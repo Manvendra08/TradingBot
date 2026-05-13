@@ -1,0 +1,683 @@
+"""
+Anomaly Detection Engine v2.6
+Pure functions — no DB/Telegram side effects.
+Returns alert dicts with 'severity' field (HIGH | MEDIUM | LOW).
+"""
+import json
+import logging
+from datetime import datetime, timezone
+
+from config.settings import (
+    OI_SPIKE_THRESHOLD_PCT,
+    PRICE_SPIKE_THRESHOLD_PCT,
+    PCR_EXTREME_LOW, PCR_EXTREME_HIGH, PCR_SHIFT_THRESHOLD,
+    IV_SPIKE_ATM_THRESHOLD,
+    MAX_PAIN_SHIFT_THRESHOLD,
+    STRIKES_AROUND_ATM,
+    SEVERITY_HIGH_MULT, SEVERITY_MED_MULT,
+    BUILDUP_OI_MIN_PCT, BUILDUP_LTP_MIN_PCT,
+    OTM_STRIKE_RANGE, OTM_OI_SPIKE_PCT,
+    VOLUME_AGGRESSION_HIGH, VOLUME_AGGRESSION_LOW,
+    IV_CRUSH_THRESHOLD,
+    STRADDLE_DELTA_PCT,
+    ATM_LEG_MOVE_PCT,
+    PCR_VELOCITY_WINDOW,
+)
+from src.models.schema import (
+    get_previous_snapshot,
+    get_previous_underlying,
+    get_latest_snapshots_for_symbol,
+    get_latest_n_snapshots,
+)
+
+log = logging.getLogger(__name__)
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────
+
+def _pct_change(old: float, new: float) -> float | None:
+    if old and old != 0:
+        return round((new - old) / abs(old) * 100, 2)
+    return None
+
+
+def _score_severity(ratio: float) -> str:
+    if ratio >= SEVERITY_HIGH_MULT:
+        return "HIGH"
+    if ratio >= SEVERITY_MED_MULT:
+        return "MEDIUM"
+    return "LOW"
+
+
+def _make_alert(alert_type: str, symbol: str, expiry: str, strike: float | None,
+                option_type: str | None, detail: dict,
+                severity: str = "LOW") -> dict:
+    return {
+        "fired_at":    datetime.now(timezone.utc).isoformat(),
+        "symbol":      symbol,
+        "alert_type":  alert_type,
+        "strike":      strike,
+        "option_type": option_type,
+        "expiry":      expiry,
+        "detail_json": json.dumps(detail),
+        "telegram_sent": 0,
+        "severity":    severity,
+        "digest_id":   None,
+    }
+
+
+# ── ATM detection ──────────────────────────────────────────────────────────
+
+def _atm_strike(strikes_data: list[dict], underlying: float) -> float:
+    all_strikes = sorted({r["strike"] for r in strikes_data})
+    return min(all_strikes, key=lambda s: abs(s - underlying))
+
+
+# ── Max Pain ───────────────────────────────────────────────────────────────
+
+def _compute_max_pain(strikes_data: list[dict]) -> float | None:
+    ce_map = {r["strike"]: r["oi"] for r in strikes_data if r["option_type"] == "CE"}
+    pe_map = {r["strike"]: r["oi"] for r in strikes_data if r["option_type"] == "PE"}
+    all_strikes = sorted(set(ce_map) | set(pe_map))
+    if not all_strikes:
+        return None
+    min_pain = None
+    max_pain_strike = None
+    for candidate in all_strikes:
+        pain = sum((candidate - s) * oi for s, oi in ce_map.items() if candidate > s)
+        pain += sum((s - candidate) * oi for s, oi in pe_map.items() if candidate < s)
+        if min_pain is None or pain < min_pain:
+            min_pain = pain
+            max_pain_strike = candidate
+    return max_pain_strike
+
+
+# ── PCR ────────────────────────────────────────────────────────────────────
+
+def _compute_pcr(strikes_data: list[dict]) -> float | None:
+    total_ce = sum(r["oi"] for r in strikes_data if r["option_type"] == "CE")
+    total_pe = sum(r["oi"] for r in strikes_data if r["option_type"] == "PE")
+    if total_ce == 0:
+        return None
+    return round(total_pe / total_ce, 4)
+
+
+# ── OI wall helpers ────────────────────────────────────────────────────────
+
+def _oi_wall(strikes_data: list[dict]) -> dict:
+    """Return strike with max CE OI (resistance) and max PE OI (support)."""
+    ce_rows = [r for r in strikes_data if r["option_type"] == "CE" and r.get("oi")]
+    pe_rows = [r for r in strikes_data if r["option_type"] == "PE" and r.get("oi")]
+    resistance = max(ce_rows, key=lambda r: r["oi"])["strike"] if ce_rows else None
+    support    = max(pe_rows, key=lambda r: r["oi"])["strike"] if pe_rows else None
+    return {"resistance": resistance, "support": support}
+
+
+# ── Strike filter ──────────────────────────────────────────────────────────
+
+def _filter_atm_range(strikes_data: list[dict], underlying: float) -> list[dict]:
+    if STRIKES_AROUND_ATM <= 0:
+        return strikes_data
+    atm = _atm_strike(strikes_data, underlying)
+    sorted_strikes = sorted({r["strike"] for r in strikes_data})
+    try:
+        idx = sorted_strikes.index(atm)
+    except ValueError:
+        return strikes_data
+    lo = sorted_strikes[max(0, idx - STRIKES_AROUND_ATM)]
+    hi = sorted_strikes[min(len(sorted_strikes) - 1, idx + STRIKES_AROUND_ATM)]
+    return [r for r in strikes_data if lo <= r["strike"] <= hi]
+
+
+def _filter_otm_only(strikes_data: list[dict], underlying: float) -> list[dict]:
+    """Return strikes beyond ATM ± OTM_STRIKE_RANGE."""
+    atm = _atm_strike(strikes_data, underlying)
+    sorted_strikes = sorted({r["strike"] for r in strikes_data})
+    try:
+        idx = sorted_strikes.index(atm)
+    except ValueError:
+        return []
+    lo_bound = sorted_strikes[max(0, idx - OTM_STRIKE_RANGE - 1)] if idx > OTM_STRIKE_RANGE else None
+    hi_bound = sorted_strikes[min(len(sorted_strikes) - 1, idx + OTM_STRIKE_RANGE + 1)]
+    return [
+        r for r in strikes_data
+        if (lo_bound is None or r["strike"] < lo_bound) or r["strike"] > hi_bound
+    ]
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# DETECTION RULES
+# ══════════════════════════════════════════════════════════════════════════
+
+def _detect_oi_spike_unwind(filtered: list[dict], symbol: str, expiry: str,
+                             underlying: float) -> list[dict]:
+    alerts = []
+    for row in filtered:
+        strike = row["strike"]
+        ot     = row["option_type"]
+        prev   = get_previous_snapshot(symbol, expiry, strike, ot)
+        if not prev:
+            continue
+        prev_oi = prev.get("oi") or 0
+        curr_oi = row.get("oi") or 0
+        pct     = _pct_change(prev_oi, curr_oi)
+        if pct is None or abs(pct) < OI_SPIKE_THRESHOLD_PCT:
+            continue
+
+        sev = _score_severity(abs(pct) / OI_SPIKE_THRESHOLD_PCT)
+        atype = "OI_SPIKE" if pct > 0 else "OI_UNWIND"
+        detail = {
+            "strike": strike, "option_type": ot,
+            "prev_oi": prev_oi, "curr_oi": curr_oi, "pct_change": pct,
+            "prev_ltp": prev.get("ltp"), "curr_ltp": row.get("ltp"),
+            "underlying": underlying,
+        }
+        log.info("[engine] %s | %s %.0f %s: OI %d→%d (%.1f%%) [%s]",
+                 symbol, atype, strike, ot, prev_oi, curr_oi, pct, sev)
+        alerts.append(_make_alert(atype, symbol, expiry, strike, ot, detail, sev))
+    return alerts
+
+
+def _detect_buildup(filtered: list[dict], symbol: str, expiry: str,
+                    underlying: float) -> list[dict]:
+    """Classify per-strike as Long-Buildup / Short-Buildup / Long-Unwinding / Short-Covering."""
+    alerts = []
+    for row in filtered:
+        strike = row["strike"]
+        ot     = row["option_type"]
+        prev   = get_previous_snapshot(symbol, expiry, strike, ot)
+        if not prev:
+            continue
+        prev_oi  = prev.get("oi") or 0
+        curr_oi  = row.get("oi") or 0
+        prev_ltp = prev.get("ltp") or 0
+        curr_ltp = row.get("ltp") or 0
+        oi_pct  = _pct_change(prev_oi, curr_oi)
+        ltp_pct = _pct_change(prev_ltp, curr_ltp)
+        if oi_pct is None or ltp_pct is None:
+            continue
+        if abs(oi_pct) < BUILDUP_OI_MIN_PCT or abs(ltp_pct) < BUILDUP_LTP_MIN_PCT:
+            continue
+
+        oi_up  = oi_pct  > 0
+        ltp_up = ltp_pct > 0
+
+        if oi_up and ltp_up:
+            label = "Long Buildup"
+        elif oi_up and not ltp_up:
+            label = "Short Buildup"
+        elif not oi_up and not ltp_up:
+            label = "Long Unwinding"
+        else:
+            label = "Short Covering"
+
+        sev = _score_severity(abs(oi_pct) / BUILDUP_OI_MIN_PCT)
+        detail = {
+            "strike": strike, "option_type": ot, "buildup_type": label,
+            "oi_pct": oi_pct, "ltp_pct": ltp_pct,
+            "prev_oi": prev_oi, "curr_oi": curr_oi,
+            "prev_ltp": prev_ltp, "curr_ltp": curr_ltp,
+            "underlying": underlying,
+        }
+        log.info("[engine] BUILDUP | %s %.0f %s: %s oi=%.1f%% ltp=%.1f%% [%s]",
+                 symbol, strike, ot, label, oi_pct, ltp_pct, sev)
+        alerts.append(_make_alert("BUILDUP_CLASSIFY", symbol, expiry, strike, ot, detail, sev))
+    return alerts
+
+
+def _detect_price_spike(symbol: str, expiry: str, underlying: float) -> list[dict]:
+    alerts = []
+    prev_row = get_previous_underlying(symbol)
+    if not prev_row:
+        return alerts
+    prev_price = prev_row["price"]
+    pct = _pct_change(prev_price, underlying)
+    if pct is None or abs(pct) < PRICE_SPIKE_THRESHOLD_PCT:
+        return alerts
+    sev = _score_severity(abs(pct) / PRICE_SPIKE_THRESHOLD_PCT)
+    detail = {
+        "prev_price": prev_price, "curr_price": underlying,
+        "pct_change": pct, "direction": "UP" if pct > 0 else "DOWN",
+    }
+    log.info("[engine] PRICE_SPIKE | %s: %.2f→%.2f (%.2f%%) [%s]",
+             symbol, prev_price, underlying, pct, sev)
+    alerts.append(_make_alert("PRICE_SPIKE", symbol, expiry, None, None, detail, sev))
+    return alerts
+
+
+def _detect_pcr(filtered: list[dict], symbol: str, expiry: str,
+                underlying: float) -> list[dict]:
+    alerts = []
+    pcr = _compute_pcr(filtered)
+    if pcr is None:
+        return alerts
+    base_detail: dict = {"pcr": pcr, "underlying": underlying}
+
+    if pcr <= PCR_EXTREME_LOW or pcr >= PCR_EXTREME_HIGH:
+        d = {**base_detail, "interpretation": (
+            "Extremely BEARISH (heavy call writing)" if pcr >= PCR_EXTREME_HIGH
+            else "Extremely BULLISH (heavy put writing)"
+        )}
+        distance = max(PCR_EXTREME_HIGH - pcr, pcr - PCR_EXTREME_LOW) if pcr >= PCR_EXTREME_HIGH else max(pcr - PCR_EXTREME_LOW, 0.01)
+        sev = _score_severity(abs(pcr - (PCR_EXTREME_LOW if pcr < 1 else PCR_EXTREME_HIGH)) / 0.2)
+        alerts.append(_make_alert("PCR_EXTREME", symbol, expiry, None, None, d, sev))
+
+    prev_snaps = get_latest_snapshots_for_symbol(symbol, expiry)
+    if prev_snaps:
+        prev_pcr = _compute_pcr(prev_snaps)
+        if prev_pcr and abs(pcr - prev_pcr) >= PCR_SHIFT_THRESHOLD:
+            d = {**base_detail, "prev_pcr": prev_pcr,
+                 "pcr_delta": round(pcr - prev_pcr, 4)}
+            sev = _score_severity(abs(pcr - prev_pcr) / PCR_SHIFT_THRESHOLD)
+            alerts.append(_make_alert("PCR_SHIFT", symbol, expiry, None, None, d, sev))
+    return alerts
+
+
+def _detect_pcr_velocity(symbol: str, expiry: str, underlying: float,
+                          curr_pcr: float | None) -> list[dict]:
+    """Fire if PCR slope over last N scans is accelerating (monotone direction)."""
+    if curr_pcr is None:
+        return []
+    snapshots = get_latest_n_snapshots(symbol, expiry, PCR_VELOCITY_WINDOW)
+    if len(snapshots) < 2:
+        return []
+    pcr_series = []
+    for snap in snapshots:
+        p = _compute_pcr(snap)
+        if p is not None:
+            pcr_series.append(p)
+    pcr_series = [curr_pcr] + pcr_series   # newest first
+    if len(pcr_series) < 3:
+        return []
+    diffs = [pcr_series[i] - pcr_series[i + 1] for i in range(len(pcr_series) - 1)]
+    if all(d > 0 for d in diffs):
+        direction, label = "rising", "Bulls gaining control"
+    elif all(d < 0 for d in diffs):
+        direction, label = "falling", "Bears gaining control"
+    else:
+        return []
+    slope = round(sum(diffs) / len(diffs), 4)
+    detail = {
+        "pcr_series": pcr_series[:PCR_VELOCITY_WINDOW],
+        "slope": slope, "direction": direction, "label": label,
+    }
+    return [_make_alert("PCR_VELOCITY", symbol, expiry, None, None, detail, "MEDIUM")]
+
+
+def _detect_iv_spike_crush(filtered: list[dict], symbol: str, expiry: str,
+                            underlying: float) -> list[dict]:
+    alerts = []
+    atm = _atm_strike(filtered, underlying)
+    for ot in ("CE", "PE"):
+        row = next((r for r in filtered if r["strike"] == atm and r["option_type"] == ot), None)
+        if not row:
+            continue
+        curr_iv = row.get("iv") or 0
+        prev = get_previous_snapshot(symbol, expiry, atm, ot)
+        if not prev:
+            continue
+        prev_iv = prev.get("iv") or 0
+        if not prev_iv:
+            continue
+        delta = curr_iv - prev_iv
+        if delta >= IV_SPIKE_ATM_THRESHOLD:
+            sev = _score_severity(delta / IV_SPIKE_ATM_THRESHOLD)
+            detail = {
+                "strike": atm, "option_type": ot,
+                "prev_iv": prev_iv, "curr_iv": curr_iv, "iv_delta": round(delta, 2),
+                "underlying": underlying,
+            }
+            log.info("[engine] IV_SPIKE | %s ATM %.0f %s: %.1f→%.1f [%s]",
+                     symbol, atm, ot, prev_iv, curr_iv, sev)
+            alerts.append(_make_alert("IV_SPIKE", symbol, expiry, atm, ot, detail, sev))
+        elif delta <= IV_CRUSH_THRESHOLD:
+            detail = {
+                "strike": atm, "option_type": ot,
+                "prev_iv": prev_iv, "curr_iv": curr_iv, "iv_delta": round(delta, 2),
+                "underlying": underlying,
+            }
+            log.info("[engine] IV_CRUSH | %s ATM %.0f %s: %.1f→%.1f", symbol, atm, ot, prev_iv, curr_iv)
+            alerts.append(_make_alert("IV_CRUSH", symbol, expiry, atm, ot, detail, "MEDIUM"))
+    return alerts
+
+
+def _detect_atm_leg_move(filtered: list[dict], symbol: str, expiry: str,
+                          underlying: float) -> list[dict]:
+    """Track CE and PE ATM LTP independently; tag directional bias."""
+    atm = _atm_strike(filtered, underlying)
+    moves = {}
+    for ot in ("CE", "PE"):
+        row = next((r for r in filtered if r["strike"] == atm and r["option_type"] == ot), None)
+        if not row:
+            continue
+        curr_ltp = row.get("ltp") or 0
+        prev = get_previous_snapshot(symbol, expiry, atm, ot)
+        if not prev:
+            continue
+        prev_ltp = prev.get("ltp") or 0
+        pct = _pct_change(prev_ltp, curr_ltp)
+        if pct is not None:
+            moves[ot] = {"pct": pct, "prev": prev_ltp, "curr": curr_ltp}
+
+    if not moves:
+        return []
+    ce_pct = moves.get("CE", {}).get("pct", 0) or 0
+    pe_pct = moves.get("PE", {}).get("pct", 0) or 0
+    if abs(ce_pct) < ATM_LEG_MOVE_PCT and abs(pe_pct) < ATM_LEG_MOVE_PCT:
+        return []
+
+    if ce_pct > 0 and pe_pct < 0:
+        bias = "Bullish Flow (CE rising, PE falling)"
+    elif ce_pct < 0 and pe_pct > 0:
+        bias = "Bearish Flow (PE rising, CE falling)"
+    elif ce_pct > 0 and pe_pct > 0:
+        bias = "Vol Expansion (both legs rising)"
+    else:
+        bias = "Vol Crush (both legs falling)"
+
+    max_move = max(abs(ce_pct), abs(pe_pct))
+    sev = _score_severity(max_move / ATM_LEG_MOVE_PCT)
+    detail = {
+        "atm_strike": atm, "underlying": underlying,
+        "ce_pct": ce_pct, "pe_pct": pe_pct,
+        "ce_prev_ltp": moves.get("CE", {}).get("prev"),
+        "ce_curr_ltp": moves.get("CE", {}).get("curr"),
+        "pe_prev_ltp": moves.get("PE", {}).get("prev"),
+        "pe_curr_ltp": moves.get("PE", {}).get("curr"),
+        "bias": bias,
+    }
+    log.info("[engine] ATM_LEG_MOVE | %s ATM %.0f: CE%+.1f%% PE%+.1f%% → %s [%s]",
+             symbol, atm, ce_pct, pe_pct, bias, sev)
+    return [_make_alert("ATM_LEG_MOVE", symbol, expiry, atm, None, detail, sev)]
+
+
+def _detect_straddle_premium(filtered: list[dict], symbol: str, expiry: str,
+                              underlying: float) -> list[dict]:
+    atm = _atm_strike(filtered, underlying)
+    ce_row = next((r for r in filtered if r["strike"] == atm and r["option_type"] == "CE"), None)
+    pe_row = next((r for r in filtered if r["strike"] == atm and r["option_type"] == "PE"), None)
+    if not ce_row or not pe_row:
+        return []
+    curr_premium = (ce_row.get("ltp") or 0) + (pe_row.get("ltp") or 0)
+    prev_ce = get_previous_snapshot(symbol, expiry, atm, "CE")
+    prev_pe = get_previous_snapshot(symbol, expiry, atm, "PE")
+    if not prev_ce or not prev_pe:
+        return []
+    prev_premium = (prev_ce.get("ltp") or 0) + (prev_pe.get("ltp") or 0)
+    pct = _pct_change(prev_premium, curr_premium)
+    if pct is None or abs(pct) < STRADDLE_DELTA_PCT:
+        return []
+    direction = "expansion" if pct > 0 else "contraction"
+    label = "Event/Uncertainty Pricing" if pct > 0 else "Premium Decay / Vol Crush"
+    sev = _score_severity(abs(pct) / STRADDLE_DELTA_PCT)
+    detail = {
+        "atm_strike": atm, "underlying": underlying,
+        "prev_premium": prev_premium, "curr_premium": curr_premium,
+        "pct_change": pct, "direction": direction, "label": label,
+    }
+    return [_make_alert("STRADDLE_PREMIUM", symbol, expiry, atm, None, detail, sev)]
+
+
+def _detect_max_pain_shift(filtered: list[dict], symbol: str, expiry: str,
+                            underlying: float) -> list[dict]:
+    max_pain = _compute_max_pain(filtered)
+    if max_pain is None:
+        return []
+    prev_snaps = get_latest_snapshots_for_symbol(symbol, expiry)
+    if not prev_snaps:
+        return []
+    prev_mp = _compute_max_pain(prev_snaps)
+    if prev_mp and abs(max_pain - prev_mp) >= MAX_PAIN_SHIFT_THRESHOLD:
+        sev = _score_severity(abs(max_pain - prev_mp) / MAX_PAIN_SHIFT_THRESHOLD)
+        detail = {
+            "prev_max_pain": prev_mp, "curr_max_pain": max_pain,
+            "shift": max_pain - prev_mp, "underlying": underlying,
+        }
+        log.info("[engine] MAX_PAIN_SHIFT | %s: %.0f→%.0f [%s]", symbol, prev_mp, max_pain, sev)
+        return [_make_alert("MAX_PAIN_SHIFT", symbol, expiry, max_pain, None, detail, sev)]
+    return []
+
+
+def _detect_oi_wall_shift(all_strikes: list[dict], symbol: str, expiry: str,
+                           underlying: float) -> list[dict]:
+    curr_wall = _oi_wall(all_strikes)
+    prev_snaps = get_latest_snapshots_for_symbol(symbol, expiry)
+    if not prev_snaps:
+        return []
+    prev_wall = _oi_wall(prev_snaps)
+    changes = {}
+    if curr_wall["resistance"] and prev_wall["resistance"] and \
+            curr_wall["resistance"] != prev_wall["resistance"]:
+        changes["resistance"] = {"prev": prev_wall["resistance"],
+                                  "curr": curr_wall["resistance"]}
+    if curr_wall["support"] and prev_wall["support"] and \
+            curr_wall["support"] != prev_wall["support"]:
+        changes["support"] = {"prev": prev_wall["support"],
+                               "curr": curr_wall["support"]}
+    if not changes:
+        return []
+    detail = {"underlying": underlying, "changes": changes, **curr_wall}
+    return [_make_alert("OI_WALL_SHIFT", symbol, expiry, None, None, detail, "MEDIUM")]
+
+
+def _detect_volume_aggression(filtered: list[dict], symbol: str, expiry: str,
+                               underlying: float) -> list[dict]:
+    """High volume vs OI-delta ratio = aggressive flow."""
+    alerts = []
+    for row in filtered:
+        vol  = row.get("volume") or 0
+        oi   = row.get("oi") or 0
+        prev = get_previous_snapshot(symbol, expiry, row["strike"], row["option_type"])
+        if not prev or not vol:
+            continue
+        oi_delta = abs((oi - (prev.get("oi") or 0)))
+        if oi_delta == 0:
+            continue
+        ratio = vol / oi_delta
+        if ratio > VOLUME_AGGRESSION_HIGH:
+            label = "Aggressive Flow (high vol vs OI delta)"
+            sev = "HIGH" if ratio > VOLUME_AGGRESSION_HIGH * 2 else "MEDIUM"
+        elif ratio < VOLUME_AGGRESSION_LOW and vol > 100:
+            label = "Passive Positioning (low vol, quiet OI build)"
+            sev = "LOW"
+        else:
+            continue
+        detail = {
+            "strike": row["strike"], "option_type": row["option_type"],
+            "volume": vol, "oi_delta": oi_delta, "ratio": round(ratio, 2),
+            "label": label, "underlying": underlying,
+        }
+        alerts.append(_make_alert("VOLUME_AGGRESSION", symbol, expiry,
+                                   row["strike"], row["option_type"], detail, sev))
+    return alerts
+
+
+def _detect_otm_unusual(all_strikes: list[dict], symbol: str, expiry: str,
+                         underlying: float) -> list[dict]:
+    otm = _filter_otm_only(all_strikes, underlying)
+    alerts = []
+    for row in otm:
+        strike = row["strike"]
+        ot     = row["option_type"]
+        prev   = get_previous_snapshot(symbol, expiry, strike, ot)
+        if not prev:
+            continue
+        prev_oi = prev.get("oi") or 0
+        curr_oi = row.get("oi") or 0
+        pct = _pct_change(prev_oi, curr_oi)
+        if pct is None or pct < OTM_OI_SPIKE_PCT:
+            continue
+        detail = {
+            "strike": strike, "option_type": ot,
+            "prev_oi": prev_oi, "curr_oi": curr_oi, "pct_change": pct,
+            "underlying": underlying, "note": "Far-OTM unusual activity",
+        }
+        sev = _score_severity(pct / OTM_OI_SPIKE_PCT)
+        log.info("[engine] OTM_UNUSUAL | %s %.0f %s: +%.1f%% [%s]",
+                 symbol, strike, ot, pct, sev)
+        alerts.append(_make_alert("OTM_UNUSUAL", symbol, expiry, strike, ot, detail, sev))
+    return alerts
+
+
+# ── Main entry ─────────────────────────────────────────────────────────────
+
+
+def _empty_scan_context(symbol: str, expiry: str, underlying: float,
+                        chart_indicators: dict | None = None,
+                        reason: str = "empty_strikes") -> dict:
+    """Return a safe scan context when the snapshot cannot be analysed."""
+    return {
+        "symbol": symbol,
+        "expiry": expiry,
+        "underlying": underlying,
+        "prev_underlying": underlying,
+        "price_change_pct": None,
+        "total_ce_oi": 0,
+        "total_pe_oi": 0,
+        "ce_oi_change": 0,
+        "pe_oi_change": 0,
+        "pcr": None,
+        "max_pain": None,
+        "support": None,
+        "resistance": None,
+        "atm_strike": None,
+        "atm_ce_ltp": 0.0,
+        "atm_pe_ltp": 0.0,
+        "straddle_premium": 0.0,
+        "chart_indicators": chart_indicators,
+        "diagnostics": {"reason": reason},
+    }
+
+
+def _sum_oi_by_type(rows: list[dict]) -> tuple[int, int]:
+    """Return (CE OI, PE OI) for the provided rows."""
+    ce = sum(r.get("oi", 0) or 0 for r in rows if r.get("option_type") == "CE")
+    pe = sum(r.get("oi", 0) or 0 for r in rows if r.get("option_type") == "PE")
+    return ce, pe
+
+
+def detect_anomalies(oc_data: dict, fetched_at: str, chart_indicators: dict | None = None) -> tuple[list[dict], dict]:
+    """
+    Returns (alerts, scan_context).
+    alerts     — list of alert dicts, each with 'severity': HIGH | MEDIUM | LOW.
+    scan_context — enriched snapshot metadata for intelligence engine.
+    """
+    symbol     = oc_data["symbol"]
+    expiry     = oc_data["expiry"]
+    strikes    = oc_data.get("strikes", []) or []
+    underlying = oc_data.get("underlying_price", 0) or 0
+
+    if not strikes:
+        log.warning("[engine] empty strikes | %s | expiry=%s", symbol, expiry)
+        return [], _empty_scan_context(symbol, expiry, underlying, chart_indicators, "empty_strikes")
+
+    alerts: list[dict] = []
+    filtered = _filter_atm_range(strikes, underlying)
+    if not filtered:
+        log.warning("[engine] empty filtered strikes | %s | expiry=%s", symbol, expiry)
+        return [], _empty_scan_context(symbol, expiry, underlying, chart_indicators, "empty_filtered_strikes")
+
+    alerts += _detect_oi_spike_unwind(filtered, symbol, expiry, underlying)
+    alerts += _detect_buildup(filtered, symbol, expiry, underlying)
+    alerts += _detect_price_spike(symbol, expiry, underlying)
+
+    pcr = _compute_pcr(filtered)
+    alerts += _detect_pcr(filtered, symbol, expiry, underlying)
+    alerts += _detect_pcr_velocity(symbol, expiry, underlying, pcr)
+
+    alerts += _detect_iv_spike_crush(filtered, symbol, expiry, underlying)
+    alerts += _detect_atm_leg_move(filtered, symbol, expiry, underlying)
+    alerts += _detect_straddle_premium(filtered, symbol, expiry, underlying)
+    alerts += _detect_max_pain_shift(filtered, symbol, expiry, underlying)
+    alerts += _detect_oi_wall_shift(strikes, symbol, expiry, underlying)
+    alerts += _detect_volume_aggression(filtered, symbol, expiry, underlying)
+    alerts += _detect_otm_unusual(strikes, symbol, expiry, underlying)
+
+    # ── Build scan context for intelligence engine ─────────────────────────
+    # Use a consistent basis for current-vs-previous total OI.
+    # Detection rules still use `filtered` where appropriate, but market stance
+    # should compare full current snapshot against full previous snapshot.
+    total_ce_oi, total_pe_oi = _sum_oi_by_type(strikes)
+
+    # Net OI change vs previous scan on the same full-snapshot basis
+    prev_snaps = get_latest_snapshots_for_symbol(symbol, expiry)
+    prev_ce_oi, prev_pe_oi = _sum_oi_by_type(prev_snaps) if prev_snaps else (0, 0)
+    ce_oi_change = total_ce_oi - prev_ce_oi
+    pe_oi_change = total_pe_oi - prev_pe_oi
+    prev_by_key = {
+        (r.get("strike"), r.get("option_type")): r
+        for r in prev_snaps
+    } if prev_snaps else {}
+    max_oi_delta_pct = 0.0
+    top_oi_delta = None
+    for row in filtered:
+        prev_row = prev_by_key.get((row.get("strike"), row.get("option_type")))
+        pct = _pct_change(prev_row.get("oi", 0), row.get("oi", 0)) if prev_row else None
+        if pct is not None and abs(pct) > max_oi_delta_pct:
+            max_oi_delta_pct = abs(pct)
+            top_oi_delta = {
+                "strike": row.get("strike"),
+                "option_type": row.get("option_type"),
+                "prev_oi": prev_row.get("oi", 0),
+                "curr_oi": row.get("oi", 0),
+                "pct": pct,
+            }
+    prev_pcr = _compute_pcr(prev_snaps) if prev_snaps else None
+    pcr_delta = (pcr - prev_pcr) if pcr is not None and prev_pcr is not None else None
+
+    # Previous underlying for price direction
+    prev_und = get_previous_underlying(symbol)
+    prev_price = prev_und["price"] if prev_und else underlying
+    price_change_pct = _pct_change(prev_price, underlying)
+
+    # Max pain + OI walls
+    max_pain = _compute_max_pain(filtered)
+    walls = _oi_wall(filtered)
+
+    # ATM straddle premium
+    atm = _atm_strike(filtered, underlying) if filtered else None
+    atm_ce_ltp = 0.0
+    atm_pe_ltp = 0.0
+    if atm:
+        ce_row = next((r for r in filtered if r["strike"] == atm and r["option_type"] == "CE"), None)
+        pe_row = next((r for r in filtered if r["strike"] == atm and r["option_type"] == "PE"), None)
+        atm_ce_ltp = (ce_row.get("ltp") or 0) if ce_row else 0
+        atm_pe_ltp = (pe_row.get("ltp") or 0) if pe_row else 0
+    max_atm_ltp_delta_pct = 0.0
+    for ot in ("CE", "PE"):
+        curr_row = next((r for r in filtered if r.get("strike") == atm and r.get("option_type") == ot), None)
+        prev_row = prev_by_key.get((atm, ot))
+        pct = _pct_change(prev_row.get("ltp", 0), curr_row.get("ltp", 0)) if curr_row and prev_row else None
+        if pct is not None:
+            max_atm_ltp_delta_pct = max(max_atm_ltp_delta_pct, abs(pct))
+
+    scan_context = {
+        "symbol": symbol,
+        "expiry": expiry,
+        "underlying": underlying,
+        "prev_underlying": prev_price,
+        "price_change_pct": price_change_pct,
+        "total_ce_oi": total_ce_oi,
+        "total_pe_oi": total_pe_oi,
+        "ce_oi_change": ce_oi_change,
+        "pe_oi_change": pe_oi_change,
+        "pcr": pcr,
+        "max_pain": max_pain,
+        "support": walls.get("support"),
+        "resistance": walls.get("resistance"),
+        "atm_strike": atm,
+        "atm_ce_ltp": atm_ce_ltp,
+        "atm_pe_ltp": atm_pe_ltp,
+        "straddle_premium": atm_ce_ltp + atm_pe_ltp,
+        "chart_indicators": chart_indicators,
+        "diagnostics": {
+            "max_oi_delta_pct": max_oi_delta_pct,
+            "max_atm_ltp_delta_pct": max_atm_ltp_delta_pct,
+            "pcr": pcr,
+            "prev_pcr": prev_pcr,
+            "pcr_delta": pcr_delta,
+            "top_oi_delta": top_oi_delta,
+        },
+    }
+
+    return alerts, scan_context

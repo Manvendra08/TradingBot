@@ -1,0 +1,81 @@
+{
+  "manifest_version": 3,
+  "name": "NSEBOT Option Chain Monitor",
+  "version": "2.5.0",
+  "description": "NSE/Dhan/Sensibull/Opstra option chain — OI delta, LTP spike, PCR, alerts, countdown.",
+  "permissions": [
+    "activeTab",
+    "notifications",
+    "storage",
+    "alarms",
+    "tabs",
+    "scripting",
+    "clipboardWrite"
+  ],
+  "host_permissions": [
+    "https://www.nseindia.com/*",
+    "https://sensibull.com/*",
+    "https://web.sensibull.com/*",
+    "https://options-trader.dhan.co/*",
+    "https://tv.dhan.co/*",
+    "https://*.tradingview.com/*",
+    "https://opstra.definedge.com/*",
+    "http://localhost:8765/*",
+    "http://127.0.0.1:8765/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://options-trader.dhan.co/advanceoptionchain*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://tv.dhan.co/*",
+        "https://*.tradingview.com/*"
+      ],
+      "js": [
+        "tv_content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true,
+      "match_about_blank": true
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "debug.html",
+        "page_bridge.js",
+        "dhan_bridge.js"
+      ],
+      "matches": [
+        "https://www.nseindia.com/*",
+        "https://options-trader.dhan.co/*",
+        "https://sensibull.com/*",
+        "https://web.sensibull.com/*",
+        "https://opstra.definedge.com/*"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>NSEBOT Debug</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { width: 500px; min-height: 400px; font-family: 'Segoe UI', monospace; background: #050810; color: #c8ddf0; font-size: 11px; }
+h1 { font-size: 13px; color: #00d4aa; padding: 10px 14px; border-bottom: 1px solid #1a2840; background: #0a1220; }
+.section { padding: 10px 14px; border-bottom: 1px solid #0e1928; }
+.section h2 { font-size: 10px; color: #4a6a8a; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+.kv { display: flex; gap: 8px; margin-bottom: 3px; }
+.k { color: #5a7a9a; min-width: 120px; }
+.v { color: #c8ddf0; font-family: monospace; word-break: break-all; }
+.v.ok   { color: #00d4aa; }
+.v.err  { color: #ef5350; }
+.v.warn { color: #ffa726; }
+pre { background: #0a1220; border: 1px solid #1a2840; border-radius: 4px; padding: 8px; font-size: 10px; overflow-x: auto; max-height: 200px; overflow-y: auto; color: #8fa8c8; }
+button { margin: 4px 4px 4px 0; padding: 5px 10px; background: #003d30; color: #00d4aa; border: 1px solid #00d4aa44; border-radius: 4px; cursor: pointer; font-size: 10px; }
+button:hover { background: #005040; }
+button.danger { background: #2a0a0a; color: #ef5350; border-color: #ef535044; }
+#log { max-height: 180px; overflow-y: auto; }
+.log-row { display: flex; gap: 6px; padding: 2px 0; border-bottom: 1px solid #080c14; }
+.log-ts   { color: #3a5a7a; min-width: 58px; }
+.log-icon { min-width: 12px; }
+.log-msg  { color: #8fa8c8; }
+.log-msg.ok   { color: #00d4aa; }
+.log-msg.err  { color: #ef5350; }
+.log-msg.warn { color: #ffa726; }
+</style>
+</head>
+<body>
+<h1>🔧 NSEBOT Debug Console</h1>
+
+<div class="section">
+  <h2>Storage State</h2>
+  <div id="storage-state">Loading...</div>
+  <div style="margin-top:8px">
+    <button onclick="refreshAll()">🔄 Refresh</button>
+    <button onclick="clearStorage()" class="danger">🗑 Clear All Storage</button>
+    <button onclick="exportStorage()">📋 Export JSON</button>
+  </div>
+</div>
+
+<div class="section">
+  <h2>Active Tab Info</h2>
+  <div id="tab-info">Checking...</div>
+</div>
+
+<div class="section">
+  <h2>Scan Log <small style="color:#3a5a7a">(last 30)</small></h2>
+  <div id="log">Loading...</div>
+</div>
+
+<div class="section">
+  <h2>Raw Snapshot (strikes sample)</h2>
+  <pre id="snapshot-raw">—</pre>
+</div>
+
+<div class="section">
+  <h2>Force Actions</h2>
+  <button onclick="forceScan()">⚡ Force Scan</button>
+  <button onclick="pingBackend()">🔌 Ping Backend</button>
+  <button onclick="injectTestData()">🧪 Inject Test Data</button>
+</div>
+
+<script>
+const KEYS = ['nsebot_alerts','nsebot_snapshot','nsebot_site','nsebot_scan_log',
+              'nsebot_last_scan_ts','nsebot_scan_count','nsebot_settings','nsebot_backend_ok'];
+
+function kv(k, v, cls='') {
+  return `<div class="kv"><span class="k">${k}</span><span class="v ${cls}">${v}</span></div>`;
+}
+
+function refreshAll() {
+  chrome.storage.local.get(KEYS, (r) => {
+    // Storage state
+    const el = document.getElementById('storage-state');
+    const scanCount = r.nsebot_scan_count || 0;
+    const site      = r.nsebot_site || '—';
+    const lastScan  = r.nsebot_last_scan_ts ? new Date(r.nsebot_last_scan_ts).toLocaleTimeString() : '—';
+    const alertCnt  = (r.nsebot_alerts || []).length;
+    const strikeCnt = (r.nsebot_snapshot?.strikes || []).length;
+    const backendOk = r.nsebot_backend_ok;
+    const symbol    = r.nsebot_snapshot?.symbol || '—';
+    const underlying = r.nsebot_snapshot?.underlying || 0;
+
+    el.innerHTML =
+      kv('Site detected',   site, site !== '—' ? 'ok' : 'err') +
+      kv('Symbol',          symbol) +
+      kv('Underlying',      underlying || '—') +
+      kv('Scan count',      scanCount, scanCount > 0 ? 'ok' : 'warn') +
+      kv('Last scan',       lastScan, lastScan !== '—' ? 'ok' : 'warn') +
+      kv('Strike rows',     strikeCnt, strikeCnt > 0 ? 'ok' : 'err') +
+      kv('Alerts fired',    alertCnt, alertCnt > 0 ? 'warn' : 'ok') +
+      kv('Backend status',  backendOk ? 'CONNECTED ✓' : 'DISCONNECTED ✗', backendOk ? 'ok' : 'err');
+
+    // Settings
+    if (r.nsebot_settings) {
+      const s = r.nsebot_settings;
+      el.innerHTML +=
+        kv('OI threshold',    s.oiThreshold + '%') +
+        kv('Interval',        s.intervalMin + ' min') +
+        kv('Backend URL',     s.backendUrl || '—');
+    }
+
+    // Scan log
+    renderLog(r.nsebot_scan_log || []);
+
+    // Snapshot sample
+    const snaps = r.nsebot_snapshot?.strikes || [];
+    const sample = snaps.slice(0, 6).map(s =>
+      `${s.option_type} ${s.strike}: OI=${s.oi} LTP=${s.ltp} IV=${s.iv||0}`
+    ).join('\n');
+    document.getElementById('snapshot-raw').textContent =
+      snaps.length ? `${snaps.length} rows total. Sample (first 6):\n${sample}` : 'No snapshot data';
+  });
+
+  // Tab info
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    const tab = tabs?.[0];
+    const el  = document.getElementById('tab-info');
+    if (!tab) { el.innerHTML = kv('Tab', 'None', 'err'); return; }
+    const url    = tab.url || '';
+    const isSup  = url.includes('nseindia') || url.includes('sensibull') || url.includes('opstra');
+    el.innerHTML =
+      kv('URL',       url.split('?')[0].slice(0, 60) + (url.length > 60 ? '…' : '')) +
+      kv('Supported', isSup ? 'YES ✓' : 'NO — navigate to NSE / Sensibull / Opstra', isSup ? 'ok' : 'err') +
+      kv('Status',    tab.status);
+  });
+}
+
+function renderLog(log) {
+  const el = document.getElementById('log');
+  if (!log.length) { el.innerHTML = '<div style="color:#3a5a7a">No log entries yet</div>'; return; }
+  el.innerHTML = [...log].reverse().slice(0,30).map(e => {
+    const cls  = e.ok ? (e.warn ? 'warn' : 'ok') : 'err';
+    const icon = e.ok ? (e.warn ? '⚠' : '✓') : '✗';
+    const ts   = e.ts ? new Date(e.ts).toLocaleTimeString() : '';
+    return `<div class="log-row">
+      <span class="log-ts">${ts}</span>
+      <span class="log-icon">${icon}</span>
+      <span class="log-msg ${cls}">${e.msg}</span>
+    </div>`;
+  }).join('');
+}
+
+function clearStorage() {
+  if (!confirm('Clear all NSEBOT storage?')) return;
+  chrome.storage.local.remove(KEYS, () => refreshAll());
+}
+
+function exportStorage() {
+  chrome.storage.local.get(KEYS, (r) => {
+    const json = JSON.stringify(r, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = `nsebot_debug_${Date.now()}.json`;
+    a.click();
+  });
+}
+
+function forceScan() {
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (tabs?.[0]) {
+      chrome.tabs.sendMessage(tabs[0].id, { type: 'FORCE_SCAN' }, (r) => {
+        setTimeout(refreshAll, 3000);
+      });
+    }
+  });
+}
+
+function pingBackend() {
+  chrome.storage.local.get(['nsebot_settings'], (r) => {
+    const url = r.nsebot_settings?.backendUrl || 'http://localhost:8765';
+    fetch(`${url}/health`)
+      .then(res => {
+        chrome.storage.local.set({ nsebot_backend_ok: res.ok });
+        alert(res.ok ? '✅ Backend reachable' : '❌ Backend returned error');
+        refreshAll();
+      })
+      .catch(() => {
+        chrome.storage.local.set({ nsebot_backend_ok: false });
+        alert('❌ Backend unreachable at ' + url);
+        refreshAll();
+      });
+  });
+}
+
+function injectTestData() {
+  // Injects a synthetic snapshot so you can verify the popup renders correctly
+  const strikes = [];
+  const base = 24000;
+  for (let i = -5; i <= 5; i++) {
+    const s = base + i * 50;
+    strikes.push({ strike: s, option_type: 'CE', oi: 100000 + i * 5000, ltp: Math.max(1, 200 - i * 20), iv: 15 + Math.abs(i) });
+    strikes.push({ strike: s, option_type: 'PE', oi: 90000  - i * 4000, ltp: Math.max(1, 200 + i * 20), iv: 15 + Math.abs(i) });
+  }
+  const snap = {
+    symbol: 'NIFTY', underlying: 24000, expiry: '2025-07-31',
+    strikes, site: 'nse', lastScan: new Date().toISOString(), scanOk: true,
+    prevStrikes: {},
+  };
+  chrome.storage.local.set({
+    nsebot_snapshot:     snap,
+    nsebot_site:         'nse',
+    nsebot_last_scan_ts: new Date().toISOString(),
+    nsebot_scan_count:   1,
+    nsebot_scan_log: [{
+      ts: new Date().toISOString(),
+      msg: 'TEST: NIFTY ✓ — 22 strikes | Spot:24000 (injected)',
+      ok: true, warn: false,
+    }],
+  }, () => {
+    alert('✅ Test snapshot injected — open the main popup to verify rendering');
+    refreshAll();
+  });
+}
+
+// Auto-refresh every 3s
+refreshAll();
+setInterval(refreshAll, 3000);
+</script>
+</body>
+</html>

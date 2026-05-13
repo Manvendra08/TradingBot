@@ -1,0 +1,31 @@
+# NSEBOT Python dependencies
+# Install: python -m pip install -r "C:\Users\manve\Downloads\NSEBOT\requirements.txt"
+
+# Core HTTP + timezone
+requests>=2.31.0
+pytz>=2024.1
+
+# Environment / secrets
+python-dotenv>=1.0.1
+
+# Scheduling
+APScheduler>=3.10.4
+
+# Dhan SDK (official)
+dhanhq>=2.0.1
+
+# Telegram
+python-telegram-bot==21.5
+
+# Dashboard
+streamlit>=1.35.0
+plotly>=5.22.0
+pandas>=2.2.0
+
+# Optional: Upstox SDK (uncomment if using Upstox as primary)
+# upstox-python-sdk>=2.8.0
+
+# Dev / testing
+pytest>=8.2.0
+pytest-asyncio>=0.23.0
+pytest-cov>=5.0.0
