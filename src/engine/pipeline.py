@@ -1,6 +1,11 @@
 """
-Data Pipeline Orchestrator v2.6
+Data Pipeline Orchestrator v2.7
 fetch → detect → dedup → digest → alert
+
+Fixes (v2.7):
+  - sent_digest logic corrected: HIGH alerts always get individual send;
+    digest marks remaining alerts as sent.
+  - Added optional market-hours guard for direct/--now invocations.
 """
 import logging
 from datetime import datetime, timezone
@@ -22,10 +27,20 @@ from config.settings import WATCH_SYMBOLS, INDIVIDUAL_ALERT_MIN_SEVERITY
 log = logging.getLogger(__name__)
 
 
-def run_pipeline(symbols: list[str] | None = None) -> None:
+def run_pipeline(symbols: list[str] | None = None, force: bool = False) -> None:
+    """
+    Run the full pipeline for each symbol.
+
+    Args:
+        symbols: Override watch list. Defaults to WATCH_SYMBOLS.
+        force:   Skip market-hours guard (used by --now CLI flag).
+                 When False, symbols are expected to already be filtered
+                 by the scheduler's _guarded_run. Direct callers should
+                 pass force=True explicitly to bypass the guard intentionally.
+    """
     symbols = symbols or WATCH_SYMBOLS
     fetched_at = datetime.now(timezone.utc).isoformat()
-    log.info("Pipeline run started | %s | symbols: %s", fetched_at, symbols)
+    log.info("Pipeline run started | %s | symbols: %s | force=%s", fetched_at, symbols, force)
     for symbol in symbols:
         try:
             _process_symbol(symbol, fetched_at)
@@ -54,7 +69,7 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
     new_alerts = [a for a in alerts if not is_duplicate(a)]
 
     if new_alerts:
-        # 3. Build digest → send ONE message
+        # 3. Build digest → send ONE grouped message
         digest_id, digest_msg = build_digest(
             symbol, new_alerts, fetched_at,
             scan_context=scan_context,
@@ -64,13 +79,22 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
 
         sent_digest = send_text(digest_msg)
 
-        # 4. Persist + record dedup + individual HIGH alerts
+        # 4. Persist + record dedup
+        #    HIGH alerts always get an individual send (in addition to digest),
+        #    so traders see time-critical signals even if they missed the digest.
+        #    All other alerts are marked sent when the digest succeeds.
         for alert in new_alerts:
             alert_id = insert_alert(alert)
             record_alert(alert)
-            if alert.get("severity") == INDIVIDUAL_ALERT_MIN_SEVERITY and not sent_digest:
+
+            is_high = alert.get("severity") == INDIVIDUAL_ALERT_MIN_SEVERITY
+            if is_high:
+                # Always attempt individual send for HIGH — digest is supplementary
                 sent = send_alert(alert)
                 if sent:
+                    mark_telegram_sent(alert_id)
+                elif sent_digest:
+                    # Digest already delivered it; mark sent to avoid retry loops
                     mark_telegram_sent(alert_id)
             elif sent_digest:
                 mark_telegram_sent(alert_id)

@@ -11,6 +11,24 @@ LOG_DIR  = BASE_DIR / "logs"
 DATA_DIR.mkdir(exist_ok=True)
 LOG_DIR.mkdir(exist_ok=True)
 
+
+def _require_env(key: str) -> str:
+    """Return env var value or raise ValueError if missing/placeholder."""
+    val = os.getenv(key, "")
+    if not val or val.startswith("YOUR_"):
+        raise ValueError(
+            f"Required environment variable '{key}' is not set. "
+            f"Copy .env.example to .env and fill in real values."
+        )
+    return val
+
+
+def _optional_env(key: str, default: str = "") -> str:
+    """Return env var value or default; never raises."""
+    val = os.getenv(key, default)
+    return val if val and not val.startswith("YOUR_") else default
+
+
 # ── Symbols ────────────────────────────────────────────────────────────────
 WATCH_NSE = ["NIFTY", "BANKNIFTY", "FINNIFTY"]
 WATCH_MCX: list[str] = []           # e.g. ["NATURALGAS", "CRUDEOIL", "GOLD"]
@@ -36,6 +54,7 @@ PRICE_SPIKE_THRESHOLD_PCT = 2.5
 PCR_EXTREME_LOW           = 0.4
 PCR_EXTREME_HIGH          = 1.8
 PCR_SHIFT_THRESHOLD       = 0.25
+PCR_EXTREME_SEVERITY_BAND = 0.2   # denominator for PCR extreme severity scoring
 IV_SPIKE_ATM_THRESHOLD    = 7.0
 MAX_PAIN_SHIFT_THRESHOLD  = 100
 ALERT_COOLDOWN_MINUTES    = 60
@@ -68,8 +87,8 @@ HTTP_TIMEOUT_SECONDS  = 15
 HTTP_MAX_RETRIES      = 3
 HTTP_BACKOFF_FACTOR   = 2
 
-DHAN_CLIENT_ID    = os.getenv("DHAN_CLIENT_ID",    "YOUR_DHAN_CLIENT_ID")
-DHAN_ACCESS_TOKEN = os.getenv("DHAN_ACCESS_TOKEN",  "YOUR_DHAN_ACCESS_TOKEN")
+DHAN_CLIENT_ID    = _optional_env("DHAN_CLIENT_ID")
+DHAN_ACCESS_TOKEN = _optional_env("DHAN_ACCESS_TOKEN")   # validated at fetcher init
 DHAN_BASE_URL     = "https://api.dhan.co/v2"
 DHAN_SECURITY_IDS = {"NIFTY": 13, "BANKNIFTY": 25, "FINNIFTY": 27}
 
@@ -83,11 +102,11 @@ NSE_HEADERS = {
     "Referer":         "https://www.nseindia.com/option-chain",
 }
 
-UPSTOX_ACCESS_TOKEN = os.getenv("UPSTOX_ACCESS_TOKEN", "YOUR_UPSTOX_TOKEN")
+UPSTOX_ACCESS_TOKEN = _optional_env("UPSTOX_ACCESS_TOKEN")
 UPSTOX_BASE_URL     = "https://api.upstox.com/v2"
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN")
-TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID",   "YOUR_CHAT_ID")
+TELEGRAM_BOT_TOKEN = _optional_env("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID   = _optional_env("TELEGRAM_CHAT_ID")
 
 STRIKES_AROUND_ATM  = 15
 LOG_LEVEL           = "INFO"
