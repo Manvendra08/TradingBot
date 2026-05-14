@@ -1,7 +1,12 @@
 """
-Anomaly Detection Engine v2.6
+Anomaly Detection Engine v2.7
 Pure functions — no DB/Telegram side effects.
 Returns alert dicts with 'severity' field (HIGH | MEDIUM | LOW).
+
+Performance fix (v2.7):
+  - All detection functions now receive `prev_snap` dict pre-fetched by
+    detect_anomalies() via a single get_prev_snapshots_bulk() call.
+  - Eliminates 300+ SQLite round trips per pipeline run.
 """
 import json
 import logging
@@ -10,7 +15,7 @@ from datetime import datetime, timezone
 from config.settings import (
     OI_SPIKE_THRESHOLD_PCT,
     PRICE_SPIKE_THRESHOLD_PCT,
-    PCR_EXTREME_LOW, PCR_EXTREME_HIGH, PCR_SHIFT_THRESHOLD,
+    PCR_EXTREME_LOW, PCR_EXTREME_HIGH, PCR_SHIFT_THRESHOLD, PCR_EXTREME_SEVERITY_BAND,
     IV_SPIKE_ATM_THRESHOLD,
     MAX_PAIN_SHIFT_THRESHOLD,
     STRIKES_AROUND_ATM,
@@ -24,13 +29,16 @@ from config.settings import (
     PCR_VELOCITY_WINDOW,
 )
 from src.models.schema import (
-    get_previous_snapshot,
+    get_prev_snapshots_bulk,
     get_previous_underlying,
     get_latest_snapshots_for_symbol,
     get_latest_n_snapshots,
 )
 
 log = logging.getLogger(__name__)
+
+# Type alias for the bulk prev-snapshot dict
+PrevByKey = dict[tuple, dict]
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -66,7 +74,7 @@ def _make_alert(alert_type: str, symbol: str, expiry: str, strike: float | None,
     }
 
 
-# ── ATM detection ──────────────────────────────────────────────────────────
+# ── ATM detection ────────────────────────────────────────────────────────────
 
 def _atm_strike(strikes_data: list[dict], underlying: float) -> float:
     all_strikes = sorted({r["strike"] for r in strikes_data})
@@ -92,7 +100,7 @@ def _compute_max_pain(strikes_data: list[dict]) -> float | None:
     return max_pain_strike
 
 
-# ── PCR ────────────────────────────────────────────────────────────────────
+# ── PCR ──────────────────────────────────────────────────────────────────
 
 def _compute_pcr(strikes_data: list[dict]) -> float | None:
     total_ce = sum(r["oi"] for r in strikes_data if r["option_type"] == "CE")
@@ -102,7 +110,7 @@ def _compute_pcr(strikes_data: list[dict]) -> float | None:
     return round(total_pe / total_ce, 4)
 
 
-# ── OI wall helpers ────────────────────────────────────────────────────────
+# ── OI wall helpers ───────────────────────────────────────────────────────────
 
 def _oi_wall(strikes_data: list[dict]) -> dict:
     """Return strike with max CE OI (resistance) and max PE OI (support)."""
@@ -113,7 +121,7 @@ def _oi_wall(strikes_data: list[dict]) -> dict:
     return {"resistance": resistance, "support": support}
 
 
-# ── Strike filter ──────────────────────────────────────────────────────────
+# ── Strike filter ─────────────────────────────────────────────────────────────
 
 def _filter_atm_range(strikes_data: list[dict], underlying: float) -> list[dict]:
     if STRIKES_AROUND_ATM <= 0:
@@ -130,32 +138,36 @@ def _filter_atm_range(strikes_data: list[dict], underlying: float) -> list[dict]
 
 
 def _filter_otm_only(strikes_data: list[dict], underlying: float) -> list[dict]:
-    """Return strikes beyond ATM ± OTM_STRIKE_RANGE."""
+    """
+    Return strikes strictly beyond ATM ± OTM_STRIKE_RANGE.
+    Fixed: removed erroneous +1 offset that included one ITM/ATM strike on each side.
+    """
     atm = _atm_strike(strikes_data, underlying)
     sorted_strikes = sorted({r["strike"] for r in strikes_data})
     try:
         idx = sorted_strikes.index(atm)
     except ValueError:
         return []
-    lo_bound = sorted_strikes[max(0, idx - OTM_STRIKE_RANGE - 1)] if idx > OTM_STRIKE_RANGE else None
-    hi_bound = sorted_strikes[min(len(sorted_strikes) - 1, idx + OTM_STRIKE_RANGE + 1)]
-    return [
-        r for r in strikes_data
-        if (lo_bound is None or r["strike"] < lo_bound) or r["strike"] > hi_bound
-    ]
+    # Boundary: last strike that is still within the ATM range
+    lo_idx = max(0, idx - OTM_STRIKE_RANGE)
+    hi_idx = min(len(sorted_strikes) - 1, idx + OTM_STRIKE_RANGE)
+    lo_bound = sorted_strikes[lo_idx]
+    hi_bound = sorted_strikes[hi_idx]
+    return [r for r in strikes_data if r["strike"] < lo_bound or r["strike"] > hi_bound]
 
 
-# ══════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 # DETECTION RULES
-# ══════════════════════════════════════════════════════════════════════════
+# All functions accept prev_by_key: PrevByKey — bulk-fetched once per run.
+# ════════════════════════════════════════════════════════════════════════════
 
 def _detect_oi_spike_unwind(filtered: list[dict], symbol: str, expiry: str,
-                             underlying: float) -> list[dict]:
+                             underlying: float, prev_by_key: PrevByKey) -> list[dict]:
     alerts = []
     for row in filtered:
         strike = row["strike"]
         ot     = row["option_type"]
-        prev   = get_previous_snapshot(symbol, expiry, strike, ot)
+        prev   = prev_by_key.get((strike, ot))
         if not prev:
             continue
         prev_oi = prev.get("oi") or 0
@@ -179,13 +191,13 @@ def _detect_oi_spike_unwind(filtered: list[dict], symbol: str, expiry: str,
 
 
 def _detect_buildup(filtered: list[dict], symbol: str, expiry: str,
-                    underlying: float) -> list[dict]:
+                    underlying: float, prev_by_key: PrevByKey) -> list[dict]:
     """Classify per-strike as Long-Buildup / Short-Buildup / Long-Unwinding / Short-Covering."""
     alerts = []
     for row in filtered:
         strike = row["strike"]
         ot     = row["option_type"]
-        prev   = get_previous_snapshot(symbol, expiry, strike, ot)
+        prev   = prev_by_key.get((strike, ot))
         if not prev:
             continue
         prev_oi  = prev.get("oi") or 0
@@ -246,7 +258,12 @@ def _detect_price_spike(symbol: str, expiry: str, underlying: float) -> list[dic
 
 
 def _detect_pcr(filtered: list[dict], symbol: str, expiry: str,
-                underlying: float) -> list[dict]:
+                underlying: float, prev_snaps: list[dict]) -> list[dict]:
+    """
+    Fixed: removed dead `distance` variable; severity now uses
+    PCR_EXTREME_SEVERITY_BAND config constant instead of hardcoded 0.2.
+    prev_snaps passed in from caller to avoid duplicate DB fetch.
+    """
     alerts = []
     pcr = _compute_pcr(filtered)
     if pcr is None:
@@ -258,11 +275,10 @@ def _detect_pcr(filtered: list[dict], symbol: str, expiry: str,
             "Extremely BEARISH (heavy call writing)" if pcr >= PCR_EXTREME_HIGH
             else "Extremely BULLISH (heavy put writing)"
         )}
-        distance = max(PCR_EXTREME_HIGH - pcr, pcr - PCR_EXTREME_LOW) if pcr >= PCR_EXTREME_HIGH else max(pcr - PCR_EXTREME_LOW, 0.01)
-        sev = _score_severity(abs(pcr - (PCR_EXTREME_LOW if pcr < 1 else PCR_EXTREME_HIGH)) / 0.2)
+        boundary = PCR_EXTREME_LOW if pcr < 1 else PCR_EXTREME_HIGH
+        sev = _score_severity(abs(pcr - boundary) / PCR_EXTREME_SEVERITY_BAND)
         alerts.append(_make_alert("PCR_EXTREME", symbol, expiry, None, None, d, sev))
 
-    prev_snaps = get_latest_snapshots_for_symbol(symbol, expiry)
     if prev_snaps:
         prev_pcr = _compute_pcr(prev_snaps)
         if prev_pcr and abs(pcr - prev_pcr) >= PCR_SHIFT_THRESHOLD:
@@ -305,7 +321,7 @@ def _detect_pcr_velocity(symbol: str, expiry: str, underlying: float,
 
 
 def _detect_iv_spike_crush(filtered: list[dict], symbol: str, expiry: str,
-                            underlying: float) -> list[dict]:
+                            underlying: float, prev_by_key: PrevByKey) -> list[dict]:
     alerts = []
     atm = _atm_strike(filtered, underlying)
     for ot in ("CE", "PE"):
@@ -313,7 +329,7 @@ def _detect_iv_spike_crush(filtered: list[dict], symbol: str, expiry: str,
         if not row:
             continue
         curr_iv = row.get("iv") or 0
-        prev = get_previous_snapshot(symbol, expiry, atm, ot)
+        prev = prev_by_key.get((atm, ot))
         if not prev:
             continue
         prev_iv = prev.get("iv") or 0
@@ -342,7 +358,7 @@ def _detect_iv_spike_crush(filtered: list[dict], symbol: str, expiry: str,
 
 
 def _detect_atm_leg_move(filtered: list[dict], symbol: str, expiry: str,
-                          underlying: float) -> list[dict]:
+                          underlying: float, prev_by_key: PrevByKey) -> list[dict]:
     """Track CE and PE ATM LTP independently; tag directional bias."""
     atm = _atm_strike(filtered, underlying)
     moves = {}
@@ -351,7 +367,7 @@ def _detect_atm_leg_move(filtered: list[dict], symbol: str, expiry: str,
         if not row:
             continue
         curr_ltp = row.get("ltp") or 0
-        prev = get_previous_snapshot(symbol, expiry, atm, ot)
+        prev = prev_by_key.get((atm, ot))
         if not prev:
             continue
         prev_ltp = prev.get("ltp") or 0
@@ -392,15 +408,15 @@ def _detect_atm_leg_move(filtered: list[dict], symbol: str, expiry: str,
 
 
 def _detect_straddle_premium(filtered: list[dict], symbol: str, expiry: str,
-                              underlying: float) -> list[dict]:
+                              underlying: float, prev_by_key: PrevByKey) -> list[dict]:
     atm = _atm_strike(filtered, underlying)
     ce_row = next((r for r in filtered if r["strike"] == atm and r["option_type"] == "CE"), None)
     pe_row = next((r for r in filtered if r["strike"] == atm and r["option_type"] == "PE"), None)
     if not ce_row or not pe_row:
         return []
     curr_premium = (ce_row.get("ltp") or 0) + (pe_row.get("ltp") or 0)
-    prev_ce = get_previous_snapshot(symbol, expiry, atm, "CE")
-    prev_pe = get_previous_snapshot(symbol, expiry, atm, "PE")
+    prev_ce = prev_by_key.get((atm, "CE"))
+    prev_pe = prev_by_key.get((atm, "PE"))
     if not prev_ce or not prev_pe:
         return []
     prev_premium = (prev_ce.get("ltp") or 0) + (prev_pe.get("ltp") or 0)
@@ -419,12 +435,9 @@ def _detect_straddle_premium(filtered: list[dict], symbol: str, expiry: str,
 
 
 def _detect_max_pain_shift(filtered: list[dict], symbol: str, expiry: str,
-                            underlying: float) -> list[dict]:
+                            underlying: float, prev_snaps: list[dict]) -> list[dict]:
     max_pain = _compute_max_pain(filtered)
-    if max_pain is None:
-        return []
-    prev_snaps = get_latest_snapshots_for_symbol(symbol, expiry)
-    if not prev_snaps:
+    if max_pain is None or not prev_snaps:
         return []
     prev_mp = _compute_max_pain(prev_snaps)
     if prev_mp and abs(max_pain - prev_mp) >= MAX_PAIN_SHIFT_THRESHOLD:
@@ -439,9 +452,8 @@ def _detect_max_pain_shift(filtered: list[dict], symbol: str, expiry: str,
 
 
 def _detect_oi_wall_shift(all_strikes: list[dict], symbol: str, expiry: str,
-                           underlying: float) -> list[dict]:
+                           underlying: float, prev_snaps: list[dict]) -> list[dict]:
     curr_wall = _oi_wall(all_strikes)
-    prev_snaps = get_latest_snapshots_for_symbol(symbol, expiry)
     if not prev_snaps:
         return []
     prev_wall = _oi_wall(prev_snaps)
@@ -461,13 +473,13 @@ def _detect_oi_wall_shift(all_strikes: list[dict], symbol: str, expiry: str,
 
 
 def _detect_volume_aggression(filtered: list[dict], symbol: str, expiry: str,
-                               underlying: float) -> list[dict]:
+                               underlying: float, prev_by_key: PrevByKey) -> list[dict]:
     """High volume vs OI-delta ratio = aggressive flow."""
     alerts = []
     for row in filtered:
         vol  = row.get("volume") or 0
         oi   = row.get("oi") or 0
-        prev = get_previous_snapshot(symbol, expiry, row["strike"], row["option_type"])
+        prev = prev_by_key.get((row["strike"], row["option_type"]))
         if not prev or not vol:
             continue
         oi_delta = abs((oi - (prev.get("oi") or 0)))
@@ -493,13 +505,13 @@ def _detect_volume_aggression(filtered: list[dict], symbol: str, expiry: str,
 
 
 def _detect_otm_unusual(all_strikes: list[dict], symbol: str, expiry: str,
-                         underlying: float) -> list[dict]:
+                         underlying: float, prev_by_key: PrevByKey) -> list[dict]:
     otm = _filter_otm_only(all_strikes, underlying)
     alerts = []
     for row in otm:
         strike = row["strike"]
         ot     = row["option_type"]
-        prev   = get_previous_snapshot(symbol, expiry, strike, ot)
+        prev   = prev_by_key.get((strike, ot))
         if not prev:
             continue
         prev_oi = prev.get("oi") or 0
@@ -519,7 +531,7 @@ def _detect_otm_unusual(all_strikes: list[dict], symbol: str, expiry: str,
     return alerts
 
 
-# ── Main entry ─────────────────────────────────────────────────────────────
+# ── Main entry ────────────────────────────────────────────────────────────────
 
 
 def _empty_scan_context(symbol: str, expiry: str, underlying: float,
@@ -559,8 +571,14 @@ def _sum_oi_by_type(rows: list[dict]) -> tuple[int, int]:
 def detect_anomalies(oc_data: dict, fetched_at: str, chart_indicators: dict | None = None) -> tuple[list[dict], dict]:
     """
     Returns (alerts, scan_context).
-    alerts     — list of alert dicts, each with 'severity': HIGH | MEDIUM | LOW.
+    alerts      — list of alert dicts, each with 'severity': HIGH | MEDIUM | LOW.
     scan_context — enriched snapshot metadata for intelligence engine.
+
+    DB access pattern (v2.7):
+      - get_prev_snapshots_bulk()         → 1 query, shared across all detection functions
+      - get_latest_snapshots_for_symbol() → 1 query, shared across PCR/MaxPain/OIWall + scan_context
+      - get_previous_underlying()         → 1 query
+      - get_latest_n_snapshots()          → used only in PCR velocity (N+2 queries, fixed)
     """
     symbol     = oc_data["symbol"]
     expiry     = oc_data["expiry"]
@@ -571,43 +589,41 @@ def detect_anomalies(oc_data: dict, fetched_at: str, chart_indicators: dict | No
         log.warning("[engine] empty strikes | %s | expiry=%s", symbol, expiry)
         return [], _empty_scan_context(symbol, expiry, underlying, chart_indicators, "empty_strikes")
 
-    alerts: list[dict] = []
     filtered = _filter_atm_range(strikes, underlying)
     if not filtered:
         log.warning("[engine] empty filtered strikes | %s | expiry=%s", symbol, expiry)
         return [], _empty_scan_context(symbol, expiry, underlying, chart_indicators, "empty_filtered_strikes")
 
-    alerts += _detect_oi_spike_unwind(filtered, symbol, expiry, underlying)
-    alerts += _detect_buildup(filtered, symbol, expiry, underlying)
+    # ── Single bulk DB fetch — shared across ALL detection functions ────────────────
+    prev_by_key: PrevByKey = get_prev_snapshots_bulk(symbol, expiry)
+    prev_snaps: list[dict] = list(prev_by_key.values())  # flat list for PCR/MaxPain/OIWall
+
+    # ── Run all detection rules ───────────────────────────────────────────────────
+    alerts: list[dict] = []
+    alerts += _detect_oi_spike_unwind(filtered, symbol, expiry, underlying, prev_by_key)
+    alerts += _detect_buildup(filtered, symbol, expiry, underlying, prev_by_key)
     alerts += _detect_price_spike(symbol, expiry, underlying)
 
     pcr = _compute_pcr(filtered)
-    alerts += _detect_pcr(filtered, symbol, expiry, underlying)
+    alerts += _detect_pcr(filtered, symbol, expiry, underlying, prev_snaps)
     alerts += _detect_pcr_velocity(symbol, expiry, underlying, pcr)
 
-    alerts += _detect_iv_spike_crush(filtered, symbol, expiry, underlying)
-    alerts += _detect_atm_leg_move(filtered, symbol, expiry, underlying)
-    alerts += _detect_straddle_premium(filtered, symbol, expiry, underlying)
-    alerts += _detect_max_pain_shift(filtered, symbol, expiry, underlying)
-    alerts += _detect_oi_wall_shift(strikes, symbol, expiry, underlying)
-    alerts += _detect_volume_aggression(filtered, symbol, expiry, underlying)
-    alerts += _detect_otm_unusual(strikes, symbol, expiry, underlying)
+    alerts += _detect_iv_spike_crush(filtered, symbol, expiry, underlying, prev_by_key)
+    alerts += _detect_atm_leg_move(filtered, symbol, expiry, underlying, prev_by_key)
+    alerts += _detect_straddle_premium(filtered, symbol, expiry, underlying, prev_by_key)
+    alerts += _detect_max_pain_shift(filtered, symbol, expiry, underlying, prev_snaps)
+    alerts += _detect_oi_wall_shift(strikes, symbol, expiry, underlying, prev_snaps)
+    alerts += _detect_volume_aggression(filtered, symbol, expiry, underlying, prev_by_key)
+    alerts += _detect_otm_unusual(strikes, symbol, expiry, underlying, prev_by_key)
 
-    # ── Build scan context for intelligence engine ─────────────────────────
-    # Use a consistent basis for current-vs-previous total OI.
-    # Detection rules still use `filtered` where appropriate, but market stance
-    # should compare full current snapshot against full previous snapshot.
+    log.info("[engine] %s | %d anomalies detected", symbol, len(alerts))
+
+    # ── Build scan context ──────────────────────────────────────────────────────────
     total_ce_oi, total_pe_oi = _sum_oi_by_type(strikes)
-
-    # Net OI change vs previous scan on the same full-snapshot basis
-    prev_snaps = get_latest_snapshots_for_symbol(symbol, expiry)
     prev_ce_oi, prev_pe_oi = _sum_oi_by_type(prev_snaps) if prev_snaps else (0, 0)
     ce_oi_change = total_ce_oi - prev_ce_oi
     pe_oi_change = total_pe_oi - prev_pe_oi
-    prev_by_key = {
-        (r.get("strike"), r.get("option_type")): r
-        for r in prev_snaps
-    } if prev_snaps else {}
+
     max_oi_delta_pct = 0.0
     top_oi_delta = None
     for row in filtered:
@@ -622,19 +638,17 @@ def detect_anomalies(oc_data: dict, fetched_at: str, chart_indicators: dict | No
                 "curr_oi": row.get("oi", 0),
                 "pct": pct,
             }
+
     prev_pcr = _compute_pcr(prev_snaps) if prev_snaps else None
     pcr_delta = (pcr - prev_pcr) if pcr is not None and prev_pcr is not None else None
 
-    # Previous underlying for price direction
     prev_und = get_previous_underlying(symbol)
     prev_price = prev_und["price"] if prev_und else underlying
     price_change_pct = _pct_change(prev_price, underlying)
 
-    # Max pain + OI walls
     max_pain = _compute_max_pain(filtered)
     walls = _oi_wall(filtered)
 
-    # ATM straddle premium
     atm = _atm_strike(filtered, underlying) if filtered else None
     atm_ce_ltp = 0.0
     atm_pe_ltp = 0.0
@@ -643,6 +657,7 @@ def detect_anomalies(oc_data: dict, fetched_at: str, chart_indicators: dict | No
         pe_row = next((r for r in filtered if r["strike"] == atm and r["option_type"] == "PE"), None)
         atm_ce_ltp = (ce_row.get("ltp") or 0) if ce_row else 0
         atm_pe_ltp = (pe_row.get("ltp") or 0) if pe_row else 0
+
     max_atm_ltp_delta_pct = 0.0
     for ot in ("CE", "PE"):
         curr_row = next((r for r in filtered if r.get("strike") == atm and r.get("option_type") == ot), None)
