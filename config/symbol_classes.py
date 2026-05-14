@@ -1,30 +1,36 @@
 """
-Symbol class classifier — maps symbol name to asset class and market window.
-Classes: NSE_INDEX | NSE_STOCK | MCX_COMMODITY | MCX_AGRI
+Symbol class metadata — maps each watched symbol to its exchange class,
+strike step size, and market window key.
 """
-import re
-from config.settings import MARKET_WINDOWS
+from __future__ import annotations
 
-_MCX_ENERGY   = re.compile(r"NATURALGAS|CRUDEOIL|CRUDE|NATGAS|NG\b", re.I)
-_MCX_METAL    = re.compile(r"\bGOLD\b|\bSILVER\b|\bCOPPER\b|\bZINC\b|\bLEAD\b|\bALUMINIUM\b|\bNICKEL\b", re.I)
-_MCX_AGRI     = re.compile(r"COTTON|MENTHA|CASTOR|KAPAS|GUAR|TURMERIC|JEERA|CORIANDER|CPO|SOYA|PALM", re.I)
-_NSE_INDEX    = re.compile(r"NIFTY|BANKNIFTY|FINNIFTY|MIDCPNIFTY|SENSEX|BANKEX", re.I)
+# symbol → (class_key, strike_step_points)
+# strike_step_points is used for cluster-dedup width calculation.
+_SYMBOL_META: dict[str, tuple[str, int]] = {
+    "NIFTY":       ("NSE_INDEX", 50),
+    "BANKNIFTY":   ("NSE_INDEX", 100),
+    "FINNIFTY":    ("NSE_INDEX", 50),
+    "MIDCPNIFTY":  ("NSE_INDEX", 25),
+    "NATURALGAS":  ("MCX_COMMODITY", 10),
+    "CRUDEOIL":    ("MCX_COMMODITY", 100),
+    "GOLD":        ("MCX_COMMODITY", 100),
+    "SILVER":      ("MCX_COMMODITY", 500),
+}
 
-
-def classify(symbol: str) -> str:
-    s = (symbol or "").strip().upper()
-    if _NSE_INDEX.search(s):
-        return "NSE_INDEX"
-    if _MCX_ENERGY.search(s):
-        return "MCX_COMMODITY"
-    if _MCX_METAL.search(s):
-        return "MCX_COMMODITY"
-    if _MCX_AGRI.search(s):
-        return "MCX_AGRI"
-    return "NSE_STOCK"
+_DEFAULT_CLASS       = "NSE_INDEX"
+_DEFAULT_STRIKE_STEP = 50
 
 
-def market_window(symbol: str) -> tuple[str, str, list[int]]:
-    """Return (open_hhmm, close_hhmm, weekdays) for the symbol's class."""
-    cls = classify(symbol)
-    return MARKET_WINDOWS.get(cls, MARKET_WINDOWS["NSE_INDEX"])
+def get_symbol_class(symbol: str) -> str:
+    """Return the market-window class key for a symbol."""
+    return _SYMBOL_META.get(symbol, (_DEFAULT_CLASS, _DEFAULT_STRIKE_STEP))[0]
+
+
+def get_strike_step(symbol: str) -> int:
+    """
+    Return the canonical strike step (in points) for a symbol.
+    Used by dedup cluster-width logic so suppression radius is
+    expressed in number-of-strikes, not raw points.
+    Example: NIFTY → 50, BANKNIFTY → 100
+    """
+    return _SYMBOL_META.get(symbol, (_DEFAULT_CLASS, _DEFAULT_STRIKE_STEP))[1]

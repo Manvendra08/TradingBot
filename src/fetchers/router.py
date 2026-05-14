@@ -1,8 +1,12 @@
 """
 Fetcher Router — tries sources in FETCHER_PRIORITY order.
 Returns first successful result; logs fallback events.
+
+Thread-safety: _instances dict is guarded by _lock so APScheduler concurrent
+jobs cannot create duplicate fetcher instances.
 """
 import logging
+import threading
 from config.settings import FETCHER_PRIORITY
 from src.fetchers.dhan_fetcher import DhanFetcher
 from src.fetchers.nse_fetcher import NSEPublicFetcher
@@ -12,19 +16,20 @@ from src.fetchers.scrapegraph_fetcher import ScrapeGraphFetcher
 log = logging.getLogger(__name__)
 
 _FETCHERS = {
-    "dhan":       DhanFetcher,
-    "nse_public": NSEPublicFetcher,
+    "dhan":        DhanFetcher,
+    "nse_public":  NSEPublicFetcher,
     "scrapegraph": ScrapeGraphFetcher,
-    "upstox":     UpstoxFetcher,
+    "upstox":      UpstoxFetcher,
 }
 
-# Singleton instances
 _instances: dict = {}
+_lock = threading.Lock()
 
 
 def _get_fetcher(name: str):
-    if name not in _instances:
-        _instances[name] = _FETCHERS[name]()
+    with _lock:
+        if name not in _instances:
+            _instances[name] = _FETCHERS[name]()
     return _instances[name]
 
 

@@ -1,8 +1,11 @@
 """
-Alert deduplication v2.6.
+Alert deduplication v2.7.
 - Severity-aware cooldown: HIGH = 30 min, others = 60 min.
-- Strike-cluster collapsing: same symbol+alert_type, strike within ±DEDUP_CLUSTER_STRIKES
-  of a recently fired key → suppress for 30 min.
+- Strike-cluster collapsing: same symbol+alert_type, strike within
+  ± (DEDUP_CLUSTER_STRIKES × symbol_strike_step) of a recently
+  fired key → suppress for 30 min.
+  Uses symbol_classes.get_strike_step() for symbol-aware spacing
+  instead of a hardcoded × 100 multiplier.
 """
 import logging
 from datetime import datetime, timezone, timedelta
@@ -12,6 +15,7 @@ from config.settings import (
     ALERT_COOLDOWN_HIGH_MINUTES,
     DEDUP_CLUSTER_STRIKES,
 )
+from config.symbol_classes import get_strike_step
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +43,10 @@ def _is_strike_cluster_suppressed(alert: dict) -> bool:
     ot     = alert.get("option_type") or ""
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=ALERT_COOLDOWN_HIGH_MINUTES)
 
+    # Symbol-class-aware cluster width
+    # e.g. NIFTY: 2 × 50 = 100pts (2 strikes), BANKNIFTY: 2 × 100 = 200pts (2 strikes)
+    cluster_width = DEDUP_CLUSTER_STRIKES * get_strike_step(sym)
+
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT dedup_key, last_fired_at FROM alert_dedup WHERE dedup_key LIKE ?",
@@ -53,7 +61,7 @@ def _is_strike_cluster_suppressed(alert: dict) -> bool:
             prev_strike = float(parts[2])
         except (ValueError, IndexError):
             continue
-        if abs(prev_strike - strike) > DEDUP_CLUSTER_STRIKES * 100:
+        if abs(prev_strike - strike) > cluster_width:
             continue
         try:
             last = datetime.fromisoformat(row["last_fired_at"])
