@@ -9,7 +9,6 @@ Tables:
 import sqlite3
 import contextlib
 import logging
-from datetime import datetime
 from pathlib import Path
 
 from config.settings import DB_PATH
@@ -111,8 +110,10 @@ def init_db() -> None:
         for sql in _MIGRATIONS:
             try:
                 conn.execute(sql)
-            except Exception:
-                pass   # column already exists — ignore
+            except sqlite3.OperationalError as e:
+                # Idempotent: column already exists is the only expected error.
+                if "duplicate column" not in str(e).lower():
+                    raise
     log.info("DB initialised at %s", DB_PATH)
 
 
@@ -207,6 +208,24 @@ def get_latest_snapshots_for_symbol(symbol: str, expiry: str) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+def get_prev_snapshots_bulk(symbol: str, expiry: str) -> dict[tuple, dict]:
+    """
+    Single-query bulk fetch of the latest snapshot row per (strike, option_type).
+    Returns a dict keyed by (strike, option_type) for O(1) detection lookups.
+    Replaces per-strike get_previous_snapshot() calls in detection loops.
+    """
+    sql = """
+        SELECT * FROM option_chain_snapshots
+        WHERE symbol=? AND expiry=? AND fetched_at=(
+            SELECT MAX(fetched_at) FROM option_chain_snapshots
+            WHERE symbol=? AND expiry=?
+        )
+    """
+    with get_conn() as conn:
+        rows = conn.execute(sql, (symbol, expiry, symbol, expiry)).fetchall()
+    return {(r["strike"], r["option_type"]): dict(r) for r in rows}
+
+
 def get_latest_n_underlying(symbol: str, n: int = 4) -> list[dict]:
     """Return last N underlying price rows for PCR velocity calc."""
     sql = """
@@ -219,22 +238,34 @@ def get_latest_n_underlying(symbol: str, n: int = 4) -> list[dict]:
 
 
 def get_latest_n_snapshots(symbol: str, expiry: str, n: int = 3) -> list[list[dict]]:
-    """Return last N distinct fetch timestamps' snapshots (for PCR velocity)."""
-    sql = """
+    """
+    Return last N distinct fetch timestamps' snapshots (for PCR velocity).
+    Uses a single query with IN clause instead of N+1 round trips.
+    """
+    times_sql = """
         SELECT DISTINCT fetched_at FROM option_chain_snapshots
         WHERE symbol=? AND expiry=?
         ORDER BY fetched_at DESC LIMIT ?
     """
     with get_conn() as conn:
-        times = [r[0] for r in conn.execute(sql, (symbol, expiry, n)).fetchall()]
-        result = []
-        for t in times:
-            rows = conn.execute(
-                "SELECT * FROM option_chain_snapshots WHERE symbol=? AND expiry=? AND fetched_at=?",
-                (symbol, expiry, t),
-            ).fetchall()
-            result.append([dict(r) for r in rows])
-        return result
+        times = [r[0] for r in conn.execute(times_sql, (symbol, expiry, n)).fetchall()]
+        if not times:
+            return []
+        placeholders = ",".join("?" * len(times))
+        all_rows = conn.execute(
+            f"SELECT * FROM option_chain_snapshots "
+            f"WHERE symbol=? AND expiry=? AND fetched_at IN ({placeholders}) "
+            f"ORDER BY fetched_at DESC, strike",
+            (symbol, expiry, *times),
+        ).fetchall()
+
+    # Group rows back by timestamp, preserving order
+    grouped: dict[str, list[dict]] = {t: [] for t in times}
+    for row in all_rows:
+        t = row["fetched_at"]
+        if t in grouped:
+            grouped[t].append(dict(row))
+    return [grouped[t] for t in times if grouped[t]]
 
 
 def get_alert_history(symbol: str | None = None, limit: int = 100) -> list[dict]:
