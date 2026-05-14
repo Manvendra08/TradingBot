@@ -366,7 +366,7 @@
     return 'NEUTRAL';
   }
 
-  function inferSentimentFromLegend(symbol) {
+  function inferSentimentFromLegend(symbol, root = document) {
     const selectors = [
       '[data-name="legend-series-item"]',
       '[data-name="legend-source-item"]',
@@ -380,7 +380,7 @@
     const candidates = [];
 
     for (const selector of selectors) {
-      const nodes = Array.from(document.querySelectorAll(selector)).slice(0, 30);
+      const nodes = Array.from(root.querySelectorAll(selector)).slice(0, 30);
 
       for (const node of nodes) {
         const text = safeText(node);
@@ -407,12 +407,10 @@
   // ---------------------------------------------------------------------------
 
   function extractOHLCFromText(text) {
-    const s = String(text || '');
+    const s = String(text || '').toUpperCase();
 
-    // Common compact form: O 100 H 110 L 95 C 105
-    const re1 =
-      /(?:O|OPEN)\s*[: ]\s*([\d,.]+).*?(?:H|HIGH)\s*[: ]\s*([\d,.]+).*?(?:L|LOW)\s*[: ]\s*([\d,.]+).*?(?:C|CLOSE)\s*[: ]\s*([\d,.]+)/i;
-
+    // 1. Strict sequence: O H L C
+    const re1 = /(?:\bO(?:PEN)?\s*[:=]?\s*([\d,.]+)).*?(?:\bH(?:IGH)?\s*[:=]?\s*([\d,.]+)).*?(?:\bL(?:OW)?\s*[:=]?\s*([\d,.]+)).*?(?:\bC(?:LOSE)?\s*[:=]?\s*([\d,.]+))/;
     const m1 = s.match(re1);
     if (m1) {
       return {
@@ -423,13 +421,14 @@
       };
     }
 
-    // TradingView sometimes exposes O/H/L/C as separated labels.
-    const o = s.match(/\bO(?:PEN)?\s*[: ]\s*([\d,.]+)/i);
-    const h = s.match(/\bH(?:IGH)?\s*[: ]\s*([\d,.]+)/i);
-    const l = s.match(/\bL(?:OW)?\s*[: ]\s*([\d,.]+)/i);
-    const c = s.match(/\bC(?:LOSE)?\s*[: ]\s*([\d,.]+)/i);
+    // 2. Loose extraction if they are present in any order, but require at least 3 to prevent false positives
+    const o = s.match(/\bO(?:PEN)?\s*[:=]?\s*([\d,.]+)/);
+    const h = s.match(/\bH(?:IGH)?\s*[:=]?\s*([\d,.]+)/);
+    const l = s.match(/\bL(?:OW)?\s*[:=]?\s*([\d,.]+)/);
+    const c = s.match(/\bC(?:LOSE)?\s*[:=]?\s*([\d,.]+)/);
 
-    if (o || h || l || c) {
+    const matched = [o, h, l, c].filter(Boolean);
+    if (matched.length >= 3) {
       return {
         open: o ? parseNumber(o[1]) : null,
         high: h ? parseNumber(h[1]) : null,
@@ -437,20 +436,38 @@
         close: c ? parseNumber(c[1]) : null
       };
     }
+    
+    // 3. Extracted purely from a sequence of numbers (e.g. 100.00 101.00 99.00 100.50)
+    const nums = s.split(/\s+/).map(x => parseNumber(x)).filter(n => n !== null);
+    if (nums.length >= 4) {
+      // Must look like prices (not tiny numbers or percentages)
+      const valid = nums.slice(0, 4).every(n => n > 10);
+      if (valid) {
+        return {
+          open: nums[0],
+          high: nums[1],
+          low: nums[2],
+          close: nums[3]
+        };
+      }
+    }
 
     return null;
   }
 
-  function extractOHLC() {
+  function extractOHLC(root = document) {
     const selectors = [
       '[data-name="legend-series-item"]',
+      '[data-name="legend-source-item"]',
       '[class*="seriesValues"]',
       '[class*="valuesWrapper"]',
-      '[class*="legend"]'
+      '[class*="itemValues"]',
+      '[class*="legend"]',
+      '[class*="chart-toolbar"]'
     ];
 
     for (const selector of selectors) {
-      const nodes = Array.from(document.querySelectorAll(selector)).slice(0, 30);
+      const nodes = Array.from(root.querySelectorAll(selector)).slice(0, 30);
 
       for (const node of nodes) {
         const text = safeText(node);
@@ -459,14 +476,32 @@
       }
     }
 
-    return extractOHLCFromText(getBodyText());
+    // Fallback: try just getting all valueItem-like elements individually
+    const valItems = root.querySelectorAll('[class*="valueItem"], [class*="itemValue"]');
+    if (valItems.length) {
+      const joined = Array.from(valItems).map(el => safeText(el)).join(' ');
+      const ohlc = extractOHLCFromText(joined);
+      if (ohlc) return ohlc;
+      
+      const nums = Array.from(valItems).map(el => parseNumber(safeText(el))).filter(n => n !== null && n > 10);
+      if (nums.length >= 4) {
+        return {
+          open: nums[0],
+          high: nums[1],
+          low: nums[2],
+          close: nums[3]
+        };
+      }
+    }
+
+    return extractOHLCFromText(safeText(root));
   }
 
   // ---------------------------------------------------------------------------
   // Storage writer
   // ---------------------------------------------------------------------------
 
-  function saveTrend(symbol, timeframe, sentiment, ohlc = null) {
+  function saveTrend(symbol, timeframe, fallbackSentiment, ohlc = null) {
     if (!symbol) {
       debug('save_skipped_no_symbol');
       return;
@@ -484,22 +519,30 @@
       return;
     }
 
-    const safeSentiment = ['BULLISH', 'BEARISH', 'NEUTRAL'].includes(sentiment)
-      ? sentiment
-      : 'NEUTRAL';
-
-    const current = {
-      symbol: cleanSymbol,
-      timeframe: tf,
-      sentiment: safeSentiment,
-      ohlc: ohlc || null
-    };
-
-    const serialized = JSON.stringify(current);
-
     chrome.storage.local.get([STORAGE_KEY], (r) => {
       const chartData = r[STORAGE_KEY] || {};
       const existing = chartData?.[cleanSymbol]?.[tf] || {};
+
+      let lastClosedOhlc = existing.last_closed_ohlc || null;
+      let currentOhlc = ohlc || existing.ohlc || null;
+      
+      // Rollover detection: if Open changes, previous candle is closed
+      if (existing.ohlc && ohlc && existing.ohlc.open !== ohlc.open) {
+        lastClosedOhlc = existing.ohlc;
+      }
+
+      // Candle sentiments should be based on last closed candle (not current candle)
+      let finalSentiment = fallbackSentiment;
+      const refOhlc = lastClosedOhlc || currentOhlc;
+      if (refOhlc) {
+        if (refOhlc.close > refOhlc.open) finalSentiment = 'BULLISH';
+        else if (refOhlc.close < refOhlc.open) finalSentiment = 'BEARISH';
+        else finalSentiment = 'NEUTRAL';
+      }
+
+      if (!['BULLISH', 'BEARISH', 'NEUTRAL'].includes(finalSentiment)) {
+        finalSentiment = 'NEUTRAL';
+      }
 
       const existingComparable = JSON.stringify({
         sentiment: existing.sentiment || null,
@@ -507,7 +550,7 @@
       });
 
       const newComparable = JSON.stringify({
-        sentiment: safeSentiment,
+        sentiment: finalSentiment,
         ohlc: ohlc || null
       });
 
@@ -517,8 +560,9 @@
       chartData[cleanSymbol] = chartData[cleanSymbol] || {};
       chartData[cleanSymbol][tf] = {
         ...existing,
-        sentiment: safeSentiment,
+        sentiment: finalSentiment,
         ohlc: ohlc || existing.ohlc || null,
+        last_closed_ohlc: lastClosedOhlc,
         updated_at: timestamp,
         seen_at: timestamp,
         changed_at: changed ? timestamp : existing.changed_at || timestamp
@@ -530,11 +574,11 @@
           [LAST_SYMBOL_KEY]: cleanSymbol
         },
         () => {
-          lastSavedSerialized = serialized;
+          lastSavedSerialized = JSON.stringify(chartData[cleanSymbol][tf]);
           debug('trend_saved', {
             symbol: cleanSymbol,
             timeframe: tf,
-            sentiment: safeSentiment,
+            sentiment: finalSentiment,
             changed,
             hasOhlc: !!ohlc
           });
@@ -547,6 +591,19 @@
   // Core scraper
   // ---------------------------------------------------------------------------
 
+  function getChartContainers() {
+    let containers = Array.from(document.querySelectorAll('.chart-container'));
+    if (containers.length > 0) return containers;
+    
+    containers = Array.from(document.querySelectorAll('td.chart-cell'));
+    if (containers.length > 0) return containers;
+
+    containers = Array.from(document.querySelectorAll('.chart-gui-wrapper'));
+    if (containers.length > 0) return containers;
+
+    return [document];
+  }
+
   function scrape() {
     try {
       if (!chrome.runtime?.id) {
@@ -554,42 +611,31 @@
         return;
       }
 
-      const symbol = extractSymbol();
+      const containers = getChartContainers();
+      let anySaved = false;
 
-      if (!symbol) {
-        debug('no_symbol_found');
-        return;
-      }
+      for (const node of containers) {
+        const text = safeText(node);
+        
+        const symbol = extractSymbol();
+        if (!symbol) continue;
 
-      const bodyText = getBodyText();
+        let timeframe = findTimeframeFromPageText(text);
+        if (timeframe === '—') timeframe = findTimeframeFromUrl() || '1h';
+        if (timeframe === '—') timeframe = '1h';
 
-      let timeframe = findTimeframe(bodyText);
+        const legendSentiment = inferSentimentFromLegend(symbol, node);
+        const bodySentiment = inferSentimentFromText(text);
+        let sentiment = legendSentiment || bodySentiment || 'NEUTRAL';
 
-      // If timeframe cannot be read from UI/URL, default to 1h.
-      // This avoids popup showing blank trend forever.
-      if (timeframe === '—') {
-        timeframe = '1h';
-      }
+        const ohlc = extractOHLC(node);
 
-      const legendSentiment = inferSentimentFromLegend(symbol);
-      const bodySentiment = inferSentimentFromText(bodyText);
-      const sentiment = legendSentiment || bodySentiment || 'NEUTRAL';
-
-      const ohlc = extractOHLC();
-
-      const nextSerialized = JSON.stringify({
-        symbol: cleanSymbolText(symbol),
-        timeframe,
-        sentiment,
-        ohlc
-      });
-
-      // Avoid excessive writes, but still update seen_at periodically.
-      if (nextSerialized !== lastSavedSerialized) {
         saveTrend(symbol, timeframe, sentiment, ohlc);
-      } else {
-        saveTrend(symbol, timeframe, sentiment, ohlc);
+        anySaved = true;
       }
+      
+      if (!anySaved) debug('no_symbol_found');
+
     } catch (e) {
       debug('scrape_error', {
         error: String(e?.message || e),
