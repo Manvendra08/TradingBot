@@ -440,9 +440,10 @@
     // 3. Extracted purely from a sequence of numbers (e.g. 100.00 101.00 99.00 100.50)
     const nums = s.split(/\s+/).map(x => parseNumber(x)).filter(n => n !== null);
     if (nums.length >= 4) {
-      // Must look like prices (not tiny numbers or percentages)
-      const valid = nums.slice(0, 4).every(n => n > 10);
-      if (valid) {
+      // Must look like prices and have OHLC labels nearby to avoid random lists
+      const hasLabels = /[OHLC]\s*[:\s]?\s*\d/i.test(s) || /Open|High|Low|Close/i.test(s);
+      const valid = nums.slice(0, 4).every(n => n > 1.0);
+      if (valid && hasLabels) {
         return {
           open: nums[0],
           high: nums[1],
@@ -520,6 +521,8 @@
     }
 
     chrome.storage.local.get([STORAGE_KEY], (r) => {
+      if (chrome.runtime.lastError) console.warn(chrome.runtime.lastError);
+      r = r || {};
       const chartData = r[STORAGE_KEY] || {};
       const existing = chartData?.[cleanSymbol]?.[tf] || {};
 
@@ -531,13 +534,21 @@
         lastClosedOhlc = existing.ohlc;
       }
 
-      // Candle sentiments should be based on last closed candle (not current candle)
+      // 1. Determine base sentiment from legend/text
       let finalSentiment = fallbackSentiment;
-      const refOhlc = lastClosedOhlc || currentOhlc;
-      if (refOhlc) {
-        if (refOhlc.close > refOhlc.open) finalSentiment = 'BULLISH';
-        else if (refOhlc.close < refOhlc.open) finalSentiment = 'BEARISH';
+
+      // 2. Override/Refine using OHLC (prioritize current candle for live bias)
+      const refOhlc = ohlc || existing.ohlc || lastClosedOhlc;
+      
+      if (refOhlc && Number.isFinite(refOhlc.open) && Number.isFinite(refOhlc.close)) {
+        if (refOhlc.close > refOhlc.open + 0.01) finalSentiment = 'BULLISH';
+        else if (refOhlc.close < refOhlc.open - 0.01) finalSentiment = 'BEARISH';
         else finalSentiment = 'NEUTRAL';
+      }
+
+      // 3. Last resort fallback to legend-based sentiment if OHLC is missing
+      if (!refOhlc && (!finalSentiment || finalSentiment === 'NEUTRAL')) {
+        finalSentiment = fallbackSentiment;
       }
 
       if (!['BULLISH', 'BEARISH', 'NEUTRAL'].includes(finalSentiment)) {

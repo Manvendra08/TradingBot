@@ -264,7 +264,17 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     "source": "chrome_extension",
                 }
                 chart_indicators = _normalize_chart_indicators(data.get("chart_indicators"), symbol)
-                alerts, scan_context = detect_anomalies(oc, fetched_at, chart_indicators=chart_indicators)
+                
+                # Extract thresholds from extension if provided
+                overrides = {}
+                if "oi_threshold" in data: overrides["oi_threshold"] = data["oi_threshold"]
+                if "ltp_threshold" in data: overrides["ltp_threshold"] = data["ltp_threshold"]
+                
+                alerts, scan_context = detect_anomalies(
+                    oc, fetched_at, 
+                    chart_indicators=chart_indicators,
+                    override_thresholds=overrides if overrides else None
+                )
                 new_alerts = []
                 suppressed = 0
                 for a in alerts:
@@ -329,11 +339,15 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     f"{diag.get('pcr_delta'):+.3f}" if diag.get("pcr_delta") is not None else "n/a",
                 )
                 if not alerts:
+                    oi_t = diag.get("oi_threshold", 40.0)
+                    ltp_t = diag.get("ltp_threshold", 8.0)
                     log.info(
-                        "[bridge] no alert reason | %s | max OI %.2f%% < 40.00, ATM LTP %.2f%% < 8.00, PCR delta %s < 0.25",
+                        "[bridge] no alert reason | %s | max OI %.2f%% < %.2f, ATM LTP %.2f%% < %.2f, PCR delta %s < 0.25",
                         symbol,
                         float(diag.get("max_oi_delta_pct") or 0),
+                        oi_t,
                         float(diag.get("max_atm_ltp_delta_pct") or 0),
+                        ltp_t,
                         "n/a" if diag.get("pcr_delta") is None else f"{abs(diag.get('pcr_delta')):.3f}",
                     )
 

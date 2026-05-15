@@ -38,6 +38,7 @@
 
   function isDhanOCUrl(url) {
     const u = (url || '').toLowerCase();
+    if (u.includes('.svg') || u.includes('.png') || u.includes('.js') || u.includes('.css')) return false;
     return DHAN_OC_PATTERNS.some(p => u.includes(p));
   }
 
@@ -363,7 +364,9 @@
             post('NSEBOT_DHAN_API_DATA', { json, parsed, url, reqBody });
           }
         }).catch(e => {
-          post('NSEBOT_DHAN_DIAG', { msg: `Dhan bridge fetch JSON parse error: ${e.message}`, ok: false, warn: true });
+          if (!e.message.includes('Unexpected')) {
+            post('NSEBOT_DHAN_DIAG', { msg: `Dhan bridge fetch JSON parse error: ${e.message}`, ok: false, warn: true });
+          }
         });
       }
     } catch (_) {}
@@ -392,7 +395,9 @@
             post('NSEBOT_DHAN_API_DATA', { json, parsed, url: this._nsebot_dhan_url, reqBody: this._nsebot_dhan_body });
           }
         } catch (e) {
-          post('NSEBOT_DHAN_DIAG', { msg: `Dhan bridge XHR parse error: ${e.message}`, ok: false });
+          if (!e.message.includes('Unexpected')) {
+            post('NSEBOT_DHAN_DIAG', { msg: `Dhan bridge XHR parse error: ${e.message}`, ok: false });
+          }
         }
       });
     }

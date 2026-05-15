@@ -145,32 +145,15 @@ def build_digest(symbol: str, alerts: list[dict],
     diag = (scan_context or {}).get("diagnostics", {})
     if not alerts and diag:
         pcr_delta = diag.get("pcr_delta")
-        pcr_text = "PCR Δ n/a" if pcr_delta is None else f"PCR Δ {abs(pcr_delta):.3f} < 0.25"
+        pcr_text = "PCR Δ n/a" if pcr_delta is None else f"PCR Δ {abs(pcr_delta):.3f} < {diag.get('pcr_shift_threshold', 0.25)}"
+        oi_thresh = diag.get("oi_threshold", 40)
+        ltp_thresh = diag.get("ltp_threshold", 8)
         lines.append(
-            f"ℹ️ `SCAN` No alert: max OI Δ {float(diag.get('max_oi_delta_pct') or 0):.2f}% < 40, "
-            f"ATM LTP Δ {float(diag.get('max_atm_ltp_delta_pct') or 0):.2f}% < 8, {pcr_text}"
+            f"ℹ️ `SCAN` No alert: max OI Δ {float(diag.get('max_oi_delta_pct') or 0):.2f}% < {oi_thresh}, "
+            f"ATM LTP Δ {float(diag.get('max_atm_ltp_delta_pct') or 0):.2f}% < {ltp_thresh}, {pcr_text}"
         )
 
-    # ── Quick Chart Telemetry ──────────────────────────────────────────────
-    if scan_context:
-        chart_data = scan_context.get("chart_indicators", {})
-        for tf in ["1h", "3h"]:
-            data = chart_data.get(tf) or chart_data.get(tf.upper())
-            if not data: continue
-            
-            sent = data.get("sentiment", "NEUTRAL")
-            icon = "🟢" if sent == "BULLISH" else ("🔴" if sent == "BEARISH" else "⚪")
-            ohlc = data.get("ohlc")
-            
-            line = f"{icon} *{tf.upper()}*: {sent}"
-            if ohlc:
-                o, h, l, c = ohlc.get("open"), ohlc.get("high"), ohlc.get("low"), ohlc.get("close")
-                if c:
-                    if o and h and l:
-                        line += f" | 🕯️ O:{o:.1f} H:{h:.1f} L:{l:.1f} C:{c:.1f}"
-                    else:
-                        line += f" | 🕯️ LTP:{c:.1f}"
-            lines.append(line)
+    # ── Quick Chart Telemetry removed (now in intelligence section) ────────────────
     for a in sorted_alerts:
         sev   = a.get("severity", "LOW")
         emoji = _SEV_EMOJI.get(sev, "ℹ️")

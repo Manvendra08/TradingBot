@@ -31,7 +31,7 @@ def _optional_env(key: str, default: str = "") -> str:
 
 # ── Symbols ────────────────────────────────────────────────────────────────
 WATCH_NSE = ["NIFTY", "BANKNIFTY", "FINNIFTY"]
-WATCH_MCX: list[str] = []           # e.g. ["NATURALGAS", "CRUDEOIL", "GOLD"]
+WATCH_MCX: list[str] = ["NATURALGAS"]   # MCX commodity futures to watch
 WATCH_SYMBOLS = WATCH_NSE + WATCH_MCX   # merged for backward compat
 
 # ── Per-class market windows: (open, close, weekdays) ─────────────────────
@@ -112,3 +112,37 @@ STRIKES_AROUND_ATM  = 15
 LOG_LEVEL           = "INFO"
 LOG_ROTATION        = "midnight"
 LOG_BACKUP_COUNT    = 30
+
+# ── Per-symbol threshold overrides ────────────────────────────────────────
+# MCX commodities have lower absolute OI volumes than NSE indices.
+# Use tighter thresholds so the engine fires on meaningful but smaller moves.
+SYMBOL_THRESHOLD_OVERRIDES: dict[str, dict] = {
+    "NATURALGAS": {
+        "oi_threshold":        10.0,   # 10% OI change (vs 40% for NIFTY)
+        "ltp_threshold":        4.0,   # 4% ATM LTP move (vs 8%)
+        "pcr_shift_threshold":  0.10,  # smaller PCR moves matter more
+        "buildup_oi_min_pct":  10.0,  # 10% OI to classify buildup
+        "buildup_ltp_min_pct":  3.0,  # 3% LTP to classify buildup
+    },
+    "CRUDEOIL": {
+        "oi_threshold":        15.0,
+        "ltp_threshold":        5.0,
+        "pcr_shift_threshold":  0.15,
+        "buildup_oi_min_pct":  12.0,
+        "buildup_ltp_min_pct":  4.0,
+    },
+    "GOLD": {
+        "oi_threshold":        20.0,
+        "ltp_threshold":        5.0,
+        "pcr_shift_threshold":  0.20,
+        "buildup_oi_min_pct":  15.0,
+        "buildup_ltp_min_pct":  5.0,
+    },
+}
+
+
+def get_symbol_thresholds(symbol: str) -> dict:
+    """Return threshold overrides for the given symbol, or empty dict for defaults."""
+    # Normalize: strip expiry/month suffix e.g. 'NATURALGAS MAY FUT' -> 'NATURALGAS'
+    base = symbol.upper().split()[0]
+    return SYMBOL_THRESHOLD_OVERRIDES.get(base, {})

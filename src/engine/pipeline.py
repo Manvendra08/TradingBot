@@ -22,7 +22,7 @@ from src.engine.anomaly_detector import detect_anomalies
 from src.alerts.dedup import is_duplicate, record_alert
 from src.alerts.digest import build_digest
 from src.alerts.telegram_dispatcher import send_alert, send_text
-from config.settings import WATCH_SYMBOLS, INDIVIDUAL_ALERT_MIN_SEVERITY
+from config.settings import WATCH_SYMBOLS, INDIVIDUAL_ALERT_MIN_SEVERITY, get_symbol_thresholds
 
 log = logging.getLogger(__name__)
 
@@ -62,7 +62,8 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
     source     = oc_data.get("source", "unknown")
 
     # 1. Detect (before persisting so deltas use previous snapshot)
-    alerts, scan_context = detect_anomalies(oc_data, fetched_at)
+    symbol_thresholds = get_symbol_thresholds(symbol)
+    alerts, scan_context = detect_anomalies(oc_data, fetched_at, override_thresholds=symbol_thresholds)
     log.info("%s: %d anomalies detected", symbol, len(alerts))
 
     # 2. Dedup filter

@@ -38,6 +38,8 @@ function scrapeCharts() {
   const charts = document.querySelectorAll('.chart-container, .layout__area--center, .chart-markup-table');
   
   chrome.storage.local.get([STORAGE_KEY], (result) => {
+    if (chrome.runtime.lastError) console.warn(chrome.runtime.lastError);
+    result = result || {};
     const existingData = result[STORAGE_KEY] || {};
     let lastSymbol = parseSymbol(document.title);
     let updatedCount = 0;

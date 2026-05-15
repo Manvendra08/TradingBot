@@ -1,5 +1,5 @@
 /**
- * popup.js — NSEBOT v2.5
+ * popup.js — NSEBOT v2.6.0
  * Changes: removed Underlying metric, IST timestamps, no expiry in alerts,
  *          ATM LTP_SPIKE alert type, simplified UI.
  */
@@ -28,8 +28,19 @@ const EMOJIS = {
 };
 const MAX_ALERTS = 50, MAX_LOG = 30, TICK_MS = 1000, HEALTH_EVERY = 15;
 
-let S = { site: null, snap: null, alerts: [], log: [], lastTs: null, count: 0, settings: { ...DFLT }, beOk: false, iSec: 300, backendAlerts: [] };
-let activeTab = 'dashboard', rTimer = null, hCount = 0, pollTimer = null, beAlertTick = 0;
+let S = {
+  site: null,
+  snap: null,
+  alerts: [],
+  log: [],
+  lastTs: null,
+  count: 0,
+  settings: { ...DFLT },
+  beOk: false,
+  iSec: 300,
+  backendAlerts: []
+};
+let activeTab = 'dashboard', rTimer = null, hCount = 0, pollTimer = null, beAlertTick = 0, stateTick = 0, stuckTick = 0;
 
 // ── IST time formatter ────────────────────────────────────────────────────────
 function fmtIST(d) {
@@ -230,11 +241,12 @@ function pollUntilReady() {
   pollTimer = setInterval(() => {
     n++;
     chrome.runtime.sendMessage({ type: 'CHECK_BACKEND', backendUrl: S.settings.backendUrl }, resp => {
+      if (chrome.runtime.lastError) return;
       const st = el('ov-status');
       if (resp?.ok) {
         if (st) { st.textContent = '✅ Bridge running! Closing...'; st.style.color = '#00d4aa'; }
         clearInterval(pollTimer); pollTimer = null;
-        chrome.storage.local.set({ [SK.BE_OK]: true, [SK.BE_RUN]: true });
+        chrome.storage.local.set({ [SK.BE_OK]: true, [SK.BE_RUN]: true }, () => { void chrome.runtime.lastError; });
         S.beOk = true; setTimeout(hideOv, 800); updateBE(); updateSvr();
       } else { if (st) { st.textContent = `Waiting... (${n})`; st.style.color = '#ffa726'; } }
     });
@@ -246,8 +258,9 @@ function startBE() {
   const url = S.settings.backendUrl; el('btn-start').disabled = true;
   el('svr-dot').className = 'svr-dot starting'; el('svr-txt').textContent = 'Starting...';
   chrome.runtime.sendMessage({ type: 'START_BACKEND', backendUrl: url }, resp => {
+    if (chrome.runtime.lastError) return;
     if (resp?.ok) {
-      chrome.storage.local.set({ [SK.BE_OK]: true, [SK.BE_RUN]: true }); S.beOk = true; updateBE(); updateSvr(); el('btn-start').disabled = false;
+      chrome.storage.local.set({ [SK.BE_OK]: true, [SK.BE_RUN]: true }, () => { void chrome.runtime.lastError; }); S.beOk = true; updateBE(); updateSvr(); el('btn-start').disabled = false;
     } else {
       el('btn-start').disabled = false; el('svr-dot').className = 'svr-dot stopped';
       el('svr-txt').textContent = 'Not running'; el('svr-hint').textContent = 'See instructions ↓'; showOv();
@@ -257,7 +270,8 @@ function startBE() {
 function stopBE() {
   el('btn-stop').disabled = true; el('svr-dot').className = 'svr-dot starting'; el('svr-txt').textContent = 'Stopping...';
   chrome.runtime.sendMessage({ type: 'STOP_BACKEND', backendUrl: S.settings.backendUrl }, () => {
-    chrome.storage.local.set({ [SK.BE_RUN]: false, [SK.BE_OK]: false }); S.beOk = false; updateBE(); updateSvr(); el('btn-stop').disabled = false;
+    if (chrome.runtime.lastError) return;
+    chrome.storage.local.set({ [SK.BE_RUN]: false, [SK.BE_OK]: false }, () => { void chrome.runtime.lastError; }); S.beOk = false; updateBE(); updateSvr(); el('btn-stop').disabled = false;
   });
 }
 function updateSvr() {
@@ -277,6 +291,8 @@ function tick() {
   updateCD();
   if (++hCount >= HEALTH_EVERY) { hCount = 0; checkBE(); }
   if (++beAlertTick >= 10) { beAlertTick = 0; fetchBackendAlerts(); }
+  // Reload state every 5s to pick up fresh lastTs written by content script
+  if (++stateTick >= 5) { stateTick = 0; loadState(() => refreshUI()); }
 }
 function refreshUI() {
   updateStatus(); updateMetrics(); updateAlertBadge(); updateBE(); updateSvr();
@@ -287,6 +303,8 @@ function refreshUI() {
 }
 function loadState(cb) {
   chrome.storage.local.get(Object.values(SK), r => {
+    if (chrome.runtime.lastError) console.warn(chrome.runtime.lastError);
+    r = r || {};
     S.site = r[SK.SITE] || null;
     S.snap = r[SK.SNAPSHOT] || null;
     S.alerts = r[SK.ALERTS] || [];
@@ -304,6 +322,8 @@ function loadState(cb) {
 }
 function loadSettingsUI() {
   chrome.storage.local.get([SK.SETTINGS], r => {
+    if (chrome.runtime.lastError) console.warn(chrome.runtime.lastError);
+    r = r || {};
     const s = { ...DFLT, ...(r[SK.SETTINGS] || {}) };
     el('s-oi').value = s.oiThreshold;
     el('s-ltp').value = s.ltpSpikeThreshPct || 5;
@@ -317,15 +337,17 @@ function loadSettingsUI() {
 function checkBE() {
   const url = S.settings.backendUrl || 'http://localhost:8765';
   chrome.runtime.sendMessage({ type: 'CHECK_BACKEND', backendUrl: url }, resp => {
+    if (chrome.runtime.lastError) return;
     const ok = !!(resp?.ok);
-    if (ok !== S.beOk) { chrome.storage.local.set({ [SK.BE_OK]: ok }); S.beOk = ok; updateBE(); updateSvr(); }
+    if (ok !== S.beOk) { chrome.storage.local.set({ [SK.BE_OK]: ok }, () => { void chrome.runtime.lastError; }); S.beOk = ok; updateBE(); updateSvr(); }
   });
 }
 
 // ── Countdown ─────────────────────────────────────────────────────────────────
 function updateCD() {
   let rem = S.iSec;
-  if (S.lastTs) rem = Math.max(0, S.iSec - Math.floor((Date.now() - new Date(S.lastTs).getTime()) / 1000));
+  const elapsed = S.lastTs ? Math.floor((Date.now() - new Date(S.lastTs).getTime()) / 1000) : Infinity;
+  if (S.lastTs) rem = Math.max(0, S.iSec - elapsed);
   const m = Math.floor(rem / 60), s = rem % 60;
   el('cd').textContent = `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
   const urgCls = rem <= 60 ? ' urgent' : rem <= 90 ? ' warning' : '';
@@ -333,6 +355,17 @@ function updateCD() {
   el('pb').className = 'pb' + urgCls;
   el('pb').style.width = ((rem / S.iSec) * 100).toFixed(1) + '%';
   el('scan-no').textContent = `Scan #${S.count}`;
+
+  // ── Watchdog: if stuck at 00:00 for >30s, auto force-scan ───────────────
+  if (rem === 0 && elapsed > S.iSec + 30) {
+    if (++stuckTick >= 30) {
+      stuckTick = 0;
+      console.warn('[NSEBOT] Watchdog: scan overdue, forcing scan');
+      forceScan();
+    }
+  } else {
+    stuckTick = 0;
+  }
 }
 function updateStatus() {
   const LABELS = { nse: 'NSE India', dhan: 'Dhan', sensibull: 'Sensibull', opstra: 'Opstra', dhan_chart: 'Dhan Chart' };
@@ -461,7 +494,7 @@ function renderDash() {
       return ts > max ? ts : max;
     }, 0);
     chartStale = latestSeen > 0 && Date.now() - latestSeen > 120000;
-    el('d-chart-ts').textContent = latestSeen === 0 ? 'â€”' : `seen ${ago(latestSeen)} | trend same ${ago(latestChanged)}`;
+    el('d-chart-ts').textContent = latestSeen === 0 ? '—' : `seen ${ago(latestSeen)} | trend same ${ago(latestChanged)}`;
   }
 
   // Symbol Mismatch Check
@@ -778,7 +811,8 @@ function testBE() {
   const url = el('s-url').value.trim() || 'http://localhost:8765', b = el('btn-test');
   b.textContent = '⏳ Testing...';
   chrome.runtime.sendMessage({ type: 'CHECK_BACKEND', backendUrl: url }, resp => {
-    const ok = !!(resp?.ok); chrome.storage.local.set({ [SK.BE_OK]: ok }); S.beOk = ok;
+    if (chrome.runtime.lastError) return;
+    const ok = !!(resp?.ok); chrome.storage.local.set({ [SK.BE_OK]: ok }, () => { void chrome.runtime.lastError; }); S.beOk = ok;
     b.textContent = ok ? '✅ Connected!' : '❌ Unreachable';
     setTimeout(() => b.textContent = '🔌 Test Backend', 2000); updateBE(); updateSvr();
   });

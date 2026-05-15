@@ -110,10 +110,12 @@ def _price_oi_verdict(price_pct: float | None, net_oi_change: int) -> tuple[str,
 
 # ── Confidence Scorer ─────────────────────────────────────────────────────
 
-def _compute_confidence(scan_ctx: dict, alerts: list[dict]) -> int:
+def _compute_confidence(scan_ctx: dict, alerts: list[dict],
+                        parsed_chart: dict | None = None) -> tuple[int, bool]:
     """
     Score 0–100 based on signal confluence.
     Higher = more factors agreeing on direction.
+    Returns (score, chart_conflict) — chart_conflict=True means 1H/3H disagree.
     """
     score = 30  # base
 
@@ -130,11 +132,18 @@ def _compute_confidence(scan_ctx: dict, alerts: list[dict]) -> int:
         elif sev == "MEDIUM":
             score += 4
 
-    # PCR confirmation
+    # PCR confirmation for directional verdicts
     if pcr and pcr < 0.7 and price_pct and price_pct > 0:
         score += 10  # low PCR + price up = bullish confluence
     elif pcr and pcr > 1.3 and price_pct and price_pct < 0:
         score += 10  # high PCR + price down = bearish confluence
+
+    # PCR moderate support — even in neutral/contraction zones
+    # A PCR of 1.15+ signals put writers are comfortable = mild support
+    if pcr and 1.15 <= pcr <= 1.5 and not (price_pct and price_pct < -0.3):
+        score += 5
+    elif pcr and 0.7 <= pcr < 0.85:
+        score += 5  # moderate bearish PCR support
 
     # OI wall proximity
     underlying = _safe(scan_ctx.get("underlying"))
@@ -143,11 +152,9 @@ def _compute_confidence(scan_ctx: dict, alerts: list[dict]) -> int:
     if underlying and support and resistance:
         total_range = resistance - support
         if total_range > 0:
-            # Near support = bullish bias confirmation if price rising
             dist_to_support = underlying - support
             if dist_to_support < total_range * 0.2 and price_pct and price_pct > 0:
                 score += 8
-            # Near resistance = bearish bias confirmation if price falling
             dist_to_resistance = resistance - underlying
             if dist_to_resistance < total_range * 0.2 and price_pct and price_pct < 0:
                 score += 8
@@ -159,7 +166,16 @@ def _compute_confidence(scan_ctx: dict, alerts: list[dict]) -> int:
         if mp_dist_pct < 0.5:
             score += 5  # near max pain = high probability zone
 
-    return min(score, 95)  # cap at 95, never 100
+    # Chart timeframe conflict detection
+    chart_conflict = False
+    if parsed_chart:
+        tf_1h = parsed_chart.get("1h", {}).get("sentiment")
+        tf_3h = parsed_chart.get("3h", {}).get("sentiment")
+        if tf_1h and tf_3h and tf_1h != tf_3h and "NEUTRAL" not in (tf_1h, tf_3h):
+            chart_conflict = True
+            score -= 10  # penalise conflicting timeframes
+
+    return min(score, 95), chart_conflict  # cap at 95, never 100
 
 
 # ── Trade Idea Generator ──────────────────────────────────────────────────
@@ -294,11 +310,8 @@ def _collect_forces(ctx: dict, alerts: list[dict], verdict_label: str, parsed_ch
 
     if pcr >= 1.15:
         bull.append((85, f"PCR supportive ({pcr:.2f})"))
-    elif pcr <= 0.85:
+    elif pcr > 0 and pcr <= 0.85:
         bear.append((85, f"PCR weak ({pcr:.2f})"))
-    else:
-        bull.append((50, f"PCR neutral ({pcr:.2f})"))
-        bear.append((50, f"PCR neutral ({pcr:.2f})"))
 
     if price_pct >= 0.35:
         bull.append((80, f"Spot momentum +{price_pct:.2f}%"))
@@ -309,9 +322,6 @@ def _collect_forces(ctx: dict, alerts: list[dict], verdict_label: str, parsed_ch
         bull.append((75, "Put writing visible"))
     if ce_oi_change > 0 and pe_oi_change <= 0:
         bear.append((75, "Call writing visible"))
-    if ce_oi_change > 0 and pe_oi_change > 0:
-        bull.append((55, "Both-side OI build"))
-        bear.append((55, "Both-side OI build"))
 
     for tf in ("1h", "3h"):
         tf_data = parsed_chart.get(tf) or {}
@@ -515,14 +525,20 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
                 "ohlc": tf_data.get("ohlc"),
                 "updated_at": tf_data.get("updated_at"),
             }
-            # Boost confidence for 1H/3H chart + OC alignment
-            if tf in ("1h", "3h") and effective_sentiment:
-                if verdict_label == "Long Buildup" and effective_sentiment == "BULLISH":
-                    confidence = min(confidence + 10, 95)
-                    log.debug("[intel] Chart confluence +10%% | %s %s BULLISH aligns Long Buildup", symbol, tf)
-                elif verdict_label == "Short Buildup" and effective_sentiment == "BEARISH":
-                    confidence = min(confidence + 10, 95)
-                    log.debug("[intel] Chart confluence +10%% | %s %s BEARISH aligns Short Buildup", symbol, tf)
+    # ── Re-compute confidence with chart context ───────────────────────────────
+    confidence, chart_conflict = _compute_confidence(ctx, current_alerts, parsed_chart)
+
+    # Chart confluence boost for matching directional verdicts
+    for tf, entry in parsed_chart.items():
+        if tf not in ("1h", "3h"):
+            continue
+        effective_sentiment = entry.get("sentiment")
+        if verdict_label == "Long Buildup" and effective_sentiment == "BULLISH":
+            confidence = min(confidence + 10, 95)
+            log.debug("[intel] Chart confluence +10%% | %s %s BULLISH aligns Long Buildup", symbol, tf)
+        elif verdict_label == "Short Buildup" and effective_sentiment == "BEARISH":
+            confidence = min(confidence + 10, 95)
+            log.debug("[intel] Chart confluence +10%% | %s %s BEARISH aligns Short Buildup", symbol, tf)
 
     # ── Build Message ──────────────────────────────────────────────────────
     msg = [f"🤖 *Bot Intelligence | {symbol}*"]
@@ -532,6 +548,8 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
     msg.append(f"{verdict_emoji} *Verdict: {verdict_label}*")
     msg.append(f"_{verdict_desc}_")
     msg.append(f"Confidence: {confidence}%")
+    if chart_conflict:
+        msg.append("⚠️ _Chart conflict: 1H vs 3H signals disagree — reduce size, wait alignment_")
 
     # OI Analysis
     if total_ce_oi or total_pe_oi:

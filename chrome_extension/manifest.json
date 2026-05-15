@@ -1,13 +1,12 @@
 {
   "manifest_version": 3,
   "name": "NSEBOT Option Chain Monitor",
-  "version": "2.5.0",
+  "version": "2.6.0",
   "description": "NSE/Dhan/Sensibull/Opstra option chain — OI delta, LTP spike, PCR, alerts, countdown.",
   "permissions": [
     "activeTab",
     "notifications",
     "storage",
-    "alarms",
     "tabs",
     "scripting",
     "clipboardWrite"
@@ -29,7 +28,11 @@
   "content_scripts": [
     {
       "matches": [
-        "https://options-trader.dhan.co/advanceoptionchain*"
+        "https://options-trader.dhan.co/advanceoptionchain*",
+        "https://www.nseindia.com/option-chain*",
+        "https://sensibull.com/*",
+        "https://web.sensibull.com/*",
+        "https://opstra.definedge.com/*"
       ],
       "js": [
         "content.js"

@@ -1,5 +1,5 @@
 /**
- * content.js — NSEBOT v2.5
+ * content.js — NSEBOT v2.6.0
  * Fixes:
  *  - Dhan: bridge properly injected (was disabled in v2.4 boot)
  *  - Dhan: expiry from active button only, not all buttons
@@ -10,10 +10,16 @@
 'use strict';
 
 // ── Security & Target check ──────────────────────────────────────────────────
-if (!window.location.href.includes('options-trader.dhan.co/advanceoptionchain')) {
-  console.log('[NSEBOT] Inactive: valid only on Dhan Advance Option Chain');
+const isSupported =
+  window.location.href.includes('options-trader.dhan.co/advanceoptionchain') ||
+  window.location.href.includes('nseindia.com/option-chain') ||
+  window.location.href.includes('sensibull.com') ||
+  window.location.href.includes('opstra.definedge.com');
+
+if (!isSupported) {
+  console.log('[NSEBOT] Inactive: valid only on supported trading sites');
 } else {
-  console.log('[NSEBOT] Active on Dhan Advance Option Chain');
+  console.log('[NSEBOT] Active on supported trading site');
 }
 
 // ── Config ──────────────────────────────────────────────────────────────────
@@ -45,10 +51,9 @@ const DHAN_BRIDGE_SRC = 'nsebot-dhan-bridge';
 const NSE_BRIDGE_SRC = 'nsebot-page-bridge';
 const EXT_SRC = 'nsebot-extension';
 
-// ── Safe chrome.* wrappers (handle extension context invalidated on reload) ──
-function safeStorageGet(keys, cb) { try { chrome.storage.local.get(keys, cb); } catch (e) { if (cb) cb({}); } }
-function safeStorageSet(obj, cb) { try { chrome.storage.local.set(obj, cb); } catch (e) { if (cb) cb(); } }
-function safeSendMessage(msg, cb) { try { chrome.runtime.sendMessage(msg, cb || (() => {})); } catch (e) {} }
+function safeStorageGet(keys, cb) { try { chrome.storage.local.get(keys, (res) => { if (chrome.runtime.lastError) console.warn(chrome.runtime.lastError); if (cb) cb(res || {}); }); } catch (e) { if (cb) cb({}); } }
+function safeStorageSet(obj, cb) { try { chrome.storage.local.set(obj, () => { if (chrome.runtime.lastError) console.warn(chrome.runtime.lastError); if (cb) cb(); }); } catch (e) { if (cb) cb(); } }
+function safeSendMessage(msg, cb) { try { chrome.runtime.sendMessage(msg, (res) => { if (chrome.runtime.lastError) console.warn(chrome.runtime.lastError); if (cb) cb(res || {}); }); } catch (e) {} }
 
 // ── State ────────────────────────────────────────────────────────────────────
 let prevStrikeMap = {};   // { "CE_22000": { oi, ltp } }
@@ -201,7 +206,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     diag(`Settings: interval=${CFG.intervalMin}m range=±${CFG.strikeRange} OI%=${CFG.oiThreshold} LTP%=${CFG.ltpSpikeThreshPct}`, true);
     sendResponse({ ok: true });
   }
-  return true;
 });
 
 // ── Site detector ─────────────────────────────────────────────────────────────
@@ -833,8 +837,13 @@ function processSnapshot(data, site) {
   const underlying = firstPositive(data.underlying, inferUnderlyingFromStrikes(data.strikes));
   const allStrikes = data.strikes;
   const filtered = filterAtmWindow(allStrikes, underlying);
-  if (!filtered.length) { diag(`ATM filter: 0 rows for ${symbol}`, false, true); return; }
+  
+  if (!filtered.length) {
+    diag(`ATM filter: 0 rows for ${symbol}`, false, true);
+    return;
+  }
 
+  // Handle symbol switch
   if (lastSnapshotSymbol && symbol && lastSnapshotSymbol !== symbol) {
     prevStrikeMap = {};
     prevAtmLtp = {};
@@ -842,125 +851,127 @@ function processSnapshot(data, site) {
   }
 
   const now = nowIST();
-  const prev = prevStrikeMap;
-  const next = {};
+  const { anomalies, nextMap, maxOiPct, maxAtmLtpPct } = analyzeAnomalies(filtered, underlying, symbol, now);
+  
+  prevStrikeMap = nextMap;
+  lastSnapshotSymbol = symbol;
+
+  const summary = getScanSummary(allStrikes, filtered, data.summary);
+  const pcrDelta = calculatePcrDelta(summary.pcr, filtered);
+
+  // 1. Persist locally
+  persistSnapshot(symbol, underlying, data.expiry, filtered, summary, site, now);
+
+  // 2. Dispatch Alerts
+  if (anomalies.length) {
+    persistAlerts(anomalies);
+    anomalies.forEach(a => {
+      if (CFG.notifications) showNotification(a);
+      if (CFG.forwardBackend) postToBackend('/ingest', a);
+    });
+  }
+
+  // 3. Log diagnostics
+  reportDiagnostics(symbol, allStrikes.length, filtered.length, underlying, summary, anomalies, maxOiPct, maxAtmLtpPct, pcrDelta);
+
+  // 4. Forward full snapshot to backend
+  if (CFG.forwardBackend && filtered.length >= 5 && Number.isFinite(underlying)) {
+    forwardSnapshot(data, filtered, symbol, summary);
+  } else if (CFG.forwardBackend) {
+    diag(`${symbol}: validation failed (${filtered.length} strikes, underlying=${underlying}) — skip POST`, false, true);
+  }
+}
+
+function analyzeAnomalies(filtered, underlying, symbol, now) {
+  const nextMap = {};
   const anomalies = [];
   let maxOiPct = 0;
   let maxAtmLtpPct = 0;
 
-  // ── Strike Interval Calculation ──────────────────────────────────────────
-  const sortedStrikes = [...new Set(allStrikes.map(s => +s.strike))].sort((a, b) => a - b);
+  const sortedStrikes = [...new Set(filtered.map(s => +s.strike))].sort((a, b) => a - b);
   let interval = 100;
   if (sortedStrikes.length > 1) {
     const diffs = [];
     for (let i = 1; i < sortedStrikes.length; i++) {
-      const d = sortedStrikes[i] - sortedStrikes[i - 1];
+      const d = sortedStrikes[i] - sortedStrikes[i-1];
       if (d > 0) diffs.push(d);
     }
     interval = diffs.length ? Math.min(...diffs) : 100;
   }
   const itmLimit = 5 * interval;
 
-  // ── OI spike detection ────────────────────────────────────────────────────
+  // OI Spikes
   filtered.forEach(({ strike, option_type, oi, ltp }) => {
     const key = `${option_type}_${strike}`;
-    const p = prev[key];
-    next[key] = { oi, ltp };
+    const p = prevStrikeMap[key];
+    nextMap[key] = { oi, ltp };
     if (!p?.oi) return;
 
-    // Filter deep ITM strikes (beyond +-5)
     const isDeepITM = (option_type === 'CE' && strike < underlying - itmLimit) ||
-      (option_type === 'PE' && strike > underlying + itmLimit);
+                      (option_type === 'PE' && strike > underlying + itmLimit);
     if (isDeepITM) return;
 
     const pct = ((oi - p.oi) / Math.abs(p.oi)) * 100;
     maxOiPct = Math.max(maxOiPct, Math.abs(pct));
     if (Math.abs(pct) >= CFG.oiThreshold) {
       anomalies.push({
-        symbol,
-        alert_type: pct > 0 ? 'OI_SPIKE' : 'OI_UNWIND',
-        strike,
-        option_type,
-        prev_oi: p.oi,
-        curr_oi: oi,
-        pct_change: pct.toFixed(1),
-        underlying,
-        fired_at: now,
+        symbol, alert_type: pct > 0 ? 'OI_SPIKE' : 'OI_UNWIND',
+        strike, option_type, prev_oi: p.oi, curr_oi: oi,
+        pct_change: pct.toFixed(1), underlying, fired_at: now
       });
     }
   });
 
-  // ── ATM LTP spike detection ───────────────────────────────────────────────
-  const uniq = [...new Set(filtered.map(r => +r.strike))].sort((a, b) => a - b);
-  const atmStrike = uniq.reduce((best, s) => Math.abs(s - underlying) < Math.abs(best - underlying) ? s : best, uniq[0] || 0);
-  const ltpThresh = CFG.ltpSpikeThreshPct || 5;
-
+  // ATM LTP Spikes
+  const atmStrike = sortedStrikes.reduce((best, s) => Math.abs(s - underlying) < Math.abs(best - underlying) ? s : best, sortedStrikes[0] || 0);
   ['CE', 'PE'].forEach(ot => {
     const atmRow = filtered.find(r => +r.strike === atmStrike && r.option_type === ot);
     if (!atmRow) return;
-    const currLtp = atmRow.ltp || 0;
-    const prevLtp = prevAtmLtp[ot] || 0;
+    const currLtp = atmRow.ltp || 0, prevLtp = prevAtmLtp[ot] || 0;
     if (prevLtp > 0 && currLtp > 0) {
       const ltpPct = ((currLtp - prevLtp) / prevLtp) * 100;
       maxAtmLtpPct = Math.max(maxAtmLtpPct, Math.abs(ltpPct));
-      if (Math.abs(ltpPct) >= ltpThresh) {
+      if (Math.abs(ltpPct) >= (CFG.ltpSpikeThreshPct || 5)) {
         anomalies.push({
-          symbol,
-          alert_type: 'LTP_SPIKE',
-          strike: atmStrike,
-          option_type: ot,
-          prev_ltp: prevLtp,
-          curr_ltp: currLtp,
-          pct_change: ltpPct.toFixed(1),
-          underlying,
-          fired_at: now,
+          symbol, alert_type: 'LTP_SPIKE', strike: atmStrike, option_type: ot,
+          prev_ltp: prevLtp, curr_ltp: currLtp, pct_change: ltpPct.toFixed(1),
+          underlying, fired_at: now
         });
       }
     }
+    if (atmRow.ltp) prevAtmLtp[ot] = atmRow.ltp;
   });
 
-  // Update ATM LTP tracking
-  const ceAtm = filtered.find(r => +r.strike === atmStrike && r.option_type === 'CE');
-  const peAtm = filtered.find(r => +r.strike === atmStrike && r.option_type === 'PE');
-  if (ceAtm?.ltp) prevAtmLtp.CE = ceAtm.ltp;
-  if (peAtm?.ltp) prevAtmLtp.PE = peAtm.ltp;
+  return { anomalies, nextMap, maxOiPct, maxAtmLtpPct };
+}
 
-  prevStrikeMap = next;
-  lastSnapshotSymbol = symbol;
-
-  // ── Summary metrics ───────────────────────────────────────────────────────
-  const api = data.summary || {};
+function getScanSummary(allStrikes, filtered, apiSummary = {}) {
   let ceOiTotal = 0, peOiTotal = 0;
   allStrikes.forEach(r => { if (r.option_type === 'CE') ceOiTotal += r.oi || 0; else peOiTotal += r.oi || 0; });
-  const summary = {
-    source: api.source || 'computed',
-    ceOi: firstFinite(api.ceOi, ceOiTotal),
-    peOi: firstFinite(api.peOi, peOiTotal),
-    pcr: firstFinite(api.pcr, ceOiTotal > 0 ? peOiTotal / ceOiTotal : null),
-    maxPain: firstFinite(api.maxPain, computeMaxPain(allStrikes)),
+  return {
+    source: apiSummary.source || 'computed',
+    ceOi: firstFinite(apiSummary.ceOi, ceOiTotal),
+    peOi: firstFinite(apiSummary.peOi, peOiTotal),
+    pcr: firstFinite(apiSummary.pcr, ceOiTotal > 0 ? peOiTotal / ceOiTotal : null),
+    maxPain: firstFinite(apiSummary.maxPain, computeMaxPain(allStrikes)),
   };
-  let prevCeOiTotal = 0, prevPeOiTotal = 0;
-  filtered.forEach(r => {
-    const p = prev[`${r.option_type}_${r.strike}`];
-    if (!p?.oi) return;
-    if (r.option_type === 'CE') prevCeOiTotal += p.oi;
-    else prevPeOiTotal += p.oi;
-  });
-  const prevPcr = prevCeOiTotal > 0 ? prevPeOiTotal / prevCeOiTotal : null;
-  const pcrDelta = Number.isFinite(prevPcr) && Number.isFinite(summary.pcr) ? summary.pcr - prevPcr : null;
-  const pcrShiftThreshold = 0.25;
+}
 
-  // ── Persist ───────────────────────────────────────────────────────────────
+function calculatePcrDelta(currPcr, filtered) {
+  let prevCeOi = 0, prevPeOi = 0;
+  filtered.forEach(r => {
+    const p = prevStrikeMap[`${r.option_type}_${r.strike}`];
+    if (p?.oi) { if (r.option_type === 'CE') prevCeOi += p.oi; else prevPeOi += p.oi; }
+  });
+  const prevPcr = prevCeOi > 0 ? prevPeOi / prevCeOi : null;
+  return (Number.isFinite(prevPcr) && Number.isFinite(currPcr)) ? currPcr - prevPcr : null;
+}
+
+function persistSnapshot(symbol, underlying, expiry, filtered, summary, site, now) {
   const snap = {
-    symbol, underlying,
-    expiry: data.expiry || '',
-    strikes: filtered, // store ONLY filtered strikes (ATM +- 15)
-    filteredStrikes: filtered,
-    summary,
-    prevStrikes: prev,
-    site,
-    lastScan: now,
-    scanOk: true,
+    symbol, underlying, expiry: expiry || '',
+    strikes: filtered, filteredStrikes: filtered,
+    summary, site, lastScan: now, scanOk: true
   };
   safeStorageGet([STORAGE.SCAN_COUNT], r => {
     safeStorageSet({
@@ -970,59 +981,49 @@ function processSnapshot(data, site) {
       [STORAGE.SITE]: site,
     });
   });
+}
 
-  // ── Dispatch anomalies ────────────────────────────────────────────────────
-  if (anomalies.length) {
-    safeStorageGet([STORAGE.ALERTS], r => {
-      safeStorageSet({ [STORAGE.ALERTS]: [...(r[STORAGE.ALERTS] || []), ...anomalies].slice(-MAX_ALERTS) });
-    });
-    anomalies.forEach(a => {
-      if (CFG.notifications) showNotification(a);
-      if (CFG.forwardBackend) postToBackend('/ingest', a);
-    });
-  }
+function persistAlerts(anomalies) {
+  safeStorageGet([STORAGE.ALERTS], r => {
+    safeStorageSet({ [STORAGE.ALERTS]: [...(r[STORAGE.ALERTS] || []), ...anomalies].slice(-MAX_ALERTS) });
+  });
+}
 
+function reportDiagnostics(symbol, totalRows, filteredRows, underlying, summary, anomalies, maxOiPct, maxAtmLtpPct, pcrDelta) {
   const pcrNote = Number.isFinite(summary.pcr) ? ` pcr:${summary.pcr.toFixed(2)}` : '';
   const mpNote = Number.isFinite(summary.maxPain) ? ` mp:${summary.maxPain}` : '';
-  const atmWindow = Number.isFinite(Number(CFG.strikeRange))
-    ? Number(CFG.strikeRange)
-    : DEFAULT_ATM_STRIKE_WINDOW;
-  diag(`${symbol} ✓ ${allStrikes.length} rows (${filtered.length} ATM±${atmWindow}) spot:${underlying}${pcrNote}${mpNote}${anomalies.length ? ` ⚠${anomalies.length}` : ''}`, true, anomalies.length > 0);
+  const range = CFG.strikeRange || 15;
+  
+  diag(`${symbol} ✓ ${totalRows} rows (${filteredRows} ATM±${range}) spot:${underlying}${pcrNote}${mpNote}${anomalies.length ? ` ⚠${anomalies.length}` : ''}`, true, anomalies.length > 0);
 
-  // Validation guard: need ≥5 strikes and a real underlying to POST
-  if (!anomalies.length && Object.keys(prev).length) {
-    const pcrPart = pcrDelta == null ? 'PCR delta n/a' : `PCR delta ${Math.abs(pcrDelta).toFixed(3)} < ${pcrShiftThreshold}`;
-    diag(`No alert: max OI delta ${maxOiPct.toFixed(2)}% < ${CFG.oiThreshold}, ATM LTP delta ${maxAtmLtpPct.toFixed(2)}% < ${ltpThresh}, ${pcrPart}`, true, true);
+  if (!anomalies.length && Object.keys(prevStrikeMap).length) {
+    const pcrPart = pcrDelta == null ? 'PCR delta n/a' : `PCR delta ${Math.abs(pcrDelta).toFixed(3)} < 0.25`;
+    diag(`No alert: max OI delta ${maxOiPct.toFixed(2)}% < ${CFG.oiThreshold}, ATM LTP delta ${maxAtmLtpPct.toFixed(2)}% < ${CFG.ltpSpikeThreshPct}, ${pcrPart}`, true, true);
   }
+}
 
-  if (filtered.length < 5 || !underlying || !Number.isFinite(underlying)) {
-    diag(`${symbol}: validation failed (${filtered.length} strikes, underlying=${underlying}) — skip POST`, false, true);
-    _pendingForceScan = false;
-    _nextIsBaseline = false;
-    return;
-  }
+function forwardSnapshot(data, filtered, symbol, summary) {
+  const isBase = _nextIsBaseline;
+  const isForce = _pendingForceScan;
+  _nextIsBaseline = false;
+  _pendingForceScan = false;
+  if (isBase) diag('Baseline scan: backend will persist only, no alert detection', true, true);
 
-  if (CFG.forwardBackend) {
-    const isBase = _nextIsBaseline;
-    const isForce = _pendingForceScan;
-    _nextIsBaseline = false;
-    _pendingForceScan = false;
-    if (isBase) diag('Baseline scan: backend will persist only, no alert detection', true, true);
+  safeStorageGet(['nsebot_chart_data'], r => {
+    const allChartData = r.nsebot_chart_data || {};
+    const chartData = findChartDataForSymbol(allChartData, symbol);
 
-    safeStorageGet(['nsebot_chart_data'], r => {
-      const allChartData = r.nsebot_chart_data || {};
-      const chartData = findChartDataForSymbol(allChartData, symbol);
-
-      postToBackend('/ingest/snapshot', {
-        ...data,
-        strikes: filtered,
-        symbol,
-        force: isForce,
-        is_baseline: isBase,
-        chart_indicators: chartData
-      });
+    postToBackend('/ingest/snapshot', {
+      ...data,
+      strikes: filtered,
+      symbol,
+      force: isForce,
+      is_baseline: isBase,
+      chart_indicators: chartData,
+      oi_threshold: CFG.oiThreshold,
+      ltp_threshold: CFG.ltpSpikeThreshPct
     });
-  }
+  });
 }
 
 // ── Notify / Backend ──────────────────────────────────────────────────────────
@@ -1048,12 +1049,22 @@ function postToBackend(path, body) {
     body: JSON.stringify(body),
   }, resp => safeStorageSet({ [STORAGE.BACKEND_OK]: !!resp?.ok }));
 }
+let logQueue = [];
+let logFlushTimer = null;
+
 function addScanLog(entry) {
+  logQueue.push(entry);
+  if (logFlushTimer) clearTimeout(logFlushTimer);
+  logFlushTimer = setTimeout(flushLogs, 150);
+}
+
+function flushLogs() {
+  const batch = [...logQueue];
+  logQueue = [];
   safeStorageGet([STORAGE.SCAN_LOG], r => {
-    const log = r[STORAGE.SCAN_LOG] || [];
-    log.push(entry);
-    if (log.length > MAX_LOG) log.splice(0, log.length - MAX_LOG);
-    safeStorageSet({ [STORAGE.SCAN_LOG]: log });
+    const existing = r[STORAGE.SCAN_LOG] || [];
+    const merged = [...existing, ...batch].slice(-MAX_LOG);
+    safeStorageSet({ [STORAGE.SCAN_LOG]: merged });
   });
 }
 function fmtNum(n) {
@@ -1070,7 +1081,7 @@ loadSettings(() => {
   if (!site) { diag('Not a supported page', false); return; }
 
   safeStorageSet({ [STORAGE.SITE]: site });
-  diag(`NSEBOT v2.5 active: ${site}`, true);
+  diag(`NSEBOT v2.6.0 active: ${site}`, true);
 
   if (site === 'nse') {
     window.addEventListener('message', handleNSEBridgeMessage);
@@ -1096,4 +1107,24 @@ loadSettings(() => {
   }
 
   scheduleScans();
+
+  // ── Visibility watchdog: re-arm scan if tab was hidden/re-shown ──────────
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      if (!scanIntervalId) {
+        diag('Tab visible: re-scheduling scans (interval was dead)', true, true);
+        scheduleScans();
+      }
+      // Immediately re-scan if overdue
+      safeStorageGet(['nsebot_last_scan_ts', 'nsebot_settings'], r => {
+        const last = r['nsebot_last_scan_ts'];
+        const iMin = r['nsebot_settings']?.intervalMin || CFG.intervalMin || 5;
+        const overdueSec = iMin * 60 + 30;
+        if (!last || (Date.now() - new Date(last).getTime()) / 1000 > overdueSec) {
+          diag('Overdue scan detected on tab focus, triggering now', true, true);
+          runPeriodicScan();
+        }
+      });
+    }
+  });
 });

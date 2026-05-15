@@ -25,13 +25,21 @@ class NSEPublicFetcher(BaseFetcher):
         """Hit NSE homepage to acquire cookies — required for API calls."""
         if self._session_warmed:
             return
-        try:
-            self.session.get(NSE_BASE_URL, timeout=10)
-            self.session.get(f"{NSE_BASE_URL}/option-chain", timeout=10)
-            NSEPublicFetcher._session_warmed = True
-            log.debug("[nse_public] session warmed")
-        except Exception as exc:
-            log.warning("[nse_public] session warm-up failed: %s", exc)
+        
+        # Add basic retry for session warm-up
+        for attempt in range(3):
+            try:
+                self.session.get(NSE_BASE_URL, timeout=10)
+                # Hit the option-chain page to ensure cookies are set for APIs
+                self.session.get(f"{NSE_BASE_URL}/option-chain", timeout=10)
+                NSEPublicFetcher._session_warmed = True
+                log.debug("[nse_public] session warmed")
+                return
+            except Exception as exc:
+                if attempt == 2:
+                    log.warning("[nse_public] session warm-up failed after %d attempts: %s", attempt+1, exc)
+                else:
+                    time.sleep(2)
 
     def fetch_option_chain(self, symbol: str) -> dict | None:
         self._warm_session()

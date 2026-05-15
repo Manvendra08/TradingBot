@@ -74,6 +74,8 @@ function kv(k, v, cls='') {
 
 function refreshAll() {
   chrome.storage.local.get(KEYS, (r) => {
+    if (chrome.runtime.lastError) console.warn(chrome.runtime.lastError);
+    r = r || {};
     // Storage state
     const el = document.getElementById('storage-state');
     const scanCount = r.nsebot_scan_count || 0;
@@ -152,6 +154,8 @@ function clearStorage() {
 
 function exportStorage() {
   chrome.storage.local.get(KEYS, (r) => {
+    if (chrome.runtime.lastError) console.warn(chrome.runtime.lastError);
+    r = r || {};
     const json = JSON.stringify(r, null, 2);
     const blob = new Blob([json], { type: 'application/json' });
     const url  = URL.createObjectURL(blob);
@@ -173,6 +177,8 @@ function forceScan() {
 
 function pingBackend() {
   chrome.storage.local.get(['nsebot_settings'], (r) => {
+    if (chrome.runtime.lastError) console.warn(chrome.runtime.lastError);
+    r = r || {};
     const url = r.nsebot_settings?.backendUrl || 'http://localhost:8765';
     fetch(`${url}/health`)
       .then(res => {

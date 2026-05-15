@@ -38,6 +38,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       title: msg.title, message: msg.body, priority: 2,
     });
     chrome.storage.local.get(['nsebot_alerts'], r => {
+      if (chrome.runtime.lastError) console.warn(chrome.runtime.lastError);
+      r = r || {};
       const count = (r.nsebot_alerts || []).length;
       chrome.action.setBadgeText({ text: count > 0 ? String(count) : '' });
       chrome.action.setBadgeBackgroundColor({ color: '#ef5350' });
@@ -91,7 +93,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  return true;
+  return false;
 });
 
 chrome.notifications.onClicked.addListener(() => chrome.action.openPopup().catch(() => {}));
