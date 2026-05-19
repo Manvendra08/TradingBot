@@ -1,5 +1,5 @@
 """
-Bot Intelligence Engine v3.0
+Bot Intelligence Engine v3.1
 Combines scan context (OI totals, price movement, PCR, max pain, OI walls)
 with current alerts to produce trade-actionable intelligence.
 
@@ -10,6 +10,7 @@ import logging
 import re
 from datetime import datetime, timezone
 from src.models.schema import get_alert_history
+from src.utils.formatting import safe_num, fmt_oi
 
 log = logging.getLogger(__name__)
 
@@ -17,30 +18,7 @@ log = logging.getLogger(__name__)
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 def _safe(val, default=0):
-    """Safely convert numeric-ish values, including comma-formatted strings."""
-    try:
-        if val is None:
-            return default
-        if isinstance(val, str):
-            s = val.replace(",", "").strip()
-            if not s or s in {"—", "-", "--", "NA", "N/A", "null", "None"}:
-                return default
-            val = s
-        n = float(val)
-        return n if n == n else default  # NaN guard
-    except (TypeError, ValueError):
-        return default
-
-
-def _fmt_oi(n: int | float | str | None) -> str:
-    n = _safe(n, 0)
-    if abs(n) >= 1e7:
-        return f"{n / 1e7:.1f}Cr"
-    if abs(n) >= 1e5:
-        return f"{n / 1e5:.1f}L"
-    if abs(n) >= 1e3:
-        return f"{n / 1e3:.1f}K"
-    return str(int(n)) if float(n).is_integer() else f"{n:.1f}"
+    return safe_num(val, default)
 
 
 def _norm_symbol(s: str | None) -> str:
@@ -81,31 +59,76 @@ def _tf_sort_key(tf: str) -> int:
 #   Price ↓ + OI ↑ = Short Buildup  (Bearish)
 #   Price ↓ + OI ↓ = Long Unwinding (Weak Bearish — longs exiting, not fresh selling)
 
-def _price_oi_verdict(price_pct: float | None, net_oi_change: int) -> tuple[str, str, str]:
+def _price_oi_verdict(price_pct: float | None, net_oi_change: int,
+                      ce_oi_change: int, pe_oi_change: int,
+                      pcr: float | None = None,
+                      alerts: list | None = None) -> tuple[str, str, str]:
     """
     Returns (verdict_label, emoji, trade_bias).
-    net_oi_change = total OI change across CE+PE combined.
+    Uses price × OI matrix as primary signal, with PCR and alert-level
+    OI spikes as secondary override when price is flat.
+
+    Fix v3.2: Flat price no longer defaults to Sideways when PCR or
+    strike-level OI activity indicates clear directional positioning.
     """
-    price_up = (price_pct or 0) > 0.05   # >0.05% to avoid noise
-    price_dn = (price_pct or 0) < -0.05
-    oi_up = net_oi_change > 0
-    oi_dn = net_oi_change < 0
+    alerts = alerts or []
+    p_pct = price_pct or 0
+    price_up = p_pct > 0.05
+    price_dn = p_pct < -0.05
 
-    if price_up and oi_up:
-        return "Long Buildup", "🟢", "Bullish — fresh longs entering"
-    if price_up and oi_dn:
-        return "Short Covering", "🟡", "Weak Bullish — shorts exiting, not fresh buying"
-    if price_dn and oi_up:
-        return "Short Buildup", "🔴", "Bearish — fresh shorts entering"
-    if price_dn and oi_dn:
-        return "Long Unwinding", "🟠", "Weak Bearish — longs exiting, not fresh selling"
+    abs_ce = abs(ce_oi_change)
+    abs_pe = abs(pe_oi_change)
+    max_chg = max(abs_ce, abs_pe)
 
-    # Flat price
-    if oi_up:
-        return "Range Expansion", "⚪", "Neutral — OI building, breakout likely"
-    if oi_dn:
-        return "Range Contraction", "⚪", "Neutral — OI exiting, low-conviction zone"
-    return "Sideways", "⚪", "Neutral — no clear signal"
+    # ── PRIMARY: Directional price + OI ────────────────────────────────────
+    if price_up:
+        if pe_oi_change > 0 and (ce_oi_change <= 0 or abs_pe > abs_ce * 2):
+            return "Long Buildup", "🟢", "Bullish — fresh longs / heavy put writing"
+        if ce_oi_change < 0 and (pe_oi_change >= 0 or abs_ce > abs_pe * 2):
+            return "Short Covering", "🟡", "Weak Bullish — shorts exiting"
+
+    if price_dn:
+        if ce_oi_change > 0 and (pe_oi_change <= 0 or abs_ce > abs_pe * 2):
+            return "Short Buildup", "🔴", "Bearish — fresh shorts / heavy call writing"
+        if pe_oi_change < 0 and (ce_oi_change >= 0 or abs_pe > abs_ce * 2):
+            return "Long Unwinding", "🟠", "Weak Bearish — longs exiting"
+
+    # ── SECONDARY: Flat price — check OI dominance (relaxed ratio) ─────────
+    if max_chg > 0:
+        if pe_oi_change > 0 and (ce_oi_change <= 0 or abs_pe > abs_ce * 1.5):
+            return "Put Writing", "🟢", "Bullish — support building"
+        if ce_oi_change > 0 and (pe_oi_change <= 0 or abs_ce > abs_pe * 1.5):
+            return "Call Writing", "🔴", "Bearish — resistance building"
+
+    # ── TERTIARY: PCR override when price is flat but sentiment is clear ────
+    # PCR > 1.3 with HIGH CE OI spikes = smart money positioning bullish
+    # PCR < 0.7 with HIGH PE OI spikes = smart money positioning bearish
+    if pcr is not None:
+        high_ce_spikes = sum(
+            1 for a in alerts
+            if a.get("severity") == "HIGH"
+            and a.get("alert_type") in ("OI_SPIKE", "BUILDUP_CLASSIFY", "OTM_UNUSUAL")
+            and a.get("option_type") == "CE"
+        )
+        high_pe_spikes = sum(
+            1 for a in alerts
+            if a.get("severity") == "HIGH"
+            and a.get("alert_type") in ("OI_SPIKE", "BUILDUP_CLASSIFY", "OTM_UNUSUAL")
+            and a.get("option_type") == "PE"
+        )
+        # Bullish override: PCR protective of downside + CE buildup by smart money
+        if pcr >= 1.25 and high_ce_spikes >= 1:
+            return "OI Bias Bullish", "🟡", "Cautious Bullish — PCR supportive, CE OI accumulating"
+        # Bearish override: low PCR + PE buildup signals
+        if pcr <= 0.80 and high_pe_spikes >= 1:
+            return "OI Bias Bearish", "🟠", "Cautious Bearish — PCR weak, PE OI accumulating"
+        # Pure PCR signal (no conflicting OI)
+        if pcr >= 1.5:
+            return "Put Writing", "🟢", "Bullish — heavy put writing, strong support"
+        if pcr <= 0.60:
+            return "Call Writing", "🔴", "Bearish — heavy call writing, strong resistance"
+
+    return "Sideways", "⚪", "Neutral — mixed signals or rangebound"
 
 
 # ── Confidence Scorer ─────────────────────────────────────────────────────
@@ -114,38 +137,30 @@ def _compute_confidence(scan_ctx: dict, alerts: list[dict],
                         parsed_chart: dict | None = None) -> tuple[int, bool]:
     """
     Score 0–100 based on signal confluence.
-    Higher = more factors agreeing on direction.
-    Returns (score, chart_conflict) — chart_conflict=True means 1H/3H disagree.
+    Base 10, +15 for HIGH severity, +10 for PCR confluence, +10 for levels.
     """
-    score = 30  # base
+    score = 10  # base
 
     price_pct = _safe(scan_ctx.get("price_change_pct"))
     ce_chg = scan_ctx.get("ce_oi_change", 0)
     pe_chg = scan_ctx.get("pe_oi_change", 0)
     pcr = _safe(scan_ctx.get("pcr"))
 
-    # Alert severity weighting
+    # Alert severity weighting (Aggressive)
     for a in alerts:
         sev = a.get("severity", "LOW")
         if sev == "HIGH":
-            score += 8
+            score += 20
         elif sev == "MEDIUM":
-            score += 4
+            score += 10
 
-    # PCR confirmation for directional verdicts
-    if pcr and pcr < 0.7 and price_pct and price_pct > 0:
-        score += 10  # low PCR + price up = bullish confluence
-    elif pcr and pcr > 1.3 and price_pct and price_pct < 0:
-        score += 10  # high PCR + price down = bearish confluence
+    # PCR confirmation for directional momentum
+    if pcr and pcr < 0.75 and price_pct and price_pct > 0:
+        score += 15  # Strong Bullish Confluence
+    elif pcr and pcr > 1.25 and price_pct and price_pct < 0:
+        score += 15  # Strong Bearish Confluence
 
-    # PCR moderate support — even in neutral/contraction zones
-    # A PCR of 1.15+ signals put writers are comfortable = mild support
-    if pcr and 1.15 <= pcr <= 1.5 and not (price_pct and price_pct < -0.3):
-        score += 5
-    elif pcr and 0.7 <= pcr < 0.85:
-        score += 5  # moderate bearish PCR support
-
-    # OI wall proximity
+    # OI wall proximity (Support/Resistance respect)
     underlying = _safe(scan_ctx.get("underlying"))
     support = _safe(scan_ctx.get("support"))
     resistance = _safe(scan_ctx.get("resistance"))
@@ -153,18 +168,20 @@ def _compute_confidence(scan_ctx: dict, alerts: list[dict],
         total_range = resistance - support
         if total_range > 0:
             dist_to_support = underlying - support
-            if dist_to_support < total_range * 0.2 and price_pct and price_pct > 0:
-                score += 8
+            # Bouncing off support?
+            if dist_to_support < total_range * 0.15 and price_pct and price_pct > 0:
+                score += 15
             dist_to_resistance = resistance - underlying
-            if dist_to_resistance < total_range * 0.2 and price_pct and price_pct < 0:
-                score += 8
+            # Rejecting from resistance?
+            if dist_to_resistance < total_range * 0.15 and price_pct and price_pct < 0:
+                score += 15
 
     # Max pain gravity
     max_pain = _safe(scan_ctx.get("max_pain"))
     if underlying and max_pain:
         mp_dist_pct = abs(underlying - max_pain) / underlying * 100
-        if mp_dist_pct < 0.5:
-            score += 5  # near max pain = high probability zone
+        if mp_dist_pct < 0.4:
+            score += 10
 
     # Chart timeframe conflict detection
     chart_conflict = False
@@ -173,9 +190,22 @@ def _compute_confidence(scan_ctx: dict, alerts: list[dict],
         tf_3h = parsed_chart.get("3h", {}).get("sentiment")
         if tf_1h and tf_3h and tf_1h != tf_3h and "NEUTRAL" not in (tf_1h, tf_3h):
             chart_conflict = True
-            score -= 10  # penalise conflicting timeframes
+            score -= 10  # Chart conflict reduces confidence meaningfully
+        elif tf_1h and tf_1h == tf_3h and tf_1h != "NEUTRAL":
+            score += 15  # Confluence bonus
 
-    return min(score, 95), chart_conflict  # cap at 95, never 100
+    # Cap: Sideways verdict should never print 90%+ confidence — contradictory
+    if score > 65:
+        # Re-derive verdict to check if it's sideways/neutral
+        abs_ce = abs(scan_ctx.get("ce_oi_change", 0))
+        abs_pe = abs(scan_ctx.get("pe_oi_change", 0))
+        p_pct = (scan_ctx.get("price_change_pct") or 0)
+        is_flat_price = abs(p_pct) <= 0.05
+        no_dominant_oi = abs_ce > 0 and abs_pe > 0 and max(abs_ce, abs_pe) < min(abs_ce, abs_pe) * 1.5
+        if is_flat_price and no_dominant_oi:
+            score = min(score, 65)  # Flat price + balanced OI → cap confidence
+
+    return min(score, 98), chart_conflict
 
 
 # ── Trade Idea Generator ──────────────────────────────────────────────────
@@ -200,7 +230,25 @@ def _generate_trade_idea(verdict_label: str, scan_ctx: dict,
 
     idea_parts = []
 
-    if verdict_label == "Long Buildup":
+    if verdict_label == "OI Bias Bullish":
+        idea_parts.append("📗 *Bias: Cautious Bullish (OI-driven)*")
+        idea_parts.append("PCR supportive + HIGH CE OI spikes — smart money positioning")
+        idea_parts.append("Strategy: Wait for trigger candle. Buy ATM CE on breakout, or Sell OTM PE if theta play.")
+        if resistance:
+            idea_parts.append(f"Entry trigger: Close above {resistance:.0f}")
+        if support:
+            idea_parts.append(f"SL zone: Below {support:.0f}")
+
+    elif verdict_label == "OI Bias Bearish":
+        idea_parts.append("📕 *Bias: Cautious Bearish (OI-driven)*")
+        idea_parts.append("PCR weak + HIGH PE OI spikes — smart money positioning")
+        idea_parts.append("Strategy: Wait for trigger candle. Buy ATM PE on breakdown, or Sell OTM CE if theta play.")
+        if support:
+            idea_parts.append(f"Entry trigger: Close below {support:.0f}")
+        if resistance:
+            idea_parts.append(f"SL zone: Above {resistance:.0f}")
+
+    elif verdict_label == "Long Buildup":
         idea_parts.append("📗 *Bias: Bullish*")
         if has_iv_crush:
             idea_parts.append("Consider: Buy ATM/OTM CE (IV low, cheaper entry)")
@@ -285,6 +333,12 @@ def _generate_risk_note(verdict: str, ctx: dict) -> str:
     if verdict == "Long Unwinding":
         return "Caution: Decline may pause once weak longs exit"
 
+    if verdict == "Put Writing":
+        return "Caution: Support weakens if put writing exits"
+
+    if verdict == "Call Writing":
+        return "Caution: Resistance weakens if call writing exits"
+
     if "Expansion" in verdict:
         return "Breakout direction unclear — wait for confirmation candle"
 
@@ -331,9 +385,9 @@ def _collect_forces(ctx: dict, alerts: list[dict], verdict_label: str, parsed_ch
         elif sentiment == "BEARISH":
             bear.append((70 if tf == "1h" else 78, f"{tf.upper()} chart bearish"))
 
-    if verdict_label in ("Long Buildup", "Short Covering"):
+    if verdict_label in ("Long Buildup", "Short Covering", "Put Writing", "OI Bias Bullish"):
         bull.append((88, f"Price x OI verdict: {verdict_label}"))
-    elif verdict_label in ("Short Buildup", "Long Unwinding"):
+    elif verdict_label in ("Short Buildup", "Long Unwinding", "Call Writing", "OI Bias Bearish"):
         bear.append((88, f"Price x OI verdict: {verdict_label}"))
 
     bull = sorted(bull, key=lambda x: x[0], reverse=True)
@@ -345,6 +399,22 @@ def _paper_trade_idea(verdict_label: str, ctx: dict) -> str:
     atm = int(_safe(ctx.get("atm_strike"), 0))
     support = int(_safe(ctx.get("support"), 0))
     resistance = int(_safe(ctx.get("resistance"), 0))
+
+    if verdict_label == "OI Bias Bullish":
+        if atm:
+            return (
+                f"PAPER: Buy {atm} CE on close above {resistance or atm + 5} "
+                f"| SL below {support or atm - 5} | Partial exit at ATM+1 strike"
+            )
+        return "Wait for breakout candle above resistance — enter CE on confirmation"
+
+    if verdict_label == "OI Bias Bearish":
+        if atm:
+            return (
+                f"PAPER: Buy {atm} PE on close below {support or atm - 5} "
+                f"| SL above {resistance or atm + 5} | Partial exit at ATM-1 strike"
+            )
+        return "Wait for breakdown candle below support — enter PE on confirmation"
 
     if verdict_label == "Long Buildup":
         if atm:
@@ -362,7 +432,19 @@ def _paper_trade_idea(verdict_label: str, ctx: dict) -> str:
         if atm:
             return f"Avoid fresh PE buys | sell OTM CE (paper) only with hedge | watch {support or atm - 5}"
         return "Trail shorts only; no fresh entry"
-    return "No clean edge (paper): wait for breakout + OI confirmation"
+    if verdict_label == "Put Writing":
+        if atm:
+            return f"Sell {atm} PE (paper) | SL below {support or atm - 1} | Target near {resistance or atm + 5}"
+        return "Sell PE (paper) with hedge | strict SL"
+    if verdict_label == "Call Writing":
+        if atm:
+            return f"Sell {atm} CE (paper) | SL above {resistance or atm + 1} | Target near {support or atm - 5}"
+        return "Sell CE (paper) with hedge | strict SL"
+    if "Expansion" in verdict_label:
+        return "Breakout watch (paper): enter on range break + OI confirmation"
+    if "Contraction" in verdict_label:
+        return "Range play (paper): fade extremes or short premium with hedge"
+    return "No clean edge (paper): wait for confirmation"
 
 
 # ── Broader Trend from History ─────────────────────────────────────────────
@@ -501,7 +583,10 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
     straddle = _safe(ctx.get("straddle_premium"))
 
     # ── Price × OI Verdict ─────────────────────────────────────────────────
-    verdict_label, verdict_emoji, verdict_desc = _price_oi_verdict(price_pct, net_oi_change)
+    verdict_label, verdict_emoji, verdict_desc = _price_oi_verdict(
+        price_pct, net_oi_change, ce_oi_change, pe_oi_change,
+        pcr=pcr, alerts=current_alerts,
+    )
 
     # ── Confidence (base) ──────────────────────────────────────────────────
     confidence = _compute_confidence(ctx, current_alerts)
@@ -533,14 +618,22 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
         if tf not in ("1h", "3h"):
             continue
         effective_sentiment = entry.get("sentiment")
-        if verdict_label == "Long Buildup" and effective_sentiment == "BULLISH":
-            confidence = min(confidence + 10, 95)
+        if verdict_label in ("Long Buildup", "Put Writing") and effective_sentiment == "BULLISH":
+            confidence = min(confidence + 12, 95)
             log.debug("[intel] Chart confluence +10%% | %s %s BULLISH aligns Long Buildup", symbol, tf)
-        elif verdict_label == "Short Buildup" and effective_sentiment == "BEARISH":
-            confidence = min(confidence + 10, 95)
+        elif verdict_label in ("Short Buildup", "Call Writing") and effective_sentiment == "BEARISH":
+            confidence = min(confidence + 12, 95)
             log.debug("[intel] Chart confluence +10%% | %s %s BEARISH aligns Short Buildup", symbol, tf)
 
     # ── Build Message ──────────────────────────────────────────────────────
+    if confidence < 50:
+        return "\n".join([
+            f"🤖 *Bot Intelligence | {symbol}*",
+            "⚪ *Verdict: Low Conviction*",
+            "_No actionable edge — wait for alignment_",
+            f"Confidence: {confidence}%",
+        ])
+
     msg = [f"🤖 *Bot Intelligence | {symbol}*"]
 
     # Market Stance
@@ -557,14 +650,19 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
         msg.append(f"📊 *OI Analysis*")
         ce_arrow = "↑" if ce_oi_change > 0 else ("↓" if ce_oi_change < 0 else "→")
         pe_arrow = "↑" if pe_oi_change > 0 else ("↓" if pe_oi_change < 0 else "→")
-        ce_chg_str = f"+{_fmt_oi(ce_oi_change)}" if ce_oi_change >= 0 else f"-{_fmt_oi(abs(ce_oi_change))}"
-        pe_chg_str = f"+{_fmt_oi(pe_oi_change)}" if pe_oi_change >= 0 else f"-{_fmt_oi(abs(pe_oi_change))}"
-        msg.append(f"CE OI: `{_fmt_oi(total_ce_oi)}` {ce_arrow} ({ce_chg_str})")
-        msg.append(f"PE OI: `{_fmt_oi(total_pe_oi)}` {pe_arrow} ({pe_chg_str})")
+        ce_chg_str = f"+{fmt_oi(ce_oi_change)}" if ce_oi_change >= 0 else f"-{fmt_oi(abs(ce_oi_change))}"
+        pe_chg_str = f"+{fmt_oi(pe_oi_change)}" if pe_oi_change >= 0 else f"-{fmt_oi(abs(pe_oi_change))}"
+        msg.append(f"CE OI: `{fmt_oi(total_ce_oi)}` {ce_arrow} ({ce_chg_str})")
+        msg.append(f"PE OI: `{fmt_oi(total_pe_oi)}` {pe_arrow} ({pe_chg_str})")
 
         # Dominant writer interpretation
         if ce_oi_change > 0 and pe_oi_change > 0:
-            dominant = "Both sides adding — big move brewing"
+            smaller = min(abs(ce_oi_change), abs(pe_oi_change))
+            larger = max(abs(ce_oi_change), abs(pe_oi_change))
+            if larger > 0 and (smaller / larger) >= 0.25:
+                dominant = "Both sides adding — volatility expansion"
+            else:
+                dominant = "One-sided heavy build — skewed positioning"
         elif ce_oi_change > 0 and pe_oi_change <= 0:
             dominant = "Writers adding calls — capping upside"
         elif pe_oi_change > 0 and ce_oi_change <= 0:
@@ -578,7 +676,12 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
     # Key Levels
     msg.append(f"")
     msg.append(f"📍 *Key Levels*")
-    spot_str = f"Spot: `{underlying:.0f}`" if underlying else "Spot: N/A"
+    chart_spot = None
+    if "1h" in parsed_chart:
+        ohlc = parsed_chart.get("1h", {}).get("ohlc") or {}
+        chart_spot = _safe(ohlc.get("close")) if ohlc else None
+    spot_val = chart_spot or underlying
+    spot_str = f"Spot: `{spot_val:.0f}`" if spot_val else "Spot: N/A"
     parts = [spot_str]
     if pcr is not None:
         parts.append(f"PCR: `{pcr:.2f}`")
@@ -668,15 +771,20 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
     msg.append("")
     msg.append("*TRADE STRATEGY*")
     msg.append(f"- Bias: {verdict_desc}")
-    if verdict_label in ("Long Buildup", "Short Covering"):
+    if verdict_label in ("Long Buildup", "Short Covering", "Put Writing"):
         action_plan = "Trail SL on longs. Avoid blind chase."
-    elif verdict_label in ("Short Buildup", "Long Unwinding"):
+    elif verdict_label in ("Short Buildup", "Long Unwinding", "Call Writing"):
         action_plan = "Trail SL on shorts. Avoid panic entry."
+    elif verdict_label == "OI Bias Bullish":
+        action_plan = "Wait for 1H trigger candle above resistance. Buy CE on breakout confirmation."
+    elif verdict_label == "OI Bias Bearish":
+        action_plan = "Wait for 1H trigger candle below support. Buy PE on breakdown confirmation."
     else:
         action_plan = "No aggressive trade. Wait trigger candle."
     msg.append(f"- Action Plan: {action_plan}")
-    risk_note = _generate_risk_note(verdict_label, ctx) or "Low conviction zone."
-    msg.append(f"- Critical Warning: {risk_note}")
+    risk_note = _generate_risk_note(verdict_label, ctx)
+    if risk_note:
+        msg.append(f"- Critical Warning: {risk_note}")
 
     msg.append("")
     msg.append("*PAPER TRADE (Specific)*")

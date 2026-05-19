@@ -86,7 +86,7 @@ All thresholds are in `config/settings.py`.
 
 ---
 
-## Chrome Extension (v2.5)
+## Chrome Extension (v2.8)
 
 The extension now bridges the gap between **Option Chain data** and **Technical Chart trends**.
 

@@ -7,12 +7,15 @@ import asyncio
 import json
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from telegram import Bot
 from telegram.error import TelegramError
 from config.settings import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from src.utils.formatting import safe_num, fmt_oi, fmt_pct
 
 log = logging.getLogger(__name__)
+
+IST = timezone(timedelta(hours=5, minutes=30))
 
 # Module-level event loop (runs in background thread)
 _loop: asyncio.AbstractEventLoop | None = None
@@ -90,15 +93,7 @@ _INTERPRETATIONS = {
 }
 
 
-def _num(v, default=0):
-    try:
-        if v is None or v == "": return default
-        n = float(v)
-        return n if n == n else default # NaN check
-    except: return default
 
-from datetime import timezone, timedelta
-IST = timezone(timedelta(hours=5, minutes=30))
 
 def _format_message(alert: dict) -> str:
     atype   = alert["alert_type"]
@@ -130,12 +125,12 @@ def _format_message(alert: dict) -> str:
             option_type    = detail.get("option_type", alert.get("option_type", "")),
             strike         = detail.get("strike", alert.get("strike", "")),
             direction      = detail.get("direction", ""),
-            pct            = _num(detail.get("pct_change")),
+            pct            = safe_num(detail.get("pct_change")),
             interpretation = detail.get("interpretation", ""),
-            pcr_delta      = _num(detail.get("pcr_delta")),
-            iv_delta       = _num(detail.get("iv_delta")),
-            shift          = _num(detail.get("shift")),
-            curr_max_pain  = _num(detail.get("curr_max_pain")),
+            pcr_delta      = safe_num(detail.get("pcr_delta")),
+            iv_delta       = safe_num(detail.get("iv_delta")),
+            shift          = safe_num(detail.get("shift")),
+            curr_max_pain  = safe_num(detail.get("curr_max_pain")),
             buildup_type   = detail.get("buildup_type", ""),
             label          = detail.get("label", ""),
             bias           = detail.get("bias", ""),
@@ -156,81 +151,73 @@ def _format_message(alert: dict) -> str:
 
     # Compact body per type
     if atype in ("OI_SPIKE", "OI_UNWIND"):
-        prev_oi  = int(_num(detail.get("prev_oi")))
-        curr_oi  = int(_num(detail.get("curr_oi")))
-        pct_chg  = _num(detail.get("pct_change"))
-        curr_ltp = _num(detail.get("curr_ltp"))
-        lines.append(f"OI: `{fmt_val(prev_oi)}`→`{fmt_val(curr_oi)}` ({pct_chg:+.1f}%)")
+        prev_oi  = safe_num(detail.get("prev_oi"))
+        curr_oi  = safe_num(detail.get("curr_oi"))
+        pct_chg  = safe_num(detail.get("pct_change"))
+        curr_ltp = safe_num(detail.get("curr_ltp"))
+        lines.append(f"OI: `{fmt_oi(prev_oi)}`→`{fmt_oi(curr_oi)}` ({fmt_pct(pct_chg)})")
         lines.append(f"LTP: `{curr_ltp:.2f}`")
     elif atype == "BUILDUP_CLASSIFY":
         btype  = detail.get("buildup_type", "")
-        oi_p   = _num(detail.get("oi_pct"))
-        ltp_p  = _num(detail.get("ltp_pct"))
+        oi_p   = safe_num(detail.get("oi_pct"))
+        ltp_p  = safe_num(detail.get("ltp_pct"))
         lines.append(f"Type: *{btype}*")
-        lines.append(f"OI: {oi_p:+.1f}% | LTP: {ltp_p:+.1f}%")
+        lines.append(f"OI: {fmt_pct(oi_p)} | LTP: {fmt_pct(ltp_p)}")
     elif atype == "LTP_SPIKE":
-        curr_ltp = _num(detail.get("curr_ltp"))
-        pct_chg  = _num(detail.get("pct_change"))
-        lines.append(f"LTP: `{curr_ltp:.2f}` ({pct_chg:+.1f}%)")
+        curr_ltp = safe_num(detail.get("curr_ltp"))
+        pct_chg  = safe_num(detail.get("pct_change"))
+        lines.append(f"LTP: `{curr_ltp:.2f}` ({fmt_pct(pct_chg)})")
     elif atype == "PRICE_SPIKE":
-        curr_pr = _num(detail.get("curr_price"))
-        pct_chg = _num(detail.get("pct_change"))
-        lines.append(f"Spot: `{curr_pr:.2f}` ({pct_chg:+.2f}%) {detail.get('direction', '')}")
+        curr_pr = safe_num(detail.get("curr_price"))
+        pct_chg = safe_num(detail.get("pct_change"))
+        lines.append(f"Spot: `{curr_pr:.2f}` ({fmt_pct(pct_chg)}) {detail.get('direction', '')}")
     elif atype in ("PCR_EXTREME", "PCR_SHIFT"):
         pcr   = detail.get("pcr", "N/A")
-        delta = _num(detail.get("pcr_delta"))
+        delta = safe_num(detail.get("pcr_delta"))
         lines.append(f"PCR: `{pcr}` (Δ {delta:+.3f})")
     elif atype == "PCR_VELOCITY":
-        slope = _num(detail.get("slope"))
+        slope = safe_num(detail.get("slope"))
         dire  = detail.get("direction", "")
         lines.append(f"Slope: {slope:+.4f}/scan ({dire})")
     elif atype == "IV_SPIKE":
-        curr_iv  = _num(detail.get("curr_iv"))
-        iv_delta = _num(detail.get("iv_delta"))
+        curr_iv  = safe_num(detail.get("curr_iv"))
+        iv_delta = safe_num(detail.get("iv_delta"))
         lines.append(f"IV: `{curr_iv:.1f}%` (+{iv_delta:.1f}pts)")
     elif atype == "IV_CRUSH":
-        curr_iv  = _num(detail.get("curr_iv"))
-        iv_delta = _num(detail.get("iv_delta"))
+        curr_iv  = safe_num(detail.get("curr_iv"))
+        iv_delta = safe_num(detail.get("iv_delta"))
         lines.append(f"IV: `{curr_iv:.1f}%` ({iv_delta:.1f}pts)")
     elif atype == "ATM_LEG_MOVE":
-        ce_p = _num(detail.get("ce_pct"))
-        pe_p = _num(detail.get("pe_pct"))
+        ce_p = safe_num(detail.get("ce_pct"))
+        pe_p = safe_num(detail.get("pe_pct"))
         bias = detail.get("bias", "")
-        lines.append(f"CE: {ce_p:+.1f}% | PE: {pe_p:+.1f}%")
+        lines.append(f"CE: {fmt_pct(ce_p)} | PE: {fmt_pct(pe_p)}")
         lines.append(f"_{bias}_")
     elif atype == "STRADDLE_PREMIUM":
-        curr_p = _num(detail.get("curr_premium"))
-        pct_p  = _num(detail.get("pct_change"))
-        lines.append(f"Premium: `{curr_p:.1f}` ({pct_p:+.1f}%)")
+        curr_p = safe_num(detail.get("curr_premium"))
+        pct_p  = safe_num(detail.get("pct_change"))
+        lines.append(f"Premium: `{curr_p:.1f}` ({fmt_pct(pct_p)})")
     elif atype == "MAX_PAIN_SHIFT":
-        curr_mp = _num(detail.get("curr_max_pain"))
-        shift   = _num(detail.get("shift"))
+        curr_mp = safe_num(detail.get("curr_max_pain"))
+        shift   = safe_num(detail.get("shift"))
         lines.append(f"MaxPain: `{curr_mp:.0f}` (Δ {shift:+.0f})")
     elif atype == "OI_WALL_SHIFT":
         chg = detail.get("changes", {})
         for side, v in chg.items():
             lines.append(f"{side.capitalize()} wall: `{v['prev']}`→`{v['curr']}`")
     elif atype == "VOLUME_AGGRESSION":
-        ratio = _num(detail.get("ratio"))
-        vol   = int(_num(detail.get("volume")))
-        lines.append(f"Vol: `{fmt_val(vol)}` | Ratio: `{ratio:.1f}`")
+        ratio = safe_num(detail.get("ratio"))
+        vol   = safe_num(detail.get("volume"))
+        lines.append(f"Vol: `{fmt_oi(vol)}` | Ratio: `{ratio:.1f}`")
     elif atype == "OTM_UNUSUAL":
-        pct_chg = _num(detail.get("pct_change"))
-        curr_oi = int(_num(detail.get("curr_oi")))
-        lines.append(f"OI: `{fmt_val(curr_oi)}` (+{pct_chg:.0f}%)")
+        pct_chg = safe_num(detail.get("pct_change"))
+        curr_oi = safe_num(detail.get("curr_oi"))
+        lines.append(f"OI: `{fmt_oi(curr_oi)}` ({fmt_pct(pct_chg)})")
 
     if interp:
         lines.append(f"_{interp}_")
 
     return "\n".join(lines)
-
-def fmt_val(n):
-    if n >= 1e7: return f"{n/1e7:.1f}Cr"
-    if n >= 1e5: return f"{n/1e5:.1f}L"
-    if n >= 1e3: return f"{n/1e3:.1f}K"
-    return str(n)
-
-
 
 # ── Dispatcher ────────────────────────────────────────────────────────────
 
@@ -264,6 +251,8 @@ def send_alert(alert: dict) -> bool:
     except Exception as exc:
         log.error("Telegram unexpected error: %s", exc)
     return False
+
+
 def send_text(text: str) -> bool:
     """Sends raw text to Telegram."""
     if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "YOUR_BOT_TOKEN":
