@@ -90,6 +90,10 @@ HTTP_BACKOFF_FACTOR   = 2
 DHAN_CLIENT_ID    = _optional_env("DHAN_CLIENT_ID")
 DHAN_ACCESS_TOKEN = _optional_env("DHAN_ACCESS_TOKEN")   # validated at fetcher init
 DHAN_BASE_URL     = "https://api.dhan.co/v2"
+
+TV_USERNAME = _optional_env("TV_USERNAME")   # TradingView login (required for MCX data)
+TV_PASSWORD = _optional_env("TV_PASSWORD")   # without these, MCX charts return None
+
 DHAN_SECURITY_IDS = {
     "NIFTY": 13,
     "BANKNIFTY": 25,

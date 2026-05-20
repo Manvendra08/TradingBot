@@ -17,13 +17,21 @@ dhanhq>=2.0.1
 # Telegram
 python-telegram-bot==21.5
 
-# Dashboard
-streamlit>=1.35.0
-plotly>=5.22.0
-pandas>=2.2.0
+# Dashboard (FastAPI HTML served by dashboard_server.py)
 
 # Optional: Upstox SDK (uncomment if using Upstox as primary)
 # upstox-python-sdk>=2.8.0
+
+# Chart data (Chrome-free OHLC fetching)
+yfinance>=0.2.40
+
+# Chart data — tvDatafeed for MCX-native real-time OHLC (requires TV_USERNAME + TV_PASSWORD in .env)
+# Not on PyPI; install from GitHub:
+tvdatafeed @ git+https://github.com/rongardF/tvdatafeed.git
+
+# Web scraping (Moneycontrol fallback fetcher)
+beautifulsoup4>=4.12.0
+playwright>=1.44.0
 
 # Dev / testing
 pytest>=8.2.0

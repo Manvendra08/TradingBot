@@ -1,88 +1,101 @@
 """
-chart_fetcher.py  —  Server-side OHLC + sentiment fetcher v1.0
-Replaces Chrome/tv_content.js DOM scraping for chart data.
+Server-side chart fetcher.
 
-Priority chain per symbol:
-  1. tvdatafeed  (unofficial TradingView WebSocket — real-time, no auth)
-  2. yfinance    (Yahoo Finance — ~15min delay, free, reliable fallback)
-  3. None        (graceful degradation — pipeline continues without chart)
+Returns the same outer shape as chrome.storage.local:
+    {
+        "NIFTY": {
+            "1h": {...},
+            "3h": {...}
+        }
+    }
 
-Output schema (same as _normalize_chart_indicators in extension_bridge.py):
-  {
-    "1h": {
-      "sentiment":   "BULLISH" | "BEARISH" | "NEUTRAL",
-      "ohlc":        {"open": float, "high": float, "low": float, "close": float},
-      "updated_at":  ISO-8601 str,
-      "source":      "tvdatafeed" | "yfinance",
-    },
-    "3h": { ... },
-  }
+Behavior:
+  - NIFTY / BANKNIFTY / FINNIFTY: yfinance first
+  - NATURALGAS: tvDatafeed first for MCX accuracy, then yfinance fallback
+  - If all providers fail, returns {}
 
-MCX note:
-  NATURALGAS, CRUDEOIL, GOLD → MCX contracts. yfinance uses NYMEX/COMEX
-  proxies (NG=F, CL=F, GC=F). Sentiment direction is reliable; absolute
-  levels differ by premium/discount (typically ₹5–20 for NATURALGAS).
-  tvdatafeed uses MCX directly when available — preferred for MCX symbols.
-
-Usage:
-  from src.fetchers.chart_fetcher import ChartFetcher
-  fetcher = ChartFetcher()
-  chart = fetcher.fetch(symbol="NATURALGAS", timeframes=["1h", "3h"])
-  # Returns dict or None on total failure
+Each timeframe payload mirrors the extension shape:
+    {
+        "sentiment": "BULLISH" | "BEARISH" | "NEUTRAL",
+        "ohlc": {"open": float, "high": float, "low": float, "close": float},
+        "last_closed_ohlc": {...} | None,
+        "updated_at": ISO-8601,
+        "seen_at": ISO-8601,
+        "changed_at": ISO-8601
+    }
 """
 
+from __future__ import annotations
+
+import contextlib
 import logging
+import os
+import re
 import threading
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
+from pathlib import Path
 from typing import Optional
 
 log = logging.getLogger(__name__)
 
 IST = timezone(timedelta(hours=5, minutes=30))
+_PROXY_ENV_KEYS = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+)
 
-# ── Symbol maps ────────────────────────────────────────────────────────────
+_YF_CACHE_DIR = Path(__file__).resolve().parents[2] / "data" / "yf-cache"
+_YF_CACHE_READY = False
+_YF_ENV_LOCK = threading.Lock()
+_STATE_LOCK = threading.Lock()
+_STATE: dict[str, dict[str, dict]] = {}
 
-# tvdatafeed: (exchange, symbol_on_tv)
+
 _TV_SYMBOL_MAP: dict[str, tuple[str, str]] = {
-    "NIFTY":      ("NSE", "NIFTY"),
-    "BANKNIFTY":  ("NSE", "BANKNIFTY"),
-    "FINNIFTY":   ("NSE", "FINNIFTY"),
+    "NIFTY": ("NSE", "NIFTY"),
+    "BANKNIFTY": ("NSE", "BANKNIFTY"),
+    "FINNIFTY": ("NSE", "FINNIFTY"),
     "MIDCPNIFTY": ("NSE", "MIDCPNIFTY"),
     "NATURALGAS": ("MCX", "NATURALGAS"),
-    "CRUDEOIL":   ("MCX", "CRUDEOIL"),
-    "GOLD":       ("MCX", "GOLD"),
-    "SILVER":     ("MCX", "SILVER"),
+    "CRUDEOIL": ("MCX", "CRUDEOIL"),
+    "GOLD": ("MCX", "GOLD"),
+    "SILVER": ("MCX", "SILVER"),
 }
 
-# yfinance ticker symbols (fallback)
 _YF_SYMBOL_MAP: dict[str, str] = {
-    "NIFTY":      "^NSEI",
-    "BANKNIFTY":  "^NSEBANK",
-    "FINNIFTY":   "NIFTY_FIN_SERVICE.NS",
+    "NIFTY": "^NSEI",
+    "BANKNIFTY": "^NSEBANK",
+    "FINNIFTY": "NIFTY_FIN_SERVICE.NS",
     "MIDCPNIFTY": "^NSMIDCP",
-    "NATURALGAS": "NG=F",    # NYMEX front-month proxy
-    "CRUDEOIL":   "CL=F",    # NYMEX WTI proxy
-    "GOLD":       "GC=F",    # COMEX Gold proxy
-    "SILVER":     "SI=F",    # COMEX Silver proxy
+    "NATURALGAS": "NG=F",
+    "CRUDEOIL": "CL=F",
+    "GOLD": "GC=F",
+    "SILVER": "SI=F",
 }
 
-# tvdatafeed interval mapping
-_TV_INTERVAL_MAP: dict[str, object] = {}   # populated lazily after import
-
-# yfinance interval + period mapping
 _YF_TF_MAP: dict[str, tuple[str, str]] = {
-    "5m":  ("5m",  "1d"),
+    "5m": ("5m", "1d"),
     "15m": ("15m", "1d"),
     "30m": ("30m", "5d"),
-    "1h":  ("1h",  "5d"),
-    "3h":  ("90m", "5d"),   # yfinance has no 3h; use 90m, resample to 3h
-    "4h":  ("1h",  "5d"),   # resample 1h → 4h
-    "1d":  ("1d",  "60d"),
+    "1h": ("1h", "5d"),
+    "3h": ("90m", "5d"),
+    "4h": ("1h", "5d"),
+    "1d": ("1d", "60d"),
 }
 
 
-# ── Availability checks (cached — import cost paid once) ──────────────────
+def _base_symbol(symbol: str) -> str:
+    s = str(symbol or "").upper().strip()
+    if not s:
+        return ""
+    s = re.sub(r"\s+(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\d{0,4}(\s+FUT)?$", "", s)
+    return s.split()[0]
+
 
 @lru_cache(maxsize=1)
 def _tvdatafeed_available() -> bool:
@@ -102,301 +115,318 @@ def _yfinance_available() -> bool:
         return False
 
 
-# ── Sentiment from OHLC ───────────────────────────────────────────────────
-
-def _sentiment(open_: float, close: float, high: float, low: float) -> str:
-    """
-    Determine candle sentiment.
-    Uses body-to-wick ratio for higher accuracy than simple open<close.
-    """
-    body = abs(close - open_)
-    total_range = high - low if high != low else 1e-9
-    body_ratio = body / total_range
-
-    if body_ratio < 0.15:
-        # Doji / spinning top — no clear direction
-        return "NEUTRAL"
-    return "BULLISH" if close > open_ else "BEARISH"
-
-
 def _now_iso() -> str:
     return datetime.now(IST).isoformat()
 
 
-# ── tvdatafeed provider ───────────────────────────────────────────────────
+def _sentiment(open_: float, close: float, high: float, low: float) -> str:
+    body = abs(close - open_)
+    total_range = high - low if high != low else 1e-9
+    if (body / total_range) < 0.15:
+        return "NEUTRAL"
+    return "BULLISH" if close > open_ else "BEARISH"
+
 
 def _tv_interval(tf: str):
-    """Map timeframe string to tvDatafeed Interval enum."""
-    global _TV_INTERVAL_MAP
-    if not _TV_INTERVAL_MAP:
-        try:
-            from tvDatafeed import Interval
-            _TV_INTERVAL_MAP = {
-                "1m":  Interval.in_1_minute,
-                "3m":  Interval.in_3_minute,
-                "5m":  Interval.in_5_minute,
-                "15m": Interval.in_15_minute,
-                "30m": Interval.in_30_minute,
-                "45m": Interval.in_45_minute,
-                "1h":  Interval.in_1_hour,
-                "2h":  Interval.in_2_hour,
-                "3h":  Interval.in_3_hour,
-                "4h":  Interval.in_4_hour,
-                "1d":  Interval.in_daily,
-                "1w":  Interval.in_weekly,
-            }
-        except ImportError:
-            return None
-    return _TV_INTERVAL_MAP.get(tf)
+    try:
+        from tvDatafeed import Interval
+    except ImportError:
+        return None
+
+    mapping = {
+        "1m": Interval.in_1_minute,
+        "3m": Interval.in_3_minute,
+        "5m": Interval.in_5_minute,
+        "15m": Interval.in_15_minute,
+        "30m": Interval.in_30_minute,
+        "45m": Interval.in_45_minute,
+        "1h": Interval.in_1_hour,
+        "2h": Interval.in_2_hour,
+        "3h": Interval.in_3_hour,
+        "4h": Interval.in_4_hour,
+        "1d": Interval.in_daily,
+        "1w": Interval.in_weekly,
+    }
+    return mapping.get(tf)
 
 
-# Thread-local tvdatafeed instance — avoids WebSocket collision across threads
 _tv_local = threading.local()
 
 
 def _get_tv_client():
-    """Return thread-local TvDatafeed instance (anonymous login)."""
     if not hasattr(_tv_local, "client"):
         try:
             from tvDatafeed import TvDatafeed
-            _tv_local.client = TvDatafeed()   # anonymous — no auth needed
-            log.debug("[chart] tvdatafeed client initialised (thread=%s)",
-                      threading.current_thread().name)
+            from config.settings import TV_USERNAME, TV_PASSWORD
+            if TV_USERNAME and TV_PASSWORD:
+                log.info("[chart] tvdatafeed: authenticating as %s", TV_USERNAME)
+                _tv_local.client = TvDatafeed(username=TV_USERNAME, password=TV_PASSWORD)
+            else:
+                log.warning(
+                    "[chart] tvdatafeed: TV_USERNAME/TV_PASSWORD not set — "
+                    "MCX commodity data (NATURALGAS, CRUDEOIL, GOLD, SILVER) will fail. "
+                    "Set credentials in .env to enable MCX charts."
+                )
+                _tv_local.client = TvDatafeed()  # unauthenticated; NSE only
         except Exception as exc:
             log.warning("[chart] tvdatafeed init failed: %s", exc)
             _tv_local.client = None
     return _tv_local.client
 
 
+def _provider_order(base_symbol: str) -> list[str]:
+    if base_symbol == "NATURALGAS":
+        return ["tvdatafeed", "yfinance"]
+    return ["yfinance", "tvdatafeed"]
+
+
+@contextlib.contextmanager
+def _without_proxy_env():
+    with _YF_ENV_LOCK:
+        saved = {key: os.environ.get(key) for key in _PROXY_ENV_KEYS}
+        try:
+            for key in _PROXY_ENV_KEYS:
+                os.environ.pop(key, None)
+            yield
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+
+def _ensure_yf_cache() -> None:
+    global _YF_CACHE_READY
+    if _YF_CACHE_READY:
+        return
+
+    with _YF_ENV_LOCK:
+        if _YF_CACHE_READY:
+            return
+        try:
+            import yfinance.cache as yf_cache
+
+            _YF_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            yf_cache.set_cache_location(str(_YF_CACHE_DIR))
+            yf_cache.set_tz_cache_location(str(_YF_CACHE_DIR))
+        except Exception as exc:
+            log.debug("[chart] yfinance cache setup failed: %s", exc)
+        finally:
+            _YF_CACHE_READY = True
+
+
+def _flatten_yf_frame(df, ticker: str):
+    if df is None or getattr(df, "empty", True):
+        return None
+
+    try:
+        if getattr(df.columns, "nlevels", 1) > 1:
+            if ticker in list(df.columns.get_level_values(-1)):
+                df = df.xs(ticker, axis=1, level=-1)
+            else:
+                df.columns = [c[-1] if isinstance(c, tuple) else c for c in df.columns]
+    except Exception:
+        pass
+
+    return df if not getattr(df, "empty", True) else None
+
+
+def _bar_to_payload(bar) -> dict | None:
+    try:
+        def _pick(*keys):
+            for key in keys:
+                try:
+                    return float(bar[key])
+                except Exception:
+                    continue
+            raise KeyError(keys[0])
+
+        o = _pick("Open", "open")
+        h = _pick("High", "high")
+        l = _pick("Low", "low")
+        c = _pick("Close", "close")
+    except Exception:
+        return None
+
+    if not all((x == x for x in (o, h, l, c))):
+        return None
+
+    return {
+        "sentiment": _sentiment(o, c, h, l),
+        "ohlc": {"open": o, "high": h, "low": l, "close": c},
+    }
+
+
 def _fetch_tv(base_symbol: str, tf: str) -> Optional[dict]:
-    """
-    Fetch latest closed candle via tvdatafeed.
-    Returns normalised single-timeframe dict or None.
-    """
     if not _tvdatafeed_available():
         return None
 
     tv_info = _TV_SYMBOL_MAP.get(base_symbol)
     if not tv_info:
         return None
-    exchange, tv_sym = tv_info
 
     interval = _tv_interval(tf)
     if interval is None:
-        log.debug("[chart] tvdatafeed: no interval mapping for %s", tf)
         return None
 
     client = _get_tv_client()
     if client is None:
         return None
 
+    exchange, tv_sym = tv_info
     try:
-        df = client.get_hist(
-            symbol=tv_sym,
-            exchange=exchange,
-            interval=interval,
-            n_bars=5,          # last 5 bars — use index -2 (last closed)
-        )
-        if df is None or df.empty:
-            log.debug("[chart] tvdatafeed empty result: %s %s %s", base_symbol, tf, exchange)
+        df = client.get_hist(symbol=tv_sym, exchange=exchange, interval=interval, n_bars=5)
+        if df is None or getattr(df, "empty", True):
             return None
 
-        # Last closed candle = second to last row (last row may be forming)
         bar = df.iloc[-2] if len(df) >= 2 else df.iloc[-1]
-        o, h, l, c = float(bar["open"]), float(bar["high"]), \
-                     float(bar["low"]),  float(bar["close"])
-        ts = bar.name.isoformat() if hasattr(bar.name, "isoformat") else _now_iso()
-
-        return {
-            "sentiment":  _sentiment(o, c, h, l),
-            "ohlc":       {"open": o, "high": h, "low": l, "close": c},
-            "updated_at": ts,
-            "source":     "tvdatafeed",
-        }
+        payload = _bar_to_payload(bar)
+        if payload is None:
+            return None
+        return payload
     except Exception as exc:
         log.warning("[chart] tvdatafeed fetch error %s %s: %s", base_symbol, tf, exc)
-        # Reset client so next call re-initialises WebSocket
         _tv_local.client = None
         return None
 
 
-# ── yfinance provider ─────────────────────────────────────────────────────
-
 def _fetch_yf(base_symbol: str, tf: str) -> Optional[dict]:
-    """
-    Fetch latest closed candle via yfinance.
-    3h and 4h are computed by resampling finer intervals.
-    Returns normalised single-timeframe dict or None.
-    """
     if not _yfinance_available():
         return None
 
     yf_sym = _YF_SYMBOL_MAP.get(base_symbol)
     if not yf_sym:
-        log.debug("[chart] yfinance: no symbol mapping for %s", base_symbol)
         return None
 
     yf_interval, yf_period = _YF_TF_MAP.get(tf, (None, None))
     if not yf_interval:
         return None
 
+    _ensure_yf_cache()
+
     try:
         import yfinance as yf
-        ticker = yf.Ticker(yf_sym)
-        df = ticker.history(period=yf_period, interval=yf_interval)
+
+        with _without_proxy_env():
+            df = yf.download(
+                yf_sym,
+                interval=yf_interval,
+                period=yf_period,
+                progress=False,
+                auto_adjust=False,
+                threads=False,
+                group_by="column",
+                keepna=False,
+                session=None,
+            )
+
+        df = _flatten_yf_frame(df, yf_sym)
+        if df is None:
+            return None
+
+        if tf == "3h":
+            df = df.resample("3h").agg(
+                {"Open": "first", "High": "max", "Low": "min", "Close": "last"}
+            ).dropna()
+        elif tf == "4h":
+            df = df.resample("4h").agg(
+                {"Open": "first", "High": "max", "Low": "min", "Close": "last"}
+            ).dropna()
 
         if df is None or df.empty:
-            log.debug("[chart] yfinance empty: %s %s", yf_sym, yf_interval)
             return None
 
-        # Resample coarser timeframes
-        if tf == "3h":
-            df = df.resample("3h").agg({
-                "Open": "first", "High": "max",
-                "Low": "min",    "Close": "last",
-            }).dropna()
-        elif tf == "4h":
-            df = df.resample("4h").agg({
-                "Open": "first", "High": "max",
-                "Low": "min",    "Close": "last",
-            }).dropna()
-
-        if df.empty:
-            return None
-
-        # Use last completed candle (exclude currently forming bar)
         bar = df.iloc[-2] if len(df) >= 2 else df.iloc[-1]
-
-        # Column names vary by yfinance version
-        def _col(primary, fallback):
-            if primary in bar.index:
-                return float(bar[primary])
-            if fallback in bar.index:
-                return float(bar[fallback])
-            return 0.0
-
-        o = _col("Open", "open")
-        h = _col("High", "high")
-        l = _col("Low",  "low")
-        c = _col("Close","close")
-
-        ts = bar.name.isoformat() if hasattr(bar.name, "isoformat") else _now_iso()
-
-        return {
-            "sentiment":  _sentiment(o, c, h, l),
-            "ohlc":       {"open": o, "high": h, "low": l, "close": c},
-            "updated_at": ts,
-            "source":     "yfinance",
-        }
+        return _bar_to_payload(bar)
     except Exception as exc:
         log.warning("[chart] yfinance fetch error %s %s: %s", base_symbol, tf, exc)
         return None
 
 
-# ── Public interface ───────────────────────────────────────────────────────
-
 class ChartFetcher:
-    """
-    Server-side chart data fetcher.
-    Drop-in replacement for Chrome extension chart telemetry.
+    DEFAULT_TIMEFRAMES = ("1h", "3h")
 
-    Thread-safe — safe to call from scheduler or pipeline threads.
-    """
+    def _merge_state(self, base_symbol: str, tf: str, payload: dict) -> dict:
+        now = _now_iso()
+        current_ohlc = payload.get("ohlc") or None
+        current_sentiment = payload.get("sentiment") or "NEUTRAL"
 
-    DEFAULT_TIMEFRAMES = ["1h", "3h"]
+        with _STATE_LOCK:
+            symbol_state = _STATE.setdefault(base_symbol, {})
+            prev = symbol_state.get(tf, {})
+            prev_ohlc = prev.get("ohlc")
+            changed = bool(prev) and (
+                prev.get("sentiment") != current_sentiment or prev_ohlc != current_ohlc
+            )
 
-    def _base_symbol(self, symbol: str) -> str:
-        """Strip expiry/month suffix: 'NATURALGAS MAY FUT' → 'NATURALGAS'."""
-        import re
-        s = symbol.upper().strip()
-        s = re.sub(
-            r"\s+(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)"
-            r"\d{0,4}(\s+FUT)?$", "", s
-        )
-        return s.split()[0]
-
-    def fetch(
-        self,
-        symbol: str,
-        timeframes: list[str] | None = None,
-    ) -> dict | None:
-        """
-        Fetch chart data for symbol across requested timeframes.
-
-        Returns:
-            {
-              "1h": { sentiment, ohlc, updated_at, source },
-              "3h": { ... },
+            entry = {
+                "sentiment": current_sentiment,
+                "ohlc": current_ohlc,
+                "last_closed_ohlc": prev_ohlc if changed else prev.get("last_closed_ohlc"),
+                "updated_at": now,
+                "seen_at": now,
+                "changed_at": now if changed or not prev else prev.get("changed_at", now),
             }
-            or None if all providers fail for all timeframes.
+            symbol_state[tf] = entry
+            return entry
 
-        Never raises — logs warnings and returns partial result or None.
-        """
-        tfs = timeframes or self.DEFAULT_TIMEFRAMES
-        base = self._base_symbol(symbol)
+    def fetch(self, symbol: str, timeframes: list[str] | None = None) -> dict:
+        tfs = list(timeframes or self.DEFAULT_TIMEFRAMES)
+        base = _base_symbol(symbol)
 
         if base not in _TV_SYMBOL_MAP and base not in _YF_SYMBOL_MAP:
-            log.warning("[chart] unknown symbol %r (base=%r) — no provider mapped", symbol, base)
-            return None
+            log.warning("[chart] unknown symbol %r (base=%r)", symbol, base)
+            return {}
 
-        result: dict = {}
-
+        result: dict[str, dict] = {}
         for tf in tfs:
-            data = None
+            payload = None
+            source = None
 
-            # Provider 1: tvdatafeed (real-time, MCX-native)
-            if _tvdatafeed_available():
-                data = _fetch_tv(base, tf)
-                if data:
-                    log.debug("[chart] %s %s → tvdatafeed %s", base, tf, data["sentiment"])
+            for provider in _provider_order(base):
+                if provider == "tvdatafeed":
+                    payload = _fetch_tv(base, tf)
+                    source = "tvdatafeed"
+                else:
+                    payload = _fetch_yf(base, tf)
+                    source = "yfinance"
 
-            # Provider 2: yfinance (delayed fallback)
-            if data is None and _yfinance_available():
-                data = _fetch_yf(base, tf)
-                if data:
-                    log.debug("[chart] %s %s → yfinance %s (delayed)", base, tf, data["sentiment"])
+                if payload:
+                    break
 
-            if data is None:
-                log.warning("[chart] %s %s — all providers failed", base, tf)
-            else:
-                result[tf] = data
+            if not payload:
+                log.warning("[chart] %s %s -> no chart data", base, tf)
+                continue
+
+            merged = self._merge_state(base, tf, payload)
+            result.setdefault(base, {})[tf] = merged
+            log.debug("[chart] %s %s -> %s", base, tf, source)
 
         if not result:
-            log.error("[chart] %s — no chart data from any provider for tfs=%s", base, tfs)
-            return None
+            log.error("[chart] %s -> no chart data from any provider", base)
+            return {}
 
-        log.info(
-            "[chart] %s | %s | %s",
-            base,
-            "  ".join(
-                f"{tf}:{v['sentiment'][:4]}({v['source'][:2].upper()})"
-                for tf, v in result.items()
-            ),
-            f"providers: tvdf={'✓' if _tvdatafeed_available() else '✗'}  "
-            f"yf={'✓' if _yfinance_available() else '✗'}",
-        )
         return result
 
     def is_operational(self) -> dict:
-        """Health check — returns provider availability."""
         return {
             "tvdatafeed": _tvdatafeed_available(),
-            "yfinance":   _yfinance_available(),
+            "yfinance": _yfinance_available(),
             "symbols_tv": list(_TV_SYMBOL_MAP.keys()),
             "symbols_yf": list(_YF_SYMBOL_MAP.keys()),
+            "yf_cache_dir": str(_YF_CACHE_DIR),
         }
 
 
-# ── Module-level singleton ─────────────────────────────────────────────────
 _instance: ChartFetcher | None = None
-_lock = threading.Lock()
+_instance_lock = threading.Lock()
 
 
 def get_chart_fetcher() -> ChartFetcher:
-    """Return module-level singleton. Thread-safe."""
     global _instance
     if _instance is None:
-        with _lock:
+        with _instance_lock:
             if _instance is None:
                 _instance = ChartFetcher()
     return _instance
