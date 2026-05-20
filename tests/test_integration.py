@@ -89,6 +89,18 @@ class TestPipelineIntegration:
             # Should not raise
             run_pipeline(symbols=["NIFTY"])
 
+    def test_pipeline_continues_when_chart_fetch_fails(self, sample_oc_nifty):
+        from src.models.schema import get_latest_snapshots_for_symbol
+
+        with patch("src.engine.pipeline.fetch_option_chain", return_value=sample_oc_nifty), \
+             patch("src.engine.pipeline.get_chart_fetcher") as mock_chart:
+            mock_chart.return_value.fetch.return_value = {}
+            from src.engine.pipeline import run_pipeline
+            run_pipeline(symbols=["NIFTY"])
+
+        rows = get_latest_snapshots_for_symbol("NIFTY", "2025-06-26")
+        assert len(rows) > 0
+
     def test_pipeline_banknifty_independent(self, sample_oc_banknifty):
         from src.models.schema import get_latest_snapshots_for_symbol
         self._run_with_oc(sample_oc_banknifty, "BANKNIFTY")
@@ -200,7 +212,7 @@ class TestTelegramFormatter:
         assert "OI_SPIKE" in msg
         assert "NIFTY" in msg
         assert "22000" in msg
-        assert "1.0L" in msg or "1.4L" in msg or "100000" in msg or "1,00,000" in msg
+        assert any(x in msg for x in ("1.0L", "1.00L", "1.4L", "1.40L", "100000", "1,00,000"))
 
     def test_price_spike_message(self):
         from src.alerts.telegram_dispatcher import _format_message

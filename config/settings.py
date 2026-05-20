@@ -82,7 +82,7 @@ ALERT_COOLDOWN_HIGH_MINUTES   = 30       # cooldown for HIGH severity
 DEDUP_CLUSTER_STRIKES         = 2        # strikes within ±N suppressed in cluster
 
 # ── HTTP / fetchers ────────────────────────────────────────────────────────
-FETCHER_PRIORITY = ["dhan", "nse_public", "scrapegraph", "upstox"]
+FETCHER_PRIORITY = ["dhan_headless", "paytm", "dhan", "nse_public", "upstox", "moneycontrol"]
 HTTP_TIMEOUT_SECONDS  = 15
 HTTP_MAX_RETRIES      = 3
 HTTP_BACKOFF_FACTOR   = 2
@@ -90,7 +90,26 @@ HTTP_BACKOFF_FACTOR   = 2
 DHAN_CLIENT_ID    = _optional_env("DHAN_CLIENT_ID")
 DHAN_ACCESS_TOKEN = _optional_env("DHAN_ACCESS_TOKEN")   # validated at fetcher init
 DHAN_BASE_URL     = "https://api.dhan.co/v2"
-DHAN_SECURITY_IDS = {"NIFTY": 13, "BANKNIFTY": 25, "FINNIFTY": 27}
+DHAN_SECURITY_IDS = {
+    "NIFTY": 13,
+    "BANKNIFTY": 25,
+    "FINNIFTY": 27,
+    "MIDCPNIFTY": 442,
+    "NATURALGAS": 488505,  # NATURALGAS MAY FUT, Dhan master 2026-05-19
+    "CRUDEOIL": 499095,    # CRUDEOIL JUN FUT
+    "GOLD": 459277,        # GOLD JUN FUT
+    "SILVER": 464150,      # SILVER JUL FUT
+}
+DHAN_SEGMENTS = {
+    "NIFTY": "IDX_I",
+    "BANKNIFTY": "IDX_I",
+    "FINNIFTY": "IDX_I",
+    "MIDCPNIFTY": "IDX_I",
+    "NATURALGAS": "MCX_COMM",
+    "CRUDEOIL": "MCX_COMM",
+    "GOLD": "MCX_COMM",
+    "SILVER": "MCX_COMM",
+}
 
 NSE_BASE_URL         = "https://www.nseindia.com"
 NSE_OPTION_CHAIN_URL = "https://www.nseindia.com/api/option-chain-indices?symbol={symbol}"
