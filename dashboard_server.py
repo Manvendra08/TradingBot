@@ -390,7 +390,7 @@ def _fetch_scanx_heatmap(symbol: str) -> dict:
         total_mcap = 0.0
         weighted = 0.0
         for r in rows:
-            pch = _safe_float(r.get("Pchange"), 0.0)
+            pch = _safe_float(r.get("PPerchange"), 0.0)
             mcap = _safe_float(r.get("Mcap"), 0.0)
             if pch > 0:
                 adv += 1
@@ -400,7 +400,7 @@ def _fetch_scanx_heatmap(symbol: str) -> dict:
                 total_mcap += mcap
                 weighted += pch * mcap
         wm = weighted / total_mcap if total_mcap > 0 else 0.0
-        top = sorted(rows, key=lambda x: abs(_safe_float(x.get("Pchange"), 0.0)), reverse=True)[:8]
+        top = sorted(rows, key=lambda x: abs(_safe_float(x.get("PPerchange"), 0.0)), reverse=True)[:8]
         out = {
             "total": len(rows),
             "adv": adv,
@@ -411,7 +411,7 @@ def _fetch_scanx_heatmap(symbol: str) -> dict:
                 {
                     "symbol": str(r.get("Sym") or ""),
                     "name": str(r.get("DispSym") or ""),
-                    "pchange": round(_safe_float(r.get("Pchange"), 0.0), 3),
+                    "pchange": round(_safe_float(r.get("PPerchange"), 0.0), 3),
                 }
                 for r in top
             ],
