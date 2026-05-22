@@ -30,8 +30,8 @@ def _optional_env(key: str, default: str = "") -> str:
 
 
 # ── Symbols ────────────────────────────────────────────────────────────────
-WATCH_NSE = ["NIFTY", "BANKNIFTY", "FINNIFTY"]
-WATCH_MCX: list[str] = ["NATURALGAS"]   # MCX commodity futures to watch
+WATCH_NSE = ["NIFTY", "BANKNIFTY"]
+WATCH_MCX: list[str] = ["NATURALGAS", "CRUDEOIL"]   # MCX commodity futures to watch
 WATCH_SYMBOLS = WATCH_NSE + WATCH_MCX   # merged for backward compat
 
 # ── Per-class market windows: (open, close, weekdays) ─────────────────────
@@ -82,13 +82,15 @@ ALERT_COOLDOWN_HIGH_MINUTES   = 30       # cooldown for HIGH severity
 DEDUP_CLUSTER_STRIKES         = 2        # strikes within ±N suppressed in cluster
 
 # ── HTTP / fetchers ────────────────────────────────────────────────────────
-FETCHER_PRIORITY = ["dhan_headless", "paytm", "dhan", "nse_public", "upstox", "moneycontrol"]
+FETCHER_PRIORITY = ["nse_public", "dhan", "dhan_headless", "dhan_commodity", "moneycontrol"]
 HTTP_TIMEOUT_SECONDS  = 15
 HTTP_MAX_RETRIES      = 3
 HTTP_BACKOFF_FACTOR   = 2
 
 DHAN_CLIENT_ID    = _optional_env("DHAN_CLIENT_ID")
-DHAN_ACCESS_TOKEN = _optional_env("DHAN_ACCESS_TOKEN")   # validated at fetcher init
+DHAN_ACCESS_TOKEN = _optional_env("DHAN_ACCESS_TOKEN")   # Valid for 24 hours
+DHAN_API_KEY      = _optional_env("DHAN_API_KEY")
+DHAN_API_SECRET   = _optional_env("DHAN_API_SECRET")
 DHAN_BASE_URL     = "https://api.dhan.co/v2"
 
 TV_USERNAME = _optional_env("TV_USERNAME")   # TradingView login (required for MCX data)
@@ -124,9 +126,6 @@ NSE_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
     "Referer":         "https://www.nseindia.com/option-chain",
 }
-
-UPSTOX_ACCESS_TOKEN = _optional_env("UPSTOX_ACCESS_TOKEN")
-UPSTOX_BASE_URL     = "https://api.upstox.com/v2"
 
 TELEGRAM_BOT_TOKEN = _optional_env("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID   = _optional_env("TELEGRAM_CHAT_ID")

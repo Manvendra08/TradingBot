@@ -1,12 +1,11 @@
 @echo off
-REM ── NSEBOT Launcher — Manual / Test Run ───────────────────────────────
-REM Runs the full pipeline once for all configured symbols, then exits.
-REM Useful for testing credentials and data pipeline without waiting for 09:15.
-
 cd /d "%~dp0"
 
+set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
+if not exist "%PYTHON_EXE%" set "PYTHON_EXE=python"
+
 echo [NSEBOT] Running one-shot pipeline for all symbols...
-python main.py --now
+"%PYTHON_EXE%" main.py --now
 echo.
 echo Done. Check logs\nsebot-main.log for details.
 pause

@@ -177,6 +177,41 @@ def _oi_wall(strikes_data: list[dict]) -> dict:
     return {"resistance": resistance, "support": support}
 
 
+def _key_levels(strikes_data: list[dict], underlying: float) -> dict:
+    """
+    Derive trader-usable levels:
+      - Support: max PE OI at/below underlying (fallback global PE max)
+      - Resistance: max CE OI at/above underlying (fallback global CE max)
+      - Max pain: computed from full strike set
+    """
+    ce_rows = [r for r in strikes_data if r.get("option_type") == "CE" and (r.get("oi") or 0) > 0]
+    pe_rows = [r for r in strikes_data if r.get("option_type") == "PE" and (r.get("oi") or 0) > 0]
+    support = None
+    resistance = None
+
+    if pe_rows:
+        pe_below = [r for r in pe_rows if r.get("strike") is not None and r["strike"] <= underlying]
+        support = (max(pe_below, key=lambda r: r["oi"]) if pe_below else max(pe_rows, key=lambda r: r["oi"]))["strike"]
+    if ce_rows:
+        ce_above = [r for r in ce_rows if r.get("strike") is not None and r["strike"] >= underlying]
+        resistance = (max(ce_above, key=lambda r: r["oi"]) if ce_above else max(ce_rows, key=lambda r: r["oi"]))["strike"]
+
+    if support is not None and resistance is not None and support >= resistance:
+        all_strikes = sorted({r["strike"] for r in strikes_data if r.get("strike") is not None})
+        lower = [s for s in all_strikes if s < underlying]
+        upper = [s for s in all_strikes if s > underlying]
+        if lower:
+            support = lower[-1]
+        if upper:
+            resistance = upper[0]
+
+    return {
+        "support": support,
+        "resistance": resistance,
+        "max_pain": _compute_max_pain(strikes_data),
+    }
+
+
 
 # ── Strike filter ─────────────────────────────────────────────────────────────
 
@@ -449,6 +484,11 @@ def _detect_oi_wall_shift(all_strikes: list[dict], symbol: str, expiry: str,
 def _detect_volume_aggression(filtered: list[dict], symbol: str, expiry: str,
                                underlying: float, prev_by_key: PrevByKey) -> list[dict]:
     alerts = []
+    # Determine minimum volume and OI delta based on symbol class to avoid signal spam
+    is_mcx = symbol.upper() in ["NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"]
+    min_vol_aggressive = 500 if is_mcx else 5000
+    min_oi_delta = 50 if is_mcx else 500
+
     for row in filtered:
         vol  = row.get("volume") or 0
         oi   = row.get("oi") or 0
@@ -460,9 +500,15 @@ def _detect_volume_aggression(filtered: list[dict], symbol: str, expiry: str,
             continue
         ratio = vol / oi_delta
         if ratio > VOLUME_AGGRESSION_HIGH:
+            # Filter out insignificant volumes and OI shifts to avoid signal spam
+            if vol < min_vol_aggressive or oi_delta < min_oi_delta:
+                continue
             label = "Aggressive Flow (high vol vs OI delta)"
             sev = "HIGH" if ratio > VOLUME_AGGRESSION_HIGH * 2 else "MEDIUM"
-        elif ratio < VOLUME_AGGRESSION_LOW and vol > 100:
+        elif ratio < VOLUME_AGGRESSION_LOW and vol > (100 if is_mcx else 1000):
+            # Passive Positioning requires a substantial OI buildup to be meaningful
+            if oi_delta < min_oi_delta:
+                continue
             label = "Passive Positioning (low vol, quiet OI build)"
             sev = "LOW"
         else:
@@ -542,6 +588,8 @@ def detect_anomalies(oc_data: dict, fetched_at: str, chart_indicators: dict | No
     expiry     = oc_data["expiry"]
     strikes    = oc_data.get("strikes", []) or []
     underlying = oc_data.get("underlying_price", 0) or 0
+    if chart_indicators is None:
+        chart_indicators = oc_data.get("chart_indicators")
 
     t = override_thresholds or {}
     oi_thresh = t.get("oi_threshold", OI_SPIKE_THRESHOLD_PCT)
@@ -623,7 +671,7 @@ def detect_anomalies(oc_data: dict, fetched_at: str, chart_indicators: dict | No
     prev_pcr = _compute_pcr(prev_snaps) if prev_snaps else None
     prev_und = get_previous_underlying(symbol)
     prev_price = prev_und["price"] if prev_und else underlying
-    walls = _oi_wall(filtered)
+    levels = _key_levels(strikes, underlying)
 
     scan_context = {
         "symbol": symbol,
@@ -636,9 +684,9 @@ def detect_anomalies(oc_data: dict, fetched_at: str, chart_indicators: dict | No
         "ce_oi_change": total_ce_oi - prev_ce_oi,
         "pe_oi_change": total_pe_oi - prev_pe_oi,
         "pcr": pcr,
-        "max_pain": _compute_max_pain(filtered),
-        "support": walls.get("support"),
-        "resistance": walls.get("resistance"),
+        "max_pain": levels.get("max_pain"),
+        "support": levels.get("support"),
+        "resistance": levels.get("resistance"),
         "atm_strike": atm,
         "chart_indicators": chart_indicators,
         "diagnostics": {

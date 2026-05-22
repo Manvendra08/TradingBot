@@ -32,6 +32,16 @@
   const STORAGE_KEY = 'nsebot_chart_data';
   const DEBUG_KEY = 'nsebot_chart_debug';
   const LAST_SYMBOL_KEY = 'last_chart_symbol';
+  const KNOWN_SYMBOLS = [
+    'BANKNIFTY',
+    'FINNIFTY',
+    'MIDCPNIFTY',
+    'NATURALGAS',
+    'CRUDEOIL',
+    'SILVER',
+    'NIFTY',
+    'GOLD'
+  ];
 
   let scrapeInterval = null;
   let lastSavedSerialized = '';
@@ -72,12 +82,18 @@
   function parseNumber(raw) {
     if (raw == null) return null;
 
-    const cleaned = String(raw)
+    const cleaned = normalizeNumericText(raw)
       .replace(/,/g, '')
       .replace(/[^\d.+-]/g, '');
 
     const n = Number.parseFloat(cleaned);
     return Number.isFinite(n) ? n : null;
+  }
+
+  function normalizeNumericText(raw) {
+    return String(raw || '')
+      .replace(/\u2212|\u2013|\u2014|\u00e2\u02c6\u2019/g, '-')
+      .replace(/\s+/g, ' ');
   }
 
   function escapeRe(s) {
@@ -146,6 +162,9 @@
   function findTimeframeFromPageText(text) {
     const s = String(text || '').toUpperCase();
 
+    const compact = s.match(/(?:FUT|INDEX|SPOT)?\s*(5M|15M|30M|60M|180M|240M|1H|3H|4H|1D|D)(?=MCX|NSE|NFO|BSE|$|[^A-Z0-9])/);
+    if (compact) return normTF(compact[1]);
+
     // Common TradingView / Dhan visible timeframe patterns.
     const patterns = [
       /\b(5M|15M|30M|60M|180M|240M|1H|3H|4H|1D|D)\b/,
@@ -204,6 +223,9 @@
       // Ignore decode errors
     }
 
+    const known = knownSymbolFromText(text);
+    if (known) return known;
+
     text = text
       .replace(/\s+/g, '')
       .replace(/^NSE:/, '')
@@ -226,6 +248,15 @@
     if (!text || text.length < 2) return null;
 
     return text;
+  }
+
+  function knownSymbolFromText(text) {
+    const compact = String(text || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (!compact) return null;
+    for (const symbol of KNOWN_SYMBOLS) {
+      if (compact.includes(symbol)) return symbol;
+    }
+    return null;
   }
 
   function extractSymbolFromUrl() {
@@ -331,7 +362,7 @@
   // ---------------------------------------------------------------------------
 
   function sentimentFromSignedChange(text) {
-    const s = String(text || '');
+    const s = normalizeNumericText(text);
 
     // Matches values like:
     // +123.45 (+0.55%)
@@ -407,10 +438,10 @@
   // ---------------------------------------------------------------------------
 
   function extractOHLCFromText(text) {
-    const s = String(text || '').toUpperCase();
+    const s = normalizeNumericText(text).toUpperCase();
 
     // 1. Strict sequence: O H L C
-    const re1 = /(?:\bO(?:PEN)?\s*[:=]?\s*([\d,.]+)).*?(?:\bH(?:IGH)?\s*[:=]?\s*([\d,.]+)).*?(?:\bL(?:OW)?\s*[:=]?\s*([\d,.]+)).*?(?:\bC(?:LOSE)?\s*[:=]?\s*([\d,.]+))/;
+    const re1 = /(?:^|[^A-Z]|MCX|NSE|NFO|BSE)O(?:PEN)?\s*[:=]?\s*([+\-]?\d[\d,]*(?:\.\d{1,2})?)\s*H(?:IGH)?\s*[:=]?\s*([+\-]?\d[\d,]*(?:\.\d{1,2})?)\s*L(?:OW)?\s*[:=]?\s*([+\-]?\d[\d,]*(?:\.\d{1,2})?)\s*C(?:LOSE)?\s*[:=]?\s*([+\-]?\d[\d,]*(?:\.\d{1,2})?)/;
     const m1 = s.match(re1);
     if (m1) {
       return {
@@ -422,10 +453,10 @@
     }
 
     // 2. Loose extraction if they are present in any order, but require at least 3 to prevent false positives
-    const o = s.match(/\bO(?:PEN)?\s*[:=]?\s*([\d,.]+)/);
-    const h = s.match(/\bH(?:IGH)?\s*[:=]?\s*([\d,.]+)/);
-    const l = s.match(/\bL(?:OW)?\s*[:=]?\s*([\d,.]+)/);
-    const c = s.match(/\bC(?:LOSE)?\s*[:=]?\s*([\d,.]+)/);
+    const o = s.match(/(?:^|[^A-Z]|MCX|NSE|NFO|BSE)O(?:PEN)?\s*[:=]?\s*([+\-]?\d[\d,]*(?:\.\d{1,2})?)/);
+    const h = s.match(/(?:^|[^A-Z])H(?:IGH)?\s*[:=]?\s*([+\-]?\d[\d,]*(?:\.\d{1,2})?)/);
+    const l = s.match(/(?:^|[^A-Z])L(?:OW)?\s*[:=]?\s*([+\-]?\d[\d,]*(?:\.\d{1,2})?)/);
+    const c = s.match(/(?:^|[^A-Z])C(?:LOSE)?\s*[:=]?\s*([+\-]?\d[\d,]*(?:\.\d{1,2})?)/);
 
     const matched = [o, h, l, c].filter(Boolean);
     if (matched.length >= 3) {

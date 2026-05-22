@@ -215,3 +215,194 @@ class TestNSEFetcherNormalise:
         assert ce["strike"] == 22000
         assert ce["oi"] == 50000
         assert ce["iv"] == pytest.approx(15.5)
+
+
+class TestChartFetcher:
+    def test_fetch_returns_symbol_keyed_payload(self):
+        from src.fetchers import chart_fetcher as cf
+
+        cf._STATE.clear()
+        fetcher = cf.ChartFetcher()
+        payload = {
+            "sentiment": "BULLISH",
+            "ohlc": {"open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5},
+        }
+
+        with patch("src.fetchers.chart_fetcher._tvdatafeed_available", return_value=False), \
+             patch("src.fetchers.chart_fetcher._yfinance_available", return_value=True), \
+             patch("src.fetchers.chart_fetcher._fetch_yf", return_value=payload):
+            out = fetcher.fetch("NIFTY")
+
+        assert "NIFTY" in out
+        assert "1h" in out["NIFTY"]
+        assert "3h" in out["NIFTY"]
+        assert out["NIFTY"]["1h"]["sentiment"] == "BULLISH"
+        assert "seen_at" in out["NIFTY"]["1h"]
+
+    def test_fetch_returns_empty_dict_on_failure(self):
+        from src.fetchers import chart_fetcher as cf
+
+        cf._STATE.clear()
+        fetcher = cf.ChartFetcher()
+
+        with patch("src.fetchers.chart_fetcher._tvdatafeed_available", return_value=False), \
+             patch("src.fetchers.chart_fetcher._yfinance_available", return_value=False):
+            out = fetcher.fetch("NIFTY")
+
+        assert out == {}
+
+
+class TestNatGasIntelligence:
+    def test_natgas_bullish_bias_prints_atm_ce_entry(self):
+        from src.engine.intelligence import generate_intelligence
+
+        alerts = [
+            {
+                "severity": "HIGH",
+                "alert_type": "OI_SPIKE",
+                "option_type": "CE",
+                "strike": 290,
+                "detail_json": json.dumps({"pct_change": 45.0}),
+            },
+            {
+                "severity": "HIGH",
+                "alert_type": "BUILDUP_CLASSIFY",
+                "option_type": "CE",
+                "strike": 290,
+                "detail_json": json.dumps({"buildup_type": "Long Buildup"}),
+            },
+        ]
+
+        chart = {
+            "NATURALGAS": {
+                "1h": {
+                    "sentiment": "BULLISH",
+                    "ohlc": {"open": 294.0, "high": 296.0, "low": 293.0, "close": 295.0},
+                    "updated_at": "2026-05-19T00:00:00Z",
+                    "seen_at": "2026-05-19T00:00:00Z",
+                    "changed_at": "2026-05-19T00:00:00Z",
+                },
+                "3h": {
+                    "sentiment": "BULLISH",
+                    "ohlc": {"open": 293.0, "high": 297.0, "low": 292.0, "close": 296.0},
+                    "updated_at": "2026-05-19T00:00:00Z",
+                    "seen_at": "2026-05-19T00:00:00Z",
+                    "changed_at": "2026-05-19T00:00:00Z",
+                },
+            }
+        }
+
+        ctx = {
+            "underlying": 295.0,
+            "price_change_pct": 0.2,
+            "total_ce_oi": 84900,
+            "total_pe_oi": 107600,
+            "ce_oi_change": 0,
+            "pe_oi_change": 0,
+            "pcr": 1.40,
+            "atm_strike": 290,
+            "support": 285,
+            "resistance": 300,
+            "max_pain": 290,
+            "chart_indicators": chart,
+        }
+
+        msg = generate_intelligence("NATURALGAS", alerts, scan_context=ctx)
+        assert "OI Bias Bullish" in msg
+        assert "Buy 290 CE" in msg
+
+
+class TestChartContextWiring:
+    def test_detect_anomalies_carries_chart_indicators_from_oc_data(self):
+        from src.engine.anomaly_detector import detect_anomalies
+
+        oc = _make_oc(symbol="NATURALGAS", underlying=295.0)
+        chart = {
+            "NATURALGAS": {
+                "1h": {"sentiment": "BULLISH", "ohlc": {"open": 294.0, "high": 296.0, "low": 293.0, "close": 295.0}},
+                "3h": {"sentiment": "BEARISH", "ohlc": {"open": 296.0, "high": 297.0, "low": 292.0, "close": 293.0}},
+            }
+        }
+        oc["chart_indicators"] = chart
+
+        with patch("src.engine.anomaly_detector.get_prev_snapshots_bulk", return_value={}), \
+             patch("src.engine.anomaly_detector.get_previous_snapshot", return_value=None), \
+             patch("src.engine.anomaly_detector.get_previous_underlying", return_value=None), \
+             patch("src.engine.anomaly_detector.get_latest_n_snapshots", return_value=[]):
+            _alerts, ctx = detect_anomalies(oc, FETCHED_AT)
+
+        assert ctx.get("chart_indicators") == chart
+
+    def test_digest_prints_1h_3h_candles_from_chart_context(self):
+        from src.alerts.digest import build_digest
+
+        alerts = [{
+            "fired_at": FETCHED_AT,
+            "symbol": "CRUDEOIL",
+            "alert_type": "OI_SPIKE",
+            "strike": 9300.0,
+            "option_type": "CE",
+            "expiry": "2026-06-16",
+            "detail_json": json.dumps({"pct_change": 28.0, "prev_oi": 100, "curr_oi": 128}),
+            "severity": "MEDIUM",
+            "telegram_sent": 0,
+        }]
+        scan_context = {
+            "underlying": 9280.0,
+            "atm_strike": 9300.0,
+            "pcr": 0.92,
+            "support": 9000.0,
+            "resistance": 9500.0,
+            "chart_indicators": {
+                "CRUDEOIL": {
+                    "1h": {"sentiment": "BULLISH", "ohlc": {"open": 9260.0, "high": 9310.0, "low": 9250.0, "close": 9295.0}},
+                    "3h": {"sentiment": "BULLISH", "ohlc": {"open": 9230.0, "high": 9340.0, "low": 9200.0, "close": 9295.0}},
+                }
+            },
+        }
+
+        _digest_id, msg = build_digest("CRUDEOIL", alerts, FETCHED_AT, scan_context=scan_context)
+
+        assert "Candles (1H / 3H)" in msg
+        assert "1H" in msg and "3H" in msg
+
+    def test_chart_confluence_can_drive_bias_when_oi_price_neutral(self):
+        from src.engine.intelligence import generate_intelligence
+
+        alerts = [
+            {
+                "severity": "HIGH",
+                "alert_type": "VOLUME_AGGRESSION",
+                "option_type": "CE",
+                "strike": 9300.0,
+                "detail_json": json.dumps({"ratio": 55}),
+            },
+            {
+                "severity": "MEDIUM",
+                "alert_type": "OI_SPIKE",
+                "option_type": "CE",
+                "strike": 9300.0,
+                "detail_json": json.dumps({"pct_change": 25}),
+            },
+        ]
+        ctx = {
+            "underlying": 9280.0,
+            "price_change_pct": 0.0,
+            "total_ce_oi": 100000,
+            "total_pe_oi": 100000,
+            "ce_oi_change": 0,
+            "pe_oi_change": 0,
+            "pcr": 1.0,
+            "atm_strike": 9300.0,
+            "support": 9000.0,
+            "resistance": 9500.0,
+            "chart_indicators": {
+                "CRUDEOIL": {
+                    "1h": {"sentiment": "BULLISH", "ohlc": {"open": 9260.0, "high": 9310.0, "low": 9250.0, "close": 9295.0}},
+                    "3h": {"sentiment": "BULLISH", "ohlc": {"open": 9230.0, "high": 9340.0, "low": 9200.0, "close": 9295.0}},
+                }
+            },
+        }
+
+        msg = generate_intelligence("CRUDEOIL", alerts, scan_context=ctx)
+        assert "Verdict: OI Bias Bullish" in msg

@@ -1,0 +1,18 @@
+=== Select / Dropdown elements ===
+<select class="form-select rounded-pill font-small ht-26 lineheight-14 py-0" id="fno_stock">             s                                                                                             <option value="NIFTYBANK" >NIFTYBANK</option>                                                                                                 <option value="NIFTY50" selected>NIFTY50</option>                                                                                                 <option value="NIFTYFINSERVICE" >NIFTYFINSERVICE</option>                                                        
+---
+<select class="form-select rounded-pill font-small ht-26 lineheight-14 py-0"  id="fno_expiry">                                                                                                                           <option class="finnifty" style="display:block" value="2026-05-05" selected>05 May 2026</option>                                                                                         <option class="finnifty" style="display:block" value="2026-05-12" >12 May 2026</option>                                                                                         <option class="finnifty
+---
+
+=== Symbol-related classes/ids ===
+Found: {'class="dropdown-content"', 'class="nav-link dropdown-toggle"', 'class="menu-item nav-item dropdown subclass othersNav"', 'class="nav-link dropdown-toggle "', 'class="nav-item dropdown subclass"', 'class="dropdown-menu menuPosOther menuPos c-nav"'}
+
+=== API GET ===
+GET status: 500
+GET content-type: text/html; charset=UTF-8
+GET first 500 chars: 
+
+=== API POST symbol=NIFTY ===
+POST status: 500
+POST content-type: text/html; charset=UTF-8
+POST first 1200 chars: 

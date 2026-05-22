@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/ --cov=src --cov-fail-under=50 -q)"
+    ]
+  }
+}

@@ -19,6 +19,20 @@ from config.symbol_classes import get_strike_step
 
 log = logging.getLogger(__name__)
 
+# Zero-signal scan: send at most once per this many minutes
+_ZERO_SIGNAL_COOLDOWN_MINUTES = 30
+_zero_signal_last: dict[str, datetime] = {}  # symbol -> last sent time
+
+
+def should_send_zero_signal(symbol: str) -> bool:
+    """Rate-limit zero-signal Telegram sends to once per 30 min per symbol."""
+    now = datetime.now(timezone.utc)
+    last = _zero_signal_last.get(symbol)
+    if last and (now - last).seconds < _ZERO_SIGNAL_COOLDOWN_MINUTES * 60:
+        return False
+    _zero_signal_last[symbol] = now
+    return True
+
 
 def _cooldown(severity: str) -> int:
     return ALERT_COOLDOWN_HIGH_MINUTES if severity == "HIGH" else ALERT_COOLDOWN_MINUTES

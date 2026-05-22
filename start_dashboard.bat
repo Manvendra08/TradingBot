@@ -1,9 +1,9 @@
 @echo off
-REM ── NSEBOT Launcher — Streamlit Dashboard ──────────────────────────────
-REM Opens the localhost Streamlit dashboard on http://localhost:8501
-
 cd /d "%~dp0"
 
+set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
+if not exist "%PYTHON_EXE%" set "PYTHON_EXE=python"
+
 echo [NSEBOT] Starting Streamlit dashboard on http://localhost:8501 ...
-streamlit run src\dashboard\app.py
+"%PYTHON_EXE%" -m streamlit run src\dashboard\app.py
 pause

@@ -1,0 +1,14 @@
+=== API Probe ===
+Status: 200
+Content-Type: text/html; charset=UTF-8
+Non-JSON response first 800 chars:
+{"cphtml":"","oihtml":"","volumehtml":"","MostActivePuts":null,"MostActiveCalls":null,"discount":"","datearray":"","dayChange":181.95,"daychangepVal":0.75,"c_price":24252,"day_change_percent":0.76,"day_change":183,"strowl":"","datahc":[[23700,154700,1770210,11.44,-9230,248235],[23750,61230,733525,11.98,20085,247650],[23800,430430,3701945,8.6,11440,2006420],[23850,72280,1817725,25.15,7930,1541605],[23900,483600,1975090,4.08,-122915,627380],[23950,114595,777530,6.79,-122330,98475],[24000,2128750,5103085,2.4,-1620125,1469325],[24050,420615,951405,2.26,-464100,374270],[24100,1815190,2556125,1.41,-698945,976495],[24150,981825,1268540,1.29,248040,1008020],[24200,4079985,3758105,0.92,1111760,2413840],[24250,1511445,708435,0.47,934180,619710],[24300,4824235,2574650,0.53,3037060,1787760],[24350,133
+
+=== f_* classes in raw HTML ===
+card-title f_fut_maxpain fontwt-medium fs-5
+card-title f_fut_price fontwt-bold fs-5
+card-title f_fut_spotprice fontwt-bold fs-5
+f_fut_price
+f_lot_size
+
+=== call_oi / put_oi / total_oi containers ===

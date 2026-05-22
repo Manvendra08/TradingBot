@@ -66,6 +66,7 @@ _TV_SYMBOL_MAP: dict[str, tuple[str, str]] = {
     "GOLD": ("MCX", "GOLD"),
     "SILVER": ("MCX", "SILVER"),
 }
+_MCX_SYMBOLS = {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"}
 
 _YF_SYMBOL_MAP: dict[str, str] = {
     "NIFTY": "^NSEI",
@@ -175,7 +176,7 @@ def _get_tv_client():
 
 
 def _provider_order(base_symbol: str) -> list[str]:
-    if base_symbol == "NATURALGAS":
+    if base_symbol in _MCX_SYMBOLS:
         return ["tvdatafeed", "yfinance"]
     return ["yfinance", "tvdatafeed"]
 
@@ -291,16 +292,104 @@ def _fetch_tv(base_symbol: str, tf: str) -> Optional[dict]:
         return None
 
 
-def _fetch_yf(base_symbol: str, tf: str) -> Optional[dict]:
-    if not _yfinance_available():
-        return None
+def _apply_price_scale(payload: dict, scale: float) -> dict:
+    try:
+        ohlc = payload.get("ohlc") or {}
+        return {
+            **payload,
+            "ohlc": {
+                "open": float(ohlc.get("open", 0.0)) * scale,
+                "high": float(ohlc.get("high", 0.0)) * scale,
+                "low": float(ohlc.get("low", 0.0)) * scale,
+                "close": float(ohlc.get("close", 0.0)) * scale,
+            },
+        }
+    except Exception:
+        return payload
 
+
+def _fetch_yf(base_symbol: str, tf: str, reference_price: float | None = None) -> Optional[dict]:
     yf_sym = _YF_SYMBOL_MAP.get(base_symbol)
     if not yf_sym:
         return None
 
     yf_interval, yf_period = _YF_TF_MAP.get(tf, (None, None))
     if not yf_interval:
+        return None
+
+    # 1. Pure HTTP query API (zero-dependency, extremely fast & robust)
+    try:
+        import urllib.request
+        import json
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{yf_sym}?interval={yf_interval}&range={yf_period}"
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+        )
+        with urllib.request.urlopen(req, timeout=10) as res:
+            data = json.loads(res.read().decode("utf-8"))
+            
+        result = data["chart"]["result"][0]
+        indicators = result["indicators"]["quote"][0]
+        opens = indicators.get("open", [])
+        highs = indicators.get("high", [])
+        lows = indicators.get("low", [])
+        closes = indicators.get("close", [])
+        
+        valid_bars = []
+        for i in range(len(opens)):
+            o = opens[i]
+            h = highs[i]
+            l = lows[i]
+            c = closes[i]
+            if o is not None and h is not None and l is not None and c is not None:
+                valid_bars.append({"Open": float(o), "High": float(h), "Low": float(l), "Close": float(c)})
+                
+        if tf == "3h" and len(valid_bars) >= 2:
+            resampled = []
+            for i in range(0, len(valid_bars), 2):
+                chunk = valid_bars[i:i+2]
+                if chunk:
+                    resampled.append({
+                        "Open": chunk[0]["Open"],
+                        "High": max(item["High"] for item in chunk),
+                        "Low": min(item["Low"] for item in chunk),
+                        "Close": chunk[-1]["Close"]
+                    })
+            valid_bars = resampled
+        elif tf == "4h" and len(valid_bars) >= 4:
+            resampled = []
+            for i in range(0, len(valid_bars), 4):
+                chunk = valid_bars[i:i+4]
+                if chunk:
+                    resampled.append({
+                        "Open": chunk[0]["Open"],
+                        "High": max(item["High"] for item in chunk),
+                        "Low": min(item["Low"] for item in chunk),
+                        "Close": chunk[-1]["Close"]
+                    })
+            valid_bars = resampled
+            
+        if valid_bars:
+            bar = valid_bars[-2] if len(valid_bars) >= 2 else valid_bars[-1]
+            payload = _bar_to_payload(bar)
+            if payload:
+                # MCX symbols from Yahoo (NG=F/CL=F/GC=F/SI=F) are in global units.
+                # Scale to local underlying so OHLC shown in Telegram/UI remains meaningful.
+                if base_symbol in _MCX_SYMBOLS and reference_price and reference_price > 0:
+                    try:
+                        close_px = float((payload.get("ohlc") or {}).get("close") or 0.0)
+                        if close_px > 0:
+                            payload = _apply_price_scale(payload, reference_price / close_px)
+                    except Exception:
+                        pass
+                log.info("[chart] successfully fetched %s %s using pure-HTTP API", base_symbol, tf)
+                return payload
+    except Exception as exc:
+        log.warning("[chart] pure-HTTP Yahoo Finance query failed for %s %s: %s", base_symbol, tf, exc)
+
+    # 2. Fallback to standard yfinance package
+    if not _yfinance_available():
         return None
 
     _ensure_yf_cache()
@@ -338,7 +427,15 @@ def _fetch_yf(base_symbol: str, tf: str) -> Optional[dict]:
             return None
 
         bar = df.iloc[-2] if len(df) >= 2 else df.iloc[-1]
-        return _bar_to_payload(bar)
+        payload = _bar_to_payload(bar)
+        if payload and base_symbol in _MCX_SYMBOLS and reference_price and reference_price > 0:
+            try:
+                close_px = float((payload.get("ohlc") or {}).get("close") or 0.0)
+                if close_px > 0:
+                    payload = _apply_price_scale(payload, reference_price / close_px)
+            except Exception:
+                pass
+        return payload
     except Exception as exc:
         log.warning("[chart] yfinance fetch error %s %s: %s", base_symbol, tf, exc)
         return None
@@ -371,7 +468,7 @@ class ChartFetcher:
             symbol_state[tf] = entry
             return entry
 
-    def fetch(self, symbol: str, timeframes: list[str] | None = None) -> dict:
+    def fetch(self, symbol: str, timeframes: list[str] | None = None, reference_price: float | None = None) -> dict:
         tfs = list(timeframes or self.DEFAULT_TIMEFRAMES)
         base = _base_symbol(symbol)
 
@@ -389,7 +486,7 @@ class ChartFetcher:
                     payload = _fetch_tv(base, tf)
                     source = "tvdatafeed"
                 else:
-                    payload = _fetch_yf(base, tf)
+                    payload = _fetch_yf(base, tf, reference_price=reference_price)
                     source = "yfinance"
 
                 if payload:

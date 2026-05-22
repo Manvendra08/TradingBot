@@ -4,13 +4,16 @@ No auth required. Session warm-up needed (cookie handshake).
 Rate-limited: use only as fallback, not primary.
 """
 import logging
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from config.settings import NSE_BASE_URL, NSE_OPTION_CHAIN_URL, NSE_EQUITY_OC_URL, NSE_HEADERS
 from src.fetchers.base_fetcher import BaseFetcher
 
 log = logging.getLogger(__name__)
 
+IST = timezone(timedelta(hours=5, minutes=30))
 INDEX_SYMBOLS = {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"}
+COMMODITY_SYMBOLS = {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER", "COPPER"}
 
 
 class NSEPublicFetcher(BaseFetcher):
@@ -43,18 +46,50 @@ class NSEPublicFetcher(BaseFetcher):
 
     def fetch_option_chain(self, symbol: str) -> dict | None:
         self._warm_session()
-        if symbol in INDEX_SYMBOLS:
-            url = NSE_OPTION_CHAIN_URL.format(symbol=symbol)
-        else:
-            url = NSE_EQUITY_OC_URL.format(symbol=symbol)
+        symbol = symbol.upper().split()[0]
 
-        raw = self._get(url)
+        if symbol in COMMODITY_SYMBOLS:
+            log.warning("[nse_public] commodity option chain disabled for %s", symbol)
+            return None
+        elif symbol in INDEX_SYMBOLS:
+            expiry = self._nearest_contract_expiry(symbol)
+            if not expiry:
+                return None
+            url = f"{NSE_BASE_URL}/api/option-chain-v3?type=Indices&symbol={symbol}&expiry={expiry}"
+            raw = self._get(url)
+        else:
+            expiry = self._nearest_contract_expiry(symbol)
+            url = f"{NSE_BASE_URL}/api/option-chain-v3?type=Equity&symbol={symbol}"
+            if expiry:
+                url += f"&expiry={expiry}"
+            raw = self._get(url)
+
         if not raw:
             return None
         return self._normalise(symbol, raw)
 
-    def _nearest_expiry(self, expiry_dates: list[str]) -> str:
-        today = datetime.now(timezone.utc).date()
+    def _commodity_spot(self, symbol: str) -> float:
+        raw = self._get(f"{NSE_BASE_URL}/api/refrates?index=commodityspotrates")
+        if not raw:
+            return 0.0
+        for item in raw.get("data", []):
+            if str(item.get("symbol", "")).upper() == symbol:
+                val = item.get("lastSpotPrice") or item.get("spotPrice") or 0
+                try:
+                    return float(str(val).replace(",", ""))
+                except (TypeError, ValueError):
+                    return 0.0
+        return 0.0
+
+    def _nearest_contract_expiry(self, symbol: str) -> str:
+        url = f"{NSE_BASE_URL}/api/option-chain-contract-info?symbol={symbol}"
+        raw = self._get(url)
+        if not raw:
+            return ""
+        return self._nearest_expiry(raw.get("expiryDates", []), out_format="%d-%b-%Y")
+
+    def _nearest_expiry(self, expiry_dates: list[str], out_format: str = "%Y-%m-%d") -> str:
+        today = datetime.now(IST).date()
         parsed: list[tuple] = []
         for exp in expiry_dates:
             try:
@@ -65,25 +100,33 @@ class NSEPublicFetcher(BaseFetcher):
 
         future = sorted((item for item in parsed if item[0] >= today), key=lambda x: x[0])
         if future:
-            return future[0][0].strftime("%Y-%m-%d")
+            return future[0][0].strftime(out_format)
 
         if parsed:
-            return sorted(parsed, key=lambda x: x[0])[0][0].strftime("%Y-%m-%d")
+            return sorted(parsed, key=lambda x: x[0])[0][0].strftime(out_format)
 
         return ""
 
     def _normalise(self, symbol: str, raw: dict) -> dict | None:
         try:
+            records_root = raw.get("records", {})
             filtered = raw.get("filtered", {})
-            records  = filtered.get("data", [])
+            records = filtered.get("data") or records_root.get("data") or []
             underlying = float(
-                raw.get("records", {}).get("underlyingValue", 0) or 0
+                records_root.get("underlyingValue", 0) or 0
             )
-            expiry_dates = raw.get("records", {}).get("expiryDates", [])
+            expiry_dates = records_root.get("expiryDates", [])
             expiry = self._nearest_expiry(expiry_dates)
 
             strikes = []
             for record in records:
+                if expiry and record.get("expiryDate"):
+                    try:
+                        record_expiry = datetime.strptime(record["expiryDate"], "%d-%b-%Y").date().strftime("%Y-%m-%d")
+                    except ValueError:
+                        record_expiry = ""
+                    if record_expiry and record_expiry != expiry:
+                        continue
                 strike = float(record.get("strikePrice", 0))
                 for ot in ("CE", "PE"):
                     opt = record.get(ot)
@@ -97,7 +140,7 @@ class NSEPublicFetcher(BaseFetcher):
                         "oi_change":   int(opt.get("changeinOpenInterest", 0) or 0),
                         "volume":      int(opt.get("totalTradedVolume", 0) or 0),
                         "iv":          float(opt.get("impliedVolatility", 0) or 0),
-                        "bid":         float(opt.get("bidPrice", 0) or 0),
+                        "bid":         float(opt.get("bidPrice", opt.get("bidprice", 0)) or 0),
                         "ask":         float(opt.get("askPrice", 0) or 0),
                     })
 

@@ -21,6 +21,8 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
+from src.fetchers.dhan_commodity_fetcher import DhanCommodityFetcher
+
 log = logging.getLogger(__name__)
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -49,9 +51,9 @@ _DHAN_SYMBOL_MAP: dict[str, str] = {
     "FINNIFTY": "FINNIFTY",
 }
 
-_WAIT_TIMEOUT_MS = 30_000
-_PAGE_LOAD_WAIT_MS = 8_000
-_INTERCEPT_TIMEOUT_MS = 25_000
+_WAIT_TIMEOUT_MS = 15_000
+_PAGE_LOAD_WAIT_MS = 4_000
+_INTERCEPT_TIMEOUT_MS = 12_000
 
 
 def _normalise_dhan_payload(raw: dict, symbol: str) -> dict | None:
@@ -191,7 +193,7 @@ async def _intercept_option_chain_async(symbol: str) -> dict | None:
 
         try:
             log.info("[dhan_headless] navigating to Dhan option chain for %s", symbol)
-            await page.goto(_DHAN_OC_URL, wait_until="domcontentloaded", timeout=45_000)
+            await page.goto(_DHAN_OC_URL, wait_until="domcontentloaded", timeout=15_000)
 
             # Try to select the symbol from the UI if a dropdown is available
             try:
@@ -225,7 +227,11 @@ async def _intercept_option_chain_async(symbol: str) -> dict | None:
 
 def _fetch_sync(symbol: str) -> dict | None:
     """Run async interceptor in isolated event loop."""
-    loop = asyncio.new_event_loop()
+    import sys
+    if sys.platform == "win32":
+        loop = asyncio.ProactorEventLoop()
+    else:
+        loop = asyncio.new_event_loop()
     try:
         return loop.run_until_complete(_intercept_option_chain_async(symbol))
     finally:
@@ -243,12 +249,23 @@ class DhanHeadlessFetcher:
             log.warning("[dhan_headless] unsupported symbol: %s", symbol)
             return None
 
+        if base in {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"}:
+            log.warning(
+                "[dhan_headless] MCX commodity %s routed to public commodity scrape",
+                base,
+            )
+            fallback = DhanCommodityFetcher().fetch_option_chain(base)
+            if fallback and fallback.get("strikes"):
+                return fallback
+
         result = _fetch_sync(base)
         if result and result.get("strikes"):
             log.info(
                 "[dhan_headless] %s → %d strikes (expiry %s)",
                 base, len(result["strikes"]), result.get("expiry"),
             )
+            return result
+
         else:
             log.warning(
                 "[dhan_headless] no data for %s — session may be expired; "

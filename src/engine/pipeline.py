@@ -11,6 +11,7 @@ import logging
 from datetime import datetime, timezone
 
 from src.fetchers.router import fetch_option_chain
+from src.fetchers.chart_fetcher import get_chart_fetcher
 from src.models.schema import (
     insert_snapshots,
     insert_underlying_price,
@@ -19,10 +20,12 @@ from src.models.schema import (
     get_previous_underlying,
 )
 from src.engine.anomaly_detector import detect_anomalies
-from src.alerts.dedup import is_duplicate, record_alert
+from src.engine.intelligence import generate_intelligence
+from src.engine.paper_trading import run_paper_trading
+from src.alerts.dedup import is_duplicate, record_alert, should_send_zero_signal
 from src.alerts.digest import build_digest
-from src.alerts.telegram_dispatcher import send_alert, send_text
-from config.settings import WATCH_SYMBOLS, INDIVIDUAL_ALERT_MIN_SEVERITY, get_symbol_thresholds
+from src.alerts.telegram_dispatcher import send_text
+from config.settings import WATCH_SYMBOLS, get_symbol_thresholds
 
 log = logging.getLogger(__name__)
 
@@ -60,51 +63,87 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
     underlying = oc_data["underlying_price"]
     expiry     = oc_data["expiry"]
     source     = oc_data.get("source", "unknown")
+    prev_row = get_previous_underlying(symbol)
+    prev_price = prev_row["price"] if prev_row else None
+    if underlying is None:
+        underlying = prev_price or 0.0
+        oc_data["underlying_price"] = underlying
+        log.warning("%s: underlying price is None, falling back to prev_price: %s", symbol, underlying)
 
-    # 1. Detect (before persisting so deltas use previous snapshot)
+    # 1a. Fetch chart data server-side (Chrome-free)
+    #     Merged into oc_data so anomaly_detector sees chart_indicators
+    #     Same key as Chrome extension output — zero downstream changes needed
+    try:
+        chart_data = get_chart_fetcher().fetch(symbol, reference_price=underlying) or {}
+        oc_data["chart_indicators"] = chart_data
+        if chart_data:
+            log.debug("%s: chart_indicators injected from chart_fetcher", symbol)
+        else:
+            log.warning("%s: chart_fetcher returned empty chart dict — continuing without chart", symbol)
+    except Exception:
+        oc_data["chart_indicators"] = {}
+        log.exception("%s: chart_fetcher crashed — continuing without chart data", symbol)
+
+    # 1b. Detect anomalies (before persisting so deltas use previous snapshot)
     symbol_thresholds = get_symbol_thresholds(symbol)
-    alerts, scan_context = detect_anomalies(oc_data, fetched_at, override_thresholds=symbol_thresholds)
+    alerts, scan_context = detect_anomalies(
+        oc_data,
+        fetched_at,
+        chart_indicators=oc_data.get("chart_indicators"),
+        override_thresholds=symbol_thresholds,
+    )
     log.info("%s: %d anomalies detected", symbol, len(alerts))
 
     # 2. Dedup filter
     new_alerts = [a for a in alerts if not is_duplicate(a)]
 
-    if new_alerts:
-        # 3. Build digest → send ONE grouped message
-        digest_id, digest_msg = build_digest(
-            symbol, new_alerts, fetched_at,
-            scan_context=scan_context,
-        )
-        for a in new_alerts:
-            a["digest_id"] = digest_id
+    # 3. Build digest — always build (zero-alert scans need suppression check)
+    intel_text = generate_intelligence(symbol, new_alerts, scan_context=scan_context)
+    digest_id, digest_msg = build_digest(
+        symbol, new_alerts, fetched_at,
+        scan_context=scan_context,
+        intelligence_text=intel_text,
+    )
+    for a in new_alerts:
+        a["digest_id"] = digest_id
 
+    # 4. Send logic
+    #    - Has alerts: always send digest
+    #    - Zero alerts, OI moved ≥1%: send quiet scan (market moving but no threshold breach)
+    #    - Zero alerts, OI flat: suppress UNLESS 30min cooldown allows heartbeat
+    should_send = bool(new_alerts)
+    if not should_send:
+        diag    = (scan_context or {}).get("diagnostics", {})
+        max_oi  = float(diag.get("max_oi_delta_pct") or 0)
+        if max_oi >= 1.0:
+            should_send = True
+        elif should_send_zero_signal(symbol):
+            should_send = True  # heartbeat: once per 30min so trader knows bot is alive
+        else:
+            log.info("%s: suppressed flat zero-signal scan (max_oi=%.2f%%)", symbol, max_oi)
+
+    if should_send:
         sent_digest = send_text(digest_msg)
+    else:
+        sent_digest = False
 
-        # 4. Persist + record dedup
-        #    HIGH alerts always get an individual send (in addition to digest),
-        #    so traders see time-critical signals even if they missed the digest.
-        #    All other alerts are marked sent when the digest succeeds.
+    # 4b. Auto paper-trading lifecycle
+    try:
+        run_paper_trading(symbol, scan_context, digest_id, intel_text)
+    except Exception:
+        log.exception("%s: paper-trading engine failed", symbol)
+
+    # 5. Persist + record dedup (alerts only)
+    if new_alerts:
         for alert in new_alerts:
             alert_id = insert_alert(alert)
             record_alert(alert)
-
-            is_high = alert.get("severity") == INDIVIDUAL_ALERT_MIN_SEVERITY
-            if is_high:
-                # Always attempt individual send for HIGH — digest is supplementary
-                sent = send_alert(alert)
-                if sent:
-                    mark_telegram_sent(alert_id)
-                elif sent_digest:
-                    # Digest already delivered it; mark sent to avoid retry loops
-                    mark_telegram_sent(alert_id)
-            elif sent_digest:
+            if sent_digest:
                 mark_telegram_sent(alert_id)
 
     # 5. Persist underlying + snapshot
-    prev_row = get_previous_underlying(symbol)
-    prev_price = prev_row["price"] if prev_row else None
     pct_chg = None
-    if prev_price and prev_price != 0:
+    if underlying is not None and prev_price and prev_price != 0:
         pct_chg = round((underlying - prev_price) / abs(prev_price) * 100, 4)
 
     insert_underlying_price(symbol, underlying, pct_chg, fetched_at)
@@ -116,7 +155,9 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
         "strike":           row["strike"],
         "option_type":      row["option_type"],
         "ltp":              row.get("ltp"),
+        "ltp_change_pct":   row.get("ltp_change_pct"),
         "oi":               row.get("oi"),
+        "oi_change_pct":    row.get("oi_change_pct"),
         "oi_change":        row.get("oi_change"),
         "volume":           row.get("volume"),
         "iv":               row.get("iv"),

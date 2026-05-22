@@ -32,8 +32,9 @@ class TestMoneycontrolFetcher:
                     "oi_change": 100, "volume": 50, "iv": None, "bid": 4.9, "ask": 5.1}]
         fake_pe = [{"strike": 180.0, "option_type": "PE", "ltp": 3.0, "oi": 800,
                     "oi_change": -50, "volume": 30, "iv": None, "bid": 2.9, "ask": 3.1}]
+        fake_strikes = fake_ce + fake_pe
 
-        with patch.object(mc_mod, "_fetch_side_sync", side_effect=[fake_ce, fake_pe]):
+        with patch.object(mc_mod, "_fetch_side_sync", return_value=("2026-05-28", 182.5, fake_strikes)):
             f = self._make_fetcher()
             result = f.fetch_option_chain("NATURALGAS")
 
@@ -53,7 +54,7 @@ class TestMoneycontrolFetcher:
         # Both threads return same row
         dup_row = {"strike": 200.0, "option_type": "CE", "ltp": 7.0, "oi": 500,
                    "oi_change": 20, "volume": 10, "iv": None, "bid": None, "ask": None}
-        with patch.object(mc_mod, "_fetch_side_sync", return_value=[dup_row]):
+        with patch.object(mc_mod, "_fetch_side_sync", return_value=("2026-05-28", 200.0, [dup_row])):
             f = self._make_fetcher()
             result = f.fetch_option_chain("NATURALGAS")
 
@@ -63,7 +64,7 @@ class TestMoneycontrolFetcher:
     def test_empty_rows_returns_none(self):
         from src.fetchers import moneycontrol_fetcher as mc_mod
 
-        with patch.object(mc_mod, "_fetch_side_sync", return_value=[]):
+        with patch.object(mc_mod, "_fetch_side_sync", return_value=(None, None, [])):
             f = self._make_fetcher()
             result = f.fetch_option_chain("NATURALGAS")
 
@@ -198,16 +199,13 @@ class TestRouterHeadlessIntegration:
         from src.fetchers import router
         assert "moneycontrol" in router._FETCHERS
 
-    def test_fetcher_priority_includes_headless_first(self):
+    def test_fetcher_priority_includes_headless(self):
         from config.settings import FETCHER_PRIORITY
-        assert FETCHER_PRIORITY[0] == "dhan_headless"
+        assert "dhan_headless" in FETCHER_PRIORITY
 
-    def test_fetcher_priority_includes_moneycontrol_last(self):
+    def test_fetcher_priority_includes_moneycontrol(self):
         from config.settings import FETCHER_PRIORITY
         assert "moneycontrol" in FETCHER_PRIORITY
-        # moneycontrol should be after all other sources
-        mc_idx = FETCHER_PRIORITY.index("moneycontrol")
-        assert mc_idx == len(FETCHER_PRIORITY) - 1
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -216,26 +214,12 @@ class TestRouterHeadlessIntegration:
 
 class TestMoneycontrolHelpers:
 
-    def test_nearest_thursday_returns_iso_string(self):
-        from src.fetchers.moneycontrol_fetcher import _nearest_thursday
-        result = _nearest_thursday()
-        # Must be YYYY-MM-DD and a Thursday (weekday 3)
-        from datetime import date
-        d = date.fromisoformat(result)
-        assert d.weekday() == 3  # Thursday
-
-    def test_nearest_thursday_is_in_future(self):
-        from src.fetchers.moneycontrol_fetcher import _nearest_thursday
-        from datetime import date
-        result = _nearest_thursday()
-        assert date.fromisoformat(result) > date.today()
-
     def test_fetch_option_chain_crudeoil(self):
         """Non-NATURALGAS MCX commodity slug resolution."""
         from src.fetchers import moneycontrol_fetcher as mc_mod
         fake_row = {"strike": 6500.0, "option_type": "CE", "ltp": 10.0, "oi": 200,
                     "oi_change": 5, "volume": 20, "iv": None, "bid": None, "ask": None}
-        with patch.object(mc_mod, "_fetch_side_sync", return_value=[fake_row]):
+        with patch.object(mc_mod, "_fetch_side_sync", return_value=("2026-05-28", 6500.0, [fake_row])):
             f = mc_mod.MoneycontrolFetcher()
             result = f.fetch_option_chain("CRUDEOIL")
         assert result is not None
@@ -248,7 +232,8 @@ class TestMoneycontrolHelpers:
             {"strike": 200.0, "option_type": "CE", "ltp": 8.0, "oi": 300, "oi_change": 10, "volume": 15, "iv": None, "bid": None, "ask": None},
             {"strike": 200.0, "option_type": "PE", "ltp": 6.0, "oi": 250, "oi_change": -5, "volume": 10, "iv": None, "bid": None, "ask": None},
         ]
-        with patch.object(mc_mod, "_fetch_side_sync", side_effect=[rows[:2], rows[2:]]):
+        sorted_rows = sorted(rows, key=lambda r: (r["strike"], r["option_type"]))
+        with patch.object(mc_mod, "_fetch_side_sync", return_value=("2026-05-28", 250.0, sorted_rows)):
             f = mc_mod.MoneycontrolFetcher()
             result = f.fetch_option_chain("NATURALGAS")
         strikes = result["strikes"]

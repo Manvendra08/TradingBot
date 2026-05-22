@@ -1,12 +1,13 @@
 @echo off
-REM Explicit launcher for the Chrome extension bridge on localhost:8765
-
 cd /d "%~dp0"
+
+set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
+if not exist "%PYTHON_EXE%" set "PYTHON_EXE=python"
 
 IF NOT EXIST ".env" (
     echo [WARN] .env not found. Make sure credentials are in system environment.
 )
 
 echo [NSEBOT] Starting extension bridge on http://127.0.0.1:8765 ...
-python main.py --bridge
+"%PYTHON_EXE%" main.py --bridge
 pause

@@ -168,8 +168,9 @@ class TestFetcherRouter:
             call_order.append(name)
             return m
 
-        with patch("src.fetchers.router._get_fetcher", side_effect=side_effect):
-            result = fetch_option_chain("NIFTY")
+        with patch("src.fetchers.router.FETCHER_PRIORITY", ["dhan", "nse_public"]):
+            with patch("src.fetchers.router._get_fetcher", side_effect=side_effect):
+                result = fetch_option_chain("NIFTY")
 
         assert result is not None
         assert "dhan" in call_order
@@ -299,3 +300,32 @@ class TestSchedulerMarketHours:
             mock_dt.now.return_value = evening
             assert _is_open_for("NIFTY") is False
             assert _is_open_for("NATURALGAS") is True
+
+    def test_guarded_run_all_closed(self):
+        from src.scheduler.job_runner import _guarded_run
+        with patch("src.scheduler.job_runner._is_open_for", return_value=False), \
+             patch("src.scheduler.job_runner.run_pipeline") as mock_pipeline:
+            _guarded_run()
+            mock_pipeline.assert_not_called()
+
+    def test_guarded_run_some_open(self):
+        from src.scheduler.job_runner import _guarded_run
+        def side_effect(sym):
+            return sym == "NATURALGAS"
+        with patch("src.scheduler.job_runner._is_open_for", side_effect=side_effect), \
+             patch("src.scheduler.job_runner.run_pipeline") as mock_pipeline:
+            _guarded_run()
+            mock_pipeline.assert_called_once_with(symbols=["NATURALGAS"])
+
+    def test_start_scheduler(self):
+        from src.scheduler.job_runner import start_scheduler
+        with patch("src.scheduler.job_runner.BlockingScheduler") as mock_sched:
+            start_scheduler()
+            mock_sched.return_value.add_job.assert_called_once()
+            mock_sched.return_value.start.assert_called_once()
+
+    def test_start_scheduler_keyboard_interrupt(self):
+        from src.scheduler.job_runner import start_scheduler
+        with patch("src.scheduler.job_runner.BlockingScheduler") as mock_sched:
+            mock_sched.return_value.start.side_effect = KeyboardInterrupt()
+            start_scheduler()  # Should not raise because it handles KeyboardInterrupt

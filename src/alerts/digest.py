@@ -1,495 +1,407 @@
-"""
-Per-scan digest builder v4.0
-Redesigned message hierarchy: ACTION FIRST → context → signals → detail.
+"""Telegram scan digest builder."""
+from __future__ import annotations
 
-Structure:
-  [1] HEADER     — symbol, spot, time, signal count
-  [2] VERDICT    — bias + confidence bar (instant read)
-  [3] ACTION     — what to do RIGHT NOW (trade or wait)
-  [4] LEVELS     — key S/R/MaxPain in one line
-  [5] OI PULSE   — CE/PE OI totals + net flow direction
-  [6] SIGNALS    — severity-tiered alert list (HIGH → MED → LOW)
-  [7] CHART      — timeframe sentiments inline
-  [8] BROADER    — multi-scan trend
-  [9] FOOTER     — scan count + digest id
-
-Zero-alert scans: compact single-block with diagnostics.
-"""
 import json
+import re
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
 from src.engine.intelligence import generate_intelligence
 
 IST = timezone(timedelta(hours=5, minutes=30))
+MAX_TELEGRAM_LEN = 3900
 
-# ── Severity styling ─────────────────────────────────────────────────────
-_SEV_BADGE = {
-    "HIGH":   "🔴 HIGH",
-    "MEDIUM": "🟡 MED ",
-    "LOW":    "🔵 LOW ",
-}
+EMOJI_GREEN = "\U0001F7E2"
+EMOJI_RED = "\U0001F534"
+EMOJI_YELLOW = "\U0001F7E1"
+EMOJI_BLUE = "\U0001F535"
+EMOJI_WHITE = "\u26AA"
+EMOJI_CANDLES = "\U0001F56F\ufe0f"
+
 _SEV_ORDER = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
-
-# ── Alert type short labels ──────────────────────────────────────────────
-_ATYPE_SHORT = {
-    "OI_SPIKE":          "OI spike",
-    "OI_UNWIND":         "OI unwind",
-    "BUILDUP_CLASSIFY":  "",
-    "PRICE_SPIKE":       "Spot move",
-    "PCR_EXTREME":       "PCR extreme",
-    "PCR_SHIFT":         "PCR shift",
-    "PCR_VELOCITY":      "PCR velocity",
-    "IV_SPIKE":          "IV spike",
-    "IV_CRUSH":          "IV crush",
-    "ATM_LEG_MOVE":      "ATM leg move",
-    "STRADDLE_PREMIUM":  "Straddle Δ",
-    "MAX_PAIN_SHIFT":    "Max Pain shift",
-    "OI_WALL_SHIFT":     "OI wall shift",
-    "VOLUME_AGGRESSION": "Vol aggression",
-    "OTM_UNUSUAL":       "OTM unusual",
-}
-
-# ── Verdict → display mapping ────────────────────────────────────────────
 _VERDICT_STYLE = {
-    "Long Buildup":      ("🟢", "BULLISH"),
-    "Put Writing":       ("🟢", "BULLISH"),
-    "Short Covering":    ("🟡", "CAUTIOUS BULL"),
-    "OI Bias Bullish":   ("🟡", "BIAS BULL"),
-    "Short Buildup":     ("🔴", "BEARISH"),
-    "Call Writing":      ("🔴", "BEARISH"),
-    "Long Unwinding":    ("🟠", "CAUTIOUS BEAR"),
-    "OI Bias Bearish":   ("🟠", "BIAS BEAR"),
-    "Sideways":          ("⚪", "NEUTRAL"),
+    "Long Buildup": (EMOJI_GREEN, "BULLISH"),
+    "Put Writing": (EMOJI_GREEN, "BULLISH"),
+    "Short Covering": (EMOJI_YELLOW, "BULLISH, but chase carefully"),
+    "OI Bias Bullish": (EMOJI_YELLOW, "BULLISH BIAS"),
+    "Short Buildup": (EMOJI_RED, "BEARISH"),
+    "Call Writing": (EMOJI_RED, "BEARISH"),
+    "Long Unwinding": ("\U0001F7E0", "BEARISH, but late"),
+    "OI Bias Bearish": ("\U0001F7E0", "BEARISH BIAS"),
+    "Sideways": (EMOJI_WHITE, "SIDEWAYS"),
 }
 
 
-def _confidence_bar(pct: int) -> str:
-    """Visual confidence bar using block chars. 10 segments."""
-    filled = round(pct / 10)
-    return "█" * filled + "░" * (10 - filled) + f" {pct}%"
+def _clean_text(text: str) -> str:
+    out = str(text or "")
+    bad = {
+        "ðŸ•¯ï¸": EMOJI_CANDLES,
+        "ðŸ•¯": EMOJI_CANDLES,
+        "ðŸ”´": EMOJI_RED,
+        "ðŸŸ¢": EMOJI_GREEN,
+        "ðŸŸ¡": EMOJI_YELLOW,
+        "ðŸ”µ": EMOJI_BLUE,
+        "âšª": EMOJI_WHITE,
+        "â€”": "-",
+        "â†’": "->",
+        "â†‘": "up",
+        "â†“": "down",
+        "â€¦": "...",
+        "Â·": "·",
+    }
+    for k, v in bad.items():
+        out = out.replace(k, v)
+    return out
 
 
-def _one_liner(alert: dict) -> str:
-    """Compact single-line signal description."""
-    atype  = alert.get("alert_type", "")
-    detail = {}
+def _fmt_num(value, digits: int = 0) -> str:
     try:
-        detail = json.loads(alert.get("detail_json") or "{}")
+        value = float(value)
     except Exception:
-        pass
+        return "N/A"
+    if digits:
+        return f"{value:.{digits}f}"
+    return f"{value:.0f}"
 
-    strike     = alert.get("strike")
-    opt_type   = alert.get("option_type", "")
-    strike_tag = f" {int(strike)} {opt_type}".rstrip() if strike else ""
+
+def _fmt_oi(value) -> str:
+    try:
+        value = int(value or 0)
+    except Exception:
+        return "0"
+    sign = "-" if value < 0 else ""
+    value = abs(value)
+    if value >= 100_000:
+        return f"{sign}{value / 100_000:.2f}L"
+    if value >= 1_000:
+        return f"{sign}{value / 1_000:.1f}K"
+    return f"{sign}{value}"
+
+
+def _clip(value: str, limit: int = 120) -> str:
+    text = _clean_text(str(value or "").replace("\n", " ").strip())
+    return text[: limit - 3] + "..." if len(text) > limit else text
+
+
+def _bar(pct: int) -> str:
+    pct = max(0, min(100, int(pct or 0)))
+    filled = round(pct / 10)
+    return ("\u2588" * filled) + ("\u2591" * (10 - filled)) + f" {pct}%"
+
+
+def _norm_symbol(symbol: str) -> str:
+    value = str(symbol or "").upper().strip()
+    value = re.sub(r"^(NSE|NFO|BSE|MCX|CDS):", "", value)
+    value = value.replace("!", "")
+    return re.sub(r"[^A-Z0-9]", "", value)
+
+
+def _chart_payload_for_symbol(scan_context: dict, symbol: str) -> dict:
+    chart_data = (scan_context or {}).get("chart_indicators")
+    if not isinstance(chart_data, dict):
+        return {}
+    tf_keys = {"1h", "3h", "4h", "1d", "15m", "30m", "5m"}
+    if any(str(k).lower() in tf_keys for k in chart_data.keys()):
+        return chart_data
+    target = _norm_symbol(symbol)
+    for key, value in chart_data.items():
+        if isinstance(value, dict) and _norm_symbol(key) == target:
+            return value
+    return {}
+
+
+def _candle_line(tf: str, tf_data: dict) -> str:
+    sentiment = str((tf_data or {}).get("sentiment") or "NEUTRAL").upper()
+    marker = EMOJI_GREEN if sentiment == "BULLISH" else (EMOJI_RED if sentiment == "BEARISH" else EMOJI_WHITE)
+    ohlc = (tf_data or {}).get("ohlc") or {}
+    if isinstance(ohlc, dict):
+        o = ohlc.get("open")
+        h = ohlc.get("high")
+        l = ohlc.get("low")
+        c = ohlc.get("close")
+        if all(v is not None for v in (o, h, l, c)):
+            try:
+                return f"{tf.upper()} {marker} {sentiment} | O `{float(o):.1f}` H `{float(h):.1f}` L `{float(l):.1f}` C `{float(c):.1f}`"
+            except Exception:
+                pass
+        if c is not None:
+            try:
+                return f"{tf.upper()} {marker} {sentiment} | C `{float(c):.1f}`"
+            except Exception:
+                pass
+    return f"{tf.upper()} {marker} {sentiment}"
+
+
+def _detail(alert: dict) -> dict:
+    try:
+        return json.loads(alert.get("detail_json") or "{}")
+    except Exception:
+        return {}
+
+
+def _signal_line(alert: dict) -> str:
+    d = _detail(alert)
+    atype = alert.get("alert_type", "")
+    strike = alert.get("strike")
+    opt = alert.get("option_type") or ""
+    leg = f"{_fmt_num(strike)} {opt}".strip() if strike else ""
 
     if atype == "BUILDUP_CLASSIFY":
-        label = detail.get("buildup_type", "Buildup")
-        oi_p  = detail.get("oi_pct", 0)
-        ltp_p = detail.get("ltp_pct", 0)
-        return f"{label}{strike_tag}  OI {oi_p:+.0f}% · LTP {ltp_p:+.0f}%"
-
-    if atype in ("OI_SPIKE", "OI_UNWIND"):
-        pct = detail.get("pct_change", 0)
-        label = "↑ OI spike" if atype == "OI_SPIKE" else "↓ OI unwind"
-        return f"{label}{strike_tag}  {pct:+.0f}%"
-
-    if atype == "PRICE_SPIKE":
-        pct  = detail.get("pct_change", 0)
-        dire = detail.get("direction", "")
-        return f"Spot {pct:+.2f}% {dire}"
-
-    if atype == "PCR_SHIFT":
-        delta = detail.get("pcr_delta", 0)
-        pcr   = detail.get("pcr", "?")
-        dire  = "bear flip" if delta < 0 else "bull flip"
-        return f"PCR {delta:+.3f} → {pcr}  ({dire})"
-
-    if atype == "PCR_EXTREME":
-        pcr   = detail.get("pcr", "?")
-        interp = detail.get("interpretation", "")
-        return f"PCR {pcr} — {interp}"
-
-    if atype == "PCR_VELOCITY":
-        label = detail.get("label", "")
-        slope = detail.get("slope", 0)
-        return f"PCR trend {slope:+.3f}/scan  {label}"
-
-    if atype == "IV_SPIKE":
-        iv_d = detail.get("iv_delta", 0)
-        return f"IV spike{strike_tag}  +{iv_d:.1f}pts  event hedge"
-
-    if atype == "IV_CRUSH":
-        iv_d = detail.get("iv_delta", 0)
-        return f"IV crush{strike_tag}  {iv_d:.1f}pts  vol decay"
-
+        return f"{d.get('buildup_type', 'Buildup')} {leg} | OI {d.get('oi_pct', 0):+.0f}% · LTP {d.get('ltp_pct', 0):+.0f}%"
+    if atype == "OI_SPIKE":
+        return f"OI spike {leg} | {d.get('pct_change', 0):+.0f}%"
+    if atype == "OI_UNWIND":
+        return f"OI unwind {leg} | {d.get('pct_change', 0):+.0f}%"
     if atype == "ATM_LEG_MOVE":
-        bias = detail.get("bias", "")
-        ce_p = detail.get("ce_pct", 0)
-        pe_p = detail.get("pe_pct", 0)
-        return f"CE {ce_p:+.1f}% · PE {pe_p:+.1f}%  → {bias}"
-
-    if atype == "STRADDLE_PREMIUM":
-        pct   = detail.get("pct_change", 0)
-        label = detail.get("label", "")
-        return f"Straddle {pct:+.1f}%  {label}"
-
-    if atype == "MAX_PAIN_SHIFT":
-        shift = detail.get("shift", 0)
-        curr  = detail.get("curr_max_pain", "?")
-        return f"MaxPain → {curr}  ({shift:+.0f}pts)"
-
-    if atype == "OI_WALL_SHIFT":
-        chg = detail.get("changes", {})
-        parts = []
-        for side, v in chg.items():
-            parts.append(f"{side.capitalize()} wall {v['prev']}→{v['curr']}")
-        return "  ".join(parts) if parts else "OI wall moved"
-
+        return f"ATM move | CE {d.get('ce_pct', 0):+.1f}% · PE {d.get('pe_pct', 0):+.1f}% -> {d.get('bias', '')}"
     if atype == "VOLUME_AGGRESSION":
-        label = detail.get("label", "")
-        ratio = detail.get("ratio", 0)
-        return f"{label}{strike_tag}  ratio {ratio:.1f}x"
-
+        return f"{d.get('label', 'Aggressive volume')} {leg} | ratio {float(d.get('ratio') or 0):.1f}x"
     if atype == "OTM_UNUSUAL":
-        pct = detail.get("pct_change", 0)
-        return f"Far-OTM{strike_tag}  +{pct:.0f}%  watch tail"
+        return f"Far OTM activity {leg} | {d.get('pct_change', 0):+.0f}%"
+    if atype == "PCR_EXTREME":
+        return f"PCR {d.get('pcr', 'N/A')} | {d.get('interpretation', '')}"
+    if atype == "PCR_SHIFT":
+        return f"PCR shift {d.get('pcr_delta', 0):+.3f} -> {d.get('pcr', 'N/A')}"
+    if atype == "PCR_VELOCITY":
+        return f"PCR trend {d.get('slope', 0):+.3f}/scan | {d.get('label', '')}"
+    if atype == "PRICE_SPIKE":
+        return f"Spot move {d.get('pct_change', 0):+.2f}% {d.get('direction', '')}"
+    if atype == "MAX_PAIN_SHIFT":
+        return f"Max pain -> {_fmt_num(d.get('curr_max_pain'))} | shift {d.get('shift', 0):+.0f}"
+    if atype == "STRADDLE_PREMIUM":
+        return f"Straddle premium {d.get('pct_change', 0):+.1f}% | {d.get('label', '')}"
+    if atype in {"IV_SPIKE", "IV_CRUSH"}:
+        return f"{atype.replace('_', ' ').title()} {leg} | IV delta {d.get('iv_delta', 0):+.1f}"
+    return f"{atype.replace('_', ' ').title()} {leg}".strip()
 
-    return f"{_ATYPE_SHORT.get(atype, atype)}{strike_tag}"
 
-
-def _extract_intel_fields(intel: str) -> dict:
-    """
-    Parse the intelligence block into named fields for structured rendering.
-    Returns dict with keys: verdict, confidence, conflict, oi_analysis,
-    levels, chart_lines, bull_forces, bear_forces, action, paper_trade,
-    broader_trend, signal_count.
-    """
-    fields = {
-        "verdict": "", "verdict_desc": "", "confidence": 0,
-        "conflict": False, "conflict_text": "",
-        "oi_lines": [], "oi_note": "",
-        "level_lines": [], "straddle": "",
-        "chart_lines": [],
-        "bull_forces": [], "bear_forces": [],
-        "action_bias": "", "action_plan": "", "critical_warning": "",
-        "paper_trade": "",
-        "broader_trend": "",
-        "signal_count": 0,
+def _parse_intelligence(raw: str) -> dict:
+    out = {
+        "verdict": "Sideways",
+        "desc": "",
+        "confidence": 0,
+        "action": "",
+        "paper": "",
+        "warning": "",
+        "oi_note": "",
+        "bull": [],
+        "bear": [],
+        "trend": "",
+        "conflict": "",
     }
-    if not intel:
-        return fields
-
-    lines = intel.splitlines()
     section = None
-
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
+    for line in _clean_text(raw or "").splitlines():
+        text = line.strip()
+        if not text:
             continue
-
-        # Verdict line:  "🟢 *Verdict: Long Buildup*"
-        if "*Verdict:" in stripped:
-            v = stripped.split("*Verdict:")[-1].replace("*", "").strip()
-            fields["verdict"] = v
+        if "*Verdict:" in text:
+            out["verdict"] = text.split("*Verdict:", 1)[1].replace("*", "").strip()
             continue
-
-        # Verdict description (italic line after verdict)
-        if fields["verdict"] and stripped.startswith("_") and fields["verdict_desc"] == "":
-            fields["verdict_desc"] = stripped.strip("_")
+        if out["verdict"] and not out["desc"] and text.startswith("_"):
+            out["desc"] = text.strip("_")
             continue
-
-        # Confidence
-        if stripped.startswith("Confidence:"):
+        if text.startswith("Confidence:"):
             try:
-                fields["confidence"] = int(stripped.split(":")[1].strip().replace("%", ""))
+                out["confidence"] = int(text.split(":", 1)[1].strip().replace("%", ""))
             except Exception:
                 pass
             continue
-
-        # Chart conflict
-        if "Chart conflict" in stripped:
-            fields["conflict"] = True
-            fields["conflict_text"] = stripped.strip("_⚠️ ")
+        if "Chart conflict" in text:
+            out["conflict"] = text.strip("_⚠️ ")
             continue
-
-        # Section headers
-        if "*OI Analysis*" in stripped:
+        if "*OI Analysis*" in text:
             section = "oi"
             continue
-        if "*Key Levels*" in stripped:
-            section = "levels"
-            continue
-        if "*Chart Status*" in stripped:
-            section = "chart"
-            continue
-        if "*BULL FORCES" in stripped:
+        if "*BULL FORCES" in text:
             section = "bull"
             continue
-        if "*BEAR FORCES" in stripped:
+        if "*BEAR FORCES" in text:
             section = "bear"
             continue
-        if "*TRADE STRATEGY*" in stripped:
+        if "*TRADE STRATEGY*" in text:
             section = "trade"
             continue
-        if "*PAPER TRADE" in stripped:
+        if "*PAPER TRADE" in text:
             section = "paper"
             continue
-        if "*Broader Trend*" in stripped or "Broader Trend:" in stripped:
-            rest = stripped.split(":", 1)[-1].strip() if ":" in stripped else stripped
-            fields["broader_trend"] = rest.strip("*🌊 ")
+        if "*Broader Trend*" in text or "Broader Trend:" in text:
+            out["trend"] = text.split(":", 1)[-1].strip("*🌊 ")
             section = None
             continue
-        if stripped.startswith("_Based on"):
-            try:
-                fields["signal_count"] = int(stripped.split("Based on ")[1].split(" signal")[0])
-            except Exception:
-                pass
-            continue
 
-        # Collect section lines
-        if section == "oi":
-            if stripped.startswith("_") and stripped.endswith("_"):
-                fields["oi_note"] = stripped.strip("_")
-            else:
-                fields["oi_lines"].append(stripped)
-        elif section == "levels":
-            if "Straddle" in stripped:
-                fields["straddle"] = stripped
-            else:
-                fields["level_lines"].append(stripped)
-        elif section == "chart":
-            fields["chart_lines"].append(stripped)
-        elif section == "bull":
-            if stripped.startswith("-"):
-                fields["bull_forces"].append(stripped.lstrip("- "))
-        elif section == "bear":
-            if stripped.startswith("-"):
-                fields["bear_forces"].append(stripped.lstrip("- "))
+        if section == "oi" and text.startswith("_"):
+            out["oi_note"] = text.strip("_")
+        elif section == "bull" and text.startswith("-"):
+            out["bull"].append(text.lstrip("- "))
+        elif section == "bear" and text.startswith("-"):
+            out["bear"].append(text.lstrip("- "))
         elif section == "trade":
-            if stripped.startswith("- Bias:"):
-                fields["action_bias"] = stripped.split("- Bias:", 1)[1].strip()
-            elif stripped.startswith("- Action Plan:"):
-                fields["action_plan"] = stripped.split("- Action Plan:", 1)[1].strip()
-            elif stripped.startswith("- Critical Warning:"):
-                fields["critical_warning"] = stripped.split("- Critical Warning:", 1)[1].strip()
-        elif section == "paper":
-            if stripped.startswith("-"):
-                fields["paper_trade"] = stripped.lstrip("- ").strip()
-
-    return fields
+            if text.startswith("- Action Plan:"):
+                out["action"] = text.split(":", 1)[1].strip()
+            elif text.startswith("- Critical Warning:"):
+                out["warning"] = text.split(":", 1)[1].strip()
+        elif section == "paper" and text.startswith("-"):
+            out["paper"] = text.lstrip("- ").strip()
+    return out
 
 
-def build_digest(symbol: str, alerts: list[dict],
-                 fetched_at: str | None = None,
-                 scan_context: dict | None = None) -> tuple[str, str]:
-    """
-    Returns (digest_id, markdown_text) for one symbol scan.
-    Redesigned v4.0: ACTION-FIRST hierarchy.
-    """
+def _default_action(label: str, confidence: int) -> str:
+    if confidence < 55:
+        return "No clean edge. Wait for confirmation."
+    if "BULL" in label:
+        return "Bullish bias. Buy only after price holds above ATM/resistance."
+    if "BEAR" in label:
+        return "Bearish bias. Sell only after rejection near ATM/support."
+    return "No aggressive trade. Wait for breakout or rejection candle."
+
+
+def _trend_text(trend_raw: str, verdict: str) -> str:
+    trend = _clip(_clean_text(trend_raw), 120)
+    if trend:
+        return trend
+    if verdict in {"Long Buildup", "Put Writing", "OI Bias Bullish"}:
+        return f"{EMOJI_GREEN} Bullish follow-through likely"
+    if verdict in {"Short Buildup", "Call Writing", "OI Bias Bearish"}:
+        return f"{EMOJI_RED} Bearish follow-through likely"
+    return f"{EMOJI_WHITE} Mixed - no dominant trend yet"
+
+
+def _delta_color(delta: float | int | None) -> str:
+    try:
+        v = float(delta or 0)
+    except Exception:
+        v = 0.0
+    if v > 0:
+        return f"{EMOJI_GREEN} +{_fmt_oi(v)}"
+    if v < 0:
+        return f"{EMOJI_RED} {_fmt_oi(v)}"
+    return f"{EMOJI_WHITE} 0"
+
+
+def _fit_telegram(message: str, digest_id: str) -> str:
+    msg = _clean_text(message)
+    if len(msg) <= MAX_TELEGRAM_LEN:
+        return msg
+    clipped = msg[: MAX_TELEGRAM_LEN - 80].rsplit("\n", 1)[0]
+    return f"{clipped}\n...trimmed\n_#{digest_id}_"
+
+
+def build_digest(
+    symbol: str,
+    alerts: list[dict],
+    fetched_at: str | None = None,
+    scan_context: dict | None = None,
+    intelligence_text: str | None = None,
+) -> tuple[str, str]:
     digest_id = str(uuid.uuid4())[:8]
-
     try:
         dt = datetime.fromisoformat(fetched_at or "").astimezone(IST)
     except Exception:
         dt = datetime.now(IST)
     ts = dt.strftime("%H:%M IST")
 
+    ctx = scan_context or {}
+    diag = ctx.get("diagnostics", {}) if isinstance(ctx, dict) else {}
     n = len(alerts)
-    _order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
-    sorted_alerts = sorted(alerts, key=lambda a: _order.get(a.get("severity", "LOW"), 2))
 
-    # ── ZERO-ALERT SCAN ───────────────────────────────────────────────────
-    diag = (scan_context or {}).get("diagnostics", {})
     if not alerts:
-        oi_thresh  = diag.get("oi_threshold", 40)
-        ltp_thresh = diag.get("ltp_threshold", 8)
-        pcr_delta  = diag.get("pcr_delta")
-        pcr_text   = "PCR Δ n/a" if pcr_delta is None else (
-            f"PCR Δ {abs(pcr_delta):.2f}"
-        )
-        max_oi  = float(diag.get("max_oi_delta_pct") or 0)
+        max_oi = float(diag.get("max_oi_delta_pct") or 0)
         max_ltp = float(diag.get("max_atm_ltp_delta_pct") or 0)
+        msg = "\n".join([
+            f"\U0001F4CA *{symbol}* | {ts} | No signals",
+            f"Spot `{_fmt_num(ctx.get('underlying'))}` | PCR `{_fmt_num(ctx.get('pcr'), 2)}`",
+            "━━━━━━━━━━━━━━━━━━━━",
+            f"{EMOJI_WHITE} *Market quiet*",
+            "No threshold crossed. No trade needed.",
+            "",
+            f"OI max `{max_oi:.2f}%` | ATM LTP max `{max_ltp:.2f}%`",
+            f"_#{digest_id} · all symbols enabled_",
+        ])
+        return digest_id, _fit_telegram(msg, digest_id)
 
-        ctx      = scan_context or {}
-        spot     = ctx.get("underlying", "")
-        pcr_val  = ctx.get("pcr", "")
-        spot_str = f"  Spot `{spot:.0f}`" if spot else ""
-        pcr_str  = f"  PCR `{pcr_val:.2f}`" if pcr_val else ""
+    sorted_alerts = sorted(alerts, key=lambda a: _SEV_ORDER.get(a.get("severity", "LOW"), 2))
+    high = sum(a.get("severity") == "HIGH" for a in alerts)
+    med = sum(a.get("severity") == "MEDIUM" for a in alerts)
+    low = sum(a.get("severity") == "LOW" for a in alerts)
 
-        lines = [
-            f"⚫ *{symbol}*  |  {ts}  |  No signals",
-            f"{'─' * 30}",
-            f"📭 *Market quiet — nothing actionable*",
-            f"",
-            f"🔎 Scan thresholds not breached:",
-            f"  OI Δ max `{max_oi:.2f}%` < `{oi_thresh}%`",
-            f"  ATM LTP Δ `{max_ltp:.2f}%` < `{ltp_thresh}%`",
-            f"  {pcr_text}",
-        ]
-        if spot_str or pcr_str:
-            lines += [f"", f"📍 Market Pulse:{spot_str}{pcr_str}"]
-        lines += [f"", f"_Next scan in progress…_"]
-        return digest_id, "\n".join(lines)
+    intel_raw = intelligence_text if intelligence_text is not None else generate_intelligence(symbol, alerts, scan_context=scan_context)
+    intel = _parse_intelligence(intel_raw)
+    emoji, label = _VERDICT_STYLE.get(intel["verdict"], (EMOJI_WHITE, "NEUTRAL"))
+    confidence = int(intel["confidence"] or 0)
+    action = intel["action"] or _default_action(label, confidence)
+    warning = intel["warning"] or ("Chart/OI mismatch. Wait." if intel["conflict"] else "Use trigger candle + stop loss.")
 
-    # ── GENERATE INTELLIGENCE ─────────────────────────────────────────────
-    intel_raw = generate_intelligence(symbol, alerts, scan_context=scan_context)
-    f = _extract_intel_fields(intel_raw)
+    counts = " ".join(x for x in [
+        f"{EMOJI_RED} {high} high" if high else "",
+        f"{EMOJI_YELLOW} {med} med" if med else "",
+        f"{EMOJI_BLUE} {low} low" if low else "",
+    ] if x)
 
-    verdict        = f["verdict"] or "Sideways"
-    verdict_desc   = f["verdict_desc"]
-    confidence     = f["confidence"]
-    v_emoji, v_label = _VERDICT_STYLE.get(verdict, ("⚪", "NEUTRAL"))
-    conf_bar       = _confidence_bar(confidence)
+    lines = [
+        f"\U0001F4CA *{symbol}* | {ts} | {n} signals",
+        counts or "No severity count",
+        f"Spot `{_fmt_num(ctx.get('underlying'))}` | ATM `{_fmt_num(ctx.get('atm_strike'))}` | PCR `{_fmt_num(ctx.get('pcr'), 2)}`",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"{emoji} *{label}* - {_clip(intel['verdict'], 45)}",
+    ]
+    if intel["desc"]:
+        lines.append(_clip(intel["desc"], 100))
+    lines.append(f"Confidence: `{_bar(confidence)}`")
 
-    ctx            = scan_context or {}
-    spot           = ctx.get("underlying", 0)
-    pcr_val        = ctx.get("pcr", 0)
-    support        = ctx.get("support", 0)
-    resistance     = ctx.get("resistance", 0)
-    max_pain       = ctx.get("max_pain", 0)
-    atm            = ctx.get("atm_strike", 0)
-    ce_oi          = ctx.get("total_ce_oi", 0)
-    pe_oi          = ctx.get("total_pe_oi", 0)
-    ce_chg         = ctx.get("ce_oi_change", 0)
-    pe_chg         = ctx.get("pe_oi_change", 0)
+    lines += [
+        "",
+        "\U0001F3AF *What to do*",
+        f"• {_clip(action, 150)}",
+        f"• {_clip(warning, 130)}",
+    ]
+    if intel["paper"]:
+        lines.append(f"• Paper: {_clip(intel['paper'], 120)}")
 
-    high_count   = sum(1 for a in alerts if a.get("severity") == "HIGH")
-    medium_count = sum(1 for a in alerts if a.get("severity") == "MEDIUM")
-    low_count    = sum(1 for a in alerts if a.get("severity") == "LOW")
+    levels = []
+    if ctx.get("support") is not None:
+        levels.append(f"S `{_fmt_num(ctx.get('support'))}`")
+    if ctx.get("resistance") is not None:
+        levels.append(f"R `{_fmt_num(ctx.get('resistance'))}`")
+    if ctx.get("max_pain") is not None:
+        levels.append(f"MP `{_fmt_num(ctx.get('max_pain'))}`")
+    if levels:
+        lines += ["", "\U0001F4CD *Key levels*", " | ".join(levels)]
 
-    # ── HELPERS ───────────────────────────────────────────────────────────
-    def _fmt_oi(v) -> str:
-        try:
-            v = int(v)
-            if v >= 100_000: return f"{v/100_000:.2f}L"
-            if v >= 1_000:   return f"{v/1_000:.1f}K"
-            return str(v)
-        except Exception:
-            return str(v)
+    chart_payload = _chart_payload_for_symbol(ctx, symbol)
+    candle_lines = []
+    for tf in ("1h", "3h"):
+        tf_data = chart_payload.get(tf)
+        if isinstance(tf_data, dict):
+            candle_lines.append(_candle_line(tf, tf_data))
+    if candle_lines:
+        lines += ["", f"{EMOJI_CANDLES} *Candles (1H / 3H)*", *candle_lines]
 
-    def _oi_arrow(chg) -> str:
-        return "↑" if chg > 0 else ("↓" if chg < 0 else "→")
-
-    def _chg_str(chg) -> str:
-        try:
-            chg = int(chg)
-            return f"+{_fmt_oi(chg)}" if chg >= 0 else f"-{_fmt_oi(abs(chg))}"
-        except Exception:
-            return "?"
-
-    # ── BUILD MESSAGE ─────────────────────────────────────────────────────
-    lines = []
-
-    # ═══════════════════════════════════════════════════════
-    # [1] HEADER
-    # ═══════════════════════════════════════════════════════
-    spot_str  = f"`{spot:.0f}`" if spot else "N/A"
-    sig_badge = f"🔴×{high_count}" if high_count else ""
-    if medium_count:
-        sig_badge += (" " if sig_badge else "") + f"🟡×{medium_count}"
-    if low_count:
-        sig_badge += (" " if sig_badge else "") + f"🔵×{low_count}"
-
-    lines.append(f"📊 *{symbol}*  ·  {ts}  ·  {n} signal{'s' if n != 1 else ''}  {sig_badge}")
-    lines.append(f"Spot {spot_str}  |  ATM `{int(atm)}`  |  PCR `{pcr_val:.2f}`")
-    lines.append("━" * 28)
-
-    # ═══════════════════════════════════════════════════════
-    # [2] VERDICT + CONFIDENCE  ← most important, reads first
-    # ═══════════════════════════════════════════════════════
-    lines.append(f"{v_emoji} *{v_label}*  —  {verdict}")
-    if verdict_desc:
-        lines.append(f"_{verdict_desc}_")
-    lines.append(f"Conf: `{conf_bar}`")
-    if f["conflict"]:
-        lines.append(f"⚠️ _{f['conflict_text']}_")
-
-    # ═══════════════════════════════════════════════════════
-    # [3] ACTION BLOCK  ← second most important
-    # ═══════════════════════════════════════════════════════
-    lines.append("")
-    lines.append("🎯 *ACTION*")
-    if f["action_plan"]:
-        lines.append(f"  {f['action_plan']}")
-    if f["paper_trade"] and "wait" not in f["paper_trade"].lower():
-        lines.append(f"  📋 _{f['paper_trade']}_")
-    elif f["paper_trade"]:
-        lines.append(f"  📋 _{f['paper_trade']}_")
-    if f["critical_warning"]:
-        lines.append(f"  ⛔ _{f['critical_warning']}_")
-
-    # ═══════════════════════════════════════════════════════
-    # [4] KEY LEVELS  ← reference before entering
-    # ═══════════════════════════════════════════════════════
-    level_parts = []
-    if support:    level_parts.append(f"S `{support:.0f}`")
-    if resistance: level_parts.append(f"R `{resistance:.0f}`")
-    if max_pain:   level_parts.append(f"MP `{max_pain:.0f}`")
-    if level_parts:
-        lines.append("")
-        lines.append("📍 " + "  |  ".join(level_parts))
-
-    # ═══════════════════════════════════════════════════════
-    # [5] OI PULSE  ← smart money footprint
-    # ═══════════════════════════════════════════════════════
+    ce_oi = ctx.get("total_ce_oi", 0)
+    pe_oi = ctx.get("total_pe_oi", 0)
+    ce_chg = ctx.get("ce_oi_change", 0)
+    pe_chg = ctx.get("pe_oi_change", 0)
     if ce_oi or pe_oi:
-        lines.append("")
-        lines.append("🧮 *OI Pulse*")
-        lines.append(
-            f"  CE `{_fmt_oi(ce_oi)}` {_oi_arrow(ce_chg)} ({_chg_str(ce_chg)})"
-            f"   PE `{_fmt_oi(pe_oi)}` {_oi_arrow(pe_chg)} ({_chg_str(pe_chg)})"
-        )
-        if f["oi_note"]:
-            lines.append(f"  _{f['oi_note']}_")
+        lines += [
+            "",
+            "\U0001F9EE *OI pulse*",
+            f"CE `{_fmt_oi(ce_oi)}` {_delta_color(ce_chg)} | PE `{_fmt_oi(pe_oi)}` {_delta_color(pe_chg)}",
+        ]
+        if intel["oi_note"]:
+            lines.append(_clip(intel["oi_note"], 120))
 
-    # ═══════════════════════════════════════════════════════
-    # [6] SIGNALS  ← what triggered this alert
-    # ═══════════════════════════════════════════════════════
-    lines.append("")
-    lines.append("📡 *Signals*")
-    for a in sorted_alerts:
-        sev   = a.get("severity", "LOW")
-        badge = _SEV_BADGE.get(sev, "🔵 LOW ")
-        text  = _one_liner(a)
-        lines.append(f"  `{badge}` {text}")
+    cap = 8 if high >= 5 else 10
+    lines += ["", "\U0001F4E1 *Top signals*"]
+    for alert in sorted_alerts[:cap]:
+        badge = {"HIGH": EMOJI_RED, "MEDIUM": EMOJI_YELLOW, "LOW": EMOJI_BLUE}.get(alert.get("severity", "LOW"), EMOJI_BLUE)
+        lines.append(f"{badge} {_clip(_signal_line(alert), 130)}")
+    hidden = len(sorted_alerts) - cap
+    if hidden > 0:
+        lines.append(f"...and {hidden} more lower-priority signals.")
 
-    # ═══════════════════════════════════════════════════════
-    # [7] CHART PULSE  ← quick timeframe read
-    # ═══════════════════════════════════════════════════════
-    if f["chart_lines"]:
-        lines.append("")
-        lines.append("📉 *Chart*")
-        for cl in f["chart_lines"]:
-            lines.append(f"  {cl}")
+    bull = _clip(intel["bull"][0], 110) if intel["bull"] else "No strong bullish factor"
+    bear = _clip(intel["bear"][0], 110) if intel["bear"] else "No strong bearish factor"
+    lines += ["", "\u2696\ufe0f *Balance*", f"{EMOJI_GREEN} {bull}", f"{EMOJI_RED} {bear}"]
 
-    # ═══════════════════════════════════════════════════════
-    # [8] FORCES SUMMARY  ← bull vs bear in one glance
-    # ═══════════════════════════════════════════════════════
-    if f["bull_forces"] or f["bear_forces"]:
-        lines.append("")
-        bull_top = f["bull_forces"][0] if f["bull_forces"] else "None"
-        bear_top = f["bear_forces"][0] if f["bear_forces"] else "None"
-        lines.append("⚖️ *Forces*")
-        lines.append(f"  🟢 {bull_top}")
-        lines.append(f"  🔴 {bear_top}")
-        # Show remaining forces if more than 1 each
-        if len(f["bull_forces"]) > 1 or len(f["bear_forces"]) > 1:
-            remaining_bull = f["bull_forces"][1:3]
-            remaining_bear = f["bear_forces"][1:3]
-            for b in remaining_bull:
-                lines.append(f"  🟢 {b}")
-            for b in remaining_bear:
-                lines.append(f"  🔴 {b}")
-
-    # ═══════════════════════════════════════════════════════
-    # [9] BROADER TREND + FOOTER
-    # ═══════════════════════════════════════════════════════
-    if f["broader_trend"]:
-        lines.append("")
-        lines.append(f"🌊 *Trend:* {f['broader_trend']}")
-
-    lines.append("")
-    lines.append(f"_#{digest_id}  ·  {n} signal{'s' if n != 1 else ''} this scan_")
-
-    return digest_id, "\n".join(lines)
+    lines += ["", f"\U0001F30A *Trend:* {_trend_text(intel['trend'], intel['verdict'])}"]
+    lines += ["", f"_#{digest_id} · {n} signals · all symbols enabled_"]
+    return digest_id, _fit_telegram("\n".join(lines), digest_id)

@@ -28,7 +28,9 @@ CREATE TABLE IF NOT EXISTS option_chain_snapshots (
     strike          REAL NOT NULL,
     option_type     TEXT NOT NULL,          -- CE | PE
     ltp             REAL,
+    ltp_change_pct  REAL,
     oi              INTEGER,
+    oi_change_pct   REAL,
     oi_change       INTEGER,
     volume          INTEGER,
     iv              REAL,
@@ -79,6 +81,27 @@ CREATE TABLE IF NOT EXISTS snapshot_baseline (
     symbol          TEXT PRIMARY KEY,
     last_symbol_at  TEXT NOT NULL           -- ISO UTC timestamp of last symbol switch
 );
+
+CREATE TABLE IF NOT EXISTS paper_trades (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    opened_at           TEXT NOT NULL,
+    closed_at           TEXT,
+    symbol              TEXT NOT NULL,
+    verdict_label       TEXT,
+    option_type         TEXT NOT NULL,      -- CE | PE
+    strike              REAL,
+    entry_underlying    REAL NOT NULL,
+    exit_underlying     REAL,
+    sl_underlying       REAL,
+    target_underlying   REAL,
+    pnl_points          REAL DEFAULT 0,
+    status              TEXT NOT NULL,      -- OPEN | CLOSED_TARGET | CLOSED_SL | CLOSED_MANUAL
+    reason              TEXT,
+    digest_id           TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_paper_symbol_status
+    ON paper_trades (symbol, status, opened_at);
 """
 
 
@@ -97,6 +120,8 @@ def get_conn():
 
 
 _MIGRATIONS = [
+    "ALTER TABLE option_chain_snapshots ADD COLUMN ltp_change_pct REAL",
+    "ALTER TABLE option_chain_snapshots ADD COLUMN oi_change_pct REAL",
     "ALTER TABLE anomaly_alerts ADD COLUMN severity TEXT DEFAULT 'LOW'",
     "ALTER TABLE anomaly_alerts ADD COLUMN digest_id TEXT",
     "ALTER TABLE alert_dedup    ADD COLUMN severity TEXT DEFAULT 'LOW'",
@@ -123,11 +148,11 @@ def insert_snapshots(rows: list[dict]) -> int:
         return 0
     sql = """
         INSERT INTO option_chain_snapshots
-            (fetched_at, symbol, expiry, strike, option_type, ltp, oi,
-             oi_change, volume, iv, bid, ask, delta, underlying_price, fetcher_source)
+            (fetched_at, symbol, expiry, strike, option_type, ltp, ltp_change_pct, oi,
+             oi_change_pct, oi_change, volume, iv, bid, ask, delta, underlying_price, fetcher_source)
         VALUES
-            (:fetched_at, :symbol, :expiry, :strike, :option_type, :ltp, :oi,
-             :oi_change, :volume, :iv, :bid, :ask, :delta, :underlying_price, :fetcher_source)
+            (:fetched_at, :symbol, :expiry, :strike, :option_type, :ltp, :ltp_change_pct, :oi,
+             :oi_change_pct, :oi_change, :volume, :iv, :bid, :ask, :delta, :underlying_price, :fetcher_source)
     """
     with get_conn() as conn:
         conn.executemany(sql, rows)
@@ -291,3 +316,64 @@ def delete_alerts(symbol: str | None = None) -> int:
             cur = conn.execute("DELETE FROM anomaly_alerts")
             conn.execute("DELETE FROM alert_dedup")
         return cur.rowcount
+
+
+def get_open_paper_trade(symbol: str) -> dict | None:
+    sql = """
+        SELECT * FROM paper_trades
+        WHERE symbol=? AND status='OPEN'
+        ORDER BY opened_at DESC
+        LIMIT 1
+    """
+    with get_conn() as conn:
+        row = conn.execute(sql, (symbol,)).fetchone()
+        return dict(row) if row else None
+
+
+def insert_paper_trade(trade: dict) -> int:
+    sql = """
+        INSERT INTO paper_trades
+            (opened_at, symbol, verdict_label, option_type, strike, entry_underlying,
+             sl_underlying, target_underlying, status, reason, digest_id)
+        VALUES
+            (:opened_at, :symbol, :verdict_label, :option_type, :strike, :entry_underlying,
+             :sl_underlying, :target_underlying, :status, :reason, :digest_id)
+        RETURNING id
+    """
+    with get_conn() as conn:
+        row = conn.execute(sql, trade).fetchone()
+        return int(row["id"])
+
+
+def close_paper_trade(trade_id: int, closed_at: str, exit_underlying: float, status: str, reason: str = "") -> None:
+    with get_conn() as conn:
+        row = conn.execute("SELECT option_type, entry_underlying FROM paper_trades WHERE id=?", (trade_id,)).fetchone()
+        if not row:
+            return
+        option_type = row["option_type"]
+        entry = float(row["entry_underlying"] or 0.0)
+        if option_type == "CE":
+            pnl = float(exit_underlying) - entry
+        else:
+            pnl = entry - float(exit_underlying)
+        conn.execute(
+            """
+            UPDATE paper_trades
+            SET closed_at=?, exit_underlying=?, pnl_points=?, status=?, reason=?
+            WHERE id=?
+            """,
+            (closed_at, exit_underlying, round(pnl, 4), status, reason, trade_id),
+        )
+
+
+def list_paper_trades(symbol: str | None = None, limit: int = 300) -> list[dict]:
+    sql = "SELECT * FROM paper_trades"
+    params: list = []
+    if symbol:
+        sql += " WHERE symbol=?"
+        params.append(symbol)
+    sql += " ORDER BY opened_at DESC LIMIT ?"
+    params.append(limit)
+    with get_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]

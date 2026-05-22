@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import threading
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from datetime import datetime, timezone, timedelta
 from telegram import Bot
 from telegram.error import TelegramError
@@ -26,8 +27,9 @@ def _start_loop():
     global _loop
     import sys
     if sys.platform == 'win32':
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    _loop = asyncio.new_event_loop()
+        _loop = asyncio.SelectorEventLoop()
+    else:
+        _loop = asyncio.new_event_loop()
     asyncio.set_event_loop(_loop)
     _loop.run_forever()
 
@@ -241,16 +243,18 @@ def send_alert(alert: dict) -> bool:
 
     try:
         future = asyncio.run_coroutine_threadsafe(_send_async(message), _loop)
-        future.result(timeout=30)
+        future.result(timeout=20)
         log.info("Telegram sent: %s | %s", alert["symbol"], alert["alert_type"])
         return True
     except TelegramError as exc:
         log.error("Telegram API error: %s", exc)
-    except TimeoutError:
-        log.error("Telegram send timed out")
+        return False
+    except FuturesTimeoutError:
+        log.error("Telegram send_alert timed out")
+        return False
     except Exception as exc:
-        log.error("Telegram unexpected error: %s", exc)
-    return False
+        log.error("Telegram unexpected error submitting alert: %s", exc)
+        return False
 
 
 def send_text(text: str) -> bool:
@@ -260,10 +264,16 @@ def send_text(text: str) -> bool:
     _ensure_loop()
     try:
         future = asyncio.run_coroutine_threadsafe(_send_async(text), _loop)
-        future.result(timeout=30)
+        future.result(timeout=20)
         first_line = (text or "").splitlines()[0][:90]
         log.info("Telegram sent text: %s", first_line)
         return True
+    except TelegramError as exc:
+        log.error("Telegram send_text API error: %s", exc)
+        return False
+    except FuturesTimeoutError:
+        log.error("Telegram send_text timed out")
+        return False
     except Exception as exc:
-        log.error("Telegram send_text error: %s", exc)
+        log.error("Telegram send_text submit error: %s", exc)
         return False

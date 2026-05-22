@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NSEBOT - Paper Trading</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@400;500&display=swap');
+  :root {
+    --bg:#0a0c0f; --surface:#111418; --border:#1e2530; --accent:#00e5a0;
+    --red:#ff4d6d; --green:#00e5a0; --yellow:#ffd166; --text:#e2e8f0; --dim:#7a8796;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 14px; }
+  header {
+    display: flex; align-items: center; gap: 12px; padding: 12px 20px;
+    border-bottom: 1px solid var(--border); background: var(--surface); position: sticky; top: 0; z-index: 10;
+  }
+  .logo { font-family: 'Space Mono', monospace; color: var(--accent); letter-spacing: 1px; font-weight: 700; }
+  .sep { flex: 1; }
+  .btn, select {
+    border: 1px solid var(--border); background: var(--bg); color: var(--text);
+    padding: 6px 10px; border-radius: 4px; font-family: 'Space Mono', monospace; font-size: 12px;
+  }
+  .btn:hover, select:hover { border-color: var(--accent); cursor: pointer; }
+  .btn.primary { border-color: var(--accent); color: var(--accent); }
+  main { padding: 18px 20px; display: grid; gap: 14px; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+  .kpi { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 12px; }
+  .kpi .label { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
+  .kpi .val { font-family: 'Space Mono', monospace; font-size: 20px; font-weight: 700; }
+  .kpi .good { color: var(--green); } .kpi .bad { color: var(--red); } .kpi .warn { color: var(--yellow); }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 14px; }
+  .title { color: var(--dim); text-transform: uppercase; letter-spacing: 1px; font-size: 11px; margin-bottom: 10px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
+  .chart-wrap { height: 240px; }
+  table { width: 100%; border-collapse: collapse; font-family: 'Space Mono', monospace; font-size: 12px; }
+  th, td { padding: 7px 8px; border-bottom: 1px solid var(--border); text-align: right; white-space: nowrap; }
+  th { color: var(--dim); font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
+  td.left, th.left { text-align: left; }
+  .status-open { color: var(--yellow); } .status-win { color: var(--green); } .status-loss { color: var(--red); }
+  .pnl-pos { color: var(--green); } .pnl-neg { color: var(--red); }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">NSEBOT PAPER</div>
+  <button class="btn" onclick="location.href='/'">Main Dashboard</button>
+  <label style="color:var(--dim);font-size:11px;">SYMBOL</label>
+  <select id="symbol"></select>
+  <label style="color:var(--dim);font-size:11px;">STATUS</label>
+  <select id="status">
+    <option value="">ALL</option>
+    <option value="OPEN">OPEN</option>
+    <option value="CLOSED_TARGET">CLOSED_TARGET</option>
+    <option value="CLOSED_SL">CLOSED_SL</option>
+    <option value="CLOSED_MANUAL">CLOSED_MANUAL</option>
+  </select>
+  <button class="btn primary" onclick="loadAll()">Refresh</button>
+  <div class="sep"></div>
+  <div id="last" style="font-family:'Space Mono',monospace;color:var(--dim);font-size:11px;">-</div>
+</header>
+
+<main>
+  <div class="kpis">
+    <div class="kpi"><div class="label">Total Trades</div><div class="val" id="k-total">-</div></div>
+    <div class="kpi"><div class="label">Open Trades</div><div class="val warn" id="k-open">-</div></div>
+    <div class="kpi"><div class="label">Closed Trades</div><div class="val" id="k-closed">-</div></div>
+    <div class="kpi"><div class="label">Win Rate</div><div class="val" id="k-win">-</div></div>
+    <div class="kpi"><div class="label">Closed PnL (pts)</div><div class="val" id="k-pnl">-</div></div>
+    <div class="kpi"><div class="label">Avg PnL / trade</div><div class="val" id="k-avg">-</div></div>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <div class="title">Equity Curve (Closed Trades)</div>
+      <div class="chart-wrap"><canvas id="equity"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="title">Open Trades</div>
+      <table>
+        <thead>
+          <tr>
+            <th class="left">Opened</th><th class="left">Symbol</th><th>Side</th><th>Strike</th><th>Entry</th><th>SL</th><th>Target</th><th class="left">Reason</th>
+          </tr>
+        </thead>
+        <tbody id="open-body"><tr><td colspan="8" class="left">No open trades</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="title">Recent Paper Trades</div>
+    <table>
+      <thead>
+        <tr>
+          <th class="left">Opened</th><th class="left">Closed</th><th class="left">Symbol</th><th>Side</th><th>Strike</th>
+          <th>Entry</th><th>Exit</th><th>SL</th><th>Target</th><th>Status</th><th>PnL</th><th class="left">Reason</th>
+        </tr>
+      </thead>
+      <tbody id="trades-body"><tr><td colspan="12" class="left">Loading...</td></tr></tbody>
+    </table>
+  </div>
+</main>
+
+<script>
+const API = '';
+let equityChart = null;
+Chart.defaults.color = '#7a8796';
+Chart.defaults.borderColor = '#1e2530';
+Chart.defaults.font.family = "'Space Mono', monospace";
+Chart.defaults.font.size = 11;
+
+function fnum(v) { if (v == null) return '-'; return Number(v).toFixed(2); }
+function fdt(s) {
+  if (!s) return '-';
+  try { return new Date(s).toLocaleString('en-IN', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' }); }
+  catch { return s; }
+}
+async function api(path) {
+  const r = await fetch(API + path);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+function statusClass(s) {
+  if (s === 'OPEN') return 'status-open';
+  if (s === 'CLOSED_TARGET') return 'status-win';
+  if (s === 'CLOSED_SL') return 'status-loss';
+  return '';
+}
+function pnlClass(v) { return Number(v || 0) >= 0 ? 'pnl-pos' : 'pnl-neg'; }
+
+function renderSummary(s) {
+  document.getElementById('k-total').textContent = s.total ?? 0;
+  document.getElementById('k-open').textContent = s.open_count ?? 0;
+  document.getElementById('k-closed').textContent = s.closed_count ?? 0;
+  document.getElementById('k-win').textContent = `${Number(s.win_rate || 0).toFixed(1)}%`;
+  const pnl = Number(s.closed_pnl || 0);
+  const pnlEl = document.getElementById('k-pnl');
+  pnlEl.textContent = pnl.toFixed(2);
+  pnlEl.className = `val ${pnl >= 0 ? 'good' : 'bad'}`;
+  document.getElementById('k-avg').textContent = Number(s.avg_pnl || 0).toFixed(2);
+
+  const open = s.open_trades || [];
+  const tbody = document.getElementById('open-body');
+  if (!open.length) {
+    tbody.innerHTML = '<tr><td colspan="8" class="left">No open trades</td></tr>';
+    return;
+  }
+  tbody.innerHTML = open.map(t => `
+    <tr>
+      <td class="left">${fdt(t.opened_at)}</td>
+      <td class="left">${t.symbol || '-'}</td>
+      <td>${t.option_type || '-'}</td>
+      <td>${fnum(t.strike)}</td>
+      <td>${fnum(t.entry_underlying)}</td>
+      <td>${fnum(t.sl_underlying)}</td>
+      <td>${fnum(t.target_underlying)}</td>
+      <td class="left">${t.reason || '-'}</td>
+    </tr>
+  `).join('');
+}
+
+function renderEquity(rows) {
+  const ctx = document.getElementById('equity').getContext('2d');
+  if (equityChart) equityChart.destroy();
+  equityChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: rows.map(r => fdt(r.closed_at)),
+      datasets: [{
+        label: 'Equity (pts)',
+        data: rows.map(r => r.equity),
+        borderColor: '#00e5a0',
+        backgroundColor: 'rgba(0,229,160,0.08)',
+        borderWidth: 1.5,
+        fill: true,
+        pointRadius: 0,
+        tension: 0.25
+      }]
+    },
+    options: { responsive: true, maintainAspectRatio: false }
+  });
+}
+
+function renderTrades(rows) {
+  const tbody = document.getElementById('trades-body');
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="12" class="left">No trades</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map(t => `
+    <tr>
+      <td class="left">${fdt(t.opened_at)}</td>
+      <td class="left">${fdt(t.closed_at)}</td>
+      <td class="left">${t.symbol || '-'}</td>
+      <td>${t.option_type || '-'}</td>
+      <td>${fnum(t.strike)}</td>
+      <td>${fnum(t.entry_underlying)}</td>
+      <td>${fnum(t.exit_underlying)}</td>
+      <td>${fnum(t.sl_underlying)}</td>
+      <td>${fnum(t.target_underlying)}</td>
+      <td class="${statusClass(t.status)}">${t.status || '-'}</td>
+      <td class="${pnlClass(t.pnl_points)}">${fnum(t.pnl_points)}</td>
+      <td class="left">${t.reason || '-'}</td>
+    </tr>
+  `).join('');
+}
+
+async function loadSymbols() {
+  const symbols = await api('/api/symbols');
+  const sel = document.getElementById('symbol');
+  sel.innerHTML = ['<option value="">ALL</option>', ...symbols.map(s => `<option value="${s}">${s}</option>`)].join('');
+}
+
+async function loadAll() {
+  const symbol = encodeURIComponent(document.getElementById('symbol').value || '');
+  const status = encodeURIComponent(document.getElementById('status').value || '');
+  const [summary, trades, equity] = await Promise.all([
+    api(`/api/paper_summary?symbol=${symbol}`),
+    api(`/api/paper_trades?symbol=${symbol}&status=${status}&limit=300`),
+    api(`/api/paper_equity?symbol=${symbol}`)
+  ]);
+  renderSummary(summary || {});
+  renderTrades(trades || []);
+  renderEquity(equity || []);
+  document.getElementById('last').textContent = `Updated ${new Date().toLocaleTimeString('en-IN')}`;
+}
+
+async function init() {
+  await loadSymbols();
+  document.getElementById('symbol').onchange = loadAll;
+  document.getElementById('status').onchange = loadAll;
+  await loadAll();
+  setInterval(loadAll, 30000);
+}
+
+init().catch(console.error);
+</script>
+</body>
+</html>

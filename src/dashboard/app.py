@@ -15,6 +15,20 @@ import streamlit as st
 from config.settings import DB_PATH, WATCH_SYMBOLS
 from src.models.schema import init_db
 
+
+def _get_db_symbols() -> list:
+    """Pull actual symbols present in DB rather than relying on config."""
+    try:
+        import sqlite3
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT DISTINCT symbol FROM option_chain_snapshots ORDER BY symbol")
+        rows = [r[0] for r in cur.fetchall()]
+        conn.close()
+        return rows if rows else WATCH_SYMBOLS
+    except Exception:
+        return WATCH_SYMBOLS
+
 st.set_page_config(
     page_title="NSEBOT Dashboard",
     page_icon="📊",
@@ -45,7 +59,7 @@ def _query(sql: str, params: tuple = ()) -> pd.DataFrame:
 # ── Sidebar ───────────────────────────────────────────────────────────────
 
 st.sidebar.title("⚙️ NSEBOT")
-symbol   = st.sidebar.selectbox("Symbol", WATCH_SYMBOLS)
+symbol   = st.sidebar.selectbox("Symbol", _get_db_symbols())
 lookback = st.sidebar.slider("History (hours)", 1, 48, 6)
 refresh  = st.sidebar.button("🔄 Refresh")
 
@@ -196,4 +210,13 @@ else:
         hide_index=True,
     )
 
-st.caption("NSEBOT v1.0 — local mode | data updates every 15 min during market hours")
+"""
+Deprecated: NSEBOT no longer uses Streamlit for its dashboard.
+Use the FastAPI + plain HTML dashboard served by `dashboard_server.py`.
+
+Run:
+  python dashboard_server.py
+
+Open:
+  http://localhost:8080/
+"""

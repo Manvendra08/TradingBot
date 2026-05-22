@@ -454,8 +454,11 @@ def _compute_broader_trend(symbol: str, alerts: list[dict]) -> str:
     Analyze last 50 alerts for the symbol to determine multi-scan trend.
     """
     history = get_alert_history(symbol, limit=50)
-    if not history:
-        return "Insufficient history — first scan"
+    merged = list(history or [])
+    if alerts:
+        merged.extend(alerts)
+    if not merged:
+        return "Insufficient history - first scan"
 
     # Count buildup types from BUILDUP_CLASSIFY alerts
     long_buildups = 0
@@ -465,7 +468,7 @@ def _compute_broader_trend(symbol: str, alerts: list[dict]) -> str:
     oi_spikes_ce = 0
     oi_spikes_pe = 0
 
-    for h in history:
+    for h in merged:
         row = dict(h) if not isinstance(h, dict) else h
         atype = row.get("alert_type", "")
         ot = row.get("option_type", "")
@@ -610,6 +613,21 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
                 "ohlc": tf_data.get("ohlc"),
                 "updated_at": tf_data.get("updated_at"),
             }
+
+    # Chart-only directional fallback:
+    # If OI/price is neutral but both 1H and 3H agree directionally,
+    # promote verdict to cautious bias so bot decision reflects candle confluence.
+    tf_1h = (parsed_chart.get("1h") or {}).get("sentiment")
+    tf_3h = (parsed_chart.get("3h") or {}).get("sentiment")
+    if verdict_label == "Sideways" and tf_1h and tf_1h == tf_3h:
+        if tf_1h == "BULLISH":
+            verdict_label = "OI Bias Bullish"
+            verdict_emoji = "🟡"
+            verdict_desc = "Cautious Bullish — 1H and 3H candle sentiment aligned bullish"
+        elif tf_1h == "BEARISH":
+            verdict_label = "OI Bias Bearish"
+            verdict_emoji = "🟠"
+            verdict_desc = "Cautious Bearish — 1H and 3H candle sentiment aligned bearish"
     # ── Re-compute confidence with chart context ───────────────────────────────
     confidence, chart_conflict = _compute_confidence(ctx, current_alerts, parsed_chart)
 

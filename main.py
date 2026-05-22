@@ -68,7 +68,7 @@ Examples:
     init_db()
 
     if args.dashboard:
-        cmd = "streamlit run src/dashboard/app.py"
+        cmd = "python dashboard_server.py"
         print(f"\n  {cmd}\n")
         log.info("Dashboard command: %s", cmd)
         return

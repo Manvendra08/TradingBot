@@ -1,0 +1,273 @@
+{
+  "source": "https://dhan.co/commodity/natural-gas-option-chain/",
+  "symbol": "NATURALGAS",
+  "underlying": 288.4,
+  "expiry_text": "22 May",
+  "rows": [
+    {
+      "strike": 50,
+      "ce": { "ltp": 258.4, "ltp_change_pct": 0, "oi": 1, "oi_change_pct": 0, "volume": 0 },
+      "pe": { "ltp": 0.05, "ltp_change_pct": 0, "oi": 1, "oi_change_pct": 0, "volume": 0 }
+    },
+    {
+      "strike": 60,
+      "ce": { "ltp": 199.3, "ltp_change_pct": 0, "oi": 0, "oi_change_pct": 0, "volume": 0 },
+      "pe": { "ltp": 0.1, "ltp_change_pct": 0, "oi": 1, "oi_change_pct": 0, "volume": 0 }
+    },
+    {
+      "strike": 65,
+      "ce": { "ltp": 199, "ltp_change_pct": 0, "oi": 0, "oi_change_pct": 0, "volume": 0 },
+      "pe": { "ltp": 0.05, "ltp_change_pct": 0, "oi": 10, "oi_change_pct": 0, "volume": 0 }
+    },
+    {
+      "strike": 85,
+      "ce": { "ltp": 191.45, "ltp_change_pct": 0, "oi": 0, "oi_change_pct": 0, "volume": 0 },
+      "pe": { "ltp": 0.05, "ltp_change_pct": 0, "oi": 48, "oi_change_pct": 0, "volume": 0 }
+    },
+    {
+      "strike": 90,
+      "ce": { "ltp": 198.75, "ltp_change_pct": 0, "oi": 0, "oi_change_pct": 0, "volume": 0 },
+      "pe": { "ltp": 0.05, "ltp_change_pct": 0, "oi": 30, "oi_change_pct": 0, "volume": 0 }
+    },
+    {
+      "strike": 150,
+      "ce": { "ltp": 133.25, "ltp_change_pct": 0, "oi": 0, "oi_change_pct": 0, "volume": 0 },
+      "pe": { "ltp": 0.15, "ltp_change_pct": 0, "oi": 1, "oi_change_pct": 0, "volume": 0 }
+    },
+    {
+      "strike": 160,
+      "ce": { "ltp": 124.3, "ltp_change_pct": 0, "oi": 0, "oi_change_pct": 0, "volume": 0 },
+      "pe": { "ltp": 0.25, "ltp_change_pct": 0, "oi": 1, "oi_change_pct": 0, "volume": 0 }
+    },
+    {
+      "strike": 170,
+      "ce": { "ltp": 115.65, "ltp_change_pct": 0, "oi": 0, "oi_change_pct": 0, "volume": 0 },
+      "pe": { "ltp": 0.1, "ltp_change_pct": 0, "oi": 1, "oi_change_pct": 0, "volume": 0 }
+    },
+    {
+      "strike": 175,
+      "ce": { "ltp": 111.45, "ltp_change_pct": 0, "oi": 0, "oi_change_pct": 0, "volume": 0 },
+      "pe": { "ltp": 0.1, "ltp_change_pct": 0, "oi": 5, "oi_change_pct": 0, "volume": 0 }
+    },
+    {
+      "strike": 180,
+      "ce": { "ltp": 107.35, "ltp_change_pct": 0, "oi": 0, "oi_change_pct": 0, "volume": 0 },
+      "pe": { "ltp": 0.05, "ltp_change_pct": 0, "oi": 24, "oi_change_pct": 0, "volume": 0 }
+    },
+    {
+      "strike": 190,
+      "ce": { "ltp": 99.35, "ltp_change_pct": 0, "oi": 0, "oi_change_pct": 0, "volume": 0 },
+      "pe": { "ltp": 0.05, "ltp_change_pct": 0, "oi": 454, "oi_change_pct": 0, "volume": 0 }
+    },
+    {
+      "strike": 195,
+      "ce": { "ltp": 119, "ltp_change_pct": 0, "oi": 1, "oi_change_pct": 0, "volume": 0 },
+      "pe": { "ltp": 0.1, "ltp_change_pct": 0, "oi": 6, "oi_change_pct": 0, "volume": 0 }
+    },
+    {
+      "strike": 200,
+      "ce": { "ltp": 72.45, "ltp_change_pct": 0, "oi": 8, "oi_change_pct": 0, "volume": 0 },
+      "pe": { "ltp": 0.05, "ltp_change_pct": 0, "oi": 1407, "oi_change_pct": 0, "volume": 0 }
+    },
+    {
+      "strike": 205,
+      "ce": { "ltp": 88.1, "ltp_change_pct": 0, "oi": 0, "oi_change_pct": 0, "volume": 0 },
+      "pe": { "ltp": 0.05, "ltp_change_pct": 0, "oi": 209, "oi_change_pct": 0, "volume": 0 }
+    },
+    {
+      "strike": 210,
+      "ce": { "ltp": 29, "ltp_change_pct": 0, "oi": 9, "oi_change_pct": 0, "volume": 0 },
+      "pe": { "ltp": 0.05, "ltp_change_pct": 0, "oi": 1919, "oi_change_pct": 0, "volume": 0 }
+    },
+    {
+      "strike": 215,
+      "ce": { "ltp": 81.1, "ltp_change_pct": 0, "oi": 0, "oi_change_pct": 0, "volume": 0 },
+      "pe": { "ltp": 0.05, "ltp_change_pct": 0, "oi": 269, "oi_change_pct": 0, "volume": 0 }
+    },
+    {
+      "strike": 220,
+      "ce": { "ltp": 68.6, "ltp_change_pct": 16.95, "oi": 88, "oi_change_pct": -1.12, "volume": 0 },
+      "pe": { "ltp": 0.05, "ltp_change_pct": 0, "oi": 1232, "oi_change_pct": 0, "volume": 0 }
+    },
+    {
+      "strike": 225,
+      "ce": { "ltp": 45.55, "ltp_change_pct": 0, "oi": 10, "oi_change_pct": 0, "volume": 0 },
+      "pe": { "ltp": 0.05, "ltp_change_pct": 0, "oi": 490, "oi_change_pct": 0, "volume": 0 }
+    },
+    {
+      "strike": 230,
+      "ce": { "ltp": 58.5, "ltp_change_pct": -2.8, "oi": 86, "oi_change_pct": 0, "volume": 0 },
+      "pe": { "ltp": 0.05, "ltp_change_pct": 0, "oi": 4111, "oi_change_pct": -2.28, "volume": 0 }
+    },
+    {
+      "strike": 235,
+      "ce": { "ltp": 57.45, "ltp_change_pct": 0, "oi": 48, "oi_change_pct": 0, "volume": 0 },
+      "pe": { "ltp": 0.05, "ltp_change_pct": 0, "oi": 1474, "oi_change_pct": 0.14, "volume": 0 }
+    },
+    {
+      "strike": 240,
+      "ce": { "ltp": 48.95, "ltp_change_pct": -2.95, "oi": 154, "oi_change_pct": -2.53, "volume": 0 },
+      "pe": { "ltp": 0.05, "ltp_change_pct": 0, "oi": 4756, "oi_change_pct": 2.9, "volume": 0 }
+    },
+    {
+      "strike": 245,
+      "ce": { "ltp": 44.1, "ltp_change_pct": -3.1, "oi": 68, "oi_change_pct": 0, "volume": 0 },
+      "pe": { "ltp": 0.05, "ltp_change_pct": 0, "oi": 2919, "oi_change_pct": -0.27, "volume": 0 }
+    },
+    {
+      "strike": 250,
+      "ce": { "ltp": 38.35, "ltp_change_pct": -2, "oi": 1064, "oi_change_pct": -0.09, "volume": 0 },
+      "pe": { "ltp": 0.05, "ltp_change_pct": -0.05, "oi": 7404, "oi_change_pct": 5.37, "volume": 0 }
+    },
+    {
+      "strike": 255,
+      "ce": { "ltp": 33.95, "ltp_change_pct": -1.55, "oi": 437, "oi_change_pct": -2.46, "volume": 0 },
+      "pe": { "ltp": 0.05, "ltp_change_pct": 0, "oi": 4652, "oi_change_pct": -0.06, "volume": 0 }
+    },
+    {
+      "strike": 260,
+      "ce": { "ltp": 28.9, "ltp_change_pct": -1.55, "oi": 966, "oi_change_pct": -1.33, "volume": 0 },
+      "pe": { "ltp": 0.05, "ltp_change_pct": -0.05, "oi": 9310, "oi_change_pct": 6.58, "volume": 0 }
+    },
+    {
+      "strike": 265,
+      "ce": { "ltp": 23.5, "ltp_change_pct": -1.85, "oi": 3007, "oi_change_pct": 0.4, "volume": 0 },
+      "pe": { "ltp": 0.1, "ltp_change_pct": 0, "oi": 6838, "oi_change_pct": -2.79, "volume": 0 }
+    },
+    {
+      "strike": 270,
+      "ce": { "ltp": 18.55, "ltp_change_pct": -1.8, "oi": 6204, "oi_change_pct": -5.08, "volume": 0 },
+      "pe": { "ltp": 0.15, "ltp_change_pct": -0.05, "oi": 13956, "oi_change_pct": 1.48, "volume": 0 }
+    },
+    {
+      "strike": 275,
+      "ce": { "ltp": 13.65, "ltp_change_pct": -1.9, "oi": 4243, "oi_change_pct": -6.67, "volume": 0 },
+      "pe": { "ltp": 0.25, "ltp_change_pct": -0.15, "oi": 9922, "oi_change_pct": 25.98, "volume": 0 }
+    },
+    {
+      "strike": 280,
+      "ce": { "ltp": 9.1, "ltp_change_pct": -1.85, "oi": 3981, "oi_change_pct": -15.6, "volume": 0 },
+      "pe": { "ltp": 0.65, "ltp_change_pct": -0.25, "oi": 13634, "oi_change_pct": -0.58, "volume": 0 }
+    },
+    {
+      "strike": 285,
+      "ce": { "ltp": 4.95, "ltp_change_pct": -1.9, "oi": 4024, "oi_change_pct": 39.05, "volume": 0 },
+      "pe": { "ltp": 1.55, "ltp_change_pct": -0.2, "oi": 12116, "oi_change_pct": 21.52, "volume": 0 }
+    },
+    {
+      "strike": 290,
+      "ce": { "ltp": 2.05, "ltp_change_pct": -1.5, "oi": 17771, "oi_change_pct": 35.1, "volume": 100000 },
+      "pe": { "ltp": 3.6, "ltp_change_pct": 0.2, "oi": 14114, "oi_change_pct": -6.56, "volume": 0 }
+    },
+    {
+      "strike": 295,
+      "ce": { "ltp": 0.75, "ltp_change_pct": -1.05, "oi": 11040, "oi_change_pct": 4, "volume": 0 },
+      "pe": { "ltp": 7.25, "ltp_change_pct": 0.6, "oi": 3666, "oi_change_pct": -11.11, "volume": 0 }
+    },
+    {
+      "strike": 300,
+      "ce": { "ltp": 0.2, "ltp_change_pct": -0.6, "oi": 22686, "oi_change_pct": 10.99, "volume": 0 },
+      "pe": { "ltp": 11.7, "ltp_change_pct": 1.25, "oi": 8431, "oi_change_pct": -1.86, "volume": 0 }
+    },
+    {
+      "strike": 305,
+      "ce": { "ltp": 0.05, "ltp_change_pct": -0.35, "oi": 8468, "oi_change_pct": 0.08, "volume": 0 },
+      "pe": { "ltp": 16.6, "ltp_change_pct": 1.3, "oi": 492, "oi_change_pct": -26.57, "volume": 0 }
+    },
+    {
+      "strike": 310,
+      "ce": { "ltp": 0.05, "ltp_change_pct": -0.15, "oi": 8034, "oi_change_pct": 1.94, "volume": 0 },
+      "pe": { "ltp": 21.55, "ltp_change_pct": 1.55, "oi": 464, "oi_change_pct": -13.59, "volume": 0 }
+    },
+    {
+      "strike": 315,
+      "ce": { "ltp": 0.05, "ltp_change_pct": -0.05, "oi": 3041, "oi_change_pct": -2.66, "volume": 0 },
+      "pe": { "ltp": 26.75, "ltp_change_pct": 1.7, "oi": 107, "oi_change_pct": 7, "volume": 0 }
+    },
+    {
+      "strike": 320,
+      "ce": { "ltp": 0.05, "ltp_change_pct": -0.05, "oi": 4308, "oi_change_pct": 1.75, "volume": 0 },
+      "pe": { "ltp": 31.2, "ltp_change_pct": 1, "oi": 106, "oi_change_pct": -0.93, "volume": 0 }
+    },
+    {
+      "strike": 325,
+      "ce": { "ltp": 0.05, "ltp_change_pct": 0, "oi": 1723, "oi_change_pct": -4.33, "volume": 0 },
+      "pe": { "ltp": 34.7, "ltp_change_pct": 0, "oi": 6, "oi_change_pct": 0, "volume": 0 }
+    },
+    {
+      "strike": 330,
+      "ce": { "ltp": 0.05, "ltp_change_pct": 0, "oi": 1239, "oi_change_pct": 1.47, "volume": 0 },
+      "pe": { "ltp": 41.15, "ltp_change_pct": 1.9, "oi": 33, "oi_change_pct": 0, "volume": 0 }
+    },
+    {
+      "strike": 335,
+      "ce": { "ltp": 0.05, "ltp_change_pct": 0, "oi": 587, "oi_change_pct": 0, "volume": 0 },
+      "pe": { "ltp": 77.6, "ltp_change_pct": 0, "oi": 0, "oi_change_pct": 0, "volume": 0 }
+    },
+    {
+      "strike": 340,
+      "ce": { "ltp": 0.05, "ltp_change_pct": 0, "oi": 1184, "oi_change_pct": 0, "volume": 0 },
+      "pe": { "ltp": 51.15, "ltp_change_pct": 9, "oi": 1, "oi_change_pct": 0, "volume": 0 }
+    },
+    {
+      "strike": 345,
+      "ce": { "ltp": 0.05, "ltp_change_pct": 0, "oi": 553, "oi_change_pct": 0, "volume": 0 },
+      "pe": { "ltp": 84.95, "ltp_change_pct": 0, "oi": 0, "oi_change_pct": 0, "volume": 0 }
+    },
+    {
+      "strike": 350,
+      "ce": { "ltp": 0.05, "ltp_change_pct": 0, "oi": 5276, "oi_change_pct": -1.09, "volume": 0 },
+      "pe": { "ltp": 57.3, "ltp_change_pct": 0, "oi": 21, "oi_change_pct": 0, "volume": 0 }
+    },
+    {
+      "strike": 355,
+      "ce": { "ltp": 0.1, "ltp_change_pct": 0, "oi": 8, "oi_change_pct": 0, "volume": 0 },
+      "pe": { "ltp": 92.5, "ltp_change_pct": 0, "oi": 0, "oi_change_pct": 0, "volume": 0 }
+    },
+    {
+      "strike": 360,
+      "ce": { "ltp": 0.05, "ltp_change_pct": 0, "oi": 854, "oi_change_pct": 0.12, "volume": 0 },
+      "pe": { "ltp": 96.4, "ltp_change_pct": 0, "oi": 0, "oi_change_pct": 0, "volume": 0 }
+    },
+    {
+      "strike": 365,
+      "ce": { "ltp": 0.05, "ltp_change_pct": 0, "oi": 24, "oi_change_pct": 0, "volume": 0 },
+      "pe": { "ltp": 100.3, "ltp_change_pct": 0, "oi": 0, "oi_change_pct": 0, "volume": 0 }
+    },
+    {
+      "strike": 370,
+      "ce": { "ltp": 0.05, "ltp_change_pct": 0, "oi": 375, "oi_change_pct": 0, "volume": 0 },
+      "pe": { "ltp": 104.25, "ltp_change_pct": 0, "oi": 0, "oi_change_pct": 0, "volume": 0 }
+    },
+    {
+      "strike": 375,
+      "ce": { "ltp": 0.1, "ltp_change_pct": 0, "oi": 9, "oi_change_pct": 0, "volume": 0 },
+      "pe": { "ltp": 108.25, "ltp_change_pct": 0, "oi": 0, "oi_change_pct": 0, "volume": 0 }
+    },
+    {
+      "strike": 380,
+      "ce": { "ltp": 0.05, "ltp_change_pct": 0, "oi": 476, "oi_change_pct": 0, "volume": 0 },
+      "pe": { "ltp": 86.3, "ltp_change_pct": 0, "oi": 1, "oi_change_pct": 0, "volume": 0 }
+    },
+    {
+      "strike": 385,
+      "ce": { "ltp": 0.05, "ltp_change_pct": 0, "oi": 1, "oi_change_pct": 0, "volume": 0 },
+      "pe": { "ltp": 85.5, "ltp_change_pct": 0, "oi": 1, "oi_change_pct": 0, "volume": 0 }
+    },
+    {
+      "strike": 400,
+      "ce": { "ltp": 0.05, "ltp_change_pct": 0, "oi": 3810, "oi_change_pct": 0, "volume": 0 },
+      "pe": { "ltp": 128.9, "ltp_change_pct": 0, "oi": 0, "oi_change_pct": 0, "volume": 0 }
+    },
+    {
+      "strike": 450,
+      "ce": { "ltp": 0.1, "ltp_change_pct": 0, "oi": 8, "oi_change_pct": 0, "volume": 0 },
+      "pe": { "ltp": 158.65, "ltp_change_pct": 0, "oi": 0, "oi_change_pct": 0, "volume": 0 }
+    },
+    {
+      "strike": 515,
+      "ce": { "ltp": 0.05, "ltp_change_pct": 0, "oi": 5, "oi_change_pct": 0, "volume": 0 },
+      "pe": { "ltp": 198, "ltp_change_pct": 0, "oi": 0, "oi_change_pct": 0, "volume": 0 }
+    }
+  ]
+}

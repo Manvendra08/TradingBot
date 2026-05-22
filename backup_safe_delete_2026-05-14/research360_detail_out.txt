@@ -1,0 +1,14 @@
+=== optionChainApi.php call context ===
+     }else{                     faq('optiondiv');                     $(".optionchaindata").show();                      $(".nifty50data").html(fno_stock);                     $(".nifty50data").show();                 }                 var fno_expiry =  $('#fno_expiry').val();                 $(".loader1").show();                                  $.post("https://www.research360.in/fno/option/ajax/optionChainApi.php",{                     stock: fno_stock,                     expiry: fno_expiry,showall:$('#showall:checked').val(),showallnew:$('#showallnew:checked').val()                 },                 function(html, status){                     $( "#oichaintable" ).html( html.data);                     $("span.f_lot_size").html(html.lot_size);                      $("div.f_fut_spotprice
+
+=== fno_* classes ===
+card-title font-CaribbeanGreen font-medium fontwt-medium fno_pcr
+
+=== Call OI / Put OI total containers ===
+--- Call OI ---
+              radius:2,                 },                 yAxis: 1,                 zIndex:3                                 },                 {                 type:'column',                 name:'Call OI Change',                 color:'#06c39b',                 pointPadding: 0.1,                 groupPadding: 0,                 data: [],                 yAxis: 2,                 zIndex:3      
+
+--- Put OI ---
+groupPadding: 0,                 data: [],                 yAxis: 2,                 zIndex:3                                 },                 {                 type:'column',                 name:'Put OI Change',                  color:'#f62f3b',                 pointPadding: 0.15,                 data: [],                 yAxis: 2,                 zIndex:3,                              },     
+
+=== data-* attributes near metrics ===
