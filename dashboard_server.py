@@ -921,11 +921,11 @@ def get_paper_summary(symbol: str = ""):
         tuple(params),
     )
     
-    # Symbol breakdown
+    # Symbol breakdown — normalise symbol to UPPER to avoid crudeoil/CRUDEOIL duplicates
     symbol_stats = _q(
         f"""
         SELECT
-            symbol,
+            UPPER(symbol) AS symbol,
             COUNT(*) AS total_trades,
             SUM(CASE WHEN status='CLOSED_TARGET' THEN 1 ELSE 0 END) AS wins,
             SUM(CASE WHEN status='CLOSED_SL' THEN 1 ELSE 0 END) AS losses,
@@ -934,7 +934,7 @@ def get_paper_summary(symbol: str = ""):
             SUM(CASE WHEN status LIKE 'CLOSED_%' THEN 1 ELSE 0 END) AS closed_count
         FROM paper_trades
         {where}
-        GROUP BY symbol
+        GROUP BY UPPER(symbol)
         ORDER BY total_pnl DESC
         """,
         tuple(params),
@@ -1105,6 +1105,35 @@ def _calculate_consecutive_wins(where: str, params: tuple) -> int:
         else:
             break
     return streak
+
+
+@app.delete("/api/paper_trades")
+def delete_paper_trades(date_from: str = "", date_to: str = ""):
+    """
+    Delete paper trades by date range.
+    date_from / date_to: ISO date strings e.g. '2026-05-01' or '2026-05-26T23:59:59'
+    At least one of date_from or date_to must be provided.
+    """
+    if not date_from and not date_to:
+        return JSONResponse({"ok": False, "error": "Provide at least date_from or date_to"}, status_code=400)
+    clauses = []
+    params: list = []
+    if date_from:
+        clauses.append("opened_at >= ?")
+        params.append(date_from)
+    if date_to:
+        # include the full end day
+        end = date_to if "T" in date_to else date_to + "T23:59:59"
+        clauses.append("opened_at <= ?")
+        params.append(end)
+    where = "WHERE " + " AND ".join(clauses)
+    # Count first so we can report how many were deleted
+    count_rows = _q(f"SELECT COUNT(*) AS n FROM paper_trades {where}", tuple(params))
+    n = int((count_rows[0] if count_rows else {}).get("n") or 0)
+    with _db() as conn:
+        conn.execute(f"DELETE FROM paper_trades {where}", tuple(params))
+        conn.commit()
+    return {"ok": True, "deleted": n, "date_from": date_from, "date_to": date_to}
 
 
 @app.get("/api/paper_equity")

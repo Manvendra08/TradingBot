@@ -676,6 +676,143 @@ tr:hover td { background: rgba(0,229,160,.04); }
 :not([data-theme="light"]) .empty-state { color: #94a3b8; }
 
 /* ════════════════════════════════════════════
+   DELETE BUTTON & MODAL
+════════════════════════════════════════════ */
+.btn-danger-outline {
+  border-color: var(--red) !important;
+  color: var(--red) !important;
+  font-size: 11px !important;
+  padding: 5px 12px !important;
+}
+.btn-danger-outline:hover { background: rgba(255,77,109,.08) !important; }
+[data-theme="light"] .btn-danger-outline { border-color: #dc2626 !important; color: #dc2626 !important; }
+[data-theme="light"] .btn-danger-outline:hover { background: rgba(220,38,38,.06) !important; }
+
+.del-modal-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 28px 32px;
+  width: 460px;
+  max-width: 95vw;
+  box-shadow: 0 24px 60px rgba(0,0,0,.5);
+}
+[data-theme="light"] .del-modal-box {
+  background: #fff;
+  box-shadow: 0 24px 60px rgba(15,23,42,.18);
+}
+
+.del-modal-title {
+  font-size: 16px; font-weight: 700; color: var(--text);
+  margin-bottom: 8px;
+}
+[data-theme="light"] .del-modal-title { color: #0f172a; }
+
+.del-modal-desc {
+  font-size: 12px; color: var(--text-dim); line-height: 1.6;
+  margin-bottom: 20px; padding: 10px 12px;
+  background: rgba(255,77,109,.06);
+  border: 1px solid rgba(255,77,109,.2);
+  border-radius: 8px;
+}
+[data-theme="light"] .del-modal-desc {
+  color: #64748b;
+  background: #fff5f5;
+  border-color: #fecaca;
+}
+
+.del-modal-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 16px; }
+
+.del-field { display: flex; flex-direction: column; gap: 6px; }
+
+.del-lbl {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 1.2px;
+  font-weight: 700; color: var(--text-dim);
+}
+[data-theme="light"] .del-lbl { color: #475569; }
+
+.del-input {
+  padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--border) !important;
+  background: var(--surface-2) !important;
+  color: var(--text) !important;
+  font-family: var(--mono); font-size: 12px;
+  outline: none; transition: border-color .2s;
+}
+.del-input:focus { border-color: var(--accent) !important; }
+[data-theme="light"] .del-input {
+  background: #f8fafc !important;
+  border-color: #cbd5e1 !important;
+  color: #0f172a !important;
+}
+[data-theme="light"] .del-input:focus { border-color: #0891b2 !important; }
+
+.del-preview {
+  padding: 10px 14px; border-radius: 8px; margin-bottom: 16px;
+  font-size: 12px; font-family: var(--mono);
+  background: rgba(255,214,102,.08);
+  border: 1px solid rgba(255,214,102,.25);
+  color: var(--yellow);
+}
+[data-theme="light"] .del-preview {
+  background: #fffbeb;
+  border-color: #fde68a;
+  color: #92400e;
+}
+
+.del-modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+
+.btn-preview {
+  border-color: var(--cyan) !important;
+  color: var(--cyan) !important;
+}
+.btn-preview:hover { background: rgba(34,211,238,.08) !important; }
+[data-theme="light"] .btn-preview { border-color: #0891b2 !important; color: #0891b2 !important; }
+
+.btn-confirm-del {
+  border-color: var(--red) !important;
+  color: var(--red) !important;
+}
+.btn-confirm-del:not(:disabled):hover { background: rgba(255,77,109,.12) !important; }
+.btn-confirm-del:disabled { opacity: .4; cursor: not-allowed; }
+[data-theme="light"] .btn-confirm-del { border-color: #dc2626 !important; color: #dc2626 !important; }
+
+/* ════════════════════════════════════════════
+   LIGHT THEME — explicit overrides for all text
+════════════════════════════════════════════ */
+[data-theme="light"] .kpi .val   { color: #0f172a !important; }
+[data-theme="light"] .kpi .lbl   { color: #475569 !important; }
+[data-theme="light"] .kpi .sub   { color: #64748b !important; }
+[data-theme="light"] .good       { color: #059669 !important; }
+[data-theme="light"] .bad        { color: #dc2626 !important; }
+[data-theme="light"] .warn       { color: #d97706 !important; }
+[data-theme="light"] .info       { color: #4338ca !important; }
+[data-theme="light"] .cyan       { color: #0891b2 !important; }
+[data-theme="light"] .orng       { color: #ea580c !important; }
+[data-theme="light"] .card-title { color: #475569 !important; }
+[data-theme="light"] .sym-name   { color: #0891b2 !important; }
+[data-theme="light"] .sym-lbl    { color: #64748b !important; }
+[data-theme="light"] .sym-val    { color: #0f172a !important; }
+[data-theme="light"] .metric-box .m-lbl { color: #475569 !important; }
+[data-theme="light"] .metric-box .m-val { color: #0f172a !important; }
+[data-theme="light"] .dist-label-row    { color: #475569 !important; }
+[data-theme="light"] .dist-cell-lbl    { color: #64748b !important; }
+[data-theme="light"] .dist-cell-val    { color: #0f172a !important; }
+[data-theme="light"] .dist-cell-pct    { color: #64748b !important; }
+[data-theme="light"] .empty-state      { color: #64748b !important; }
+[data-theme="light"] .b-dur            { background: #f1f5f9; color: #475569; }
+[data-theme="light"] .lot-chip         { background: #f1f5f9; color: #64748b; }
+[data-theme="light"] .verdict-label    { color: #0f172a !important; }
+[data-theme="light"] .verdict-display  { background: #f1f5f9; border-color: #cbd5e1; }
+[data-theme="light"] .vt-bias          { color: #475569 !important; }
+[data-theme="light"] .vt-strategy      { color: #0891b2 !important; }
+[data-theme="light"] .vt-desc          { color: #1e293b !important; }
+[data-theme="light"] .vt-action        { color: #334155 !important; background: #f1f5f9; border-left-color: #0891b2; }
+[data-theme="light"] .pp               { color: #059669 !important; }
+[data-theme="light"] .pn               { color: #dc2626 !important; }
+[data-theme="light"] .pz               { color: #94a3b8 !important; }
+
+/* ════════════════════════════════════════════
    ANIMATIONS
 ════════════════════════════════════════════ */
 @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
@@ -874,9 +1011,14 @@ tr:hover td { background: rgba(0,229,160,.04); }
 
 <!-- Trade History -->
 <div class="card">
-  <div class="card-title">
-    <div class="card-title-bar purple"></div>
-    Trade History
+  <div class="card-title" style="justify-content:space-between;">
+    <div style="display:flex;align-items:center;gap:8px;">
+      <div class="card-title-bar purple"></div>
+      Trade History
+    </div>
+    <button class="btn btn-danger-outline" onclick="openDeleteModal()" title="Delete trades by date range">
+      🗑 Delete Range
+    </button>
   </div>
   <div class="tbl-wrap">
     <table>
@@ -901,6 +1043,30 @@ tr:hover td { background: rgba(0,229,160,.04); }
         <tr><td colspan="15"><div class="empty-state"><div class="empty-icon">⏳</div>Loading…</div></td></tr>
       </tbody>
     </table>
+  </div>
+</div>
+
+<!-- Delete Modal -->
+<div id="delete-modal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.6);backdrop-filter:blur(4px);align-items:center;justify-content:center;">
+  <div class="del-modal-box">
+    <div class="del-modal-title">🗑 Delete Trade History</div>
+    <div class="del-modal-desc">Permanently removes all trades opened within the selected date range. This cannot be undone.</div>
+    <div class="del-modal-fields">
+      <div class="del-field">
+        <label class="del-lbl">From Date</label>
+        <input type="date" id="del-from" class="del-input">
+      </div>
+      <div class="del-field">
+        <label class="del-lbl">To Date</label>
+        <input type="date" id="del-to" class="del-input">
+      </div>
+    </div>
+    <div id="del-preview" class="del-preview" style="display:none;"></div>
+    <div class="del-modal-actions">
+      <button class="btn" onclick="closeDeleteModal()">Cancel</button>
+      <button class="btn btn-preview" onclick="previewDelete()">Preview</button>
+      <button class="btn btn-confirm-del" id="del-confirm-btn" onclick="confirmDelete()" disabled>Delete</button>
+    </div>
   </div>
 </div>
 
@@ -1196,6 +1362,88 @@ async function loadAll() {
     renderEquity(equity||[]);
     document.getElementById('last').textContent=`Updated ${new Date().toLocaleTimeString('en-IN')}`;
   } catch(e) { console.error('API error:',e); }
+}
+
+/* ── Delete Modal ─────────────────────────────────────────────────── */
+function openDeleteModal() {
+  // Default: from = first day of current month, to = today
+  const today = new Date();
+  const firstOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+  document.getElementById('del-from').value = firstOfMonth.toISOString().slice(0,10);
+  document.getElementById('del-to').value   = today.toISOString().slice(0,10);
+  document.getElementById('del-preview').style.display = 'none';
+  document.getElementById('del-confirm-btn').disabled = true;
+  const m = document.getElementById('delete-modal');
+  m.style.display = 'flex';
+}
+
+function closeDeleteModal() {
+  document.getElementById('delete-modal').style.display = 'none';
+}
+
+// Close on backdrop click
+document.getElementById('delete-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeDeleteModal();
+});
+
+async function previewDelete() {
+  const from = document.getElementById('del-from').value;
+  const to   = document.getElementById('del-to').value;
+  if (!from && !to) { alert('Select at least one date.'); return; }
+  try {
+    const params = new URLSearchParams();
+    if (from) params.set('date_from', from);
+    if (to)   params.set('date_to', to);
+    // Use GET paper_trades to count matching rows
+    const trades = await api(`/api/paper_trades?limit=9999`);
+    const fromTs = from ? new Date(from).getTime() : 0;
+    const toTs   = to   ? new Date(to + 'T23:59:59').getTime() : Infinity;
+    const matching = trades.filter(t => {
+      const ts = new Date(t.opened_at).getTime();
+      return ts >= fromTs && ts <= toTs;
+    });
+    const prev = document.getElementById('del-preview');
+    prev.style.display = 'block';
+    if (matching.length === 0) {
+      prev.textContent = '⚠ No trades found in this date range.';
+      document.getElementById('del-confirm-btn').disabled = true;
+    } else {
+      const syms = [...new Set(matching.map(t => t.symbol))].join(', ');
+      prev.textContent = `⚠ ${matching.length} trade(s) will be deleted — Symbols: ${syms}`;
+      document.getElementById('del-confirm-btn').disabled = false;
+    }
+  } catch(e) { alert('Preview failed: ' + e.message); }
+}
+
+async function confirmDelete() {
+  const from = document.getElementById('del-from').value;
+  const to   = document.getElementById('del-to').value;
+  const label = (from && to) ? `${from} → ${to}` : (from || to);
+  if (!confirm(`Permanently delete trades from ${label}?\n\nThis cannot be undone.`)) return;
+  try {
+    const params = new URLSearchParams();
+    if (from) params.set('date_from', from);
+    if (to)   params.set('date_to', to);
+    const res = await fetch(`/api/paper_trades?${params}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (data.ok) {
+      closeDeleteModal();
+      await loadAll();
+      // Brief toast
+      const t = document.createElement('div');
+      t.textContent = `✓ Deleted ${data.deleted} trade(s)`;
+      Object.assign(t.style, {
+        position:'fixed', bottom:'24px', right:'24px', zIndex:'99999',
+        background:'#059669', color:'#fff', padding:'10px 18px',
+        borderRadius:'8px', fontFamily:'monospace', fontSize:'13px',
+        boxShadow:'0 4px 16px rgba(0,0,0,.3)', transition:'opacity .4s'
+      });
+      document.body.appendChild(t);
+      setTimeout(() => { t.style.opacity='0'; setTimeout(()=>t.remove(), 400); }, 2500);
+    } else {
+      alert('Delete failed: ' + (data.error || 'Unknown error'));
+    }
+  } catch(e) { alert('Delete failed: ' + e.message); }
 }
 
 async function init() {
