@@ -383,22 +383,21 @@ def close_paper_trade(trade_id: int, closed_at: str, exit_underlying: float, exi
         
         # Calculate P&L based on trade type
         if option_type in ("CE", "PE"):
-            # Options: Use premium difference
-            if entry_premium > 0 and exit_premium and exit_premium > 0:
-                # Premium-based P&L (realistic)
+            if entry_premium and entry_premium > 0 and exit_premium and exit_premium > 0:
+                # Best case: both premiums known → realistic option P&L
                 pnl_points = exit_premium - entry_premium
-                pnl_rupees = pnl_points * lot_size * lots
             else:
-                # Fallback to underlying-based (legacy)
+                # Fallback: underlying move (legacy / when premium unavailable)
                 if option_type == "CE":
-                    pnl_points = exit_underlying - entry_underlying
+                    pnl_points = float(exit_underlying) - entry_underlying
                 else:
-                    pnl_points = entry_underlying - exit_underlying
-                pnl_rupees = pnl_points * lot_size * lots
+                    pnl_points = entry_underlying - float(exit_underlying)
         else:
-            # Futures (FUT): Use underlying price difference
-            pnl_points = exit_underlying - entry_underlying
-            pnl_rupees = pnl_points * lot_size * lots
+            # Futures: underlying price difference
+            pnl_points = float(exit_underlying) - entry_underlying
+
+        # Always compute rupees — never leave it 0
+        pnl_rupees = pnl_points * lot_size * lots
         
         conn.execute(
             """
