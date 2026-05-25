@@ -3,95 +3,54 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>NSEBOT - Paper Trading</title>
+<title>NSEBOT — Paper Trading</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <link rel="stylesheet" href="theme.css">
 <script src="theme.js"></script>
 <style>
-  /* ── Page-specific overrides ── */
-  main { padding: 18px 20px; display: grid; gap: 16px; max-width: 1900px; margin: 0 auto; }
+/* ── Layout ── */
+body { min-height: 100vh; }
+main { padding: 20px 24px; display: grid; gap: 18px; max-width: 1920px; margin: 0 auto; }
 
-  .kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(175px, 1fr)); gap: 12px; }
-  .kpi {
-    background: linear-gradient(135deg, var(--surface) 0%, var(--surface-2) 100%);
-    border: 1px solid var(--border); border-radius: 8px; padding: 14px;
-    position: relative; overflow: hidden;
-  }
-  .kpi::before {
-    content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
-    background: linear-gradient(90deg, transparent, var(--accent), transparent);
-    opacity: 0; transition: opacity 0.3s;
-  }
-  .kpi:hover::before { opacity: 1; }
-  .kpi .label { color: var(--text-dim); font-size: 10px; text-transform: uppercase; letter-spacing: 1.2px; margin-bottom: 8px; }
-  .kpi .val   { font-family: var(--mono); font-size: 22px; font-weight: 700; }
-  .kpi .sub   { font-size: 11px; color: var(--text-dim); margin-top: 4px; font-family: var(--mono); }
-  .good { color: var(--green); } .bad { color: var(--red); }
-  .warn { color: var(--yellow); } .neutral { color: var(--blue); }
-
-  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
-  .card-title {
-    color: var(--text); font-size: 13px; font-weight: 600;
-    text-transform: uppercase; letter-spacing: 1px; margin-bottom: 14px;
-    display: flex; align-items: center; gap: 8px;
-  }
-  .card-title::before { content: ''; width: 3px; height: 14px; background: var(--accent); border-radius: 2px; }
-
-  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-  .grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
-  @media (max-width: 1200px) { .grid2 { grid-template-columns: 1fr; } }
-
-  .sym-card {
-    background: var(--surface-2); border: 1px solid var(--border);
-    border-radius: 6px; padding: 12px;
-  }
-  .sym-card .sym-name { font-family: var(--mono); font-size: 13px; color: var(--accent); font-weight: 700; margin-bottom: 8px; }
-  .sym-card .sym-row  { display: flex; justify-content: space-between; padding: 3px 0; font-size: 12px; }
-  .sym-card .sym-lbl  { color: var(--text-dim); }
-  .sym-card .sym-val  { font-family: var(--mono); font-weight: 600; }
-
-  .chart-wrap { height: 280px; }
-
-  .tbl-wrap { overflow-x: auto; }
-  table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; }
-  th, td { padding: 9px 10px; border-bottom: 1px solid var(--border); text-align: right; white-space: nowrap; }
-  th { color: var(--text-dim); font-size: 10px; text-transform: uppercase; letter-spacing: 1px; background: var(--surface-2); position: sticky; top: 0; z-index: 5; }
-  td.L, th.L { text-align: left; }
-  tr:hover td { background: rgba(0,229,160,0.03); }
-
-  .b-dur    { background: var(--surface-2); color: var(--text-dim); }
-  .b-type   { background: rgba(77,166,255,.12); color: var(--blue); font-size: 10px; padding: 2px 6px; border-radius: 3px; }
-
-  .pp { color: var(--green); font-weight: 600; }
-  .pn { color: var(--red);   font-weight: 600; }
-  .pz { color: var(--text-dim); }
-
-  .lot-chip { font-size: 10px; color: var(--text-dim); background: var(--surface-2); padding: 1px 5px; border-radius: 3px; margin-left: 4px; }
-
-  header {
-    display: flex; align-items: center; gap: 12px; padding: 12px 20px;
-    border-bottom: 1px solid var(--border); background: var(--surface);
-    position: sticky; top: 0; z-index: 100;
-  }
-  .logo { font-family: var(--mono); color: var(--accent); letter-spacing: 1px; font-weight: 700; font-size: 15px; }
-  .sep { flex: 1; }
-  .btn, select {
-    border: 1px solid var(--border); background: var(--bg); color: var(--text);
-    padding: 6px 12px; border-radius: 4px; font-family: var(--mono); font-size: 12px;
-    transition: border-color 0.2s;
-  }
-  .btn:hover, select:hover { border-color: var(--accent); cursor: pointer; }
-  .btn.primary { border-color: var(--accent); color: var(--accent); }
+/* ── Header ── */
+header {
+  display: flex; align-items: center; gap: 10px; padding: 0 24px;
+  height: 52px; border-bottom: 1px solid var(--border);
+  background: var(--surface); position: sticky; top: 0; z-index: 100;
+}
+[data-theme="light"] header { box-shadow: 0 2px 8px rgba(15,23,42,.08); }
+.logo { font-family: var(--mono); color: var(--accent); font-weight: 700; font-size: 14px; letter-spacing: 1px; white-space: nowrap; }
+.hdr-sep { flex: 1; }
+.hdr-label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .8px; white-space: nowrap; }
+.btn {
+  border: 1px solid var(--border); background: var(--bg); color: var(--text);
+  padding: 5px 12px; border-radius: 5px; font-family: var(--mono); font-size: 11px;
+  cursor: pointer; transition: all .18s; white-space: nowrap;
+}
+.btn:hover { border-color: var(--accent); color: var(--accent); }
+.btn.primary { border-color: var(--accent); color: var(--accent); }
+select {
+  border: 1px solid var(--border); background: var(--bg); color: var(--text);
+  padding: 5px 8px; border-radius: 5px; font-family: var(--mono); font-size: 11px;
+  cursor: pointer; transition: border-color .18s;
+}
+select:hover { border-color: var(--accent); }
+[data-theme="light"] .btn, [data-theme="light"] select {
+  background: #fff; border-color: #cbd5e1; color: #0f172a;
+  box-shadow: 0 1px 2px rgba(15,23,42,.06);
+}
+[data-theme="light"] .btn:hover, [data-theme="light"] select:hover { border-color: #0891b2; }
+[data-theme="light"] .btn.primary { border-color: #0891b2; color: #0891b2; font-weight: 600; }
+#last { font-family: var(--mono); color: var(--text-dim); font-size: 10px; white-space: nowrap; }
 </style>
 </head>
 <body>
-
 <header>
   <div class="logo">📊 PAPER TRADING</div>
   <button class="btn" onclick="location.href='/'">← Dashboard</button>
-  <label style="color:var(--text-dim);font-size:11px;">SYMBOL</label>
+  <span class="hdr-label">Symbol</span>
   <select id="symbol"></select>
-  <label style="color:var(--text-dim);font-size:11px;">STATUS</label>
+  <span class="hdr-label">Status</span>
   <select id="status">
     <option value="">ALL</option>
     <option value="OPEN">OPEN</option>
@@ -100,487 +59,372 @@
     <option value="CLOSED_MANUAL">MANUAL</option>
   </select>
   <button class="btn primary" onclick="loadAll()">⟳ Refresh</button>
-  <div class="sep"></div>
-  <div id="last" style="font-family:'Space Mono',monospace;color:var(--text-dim);font-size:11px;">—</div>
-  <button id="theme-toggle-btn" class="theme-toggle" title="Toggle dark/light theme" onclick="if(window.themeManager) window.themeManager.toggleTheme(); else { const html=document.documentElement; if(html.getAttribute('data-theme')==='light') html.removeAttribute('data-theme'); else html.setAttribute('data-theme','light'); }">☀️</button>
+  <div class="hdr-sep"></div>
+  <div id="last">—</div>
+  <button id="theme-toggle-btn" class="theme-toggle" title="Toggle theme" onclick="window.toggleTheme()">☀️</button>
 </header>
-
 <main>
 
-  <!-- KPIs -->
-  <div class="kpis">
-    <div class="kpi">
-      <div class="label">Total Trades</div>
-      <div class="val neutral" id="k-total">—</div>
-      <div class="sub" id="k-open-sub">— open</div>
-    </div>
-    <div class="kpi">
-      <div class="label">Win Rate</div>
-      <div class="val" id="k-win">—</div>
-      <div class="sub" id="k-win-sub">— W / — L</div>
-    </div>
-    <div class="kpi">
-      <div class="label">Total P&amp;L (₹)</div>
-      <div class="val" id="k-pnl">—</div>
-      <div class="sub">closed trades</div>
-    </div>
-    <div class="kpi">
-      <div class="label">Avg P&amp;L / Trade</div>
-      <div class="val" id="k-avg">—</div>
-      <div class="sub" id="k-avg-sub">W: — | L: —</div>
-    </div>
-    <div class="kpi">
-      <div class="label">Profit Factor</div>
-      <div class="val" id="k-pf">—</div>
-      <div class="sub">gross wins ÷ gross losses</div>
-    </div>
-    <div class="kpi">
-      <div class="label">Win Streak</div>
-      <div class="val good" id="k-streak">—</div>
-      <div class="sub">consecutive wins</div>
-    </div>
-  </div>
+<!-- ── KPI Strip ── -->
+<style>
+.kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; }
+.kpi {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  padding: 16px 14px; position: relative; overflow: hidden; transition: box-shadow .2s, border-color .2s;
+}
+.kpi::after {
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  opacity: 0; transition: opacity .3s;
+}
+.kpi:hover::after { opacity: 1; }
+[data-theme="light"] .kpi { box-shadow: 0 1px 4px rgba(15,23,42,.07); }
+[data-theme="light"] .kpi:hover { box-shadow: 0 4px 16px rgba(15,23,42,.11); border-color: #94a3b8; }
+.kpi .lbl { font-size: 9px; text-transform: uppercase; letter-spacing: 1.4px; color: var(--text-dim); margin-bottom: 10px; font-family: var(--sans); font-weight: 600; }
+.kpi .val { font-family: var(--mono); font-size: 24px; font-weight: 700; line-height: 1; }
+.kpi .sub { font-size: 10px; color: var(--text-dim); margin-top: 6px; font-family: var(--mono); }
+.good { color: var(--green); } .bad { color: var(--red); } .warn { color: var(--yellow); } .neutral { color: var(--blue); }
+[data-theme="light"] .good { color: #059669; } [data-theme="light"] .bad { color: #dc2626; }
+[data-theme="light"] .warn { color: #d97706; } [data-theme="light"] .neutral { color: #0284c7; }
+</style>
+<div class="kpis">
+  <div class="kpi"><div class="lbl">Total Trades</div><div class="val neutral" id="k-total">—</div><div class="sub" id="k-open-sub">— open</div></div>
+  <div class="kpi"><div class="lbl">Win Rate</div><div class="val" id="k-win">—</div><div class="sub" id="k-win-sub">— W / — L</div></div>
+  <div class="kpi"><div class="lbl">Total P&amp;L (₹)</div><div class="val" id="k-pnl">—</div><div class="sub">closed trades</div></div>
+  <div class="kpi"><div class="lbl">Avg P&amp;L / Trade</div><div class="val" id="k-avg">—</div><div class="sub" id="k-avg-sub">W: — | L: —</div></div>
+  <div class="kpi"><div class="lbl">Profit Factor</div><div class="val" id="k-pf">—</div><div class="sub">gross wins ÷ losses</div></div>
+  <div class="kpi"><div class="lbl">Win Streak</div><div class="val good" id="k-streak">—</div><div class="sub">consecutive wins</div></div>
+</div>
 
-  <!-- Symbol breakdown -->
+<!-- ── Card base ── -->
+<style>
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px; }
+[data-theme="light"] .card { box-shadow: 0 1px 4px rgba(15,23,42,.07); }
+.card-title {
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.2px;
+  color: var(--text-dim); margin-bottom: 16px; display: flex; align-items: center; gap: 8px;
+}
+.card-title::before { content: ''; width: 3px; height: 13px; background: var(--accent); border-radius: 2px; flex-shrink: 0; }
+[data-theme="light"] .card-title { color: #475569; }
+[data-theme="light"] .card-title::before { background: #0891b2; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+@media (max-width: 1100px) { .grid2 { grid-template-columns: 1fr; } }
+
+/* Symbol cards */
+.sym-card {
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 14px;
+  transition: box-shadow .2s;
+}
+[data-theme="light"] .sym-card { background: #f8fafc; border-color: #e2e8f0; }
+[data-theme="light"] .sym-card:hover { box-shadow: 0 3px 10px rgba(15,23,42,.09); }
+.sym-name { font-family: var(--mono); font-size: 13px; color: var(--accent); font-weight: 700; margin-bottom: 10px; letter-spacing: .5px; }
+[data-theme="light"] .sym-name { color: #0891b2; }
+.sym-row { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; font-size: 12px; border-bottom: 1px solid var(--border); }
+.sym-row:last-child { border-bottom: none; }
+[data-theme="light"] .sym-row { border-color: #f1f5f9; }
+.sym-lbl { color: var(--text-dim); font-size: 11px; }
+[data-theme="light"] .sym-lbl { color: #64748b; }
+.sym-val { font-family: var(--mono); font-weight: 600; font-size: 12px; }
+</style>
+
+<!-- Symbol Breakdown -->
+<div class="card">
+  <div class="card-title">Performance by Symbol</div>
+  <div class="grid3" id="sym-breakdown"><div style="color:var(--text-dim);font-size:12px;">No trades yet</div></div>
+</div>
+
+<!-- ── Holding Period Analysis ── -->
+<style>
+.metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.metric-box {
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 14px;
+}
+[data-theme="light"] .metric-box { background: #f8fafc; border-color: #e2e8f0; }
+.metric-box .m-lbl { font-size: 9px; text-transform: uppercase; letter-spacing: 1.2px; color: var(--text-dim); margin-bottom: 8px; font-weight: 600; }
+[data-theme="light"] .metric-box .m-lbl { color: #64748b; }
+.metric-box .m-val { font-family: var(--mono); font-size: 22px; font-weight: 700; }
+.dist-grid {
+  display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 14px;
+}
+[data-theme="light"] .dist-grid { background: #f8fafc; border-color: #e2e8f0; }
+.dist-cell { text-align: center; }
+.dist-cell .d-lbl { font-size: 9px; color: var(--text-dim); margin-bottom: 6px; font-weight: 600; text-transform: uppercase; letter-spacing: .8px; }
+[data-theme="light"] .dist-cell .d-lbl { color: #64748b; }
+.dist-cell .d-val { font-family: var(--mono); font-size: 20px; font-weight: 700; color: var(--text); }
+[data-theme="light"] .dist-cell .d-val { color: #0f172a; }
+.dist-cell .d-pct { font-size: 10px; color: var(--text-dim); margin-top: 3px; font-family: var(--mono); }
+[data-theme="light"] .dist-cell .d-pct { color: #64748b; }
+.dist-divider { width: 1px; background: var(--border); margin: 0 4px; }
+[data-theme="light"] .dist-divider { background: #e2e8f0; }
+</style>
+<div class="card">
+  <div class="card-title">Holding Period Analysis</div>
+  <div class="metric-grid">
+    <div class="metric-box"><div class="m-lbl">Avg Duration</div><div class="m-val" style="color:var(--accent);" id="h-avg">—</div></div>
+    <div class="metric-box"><div class="m-lbl">Median Duration</div><div class="m-val" id="h-median">—</div></div>
+    <div class="metric-box"><div class="m-lbl">Fastest Trade</div><div class="m-val good" id="h-fastest">—</div></div>
+    <div class="metric-box"><div class="m-lbl">Slowest Trade</div><div class="m-val warn" id="h-slowest">—</div></div>
+  </div>
+  <div style="font-size:9px;text-transform:uppercase;letter-spacing:1.2px;color:var(--text-dim);font-weight:600;margin-bottom:10px;">Duration Distribution</div>
+  <div class="dist-grid">
+    <div class="dist-cell"><div class="d-lbl">&lt; 5 min</div><div class="d-val" id="h-dist-1">—</div><div class="d-pct" id="h-dist-1-pct">—</div></div>
+    <div class="dist-cell"><div class="d-lbl">5 – 15 min</div><div class="d-val" id="h-dist-2">—</div><div class="d-pct" id="h-dist-2-pct">—</div></div>
+    <div class="dist-cell"><div class="d-lbl">15 – 30 min</div><div class="d-val" id="h-dist-3">—</div><div class="d-pct" id="h-dist-3-pct">—</div></div>
+    <div class="dist-cell"><div class="d-lbl">30 – 60 min</div><div class="d-val" id="h-dist-4">—</div><div class="d-pct" id="h-dist-4-pct">—</div></div>
+    <div class="dist-cell"><div class="d-lbl">&gt; 60 min</div><div class="d-val" id="h-dist-5">—</div><div class="d-pct" id="h-dist-5-pct">—</div></div>
+  </div>
+</div>
+
+<!-- ── Equity + Open Positions ── -->
+<style>
+.chart-wrap { height: 260px; }
+.tbl-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 11.5px; }
+th, td { padding: 9px 10px; border-bottom: 1px solid var(--border); text-align: right; white-space: nowrap; }
+th {
+  font-size: 9px; text-transform: uppercase; letter-spacing: 1px; font-weight: 700;
+  color: var(--text-dim); background: var(--surface-2); position: sticky; top: 0; z-index: 5;
+}
+[data-theme="light"] th {
+  background: #f1f5f9; color: #475569; border-bottom: 2px solid #cbd5e1;
+}
+[data-theme="light"] td { color: #1e293b; }
+td.L, th.L { text-align: left; }
+tr:hover td { background: rgba(0,229,160,.03); }
+[data-theme="light"] tr:hover td { background: rgba(8,145,178,.04); }
+.pp { color: var(--green); font-weight: 700; }
+.pn { color: var(--red); font-weight: 700; }
+.pz { color: var(--text-dim); }
+[data-theme="light"] .pp { color: #059669; }
+[data-theme="light"] .pn { color: #dc2626; }
+.b-type { background: rgba(77,166,255,.12); color: var(--blue); font-size: 10px; padding: 2px 7px; border-radius: 4px; font-weight: 600; }
+[data-theme="light"] .b-type { background: #dbeafe; color: #1d4ed8; }
+.lot-chip { font-size: 9px; color: var(--text-dim); background: var(--surface-2); padding: 1px 5px; border-radius: 3px; margin-left: 3px; }
+[data-theme="light"] .lot-chip { background: #f1f5f9; color: #64748b; }
+.b-dur { background: var(--surface-2); color: var(--text-dim); font-size: 10px; padding: 2px 6px; border-radius: 3px; }
+[data-theme="light"] .b-dur { background: #f1f5f9; color: #64748b; }
+</style>
+<div class="grid2">
   <div class="card">
-    <div class="card-title">Performance by Symbol</div>
-    <div class="grid3" id="sym-breakdown">
-      <div style="color:var(--text-dim);font-size:12px;">No trades yet</div>
-    </div>
+    <div class="card-title">Equity Curve (₹)</div>
+    <div class="chart-wrap"><canvas id="equity"></canvas></div>
   </div>
-
-  <!-- Phase 2: Holding Period Analysis -->
   <div class="card">
-    <div class="card-title">Holding Period Analysis</div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;">
-      <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:6px;padding:12px;">
-        <div style="font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">Avg Duration</div>
-        <div style="font-family:var(--mono);font-size:20px;font-weight:700;color:var(--accent);" id="h-avg">—</div>
-      </div>
-      <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:6px;padding:12px;">
-        <div style="font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">Median Duration</div>
-        <div style="font-family:var(--mono);font-size:20px;font-weight:700;color:var(--text);" id="h-median">—</div>
-      </div>
-      <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:6px;padding:12px;">
-        <div style="font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">Fastest Trade</div>
-        <div style="font-family:var(--mono);font-size:20px;font-weight:700;color:var(--green);" id="h-fastest">—</div>
-      </div>
-      <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:6px;padding:12px;">
-        <div style="font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">Slowest Trade</div>
-        <div style="font-family:var(--mono);font-size:20px;font-weight:700;color:var(--yellow);" id="h-slowest">—</div>
-      </div>
-    </div>
-    <div style="margin-top:16px;padding:12px;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;">
-      <div style="font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">Duration Distribution</div>
-      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;font-size:11px;font-family:var(--mono);">
-        <div style="text-align:center;">
-          <div style="color:var(--text-dim);margin-bottom:4px;">&lt; 5min</div>
-          <div style="font-size:16px;font-weight:700;color:var(--text);" id="h-dist-1">—</div>
-          <div style="font-size:9px;color:var(--text-dim);" id="h-dist-1-pct">—</div>
-        </div>
-        <div style="text-align:center;">
-          <div style="color:var(--text-dim);margin-bottom:4px;">5-15min</div>
-          <div style="font-size:16px;font-weight:700;color:var(--text);" id="h-dist-2">—</div>
-          <div style="font-size:9px;color:var(--text-dim);" id="h-dist-2-pct">—</div>
-        </div>
-        <div style="text-align:center;">
-          <div style="color:var(--text-dim);margin-bottom:4px;">15-30min</div>
-          <div style="font-size:16px;font-weight:700;color:var(--text);" id="h-dist-3">—</div>
-          <div style="font-size:9px;color:var(--text-dim);" id="h-dist-3-pct">—</div>
-        </div>
-        <div style="text-align:center;">
-          <div style="color:var(--text-dim);margin-bottom:4px;">30-60min</div>
-          <div style="font-size:16px;font-weight:700;color:var(--text);" id="h-dist-4">—</div>
-          <div style="font-size:9px;color:var(--text-dim);" id="h-dist-4-pct">—</div>
-        </div>
-        <div style="text-align:center;">
-          <div style="color:var(--text-dim);margin-bottom:4px;">&gt; 60min</div>
-          <div style="font-size:16px;font-weight:700;color:var(--text);" id="h-dist-5">—</div>
-          <div style="font-size:9px;color:var(--text-dim);" id="h-dist-5-pct">—</div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Equity + Open positions -->
-  <div class="grid2">
-    <div class="card">
-      <div class="card-title">Equity Curve (₹)</div>
-      <div class="chart-wrap"><canvas id="equity"></canvas></div>
-    </div>
-    <div class="card">
-      <div class="card-title">Open Positions (<span id="open-count">0</span>)</div>
-      <div class="tbl-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th class="L">Opened</th>
-              <th class="L">Symbol</th>
-              <th>Type</th>
-              <th>Strike</th>
-              <th>Entry Price</th>
-              <th>SL</th>
-              <th>Target</th>
-              <th>Lots</th>
-              <th class="L">Verdict</th>
-            </tr>
-          </thead>
-          <tbody id="open-body">
-            <tr><td colspan="9" class="L" style="color:var(--dim);">No open trades</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-
-  <!-- Trade history -->
-  <div class="card">
-    <div class="card-title">Trade History</div>
+    <div class="card-title">Open Positions <span id="open-count" style="color:var(--accent);margin-left:4px;">0</span></div>
     <div class="tbl-wrap">
       <table>
-        <thead>
-          <tr>
-            <th class="L">Opened</th>
-            <th class="L">Closed</th>
-            <th>Dur</th>
-            <th class="L">Symbol</th>
-            <th>Type</th>
-            <th>Strike</th>
-            <th>Entry ₹</th>
-            <th>Exit ₹</th>
-            <th>SL ₹</th>
-            <th>Target ₹</th>
-            <th>Lots</th>
-            <th>Status</th>
-            <th>P&amp;L (₹)</th>
-            <th>P&amp;L (pts)</th>
-            <th class="L">Verdict</th>
-          </tr>
-        </thead>
-        <tbody id="trades-body">
-          <tr><td colspan="15" class="L" style="color:var(--dim);">Loading…</td></tr>
-        </tbody>
+        <thead><tr>
+          <th class="L">Opened</th><th class="L">Symbol</th><th>Type</th>
+          <th>Strike</th><th>Entry</th><th>SL</th><th>Target</th><th>Lots</th><th class="L">Verdict</th>
+        </tr></thead>
+        <tbody id="open-body"><tr><td colspan="9" class="L" style="color:var(--text-dim);">No open trades</td></tr></tbody>
       </table>
     </div>
   </div>
+</div>
+
+<!-- ── Badge styles ── -->
+<style>
+.badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 700; letter-spacing: .4px; }
+.b-open  { background: rgba(255,214,102,.15); color: var(--yellow); }
+.b-win   { background: rgba(0,229,160,.15);   color: var(--green); }
+.b-loss  { background: rgba(255,77,109,.15);  color: var(--red); }
+.b-manual{ background: rgba(77,166,255,.15);  color: var(--blue); }
+[data-theme="light"] .b-open   { background: #fef3c7; color: #b45309; }
+[data-theme="light"] .b-win    { background: #d1fae5; color: #065f46; }
+[data-theme="light"] .b-loss   { background: #fee2e2; color: #991b1b; }
+[data-theme="light"] .b-manual { background: #dbeafe; color: #1e40af; }
+</style>
+
+<!-- ── Trade History ── -->
+<div class="card">
+  <div class="card-title">Trade History</div>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr>
+        <th class="L">Opened</th><th class="L">Closed</th><th>Dur</th>
+        <th class="L">Symbol</th><th>Type</th><th>Strike</th>
+        <th>Entry ₹</th><th>Exit ₹</th><th>SL ₹</th><th>Target ₹</th>
+        <th>Lots</th><th>Status</th><th>P&amp;L (₹)</th><th>pts</th><th class="L">Verdict</th>
+      </tr></thead>
+      <tbody id="trades-body"><tr><td colspan="15" class="L" style="color:var(--text-dim);">Loading…</td></tr></tbody>
+    </table>
+  </div>
+</div>
 
 </main>
 
 <script>
 const API = '';
-let eqChart = null;
-
-/* ── Chart.js theme-aware defaults ── */
-function updateChartDefaults() {
-  const isDark = !document.documentElement.getAttribute('data-theme') || document.documentElement.getAttribute('data-theme') === 'dark';
-  Chart.defaults.color = isDark ? '#7a8796' : '#334155';
-  Chart.defaults.borderColor = isDark ? '#1e2530' : '#cbd5e1';
-  Chart.defaults.font.family = "'Space Mono', monospace";
-  Chart.defaults.font.size = 11;
-}
-
-// Update on init
-updateChartDefaults();
-
-// Update when theme changes
-const observer = new MutationObserver(() => {
-  updateChartDefaults();
-  if (eqChart) {
-    eqChart.destroy();
-    eqChart = null;
-    // Redraw equity chart with new colors
-    const rows = window.lastEquityData || [];
-    if (rows.length) renderEquity(rows);
-  }
-});
-
-observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-
-// Store last equity data for redraw on theme change
-let lastEquityData = [];
+let eqChart = null, lastEquityData = [];
 
 /* ── helpers ── */
+const isDark = () => document.documentElement.getAttribute('data-theme') !== 'light';
 function fdt(s) {
   if (!s) return '—';
-  try { return new Date(s).toLocaleString('en-IN', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit', hour12:true }); }
+  try { return new Date(s).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit',hour12:true}); }
   catch { return s; }
 }
-function fp(v, dec=2) { return v == null ? '—' : Number(v).toFixed(dec); }
-function frs(v) {
-  if (v == null) return '—';
-  const n = Number(v);
-  const s = Math.abs(n) >= 1000
-    ? (n >= 0 ? '+' : '') + (n/1000).toFixed(1) + 'k'
-    : (n >= 0 ? '+' : '') + n.toFixed(0);
-  return s;
+function fp(v,d=2){ return v==null?'—':Number(v).toFixed(d); }
+function frs(v){
+  if(v==null)return'—';
+  const n=Number(v);
+  return Math.abs(n)>=1000?(n>=0?'+':'')+( n/1000).toFixed(1)+'k':(n>=0?'+':'')+n.toFixed(0);
 }
-function frsLong(v) {
-  if (v == null) return '—';
-  const n = Number(v);
-  return (n >= 0 ? '+' : '') + '₹' + Math.abs(n).toLocaleString('en-IN', {minimumFractionDigits:0, maximumFractionDigits:0});
+function frsLong(v){
+  if(v==null)return'—';
+  const n=Number(v);
+  return(n>=0?'+':'')+'\u20b9'+Math.abs(n).toLocaleString('en-IN',{minimumFractionDigits:0,maximumFractionDigits:0});
 }
-function pc(v) { const n = Number(v||0); return n > 0 ? 'pp' : n < 0 ? 'pn' : 'pz'; }
-function sign(v) { const n = Number(v||0); return (n>0?'+':'')+n.toFixed(2); }
-function signRs(v) {
-  if (v == null) return '—';
-  const n = Number(v);
-  return (n >= 0 ? '+' : '') + '₹' + Math.abs(n).toLocaleString('en-IN', {minimumFractionDigits:0, maximumFractionDigits:0});
+function pc(v){ const n=Number(v||0); return n>0?'pp':n<0?'pn':'pz'; }
+function sign(v){ const n=Number(v||0); return(n>0?'+':'')+n.toFixed(2); }
+function signRs(v){
+  if(v==null)return'—';
+  const n=Number(v);
+  return(n>=0?'+':'')+'\u20b9'+Math.abs(n).toLocaleString('en-IN',{minimumFractionDigits:0,maximumFractionDigits:0});
 }
+async function api(path){ const r=await fetch(API+path); if(!r.ok)throw new Error(await r.text()); return r.json(); }
 
-async function api(path) {
-  const r = await fetch(API + path);
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
-}
-
-/* ── status badge ── */
-function sbadge(s) {
-  if (s === 'OPEN')           return '<span class="badge b-open">OPEN</span>';
-  if (s === 'CLOSED_TARGET')  return '<span class="badge b-win">TARGET</span>';
-  if (s === 'CLOSED_SL')      return '<span class="badge b-loss">SL HIT</span>';
-  if (s === 'CLOSED_MANUAL')  return '<span class="badge b-manual">MANUAL</span>';
+function sbadge(s){
+  if(s==='OPEN')          return '<span class="badge b-open">OPEN</span>';
+  if(s==='CLOSED_TARGET') return '<span class="badge b-win">TARGET</span>';
+  if(s==='CLOSED_SL')     return '<span class="badge b-loss">SL HIT</span>';
+  if(s==='CLOSED_MANUAL') return '<span class="badge b-manual">MANUAL</span>';
   return `<span class="badge">${s||'—'}</span>`;
 }
+function entryPrice(t){ if(t.option_type==='FUT')return fp(t.entry_underlying); return t.entry_premium?fp(t.entry_premium):fp(t.entry_underlying); }
+function exitPrice(t){  if(t.option_type==='FUT')return fp(t.exit_underlying);  return t.exit_premium?fp(t.exit_premium):fp(t.exit_underlying); }
+function slPrice(t){    if(t.option_type==='FUT')return fp(t.sl_underlying);    return t.sl_premium?fp(t.sl_premium):fp(t.sl_underlying); }
+function targetPrice(t){if(t.option_type==='FUT')return fp(t.target_underlying);return t.target_premium?fp(t.target_premium):fp(t.target_underlying); }
+function priceLabel(t){ if(t.option_type==='FUT')return'Fut'; return t.entry_premium?'Prem':'Spot'; }
 
-/*
-  Price display logic:
-  - Options (CE/PE): show entry_premium / exit_premium / sl_premium / target_premium
-  - Futures (FUT):   show entry_underlying / exit_underlying / sl_underlying / target_underlying
-  - Fallback:        if premium is null/0, fall back to underlying
-*/
-function entryPrice(t) {
-  if (t.option_type === 'FUT') return fp(t.entry_underlying);
-  return t.entry_premium ? fp(t.entry_premium) : fp(t.entry_underlying);
-}
-function exitPrice(t) {
-  if (t.option_type === 'FUT') return fp(t.exit_underlying);
-  return t.exit_premium ? fp(t.exit_premium) : fp(t.exit_underlying);
-}
-function slPrice(t) {
-  if (t.option_type === 'FUT') return fp(t.sl_underlying);
-  return t.sl_premium ? fp(t.sl_premium) : fp(t.sl_underlying);
-}
-function targetPrice(t) {
-  if (t.option_type === 'FUT') return fp(t.target_underlying);
-  return t.target_premium ? fp(t.target_premium) : fp(t.target_underlying);
-}
-function priceLabel(t) {
-  if (t.option_type === 'FUT') return 'Fut';
-  return (t.entry_premium) ? 'Prem' : 'Spot';
-}
-
-/* ── render KPIs ── */
+/* ── renderSummary ── */
 function renderSummary(s) {
-  const total   = s.total ?? 0;
-  const open    = s.open_count ?? 0;
-  const wins    = s.wins ?? 0;
-  const losses  = s.losses ?? 0;
-  const closed  = s.closed_count ?? 0;
-  const wr      = Number(s.win_rate || 0);
-  const pnl     = Number(s.closed_pnl || 0);
-  const avg     = Number(s.avg_pnl || 0);
-  const avgW    = Number(s.avg_win || 0);
-  const avgL    = Number(s.avg_loss || 0);
-  const pf      = Number(s.profit_factor || 0);
-  const streak  = s.consecutive_wins ?? 0;
+  const wr=Number(s.win_rate||0), pnl=Number(s.closed_pnl||0);
+  const avg=Number(s.avg_pnl||0), pf=Number(s.profit_factor||0);
+  document.getElementById('k-total').textContent=s.total??0;
+  document.getElementById('k-open-sub').textContent=`${s.open_count??0} open`;
+  const wEl=document.getElementById('k-win');
+  wEl.textContent=`${wr.toFixed(1)}%`; wEl.className=`val ${wr>=60?'good':wr>=40?'warn':'bad'}`;
+  document.getElementById('k-win-sub').textContent=`${s.wins??0} W / ${s.losses??0} L`;
+  const pEl=document.getElementById('k-pnl'); pEl.textContent=frsLong(pnl); pEl.className=`val ${pnl>=0?'good':'bad'}`;
+  const aEl=document.getElementById('k-avg'); aEl.textContent=frsLong(avg); aEl.className=`val ${avg>=0?'good':'bad'}`;
+  document.getElementById('k-avg-sub').textContent=`W: ${frs(s.avg_win)} | L: ${frs(s.avg_loss)}`;
+  const pfEl=document.getElementById('k-pf'); pfEl.textContent=pf>0?pf.toFixed(2):'∞'; pfEl.className=`val ${pf>=1.5?'good':pf>=1?'warn':'bad'}`;
+  document.getElementById('k-streak').textContent=s.consecutive_wins??0;
 
-  document.getElementById('k-total').textContent = total;
-  document.getElementById('k-open-sub').textContent = `${open} open`;
+  const bd=s.symbol_breakdown||[];
+  document.getElementById('sym-breakdown').innerHTML=bd.length?bd.map(sym=>`
+    <div class="sym-card">
+      <div class="sym-name">${sym.symbol}</div>
+      <div class="sym-row"><span class="sym-lbl">Trades</span><span class="sym-val">${sym.total_trades}</span></div>
+      <div class="sym-row"><span class="sym-lbl">Win Rate</span><span class="sym-val ${Number(sym.win_rate)>=60?'good':Number(sym.win_rate)>=40?'warn':'bad'}">${Number(sym.win_rate||0).toFixed(1)}%</span></div>
+      <div class="sym-row"><span class="sym-lbl">Avg P&amp;L</span><span class="sym-val ${pc(sym.avg_pnl)}">${signRs(sym.avg_pnl)}</span></div>
+      <div class="sym-row"><span class="sym-lbl">Total P&amp;L</span><span class="sym-val ${pc(sym.total_pnl)}">${signRs(sym.total_pnl)}</span></div>
+    </div>`).join(''):'<div style="color:var(--text-dim);font-size:12px;">No trades yet</div>';
 
-  const wEl = document.getElementById('k-win');
-  wEl.textContent = `${wr.toFixed(1)}%`;
-  wEl.className = `val ${wr >= 60 ? 'good' : wr >= 40 ? 'warn' : 'bad'}`;
-  document.getElementById('k-win-sub').textContent = `${wins} W / ${losses} L`;
+  const ot=s.open_trades||[];
+  document.getElementById('open-count').textContent=ot.length;
+  document.getElementById('open-body').innerHTML=ot.length?ot.map(t=>`
+    <tr>
+      <td class="L">${fdt(t.opened_at)}</td><td class="L"><strong>${t.symbol}</strong></td>
+      <td><span class="b-type">${t.option_type}</span></td><td>${fp(t.strike)}</td>
+      <td>${entryPrice(t)} <span class="lot-chip">${priceLabel(t)}</span></td>
+      <td class="bad">${slPrice(t)}</td><td class="good">${targetPrice(t)}</td>
+      <td>${t.lots??1}</td>
+      <td class="L" style="color:var(--text-dim);max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${t.reason||''}">${t.verdict_label||t.reason||'—'}</td>
+    </tr>`).join(''):'<tr><td colspan="9" class="L" style="color:var(--text-dim);">No open trades</td></tr>';
 
-  const pEl = document.getElementById('k-pnl');
-  pEl.textContent = frsLong(pnl);
-  pEl.className = `val ${pnl >= 0 ? 'good' : 'bad'}`;
-
-  const aEl = document.getElementById('k-avg');
-  aEl.textContent = frsLong(avg);
-  aEl.className = `val ${avg >= 0 ? 'good' : 'bad'}`;
-  document.getElementById('k-avg-sub').textContent = `W: ${frs(avgW)} | L: ${frs(avgL)}`;
-
-  const pfEl = document.getElementById('k-pf');
-  pfEl.textContent = pf > 0 ? pf.toFixed(2) : '∞';
-  pfEl.className = `val ${pf >= 1.5 ? 'good' : pf >= 1 ? 'warn' : 'bad'}`;
-
-  document.getElementById('k-streak').textContent = streak;
-
-  /* symbol breakdown */
-  const bd = s.symbol_breakdown || [];
-  const bc = document.getElementById('sym-breakdown');
-  if (!bd.length) {
-    bc.innerHTML = '<div style="color:var(--dim);font-size:12px;">No trades yet</div>';
-  } else {
-    bc.innerHTML = bd.map(sym => `
-      <div class="sym-card">
-        <div class="sym-name">${sym.symbol}</div>
-        <div class="sym-row"><span class="sym-lbl">Trades</span><span class="sym-val">${sym.total_trades}</span></div>
-        <div class="sym-row"><span class="sym-lbl">Win Rate</span>
-          <span class="sym-val ${Number(sym.win_rate)>=60?'good':Number(sym.win_rate)>=40?'warn':'bad'}">${Number(sym.win_rate||0).toFixed(1)}%</span></div>
-        <div class="sym-row"><span class="sym-lbl">Avg P&amp;L</span>
-          <span class="sym-val ${pc(sym.avg_pnl)}">${signRs(sym.avg_pnl)}</span></div>
-        <div class="sym-row"><span class="sym-lbl">Total P&amp;L</span>
-          <span class="sym-val ${pc(sym.total_pnl)}">${signRs(sym.total_pnl)}</span></div>
-      </div>`).join('');
-  }
-
-  /* open trades table */
-  const ot = s.open_trades || [];
-  document.getElementById('open-count').textContent = ot.length;
-  const ob = document.getElementById('open-body');
-  if (!ot.length) {
-    ob.innerHTML = '<tr><td colspan="9" class="L" style="color:var(--text-dim);">No open trades</td></tr>';
-  } else {
-    ob.innerHTML = ot.map(t => `
-      <tr>
-        <td class="L">${fdt(t.opened_at)}</td>
-        <td class="L"><strong>${t.symbol}</strong></td>
-        <td><span class="b-type">${t.option_type}</span></td>
-        <td>${fp(t.strike)}</td>
-        <td>${entryPrice(t)} <span class="lot-chip">${priceLabel(t)}</span></td>
-        <td class="bad">${slPrice(t)}</td>
-        <td class="good">${targetPrice(t)}</td>
-        <td>${t.lots ?? 1}</td>
-        <td class="L" style="color:var(--text-dim);max-width:180px;overflow:hidden;text-overflow:ellipsis;"
-            title="${t.reason||''}">${t.verdict_label || t.reason || '—'}</td>
-      </tr>`).join('');
-  }
-
-  /* Phase 2: Holding period analysis */
-  const ha = s.holding_analysis || {};
-  document.getElementById('h-avg').textContent = ha.avg_duration_minutes ? `${ha.avg_duration_minutes}m` : '—';
-  document.getElementById('h-median').textContent = ha.median_duration_minutes ? `${ha.median_duration_minutes}m` : '—';
-  document.getElementById('h-fastest').textContent = ha.fastest_trade || '—';
-  document.getElementById('h-slowest').textContent = ha.slowest_trade || '—';
-  
-  const dist = ha.distribution || {};
-  const distPct = ha.distribution_pct || {};
-  document.getElementById('h-dist-1').textContent = dist.under_5min ?? 0;
-  document.getElementById('h-dist-1-pct').textContent = distPct.under_5min ? `${distPct.under_5min}%` : '0%';
-  document.getElementById('h-dist-2').textContent = dist['5_to_15min'] ?? 0;
-  document.getElementById('h-dist-2-pct').textContent = distPct['5_to_15min'] ? `${distPct['5_to_15min']}%` : '0%';
-  document.getElementById('h-dist-3').textContent = dist['15_to_30min'] ?? 0;
-  document.getElementById('h-dist-3-pct').textContent = distPct['15_to_30min'] ? `${distPct['15_to_30min']}%` : '0%';
-  document.getElementById('h-dist-4').textContent = dist['30_to_60min'] ?? 0;
-  document.getElementById('h-dist-4-pct').textContent = distPct['30_to_60min'] ? `${distPct['30_to_60min']}%` : '0%';
-  document.getElementById('h-dist-5').textContent = dist.over_60min ?? 0;
-  document.getElementById('h-dist-5-pct').textContent = distPct.over_60min ? `${distPct.over_60min}%` : '0%';
+  const ha=s.holding_analysis||{}, dist=ha.distribution||{}, dpct=ha.distribution_pct||{};
+  document.getElementById('h-avg').textContent     = ha.avg_duration_minutes    ?`${ha.avg_duration_minutes}m`   :'—';
+  document.getElementById('h-median').textContent  = ha.median_duration_minutes ?`${ha.median_duration_minutes}m`:'—';
+  document.getElementById('h-fastest').textContent = ha.fastest_trade||'—';
+  document.getElementById('h-slowest').textContent = ha.slowest_trade||'—';
+  document.getElementById('h-dist-1').textContent     = dist.under_5min??0;
+  document.getElementById('h-dist-1-pct').textContent = dpct.under_5min    ?`${dpct.under_5min}%`    :'0%';
+  document.getElementById('h-dist-2').textContent     = dist['5_to_15min']??0;
+  document.getElementById('h-dist-2-pct').textContent = dpct['5_to_15min'] ?`${dpct['5_to_15min']}%` :'0%';
+  document.getElementById('h-dist-3').textContent     = dist['15_to_30min']??0;
+  document.getElementById('h-dist-3-pct').textContent = dpct['15_to_30min']?`${dpct['15_to_30min']}%`:'0%';
+  document.getElementById('h-dist-4').textContent     = dist['30_to_60min']??0;
+  document.getElementById('h-dist-4-pct').textContent = dpct['30_to_60min']?`${dpct['30_to_60min']}%`:'0%';
+  document.getElementById('h-dist-5').textContent     = dist.over_60min??0;
+  document.getElementById('h-dist-5-pct').textContent = dpct.over_60min    ?`${dpct.over_60min}%`    :'0%';
 }
 
-/* ── equity chart ── */
+/* ── renderEquity ── */
 function renderEquity(rows) {
-  lastEquityData = rows; // Store for theme change redraw
-  const isDark = !document.documentElement.getAttribute('data-theme') || document.documentElement.getAttribute('data-theme') === 'dark';
-  const ctx = document.getElementById('equity').getContext('2d');
-  if (eqChart) eqChart.destroy();
-  eqChart = new Chart(ctx, {
-    type: 'line',
-    data: {
-      labels: rows.map(r => fdt(r.closed_at)),
-      datasets: [{
-        label: 'Equity (₹)',
-        data: rows.map(r => r.equity),
-        borderColor: isDark ? '#00e5a0' : '#0891b2',
-        backgroundColor: isDark ? 'rgba(0,229,160,0.07)' : 'rgba(8,145,178,0.07)',
-        borderWidth: 2, fill: true,
-        pointRadius: rows.length < 30 ? 3 : 0,
-        pointHoverRadius: 5,
-        pointBackgroundColor: isDark ? '#00e5a0' : '#0891b2',
-        tension: 0.3
-      }]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          backgroundColor: isDark ? 'rgba(17,20,24,.95)' : 'rgba(248,250,252,.95)',
-          titleColor: isDark ? '#e2e8f0' : '#0f172a',
-          bodyColor: isDark ? '#00e5a0' : '#0891b2',
-          borderColor: isDark ? '#1e2530' : '#cbd5e1',
-          borderWidth: 1,
-          padding: 10, displayColors: false,
-          callbacks: {
-            label: ctx => `₹${Number(ctx.parsed.y).toLocaleString('en-IN', {minimumFractionDigits:0})}`
-          }
-        }
-      },
-      scales: {
-        y: {
-          grid: { color: isDark ? '#1e2530' : '#e2e8f0' },
-          ticks: {
-            color: isDark ? '#7a8796' : '#334155',
-            callback: v => '₹' + (Math.abs(v)>=1000 ? (v/1000).toFixed(0)+'k' : v)
-          }
-        },
-        x: {
-          grid: { display: false },
-          ticks: { color: isDark ? '#7a8796' : '#334155', maxRotation: 0, maxTicksLimit: 8 }
-        }
+  lastEquityData=rows;
+  const dark=isDark(), accent=dark?'#00e5a0':'#0891b2';
+  const ctx=document.getElementById('equity').getContext('2d');
+  if(eqChart)eqChart.destroy();
+  eqChart=new Chart(ctx,{
+    type:'line',
+    data:{labels:rows.map(r=>fdt(r.closed_at)),datasets:[{
+      data:rows.map(r=>r.equity), borderColor:accent,
+      backgroundColor:dark?'rgba(0,229,160,.07)':'rgba(8,145,178,.07)',
+      borderWidth:2, fill:true, tension:0.35,
+      pointRadius:rows.length<40?3:0, pointHoverRadius:5, pointBackgroundColor:accent
+    }]},
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      plugins:{legend:{display:false},tooltip:{
+        backgroundColor:dark?'rgba(17,20,24,.95)':'rgba(255,255,255,.97)',
+        titleColor:dark?'#e2e8f0':'#0f172a', bodyColor:accent,
+        borderColor:dark?'#1e2530':'#cbd5e1', borderWidth:1, padding:10, displayColors:false,
+        callbacks:{label:c=>`₹${Number(c.parsed.y).toLocaleString('en-IN')}`}
+      }},
+      scales:{
+        y:{grid:{color:dark?'#1e2530':'#e2e8f0'},ticks:{color:dark?'#7a8796':'#475569',callback:v=>'₹'+(Math.abs(v)>=1000?(v/1000).toFixed(0)+'k':v)}},
+        x:{grid:{display:false},ticks:{color:dark?'#7a8796':'#475569',maxRotation:0,maxTicksLimit:8}}
       }
     }
   });
 }
 
-/* ── trade history table ── */
+/* ── renderTrades ── */
 function renderTrades(rows) {
-  const tb = document.getElementById('trades-body');
-  if (!rows.length) {
-    tb.innerHTML = '<tr><td colspan="15" class="L" style="color:var(--dim);">No trades found</td></tr>';
-    return;
-  }
-  tb.innerHTML = rows.map(t => `
+  const tb=document.getElementById('trades-body');
+  if(!rows.length){tb.innerHTML='<tr><td colspan="15" class="L" style="color:var(--text-dim);">No trades found</td></tr>';return;}
+  tb.innerHTML=rows.map(t=>`
     <tr>
-      <td class="L">${fdt(t.opened_at)}</td>
-      <td class="L">${fdt(t.closed_at)}</td>
-      <td><span class="badge b-dur">${t.duration_text || '—'}</span></td>
+      <td class="L">${fdt(t.opened_at)}</td><td class="L">${fdt(t.closed_at)}</td>
+      <td><span class="b-dur">${t.duration_text||'—'}</span></td>
       <td class="L"><strong>${t.symbol}</strong></td>
       <td><span class="b-type">${t.option_type}</span></td>
       <td>${fp(t.strike)}</td>
       <td>${entryPrice(t)} <span class="lot-chip">${priceLabel(t)}</span></td>
       <td>${exitPrice(t)}</td>
-      <td class="bad">${slPrice(t)}</td>
-      <td class="good">${targetPrice(t)}</td>
-      <td>${t.lots ?? 1}</td>
-      <td>${sbadge(t.status)}</td>
+      <td class="bad">${slPrice(t)}</td><td class="good">${targetPrice(t)}</td>
+      <td>${t.lots??1}</td><td>${sbadge(t.status)}</td>
       <td class="${pc(t.pnl_rupees)}">${signRs(t.pnl_rupees)}</td>
-      <td class="${pc(t.pnl_points)}" style="font-size:11px;color:var(--dim);">${sign(t.pnl_points)}</td>
-      <td class="L" style="color:var(--dim);max-width:200px;overflow:hidden;text-overflow:ellipsis;"
-          title="${t.reason||''}">${t.verdict_label || t.reason || '—'}</td>
+      <td class="${pc(t.pnl_points)}" style="font-size:10px;color:var(--text-dim);">${sign(t.pnl_points)}</td>
+      <td class="L" style="color:var(--text-dim);max-width:200px;overflow:hidden;text-overflow:ellipsis;" title="${t.reason||''}">${t.verdict_label||t.reason||'—'}</td>
     </tr>`).join('');
 }
 
-/* ── load ── */
-async function loadSymbols() {
-  const syms = await api('/api/symbols');
-  const sel = document.getElementById('symbol');
-  sel.innerHTML = ['<option value="">ALL</option>', ...syms.map(s => `<option value="${s}">${s}</option>`)].join('');
-}
+/* Redraw chart on theme change */
+document.addEventListener('themechange', ()=>{ if(lastEquityData.length) renderEquity(lastEquityData); });
 
-async function loadAll() {
-  const sym = encodeURIComponent(document.getElementById('symbol').value || '');
-  const st  = encodeURIComponent(document.getElementById('status').value || '');
-  const [summary, trades, equity] = await Promise.all([
+/* ── init ── */
+async function loadSymbols(){
+  const syms=await api('/api/symbols');
+  document.getElementById('symbol').innerHTML=['<option value="">ALL</option>',...syms.map(s=>`<option value="${s}">${s}</option>`)].join('');
+}
+async function loadAll(){
+  const sym=encodeURIComponent(document.getElementById('symbol').value||'');
+  const st=encodeURIComponent(document.getElementById('status').value||'');
+  const [summary,trades,equity]=await Promise.all([
     api(`/api/paper_summary?symbol=${sym}`),
     api(`/api/paper_trades?symbol=${sym}&status=${st}&limit=300`),
     api(`/api/paper_equity?symbol=${sym}`)
   ]);
-  renderSummary(summary || {});
-  renderTrades(trades || []);
-  renderEquity(equity || []);
-  document.getElementById('last').textContent = `Updated ${new Date().toLocaleTimeString('en-IN')}`;
+  renderSummary(summary||{}); renderTrades(trades||[]); renderEquity(equity||[]);
+  document.getElementById('last').textContent=`Updated ${new Date().toLocaleTimeString('en-IN')}`;
 }
-
-async function init() {
-  await loadSymbols();
-  document.getElementById('symbol').onchange = loadAll;
-  document.getElementById('status').onchange = loadAll;
-  await loadAll();
-  setInterval(loadAll, 30000);
-}
-
+async function init(){ await loadSymbols(); document.getElementById('symbol').onchange=loadAll; document.getElementById('status').onchange=loadAll; await loadAll(); setInterval(loadAll,30000); }
 init().catch(console.error);
 </script>
 </body>
