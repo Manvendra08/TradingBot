@@ -17,7 +17,7 @@ class ThemeManager {
     const saved = localStorage.getItem(this.STORAGE_KEY);
     const theme = saved || this.getSystemTheme();
     this.setTheme(theme);
-    this.createToggleButton();
+    this.setupToggleButton();
   }
 
   getSystemTheme() {
@@ -45,42 +45,30 @@ class ThemeManager {
     this.setTheme(next);
   }
 
-  createToggleButton() {
-    // Check if button already exists
-    const existingBtn = document.getElementById('theme-toggle-btn');
-    if (existingBtn) {
-      const currentTheme = document.documentElement.getAttribute('data-theme') || this.DARK_THEME;
-      this.updateToggleButton(currentTheme);
-      existingBtn.onclick = () => this.toggleTheme();
-      return;
+  setupToggleButton() {
+    // Wait for DOM to be ready
+    const setupButton = () => {
+      const btn = document.getElementById('theme-toggle-btn');
+      if (btn) {
+        const currentTheme = document.documentElement.getAttribute('data-theme') || this.DARK_THEME;
+        this.updateToggleButton(currentTheme);
+        // Bind the toggleTheme method to this instance
+        btn.onclick = () => this.toggleTheme();
+      }
+    };
+
+    // If DOM is already loaded, setup immediately
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', setupButton);
+    } else {
+      setupButton();
     }
-
-    // Find header or create one
-    let header = document.querySelector('header');
-    if (!header) {
-      header = document.createElement('header');
-      document.body.insertBefore(header, document.body.firstChild);
-    }
-
-    // Create toggle button
-    const btn = document.createElement('button');
-    btn.id = 'theme-toggle-btn';
-    btn.className = 'theme-toggle';
-    btn.setAttribute('title', 'Toggle dark/light theme');
-    btn.style.marginLeft = 'auto';
-    btn.style.marginRight = '12px';
-    btn.onclick = () => this.toggleTheme();
-
-    // Add to header (right side)
-    header.appendChild(btn);
-    this.updateToggleButton(document.documentElement.getAttribute('data-theme') || this.DARK_THEME);
   }
 
   updateToggleButton(theme) {
     const btn = document.getElementById('theme-toggle-btn');
     if (btn) {
       btn.textContent = theme === this.LIGHT_THEME ? '🌙' : '☀️';
-      btn.onclick = () => this.toggleTheme();
     }
   }
 }
@@ -93,3 +81,4 @@ if (document.readyState === 'loading') {
 } else {
   window.themeManager = new ThemeManager();
 }
+

@@ -102,7 +102,7 @@
   <button class="btn primary" onclick="loadAll()">⟳ Refresh</button>
   <div class="sep"></div>
   <div id="last" style="font-family:'Space Mono',monospace;color:var(--text-dim);font-size:11px;">—</div>
-  <button id="theme-toggle-btn" class="theme-toggle" title="Toggle dark/light theme" onclick="window.themeManager && window.themeManager.toggleTheme()">☀️</button>
+  <button id="theme-toggle-btn" class="theme-toggle" title="Toggle dark/light theme" onclick="if(window.themeManager) window.themeManager.toggleTheme(); else { const html=document.documentElement; if(html.getAttribute('data-theme')==='light') html.removeAttribute('data-theme'); else html.setAttribute('data-theme','light'); }">☀️</button>
 </header>
 
 <main>
