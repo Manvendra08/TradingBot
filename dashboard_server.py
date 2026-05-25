@@ -868,12 +868,19 @@ def get_paper_summary(symbol: str = ""):
     out["win_rate"] = round((wins / closed) * 100, 2) if closed > 0 else 0.0
     
     # Profit factor calculation
+    if where:
+        wins_where = f"{where} AND status='CLOSED_TARGET'"
+        losses_where = f"{where} AND status='CLOSED_SL'"
+    else:
+        wins_where = "WHERE status='CLOSED_TARGET'"
+        losses_where = "WHERE status='CLOSED_SL'"
+    
     total_wins = sum(float(r.get("pnl_rupees") or 0) for r in _q(
-        f"SELECT pnl_rupees FROM paper_trades {where} {'AND' if where else 'WHERE'} status='CLOSED_TARGET'",
+        f"SELECT pnl_rupees FROM paper_trades {wins_where}",
         tuple(params)
     ))
     total_losses = abs(sum(float(r.get("pnl_rupees") or 0) for r in _q(
-        f"SELECT pnl_rupees FROM paper_trades {where} {'AND' if where else 'WHERE'} status='CLOSED_SL'",
+        f"SELECT pnl_rupees FROM paper_trades {losses_where}",
         tuple(params)
     )))
     out["profit_factor"] = round(total_wins / total_losses, 2) if total_losses > 0 else 0.0
@@ -891,8 +898,14 @@ def _calculate_holding_analysis(where: str, params: tuple) -> dict:
     """Calculate holding period distribution and metrics."""
     from datetime import datetime
     
+    # Build WHERE clause properly
+    if where:
+        sql_where = f"{where} AND status LIKE 'CLOSED_%' AND closed_at IS NOT NULL"
+    else:
+        sql_where = "WHERE status LIKE 'CLOSED_%' AND closed_at IS NOT NULL"
+    
     rows = _q(
-        f"SELECT opened_at, closed_at, status FROM paper_trades {where} {'AND' if where else 'WHERE'} status LIKE 'CLOSED_%' AND closed_at IS NOT NULL",
+        f"SELECT opened_at, closed_at, status FROM paper_trades {sql_where}",
         params
     )
     
@@ -990,8 +1003,14 @@ def _format_duration(minutes: float) -> str:
 
 def _calculate_consecutive_wins(where: str, params: tuple) -> int:
     """Calculate current consecutive wins/losses streak."""
+    # Build WHERE clause properly
+    if where:
+        sql_where = f"{where} AND status LIKE 'CLOSED_%'"
+    else:
+        sql_where = "WHERE status LIKE 'CLOSED_%'"
+    
     rows = _q(
-        f"SELECT status FROM paper_trades {where} {'AND' if where else 'WHERE'} status LIKE 'CLOSED_%' ORDER BY closed_at DESC LIMIT 20",
+        f"SELECT status FROM paper_trades {sql_where} ORDER BY closed_at DESC LIMIT 20",
         params
     )
     streak = 0
