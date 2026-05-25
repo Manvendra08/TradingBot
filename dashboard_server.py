@@ -799,8 +799,93 @@ def get_paper_trades(symbol: str = "", status: str = "", limit: int = 300):
         else:
             row["duration_minutes"] = None
             row["duration_text"] = "-"
+        
+        # Enrich with human-readable verdict explanation
+        row["verdict_explanation"] = _explain_verdict(row.get("verdict_label"), row.get("option_type"))
     
     return rows
+
+
+def _explain_verdict(verdict: str | None, option_type: str | None) -> dict:
+    """Convert verdict_label into human-readable explanation."""
+    if not verdict:
+        return {"bias": "Unknown", "strategy": "No verdict", "description": ""}
+    
+    ot = (option_type or "").upper()
+    
+    explanations = {
+        "Long Buildup": {
+            "bias": "Bullish",
+            "strategy": "Fresh buying with rising OI",
+            "description": "Price rising + Call OI increasing = Strong bullish momentum",
+            "action": "Buy CE" if ot == "CE" else "Sell PE",
+            "emoji": "📗"
+        },
+        "Short Buildup": {
+            "bias": "Bearish",
+            "strategy": "Fresh selling with rising OI",
+            "description": "Price falling + Put OI increasing = Strong bearish momentum",
+            "action": "Buy PE" if ot == "PE" else "Sell CE",
+            "emoji": "📕"
+        },
+        "Put Writing": {
+            "bias": "Bullish",
+            "strategy": "Selling puts (bullish bet)",
+            "description": "Put sellers confident price won't fall",
+            "action": "Sell PE",
+            "emoji": "📗"
+        },
+        "Call Writing": {
+            "bias": "Bearish",
+            "strategy": "Selling calls (bearish bet)",
+            "description": "Call sellers confident price won't rise",
+            "action": "Sell CE",
+            "emoji": "📕"
+        },
+        "OI Bias Bullish": {
+            "bias": "Cautious Bullish",
+            "strategy": "OI + chart sentiment aligned bullish",
+            "description": "1H/3H charts bullish + supportive OI pattern",
+            "action": "Buy CE on breakout",
+            "emoji": "🟡"
+        },
+        "OI Bias Bearish": {
+            "bias": "Cautious Bearish",
+            "strategy": "OI + chart sentiment aligned bearish",
+            "description": "1H/3H charts bearish + supportive OI pattern",
+            "action": "Buy PE on breakdown",
+            "emoji": "🟠"
+        },
+        "Short Covering": {
+            "bias": "Cautious Bullish",
+            "strategy": "Rally from short exit",
+            "description": "Price rising but from shorts closing, not fresh buying",
+            "action": "Trail longs, avoid fresh entry",
+            "emoji": "📒"
+        },
+        "Long Unwinding": {
+            "bias": "Cautious Bearish",
+            "strategy": "Decline from long exit",
+            "description": "Price falling from longs closing, not aggressive shorts",
+            "action": "Trail shorts, avoid fresh entry",
+            "emoji": "📙"
+        },
+        "Sideways": {
+            "bias": "Neutral",
+            "strategy": "Range-bound market",
+            "description": "No clear directional bias",
+            "action": "Wait for breakout",
+            "emoji": "⚪"
+        }
+    }
+    
+    return explanations.get(verdict, {
+        "bias": verdict,
+        "strategy": "Custom verdict",
+        "description": "",
+        "action": "",
+        "emoji": "📘"
+    })
 
 
 @app.get("/api/paper_summary")
