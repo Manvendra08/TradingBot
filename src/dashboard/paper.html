@@ -5,8 +5,55 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>NSEBOT — Paper Trading</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<link rel="stylesheet" href="theme.css">
-<script src="theme.js"></script>
+
+<!-- ── Inlined theme variables (theme.css not served as static) ── -->
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@400;500;600&display=swap');
+:root {
+  --bg:#0a0c0f; --surface:#111418; --surface-2:#1a1d23; --border:#1e2530;
+  --accent:#00e5a0; --red:#ff4d6d; --green:#00e5a0; --yellow:#ffd166;
+  --blue:#4da6ff; --text:#e2e8f0; --text-dim:#94a3b8; --muted:#4a5568;
+  --mono:'Space Mono',monospace; --sans:'DM Sans',sans-serif;
+}
+[data-theme="light"] {
+  --bg:#f8fafc; --surface:#ffffff; --surface-2:#f1f5f9; --border:#cbd5e1;
+  --accent:#0891b2; --red:#dc2626; --green:#059669; --yellow:#d97706;
+  --blue:#0284c7; --text:#0f172a; --text-dim:#475569; --muted:#78716c;
+}
+html,body { background:var(--bg); color:var(--text); font-family:var(--sans); font-size:14px; transition:background .3s,color .3s; }
+</style>
+
+<!-- ── Inlined theme toggle logic (theme.js not served as static) ── -->
+<script>
+(function(){
+  var KEY='nsebot-theme', LIGHT='light';
+  var saved = localStorage.getItem(KEY) || 'dark';
+  if(saved===LIGHT) document.documentElement.setAttribute('data-theme',LIGHT);
+  else document.documentElement.removeAttribute('data-theme');
+
+  window.toggleTheme = function(){
+    var isLight = document.documentElement.getAttribute('data-theme')===LIGHT;
+    var next = isLight ? 'dark' : LIGHT;
+    if(next===LIGHT) document.documentElement.setAttribute('data-theme',LIGHT);
+    else document.documentElement.removeAttribute('data-theme');
+    localStorage.setItem(KEY, next);
+    var btn = document.getElementById('theme-toggle-btn');
+    if(btn) btn.textContent = next===LIGHT ? '🌙' : '☀️';
+    document.dispatchEvent(new CustomEvent('themechange',{detail:{theme:next}}));
+  };
+
+  function wireBtn(){
+    var btn = document.getElementById('theme-toggle-btn');
+    if(!btn) return;
+    var isLight = document.documentElement.getAttribute('data-theme')===LIGHT;
+    btn.textContent = isLight ? '🌙' : '☀️';
+    btn.onclick = window.toggleTheme;
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',wireBtn);
+  else wireBtn();
+  window.themeManager = {toggleTheme: window.toggleTheme};
+})();
+</script>
 <style>
 /* ════════════════════════════════════════════
    DESIGN TOKENS — Extended Palette
@@ -22,7 +69,7 @@
   --grad-profit: linear-gradient(135deg, #00e5a0 0%, #22d3ee 100%);
   --grad-loss:   linear-gradient(135deg, #ff4d6d 0%, #fb923c 100%);
   --grad-win:    linear-gradient(135deg, #a78bfa 0%, #818cf8 100%);
-  --grad-card:   linear-gradient(145deg, #111418 0%, #151820 100%);
+  --grad-card:   linear-gradient(145deg, #161a22 0%, #1a1e28 100%);
 
   --glow-green:  0 0 20px rgba(0,229,160,.25);
   --glow-blue:   0 0 20px rgba(34,211,238,.2);
@@ -153,6 +200,8 @@ select:hover, select:focus { border-color: var(--accent) !important; }
 .theme-toggle:hover { border-color: var(--accent) !important; }
 
 #last { font-family: var(--mono); color: var(--text-dim); font-size: 10px; white-space: nowrap; }
+:not([data-theme="light"]) #last { color: #94a3b8; }
+:not([data-theme="light"]) .hdr-label { color: #94a3b8; }
 
 .live-dot {
   width: 8px; height: 8px; border-radius: 50%;
@@ -397,15 +446,24 @@ th.sortable::after { content: ' ⇅'; opacity: 0.4; font-size: 10px; }
 th.sorted-asc::after  { content: ' ↑'; opacity: 1; }
 th.sorted-desc::after { content: ' ↓'; opacity: 1; }
 
+/* Dark theme: ensure th text is readable */
+:not([data-theme="light"]) th {
+  color: #94a3b8 !important;
+  background: #1e2530 !important;
+  border-bottom-color: #2d3748 !important;
+}
+:not([data-theme="light"]) th:hover { background: #252d3d !important; }
+
 td {
   padding: 10px; border-bottom: 1px solid var(--border);
   text-align: right; white-space: nowrap; color: var(--text);
   transition: background .15s;
 }
 
-/* Ensure table text is visible in dark theme */
+/* Dark theme: ensure td text is readable */
 :not([data-theme="light"]) td {
-  color: #e2e8f0;
+  color: #e2e8f0 !important;
+  border-bottom-color: #1e2530 !important;
 }
 
 [data-theme="light"] th { background: #f1f5f9 !important; color: #475569 !important; border-bottom: 2px solid #cbd5e1 !important; }
@@ -419,6 +477,10 @@ tr:hover td { background: rgba(0,229,160,.04); }
 .pp { color: var(--green) !important; font-weight: 700; }
 .pn { color: var(--red)   !important; font-weight: 700; }
 .pz { color: var(--text-dim); }
+
+:not([data-theme="light"]) .pp { color: #00e5a0 !important; }
+:not([data-theme="light"]) .pn { color: #ff4d6d !important; }
+:not([data-theme="light"]) .pz { color: #94a3b8 !important; }
 
 .b-type { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 700; letter-spacing: .5px; }
 .b-type-fut { background: rgba(129,140,248,.15); color: var(--indigo); }
@@ -434,11 +496,19 @@ tr:hover td { background: rgba(0,229,160,.04); }
 .b-dur { display: inline-block; background: var(--surface-2); color: var(--text-dim); font-size: 10px; padding: 2px 7px; border-radius: 4px; }
 .lot-chip { font-size: 9px; color: var(--text-dim); background: var(--surface-2); padding: 1px 5px; border-radius: 3px; margin-left: 3px; vertical-align: middle; }
 
+:not([data-theme="light"]) .b-dur { color: #94a3b8; background: #1e2530; }
+:not([data-theme="light"]) .lot-chip { color: #94a3b8; background: #1e2530; }
+
 .badge { display: inline-block; padding: 3px 8px; border-radius: 5px; font-size: 10px; font-weight: 700; letter-spacing: .5px; }
 .b-open   { background: rgba(255,214,102,.15); color: var(--yellow); }
 .b-win    { background: rgba(0,229,160,.15);   color: var(--green); }
 .b-loss   { background: rgba(255,77,109,.15);  color: var(--red); }
 .b-manual { background: rgba(129,140,248,.15); color: var(--indigo); }
+
+:not([data-theme="light"]) .b-open   { color: #ffd166 !important; }
+:not([data-theme="light"]) .b-win    { color: #00e5a0 !important; }
+:not([data-theme="light"]) .b-loss   { color: #ff4d6d !important; }
+:not([data-theme="light"]) .b-manual { color: #818cf8 !important; }
 
 [data-theme="light"] .b-open   { background: #fef3c7; color: #b45309; }
 [data-theme="light"] .b-win    { background: #d1fae5; color: #065f46; }
