@@ -5,36 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>NSEBOT - Paper Trading</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<link rel="stylesheet" href="theme.css">
+<script src="theme.js"></script>
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@400;500;600&display=swap');
-  :root {
-    --bg:#0a0c0f; --surface:#111418; --surface-2:#1a1d23; --border:#1e2530;
-    --accent:#00e5a0; --red:#ff4d6d; --green:#00e5a0; --yellow:#ffd166;
-    --blue:#4da6ff; --text:#e2e8f0; --dim:#7a8796;
-  }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: var(--bg); color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 14px; }
-
-  /* ── Header ── */
-  header {
-    display: flex; align-items: center; gap: 12px; padding: 12px 20px;
-    border-bottom: 1px solid var(--border); background: var(--surface);
-    position: sticky; top: 0; z-index: 10;
-  }
-  .logo { font-family: 'Space Mono', monospace; color: var(--accent); letter-spacing: 1px; font-weight: 700; font-size: 15px; }
-  .sep { flex: 1; }
-  .btn, select {
-    border: 1px solid var(--border); background: var(--bg); color: var(--text);
-    padding: 6px 12px; border-radius: 4px; font-family: 'Space Mono', monospace; font-size: 12px;
-    transition: border-color 0.2s;
-  }
-  .btn:hover, select:hover { border-color: var(--accent); cursor: pointer; }
-  .btn.primary { border-color: var(--accent); color: var(--accent); }
-
-  /* ── Layout ── */
+  /* ── Page-specific overrides ── */
   main { padding: 18px 20px; display: grid; gap: 16px; max-width: 1900px; margin: 0 auto; }
 
-  /* ── KPI Cards ── */
   .kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(175px, 1fr)); gap: 12px; }
   .kpi {
     background: linear-gradient(135deg, var(--surface) 0%, var(--surface-2) 100%);
@@ -47,13 +23,12 @@
     opacity: 0; transition: opacity 0.3s;
   }
   .kpi:hover::before { opacity: 1; }
-  .kpi .label { color: var(--dim); font-size: 10px; text-transform: uppercase; letter-spacing: 1.2px; margin-bottom: 8px; }
-  .kpi .val   { font-family: 'Space Mono', monospace; font-size: 22px; font-weight: 700; }
-  .kpi .sub   { font-size: 11px; color: var(--dim); margin-top: 4px; font-family: 'Space Mono', monospace; }
+  .kpi .label { color: var(--text-dim); font-size: 10px; text-transform: uppercase; letter-spacing: 1.2px; margin-bottom: 8px; }
+  .kpi .val   { font-family: var(--mono); font-size: 22px; font-weight: 700; }
+  .kpi .sub   { font-size: 11px; color: var(--text-dim); margin-top: 4px; font-family: var(--mono); }
   .good { color: var(--green); } .bad { color: var(--red); }
   .warn { color: var(--yellow); } .neutral { color: var(--blue); }
 
-  /* ── Cards ── */
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
   .card-title {
     color: var(--text); font-size: 13px; font-weight: 600;
@@ -62,54 +37,51 @@
   }
   .card-title::before { content: ''; width: 3px; height: 14px; background: var(--accent); border-radius: 2px; }
 
-  /* ── Grids ── */
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
   .grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
   @media (max-width: 1200px) { .grid2 { grid-template-columns: 1fr; } }
 
-  /* ── Symbol breakdown cards ── */
   .sym-card {
     background: var(--surface-2); border: 1px solid var(--border);
     border-radius: 6px; padding: 12px;
   }
-  .sym-card .sym-name { font-family: 'Space Mono', monospace; font-size: 13px; color: var(--accent); font-weight: 700; margin-bottom: 8px; }
+  .sym-card .sym-name { font-family: var(--mono); font-size: 13px; color: var(--accent); font-weight: 700; margin-bottom: 8px; }
   .sym-card .sym-row  { display: flex; justify-content: space-between; padding: 3px 0; font-size: 12px; }
-  .sym-card .sym-lbl  { color: var(--dim); }
-  .sym-card .sym-val  { font-family: 'Space Mono', monospace; font-weight: 600; }
+  .sym-card .sym-lbl  { color: var(--text-dim); }
+  .sym-card .sym-val  { font-family: var(--mono); font-weight: 600; }
 
-  /* ── Chart ── */
   .chart-wrap { height: 280px; }
 
-  /* ── Tables ── */
   .tbl-wrap { overflow-x: auto; }
-  table { width: 100%; border-collapse: collapse; font-family: 'Space Mono', monospace; font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; }
   th, td { padding: 9px 10px; border-bottom: 1px solid var(--border); text-align: right; white-space: nowrap; }
-  th { color: var(--dim); font-size: 10px; text-transform: uppercase; letter-spacing: 1px; background: var(--surface-2); position: sticky; top: 0; z-index: 5; }
+  th { color: var(--text-dim); font-size: 10px; text-transform: uppercase; letter-spacing: 1px; background: var(--surface-2); position: sticky; top: 0; z-index: 5; }
   td.L, th.L { text-align: left; }
   tr:hover td { background: rgba(0,229,160,0.03); }
 
-  /* ── Badges ── */
-  .badge { display: inline-block; padding: 2px 7px; border-radius: 3px; font-size: 10px; font-weight: 600; letter-spacing: 0.5px; }
-  .b-open   { background: rgba(255,214,102,.15); color: var(--yellow); }
-  .b-win    { background: rgba(0,229,160,.15);   color: var(--green);  }
-  .b-loss   { background: rgba(255,77,109,.15);  color: var(--red);    }
-  .b-manual { background: rgba(77,166,255,.15);  color: var(--blue);   }
-  .b-dur    { background: var(--surface-2); color: var(--dim); }
+  .b-dur    { background: var(--surface-2); color: var(--text-dim); }
   .b-type   { background: rgba(77,166,255,.12); color: var(--blue); font-size: 10px; padding: 2px 6px; border-radius: 3px; }
 
-  /* ── P&L colours ── */
   .pp { color: var(--green); font-weight: 600; }
   .pn { color: var(--red);   font-weight: 600; }
-  .pz { color: var(--dim); }
+  .pz { color: var(--text-dim); }
 
-  /* ── Lot info chip ── */
-  .lot-chip { font-size: 10px; color: var(--dim); background: var(--surface-2); padding: 1px 5px; border-radius: 3px; margin-left: 4px; }
+  .lot-chip { font-size: 10px; color: var(--text-dim); background: var(--surface-2); padding: 1px 5px; border-radius: 3px; margin-left: 4px; }
 
-  /* ── Scrollbar ── */
-  ::-webkit-scrollbar { width: 7px; height: 7px; }
-  ::-webkit-scrollbar-track { background: var(--surface); }
-  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
-  ::-webkit-scrollbar-thumb:hover { background: var(--dim); }
+  header {
+    display: flex; align-items: center; gap: 12px; padding: 12px 20px;
+    border-bottom: 1px solid var(--border); background: var(--surface);
+    position: sticky; top: 0; z-index: 10;
+  }
+  .logo { font-family: var(--mono); color: var(--accent); letter-spacing: 1px; font-weight: 700; font-size: 15px; }
+  .sep { flex: 1; }
+  .btn, select {
+    border: 1px solid var(--border); background: var(--bg); color: var(--text);
+    padding: 6px 12px; border-radius: 4px; font-family: var(--mono); font-size: 12px;
+    transition: border-color 0.2s;
+  }
+  .btn:hover, select:hover { border-color: var(--accent); cursor: pointer; }
+  .btn.primary { border-color: var(--accent); color: var(--accent); }
 </style>
 </head>
 <body>

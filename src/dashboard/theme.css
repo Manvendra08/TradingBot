@@ -1,0 +1,223 @@
+/* ── Global Theme System ── */
+/* Apply to all pages: index.html, paper.html, etc. */
+
+@import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@400;500;600&display=swap');
+
+/* ── Dark Theme (Default) ── */
+:root {
+  --bg: #0a0c0f;
+  --surface: #111418;
+  --surface-2: #1a1d23;
+  --border: #1e2530;
+  --accent: #00e5a0;
+  --red: #ff4d6d;
+  --green: #00e5a0;
+  --yellow: #ffd166;
+  --blue: #4da6ff;
+  --text: #e2e8f0;
+  --text-dim: #7a8796;
+  --muted: #4a5568;
+  --mono: 'Space Mono', monospace;
+  --sans: 'DM Sans', sans-serif;
+}
+
+/* ── Light Theme ── */
+[data-theme="light"] {
+  --bg: #f8fafc;
+  --surface: #ffffff;
+  --surface-2: #f1f5f9;
+  --border: #e2e8f0;
+  --accent: #059669;
+  --red: #e11d48;
+  --green: #059669;
+  --yellow: #d97706;
+  --blue: #0284c7;
+  --text: #0f172a;
+  --text-dim: #64748b;
+  --muted: #cbd5e1;
+}
+
+/* ── Global Styles ── */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 14px;
+  transition: background-color 0.3s, color 0.3s;
+}
+
+/* ── Theme Toggle Button ── */
+.theme-toggle {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  width: 36px;
+  height: 36px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  transition: all 0.2s;
+}
+
+.theme-toggle:hover {
+  border-color: var(--accent);
+  background: var(--surface-2);
+}
+
+/* ── Common Elements ── */
+header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  transition: background-color 0.3s;
+}
+
+.card, .kpi {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  transition: background-color 0.3s;
+}
+
+table {
+  background: var(--surface);
+}
+
+th {
+  background: var(--surface-2);
+  color: var(--text-dim);
+}
+
+tr:hover td {
+  background: rgba(0, 229, 160, 0.03);
+}
+
+[data-theme="light"] tr:hover td {
+  background: rgba(5, 150, 105, 0.03);
+}
+
+/* ── Buttons & Inputs ── */
+button, select, input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: var(--mono);
+  transition: all 0.2s;
+}
+
+button:hover, select:hover, input:hover {
+  border-color: var(--accent);
+}
+
+button.primary {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+button.primary:hover {
+  background: rgba(0, 229, 160, 0.08);
+}
+
+[data-theme="light"] button.primary:hover {
+  background: rgba(5, 150, 105, 0.08);
+}
+
+/* ── Status Indicators ── */
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: background 0.3s;
+}
+
+.status-dot.live {
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+}
+
+/* ── Badges ── */
+.badge {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  transition: all 0.2s;
+}
+
+.badge.b-open {
+  background: rgba(255, 214, 102, 0.15);
+  color: var(--yellow);
+}
+
+.badge.b-win {
+  background: rgba(0, 229, 160, 0.15);
+  color: var(--green);
+}
+
+.badge.b-loss {
+  background: rgba(255, 77, 109, 0.15);
+  color: var(--red);
+}
+
+.badge.b-manual {
+  background: rgba(77, 166, 255, 0.15);
+  color: var(--blue);
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--surface);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-dim);
+}
+
+/* ── Utility Classes ── */
+.text-good {
+  color: var(--green);
+}
+
+.text-bad {
+  color: var(--red);
+}
+
+.text-warn {
+  color: var(--yellow);
+}
+
+.text-dim {
+  color: var(--text-dim);
+}
+
+.bg-surface {
+  background: var(--surface);
+}
+
+.bg-surface-2 {
+  background: var(--surface-2);
+}
+
+.border-accent {
+  border-color: var(--accent);
+}

@@ -47,7 +47,7 @@ LOT_SIZES = {
 }
 
 # Default number of lots per trade (can be overridden per symbol)
-DEFAULT_LOTS_PER_TRADE = 1
+DEFAULT_LOTS_PER_TRADE = 10
 
 # ── Per-class market windows: (open, close, weekdays) ─────────────────────
 MARKET_WINDOWS: dict[str, tuple[str, str, list[int]]] = {
