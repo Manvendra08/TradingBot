@@ -648,7 +648,7 @@ tr:hover td { background: rgba(0,229,160,.04); }
 
   <div class="hdr-sep"></div>
   <div id="last">—</div>
-  <button id="theme-toggle-btn" class="theme-toggle" title="Toggle Day / Night" aria-label="Toggle theme">☀️</button>
+  <button id="theme-toggle-btn" class="theme-toggle" title="Toggle Day / Night" aria-label="Toggle theme" onclick="window.toggleTheme()">☀️</button>
 </header>
 
 <main>
@@ -1129,6 +1129,14 @@ async function loadAll() {
 }
 
 async function init() {
+  // Initialize theme button
+  const themeBtn = document.getElementById('theme-toggle-btn');
+  if (themeBtn && window.toggleTheme) {
+    const current = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+    themeBtn.textContent = current === 'light' ? '🌙' : '☀️';
+    themeBtn.onclick = window.toggleTheme;
+  }
+  
   await loadSymbols();
   document.getElementById('symbol').onchange=loadAll;
   document.getElementById('status').onchange=loadAll;
