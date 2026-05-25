@@ -96,6 +96,12 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
 
     # 2. Dedup filter
     new_alerts = [a for a in alerts if not is_duplicate(a)]
+    dedup_suppressed = max(0, len(alerts) - len(new_alerts))
+    if dedup_suppressed:
+        log.info(
+            "%s: detected=%d | new=%d | dedup_suppressed=%d",
+            symbol, len(alerts), len(new_alerts), dedup_suppressed,
+        )
 
     # 3. Build digest — always build (zero-alert scans need suppression check)
     intel_text = generate_intelligence(symbol, new_alerts, scan_context=scan_context)
@@ -103,19 +109,27 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
         symbol, new_alerts, fetched_at,
         scan_context=scan_context,
         intelligence_text=intel_text,
+        detected_count=len(alerts),
+        dedup_suppressed_count=dedup_suppressed,
     )
     for a in new_alerts:
         a["digest_id"] = digest_id
 
     # 4. Send logic
     #    - Has alerts: always send digest
+    #    - Only duplicate alerts: heartbeat send (cooldown-gated)
     #    - Zero alerts, OI moved ≥1%: send quiet scan (market moving but no threshold breach)
     #    - Zero alerts, OI flat: suppress UNLESS 30min cooldown allows heartbeat
     should_send = bool(new_alerts)
     if not should_send:
         diag    = (scan_context or {}).get("diagnostics", {})
         max_oi  = float(diag.get("max_oi_delta_pct") or 0)
-        if max_oi >= 1.0:
+        if dedup_suppressed > 0:
+            if should_send_zero_signal(symbol):
+                should_send = True
+            else:
+                log.info("%s: duplicate-only scan suppressed by cooldown", symbol)
+        elif max_oi >= 1.0:
             should_send = True
         elif should_send_zero_signal(symbol):
             should_send = True  # heartbeat: once per 30min so trader knows bot is alive

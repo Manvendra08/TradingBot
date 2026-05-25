@@ -21,16 +21,43 @@ log = logging.getLogger(__name__)
 
 # Zero-signal scan: send at most once per this many minutes
 _ZERO_SIGNAL_COOLDOWN_MINUTES = 30
-_zero_signal_last: dict[str, datetime] = {}  # symbol -> last sent time
+_ZERO_SIGNAL_DEDUP_PREFIX = "__zero_signal__|"
 
 
 def should_send_zero_signal(symbol: str) -> bool:
-    """Rate-limit zero-signal Telegram sends to once per 30 min per symbol."""
+    """Rate-limit zero-signal Telegram sends to once per 30 min per symbol.
+
+    Persisted in alert_dedup table so cooldown survives process restarts.
+    """
     now = datetime.now(timezone.utc)
-    last = _zero_signal_last.get(symbol)
-    if last and (now - last).seconds < _ZERO_SIGNAL_COOLDOWN_MINUTES * 60:
-        return False
-    _zero_signal_last[symbol] = now
+    cutoff = now - timedelta(minutes=_ZERO_SIGNAL_COOLDOWN_MINUTES)
+    key = f"{_ZERO_SIGNAL_DEDUP_PREFIX}{(symbol or '').upper()}"
+
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT last_fired_at FROM alert_dedup WHERE dedup_key=?",
+            (key,),
+        ).fetchone()
+        if row:
+            try:
+                last = datetime.fromisoformat(row["last_fired_at"])
+                if last.tzinfo is None:
+                    last = last.replace(tzinfo=timezone.utc)
+                if last >= cutoff:
+                    return False
+            except Exception:
+                pass
+
+        conn.execute(
+            """
+            INSERT INTO alert_dedup (dedup_key, last_fired_at, severity)
+            VALUES (?, ?, ?)
+            ON CONFLICT(dedup_key) DO UPDATE SET
+                last_fired_at = excluded.last_fired_at,
+                severity      = excluded.severity
+            """,
+            (key, now.isoformat(), "INFO"),
+        )
     return True
 
 

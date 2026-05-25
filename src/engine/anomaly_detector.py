@@ -31,6 +31,7 @@ from config.settings import (
 from src.models.schema import (
     get_prev_snapshots_bulk,
     get_previous_underlying,
+    get_previous_underlying_before,
     get_previous_snapshot,
     get_latest_snapshots_for_symbol,
     get_latest_n_snapshots,
@@ -561,6 +562,7 @@ def _empty_scan_context(symbol: str, expiry: str, underlying: float,
         "expiry": expiry,
         "underlying": underlying,
         "prev_underlying": underlying,
+        "price_change_points": 0.0,
         "price_change_pct": None,
         "total_ce_oi": 0,
         "total_pe_oi": 0,
@@ -669,16 +671,18 @@ def detect_anomalies(oc_data: dict, fetched_at: str, chart_indicators: dict | No
             top_oi_delta = {"strike": row["strike"], "option_type": row["option_type"], "pct": pct}
 
     prev_pcr = _compute_pcr(prev_snaps) if prev_snaps else None
-    prev_und = get_previous_underlying(symbol)
-    prev_price = prev_und["price"] if prev_und else underlying
+    prev_und = get_previous_underlying_before(symbol, fetched_at)
+    prev_price = prev_und["price"] if prev_und else None
+    price_change_points = round(float(underlying or 0) - float(prev_price or 0), 4) if prev_price is not None else 0.0
     levels = _key_levels(strikes, underlying)
 
     scan_context = {
         "symbol": symbol,
         "expiry": expiry,
         "underlying": underlying,
-        "prev_underlying": prev_price,
-        "price_change_pct": _pct_change(prev_price, underlying),
+        "prev_underlying": prev_price if prev_price is not None else underlying,
+        "price_change_points": price_change_points,
+        "price_change_pct": _pct_change(prev_price, underlying) if prev_price is not None else None,
         "total_ce_oi": total_ce_oi,
         "total_pe_oi": total_pe_oi,
         "ce_oi_change": total_ce_oi - prev_ce_oi,

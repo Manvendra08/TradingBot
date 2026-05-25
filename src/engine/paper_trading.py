@@ -75,6 +75,25 @@ def _parse_verdict_and_confidence(intel_text: str) -> tuple[str, int]:
     return verdict, confidence
 
 
+def _is_bullish_verdict(verdict: str) -> bool:
+    return verdict in {"Long Buildup", "Put Writing", "OI Bias Bullish"}
+
+
+def _is_bearish_verdict(verdict: str) -> bool:
+    return verdict in {"Short Buildup", "Call Writing", "OI Bias Bearish"}
+
+
+def _is_reversal_against_open_trade(open_trade: dict, verdict: str, confidence: int) -> bool:
+    if confidence < 70:
+        return False
+    ot = str(open_trade.get("option_type") or "").upper()
+    if ot == "CE" and _is_bearish_verdict(verdict):
+        return True
+    if ot == "PE" and _is_bullish_verdict(verdict):
+        return True
+    return False
+
+
 def _trade_plan_from_verdict(verdict: str, confidence: int, ctx: dict) -> dict | None:
     if confidence < 60:
         return None
@@ -89,8 +108,8 @@ def _trade_plan_from_verdict(verdict: str, confidence: int, ctx: dict) -> dict |
     if underlying <= 0:
         return None
 
-    bullish = verdict in {"Long Buildup", "Put Writing", "OI Bias Bullish"}
-    bearish = verdict in {"Short Buildup", "Call Writing", "OI Bias Bearish"}
+    bullish = _is_bullish_verdict(verdict)
+    bearish = _is_bearish_verdict(verdict)
     if not bullish and not bearish:
         return None
 
@@ -183,15 +202,29 @@ def run_paper_trading(symbol: str, scan_context: dict, digest_id: str, intellige
     now_iso = datetime.now(timezone.utc).isoformat()
     underlying = float((scan_context or {}).get("underlying") or 0.0)
     expiry = (scan_context or {}).get("expiry", "")
+    verdict, confidence = _parse_verdict_and_confidence(intelligence_text)
     
     if underlying <= 0:
         return
 
     _maybe_close_open_trade(symbol, underlying, expiry, now_iso)
-    if get_open_paper_trade(symbol):
-        return
+    open_trade = get_open_paper_trade(symbol)
+    if open_trade and _is_reversal_against_open_trade(open_trade, verdict, confidence):
+        strike = float(open_trade.get("strike") or 0.0)
+        option_type = str(open_trade.get("option_type") or "")
+        exit_premium = _get_option_premium(symbol, expiry, strike, option_type) if strike > 0 else None
+        close_paper_trade(
+            open_trade["id"],
+            now_iso,
+            underlying,
+            exit_premium,
+            "CLOSED_MANUAL",
+            f"reversal: verdict={verdict} conf={confidence}",
+        )
+        open_trade = None
 
-    verdict, confidence = _parse_verdict_and_confidence(intelligence_text)
+    if open_trade:
+        return
     
     # Add symbol and expiry to context for premium fetching
     ctx = {**(scan_context or {}), "symbol": symbol, "expiry": expiry}
@@ -222,4 +255,3 @@ def run_paper_trading(symbol: str, scan_context: dict, digest_id: str, intellige
             "digest_id": digest_id,
         }
     )
-

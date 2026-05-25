@@ -232,6 +232,19 @@ def get_previous_underlying(symbol: str) -> dict | None:
         return dict(row) if row else None
 
 
+def get_previous_underlying_before(symbol: str, fetched_at: str) -> dict | None:
+    """Fetch the latest underlying row strictly before the current scan timestamp."""
+    sql = """
+        SELECT * FROM underlying_price
+        WHERE symbol=? AND fetched_at < ?
+        ORDER BY fetched_at DESC
+        LIMIT 1
+    """
+    with get_conn() as conn:
+        row = conn.execute(sql, (symbol, fetched_at)).fetchone()
+        return dict(row) if row else None
+
+
 def get_latest_snapshots_for_symbol(symbol: str, expiry: str) -> list[dict]:
     """All strikes for the latest fetch timestamp for a symbol/expiry."""
     sql = """

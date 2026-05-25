@@ -64,6 +64,14 @@ def _fmt_num(value, digits: int = 0) -> str:
     return f"{value:.0f}"
 
 
+def _fmt_signed(value, digits: int = 2) -> str:
+    try:
+        value = float(value or 0)
+    except Exception:
+        value = 0.0
+    return f"{value:+.{digits}f}"
+
+
 def _fmt_oi(value) -> str:
     try:
         value = int(value or 0)
@@ -113,6 +121,19 @@ def _chart_payload_for_symbol(scan_context: dict, symbol: str) -> dict:
 def _candle_line(tf: str, tf_data: dict) -> str:
     sentiment = str((tf_data or {}).get("sentiment") or "NEUTRAL").upper()
     marker = EMOJI_GREEN if sentiment == "BULLISH" else (EMOJI_RED if sentiment == "BEARISH" else EMOJI_WHITE)
+    start_label = ""
+    raw_start = (tf_data or {}).get("bar_start_utc")
+    raw_end = (tf_data or {}).get("bar_end_utc")
+    if raw_start:
+        try:
+            start_dt = datetime.fromisoformat(str(raw_start)).astimezone(IST)
+            if raw_end:
+                end_dt = datetime.fromisoformat(str(raw_end)).astimezone(IST)
+                start_label = f" ({start_dt.strftime('%d-%b %H:%M')}-{end_dt.strftime('%H:%M')} IST)"
+            else:
+                start_label = f" ({start_dt.strftime('%d-%b %H:%M')} IST)"
+        except Exception:
+            start_label = ""
     ohlc = (tf_data or {}).get("ohlc") or {}
     if isinstance(ohlc, dict):
         o = ohlc.get("open")
@@ -121,15 +142,15 @@ def _candle_line(tf: str, tf_data: dict) -> str:
         c = ohlc.get("close")
         if all(v is not None for v in (o, h, l, c)):
             try:
-                return f"{tf.upper()} {marker} {sentiment} | O `{float(o):.1f}` H `{float(h):.1f}` L `{float(l):.1f}` C `{float(c):.1f}`"
+                return f"{tf.upper()} {marker} {sentiment}{start_label} | O `{float(o):.1f}` H `{float(h):.1f}` L `{float(l):.1f}` C `{float(c):.1f}`"
             except Exception:
                 pass
         if c is not None:
             try:
-                return f"{tf.upper()} {marker} {sentiment} | C `{float(c):.1f}`"
+                return f"{tf.upper()} {marker} {sentiment}{start_label} | C `{float(c):.1f}`"
             except Exception:
                 pass
-    return f"{tf.upper()} {marker} {sentiment}"
+    return f"{tf.upper()} {marker} {sentiment}{start_label}"
 
 
 def _detail(alert: dict) -> dict:
@@ -292,6 +313,8 @@ def build_digest(
     fetched_at: str | None = None,
     scan_context: dict | None = None,
     intelligence_text: str | None = None,
+    detected_count: int | None = None,
+    dedup_suppressed_count: int | None = None,
 ) -> tuple[str, str]:
     digest_id = str(uuid.uuid4())[:8]
     try:
@@ -307,12 +330,19 @@ def build_digest(
     if not alerts:
         max_oi = float(diag.get("max_oi_delta_pct") or 0)
         max_ltp = float(diag.get("max_atm_ltp_delta_pct") or 0)
+        total_detected = int(detected_count or 0)
+        deduped = int(dedup_suppressed_count or 0)
+        title = "No signals"
+        quiet_note = "No threshold crossed. No trade needed."
+        if total_detected > 0 and deduped >= total_detected:
+            title = "No NEW signals"
+            quiet_note = f"Detected `{total_detected}` but dedup suppressed repeats."
         msg = "\n".join([
-            f"\U0001F4CA *{symbol}* | {ts} | No signals",
+            f"\U0001F4CA *{symbol}* | {ts} | {title}",
             f"Spot `{_fmt_num(ctx.get('underlying'))}` | PCR `{_fmt_num(ctx.get('pcr'), 2)}`",
             "━━━━━━━━━━━━━━━━━━━━",
             f"{EMOJI_WHITE} *Market quiet*",
-            "No threshold crossed. No trade needed.",
+            quiet_note,
             "",
             f"OI max `{max_oi:.2f}%` | ATM LTP max `{max_ltp:.2f}%`",
             f"_#{digest_id} · all symbols enabled_",
@@ -344,6 +374,23 @@ def build_digest(
         "━━━━━━━━━━━━━━━━━━━━",
         f"{emoji} *{label}* - {_clip(intel['verdict'], 45)}",
     ]
+    try:
+        d_spot = float(ctx.get("price_change_pct") or 0.0)
+    except Exception:
+        d_spot = 0.0
+    try:
+        d_points = float(ctx.get("price_change_points") or 0.0)
+    except Exception:
+        d_points = 0.0
+    pct_digits = 3 if abs(d_spot) < 0.01 and d_spot != 0 else 2
+    spot_delta = (
+        "flat"
+        if abs(d_points) < 0.05 and abs(d_spot) < 0.005
+        else f"{_fmt_signed(d_points, 1)} (`{_fmt_signed(d_spot, pct_digits)}%`)"
+    )
+    lines.append(
+        f"Δ prev scan: Spot `{spot_delta}` | CE OI `{_fmt_oi(ctx.get('ce_oi_change', 0))}` | PE OI `{_fmt_oi(ctx.get('pe_oi_change', 0))}`"
+    )
     if intel["desc"]:
         lines.append(_clip(intel["desc"], 100))
     lines.append(f"Confidence: `{_bar(confidence)}`")
@@ -396,7 +443,7 @@ def build_digest(
         lines.append(f"{badge} {_clip(_signal_line(alert), 130)}")
     hidden = len(sorted_alerts) - cap
     if hidden > 0:
-        lines.append(f"...and {hidden} more lower-priority signals.")
+        lines.append(f"...and {hidden} more signals.")
 
     bull = _clip(intel["bull"][0], 110) if intel["bull"] else "No strong bullish factor"
     bear = _clip(intel["bear"][0], 110) if intel["bear"] else "No strong bearish factor"

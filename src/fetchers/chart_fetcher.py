@@ -28,14 +28,18 @@ Each timeframe payload mirrors the extension shape:
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 import re
+import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
+
+from config.settings import DB_PATH, DHAN_SECURITY_IDS
 
 log = logging.getLogger(__name__)
 
@@ -67,6 +71,8 @@ _TV_SYMBOL_MAP: dict[str, tuple[str, str]] = {
     "SILVER": ("MCX", "SILVER"),
 }
 _MCX_SYMBOLS = {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"}
+_DHAN_BUILTUP_SYMBOLS = {"NATURALGAS", "CRUDEOIL"}
+_DHAN_BUILTUP_URL = "https://openweb-ticks.dhan.co/builtup"
 
 _YF_SYMBOL_MAP: dict[str, str] = {
     "NIFTY": "^NSEI",
@@ -120,12 +126,34 @@ def _now_iso() -> str:
     return datetime.now(IST).isoformat()
 
 
+def _to_utc_iso(ts_value, *, naive_tz=timezone.utc) -> str | None:
+    if ts_value is None:
+        return None
+    try:
+        if isinstance(ts_value, (int, float)):
+            dt = datetime.fromtimestamp(float(ts_value), timezone.utc)
+        elif isinstance(ts_value, datetime):
+            dt = ts_value
+        elif hasattr(ts_value, "to_pydatetime"):
+            dt = ts_value.to_pydatetime()
+        else:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=naive_tz)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        return dt.astimezone(timezone.utc).isoformat()
+    except Exception:
+        return None
+
+
 def _sentiment(open_: float, close: float, high: float, low: float) -> str:
-    body = abs(close - open_)
-    total_range = high - low if high != low else 1e-9
-    if (body / total_range) < 0.15:
-        return "NEUTRAL"
-    return "BULLISH" if close > open_ else "BEARISH"
+    eps = 1e-9
+    if close > open_ + eps:
+        return "BULLISH"
+    if close < open_ - eps:
+        return "BEARISH"
+    return "NEUTRAL"
 
 
 def _tv_interval(tf: str):
@@ -176,9 +204,9 @@ def _get_tv_client():
 
 
 def _provider_order(base_symbol: str) -> list[str]:
-    if base_symbol in _MCX_SYMBOLS:
-        return ["tvdatafeed", "yfinance"]
-    return ["yfinance", "tvdatafeed"]
+    # TradingView is closest to what the trader sees on screen. Yahoo remains
+    # a fallback only, because its index candles can be delayed/resampled.
+    return ["tvdatafeed", "yfinance"]
 
 
 @contextlib.contextmanager
@@ -233,7 +261,7 @@ def _flatten_yf_frame(df, ticker: str):
     return df if not getattr(df, "empty", True) else None
 
 
-def _bar_to_payload(bar) -> dict | None:
+def _bar_to_payload(bar, *, bar_start_ts=None, bar_end_ts=None, naive_tz=timezone.utc) -> dict | None:
     try:
         def _pick(*keys):
             for key in keys:
@@ -256,7 +284,187 @@ def _bar_to_payload(bar) -> dict | None:
     return {
         "sentiment": _sentiment(o, c, h, l),
         "ohlc": {"open": o, "high": h, "low": l, "close": c},
+        "bar_start_utc": _to_utc_iso(bar_start_ts, naive_tz=naive_tz),
+        "bar_end_utc": _to_utc_iso(bar_end_ts or bar_start_ts, naive_tz=naive_tz),
     }
+
+
+def _parse_dt_utc(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        text = str(value).strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _is_payload_stale(payload: dict, tf: str) -> bool:
+    end_raw = (payload or {}).get("bar_end_utc") or (payload or {}).get("bar_start_utc")
+    end_dt = _parse_dt_utc(end_raw)
+    if end_dt is None:
+        return True
+    age_mins = (datetime.now(timezone.utc) - end_dt).total_seconds() / 60.0
+    ttl = 120 if tf == "1h" else 240 if tf == "3h" else 180
+    return age_mins > ttl
+
+
+def _floor_tf_start(now_ist: datetime, tf: str) -> datetime:
+    if tf == "3h":
+        hour = (now_ist.hour // 3) * 3
+        return now_ist.replace(hour=hour, minute=0, second=0, microsecond=0)
+    return now_ist.replace(minute=0, second=0, microsecond=0)
+
+
+def _last_closed_window(tf: str) -> tuple[datetime, datetime] | None:
+    now_ist = datetime.now(IST)
+    if tf == "1h":
+        end_ist = now_ist.replace(minute=0, second=0, microsecond=0)
+        start_ist = end_ist - timedelta(hours=1)
+    elif tf == "3h":
+        current_block_start = _floor_tf_start(now_ist, "3h")
+        end_ist = current_block_start
+        start_ist = end_ist - timedelta(hours=3)
+    else:
+        return None
+    return start_ist.astimezone(timezone.utc), end_ist.astimezone(timezone.utc)
+
+
+def _aggregate_rows_to_payload(rows: list[dict], start_utc: datetime, end_utc: datetime) -> Optional[dict]:
+    selected: list[dict] = []
+    for row in rows:
+        try:
+            st = datetime.fromtimestamp(float(row.get("st")), timezone.utc)
+            et = datetime.fromtimestamp(float(row.get("et")), timezone.utc)
+        except Exception:
+            continue
+        if st >= start_utc and et <= end_utc:
+            selected.append(row)
+
+    selected.sort(key=lambda r: float(r.get("st") or 0))
+    if not selected:
+        return None
+    try:
+        o = float(selected[0]["o"])
+        h = max(float(r["h"]) for r in selected)
+        l = min(float(r["l"]) for r in selected)
+        c = float(selected[-1]["c"])
+    except Exception:
+        return None
+    return {
+        "sentiment": _sentiment(o, c, h, l),
+        "ohlc": {"open": o, "high": h, "low": l, "close": c},
+        "bar_start_utc": start_utc.isoformat(),
+        "bar_end_utc": end_utc.isoformat(),
+    }
+
+
+def _fetch_dhan_builtup_ohlc(base_symbol: str, tf: str) -> Optional[dict]:
+    if base_symbol not in _DHAN_BUILTUP_SYMBOLS:
+        return None
+    window = _last_closed_window(tf)
+    if not window:
+        return None
+    sid = DHAN_SECURITY_IDS.get(base_symbol)
+    if not sid:
+        return None
+
+    payload = {
+        "Data": {
+            "Exch": "MCX",
+            "Seg": "M",
+            "Inst": "FUTCOM",
+            "Timeinterval": "15",
+            "Secid": int(sid),
+        }
+    }
+    try:
+        import urllib.request
+
+        with _without_proxy_env():
+            req = urllib.request.Request(
+                _DHAN_BUILTUP_URL,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                    "Content-Type": "application/json; charset=UTF-8",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=15) as res:
+                raw = json.loads(res.read().decode("utf-8"))
+        rows = raw.get("data") if isinstance(raw, dict) else None
+        if not isinstance(rows, list):
+            return None
+        out = _aggregate_rows_to_payload(rows, *window)
+        if out:
+            log.info("[chart] %s %s -> using dhan_builtup last-closed candle", base_symbol, tf)
+        return out
+    except Exception as exc:
+        log.warning("[chart] dhan_builtup fetch failed %s %s: %s", base_symbol, tf, exc)
+        return None
+
+
+def _fetch_local_ohlc_from_db(base_symbol: str, tf: str) -> Optional[dict]:
+    if tf not in {"1h", "3h"}:
+        return None
+    window = _last_closed_window(tf)
+    if not window:
+        return None
+    start_utc, end_utc = window
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                """
+                SELECT fetched_at, price
+                FROM underlying_price
+                WHERE symbol=? AND fetched_at >= ? AND fetched_at < ?
+                ORDER BY fetched_at ASC
+                """,
+                (base_symbol, start_utc.isoformat(), end_utc.isoformat()),
+            ).fetchall()
+            if not rows:
+                return None
+
+            prices: list[float] = []
+            first_dt_utc = None
+            last_dt_utc = None
+            for r in rows:
+                try:
+                    prices.append(float(r["price"]))
+                    dt_utc = _parse_dt_utc(r["fetched_at"])
+                    if dt_utc is not None:
+                        if first_dt_utc is None:
+                            first_dt_utc = dt_utc
+                        last_dt_utc = dt_utc
+                except Exception:
+                    continue
+            if not prices:
+                return None
+
+            o = prices[0]
+            h = max(prices)
+            l = min(prices)
+            c = prices[-1]
+            return {
+                "sentiment": _sentiment(o, c, h, l),
+                "ohlc": {"open": o, "high": h, "low": l, "close": c},
+                "bar_start_utc": start_utc.isoformat(),
+                "bar_end_utc": end_utc.isoformat(),
+            }
+        finally:
+            conn.close()
+    except Exception as exc:
+        log.debug("[chart] local DB OHLC build failed for %s %s: %s", base_symbol, tf, exc)
+        return None
 
 
 def _fetch_tv(base_symbol: str, tf: str) -> Optional[dict]:
@@ -281,8 +489,13 @@ def _fetch_tv(base_symbol: str, tf: str) -> Optional[dict]:
         if df is None or getattr(df, "empty", True):
             return None
 
-        bar = df.iloc[-2] if len(df) >= 2 else df.iloc[-1]
-        payload = _bar_to_payload(bar)
+        bar = df.iloc[-1]
+        bar_ts = None
+        try:
+            bar_ts = df.index[-1]
+        except Exception:
+            pass
+        payload = _bar_to_payload(bar, bar_start_ts=bar_ts, bar_end_ts=bar_ts, naive_tz=IST)
         if payload is None:
             return None
         return payload
@@ -331,6 +544,7 @@ def _fetch_yf(base_symbol: str, tf: str, reference_price: float | None = None) -
             
         result = data["chart"]["result"][0]
         indicators = result["indicators"]["quote"][0]
+        timestamps = result.get("timestamp", []) or []
         opens = indicators.get("open", [])
         highs = indicators.get("high", [])
         lows = indicators.get("low", [])
@@ -343,36 +557,43 @@ def _fetch_yf(base_symbol: str, tf: str, reference_price: float | None = None) -
             l = lows[i]
             c = closes[i]
             if o is not None and h is not None and l is not None and c is not None:
-                valid_bars.append({"Open": float(o), "High": float(h), "Low": float(l), "Close": float(c)})
+                ts = timestamps[i] if i < len(timestamps) else None
+                valid_bars.append({
+                    "Open": float(o),
+                    "High": float(h),
+                    "Low": float(l),
+                    "Close": float(c),
+                    "_ts": ts,
+                })
                 
         if tf == "3h" and len(valid_bars) >= 2:
-            resampled = []
-            for i in range(0, len(valid_bars), 2):
-                chunk = valid_bars[i:i+2]
-                if chunk:
-                    resampled.append({
-                        "Open": chunk[0]["Open"],
-                        "High": max(item["High"] for item in chunk),
-                        "Low": min(item["Low"] for item in chunk),
-                        "Close": chunk[-1]["Close"]
-                    })
-            valid_bars = resampled
+            chunk = valid_bars[-2:]
+            valid_bars = [{
+                "Open": chunk[0]["Open"],
+                "High": max(item["High"] for item in chunk),
+                "Low": min(item["Low"] for item in chunk),
+                "Close": chunk[-1]["Close"],
+                "_ts_start": chunk[0].get("_ts"),
+                "_ts_end": chunk[-1].get("_ts"),
+            }]
         elif tf == "4h" and len(valid_bars) >= 4:
-            resampled = []
-            for i in range(0, len(valid_bars), 4):
-                chunk = valid_bars[i:i+4]
-                if chunk:
-                    resampled.append({
-                        "Open": chunk[0]["Open"],
-                        "High": max(item["High"] for item in chunk),
-                        "Low": min(item["Low"] for item in chunk),
-                        "Close": chunk[-1]["Close"]
-                    })
-            valid_bars = resampled
+            chunk = valid_bars[-4:]
+            valid_bars = [{
+                "Open": chunk[0]["Open"],
+                "High": max(item["High"] for item in chunk),
+                "Low": min(item["Low"] for item in chunk),
+                "Close": chunk[-1]["Close"],
+                "_ts_start": chunk[0].get("_ts"),
+                "_ts_end": chunk[-1].get("_ts"),
+            }]
             
         if valid_bars:
-            bar = valid_bars[-2] if len(valid_bars) >= 2 else valid_bars[-1]
-            payload = _bar_to_payload(bar)
+            bar = valid_bars[-1]
+            payload = _bar_to_payload(
+                bar,
+                bar_start_ts=bar.get("_ts_start", bar.get("_ts")),
+                bar_end_ts=bar.get("_ts_end", bar.get("_ts")),
+            )
             if payload:
                 # MCX symbols from Yahoo (NG=F/CL=F/GC=F/SI=F) are in global units.
                 # Scale to local underlying so OHLC shown in Telegram/UI remains meaningful.
@@ -426,8 +647,13 @@ def _fetch_yf(base_symbol: str, tf: str, reference_price: float | None = None) -
         if df is None or df.empty:
             return None
 
-        bar = df.iloc[-2] if len(df) >= 2 else df.iloc[-1]
-        payload = _bar_to_payload(bar)
+        bar = df.iloc[-1]
+        bar_ts = None
+        try:
+            bar_ts = df.index[-1]
+        except Exception:
+            pass
+        payload = _bar_to_payload(bar, bar_start_ts=bar_ts, bar_end_ts=bar_ts)
         if payload and base_symbol in _MCX_SYMBOLS and reference_price and reference_price > 0:
             try:
                 close_px = float((payload.get("ohlc") or {}).get("close") or 0.0)
@@ -460,6 +686,8 @@ class ChartFetcher:
             entry = {
                 "sentiment": current_sentiment,
                 "ohlc": current_ohlc,
+                "bar_start_utc": payload.get("bar_start_utc"),
+                "bar_end_utc": payload.get("bar_end_utc"),
                 "last_closed_ohlc": prev_ohlc if changed else prev.get("last_closed_ohlc"),
                 "updated_at": now,
                 "seen_at": now,
@@ -481,16 +709,28 @@ class ChartFetcher:
             payload = None
             source = None
 
-            for provider in _provider_order(base):
-                if provider == "tvdatafeed":
-                    payload = _fetch_tv(base, tf)
-                    source = "tvdatafeed"
-                else:
-                    payload = _fetch_yf(base, tf, reference_price=reference_price)
-                    source = "yfinance"
+            if base in _DHAN_BUILTUP_SYMBOLS:
+                payload = _fetch_dhan_builtup_ohlc(base, tf)
+                source = "dhan_builtup" if payload else None
 
-                if payload:
-                    break
+            if not payload:
+                for provider in _provider_order(base):
+                    if provider == "tvdatafeed":
+                        payload = _fetch_tv(base, tf)
+                        source = "tvdatafeed"
+                    else:
+                        payload = _fetch_yf(base, tf, reference_price=reference_price)
+                        source = "yfinance"
+
+                    if payload:
+                        break
+
+            if base in _MCX_SYMBOLS and (payload is None or _is_payload_stale(payload, tf)):
+                local_payload = _fetch_local_ohlc_from_db(base, tf)
+                if local_payload:
+                    payload = local_payload
+                    source = "local_underlying_db"
+                    log.info("[chart] %s %s -> using local_underlying_db (fresh MCX fallback)", base, tf)
 
             if not payload:
                 log.warning("[chart] %s %s -> no chart data", base, tf)

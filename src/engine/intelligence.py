@@ -194,6 +194,15 @@ def _compute_confidence(scan_ctx: dict, alerts: list[dict],
         elif tf_1h and tf_1h == tf_3h and tf_1h != "NEUTRAL":
             score += 15  # Confluence bonus
 
+    alert_types = [a.get("alert_type") for a in alerts]
+    if alerts and alert_types.count("VOLUME_AGGRESSION") / max(len(alerts), 1) >= 0.70:
+        directional_types = {"BUILDUP_CLASSIFY", "OI_SPIKE", "OI_UNWIND", "ATM_LEG_MOVE"}
+        directional_count = sum(1 for t in alert_types if t in directional_types)
+        if directional_count <= max(2, len(alerts) * 0.15):
+            score = min(score, 88)
+    if chart_conflict:
+        score = min(score, 85)
+
     # Cap: Sideways verdict should never print 90%+ confidence — contradictory
     if score > 65:
         # Re-derive verdict to check if it's sideways/neutral
@@ -467,6 +476,10 @@ def _compute_broader_trend(symbol: str, alerts: list[dict]) -> str:
     short_covers = 0
     oi_spikes_ce = 0
     oi_spikes_pe = 0
+    vol_aggr_ce = 0
+    vol_aggr_pe = 0
+    atm_bull = 0
+    atm_bear = 0
 
     for h in merged:
         row = dict(h) if not isinstance(h, dict) else h
@@ -495,10 +508,22 @@ def _compute_broader_trend(symbol: str, alerts: list[dict]) -> str:
                 oi_spikes_ce += 1
             else:
                 oi_spikes_pe += 1
+        if atype == "VOLUME_AGGRESSION":
+            if ot == "CE":
+                vol_aggr_ce += 1
+            elif ot == "PE":
+                vol_aggr_pe += 1
+        if atype == "ATM_LEG_MOVE":
+            bias = str(detail.get("bias") or "")
+            if "Bullish" in bias:
+                atm_bull += 1
+            elif "Bearish" in bias:
+                atm_bear += 1
 
     # Decision logic
-    bull_score = long_buildups + short_covers + oi_spikes_pe
-    bear_score = short_buildups + long_unwinds + oi_spikes_ce
+    bull_score = long_buildups + short_covers + oi_spikes_pe + vol_aggr_pe + atm_bull
+    bear_score = short_buildups + long_unwinds + oi_spikes_ce + vol_aggr_ce + atm_bear
+    active_flow = vol_aggr_ce + vol_aggr_pe
 
     if bear_score >= 8 and bear_score > bull_score * 2:
         return "🔴 Strong Bearish Trend — persistent call writing + short buildup"
@@ -508,6 +533,8 @@ def _compute_broader_trend(symbol: str, alerts: list[dict]) -> str:
         return "🟢 Strong Bullish Trend — persistent put writing + long buildup"
     if bull_score >= 5 and bull_score > bear_score * 1.5:
         return "🟡 Mild Bullish — support building, buyers active"
+    if active_flow >= 10:
+        return "âšª High Activity â€” aggressive flow on both sides"
     if oi_spikes_ce > 3 and oi_spikes_pe > 3 and abs(oi_spikes_ce - oi_spikes_pe) <= 2:
         return "⚪ Rangebound — balanced OI activity on both sides"
     if bull_score + bear_score < 3:
@@ -644,6 +671,12 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
             log.debug("[intel] Chart confluence +10%% | %s %s BEARISH aligns Short Buildup", symbol, tf)
 
     # ── Build Message ──────────────────────────────────────────────────────
+    alert_types = [a.get("alert_type") for a in current_alerts]
+    if current_alerts and alert_types.count("VOLUME_AGGRESSION") / max(len(current_alerts), 1) >= 0.70:
+        confidence = min(confidence, 88)
+    if chart_conflict:
+        confidence = min(confidence, 85)
+
     if confidence < 50:
         return "\n".join([
             f"🤖 *Bot Intelligence | {symbol}*",
