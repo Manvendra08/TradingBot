@@ -4,6 +4,8 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
+import pytz
+
 from src.models.schema import (
     close_paper_trade,
     get_open_paper_trade,
@@ -11,6 +13,19 @@ from src.models.schema import (
     get_latest_snapshots_for_symbol,
 )
 from config.settings import LOT_SIZES, DEFAULT_LOTS_PER_TRADE
+from config.symbol_classes import market_window
+
+IST = pytz.timezone("Asia/Kolkata")
+
+
+def _is_market_open(symbol: str) -> bool:
+    """Return True only if current IST time is within the symbol's market window."""
+    now = datetime.now(IST)
+    open_t, close_t, days = market_window(symbol)
+    if now.weekday() not in days:
+        return False
+    t = now.strftime("%H:%M")
+    return open_t <= t <= close_t
 
 
 def _get_option_premium(symbol: str, expiry: str, strike: float, option_type: str) -> float | None:
@@ -28,39 +43,17 @@ def _get_option_premium(symbol: str, expiry: str, strike: float, option_type: st
 
 def _calculate_option_sl_target(entry_premium: float, option_type: str, is_bullish: bool) -> tuple[float, float]:
     """
-    Calculate SL and Target in premium terms for options.
-    
-    For CE (Call):
-      - Bullish: SL = entry - 30%, Target = entry + 50%
-      - Bearish: SL = entry + 30%, Target = entry - 50%
-    
-    For PE (Put):
-      - Bullish: SL = entry + 30%, Target = entry - 50%
-      - Bearish: SL = entry - 30%, Target = entry + 50%
+    Calculate SL and Target in premium terms.
+    Engine always takes LONG positions (buys CE for bullish, buys PE for bearish).
+    Long option: profit when premium rises.
+      SL     = entry * 0.70  (exit if premium drops 30%)
+      Target = entry * 1.50  (exit when premium rises 50%)
     """
     if entry_premium <= 0:
         return 0.0, 0.0
-    
-    if option_type == "CE":
-        if is_bullish:
-            # Long CE: SL below, Target above
-            sl = entry_premium * 0.70  # -30%
-            target = entry_premium * 1.50  # +50%
-        else:
-            # Short CE: SL above, Target below
-            sl = entry_premium * 1.30  # +30%
-            target = entry_premium * 0.50  # -50%
-    else:  # PE
-        if is_bullish:
-            # Short PE: SL above, Target below
-            sl = entry_premium * 1.30  # +30%
-            target = entry_premium * 0.50  # -50%
-        else:
-            # Long PE: SL below, Target above
-            sl = entry_premium * 0.70  # -30%
-            target = entry_premium * 1.50  # +50%
-    
-    return round(sl, 2), round(target, 2)
+    sl     = round(entry_premium * 0.70, 2)   # -30%
+    target = round(entry_premium * 1.50, 2)   # +50%
+    return sl, target
 
 
 def _parse_verdict_and_confidence(intel_text: str) -> tuple[str, int]:
@@ -162,21 +155,16 @@ def _maybe_close_open_trade(symbol: str, underlying: float, expiry: str, now_iso
     target_premium = open_trade.get("target_premium")
     
     if exit_premium and sl_premium and target_premium:
-        # Use premium-based exit logic
-        if option_type == "CE":
-            if target_premium > 0 and exit_premium >= target_premium:
-                close_paper_trade(open_trade["id"], now_iso, underlying, exit_premium, "CLOSED_TARGET", "target hit")
-                return
-            if sl_premium > 0 and exit_premium <= sl_premium:
-                close_paper_trade(open_trade["id"], now_iso, underlying, exit_premium, "CLOSED_SL", "stop loss hit")
-                return
-        else:  # PE
-            if target_premium > 0 and exit_premium <= target_premium:
-                close_paper_trade(open_trade["id"], now_iso, underlying, exit_premium, "CLOSED_TARGET", "target hit")
-                return
-            if sl_premium > 0 and exit_premium >= sl_premium:
-                close_paper_trade(open_trade["id"], now_iso, underlying, exit_premium, "CLOSED_SL", "stop loss hit")
-                return
+        # Premium-based exit — direction depends on option type
+        # Long CE (bullish): target = premium rises, SL = premium falls
+        # Long PE (bearish): target = premium rises, SL = premium falls
+        # (engine always takes long positions — buys CE for bullish, buys PE for bearish)
+        if exit_premium >= float(target_premium):
+            close_paper_trade(open_trade["id"], now_iso, underlying, exit_premium, "CLOSED_TARGET", "target hit")
+            return
+        if exit_premium <= float(sl_premium):
+            close_paper_trade(open_trade["id"], now_iso, underlying, exit_premium, "CLOSED_SL", "stop loss hit")
+            return
     else:
         # Fallback to underlying-based exit logic (legacy)
         target_underlying = float(open_trade.get("target_underlying") or 0.0)
@@ -203,8 +191,17 @@ def run_paper_trading(symbol: str, scan_context: dict, digest_id: str, intellige
     underlying = float((scan_context or {}).get("underlying") or 0.0)
     expiry = (scan_context or {}).get("expiry", "")
     verdict, confidence = _parse_verdict_and_confidence(intelligence_text)
-    
+
     if underlying <= 0:
+        return
+
+    # ── Market hours guard ────────────────────────────────────────────────
+    # Never open or close paper trades outside the symbol's market window.
+    if not _is_market_open(symbol):
+        import logging
+        logging.getLogger(__name__).debug(
+            "%s: paper-trading skipped — outside market hours", symbol
+        )
         return
 
     _maybe_close_open_trade(symbol, underlying, expiry, now_iso)

@@ -376,42 +376,41 @@ def insert_paper_trade(trade: dict) -> int:
 def close_paper_trade(trade_id: int, closed_at: str, exit_underlying: float, exit_premium: float | None, status: str, reason: str = "") -> None:
     """Close a paper trade and calculate P&L in both points and rupees."""
     from config.settings import LOT_SIZES
-    
+
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT symbol, option_type, entry_underlying, entry_premium, lots FROM paper_trades WHERE id=?",
+            "SELECT symbol, option_type, verdict_label, entry_underlying, entry_premium, lots FROM paper_trades WHERE id=?",
             (trade_id,)
         ).fetchone()
         if not row:
             return
-        
+
         symbol = row["symbol"]
         option_type = row["option_type"]
+        verdict_label = row["verdict_label"] or ""
         entry_underlying = float(row["entry_underlying"] or 0.0)
         entry_premium = float(row["entry_premium"] or 0.0)
         lots = int(row["lots"] or 1)
-        
-        # Get lot size for symbol
-        lot_size = LOT_SIZES.get(symbol, 1)
-        
-        # Calculate P&L based on trade type
+
+        lot_size = LOT_SIZES.get(symbol.upper(), LOT_SIZES.get(symbol, 1))
+
+        # Engine always takes LONG positions (buys CE or buys PE).
+        # P&L = exit_premium - entry_premium for both CE and PE.
         if option_type in ("CE", "PE"):
             if entry_premium and entry_premium > 0 and exit_premium and exit_premium > 0:
-                # Best case: both premiums known → realistic option P&L
                 pnl_points = exit_premium - entry_premium
             else:
-                # Fallback: underlying move (legacy / when premium unavailable)
+                # Fallback: underlying move
                 if option_type == "CE":
                     pnl_points = float(exit_underlying) - entry_underlying
                 else:
                     pnl_points = entry_underlying - float(exit_underlying)
         else:
-            # Futures: underlying price difference
+            # Futures
             pnl_points = float(exit_underlying) - entry_underlying
 
-        # Always compute rupees — never leave it 0
         pnl_rupees = pnl_points * lot_size * lots
-        
+
         conn.execute(
             """
             UPDATE paper_trades
