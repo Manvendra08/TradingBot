@@ -26,15 +26,15 @@
   --bg: #f8fafc;
   --surface: #ffffff;
   --surface-2: #f1f5f9;
-  --border: #e2e8f0;
-  --accent: #059669;
-  --red: #e11d48;
-  --green: #059669;
+  --border: #cbd5e1;
+  --accent: #0891b2;
+  --red: #dc2626;
+  --green: #0891b2;
   --yellow: #d97706;
   --blue: #0284c7;
   --text: #0f172a;
-  --text-dim: #64748b;
-  --muted: #cbd5e1;
+  --text-dim: #334155;
+  --muted: #78716c;
 }
 
 /* ── Global Styles ── */
@@ -86,6 +86,22 @@ header {
   transition: background-color 0.3s;
 }
 
+/* ── Light Theme Enhancements ── */
+[data-theme="light"] .card,
+[data-theme="light"] .kpi {
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+}
+
+[data-theme="light"] .card:hover,
+[data-theme="light"] .kpi:hover {
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.12);
+  border-color: #cbd5e1;
+}
+
+[data-theme="light"] header {
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+}
+
 table {
   background: var(--surface);
 }
@@ -93,6 +109,14 @@ table {
 th {
   background: var(--surface-2);
   color: var(--text-dim);
+  font-weight: 600;
+}
+
+[data-theme="light"] th {
+  background: #f1f5f9;
+  color: #334155;
+  font-weight: 600;
+  border-bottom: 2px solid #cbd5e1;
 }
 
 tr:hover td {
@@ -100,7 +124,7 @@ tr:hover td {
 }
 
 [data-theme="light"] tr:hover td {
-  background: rgba(5, 150, 105, 0.03);
+  background: rgba(8, 145, 178, 0.04);
 }
 
 /* ── Buttons & Inputs ── */
@@ -125,8 +149,30 @@ button.primary:hover {
   background: rgba(0, 229, 160, 0.08);
 }
 
+[data-theme="light"] button,
+[data-theme="light"] select,
+[data-theme="light"] input {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  color: #0f172a;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+}
+
+[data-theme="light"] button:hover,
+[data-theme="light"] select:hover,
+[data-theme="light"] input:hover {
+  border-color: #0891b2;
+  box-shadow: 0 2px 4px rgba(8, 145, 178, 0.1);
+}
+
+[data-theme="light"] button.primary {
+  border-color: #0891b2;
+  color: #0891b2;
+  font-weight: 600;
+}
+
 [data-theme="light"] button.primary:hover {
-  background: rgba(5, 150, 105, 0.08);
+  background: rgba(8, 145, 178, 0.08);
 }
 
 /* ── Status Indicators ── */
@@ -172,6 +218,31 @@ button.primary:hover {
 .badge.b-manual {
   background: rgba(77, 166, 255, 0.15);
   color: var(--blue);
+}
+
+/* ── Light Theme Badge Enhancements ── */
+[data-theme="light"] .badge.b-open {
+  background: #fef3c7;
+  color: #b45309;
+  font-weight: 600;
+}
+
+[data-theme="light"] .badge.b-win {
+  background: #ccfbf1;
+  color: #0d7377;
+  font-weight: 600;
+}
+
+[data-theme="light"] .badge.b-loss {
+  background: #fee2e2;
+  color: #991b1b;
+  font-weight: 600;
+}
+
+[data-theme="light"] .badge.b-manual {
+  background: #dbeafe;
+  color: #0c4a6e;
+  font-weight: 600;
 }
 
 /* ── Scrollbar ── */
