@@ -47,8 +47,11 @@ class ThemeManager {
 
   createToggleButton() {
     // Check if button already exists
-    if (document.getElementById('theme-toggle-btn')) {
-      this.updateToggleButton(document.documentElement.getAttribute('data-theme') || this.DARK_THEME);
+    const existingBtn = document.getElementById('theme-toggle-btn');
+    if (existingBtn) {
+      const currentTheme = document.documentElement.getAttribute('data-theme') || this.DARK_THEME;
+      this.updateToggleButton(currentTheme);
+      existingBtn.onclick = () => this.toggleTheme();
       return;
     }
 

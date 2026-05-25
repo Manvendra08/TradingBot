@@ -71,7 +71,7 @@
   header {
     display: flex; align-items: center; gap: 12px; padding: 12px 20px;
     border-bottom: 1px solid var(--border); background: var(--surface);
-    position: sticky; top: 0; z-index: 10;
+    position: sticky; top: 0; z-index: 100;
   }
   .logo { font-family: var(--mono); color: var(--accent); letter-spacing: 1px; font-weight: 700; font-size: 15px; }
   .sep { flex: 1; }
@@ -102,7 +102,7 @@
   <button class="btn primary" onclick="loadAll()">⟳ Refresh</button>
   <div class="sep"></div>
   <div id="last" style="font-family:'Space Mono',monospace;color:var(--text-dim);font-size:11px;">—</div>
-  <button id="theme-toggle-btn" class="theme-toggle" title="Toggle dark/light theme">☀️</button>
+  <button id="theme-toggle-btn" class="theme-toggle" title="Toggle dark/light theme" onclick="window.themeManager && window.themeManager.toggleTheme()">☀️</button>
 </header>
 
 <main>
