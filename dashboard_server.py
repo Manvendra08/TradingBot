@@ -879,9 +879,113 @@ def get_paper_summary(symbol: str = ""):
     out["profit_factor"] = round(total_wins / total_losses, 2) if total_losses > 0 else 0.0
     out["consecutive_wins"] = _calculate_consecutive_wins(where, tuple(params))
     
+    # Phase 2: Holding period analysis
+    out["holding_analysis"] = _calculate_holding_analysis(where, tuple(params))
+    
     out["open_trades"] = open_rows
     out["symbol_breakdown"] = symbol_stats
     return out
+
+
+def _calculate_holding_analysis(where: str, params: tuple) -> dict:
+    """Calculate holding period distribution and metrics."""
+    from datetime import datetime
+    
+    rows = _q(
+        f"SELECT opened_at, closed_at, status FROM paper_trades {where} {'AND' if where else 'WHERE'} status LIKE 'CLOSED_%' AND closed_at IS NOT NULL",
+        params
+    )
+    
+    if not rows:
+        return {
+            "avg_duration_minutes": 0,
+            "median_duration_minutes": 0,
+            "min_duration_minutes": 0,
+            "max_duration_minutes": 0,
+            "distribution": {
+                "under_5min": 0,
+                "5_to_15min": 0,
+                "15_to_30min": 0,
+                "30_to_60min": 0,
+                "over_60min": 0
+            },
+            "fastest_trade": None,
+            "slowest_trade": None
+        }
+    
+    durations = []
+    for r in rows:
+        try:
+            opened = datetime.fromisoformat(r["opened_at"].replace("Z", "+00:00"))
+            closed = datetime.fromisoformat(r["closed_at"].replace("Z", "+00:00"))
+            duration_min = (closed - opened).total_seconds() / 60
+            durations.append(duration_min)
+        except:
+            continue
+    
+    if not durations:
+        return {
+            "avg_duration_minutes": 0,
+            "median_duration_minutes": 0,
+            "min_duration_minutes": 0,
+            "max_duration_minutes": 0,
+            "distribution": {
+                "under_5min": 0,
+                "5_to_15min": 0,
+                "15_to_30min": 0,
+                "30_to_60min": 0,
+                "over_60min": 0
+            },
+            "fastest_trade": None,
+            "slowest_trade": None
+        }
+    
+    # Calculate distribution
+    under_5 = sum(1 for d in durations if d < 5)
+    five_to_15 = sum(1 for d in durations if 5 <= d < 15)
+    fifteen_to_30 = sum(1 for d in durations if 15 <= d < 30)
+    thirty_to_60 = sum(1 for d in durations if 30 <= d < 60)
+    over_60 = sum(1 for d in durations if d >= 60)
+    
+    # Sort for median
+    sorted_durations = sorted(durations)
+    median_idx = len(sorted_durations) // 2
+    median = sorted_durations[median_idx] if sorted_durations else 0
+    
+    return {
+        "avg_duration_minutes": round(sum(durations) / len(durations), 1),
+        "median_duration_minutes": round(median, 1),
+        "min_duration_minutes": round(min(durations), 1),
+        "max_duration_minutes": round(max(durations), 1),
+        "distribution": {
+            "under_5min": under_5,
+            "5_to_15min": five_to_15,
+            "15_to_30min": fifteen_to_30,
+            "30_to_60min": thirty_to_60,
+            "over_60min": over_60
+        },
+        "distribution_pct": {
+            "under_5min": round((under_5 / len(durations)) * 100, 1) if durations else 0,
+            "5_to_15min": round((five_to_15 / len(durations)) * 100, 1) if durations else 0,
+            "15_to_30min": round((fifteen_to_30 / len(durations)) * 100, 1) if durations else 0,
+            "30_to_60min": round((thirty_to_60 / len(durations)) * 100, 1) if durations else 0,
+            "over_60min": round((over_60 / len(durations)) * 100, 1) if durations else 0
+        },
+        "fastest_trade": _format_duration(min(durations)),
+        "slowest_trade": _format_duration(max(durations))
+    }
+
+
+def _format_duration(minutes: float) -> str:
+    """Format duration in human-readable format."""
+    if minutes < 1:
+        return f"{int(minutes * 60)}s"
+    elif minutes < 60:
+        return f"{int(minutes)}m"
+    else:
+        hours = int(minutes / 60)
+        mins = int(minutes % 60)
+        return f"{hours}h {mins}m" if mins > 0 else f"{hours}h"
 
 
 def _calculate_consecutive_wins(where: str, params: tuple) -> int:

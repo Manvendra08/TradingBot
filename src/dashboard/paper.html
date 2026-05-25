@@ -145,7 +145,60 @@
   <div class="card">
     <div class="card-title">Performance by Symbol</div>
     <div class="grid3" id="sym-breakdown">
-      <div style="color:var(--dim);font-size:12px;">No trades yet</div>
+      <div style="color:var(--text-dim);font-size:12px;">No trades yet</div>
+    </div>
+  </div>
+
+  <!-- Phase 2: Holding Period Analysis -->
+  <div class="card">
+    <div class="card-title">Holding Period Analysis</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;">
+      <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:6px;padding:12px;">
+        <div style="font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">Avg Duration</div>
+        <div style="font-family:var(--mono);font-size:20px;font-weight:700;color:var(--accent);" id="h-avg">—</div>
+      </div>
+      <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:6px;padding:12px;">
+        <div style="font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">Median Duration</div>
+        <div style="font-family:var(--mono);font-size:20px;font-weight:700;color:var(--text);" id="h-median">—</div>
+      </div>
+      <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:6px;padding:12px;">
+        <div style="font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">Fastest Trade</div>
+        <div style="font-family:var(--mono);font-size:20px;font-weight:700;color:var(--green);" id="h-fastest">—</div>
+      </div>
+      <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:6px;padding:12px;">
+        <div style="font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">Slowest Trade</div>
+        <div style="font-family:var(--mono);font-size:20px;font-weight:700;color:var(--yellow);" id="h-slowest">—</div>
+      </div>
+    </div>
+    <div style="margin-top:16px;padding:12px;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;">
+      <div style="font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">Duration Distribution</div>
+      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;font-size:11px;font-family:var(--mono);">
+        <div style="text-align:center;">
+          <div style="color:var(--text-dim);margin-bottom:4px;">&lt; 5min</div>
+          <div style="font-size:16px;font-weight:700;color:var(--text);" id="h-dist-1">—</div>
+          <div style="font-size:9px;color:var(--text-dim);" id="h-dist-1-pct">—</div>
+        </div>
+        <div style="text-align:center;">
+          <div style="color:var(--text-dim);margin-bottom:4px;">5-15min</div>
+          <div style="font-size:16px;font-weight:700;color:var(--text);" id="h-dist-2">—</div>
+          <div style="font-size:9px;color:var(--text-dim);" id="h-dist-2-pct">—</div>
+        </div>
+        <div style="text-align:center;">
+          <div style="color:var(--text-dim);margin-bottom:4px;">15-30min</div>
+          <div style="font-size:16px;font-weight:700;color:var(--text);" id="h-dist-3">—</div>
+          <div style="font-size:9px;color:var(--text-dim);" id="h-dist-3-pct">—</div>
+        </div>
+        <div style="text-align:center;">
+          <div style="color:var(--text-dim);margin-bottom:4px;">30-60min</div>
+          <div style="font-size:16px;font-weight:700;color:var(--text);" id="h-dist-4">—</div>
+          <div style="font-size:9px;color:var(--text-dim);" id="h-dist-4-pct">—</div>
+        </div>
+        <div style="text-align:center;">
+          <div style="color:var(--text-dim);margin-bottom:4px;">&gt; 60min</div>
+          <div style="font-size:16px;font-weight:700;color:var(--text);" id="h-dist-5">—</div>
+          <div style="font-size:9px;color:var(--text-dim);" id="h-dist-5-pct">—</div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -378,7 +431,7 @@ function renderSummary(s) {
   document.getElementById('open-count').textContent = ot.length;
   const ob = document.getElementById('open-body');
   if (!ot.length) {
-    ob.innerHTML = '<tr><td colspan="9" class="L" style="color:var(--dim);">No open trades</td></tr>';
+    ob.innerHTML = '<tr><td colspan="9" class="L" style="color:var(--text-dim);">No open trades</td></tr>';
   } else {
     ob.innerHTML = ot.map(t => `
       <tr>
@@ -390,10 +443,30 @@ function renderSummary(s) {
         <td class="bad">${slPrice(t)}</td>
         <td class="good">${targetPrice(t)}</td>
         <td>${t.lots ?? 1}</td>
-        <td class="L" style="color:var(--dim);max-width:180px;overflow:hidden;text-overflow:ellipsis;"
+        <td class="L" style="color:var(--text-dim);max-width:180px;overflow:hidden;text-overflow:ellipsis;"
             title="${t.reason||''}">${t.verdict_label || t.reason || '—'}</td>
       </tr>`).join('');
   }
+
+  /* Phase 2: Holding period analysis */
+  const ha = s.holding_analysis || {};
+  document.getElementById('h-avg').textContent = ha.avg_duration_minutes ? `${ha.avg_duration_minutes}m` : '—';
+  document.getElementById('h-median').textContent = ha.median_duration_minutes ? `${ha.median_duration_minutes}m` : '—';
+  document.getElementById('h-fastest').textContent = ha.fastest_trade || '—';
+  document.getElementById('h-slowest').textContent = ha.slowest_trade || '—';
+  
+  const dist = ha.distribution || {};
+  const distPct = ha.distribution_pct || {};
+  document.getElementById('h-dist-1').textContent = dist.under_5min ?? 0;
+  document.getElementById('h-dist-1-pct').textContent = distPct.under_5min ? `${distPct.under_5min}%` : '0%';
+  document.getElementById('h-dist-2').textContent = dist['5_to_15min'] ?? 0;
+  document.getElementById('h-dist-2-pct').textContent = distPct['5_to_15min'] ? `${distPct['5_to_15min']}%` : '0%';
+  document.getElementById('h-dist-3').textContent = dist['15_to_30min'] ?? 0;
+  document.getElementById('h-dist-3-pct').textContent = distPct['15_to_30min'] ? `${distPct['15_to_30min']}%` : '0%';
+  document.getElementById('h-dist-4').textContent = dist['30_to_60min'] ?? 0;
+  document.getElementById('h-dist-4-pct').textContent = distPct['30_to_60min'] ? `${distPct['30_to_60min']}%` : '0%';
+  document.getElementById('h-dist-5').textContent = dist.over_60min ?? 0;
+  document.getElementById('h-dist-5-pct').textContent = distPct.over_60min ? `${distPct.over_60min}%` : '0%';
 }
 
 /* ── equity chart ── */
