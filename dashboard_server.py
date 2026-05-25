@@ -256,11 +256,10 @@ def _synthetic_chart_payload(symbol: str) -> dict:
         c = _safe_float(in_window[-1].get("price"), 0.0)
         h = max(_safe_float(x.get("price"), 0.0) for x in in_window)
         l = min(_safe_float(x.get("price"), 0.0) for x in in_window)
-        pct = ((c - o) / abs(o) * 100.0) if o else 0.0
         sentiment = "NEUTRAL"
-        if pct > 0.1:
+        if c > o:
             sentiment = "BULLISH"
-        elif pct < -0.1:
+        elif c < o:
             sentiment = "BEARISH"
         return {
             "sentiment": sentiment,
@@ -774,6 +773,33 @@ def get_paper_trades(symbol: str = "", status: str = "", limit: int = 300):
         f"SELECT * FROM paper_trades {where} ORDER BY opened_at DESC LIMIT ?",
         (*params, int(limit)),
     )
+    
+    # Calculate duration for closed trades
+    from datetime import datetime
+    for row in rows:
+        if row.get("closed_at") and row.get("opened_at"):
+            try:
+                opened = datetime.fromisoformat(row["opened_at"].replace("Z", "+00:00"))
+                closed = datetime.fromisoformat(row["closed_at"].replace("Z", "+00:00"))
+                duration_sec = (closed - opened).total_seconds()
+                row["duration_minutes"] = round(duration_sec / 60, 1)
+                
+                # Human-readable duration
+                if duration_sec < 60:
+                    row["duration_text"] = f"{int(duration_sec)}s"
+                elif duration_sec < 3600:
+                    row["duration_text"] = f"{int(duration_sec / 60)}m"
+                else:
+                    hours = int(duration_sec / 3600)
+                    mins = int((duration_sec % 3600) / 60)
+                    row["duration_text"] = f"{hours}h {mins}m" if mins > 0 else f"{hours}h"
+            except:
+                row["duration_minutes"] = None
+                row["duration_text"] = "-"
+        else:
+            row["duration_minutes"] = None
+            row["duration_text"] = "-"
+    
     return rows
 
 
@@ -795,7 +821,11 @@ def get_paper_summary(symbol: str = ""):
             SUM(CASE WHEN status='CLOSED_TARGET' THEN 1 ELSE 0 END) AS wins,
             SUM(CASE WHEN status='CLOSED_SL' THEN 1 ELSE 0 END) AS losses,
             ROUND(COALESCE(SUM(CASE WHEN status LIKE 'CLOSED_%' THEN pnl_points ELSE 0 END), 0), 2) AS closed_pnl,
-            ROUND(COALESCE(AVG(CASE WHEN status LIKE 'CLOSED_%' THEN pnl_points END), 0), 2) AS avg_pnl
+            ROUND(COALESCE(AVG(CASE WHEN status LIKE 'CLOSED_%' THEN pnl_points END), 0), 2) AS avg_pnl,
+            ROUND(COALESCE(AVG(CASE WHEN status='CLOSED_TARGET' THEN pnl_points END), 0), 2) AS avg_win,
+            ROUND(COALESCE(AVG(CASE WHEN status='CLOSED_SL' THEN pnl_points END), 0), 2) AS avg_loss,
+            MAX(CASE WHEN status LIKE 'CLOSED_%' THEN pnl_points ELSE 0 END) AS max_win,
+            MIN(CASE WHEN status LIKE 'CLOSED_%' THEN pnl_points ELSE 0 END) AS max_loss
         FROM paper_trades
         {where}
         """,
@@ -805,12 +835,68 @@ def get_paper_summary(symbol: str = ""):
         f"SELECT * FROM paper_trades {where} {'AND' if where else 'WHERE'} status='OPEN' ORDER BY opened_at DESC",
         tuple(params),
     )
+    
+    # Symbol breakdown
+    symbol_stats = _q(
+        f"""
+        SELECT
+            symbol,
+            COUNT(*) AS total_trades,
+            SUM(CASE WHEN status='CLOSED_TARGET' THEN 1 ELSE 0 END) AS wins,
+            SUM(CASE WHEN status='CLOSED_SL' THEN 1 ELSE 0 END) AS losses,
+            ROUND(COALESCE(SUM(CASE WHEN status LIKE 'CLOSED_%' THEN pnl_points ELSE 0 END), 0), 2) AS total_pnl,
+            ROUND(COALESCE(AVG(CASE WHEN status LIKE 'CLOSED_%' THEN pnl_points END), 0), 2) AS avg_pnl,
+            SUM(CASE WHEN status LIKE 'CLOSED_%' THEN 1 ELSE 0 END) AS closed_count
+        FROM paper_trades
+        {where}
+        GROUP BY symbol
+        ORDER BY total_pnl DESC
+        """,
+        tuple(params),
+    )
+    
+    # Calculate win rate per symbol
+    for s in symbol_stats:
+        closed = int(s.get("closed_count") or 0)
+        wins = int(s.get("wins") or 0)
+        s["win_rate"] = round((wins / closed) * 100, 2) if closed > 0 else 0.0
+    
     out = totals[0] if totals else {}
     wins = int(out.get("wins") or 0)
+    losses = int(out.get("losses") or 0)
     closed = int(out.get("closed_count") or 0)
     out["win_rate"] = round((wins / closed) * 100, 2) if closed > 0 else 0.0
+    
+    # Profit factor calculation
+    total_wins = sum(float(r.get("pnl_points") or 0) for r in _q(
+        f"SELECT pnl_points FROM paper_trades {where} {'AND' if where else 'WHERE'} status='CLOSED_TARGET'",
+        tuple(params)
+    ))
+    total_losses = abs(sum(float(r.get("pnl_points") or 0) for r in _q(
+        f"SELECT pnl_points FROM paper_trades {where} {'AND' if where else 'WHERE'} status='CLOSED_SL'",
+        tuple(params)
+    )))
+    out["profit_factor"] = round(total_wins / total_losses, 2) if total_losses > 0 else 0.0
+    out["consecutive_wins"] = _calculate_consecutive_wins(where, tuple(params))
+    
     out["open_trades"] = open_rows
+    out["symbol_breakdown"] = symbol_stats
     return out
+
+
+def _calculate_consecutive_wins(where: str, params: tuple) -> int:
+    """Calculate current consecutive wins/losses streak."""
+    rows = _q(
+        f"SELECT status FROM paper_trades {where} {'AND' if where else 'WHERE'} status LIKE 'CLOSED_%' ORDER BY closed_at DESC LIMIT 20",
+        params
+    )
+    streak = 0
+    for r in rows:
+        if r.get("status") == "CLOSED_TARGET":
+            streak += 1
+        else:
+            break
+    return streak
 
 
 @app.get("/api/paper_equity")
