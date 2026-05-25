@@ -48,6 +48,7 @@ class ThemeManager {
   createToggleButton() {
     // Check if button already exists
     if (document.getElementById('theme-toggle-btn')) {
+      this.updateToggleButton(document.documentElement.getAttribute('data-theme') || this.DARK_THEME);
       return;
     }
 
@@ -76,6 +77,7 @@ class ThemeManager {
     const btn = document.getElementById('theme-toggle-btn');
     if (btn) {
       btn.textContent = theme === this.LIGHT_THEME ? '🌙' : '☀️';
+      btn.onclick = () => this.toggleTheme();
     }
   }
 }

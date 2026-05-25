@@ -89,9 +89,9 @@
 <header>
   <div class="logo">📊 PAPER TRADING</div>
   <button class="btn" onclick="location.href='/'">← Dashboard</button>
-  <label style="color:var(--dim);font-size:11px;">SYMBOL</label>
+  <label style="color:var(--text-dim);font-size:11px;">SYMBOL</label>
   <select id="symbol"></select>
-  <label style="color:var(--dim);font-size:11px;">STATUS</label>
+  <label style="color:var(--text-dim);font-size:11px;">STATUS</label>
   <select id="status">
     <option value="">ALL</option>
     <option value="OPEN">OPEN</option>
@@ -101,7 +101,8 @@
   </select>
   <button class="btn primary" onclick="loadAll()">⟳ Refresh</button>
   <div class="sep"></div>
-  <div id="last" style="font-family:'Space Mono',monospace;color:var(--dim);font-size:11px;">—</div>
+  <div id="last" style="font-family:'Space Mono',monospace;color:var(--text-dim);font-size:11px;">—</div>
+  <button id="theme-toggle-btn" class="theme-toggle" title="Toggle dark/light theme">☀️</button>
 </header>
 
 <main>
@@ -215,10 +216,35 @@
 <script>
 const API = '';
 let eqChart = null;
-Chart.defaults.color = '#7a8796';
-Chart.defaults.borderColor = '#1e2530';
-Chart.defaults.font.family = "'Space Mono', monospace";
-Chart.defaults.font.size = 11;
+
+/* ── Chart.js theme-aware defaults ── */
+function updateChartDefaults() {
+  const isDark = !document.documentElement.getAttribute('data-theme') || document.documentElement.getAttribute('data-theme') === 'dark';
+  Chart.defaults.color = isDark ? '#7a8796' : '#334155';
+  Chart.defaults.borderColor = isDark ? '#1e2530' : '#cbd5e1';
+  Chart.defaults.font.family = "'Space Mono', monospace";
+  Chart.defaults.font.size = 11;
+}
+
+// Update on init
+updateChartDefaults();
+
+// Update when theme changes
+const observer = new MutationObserver(() => {
+  updateChartDefaults();
+  if (eqChart) {
+    eqChart.destroy();
+    eqChart = null;
+    // Redraw equity chart with new colors
+    const rows = window.lastEquityData || [];
+    if (rows.length) renderEquity(rows);
+  }
+});
+
+observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
+// Store last equity data for redraw on theme change
+let lastEquityData = [];
 
 /* ── helpers ── */
 function fdt(s) {
@@ -372,6 +398,8 @@ function renderSummary(s) {
 
 /* ── equity chart ── */
 function renderEquity(rows) {
+  lastEquityData = rows; // Store for theme change redraw
+  const isDark = !document.documentElement.getAttribute('data-theme') || document.documentElement.getAttribute('data-theme') === 'dark';
   const ctx = document.getElementById('equity').getContext('2d');
   if (eqChart) eqChart.destroy();
   eqChart = new Chart(ctx, {
@@ -381,12 +409,12 @@ function renderEquity(rows) {
       datasets: [{
         label: 'Equity (₹)',
         data: rows.map(r => r.equity),
-        borderColor: '#00e5a0',
-        backgroundColor: 'rgba(0,229,160,0.07)',
+        borderColor: isDark ? '#00e5a0' : '#0891b2',
+        backgroundColor: isDark ? 'rgba(0,229,160,0.07)' : 'rgba(8,145,178,0.07)',
         borderWidth: 2, fill: true,
         pointRadius: rows.length < 30 ? 3 : 0,
         pointHoverRadius: 5,
-        pointBackgroundColor: '#00e5a0',
+        pointBackgroundColor: isDark ? '#00e5a0' : '#0891b2',
         tension: 0.3
       }]
     },
@@ -395,8 +423,11 @@ function renderEquity(rows) {
       plugins: {
         legend: { display: false },
         tooltip: {
-          backgroundColor: 'rgba(17,20,24,.95)', titleColor: '#e2e8f0',
-          bodyColor: '#00e5a0', borderColor: '#1e2530', borderWidth: 1,
+          backgroundColor: isDark ? 'rgba(17,20,24,.95)' : 'rgba(248,250,252,.95)',
+          titleColor: isDark ? '#e2e8f0' : '#0f172a',
+          bodyColor: isDark ? '#00e5a0' : '#0891b2',
+          borderColor: isDark ? '#1e2530' : '#cbd5e1',
+          borderWidth: 1,
           padding: 10, displayColors: false,
           callbacks: {
             label: ctx => `₹${Number(ctx.parsed.y).toLocaleString('en-IN', {minimumFractionDigits:0})}`
@@ -404,9 +435,17 @@ function renderEquity(rows) {
         }
       },
       scales: {
-        y: { grid: { color: '#1e2530' }, ticks: { color: '#7a8796',
-          callback: v => '₹' + (Math.abs(v)>=1000 ? (v/1000).toFixed(0)+'k' : v) } },
-        x: { grid: { display: false }, ticks: { color: '#7a8796', maxRotation: 0, maxTicksLimit: 8 } }
+        y: {
+          grid: { color: isDark ? '#1e2530' : '#e2e8f0' },
+          ticks: {
+            color: isDark ? '#7a8796' : '#334155',
+            callback: v => '₹' + (Math.abs(v)>=1000 ? (v/1000).toFixed(0)+'k' : v)
+          }
+        },
+        x: {
+          grid: { display: false },
+          ticks: { color: isDark ? '#7a8796' : '#334155', maxRotation: 0, maxTicksLimit: 8 }
+        }
       }
     }
   });
