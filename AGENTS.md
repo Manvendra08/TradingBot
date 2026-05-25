@@ -18,6 +18,14 @@
   - NATURALGAS: TradingView 24h news + direction scoring
   - NIFTY/BANKNIFTY: ScanX heatmap + combined direction (OI + 1H/3H sentiments)
   - Fallback 1H/3H sentiment generator from local underlying_price history
+- Paper trading dashboard (Phase 1 complete):
+  - Bloomberg/TradingView-inspired professional UI
+  - 6 comprehensive KPIs: total trades, win rate, P&L, avg P&L, profit factor, streak
+  - Symbol performance breakdown (win rate, avg P&L, total P&L per symbol)
+  - Trade duration tracking (human-readable format)
+  - Enhanced equity curve with smooth animations
+  - Color-coded status badges and P&L display
+  - Responsive design (desktop/tablet/mobile)
 - Keep docs aligned with the live FastAPI dashboard, not older Streamlit references
 
 ## Token Efficiency
