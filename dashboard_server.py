@@ -820,12 +820,12 @@ def get_paper_summary(symbol: str = ""):
             SUM(CASE WHEN status LIKE 'CLOSED_%' THEN 1 ELSE 0 END) AS closed_count,
             SUM(CASE WHEN status='CLOSED_TARGET' THEN 1 ELSE 0 END) AS wins,
             SUM(CASE WHEN status='CLOSED_SL' THEN 1 ELSE 0 END) AS losses,
-            ROUND(COALESCE(SUM(CASE WHEN status LIKE 'CLOSED_%' THEN pnl_points ELSE 0 END), 0), 2) AS closed_pnl,
-            ROUND(COALESCE(AVG(CASE WHEN status LIKE 'CLOSED_%' THEN pnl_points END), 0), 2) AS avg_pnl,
-            ROUND(COALESCE(AVG(CASE WHEN status='CLOSED_TARGET' THEN pnl_points END), 0), 2) AS avg_win,
-            ROUND(COALESCE(AVG(CASE WHEN status='CLOSED_SL' THEN pnl_points END), 0), 2) AS avg_loss,
-            MAX(CASE WHEN status LIKE 'CLOSED_%' THEN pnl_points ELSE 0 END) AS max_win,
-            MIN(CASE WHEN status LIKE 'CLOSED_%' THEN pnl_points ELSE 0 END) AS max_loss
+            ROUND(COALESCE(SUM(CASE WHEN status LIKE 'CLOSED_%' THEN pnl_rupees ELSE 0 END), 0), 2) AS closed_pnl,
+            ROUND(COALESCE(AVG(CASE WHEN status LIKE 'CLOSED_%' THEN pnl_rupees END), 0), 2) AS avg_pnl,
+            ROUND(COALESCE(AVG(CASE WHEN status='CLOSED_TARGET' THEN pnl_rupees END), 0), 2) AS avg_win,
+            ROUND(COALESCE(AVG(CASE WHEN status='CLOSED_SL' THEN pnl_rupees END), 0), 2) AS avg_loss,
+            MAX(CASE WHEN status LIKE 'CLOSED_%' THEN pnl_rupees ELSE 0 END) AS max_win,
+            MIN(CASE WHEN status LIKE 'CLOSED_%' THEN pnl_rupees ELSE 0 END) AS max_loss
         FROM paper_trades
         {where}
         """,
@@ -844,8 +844,8 @@ def get_paper_summary(symbol: str = ""):
             COUNT(*) AS total_trades,
             SUM(CASE WHEN status='CLOSED_TARGET' THEN 1 ELSE 0 END) AS wins,
             SUM(CASE WHEN status='CLOSED_SL' THEN 1 ELSE 0 END) AS losses,
-            ROUND(COALESCE(SUM(CASE WHEN status LIKE 'CLOSED_%' THEN pnl_points ELSE 0 END), 0), 2) AS total_pnl,
-            ROUND(COALESCE(AVG(CASE WHEN status LIKE 'CLOSED_%' THEN pnl_points END), 0), 2) AS avg_pnl,
+            ROUND(COALESCE(SUM(CASE WHEN status LIKE 'CLOSED_%' THEN pnl_rupees ELSE 0 END), 0), 2) AS total_pnl,
+            ROUND(COALESCE(AVG(CASE WHEN status LIKE 'CLOSED_%' THEN pnl_rupees END), 0), 2) AS avg_pnl,
             SUM(CASE WHEN status LIKE 'CLOSED_%' THEN 1 ELSE 0 END) AS closed_count
         FROM paper_trades
         {where}
@@ -868,12 +868,12 @@ def get_paper_summary(symbol: str = ""):
     out["win_rate"] = round((wins / closed) * 100, 2) if closed > 0 else 0.0
     
     # Profit factor calculation
-    total_wins = sum(float(r.get("pnl_points") or 0) for r in _q(
-        f"SELECT pnl_points FROM paper_trades {where} {'AND' if where else 'WHERE'} status='CLOSED_TARGET'",
+    total_wins = sum(float(r.get("pnl_rupees") or 0) for r in _q(
+        f"SELECT pnl_rupees FROM paper_trades {where} {'AND' if where else 'WHERE'} status='CLOSED_TARGET'",
         tuple(params)
     ))
-    total_losses = abs(sum(float(r.get("pnl_points") or 0) for r in _q(
-        f"SELECT pnl_points FROM paper_trades {where} {'AND' if where else 'WHERE'} status='CLOSED_SL'",
+    total_losses = abs(sum(float(r.get("pnl_rupees") or 0) for r in _q(
+        f"SELECT pnl_rupees FROM paper_trades {where} {'AND' if where else 'WHERE'} status='CLOSED_SL'",
         tuple(params)
     )))
     out["profit_factor"] = round(total_wins / total_losses, 2) if total_losses > 0 else 0.0
@@ -908,17 +908,17 @@ def get_paper_equity(symbol: str = ""):
         params.append(symbol.upper().strip())
     where = "WHERE " + " AND ".join(clauses)
     rows = _q(
-        f"SELECT closed_at, pnl_points FROM paper_trades {where} ORDER BY closed_at",
+        f"SELECT closed_at, pnl_rupees FROM paper_trades {where} ORDER BY closed_at",
         tuple(params),
     )
     equity = 0.0
     out = []
     for row in rows:
-        equity += float(row.get("pnl_points") or 0.0)
+        equity += float(row.get("pnl_rupees") or 0.0)
         out.append({
             "closed_at": row.get("closed_at"),
-            "pnl_points": round(float(row.get("pnl_points") or 0.0), 4),
-            "equity": round(equity, 4),
+            "pnl_rupees": round(float(row.get("pnl_rupees") or 0.0), 2),
+            "equity": round(equity, 2),
         })
     return out
 

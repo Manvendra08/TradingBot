@@ -8,35 +8,37 @@
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@400;500;600&display=swap');
   :root {
-    --bg:#0a0c0f; --surface:#111418; --surface-2:#1a1d23; --border:#1e2530; --accent:#00e5a0;
-    --red:#ff4d6d; --green:#00e5a0; --yellow:#ffd166; --blue:#4da6ff; --text:#e2e8f0; --dim:#7a8796;
+    --bg:#0a0c0f; --surface:#111418; --surface-2:#1a1d23; --border:#1e2530;
+    --accent:#00e5a0; --red:#ff4d6d; --green:#00e5a0; --yellow:#ffd166;
+    --blue:#4da6ff; --text:#e2e8f0; --dim:#7a8796;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: var(--bg); color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 14px; }
-  
-  /* Header */
+
+  /* ── Header ── */
   header {
     display: flex; align-items: center; gap: 12px; padding: 12px 20px;
-    border-bottom: 1px solid var(--border); background: var(--surface); position: sticky; top: 0; z-index: 10;
+    border-bottom: 1px solid var(--border); background: var(--surface);
+    position: sticky; top: 0; z-index: 10;
   }
-  .logo { font-family: 'Space Mono', monospace; color: var(--accent); letter-spacing: 1px; font-weight: 700; font-size: 16px; }
+  .logo { font-family: 'Space Mono', monospace; color: var(--accent); letter-spacing: 1px; font-weight: 700; font-size: 15px; }
   .sep { flex: 1; }
   .btn, select {
     border: 1px solid var(--border); background: var(--bg); color: var(--text);
     padding: 6px 12px; border-radius: 4px; font-family: 'Space Mono', monospace; font-size: 12px;
-    transition: all 0.2s;
+    transition: border-color 0.2s;
   }
   .btn:hover, select:hover { border-color: var(--accent); cursor: pointer; }
   .btn.primary { border-color: var(--accent); color: var(--accent); }
-  
-  /* Main Layout */
-  main { padding: 18px 20px; display: grid; gap: 16px; max-width: 1800px; margin: 0 auto; }
-  
-  /* KPI Cards - Bloomberg style */
-  .kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
-  .kpi { 
-    background: linear-gradient(135deg, var(--surface) 0%, var(--surface-2) 100%); 
-    border: 1px solid var(--border); border-radius: 8px; padding: 14px; 
+
+  /* ── Layout ── */
+  main { padding: 18px 20px; display: grid; gap: 16px; max-width: 1900px; margin: 0 auto; }
+
+  /* ── KPI Cards ── */
+  .kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(175px, 1fr)); gap: 12px; }
+  .kpi {
+    background: linear-gradient(135deg, var(--surface) 0%, var(--surface-2) 100%);
+    border: 1px solid var(--border); border-radius: 8px; padding: 14px;
     position: relative; overflow: hidden;
   }
   .kpi::before {
@@ -45,117 +47,76 @@
     opacity: 0; transition: opacity 0.3s;
   }
   .kpi:hover::before { opacity: 1; }
-  .kpi .label { 
-    color: var(--dim); font-size: 10px; text-transform: uppercase; 
-    letter-spacing: 1.2px; margin-bottom: 8px; font-weight: 500;
-  }
-  .kpi .val { font-family: 'Space Mono', monospace; font-size: 22px; font-weight: 700; }
-  .kpi .sub { font-size: 11px; color: var(--dim); margin-top: 4px; font-family: 'Space Mono', monospace; }
-  .good { color: var(--green); } .bad { color: var(--red); } .warn { color: var(--yellow); } .neutral { color: var(--blue); }
-  
-  /* Cards */
-  .card { 
-    background: var(--surface); border: 1px solid var(--border); 
-    border-radius: 8px; padding: 16px; 
-  }
-  .card-title { 
-    color: var(--text); font-size: 13px; font-weight: 600; 
+  .kpi .label { color: var(--dim); font-size: 10px; text-transform: uppercase; letter-spacing: 1.2px; margin-bottom: 8px; }
+  .kpi .val   { font-family: 'Space Mono', monospace; font-size: 22px; font-weight: 700; }
+  .kpi .sub   { font-size: 11px; color: var(--dim); margin-top: 4px; font-family: 'Space Mono', monospace; }
+  .good { color: var(--green); } .bad { color: var(--red); }
+  .warn { color: var(--yellow); } .neutral { color: var(--blue); }
+
+  /* ── Cards ── */
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  .card-title {
+    color: var(--text); font-size: 13px; font-weight: 600;
     text-transform: uppercase; letter-spacing: 1px; margin-bottom: 14px;
     display: flex; align-items: center; gap: 8px;
   }
-  .card-title::before {
-    content: ''; width: 3px; height: 14px; background: var(--accent); border-radius: 2px;
-  }
-  
-  /* Grid Layouts */
+  .card-title::before { content: ''; width: 3px; height: 14px; background: var(--accent); border-radius: 2px; }
+
+  /* ── Grids ── */
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-  .grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+  .grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
   @media (max-width: 1200px) { .grid2 { grid-template-columns: 1fr; } }
-  
-  /* Chart */
-  .chart-wrap { height: 280px; }
-  
-  /* Symbol Breakdown Cards */
-  .symbol-card {
-    background: var(--surface-2); border: 1px solid var(--border); 
+
+  /* ── Symbol breakdown cards ── */
+  .sym-card {
+    background: var(--surface-2); border: 1px solid var(--border);
     border-radius: 6px; padding: 12px;
   }
-  .symbol-card .symbol-name {
-    font-family: 'Space Mono', monospace; font-size: 13px; 
-    color: var(--accent); font-weight: 700; margin-bottom: 8px;
-  }
-  .symbol-card .stat-row {
-    display: flex; justify-content: space-between; align-items: center;
-    padding: 4px 0; font-size: 12px;
-  }
-  .symbol-card .stat-label { color: var(--dim); }
-  .symbol-card .stat-val { font-family: 'Space Mono', monospace; font-weight: 600; }
-  
-  /* Tables - TradingView inspired */
-  .table-container { overflow-x: auto; }
-  table { 
-    width: 100%; border-collapse: collapse; 
-    font-family: 'Space Mono', monospace; font-size: 12px;
-  }
-  th, td { 
-    padding: 10px 12px; border-bottom: 1px solid var(--border); 
-    text-align: right; white-space: nowrap;
-  }
-  th { 
-    color: var(--dim); font-size: 10px; text-transform: uppercase; 
-    letter-spacing: 1px; font-weight: 600; background: var(--surface-2);
-    position: sticky; top: 0; z-index: 5;
-  }
-  td.left, th.left { text-align: left; }
-  tr:hover td { background: rgba(0, 229, 160, 0.03); }
-  
-  /* Trade Status Badges */
-  .status-badge {
-    display: inline-block; padding: 3px 8px; border-radius: 3px;
-    font-size: 10px; font-weight: 600; letter-spacing: 0.5px;
-  }
-  .status-open { background: rgba(255, 214, 102, 0.15); color: var(--yellow); }
-  .status-win { background: rgba(0, 229, 160, 0.15); color: var(--green); }
-  .status-loss { background: rgba(255, 77, 109, 0.15); color: var(--red); }
-  .status-manual { background: rgba(77, 166, 255, 0.15); color: var(--blue); }
-  
-  /* P&L Styling */
-  .pnl-pos { color: var(--green); font-weight: 600; }
-  .pnl-neg { color: var(--red); font-weight: 600; }
-  .pnl-zero { color: var(--dim); }
-  
-  /* Trade Reason Tooltip */
-  .reason-cell {
-    max-width: 200px; overflow: hidden; text-overflow: ellipsis;
-    cursor: help; position: relative;
-  }
-  .reason-cell:hover { color: var(--accent); }
-  
-  /* Duration Badge */
-  .duration-badge {
-    background: var(--surface-2); padding: 2px 6px; border-radius: 3px;
-    font-size: 10px; color: var(--dim);
-  }
-  
-  /* Empty State */
-  .empty-state {
-    text-align: center; padding: 40px 20px; color: var(--dim);
-  }
-  .empty-state svg {
-    width: 48px; height: 48px; margin-bottom: 12px; opacity: 0.3;
-  }
-  
-  /* Scrollbar */
-  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  .sym-card .sym-name { font-family: 'Space Mono', monospace; font-size: 13px; color: var(--accent); font-weight: 700; margin-bottom: 8px; }
+  .sym-card .sym-row  { display: flex; justify-content: space-between; padding: 3px 0; font-size: 12px; }
+  .sym-card .sym-lbl  { color: var(--dim); }
+  .sym-card .sym-val  { font-family: 'Space Mono', monospace; font-weight: 600; }
+
+  /* ── Chart ── */
+  .chart-wrap { height: 280px; }
+
+  /* ── Tables ── */
+  .tbl-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-family: 'Space Mono', monospace; font-size: 12px; }
+  th, td { padding: 9px 10px; border-bottom: 1px solid var(--border); text-align: right; white-space: nowrap; }
+  th { color: var(--dim); font-size: 10px; text-transform: uppercase; letter-spacing: 1px; background: var(--surface-2); position: sticky; top: 0; z-index: 5; }
+  td.L, th.L { text-align: left; }
+  tr:hover td { background: rgba(0,229,160,0.03); }
+
+  /* ── Badges ── */
+  .badge { display: inline-block; padding: 2px 7px; border-radius: 3px; font-size: 10px; font-weight: 600; letter-spacing: 0.5px; }
+  .b-open   { background: rgba(255,214,102,.15); color: var(--yellow); }
+  .b-win    { background: rgba(0,229,160,.15);   color: var(--green);  }
+  .b-loss   { background: rgba(255,77,109,.15);  color: var(--red);    }
+  .b-manual { background: rgba(77,166,255,.15);  color: var(--blue);   }
+  .b-dur    { background: var(--surface-2); color: var(--dim); }
+  .b-type   { background: rgba(77,166,255,.12); color: var(--blue); font-size: 10px; padding: 2px 6px; border-radius: 3px; }
+
+  /* ── P&L colours ── */
+  .pp { color: var(--green); font-weight: 600; }
+  .pn { color: var(--red);   font-weight: 600; }
+  .pz { color: var(--dim); }
+
+  /* ── Lot info chip ── */
+  .lot-chip { font-size: 10px; color: var(--dim); background: var(--surface-2); padding: 1px 5px; border-radius: 3px; margin-left: 4px; }
+
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar { width: 7px; height: 7px; }
   ::-webkit-scrollbar-track { background: var(--surface); }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
   ::-webkit-scrollbar-thumb:hover { background: var(--dim); }
 </style>
 </head>
 <body>
+
 <header>
   <div class="logo">📊 PAPER TRADING</div>
-  <button class="btn" onclick="location.href='/'">← Main Dashboard</button>
+  <button class="btn" onclick="location.href='/'">← Dashboard</button>
   <label style="color:var(--dim);font-size:11px;">SYMBOL</label>
   <select id="symbol"></select>
   <label style="color:var(--dim);font-size:11px;">STATUS</label>
@@ -168,350 +129,359 @@
   </select>
   <button class="btn primary" onclick="loadAll()">⟳ Refresh</button>
   <div class="sep"></div>
-  <div id="last" style="font-family:'Space Mono',monospace;color:var(--dim);font-size:11px;">-</div>
+  <div id="last" style="font-family:'Space Mono',monospace;color:var(--dim);font-size:11px;">—</div>
 </header>
 
 <main>
-  <!-- KPI Summary -->
+
+  <!-- KPIs -->
   <div class="kpis">
     <div class="kpi">
       <div class="label">Total Trades</div>
-      <div class="val neutral" id="k-total">-</div>
-      <div class="sub" id="k-open-sub">- open</div>
+      <div class="val neutral" id="k-total">—</div>
+      <div class="sub" id="k-open-sub">— open</div>
     </div>
     <div class="kpi">
       <div class="label">Win Rate</div>
-      <div class="val" id="k-win">-</div>
-      <div class="sub" id="k-win-sub">- wins / - losses</div>
+      <div class="val" id="k-win">—</div>
+      <div class="sub" id="k-win-sub">— W / — L</div>
     </div>
     <div class="kpi">
-      <div class="label">Total P&L</div>
-      <div class="val" id="k-pnl">-</div>
+      <div class="label">Total P&amp;L (₹)</div>
+      <div class="val" id="k-pnl">—</div>
       <div class="sub">closed trades</div>
     </div>
     <div class="kpi">
-      <div class="label">Avg P&L / Trade</div>
-      <div class="val" id="k-avg">-</div>
-      <div class="sub" id="k-avg-sub">avg win: - | avg loss: -</div>
+      <div class="label">Avg P&amp;L / Trade</div>
+      <div class="val" id="k-avg">—</div>
+      <div class="sub" id="k-avg-sub">W: — | L: —</div>
     </div>
     <div class="kpi">
       <div class="label">Profit Factor</div>
-      <div class="val" id="k-pf">-</div>
-      <div class="sub">total wins / total losses</div>
+      <div class="val" id="k-pf">—</div>
+      <div class="sub">gross wins ÷ gross losses</div>
     </div>
     <div class="kpi">
-      <div class="label">Streak</div>
-      <div class="val good" id="k-streak">-</div>
+      <div class="label">Win Streak</div>
+      <div class="val good" id="k-streak">—</div>
       <div class="sub">consecutive wins</div>
     </div>
   </div>
 
-  <!-- Performance by Symbol -->
+  <!-- Symbol breakdown -->
   <div class="card">
     <div class="card-title">Performance by Symbol</div>
-    <div class="grid3" id="symbol-breakdown">
-      <div class="empty-state">
-        <div style="color:var(--dim);">No trades yet</div>
-      </div>
+    <div class="grid3" id="sym-breakdown">
+      <div style="color:var(--dim);font-size:12px;">No trades yet</div>
     </div>
   </div>
 
-  <!-- Equity Curve & Open Trades -->
+  <!-- Equity + Open positions -->
   <div class="grid2">
     <div class="card">
-      <div class="card-title">Equity Curve</div>
+      <div class="card-title">Equity Curve (₹)</div>
       <div class="chart-wrap"><canvas id="equity"></canvas></div>
     </div>
     <div class="card">
       <div class="card-title">Open Positions (<span id="open-count">0</span>)</div>
-      <div class="table-container">
+      <div class="tbl-wrap">
         <table>
           <thead>
             <tr>
-              <th class="left">Opened</th>
-              <th class="left">Symbol</th>
+              <th class="L">Opened</th>
+              <th class="L">Symbol</th>
               <th>Type</th>
               <th>Strike</th>
-              <th>Entry</th>
+              <th>Entry Price</th>
               <th>SL</th>
               <th>Target</th>
-              <th class="left">Verdict</th>
+              <th>Lots</th>
+              <th class="L">Verdict</th>
             </tr>
           </thead>
           <tbody id="open-body">
-            <tr><td colspan="8" class="left empty-state">No open trades</td></tr>
+            <tr><td colspan="9" class="L" style="color:var(--dim);">No open trades</td></tr>
           </tbody>
         </table>
       </div>
     </div>
   </div>
 
-  <!-- Trade History -->
+  <!-- Trade history -->
   <div class="card">
     <div class="card-title">Trade History</div>
-    <div class="table-container">
+    <div class="tbl-wrap">
       <table>
         <thead>
           <tr>
-            <th class="left">Opened</th>
-            <th class="left">Closed</th>
-            <th>Duration</th>
-            <th class="left">Symbol</th>
+            <th class="L">Opened</th>
+            <th class="L">Closed</th>
+            <th>Dur</th>
+            <th class="L">Symbol</th>
             <th>Type</th>
             <th>Strike</th>
-            <th>Entry</th>
-            <th>Exit</th>
-            <th>SL</th>
-            <th>Target</th>
+            <th>Entry ₹</th>
+            <th>Exit ₹</th>
+            <th>SL ₹</th>
+            <th>Target ₹</th>
+            <th>Lots</th>
             <th>Status</th>
-            <th>P&L (pts)</th>
-            <th class="left">Verdict & Reason</th>
+            <th>P&amp;L (₹)</th>
+            <th>P&amp;L (pts)</th>
+            <th class="L">Verdict</th>
           </tr>
         </thead>
         <tbody id="trades-body">
-          <tr><td colspan="13" class="left empty-state">Loading...</td></tr>
+          <tr><td colspan="15" class="L" style="color:var(--dim);">Loading…</td></tr>
         </tbody>
       </table>
     </div>
   </div>
+
 </main>
 
 <script>
 const API = '';
-let equityChart = null;
+let eqChart = null;
 Chart.defaults.color = '#7a8796';
 Chart.defaults.borderColor = '#1e2530';
 Chart.defaults.font.family = "'Space Mono', monospace";
 Chart.defaults.font.size = 11;
 
-function fnum(v) { if (v == null) return '-'; return Number(v).toFixed(2); }
+/* ── helpers ── */
 function fdt(s) {
-  if (!s) return '-';
-  try { 
-    return new Date(s).toLocaleString('en-IN', { 
-      day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit', hour12: true 
-    }); 
-  } catch { return s; }
+  if (!s) return '—';
+  try { return new Date(s).toLocaleString('en-IN', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit', hour12:true }); }
+  catch { return s; }
 }
+function fp(v, dec=2) { return v == null ? '—' : Number(v).toFixed(dec); }
+function frs(v) {
+  if (v == null) return '—';
+  const n = Number(v);
+  const s = Math.abs(n) >= 1000
+    ? (n >= 0 ? '+' : '') + (n/1000).toFixed(1) + 'k'
+    : (n >= 0 ? '+' : '') + n.toFixed(0);
+  return s;
+}
+function frsLong(v) {
+  if (v == null) return '—';
+  const n = Number(v);
+  return (n >= 0 ? '+' : '') + '₹' + Math.abs(n).toLocaleString('en-IN', {minimumFractionDigits:0, maximumFractionDigits:0});
+}
+function pc(v) { const n = Number(v||0); return n > 0 ? 'pp' : n < 0 ? 'pn' : 'pz'; }
+function sign(v) { const n = Number(v||0); return (n>0?'+':'')+n.toFixed(2); }
+function signRs(v) {
+  if (v == null) return '—';
+  const n = Number(v);
+  return (n >= 0 ? '+' : '') + '₹' + Math.abs(n).toLocaleString('en-IN', {minimumFractionDigits:0, maximumFractionDigits:0});
+}
+
 async function api(path) {
   const r = await fetch(API + path);
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
 
-function statusBadge(s) {
-  if (s === 'OPEN') return '<span class="status-badge status-open">OPEN</span>';
-  if (s === 'CLOSED_TARGET') return '<span class="status-badge status-win">TARGET HIT</span>';
-  if (s === 'CLOSED_SL') return '<span class="status-badge status-loss">STOP LOSS</span>';
-  if (s === 'CLOSED_MANUAL') return '<span class="status-badge status-manual">MANUAL</span>';
-  return `<span class="status-badge">${s}</span>`;
+/* ── status badge ── */
+function sbadge(s) {
+  if (s === 'OPEN')           return '<span class="badge b-open">OPEN</span>';
+  if (s === 'CLOSED_TARGET')  return '<span class="badge b-win">TARGET</span>';
+  if (s === 'CLOSED_SL')      return '<span class="badge b-loss">SL HIT</span>';
+  if (s === 'CLOSED_MANUAL')  return '<span class="badge b-manual">MANUAL</span>';
+  return `<span class="badge">${s||'—'}</span>`;
 }
 
-function pnlClass(v) { 
-  const n = Number(v || 0);
-  if (n > 0) return 'pnl-pos';
-  if (n < 0) return 'pnl-neg';
-  return 'pnl-zero';
+/*
+  Price display logic:
+  - Options (CE/PE): show entry_premium / exit_premium / sl_premium / target_premium
+  - Futures (FUT):   show entry_underlying / exit_underlying / sl_underlying / target_underlying
+  - Fallback:        if premium is null/0, fall back to underlying
+*/
+function entryPrice(t) {
+  if (t.option_type === 'FUT') return fp(t.entry_underlying);
+  return t.entry_premium ? fp(t.entry_premium) : fp(t.entry_underlying);
+}
+function exitPrice(t) {
+  if (t.option_type === 'FUT') return fp(t.exit_underlying);
+  return t.exit_premium ? fp(t.exit_premium) : fp(t.exit_underlying);
+}
+function slPrice(t) {
+  if (t.option_type === 'FUT') return fp(t.sl_underlying);
+  return t.sl_premium ? fp(t.sl_premium) : fp(t.sl_underlying);
+}
+function targetPrice(t) {
+  if (t.option_type === 'FUT') return fp(t.target_underlying);
+  return t.target_premium ? fp(t.target_premium) : fp(t.target_underlying);
+}
+function priceLabel(t) {
+  if (t.option_type === 'FUT') return 'Fut';
+  return (t.entry_premium) ? 'Prem' : 'Spot';
 }
 
-function pnlSign(v) {
-  const n = Number(v || 0);
-  if (n > 0) return '+' + n.toFixed(2);
-  return n.toFixed(2);
-}
-
+/* ── render KPIs ── */
 function renderSummary(s) {
-  const total = s.total ?? 0;
-  const open = s.open_count ?? 0;
-  const closed = s.closed_count ?? 0;
-  const wins = s.wins ?? 0;
-  const losses = s.losses ?? 0;
-  const winRate = Number(s.win_rate || 0);
-  const pnl = Number(s.closed_pnl || 0);
-  const avgPnl = Number(s.avg_pnl || 0);
-  const avgWin = Number(s.avg_win || 0);
-  const avgLoss = Number(s.avg_loss || 0);
-  const profitFactor = Number(s.profit_factor || 0);
-  const streak = s.consecutive_wins ?? 0;
+  const total   = s.total ?? 0;
+  const open    = s.open_count ?? 0;
+  const wins    = s.wins ?? 0;
+  const losses  = s.losses ?? 0;
+  const closed  = s.closed_count ?? 0;
+  const wr      = Number(s.win_rate || 0);
+  const pnl     = Number(s.closed_pnl || 0);
+  const avg     = Number(s.avg_pnl || 0);
+  const avgW    = Number(s.avg_win || 0);
+  const avgL    = Number(s.avg_loss || 0);
+  const pf      = Number(s.profit_factor || 0);
+  const streak  = s.consecutive_wins ?? 0;
 
   document.getElementById('k-total').textContent = total;
   document.getElementById('k-open-sub').textContent = `${open} open`;
-  
-  const winEl = document.getElementById('k-win');
-  winEl.textContent = `${winRate.toFixed(1)}%`;
-  winEl.className = `val ${winRate >= 60 ? 'good' : winRate >= 40 ? 'warn' : 'bad'}`;
-  document.getElementById('k-win-sub').textContent = `${wins} wins / ${losses} losses`;
-  
-  const pnlEl = document.getElementById('k-pnl');
-  pnlEl.textContent = pnlSign(pnl);
-  pnlEl.className = `val ${pnl >= 0 ? 'good' : 'bad'}`;
-  
-  const avgEl = document.getElementById('k-avg');
-  avgEl.textContent = pnlSign(avgPnl);
-  avgEl.className = `val ${avgPnl >= 0 ? 'good' : 'bad'}`;
-  document.getElementById('k-avg-sub').textContent = 
-    `avg win: ${avgWin > 0 ? '+' : ''}${avgWin.toFixed(2)} | avg loss: ${avgLoss.toFixed(2)}`;
-  
+
+  const wEl = document.getElementById('k-win');
+  wEl.textContent = `${wr.toFixed(1)}%`;
+  wEl.className = `val ${wr >= 60 ? 'good' : wr >= 40 ? 'warn' : 'bad'}`;
+  document.getElementById('k-win-sub').textContent = `${wins} W / ${losses} L`;
+
+  const pEl = document.getElementById('k-pnl');
+  pEl.textContent = frsLong(pnl);
+  pEl.className = `val ${pnl >= 0 ? 'good' : 'bad'}`;
+
+  const aEl = document.getElementById('k-avg');
+  aEl.textContent = frsLong(avg);
+  aEl.className = `val ${avg >= 0 ? 'good' : 'bad'}`;
+  document.getElementById('k-avg-sub').textContent = `W: ${frs(avgW)} | L: ${frs(avgL)}`;
+
   const pfEl = document.getElementById('k-pf');
-  pfEl.textContent = profitFactor > 0 ? profitFactor.toFixed(2) : '∞';
-  pfEl.className = `val ${profitFactor >= 1.5 ? 'good' : profitFactor >= 1 ? 'warn' : 'bad'}`;
-  
+  pfEl.textContent = pf > 0 ? pf.toFixed(2) : '∞';
+  pfEl.className = `val ${pf >= 1.5 ? 'good' : pf >= 1 ? 'warn' : 'bad'}`;
+
   document.getElementById('k-streak').textContent = streak;
 
-  // Symbol breakdown
-  const breakdown = s.symbol_breakdown || [];
-  const container = document.getElementById('symbol-breakdown');
-  if (!breakdown.length) {
-    container.innerHTML = '<div class="empty-state"><div style="color:var(--dim);">No trades yet</div></div>';
+  /* symbol breakdown */
+  const bd = s.symbol_breakdown || [];
+  const bc = document.getElementById('sym-breakdown');
+  if (!bd.length) {
+    bc.innerHTML = '<div style="color:var(--dim);font-size:12px;">No trades yet</div>';
   } else {
-    container.innerHTML = breakdown.map(sym => `
-      <div class="symbol-card">
-        <div class="symbol-name">${sym.symbol || '-'}</div>
-        <div class="stat-row">
-          <span class="stat-label">Trades</span>
-          <span class="stat-val">${sym.total_trades || 0}</span>
-        </div>
-        <div class="stat-row">
-          <span class="stat-label">Win Rate</span>
-          <span class="stat-val ${sym.win_rate >= 60 ? 'good' : sym.win_rate >= 40 ? 'warn' : 'bad'}">${Number(sym.win_rate || 0).toFixed(1)}%</span>
-        </div>
-        <div class="stat-row">
-          <span class="stat-label">Avg P&L</span>
-          <span class="stat-val ${pnlClass(sym.avg_pnl)}">${pnlSign(sym.avg_pnl || 0)}</span>
-        </div>
-        <div class="stat-row">
-          <span class="stat-label">Total P&L</span>
-          <span class="stat-val ${pnlClass(sym.total_pnl)}">${pnlSign(sym.total_pnl || 0)}</span>
-        </div>
-      </div>
-    `).join('');
+    bc.innerHTML = bd.map(sym => `
+      <div class="sym-card">
+        <div class="sym-name">${sym.symbol}</div>
+        <div class="sym-row"><span class="sym-lbl">Trades</span><span class="sym-val">${sym.total_trades}</span></div>
+        <div class="sym-row"><span class="sym-lbl">Win Rate</span>
+          <span class="sym-val ${Number(sym.win_rate)>=60?'good':Number(sym.win_rate)>=40?'warn':'bad'}">${Number(sym.win_rate||0).toFixed(1)}%</span></div>
+        <div class="sym-row"><span class="sym-lbl">Avg P&amp;L</span>
+          <span class="sym-val ${pc(sym.avg_pnl)}">${signRs(sym.avg_pnl)}</span></div>
+        <div class="sym-row"><span class="sym-lbl">Total P&amp;L</span>
+          <span class="sym-val ${pc(sym.total_pnl)}">${signRs(sym.total_pnl)}</span></div>
+      </div>`).join('');
   }
 
-  // Open trades
-  const openTrades = s.open_trades || [];
-  document.getElementById('open-count').textContent = openTrades.length;
-  const tbody = document.getElementById('open-body');
-  if (!openTrades.length) {
-    tbody.innerHTML = '<tr><td colspan="8" class="left empty-state">No open trades</td></tr>';
+  /* open trades table */
+  const ot = s.open_trades || [];
+  document.getElementById('open-count').textContent = ot.length;
+  const ob = document.getElementById('open-body');
+  if (!ot.length) {
+    ob.innerHTML = '<tr><td colspan="9" class="L" style="color:var(--dim);">No open trades</td></tr>';
   } else {
-    tbody.innerHTML = openTrades.map(t => `
+    ob.innerHTML = ot.map(t => `
       <tr>
-        <td class="left">${fdt(t.opened_at)}</td>
-        <td class="left"><strong>${t.symbol || '-'}</strong></td>
-        <td>${t.option_type || '-'}</td>
-        <td>${fnum(t.strike)}</td>
-        <td>${fnum(t.entry_underlying)}</td>
-        <td class="bad">${fnum(t.sl_underlying)}</td>
-        <td class="good">${fnum(t.target_underlying)}</td>
-        <td class="left reason-cell">${t.verdict_label || t.reason || '-'}</td>
-      </tr>
-    `).join('');
+        <td class="L">${fdt(t.opened_at)}</td>
+        <td class="L"><strong>${t.symbol}</strong></td>
+        <td><span class="b-type">${t.option_type}</span></td>
+        <td>${fp(t.strike)}</td>
+        <td>${entryPrice(t)} <span class="lot-chip">${priceLabel(t)}</span></td>
+        <td class="bad">${slPrice(t)}</td>
+        <td class="good">${targetPrice(t)}</td>
+        <td>${t.lots ?? 1}</td>
+        <td class="L" style="color:var(--dim);max-width:180px;overflow:hidden;text-overflow:ellipsis;"
+            title="${t.reason||''}">${t.verdict_label || t.reason || '—'}</td>
+      </tr>`).join('');
   }
 }
 
+/* ── equity chart ── */
 function renderEquity(rows) {
   const ctx = document.getElementById('equity').getContext('2d');
-  if (equityChart) equityChart.destroy();
-  
-  if (!rows.length) {
-    equityChart = new Chart(ctx, {
-      type: 'line',
-      data: { labels: [], datasets: [] },
-      options: { 
-        responsive: true, 
-        maintainAspectRatio: false,
-        plugins: {
-          legend: { display: false }
-        }
-      }
-    });
-    return;
-  }
-  
-  equityChart = new Chart(ctx, {
+  if (eqChart) eqChart.destroy();
+  eqChart = new Chart(ctx, {
     type: 'line',
     data: {
       labels: rows.map(r => fdt(r.closed_at)),
       datasets: [{
-        label: 'Equity (pts)',
+        label: 'Equity (₹)',
         data: rows.map(r => r.equity),
         borderColor: '#00e5a0',
-        backgroundColor: 'rgba(0,229,160,0.08)',
-        borderWidth: 2,
-        fill: true,
-        pointRadius: 3,
+        backgroundColor: 'rgba(0,229,160,0.07)',
+        borderWidth: 2, fill: true,
+        pointRadius: rows.length < 30 ? 3 : 0,
         pointHoverRadius: 5,
         pointBackgroundColor: '#00e5a0',
         tension: 0.3
       }]
     },
-    options: { 
-      responsive: true, 
-      maintainAspectRatio: false,
+    options: {
+      responsive: true, maintainAspectRatio: false,
       plugins: {
         legend: { display: false },
         tooltip: {
-          backgroundColor: 'rgba(17, 20, 24, 0.95)',
-          titleColor: '#e2e8f0',
-          bodyColor: '#00e5a0',
-          borderColor: '#1e2530',
-          borderWidth: 1,
-          padding: 10,
-          displayColors: false
+          backgroundColor: 'rgba(17,20,24,.95)', titleColor: '#e2e8f0',
+          bodyColor: '#00e5a0', borderColor: '#1e2530', borderWidth: 1,
+          padding: 10, displayColors: false,
+          callbacks: {
+            label: ctx => `₹${Number(ctx.parsed.y).toLocaleString('en-IN', {minimumFractionDigits:0})}`
+          }
         }
       },
       scales: {
-        y: {
-          grid: { color: '#1e2530' },
-          ticks: { color: '#7a8796' }
-        },
-        x: {
-          grid: { display: false },
-          ticks: { color: '#7a8796', maxRotation: 0 }
-        }
+        y: { grid: { color: '#1e2530' }, ticks: { color: '#7a8796',
+          callback: v => '₹' + (Math.abs(v)>=1000 ? (v/1000).toFixed(0)+'k' : v) } },
+        x: { grid: { display: false }, ticks: { color: '#7a8796', maxRotation: 0, maxTicksLimit: 8 } }
       }
     }
   });
 }
 
+/* ── trade history table ── */
 function renderTrades(rows) {
-  const tbody = document.getElementById('trades-body');
+  const tb = document.getElementById('trades-body');
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="13" class="left empty-state">No trades found</td></tr>';
+    tb.innerHTML = '<tr><td colspan="15" class="L" style="color:var(--dim);">No trades found</td></tr>';
     return;
   }
-  tbody.innerHTML = rows.map(t => `
+  tb.innerHTML = rows.map(t => `
     <tr>
-      <td class="left">${fdt(t.opened_at)}</td>
-      <td class="left">${fdt(t.closed_at)}</td>
-      <td><span class="duration-badge">${t.duration_text || '-'}</span></td>
-      <td class="left"><strong>${t.symbol || '-'}</strong></td>
-      <td>${t.option_type || '-'}</td>
-      <td>${fnum(t.strike)}</td>
-      <td>${fnum(t.entry_underlying)}</td>
-      <td>${fnum(t.exit_underlying)}</td>
-      <td class="bad">${fnum(t.sl_underlying)}</td>
-      <td class="good">${fnum(t.target_underlying)}</td>
-      <td>${statusBadge(t.status)}</td>
-      <td class="${pnlClass(t.pnl_points)}">${pnlSign(t.pnl_points || 0)}</td>
-      <td class="left reason-cell" title="${t.reason || ''}">${t.verdict_label || t.reason || '-'}</td>
-    </tr>
-  `).join('');
+      <td class="L">${fdt(t.opened_at)}</td>
+      <td class="L">${fdt(t.closed_at)}</td>
+      <td><span class="badge b-dur">${t.duration_text || '—'}</span></td>
+      <td class="L"><strong>${t.symbol}</strong></td>
+      <td><span class="b-type">${t.option_type}</span></td>
+      <td>${fp(t.strike)}</td>
+      <td>${entryPrice(t)} <span class="lot-chip">${priceLabel(t)}</span></td>
+      <td>${exitPrice(t)}</td>
+      <td class="bad">${slPrice(t)}</td>
+      <td class="good">${targetPrice(t)}</td>
+      <td>${t.lots ?? 1}</td>
+      <td>${sbadge(t.status)}</td>
+      <td class="${pc(t.pnl_rupees)}">${signRs(t.pnl_rupees)}</td>
+      <td class="${pc(t.pnl_points)}" style="font-size:11px;color:var(--dim);">${sign(t.pnl_points)}</td>
+      <td class="L" style="color:var(--dim);max-width:200px;overflow:hidden;text-overflow:ellipsis;"
+          title="${t.reason||''}">${t.verdict_label || t.reason || '—'}</td>
+    </tr>`).join('');
 }
 
+/* ── load ── */
 async function loadSymbols() {
-  const symbols = await api('/api/symbols');
+  const syms = await api('/api/symbols');
   const sel = document.getElementById('symbol');
-  sel.innerHTML = ['<option value="">ALL</option>', ...symbols.map(s => `<option value="${s}">${s}</option>`)].join('');
+  sel.innerHTML = ['<option value="">ALL</option>', ...syms.map(s => `<option value="${s}">${s}</option>`)].join('');
 }
 
 async function loadAll() {
-  const symbol = encodeURIComponent(document.getElementById('symbol').value || '');
-  const status = encodeURIComponent(document.getElementById('status').value || '');
+  const sym = encodeURIComponent(document.getElementById('symbol').value || '');
+  const st  = encodeURIComponent(document.getElementById('status').value || '');
   const [summary, trades, equity] = await Promise.all([
-    api(`/api/paper_summary?symbol=${symbol}`),
-    api(`/api/paper_trades?symbol=${symbol}&status=${status}&limit=300`),
-    api(`/api/paper_equity?symbol=${symbol}`)
+    api(`/api/paper_summary?symbol=${sym}`),
+    api(`/api/paper_trades?symbol=${sym}&status=${st}&limit=300`),
+    api(`/api/paper_equity?symbol=${sym}`)
   ]);
   renderSummary(summary || {});
   renderTrades(trades || []);

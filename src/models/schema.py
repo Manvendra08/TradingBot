@@ -88,13 +88,19 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     closed_at           TEXT,
     symbol              TEXT NOT NULL,
     verdict_label       TEXT,
-    option_type         TEXT NOT NULL,      -- CE | PE
+    option_type         TEXT NOT NULL,      -- CE | PE | FUT
     strike              REAL,
-    entry_underlying    REAL NOT NULL,
-    exit_underlying     REAL,
-    sl_underlying       REAL,
-    target_underlying   REAL,
-    pnl_points          REAL DEFAULT 0,
+    entry_underlying    REAL NOT NULL,      -- spot/futures price at entry
+    exit_underlying     REAL,               -- spot/futures price at exit
+    entry_premium       REAL,               -- option premium at entry (for options)
+    exit_premium        REAL,               -- option premium at exit (for options)
+    sl_underlying       REAL,               -- SL in underlying terms
+    target_underlying   REAL,               -- Target in underlying terms
+    sl_premium          REAL,               -- SL in premium terms (for options)
+    target_premium      REAL,               -- Target in premium terms (for options)
+    lots                INTEGER DEFAULT 1,  -- number of lots traded
+    pnl_points          REAL DEFAULT 0,     -- P&L in points (legacy)
+    pnl_rupees          REAL DEFAULT 0,     -- P&L in ₹ (lot size adjusted)
     status              TEXT NOT NULL,      -- OPEN | CLOSED_TARGET | CLOSED_SL | CLOSED_MANUAL
     reason              TEXT,
     digest_id           TEXT
@@ -125,6 +131,13 @@ _MIGRATIONS = [
     "ALTER TABLE anomaly_alerts ADD COLUMN severity TEXT DEFAULT 'LOW'",
     "ALTER TABLE anomaly_alerts ADD COLUMN digest_id TEXT",
     "ALTER TABLE alert_dedup    ADD COLUMN severity TEXT DEFAULT 'LOW'",
+    # Paper trading enhancements for realistic P&L
+    "ALTER TABLE paper_trades ADD COLUMN entry_premium REAL",
+    "ALTER TABLE paper_trades ADD COLUMN exit_premium REAL",
+    "ALTER TABLE paper_trades ADD COLUMN sl_premium REAL",
+    "ALTER TABLE paper_trades ADD COLUMN target_premium REAL",
+    "ALTER TABLE paper_trades ADD COLUMN lots INTEGER DEFAULT 1",
+    "ALTER TABLE paper_trades ADD COLUMN pnl_rupees REAL DEFAULT 0",
 ]
 
 
@@ -334,10 +347,12 @@ def insert_paper_trade(trade: dict) -> int:
     sql = """
         INSERT INTO paper_trades
             (opened_at, symbol, verdict_label, option_type, strike, entry_underlying,
-             sl_underlying, target_underlying, status, reason, digest_id)
+             entry_premium, sl_underlying, sl_premium, target_underlying, target_premium,
+             lots, status, reason, digest_id)
         VALUES
             (:opened_at, :symbol, :verdict_label, :option_type, :strike, :entry_underlying,
-             :sl_underlying, :target_underlying, :status, :reason, :digest_id)
+             :entry_premium, :sl_underlying, :sl_premium, :target_underlying, :target_premium,
+             :lots, :status, :reason, :digest_id)
         RETURNING id
     """
     with get_conn() as conn:
@@ -345,24 +360,53 @@ def insert_paper_trade(trade: dict) -> int:
         return int(row["id"])
 
 
-def close_paper_trade(trade_id: int, closed_at: str, exit_underlying: float, status: str, reason: str = "") -> None:
+def close_paper_trade(trade_id: int, closed_at: str, exit_underlying: float, exit_premium: float | None, status: str, reason: str = "") -> None:
+    """Close a paper trade and calculate P&L in both points and rupees."""
+    from config.settings import LOT_SIZES
+    
     with get_conn() as conn:
-        row = conn.execute("SELECT option_type, entry_underlying FROM paper_trades WHERE id=?", (trade_id,)).fetchone()
+        row = conn.execute(
+            "SELECT symbol, option_type, entry_underlying, entry_premium, lots FROM paper_trades WHERE id=?",
+            (trade_id,)
+        ).fetchone()
         if not row:
             return
+        
+        symbol = row["symbol"]
         option_type = row["option_type"]
-        entry = float(row["entry_underlying"] or 0.0)
-        if option_type == "CE":
-            pnl = float(exit_underlying) - entry
+        entry_underlying = float(row["entry_underlying"] or 0.0)
+        entry_premium = float(row["entry_premium"] or 0.0)
+        lots = int(row["lots"] or 1)
+        
+        # Get lot size for symbol
+        lot_size = LOT_SIZES.get(symbol, 1)
+        
+        # Calculate P&L based on trade type
+        if option_type in ("CE", "PE"):
+            # Options: Use premium difference
+            if entry_premium > 0 and exit_premium and exit_premium > 0:
+                # Premium-based P&L (realistic)
+                pnl_points = exit_premium - entry_premium
+                pnl_rupees = pnl_points * lot_size * lots
+            else:
+                # Fallback to underlying-based (legacy)
+                if option_type == "CE":
+                    pnl_points = exit_underlying - entry_underlying
+                else:
+                    pnl_points = entry_underlying - exit_underlying
+                pnl_rupees = pnl_points * lot_size * lots
         else:
-            pnl = entry - float(exit_underlying)
+            # Futures (FUT): Use underlying price difference
+            pnl_points = exit_underlying - entry_underlying
+            pnl_rupees = pnl_points * lot_size * lots
+        
         conn.execute(
             """
             UPDATE paper_trades
-            SET closed_at=?, exit_underlying=?, pnl_points=?, status=?, reason=?
+            SET closed_at=?, exit_underlying=?, exit_premium=?, pnl_points=?, pnl_rupees=?, status=?, reason=?
             WHERE id=?
             """,
-            (closed_at, exit_underlying, round(pnl, 4), status, reason, trade_id),
+            (closed_at, exit_underlying, exit_premium, round(pnl_points, 4), round(pnl_rupees, 2), status, reason, trade_id),
         )
 
 

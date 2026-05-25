@@ -34,6 +34,21 @@ WATCH_NSE = ["NIFTY", "BANKNIFTY"]
 WATCH_MCX: list[str] = ["NATURALGAS", "CRUDEOIL"]   # MCX commodity futures to watch
 WATCH_SYMBOLS = WATCH_NSE + WATCH_MCX   # merged for backward compat
 
+# ── Lot Sizes (for P&L calculation in ₹) ──────────────────────────────────
+LOT_SIZES = {
+    "NIFTY": 25,           # NIFTY options/futures lot size
+    "BANKNIFTY": 15,       # BANKNIFTY options/futures lot size
+    "FINNIFTY": 25,        # FINNIFTY options/futures lot size
+    "MIDCPNIFTY": 50,      # MIDCPNIFTY options/futures lot size
+    "NATURALGAS": 1250,    # NATURALGAS futures lot size (MCX)
+    "CRUDEOIL": 100,       # CRUDEOIL futures lot size (MCX)
+    "GOLD": 100,           # GOLD futures lot size (MCX)
+    "SILVER": 30,          # SILVER futures lot size (MCX)
+}
+
+# Default number of lots per trade (can be overridden per symbol)
+DEFAULT_LOTS_PER_TRADE = 1
+
 # ── Per-class market windows: (open, close, weekdays) ─────────────────────
 MARKET_WINDOWS: dict[str, tuple[str, str, list[int]]] = {
     "NSE_INDEX":     ("09:15", "15:30", [0, 1, 2, 3, 4]),
