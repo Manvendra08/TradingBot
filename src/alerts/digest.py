@@ -374,18 +374,23 @@ def build_digest(
         "━━━━━━━━━━━━━━━━━━━━",
         f"{emoji} *{label}* - {_clip(intel['verdict'], 45)}",
     ]
+    # Get price change values - preserve None to detect missing data
+    price_change_pct = ctx.get("price_change_pct")
+    price_change_points = ctx.get("price_change_points")
+    
     try:
-        d_spot = float(ctx.get("price_change_pct") or 0.0)
+        d_spot = float(price_change_pct) if price_change_pct is not None else 0.0
     except Exception:
         d_spot = 0.0
     try:
-        d_points = float(ctx.get("price_change_points") or 0.0)
+        d_points = float(price_change_points or 0.0)
     except Exception:
         d_points = 0.0
+    
     pct_digits = 3 if abs(d_spot) < 0.01 and d_spot != 0 else 2
     
     # If price_change_pct is None (no previous data), show "no prev data" instead of "flat"
-    if ctx.get("price_change_pct") is None:
+    if price_change_pct is None:
         spot_delta = "no prev data"
     elif abs(d_points) < 0.05 and abs(d_spot) < 0.005:
         spot_delta = "flat"

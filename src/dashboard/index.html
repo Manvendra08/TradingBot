@@ -240,19 +240,28 @@ Chart.defaults.color = 'var(--text-dim)';
 Chart.defaults.borderColor = 'var(--border)';
 Chart.defaults.font.family = "'Space Mono', monospace";
 Chart.defaults.font.size = 11;
-Chart.defaults.color = 'var(--text-dim)';  // Set default tick color
+
+// Helper to get computed CSS variable color
+function getThemeColor(varName) {
+  return getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+}
 
 function mkChart(id, type, data, opts = {}) {
   if (charts[id]) charts[id].destroy();
   const ctx = document.getElementById(id).getContext('2d');
+  
+  // Get current theme colors
+  const textDim = getThemeColor('--text-dim');
+  const borderColor = getThemeColor('--border');
+  
   charts[id] = new Chart(ctx, {
     type, data,
     options: {
       responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { position: 'top', labels: { boxWidth: 10, padding: 12, color: 'var(--text-dim)' } } },
+      plugins: { legend: { position: 'top', labels: { boxWidth: 10, padding: 12, color: textDim } } },
       scales: {
-        x: { grid: { color: 'var(--border)' }, ticks: { maxRotation: 45, color: 'var(--text-dim)' } },
-        y: { grid: { color: 'var(--border)' }, ticks: { color: 'var(--text-dim)' } }
+        x: { grid: { color: borderColor }, ticks: { maxRotation: 45, color: textDim } },
+        y: { grid: { color: borderColor }, ticks: { color: textDim } }
       },
       ...opts
     }
@@ -276,7 +285,8 @@ function toggleTheme() {
   const newTheme = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
   root.setAttribute('data-theme', newTheme);
   localStorage.setItem('theme', newTheme);
-  Object.values(charts).forEach(c => c.update());
+  // Dispatch theme change event to trigger chart reload
+  document.dispatchEvent(new CustomEvent('themechange', { detail: { theme: newTheme } }));
 }
 
 function fmt(n) {
@@ -523,6 +533,12 @@ async function init() {
     localStorage.setItem('nsebot-history-hours', slider.value);
   };
   slider.onchange = loadAll;
+  
+  // Listen for theme changes and reload charts with new colors
+  document.addEventListener('themechange', () => {
+    loadAll();
+  });
+  
   await loadAll();
   setInterval(loadAll, 60000);
 }
