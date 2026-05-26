@@ -585,11 +585,14 @@ def _format_key_signal(alert: dict) -> str:
     
     if atype == "OI_SPIKE":
         pct = float(detail.get("pct_change", 0))
-        oi_from = detail.get("oi_from", "?")
-        oi_to = detail.get("oi_to", "?")
+        prev_oi = detail.get("prev_oi", 0)
+        curr_oi = detail.get("curr_oi", 0)
+        # Format OI values
+        prev_oi_fmt = _fmt_oi(prev_oi) if prev_oi else "?"
+        curr_oi_fmt = _fmt_oi(curr_oi) if curr_oi else "?"
         interpretation = "Massive resistance wall forming" if opt == "CE" else "Strong support building"
         action = "Sellers aggressively capping upside" if opt == "CE" else "Sellers confident price won't fall"
-        return f"🔥 {leg}: OI SPIKE {pct:+.1f}% ({oi_from}→{oi_to})\n   → {interpretation}\n   → {action}"
+        return f"🔥 {leg}: OI SPIKE {pct:+.1f}% ({prev_oi_fmt}→{curr_oi_fmt})\n   → {interpretation}\n   → {action}"
     
     elif atype == "OI_UNWIND":
         pct = float(detail.get("pct_change", 0))
@@ -767,12 +770,24 @@ def _build_confirmation_section(chart_payload: dict, scan_context: dict, verdict
     """Build confirmation signals section."""
     lines = []
     
-    # Candles
+    # Candles with colored arrows
     candles_1h = chart_payload.get("1h", {}).get("sentiment", "NEUTRAL").upper()
     candles_3h = chart_payload.get("3h", {}).get("sentiment", "NEUTRAL").upper()
     
-    arrow_1h = "▲" if candles_1h == "BULLISH" else ("▼" if candles_1h == "BEARISH" else "→")
-    arrow_3h = "▲" if candles_3h == "BULLISH" else ("▼" if candles_3h == "BEARISH" else "→")
+    # Use colored emojis for arrows
+    if candles_1h == "BULLISH":
+        arrow_1h = f"{EMOJI_GREEN} ▲"
+    elif candles_1h == "BEARISH":
+        arrow_1h = f"{EMOJI_RED} ▼"
+    else:
+        arrow_1h = f"{EMOJI_WHITE} →"
+    
+    if candles_3h == "BULLISH":
+        arrow_3h = f"{EMOJI_GREEN} ▲"
+    elif candles_3h == "BEARISH":
+        arrow_3h = f"{EMOJI_RED} ▼"
+    else:
+        arrow_3h = f"{EMOJI_WHITE} →"
     
     conflict = ""
     is_bearish = _is_bearish_verdict(verdict)
