@@ -383,11 +383,14 @@ def build_digest(
     except Exception:
         d_points = 0.0
     pct_digits = 3 if abs(d_spot) < 0.01 and d_spot != 0 else 2
-    spot_delta = (
-        "flat"
-        if abs(d_points) < 0.05 and abs(d_spot) < 0.005
-        else f"{_fmt_signed(d_points, 1)} (`{_fmt_signed(d_spot, pct_digits)}%`)"
-    )
+    
+    # If price_change_pct is None (no previous data), show "no prev data" instead of "flat"
+    if ctx.get("price_change_pct") is None:
+        spot_delta = "no prev data"
+    elif abs(d_points) < 0.05 and abs(d_spot) < 0.005:
+        spot_delta = "flat"
+    else:
+        spot_delta = f"{_fmt_signed(d_points, 1)} (`{_fmt_signed(d_spot, pct_digits)}%`)"
     lines.append(
         f"Δ prev scan: Spot `{spot_delta}` | CE OI `{_fmt_oi(ctx.get('ce_oi_change', 0))}` | PE OI `{_fmt_oi(ctx.get('pe_oi_change', 0))}`"
     )
