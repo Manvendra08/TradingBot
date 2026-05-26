@@ -23,7 +23,7 @@ from src.engine.anomaly_detector import detect_anomalies
 from src.engine.intelligence import generate_intelligence
 from src.engine.paper_trading import run_paper_trading
 from src.alerts.dedup import is_duplicate, record_alert, should_send_zero_signal
-from src.alerts.digest import build_digest
+from src.alerts.digest import build_digest_wrapper as build_digest
 from src.alerts.telegram_dispatcher import send_text
 from config.settings import WATCH_SYMBOLS, get_symbol_thresholds
 

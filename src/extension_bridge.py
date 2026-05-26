@@ -35,7 +35,7 @@ from src.engine.anomaly_detector import detect_anomalies
 from src.alerts.dedup import is_duplicate, record_alert
 from src.alerts.telegram_dispatcher import send_alert, send_text
 from src.models.schema import insert_alert, mark_telegram_sent
-from src.alerts.digest import build_digest
+from src.alerts.digest import build_digest_wrapper as build_digest
 from config.settings import INDIVIDUAL_ALERT_MIN_SEVERITY
 
 configure_logging(name="bridge")
