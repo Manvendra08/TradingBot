@@ -373,17 +373,36 @@ def _fetch_scanx_heatmap(symbol: str) -> dict:
             "sorder": "desc",
         }
     }
+    # Retry up to 3 times; 3rd attempt disables SSL verify as fallback
+    rows = []
+    last_exc = None
+    for attempt in range(3):
+        try:
+            res = requests.post(
+                _SCANX_HEATMAP_API,
+                json=payload,
+                timeout=15,
+                verify=(attempt < 2),  # SSL verify on attempts 0,1; off on attempt 2
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+            )
+            res.raise_for_status()
+            body = res.json() if res.content else {}
+            data = body.get("data") if isinstance(body, dict) else []
+            rows = data if isinstance(data, list) else []
+            last_exc = None
+            break
+        except Exception as exc:
+            last_exc = exc
+            if attempt < 2:
+                time.sleep(1.5 * (attempt + 1))
+
     try:
-        res = requests.post(
-            _SCANX_HEATMAP_API,
-            json=payload,
-            timeout=20,
-            headers={"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"},
-        )
-        res.raise_for_status()
-        body = res.json() if res.content else {}
-        data = body.get("data") if isinstance(body, dict) else []
-        rows = data if isinstance(data, list) else []
+        if last_exc is not None:
+            raise last_exc
         adv = 0
         dec = 0
         total_mcap = 0.0
@@ -832,14 +851,14 @@ def _explain_verdict(verdict: str | None, option_type: str | None) -> dict:
             "bias": "Bullish",
             "strategy": "Selling puts (bullish bet)",
             "description": "Put sellers confident price won't fall",
-            "action": "Sell PE",
+            "action": "Legacy CE proxy; current engine skips writing trades" if ot == "CE" else "Sell PE",
             "emoji": "📗"
         },
         "Call Writing": {
             "bias": "Bearish",
             "strategy": "Selling calls (bearish bet)",
             "description": "Call sellers confident price won't rise",
-            "action": "Sell CE",
+            "action": "Legacy PE proxy; current engine skips writing trades" if ot == "PE" else "Sell CE",
             "emoji": "📕"
         },
         "OI Bias Bullish": {
