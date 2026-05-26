@@ -90,7 +90,7 @@ _YF_TF_MAP: dict[str, tuple[str, str]] = {
     "15m": ("15m", "1d"),
     "30m": ("30m", "5d"),
     "1h": ("1h", "5d"),
-    "3h": ("90m", "5d"),
+    "3h": ("1h", "5d"),
     "4h": ("1h", "5d"),
     "1d": ("1d", "60d"),
 }
@@ -204,8 +204,12 @@ def _get_tv_client():
 
 
 def _provider_order(base_symbol: str) -> list[str]:
-    # TradingView is closest to what the trader sees on screen. Yahoo remains
-    # a fallback only, because its index candles can be delayed/resampled.
+    # For NSE index symbols, prefer Yahoo and explicitly ignore in-progress bars.
+    # tvDatafeed often returns the current forming candle with odd timestamps.
+    if base_symbol in {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"}:
+        return ["yfinance"]
+    # For commodities, TradingView (if logged in) is closest to what traders see,
+    # with Yahoo as fallback.
     return ["tvdatafeed", "yfinance"]
 
 
@@ -286,6 +290,57 @@ def _bar_to_payload(bar, *, bar_start_ts=None, bar_end_ts=None, naive_tz=timezon
         "ohlc": {"open": o, "high": h, "low": l, "close": c},
         "bar_start_utc": _to_utc_iso(bar_start_ts, naive_tz=naive_tz),
         "bar_end_utc": _to_utc_iso(bar_end_ts or bar_start_ts, naive_tz=naive_tz),
+    }
+
+
+def _payload_from_closed_bars(
+    bars: list[dict],
+    *,
+    bar_minutes: int,
+    aggregate_count: int = 1,
+) -> dict | None:
+    """
+    Build payload from the last *closed* bars only.
+    `bars` expects Yahoo-like entries with Open/High/Low/Close/_ts(epoch).
+    """
+    if bar_minutes <= 0 or aggregate_count <= 0:
+        return None
+
+    now_utc = datetime.now(timezone.utc)
+    closed: list[tuple[datetime, dict]] = []
+    for bar in bars:
+        ts = bar.get("_ts")
+        if ts is None:
+            continue
+        try:
+            start_dt = datetime.fromtimestamp(float(ts), timezone.utc)
+        except Exception:
+            continue
+        end_dt = start_dt + timedelta(minutes=bar_minutes)
+        if end_dt <= now_utc:
+            closed.append((start_dt, bar))
+
+    if len(closed) < aggregate_count:
+        return None
+
+    closed.sort(key=lambda item: item[0])
+    selected = closed[-aggregate_count:]
+
+    try:
+        o = float(selected[0][1]["Open"])
+        h = max(float(item[1]["High"]) for item in selected)
+        l = min(float(item[1]["Low"]) for item in selected)
+        c = float(selected[-1][1]["Close"])
+    except Exception:
+        return None
+
+    start_dt = selected[0][0]
+    end_dt = selected[-1][0] + timedelta(minutes=bar_minutes)
+    return {
+        "sentiment": _sentiment(o, c, h, l),
+        "ohlc": {"open": o, "high": h, "low": l, "close": c},
+        "bar_start_utc": start_dt.isoformat(),
+        "bar_end_utc": end_dt.isoformat(),
     }
 
 
@@ -566,17 +621,7 @@ def _fetch_yf(base_symbol: str, tf: str, reference_price: float | None = None) -
                     "_ts": ts,
                 })
                 
-        if tf == "3h" and len(valid_bars) >= 2:
-            chunk = valid_bars[-2:]
-            valid_bars = [{
-                "Open": chunk[0]["Open"],
-                "High": max(item["High"] for item in chunk),
-                "Low": min(item["Low"] for item in chunk),
-                "Close": chunk[-1]["Close"],
-                "_ts_start": chunk[0].get("_ts"),
-                "_ts_end": chunk[-1].get("_ts"),
-            }]
-        elif tf == "4h" and len(valid_bars) >= 4:
+        if tf == "4h" and len(valid_bars) >= 4:
             chunk = valid_bars[-4:]
             valid_bars = [{
                 "Open": chunk[0]["Open"],
@@ -588,12 +633,17 @@ def _fetch_yf(base_symbol: str, tf: str, reference_price: float | None = None) -
             }]
             
         if valid_bars:
-            bar = valid_bars[-1]
-            payload = _bar_to_payload(
-                bar,
-                bar_start_ts=bar.get("_ts_start", bar.get("_ts")),
-                bar_end_ts=bar.get("_ts_end", bar.get("_ts")),
-            )
+            if tf == "1h":
+                payload = _payload_from_closed_bars(valid_bars, bar_minutes=60, aggregate_count=1)
+            elif tf == "3h":
+                payload = _payload_from_closed_bars(valid_bars, bar_minutes=60, aggregate_count=3)
+            else:
+                bar = valid_bars[-1]
+                payload = _bar_to_payload(
+                    bar,
+                    bar_start_ts=bar.get("_ts_start", bar.get("_ts")),
+                    bar_end_ts=bar.get("_ts_end", bar.get("_ts")),
+                )
             if payload:
                 # MCX symbols from Yahoo (NG=F/CL=F/GC=F/SI=F) are in global units.
                 # Scale to local underlying so OHLC shown in Telegram/UI remains meaningful.
@@ -647,13 +697,33 @@ def _fetch_yf(base_symbol: str, tf: str, reference_price: float | None = None) -
         if df is None or df.empty:
             return None
 
-        bar = df.iloc[-1]
-        bar_ts = None
-        try:
-            bar_ts = df.index[-1]
-        except Exception:
-            pass
-        payload = _bar_to_payload(bar, bar_start_ts=bar_ts, bar_end_ts=bar_ts)
+        if tf in {"1h", "3h"}:
+            bars: list[dict] = []
+            for ts, row in df.tail(64).iterrows():
+                try:
+                    bars.append(
+                        {
+                            "Open": float(row["Open"]),
+                            "High": float(row["High"]),
+                            "Low": float(row["Low"]),
+                            "Close": float(row["Close"]),
+                            "_ts": float(ts.timestamp()),
+                        }
+                    )
+                except Exception:
+                    continue
+            if tf == "1h":
+                payload = _payload_from_closed_bars(bars, bar_minutes=60, aggregate_count=1)
+            else:
+                payload = _payload_from_closed_bars(bars, bar_minutes=60, aggregate_count=3)
+        else:
+            bar = df.iloc[-1]
+            bar_ts = None
+            try:
+                bar_ts = df.index[-1]
+            except Exception:
+                pass
+            payload = _bar_to_payload(bar, bar_start_ts=bar_ts, bar_end_ts=bar_ts)
         if payload and base_symbol in _MCX_SYMBOLS and reference_price and reference_price > 0:
             try:
                 close_px = float((payload.get("ohlc") or {}).get("close") or 0.0)

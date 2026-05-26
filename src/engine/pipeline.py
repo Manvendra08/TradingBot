@@ -92,6 +92,7 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
         chart_indicators=oc_data.get("chart_indicators"),
         override_thresholds=symbol_thresholds,
     )
+    scan_context["option_rows"] = list(oc_data.get("strikes") or [])
     log.info("%s: %d anomalies detected", symbol, len(alerts))
 
     # 2. Dedup filter

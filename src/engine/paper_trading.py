@@ -6,6 +6,11 @@ from datetime import datetime, timezone
 
 import pytz
 
+from src.engine.paper_plan import (
+    build_paper_trade_plan,
+    is_bearish_verdict,
+    is_bullish_verdict,
+)
 from src.models.schema import (
     close_paper_trade,
     get_open_paper_trade,
@@ -28,8 +33,24 @@ def _is_market_open(symbol: str) -> bool:
     return open_t <= t <= close_t
 
 
-def _get_option_premium(symbol: str, expiry: str, strike: float, option_type: str) -> float | None:
+def _get_option_premium(
+    symbol: str,
+    expiry: str,
+    strike: float,
+    option_type: str,
+    option_rows: list[dict] | None = None,
+) -> float | None:
     """Fetch current option premium (LTP) from latest snapshot."""
+    for row in option_rows or []:
+        try:
+            if (
+                abs(float(row.get("strike") or 0) - strike) < 0.01
+                and str(row.get("option_type") or "").upper() == option_type
+            ):
+                premium = float(row.get("ltp") or 0.0)
+                return premium if premium > 0 else None
+        except Exception:
+            continue
     try:
         snapshots = get_latest_snapshots_for_symbol(symbol, expiry)
         for snap in snapshots:
@@ -41,7 +62,7 @@ def _get_option_premium(symbol: str, expiry: str, strike: float, option_type: st
     return None
 
 
-def _calculate_option_sl_target(entry_premium: float, option_type: str, is_bullish: bool) -> tuple[float, float]:
+def _calculate_option_sl_target(entry_premium: float) -> tuple[float, float]:
     """
     Calculate SL and Target in premium terms.
     Engine always takes LONG positions (buys CE for bullish, buys PE for bearish).
@@ -68,78 +89,49 @@ def _parse_verdict_and_confidence(intel_text: str) -> tuple[str, int]:
     return verdict, confidence
 
 
-def _is_bullish_verdict(verdict: str) -> bool:
-    return verdict in {"Long Buildup", "Put Writing", "OI Bias Bullish"}
-
-
-def _is_bearish_verdict(verdict: str) -> bool:
-    return verdict in {"Short Buildup", "Call Writing", "OI Bias Bearish"}
-
-
 def _is_reversal_against_open_trade(open_trade: dict, verdict: str, confidence: int) -> bool:
     if confidence < 70:
         return False
     ot = str(open_trade.get("option_type") or "").upper()
-    if ot == "CE" and _is_bearish_verdict(verdict):
+    if ot == "CE" and is_bearish_verdict(verdict):
         return True
-    if ot == "PE" and _is_bullish_verdict(verdict):
+    if ot == "PE" and is_bullish_verdict(verdict):
         return True
     return False
 
 
 def _trade_plan_from_verdict(verdict: str, confidence: int, ctx: dict) -> dict | None:
-    if confidence < 60:
+    plan = build_paper_trade_plan(verdict, confidence, ctx)
+    if not plan:
         return None
 
-    atm = float(ctx.get("atm_strike") or 0.0)
-    underlying = float(ctx.get("underlying") or 0.0)
-    support = float(ctx.get("support") or 0.0)
-    resistance = float(ctx.get("resistance") or 0.0)
     expiry = ctx.get("expiry", "")
     symbol = ctx.get("symbol", "")
-    
-    if underlying <= 0:
-        return None
+    option_rows = ctx.get("option_rows") or []
+    strike = float(plan["strike"])
+    option_type = str(plan["option_type"])
+    entry_premium = _get_option_premium(symbol, expiry, strike, option_type, option_rows)
 
-    bullish = _is_bullish_verdict(verdict)
-    bearish = _is_bearish_verdict(verdict)
-    if not bullish and not bearish:
-        return None
-
-    option_type = "CE" if bullish else "PE"
-    strike = atm if atm > 0 else round(underlying)
-    
-    # Calculate underlying-based SL/Target (for reference)
-    if bullish:
-        sl_underlying = support if support > 0 else underlying * 0.995
-        target_underlying = resistance if resistance > 0 else underlying * 1.01
-    else:
-        sl_underlying = resistance if resistance > 0 else underlying * 1.005
-        target_underlying = support if support > 0 else underlying * 0.99
-    
-    # Fetch option premium
-    entry_premium = _get_option_premium(symbol, expiry, strike, option_type)
-    
-    # Calculate premium-based SL/Target
     sl_premium = None
     target_premium = None
     if entry_premium and entry_premium > 0:
-        sl_premium, target_premium = _calculate_option_sl_target(entry_premium, option_type, bullish)
+        sl_premium, target_premium = _calculate_option_sl_target(entry_premium)
 
     return {
-        "verdict_label": verdict,
-        "option_type": option_type,
-        "strike": strike,
-        "entry_underlying": underlying,
+        **plan,
         "entry_premium": entry_premium,
-        "sl_underlying": round(sl_underlying, 4),
-        "target_underlying": round(target_underlying, 4),
         "sl_premium": sl_premium,
         "target_premium": target_premium,
     }
 
 
-def _maybe_close_open_trade(symbol: str, underlying: float, expiry: str, now_iso: str) -> None:
+def _maybe_close_open_trade(
+    symbol: str,
+    underlying: float,
+    expiry: str,
+    now_iso: str,
+    option_rows: list[dict] | None = None,
+) -> None:
     open_trade = get_open_paper_trade(symbol)
     if not open_trade:
         return
@@ -148,7 +140,7 @@ def _maybe_close_open_trade(symbol: str, underlying: float, expiry: str, now_iso
     strike = float(open_trade.get("strike") or 0.0)
     
     # Get current premium for exit
-    exit_premium = _get_option_premium(symbol, expiry, strike, option_type)
+    exit_premium = _get_option_premium(symbol, expiry, strike, option_type, option_rows)
     
     # Check premium-based SL/Target first (if available)
     sl_premium = open_trade.get("sl_premium")
@@ -204,12 +196,13 @@ def run_paper_trading(symbol: str, scan_context: dict, digest_id: str, intellige
         )
         return
 
-    _maybe_close_open_trade(symbol, underlying, expiry, now_iso)
+    option_rows = list((scan_context or {}).get("option_rows") or [])
+    _maybe_close_open_trade(symbol, underlying, expiry, now_iso, option_rows)
     open_trade = get_open_paper_trade(symbol)
     if open_trade and _is_reversal_against_open_trade(open_trade, verdict, confidence):
         strike = float(open_trade.get("strike") or 0.0)
         option_type = str(open_trade.get("option_type") or "")
-        exit_premium = _get_option_premium(symbol, expiry, strike, option_type) if strike > 0 else None
+        exit_premium = _get_option_premium(symbol, expiry, strike, option_type, option_rows) if strike > 0 else None
         close_paper_trade(
             open_trade["id"],
             now_iso,
@@ -224,7 +217,7 @@ def run_paper_trading(symbol: str, scan_context: dict, digest_id: str, intellige
         return
     
     # Add symbol and expiry to context for premium fetching
-    ctx = {**(scan_context or {}), "symbol": symbol, "expiry": expiry}
+    ctx = {**(scan_context or {}), "symbol": symbol, "expiry": expiry, "option_rows": option_rows}
     plan = _trade_plan_from_verdict(verdict, confidence, ctx)
     if not plan:
         return

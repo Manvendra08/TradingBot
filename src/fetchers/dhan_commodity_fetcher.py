@@ -15,7 +15,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
-from config.settings import HTTP_TIMEOUT_SECONDS, HTTP_MAX_RETRIES, HTTP_BACKOFF_FACTOR
+from config.settings import HTTP_TIMEOUT_SECONDS, HTTP_MAX_RETRIES, HTTP_BACKOFF_FACTOR, DHAN_SECURITY_IDS
 from src.fetchers.base_fetcher import BaseFetcher
 
 log = logging.getLogger(__name__)
@@ -24,6 +24,7 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 _BASE_URL = "https://dhan.co/commodity/{slug}-option-chain/"
 _SCANX_OPTCHAIN_URL = "https://open-web-scanx.dhan.co/scanx/optchainactive"
+_DHAN_BUILTUP_URL = "https://openweb-ticks.dhan.co/builtup"
 _JULIAN_1980_BASE = datetime(1980, 1, 1, tzinfo=timezone.utc)
 
 _SYMBOL_SLUGS: dict[str, str] = {
@@ -44,6 +45,14 @@ _HEADERS = {
 }
 
 _JSON_HEADERS = {
+    "User-Agent": _HEADERS["User-Agent"],
+    "Accept": "application/json, text/plain, */*",
+    "Content-Type": "application/json; charset=UTF-8",
+    "Origin": "https://dhan.co",
+    "Referer": "https://dhan.co/",
+}
+
+_BUILTUP_HEADERS = {
     "User-Agent": _HEADERS["User-Agent"],
     "Accept": "application/json, text/plain, */*",
     "Content-Type": "application/json; charset=UTF-8",
@@ -241,6 +250,28 @@ def _extract_underlying_from_page_props(page_props: dict, symbol: str) -> Option
         if v is not None:
             return v
     return _extract_underlying(json.dumps(page_props), symbol)
+
+
+def _extract_live_fut_from_builtup(raw: dict) -> Optional[float]:
+    rows = (raw or {}).get("data")
+    if not isinstance(rows, list) or not rows:
+        return None
+    latest = None
+    latest_et = None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        et = _parse_int(row.get("et") or row.get("st")) or 0
+        if latest is None or et >= (latest_et or 0):
+            latest = row
+            latest_et = et
+    if not isinstance(latest, dict):
+        return None
+    for key in ("c", "ltp", "close"):
+        px = _parse_float(str(latest.get(key) or ""))
+        if px is not None and px > 0:
+            return px
+    return None
 
 
 def _normalise_scanx_oc(raw: dict) -> list[dict]:
@@ -531,6 +562,41 @@ class DhanCommodityFetcher(BaseFetcher):
         log.error("[dhan_commodity] optchainactive exhausted after %d retries: %s", HTTP_MAX_RETRIES, last_exc)
         return None
 
+    def _fetch_builtup_live_price(self, secid: int) -> Optional[float]:
+        payload = {
+            "Data": {
+                "Exch": "MCX",
+                "Seg": "M",
+                "Inst": "FUTCOM",
+                "Timeinterval": "15",
+                "Secid": int(secid),
+            }
+        }
+        last_exc = None
+        for attempt in range(1, HTTP_MAX_RETRIES + 1):
+            try:
+                resp = self.session.post(
+                    _DHAN_BUILTUP_URL,
+                    headers=_BUILTUP_HEADERS,
+                    json=payload,
+                    timeout=HTTP_TIMEOUT_SECONDS,
+                )
+                resp.raise_for_status()
+                return _extract_live_fut_from_builtup(resp.json())
+            except Exception as exc:
+                last_exc = exc
+                wait = HTTP_BACKOFF_FACTOR ** attempt
+                log.warning(
+                    "[dhan_commodity] builtup live-price attempt %d/%d failed: %s - retry in %ds",
+                    attempt,
+                    HTTP_MAX_RETRIES,
+                    exc,
+                    wait,
+                )
+                time.sleep(wait)
+        log.warning("[dhan_commodity] builtup live-price unavailable: %s", last_exc)
+        return None
+
     def fetch_option_chain(self, symbol: str) -> dict | None:
         base = symbol.upper().split()[0]
         slug = _SYMBOL_SLUGS.get(base)
@@ -586,6 +652,12 @@ class DhanCommodityFetcher(BaseFetcher):
         if not strikes:
             log.warning("[dhan_commodity] no strikes parsed for %s", base)
             return None
+
+        secid = DHAN_SECURITY_IDS.get(base)
+        if secid:
+            live_fut = self._fetch_builtup_live_price(secid)
+            if live_fut is not None and live_fut > 0:
+                underlying = live_fut
 
         return {
             "symbol": base,

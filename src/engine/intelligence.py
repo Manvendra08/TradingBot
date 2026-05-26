@@ -9,6 +9,7 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
+from src.engine.paper_plan import build_paper_trade_plan, format_paper_plan
 from src.models.schema import get_alert_history
 from src.utils.formatting import safe_num, fmt_oi
 
@@ -405,55 +406,22 @@ def _collect_forces(ctx: dict, alerts: list[dict], verdict_label: str, parsed_ch
 
 
 def _paper_trade_idea(verdict_label: str, ctx: dict) -> str:
-    atm = int(_safe(ctx.get("atm_strike"), 0))
-    support = int(_safe(ctx.get("support"), 0))
-    resistance = int(_safe(ctx.get("resistance"), 0))
-
-    if verdict_label == "OI Bias Bullish":
-        if atm:
-            return (
-                f"PAPER: Buy {atm} CE on close above {resistance or atm + 5} "
-                f"| SL below {support or atm - 5} | Partial exit at ATM+1 strike"
-            )
-        return "Wait for breakout candle above resistance — enter CE on confirmation"
-
-    if verdict_label == "OI Bias Bearish":
-        if atm:
-            return (
-                f"PAPER: Buy {atm} PE on close below {support or atm - 5} "
-                f"| SL above {resistance or atm + 5} | Partial exit at ATM-1 strike"
-            )
-        return "Wait for breakdown candle below support — enter PE on confirmation"
-
-    if verdict_label == "Long Buildup":
-        if atm:
-            return f"Buy {atm} CE (paper) | SL below {support or atm - 1} | Target near {resistance or atm + 5}"
-        return "Buy FUT (paper) on pullback | strict SL"
-    if verdict_label == "Short Buildup":
-        if atm:
-            return f"Buy {atm} PE (paper) | SL above {resistance or atm + 1} | Target near {support or atm - 5}"
-        return "Sell FUT (paper) on rise-fail | strict SL"
+    confidence = int(_safe(ctx.get("confidence"), 0))
+    plan = build_paper_trade_plan(verdict_label, confidence, ctx)
+    if plan:
+        return format_paper_plan(plan)
+    if verdict_label in {"Put Writing", "Call Writing"}:
+        return "No auto paper trade: option writing is not enabled"
     if verdict_label == "Short Covering":
-        if atm:
-            return f"Avoid fresh CE buys | sell OTM PE (paper) only with hedge | watch {resistance or atm + 5}"
-        return "Trail longs only; no fresh entry"
+        return "No auto paper trade: short covering is trail-only"
     if verdict_label == "Long Unwinding":
-        if atm:
-            return f"Avoid fresh PE buys | sell OTM CE (paper) only with hedge | watch {support or atm - 5}"
-        return "Trail shorts only; no fresh entry"
-    if verdict_label == "Put Writing":
-        if atm:
-            return f"Sell {atm} PE (paper) | SL below {support or atm - 1} | Target near {resistance or atm + 5}"
-        return "Sell PE (paper) with hedge | strict SL"
-    if verdict_label == "Call Writing":
-        if atm:
-            return f"Sell {atm} CE (paper) | SL above {resistance or atm + 1} | Target near {support or atm - 5}"
-        return "Sell CE (paper) with hedge | strict SL"
+        return "No auto paper trade: long unwinding is trail-only"
     if "Expansion" in verdict_label:
-        return "Breakout watch (paper): enter on range break + OI confirmation"
+        return "No auto paper trade: breakout direction unconfirmed"
     if "Contraction" in verdict_label:
-        return "Range play (paper): fade extremes or short premium with hedge"
-    return "No clean edge (paper): wait for confirmation"
+        return "No auto paper trade: range decay needs hedged strategy"
+    return "No auto paper trade: wait for cleaner alignment"
+
 
 
 # ── Broader Trend from History ─────────────────────────────────────────────
@@ -839,7 +807,7 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
 
     msg.append("")
     msg.append("*PAPER TRADE (Specific)*")
-    msg.append(f"- {_paper_trade_idea(verdict_label, ctx)}")
+    msg.append(f"- {_paper_trade_idea(verdict_label, {**ctx, 'symbol': symbol, 'confidence': confidence})}")
 
     # Broader Trend
     trend = _compute_broader_trend(symbol, current_alerts)

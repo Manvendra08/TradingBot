@@ -17,6 +17,7 @@ EMOJI_YELLOW = "\U0001F7E1"
 EMOJI_BLUE = "\U0001F535"
 EMOJI_WHITE = "\u26AA"
 EMOJI_CANDLES = "\U0001F56F\ufe0f"
+_FUTURE_SYMBOLS = {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"}
 
 _SEV_ORDER = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
 _VERDICT_STYLE = {
@@ -102,6 +103,19 @@ def _norm_symbol(symbol: str) -> str:
     value = re.sub(r"^(NSE|NFO|BSE|MCX|CDS):", "", value)
     value = value.replace("!", "")
     return re.sub(r"[^A-Z0-9]", "", value)
+
+
+def _price_label(symbol: str) -> str:
+    base = _norm_symbol(symbol).split()[0] if symbol else ""
+    return "Fut" if base in _FUTURE_SYMBOLS else "Spot"
+
+
+def _is_bullish_verdict(verdict: str) -> bool:
+    return verdict in {"Long Buildup", "Put Writing", "OI Bias Bullish", "Short Covering"}
+
+
+def _is_bearish_verdict(verdict: str) -> bool:
+    return verdict in {"Short Buildup", "Call Writing", "OI Bias Bearish", "Long Unwinding"}
 
 
 def _chart_payload_for_symbol(scan_context: dict, symbol: str) -> dict:
@@ -326,6 +340,7 @@ def build_digest(
     ctx = scan_context or {}
     diag = ctx.get("diagnostics", {}) if isinstance(ctx, dict) else {}
     n = len(alerts)
+    px_label = _price_label(symbol)
 
     if not alerts:
         max_oi = float(diag.get("max_oi_delta_pct") or 0)
@@ -339,7 +354,7 @@ def build_digest(
             quiet_note = f"Detected `{total_detected}` but dedup suppressed repeats."
         msg = "\n".join([
             f"\U0001F4CA *{symbol}* | {ts} | {title}",
-            f"Spot `{_fmt_num(ctx.get('underlying'))}` | PCR `{_fmt_num(ctx.get('pcr'), 2)}`",
+            f"{px_label} `{_fmt_num(ctx.get('underlying'))}` | PCR `{_fmt_num(ctx.get('pcr'), 2)}`",
             "━━━━━━━━━━━━━━━━━━━━",
             f"{EMOJI_WHITE} *Market quiet*",
             quiet_note,
@@ -370,7 +385,7 @@ def build_digest(
     lines = [
         f"\U0001F4CA *{symbol}* | {ts} | {n} signals",
         counts or "No severity count",
-        f"Spot `{_fmt_num(ctx.get('underlying'))}` | ATM `{_fmt_num(ctx.get('atm_strike'))}` | PCR `{_fmt_num(ctx.get('pcr'), 2)}`",
+        f"{px_label} `{_fmt_num(ctx.get('underlying'))}` | ATM `{_fmt_num(ctx.get('atm_strike'))}` | PCR `{_fmt_num(ctx.get('pcr'), 2)}`",
         "━━━━━━━━━━━━━━━━━━━━",
         f"{emoji} *{label}* - {_clip(intel['verdict'], 45)}",
     ]
@@ -397,7 +412,7 @@ def build_digest(
     else:
         spot_delta = f"{_fmt_signed(d_points, 1)} (`{_fmt_signed(d_spot, pct_digits)}%`)"
     lines.append(
-        f"Δ prev scan: Spot `{spot_delta}` | CE OI `{_fmt_oi(ctx.get('ce_oi_change', 0))}` | PE OI `{_fmt_oi(ctx.get('pe_oi_change', 0))}`"
+        f"Δ prev scan: {px_label} `{spot_delta}` | CE OI `{_fmt_oi(ctx.get('ce_oi_change', 0))}` | PE OI `{_fmt_oi(ctx.get('pe_oi_change', 0))}`"
     )
     if intel["desc"]:
         lines.append(_clip(intel["desc"], 100))
@@ -455,7 +470,13 @@ def build_digest(
 
     bull = _clip(intel["bull"][0], 110) if intel["bull"] else "No strong bullish factor"
     bear = _clip(intel["bear"][0], 110) if intel["bear"] else "No strong bearish factor"
-    lines += ["", "\u2696\ufe0f *Balance*", f"{EMOJI_GREEN} {bull}", f"{EMOJI_RED} {bear}"]
+    lines += ["", "\u2696\ufe0f *Balance*"]
+    if _is_bullish_verdict(intel["verdict"]):
+        lines += [f"{EMOJI_GREEN} Primary: {bull}", f"{EMOJI_YELLOW} Caution: {bear}"]
+    elif _is_bearish_verdict(intel["verdict"]):
+        lines += [f"{EMOJI_RED} Primary: {bear}", f"{EMOJI_YELLOW} Caution: {bull}"]
+    else:
+        lines += [f"{EMOJI_GREEN} {bull}", f"{EMOJI_RED} {bear}"]
 
     lines += ["", f"\U0001F30A *Trend:* {_trend_text(intel['trend'], intel['verdict'])}"]
     lines += ["", f"_#{digest_id} · {n} signals · all symbols enabled_"]

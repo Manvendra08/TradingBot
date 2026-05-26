@@ -311,6 +311,85 @@ class TestNatGasIntelligence:
         assert "OI Bias Bullish" in msg
         assert "Buy 290 CE" in msg
 
+    def test_paper_plan_does_not_use_far_resistance_as_entry_trigger(self):
+        from src.engine.intelligence import generate_intelligence
+        from src.engine.paper_plan import build_paper_trade_plan
+
+        alerts = [
+            {
+                "severity": "HIGH",
+                "alert_type": "OI_SPIKE",
+                "option_type": "CE",
+                "strike": 280,
+                "detail_json": json.dumps({"pct_change": 45.0}),
+            },
+            {
+                "severity": "HIGH",
+                "alert_type": "BUILDUP_CLASSIFY",
+                "option_type": "CE",
+                "strike": 280,
+                "detail_json": json.dumps({"buildup_type": "Long Buildup"}),
+            },
+            {
+                "severity": "HIGH",
+                "alert_type": "ATM_LEG_MOVE",
+                "option_type": "CE",
+                "strike": 280,
+                "detail_json": json.dumps({"bias": "Bullish Flow"}),
+            },
+        ]
+        ctx = {
+            "symbol": "NATURALGAS",
+            "underlying": 279.0,
+            "price_change_pct": 0.1,
+            "total_ce_oi": 100000,
+            "total_pe_oi": 140000,
+            "ce_oi_change": 0,
+            "pe_oi_change": 1000,
+            "pcr": 1.4,
+            "atm_strike": 280,
+            "support": 270,
+            "resistance": 320,
+            "max_pain": 290,
+            "chart_indicators": {
+                "NATURALGAS": {
+                    "1h": {"sentiment": "BULLISH", "ohlc": {"open": 276.0, "high": 280.0, "low": 275.0, "close": 279.0}},
+                    "3h": {"sentiment": "BULLISH", "ohlc": {"open": 274.0, "high": 280.0, "low": 273.0, "close": 279.0}},
+                }
+            },
+        }
+
+        plan = build_paper_trade_plan("OI Bias Bullish", 80, ctx)
+        msg = generate_intelligence("NATURALGAS", alerts, scan_context=ctx)
+
+        assert plan["strike"] == 280
+        assert plan["target_underlying"] == 290
+        assert "Buy 280 CE at current scan" in msg
+        assert "close above 320" not in msg
+        assert "Partial exit at ATM+1 strike" not in msg
+
+    def test_paper_engine_uses_current_scan_premium_rows(self):
+        from src.engine.paper_trading import _trade_plan_from_verdict
+
+        ctx = {
+            "symbol": "NATURALGAS",
+            "expiry": "2026-06-24",
+            "underlying": 279.0,
+            "atm_strike": 280,
+            "support": 270,
+            "resistance": 290,
+            "option_rows": [
+                {"strike": 280.0, "option_type": "CE", "ltp": 12.5},
+                {"strike": 280.0, "option_type": "PE", "ltp": 9.0},
+            ],
+        }
+
+        plan = _trade_plan_from_verdict("Long Buildup", 80, ctx)
+
+        assert plan["entry_premium"] == 12.5
+        assert plan["sl_premium"] == 8.75
+        assert plan["target_premium"] == 18.75
+
 
 class TestChartContextWiring:
     def test_detect_anomalies_carries_chart_indicators_from_oc_data(self):
