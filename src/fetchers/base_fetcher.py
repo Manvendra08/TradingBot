@@ -46,6 +46,10 @@ class BaseFetcher(abc.ABC):
                 return r.json()
             except (requests.RequestException, ValueError) as exc:
                 last_exc = exc
+                exc_str = str(exc).lower()
+                if "nameresolutionerror" in exc_str or "getaddrinfo failed" in exc_str or "failed to resolve" in exc_str:
+                    log.warning("[%s] Name resolution failed — network offline or DNS issue. Skipping retries.", self.name)
+                    break
                 wait = HTTP_BACKOFF_FACTOR ** attempt
                 log.warning("[%s] attempt %d/%d failed: %s — retry in %ds",
                             self.name, attempt, HTTP_MAX_RETRIES, exc, wait)

@@ -89,9 +89,9 @@ _YF_TF_MAP: dict[str, tuple[str, str]] = {
     "5m": ("5m", "1d"),
     "15m": ("15m", "1d"),
     "30m": ("30m", "5d"),
-    "1h": ("1h", "5d"),
-    "3h": ("1h", "5d"),
-    "4h": ("1h", "5d"),
+    "1h": ("1h", "15d"),
+    "3h": ("1h", "45d"),
+    "4h": ("1h", "60d"),
     "1d": ("1d", "60d"),
 }
 
@@ -181,26 +181,72 @@ def _tv_interval(tf: str):
 
 _tv_local = threading.local()
 
+# Circuit-breaker: after this many consecutive failures, back off for _TV_BACKOFF_SECONDS
+_TV_MAX_FAILURES = 3
+_TV_BACKOFF_SECONDS = 120  # 2 minutes
+
 
 def _get_tv_client():
-    if not hasattr(_tv_local, "client"):
+    """
+    Return a thread-local TvDatafeed client, or None if:
+    - credentials are missing
+    - init failed
+    - circuit-breaker is open (too many recent failures)
+    """
+    # Check circuit-breaker before attempting to (re)create client
+    fail_count = getattr(_tv_local, "fail_count", 0)
+    backoff_until = getattr(_tv_local, "backoff_until", None)
+    if backoff_until is not None:
+        import time as _time
+        if _time.monotonic() < backoff_until:
+            return None  # still in backoff window, skip silently
+        else:
+            # Backoff expired — reset and allow one retry
+            _tv_local.fail_count = 0
+            _tv_local.backoff_until = None
+            _tv_local.client = None
+
+    if not hasattr(_tv_local, "client") or _tv_local.client is None:
         try:
             from tvDatafeed import TvDatafeed
-            from config.settings import TV_USERNAME, TV_PASSWORD
-            if TV_USERNAME and TV_PASSWORD:
-                log.info("[chart] tvdatafeed: authenticating as %s", TV_USERNAME)
+            from config.settings import TV_USERNAME, TV_PASSWORD, TV_SESSIONID
+            if TV_SESSIONID:
+                log.info("[chart] tvdatafeed: authenticating using sessionid cookie")
+                _tv_local.client = TvDatafeed(sessionid=TV_SESSIONID)
+            elif TV_USERNAME and TV_PASSWORD:
+                log.info("[chart] tvdatafeed: authenticating as %s (warning: credentials may trigger CAPTCHA)", TV_USERNAME)
                 _tv_local.client = TvDatafeed(username=TV_USERNAME, password=TV_PASSWORD)
             else:
                 log.warning(
-                    "[chart] tvdatafeed: TV_USERNAME/TV_PASSWORD not set — "
+                    "[chart] tvdatafeed: TV_SESSIONID or credentials not set — "
                     "MCX commodity data (NATURALGAS, CRUDEOIL, GOLD, SILVER) will fail. "
-                    "Set credentials in .env to enable MCX charts."
+                    "Set TV_SESSIONID in .env to enable MCX charts."
                 )
                 _tv_local.client = TvDatafeed()  # unauthenticated; NSE only
         except Exception as exc:
             log.warning("[chart] tvdatafeed init failed: %s", exc)
             _tv_local.client = None
     return _tv_local.client
+
+
+def _tv_record_failure():
+    """Increment failure counter; open circuit-breaker if threshold reached."""
+    import time as _time
+    _tv_local.fail_count = getattr(_tv_local, "fail_count", 0) + 1
+    _tv_local.client = None
+    if _tv_local.fail_count >= _TV_MAX_FAILURES:
+        _tv_local.backoff_until = _time.monotonic() + _TV_BACKOFF_SECONDS
+        log.warning(
+            "[chart] tvdatafeed: %d consecutive failures — backing off for %ds",
+            _tv_local.fail_count,
+            _TV_BACKOFF_SECONDS,
+        )
+
+
+def _tv_record_success():
+    """Reset failure counter on a successful fetch."""
+    _tv_local.fail_count = 0
+    _tv_local.backoff_until = None
 
 
 def _provider_order(base_symbol: str) -> list[str]:
@@ -334,14 +380,90 @@ def _payload_from_closed_bars(
     except Exception:
         return None
 
+    prev_ohlc = None
+    if len(closed) >= 2 * aggregate_count:
+        prev_selected = closed[-2 * aggregate_count : -aggregate_count]
+        try:
+            p_o = float(prev_selected[0][1]["Open"])
+            p_h = max(float(item[1]["High"]) for item in prev_selected)
+            p_l = min(float(item[1]["Low"]) for item in prev_selected)
+            p_c = float(prev_selected[-1][1]["Close"])
+            prev_ohlc = {"open": p_o, "high": p_h, "low": p_l, "close": p_c}
+        except Exception:
+            pass
+
     start_dt = selected[0][0]
     end_dt = selected[-1][0] + timedelta(minutes=bar_minutes)
     return {
         "sentiment": _sentiment(o, c, h, l),
         "ohlc": {"open": o, "high": h, "low": l, "close": c},
+        "prev_ohlc": prev_ohlc,
         "bar_start_utc": start_dt.isoformat(),
         "bar_end_utc": end_dt.isoformat(),
     }
+
+
+def _aggregate_bars_list(bars: list[dict], bar_minutes: int, aggregate_count: int) -> list[dict]:
+    now_utc = datetime.now(timezone.utc)
+    closed = []
+    for bar in bars:
+        ts = bar.get("_ts")
+        if ts is None:
+            continue
+        try:
+            start_dt = datetime.fromtimestamp(float(ts), timezone.utc)
+        except Exception:
+            continue
+        end_dt = start_dt + timedelta(minutes=bar_minutes)
+        if end_dt <= now_utc:
+            closed.append((start_dt, bar))
+    
+    closed.sort(key=lambda item: item[0])
+    
+    agg_bars = []
+    n = len(closed)
+    for i in range(n, 0, -aggregate_count):
+        chunk = closed[i-aggregate_count:i]
+        if len(chunk) < aggregate_count:
+            continue
+        try:
+            o = float(chunk[0][1]["Open"])
+            h = max(float(item[1]["High"]) for item in chunk)
+            l = min(float(item[1]["Low"]) for item in chunk)
+            c = float(chunk[-1][1]["Close"])
+            agg_bars.append({
+                "Open": o,
+                "High": h,
+                "Low": l,
+                "Close": c,
+                "_ts": chunk[0][1]["_ts"]
+            })
+        except Exception:
+            continue
+    agg_bars.reverse()
+    return agg_bars
+
+
+def _calculate_atr_from_bars(bars: list[dict], period: int = 14) -> float | None:
+    if len(bars) < period + 1:
+        return None
+    tr = []
+    for i in range(1, len(bars)):
+        try:
+            h = float(bars[i]["High"])
+            l = float(bars[i]["Low"])
+            c_prev = float(bars[i-1]["Close"])
+            tr.append(max(h - l, abs(h - c_prev), abs(l - c_prev)))
+        except Exception:
+            continue
+    if len(tr) < period:
+        return None
+    # Wilder's smoothing
+    atr = sum(tr[:period]) / period
+    for i in range(period, len(tr)):
+        atr = (atr * (period - 1) + tr[i]) / period
+    return atr
+
 
 
 def _parse_dt_utc(value: str | None) -> datetime | None:
@@ -392,6 +514,11 @@ def _last_closed_window(tf: str) -> tuple[datetime, datetime] | None:
 
 def _aggregate_rows_to_payload(rows: list[dict], start_utc: datetime, end_utc: datetime) -> Optional[dict]:
     selected: list[dict] = []
+    duration = end_utc - start_utc
+    prev_start_utc = start_utc - duration
+    prev_end_utc = end_utc - duration
+    prev_selected: list[dict] = []
+
     for row in rows:
         try:
             st = datetime.fromtimestamp(float(row.get("st")), timezone.utc)
@@ -400,8 +527,12 @@ def _aggregate_rows_to_payload(rows: list[dict], start_utc: datetime, end_utc: d
             continue
         if st >= start_utc and et <= end_utc:
             selected.append(row)
+        elif st >= prev_start_utc and et <= prev_end_utc:
+            prev_selected.append(row)
 
     selected.sort(key=lambda r: float(r.get("st") or 0))
+    prev_selected.sort(key=lambda r: float(r.get("st") or 0))
+
     if not selected:
         return None
     try:
@@ -411,9 +542,22 @@ def _aggregate_rows_to_payload(rows: list[dict], start_utc: datetime, end_utc: d
         c = float(selected[-1]["c"])
     except Exception:
         return None
+
+    prev_ohlc = None
+    if prev_selected:
+        try:
+            po = float(prev_selected[0]["o"])
+            ph = max(float(r["h"]) for r in prev_selected)
+            pl = min(float(r["l"]) for r in prev_selected)
+            pc = float(prev_selected[-1]["c"])
+            prev_ohlc = {"open": po, "high": ph, "low": pl, "close": pc}
+        except Exception:
+            pass
+
     return {
         "sentiment": _sentiment(o, c, h, l),
         "ohlc": {"open": o, "high": h, "low": l, "close": c},
+        "prev_ohlc": prev_ohlc,
         "bar_start_utc": start_utc.isoformat(),
         "bar_end_utc": end_utc.isoformat(),
     }
@@ -540,9 +684,23 @@ def _fetch_tv(base_symbol: str, tf: str) -> Optional[dict]:
 
     exchange, tv_sym = tv_info
     try:
-        df = client.get_hist(symbol=tv_sym, exchange=exchange, interval=interval, n_bars=5)
+        df = client.get_hist(symbol=tv_sym, exchange=exchange, interval=interval, n_bars=30)
         if df is None or getattr(df, "empty", True):
+            _tv_record_failure()
             return None
+
+        # Build list of bars for ATR calculation
+        tv_bars = []
+        for idx, row in df.iterrows():
+            try:
+                tv_bars.append({
+                    "Open": float(row["open"]),
+                    "High": float(row["high"]),
+                    "Low": float(row["low"]),
+                    "Close": float(row["close"]),
+                })
+            except Exception:
+                continue
 
         bar = df.iloc[-1]
         bar_ts = None
@@ -552,11 +710,31 @@ def _fetch_tv(base_symbol: str, tf: str) -> Optional[dict]:
             pass
         payload = _bar_to_payload(bar, bar_start_ts=bar_ts, bar_end_ts=bar_ts, naive_tz=IST)
         if payload is None:
+            _tv_record_failure()
             return None
+
+        # Calculate ATR
+        atr = _calculate_atr_from_bars(tv_bars, period=14)
+        if atr is not None:
+            payload["atr_14"] = atr
+
+        # Extract prev_ohlc if available
+        if len(df) >= 2:
+            prev_bar = df.iloc[-2]
+            prev_ts = None
+            try:
+                prev_ts = df.index[-2]
+            except Exception:
+                pass
+            prev_payload = _bar_to_payload(prev_bar, bar_start_ts=prev_ts, bar_end_ts=prev_ts, naive_tz=IST)
+            if prev_payload:
+                payload["prev_ohlc"] = prev_payload["ohlc"]
+
+        _tv_record_success()
         return payload
     except Exception as exc:
         log.warning("[chart] tvdatafeed fetch error %s %s: %s", base_symbol, tf, exc)
-        _tv_local.client = None
+        _tv_record_failure()
         return None
 
 
@@ -635,8 +813,16 @@ def _fetch_yf(base_symbol: str, tf: str, reference_price: float | None = None) -
         if valid_bars:
             if tf == "1h":
                 payload = _payload_from_closed_bars(valid_bars, bar_minutes=60, aggregate_count=1)
+                agg_bars = _aggregate_bars_list(valid_bars, bar_minutes=60, aggregate_count=1)
+                atr = _calculate_atr_from_bars(agg_bars, period=14)
+                if payload and atr is not None:
+                    payload["atr_14"] = atr
             elif tf == "3h":
                 payload = _payload_from_closed_bars(valid_bars, bar_minutes=60, aggregate_count=3)
+                agg_bars = _aggregate_bars_list(valid_bars, bar_minutes=60, aggregate_count=3)
+                atr = _calculate_atr_from_bars(agg_bars, period=14)
+                if payload and atr is not None:
+                    payload["atr_14"] = atr
             else:
                 bar = valid_bars[-1]
                 payload = _bar_to_payload(
@@ -644,6 +830,15 @@ def _fetch_yf(base_symbol: str, tf: str, reference_price: float | None = None) -
                     bar_start_ts=bar.get("_ts_start", bar.get("_ts")),
                     bar_end_ts=bar.get("_ts_end", bar.get("_ts")),
                 )
+                if payload and len(valid_bars) >= 2:
+                    prev_bar = valid_bars[-2]
+                    prev_payload = _bar_to_payload(
+                        prev_bar,
+                        bar_start_ts=prev_bar.get("_ts_start", prev_bar.get("_ts")),
+                        bar_end_ts=prev_bar.get("_ts_end", prev_bar.get("_ts")),
+                    )
+                    if prev_payload:
+                        payload["prev_ohlc"] = prev_payload["ohlc"]
             if payload:
                 # MCX symbols from Yahoo (NG=F/CL=F/GC=F/SI=F) are in global units.
                 # Scale to local underlying so OHLC shown in Telegram/UI remains meaningful.
@@ -651,7 +846,10 @@ def _fetch_yf(base_symbol: str, tf: str, reference_price: float | None = None) -
                     try:
                         close_px = float((payload.get("ohlc") or {}).get("close") or 0.0)
                         if close_px > 0:
-                            payload = _apply_price_scale(payload, reference_price / close_px)
+                            scale = reference_price / close_px
+                            payload = _apply_price_scale(payload, scale)
+                            if "atr_14" in payload and payload["atr_14"] is not None:
+                                payload["atr_14"] = payload["atr_14"] * scale
                     except Exception:
                         pass
                 log.info("[chart] successfully fetched %s %s using pure-HTTP API", base_symbol, tf)
@@ -714,8 +912,16 @@ def _fetch_yf(base_symbol: str, tf: str, reference_price: float | None = None) -
                     continue
             if tf == "1h":
                 payload = _payload_from_closed_bars(bars, bar_minutes=60, aggregate_count=1)
+                agg_bars = _aggregate_bars_list(bars, bar_minutes=60, aggregate_count=1)
+                atr = _calculate_atr_from_bars(agg_bars, period=14)
+                if payload and atr is not None:
+                    payload["atr_14"] = atr
             else:
                 payload = _payload_from_closed_bars(bars, bar_minutes=60, aggregate_count=3)
+                agg_bars = _aggregate_bars_list(bars, bar_minutes=60, aggregate_count=3)
+                atr = _calculate_atr_from_bars(agg_bars, period=14)
+                if payload and atr is not None:
+                    payload["atr_14"] = atr
         else:
             bar = df.iloc[-1]
             bar_ts = None
@@ -724,11 +930,24 @@ def _fetch_yf(base_symbol: str, tf: str, reference_price: float | None = None) -
             except Exception:
                 pass
             payload = _bar_to_payload(bar, bar_start_ts=bar_ts, bar_end_ts=bar_ts)
+            if payload and len(df) >= 2:
+                prev_bar = df.iloc[-2]
+                prev_ts = None
+                try:
+                    prev_ts = df.index[-2]
+                except Exception:
+                    pass
+                prev_payload = _bar_to_payload(prev_bar, bar_start_ts=prev_ts, bar_end_ts=prev_ts)
+                if prev_payload:
+                    payload["prev_ohlc"] = prev_payload["ohlc"]
         if payload and base_symbol in _MCX_SYMBOLS and reference_price and reference_price > 0:
             try:
                 close_px = float((payload.get("ohlc") or {}).get("close") or 0.0)
                 if close_px > 0:
-                    payload = _apply_price_scale(payload, reference_price / close_px)
+                    scale = reference_price / close_px
+                    payload = _apply_price_scale(payload, scale)
+                    if "atr_14" in payload and payload["atr_14"] is not None:
+                        payload["atr_14"] = payload["atr_14"] * scale
             except Exception:
                 pass
         return payload

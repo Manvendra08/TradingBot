@@ -124,6 +124,85 @@ class TestPipelineIntegration:
             detail = json.loads(alert["detail_json"])
             assert isinstance(detail, dict)
 
+    def test_pipeline_continues_when_chart_fetch_crashes(self, sample_oc_nifty):
+        from src.models.schema import get_latest_snapshots_for_symbol
+        with patch("src.engine.pipeline.fetch_option_chain", return_value=sample_oc_nifty), \
+             patch("src.engine.pipeline.get_chart_fetcher") as mock_chart:
+            mock_chart.return_value.fetch.side_effect = Exception("Chart fetch crash")
+            from src.engine.pipeline import run_pipeline
+            run_pipeline(symbols=["NIFTY"])
+        rows = get_latest_snapshots_for_symbol("NIFTY", "2025-06-26")
+        assert len(rows) > 0
+
+    def test_pipeline_continues_when_process_symbol_crashes(self):
+        with patch("src.engine.pipeline._process_symbol", side_effect=Exception("Symbol process crash")):
+            from src.engine.pipeline import run_pipeline
+            run_pipeline(symbols=["NIFTY"])
+
+    def test_pipeline_continues_when_save_scan_summary_fails(self, sample_oc_nifty):
+        with patch("src.engine.pipeline.fetch_option_chain", return_value=sample_oc_nifty), \
+             patch("src.engine.pipeline.save_scan_summary", side_effect=Exception("Save summary failed")):
+            from src.engine.pipeline import run_pipeline
+            run_pipeline(symbols=["NIFTY"])
+
+    def test_pipeline_continues_when_paper_trading_fails(self, sample_oc_nifty):
+        with patch("src.engine.pipeline.fetch_option_chain", return_value=sample_oc_nifty), \
+             patch("src.engine.pipeline.run_paper_trading", side_effect=Exception("Paper trading failed")):
+            from src.engine.pipeline import run_pipeline
+            run_pipeline(symbols=["NIFTY"])
+
+    def test_pipeline_zero_alerts_send_scenarios(self, sample_oc_nifty):
+        import copy
+        oc = copy.deepcopy(sample_oc_nifty)
+        # Scenario 1: max_oi >= 1.0 (should_send = True)
+        with patch("src.engine.pipeline.fetch_option_chain", return_value=oc), \
+             patch("src.engine.pipeline.detect_anomalies") as mock_detect, \
+             patch("src.engine.pipeline.send_text") as mock_send:
+            mock_detect.return_value = ([], {"diagnostics": {"max_oi_delta_pct": 1.5}})
+            from src.engine.pipeline import run_pipeline
+            run_pipeline(symbols=["NIFTY"])
+            mock_send.assert_called_once()
+
+        # Scenario 2: duplicate alerts and should_send_zero_signal is False (should_send = False)
+        with patch("src.engine.pipeline.fetch_option_chain", return_value=oc), \
+             patch("src.engine.pipeline.detect_anomalies") as mock_detect, \
+             patch("src.engine.pipeline.is_duplicate", return_value=True), \
+             patch("src.engine.pipeline.should_send_zero_signal", return_value=False), \
+             patch("src.engine.pipeline.send_text") as mock_send:
+            mock_detect.return_value = ([{"alert_type": "OI_SPIKE"}], {"diagnostics": {"max_oi_delta_pct": 0.5}})
+            run_pipeline(symbols=["NIFTY"])
+            mock_send.assert_not_called()
+
+        # Scenario 3: duplicate alerts and should_send_zero_signal is True (should_send = True) -> covers line 138
+        with patch("src.engine.pipeline.fetch_option_chain", return_value=oc), \
+             patch("src.engine.pipeline.detect_anomalies") as mock_detect, \
+             patch("src.engine.pipeline.is_duplicate", return_value=True), \
+             patch("src.engine.pipeline.should_send_zero_signal", return_value=True), \
+             patch("src.engine.pipeline.send_text") as mock_send:
+            mock_detect.return_value = ([{"alert_type": "OI_SPIKE"}], {"diagnostics": {"max_oi_delta_pct": 0.5}})
+            run_pipeline(symbols=["NIFTY"])
+            mock_send.assert_called_once()
+
+        # Scenario 4: underlying price is None -> covers line 70-72
+        oc_none = copy.deepcopy(sample_oc_nifty)
+        oc_none["underlying_price"] = None
+        with patch("src.engine.pipeline.fetch_option_chain", return_value=oc_none), \
+             patch("src.engine.pipeline.send_text"):
+            run_pipeline(symbols=["NIFTY"])
+
+        # Scenario 5: sent_digest is True with new alerts -> covers line 165
+        with patch("src.engine.pipeline.fetch_option_chain", return_value=oc), \
+             patch("src.engine.pipeline.detect_anomalies") as mock_detect, \
+             patch("src.engine.pipeline.is_duplicate", return_value=False), \
+             patch("src.engine.pipeline.record_alert"), \
+             patch("src.engine.pipeline.send_text", return_value=True) as mock_send, \
+             patch("src.engine.pipeline.insert_alert", return_value=123) as mock_insert, \
+             patch("src.engine.pipeline.mark_telegram_sent") as mock_mark:
+            mock_detect.return_value = ([{"symbol": "NIFTY", "alert_type": "OI_SPIKE", "strike": 22000.0, "option_type": "CE", "severity": "HIGH", "detail_json": '{"pct_change": 40.0}'}], {"diagnostics": {"max_oi_delta_pct": 0.5}})
+            run_pipeline(symbols=["NIFTY"])
+            mock_mark.assert_called_once_with(123)
+
+
 
 class TestFetcherRouter:
     """Tests fetcher fallback chain logic."""
@@ -319,13 +398,51 @@ class TestSchedulerMarketHours:
 
     def test_start_scheduler(self):
         from src.scheduler.job_runner import start_scheduler
-        with patch("src.scheduler.job_runner.BlockingScheduler") as mock_sched:
-            start_scheduler()
-            mock_sched.return_value.add_job.assert_called_once()
-            mock_sched.return_value.start.assert_called_once()
+        with patch("src.scheduler.job_runner._guarded_run") as mock_run, \
+             patch("src.scheduler.job_runner._run_dhan_naturalgas_scrape") as mock_scrape, \
+             patch("time.sleep", side_effect=SystemExit) as mock_sleep:
+            try:
+                start_scheduler()
+            except SystemExit:
+                pass
+            mock_run.assert_called_once()
+            mock_scrape.assert_called_once()
 
     def test_start_scheduler_keyboard_interrupt(self):
         from src.scheduler.job_runner import start_scheduler
-        with patch("src.scheduler.job_runner.BlockingScheduler") as mock_sched:
-            mock_sched.return_value.start.side_effect = KeyboardInterrupt()
-            start_scheduler()  # Should not raise because it handles KeyboardInterrupt
+        with patch("src.scheduler.job_runner._guarded_run") as mock_run, \
+             patch("time.sleep", side_effect=KeyboardInterrupt) as mock_sleep:
+            start_scheduler()  # Handles KeyboardInterrupt without throwing
+            mock_run.assert_called_once()
+
+    def test_run_dhan_naturalgas_scrape_runner_missing(self):
+        from src.scheduler.job_runner import _run_dhan_naturalgas_scrape
+        with patch("src.scheduler.job_runner.SCRAPE_RUNNER") as mock_runner:
+            mock_runner.exists.return_value = False
+            _run_dhan_naturalgas_scrape()
+
+    def test_run_dhan_naturalgas_scrape_success(self):
+        from src.scheduler.job_runner import _run_dhan_naturalgas_scrape
+        with patch("src.scheduler.job_runner.SCRAPE_RUNNER") as mock_runner, \
+             patch("subprocess.run") as mock_run:
+            mock_runner.exists.return_value = True
+            mock_run.return_value.stdout = "Dhan scrape output"
+            _run_dhan_naturalgas_scrape()
+
+    def test_run_dhan_naturalgas_scrape_called_process_error(self):
+        from src.scheduler.job_runner import _run_dhan_naturalgas_scrape
+        import subprocess
+        with patch("src.scheduler.job_runner.SCRAPE_RUNNER") as mock_runner, \
+             patch("subprocess.run") as mock_run:
+            mock_runner.exists.return_value = True
+            mock_run.side_effect = subprocess.CalledProcessError(1, "cmd", stderr="Process failed")
+            _run_dhan_naturalgas_scrape()
+
+    def test_run_dhan_naturalgas_scrape_general_exception(self):
+        from src.scheduler.job_runner import _run_dhan_naturalgas_scrape
+        with patch("src.scheduler.job_runner.SCRAPE_RUNNER") as mock_runner, \
+             patch("subprocess.run") as mock_run:
+            mock_runner.exists.return_value = True
+            mock_run.side_effect = Exception("General error")
+            _run_dhan_naturalgas_scrape()
+

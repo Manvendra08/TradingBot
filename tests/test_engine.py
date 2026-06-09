@@ -245,8 +245,9 @@ class TestChartFetcher:
         cf._STATE.clear()
         fetcher = cf.ChartFetcher()
 
-        with patch("src.fetchers.chart_fetcher._tvdatafeed_available", return_value=False), \
-             patch("src.fetchers.chart_fetcher._yfinance_available", return_value=False):
+        with patch("src.fetchers.chart_fetcher._fetch_yf", return_value=None), \
+             patch("src.fetchers.chart_fetcher._fetch_dhan_builtup_ohlc", return_value=None), \
+             patch("src.fetchers.chart_fetcher._fetch_tv", return_value=None):
             out = fetcher.fetch("NIFTY")
 
         assert out == {}
@@ -260,31 +261,31 @@ class TestNatGasIntelligence:
             {
                 "severity": "HIGH",
                 "alert_type": "OI_SPIKE",
-                "option_type": "CE",
-                "strike": 290,
+                "option_type": "PE",
+                "strike": 9300,
                 "detail_json": json.dumps({"pct_change": 45.0}),
             },
             {
                 "severity": "HIGH",
                 "alert_type": "BUILDUP_CLASSIFY",
                 "option_type": "CE",
-                "strike": 290,
+                "strike": 9300,
                 "detail_json": json.dumps({"buildup_type": "Long Buildup"}),
             },
         ]
 
         chart = {
-            "NATURALGAS": {
+            "CRUDEOIL": {
                 "1h": {
                     "sentiment": "BULLISH",
-                    "ohlc": {"open": 294.0, "high": 296.0, "low": 293.0, "close": 295.0},
+                    "ohlc": {"open": 9260.0, "high": 9310.0, "low": 9250.0, "close": 9295.0},
                     "updated_at": "2026-05-19T00:00:00Z",
                     "seen_at": "2026-05-19T00:00:00Z",
                     "changed_at": "2026-05-19T00:00:00Z",
                 },
                 "3h": {
                     "sentiment": "BULLISH",
-                    "ohlc": {"open": 293.0, "high": 297.0, "low": 292.0, "close": 296.0},
+                    "ohlc": {"open": 9230.0, "high": 9340.0, "low": 9200.0, "close": 9295.0},
                     "updated_at": "2026-05-19T00:00:00Z",
                     "seen_at": "2026-05-19T00:00:00Z",
                     "changed_at": "2026-05-19T00:00:00Z",
@@ -293,23 +294,23 @@ class TestNatGasIntelligence:
         }
 
         ctx = {
-            "underlying": 295.0,
+            "underlying": 9280.0,
             "price_change_pct": 0.2,
             "total_ce_oi": 84900,
             "total_pe_oi": 107600,
             "ce_oi_change": 0,
             "pe_oi_change": 0,
             "pcr": 1.40,
-            "atm_strike": 290,
-            "support": 285,
-            "resistance": 300,
-            "max_pain": 290,
+            "atm_strike": 9300,
+            "support": 9200,
+            "resistance": 9400,
+            "max_pain": 9300,
             "chart_indicators": chart,
         }
 
-        msg = generate_intelligence("NATURALGAS", alerts, scan_context=ctx)
-        assert "OI Bias Bullish" in msg
-        assert "Buy 290 CE" in msg
+        msg = generate_intelligence("CRUDEOIL", alerts, scan_context=ctx)
+        assert "Long Buildup" in msg
+        assert "Buy FUT at current scan" in msg  # CRUDEOIL → FUT (MCX commodity, poor option liquidity)
 
     def test_paper_plan_does_not_use_far_resistance_as_entry_trigger(self):
         from src.engine.intelligence import generate_intelligence
@@ -320,6 +321,87 @@ class TestNatGasIntelligence:
                 "severity": "HIGH",
                 "alert_type": "OI_SPIKE",
                 "option_type": "CE",
+                "strike": 9300,
+                "detail_json": json.dumps({"pct_change": 45.0}),
+            },
+            {
+                "severity": "HIGH",
+                "alert_type": "BUILDUP_CLASSIFY",
+                "option_type": "CE",
+                "strike": 9300,
+                "detail_json": json.dumps({"buildup_type": "Long Buildup"}),
+            },
+            {
+                "severity": "HIGH",
+                "alert_type": "ATM_LEG_MOVE",
+                "option_type": "CE",
+                "strike": 9300,
+                "detail_json": json.dumps({"bias": "Bullish Flow"}),
+            },
+        ]
+        ctx = {
+            "symbol": "CRUDEOIL",
+            "underlying": 9280.0,
+            "price_change_pct": 0.1,
+            "total_ce_oi": 100000,
+            "total_pe_oi": 140000,
+            "ce_oi_change": 0,
+            "pe_oi_change": 1000,
+            "pcr": 1.4,
+            "atm_strike": 9300,
+            "support": 9200,
+            "resistance": 9500,
+            "max_pain": 9300,
+            "chart_indicators": {
+                "CRUDEOIL": {
+                    "1h": {"sentiment": "BULLISH", "ohlc": {"open": 9260.0, "high": 9310.0, "low": 9250.0, "close": 9295.0}},
+                    "3h": {"sentiment": "BULLISH", "ohlc": {"open": 9230.0, "high": 9340.0, "low": 9200.0, "close": 9295.0}},
+                }
+            },
+        }
+
+        plan = build_paper_trade_plan("OI Bias Bullish", 80, ctx)
+        msg = generate_intelligence("CRUDEOIL", alerts, scan_context=ctx)
+
+        # CRUDEOIL now routes to FUT (MCX commodity, poor option liquidity)
+        assert plan["option_type"] == "FUT"
+        assert plan["target_underlying"] == 9500
+        assert "Buy FUT at current scan" in msg
+        assert "close above 9500" not in msg
+
+    def test_paper_engine_uses_current_scan_premium_rows(self):
+        from src.engine.paper_trading import _trade_plan_from_verdict
+
+        ctx = {
+            "symbol": "CRUDEOIL",
+            "expiry": "2026-06-24",
+            "underlying": 9280.0,
+            "atm_strike": 9300,
+            "support": 9200,
+            "resistance": 9400,
+            "option_rows": [
+                {"strike": 9300.0, "option_type": "CE", "ltp": 120.5},
+                {"strike": 9300.0, "option_type": "PE", "ltp": 90.0},
+            ],
+        }
+
+        plan = _trade_plan_from_verdict("Long Buildup", 80, ctx)
+
+        # CRUDEOIL routes to FUT: entry_premium = underlying price, option_rows unused
+        assert plan["option_type"] == "FUT"
+        assert plan["entry_premium"] == 9280.0
+        assert plan["sl_premium"] == 9200.0
+        assert plan["target_premium"] == 9400.0
+
+    def test_naturalgas_futures_trade_plan_and_execution(self):
+        from src.engine.paper_trading import _trade_plan_from_verdict
+        from src.engine.intelligence import generate_intelligence
+
+        alerts = [
+            {
+                "severity": "HIGH",
+                "alert_type": "OI_SPIKE",
+                "option_type": "PE",
                 "strike": 280,
                 "detail_json": json.dumps({"pct_change": 45.0}),
             },
@@ -330,46 +412,7 @@ class TestNatGasIntelligence:
                 "strike": 280,
                 "detail_json": json.dumps({"buildup_type": "Long Buildup"}),
             },
-            {
-                "severity": "HIGH",
-                "alert_type": "ATM_LEG_MOVE",
-                "option_type": "CE",
-                "strike": 280,
-                "detail_json": json.dumps({"bias": "Bullish Flow"}),
-            },
         ]
-        ctx = {
-            "symbol": "NATURALGAS",
-            "underlying": 279.0,
-            "price_change_pct": 0.1,
-            "total_ce_oi": 100000,
-            "total_pe_oi": 140000,
-            "ce_oi_change": 0,
-            "pe_oi_change": 1000,
-            "pcr": 1.4,
-            "atm_strike": 280,
-            "support": 270,
-            "resistance": 320,
-            "max_pain": 290,
-            "chart_indicators": {
-                "NATURALGAS": {
-                    "1h": {"sentiment": "BULLISH", "ohlc": {"open": 276.0, "high": 280.0, "low": 275.0, "close": 279.0}},
-                    "3h": {"sentiment": "BULLISH", "ohlc": {"open": 274.0, "high": 280.0, "low": 273.0, "close": 279.0}},
-                }
-            },
-        }
-
-        plan = build_paper_trade_plan("OI Bias Bullish", 80, ctx)
-        msg = generate_intelligence("NATURALGAS", alerts, scan_context=ctx)
-
-        assert plan["strike"] == 280
-        assert plan["target_underlying"] == 290
-        assert "Buy 280 CE at current scan" in msg
-        assert "close above 320" not in msg
-        assert "Partial exit at ATM+1 strike" not in msg
-
-    def test_paper_engine_uses_current_scan_premium_rows(self):
-        from src.engine.paper_trading import _trade_plan_from_verdict
 
         ctx = {
             "symbol": "NATURALGAS",
@@ -378,17 +421,32 @@ class TestNatGasIntelligence:
             "atm_strike": 280,
             "support": 270,
             "resistance": 290,
-            "option_rows": [
-                {"strike": 280.0, "option_type": "CE", "ltp": 12.5},
-                {"strike": 280.0, "option_type": "PE", "ltp": 9.0},
-            ],
+            "price_change_pct": 0.1,
+            "total_ce_oi": 100000,
+            "total_pe_oi": 140000,
+            "ce_oi_change": 0,
+            "pe_oi_change": 1000,
+            "pcr": 1.4,
+            "chart_indicators": {
+                "NATURALGAS": {
+                    "1h": {"sentiment": "BULLISH", "ohlc": {"open": 276.0, "high": 280.0, "low": 275.0, "close": 279.0}},
+                    "3h": {"sentiment": "BULLISH", "ohlc": {"open": 274.0, "high": 280.0, "low": 273.0, "close": 279.0}},
+                }
+            },
         }
 
+        # 1. Verify that the build_paper_trade_plan sets option_type to FUT and matches underlying
         plan = _trade_plan_from_verdict("Long Buildup", 80, ctx)
+        assert plan["option_type"] == "FUT"
+        assert plan["entry_premium"] == 279.0
+        assert plan["sl_underlying"] == 270.0
+        assert plan["target_underlying"] == 290.0
 
-        assert plan["entry_premium"] == 12.5
-        assert plan["sl_premium"] == 8.75
-        assert plan["target_premium"] == 18.75
+        # 2. Verify that generate_intelligence text outputs Futures style trade message
+        msg = generate_intelligence("NATURALGAS", alerts, scan_context=ctx)
+        assert "Buy FUT at current scan" in msg
+        assert "SL spot 270" in msg
+        assert "Target spot 290" in msg
 
 
 class TestChartContextWiring:
@@ -445,6 +503,54 @@ class TestChartContextWiring:
         assert "Candles (1H / 3H)" in msg
         assert "1H" in msg and "3H" in msg
 
+    def test_digest_prints_paper_trade_status(self):
+        from src.alerts.digest import build_digest, build_enhanced_digest
+
+        alerts = [{
+            "fired_at": FETCHED_AT,
+            "symbol": "CRUDEOIL",
+            "alert_type": "OI_SPIKE",
+            "strike": 9300.0,
+            "option_type": "CE",
+            "expiry": "2026-06-16",
+            "detail_json": json.dumps({"pct_change": 28.0, "prev_oi": 100, "curr_oi": 128}),
+            "severity": "MEDIUM",
+            "telegram_sent": 0,
+        }]
+        scan_context = {
+            "underlying": 9280.0,
+            "atm_strike": 9300.0,
+            "pcr": 0.92,
+            "support": 9000.0,
+            "resistance": 9500.0,
+            "chart_indicators": {}
+        }
+        status = {
+            "action": "EXECUTED",
+            "setup_type": "CORE",
+            "trade": {
+                "option_type": "CE",
+                "strike": 9300.0,
+                "entry_premium": 150.0,
+                "sl_premium": 105.0,
+                "target_premium": 225.0,
+                "lots": 10
+            },
+            "reason": "Signal filters passed"
+        }
+
+        # 1. Test build_digest
+        _, msg = build_digest("CRUDEOIL", alerts, FETCHED_AT, scan_context=scan_context, paper_trade_status=status)
+        assert "PAPER TRADE STATUS" in msg
+        assert "EXECUTED" in msg
+        assert "Buy 9300 CE @ 150.00" in msg
+
+        # 2. Test build_enhanced_digest
+        _, msg_enhanced = build_enhanced_digest("CRUDEOIL", alerts, FETCHED_AT, scan_context=scan_context, paper_trade_status=status)
+        assert "PAPER TRADE STATUS" in msg_enhanced
+        assert "EXECUTED" in msg_enhanced
+        assert "Buy 9300 CE @ 150.00" in msg_enhanced
+
     def test_chart_confluence_can_drive_bias_when_oi_price_neutral(self):
         from src.engine.intelligence import generate_intelligence
 
@@ -452,14 +558,14 @@ class TestChartContextWiring:
             {
                 "severity": "HIGH",
                 "alert_type": "VOLUME_AGGRESSION",
-                "option_type": "CE",
+                "option_type": "PE",
                 "strike": 9300.0,
                 "detail_json": json.dumps({"ratio": 55}),
             },
             {
                 "severity": "MEDIUM",
                 "alert_type": "OI_SPIKE",
-                "option_type": "CE",
+                "option_type": "PE",
                 "strike": 9300.0,
                 "detail_json": json.dumps({"pct_change": 25}),
             },
@@ -485,3 +591,118 @@ class TestChartContextWiring:
 
         msg = generate_intelligence("CRUDEOIL", alerts, scan_context=ctx)
         assert "Verdict: OI Bias Bullish" in msg
+
+
+class TestTelegramDigestImprovements:
+    def test_get_symbol_offset(self):
+        from src.alerts.digest import _get_symbol_offset
+        assert _get_symbol_offset("NATURALGAS") == 5.0
+        assert _get_symbol_offset("CRUDEOIL") == 100.0
+        assert _get_symbol_offset("NIFTY") == 50.0
+        assert _get_symbol_offset("BANKNIFTY") == 100.0
+
+    def test_price_label_future_vs_spot(self):
+        from src.alerts.digest import _price_label
+        assert _price_label("NATURALGAS") == "Future"
+        assert _price_label("NIFTY") == "Spot"
+
+    def test_enhanced_digest_warning_on_conflict(self):
+        from src.alerts.digest import build_enhanced_digest
+        alerts = [{
+            "fired_at": "2026-05-28T23:54:02",
+            "symbol": "NATURALGAS",
+            "alert_type": "OI_SPIKE",
+            "strike": 300.0,
+            "option_type": "PE",
+            "expiry": "2026-06-25",
+            "detail_json": json.dumps({"pct_change": 55.0, "prev_oi": 100, "curr_oi": 155}),
+            "severity": "HIGH",
+            "telegram_sent": 0,
+        }]
+        scan_context = {
+            "underlying": 296.5,
+            "atm_strike": 295.0,
+            "pcr": 2.73,
+            "support": 290.0,
+            "resistance": 320.0,
+            "chart_indicators": {
+                "NATURALGAS": {
+                    "1h": {"sentiment": "BEARISH", "ohlc": {}},
+                    "3h": {"sentiment": "BULLISH", "ohlc": {}},
+                }
+            },
+        }
+        # Verdict: Put Writing (which is Bullish) + 1H BEARISH sentiment = Conflict warning should trigger!
+        intelligence_text = "*Verdict:* Put Writing\nConfidence: 90%"
+        _, msg = build_enhanced_digest(
+            "NATURALGAS", alerts, "2026-05-28T23:54:02", scan_context, intelligence_text
+        )
+        
+        # Verify warnings and labels
+        assert "Chart timeframe conflict (1H vs 3H) - size down" in msg
+        assert "Future `296.50`" in msg
+        assert "Sell 290.00 PE / 285.00 PE (premium at support)" in msg
+        assert "if future breaks 320.00 with volume" in msg
+        assert "Stop: future closes below 285.00" in msg
+        assert "Target: 320.00, then 325.00" in msg
+        assert "[High]" in msg  # Check titlecase severity tag
+
+    def test_min_oi_threshold_filtering(self):
+        from src.engine.anomaly_detector import detect_anomalies
+        # Create option chain where OI change is +100% but absolute OI is below MIN_OI_THRESHOLD (50)
+        oc = {
+            "symbol": "NATURALGAS",
+            "expiry": "2026-06-25",
+            "underlying_price": 296.5,
+            "fetched_at": "2026-05-28T23:54:02",
+            "strikes": [
+                {"strike": 300.0, "option_type": "CE", "oi": 30, "ltp": 5.0, "iv": 30.0},
+            ]
+        }
+        
+        # Mock database calls for previous snapshots returning lower OI (15) -> 100% increase
+        with patch("src.engine.anomaly_detector.get_prev_snapshots_bulk", return_value={
+            (300.0, "CE"): {"strike": 300.0, "option_type": "CE", "oi": 15, "ltp": 2.5, "iv": 30.0}
+        }), patch("src.engine.anomaly_detector.get_previous_underlying", return_value=None), \
+            patch("src.engine.anomaly_detector.get_latest_n_snapshots", return_value=[]):
+            alerts, _ = detect_anomalies(oc, "2026-05-28T23:54:02")
+            
+        # Verify that OI spike alert is suppressed because OI (30) is below MIN_OI_THRESHOLD (50)
+        oi_alerts = [a for a in alerts if a["alert_type"] in ("OI_SPIKE", "BUILDUP_CLASSIFY")]
+        assert len(oi_alerts) == 0
+
+    def test_digest_conflicting_signals(self):
+        from src.alerts.digest import build_enhanced_digest
+        alerts = [{
+            "fired_at": FETCHED_AT,
+            "symbol": "NATURALGAS",
+            "alert_type": "OI_SPIKE",
+            "strike": 300.0,
+            "option_type": "PE",
+            "expiry": "2026-06-25",
+            "detail_json": json.dumps({"pct_change": 55.0, "prev_oi": 100, "curr_oi": 155}),
+            "severity": "HIGH",
+            "telegram_sent": 0,
+        }]
+        scan_context = {
+            "underlying": 296.5,
+            "atm_strike": 295.0,
+            "pcr": 0.95,
+            "ce_oi_change": -2600.0,
+            "pe_oi_change": 7500.0,
+            "support": 290.0,
+            "resistance": 320.0,
+            "chart_indicators": {
+                "NATURALGAS": {
+                    "1h": {"sentiment": "BEARISH", "ohlc": {}},
+                    "3h": {"sentiment": "BULLISH", "ohlc": {}},
+                }
+            },
+        }
+        _digest_id, msg = build_enhanced_digest("NATURALGAS", alerts, FETCHED_AT, scan_context=scan_context)
+        
+        # Verify conflicting signals are mentioned instead of mixed/rangebound
+        assert "conflicting signals" in msg
+        assert "Conflicting signals - OI Flow is BULLISH but engine verdict is neutral" in msg
+
+

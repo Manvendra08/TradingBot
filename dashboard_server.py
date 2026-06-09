@@ -52,6 +52,50 @@ except ImportError:
 app = FastAPI(title="NSEBOT Dashboard API")
 log = logging.getLogger("nsebot.dashboard")
 
+# Graceful Disconnect Middleware to suppress noisy ASGI connection reset tracebacks
+try:
+    from starlette.exceptions import ClientDisconnect
+except ImportError:
+    class ClientDisconnect(Exception):
+        pass
+
+try:
+    import anyio
+    _DISCONNECT_ERRORS = (
+        ConnectionResetError,
+        OSError,
+        ClientDisconnect,
+        anyio.BrokenResourceError,
+        anyio.EndOfStream,
+    )
+except Exception:
+    _DISCONNECT_ERRORS = (ConnectionResetError, OSError, ClientDisconnect)
+
+
+class GracefulDisconnectMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_wrapper(message):
+            try:
+                await send(message)
+            except _DISCONNECT_ERRORS:
+                pass
+
+        try:
+            await self.app(scope, receive, send_wrapper)
+        except _DISCONNECT_ERRORS:
+            pass
+
+
+app.add_middleware(GracefulDisconnectMiddleware)
+
+
 try:
     from src.engine.intelligence import generate_intelligence
 except Exception:
@@ -440,7 +484,31 @@ def _fetch_scanx_heatmap(symbol: str) -> dict:
         return {"total": 0, "adv": 0, "dec": 0, "weighted_change": 0.0, "heatmap_direction": "MIXED", "top_moves": []}
 
 
-def _parse_intel_fields(raw: str) -> dict:
+def _parse_intel_fields(raw) -> dict:
+    # Fast-path: IntelligenceResult has all fields natively (Phase 3)
+    try:
+        from src.engine.intelligence import IntelligenceResult
+        if isinstance(raw, IntelligenceResult):
+            summary_lines = [
+                x for x in [
+                    f"Verdict: {raw.verdict_label}",
+                    f"Confidence: {raw.confidence}%",
+                    raw.action_plan,
+                    raw.risk_note,
+                    f"Trend: {raw.trend}" if raw.trend else "",
+                ] if x
+            ]
+            return {
+                "verdict":       raw.verdict_label,
+                "confidence":    raw.confidence,
+                "action":        raw.action_plan,
+                "warning":       raw.risk_note,
+                "trend":         raw.trend,
+                "summary_lines": summary_lines,
+            }
+    except ImportError:
+        pass
+    # Legacy: parse from Telegram text string
     text = str(raw or "")
     verdict = "UNKNOWN"
     confidence = 0
@@ -646,10 +714,7 @@ def get_intelligence_summary(symbol: str):
     underlying = _safe_float((up_rows[0] if up_rows else {}).get("price"), 0.0)
     prev_underlying = _safe_float((up_rows[1] if len(up_rows) > 1 else {}).get("price"), 0.0) or None
     ctx = _chain_context(rows, underlying, prev_underlying)
-    chart_payload = {}
-    # Avoid slow/credential-bound external chart fetch for MCX symbols here.
-    if sym not in _MCX_SYMBOLS:
-        chart_payload = _chart_payload(sym, underlying)
+    chart_payload = _chart_payload(sym, underlying)
     fallback_chart = _synthetic_chart_payload(sym)
     if "1h" not in chart_payload and "1h" in fallback_chart:
         chart_payload["1h"] = fallback_chart["1h"]

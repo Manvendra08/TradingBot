@@ -27,6 +27,7 @@ from config.settings import (
     STRADDLE_DELTA_PCT,
     ATM_LEG_MOVE_PCT,
     PCR_VELOCITY_WINDOW,
+    MIN_OI_THRESHOLD,
 )
 from src.models.schema import (
     get_prev_snapshots_bulk,
@@ -181,8 +182,8 @@ def _oi_wall(strikes_data: list[dict]) -> dict:
 def _key_levels(strikes_data: list[dict], underlying: float) -> dict:
     """
     Derive trader-usable levels:
-      - Support: max PE OI at/below underlying (fallback global PE max)
-      - Resistance: max CE OI at/above underlying (fallback global CE max)
+      - Support: global max PE OI strike (unless overlap/inversion falls back)
+      - Resistance: global max CE OI strike (unless overlap/inversion falls back)
       - Max pain: computed from full strike set
     """
     ce_rows = [r for r in strikes_data if r.get("option_type") == "CE" and (r.get("oi") or 0) > 0]
@@ -191,12 +192,19 @@ def _key_levels(strikes_data: list[dict], underlying: float) -> dict:
     resistance = None
 
     if pe_rows:
-        pe_below = [r for r in pe_rows if r.get("strike") is not None and r["strike"] <= underlying]
-        support = (max(pe_below, key=lambda r: r["oi"]) if pe_below else max(pe_rows, key=lambda r: r["oi"]))["strike"]
+        support = max(pe_rows, key=lambda r: r.get("oi", 0))["strike"]
     if ce_rows:
-        ce_above = [r for r in ce_rows if r.get("strike") is not None and r["strike"] >= underlying]
-        resistance = (max(ce_above, key=lambda r: r["oi"]) if ce_above else max(ce_rows, key=lambda r: r["oi"]))["strike"]
+        resistance = max(ce_rows, key=lambda r: r.get("oi", 0))["strike"]
 
+    # If they are inverted or overlap, fall back to the directional behavior (PE below spot, CE above spot)
+    if support is not None and resistance is not None and support >= resistance:
+        pe_below = [r for r in pe_rows if r.get("strike") is not None and r["strike"] <= underlying]
+        support = (max(pe_below, key=lambda r: r.get("oi", 0)) if pe_below else max(pe_rows, key=lambda r: r.get("oi", 0)))["strike"]
+        
+        ce_above = [r for r in ce_rows if r.get("strike") is not None and r["strike"] >= underlying]
+        resistance = (max(ce_above, key=lambda r: r.get("oi", 0)) if ce_above else max(ce_rows, key=lambda r: r.get("oi", 0)))["strike"]
+
+    # If they still overlap or are inverted, resolve to adjacent strikes around underlying spot
     if support is not None and resistance is not None and support >= resistance:
         all_strikes = sorted({r["strike"] for r in strikes_data if r.get("strike") is not None})
         lower = [s for s in all_strikes if s < underlying]
@@ -264,6 +272,8 @@ def _detect_oi_spike_unwind(filtered: list[dict], symbol: str, expiry: str,
             continue
         prev_oi = prev.get("oi") or 0
         curr_oi = row.get("oi") or 0
+        if prev_oi < MIN_OI_THRESHOLD or curr_oi < MIN_OI_THRESHOLD:
+            continue
         pct     = _pct_change(prev_oi, curr_oi)
         if pct is None or abs(pct) < oi_thresh:
             continue
@@ -295,6 +305,8 @@ def _detect_buildup(filtered: list[dict], symbol: str, expiry: str,
             continue
         prev_oi  = prev.get("oi") or 0
         curr_oi  = row.get("oi") or 0
+        if prev_oi < MIN_OI_THRESHOLD or curr_oi < MIN_OI_THRESHOLD:
+            continue
         prev_ltp = prev.get("ltp") or 0
         curr_ltp = row.get("ltp") or 0
         oi_pct  = _pct_change(prev_oi, curr_oi)
@@ -536,6 +548,8 @@ def _detect_otm_unusual(all_strikes: list[dict], symbol: str, expiry: str,
             continue
         prev_oi = prev.get("oi") or 0
         curr_oi = row.get("oi") or 0
+        if prev_oi < MIN_OI_THRESHOLD or curr_oi < MIN_OI_THRESHOLD:
+            continue
         pct = _pct_change(prev_oi, curr_oi)
         if pct is None or pct < OTM_OI_SPIKE_PCT:
             continue

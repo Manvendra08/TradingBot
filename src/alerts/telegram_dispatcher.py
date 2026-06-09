@@ -186,7 +186,9 @@ def _format_message(alert: dict) -> str:
     elif atype == "PRICE_SPIKE":
         curr_pr = safe_num(detail.get("curr_price"))
         pct_chg = safe_num(detail.get("pct_change"))
-        lines.append(f"Spot: `{curr_pr:.2f}` ({fmt_pct(pct_chg)}) {detail.get('direction', '')}")
+        is_commodity = str(alert.get("symbol", "")).upper().split()[0] in {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"}
+        label = "Future" if is_commodity else "Spot"
+        lines.append(f"{label}: `{curr_pr:.2f}` ({fmt_pct(pct_chg)}) {detail.get('direction', '')}")
     elif atype in ("PCR_EXTREME", "PCR_SHIFT"):
         pcr   = detail.get("pcr", "N/A")
         delta = safe_num(detail.get("pcr_delta"))

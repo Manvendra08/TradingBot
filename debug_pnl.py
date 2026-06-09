@@ -31,12 +31,21 @@ for r in rows:
     is_bearish = verd in BEARISH
 
     if ep > 0 and xp > 0:
-        if (ot == "CE" and is_bullish) or (ot == "PE" and is_bearish):
-            pnl_pts = xp - ep
-            direction = "LONG"
+        if ot in ("CE", "PE"):
+            if (ot == "CE" and is_bullish) or (ot == "PE" and is_bearish):
+                pnl_pts = xp - ep
+                direction = "LONG"
+            else:
+                pnl_pts = ep - xp
+                direction = "SHORT"
         else:
-            pnl_pts = ep - xp
-            direction = "SHORT"
+            # Futures
+            if is_bearish:
+                pnl_pts = ep - xp
+                direction = "SHORT"
+            else:
+                pnl_pts = xp - ep
+                direction = "LONG"
     else:
         pnl_pts = 0
         direction = "?"

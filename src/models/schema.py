@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     closed_at           TEXT,
     symbol              TEXT NOT NULL,
     verdict_label       TEXT,
+    side                TEXT DEFAULT 'BUY',
     option_type         TEXT NOT NULL,      -- CE | PE | FUT
     strike              REAL,
     entry_underlying    REAL NOT NULL,      -- spot/futures price at entry
@@ -103,11 +104,48 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     pnl_rupees          REAL DEFAULT 0,     -- P&L in ₹ (lot size adjusted)
     status              TEXT NOT NULL,      -- OPEN | CLOSED_TARGET | CLOSED_SL | CLOSED_MANUAL
     reason              TEXT,
-    digest_id           TEXT
+    digest_id           TEXT,
+    signal_key          TEXT,
+    pyramid_level       INTEGER DEFAULT 1,
+    max_favorable_r     REAL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_paper_symbol_status
     ON paper_trades (symbol, status, opened_at);
+
+CREATE TABLE IF NOT EXISTS scan_summaries (
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol                 TEXT NOT NULL,
+    expiry                 TEXT,
+    fetched_at             TEXT NOT NULL,
+    digest_id              TEXT,
+    underlying             REAL,
+    atm_strike             REAL,
+    total_ce_oi            INTEGER,
+    total_pe_oi            INTEGER,
+    ce_oi_change           INTEGER,
+    pe_oi_change           INTEGER,
+    pcr                    REAL,
+    max_pain               REAL,
+    support                REAL,
+    resistance             REAL,
+    verdict_label          TEXT,
+    confidence             INTEGER,
+    candle_1h              TEXT,
+    candle_3h              TEXT,
+    top_signal_type        TEXT,
+    top_signal_strike      REAL,
+    top_signal_option_type TEXT,
+    top_signal_severity    TEXT,
+    top_signal_oi_pct      REAL,
+    trend_bias             TEXT,
+    trend_strength         INTEGER,
+    market_regime          TEXT,
+    created_at             TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_scan_summaries_symbol_time
+    ON scan_summaries (symbol, fetched_at DESC);
 """
 
 
@@ -138,6 +176,19 @@ _MIGRATIONS = [
     "ALTER TABLE paper_trades ADD COLUMN target_premium REAL",
     "ALTER TABLE paper_trades ADD COLUMN lots INTEGER DEFAULT 1",
     "ALTER TABLE paper_trades ADD COLUMN pnl_rupees REAL DEFAULT 0",
+    # V2.2: trade decision metadata
+    "ALTER TABLE paper_trades ADD COLUMN trade_status TEXT DEFAULT 'TRIGGERED_CORE'",
+    "ALTER TABLE paper_trades ADD COLUMN setup_type TEXT",
+    "ALTER TABLE paper_trades ADD COLUMN decision_reason TEXT",
+    "ALTER TABLE paper_trades ADD COLUMN confidence_score INTEGER",
+    "ALTER TABLE paper_trades ADD COLUMN entry_quality_score INTEGER",
+    "ALTER TABLE paper_trades ADD COLUMN trend_alignment_score INTEGER",
+    "ALTER TABLE paper_trades ADD COLUMN regime_score INTEGER",
+    # Timeframe breakout enhancements
+    "ALTER TABLE paper_trades ADD COLUMN signal_key TEXT",
+    "ALTER TABLE paper_trades ADD COLUMN pyramid_level INTEGER DEFAULT 1",
+    "ALTER TABLE paper_trades ADD COLUMN max_favorable_r REAL DEFAULT 0",
+    "ALTER TABLE paper_trades ADD COLUMN side TEXT DEFAULT 'BUY'",
 ]
 
 
@@ -152,6 +203,10 @@ def init_db() -> None:
                 # Idempotent: column already exists is the only expected error.
                 if "duplicate column" not in str(e).lower():
                     raise
+        try:
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_trades_signal_key ON paper_trades (signal_key)")
+        except sqlite3.OperationalError:
+            pass
     log.info("DB initialised at %s", DB_PATH)
 
 
@@ -347,7 +402,7 @@ def delete_alerts(symbol: str | None = None) -> int:
 def get_open_paper_trade(symbol: str) -> dict | None:
     sql = """
         SELECT * FROM paper_trades
-        WHERE symbol=? AND status='OPEN'
+        WHERE symbol=? AND status='OPEN' AND (setup_type IS NULL OR setup_type != 'TIMEFRAME')
         ORDER BY opened_at DESC
         LIMIT 1
     """
@@ -356,20 +411,80 @@ def get_open_paper_trade(symbol: str) -> dict | None:
         return dict(row) if row else None
 
 
+def get_open_timeframe_trades(symbol: str) -> list[dict]:
+    sql = """
+        SELECT * FROM paper_trades
+        WHERE symbol=? AND status='OPEN' AND setup_type='TIMEFRAME'
+        ORDER BY opened_at DESC
+    """
+    with get_conn() as conn:
+        rows = conn.execute(sql, (symbol,)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_scan_summary_at_least_1h_old(symbol: str, current_fetched_at: str) -> dict | None:
+    from datetime import datetime, timedelta
+    try:
+        curr_dt = datetime.fromisoformat(current_fetched_at.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+    sql = """
+        SELECT total_ce_oi, total_pe_oi, fetched_at FROM scan_summaries
+        WHERE symbol=?
+        ORDER BY fetched_at DESC
+        LIMIT 50
+    """
+    with get_conn() as conn:
+        rows = conn.execute(sql, (symbol,)).fetchall()
+        for row in rows:
+            try:
+                row_dt = datetime.fromisoformat(row["fetched_at"].replace("Z", "+00:00"))
+                if curr_dt - row_dt >= timedelta(hours=1):
+                    return dict(row)
+            except Exception:
+                continue
+    return None
+
+
 def insert_paper_trade(trade: dict) -> int:
     sql = """
         INSERT INTO paper_trades
-            (opened_at, symbol, verdict_label, option_type, strike, entry_underlying,
+            (opened_at, symbol, verdict_label, side, option_type, strike, entry_underlying,
              entry_premium, sl_underlying, sl_premium, target_underlying, target_premium,
-             lots, status, reason, digest_id)
+             lots, status, reason, digest_id,
+             trade_status, setup_type, decision_reason,
+             confidence_score, entry_quality_score, trend_alignment_score, regime_score,
+             signal_key, pyramid_level, max_favorable_r)
         VALUES
-            (:opened_at, :symbol, :verdict_label, :option_type, :strike, :entry_underlying,
+            (:opened_at, :symbol, :verdict_label, :side, :option_type, :strike, :entry_underlying,
              :entry_premium, :sl_underlying, :sl_premium, :target_underlying, :target_premium,
-             :lots, :status, :reason, :digest_id)
+             :lots, :status, :reason, :digest_id,
+             :trade_status, :setup_type, :decision_reason,
+             :confidence_score, :entry_quality_score, :trend_alignment_score, :regime_score,
+             :signal_key, :pyramid_level, :max_favorable_r)
         RETURNING id
     """
+    row_data = {
+        "side":                  trade.get("side", "BUY"),
+        "trade_status":          trade.get("trade_status", "TRIGGERED_CORE"),
+        "setup_type":            trade.get("setup_type"),
+        "decision_reason":       trade.get("decision_reason"),
+        "confidence_score":      trade.get("confidence_score"),
+        "entry_quality_score":   trade.get("entry_quality_score"),
+        "trend_alignment_score": trade.get("trend_alignment_score"),
+        "regime_score":          trade.get("regime_score"),
+        "signal_key":            trade.get("signal_key"),
+        "pyramid_level":         trade.get("pyramid_level", 1),
+        "max_favorable_r":       trade.get("max_favorable_r", 0.0),
+        **{k: trade.get(k) for k in (
+            "opened_at", "symbol", "verdict_label", "option_type", "strike",
+            "entry_underlying", "entry_premium", "sl_underlying", "sl_premium",
+            "target_underlying", "target_premium", "lots", "status", "reason", "digest_id",
+        )},
+    }
     with get_conn() as conn:
-        row = conn.execute(sql, trade).fetchone()
+        row = conn.execute(sql, row_data).fetchone()
         return int(row["id"])
 
 
@@ -379,7 +494,7 @@ def close_paper_trade(trade_id: int, closed_at: str, exit_underlying: float, exi
 
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT symbol, option_type, verdict_label, entry_underlying, entry_premium, lots FROM paper_trades WHERE id=?",
+            "SELECT symbol, option_type, verdict_label, entry_underlying, entry_premium, lots, strike, side FROM paper_trades WHERE id=?",
             (trade_id,)
         ).fetchone()
         if not row:
@@ -391,23 +506,37 @@ def close_paper_trade(trade_id: int, closed_at: str, exit_underlying: float, exi
         entry_underlying = float(row["entry_underlying"] or 0.0)
         entry_premium = float(row["entry_premium"] or 0.0)
         lots = int(row["lots"] or 1)
+        side = row["side"] or "BUY"
 
         lot_size = LOT_SIZES.get(symbol.upper(), LOT_SIZES.get(symbol, 1))
 
-        # Engine always takes LONG positions (buys CE or buys PE).
-        # P&L = exit_premium - entry_premium for both CE and PE.
+        # P&L calculation: inverted for SELL option trades.
         if option_type in ("CE", "PE"):
             if entry_premium and entry_premium > 0 and exit_premium and exit_premium > 0:
-                pnl_points = exit_premium - entry_premium
-            else:
-                # Fallback: underlying move
-                if option_type == "CE":
-                    pnl_points = float(exit_underlying) - entry_underlying
+                if side == "SELL":
+                    pnl_points = entry_premium - exit_premium
                 else:
-                    pnl_points = entry_underlying - float(exit_underlying)
+                    pnl_points = exit_premium - entry_premium
+            elif entry_premium and entry_premium > 0:
+                # Fallback: Estimate exit premium using intrinsic value at exit if missing
+                strike = float(row["strike"] or 0.0)
+                if option_type == "CE":
+                    estimated_exit = max(0.0, float(exit_underlying) - strike)
+                else:
+                    estimated_exit = max(0.0, strike - float(exit_underlying))
+                if side == "SELL":
+                    pnl_points = entry_premium - estimated_exit
+                else:
+                    pnl_points = estimated_exit - entry_premium
+            else:
+                pnl_points = 0.0
         else:
             # Futures
-            pnl_points = float(exit_underlying) - entry_underlying
+            from src.engine.verdict_sets import is_bearish
+            if side == "SELL" or verdict_label == "SHORT" or is_bearish(verdict_label):
+                pnl_points = entry_underlying - float(exit_underlying)
+            else:
+                pnl_points = float(exit_underlying) - entry_underlying
 
         pnl_rupees = pnl_points * lot_size * lots
 
@@ -432,3 +561,14 @@ def list_paper_trades(symbol: str | None = None, limit: int = 300) -> list[dict]
     with get_conn() as conn:
         rows = conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
+
+def delete_expired_contracts() -> int:
+    """Delete expired contract OI data from DB."""
+    from datetime import datetime, timezone
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    with get_conn() as conn:
+        cur1 = conn.execute("DELETE FROM option_chain_snapshots WHERE expiry < ?", (today,))
+        cur2 = conn.execute("DELETE FROM scan_summaries WHERE expiry < ?", (today,))
+        log.info("[db] Deleted %d expired snapshots and %d expired scan summaries.", cur1.rowcount, cur2.rowcount)
+        return cur1.rowcount + cur2.rowcount
+

@@ -39,6 +39,10 @@ class NSEPublicFetcher(BaseFetcher):
                 log.debug("[nse_public] session warmed")
                 return
             except Exception as exc:
+                exc_str = str(exc).lower()
+                if "nameresolutionerror" in exc_str or "getaddrinfo failed" in exc_str or "failed to resolve" in exc_str:
+                    log.warning("[nse_public] session warm-up failed: Name resolution failed. Skipping retries.")
+                    break
                 if attempt == 2:
                     log.warning("[nse_public] session warm-up failed after %d attempts: %s", attempt+1, exc)
                 else:

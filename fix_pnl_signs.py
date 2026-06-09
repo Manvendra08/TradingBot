@@ -61,13 +61,22 @@ for r in rows:
             # long position: profit when premium rises
             if (ot == "CE" and is_bullish) or (ot == "PE" and is_bearish):
                 pnl_pts = xp - ep
+                is_long = True
             else:
                 # short position: profit when premium falls
                 pnl_pts = ep - xp
+                is_long = False
         else:
             pnl_pts = (xu - eu) if ot == "CE" else (eu - xu)
+            is_long = True
     else:
-        pnl_pts = xu - eu
+        # Futures
+        if is_bearish:
+            pnl_pts = eu - xu
+            is_long = False
+        else:
+            pnl_pts = xu - eu
+            is_long = True
 
     pnl_rs = round(pnl_pts * lot_size * lots, 2)
 
@@ -76,7 +85,7 @@ for r in rows:
             "UPDATE paper_trades SET pnl_points=?, pnl_rupees=? WHERE id=?",
             (round(pnl_pts, 4), pnl_rs, tid)
         )
-        direction = "LONG" if ((ot=="CE" and is_bullish) or (ot=="PE" and is_bearish)) else "SHORT"
+        direction = "LONG" if is_long else "SHORT"
         print(f"  #{tid:2d} {sym:12s} {ot} {direction:5s} [{verd}]  ep={ep:.2f} xp={xp:.2f}  OLD={old:>10,.0f}  NEW={pnl_rs:>10,.0f}")
         updated += 1
 

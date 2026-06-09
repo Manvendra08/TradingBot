@@ -54,8 +54,8 @@ class DhanFetcher(BaseFetcher):
     def _base_symbol(self, symbol: str) -> str:
         return str(symbol or "").upper().strip().split()[0]
 
-    def _nearest_expiry(self, expiries: list[str]) -> str | None:
-        """Return soonest expiry >= today; safely handle empty/malformed lists."""
+    def _nearest_expiry(self, expiries: list[str], symbol: str = "") -> str | None:
+        """Return soonest expiry >= today; strictly weekly for NIFTY, monthly for others."""
         if not expiries:
             return None
 
@@ -73,7 +73,23 @@ class DhanFetcher(BaseFetcher):
                 log.debug("[dhan] ignoring malformed expiry value: %r", e)
 
         if valid:
-            return sorted(valid)[0]
+            valid = sorted(valid)
+            base_sym = self._base_symbol(symbol)
+            if base_sym != "NIFTY":
+                from collections import defaultdict
+                month_groups = defaultdict(list)
+                for v in valid:
+                    d = datetime.strptime(v, "%Y-%m-%d").date()
+                    month_groups[(d.year, d.month)].append(d)
+                
+                monthly_expiries = []
+                for (y, m), d_list in month_groups.items():
+                    monthly_expiries.append(max(d_list))
+                
+                monthly_expiries.sort()
+                return monthly_expiries[0].strftime("%Y-%m-%d") if monthly_expiries else valid[0]
+            
+            return valid[0]
         if parsed_any:
             return sorted(parsed_any)[0]
 
@@ -151,7 +167,7 @@ class DhanFetcher(BaseFetcher):
             return self._fallback_commodity(symbol, "missing security_id")
 
         base_payload = {"UnderlyingScrip": security_id, "UnderlyingSeg": segment}
-        expiry = self._nearest_expiry(self._get_expiries(base_payload))
+        expiry = self._nearest_expiry(self._get_expiries(base_payload), symbol=symbol)
         if not expiry:
             log.warning("[dhan] no expiry returned for %s", symbol)
             return self._fallback_commodity(symbol, "no expiry returned")
@@ -181,7 +197,7 @@ class DhanFetcher(BaseFetcher):
                 return None
 
             underlying = _safe_float(data.get("last_price"), 0.0)
-            expiry = requested_expiry or self._nearest_expiry(data.get("expiry_list", []) or [])
+            expiry = requested_expiry or self._nearest_expiry(data.get("expiry_list", []) or [], symbol=symbol)
             strikes = self._normalise_current_oc(data.get("oc", {}))
             if not strikes:
                 strikes = self._normalise_legacy_oc(data.get("oc_data", {}), expiry)

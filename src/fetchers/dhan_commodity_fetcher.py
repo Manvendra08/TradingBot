@@ -235,7 +235,22 @@ def _pick_option_expj(page_props: dict) -> Optional[int]:
     expjs.sort()
     nowj = _now_julian_1980_seconds()
     future = [v for v in expjs if v >= nowj]
-    return future[0] if future else expjs[0]
+    if not future:
+        future = expjs
+        
+    from collections import defaultdict
+    month_groups = defaultdict(list)
+    for v in future:
+        d = _JULIAN_1980_BASE + timedelta(seconds=int(v))
+        d_ist = d.astimezone(IST).date()
+        month_groups[(d_ist.year, d_ist.month)].append(v)
+        
+    monthly_expjs = []
+    for (y, m), v_list in month_groups.items():
+        monthly_expjs.append(max(v_list))
+        
+    monthly_expjs.sort()
+    return monthly_expjs[0] if monthly_expjs else future[0]
 
 
 def _extract_underlying_from_page_props(page_props: dict, symbol: str) -> Optional[float]:
@@ -515,7 +530,6 @@ def _extract_strikes(html: str) -> list[dict]:
 
     return parsed
 
-
 class DhanCommodityFetcher(BaseFetcher):
     name = "dhan_commodity"
 
@@ -528,6 +542,13 @@ class DhanCommodityFetcher(BaseFetcher):
                 return resp.text
             except Exception as exc:
                 last_exc = exc
+                exc_str = str(exc).lower()
+                if "nameresolutionerror" in exc_str or "getaddrinfo failed" in exc_str or "failed to resolve" in exc_str:
+                    log.warning("[dhan_commodity] Name resolution failed — network offline. Skipping retries.")
+                    break
+                if "timeout" in type(exc).__name__.lower() or "timeout" in str(exc).lower() or "timed out" in str(exc).lower():
+                    log.warning("[dhan_commodity] HTML request timed out — skipping retries: %s", exc)
+                    break
                 wait = HTTP_BACKOFF_FACTOR ** attempt
                 log.warning("[dhan_commodity] attempt %d/%d failed: %s — retry in %ds",
                             attempt, HTTP_MAX_RETRIES, exc, wait)
@@ -550,6 +571,10 @@ class DhanCommodityFetcher(BaseFetcher):
                 return resp.json()
             except Exception as exc:
                 last_exc = exc
+                exc_str = str(exc).lower()
+                if "nameresolutionerror" in exc_str or "getaddrinfo failed" in exc_str or "failed to resolve" in exc_str:
+                    log.warning("[dhan_commodity] Name resolution failed — network offline. Skipping retries.")
+                    break
                 wait = HTTP_BACKOFF_FACTOR ** attempt
                 log.warning(
                     "[dhan_commodity] optchainactive attempt %d/%d failed: %s - retry in %ds",
@@ -585,6 +610,10 @@ class DhanCommodityFetcher(BaseFetcher):
                 return _extract_live_fut_from_builtup(resp.json())
             except Exception as exc:
                 last_exc = exc
+                exc_str = str(exc).lower()
+                if "nameresolutionerror" in exc_str or "getaddrinfo failed" in exc_str or "failed to resolve" in exc_str:
+                    log.warning("[dhan_commodity] Name resolution failed — network offline. Skipping retries.")
+                    break
                 wait = HTTP_BACKOFF_FACTOR ** attempt
                 log.warning(
                     "[dhan_commodity] builtup live-price attempt %d/%d failed: %s - retry in %ds",
@@ -606,48 +635,107 @@ class DhanCommodityFetcher(BaseFetcher):
 
         url = _BASE_URL.format(slug=slug)
         html = self._fetch_html(url)
-        if not html:
-            return None
+        
+        sid = None
+        expj = None
+        expiry = ""
+        underlying = None
+        strikes = []
 
-        page_text = _clean_text(_strip_tags(html))
-        next_data = _extract_next_data(html)
-        page_props = _extract_page_props(next_data)
+        if html:
+            page_text = _clean_text(_strip_tags(html))
+            next_data = _extract_next_data(html)
+            page_props = _extract_page_props(next_data)
 
-        sid = _pick_scrip_id(page_props)
-        expj = _pick_option_expj(page_props)
-        expiry = _julian_1980_to_expiry_iso(expj) if expj else ""
-        if not expiry:
-            expiry = _extract_expiry_iso(page_text)
+            sid = _pick_scrip_id(page_props)
+            expj = _pick_option_expj(page_props)
+            expiry = _julian_1980_to_expiry_iso(expj) if expj else ""
+            if not expiry:
+                expiry = _extract_expiry_iso(page_text)
 
-        underlying = _extract_underlying_from_page_props(page_props, base)
-        if underlying is None:
-            underlying = _extract_underlying(page_text, base)
+            underlying = _extract_underlying_from_page_props(page_props, base)
+            if underlying is None:
+                underlying = _extract_underlying(page_text, base)
 
-        strikes: list[dict] = []
-        if sid and expj:
-            raw = self._fetch_scanx_option_chain(sid, expj)
-            strikes = _normalise_scanx_oc(raw or {})
-            if strikes:
-                api_underlying = _parse_float(str(((raw or {}).get("data") or {}).get("sltp") or ""))
-                if api_underlying is not None:
-                    underlying = api_underlying
-                log.info(
-                    "[dhan_commodity] parsed %d strikes via optchainactive for %s (sid=%s expj=%s)",
-                    len({r["strike"] for r in strikes}),
-                    base,
-                    sid,
-                    expj,
-                )
-            else:
-                log.warning(
-                    "[dhan_commodity] optchainactive returned empty chain for %s (sid=%s expj=%s)",
-                    base,
-                    sid,
-                    expj,
-                )
+            if sid and expj:
+                raw = self._fetch_scanx_option_chain(sid, expj)
+                strikes = _normalise_scanx_oc(raw or {})
+                if strikes:
+                    api_underlying = _parse_float(str(((raw or {}).get("data") or {}).get("sltp") or ""))
+                    if api_underlying is not None:
+                        underlying = api_underlying
+                    log.info(
+                        "[dhan_commodity] parsed %d strikes via optchainactive for %s (sid=%s expj=%s)",
+                        len({r["strike"] for r in strikes}),
+                        base,
+                        sid,
+                        expj,
+                    )
+                else:
+                    log.warning(
+                        "[dhan_commodity] optchainactive returned empty chain for %s (sid=%s expj=%s)",
+                        base,
+                        sid,
+                        expj,
+                    )
 
+            if not strikes:
+                strikes = _extract_strikes(html)
+
+        # ── API-ONLY FALLBACK ──────────────────────────────────────────────────
         if not strikes:
-            strikes = _extract_strikes(html)
+            log.info("[dhan_commodity] HTML parsing failed or empty. Falling back to ScanX API scan for %s", base)
+            secid = DHAN_SECURITY_IDS.get(base)
+            if secid:
+                fl_payload = {"Data": {"Seg": 5, "Sid": int(secid), "Exp": 0}}
+                try:
+                    resp = self.session.post(
+                        _SCANX_OPTCHAIN_URL,
+                        headers=_JSON_HEADERS,
+                        json=fl_payload,
+                        timeout=10.0,
+                    )
+                    resp.raise_for_status()
+                    data = resp.json().get("data", {})
+                    fl = data.get("fl", {})
+                    expjs_list = sorted([int(k) for k in fl.keys()])
+                    
+                    if expjs_list:
+                        fut_exp = expjs_list[0]
+                        seconds_per_day = 86400
+                        for days_before in range(0, 8):
+                            test_exp = fut_exp - (days_before * seconds_per_day)
+                            payload_oc = {"Data": {"Seg": 5, "Sid": int(secid), "Exp": test_exp}}
+                            try:
+                                log.debug("[dhan_commodity] ScanX scan: trying Exp=%d", test_exp)
+                                resp_oc = self.session.post(
+                                    _SCANX_OPTCHAIN_URL,
+                                    headers=_JSON_HEADERS,
+                                    json=payload_oc,
+                                    timeout=15.0,
+                                )
+                                if resp_oc.status_code == 200:
+                                    raw_oc = resp_oc.json()
+                                    candidate_strikes = _normalise_scanx_oc(raw_oc)
+                                    if candidate_strikes:
+                                        strikes = candidate_strikes
+                                        expj = test_exp
+                                        expiry = _julian_1980_to_expiry_iso(expj)
+                                        api_underlying = _parse_float(str((raw_oc.get("data") or {}).get("sltp") or ""))
+                                        if api_underlying is not None:
+                                            underlying = api_underlying
+                                        log.info(
+                                            "[dhan_commodity] ScanX API scan success: parsed %d strikes for %s at Exp=%d (offset=%d days)",
+                                            len({r["strike"] for r in strikes}),
+                                            base,
+                                            expj,
+                                            days_before,
+                                        )
+                                        break
+                            except Exception as exc:
+                                log.debug("[dhan_commodity] ScanX scan Exp=%d timed out or failed: %s", test_exp, exc)
+                except Exception as exc:
+                    log.error("[dhan_commodity] API scan fallback failed: %s", exc)
 
         if not strikes:
             log.warning("[dhan_commodity] no strikes parsed for %s", base)

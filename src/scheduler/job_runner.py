@@ -68,12 +68,17 @@ def _run_dhan_naturalgas_scrape():
 
 
 def start_scheduler():
+    from src.models.schema import delete_expired_contracts
+    
     log.info(
         "Scheduler started — default interval: %d min | runtime interval: %d min | symbols: %s",
         FETCH_INTERVAL_MINUTES,
         get_scan_frequency_minutes(),
         WATCH_SYMBOLS,
     )
+    # Run a cleanup of expired data on startup
+    delete_expired_contracts()
+    
     try:
         while True:
             interval = get_scan_frequency_minutes()

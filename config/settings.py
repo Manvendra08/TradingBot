@@ -85,6 +85,9 @@ IV_CRUSH_THRESHOLD        = -5.0    # IV drop of this magnitude = IV crush
 STRADDLE_DELTA_PCT        = 10.0    # straddle premium Δ % to fire
 ATM_LEG_MOVE_PCT          = 8.0     # per-leg ATM LTP Δ% to fire
 PCR_VELOCITY_WINDOW       = 3       # scans for PCR rate-of-change calc
+MIN_OI_THRESHOLD          = 50      # min absolute current/previous OI to flag spikes/buildup
+
+
 
 # ── Severity thresholds (multipliers of base threshold) ───────────────────
 SEVERITY_HIGH_MULT        = 2.5     # e.g. OI Δ ≥ 100% = HIGH
@@ -110,13 +113,14 @@ DHAN_BASE_URL     = "https://api.dhan.co/v2"
 
 TV_USERNAME = _optional_env("TV_USERNAME")   # TradingView login (required for MCX data)
 TV_PASSWORD = _optional_env("TV_PASSWORD")   # without these, MCX charts return None
+TV_SESSIONID = _optional_env("TV_SESSIONID")  # Optional TradingView sessionid cookie (bypasses CAPTCHA)
 
 DHAN_SECURITY_IDS = {
     "NIFTY": 13,
     "BANKNIFTY": 25,
     "FINNIFTY": 27,
     "MIDCPNIFTY": 442,
-    "NATURALGAS": 488505,  # NATURALGAS MAY FUT, Dhan master 2026-05-19
+    "NATURALGAS": 504265,  # NATURALGAS JUN FUT, Dhan master 2026-05-28
     "CRUDEOIL": 499095,    # CRUDEOIL JUN FUT
     "GOLD": 459277,        # GOLD JUN FUT
     "SILVER": 464150,      # SILVER JUL FUT
@@ -183,3 +187,49 @@ def get_symbol_thresholds(symbol: str) -> dict:
     # Normalize: strip expiry/month suffix e.g. 'NATURALGAS MAY FUT' -> 'NATURALGAS'
     base = symbol.upper().split()[0]
     return SYMBOL_THRESHOLD_OVERRIDES.get(base, {})
+
+
+# ── Trading System V2.2 ────────────────────────────────────────────────────
+
+# Research mode: True = EXPERIMENTAL trades allowed; False = CORE only
+PAPER_RESEARCH_MODE = True
+
+# Trade decision thresholds — CORE (high-quality setups)
+MIN_CONFIDENCE_CORE           = 70
+MIN_ENTRY_QUALITY_CORE        = 60
+MIN_TREND_ALIGNMENT_CORE      = 70
+MIN_REGIME_SCORE_CORE         = 60
+
+# Trade decision thresholds — EXPERIMENTAL (research / marginal setups)
+MIN_CONFIDENCE_EXPERIMENTAL   = 50
+MIN_ENTRY_QUALITY_EXPERIMENTAL = 40
+
+# Reversal trade: higher confidence bar
+REVERSAL_MIN_CONFIDENCE       = 75
+
+# Risk engine — applies to paper trading too (overtrading distorts results)
+MAX_OPEN_TRADES_PER_SYMBOL    = 1    # conservative start; raise after validating
+MAX_OPEN_TRADES_TOTAL         = 4    # across all symbols
+MAX_TRADES_PER_SYMBOL_PER_DAY = 2    # configurable
+MAX_DAILY_LOSS_RUPEES         = 200000
+LOSS_COOLDOWN_MINUTES         = 30
+
+# ── Trend-Based Trading Logic (Hybrid) ────────────────────────────────────
+# Mode: "conservative" | "balanced" | "aggressive" | "hybrid"
+TREND_FILTER_MODE             = "hybrid"
+
+# Minimum scans needed before trend-based trades allowed
+TREND_MIN_SCANS               = 3
+
+# Trend persistence: fraction of last N scans that must agree (0.0-1.0)
+TREND_CONSISTENCY_THRESHOLD   = 0.6   # 60% of last 5 scans must agree
+
+# Momentum scoring: 0-100 score threshold to trigger trade
+MOMENTUM_SCORE_THRESHOLD      = 75
+
+# Reversal: higher confidence bar for counter-trend trades
+REVERSAL_MIN_CONFIDENCE       = 75
+
+# Timeframe Strategy Settings
+TIMEFRAME_OI_MIN_DIFF_PCT     = 0.005  # 0.5% of base side's previous OI
+

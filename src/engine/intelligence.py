@@ -1,19 +1,67 @@
 """
-Bot Intelligence Engine v3.1
+Bot Intelligence Engine v4.0
 Combines scan context (OI totals, price movement, PCR, max pain, OI walls)
 with current alerts to produce trade-actionable intelligence.
+
+Phase 3 refactor: generate_intelligence() now returns an IntelligenceResult
+dataclass natively. generate_intelligence_structured() reads fields directly
+from the dataclass — zero regex parsing anywhere.
 
 Output: Telegram-formatted markdown block appended to digest.
 """
 import json
 import logging
 import re
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from src.engine.paper_plan import build_paper_trade_plan, format_paper_plan
+from src.engine.verdict_sets import is_bullish, is_bearish
 from src.models.schema import get_alert_history
 from src.utils.formatting import safe_num, fmt_oi
 
 log = logging.getLogger(__name__)
+
+
+# ── Structured result ──────────────────────────────────────────────────────
+
+@dataclass
+class IntelligenceResult:
+    """
+    Structured output from generate_intelligence().
+    All downstream consumers (paper_trading, scan_summary, pipeline)
+    read fields directly — no regex parsing needed.
+    """
+    symbol: str
+    verdict_label: str                    # e.g. "Long Buildup"
+    verdict_emoji: str                    # e.g. "🟢"
+    verdict_desc: str                     # e.g. "Bullish — fresh longs"
+    bias: str                             # "BULLISH" | "BEARISH" | "NEUTRAL"
+    confidence: int                       # 0-100
+    chart_conflict: bool                  # 1H vs 3H disagree
+    trend: str                            # broader trend label
+    bull_forces: list[tuple[int, str]] = field(default_factory=list)
+    bear_forces: list[tuple[int, str]] = field(default_factory=list)
+    action_plan: str = ""
+    risk_note: str = ""
+    telegram_text: str = ""               # full Telegram-formatted message
+    expiry: str = ""
+    days_to_expiry: int = -1
+
+
+    # Convenience: dict-like access for backward-compat with callers that do intel["key"]
+    def __getitem__(self, key: str):
+        return getattr(self, key)
+
+    def get(self, key: str, default=None):
+        return getattr(self, key, default)
+
+    def __str__(self) -> str:
+        """Backward-compat: str(intel) returns the Telegram text."""
+        return self.telegram_text
+
+    def __contains__(self, item: str) -> bool:
+        """Backward-compat: 'text' in intel checks the Telegram text."""
+        return item in self.telegram_text
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -83,16 +131,86 @@ def _price_oi_verdict(price_pct: float | None, net_oi_change: int,
 
     # ── PRIMARY: Directional price + OI ────────────────────────────────────
     if price_up:
+        # Check for contradictory Bearish options flow even though price is up
+        if ce_oi_change > 0:
+            is_contradictory = False
+            if pe_oi_change > 0 and ce_oi_change > pe_oi_change * 1.5:
+                is_contradictory = True
+            elif pe_oi_change <= 0:
+                has_ce_spike = any(
+                    a.get("severity") == "HIGH"
+                    and a.get("alert_type") in ("OI_SPIKE", "BUILDUP_CLASSIFY", "OTM_UNUSUAL")
+                    and a.get("option_type") == "CE"
+                    for a in alerts
+                )
+                if (pcr is not None and pcr <= 0.85) or has_ce_spike:
+                    is_contradictory = True
+            if is_contradictory:
+                return "Call Writing", "🔴", "Bearish — resistance building / call writing dominant despite price tick"
+
         if pe_oi_change > 0 and (ce_oi_change <= 0 or abs_pe > abs_ce * 2):
             return "Long Buildup", "🟢", "Bullish — fresh longs / heavy put writing"
         if ce_oi_change < 0 and (pe_oi_change >= 0 or abs_ce > abs_pe * 2):
             return "Short Covering", "🟡", "Weak Bullish — shorts exiting"
+        if ce_oi_change > 0 and pe_oi_change <= 0:
+            # Symmetrically, only treat as Long Buildup if PCR isn't highly bearish
+            if pcr is not None and pcr <= 0.85:
+                pass
+            else:
+                return "Long Buildup", "🟢", "Bullish — fresh longs / call buying"
+        
+        # Only return the default directional verdict if the price move is substantial (>0.15%)
+        # or if the options flow is completely flat/minor. Otherwise, fall through to check other indicators.
+        if p_pct > 0.15 or (ce_oi_change == 0 and pe_oi_change == 0):
+            return "Long Buildup", "🟢", "Bullish — upward price trend dominant"
 
     if price_dn:
+        # Check for contradictory Bullish options flow even though price is down
+        if pe_oi_change > 0:
+            is_contradictory = False
+            if ce_oi_change > 0 and pe_oi_change > ce_oi_change * 1.5:
+                is_contradictory = True
+            elif ce_oi_change <= 0:
+                has_pe_spike = any(
+                    a.get("severity") == "HIGH"
+                    and a.get("alert_type") in ("OI_SPIKE", "BUILDUP_CLASSIFY", "OTM_UNUSUAL")
+                    and a.get("option_type") == "PE"
+                    for a in alerts
+                )
+                if (pcr is not None and pcr >= 1.25) or has_pe_spike:
+                    is_contradictory = True
+            if is_contradictory:
+                return "Put Writing", "🟢", "Bullish — support building / put writing dominant despite price dip"
+
         if ce_oi_change > 0 and (pe_oi_change <= 0 or abs_ce > abs_pe * 2):
             return "Short Buildup", "🔴", "Bearish — fresh shorts / heavy call writing"
         if pe_oi_change < 0 and (ce_oi_change >= 0 or abs_pe > abs_ce * 2):
             return "Long Unwinding", "🟠", "Weak Bearish — longs exiting"
+        if pe_oi_change > 0 and ce_oi_change <= 0:
+            if pcr is not None and pcr >= 1.25:
+                pass
+            else:
+                return "Short Buildup", "🔴", "Bearish — fresh shorts / put buying"
+        # Both building but PE heavily dominates: price dip is noise / short-term pullback.
+        # Symmetric to price_up line 131 (abs_pe > abs_ce * 2 → Long Buildup).
+        if pe_oi_change > 0 and ce_oi_change > 0 and abs_pe > abs_ce * 3:
+            return "Put Writing", "🟢", "Cautious Bullish — PE-heavy buildup despite price dip"
+        # PCR extreme override: check even when price is slightly down.
+        # Prevents a tiny -0.05% dip from masking a PCR 2.0+ or 0.5- regime.
+        if pcr is not None:
+            high_ce_spikes_dn = sum(
+                1 for a in alerts
+                if a.get("severity") == "HIGH"
+                and a.get("alert_type") in ("OI_SPIKE", "BUILDUP_CLASSIFY", "OTM_UNUSUAL")
+                and a.get("option_type") == "CE"
+            )
+            if pcr >= 1.5 and high_ce_spikes_dn >= 1:
+                return "OI Bias Bullish", "🟡", "Cautious Bullish — PCR very high, CE accumulating despite dip"
+        
+        # Only return the default directional verdict if the price move is substantial (<-0.15%)
+        # or if the options flow is completely flat/minor. Otherwise, fall through to check other indicators.
+        if p_pct < -0.15 or (ce_oi_change == 0 and pe_oi_change == 0):
+            return "Short Buildup", "🔴", "Bearish — downward price trend dominant"
 
     # ── SECONDARY: Flat price — check OI dominance (relaxed ratio) ─────────
     if max_chg > 0:
@@ -123,19 +241,87 @@ def _price_oi_verdict(price_pct: float | None, net_oi_change: int,
         # Bearish override: low PCR + PE buildup signals
         if pcr <= 0.80 and high_pe_spikes >= 1:
             return "OI Bias Bearish", "🟠", "Cautious Bearish — PCR weak, PE OI accumulating"
-        # Pure PCR signal (no conflicting OI)
-        if pcr >= 1.5:
+        # Pure PCR signal — but ONLY when the relevant side is actually BUILDING.
+        # High PCR while PE is unwinding is NOT put writing; it is stale OI + exit.
+        if pcr >= 1.5 and pe_oi_change > 0:
             return "Put Writing", "🟢", "Bullish — heavy put writing, strong support"
-        if pcr <= 0.60:
+        if pcr <= 0.60 and ce_oi_change > 0:
             return "Call Writing", "🔴", "Bearish — heavy call writing, strong resistance"
+
+    # Mass two-sided unwinding = position squaring / expiry, NOT a setup.
+    if ce_oi_change < 0 and pe_oi_change < 0:
+        return "Sideways", "⚪", "Neutral — both sides unwinding (squaring/expiry)"
 
     return "Sideways", "⚪", "Neutral — mixed signals or rangebound"
 
 
 # ── Confidence Scorer ─────────────────────────────────────────────────────
 
+# ── Alert Direction Classifier ─────────────────────────────────────────────
+
+def _get_alert_direction(a: dict) -> str:
+    """Classifies an alert as BULLISH, BEARISH, or NEUTRAL."""
+    atype = a.get("alert_type", "")
+    ot = a.get("option_type", "")
+    
+    detail = {}
+    try:
+        detail_raw = a.get("detail_json") or "{}"
+        detail = json.loads(detail_raw) if isinstance(detail_raw, str) else (detail_raw or {})
+    except Exception:
+        pass
+
+    if atype == "BUILDUP_CLASSIFY":
+        bt = detail.get("buildup_type", "")
+        if "Long Buildup" in bt or "Short Covering" in bt:
+            return "BULLISH"
+        if "Short Buildup" in bt or "Long Unwinding" in bt:
+            return "BEARISH"
+
+    if atype == "OI_SPIKE":
+        if ot == "PE": return "BULLISH"
+        if ot == "CE": return "BEARISH"
+
+    if atype == "OI_UNWIND":
+        if ot == "CE": return "BULLISH"
+        if ot == "PE": return "BEARISH"
+
+    if atype == "OTM_UNUSUAL":
+        if ot == "PE": return "BULLISH"
+        if ot == "CE": return "BEARISH"
+
+    if atype == "ATM_LEG_MOVE":
+        bias = str(detail.get("bias") or "")
+        if "Bullish" in bias: return "BULLISH"
+        if "Bearish" in bias: return "BEARISH"
+
+    if atype == "VOLUME_AGGRESSION":
+        if ot == "PE": return "BULLISH"
+        if ot == "CE": return "BEARISH"
+
+    if atype == "PRICE_SPIKE":
+        direction = str(detail.get("direction") or "").upper()
+        if direction == "UP": return "BULLISH"
+        if direction == "DOWN": return "BEARISH"
+
+    if atype == "PCR_VELOCITY":
+        direction = str(detail.get("direction") or "").lower()
+        if direction == "rising": return "BULLISH"
+        if direction == "falling": return "BEARISH"
+
+    if atype == "PCR_SHIFT":
+        pcr_delta = float(detail.get("pcr_delta") or 0)
+        if pcr_delta > 0: return "BULLISH"
+        if pcr_delta < 0: return "BEARISH"
+
+    return "NEUTRAL"
+
+
+# ── Confidence Scorer ─────────────────────────────────────────────────────
+
 def _compute_confidence(scan_ctx: dict, alerts: list[dict],
-                        parsed_chart: dict | None = None) -> tuple[int, bool]:
+                        parsed_chart: dict | None = None,
+                        verdict_label: str | None = None) -> tuple[int, bool]:
     """
     Score 0–100 based on signal confluence.
     Base 10, +15 for HIGH severity, +10 for PCR confluence, +10 for levels.
@@ -147,13 +333,38 @@ def _compute_confidence(scan_ctx: dict, alerts: list[dict],
     pe_chg = scan_ctx.get("pe_oi_change", 0)
     pcr = _safe(scan_ctx.get("pcr"))
 
-    # Alert severity weighting (Aggressive)
+    # Determine verdict bias if label provided
+    verdict_bias = "NEUTRAL"
+    if verdict_label:
+        if is_bullish(verdict_label):
+            verdict_bias = "BULLISH"
+        elif is_bearish(verdict_label):
+            verdict_bias = "BEARISH"
+
+    # Alert severity weighting (Aggressive).
+    # Unwinding alerts are EXITS, not fresh conviction — weight them at ~40%.
     for a in alerts:
         sev = a.get("severity", "LOW")
-        if sev == "HIGH":
-            score += 20
-        elif sev == "MEDIUM":
-            score += 10
+        is_unwind = a.get("alert_type") == "OI_UNWIND" or (
+            a.get("alert_type") == "BUILDUP_CLASSIFY"
+            and "Unwinding" in (a.get("detail_json") or "")
+        )
+        
+        weight = 8 if is_unwind else 20
+        if sev == "MEDIUM":
+            weight = 4 if is_unwind else 10
+        elif sev == "LOW":
+            weight = 0
+
+        if weight > 0:
+            alert_dir = _get_alert_direction(a)
+            if verdict_bias != "NEUTRAL" and alert_dir != "NEUTRAL":
+                if alert_dir == verdict_bias:
+                    score += weight
+                else:
+                    score -= weight  # subtract points when alerts contradict
+            else:
+                score += weight
 
     # PCR confirmation for directional momentum
     if pcr and pcr < 0.75 and price_pct and price_pct > 0:
@@ -215,13 +426,27 @@ def _compute_confidence(scan_ctx: dict, alerts: list[dict],
         if is_flat_price and no_dominant_oi:
             score = min(score, 65)  # Flat price + balanced OI → cap confidence
 
-    return min(score, 98), chart_conflict
+    # Squaring guard: if most alerts are unwinds AND both sides shrinking,
+    # this is not a high-conviction directional scan. Cap hard.
+    if alerts:
+        unwinds = sum(
+            1 for a in alerts
+            if a.get("alert_type") == "OI_UNWIND"
+            or (a.get("alert_type") == "BUILDUP_CLASSIFY"
+                and "Unwinding" in (a.get("detail_json") or ""))
+        )
+        unwind_ratio = unwinds / len(alerts)
+        both_shrinking = ce_chg < 0 and pe_chg < 0
+        if unwind_ratio >= 0.7 and both_shrinking:
+            score = min(score, 45)
+
+    return min(max(score, 0), 98), chart_conflict
 
 
 # ── Trade Idea Generator ──────────────────────────────────────────────────
 
 def _generate_trade_idea(verdict_label: str, scan_ctx: dict,
-                         alerts: list[dict]) -> str:
+                         alerts: list[dict], parsed_chart: dict | None = None) -> str:
     """
     Produce a specific, actionable trade suggestion.
     Always advisory — never commanding.
@@ -238,7 +463,27 @@ def _generate_trade_idea(verdict_label: str, scan_ctx: dict,
     has_iv_spike = any(a.get("alert_type") == "IV_SPIKE" for a in alerts)
     has_iv_crush = any(a.get("alert_type") == "IV_CRUSH" for a in alerts)
 
+    tf_1h = None
+    tf_3h = None
+    chart_conflict = False
+    if parsed_chart:
+        tf_1h = parsed_chart.get("1h", {}).get("sentiment")
+        tf_3h = parsed_chart.get("3h", {}).get("sentiment")
+        if tf_1h and tf_3h and tf_1h != tf_3h and "NEUTRAL" not in (tf_1h, tf_3h):
+            chart_conflict = True
+
     idea_parts = []
+
+    # If there is a timeframe conflict, warn immediately in the trade plan
+    if chart_conflict:
+        idea_parts.append("⚠️ *Timeframe conflict (1H vs 3H charts disagree) — Stand aside / Reduce size.*")
+
+    # If charts contradict verdict bias
+    v_bias = "BULLISH" if is_bullish(verdict_label) else ("BEARISH" if is_bearish(verdict_label) else "NEUTRAL")
+    if v_bias == "BULLISH" and tf_1h == "BEARISH" and tf_3h == "BEARISH":
+        idea_parts.append("⚠️ *High risk CE buy: 1H & 3H charts are BEARISH. Avoid CEs or wait for confirmation.*")
+    elif v_bias == "BEARISH" and tf_1h == "BULLISH" and tf_3h == "BULLISH":
+        idea_parts.append("⚠️ *High risk PE buy: 1H & 3H charts are BULLISH. Avoid PEs or wait for confirmation.*")
 
     if verdict_label == "OI Bias Bullish":
         idea_parts.append("📗 *Bias: Cautious Bullish (OI-driven)*")
@@ -355,6 +600,35 @@ def _generate_risk_note(verdict: str, ctx: dict) -> str:
     return ""
 
 
+def _compute_dynamic_action_plan(v_label: str, tf_1h: str | None, tf_3h: str | None, conflict: bool) -> str:
+    """Compute action plan dynamically based on verdict, chart sentiments, and conflicts."""
+    if conflict:
+        return "Timeframe conflict (1H vs 3H charts disagree) — Stand aside / Reduce size."
+    
+    v_bias = "BULLISH" if is_bullish(v_label) else ("BEARISH" if is_bearish(v_label) else "NEUTRAL")
+    
+    # Check if both timeframes are strongly opposite to verdict bias
+    if v_bias == "BULLISH" and tf_1h == "BEARISH" and tf_3h == "BEARISH":
+        return "Avoid CEs. High risk due to Bearish chart alignment. Wait for chart reversal."
+    if v_bias == "BEARISH" and tf_1h == "BULLISH" and tf_3h == "BULLISH":
+        return "Avoid PEs. High risk due to Bullish chart alignment. Wait for chart reversal."
+        
+    if v_label in ("Long Buildup", "Short Covering", "Put Writing"):
+        if tf_1h == "BEARISH" or tf_3h == "BEARISH":
+            return "Trail SL on longs. Avoid aggressive entries due to mixed chart sentiment."
+        return "Trail SL on longs. Avoid blind chase."
+    elif v_label in ("Short Buildup", "Long Unwinding", "Call Writing"):
+        if tf_1h == "BULLISH" or tf_3h == "BULLISH":
+            return "Trail SL on shorts. Avoid aggressive entries due to mixed chart sentiment."
+        return "Trail SL on shorts. Avoid panic entry."
+    elif v_label == "OI Bias Bullish":
+        return "Wait for 1H trigger candle above resistance. Buy CE on breakout confirmation."
+    elif v_label == "OI Bias Bearish":
+        return "Wait for 1H trigger candle below support. Buy PE on breakdown confirmation."
+    
+    return "No aggressive trade. Wait trigger candle."
+
+
 def _factor_priority(score: int) -> str:
     if score >= 90:
         return "P1"
@@ -409,7 +683,12 @@ def _paper_trade_idea(verdict_label: str, ctx: dict) -> str:
     confidence = int(_safe(ctx.get("confidence"), 0))
     plan = build_paper_trade_plan(verdict_label, confidence, ctx)
     if plan:
-        return format_paper_plan(plan)
+        msg = format_paper_plan(plan)
+        if ctx.get("days_to_expiry") == 0:
+            msg += "\n⚠️ Expiry Day: strictly intraday."
+        elif ctx.get("days_to_expiry") in (1, 2):
+            msg += "\n⚠️ Low DTE: prefer closer strikes or short/hedged structures."
+        return msg
     if verdict_label in {"Put Writing", "Call Writing"}:
         return "No auto paper trade: option writing is not enabled"
     if verdict_label == "Short Covering":
@@ -557,14 +836,19 @@ def _parse_chart_indicators(raw_indicators) -> dict:
 
 
 def generate_intelligence(symbol: str, current_alerts: list[dict],
-                          scan_context: dict | None = None) -> str:
+                          scan_context: dict | None = None) -> "IntelligenceResult":
     """
     Analyzes scan context + current alerts to generate trade-actionable intelligence.
-    Returns Telegram-formatted markdown string.
+
+    Phase 3: Returns IntelligenceResult dataclass natively.
+    All structured fields (verdict_label, confidence, bias, chart_conflict, trend)
+    are set directly — no regex parsing needed downstream.
+
+    Backward-compat: callers that used the return value as a plain string
+    should switch to result.telegram_text. The IntelligenceResult.__str__
+    returns telegram_text for any remaining legacy str() usage.
     """
     current_alerts = current_alerts or []
-    if not current_alerts and not symbol:
-        return ""
 
     ctx = scan_context or {}
     underlying = _safe(ctx.get("underlying"))
@@ -579,6 +863,17 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
     support = ctx.get("support")
     resistance = ctx.get("resistance")
     straddle = _safe(ctx.get("straddle_premium"))
+    expiry = ctx.get("expiry", "")
+    
+    days_to_expiry = -1
+    if expiry:
+        try:
+            exp_date = datetime.strptime(expiry, "%Y-%m-%d").date()
+            today_date = datetime.now(timezone.utc).date()
+            days_to_expiry = (exp_date - today_date).days
+        except Exception:
+            pass
+
 
     # ── Price × OI Verdict ─────────────────────────────────────────────────
     verdict_label, verdict_emoji, verdict_desc = _price_oi_verdict(
@@ -587,7 +882,7 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
     )
 
     # ── Confidence (base) ──────────────────────────────────────────────────
-    confidence = _compute_confidence(ctx, current_alerts)
+    confidence, _ = _compute_confidence(ctx, current_alerts, verdict_label=verdict_label)
 
     # ── Chart Confluence Confidence Boost ──────────────────────────────────
     # Must run BEFORE building msg so the printed Confidence% is accurate.
@@ -624,7 +919,7 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
             verdict_emoji = "🟠"
             verdict_desc = "Cautious Bearish — 1H and 3H candle sentiment aligned bearish"
     # ── Re-compute confidence with chart context ───────────────────────────────
-    confidence, chart_conflict = _compute_confidence(ctx, current_alerts, parsed_chart)
+    confidence, chart_conflict = _compute_confidence(ctx, current_alerts, parsed_chart, verdict_label=verdict_label)
 
     # Chart confluence boost for matching directional verdicts
     for tf, entry in parsed_chart.items():
@@ -645,15 +940,45 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
     if chart_conflict:
         confidence = min(confidence, 85)
 
+    # Derive bias from verdict (no regex — direct set membership)
+    bias = "BULLISH" if is_bullish(verdict_label) else ("BEARISH" if is_bearish(verdict_label) else "NEUTRAL")
+
     if confidence < 50:
-        return "\n".join([
+        telegram_text = "\n".join([
             f"🤖 *Bot Intelligence | {symbol}*",
             "⚪ *Verdict: Low Conviction*",
             "_No actionable edge — wait for alignment_",
             f"Confidence: {confidence}%",
         ])
+        return IntelligenceResult(
+            symbol=symbol,
+            verdict_label="Low Conviction",
+            verdict_emoji="⚪",
+            verdict_desc="No actionable edge",
+            bias="NEUTRAL",
+            confidence=confidence,
+            chart_conflict=chart_conflict,
+            trend="",
+            telegram_text=telegram_text,
+            expiry=expiry,
+            days_to_expiry=days_to_expiry,
+        )
 
     msg = [f"🤖 *Bot Intelligence | {symbol}*"]
+    
+    # Add trading mode indicator
+    try:
+        from config.settings import TREND_FILTER_MODE, PAPER_RESEARCH_MODE
+        mode_emoji = {
+            "conservative": "🛡️",
+            "balanced": "⚖️",
+            "aggressive": "⚡",
+            "hybrid": "🎯",
+        }.get(TREND_FILTER_MODE, "📊")
+        research_tag = " [RESEARCH]" if PAPER_RESEARCH_MODE else ""
+        msg.append(f"_{mode_emoji} Mode: {TREND_FILTER_MODE.title()}{research_tag}_")
+    except Exception:
+        pass
 
     # Market Stance
     msg.append(f"")
@@ -700,7 +1025,10 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
         ohlc = parsed_chart.get("1h", {}).get("ohlc") or {}
         chart_spot = _safe(ohlc.get("close")) if ohlc else None
     spot_val = chart_spot or underlying
-    spot_str = f"Spot: `{spot_val:.0f}`" if spot_val else "Spot: N/A"
+    is_commodity = symbol.upper().split()[0] in {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"}
+    lbl = "Future" if is_commodity else "Spot"
+    fmt = ".2f" if is_commodity else ".0f"
+    spot_str = f"{lbl}: `{spot_val:{fmt}}`" if spot_val else f"{lbl}: N/A"
     parts = [spot_str]
     if pcr is not None:
         parts.append(f"PCR: `{pcr:.2f}`")
@@ -790,24 +1118,102 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
     msg.append("")
     msg.append("*TRADE STRATEGY*")
     msg.append(f"- Bias: {verdict_desc}")
-    if verdict_label in ("Long Buildup", "Short Covering", "Put Writing"):
-        action_plan = "Trail SL on longs. Avoid blind chase."
-    elif verdict_label in ("Short Buildup", "Long Unwinding", "Call Writing"):
-        action_plan = "Trail SL on shorts. Avoid panic entry."
-    elif verdict_label == "OI Bias Bullish":
-        action_plan = "Wait for 1H trigger candle above resistance. Buy CE on breakout confirmation."
-    elif verdict_label == "OI Bias Bearish":
-        action_plan = "Wait for 1H trigger candle below support. Buy PE on breakdown confirmation."
-    else:
-        action_plan = "No aggressive trade. Wait trigger candle."
-    msg.append(f"- Action Plan: {action_plan}")
+    _action_plan = _compute_dynamic_action_plan(verdict_label, tf_1h, tf_3h, chart_conflict)
+    msg.append(f"- Action Plan: {_action_plan}")
     risk_note = _generate_risk_note(verdict_label, ctx)
     if risk_note:
         msg.append(f"- Critical Warning: {risk_note}")
 
     msg.append("")
     msg.append("*PAPER TRADE (Specific)*")
-    msg.append(f"- {_paper_trade_idea(verdict_label, {**ctx, 'symbol': symbol, 'confidence': confidence})}")
+    msg.append(f"- {_paper_trade_idea(verdict_label, {**ctx, 'symbol': symbol, 'confidence': confidence, 'days_to_expiry': days_to_expiry})}")
+
+    # ── Phase 2-4: Decision Engine Status ──────────────────────────────────
+    # Show trade decision analysis inline
+    try:
+        from src.engine.trade_decision import make_trade_decision
+        from src.engine.risk_engine import check_risk_limits
+        
+        decision_ctx = {**ctx, "symbol": symbol, "expiry": ctx.get("expiry", "")}
+        decision = make_trade_decision(symbol, {
+            "verdict_label": verdict_label,
+            "confidence": confidence,
+            "chart_conflict": chart_conflict,
+        }, decision_ctx)
+        
+        risk_ok, risk_reason = check_risk_limits(symbol)
+        
+        msg.append("")
+        msg.append("🎯 *TRADE DECISION ENGINE*")
+        
+        # Decision status with emoji
+        status = decision.get("status", "BLOCKED")
+        if status == "TRIGGERED_CORE":
+            status_emoji = "✅"
+            status_text = "APPROVED (Core Setup)"
+        elif status == "TRIGGERED_EXPERIMENTAL":
+            status_emoji = "🧪"
+            status_text = "APPROVED (Experimental)"
+        else:
+            status_emoji = "❌"
+            status_text = "BLOCKED"
+        
+        msg.append(f"Status: {status_emoji} *{status_text}*")
+        
+        # Setup type
+        setup_type = decision.get("setup_type")
+        if setup_type:
+            setup_emoji = {
+                "CONFIRMED_REVERSAL": "🔄",
+                "TREND_CONTINUATION": "📈",
+                "MOMENTUM_TRADE": "⚡",
+                "EXPERIMENTAL_SETUP": "🧪",
+            }.get(setup_type, "📊")
+            msg.append(f"Setup: {setup_emoji} {setup_type.replace('_', ' ').title()}")
+        
+        # Scores (compact format)
+        scores = decision.get("scores", {})
+        if scores:
+            score_parts = []
+            if "confidence" in scores:
+                score_parts.append(f"Conf:{scores['confidence']}%")
+            if "entry_quality" in scores:
+                eq = scores['entry_quality']
+                eq_emoji = "🟢" if eq >= 70 else ("🟡" if eq >= 50 else "🔴")
+                score_parts.append(f"EQ:{eq_emoji}{eq}")
+            if "trend_alignment" in scores:
+                ta = scores['trend_alignment']
+                ta_emoji = "🟢" if ta >= 70 else ("🟡" if ta >= 50 else "🔴")
+                score_parts.append(f"TA:{ta_emoji}{ta}")
+            if "regime_score" in scores:
+                rs = scores['regime_score']
+                rs_emoji = "🟢" if rs >= 70 else ("🟡" if rs >= 50 else "🔴")
+                score_parts.append(f"Reg:{rs_emoji}{rs}")
+            if "momentum_score" in scores:
+                ms = scores['momentum_score']
+                ms_emoji = "🟢" if ms >= 75 else ("🟡" if ms >= 60 else "🔴")
+                score_parts.append(f"Mom:{ms_emoji}{ms}")
+            
+            if score_parts:
+                msg.append(f"Scores: {' | '.join(score_parts)}")
+        
+        # Decision reason (compact)
+        reason = decision.get("reason", "")
+        if reason and len(reason) < 100:
+            msg.append(f"_{reason}_")
+        
+        # Risk engine status
+        if not risk_ok:
+            msg.append(f"⚠️ Risk Block: {risk_reason}")
+        
+        # Soft conflicts
+        soft_conflicts = decision.get("soft_conflicts", [])
+        if soft_conflicts:
+            conflict_text = ", ".join(soft_conflicts)
+            msg.append(f"⚠️ Conflicts: {conflict_text}")
+        
+    except Exception as e:
+        log.warning("Failed to add decision engine status to telegram: %s", e)
 
     # Broader Trend
     trend = _compute_broader_trend(symbol, current_alerts)
@@ -817,4 +1223,40 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
     msg.append(f"")
     msg.append(f"_Based on {len(current_alerts)} signals this scan_")
 
-    return "\n".join(msg)
+    # ── Action plan (structured) ───────────────────────────────────────────
+    action_plan = _compute_dynamic_action_plan(verdict_label, tf_1h, tf_3h, chart_conflict)
+
+    risk_note = _generate_risk_note(verdict_label, ctx)
+
+    return IntelligenceResult(
+        symbol=symbol,
+        verdict_label=verdict_label,
+        verdict_emoji=verdict_emoji,
+        verdict_desc=verdict_desc,
+        bias=bias,
+        confidence=confidence,
+        chart_conflict=chart_conflict,
+        trend=trend,
+        bull_forces=bull_forces,
+        bear_forces=bear_forces,
+        action_plan=action_plan,
+        risk_note=risk_note,
+        telegram_text="\n".join(msg),
+        expiry=expiry,
+        days_to_expiry=days_to_expiry,
+    )
+
+
+def generate_intelligence_structured(
+    symbol: str,
+    current_alerts: list[dict],
+    scan_context: dict | None = None,
+) -> "IntelligenceResult":
+    """
+    Phase 3: Returns IntelligenceResult directly from generate_intelligence().
+    Zero regex parsing. All fields are set natively inside generate_intelligence().
+
+    Backward-compat: callers that used intel["verdict_label"] etc. still work
+    because IntelligenceResult implements __getitem__ and get().
+    """
+    return generate_intelligence(symbol, current_alerts, scan_context)

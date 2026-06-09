@@ -55,26 +55,28 @@ def _parse_int(text: str) -> Optional[int]:
     return int(val) if val is not None else None
 
 
-def _fetch_nse_commodity_spot(symbol: str) -> Optional[float]:
+def _get_live_future_price(base_symbol: str) -> Optional[float]:
     try:
-        import requests
-
-        session = requests.Session()
-        session.headers.update(NSE_HEADERS)
-        session.get(NSE_BASE_URL, timeout=10)
-        session.get(f"{NSE_BASE_URL}/option-chain", timeout=10)
-        res = session.get(f"{NSE_BASE_URL}/api/refrates?index=commodityspotrates", timeout=10)
-        res.raise_for_status()
-        for item in res.json().get("data", []):
-            if str(item.get("symbol", "")).upper() != symbol:
-                continue
-            val = item.get("lastSpotPrice") or item.get("spotPrice")
-            spot = _parse_number(str(val))
-            if spot and spot > 0:
-                log.info("[mc] NSE commodity spot for %s: %.2f", symbol, spot)
-                return spot
+        from src.fetchers.dhan_commodity_fetcher import DhanCommodityFetcher
+        from config.settings import DHAN_SECURITY_IDS
+        secid = DHAN_SECURITY_IDS.get(base_symbol)
+        if secid:
+            fetcher = DhanCommodityFetcher()
+            val = fetcher._fetch_builtup_live_price(secid)
+            if val and val > 0:
+                log.info("[mc] Fetched live future price from Dhan for %s: %.2f", base_symbol, val)
+                return val
     except Exception as exc:
-        log.warning("[mc] NSE commodity spot fetch failed for %s: %s", symbol, exc)
+        log.warning("[mc] Could not fetch live future price from Dhan: %s", exc)
+    return None
+
+
+def _fetch_nse_commodity_spot(symbol: str) -> Optional[float]:
+    # For MCX commodities, we focus on the active Future contract price.
+    # Spot rates from NSE are not relevant to options pricing.
+    val = _get_live_future_price(symbol)
+    if val:
+        return val
     return None
 
 

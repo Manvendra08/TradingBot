@@ -82,6 +82,36 @@ class TestMoneycontrolFetcher:
         assert _parse_int("abc") is None
         assert _parse_int("1000") == 1000
 
+    def test_get_live_future_price_success(self):
+        from src.fetchers.moneycontrol_fetcher import _get_live_future_price
+        from src.fetchers.dhan_commodity_fetcher import DhanCommodityFetcher
+
+        with patch.object(DhanCommodityFetcher, "_fetch_builtup_live_price", return_value=315.0) as mock_fetch:
+            val = _get_live_future_price("NATURALGAS")
+            assert val == pytest.approx(315.0)
+            mock_fetch.assert_called_once_with(504265)
+
+    def test_get_live_future_price_missing_secid(self):
+        from src.fetchers.moneycontrol_fetcher import _get_live_future_price
+        val = _get_live_future_price("UNKNOWNSYM")
+        assert val is None
+
+    def test_get_live_future_price_exception_handled(self):
+        from src.fetchers.moneycontrol_fetcher import _get_live_future_price
+        from src.fetchers.dhan_commodity_fetcher import DhanCommodityFetcher
+
+        with patch.object(DhanCommodityFetcher, "_fetch_builtup_live_price", side_effect=Exception("Dhan down")):
+            val = _get_live_future_price("NATURALGAS")
+            assert val is None
+
+    def test_fetch_nse_commodity_spot_delegates(self):
+        from src.fetchers import moneycontrol_fetcher as mc_mod
+
+        with patch.object(mc_mod, "_get_live_future_price", return_value=315.0) as mock_get:
+            val = mc_mod._fetch_nse_commodity_spot("NATURALGAS")
+            assert val == pytest.approx(315.0)
+            mock_get.assert_called_once_with("NATURALGAS")
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # DhanHeadlessFetcher — unit tests (async interceptor mocked)
@@ -168,7 +198,7 @@ class TestDhanHeadlessFetcher:
         from src.fetchers import dhan_headless_fetcher as dh_mod
 
         fake_result = {
-            "symbol": "NATURALGAS",
+            "symbol": "NIFTY",
             "underlying_price": 261.0,
             "expiry": "2026-05-22",
             "strikes": [{"strike": 260.0, "option_type": "CE"}],
@@ -178,7 +208,7 @@ class TestDhanHeadlessFetcher:
 
         with patch.object(dh_mod, "_fetch_sync", return_value=fake_result):
             f = self._make_fetcher()
-            result = f.fetch_option_chain("NATURALGAS")
+            result = f.fetch_option_chain("NIFTY")
 
         assert result is not None
         assert result["strikes"][0]["strike"] == pytest.approx(260.0)
@@ -287,7 +317,7 @@ class TestDhanHeadlessHelpers:
         with patch.object(dh_mod, "_fetch_sync", return_value=None):
             with caplog.at_level(logging.WARNING, logger="src.fetchers.dhan_headless_fetcher"):
                 f = dh_mod.DhanHeadlessFetcher()
-                result = f.fetch_option_chain("NATURALGAS")
+                result = f.fetch_option_chain("NIFTY")
 
         assert result is None
         assert any("session may be expired" in r.message or "no data" in r.message.lower()

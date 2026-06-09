@@ -20,8 +20,9 @@ from src.models.schema import (
     get_previous_underlying,
 )
 from src.engine.anomaly_detector import detect_anomalies
-from src.engine.intelligence import generate_intelligence
-from src.engine.paper_trading import run_paper_trading
+from src.engine.intelligence import generate_intelligence_structured
+from src.engine.paper_trading import run_paper_trading, run_timeframe_strategy
+from src.engine.scan_summary import save_scan_summary
 from src.alerts.dedup import is_duplicate, record_alert, should_send_zero_signal
 from src.alerts.digest import build_digest_wrapper as build_digest
 from src.alerts.telegram_dispatcher import send_text
@@ -105,16 +106,42 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
         )
 
     # 3. Build digest — always build (zero-alert scans need suppression check)
-    intel_text = generate_intelligence(symbol, new_alerts, scan_context=scan_context)
+    intel = generate_intelligence_structured(symbol, new_alerts, scan_context=scan_context)
+    intel_text = intel["telegram_text"]
+
+    # Pre-generate digest_id and execute paper trading first to format status
+    import uuid
+    digest_id = str(uuid.uuid4())[:8]
+    trade_report = None
+    try:
+        pt_report = run_paper_trading(symbol, scan_context, digest_id, intel)
+        tf_report = run_timeframe_strategy(symbol, scan_context, digest_id, intel)
+        if pt_report and pt_report.get("action") in ("EXECUTED", "CLOSED"):
+            trade_report = pt_report
+        elif tf_report and tf_report.get("action") in ("EXECUTED", "CLOSED"):
+            trade_report = tf_report
+        else:
+            trade_report = pt_report or tf_report
+    except Exception:
+        log.exception("%s: paper-trading engine failed", symbol)
+
     digest_id, digest_msg = build_digest(
         symbol, new_alerts, fetched_at,
         scan_context=scan_context,
         intelligence_text=intel_text,
         detected_count=len(alerts),
         dedup_suppressed_count=dedup_suppressed,
+        digest_id=digest_id,
+        paper_trade_status=trade_report,
     )
     for a in new_alerts:
         a["digest_id"] = digest_id
+
+    # 3b. Save scan summary for multi-scan trend analysis (Phase 2+)
+    try:
+        save_scan_summary(symbol, scan_context, new_alerts, intel, digest_id, fetched_at)
+    except Exception:
+        log.exception("%s: scan summary save failed", symbol)
 
     # 4. Send logic
     #    - Has alerts: always send digest
@@ -141,12 +168,6 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
         sent_digest = send_text(digest_msg)
     else:
         sent_digest = False
-
-    # 4b. Auto paper-trading lifecycle
-    try:
-        run_paper_trading(symbol, scan_context, digest_id, intel_text)
-    except Exception:
-        log.exception("%s: paper-trading engine failed", symbol)
 
     # 5. Persist + record dedup (alerts only)
     if new_alerts:

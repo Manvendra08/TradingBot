@@ -1130,20 +1130,67 @@ tr:hover td { background: rgba(0,229,160,.04); }
   </div>
 </div>
 
-<!-- Trade History -->
+<!-- Trade History with Filters -->
 <div class="card">
   <div class="card-title" style="justify-content:space-between;">
     <div style="display:flex;align-items:center;gap:8px;">
       <div class="card-title-bar purple"></div>
       Trade History
     </div>
-    <button class="btn btn-danger-outline" onclick="openDeleteModal()" title="Delete trades by date range">
-      🗑 Delete Range
-    </button>
+    <div style="display:flex;gap:8px;align-items:center;">
+      <button class="btn" onclick="toggleTradeFilters()" title="Show/hide filters">
+        ⚙ Filters
+      </button>
+      <button class="btn" onclick="exportTrades('csv')" title="Export as CSV">
+        📥 CSV
+      </button>
+      <button class="btn" onclick="exportTrades('json')" title="Export as JSON">
+        📥 JSON
+      </button>
+      <button class="btn btn-danger-outline" onclick="openDeleteModal()" title="Delete trades by date range">
+        🗑 Delete
+      </button>
+    </div>
   </div>
+
+  <!-- Trade Filters (Hidden by default) -->
+  <div id="trade-filters" style="display:none;padding:16px;background:var(--surface-2);border-radius:10px;margin-bottom:16px;border:1px solid var(--border);">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;">
+      <div>
+        <label style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);font-weight:700;display:block;margin-bottom:6px;">Date From</label>
+        <input type="date" id="filter-date-from" class="del-input" style="width:100%;">
+      </div>
+      <div>
+        <label style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);font-weight:700;display:block;margin-bottom:6px;">Date To</label>
+        <input type="date" id="filter-date-to" class="del-input" style="width:100%;">
+      </div>
+      <div>
+        <label style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);font-weight:700;display:block;margin-bottom:6px;">P&amp;L Min (₹)</label>
+        <input type="number" id="filter-pnl-min" class="del-input" style="width:100%;" placeholder="e.g. -1000">
+      </div>
+      <div>
+        <label style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);font-weight:700;display:block;margin-bottom:6px;">P&amp;L Max (₹)</label>
+        <input type="number" id="filter-pnl-max" class="del-input" style="width:100%;" placeholder="e.g. 5000">
+      </div>
+      <div>
+        <label style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);font-weight:700;display:block;margin-bottom:6px;">Duration Min (min)</label>
+        <input type="number" id="filter-dur-min" class="del-input" style="width:100%;" placeholder="e.g. 5">
+      </div>
+      <div>
+        <label style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);font-weight:700;display:block;margin-bottom:6px;">Duration Max (min)</label>
+        <input type="number" id="filter-dur-max" class="del-input" style="width:100%;" placeholder="e.g. 60">
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:12px;">
+      <button class="btn primary" onclick="applyTradeFilters()" style="flex:1;">Apply Filters</button>
+      <button class="btn" onclick="resetTradeFilters()" style="flex:1;">Reset</button>
+    </div>
+  </div>
+
   <div class="tbl-wrap">
     <table>
       <thead><tr>
+        <th style="width:30px;"></th>
         <th class="L sortable" data-sort="opened_at">Opened</th>
         <th class="L sortable" data-sort="closed_at">Closed</th>
         <th>Dur</th>
@@ -1161,7 +1208,7 @@ tr:hover td { background: rgba(0,229,160,.04); }
         <th class="L">Verdict</th>
       </tr></thead>
       <tbody id="trades-body">
-        <tr><td colspan="15"><div class="empty-state"><div class="empty-icon">⏳</div>Loading…</div></td></tr>
+        <tr><td colspan="16"><div class="empty-state"><div class="empty-icon">⏳</div>Loading…</div></td></tr>
       </tbody>
     </table>
   </div>
@@ -1223,10 +1270,12 @@ async function api(path) { const r=await fetch(API+path); if(!r.ok) throw new Er
 
 function typeChip(t) {
   const ot=(t.option_type||'').toUpperCase();
-  if(ot==='FUT') return `<span class="b-type b-type-fut">FUT</span>`;
-  if(ot==='CE')  return `<span class="b-type b-type-ce">CE</span>`;
-  if(ot==='PE')  return `<span class="b-type b-type-pe">PE</span>`;
-  return `<span class="b-type b-type-def">${ot||'—'}</span>`;
+  const side=(t.side||'BUY').toUpperCase();
+  const sideClass=side==='SELL' ? 'badge b-loss' : 'badge b-win';
+  if(ot==='FUT') return `<span class="${sideClass}" style="font-size:9px;padding:1px 4px;margin-right:4px;vertical-align:middle;">${side}</span><span class="b-type b-type-fut" style="vertical-align:middle;">FUT</span>`;
+  if(ot==='CE')  return `<span class="${sideClass}" style="font-size:9px;padding:1px 4px;margin-right:4px;vertical-align:middle;">${side}</span><span class="b-type b-type-ce" style="vertical-align:middle;">CE</span>`;
+  if(ot==='PE')  return `<span class="${sideClass}" style="font-size:9px;padding:1px 4px;margin-right:4px;vertical-align:middle;">${side}</span><span class="b-type b-type-pe" style="vertical-align:middle;">PE</span>`;
+  return `<span class="${sideClass}" style="font-size:9px;padding:1px 4px;margin-right:4px;vertical-align:middle;">${side}</span><span class="b-type b-type-def" style="vertical-align:middle;">${ot||'—'}</span>`;
 }
 function sbadge(s) {
   if(s==='OPEN')          return '<span class="badge b-open">OPEN</span>';
@@ -1427,9 +1476,10 @@ function sortTrades() {
 
 function renderTrades(rows) {
   const tb=document.getElementById('trades-body');
-  if(!rows.length){ tb.innerHTML='<tr><td colspan="15"><div class="empty-state"><div class="empty-icon">📭</div>No trades found</div></td></tr>'; return; }
-  tb.innerHTML=rows.map(t=>`
+  if(!rows.length){ tb.innerHTML='<tr><td colspan="16"><div class="empty-state"><div class="empty-icon">📭</div>No trades found</div></td></tr>'; return; }
+  tb.innerHTML=rows.map((t,idx)=>`
     <tr>
+      <td style="text-align:center;cursor:pointer;color:var(--accent);" onclick="toggleTradeDetails(${idx})" title="Expand details">▶</td>
       <td class="L">${fdt(t.opened_at)}</td>
       <td class="L">${fdt(t.closed_at)}</td>
       <td><span class="b-dur">${t.duration_text||'—'}</span></td>
@@ -1445,7 +1495,50 @@ function renderTrades(rows) {
       <td class="${pc(t.pnl_rupees)}">${signRs(t.pnl_rupees)}</td>
       <td class="${pc(t.pnl_points)}" style="font-size:10px;color:var(--text-dim)">${sign(t.pnl_points)}</td>
       <td class="L">${vtag(t.verdict_label||t.reason, t.verdict_explanation)}</td>
+    </tr>
+    <tr id="details-${idx}" style="display:none;">
+      <td colspan="16" style="padding:0;border:none;">
+        <div style="background:var(--surface-2);padding:16px;border-top:1px solid var(--border);border-bottom:1px solid var(--border);">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;">
+            <div>
+              <div style="font-size:9px;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);font-weight:700;margin-bottom:6px;">Entry Details</div>
+              <div style="font-size:12px;color:var(--text);font-family:var(--mono);">
+                <div>Underlying: ${fp(t.entry_underlying)}</div>
+                ${t.entry_premium ? `<div>Premium: ${fp(t.entry_premium)}</div>` : ''}
+                <div>Time: ${fdt(t.opened_at)}</div>
+              </div>
+            </div>
+            <div>
+              <div style="font-size:9px;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);font-weight:700;margin-bottom:6px;">Exit Details</div>
+              <div style="font-size:12px;color:var(--text);font-family:var(--mono);">
+                <div>Underlying: ${fp(t.exit_underlying)}</div>
+                ${t.exit_premium ? `<div>Premium: ${fp(t.exit_premium)}</div>` : ''}
+                <div>Time: ${fdt(t.closed_at)}</div>
+              </div>
+            </div>
+            <div>
+              <div style="font-size:9px;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);font-weight:700;margin-bottom:6px;">P&amp;L Breakdown</div>
+              <div style="font-size:12px;color:var(--text);font-family:var(--mono);">
+                <div>Points: ${sign(t.pnl_points)}</div>
+                <div>Rupees: ${signRs(t.pnl_rupees)}</div>
+                <div>Lots: ${t.lots || 1}</div>
+              </div>
+            </div>
+            <div>
+              <div style="font-size:9px;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);font-weight:700;margin-bottom:6px;">Trade Reason</div>
+              <div style="font-size:12px;color:var(--text);">${t.reason || t.verdict_label || '—'}</div>
+            </div>
+          </div>
+        </div>
+      </td>
     </tr>`).join('');
+}
+
+function toggleTradeDetails(idx) {
+  const row = document.getElementById(`details-${idx}`);
+  if (row) {
+    row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
+  }
 }
 
 document.addEventListener('themechange', ()=>{ if(lastEquityData.length) renderEquity(lastEquityData); });
@@ -1582,6 +1675,119 @@ async function init() {
   document.getElementById('status').onchange=loadAll;
   await loadAll();
   setInterval(loadAll,30000);
+}
+
+/* ── Trade Filters ─────────────────────────────────────────────────── */
+let filteredTrades = [];
+
+function toggleTradeFilters() {
+  const filters = document.getElementById('trade-filters');
+  filters.style.display = filters.style.display === 'none' ? 'block' : 'none';
+}
+
+function applyTradeFilters() {
+  const dateFrom = document.getElementById('filter-date-from').value;
+  const dateTo = document.getElementById('filter-date-to').value;
+  const pnlMin = parseFloat(document.getElementById('filter-pnl-min').value) || -Infinity;
+  const pnlMax = parseFloat(document.getElementById('filter-pnl-max').value) || Infinity;
+  const durMin = parseFloat(document.getElementById('filter-dur-min').value) || 0;
+  const durMax = parseFloat(document.getElementById('filter-dur-max').value) || Infinity;
+
+  filteredTrades = allTrades.filter(t => {
+    // Date filter
+    if (dateFrom) {
+      const fromTs = new Date(dateFrom).getTime();
+      const tTs = new Date(t.opened_at).getTime();
+      if (tTs < fromTs) return false;
+    }
+    if (dateTo) {
+      const toTs = new Date(dateTo + 'T23:59:59').getTime();
+      const tTs = new Date(t.opened_at).getTime();
+      if (tTs > toTs) return false;
+    }
+    
+    // P&L filter
+    const pnl = parseFloat(t.pnl_rupees) || 0;
+    if (pnl < pnlMin || pnl > pnlMax) return false;
+    
+    // Duration filter
+    const dur = parseFloat(t.duration_minutes) || 0;
+    if (dur < durMin || dur > durMax) return false;
+    
+    return true;
+  });
+
+  sortCol ? sortTrades() : renderTrades(filteredTrades);
+}
+
+function resetTradeFilters() {
+  document.getElementById('filter-date-from').value = '';
+  document.getElementById('filter-date-to').value = '';
+  document.getElementById('filter-pnl-min').value = '';
+  document.getElementById('filter-pnl-max').value = '';
+  document.getElementById('filter-dur-min').value = '';
+  document.getElementById('filter-dur-max').value = '';
+  filteredTrades = [];
+  sortCol ? sortTrades() : renderTrades(allTrades);
+}
+
+/* ── Export Trades ─────────────────────────────────────────────────── */
+function exportTrades(format) {
+  const trades = filteredTrades.length > 0 ? filteredTrades : allTrades;
+  if (!trades.length) {
+    alert('No trades to export');
+    return;
+  }
+
+  let content, filename, mimeType;
+
+  if (format === 'csv') {
+    // CSV export
+    const headers = ['Opened', 'Closed', 'Duration', 'Symbol', 'Type', 'Strike', 'Entry (₹)', 'Exit (₹)', 'SL (₹)', 'Target (₹)', 'Lots', 'Status', 'P&L (₹)', 'P&L (pts)', 'Verdict'];
+    const rows = trades.map(t => [
+      t.opened_at || '',
+      t.closed_at || '',
+      t.duration_text || '',
+      t.symbol || '',
+      t.option_type || '',
+      t.strike || '',
+      entryPrice(t),
+      exitPrice(t),
+      slPrice(t),
+      targetPrice(t),
+      t.lots || 1,
+      t.status || '',
+      t.pnl_rupees || 0,
+      t.pnl_points || 0,
+      t.verdict_label || t.reason || ''
+    ]);
+    
+    content = [headers, ...rows].map(row => 
+      row.map(cell => {
+        const str = String(cell || '');
+        return str.includes(',') || str.includes('"') ? `"${str.replace(/"/g, '""')}"` : str;
+      }).join(',')
+    ).join('\n');
+    
+    filename = `nsebot-trades-${new Date().toISOString().slice(0,10)}.csv`;
+    mimeType = 'text/csv';
+  } else if (format === 'json') {
+    // JSON export
+    content = JSON.stringify(trades, null, 2);
+    filename = `nsebot-trades-${new Date().toISOString().slice(0,10)}.json`;
+    mimeType = 'application/json';
+  }
+
+  // Trigger download
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 init().catch(console.error);
