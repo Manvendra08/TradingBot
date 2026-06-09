@@ -96,6 +96,17 @@ class GracefulDisconnectMiddleware:
 app.add_middleware(GracefulDisconnectMiddleware)
 
 
+@app.on_event("startup")
+async def startup_event():
+    try:
+        import anyio.to_thread
+        limiter = anyio.to_thread.current_default_thread_limiter()
+        limiter.total_tokens = 15
+        log.info("Startup: Limited AnyIO default thread pool capacity to 15 to prevent thread/memory exhaustion")
+    except Exception as exc:
+        log.warning("Could not set AnyIO thread pool limit: %s", exc)
+
+
 try:
     from src.engine.intelligence import generate_intelligence
 except Exception:
@@ -581,7 +592,7 @@ def _in_clause(values: list[str]) -> tuple[str, tuple]:
     return ",".join("?" for _ in values), tuple(values)
 
 @app.get("/api/symbols")
-def get_symbols():
+async def get_symbols():
     rows = _q("SELECT DISTINCT symbol FROM option_chain_snapshots ORDER BY symbol")
     configured = [_canonical_symbol(s) for s in WATCH_SYMBOLS]
     from_db = [_canonical_symbol(r["symbol"]) for r in rows]
@@ -595,7 +606,7 @@ def get_symbols():
 
 
 @app.get("/api/meta")
-def get_meta(symbol: str):
+async def get_meta(symbol: str):
     symbols = _matching_symbols(symbol)
     placeholders, params = _in_clause(symbols)
     rows = _q(
@@ -607,7 +618,7 @@ def get_meta(symbol: str):
 
 
 @app.get("/api/price")
-def get_price(symbol: str, hours: int = 6):
+async def get_price(symbol: str, hours: int = 6):
     symbols = _matching_symbols(symbol)
     placeholders, symbol_params = _in_clause(symbols)
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
@@ -627,7 +638,7 @@ def get_price(symbol: str, hours: int = 6):
 
 
 @app.get("/api/oi")
-def get_oi(symbol: str):
+async def get_oi(symbol: str):
     symbols = _matching_symbols(symbol)
     placeholders, params = _in_clause(symbols)
     rows = _q(
@@ -645,7 +656,7 @@ def get_oi(symbol: str):
 
 
 @app.get("/api/pcr")
-def get_pcr(symbol: str, hours: int = 6):
+async def get_pcr(symbol: str, hours: int = 6):
     symbols = _matching_symbols(symbol)
     placeholders, symbol_params = _in_clause(symbols)
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
@@ -685,7 +696,7 @@ def get_pcr(symbol: str, hours: int = 6):
 
 
 @app.get("/api/alerts")
-def get_alerts(symbol: str, limit: int = 100):
+async def get_alerts(symbol: str, limit: int = 100):
     symbols = _matching_symbols(symbol)
     placeholders, params = _in_clause(symbols)
     rows = _q(
@@ -811,7 +822,7 @@ def get_intelligence_summary(symbol: str):
 
 
 @app.get("/api/expiries")
-def get_expiries(symbol: str):
+async def get_expiries(symbol: str):
     symbols = _matching_symbols(symbol)
     placeholders, params = _in_clause(symbols)
     rows = _q(
@@ -822,7 +833,7 @@ def get_expiries(symbol: str):
 
 
 @app.get("/api/runtime")
-def get_runtime():
+async def get_runtime():
     return {
         "scan_frequency_minutes": get_scan_frequency_minutes(),
         "scan_frequency_options": ALLOWED_SCAN_FREQUENCIES,
@@ -832,7 +843,7 @@ def get_runtime():
 
 
 @app.post("/api/runtime")
-def set_runtime(scan_frequency_minutes: int = Query(...)):
+async def set_runtime(scan_frequency_minutes: int = Query(...)):
     if scan_frequency_minutes not in ALLOWED_SCAN_FREQUENCIES:
         return JSONResponse(
             {"ok": False, "error": "invalid scan_frequency_minutes", "allowed": ALLOWED_SCAN_FREQUENCIES},
@@ -843,7 +854,7 @@ def set_runtime(scan_frequency_minutes: int = Query(...)):
 
 
 @app.get("/api/paper_trades")
-def get_paper_trades(symbol: str = "", status: str = "", limit: int = 300):
+async def get_paper_trades(symbol: str = "", status: str = "", limit: int = 300):
     clauses = []
     params: list = []
     if symbol:
@@ -973,7 +984,7 @@ def _explain_verdict(verdict: str | None, option_type: str | None) -> dict:
 
 
 @app.get("/api/paper_summary")
-def get_paper_summary(symbol: str = ""):
+async def get_paper_summary(symbol: str = ""):
     clauses = []
     params: list = []
     if symbol:
@@ -1192,7 +1203,7 @@ def _calculate_consecutive_wins(where: str, params: tuple) -> int:
 
 
 @app.delete("/api/paper_trades")
-def delete_paper_trades(date_from: str = "", date_to: str = ""):
+async def delete_paper_trades(date_from: str = "", date_to: str = ""):
     """
     Delete paper trades by date range.
     date_from / date_to: ISO date strings e.g. '2026-05-01' or '2026-05-26T23:59:59'
@@ -1221,7 +1232,7 @@ def delete_paper_trades(date_from: str = "", date_to: str = ""):
 
 
 @app.get("/api/paper_equity")
-def get_paper_equity(symbol: str = ""):
+async def get_paper_equity(symbol: str = ""):
     clauses = ["status LIKE 'CLOSED_%'"]
     params: list = []
     if symbol:
@@ -1247,7 +1258,7 @@ def get_paper_equity(symbol: str = ""):
 # ── Serve dashboard HTML ───────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
-def dashboard():
+async def dashboard():
     html_path = ROOT / "src" / "dashboard" / "index.html"
     if html_path.exists():
         return HTMLResponse(html_path.read_text(encoding="utf-8"))
@@ -1255,7 +1266,7 @@ def dashboard():
 
 
 @app.get("/paper", response_class=HTMLResponse)
-def paper_dashboard():
+async def paper_dashboard():
     html_path = ROOT / "src" / "dashboard" / "paper.html"
     if html_path.exists():
         return HTMLResponse(html_path.read_text(encoding="utf-8"))
