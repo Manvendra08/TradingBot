@@ -10,6 +10,7 @@ import re
 import sqlite3
 import sys
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -49,7 +50,19 @@ except ImportError:
     print("[ERROR] Run: python -m pip install fastapi uvicorn")
     sys.exit(1)
 
-app = FastAPI(title="NSEBOT Dashboard API")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        import anyio.to_thread
+        limiter = anyio.to_thread.current_default_thread_limiter()
+        limiter.total_tokens = 15
+        log.info("Startup: Limited AnyIO default thread pool capacity to 15 to prevent thread/memory exhaustion")
+    except Exception as exc:
+        log.warning("Could not set AnyIO thread pool limit: %s", exc)
+    yield
+
+
+app = FastAPI(title="NSEBOT Dashboard API", lifespan=lifespan)
 log = logging.getLogger("nsebot.dashboard")
 
 # Graceful Disconnect Middleware to suppress noisy ASGI connection reset tracebacks
@@ -96,15 +109,7 @@ class GracefulDisconnectMiddleware:
 app.add_middleware(GracefulDisconnectMiddleware)
 
 
-@app.on_event("startup")
-async def startup_event():
-    try:
-        import anyio.to_thread
-        limiter = anyio.to_thread.current_default_thread_limiter()
-        limiter.total_tokens = 15
-        log.info("Startup: Limited AnyIO default thread pool capacity to 15 to prevent thread/memory exhaustion")
-    except Exception as exc:
-        log.warning("Could not set AnyIO thread pool limit: %s", exc)
+
 
 
 try:
