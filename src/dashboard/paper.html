@@ -1165,12 +1165,12 @@ tr:hover td { background: rgba(0,229,160,.04); }
         <input type="date" id="filter-date-to" class="del-input" style="width:100%;">
       </div>
       <div>
-        <label style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);font-weight:700;display:block;margin-bottom:6px;">P&amp;L Min (₹)</label>
-        <input type="number" id="filter-pnl-min" class="del-input" style="width:100%;" placeholder="e.g. -1000">
+        <label style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);font-weight:700;display:block;margin-bottom:6px;">Symbol</label>
+        <input type="text" id="filter-symbol" class="del-input" style="width:100%;" placeholder="e.g. NIFTY">
       </div>
       <div>
-        <label style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);font-weight:700;display:block;margin-bottom:6px;">P&amp;L Max (₹)</label>
-        <input type="number" id="filter-pnl-max" class="del-input" style="width:100%;" placeholder="e.g. 5000">
+        <label style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);font-weight:700;display:block;margin-bottom:6px;">Verdict</label>
+        <input type="text" id="filter-verdict" class="del-input" style="width:100%;" placeholder="e.g. LONG">
       </div>
       <div>
         <label style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);font-weight:700;display:block;margin-bottom:6px;">Duration Min (min)</label>
@@ -1688,8 +1688,8 @@ function toggleTradeFilters() {
 function applyTradeFilters() {
   const dateFrom = document.getElementById('filter-date-from').value;
   const dateTo = document.getElementById('filter-date-to').value;
-  const pnlMin = parseFloat(document.getElementById('filter-pnl-min').value) || -Infinity;
-  const pnlMax = parseFloat(document.getElementById('filter-pnl-max').value) || Infinity;
+  const symbolFilter = document.getElementById('filter-symbol').value.trim().toUpperCase();
+  const verdictFilter = document.getElementById('filter-verdict').value.trim().toUpperCase();
   const durMin = parseFloat(document.getElementById('filter-dur-min').value) || 0;
   const durMax = parseFloat(document.getElementById('filter-dur-max').value) || Infinity;
 
@@ -1706,9 +1706,17 @@ function applyTradeFilters() {
       if (tTs > toTs) return false;
     }
     
-    // P&L filter
-    const pnl = parseFloat(t.pnl_rupees) || 0;
-    if (pnl < pnlMin || pnl > pnlMax) return false;
+    // Symbol filter
+    if (symbolFilter) {
+      const tSym = (t.symbol || '').toUpperCase();
+      if (!tSym.includes(symbolFilter)) return false;
+    }
+
+    // Verdict filter
+    if (verdictFilter) {
+      const tVerdict = (t.verdict_label || t.reason || '').toUpperCase();
+      if (!tVerdict.includes(verdictFilter)) return false;
+    }
     
     // Duration filter
     const dur = parseFloat(t.duration_minutes) || 0;
@@ -1723,8 +1731,8 @@ function applyTradeFilters() {
 function resetTradeFilters() {
   document.getElementById('filter-date-from').value = '';
   document.getElementById('filter-date-to').value = '';
-  document.getElementById('filter-pnl-min').value = '';
-  document.getElementById('filter-pnl-max').value = '';
+  document.getElementById('filter-symbol').value = '';
+  document.getElementById('filter-verdict').value = '';
   document.getElementById('filter-dur-min').value = '';
   document.getElementById('filter-dur-max').value = '';
   filteredTrades = [];
