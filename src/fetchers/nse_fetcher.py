@@ -19,6 +19,7 @@ COMMODITY_SYMBOLS = {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER", "COPPER"}
 class NSEPublicFetcher(BaseFetcher):
     name = "nse_public"
     _session_warmed = False
+    _last_warmed_time = 0.0
 
     def __init__(self):
         super().__init__()
@@ -26,8 +27,11 @@ class NSEPublicFetcher(BaseFetcher):
 
     def _warm_session(self):
         """Hit NSE homepage to acquire cookies — required for API calls."""
-        if self._session_warmed:
+        now = time.time()
+        if NSEPublicFetcher._session_warmed and (now - NSEPublicFetcher._last_warmed_time < 300):
             return
+        
+        self.session.cookies.clear()
         
         # Add basic retry for session warm-up
         for attempt in range(3):
@@ -36,6 +40,7 @@ class NSEPublicFetcher(BaseFetcher):
                 # Hit the option-chain page to ensure cookies are set for APIs
                 self.session.get(f"{NSE_BASE_URL}/option-chain", timeout=10)
                 NSEPublicFetcher._session_warmed = True
+                NSEPublicFetcher._last_warmed_time = time.time()
                 log.debug("[nse_public] session warmed")
                 return
             except Exception as exc:
@@ -55,20 +60,27 @@ class NSEPublicFetcher(BaseFetcher):
         if symbol in COMMODITY_SYMBOLS:
             log.warning("[nse_public] commodity option chain disabled for %s", symbol)
             return None
-        elif symbol in INDEX_SYMBOLS:
-            expiry = self._nearest_contract_expiry(symbol)
-            if not expiry:
-                return None
-            url = f"{NSE_BASE_URL}/api/option-chain-v3?type=Indices&symbol={symbol}&expiry={expiry}"
-            raw = self._get(url)
-        else:
-            expiry = self._nearest_contract_expiry(symbol)
-            url = f"{NSE_BASE_URL}/api/option-chain-v3?type=Equity&symbol={symbol}"
-            if expiry:
-                url += f"&expiry={expiry}"
-            raw = self._get(url)
+
+        raw = None
+        try:
+            if symbol in INDEX_SYMBOLS:
+                expiry = self._nearest_contract_expiry(symbol)
+                if not expiry:
+                    return None
+                url = f"{NSE_BASE_URL}/api/option-chain-v3?type=Indices&symbol={symbol}&expiry={expiry}"
+                raw = self._get(url)
+            else:
+                expiry = self._nearest_contract_expiry(symbol)
+                url = f"{NSE_BASE_URL}/api/option-chain-v3?type=Equity&symbol={symbol}"
+                if expiry:
+                    url += f"&expiry={expiry}"
+                raw = self._get(url)
+        except Exception as exc:
+            log.warning("[nse_public] fetch error for %s: %s", symbol, exc)
+            NSEPublicFetcher._session_warmed = False
 
         if not raw:
+            NSEPublicFetcher._session_warmed = False
             return None
         return self._normalise(symbol, raw)
 

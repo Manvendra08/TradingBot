@@ -55,14 +55,17 @@ It:
 
 - `src/fetchers/router.py` - source routing and ATM strike filtering
 - `src/fetchers/chart_fetcher.py` - candle sourcing and aggregation
-- `src/engine/pipeline.py` - orchestrates the scan
+- `src/engine/pipeline.py` - orchestrates the scan (includes fetch-failure Telegram alerts)
 - `src/engine/anomaly_detector.py` - computes alerts and scan context
 - `src/engine/intelligence.py` - verdict, trend, trade guidance
 - `src/alerts/digest.py` - Telegram message builder
 - `src/alerts/telegram_dispatcher.py` - Telegram delivery and retries
-- `src/engine/paper_trading.py` - automatic paper trade lifecycle
+- `src/engine/paper_trading.py` - automatic paper trade lifecycle (includes holiday guards)
 - `src/models/schema.py` - SQLite tables and helpers
 - `dashboard_server.py` - FastAPI dashboard API and pages
+- `config/holidays.py` - 2026 Indian market holiday calendar (NSE & MCX)
+- `src/scheduler/job_runner.py` - scheduler loop (includes watchdog thread timeout)
+- `src/fetchers/nse_fetcher.py` - fallback NSE fetcher (includes cookie re-warming & session invalidation)
 
 ## Next session context
 

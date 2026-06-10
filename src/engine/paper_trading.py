@@ -37,6 +37,9 @@ def _is_market_open(symbol: str) -> bool:
     open_t, close_t, days = market_window(symbol)
     if now.weekday() not in days:
         return False
+    from config.holidays import is_market_holiday
+    if is_market_holiday(symbol, now):
+        return False
     t = now.strftime("%H:%M")
     return open_t <= t <= close_t
 

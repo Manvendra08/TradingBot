@@ -3,9 +3,33 @@ pytest conftest.py — shared fixtures for all tests.
 Sets up an isolated in-memory SQLite DB per test session.
 """
 import os
+import sys
 import pytest
 import tempfile
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
+
+# Mock tvDatafeed if not installed, preventing import and patching errors in test runs
+try:
+    import tvDatafeed
+except ImportError:
+    class FakeInterval:
+        in_1_minute = "1m"
+        in_3_minute = "3m"
+        in_5_minute = "5m"
+        in_15_minute = "15m"
+        in_30_minute = "30m"
+        in_45_minute = "45m"
+        in_1_hour = "1h"
+        in_2_hour = "2h"
+        in_3_hour = "3h"
+        in_4_hour = "4h"
+        in_daily = "1d"
+        in_weekly = "1w"
+
+    mock_tv = MagicMock()
+    mock_tv.TvDatafeed = MagicMock
+    mock_tv.Interval = FakeInterval
+    sys.modules["tvDatafeed"] = mock_tv
 
 
 @pytest.fixture(scope="session", autouse=True)

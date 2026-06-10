@@ -29,6 +29,9 @@ def _is_open_for(symbol: str) -> bool:
     open_t, close_t, days = market_window(symbol)
     if now.weekday() not in days:
         return False
+    from config.holidays import is_market_holiday
+    if is_market_holiday(symbol, now):
+        return False
     t = now.strftime("%H:%M")
     return open_t <= t <= close_t
 
@@ -67,6 +70,72 @@ def _run_dhan_naturalgas_scrape():
         log.warning("Dhan scrape runner error: %s", exc)
 
 
+def _update_live_cmps() -> None:
+    """Lightweight live CMP refresh for symbols with OPEN trades."""
+    from src.models.schema import get_conn, insert_snapshots, insert_underlying_price
+    with get_conn() as conn:
+        rows = conn.execute("SELECT DISTINCT symbol FROM paper_trades WHERE status='OPEN'").fetchall()
+        open_symbols = [r["symbol"] for r in rows]
+    
+    if not open_symbols:
+        return
+        
+    log.info("Running live CMP refresh for active symbols: %s", open_symbols)
+    from src.fetchers.router import fetch_option_chain
+    from datetime import datetime, timezone
+    
+    for symbol in open_symbols:
+        # Check if market is open for this symbol
+        if not _is_open_for(symbol):
+            continue
+        try:
+            oc_data = fetch_option_chain(symbol)
+            if oc_data and oc_data.get("strikes"):
+                fetched_at = datetime.now(timezone.utc).isoformat()
+                underlying = oc_data["underlying_price"]
+                if underlying:
+                    insert_underlying_price(symbol, underlying, oc_data.get("pct_change"), fetched_at)
+                
+                rows_to_insert = []
+                for s in oc_data["strikes"]:
+                    rows_to_insert.append({
+                        "fetched_at": fetched_at,
+                        "symbol": symbol,
+                        "expiry": oc_data["expiry"],
+                        "strike": s["strike"],
+                        "option_type": s["option_type"],
+                        "ltp": s["ltp"],
+                        "ltp_change_pct": s.get("ltp_change_pct"),
+                        "oi": s.get("oi"),
+                        "oi_change_pct": s.get("oi_change_pct"),
+                        "oi_change": s.get("oi_change"),
+                        "volume": s.get("volume"),
+                        "iv": s.get("iv"),
+                        "bid": s.get("bid"),
+                        "ask": s.get("ask"),
+                        "delta": s.get("delta"),
+                        "underlying_price": underlying,
+                        "fetcher_source": oc_data.get("source", "unknown")
+                    })
+                insert_snapshots(rows_to_insert)
+                log.info("Live CMP refresh completed for %s (%d strikes)", symbol, len(rows_to_insert))
+        except Exception as e:
+            log.warning("Live CMP refresh failed for %s: %s", symbol, e)
+
+
+import threading
+
+def run_with_timeout(func, timeout, *args, **kwargs) -> bool:
+    """Run a function in a daemon thread with a timeout watchdog."""
+    t = threading.Thread(target=func, args=args, kwargs=kwargs, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        log.error("Watchdog: function '%s' timed out after %ds and might be hung", func.__name__, timeout)
+        return False
+    return True
+
+
 def start_scheduler():
     from src.models.schema import delete_expired_contracts
     
@@ -79,15 +148,43 @@ def start_scheduler():
     # Run a cleanup of expired data on startup
     delete_expired_contracts()
     
+    last_full_scan = 0.0
+    last_cmp_refresh = 0.0
+    
     try:
         while True:
-            interval = get_scan_frequency_minutes()
-            cycle_start = time.time()
-            _guarded_run()
-            _run_dhan_naturalgas_scrape()
-            elapsed = time.time() - cycle_start
-            sleep_for = max(1, int(interval * 60 - elapsed))
-            log.debug("Scheduler cycle done in %.1fs; next run in %ds", elapsed, sleep_for)
-            time.sleep(sleep_for)
+            now = time.time()
+            interval_min = get_scan_frequency_minutes()
+            
+            # 1. Full Scan Loop (strategy execution, alerts)
+            if now - last_full_scan >= interval_min * 60:
+                cycle_start = time.time()
+                def run_all():
+                    _guarded_run()
+                    _run_dhan_naturalgas_scrape()
+                
+                success = run_with_timeout(run_all, timeout=300)
+                if not success:
+                    try:
+                        from src.alerts.telegram_dispatcher import send_text
+                        send_text("⚠️ **NSEBOT ALERT**: Scheduler scan loop timed out/hung after 5 minutes. Watchdog bypassed it to keep scheduler active.")
+                    except Exception:
+                        pass
+                elapsed = time.time() - cycle_start
+                last_full_scan = time.time()
+                log.debug("Full scan cycle completed in %.1fs (success=%s)", elapsed, success)
+                
+            # 2. Live CMP Refresh Loop (every 2 minutes)
+            if time.time() - last_cmp_refresh >= 120:
+                cycle_start = time.time()
+                success = run_with_timeout(_update_live_cmps, timeout=90)
+                elapsed = time.time() - cycle_start
+                last_cmp_refresh = time.time()
+                if elapsed > 0.5:
+                    log.debug("Live CMP refresh completed in %.1fs (success=%s)", elapsed, success)
+            
+            # Sleep in short increments to remain responsive to intervals and changes
+            time.sleep(10)
     except (KeyboardInterrupt, SystemExit):
         log.info("Scheduler stopped")
+

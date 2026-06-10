@@ -59,6 +59,10 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
     oc_data = fetch_option_chain(symbol)
     if not oc_data:
         log.error("No data for %s — skipping", symbol)
+        try:
+            send_text(f"⚠️ **NSEBOT ALERT**: ALL data fetchers failed for symbol `{symbol}` at scan interval. Price tracking and strategy execution skipped.")
+        except Exception:
+            log.exception("Failed to send fetch-failure Telegram alert for %s", symbol)
         return
 
     underlying = oc_data["underlying_price"]
