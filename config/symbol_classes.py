@@ -13,7 +13,7 @@ _SYMBOL_META: dict[str, tuple[str, int]] = {
     "BANKNIFTY":   ("NSE_INDEX", 100),
     "FINNIFTY":    ("NSE_INDEX", 50),
     "MIDCPNIFTY":  ("NSE_INDEX", 25),
-    "NATURALGAS":  ("MCX_COMMODITY", 10),
+    "NATURALGAS":  ("MCX_COMMODITY", 5),
     "CRUDEOIL":    ("MCX_COMMODITY", 100),
     "GOLD":        ("MCX_COMMODITY", 100),
     "SILVER":      ("MCX_COMMODITY", 500),

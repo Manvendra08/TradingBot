@@ -58,8 +58,8 @@ def _parse_int(text: str) -> Optional[int]:
 def _get_live_future_price(base_symbol: str) -> Optional[float]:
     try:
         from src.fetchers.dhan_commodity_fetcher import DhanCommodityFetcher
-        from config.settings import DHAN_SECURITY_IDS
-        secid = DHAN_SECURITY_IDS.get(base_symbol)
+        from src.utils.dhan_resolver import get_dhan_security_id
+        secid = get_dhan_security_id(base_symbol)
         if secid:
             fetcher = DhanCommodityFetcher()
             val = fetcher._fetch_builtup_live_price(secid)

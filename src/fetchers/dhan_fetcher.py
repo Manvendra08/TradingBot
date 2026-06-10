@@ -11,6 +11,7 @@ from config.settings import (
     DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN, DHAN_BASE_URL,
     DHAN_SECURITY_IDS, DHAN_SEGMENTS
 )
+from src.utils.dhan_resolver import get_dhan_security_id
 from src.fetchers.dhan_commodity_fetcher import DhanCommodityFetcher
 from src.fetchers.base_fetcher import BaseFetcher
 
@@ -159,7 +160,7 @@ class DhanFetcher(BaseFetcher):
     def fetch_option_chain(self, symbol: str) -> dict | None:
         base_symbol = self._base_symbol(symbol)
         segment = DHAN_SEGMENTS.get(base_symbol, "NSE_FNO")
-        security_id = DHAN_SECURITY_IDS.get(base_symbol)
+        security_id = get_dhan_security_id(base_symbol)
         if not security_id and segment == "MCX_COMM":
             security_id = self._resolve_mcx_future_security_id(base_symbol)
         if not security_id:

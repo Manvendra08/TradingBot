@@ -13,7 +13,7 @@ import pytz
 
 from config.settings import FETCH_INTERVAL_MINUTES, WATCH_SYMBOLS
 from config.runtime_config import get_scan_frequency_minutes
-from config.symbol_classes import market_window
+from config.symbol_classes import market_window, get_symbol_class
 from src.engine.pipeline import run_pipeline
 
 log = logging.getLogger(__name__)
@@ -36,12 +36,13 @@ def _is_open_for(symbol: str) -> bool:
     return open_t <= t <= close_t
 
 
-def _guarded_run():
-    open_symbols = [s for s in WATCH_SYMBOLS if _is_open_for(s)]
+def _guarded_run(class_key: str | None = None):
+    symbols_to_check = [s for s in WATCH_SYMBOLS if (class_key is None or get_symbol_class(s) == class_key)]
+    open_symbols = [s for s in symbols_to_check if _is_open_for(s)]
     if not open_symbols:
-        log.debug("All symbols outside market hours — skipping")
+        log.debug("All symbols outside market hours%s — skipping", f" for {class_key}" if class_key else "")
         return
-    closed = set(WATCH_SYMBOLS) - set(open_symbols)
+    closed = set(symbols_to_check) - set(open_symbols)
     if closed:
         log.debug("Skipping closed symbols: %s", sorted(closed))
     run_pipeline(symbols=open_symbols)
@@ -80,7 +81,7 @@ def _update_live_cmps() -> None:
     if not open_symbols:
         return
         
-    log.info("Running live CMP refresh for active symbols: %s", open_symbols)
+    log.debug("Running live CMP refresh for active symbols: %s", open_symbols)
     from src.fetchers.router import fetch_option_chain
     from datetime import datetime, timezone
     
@@ -118,7 +119,7 @@ def _update_live_cmps() -> None:
                         "fetcher_source": oc_data.get("source", "unknown")
                     })
                 insert_snapshots(rows_to_insert)
-                log.info("Live CMP refresh completed for %s (%d strikes)", symbol, len(rows_to_insert))
+                log.debug("Live CMP refresh completed for %s (%d strikes)", symbol, len(rows_to_insert))
         except Exception as e:
             log.warning("Live CMP refresh failed for %s: %s", symbol, e)
 
@@ -148,31 +149,72 @@ def start_scheduler():
     # Run a cleanup of expired data on startup
     delete_expired_contracts()
     
-    last_full_scan = 0.0
+    current_date = datetime.now(IST).date()
+    last_scanned_interval: dict[str, int] = {}
+    has_done_startup_scan: dict[str, bool] = {}
+    
     last_cmp_refresh = 0.0
     
     try:
         while True:
-            now = time.time()
+            now_ts = time.time()
+            now_ist = datetime.fromtimestamp(now_ts, IST)
             interval_min = get_scan_frequency_minutes()
             
-            # 1. Full Scan Loop (strategy execution, alerts)
-            if now - last_full_scan >= interval_min * 60:
-                cycle_start = time.time()
-                def run_all():
-                    _guarded_run()
-                    _run_dhan_naturalgas_scrape()
+            if now_ist.date() > current_date:
+                current_date = now_ist.date()
+                last_scanned_interval.clear()
+                has_done_startup_scan.clear()
+            
+            # 1. Full Scan Loop per market class
+            import math
+            from config.symbol_classes import get_symbol_class, MARKET_WINDOWS
+            
+            for class_key in MARKET_WINDOWS:
+                class_symbols = [s for s in WATCH_SYMBOLS if get_symbol_class(s) == class_key]
+                if not class_symbols:
+                    continue
+                    
+                open_t, close_t, days = MARKET_WINDOWS[class_key]
+                open_h, open_m = map(int, open_t.split(":"))
+                market_open_time = now_ist.replace(hour=open_h, minute=open_m, second=0, microsecond=0)
                 
-                success = run_with_timeout(run_all, timeout=300)
-                if not success:
-                    try:
-                        from src.alerts.telegram_dispatcher import send_text
-                        send_text("⚠️ **NSEBOT ALERT**: Scheduler scan loop timed out/hung after 5 minutes. Watchdog bypassed it to keep scheduler active.")
-                    except Exception:
-                        pass
-                elapsed = time.time() - cycle_start
-                last_full_scan = time.time()
-                log.debug("Full scan cycle completed in %.1fs (success=%s)", elapsed, success)
+                delta_minutes = (now_ist - market_open_time).total_seconds() / 60.0
+                if delta_minutes < 0:
+                    continue
+                    
+                current_interval_idx = math.floor(delta_minutes / interval_min)
+                should_scan = False
+                
+                if current_interval_idx == 0:
+                    if not has_done_startup_scan.get(class_key, False):
+                        should_scan = True
+                        has_done_startup_scan[class_key] = True
+                        last_scanned_interval[class_key] = 0
+                else:
+                    last_scanned = last_scanned_interval.get(class_key, -1)
+                    if current_interval_idx > last_scanned:
+                        should_scan = True
+                        has_done_startup_scan[class_key] = True
+                        last_scanned_interval[class_key] = current_interval_idx
+                        
+                if should_scan:
+                    cycle_start = time.time()
+                    log.info("Triggering scan for %s (interval idx: %d, time since open: %.1f min)", class_key, current_interval_idx, delta_minutes)
+                    def run_all():
+                        _guarded_run(class_key)
+                        if class_key == "MCX_COMMODITY":
+                            _run_dhan_naturalgas_scrape()
+                    
+                    success = run_with_timeout(run_all, timeout=300)
+                    if not success:
+                        try:
+                            from src.alerts.telegram_dispatcher import send_text
+                            send_text(f"⚠️ **NSEBOT ALERT**: Scheduler scan loop timed out/hung after 5 minutes for {class_key}. Watchdog bypassed it.")
+                        except Exception:
+                            pass
+                    elapsed = time.time() - cycle_start
+                    log.debug("Full scan cycle completed for %s in %.1fs (success=%s)", class_key, elapsed, success)
                 
             # 2. Live CMP Refresh Loop (every 2 minutes)
             if time.time() - last_cmp_refresh >= 120:

@@ -39,7 +39,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
-from config.settings import DB_PATH, DHAN_SECURITY_IDS
+from config.settings import DB_PATH
+from src.utils.dhan_resolver import get_dhan_security_id
 
 log = logging.getLogger(__name__)
 
@@ -491,24 +492,32 @@ def _is_payload_stale(payload: dict, tf: str) -> bool:
     return age_mins > ttl
 
 
-def _floor_tf_start(now_ist: datetime, tf: str) -> datetime:
-    if tf == "3h":
-        hour = (now_ist.hour // 3) * 3
-        return now_ist.replace(hour=hour, minute=0, second=0, microsecond=0)
-    return now_ist.replace(minute=0, second=0, microsecond=0)
-
-
-def _last_closed_window(tf: str) -> tuple[datetime, datetime] | None:
+def _last_closed_window(tf: str, base_symbol: str) -> tuple[datetime, datetime] | None:
     now_ist = datetime.now(IST)
-    if tf == "1h":
-        end_ist = now_ist.replace(minute=0, second=0, microsecond=0)
-        start_ist = end_ist - timedelta(hours=1)
-    elif tf == "3h":
-        current_block_start = _floor_tf_start(now_ist, "3h")
-        end_ist = current_block_start
-        start_ist = end_ist - timedelta(hours=3)
+    from config.symbol_classes import market_window
+    
+    open_t, close_t, _ = market_window(base_symbol)
+    open_h, open_m = map(int, open_t.split(":"))
+    
+    market_open = now_ist.replace(hour=open_h, minute=open_m, second=0, microsecond=0)
+    delta_mins = (now_ist - market_open).total_seconds() / 60.0
+    
+    if tf.endswith("m"):
+        tf_mins = int(tf[:-1])
+    elif tf.endswith("h"):
+        tf_mins = int(tf[:-1]) * 60
     else:
-        return None
+        tf_mins = 60
+        
+    if delta_mins < tf_mins:
+        start_ist = market_open
+        end_ist = now_ist
+    else:
+        import math
+        completed_intervals = math.floor(delta_mins / tf_mins)
+        start_ist = market_open + timedelta(minutes=(completed_intervals - 1) * tf_mins)
+        end_ist = market_open + timedelta(minutes=completed_intervals * tf_mins)
+
     return start_ist.astimezone(timezone.utc), end_ist.astimezone(timezone.utc)
 
 
@@ -563,13 +572,13 @@ def _aggregate_rows_to_payload(rows: list[dict], start_utc: datetime, end_utc: d
     }
 
 
-def _fetch_dhan_builtup_ohlc(base_symbol: str, tf: str) -> Optional[dict]:
+def _fetch_dhan_builtup_ohlc(base_symbol: str, tf: str, reference_price: float | None = None) -> Optional[dict]:
     if base_symbol not in _DHAN_BUILTUP_SYMBOLS:
         return None
-    window = _last_closed_window(tf)
+    window = _last_closed_window(tf, base_symbol)
     if not window:
         return None
-    sid = DHAN_SECURITY_IDS.get(base_symbol)
+    sid = get_dhan_security_id(base_symbol)
     if not sid:
         return None
 
@@ -603,6 +612,16 @@ def _fetch_dhan_builtup_ohlc(base_symbol: str, tf: str) -> Optional[dict]:
         out = _aggregate_rows_to_payload(rows, *window)
         if out:
             log.info("[chart] %s %s -> using dhan_builtup last-closed candle", base_symbol, tf)
+            # Fetch historical ATR and prev_ohlc from yfinance as a fallback
+            try:
+                yf_payload = _fetch_yf(base_symbol, tf, reference_price=reference_price)
+                if yf_payload:
+                    if "atr_14" in yf_payload:
+                        out["atr_14"] = yf_payload["atr_14"]
+                    if "prev_ohlc" in yf_payload:
+                        out["prev_ohlc"] = yf_payload["prev_ohlc"]
+            except Exception as e:
+                log.warning("[chart] failed to fetch yfinance fallback indicators for %s %s: %s", base_symbol, tf, e)
         return out
     except Exception as exc:
         log.warning("[chart] dhan_builtup fetch failed %s %s: %s", base_symbol, tf, exc)
@@ -612,7 +631,7 @@ def _fetch_dhan_builtup_ohlc(base_symbol: str, tf: str) -> Optional[dict]:
 def _fetch_local_ohlc_from_db(base_symbol: str, tf: str) -> Optional[dict]:
     if tf not in {"1h", "3h"}:
         return None
-    window = _last_closed_window(tf)
+    window = _last_closed_window(tf, base_symbol)
     if not window:
         return None
     start_utc, end_utc = window
@@ -977,11 +996,16 @@ class ChartFetcher:
                 "ohlc": current_ohlc,
                 "bar_start_utc": payload.get("bar_start_utc"),
                 "bar_end_utc": payload.get("bar_end_utc"),
+                "prev_ohlc": payload.get("prev_ohlc") or prev_ohlc or prev.get("prev_ohlc"),
                 "last_closed_ohlc": prev_ohlc if changed else prev.get("last_closed_ohlc"),
                 "updated_at": now,
                 "seen_at": now,
                 "changed_at": now if changed or not prev else prev.get("changed_at", now),
             }
+            # Preserve additional indicators like atr_14, support, resistance, etc. from raw payload
+            for k, v in payload.items():
+                if k not in entry:
+                    entry[k] = v
             symbol_state[tf] = entry
             return entry
 
@@ -999,7 +1023,7 @@ class ChartFetcher:
             source = None
 
             if base in _DHAN_BUILTUP_SYMBOLS:
-                payload = _fetch_dhan_builtup_ohlc(base, tf)
+                payload = _fetch_dhan_builtup_ohlc(base, tf, reference_price=reference_price)
                 source = "dhan_builtup" if payload else None
 
             if not payload:

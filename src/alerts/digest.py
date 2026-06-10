@@ -392,7 +392,7 @@ def _fit_telegram(message: str, digest_id: str) -> str:
 
 def _format_paper_trade_status(status: dict | None) -> str:
     if not status:
-        return "• Status: NO_ACTION\n• Details: No paper trade logic evaluated for this scan."
+        return "• *Status:* NO_ACTION | No paper trade logic evaluated."
 
     action = status.get("action")
     if action == "EXECUTED":
@@ -410,9 +410,9 @@ def _format_paper_trade_status(status: dict | None) -> str:
         else:
             details = f"{side} {strike:g} {opt} @ {entry:.2f} | SL: {sl:.2f} | Target: {tgt:.2f} (Lots: {lots})"
         return (
-            f"• Status: *EXECUTED* ({setup})\n"
-            f"• Details: {details}\n"
-            f"• Reason: {status.get('reason', 'Signal filters passed')}"
+            f"• *Status:* EXECUTED ({setup})\n"
+            f"• *Details:* {details}\n"
+            f"• *Reason:* {status.get('reason', 'Signal filters passed')}"
         )
     elif action == "CLOSED":
         trade = status.get("trade", {})
@@ -426,9 +426,9 @@ def _format_paper_trade_status(status: dict | None) -> str:
         else:
             details = f"{side} {strike:g} {opt} trade closed | P&L: {pnl_sign}₹{pnl:,.2f}"
         return (
-            f"• Status: *CLOSED*\n"
-            f"• Details: {details}\n"
-            f"• Reason: {status.get('reason') or trade.get('reason') or 'Exit conditions met'}"
+            f"• *Status:* CLOSED\n"
+            f"• *Details:* {details}\n"
+            f"• *Reason:* {status.get('reason') or trade.get('reason') or 'Exit conditions met'}"
         )
     elif action == "HELD":
         trade = status.get("trade", {})
@@ -442,22 +442,15 @@ def _format_paper_trade_status(status: dict | None) -> str:
         else:
             details = f"{side} {strike:g} {opt} open since {trade.get('opened_at', '')[:16].replace('T', ' ')}"
         return (
-            f"• Status: *HELD*\n"
-            f"• Details: Active position is already open ({details})\n"
-            f"• Action: Monitoring exits"
+            f"• *Status:* HELD ({details})\n"
+            f"• *Action:* Monitoring exits"
         )
     elif action and action.startswith("BLOCKED"):
-        return (
-            f"• Status: *BLOCKED*\n"
-            f"• Reason: {status.get('reason', 'Filters not met')}"
-        )
+        return f"• *Status:* BLOCKED | *Reason:* {status.get('reason', 'Filters not met')}"
     elif action == "SKIPPED_MARKET_CLOSED":
-        return (
-            f"• Status: *SKIPPED*\n"
-            f"• Reason: Market is currently closed"
-        )
+        return f"• *Status:* SKIPPED | *Reason:* Market is currently closed"
     else:
-        return f"• Status: *NO_TRADE*\n• Reason: {status.get('reason', 'No directional setup')}"
+        return f"• *Status:* NO_TRADE | *Reason:* {status.get('reason', 'No directional setup')}"
 
 
 def build_digest(
@@ -911,8 +904,7 @@ def _build_market_structure(alerts: list[dict], verdict: str) -> str:
 
 def _build_trading_plan(symbol: str, verdict: str, strength: int, scan_context: dict, intel: dict) -> str:
     """
-    Plan with explicit entry/stop/target levels. No R:R gate (per spec) but
-    levels are shown so the trader can eyeball reward vs risk.
+    Plan with explicit entry/stop/target levels. Consolidated for brevity.
     """
     lines = []
     px = _price_label(symbol).lower()
@@ -924,50 +916,67 @@ def _build_trading_plan(symbol: str, verdict: str, strength: int, scan_context: 
     is_bear = _is_bearish_verdict(verdict)
     is_bull = _is_bullish_verdict(verdict)
 
-    lines.append("Recommended:")
+    # 1. Recommended
+    rec = []
     if is_bear and resistance:
-        lines.append(f"\u2022 Sell {fmt(resistance)} CE / {fmt(resistance + offset)} CE (premium at resistance)")
+        rec.append(f"\u2022 Sell {fmt(resistance)} CE / {fmt(resistance + offset)} CE (premium at resistance)")
         if support:
-            lines.append(f"\u2022 Sell {fmt(support)} PE only if {px} holds above {fmt(support)}")
+            rec.append(f"\u2022 Sell {fmt(support)} PE only if {px} holds above {fmt(support)}")
     elif is_bull and support:
-        lines.append(f"\u2022 Sell {fmt(support)} PE / {fmt(support - offset)} PE (premium at support)")
+        rec.append(f"\u2022 Sell {fmt(support)} PE / {fmt(support - offset)} PE (premium at support)")
         if resistance:
-            lines.append(f"\u2022 Buy {fmt(resistance)} CE only if {px} breaks {fmt(resistance)} with volume")
+            rec.append(f"\u2022 Buy {fmt(resistance)} CE only if {px} breaks {fmt(resistance)} with volume")
     else:
         if atm:
-            lines.append(f"\u2022 Range: Sell {fmt(atm + offset)} CE + {fmt(atm - offset)} PE (iron condor)")
-        lines.append("\u2022 Wait for breakout confirmation before directional trades")
+            rec.append(f"\u2022 Sell {fmt(atm + offset)} CE + {fmt(atm - offset)} PE")
+        rec.append("\u2022 Wait for breakout confirmation")
+    if rec:
+        lines.append("Recommended:")
+        lines.extend(rec)
 
-    lines.append("\nAvoid:")
+    # 2. Avoid
+    avoid = []
     if is_bear:
-        lines.append("\u2022 Buying CEs (trend is downward)")
+        avoid.append("\u2022 Buying CEs (trend is downward)")
         if support:
-            lines.append(f"\u2022 Selling PEs below {fmt(support)}")
+            avoid.append(f"\u2022 Selling PEs below {fmt(support)}")
     elif is_bull:
-        lines.append("\u2022 Buying PEs (trend is upward)")
+        avoid.append("\u2022 Buying PEs (trend is upward)")
         if resistance:
-            lines.append(f"\u2022 Selling CEs above {fmt(resistance)}")
+            avoid.append(f"\u2022 Selling CEs above {fmt(resistance)}")
     else:
-        lines.append("\u2022 Directional bets (no clear edge)")
+        avoid.append("\u2022 Directional bets (no clear edge)")
+    if avoid:
+        lines.append("\nAvoid:")
+        lines.extend(avoid)
 
-    lines.append("\nLevels:")
+    # 3. Levels
+    lvls = []
     if is_bear and resistance:
-        lines.append(f"\u2022 Stop: {px} closes above {fmt(resistance + offset)}")
+        lvls.append(f"\u2022 Stop: {px} closes above {fmt(resistance + offset)}")
         if support:
-            lines.append(f"\u2022 Target: {fmt(support)}, then {fmt(support - offset)}")
+            lvls.append(f"\u2022 Target: {fmt(support)}, then {fmt(support - offset)}")
     elif is_bull and support:
         # Bug 2 fix: stop is support - offset, NOT an arbitrary far level
-        lines.append(f"\u2022 Stop: {px} closes below {fmt(support - offset)}")
+        lvls.append(f"\u2022 Stop: {px} closes below {fmt(support - offset)}")
         if resistance:
-            lines.append(f"\u2022 Target: {fmt(resistance)}, then {fmt(resistance + offset)}")
+            lvls.append(f"\u2022 Target: {fmt(resistance)}, then {fmt(resistance + offset)}")
     else:
         if resistance and support:
-            lines.append(f"\u2022 Invalidation: break of {fmt(resistance)} or {fmt(support)}")
+            lvls.append(f"\u2022 Invalidation: break of {fmt(resistance)} or {fmt(support)}")
+    if lvls:
+        lines.append("\nLevels:")
+        lines.extend(lvls)
 
+    extra_notes = []
     if strength < 60:
-        lines.append("\u2022 Low signal strength -> reduce size")
+        extra_notes.append("\u2022 Low signal strength -> reduce size")
     if intel.get("conflict"):
-        lines.append(f"\u2022 \u26A0\ufe0f {intel['conflict']}")
+        extra_notes.append(f"\u2022 \u26A0\ufe0f {intel['conflict']}")
+    if extra_notes:
+        lines.append("")
+        lines.extend(extra_notes)
+
     return "\n".join(lines)
 
 
@@ -990,11 +999,18 @@ def _build_confirmation_section(chart_payload: dict, scan_context: dict, verdict
         conflict = " \u26A0\ufe0f CONFLICT"
     elif vbias == "BEARISH" and "BULLISH" in (c1, c3):
         conflict = " \u26A0\ufe0f CONFLICT"
-    lines.append(f"Candles: 1H {c1} {arrow(c1)} | 3H {c3} {arrow(c3)}{conflict}")
+    lines.append(f"\u2022 *Candles:* 1H {c1} {arrow(c1)} | 3H {c3} {arrow(c3)}{conflict}")
 
     oi_bias, oi_text = _oi_flow_read(scan_context.get("ce_oi_change", 0), scan_context.get("pe_oi_change", 0))
-    agree = "agrees" if oi_bias == vbias and vbias != "NEUTRAL" else ("disagrees" if oi_bias != "NEUTRAL" and vbias != "NEUTRAL" and oi_bias != vbias else "neutral on")
-    lines.append(f"OI Flow: {oi_text} -> {oi_bias} ({agree} verdict)")
+    if oi_bias == vbias and vbias != "NEUTRAL":
+        agree_lbl = "*[agrees with verdict]*"
+    elif oi_bias != "NEUTRAL" and vbias != "NEUTRAL" and oi_bias != vbias:
+        agree_lbl = f"*[disagrees with verdict]*"
+    else:
+        agree_lbl = ""
+    
+    agree_part = f" {agree_lbl}" if agree_lbl else ""
+    lines.append(f"\u2022 *OI Flow:* {oi_text} -> {oi_bias}{agree_part}")
     return "\n".join(lines)
 
 
@@ -1088,9 +1104,32 @@ def build_enhanced_digest(
     else:
         spot_delta = f"{_fmt_signed(d_points, 1)} (`{_fmt_signed(d_spot, pct_digits)}%`)"
  
+    # ── Decision
+    def sec(title, body):
+        return ["", title, body]
+
+    spot_delta_clean = spot_delta.replace("`", "")
+    spot_delta_str = f" ({spot_delta_clean})" if spot_delta != "flat" and spot_delta != "no prev data" else ""
+    oi_unwind_note = ""
+    ce_net, pe_net = _net_oi_delta(alerts, ctx)
+    if ce_net < 0 and pe_net < 0:
+        oi_unwind_note = " (Both Unwinding)"
+    elif ce_net > 0 and pe_net > 0:
+        oi_unwind_note = " (Both Building)"
+
+    # ── Header (always) ────────────────────────────────────────────────────
+    spot_val = _fmt_val(ctx.get('underlying'), symbol)
+    atm_val = _fmt_val(ctx.get('atm_strike'), symbol)
+    pcr_val = _fmt_num(ctx.get('pcr'), 2)
+    lines = [
+        f"\U0001F4CA *{symbol}*{header_extra} | {ts}",
+        f"{px_label} `{spot_val}{spot_delta_str}` | ATM `{atm_val}` | PCR `{pcr_val}`",
+        f"Net OI \u0394: CE `{_fmt_oi(ce_net)}` | PE `{_fmt_oi(pe_net)}`{oi_unwind_note}",
+        DIVIDER,
+    ]
+ 
     # ── Decision gate: regime backstop + verdict ──────────────────────────
     regime, banner_text, no_trade = _classify_regime(alerts, ctx, verdict)
-    ce_net, pe_net = _net_oi_delta(alerts, ctx)
     vbias = _verdict_bias(verdict)
  
     c1 = chart_payload.get("1h", {}).get("sentiment", "NEUTRAL").upper()
@@ -1099,33 +1138,23 @@ def build_enhanced_digest(
  
     confirmation = _build_confirmation_section(chart_payload, ctx, verdict)
  
-    def sec(title, body):
-        return ["", title, "", body, ""]
- 
-    # ── Header (always) ────────────────────────────────────────────────────
-    lines = [
-        f"\U0001F4CA *{symbol}*{header_extra} | {ts} | {n} signals",
-        DIVIDER,
-        "",
-    ]
-
     if no_trade:
         # NO-TRADE banner. Plan suppressed — no fake entries on squaring.
         lines += [
             f"\U0001F6D1 *NO TRADE* - {banner_text}",
             "Stand aside. No directional edge this scan.",
             "",
-            f"{px_label} `{_fmt_val(ctx.get('underlying'), symbol)}` | ATM `{_fmt_val(ctx.get('atm_strike'), symbol)}` | PCR `{_fmt_num(ctx.get('pcr'), 2)}`",
+            f"{px_label} `{spot_val}` | ATM `{atm_val}` | PCR `{pcr_val}`",
             f"Net OI flow: CE `{_fmt_oi(ce_net)}` | PE `{_fmt_oi(pe_net)}`",
         ]
         if vbias != "NEUTRAL":
             lines.append(f"\u26A0\ufe0f Engine verdict was {label} ({strength}/100) - not confirmed by flow")
-        lines += sec("\u26A1 WHY NO TRADE", _build_no_trade_reason(regime, ce_net, pe_net, verdict, strength))
-        lines += sec("\U0001F4CA BIGGEST MOVES", _build_biggest_moves(alerts))
-        lines += sec("\U0001F4C8 CONFIRMATION", confirmation)
+        lines += sec("\u26A1 *WHY NO TRADE*", _build_no_trade_reason(regime, ce_net, pe_net, verdict, strength))
+        lines += sec("\U0001F4CA *BIGGEST MOVES*", _build_biggest_moves(alerts))
+        lines += sec("\U0001F4C8 *CONFIRMATION*", confirmation)
         if paper_trade_status:
-            lines += sec("🤖 PAPER TRADE STATUS", _format_paper_trade_status(paper_trade_status))
-        lines += [f"_#{digest_id}_", DIVIDER]
+            lines += sec("🤖 *PAPER TRADE STATUS*", _format_paper_trade_status(paper_trade_status))
+        lines += ["", f"_#{digest_id}_", DIVIDER]
         return digest_id, _fit_telegram("\n".join(lines), digest_id)
 
     # ── TRADEABLE path ─────────────────────────────────────────────────────
@@ -1135,10 +1164,10 @@ def build_enhanced_digest(
 
     levels_parts = []
     if ctx.get("support"):
-        levels_parts.append(f"Support: `{_fmt_val(ctx.get('support'), symbol)}`")
+        levels_parts.append(f"Support `{_fmt_val(ctx.get('support'), symbol)}`")
     if ctx.get("resistance"):
-        levels_parts.append(f"Resistance: `{_fmt_val(ctx.get('resistance'), symbol)}`")
-    levels_section = " | ".join(levels_parts) if levels_parts else "No key levels identified"
+        levels_parts.append(f"Resistance `{_fmt_val(ctx.get('resistance'), symbol)}`")
+    levels_section = " | ".join(levels_parts) if levels_parts else "None identified"
 
     if "Put Writing" in verdict:
         trade_word = "SELL PE"
@@ -1151,27 +1180,36 @@ def build_enhanced_digest(
     else:
         trade_word = "WAIT"
 
+    trade_text = f"{emoji} *TRADE: {trade_word}* - {label}"
     lines += [
-        f"{emoji} *TRADE: {trade_word}* - {label}",
-        f"Signal strength: {s_bar} {strength}/100 ({s_label})",
+        trade_text,
+        f"`Signal strength: {s_bar} {strength}/100 ({s_label.upper()})`",
     ]
     if has_conflict:
-        lines.append("\u26A0\ufe0f Chart timeframe conflict (1H vs 3H) - size down")
-    lines += [
-        "",
-        f"{px_label} `{_fmt_val(ctx.get('underlying'), symbol)}` | ATM `{_fmt_val(ctx.get('atm_strike'), symbol)}` | PCR `{_fmt_num(ctx.get('pcr'), 2)}`",
-        f"\u0394 prev scan: {px_label} `{spot_delta}` | Net OI: CE `{_fmt_oi(ce_net)}` | PE `{_fmt_oi(pe_net)}`",
-        "",
+        lines.append(f"`\u26A0\ufe0f Chart timeframe conflict (1H vs 3H) - size down`")
+
+    # Combine key levels and key signal into one section
+    key_signal_clean = key_signal_formatted.replace("\n", " ").strip()
+    key_signal_clean = key_signal_clean.replace(
+        "   \u26A0\ufe0f Note: headline signal does not confirm the verdict",
+        " *[⚠️ Disagrees with verdict]*"
+    )
+
+    signals_levels_body = [
+        f"\u2022 *Key Levels:* {levels_section}",
+        f"\u2022 *Headline:* {key_signal_clean}"
     ]
-    lines += sec("\u26A1 KEY SIGNAL", key_signal_formatted)
-    lines += sec("\U0001F3AF TRADING PLAN", trading_plan)
-    lines += sec("\U0001F4CD KEY LEVELS", levels_section)
-    lines += sec("\U0001F4CA MARKET STRUCTURE", market_structure)
-    lines += sec("\U0001F4C8 CONFIRMATION", confirmation)
-    lines += sec("\U0001F4A1 BOTTOM LINE", bottom_line)
+    lines += sec("\u26A1 *KEY SIGNALS & LEVELS*", "\n".join(signals_levels_body))
+    lines += sec("\U0001F3AF *TRADING PLAN*", trading_plan)
+    
+    if market_structure and market_structure != "No significant OI structure changes":
+        lines += sec("\U0001F4CA *MARKET STRUCTURE*", market_structure)
+        
+    lines += sec("\U0001F4C8 *CONFIRMATION*", confirmation)
+    lines += sec("\U0001F4A1 *BOTTOM LINE*", bottom_line)
     if paper_trade_status:
-        lines += sec("🤖 PAPER TRADE STATUS", _format_paper_trade_status(paper_trade_status))
-    lines += [f"_#{digest_id}_", DIVIDER]
+        lines += sec("🤖 *PAPER TRADE STATUS*", _format_paper_trade_status(paper_trade_status))
+    lines += ["", f"_#{digest_id}_", DIVIDER]
 
     return digest_id, _fit_telegram("\n".join(lines), digest_id)
 

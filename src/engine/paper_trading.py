@@ -31,6 +31,9 @@ from config.symbol_classes import market_window, get_strike_step
 IST = pytz.timezone("Asia/Kolkata")
 
 
+
+
+
 def _is_market_open(symbol: str) -> bool:
     """Return True only if current IST time is within the symbol's market window."""
     now = datetime.now(IST)
@@ -181,16 +184,49 @@ def _maybe_close_open_trade(
     strike = float(open_trade.get("strike") or 0.0)
     side = open_trade.get("side") or "BUY"
     
-    # Get current premium for exit
-    exit_premium = _get_option_premium(symbol, expiry, strike, option_type, option_rows)
+    # 1. ALWAYS check underlying CMP first to see if it crossed SL or TP
+    target_underlying = float(open_trade.get("target_underlying") or 0.0)
+    sl_underlying = float(open_trade.get("sl_underlying") or 0.0)
     
-    # Check premium-based SL/Target first (if available)
-    sl_premium = open_trade.get("sl_premium")
-    target_premium = open_trade.get("target_premium")
-    
-    if exit_premium and sl_premium and target_premium:
-        # Premium-based exit — direction depends on option type
-        if option_type != "FUT":
+    # Resolve exit premium (for options)
+    exit_premium = None
+    if option_type != "FUT":
+        exit_premium = _get_option_premium(symbol, expiry, strike, option_type, option_rows)
+    else:
+        exit_premium = underlying
+        
+    verdict_label = open_trade.get("verdict_label", "")
+    from src.engine.paper_plan import is_bullish_verdict
+    if option_type == "CE":
+        is_bull = (side == "BUY")
+    elif option_type == "PE":
+        is_bull = (side == "SELL")
+    elif option_type == "FUT":
+        is_bull = (side == "BUY")
+    else:
+        is_bull = is_bullish_verdict(verdict_label)
+
+    # Check underlying-based crossing (CMP)
+    if is_bull:
+        if target_underlying > 0 and underlying >= target_underlying:
+            close_paper_trade(open_trade["id"], now_iso, underlying, exit_premium, "CLOSED_TARGET", "target hit")
+            return
+        if sl_underlying > 0 and underlying <= sl_underlying:
+            close_paper_trade(open_trade["id"], now_iso, underlying, exit_premium, "CLOSED_SL", "stop loss hit")
+            return
+    else:
+        if target_underlying > 0 and underlying <= target_underlying:
+            close_paper_trade(open_trade["id"], now_iso, underlying, exit_premium, "CLOSED_TARGET", "target hit")
+            return
+        if sl_underlying > 0 and underlying >= sl_underlying:
+            close_paper_trade(open_trade["id"], now_iso, underlying, exit_premium, "CLOSED_SL", "stop loss hit")
+            return
+
+    # 2. If underlying hasn't crossed, check premium-based SL/Target (if option and exit_premium available)
+    if option_type != "FUT" and exit_premium is not None:
+        sl_premium = open_trade.get("sl_premium")
+        target_premium = open_trade.get("target_premium")
+        if sl_premium is not None and target_premium is not None:
             if side == "SELL":
                 # For SELL option, exit when premium rises above SL (loss), or drops below target (profit)
                 if exit_premium <= float(target_premium):
@@ -207,40 +243,6 @@ def _maybe_close_open_trade(
                 if exit_premium <= float(sl_premium):
                     close_paper_trade(open_trade["id"], now_iso, underlying, exit_premium, "CLOSED_SL", "stop loss hit")
                     return
-    
-    # Fallback to underlying-based exit logic (legacy & FUT)
-    target_underlying = float(open_trade.get("target_underlying") or 0.0)
-    sl_underlying = float(open_trade.get("sl_underlying") or 0.0)
-    
-    # For FUT, exit_premium is the underlying
-    if option_type == "FUT":
-        exit_premium = underlying
-        
-    verdict_label = open_trade.get("verdict_label", "")
-    from src.engine.paper_plan import is_bullish_verdict
-    if option_type == "CE":
-        is_bull = (side == "BUY")
-    elif option_type == "PE":
-        is_bull = (side == "SELL")
-    elif option_type == "FUT":
-        is_bull = (side == "BUY")
-    else:
-        is_bull = is_bullish_verdict(verdict_label)
-    
-    if is_bull:
-        if target_underlying > 0 and underlying >= target_underlying:
-            close_paper_trade(open_trade["id"], now_iso, underlying, exit_premium, "CLOSED_TARGET", "target hit")
-            return
-        if sl_underlying > 0 and underlying <= sl_underlying:
-            close_paper_trade(open_trade["id"], now_iso, underlying, exit_premium, "CLOSED_SL", "stop loss hit")
-            return
-    else:
-        if target_underlying > 0 and underlying <= target_underlying:
-            close_paper_trade(open_trade["id"], now_iso, underlying, exit_premium, "CLOSED_TARGET", "target hit")
-            return
-        if sl_underlying > 0 and underlying >= sl_underlying:
-            close_paper_trade(open_trade["id"], now_iso, underlying, exit_premium, "CLOSED_SL", "stop loss hit")
-            return
 
 
 def run_paper_trading(symbol: str, scan_context: dict, digest_id: str, intel: dict) -> dict | None:
@@ -395,9 +397,9 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
         return
 
     ohlc_3h = pay_3h.get("ohlc")
-    prev_3h = pay_3h.get("prev_ohlc")
+    prev_3h = pay_3h.get("prev_ohlc") or pay_3h.get("last_closed_ohlc")
     ohlc_1h = pay_1h.get("ohlc")
-    prev_1h = pay_1h.get("prev_ohlc")
+    prev_1h = pay_1h.get("prev_ohlc") or pay_1h.get("last_closed_ohlc")
 
     if not ohlc_3h or not prev_3h or not ohlc_1h or not prev_1h:
         log.warning("%s: Timeframe strategy skipped — incomplete 3h/1h candle data", symbol)
@@ -438,11 +440,8 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
     long_oi_support = (pe_diff - ce_diff) > (prev_pe * min_diff_pct)
     short_oi_support = (ce_diff - pe_diff) > (prev_ce * min_diff_pct)
 
-    # Calculate breakout buffer (Item 1)
-    percent_buffer = underlying * 0.001
-    atr_val = pay_3h.get("atr_14")
-    atr_buffer = float(atr_val) * 0.10 if atr_val is not None else 0.0
-    breakout_buffer = max(percent_buffer, atr_buffer)
+    # Calculate breakout buffer (Strictly 0.1% of underlying CMP, no ATR dependency)
+    breakout_buffer = underlying * 0.001
 
     log.info("%s: Timeframe strategy | 3h close=%g p3h_high=%g p3h_low=%g (buffer=%g) | 1h close=%g p1h_high=%g p1h_low=%g | pe_diff=%g ce_diff=%g",
              symbol, c_3h_close, p_3h_high, p_3h_low, breakout_buffer, c_1h_close, p_1h_high, p_1h_low, pe_diff, ce_diff)

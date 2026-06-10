@@ -108,7 +108,7 @@ def _filter_atm_strikes(result: dict) -> None:
         kept_strikes = set(strikes_list[start_idx:end_idx])
         
         result["strikes"] = [s for s in strikes_data if s["strike"] in kept_strikes]
-        log.info(
+        log.debug(
             "Filtered strikes for %s from %d to %d around ATM strike %s",
             result.get("symbol"),
             len(strikes_list),
@@ -144,7 +144,7 @@ def fetch_option_chain(symbol: str) -> dict | None:
                     continue
 
                 if source != FETCHER_PRIORITY[0]:
-                    log.warning("Fallback active: using '%s' for %s", source, symbol)
+                    log.debug("Fallback active: using '%s' for %s", source, symbol)
                 
                 # Filter to ATM +- configured strike window
                 _filter_atm_strikes(result)

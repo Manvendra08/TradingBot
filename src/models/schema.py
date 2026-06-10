@@ -518,16 +518,25 @@ def close_paper_trade(trade_id: int, closed_at: str, exit_underlying: float, exi
                 else:
                     pnl_points = exit_premium - entry_premium
             elif entry_premium and entry_premium > 0:
-                # Fallback: Estimate exit premium using intrinsic value at exit if missing
+                # Fallback: Estimate exit premium using last known snapshot LTP to preserve time value
                 strike = float(row["strike"] or 0.0)
-                if option_type == "CE":
-                    estimated_exit = max(0.0, float(exit_underlying) - strike)
+                snap_row = conn.execute(
+                    "SELECT ltp FROM option_chain_snapshots WHERE symbol=? AND strike=? AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
+                    (symbol.upper(), strike, option_type)
+                ).fetchone()
+                if snap_row:
+                    estimated_exit = float(snap_row["ltp"])
                 else:
-                    estimated_exit = max(0.0, strike - float(exit_underlying))
+                    # Fallback to intrinsic value at exit if no snapshot exists
+                    if option_type == "CE":
+                        estimated_exit = max(0.0, float(exit_underlying) - strike)
+                    else:
+                        estimated_exit = max(0.0, strike - float(exit_underlying))
                 if side == "SELL":
                     pnl_points = entry_premium - estimated_exit
                 else:
                     pnl_points = estimated_exit - entry_premium
+                exit_premium = estimated_exit
             else:
                 pnl_points = 0.0
         else:

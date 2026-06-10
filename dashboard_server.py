@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 try:
-    from config.settings import DB_PATH, WATCH_SYMBOLS
+    from config.settings import DB_PATH, WATCH_SYMBOLS, LOT_SIZES
     from config.runtime_config import (
         ALLOWED_SCAN_FREQUENCIES,
         MIN_SCAN_FREQUENCY,
@@ -35,6 +35,17 @@ except ImportError:
     ALLOWED_SCAN_FREQUENCIES = [5, 15, 30, 60, 180, 1440]
     MIN_SCAN_FREQUENCY = 5
     MAX_SCAN_FREQUENCY = 1440
+    LOT_SIZES = {
+        "NIFTY": 25,
+        "BANKNIFTY": 15,
+        "FINNIFTY": 25,
+        "MIDCPNIFTY": 50,
+        "NATURALGAS": 1250,
+        "CRUDEOIL": 100,
+        "GOLD": 100,
+        "SILVER": 30,
+    }
+
 
     def get_scan_frequency_minutes() -> int:
         return 5
@@ -858,6 +869,49 @@ async def set_runtime(scan_frequency_minutes: int = Query(...)):
     return {"ok": True, "scan_frequency_minutes": value}
 
 
+def _enrich_open_trades_with_live_pnl(rows: list[dict]) -> None:
+    for row in rows:
+        if row.get("status") != "OPEN":
+            continue
+            
+        symbol = str(row.get("symbol") or "").upper().strip()
+        option_type = str(row.get("option_type") or "").upper().strip()
+        strike = row.get("strike")
+        
+        cmp = None
+        if option_type == "FUT" or not option_type or strike is None:
+            res = _q("SELECT price FROM underlying_price WHERE symbol=? ORDER BY fetched_at DESC LIMIT 1", (symbol,))
+            if res:
+                cmp = res[0]["price"]
+        else:
+            try:
+                strike_val = float(strike)
+            except (ValueError, TypeError):
+                strike_val = 0.0
+            res = _q(
+                "SELECT ltp FROM option_chain_snapshots WHERE symbol=? AND ABS(strike - ?) < 0.01 AND option_type=? ORDER BY fetched_at DESC LIMIT 1",
+                (symbol, strike_val, option_type)
+            )
+            if res:
+                cmp = res[0]["ltp"]
+                
+        if cmp is not None and cmp > 0:
+            if option_type == "FUT":
+                entry = float(row.get("entry_underlying") or 0.0)
+            else:
+                entry = float(row.get("entry_premium") or row.get("entry_underlying") or 0.0)
+            
+            lots = int(row.get("lots") or 1)
+            side = str(row.get("side") or "BUY").upper().strip()
+            lot_size = LOT_SIZES.get(symbol, 1)
+            
+            pnl = (cmp - entry) * lots * lot_size if side == "BUY" else (entry - cmp) * lots * lot_size
+            
+            row["pnl_rupees"] = round(pnl, 2)
+            row["cmp"] = cmp
+
+
+
 @app.get("/api/paper_trades")
 async def get_paper_trades(symbol: str = "", status: str = "", limit: int = 300):
     clauses = []
@@ -873,6 +927,7 @@ async def get_paper_trades(symbol: str = "", status: str = "", limit: int = 300)
         f"SELECT * FROM paper_trades {where} ORDER BY opened_at DESC LIMIT ?",
         (*params, int(limit)),
     )
+    _enrich_open_trades_with_live_pnl(rows)
     
     # Calculate duration for closed trades
     from datetime import datetime
@@ -1020,6 +1075,7 @@ async def get_paper_summary(symbol: str = ""):
         f"SELECT * FROM paper_trades {where} {'AND' if where else 'WHERE'} status='OPEN' ORDER BY opened_at DESC",
         tuple(params),
     )
+    _enrich_open_trades_with_live_pnl(open_rows)
     
     # Symbol breakdown — normalise symbol to UPPER to avoid crudeoil/CRUDEOIL duplicates
     symbol_stats = _q(

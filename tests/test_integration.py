@@ -405,7 +405,8 @@ class TestSchedulerMarketHours:
                 start_scheduler()
             except SystemExit:
                 pass
-            mock_run.assert_called_once()
+            from unittest.mock import call
+            mock_run.assert_has_calls([call('NSE_INDEX'), call('MCX_COMMODITY')], any_order=True)
             mock_scrape.assert_called_once()
 
     def test_start_scheduler_keyboard_interrupt(self):
@@ -413,7 +414,8 @@ class TestSchedulerMarketHours:
         with patch("src.scheduler.job_runner._guarded_run") as mock_run, \
              patch("time.sleep", side_effect=KeyboardInterrupt) as mock_sleep:
             start_scheduler()  # Handles KeyboardInterrupt without throwing
-            mock_run.assert_called_once()
+            from unittest.mock import call
+            mock_run.assert_has_calls([call('NSE_INDEX'), call('MCX_COMMODITY')], any_order=True)
 
     def test_run_dhan_naturalgas_scrape_runner_missing(self):
         from src.scheduler.job_runner import _run_dhan_naturalgas_scrape

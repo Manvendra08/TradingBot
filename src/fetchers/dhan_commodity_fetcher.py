@@ -15,7 +15,8 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
-from config.settings import HTTP_TIMEOUT_SECONDS, HTTP_MAX_RETRIES, HTTP_BACKOFF_FACTOR, DHAN_SECURITY_IDS
+from config.settings import HTTP_TIMEOUT_SECONDS, HTTP_MAX_RETRIES, HTTP_BACKOFF_FACTOR
+from src.utils.dhan_resolver import get_dhan_security_id
 from src.fetchers.base_fetcher import BaseFetcher
 
 log = logging.getLogger(__name__)
@@ -664,7 +665,7 @@ class DhanCommodityFetcher(BaseFetcher):
                     api_underlying = _parse_float(str(((raw or {}).get("data") or {}).get("sltp") or ""))
                     if api_underlying is not None:
                         underlying = api_underlying
-                    log.info(
+                    log.debug(
                         "[dhan_commodity] parsed %d strikes via optchainactive for %s (sid=%s expj=%s)",
                         len({r["strike"] for r in strikes}),
                         base,
@@ -685,7 +686,7 @@ class DhanCommodityFetcher(BaseFetcher):
         # ── API-ONLY FALLBACK ──────────────────────────────────────────────────
         if not strikes:
             log.info("[dhan_commodity] HTML parsing failed or empty. Falling back to ScanX API scan for %s", base)
-            secid = DHAN_SECURITY_IDS.get(base)
+            secid = get_dhan_security_id(base)
             if secid:
                 fl_payload = {"Data": {"Seg": 5, "Sid": int(secid), "Exp": 0}}
                 try:
@@ -741,7 +742,7 @@ class DhanCommodityFetcher(BaseFetcher):
             log.warning("[dhan_commodity] no strikes parsed for %s", base)
             return None
 
-        secid = DHAN_SECURITY_IDS.get(base)
+        secid = get_dhan_security_id(base)
         if secid:
             live_fut = self._fetch_builtup_live_price(secid)
             if live_fut is not None and live_fut > 0:

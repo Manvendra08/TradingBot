@@ -103,24 +103,49 @@ def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | N
         # FUT
         strike = atm
 
-    if bullish:
-        sl = _near_level(support, underlying, step, "below")
-        target = _near_level(resistance, underlying, step, "above")
-        sl = sl if sl is not None else _round_to_step(underlying - step, step)
-        target = target if target is not None else _round_to_step(underlying + step, step)
-        if sl >= underlying:
-            sl = _round_to_step(underlying - step, step)
-        if target <= underlying:
-            target = _round_to_step(underlying + step, step)
-    else:
-        sl = _near_level(resistance, underlying, step, "above")
-        target = _near_level(support, underlying, step, "below")
-        sl = sl if sl is not None else _round_to_step(underlying + step, step)
-        target = target if target is not None else _round_to_step(underlying - step, step)
-        if sl <= underlying:
-            sl = _round_to_step(underlying + step, step)
-        if target >= underlying:
-            target = _round_to_step(underlying - step, step)
+    atr_used = False
+    setup_type = ctx.get("setup_type")
+    if option_type == "FUT" and setup_type != "TIMEFRAME":
+        chart_indicators = ctx.get("chart_indicators") or {}
+        tf_data = chart_indicators
+        if not any(k in chart_indicators for k in ("1h", "3h")):
+            tf_data = next(iter(chart_indicators.values()), {}) if chart_indicators else {}
+        pay_3h = tf_data.get("3h") or {}
+        pay_1h = tf_data.get("1h") or {}
+        atr = pay_3h.get("atr_14") or pay_1h.get("atr_14")
+        if atr is None:
+            for tf, payload in tf_data.items():
+                if isinstance(payload, dict) and payload.get("atr_14"):
+                    atr = payload["atr_14"]
+                    break
+        if atr and atr > 0:
+            atr_used = True
+            if bullish:
+                sl = underlying - 1.5 * atr
+                target = underlying + 3.0 * atr
+            else:
+                sl = underlying + 1.5 * atr
+                target = underlying - 3.0 * atr
+
+    if not atr_used:
+        if bullish:
+            sl = _near_level(support, underlying, step, "below")
+            target = _near_level(resistance, underlying, step, "above")
+            sl = sl if sl is not None else _round_to_step(underlying - step, step)
+            target = target if target is not None else _round_to_step(underlying + step, step)
+            if sl >= underlying:
+                sl = _round_to_step(underlying - step, step)
+            if target <= underlying:
+                target = _round_to_step(underlying + step, step)
+        else:
+            sl = _near_level(resistance, underlying, step, "above")
+            target = _near_level(support, underlying, step, "below")
+            sl = sl if sl is not None else _round_to_step(underlying + step, step)
+            target = target if target is not None else _round_to_step(underlying - step, step)
+            if sl <= underlying:
+                sl = _round_to_step(underlying + step, step)
+            if target >= underlying:
+                target = _round_to_step(underlying - step, step)
 
     return {
         "verdict_label": verdict,

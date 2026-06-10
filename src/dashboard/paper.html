@@ -1115,15 +1115,17 @@ tr:hover td { background: rgba(0,229,160,.04); }
           <th class="L">Opened</th>
           <th class="L">Symbol</th>
           <th>Type</th>
-          <th>Strike</th>
+          <th>Instrument</th>
           <th>Entry</th>
+          <th>CMP</th>
           <th>SL</th>
           <th>Target</th>
           <th>Lots</th>
+          <th>P&amp;L (₹)</th>
           <th class="L">Verdict</th>
         </tr></thead>
         <tbody id="open-body">
-          <tr><td colspan="9"><div class="empty-state"><div class="empty-icon">🟢</div>No open trades</div></td></tr>
+          <tr><td colspan="11"><div class="empty-state"><div class="empty-icon">🟢</div>No open trades</div></td></tr>
         </tbody>
       </table>
     </div>
@@ -1380,19 +1382,38 @@ function renderSummary(s) {
   const ot=s.open_trades||[];
   document.getElementById('open-count').textContent=ot.length;
   document.getElementById('open-body').innerHTML=ot.length
-    ? ot.map(t=>`
+    ? ot.map(t=>{
+      const side = (t.side||'BUY').toUpperCase();
+      const otType = (t.option_type||'').toUpperCase();
+      const instr = otType === 'FUT' ? 'FUT' : (t.strike ? t.strike + ' ' + otType : otType);
+      const entry = otType === 'FUT' ? parseFloat(t.entry_underlying) : (parseFloat(t.entry_premium) || parseFloat(t.entry_underlying));
+      const lots = parseFloat(t.lots) || 1;
+      const pnl = parseFloat(t.pnl_rupees) || 0;
+      
+      let cmp = entry;
+      if (t.cmp != null) {
+          cmp = parseFloat(t.cmp);
+      } else {
+          if (side === 'BUY') { cmp = entry + (pnl / lots); }
+          else if (side === 'SELL') { cmp = entry - (pnl / lots); }
+      }
+      
+      return `
       <tr class="${openRowClass(t)}">
         <td class="L">${fdt(t.opened_at)}</td>
         <td class="L"><strong>${t.symbol}</strong></td>
-        <td>${typeChip(t)}</td>
-        <td>${fp(t.strike)}</td>
-        <td>${entryPrice(t)} <span class="lot-chip">${priceLabel(t)}</span></td>
+        <td><span class="badge ${side==='SELL'?'b-loss':'b-win'}">${side}</span></td>
+        <td>${instr}</td>
+        <td>${fp(entry)}</td>
+        <td>${fp(cmp)}</td>
         <td class="bad">${slPrice(t)}</td>
         <td class="good">${targetPrice(t)}</td>
         <td>${t.lots??1}</td>
+        <td class="${pnl>=0?'good':'bad'}">${signRs(pnl)}</td>
         <td class="L">${vtag(t.verdict_label||t.reason, t.verdict_explanation)}</td>
-      </tr>`).join('')
-    : '<tr><td colspan="9"><div class="empty-state"><div class="empty-icon">🟢</div>No open trades</div></td></tr>';
+      </tr>`;
+    }).join('')
+    : '<tr><td colspan="11"><div class="empty-state"><div class="empty-icon">🟢</div>No open trades</div></td></tr>';
 
   /* Holding analysis */
   const ha=s.holding_analysis||{}, dist=ha.distribution||{}, dpct=ha.distribution_pct||{};
