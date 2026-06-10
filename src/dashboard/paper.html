@@ -432,11 +432,13 @@ main { padding: 22px 24px; display: grid; gap: 20px; max-width: 1920px; margin: 
 ════════════════════════════════════════════ */
 .tbl-wrap { overflow-x: auto; border-radius: 10px; border: 1px solid var(--border); -webkit-overflow-scrolling: touch; }
 
-table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 11.5px; background: transparent !important; }
+table { width: 100%; border-collapse: collapse; font-family: var(--sans); font-size: 12.5px; background: transparent !important; }
+
+.t-mono { font-family: var(--mono); font-size: 11px; }
 
 th {
-  padding: 10px; border-bottom: 1px solid var(--border); text-align: right;
-  font-size: 9px; text-transform: uppercase; letter-spacing: 1.2px; font-weight: 700;
+  padding: 12px 10px; border-bottom: 1px solid var(--border); text-align: right;
+  font-family: var(--sans); font-size: 10px; text-transform: uppercase; letter-spacing: 1.2px; font-weight: 700;
   color: var(--text-dim) !important; background: var(--surface-2) !important;
   white-space: nowrap; position: sticky; top: 0; z-index: 5;
   cursor: pointer; user-select: none; transition: background .15s;
@@ -1117,7 +1119,7 @@ tr:hover td { background: rgba(0,229,160,.04); }
           <th>Type</th>
           <th>Instrument</th>
           <th>Entry</th>
-          <th>CMP</th>
+          <th class="cmp-col">CMP</th>
           <th>SL</th>
           <th>Target</th>
           <th>Lots</th>
@@ -1400,16 +1402,16 @@ function renderSummary(s) {
       
       return `
       <tr class="${openRowClass(t)}">
-        <td class="L">${fdt(t.opened_at)}</td>
+        <td class="L t-mono">${fdt(t.opened_at)}</td>
         <td class="L"><strong>${t.symbol}</strong></td>
         <td><span class="badge ${side==='SELL'?'b-loss':'b-win'}">${side}</span></td>
-        <td>${instr}</td>
-        <td>${fp(entry)}</td>
-        <td>${fp(cmp)}</td>
-        <td class="bad">${slPrice(t)}</td>
-        <td class="good">${targetPrice(t)}</td>
-        <td>${t.lots??1}</td>
-        <td class="${pnl>=0?'good':'bad'}">${signRs(pnl)}</td>
+        <td class="t-mono">${instr}</td>
+        <td class="t-mono">${fp(entry)}</td>
+        <td class="cmp-col t-mono">${fp(cmp)}</td>
+        <td class="bad t-mono">${slPrice(t)}</td>
+        <td class="good t-mono">${targetPrice(t)}</td>
+        <td class="t-mono">${t.lots??1}</td>
+        <td class="${pnl>=0?'good':'bad'} t-mono">${signRs(pnl)}</td>
         <td class="L">${vtag(t.verdict_label||t.reason, t.verdict_explanation)}</td>
       </tr>`;
     }).join('')
@@ -1501,20 +1503,20 @@ function renderTrades(rows) {
   tb.innerHTML=rows.map((t,idx)=>`
     <tr>
       <td style="text-align:center;cursor:pointer;color:var(--accent);" onclick="toggleTradeDetails(${idx})" title="Expand details">▶</td>
-      <td class="L">${fdt(t.opened_at)}</td>
-      <td class="L">${fdt(t.closed_at)}</td>
-      <td><span class="b-dur">${t.duration_text||'—'}</span></td>
+      <td class="L t-mono">${fdt(t.opened_at)}</td>
+      <td class="L t-mono">${fdt(t.closed_at)}</td>
+      <td class="t-mono"><span class="b-dur">${t.duration_text||'—'}</span></td>
       <td class="L"><strong>${t.symbol}</strong></td>
       <td>${typeChip(t)}</td>
-      <td>${fp(t.strike)}</td>
-      <td>${entryPrice(t)} <span class="lot-chip">${priceLabel(t)}</span></td>
-      <td>${exitPrice(t)}</td>
-      <td class="bad">${slPrice(t)}</td>
-      <td class="good">${targetPrice(t)}</td>
-      <td>${t.lots??1}</td>
+      <td class="t-mono">${fp(t.strike)}</td>
+      <td class="t-mono">${entryPrice(t)} <span class="lot-chip">${priceLabel(t)}</span></td>
+      <td class="t-mono">${exitPrice(t)}</td>
+      <td class="bad t-mono">${slPrice(t)}</td>
+      <td class="good t-mono">${targetPrice(t)}</td>
+      <td class="t-mono">${t.lots??1}</td>
       <td>${sbadge(t.status)}</td>
-      <td class="${pc(t.pnl_rupees)}">${signRs(t.pnl_rupees)}</td>
-      <td class="${pc(t.pnl_points)}" style="font-size:10px;color:var(--text-dim)">${sign(t.pnl_points)}</td>
+      <td class="${pc(t.pnl_rupees)} t-mono">${signRs(t.pnl_rupees)}</td>
+      <td class="${pc(t.pnl_points)} t-mono" style="font-size:10px;color:var(--text-dim)">${sign(t.pnl_points)}</td>
       <td class="L">${vtag(t.verdict_label||t.reason, t.verdict_explanation)}</td>
     </tr>
     <tr id="details-${idx}" style="display:none;">
