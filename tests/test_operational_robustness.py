@@ -241,9 +241,9 @@ def test_build_paper_trade_plan_fut_atr():
     assert plan_reg is not None
     assert plan_reg["option_type"] == "FUT"
     # SL = underlying - 1.5 * ATR = 300 - 1.5 * 5 = 292.5
-    # TP = underlying + 3.0 * ATR = 300 + 3.0 * 5 = 315.0
+    # TP = underlying + 2.0 * ATR = 300 + 2.0 * 5 = 310.0
     assert plan_reg["sl_underlying"] == 292.5
-    assert plan_reg["target_underlying"] == 315.0
+    assert plan_reg["target_underlying"] == 310.0
     
     # Timeframe FUT trade should bypass ATR SL/TP logic (default to Support/Resistance step-based fallback)
     ctx_tf = {**ctx_regular, "setup_type": "TIMEFRAME"}
@@ -252,6 +252,6 @@ def test_build_paper_trade_plan_fut_atr():
     assert plan_tf["option_type"] == "FUT"
     # Fallback to strike step based SL/TP: strike step is 5 (for NG), so SL is 295.0, TP is 305.0
     assert plan_tf["sl_underlying"] != 292.5
-    assert plan_tf["target_underlying"] != 315.0
+    assert plan_tf["target_underlying"] != 310.0
 
 

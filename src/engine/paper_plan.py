@@ -122,10 +122,10 @@ def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | N
             atr_used = True
             if bullish:
                 sl = underlying - 1.5 * atr
-                target = underlying + 3.0 * atr
+                target = underlying + 2.0 * atr
             else:
                 sl = underlying + 1.5 * atr
-                target = underlying - 3.0 * atr
+                target = underlying - 2.0 * atr
 
     if not atr_used:
         if bullish:
