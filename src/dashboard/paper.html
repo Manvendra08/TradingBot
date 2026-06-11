@@ -1685,6 +1685,8 @@ async function confirmDelete() {
     } else {
       alert('Delete failed: ' + (data.error || 'Unknown error'));
     }
+  } catch(e) { alert('Delete failed: ' + e.message); }
+}
 
 async function closeOpenTrade(tradeId, symbol) {
   if (!confirm(`Are you sure you want to manually close open trade #${tradeId} (${symbol})?`)) return;
