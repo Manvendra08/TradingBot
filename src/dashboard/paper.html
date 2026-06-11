@@ -1125,9 +1125,10 @@ tr:hover td { background: rgba(0,229,160,.04); }
           <th>Lots</th>
           <th>P&amp;L (₹)</th>
           <th class="L">Verdict</th>
+          <th>Action</th>
         </tr></thead>
         <tbody id="open-body">
-          <tr><td colspan="11"><div class="empty-state"><div class="empty-icon">🟢</div>No open trades</div></td></tr>
+          <tr><td colspan="12"><div class="empty-state"><div class="empty-icon">🟢</div>No open trades</div></td></tr>
         </tbody>
       </table>
     </div>
@@ -1413,9 +1414,12 @@ function renderSummary(s) {
         <td class="t-mono">${t.lots??1}</td>
         <td class="${pnl>=0?'good':'bad'} t-mono">${signRs(pnl)}</td>
         <td class="L">${vtag(t.verdict_label||t.reason, t.verdict_explanation)}</td>
+        <td>
+          <button class="btn" onclick="closeOpenTrade(${t.id}, '${t.symbol}')" style="padding: 2px 6px; font-size: 10px; border-color: #ef4444 !important; color: #ef4444 !important; background: transparent !important; border-radius: 4px;">Close</button>
+        </td>
       </tr>`;
     }).join('')
-    : '<tr><td colspan="11"><div class="empty-state"><div class="empty-icon">🟢</div>No open trades</div></td></tr>';
+    : '<tr><td colspan="12"><div class="empty-state"><div class="empty-icon">🟢</div>No open trades</div></td></tr>';
 
   /* Holding analysis */
   const ha=s.holding_analysis||{}, dist=ha.distribution||{}, dpct=ha.distribution_pct||{};
@@ -1681,8 +1685,30 @@ async function confirmDelete() {
     } else {
       alert('Delete failed: ' + (data.error || 'Unknown error'));
     }
-  } catch(e) { alert('Delete failed: ' + e.message); }
+
+async function closeOpenTrade(tradeId, symbol) {
+  if (!confirm(`Are you sure you want to manually close open trade #${tradeId} (${symbol})?`)) return;
+  try {
+    const res = await fetch(`/api/paper_trades/close?trade_id=${tradeId}`, { method: 'POST' });
+    const data = await res.json();
+    if (data.ok) {
+      await loadAll();
+      const t = document.createElement('div');
+      t.textContent = `✓ Closed trade #${tradeId}`;
+      Object.assign(t.style, {
+        position:'fixed', bottom:'24px', right:'24px', zIndex:'99999',
+        background:'#059669', color:'#fff', padding:'10px 18px',
+        borderRadius:'8px', fontFamily:'monospace', fontSize:'13px',
+        boxShadow:'0 4px 16px rgba(0,0,0,.3)', transition:'opacity .4s'
+      });
+      document.body.appendChild(t);
+      setTimeout(() => { t.style.opacity='0'; setTimeout(()=>t.remove(), 400); }, 2500);
+    } else {
+      alert('Failed to close trade: ' + (data.error || 'Unknown error'));
+    }
+  } catch(e) { alert('Error closing trade: ' + e.message); }
 }
+
 
 async function init() {
   // Initialize theme button

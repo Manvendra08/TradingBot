@@ -146,7 +146,12 @@ _MCX_SYMBOLS = {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"}
 # ── DB helper ─────────────────────────────────────────────────────────────
 
 def _db():
-    conn = sqlite3.connect(DB_PATH)
+    try:
+        from config.settings import DB_PATH as settings_db_path
+        db_p = settings_db_path
+    except ImportError:
+        db_p = DB_PATH
+    conn = sqlite3.connect(db_p)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -1285,6 +1290,63 @@ def _calculate_consecutive_wins(where: str, params: tuple) -> int:
         else:
             break
     return streak
+
+
+
+@app.post("/api/paper_trades/close")
+async def manual_close_paper_trade(trade_id: int = Query(...)):
+    from src.models.schema import close_paper_trade
+    from datetime import datetime, timezone
+    
+    rows = _q("SELECT * FROM paper_trades WHERE id=?", (trade_id,))
+    if not rows:
+        return JSONResponse({"ok": False, "error": "Trade not found"}, status_code=404)
+    row = rows[0]
+    if row.get("status") != "OPEN":
+        return JSONResponse({"ok": False, "error": "Trade is already closed"}, status_code=400)
+        
+    symbol = str(row.get("symbol") or "").upper().strip()
+    option_type = str(row.get("option_type") or "").upper().strip()
+    strike = row.get("strike")
+    entry_underlying = float(row.get("entry_underlying") or 0.0)
+    
+    # 1. Fetch latest underlying price
+    exit_und = None
+    res_und = _q("SELECT price FROM underlying_price WHERE symbol=? ORDER BY fetched_at DESC LIMIT 1", (symbol,))
+    if res_und:
+        exit_und = res_und[0]["price"]
+    else:
+        exit_und = entry_underlying
+        
+    # 2. Fetch exit premium
+    exit_prem = None
+    if option_type in ("CE", "PE") and strike is not None:
+        try:
+            strike_val = float(strike)
+        except (ValueError, TypeError):
+            strike_val = 0.0
+        res_opt = _q(
+            "SELECT ltp FROM option_chain_snapshots WHERE symbol=? AND ABS(strike - ?) < 0.01 AND option_type=? ORDER BY fetched_at DESC LIMIT 1",
+            (symbol, strike_val, option_type)
+        )
+        if res_opt:
+            exit_prem = res_opt[0]["ltp"]
+        else:
+            exit_prem = row.get("entry_premium") or exit_und
+    else:
+        # FUT
+        exit_prem = exit_und
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    close_paper_trade(
+        trade_id=trade_id,
+        closed_at=now_iso,
+        exit_underlying=exit_und,
+        exit_premium=exit_prem,
+        status="CLOSED_MANUAL",
+        reason="Manual close via dashboard"
+    )
+    return {"ok": True, "trade_id": trade_id}
 
 
 @app.delete("/api/paper_trades")
