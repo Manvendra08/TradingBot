@@ -405,10 +405,16 @@ def _format_paper_trade_status(status: dict | None) -> str:
         tgt = trade.get("target_premium") or trade.get("target_underlying")
         lots = status.get("lots") or trade.get("lots") or 10
         side = str(trade.get("side") or status.get("side") or "BUY").title()
+
+        entry_str = f"{entry:.2f}" if entry is not None else "—"
+        sl_str = f"{sl:.2f}" if sl is not None else "—"
+        tgt_str = f"{tgt:.2f}" if tgt is not None else "—"
+        strike_str = f"{strike:g}" if strike is not None else "—"
+
         if opt == "FUT":
-            details = f"{side} FUT @ {entry:.2f} | SL: {sl:.2f} | Target: {tgt:.2f} (Lots: {lots})"
+            details = f"{side} FUT @ {entry_str} | SL: {sl_str} | Target: {tgt_str} (Lots: {lots})"
         else:
-            details = f"{side} {strike:g} {opt} @ {entry:.2f} | SL: {sl:.2f} | Target: {tgt:.2f} (Lots: {lots})"
+            details = f"{side} {strike_str} {opt} @ {entry_str} | SL: {sl_str} | Target: {tgt_str} (Lots: {lots})"
         return (
             f"• *Status:* EXECUTED ({setup})\n"
             f"• *Details:* {details}\n"
@@ -418,13 +424,16 @@ def _format_paper_trade_status(status: dict | None) -> str:
         trade = status.get("trade", {})
         opt = trade.get("option_type", "CE")
         strike = trade.get("strike")
-        pnl = trade.get("pnl_rupees", 0.0)
+        pnl = trade.get("pnl_rupees")
+        if pnl is None:
+            pnl = 0.0
         pnl_sign = "+" if pnl > 0 else ""
         side = str(trade.get("side") or "BUY").title()
+        strike_str = f"{strike:g}" if strike is not None else "—"
         if opt == "FUT":
             details = f"{side} FUT trade closed | P&L: {pnl_sign}₹{pnl:,.2f}"
         else:
-            details = f"{side} {strike:g} {opt} trade closed | P&L: {pnl_sign}₹{pnl:,.2f}"
+            details = f"{side} {strike_str} {opt} trade closed | P&L: {pnl_sign}₹{pnl:,.2f}"
         return (
             f"• *Status:* CLOSED\n"
             f"• *Details:* {details}\n"
@@ -437,10 +446,13 @@ def _format_paper_trade_status(status: dict | None) -> str:
         entry = trade.get("entry_premium") or trade.get("entry_underlying")
         lots = trade.get("lots", 10)
         side = str(trade.get("side") or "BUY").title()
+        strike_str = f"{strike:g}" if strike is not None else "—"
+        opened_at = trade.get("opened_at")
+        opened_at_str = str(opened_at)[:16].replace("T", " ") if opened_at else "—"
         if opt == "FUT":
-            details = f"{side} FUT position open since {trade.get('opened_at', '')[:16].replace('T', ' ')}"
+            details = f"{side} FUT position open since {opened_at_str}"
         else:
-            details = f"{side} {strike:g} {opt} open since {trade.get('opened_at', '')[:16].replace('T', ' ')}"
+            details = f"{side} {strike_str} {opt} open since {opened_at_str}"
         return (
             f"• *Status:* HELD ({details})\n"
             f"• *Action:* Monitoring exits"
