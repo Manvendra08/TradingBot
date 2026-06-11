@@ -575,7 +575,7 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
                             underlying,
                             exit_premium if trade["option_type"] == "CE" else underlying,
                             "CLOSED_MANUAL",
-                            f"timeframe exit | 1H close {c_1h_close} < p1H_low {p_1h_low} + Short OI bias",
+                            f"timeframe exit | 1H close {c_1h_close:.2f} < p1H_low {p_1h_low:.2f} + Short OI bias",
                         )
                         log.info("%s: Closed open TIMEFRAME LONG trade (id=%d) on 1H close crossover with OI bias", symbol, trade["id"])
 
@@ -602,7 +602,7 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
                             underlying,
                             exit_premium if trade["option_type"] == "PE" else underlying,
                             "CLOSED_MANUAL",
-                            f"timeframe exit | 1H close {c_1h_close} > p1H_high {p_1h_high} + Long OI bias",
+                            f"timeframe exit | 1H close {c_1h_close:.2f} > p1H_high {p_1h_high:.2f} + Long OI bias",
                         )
                         log.info("%s: Closed open TIMEFRAME SHORT trade (id=%d) on 1H close crossover with OI bias", symbol, trade["id"])
 
@@ -741,7 +741,7 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
             "sl_premium": sl_premium,
             "lots": lots,
             "status": "OPEN",
-            "reason": f"timeframe entry | 3H close {c_3h_close} > p3H_high {p_3h_high} | level {pyramid_level}",
+            "reason": f"timeframe entry | 3H close {c_3h_close:.2f} > p3H_high {p_3h_high:.2f} | level {pyramid_level}",
             "digest_id": digest_id,
             "trade_status": "TRIGGERED_TIMEFRAME",
             "setup_type": "TIMEFRAME",
@@ -790,7 +790,7 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
             "sl_premium": sl_premium,
             "lots": lots,
             "status": "OPEN",
-            "reason": f"timeframe entry | 3H close {c_3h_close} < p3H_low {p_3h_low} | level {pyramid_level}",
+            "reason": f"timeframe entry | 3H close {c_3h_close:.2f} < p3H_low {p_3h_low:.2f} | level {pyramid_level}",
             "digest_id": digest_id,
             "trade_status": "TRIGGERED_TIMEFRAME",
             "setup_type": "TIMEFRAME",

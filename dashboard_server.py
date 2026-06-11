@@ -912,26 +912,17 @@ def _enrich_open_trades_with_live_pnl(rows: list[dict]) -> None:
 
 
 
-@app.get("/api/paper_trades")
-async def get_paper_trades(symbol: str = "", status: str = "", limit: int = 300):
-    clauses = []
-    params: list = []
-    if symbol:
-        clauses.append("symbol=?")
-        params.append(symbol.upper().strip())
-    if status:
-        clauses.append("status=?")
-        params.append(status.upper().strip())
-    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    rows = _q(
-        f"SELECT * FROM paper_trades {where} ORDER BY opened_at DESC LIMIT ?",
-        (*params, int(limit)),
-    )
-    _enrich_open_trades_with_live_pnl(rows)
-    
-    # Calculate duration for closed trades
+def _enrich_trade_details(rows: list[dict]) -> None:
     from datetime import datetime
     for row in rows:
+        # 1. Prefix verdict label with TF- if setup_type is TIMEFRAME or reason contains timeframe
+        is_tf = (row.get("setup_type") == "TIMEFRAME") or ("timeframe" in str(row.get("reason") or "").lower())
+        if is_tf:
+            v = row.get("verdict_label")
+            if v and not v.startswith("TF-"):
+                row["verdict_label"] = f"TF-{v}"
+
+        # 2. Calculate duration for closed trades
         if row.get("closed_at") and row.get("opened_at"):
             try:
                 opened = datetime.fromisoformat(row["opened_at"].replace("Z", "+00:00"))
@@ -955,9 +946,27 @@ async def get_paper_trades(symbol: str = "", status: str = "", limit: int = 300)
             row["duration_minutes"] = None
             row["duration_text"] = "-"
         
-        # Enrich with human-readable verdict explanation
+        # 3. Enrich with human-readable verdict explanation
         row["verdict_explanation"] = _explain_verdict(row.get("verdict_label"), row.get("option_type"))
-    
+
+
+@app.get("/api/paper_trades")
+async def get_paper_trades(symbol: str = "", status: str = "", limit: int = 300):
+    clauses = []
+    params: list = []
+    if symbol:
+        clauses.append("symbol=?")
+        params.append(symbol.upper().strip())
+    if status:
+        clauses.append("status=?")
+        params.append(status.upper().strip())
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    rows = _q(
+        f"SELECT * FROM paper_trades {where} ORDER BY opened_at DESC LIMIT ?",
+        (*params, int(limit)),
+    )
+    _enrich_open_trades_with_live_pnl(rows)
+    _enrich_trade_details(rows)
     return rows
 
 
@@ -1031,6 +1040,20 @@ def _explain_verdict(verdict: str | None, option_type: str | None) -> dict:
             "description": "No clear directional bias",
             "action": "Wait for breakout",
             "emoji": "⚪"
+        },
+        "TF-LONG": {
+            "bias": "TF-Bullish",
+            "strategy": "Timeframe Crossover Long",
+            "description": "3H close breakout above previous candle high",
+            "action": "Buy FUT" if ot == "FUT" else "Buy CE",
+            "emoji": "🟦"
+        },
+        "TF-SHORT": {
+            "bias": "TF-Bearish",
+            "strategy": "Timeframe Crossover Short",
+            "description": "3H close breakdown below previous candle low",
+            "action": "Sell FUT" if ot == "FUT" else "Buy PE",
+            "emoji": "🟦"
         }
     }
     
@@ -1076,6 +1099,7 @@ async def get_paper_summary(symbol: str = ""):
         tuple(params),
     )
     _enrich_open_trades_with_live_pnl(open_rows)
+    _enrich_trade_details(open_rows)
     
     # Symbol breakdown — normalise symbol to UPPER to avoid crudeoil/CRUDEOIL duplicates
     symbol_stats = _q(
