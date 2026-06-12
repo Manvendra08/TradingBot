@@ -1,3 +1,5 @@
 {
-  "scan_frequency_minutes": 60
+  "scan_frequency_minutes": 60,
+  "scan_frequency_nse": 30,
+  "scan_frequency_mcx": 60
 }

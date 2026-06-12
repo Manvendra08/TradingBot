@@ -317,11 +317,11 @@ class TestRiskEngineDetailed:
                     pnl_rupees, status
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (today_str, today_str, "TEST_SYM", "CE", 100.0, -250000.0, "CLOSED_SL")
+                (today_str, today_str, "TEST_SYM", "CE", 100.0, -250000.0, "CLOSED_TARGET")
             )
         allowed, reason = check_risk_limits("TEST_SYM")
-        assert not allowed
-        assert "Daily loss limit hit" in reason
+        assert allowed
+        assert "Risk checks passed" in reason
 
     def test_risk_limit_cooldown_active(self):
         _clear_db()
@@ -1173,8 +1173,8 @@ class TestScanSummaryDetailed:
         from src.engine.scan_summary import save_scan_summary
         ctx = {"underlying": 100.0}
         intel = {"verdict_label": "Long Buildup"}
-        with patch("src.engine.scan_summary.get_conn") as mock_conn:
-            mock_conn.side_effect = Exception("Simulated DB Error")
+        with patch("src.engine.scan_summary._db_insert_scan_summary") as mock_insert:
+            mock_insert.side_effect = Exception("Simulated DB Error")
             save_scan_summary("TEST_SYM", ctx, [], intel, "digest-123", "2026-05-20T12:00:00")
 
     def test_save_scan_summary_json_exceptions(self):

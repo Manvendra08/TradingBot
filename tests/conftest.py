@@ -113,3 +113,12 @@ def sample_oc_banknifty():
         "strikes":          strikes,
         "source":           "test",
     }
+
+
+@pytest.fixture(autouse=True)
+def mock_runtime_config_frequencies():
+    """Mock scan frequencies to default 5 min to ensure tests are isolated from host configuration file."""
+    with patch("src.engine.paper_trading.get_scan_frequency_nse", return_value=5), \
+         patch("src.engine.paper_trading.get_scan_frequency_mcx", return_value=5), \
+         patch("src.engine.paper_trading.get_scan_frequency_minutes", return_value=5):
+        yield

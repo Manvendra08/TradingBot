@@ -73,13 +73,13 @@ def check_risk_limits(symbol: str, setup_type: str | None = None) -> tuple[bool,
             if today_count >= MAX_TRADES_PER_SYMBOL_PER_DAY:
                 return False, f"Max trades per day ({today_count}/{MAX_TRADES_PER_SYMBOL_PER_DAY})"
 
-        # 4. Daily loss cap (also IST-aligned)
-        today_pnl = conn.execute(
-            "SELECT COALESCE(SUM(pnl_rupees), 0) AS total FROM paper_trades WHERE closed_at >= ?",
-            (today_start,),
-        ).fetchone()["total"]
-        if float(today_pnl) < -abs(MAX_DAILY_LOSS_RUPEES):
-            return False, f"Daily loss limit hit (\u20b9{float(today_pnl):,.0f})"
+        # 4. Daily loss cap (Removed per user request)
+        # today_pnl = conn.execute(
+        #     "SELECT COALESCE(SUM(pnl_rupees), 0) AS total FROM paper_trades WHERE closed_at >= ?",
+        #     (today_start,),
+        # ).fetchone()["total"]
+        # if float(today_pnl) < -abs(MAX_DAILY_LOSS_RUPEES):
+        #     return False, f"Daily loss limit hit (\u20b9{float(today_pnl):,.0f})"
 
         # 5. Cooldown after SL/loss
         last_loss = conn.execute(
