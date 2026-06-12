@@ -175,6 +175,17 @@ def _maybe_close_open_trade(
     now_iso: str,
     option_rows: list[dict] | None = None,
 ) -> None:
+    """
+    Check open trade for SL/target hit and close if triggered.
+
+    P0 fix: Underlying and premium checks are now both evaluated independently
+    for non-FUT options. Previously the underlying block returned early before
+    premium SL/target could fire on the same poll — meaning options that had
+    decayed/exploded past their premium SL were not closed until the spot price
+    itself crossed the underlying SL level. Both checks now run unless the
+    underlying check definitively closes the trade (in which case return is
+    correct and premium check is moot).
+    """
     open_trade = get_open_paper_trade(symbol)
     if not open_trade:
         return
@@ -203,23 +214,33 @@ def _maybe_close_open_trade(
     else:
         is_bull = is_bullish_verdict(verdict_label)
 
-    # Underlying-based exit (early return after each close — B3 guard also in close_paper_trade)
-    if is_bull:
-        if target_underlying > 0 and underlying >= target_underlying:
-            close_paper_trade(open_trade["id"], now_iso, underlying, exit_premium, "CLOSED_TARGET", "target hit")
-            return
-        elif sl_underlying > 0 and underlying <= sl_underlying:
-            close_paper_trade(open_trade["id"], now_iso, underlying, exit_premium, "CLOSED_SL", "stop loss hit")
-            return
-    else:
-        if target_underlying > 0 and underlying <= target_underlying:
-            close_paper_trade(open_trade["id"], now_iso, underlying, exit_premium, "CLOSED_TARGET", "target hit")
-            return
-        elif sl_underlying > 0 and underlying >= sl_underlying:
-            close_paper_trade(open_trade["id"], now_iso, underlying, exit_premium, "CLOSED_SL", "stop loss hit")
-            return
+    # Underlying-based exit — evaluated only when both levels are set.
+    # For FUT: this is the only exit mechanism (exit_premium == underlying).
+    # For options: only closes if underlying level is definitively hit;
+    #              if not hit, fall through to premium check below.
+    underlying_closed = False
+    if target_underlying > 0 and sl_underlying > 0:
+        if is_bull:
+            if underlying >= target_underlying:
+                close_paper_trade(open_trade["id"], now_iso, underlying, exit_premium, "CLOSED_TARGET", "target hit")
+                underlying_closed = True
+            elif underlying <= sl_underlying:
+                close_paper_trade(open_trade["id"], now_iso, underlying, exit_premium, "CLOSED_SL", "stop loss hit")
+                underlying_closed = True
+        else:
+            if underlying <= target_underlying:
+                close_paper_trade(open_trade["id"], now_iso, underlying, exit_premium, "CLOSED_TARGET", "target hit")
+                underlying_closed = True
+            elif underlying >= sl_underlying:
+                close_paper_trade(open_trade["id"], now_iso, underlying, exit_premium, "CLOSED_SL", "stop loss hit")
+                underlying_closed = True
 
-    # Premium-based exit (only reached if underlying check didn't trigger)
+    if underlying_closed:
+        return
+
+    # Premium-based exit for options — always evaluated if underlying did not close the trade.
+    # This ensures options that have decayed/spiked past their premium SL/target are closed
+    # even when spot price has not yet reached the underlying SL/target level.
     if option_type != "FUT" and exit_premium is not None:
         sl_premium = open_trade.get("sl_premium")
         target_premium = open_trade.get("target_premium")
@@ -275,7 +296,7 @@ def run_paper_trading(symbol: str, scan_context: dict, digest_id: str, intel: di
                 return {
                     "action": "CLOSED",
                     "trade": closed_trade,
-                    "reason": f"Closed via exit logic: {closed_trade.get('reason') or 'SL/Target hit'} (P&L: ₹{closed_trade.get('pnl_rupees', 0.0):,.2f})"
+                    "reason": f"Closed via exit logic: {closed_trade.get('reason') or 'SL/Target hit'} (P&L: \u20b9{closed_trade.get('pnl_rupees', 0.0):,.2f})"
                 }
 
     if current_open_trade and _is_reversal_against_open_trade(current_open_trade, verdict, confidence):
@@ -295,7 +316,7 @@ def run_paper_trading(symbol: str, scan_context: dict, digest_id: str, intel: di
                 return {
                     "action": "CLOSED",
                     "trade": closed_trade,
-                    "reason": f"Closed on opposite reversal signal: verdict={verdict} (P&L: ₹{closed_trade.get('pnl_rupees', 0.0):,.2f})"
+                    "reason": f"Closed on opposite reversal signal: verdict={verdict} (P&L: \u20b9{closed_trade.get('pnl_rupees', 0.0):,.2f})"
                 }
 
     if current_open_trade:
@@ -320,7 +341,7 @@ def run_paper_trading(symbol: str, scan_context: dict, digest_id: str, intel: di
     lots = DEFAULT_LOTS_PER_TRADE
     scores = decision.get("scores") or {}
 
-    # B10: generate a deterministic signal_key so INSERT OR IGNORE deduplicates on retry
+    # Deterministic signal_key for INSERT OR IGNORE deduplication on retry.
     today_date = datetime.now(IST).strftime("%Y%m%d")
     option_type_key = plan.get("option_type", "")
     strike_key = int(plan.get("strike") or 0)
@@ -352,7 +373,19 @@ def run_paper_trading(symbol: str, scan_context: dict, digest_id: str, intel: di
         "regime_score":          scores.get("regime_score"),
         "signal_key":            signal_key,
     }
-    insert_paper_trade(trade_data)
+
+    # P1 fix: INSERT OR IGNORE silently drops duplicate rows and still returns
+    # lastrowid=0 (or the prior rowid). Check lastrowid explicitly so the caller
+    # can distinguish a real insert from a dedup-blocked one.
+    inserted_id = insert_paper_trade(trade_data)
+    if not inserted_id:
+        log.warning("%s: paper trade INSERT skipped — duplicate signal_key=%s", symbol, signal_key)
+        return {
+            "action":     "DEDUP_SKIPPED",
+            "reason":     f"Duplicate signal already recorded today (signal_key={signal_key})",
+            "signal_key": signal_key,
+        }
+
     return {
         "action":     "EXECUTED",
         "trade":      trade_data,
@@ -397,7 +430,7 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
     pay_1h = tf_data.get("1h")
     if not pay_3h or not pay_1h:
         log.warning("%s: Timeframe strategy skipped — missing 3h/1h chart data", symbol)
-        return
+        return {"action": "SKIPPED_NO_CHART_DATA", "reason": "Missing 3h/1h chart data"}
 
     ohlc_3h = pay_3h.get("ohlc")
     prev_3h = pay_3h.get("prev_ohlc") or pay_3h.get("last_closed_ohlc")
@@ -406,7 +439,7 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
 
     if not ohlc_3h or not prev_3h or not ohlc_1h or not prev_1h:
         log.warning("%s: Timeframe strategy skipped — incomplete 3h/1h candle data", symbol)
-        return
+        return {"action": "SKIPPED_INCOMPLETE_CANDLES", "reason": "Incomplete 3h/1h candle data"}
 
     c_3h_close = float(ohlc_3h["close"])
     p_3h_high = float(prev_3h["high"])
@@ -421,16 +454,16 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
 
     if current_ce is None or current_pe is None:
         log.warning("%s: Timeframe strategy skipped — missing total OI data", symbol)
-        return
+        return {"action": "SKIPPED_NO_OI", "reason": "Missing total OI data"}
 
     if scan_freq in (15, 30):
         scans_needed = 60 // scan_freq
         older = get_scan_summary_n_scans_ago(symbol, scans_needed)
         if not older:
             log.warning("%s: Timeframe strategy skipped — insufficient scan history (%d scans ago)", symbol, scans_needed)
-            return
+            return {"action": "SKIPPED_INSUFFICIENT_HISTORY", "reason": f"Insufficient scan history ({scans_needed} scans ago)"}
     else:
         older = get_scan_summary_at_least_1h_old(symbol, fetched_at)
         if not older:
             log.warning("%s: Timeframe strategy skipped — insufficient 1h scan history", symbol)
-            return
+            return {"action": "SKIPPED_INSUFFICIENT_HISTORY", "reason": "Insufficient 1h scan history"}

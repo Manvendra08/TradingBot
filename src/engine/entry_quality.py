@@ -1,6 +1,7 @@
 """
 Entry Quality Scorer — validates trade entry location and timing.
 B6 fix: explicit validation when sl_underlying/target_underlying missing.
+P0 fix: R:R penalty is now direction-aware for SELL trades.
 """
 from __future__ import annotations
 
@@ -20,10 +21,10 @@ def calculate_entry_quality(
 
     ctx must contain: underlying, support, resistance,
                       sl_underlying, target_underlying,
-                      option_rows, price_change_pct.
+                      option_rows, price_change_pct, side.
     Penalties:
       -25  price on wrong side of key level
-      -25  poor R:R (target closer than SL)
+      -25  poor R:R (target closer than SL) — direction-aware for SELL
       -20  wide bid-ask spread (>5% of LTP)
       -15  chasing after large move (>1.5%)
     """
@@ -51,18 +52,34 @@ def calculate_entry_quality(
                     score -= 25
                     reasons.append(f"Price near resistance {resistance:.0f} — rejection risk")
 
-    # 2. R:R check — B6: validate keys exist, log when missing
+    # 2. R:R check — direction-aware (P0 fix)
+    #    For BUY trades:  target > underlying > sl  → dist_target = target - underlying, dist_sl = underlying - sl
+    #    For SELL trades: sl > underlying > target  → dist_target = underlying - target, dist_sl = sl - underlying
+    #    Using signed distances ensures SELL premium-decay setups (sl above, target below) are evaluated correctly.
     sl     = float(ctx.get("sl_underlying") or 0)
     target = float(ctx.get("target_underlying") or 0)
     if sl <= 0 or target <= 0:
         log.debug("%s: entry quality R:R skipped — sl=%s target=%s (tag only)", symbol, sl, target)
         reasons.append("Missing SL/target — R:R check skipped")
     else:
-        dist_sl     = abs(underlying - sl)
-        dist_target = abs(underlying - target)
-        if dist_sl > 0 and dist_target / dist_sl < 1.0:
+        is_long = (side == "BUY" and option_type in ("CE", "FUT")) or \
+                  (side == "SELL" and option_type == "PE")
+        if is_long:
+            # Underlying must move UP to hit target, DOWN to hit SL
+            dist_target = target - underlying
+            dist_sl     = underlying - sl
+        else:
+            # Underlying must move DOWN to hit target, UP to hit SL
+            dist_target = underlying - target
+            dist_sl     = sl - underlying
+
+        if dist_sl > 0 and dist_target > 0 and dist_target / dist_sl < 1.0:
             score -= 25
             reasons.append(f"Poor R:R {dist_target/dist_sl:.2f} — target closer than SL")
+        elif dist_sl <= 0 or dist_target <= 0:
+            # SL or target is on the wrong side of current price — structural plan error
+            score -= 25
+            reasons.append("SL or target inverted vs current price")
 
     # 3. Bid-ask spread
     for row in (ctx.get("option_rows") or []):
