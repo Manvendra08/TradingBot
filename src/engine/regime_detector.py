@@ -4,6 +4,8 @@ B2 fix: prices reversed to oldest→newest before direction calculation.
 B4 fix: uses is_bullish/is_bearish from verdict_sets (explicit set membership).
 B7 fix: int(n*0.7) truncation replaced with math.ceil for correct 70% threshold.
 B8 fix: excludes is_fallback=1 rows so stale-price inserts can't poison regime.
+B9 fix: exponential recency weighting — newest scan outweighs oldest by ~5x
+        so a mid-session breakout isn't suppressed by stale morning scans.
 """
 from __future__ import annotations
 
@@ -21,11 +23,20 @@ REGIME_RANGE         = "RANGE"
 REGIME_VOLATILE      = "VOLATILE"
 REGIME_NO_TRADE      = "NO_TRADE"
 
+# Decay factor per step back in time.
+# weight[i] = DECAY^(n-1-i), i=0 oldest, i=n-1 newest.
+# DECAY=0.80 → newest weight=1.0, 9 steps back ≈ 0.134 (~7.4x difference).
+_DECAY = 0.80
+
 
 def detect_market_regime(symbol: str) -> str:
     """
     Classify market regime from last 10 non-fallback scan summaries.
     Returns one of: TRENDING_UP, TRENDING_DOWN, RANGE, VOLATILE, NO_TRADE.
+
+    Verdict votes are exponentially weighted by recency (newest = weight 1.0,
+    each step back multiplied by _DECAY) so a recent directional breakout
+    overrides stale opposing scans from earlier in the session.
     """
     with get_conn() as conn:
         rows = conn.execute(
@@ -43,37 +54,47 @@ def detect_market_regime(symbol: str) -> str:
     if len(rows) < 5:
         return REGIME_NO_TRADE
 
-    # B2 fix: rows are DESC (newest first) — reverse so oldest→newest
+    # rows are DESC (newest first) — reverse so oldest→newest for price calc
     rows = list(reversed(rows))
+    n = len(rows)
 
+    # --- Price direction (half-avg, oldest→newest) ---
     prices = [float(r["underlying"]) for r in rows if r["underlying"] and float(r["underlying"]) > 0]
     if len(prices) < 5:
         return REGIME_NO_TRADE
 
-    # Direction: compare first half avg vs second half avg (oldest→newest)
     mid = len(prices) // 2
-    first_half_avg = sum(prices[:mid]) / mid
+    first_half_avg  = sum(prices[:mid]) / mid
     second_half_avg = sum(prices[mid:]) / len(prices[mid:])
     price_change_pct = (second_half_avg - first_half_avg) / first_half_avg * 100
+    price_range_pct  = (max(prices) - min(prices)) / min(prices) * 100
 
-    # Volatility: price range over the window
-    price_range_pct = (max(prices) - min(prices)) / min(prices) * 100
+    # --- Recency-weighted verdict scores ---
+    # i=0 → oldest → weight = _DECAY^(n-1)
+    # i=n-1 → newest → weight = _DECAY^0 = 1.0
+    bullish_score = 0.0
+    bearish_score = 0.0
+    total_weight  = 0.0
 
-    # Verdict counts using explicit set membership (B4 fix)
-    bullish_count = sum(1 for r in rows if is_bullish(r["verdict_label"] or ""))
-    bearish_count = sum(1 for r in rows if is_bearish(r["verdict_label"] or ""))
-    n = len(rows)
+    for i, row in enumerate(rows):
+        w = _DECAY ** (n - 1 - i)
+        total_weight += w
+        label = row["verdict_label"] or ""
+        if is_bullish(label):
+            bullish_score += w
+        elif is_bearish(label):
+            bearish_score += w
 
-    # B7 fix: use math.ceil so threshold is genuinely >=70%, not truncated
-    threshold = math.ceil(n * 0.7)
+    # Threshold: 70% of total weight (float, no truncation issue)
+    threshold = total_weight * 0.70
 
-    if bullish_count >= threshold and price_change_pct > 0.5:
+    if bullish_score >= threshold and price_change_pct > 0.5:
         return REGIME_TRENDING_UP
-    if bearish_count >= threshold and price_change_pct < -0.5:
+    if bearish_score >= threshold and price_change_pct < -0.5:
         return REGIME_TRENDING_DOWN
     if price_range_pct > 3.0:
         return REGIME_VOLATILE
-    if abs(price_change_pct) < 0.3 and abs(bullish_count - bearish_count) <= 2:
+    if abs(price_change_pct) < 0.3 and abs(bullish_score - bearish_score) <= total_weight * 0.2:
         return REGIME_RANGE
     return REGIME_NO_TRADE
 
