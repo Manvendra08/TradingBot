@@ -2,10 +2,13 @@
 Market Regime Detector — classifies market state from last 10 scan summaries.
 B2 fix: prices reversed to oldest→newest before direction calculation.
 B4 fix: uses is_bullish/is_bearish from verdict_sets (explicit set membership).
+B7 fix: int(n*0.7) truncation replaced with math.ceil for correct 70% threshold.
+B8 fix: excludes is_fallback=1 rows so stale-price inserts can't poison regime.
 """
 from __future__ import annotations
 
 import logging
+import math
 
 from src.models.schema import get_conn
 from src.engine.verdict_sets import is_bullish, is_bearish
@@ -21,7 +24,7 @@ REGIME_NO_TRADE      = "NO_TRADE"
 
 def detect_market_regime(symbol: str) -> str:
     """
-    Classify market regime from last 10 scan summaries.
+    Classify market regime from last 10 non-fallback scan summaries.
     Returns one of: TRENDING_UP, TRENDING_DOWN, RANGE, VOLATILE, NO_TRADE.
     """
     with get_conn() as conn:
@@ -30,6 +33,7 @@ def detect_market_regime(symbol: str) -> str:
             SELECT verdict_label, underlying, confidence
             FROM scan_summaries
             WHERE symbol = ?
+              AND (is_fallback IS NULL OR is_fallback = 0)
             ORDER BY fetched_at DESC
             LIMIT 10
             """,
@@ -60,9 +64,12 @@ def detect_market_regime(symbol: str) -> str:
     bearish_count = sum(1 for r in rows if is_bearish(r["verdict_label"] or ""))
     n = len(rows)
 
-    if bullish_count >= int(n * 0.7) and price_change_pct > 0.5:
+    # B7 fix: use math.ceil so threshold is genuinely >=70%, not truncated
+    threshold = math.ceil(n * 0.7)
+
+    if bullish_count >= threshold and price_change_pct > 0.5:
         return REGIME_TRENDING_UP
-    if bearish_count >= int(n * 0.7) and price_change_pct < -0.5:
+    if bearish_count >= threshold and price_change_pct < -0.5:
         return REGIME_TRENDING_DOWN
     if price_range_pct > 3.0:
         return REGIME_VOLATILE

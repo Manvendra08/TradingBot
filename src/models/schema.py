@@ -5,6 +5,10 @@ Tables:
   underlying_price        — spot price per symbol per snapshot
   anomaly_alerts          — fired alert log
   alert_dedup             — deduplication tracker
+
+B8 fix: scan_summaries gains is_fallback column; stale-price rows tagged at insert.
+B10 fix: insert_paper_trade uses INSERT OR IGNORE on signal_key to prevent duplicate
+         trade rows on pipeline retry after crash.
 """
 import sqlite3
 import contextlib
@@ -101,11 +105,11 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     target_premium      REAL,               -- Target in premium terms (for options)
     lots                INTEGER DEFAULT 1,  -- number of lots traded
     pnl_points          REAL DEFAULT 0,     -- P&L in points (legacy)
-    pnl_rupees          REAL DEFAULT 0,     -- P&L in ₹ (lot size adjusted)
+    pnl_rupees          REAL DEFAULT 0,     -- P&L in \u20b9 (lot size adjusted)
     status              TEXT NOT NULL,      -- OPEN | CLOSED_TARGET | CLOSED_SL | CLOSED_MANUAL
     reason              TEXT,
     digest_id           TEXT,
-    signal_key          TEXT,
+    signal_key          TEXT UNIQUE,
     pyramid_level       INTEGER DEFAULT 1,
     max_favorable_r     REAL DEFAULT 0
 );
@@ -141,6 +145,7 @@ CREATE TABLE IF NOT EXISTS scan_summaries (
     trend_bias             TEXT,
     trend_strength         INTEGER,
     market_regime          TEXT,
+    is_fallback            INTEGER DEFAULT 0,  -- B8: 1 when underlying is a stale fallback value
     created_at             TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -189,6 +194,8 @@ _MIGRATIONS = [
     "ALTER TABLE paper_trades ADD COLUMN pyramid_level INTEGER DEFAULT 1",
     "ALTER TABLE paper_trades ADD COLUMN max_favorable_r REAL DEFAULT 0",
     "ALTER TABLE paper_trades ADD COLUMN side TEXT DEFAULT 'BUY'",
+    # B8: stale fallback tagging for regime isolation
+    "ALTER TABLE scan_summaries ADD COLUMN is_fallback INTEGER DEFAULT 0",
 ]
 
 
@@ -203,8 +210,9 @@ def init_db() -> None:
                 # Idempotent: column already exists is the only expected error.
                 if "duplicate column" not in str(e).lower():
                     raise
+        # B10: unique index on signal_key for trade dedup (idempotent)
         try:
-            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_trades_signal_key ON paper_trades (signal_key)")
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_trades_signal_key ON paper_trades (signal_key) WHERE signal_key IS NOT NULL")
         except sqlite3.OperationalError:
             pass
     log.info("DB initialised at %s", DB_PATH)
@@ -474,8 +482,16 @@ def get_scan_summary_n_scans_ago(symbol: str, n: int) -> dict | None:
 
 
 def insert_paper_trade(trade: dict) -> int:
-    sql = """
-        INSERT INTO paper_trades
+    """
+    Insert a new paper trade row.
+    B10: Uses INSERT OR IGNORE when signal_key is present — safe against
+    duplicate rows on pipeline retry after crash. Returns 0 if deduped.
+    """
+    signal_key = trade.get("signal_key")
+    verb = "INSERT OR IGNORE" if signal_key else "INSERT"
+
+    sql = f"""
+        {verb} INTO paper_trades
             (opened_at, symbol, verdict_label, side, option_type, strike, entry_underlying,
              entry_premium, sl_underlying, sl_premium, target_underlying, target_premium,
              lots, status, reason, digest_id,
@@ -500,7 +516,7 @@ def insert_paper_trade(trade: dict) -> int:
         "entry_quality_score":   trade.get("entry_quality_score"),
         "trend_alignment_score": trade.get("trend_alignment_score"),
         "regime_score":          trade.get("regime_score"),
-        "signal_key":            trade.get("signal_key"),
+        "signal_key":            signal_key,
         "pyramid_level":         trade.get("pyramid_level", 1),
         "max_favorable_r":       trade.get("max_favorable_r", 0.0),
         **{k: trade.get(k) for k in (
@@ -511,7 +527,34 @@ def insert_paper_trade(trade: dict) -> int:
     }
     with get_conn() as conn:
         row = conn.execute(sql, row_data).fetchone()
-        return int(row["id"])
+        return int(row["id"]) if row else 0
+
+
+def insert_scan_summary(summary: dict, is_fallback: bool = False) -> None:
+    """
+    Insert a scan summary row.
+    Pass is_fallback=True when the underlying price is a stale/prev value
+    so regime detection can filter these rows out.
+    """
+    sql = """
+        INSERT INTO scan_summaries
+            (symbol, expiry, fetched_at, digest_id, underlying, atm_strike,
+             total_ce_oi, total_pe_oi, ce_oi_change, pe_oi_change, pcr, max_pain,
+             support, resistance, verdict_label, confidence,
+             candle_1h, candle_3h, top_signal_type, top_signal_strike,
+             top_signal_option_type, top_signal_severity, top_signal_oi_pct,
+             trend_bias, trend_strength, market_regime, is_fallback)
+        VALUES
+            (:symbol, :expiry, :fetched_at, :digest_id, :underlying, :atm_strike,
+             :total_ce_oi, :total_pe_oi, :ce_oi_change, :pe_oi_change, :pcr, :max_pain,
+             :support, :resistance, :verdict_label, :confidence,
+             :candle_1h, :candle_3h, :top_signal_type, :top_signal_strike,
+             :top_signal_option_type, :top_signal_severity, :top_signal_oi_pct,
+             :trend_bias, :trend_strength, :market_regime, :is_fallback)
+    """
+    row_data = {**summary, "is_fallback": 1 if is_fallback else 0}
+    with get_conn() as conn:
+        conn.execute(sql, row_data)
 
 
 def close_paper_trade(trade_id: int, closed_at: str, exit_underlying: float, exit_premium: float | None, status: str, reason: str = "") -> None:
@@ -520,10 +563,12 @@ def close_paper_trade(trade_id: int, closed_at: str, exit_underlying: float, exi
 
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT symbol, option_type, verdict_label, entry_underlying, entry_premium, lots, strike, side FROM paper_trades WHERE id=?",
+            "SELECT symbol, option_type, verdict_label, entry_underlying, entry_premium, lots, strike, side FROM paper_trades WHERE id=? AND status='OPEN'",
             (trade_id,)
         ).fetchone()
         if not row:
+            # Trade already closed or doesn't exist — safe no-op (B3 guard)
+            log.debug("close_paper_trade: trade %s not found or already closed, skipping", trade_id)
             return
 
         symbol = row["symbol"]
@@ -579,7 +624,7 @@ def close_paper_trade(trade_id: int, closed_at: str, exit_underlying: float, exi
             """
             UPDATE paper_trades
             SET closed_at=?, exit_underlying=?, exit_premium=?, pnl_points=?, pnl_rupees=?, status=?, reason=?
-            WHERE id=?
+            WHERE id=? AND status='OPEN'
             """,
             (closed_at, exit_underlying, exit_premium, round(pnl_points, 4), round(pnl_rupees, 2), status, reason, trade_id),
         )
@@ -606,4 +651,3 @@ def delete_expired_contracts() -> int:
         cur2 = conn.execute("DELETE FROM scan_summaries WHERE expiry < ?", (today,))
         log.info("[db] Deleted %d expired snapshots and %d expired scan summaries.", cur1.rowcount, cur2.rowcount)
         return cur1.rowcount + cur2.rowcount
-
