@@ -1,11 +1,10 @@
 """
-Data Pipeline Orchestrator v2.7
+Data Pipeline Orchestrator v2.8
 fetch → detect → dedup → digest → alert
 
-Fixes (v2.7):
-  - sent_digest logic corrected: HIGH alerts always get individual send;
-    digest marks remaining alerts as sent.
-  - Added optional market-hours guard for direct/--now invocations.
+Fixes (v2.8):
+  - B5: Track when underlying fell back to prev_price (is_fallback=True).
+        Pass to save_scan_summary so regime_detector filters these rows out.
 """
 import logging
 from datetime import datetime, timezone
@@ -38,9 +37,6 @@ def run_pipeline(symbols: list[str] | None = None, force: bool = False) -> None:
     Args:
         symbols: Override watch list. Defaults to WATCH_SYMBOLS.
         force:   Skip market-hours guard (used by --now CLI flag).
-                 When False, symbols are expected to already be filtered
-                 by the scheduler's _guarded_run. Direct callers should
-                 pass force=True explicitly to bypass the guard intentionally.
     """
     symbols = symbols or WATCH_SYMBOLS
     fetched_at = datetime.now(timezone.utc).isoformat()
@@ -68,16 +64,18 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
     underlying = oc_data["underlying_price"]
     expiry     = oc_data["expiry"]
     source     = oc_data.get("source", "unknown")
-    prev_row = get_previous_underlying(symbol)
+    prev_row   = get_previous_underlying(symbol)
     prev_price = prev_row["price"] if prev_row else None
+
+    # B5: flag when we're using a stale fallback price so regime_detector can ignore the row
+    is_fallback = False
     if underlying is None:
         underlying = prev_price or 0.0
         oc_data["underlying_price"] = underlying
+        is_fallback = True
         log.warning("%s: underlying price is None, falling back to prev_price: %s", symbol, underlying)
 
     # 1a. Fetch chart data server-side (Chrome-free)
-    #     Merged into oc_data so anomaly_detector sees chart_indicators
-    #     Same key as Chrome extension output — zero downstream changes needed
     try:
         chart_data = get_chart_fetcher().fetch(symbol, reference_price=underlying) or {}
         oc_data["chart_indicators"] = chart_data
@@ -89,7 +87,7 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
         oc_data["chart_indicators"] = {}
         log.exception("%s: chart_fetcher crashed — continuing without chart data", symbol)
 
-    # 1b. Detect anomalies (before persisting so deltas use previous snapshot)
+    # 1b. Detect anomalies
     symbol_thresholds = get_symbol_thresholds(symbol)
     alerts, scan_context = detect_anomalies(
         oc_data,
@@ -109,11 +107,10 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
             symbol, len(alerts), len(new_alerts), dedup_suppressed,
         )
 
-    # 3. Build digest — always build (zero-alert scans need suppression check)
+    # 3. Build digest
     intel = generate_intelligence_structured(symbol, new_alerts, scan_context=scan_context)
     intel_text = intel["telegram_text"]
 
-    # Pre-generate digest_id and execute paper trading first to format status
     import uuid
     digest_id = str(uuid.uuid4())[:8]
     trade_report = None
@@ -141,17 +138,14 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
     for a in new_alerts:
         a["digest_id"] = digest_id
 
-    # 3b. Save scan summary for multi-scan trend analysis (Phase 2+)
+    # 3b. Save scan summary — pass is_fallback so regime_detector can exclude stale rows
     try:
-        save_scan_summary(symbol, scan_context, new_alerts, intel, digest_id, fetched_at)
+        save_scan_summary(symbol, scan_context, new_alerts, intel, digest_id, fetched_at,
+                          is_fallback=is_fallback)
     except Exception:
         log.exception("%s: scan summary save failed", symbol)
 
     # 4. Send logic
-    #    - Has alerts: always send digest
-    #    - Only duplicate alerts: heartbeat send (cooldown-gated)
-    #    - Zero alerts, OI moved ≥1%: send quiet scan (market moving but no threshold breach)
-    #    - Zero alerts, OI flat: suppress UNLESS 30min cooldown allows heartbeat
     should_send = bool(new_alerts)
     if not should_send:
         diag    = (scan_context or {}).get("diagnostics", {})
@@ -164,7 +158,7 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
         elif max_oi >= 1.0:
             should_send = True
         elif should_send_zero_signal(symbol):
-            should_send = True  # heartbeat: once per 30min so trader knows bot is alive
+            should_send = True
         else:
             log.info("%s: suppressed flat zero-signal scan (max_oi=%.2f%%)", symbol, max_oi)
 
@@ -173,7 +167,7 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
     else:
         sent_digest = False
 
-    # 5. Persist + record dedup (alerts only)
+    # 5. Persist + record dedup
     if new_alerts:
         for alert in new_alerts:
             alert_id = insert_alert(alert)
@@ -181,7 +175,6 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
             if sent_digest:
                 mark_telegram_sent(alert_id)
 
-    # 5. Persist underlying + snapshot
     pct_chg = None
     if underlying is not None and prev_price and prev_price != 0:
         pct_chg = round((underlying - prev_price) / abs(prev_price) * 100, 4)
