@@ -196,10 +196,55 @@ def test_timeframe_strategy_natgas_future():
         assert len(trades) == 1
         trade = dict(trades[0])
         assert trade["verdict_label"] == "LONG"
+        assert trade["side"] == "BUY"
         assert trade["option_type"] == "FUT"
         assert trade["entry_underlying"] == 310.0
         assert trade["entry_premium"] == 310.0
         assert trade["status"] == "OPEN"
+
+def test_timeframe_strategy_natgas_future_short():
+    scan_context = {
+        "underlying": 300.0,
+        "atm_strike": 300.0,
+        "expiry": "2026-06-25",
+        "total_ce_oi": 80000,
+        "total_pe_oi": 50000,
+        "fetched_at": "2026-06-01T12:00:00Z",
+        "chart_indicators": {
+            "3h": {
+                "ohlc": {"open": 305, "high": 312, "low": 304, "close": 299},
+                "prev_ohlc": {"open": 308, "high": 312, "low": 304, "close": 308},
+                "bar_end_utc": "2026-06-01T12:00:00Z"
+            },
+            "1h": {
+                "ohlc": {"open": 302, "high": 304, "low": 298, "close": 299},
+                "prev_ohlc": {"open": 304, "high": 306, "low": 302, "close": 304},
+                "bar_end_utc": "2026-06-01T12:00:00Z"
+            }
+        }
+    }
+
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO scan_summaries (symbol, expiry, fetched_at, total_ce_oi, total_pe_oi) VALUES (?, ?, ?, ?, ?)",
+            ("NATURALGAS", "2026-06-25", "2026-06-01T10:30:00Z", 50000, 50000)
+        )
+
+    with patch("src.engine.paper_trading._is_market_open", return_value=True), \
+         patch("src.engine.paper_trading.check_risk_limits", return_value=(True, "")):
+        run_timeframe_strategy("NATURALGAS", scan_context, "digest-123", {})
+
+    with get_conn() as conn:
+        trades = conn.execute("SELECT * FROM paper_trades WHERE symbol='NATURALGAS'").fetchall()
+        assert len(trades) == 1
+        trade = dict(trades[0])
+        assert trade["verdict_label"] == "SHORT"
+        assert trade["side"] == "SELL"
+        assert trade["option_type"] == "FUT"
+        assert trade["entry_underlying"] == 300.0
+        assert trade["entry_premium"] == 300.0
+        assert trade["status"] == "OPEN"
+
 
 def test_timeframe_strategy_option_sl_hit():
     with get_conn() as conn:
