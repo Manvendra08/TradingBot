@@ -87,8 +87,6 @@ ATM_LEG_MOVE_PCT          = 8.0     # per-leg ATM LTP Δ% to fire
 PCR_VELOCITY_WINDOW       = 3       # scans for PCR rate-of-change calc
 MIN_OI_THRESHOLD          = 50      # min absolute current/previous OI to flag spikes/buildup
 
-
-
 # ── Severity thresholds (multipliers of base threshold) ───────────────────
 SEVERITY_HIGH_MULT        = 2.5     # e.g. OI Δ ≥ 100% = HIGH
 SEVERITY_MED_MULT         = 1.5     # e.g. OI Δ ≥ 60%  = MEDIUM
@@ -111,8 +109,8 @@ DHAN_API_KEY      = _optional_env("DHAN_API_KEY")
 DHAN_API_SECRET   = _optional_env("DHAN_API_SECRET")
 DHAN_BASE_URL     = "https://api.dhan.co/v2"
 
-TV_USERNAME = _optional_env("TV_USERNAME")   # TradingView login (required for MCX data)
-TV_PASSWORD = _optional_env("TV_PASSWORD")   # without these, MCX charts return None
+TV_USERNAME  = _optional_env("TV_USERNAME")   # TradingView login (required for MCX data)
+TV_PASSWORD  = _optional_env("TV_PASSWORD")   # without these, MCX charts return None
 TV_SESSIONID = _optional_env("TV_SESSIONID")  # Optional TradingView sessionid cookie (bypasses CAPTCHA)
 
 DHAN_SECURITY_IDS = {
@@ -159,11 +157,11 @@ LOG_BACKUP_COUNT    = 30
 # Use tighter thresholds so the engine fires on meaningful but smaller moves.
 SYMBOL_THRESHOLD_OVERRIDES: dict[str, dict] = {
     "NATURALGAS": {
-        "oi_threshold":        10.0,   # 10% OI change (vs 40% for NIFTY)
-        "ltp_threshold":        4.0,   # 4% ATM LTP move (vs 8%)
-        "pcr_shift_threshold":  0.10,  # smaller PCR moves matter more
-        "buildup_oi_min_pct":  10.0,  # 10% OI to classify buildup
-        "buildup_ltp_min_pct":  3.0,  # 3% LTP to classify buildup
+        "oi_threshold":        10.0,
+        "ltp_threshold":        4.0,
+        "pcr_shift_threshold":  0.10,
+        "buildup_oi_min_pct":  10.0,
+        "buildup_ltp_min_pct":  3.0,
     },
     "CRUDEOIL": {
         "oi_threshold":        15.0,
@@ -184,7 +182,6 @@ SYMBOL_THRESHOLD_OVERRIDES: dict[str, dict] = {
 
 def get_symbol_thresholds(symbol: str) -> dict:
     """Return threshold overrides for the given symbol, or empty dict for defaults."""
-    # Normalize: strip expiry/month suffix e.g. 'NATURALGAS MAY FUT' -> 'NATURALGAS'
     base = symbol.upper().split()[0]
     return SYMBOL_THRESHOLD_OVERRIDES.get(base, {})
 
@@ -195,41 +192,52 @@ def get_symbol_thresholds(symbol: str) -> dict:
 PAPER_RESEARCH_MODE = True
 
 # Trade decision thresholds — CORE (high-quality setups)
-MIN_CONFIDENCE_CORE           = 70
-MIN_ENTRY_QUALITY_CORE        = 60
-MIN_TREND_ALIGNMENT_CORE      = 70
-MIN_REGIME_SCORE_CORE         = 60
+MIN_CONFIDENCE_CORE            = 70
+MIN_ENTRY_QUALITY_CORE         = 60
+MIN_TREND_ALIGNMENT_CORE       = 70
+MIN_REGIME_SCORE_CORE          = 60
 
 # Trade decision thresholds — EXPERIMENTAL (research / marginal setups)
-MIN_CONFIDENCE_EXPERIMENTAL   = 50
+MIN_CONFIDENCE_EXPERIMENTAL    = 50
 MIN_ENTRY_QUALITY_EXPERIMENTAL = 40
 
 # Reversal trade: higher confidence bar
-REVERSAL_MIN_CONFIDENCE       = 75
+REVERSAL_MIN_CONFIDENCE        = 75
 
 # Risk engine — applies to paper trading too (overtrading distorts results)
-MAX_OPEN_TRADES_PER_SYMBOL    = 1    # conservative start; raise after validating
-MAX_OPEN_TRADES_TOTAL         = 4    # across all symbols
-MAX_TRADES_PER_SYMBOL_PER_DAY = 2    # configurable
-MAX_DAILY_LOSS_RUPEES         = 200000
-LOSS_COOLDOWN_MINUTES         = 30
+MAX_OPEN_TRADES_PER_SYMBOL     = 1
+MAX_OPEN_TRADES_TOTAL          = 4
+MAX_TRADES_PER_SYMBOL_PER_DAY  = 2
+MAX_DAILY_LOSS_RUPEES          = 200000
+LOSS_COOLDOWN_MINUTES          = 30
 
-# ── Trend-Based Trading Logic (Hybrid) ────────────────────────────────────
+# ── Trend-Based Trading Logic ──────────────────────────────────────────────
 # Mode: "conservative" | "balanced" | "aggressive" | "hybrid"
-TREND_FILTER_MODE             = "hybrid"
+TREND_FILTER_MODE              = "hybrid"
 
-# Minimum scans needed before trend-based trades allowed
-TREND_MIN_SCANS               = 3
+# Minimum non-fallback scan summaries required before any trend-based trade
+# fires for a symbol. Prevents new symbols from getting TRIGGERED_CORE with
+# zero trend validation. (#6)
+TREND_MIN_SCANS                = 3
 
 # Trend persistence: fraction of last N scans that must agree (0.0-1.0)
-TREND_CONSISTENCY_THRESHOLD   = 0.6   # 60% of last 5 scans must agree
+TREND_CONSISTENCY_THRESHOLD    = 0.6
 
 # Momentum scoring: 0-100 score threshold to trigger trade
-MOMENTUM_SCORE_THRESHOLD      = 75
+# Used as the momentum fallback gate in hybrid mode (#7)
+MOMENTUM_SCORE_THRESHOLD       = 75
 
-# Reversal: higher confidence bar for counter-trend trades
-REVERSAL_MIN_CONFIDENCE       = 75
+# ── Regime Detection ──────────────────────────────────────────────────────
+# Thresholds for the explicit RANGE classification branch (#10).
+# A session where abs(price_change_pct) < MAX_CHANGE and
+# price_range_pct < MAX_RANGE is classified as RANGE rather than NO_TRADE.
+REGIME_RANGE_MAX_CHANGE_PCT    = 0.5   # % half-session price drift
+REGIME_RANGE_MAX_RANGE_PCT     = 1.5   # % high-low range over session
+
+# ── Trade Plan ────────────────────────────────────────────────────────────
+# Maximum strike-steps between current underlying and support/resistance
+# before the level is considered "too far" and ATM is used instead (#13)
+MAX_LEVEL_DISTANCE_STEPS       = 3
 
 # Timeframe Strategy Settings
-TIMEFRAME_OI_MIN_DIFF_PCT     = 0.005  # 0.5% of base side's previous OI
-
+TIMEFRAME_OI_MIN_DIFF_PCT      = 0.005  # 0.5% of base side's previous OI

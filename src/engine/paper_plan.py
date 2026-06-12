@@ -1,11 +1,16 @@
-"""Shared paper-trade plan builder for Telegram text and auto execution."""
+"""Shared paper-trade plan builder for Telegram text and auto execution.
+
+P3 fix (#13): MAX_LEVEL_DISTANCE_STEPS moved to config/settings.py.
+  Imported from there so the value is tunable per-deployment without a
+  code change. Local module constant removed.
+"""
 from __future__ import annotations
 
 from config.symbol_classes import get_strike_step
+from config.settings import MAX_LEVEL_DISTANCE_STEPS
 from src.engine.verdict_sets import BULLISH_VERDICTS, BEARISH_VERDICTS, is_bullish, is_bearish
 
 MIN_PAPER_CONFIDENCE = 65
-MAX_LEVEL_DISTANCE_STEPS = 3
 
 LONG_CE_VERDICTS = BULLISH_VERDICTS   # backward-compat alias
 LONG_PE_VERDICTS = BEARISH_VERDICTS   # backward-compat alias
@@ -176,4 +181,3 @@ def format_paper_plan(plan: dict | None) -> str:
         f"{side} {strike:g} {opt} at current scan "
         f"| SL spot {sl:g} | Target spot {target:g}"
     )
-

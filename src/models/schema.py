@@ -9,15 +9,21 @@ Tables:
 B8 fix: scan_summaries gains is_fallback column; stale-price rows tagged at insert.
 B10 fix: insert_paper_trade uses INSERT OR IGNORE on signal_key to prevent duplicate
          trade rows on pipeline retry after crash.
+P3 fix (#14): get_today_scan_count() now uses IST midnight (UTC+05:30) as the
+  day boundary instead of UTC midnight. A trade at 00:30 UTC (06:00 IST) on a
+  new IST calendar day was previously counted in the prior day's quota.
 """
 import sqlite3
 import contextlib
 import logging
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from config.settings import DB_PATH
 
 log = logging.getLogger(__name__)
+
+_IST = timezone(timedelta(hours=5, minutes=30))
 
 DDL = """
 PRAGMA journal_mode=WAL;
@@ -207,10 +213,8 @@ def init_db() -> None:
             try:
                 conn.execute(sql)
             except sqlite3.OperationalError as e:
-                # Idempotent: column already exists is the only expected error.
                 if "duplicate column" not in str(e).lower():
                     raise
-        # B10: unique index on signal_key for trade dedup (idempotent)
         try:
             conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_trades_signal_key ON paper_trades (signal_key) WHERE signal_key IS NOT NULL")
         except sqlite3.OperationalError:
@@ -219,7 +223,6 @@ def init_db() -> None:
 
 
 def insert_snapshots(rows: list[dict]) -> int:
-    """Bulk-insert option chain snapshot rows. Returns count inserted."""
     if not rows:
         return 0
     sql = """
@@ -271,7 +274,6 @@ def mark_telegram_sent(alert_id: int) -> None:
 
 
 def get_previous_snapshot(symbol: str, expiry: str, strike: float, option_type: str) -> dict | None:
-    """Fetch the immediately preceding snapshot for delta calculations."""
     sql = """
         SELECT * FROM option_chain_snapshots
         WHERE symbol=? AND expiry=? AND strike=? AND option_type=?
@@ -296,7 +298,6 @@ def get_previous_underlying(symbol: str) -> dict | None:
 
 
 def get_previous_underlying_before(symbol: str, fetched_at: str) -> dict | None:
-    """Fetch the latest underlying row strictly before the current scan timestamp."""
     sql = """
         SELECT * FROM underlying_price
         WHERE symbol=? AND fetched_at < ?
@@ -309,7 +310,6 @@ def get_previous_underlying_before(symbol: str, fetched_at: str) -> dict | None:
 
 
 def get_latest_snapshots_for_symbol(symbol: str, expiry: str) -> list[dict]:
-    """All strikes for the latest fetch timestamp for a symbol/expiry."""
     sql = """
         SELECT * FROM option_chain_snapshots
         WHERE symbol=? AND expiry=? AND fetched_at=(
@@ -323,11 +323,6 @@ def get_latest_snapshots_for_symbol(symbol: str, expiry: str) -> list[dict]:
 
 
 def get_prev_snapshots_bulk(symbol: str, expiry: str) -> dict[tuple, dict]:
-    """
-    Single-query bulk fetch of the latest snapshot row per (strike, option_type).
-    Returns a dict keyed by (strike, option_type) for O(1) detection lookups.
-    Replaces per-strike get_previous_snapshot() calls in detection loops.
-    """
     sql = """
         SELECT * FROM option_chain_snapshots
         WHERE symbol=? AND expiry=? AND fetched_at=(
@@ -341,7 +336,6 @@ def get_prev_snapshots_bulk(symbol: str, expiry: str) -> dict[tuple, dict]:
 
 
 def get_latest_n_underlying(symbol: str, n: int = 4) -> list[dict]:
-    """Return last N underlying price rows for PCR velocity calc."""
     sql = """
         SELECT * FROM underlying_price WHERE symbol=?
         ORDER BY fetched_at DESC LIMIT ?
@@ -352,10 +346,6 @@ def get_latest_n_underlying(symbol: str, n: int = 4) -> list[dict]:
 
 
 def get_latest_n_snapshots(symbol: str, expiry: str, n: int = 3) -> list[list[dict]]:
-    """
-    Return last N distinct fetch timestamps' snapshots (for PCR velocity).
-    Uses a single query with IN clause instead of N+1 round trips.
-    """
     times_sql = """
         SELECT DISTINCT fetched_at FROM option_chain_snapshots
         WHERE symbol=? AND expiry=?
@@ -373,7 +363,6 @@ def get_latest_n_snapshots(symbol: str, expiry: str, n: int = 3) -> list[list[di
             (symbol, expiry, *times),
         ).fetchall()
 
-    # Group rows back by timestamp, preserving order
     grouped: dict[str, list[dict]] = {t: [] for t in times}
     for row in all_rows:
         t = row["fetched_at"]
@@ -396,7 +385,6 @@ def get_alert_history(symbol: str | None = None, limit: int = 100) -> list[dict]
 
 
 def delete_alerts(symbol: str | None = None) -> int:
-    """Delete alerts (and their dedup records). If symbol is None, wipes all rows."""
     with get_conn() as conn:
         if symbol:
             cur = conn.execute("DELETE FROM anomaly_alerts WHERE symbol=?", (symbol,))
@@ -456,19 +444,56 @@ def get_scan_summary_at_least_1h_old(symbol: str, current_fetched_at: str) -> di
 
 
 def get_today_scan_count(symbol: str, current_fetched_at: str) -> int:
-    """Return the count of scan summaries saved for the current calendar day (UTC)."""
-    date_str = current_fetched_at.split("T")[0]
+    """
+    Return count of scan summaries saved for the current IST calendar day.
+
+    P3 fix (#14): Uses IST midnight as the day boundary (UTC+05:30) instead
+    of UTC midnight. Previously a scan at 00:30 UTC (06:00 IST) on a new
+    IST calendar day was counted against the prior day's quota because the
+    UTC date string was used directly for the LIKE comparison.
+    """
+    try:
+        # Parse fetched_at (may be UTC ISO string with or without Z/offset)
+        ts = current_fetched_at.replace("Z", "+00:00")
+        dt_utc = datetime.fromisoformat(ts)
+        if dt_utc.tzinfo is None:
+            dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+        dt_ist = dt_utc.astimezone(_IST)
+        ist_date_str = dt_ist.strftime("%Y-%m-%d")
+    except Exception:
+        # Fallback: strip date prefix from raw string (UTC, best-effort)
+        ist_date_str = current_fetched_at.split("T")[0]
+
+    # fetched_at is stored as UTC ISO strings; compute IST day window in UTC
+    # and query with a BETWEEN so the index on fetched_at is used.
+    try:
+        ist_midnight = datetime(
+            int(ist_date_str[:4]), int(ist_date_str[5:7]), int(ist_date_str[8:10]),
+            tzinfo=_IST,
+        )
+        window_start_utc = ist_midnight.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+        window_end_ist   = ist_midnight + timedelta(days=1)
+        window_end_utc   = window_end_ist.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    except Exception:
+        # Fallback to UTC date LIKE (pre-fix behaviour)
+        date_str = current_fetched_at.split("T")[0]
+        sql = "SELECT COUNT(*) FROM scan_summaries WHERE symbol=? AND fetched_at LIKE ?"
+        with get_conn() as conn:
+            row = conn.execute(sql, (symbol, f"{date_str}%")).fetchone()
+        return row[0] if row else 0
+
     sql = """
         SELECT COUNT(*) FROM scan_summaries
-        WHERE symbol=? AND fetched_at LIKE ?
+        WHERE symbol = ?
+          AND fetched_at >= ?
+          AND fetched_at <  ?
     """
     with get_conn() as conn:
-        row = conn.execute(sql, (symbol, f"{date_str}%")).fetchone()
-        return row[0] if row else 0
+        row = conn.execute(sql, (symbol, window_start_utc, window_end_utc)).fetchone()
+    return int(row[0]) if row else 0
 
 
 def get_scan_summary_n_scans_ago(symbol: str, n: int) -> dict | None:
-    """Return the scan summary row from exactly n scans ago (using offset n-1)."""
     sql = """
         SELECT total_ce_oi, total_pe_oi, fetched_at FROM scan_summaries
         WHERE symbol=?
@@ -479,6 +504,18 @@ def get_scan_summary_n_scans_ago(symbol: str, n: int) -> dict | None:
         row = conn.execute(sql, (symbol, n - 1)).fetchone()
         return dict(row) if row else None
 
+
+def get_recent_alerts_for_symbol(symbol: str, limit: int = 50) -> list[dict]:
+    sql = """
+        SELECT verdict_label FROM anomaly_alerts
+        WHERE symbol = ?
+          AND verdict_label IS NOT NULL
+        ORDER BY fired_at DESC
+        LIMIT ?
+    """
+    with get_conn() as conn:
+        rows = conn.execute(sql, (symbol, limit)).fetchall()
+        return [dict(r) for r in rows]
 
 
 def insert_paper_trade(trade: dict) -> int:
@@ -531,11 +568,6 @@ def insert_paper_trade(trade: dict) -> int:
 
 
 def insert_scan_summary(summary: dict, is_fallback: bool = False) -> None:
-    """
-    Insert a scan summary row.
-    Pass is_fallback=True when the underlying price is a stale/prev value
-    so regime detection can filter these rows out.
-    """
     sql = """
         INSERT INTO scan_summaries
             (symbol, expiry, fetched_at, digest_id, underlying, atm_strike,
@@ -567,7 +599,6 @@ def close_paper_trade(trade_id: int, closed_at: str, exit_underlying: float, exi
             (trade_id,)
         ).fetchone()
         if not row:
-            # Trade already closed or doesn't exist — safe no-op (B3 guard)
             log.debug("close_paper_trade: trade %s not found or already closed, skipping", trade_id)
             return
 
@@ -581,7 +612,6 @@ def close_paper_trade(trade_id: int, closed_at: str, exit_underlying: float, exi
 
         lot_size = LOT_SIZES.get(symbol.upper(), LOT_SIZES.get(symbol, 1))
 
-        # P&L calculation: inverted for SELL option trades.
         if option_type in ("CE", "PE"):
             if entry_premium and entry_premium > 0 and exit_premium and exit_premium > 0:
                 if side == "SELL":
@@ -589,7 +619,6 @@ def close_paper_trade(trade_id: int, closed_at: str, exit_underlying: float, exi
                 else:
                     pnl_points = exit_premium - entry_premium
             elif entry_premium and entry_premium > 0:
-                # Fallback: Estimate exit premium using last known snapshot LTP to preserve time value
                 strike = float(row["strike"] or 0.0)
                 snap_row = conn.execute(
                     "SELECT ltp FROM option_chain_snapshots WHERE symbol=? AND strike=? AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
@@ -598,7 +627,6 @@ def close_paper_trade(trade_id: int, closed_at: str, exit_underlying: float, exi
                 if snap_row:
                     estimated_exit = float(snap_row["ltp"])
                 else:
-                    # Fallback to intrinsic value at exit if no snapshot exists
                     if option_type == "CE":
                         estimated_exit = max(0.0, float(exit_underlying) - strike)
                     else:
@@ -611,7 +639,6 @@ def close_paper_trade(trade_id: int, closed_at: str, exit_underlying: float, exi
             else:
                 pnl_points = 0.0
         else:
-            # Futures
             from src.engine.verdict_sets import is_bearish
             if side == "SELL" or verdict_label == "SHORT" or is_bearish(verdict_label):
                 pnl_points = entry_underlying - float(exit_underlying)
@@ -641,6 +668,7 @@ def list_paper_trades(symbol: str | None = None, limit: int = 300) -> list[dict]
     with get_conn() as conn:
         rows = conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
+
 
 def delete_expired_contracts() -> int:
     """Delete expired contract OI data from DB."""
