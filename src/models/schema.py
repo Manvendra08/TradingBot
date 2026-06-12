@@ -507,15 +507,16 @@ def get_scan_summary_n_scans_ago(symbol: str, n: int) -> dict | None:
 
 def get_recent_alerts_for_symbol(symbol: str, limit: int = 50) -> list[dict]:
     sql = """
-        SELECT verdict_label FROM anomaly_alerts
+        SELECT verdict_label FROM scan_summaries
         WHERE symbol = ?
           AND verdict_label IS NOT NULL
-        ORDER BY fired_at DESC
+        ORDER BY fetched_at DESC
         LIMIT ?
     """
     with get_conn() as conn:
         rows = conn.execute(sql, (symbol, limit)).fetchall()
         return [dict(r) for r in rows]
+
 
 
 def insert_paper_trade(trade: dict) -> int:
