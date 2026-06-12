@@ -68,7 +68,7 @@ def check_risk_limits(symbol: str, setup_type: str | None = None) -> tuple[bool,
         last_loss = conn.execute(
             """
             SELECT closed_at FROM paper_trades
-            WHERE symbol=? AND status IN ('CLOSED_SL', 'CLOSED_MANUAL')
+            WHERE symbol=? AND status IN ('CLOSED_SL', 'CLOSED_MANUAL', 'Dead Trade', 'TF-1H-Cross')
             AND pnl_rupees < 0
             ORDER BY closed_at DESC
             LIMIT 1

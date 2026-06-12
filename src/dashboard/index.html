@@ -184,9 +184,12 @@
     <label>HISTORY (CHARTS)</label>
     <input type="range" id="hours" min="1" max="48" value="6">
     <span id="hours-val">6h</span>
-    <label>SCAN</label>
-    <select id="scan-freq"></select>
-    <button onclick="saveScanFrequency()">SET</button>
+    <label>NSE SCAN</label>
+    <select id="scan-freq-nse"></select>
+    <button onclick="saveScanFrequency('nse')">SET</button>
+    <label>MCX SCAN</label>
+    <select id="scan-freq-mcx"></select>
+    <button onclick="saveScanFrequency('mcx')">SET</button>
     <span id="scan-freq-status">—</span>
   </div>
   <div class="separator"></div>
@@ -336,38 +339,47 @@ async function loadAll() {
   }
 }
 
-async function loadRuntime() {
-  const rt = await api('/api/runtime');
-  const sel = document.getElementById('scan-freq');
+function formatFreqLabel(mins) {
+  return mins === 60 ? '1H' : mins === 180 ? '3H' : mins === 1440 ? '1D' : `${mins}m`;
+}
+
+function populateSelector(sel, currentVal, options) {
   if (!sel.options.length) {
-    const options = rt.scan_frequency_options || [5, 15, 30, 60, 180, 1440];
     for (const i of options) {
       const opt = document.createElement('option');
       opt.value = String(i);
-      if (i === 60) opt.textContent = '1H';
-      else if (i === 180) opt.textContent = '3H';
-      else if (i === 1440) opt.textContent = '1D';
-      else opt.textContent = `${i} min`;
+      opt.textContent = i === 60 ? '1H' : i === 180 ? '3H' : i === 1440 ? '1D' : `${i} min`;
       sel.appendChild(opt);
     }
   }
-  sel.value = String(rt.scan_frequency_minutes);
-  const lbl = rt.scan_frequency_minutes === 60 ? '1H'
-    : rt.scan_frequency_minutes === 180 ? '3H'
-    : rt.scan_frequency_minutes === 1440 ? '1D'
-    : `${rt.scan_frequency_minutes} min`;
-  document.getElementById('scan-freq-status').textContent = `Current ${lbl}`;
+  sel.value = String(currentVal);
 }
 
-async function saveScanFrequency() {
-  const sel = document.getElementById('scan-freq');
+async function loadRuntime() {
+  const rt = await api('/api/runtime');
+  const options = rt.scan_frequency_options || [5, 15, 30, 60, 180, 1440];
+  
+  const selNse = document.getElementById('scan-freq-nse');
+  const selMcx = document.getElementById('scan-freq-mcx');
+  
+  populateSelector(selNse, rt.scan_frequency_nse, options);
+  populateSelector(selMcx, rt.scan_frequency_mcx, options);
+  
+  const lblNse = formatFreqLabel(rt.scan_frequency_nse);
+  const lblMcx = formatFreqLabel(rt.scan_frequency_mcx);
+  
+  document.getElementById('scan-freq-status').textContent = `NSE: ${lblNse} | MCX: ${lblMcx}`;
+}
+
+async function saveScanFrequency(type) {
+  const sel = document.getElementById(`scan-freq-${type}`);
   const minutes = Number(sel.value || 5);
-  const rt = await apiPost(`/api/runtime?scan_frequency_minutes=${minutes}`);
-  const lbl = rt.scan_frequency_minutes === 60 ? '1H'
-    : rt.scan_frequency_minutes === 180 ? '3H'
-    : rt.scan_frequency_minutes === 1440 ? '1D'
-    : `${rt.scan_frequency_minutes} min`;
-  document.getElementById('scan-freq-status').textContent = `Saved ${lbl}`;
+  const rt = await apiPost(`/api/runtime?scan_frequency_${type}=${minutes}`);
+  
+  const lblNse = formatFreqLabel(rt.scan_frequency_nse);
+  const lblMcx = formatFreqLabel(rt.scan_frequency_mcx);
+  
+  document.getElementById('scan-freq-status').textContent = `Saved! NSE: ${lblNse} | MCX: ${lblMcx}`;
 }
 
 function renderMeta(m) {

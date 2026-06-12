@@ -21,12 +21,16 @@ from src.models.schema import (
     get_latest_snapshots_for_symbol,
     get_open_timeframe_trades,
     get_scan_summary_at_least_1h_old,
+    get_today_scan_count,
+    get_scan_summary_n_scans_ago,
     get_conn,
 )
 from src.engine.trade_decision import make_trade_decision
 from src.engine.risk_engine import check_risk_limits
 from config.settings import LOT_SIZES, DEFAULT_LOTS_PER_TRADE, TIMEFRAME_OI_MIN_DIFF_PCT
-from config.symbol_classes import market_window, get_strike_step
+from config.symbol_classes import market_window, get_strike_step, get_symbol_class
+from config.runtime_config import get_scan_frequency_minutes, get_scan_frequency_nse, get_scan_frequency_mcx
+
 
 IST = pytz.timezone("Asia/Kolkata")
 
@@ -380,6 +384,21 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
     if underlying <= 0:
         return None
 
+    # Gating checks for scan frequency
+    if get_symbol_class(symbol) == "MCX_COMMODITY":
+        scan_freq = get_scan_frequency_mcx()
+    else:
+        scan_freq = get_scan_frequency_nse()
+    fetched_at = ctx.get("fetched_at") or datetime.now(timezone.utc).isoformat()
+    if scan_freq in (15, 30):
+        scans_needed = 60 // scan_freq
+        today_scans = get_today_scan_count(symbol, fetched_at)
+        current_scan_idx = today_scans + 1
+        if current_scan_idx % scans_needed != 0:
+            log.info("%s: Timeframe strategy skipped — scan %d is not a 1-hour boundary (run every %d scans for %d-min scan freq)", 
+                     symbol, current_scan_idx, scans_needed, scan_freq)
+            return {"action": "SKIPPED_TIMEFRAME_BOUNDARY", "reason": f"Skipped scan {current_scan_idx} (run every {scans_needed} scans)"}
+
     open_trades_before = get_open_timeframe_trades(symbol)
 
     # Check if we have chart indicators
@@ -418,17 +437,23 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
     # Fetch total ce/pe oi for bias
     current_ce = ctx.get("total_ce_oi")
     current_pe = ctx.get("total_pe_oi")
-    fetched_at = ctx.get("fetched_at") or datetime.now(timezone.utc).isoformat()
 
     if current_ce is None or current_pe is None:
         log.warning("%s: Timeframe strategy skipped — missing total OI data", symbol)
         return
 
-    # Compute OI bias from scan summaries at least 1h ago
-    older = get_scan_summary_at_least_1h_old(symbol, fetched_at)
-    if not older:
-        log.warning("%s: Timeframe strategy skipped — insufficient scan history (< 1 hour)", symbol)
-        return
+    # Compute OI bias using the same approach (scans-based lookback for 15m/30m frequencies)
+    if scan_freq in (15, 30):
+        scans_needed = 60 // scan_freq
+        older = get_scan_summary_n_scans_ago(symbol, scans_needed)
+        if not older:
+            log.warning("%s: Timeframe strategy skipped — insufficient scan history (%d scans ago)", symbol, scans_needed)
+            return
+    else:
+        older = get_scan_summary_at_least_1h_old(symbol, fetched_at)
+        if not older:
+            log.warning("%s: Timeframe strategy skipped — insufficient scan history (< 1 hour)", symbol)
+            return
 
     prev_ce = older["total_ce_oi"]
     prev_pe = older["total_pe_oi"]
@@ -546,7 +571,7 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
                         now_iso,
                         underlying,
                         exit_premium if trade["option_type"] in ("CE", "PE") else underlying,
-                        "CLOSED_MANUAL",
+                        "Dead Trade",
                         f"Dead trade exit: 3 hours passed, max favorable R {max_fav:.2f} < 0.5",
                     )
                     log.info("%s: Closed open TIMEFRAME trade (id=%d) on dead-trade exit", symbol, trade["id"])
@@ -564,7 +589,7 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
                             now_iso,
                             underlying,
                             exit_premium if trade["option_type"] == "CE" else underlying,
-                            "CLOSED_MANUAL",
+                            "TF-1H-Cross",
                             f"timeframe exit | Large reversal move ({crossover_size:.2f} > 2x buffer {2 * breakout_buffer:.2f})",
                         )
                         log.info("%s: Closed open TIMEFRAME LONG trade (id=%d) on large 1H close reversal", symbol, trade["id"])
@@ -574,7 +599,7 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
                             now_iso,
                             underlying,
                             exit_premium if trade["option_type"] == "CE" else underlying,
-                            "CLOSED_MANUAL",
+                            "TF-1H-Cross",
                             f"timeframe exit | 1H close {c_1h_close:.2f} < p1H_low {p_1h_low:.2f} + Short OI bias",
                         )
                         log.info("%s: Closed open TIMEFRAME LONG trade (id=%d) on 1H close crossover with OI bias", symbol, trade["id"])
@@ -591,7 +616,7 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
                             now_iso,
                             underlying,
                             exit_premium if trade["option_type"] == "PE" else underlying,
-                            "CLOSED_MANUAL",
+                            "TF-1H-Cross",
                             f"timeframe exit | Large reversal move ({crossover_size:.2f} > 2x buffer {2 * breakout_buffer:.2f})",
                         )
                         log.info("%s: Closed open TIMEFRAME SHORT trade (id=%d) on large 1H close reversal", symbol, trade["id"])
@@ -601,7 +626,7 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
                             now_iso,
                             underlying,
                             exit_premium if trade["option_type"] == "PE" else underlying,
-                            "CLOSED_MANUAL",
+                            "TF-1H-Cross",
                             f"timeframe exit | 1H close {c_1h_close:.2f} > p1H_high {p_1h_high:.2f} + Long OI bias",
                         )
                         log.info("%s: Closed open TIMEFRAME SHORT trade (id=%d) on 1H close crossover with OI bias", symbol, trade["id"])

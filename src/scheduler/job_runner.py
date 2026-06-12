@@ -12,7 +12,7 @@ from pathlib import Path
 import pytz
 
 from config.settings import FETCH_INTERVAL_MINUTES, WATCH_SYMBOLS
-from config.runtime_config import get_scan_frequency_minutes
+from config.runtime_config import get_scan_frequency_minutes, get_scan_frequency_nse, get_scan_frequency_mcx
 from config.symbol_classes import market_window, get_symbol_class
 from src.engine.pipeline import run_pipeline
 
@@ -141,9 +141,10 @@ def start_scheduler():
     from src.models.schema import delete_expired_contracts
     
     log.info(
-        "Scheduler started — default interval: %d min | runtime interval: %d min | symbols: %s",
+        "Scheduler started — default interval: %d min | NSE interval: %d min | MCX interval: %d min | symbols: %s",
         FETCH_INTERVAL_MINUTES,
-        get_scan_frequency_minutes(),
+        get_scan_frequency_nse(),
+        get_scan_frequency_mcx(),
         WATCH_SYMBOLS,
     )
     # Run a cleanup of expired data on startup
@@ -159,7 +160,6 @@ def start_scheduler():
         while True:
             now_ts = time.time()
             now_ist = datetime.fromtimestamp(now_ts, IST)
-            interval_min = get_scan_frequency_minutes()
             
             if now_ist.date() > current_date:
                 current_date = now_ist.date()
@@ -182,7 +182,12 @@ def start_scheduler():
                 delta_minutes = (now_ist - market_open_time).total_seconds() / 60.0
                 if delta_minutes < 0:
                     continue
-                    
+                
+                if class_key == "MCX_COMMODITY":
+                    interval_min = get_scan_frequency_mcx()
+                else:
+                    interval_min = get_scan_frequency_nse()
+
                 current_interval_idx = math.floor(delta_minutes / interval_min)
                 should_scan = False
                 

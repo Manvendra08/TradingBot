@@ -154,7 +154,7 @@ def test_timeframe_strategy_exit_long():
         trades = conn.execute("SELECT * FROM paper_trades WHERE symbol='NIFTY'").fetchall()
         assert len(trades) == 1
         trade = dict(trades[0])
-        assert trade["status"] == "CLOSED_MANUAL"
+        assert trade["status"] == "TF-1H-Cross"
         assert trade["exit_premium"] == 120.0
         assert trade["pnl_points"] == -130.0  # 120 - 250
         assert trade["pnl_rupees"] == -3250.0  # -130 * 25 (lot size)
@@ -296,7 +296,7 @@ def test_timeframe_strategy_dead_trade_exit():
         trades = conn.execute("SELECT * FROM paper_trades WHERE symbol='NIFTY'").fetchall()
         assert len(trades) == 1
         trade = dict(trades[0])
-        assert trade["status"] == "CLOSED_MANUAL"
+        assert trade["status"] == "Dead Trade"
         assert "Dead trade exit" in trade["reason"]
 
 def test_timeframe_strategy_pyramiding():
@@ -400,7 +400,7 @@ def test_timeframe_strategy_exit_long_large_move_candle_only():
 
     with get_conn() as conn:
         trade = conn.execute("SELECT * FROM paper_trades WHERE symbol='NIFTY'").fetchone()
-        assert trade["status"] == "CLOSED_MANUAL"
+        assert trade["status"] == "TF-1H-Cross"
         assert "Large reversal move" in trade["reason"]
 
 def test_timeframe_strategy_exit_long_small_move_with_oi():
@@ -453,7 +453,7 @@ def test_timeframe_strategy_exit_long_small_move_with_oi():
 
     with get_conn() as conn:
         trade = conn.execute("SELECT * FROM paper_trades WHERE symbol='NIFTY'").fetchone()
-        assert trade["status"] == "CLOSED_MANUAL"
+        assert trade["status"] == "TF-1H-Cross"
         assert "Short OI bias" in trade["reason"]
 
 def test_timeframe_strategy_exit_long_small_move_no_oi():
@@ -505,4 +505,128 @@ def test_timeframe_strategy_exit_long_small_move_no_oi():
     with get_conn() as conn:
         trade = conn.execute("SELECT * FROM paper_trades WHERE symbol='NIFTY'").fetchone()
         assert trade["status"] == "OPEN"
+
+
+def test_aggregate_bars_grid_filtering():
+    from src.fetchers.chart_fetcher import _aggregate_bars_grid
+    import pytz
+
+    tz = pytz.timezone("Asia/Kolkata")
+    bars = []
+    times_ist = [
+        datetime(2026, 6, 11, 9, 15),
+        datetime(2026, 6, 11, 10, 15),
+        datetime(2026, 6, 11, 11, 15),
+        datetime(2026, 6, 11, 12, 15),
+        datetime(2026, 6, 11, 13, 15),
+        datetime(2026, 6, 11, 14, 15),
+        datetime(2026, 6, 11, 15, 15),
+    ]
+    for dt_ist in times_ist:
+        dt_local = tz.localize(dt_ist)
+        ts_utc = dt_local.astimezone(timezone.utc).timestamp()
+        bars.append({
+            "Open": 100.0, "High": 110.0, "Low": 90.0, "Close": 105.0, "_ts": ts_utc
+        })
+
+    mock_now = tz.localize(datetime(2026, 6, 11, 17, 0))
+
+    class MockDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return mock_now
+
+    with patch("src.fetchers.chart_fetcher.datetime", MockDateTime):
+        # Test 1H timeframe aggregation (tf_mins = 60)
+        agg_1h = _aggregate_bars_grid(bars, 60, "NIFTY")
+        assert len(agg_1h) == 6
+        assert agg_1h[-1]["_slot_start"].strftime("%H:%M") == "14:15"
+
+        # Test 3H timeframe aggregation (tf_mins = 180)
+        agg_3h = _aggregate_bars_grid(bars, 180, "NIFTY")
+        assert len(agg_3h) == 2
+        assert agg_3h[0]["_slot_start"].strftime("%H:%M") == "09:15"
+        assert agg_3h[1]["_slot_start"].strftime("%H:%M") == "12:15"
+
+
+def test_today_scan_count_and_n_scans_ago():
+    from src.models.schema import get_today_scan_count, get_scan_summary_n_scans_ago
+    with get_conn() as conn:
+        conn.execute("DELETE FROM scan_summaries")
+        conn.execute(
+            "INSERT INTO scan_summaries (symbol, expiry, fetched_at, total_ce_oi, total_pe_oi) VALUES (?, ?, ?, ?, ?)",
+            ("NIFTY", "2026-06-11", "2026-06-11T10:00:00Z", 100, 200)
+        )
+        conn.execute(
+            "INSERT INTO scan_summaries (symbol, expiry, fetched_at, total_ce_oi, total_pe_oi) VALUES (?, ?, ?, ?, ?)",
+            ("NIFTY", "2026-06-11", "2026-06-11T10:15:00Z", 300, 400)
+        )
+        conn.execute(
+            "INSERT INTO scan_summaries (symbol, expiry, fetched_at, total_ce_oi, total_pe_oi) VALUES (?, ?, ?, ?, ?)",
+            ("NIFTY", "2026-06-11", "2026-06-11T10:30:00Z", 500, 600)
+        )
+
+    assert get_today_scan_count("NIFTY", "2026-06-11T10:35:00Z") == 3
+
+    ago_1 = get_scan_summary_n_scans_ago("NIFTY", 1)
+    assert ago_1["total_ce_oi"] == 500
+
+    ago_2 = get_scan_summary_n_scans_ago("NIFTY", 2)
+    assert ago_2["total_ce_oi"] == 300
+
+    ago_3 = get_scan_summary_n_scans_ago("NIFTY", 3)
+    assert ago_3["total_ce_oi"] == 100
+
+
+def test_run_timeframe_strategy_scan_frequency_gating():
+    scan_context = {
+        "underlying": 23000.0,
+        "atm_strike": 23000.0,
+        "expiry": "2026-06-11",
+        "total_ce_oi": 1000000,
+        "total_pe_oi": 1500000,
+        "fetched_at": "2026-06-11T12:00:00Z",
+        "chart_indicators": {
+            "3h": {
+                "ohlc": {"open": 22950, "high": 23050, "low": 22900, "close": 23050},
+                "prev_ohlc": {"open": 22800, "high": 23000, "low": 22800, "close": 22950},
+            },
+            "1h": {
+                "ohlc": {"open": 22980, "high": 23020, "low": 22970, "close": 23020},
+                "prev_ohlc": {"open": 22950, "high": 22990, "low": 22950, "close": 22980},
+            }
+        }
+    }
+
+    with patch("src.engine.paper_trading._is_market_open", return_value=True), \
+         patch("src.engine.paper_trading.check_risk_limits", return_value=(True, "")):
+
+        with patch("src.engine.paper_trading.get_scan_frequency_nse", return_value=15):
+            res = run_timeframe_strategy("NIFTY", scan_context, "digest-123", {})
+            assert res["action"] == "SKIPPED_TIMEFRAME_BOUNDARY"
+
+        with get_conn() as conn:
+            conn.execute("DELETE FROM scan_summaries")
+            for i in range(4):
+                conn.execute(
+                    "INSERT INTO scan_summaries (symbol, expiry, fetched_at, total_ce_oi, total_pe_oi) VALUES (?, ?, ?, ?, ?)",
+                    ("NIFTY", "2026-06-11", f"2026-06-11T10:0{i}:00Z", 1000000, 1000000)
+                )
+
+        with patch("src.engine.paper_trading.get_scan_frequency_nse", return_value=15):
+            res = run_timeframe_strategy("NIFTY", scan_context, "digest-123", {})
+            assert res["action"] == "SKIPPED_TIMEFRAME_BOUNDARY"
+
+        with get_conn() as conn:
+            conn.execute("DELETE FROM scan_summaries")
+            for i in range(3):
+                conn.execute(
+                    "INSERT INTO scan_summaries (symbol, expiry, fetched_at, total_ce_oi, total_pe_oi) VALUES (?, ?, ?, ?, ?)",
+                    ("NIFTY", "2026-06-11", f"2026-06-11T10:0{i}:00Z", 1000000, 1000000)
+                )
+
+        with patch("src.engine.paper_trading.get_scan_frequency_nse", return_value=15):
+            res = run_timeframe_strategy("NIFTY", scan_context, "digest-123", {"verdict_label": "Long Buildup", "confidence": 80})
+            assert res is None or res.get("action") != "SKIPPED_TIMEFRAME_BOUNDARY"
+
 

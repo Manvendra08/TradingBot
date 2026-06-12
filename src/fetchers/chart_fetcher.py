@@ -445,6 +445,112 @@ def _aggregate_bars_list(bars: list[dict], bar_minutes: int, aggregate_count: in
     return agg_bars
 
 
+def _aggregate_bars_grid(bars: list[dict], tf_mins: int, base_symbol: str) -> list[dict]:
+    """
+    Groups bars by daily market grids and aggregates them.
+    Only completed slots that fit entirely within market hours are returned.
+    """
+    import pytz
+    from config.symbol_classes import market_window
+
+    tz_local = pytz.timezone("Asia/Kolkata")
+    open_t, close_t, _ = market_window(base_symbol)
+    open_h, open_m = map(int, open_t.split(":"))
+    close_h, close_m = map(int, close_t.split(":"))
+    now_local = datetime.now(tz_local)
+
+    parsed_bars = []
+    for bar in bars:
+        ts = bar.get("_ts")
+        if ts is None:
+            continue
+        try:
+            dt_utc = datetime.fromtimestamp(float(ts), timezone.utc)
+            dt_local = dt_utc.astimezone(tz_local)
+            parsed_bars.append((dt_local, bar))
+        except Exception:
+            continue
+
+    if not parsed_bars:
+        return []
+
+    by_date = {}
+    for dt_local, bar in parsed_bars:
+        date_str = dt_local.date().isoformat()
+        by_date.setdefault(date_str, []).append((dt_local, bar))
+
+    aggregated_bars = []
+    for date_str in sorted(by_date.keys()):
+        day_bars = by_date[date_str]
+        day_bars.sort(key=lambda x: x[0])
+
+        y, m, d = map(int, date_str.split("-"))
+        mkt_open = tz_local.localize(datetime(y, m, d, open_h, open_m, 0))
+        mkt_close = tz_local.localize(datetime(y, m, d, close_h, close_m, 0))
+
+        slot_start = mkt_open
+        while True:
+            slot_end = slot_start + timedelta(minutes=tf_mins)
+            if slot_end > mkt_close or slot_end > now_local:
+                break
+
+            slot_bars = [bar for dt, bar in day_bars if slot_start <= dt < slot_end]
+            if slot_bars:
+                try:
+                    o = float(slot_bars[0]["Open"])
+                    h = max(float(b["High"]) for b in slot_bars)
+                    l = min(float(b["Low"]) for b in slot_bars)
+                    c = float(slot_bars[-1]["Close"])
+                    ts_utc = slot_start.astimezone(timezone.utc).timestamp()
+                    aggregated_bars.append({
+                        "Open": o,
+                        "High": h,
+                        "Low": l,
+                        "Close": c,
+                        "_ts": ts_utc,
+                        "_slot_start": slot_start,
+                        "_slot_end": slot_end
+                    })
+                except Exception:
+                    pass
+            slot_start = slot_end
+
+    return aggregated_bars
+
+
+def _payload_from_grid_bars(agg_bars: list[dict]) -> dict | None:
+    if not agg_bars:
+        return None
+
+    last_bar = agg_bars[-1]
+    o = last_bar["Open"]
+    h = last_bar["High"]
+    l = last_bar["Low"]
+    c = last_bar["Close"]
+
+    prev_ohlc = None
+    if len(agg_bars) >= 2:
+        prev_bar = agg_bars[-2]
+        prev_ohlc = {
+            "open": prev_bar["Open"],
+            "high": prev_bar["High"],
+            "low": prev_bar["Low"],
+            "close": prev_bar["Close"]
+        }
+
+    start_dt = last_bar["_slot_start"].astimezone(timezone.utc)
+    end_dt = last_bar["_slot_end"].astimezone(timezone.utc)
+
+    return {
+        "sentiment": _sentiment(o, c, h, l),
+        "ohlc": {"open": o, "high": h, "low": l, "close": c},
+        "prev_ohlc": prev_ohlc,
+        "bar_start_utc": start_dt.isoformat(),
+        "bar_end_utc": end_dt.isoformat(),
+    }
+
+
+
 def _calculate_atr_from_bars(bars: list[dict], period: int = 14) -> float | None:
     if len(bars) < period + 1:
         return None
@@ -760,7 +866,8 @@ def _fetch_tv(base_symbol: str, tf: str) -> Optional[dict]:
 def _apply_price_scale(payload: dict, scale: float) -> dict:
     try:
         ohlc = payload.get("ohlc") or {}
-        return {
+        prev = payload.get("prev_ohlc")
+        res = {
             **payload,
             "ohlc": {
                 "open": float(ohlc.get("open", 0.0)) * scale,
@@ -769,6 +876,14 @@ def _apply_price_scale(payload: dict, scale: float) -> dict:
                 "close": float(ohlc.get("close", 0.0)) * scale,
             },
         }
+        if prev:
+            res["prev_ohlc"] = {
+                "open": float(prev.get("open", 0.0)) * scale,
+                "high": float(prev.get("high", 0.0)) * scale,
+                "low": float(prev.get("low", 0.0)) * scale,
+                "close": float(prev.get("close", 0.0)) * scale,
+            }
+        return res
     except Exception:
         return payload
 
@@ -818,46 +933,22 @@ def _fetch_yf(base_symbol: str, tf: str, reference_price: float | None = None) -
                     "_ts": ts,
                 })
                 
-        if tf == "4h" and len(valid_bars) >= 4:
-            chunk = valid_bars[-4:]
-            valid_bars = [{
-                "Open": chunk[0]["Open"],
-                "High": max(item["High"] for item in chunk),
-                "Low": min(item["Low"] for item in chunk),
-                "Close": chunk[-1]["Close"],
-                "_ts_start": chunk[0].get("_ts"),
-                "_ts_end": chunk[-1].get("_ts"),
-            }]
-            
         if valid_bars:
-            if tf == "1h":
-                payload = _payload_from_closed_bars(valid_bars, bar_minutes=60, aggregate_count=1)
-                agg_bars = _aggregate_bars_list(valid_bars, bar_minutes=60, aggregate_count=1)
-                atr = _calculate_atr_from_bars(agg_bars, period=14)
-                if payload and atr is not None:
-                    payload["atr_14"] = atr
-            elif tf == "3h":
-                payload = _payload_from_closed_bars(valid_bars, bar_minutes=60, aggregate_count=3)
-                agg_bars = _aggregate_bars_list(valid_bars, bar_minutes=60, aggregate_count=3)
-                atr = _calculate_atr_from_bars(agg_bars, period=14)
-                if payload and atr is not None:
-                    payload["atr_14"] = atr
+            if tf.endswith("m"):
+                tf_mins = int(tf[:-1])
+            elif tf.endswith("h"):
+                tf_mins = int(tf[:-1]) * 60
+            elif tf.endswith("d"):
+                tf_mins = int(tf[:-1]) * 1440
             else:
-                bar = valid_bars[-1]
-                payload = _bar_to_payload(
-                    bar,
-                    bar_start_ts=bar.get("_ts_start", bar.get("_ts")),
-                    bar_end_ts=bar.get("_ts_end", bar.get("_ts")),
-                )
-                if payload and len(valid_bars) >= 2:
-                    prev_bar = valid_bars[-2]
-                    prev_payload = _bar_to_payload(
-                        prev_bar,
-                        bar_start_ts=prev_bar.get("_ts_start", prev_bar.get("_ts")),
-                        bar_end_ts=prev_bar.get("_ts_end", prev_bar.get("_ts")),
-                    )
-                    if prev_payload:
-                        payload["prev_ohlc"] = prev_payload["ohlc"]
+                tf_mins = 60
+
+            agg_bars = _aggregate_bars_grid(valid_bars, tf_mins, base_symbol)
+            payload = _payload_from_grid_bars(agg_bars)
+            atr = _calculate_atr_from_bars(agg_bars, period=14)
+            if payload and atr is not None:
+                payload["atr_14"] = atr
+
             if payload:
                 # MCX symbols from Yahoo (NG=F/CL=F/GC=F/SI=F) are in global units.
                 # Scale to local underlying so OHLC shown in Telegram/UI remains meaningful.
@@ -902,63 +993,39 @@ def _fetch_yf(base_symbol: str, tf: str, reference_price: float | None = None) -
         if df is None:
             return None
 
-        if tf == "3h":
-            df = df.resample("3h").agg(
-                {"Open": "first", "High": "max", "Low": "min", "Close": "last"}
-            ).dropna()
-        elif tf == "4h":
-            df = df.resample("4h").agg(
-                {"Open": "first", "High": "max", "Low": "min", "Close": "last"}
-            ).dropna()
-
         if df is None or df.empty:
             return None
 
-        if tf in {"1h", "3h"}:
-            bars: list[dict] = []
-            for ts, row in df.tail(64).iterrows():
-                try:
-                    bars.append(
-                        {
-                            "Open": float(row["Open"]),
-                            "High": float(row["High"]),
-                            "Low": float(row["Low"]),
-                            "Close": float(row["Close"]),
-                            "_ts": float(ts.timestamp()),
-                        }
-                    )
-                except Exception:
-                    continue
-            if tf == "1h":
-                payload = _payload_from_closed_bars(bars, bar_minutes=60, aggregate_count=1)
-                agg_bars = _aggregate_bars_list(bars, bar_minutes=60, aggregate_count=1)
-                atr = _calculate_atr_from_bars(agg_bars, period=14)
-                if payload and atr is not None:
-                    payload["atr_14"] = atr
-            else:
-                payload = _payload_from_closed_bars(bars, bar_minutes=60, aggregate_count=3)
-                agg_bars = _aggregate_bars_list(bars, bar_minutes=60, aggregate_count=3)
-                atr = _calculate_atr_from_bars(agg_bars, period=14)
-                if payload and atr is not None:
-                    payload["atr_14"] = atr
-        else:
-            bar = df.iloc[-1]
-            bar_ts = None
+        bars: list[dict] = []
+        for ts, row in df.tail(64).iterrows():
             try:
-                bar_ts = df.index[-1]
+                bars.append(
+                    {
+                        "Open": float(row["Open"]),
+                        "High": float(row["High"]),
+                        "Low": float(row["Low"]),
+                        "Close": float(row["Close"]),
+                        "_ts": float(ts.timestamp()),
+                    }
+                )
             except Exception:
-                pass
-            payload = _bar_to_payload(bar, bar_start_ts=bar_ts, bar_end_ts=bar_ts)
-            if payload and len(df) >= 2:
-                prev_bar = df.iloc[-2]
-                prev_ts = None
-                try:
-                    prev_ts = df.index[-2]
-                except Exception:
-                    pass
-                prev_payload = _bar_to_payload(prev_bar, bar_start_ts=prev_ts, bar_end_ts=prev_ts)
-                if prev_payload:
-                    payload["prev_ohlc"] = prev_payload["ohlc"]
+                continue
+
+        if bars:
+            if tf.endswith("m"):
+                tf_mins = int(tf[:-1])
+            elif tf.endswith("h"):
+                tf_mins = int(tf[:-1]) * 60
+            elif tf.endswith("d"):
+                tf_mins = int(tf[:-1]) * 1440
+            else:
+                tf_mins = 60
+
+            agg_bars = _aggregate_bars_grid(bars, tf_mins, base_symbol)
+            payload = _payload_from_grid_bars(agg_bars)
+            atr = _calculate_atr_from_bars(agg_bars, period=14)
+            if payload and atr is not None:
+                payload["atr_14"] = atr
         if payload and base_symbol in _MCX_SYMBOLS and reference_price and reference_price > 0:
             try:
                 close_px = float((payload.get("ohlc") or {}).get("close") or 0.0)

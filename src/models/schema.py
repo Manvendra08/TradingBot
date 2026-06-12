@@ -447,6 +447,32 @@ def get_scan_summary_at_least_1h_old(symbol: str, current_fetched_at: str) -> di
     return None
 
 
+def get_today_scan_count(symbol: str, current_fetched_at: str) -> int:
+    """Return the count of scan summaries saved for the current calendar day (UTC)."""
+    date_str = current_fetched_at.split("T")[0]
+    sql = """
+        SELECT COUNT(*) FROM scan_summaries
+        WHERE symbol=? AND fetched_at LIKE ?
+    """
+    with get_conn() as conn:
+        row = conn.execute(sql, (symbol, f"{date_str}%")).fetchone()
+        return row[0] if row else 0
+
+
+def get_scan_summary_n_scans_ago(symbol: str, n: int) -> dict | None:
+    """Return the scan summary row from exactly n scans ago (using offset n-1)."""
+    sql = """
+        SELECT total_ce_oi, total_pe_oi, fetched_at FROM scan_summaries
+        WHERE symbol=?
+        ORDER BY fetched_at DESC
+        LIMIT 1 OFFSET ?
+    """
+    with get_conn() as conn:
+        row = conn.execute(sql, (symbol, n - 1)).fetchone()
+        return dict(row) if row else None
+
+
+
 def insert_paper_trade(trade: dict) -> int:
     sql = """
         INSERT INTO paper_trades

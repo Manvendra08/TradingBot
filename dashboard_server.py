@@ -28,6 +28,10 @@ try:
         MAX_SCAN_FREQUENCY,
         get_scan_frequency_minutes,
         set_scan_frequency_minutes,
+        get_scan_frequency_nse,
+        get_scan_frequency_mcx,
+        set_scan_frequency_nse,
+        set_scan_frequency_mcx,
     )
 except ImportError:
     DB_PATH = ROOT / "data" / "nsebot.db"
@@ -857,6 +861,8 @@ async def get_expiries(symbol: str):
 async def get_runtime():
     return {
         "scan_frequency_minutes": get_scan_frequency_minutes(),
+        "scan_frequency_nse": get_scan_frequency_nse(),
+        "scan_frequency_mcx": get_scan_frequency_mcx(),
         "scan_frequency_options": ALLOWED_SCAN_FREQUENCIES,
         "min_scan_frequency_minutes": MIN_SCAN_FREQUENCY,
         "max_scan_frequency_minutes": MAX_SCAN_FREQUENCY,
@@ -864,14 +870,39 @@ async def get_runtime():
 
 
 @app.post("/api/runtime")
-async def set_runtime(scan_frequency_minutes: int = Query(...)):
-    if scan_frequency_minutes not in ALLOWED_SCAN_FREQUENCIES:
-        return JSONResponse(
-            {"ok": False, "error": "invalid scan_frequency_minutes", "allowed": ALLOWED_SCAN_FREQUENCIES},
-            status_code=400,
-        )
-    value = set_scan_frequency_minutes(scan_frequency_minutes)
-    return {"ok": True, "scan_frequency_minutes": value}
+async def set_runtime(
+    scan_frequency_minutes: int | None = Query(None),
+    scan_frequency_nse: int | None = Query(None),
+    scan_frequency_mcx: int | None = Query(None),
+):
+    if scan_frequency_minutes is not None:
+        if scan_frequency_minutes not in ALLOWED_SCAN_FREQUENCIES:
+            return JSONResponse(
+                {"ok": False, "error": "invalid scan_frequency_minutes", "allowed": ALLOWED_SCAN_FREQUENCIES},
+                status_code=400,
+            )
+        set_scan_frequency_minutes(scan_frequency_minutes)
+    if scan_frequency_nse is not None:
+        if scan_frequency_nse not in ALLOWED_SCAN_FREQUENCIES:
+            return JSONResponse(
+                {"ok": False, "error": "invalid scan_frequency_nse", "allowed": ALLOWED_SCAN_FREQUENCIES},
+                status_code=400,
+            )
+        set_scan_frequency_nse(scan_frequency_nse)
+    if scan_frequency_mcx is not None:
+        if scan_frequency_mcx not in ALLOWED_SCAN_FREQUENCIES:
+            return JSONResponse(
+                {"ok": False, "error": "invalid scan_frequency_mcx", "allowed": ALLOWED_SCAN_FREQUENCIES},
+                status_code=400,
+            )
+        set_scan_frequency_mcx(scan_frequency_mcx)
+    
+    return {
+        "ok": True,
+        "scan_frequency_minutes": get_scan_frequency_minutes(),
+        "scan_frequency_nse": get_scan_frequency_nse(),
+        "scan_frequency_mcx": get_scan_frequency_mcx(),
+    }
 
 
 def _enrich_open_trades_with_live_pnl(rows: list[dict]) -> None:
@@ -1085,15 +1116,15 @@ async def get_paper_summary(symbol: str = ""):
         SELECT
             COUNT(*) AS total,
             SUM(CASE WHEN status='OPEN' THEN 1 ELSE 0 END) AS open_count,
-            SUM(CASE WHEN status LIKE 'CLOSED_%' THEN 1 ELSE 0 END) AS closed_count,
-            SUM(CASE WHEN status='CLOSED_TARGET' THEN 1 ELSE 0 END) AS wins,
-            SUM(CASE WHEN status='CLOSED_SL' THEN 1 ELSE 0 END) AS losses,
-            ROUND(COALESCE(SUM(CASE WHEN status LIKE 'CLOSED_%' THEN pnl_rupees ELSE 0 END), 0), 2) AS closed_pnl,
-            ROUND(COALESCE(AVG(CASE WHEN status LIKE 'CLOSED_%' THEN pnl_rupees END), 0), 2) AS avg_pnl,
-            ROUND(COALESCE(AVG(CASE WHEN status='CLOSED_TARGET' THEN pnl_rupees END), 0), 2) AS avg_win,
-            ROUND(COALESCE(AVG(CASE WHEN status='CLOSED_SL' THEN pnl_rupees END), 0), 2) AS avg_loss,
-            MAX(CASE WHEN status LIKE 'CLOSED_%' THEN pnl_rupees ELSE 0 END) AS max_win,
-            MIN(CASE WHEN status LIKE 'CLOSED_%' THEN pnl_rupees ELSE 0 END) AS max_loss
+            SUM(CASE WHEN status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross') THEN 1 ELSE 0 END) AS closed_count,
+            SUM(CASE WHEN status='CLOSED_TARGET' OR (status IN ('Dead Trade', 'TF-1H-Cross') AND pnl_rupees > 0) THEN 1 ELSE 0 END) AS wins,
+            SUM(CASE WHEN status='CLOSED_SL' OR (status IN ('Dead Trade', 'TF-1H-Cross') AND pnl_rupees < 0) THEN 1 ELSE 0 END) AS losses,
+            ROUND(COALESCE(SUM(CASE WHEN status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross') THEN pnl_rupees ELSE 0 END), 0), 2) AS closed_pnl,
+            ROUND(COALESCE(AVG(CASE WHEN status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross') THEN pnl_rupees END), 0), 2) AS avg_pnl,
+            ROUND(COALESCE(AVG(CASE WHEN status='CLOSED_TARGET' OR (status IN ('Dead Trade', 'TF-1H-Cross') AND pnl_rupees > 0) THEN pnl_rupees END), 0), 2) AS avg_win,
+            ROUND(COALESCE(AVG(CASE WHEN status='CLOSED_SL' OR (status IN ('Dead Trade', 'TF-1H-Cross') AND pnl_rupees < 0) THEN pnl_rupees END), 0), 2) AS avg_loss,
+            MAX(CASE WHEN status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross') THEN pnl_rupees ELSE 0 END) AS max_win,
+            MIN(CASE WHEN status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross') THEN pnl_rupees ELSE 0 END) AS max_loss
         FROM paper_trades
         {where}
         """,
@@ -1112,11 +1143,11 @@ async def get_paper_summary(symbol: str = ""):
         SELECT
             UPPER(symbol) AS symbol,
             COUNT(*) AS total_trades,
-            SUM(CASE WHEN status='CLOSED_TARGET' THEN 1 ELSE 0 END) AS wins,
-            SUM(CASE WHEN status='CLOSED_SL' THEN 1 ELSE 0 END) AS losses,
-            ROUND(COALESCE(SUM(CASE WHEN status LIKE 'CLOSED_%' THEN pnl_rupees ELSE 0 END), 0), 2) AS total_pnl,
-            ROUND(COALESCE(AVG(CASE WHEN status LIKE 'CLOSED_%' THEN pnl_rupees END), 0), 2) AS avg_pnl,
-            SUM(CASE WHEN status LIKE 'CLOSED_%' THEN 1 ELSE 0 END) AS closed_count
+            SUM(CASE WHEN status='CLOSED_TARGET' OR (status IN ('Dead Trade', 'TF-1H-Cross') AND pnl_rupees > 0) THEN 1 ELSE 0 END) AS wins,
+            SUM(CASE WHEN status='CLOSED_SL' OR (status IN ('Dead Trade', 'TF-1H-Cross') AND pnl_rupees < 0) THEN 1 ELSE 0 END) AS losses,
+            ROUND(COALESCE(SUM(CASE WHEN status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross') THEN pnl_rupees ELSE 0 END), 0), 2) AS total_pnl,
+            ROUND(COALESCE(AVG(CASE WHEN status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross') THEN pnl_rupees END), 0), 2) AS avg_pnl,
+            SUM(CASE WHEN status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross') THEN 1 ELSE 0 END) AS closed_count
         FROM paper_trades
         {where}
         GROUP BY UPPER(symbol)
@@ -1139,11 +1170,11 @@ async def get_paper_summary(symbol: str = ""):
     
     # Profit factor calculation
     if where:
-        wins_where = f"{where} AND status='CLOSED_TARGET'"
-        losses_where = f"{where} AND status='CLOSED_SL'"
+        wins_where = f"{where} AND (status='CLOSED_TARGET' OR (status IN ('Dead Trade', 'TF-1H-Cross') AND pnl_rupees > 0))"
+        losses_where = f"{where} AND (status='CLOSED_SL' OR (status IN ('Dead Trade', 'TF-1H-Cross') AND pnl_rupees < 0))"
     else:
-        wins_where = "WHERE status='CLOSED_TARGET'"
-        losses_where = "WHERE status='CLOSED_SL'"
+        wins_where = "WHERE (status='CLOSED_TARGET' OR (status IN ('Dead Trade', 'TF-1H-Cross') AND pnl_rupees > 0))"
+        losses_where = "WHERE (status='CLOSED_SL' OR (status IN ('Dead Trade', 'TF-1H-Cross') AND pnl_rupees < 0))"
     
     total_wins = sum(float(r.get("pnl_rupees") or 0) for r in _q(
         f"SELECT pnl_rupees FROM paper_trades {wins_where}",
@@ -1170,9 +1201,9 @@ def _calculate_holding_analysis(where: str, params: tuple) -> dict:
     
     # Build WHERE clause properly
     if where:
-        sql_where = f"{where} AND status LIKE 'CLOSED_%' AND closed_at IS NOT NULL"
+        sql_where = f"{where} AND (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross')) AND closed_at IS NOT NULL"
     else:
-        sql_where = "WHERE status LIKE 'CLOSED_%' AND closed_at IS NOT NULL"
+        sql_where = "WHERE (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross')) AND closed_at IS NOT NULL"
     
     rows = _q(
         f"SELECT opened_at, closed_at, status FROM paper_trades {sql_where}",
@@ -1275,9 +1306,9 @@ def _calculate_consecutive_wins(where: str, params: tuple) -> int:
     """Calculate current consecutive wins/losses streak."""
     # Build WHERE clause properly
     if where:
-        sql_where = f"{where} AND status LIKE 'CLOSED_%'"
+        sql_where = f"{where} AND (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross'))"
     else:
-        sql_where = "WHERE status LIKE 'CLOSED_%'"
+        sql_where = "WHERE (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross'))"
     
     rows = _q(
         f"SELECT status FROM paper_trades {sql_where} ORDER BY closed_at DESC LIMIT 20",
@@ -1285,7 +1316,7 @@ def _calculate_consecutive_wins(where: str, params: tuple) -> int:
     )
     streak = 0
     for r in rows:
-        if r.get("status") == "CLOSED_TARGET":
+        if r.get("status") == "CLOSED_TARGET" or (r.get("status") in ("Dead Trade", "TF-1H-Cross") and (r.get("pnl_rupees") or 0.0) > 0):
             streak += 1
         else:
             break
@@ -1380,7 +1411,7 @@ async def delete_paper_trades(date_from: str = "", date_to: str = ""):
 
 @app.get("/api/paper_equity")
 async def get_paper_equity(symbol: str = ""):
-    clauses = ["status LIKE 'CLOSED_%'"]
+    clauses = ["(status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross'))"]
     params: list = []
     if symbol:
         clauses.append("symbol=?")

@@ -1287,6 +1287,8 @@ function sbadge(s) {
   if(s==='CLOSED_TARGET') return '<span class="badge b-win">TARGET</span>';
   if(s==='CLOSED_SL')     return '<span class="badge b-loss">SL HIT</span>';
   if(s==='CLOSED_MANUAL') return '<span class="badge b-manual">MANUAL</span>';
+  if(s==='Dead Trade')    return '<span class="badge b-manual">DEAD TRADE</span>';
+  if(s==='TF-1H-Cross')   return '<span class="badge b-manual">TF CROSS</span>';
   return `<span class="badge">${s||'—'}</span>`;
 }
 function entryPrice(t) { if(t.option_type==='FUT') return fp(t.entry_underlying); return t.entry_premium?fp(t.entry_premium):fp(t.entry_underlying); }
