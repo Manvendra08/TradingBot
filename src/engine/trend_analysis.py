@@ -4,6 +4,14 @@ P1 fix: detect_reversal_from_scans() now accepts skip_latest=True (default True)
   make_trade_decision is called) is excluded from the 2-scan confirmation
   window. Previously rows[0] was the triggering scan itself, giving only
   1 real independent confirmation instead of 2.
+
+P2 fix (#1): get_broader_trend_from_alerts() now accepts a pre-fetched result via
+  the `cached` parameter. check_trend_persistence() and calculate_momentum_score()
+  both accept an optional `broader_trend` kwarg so callers can compute once and
+  pass down — eliminates 2-3 redundant DB+query round trips per scan cycle in
+  hybrid mode.
+P2 fix (#11): _is_reversal_against_open_trade threshold sourced from
+  REVERSAL_MIN_CONFIDENCE (settings.py) instead of hardcoded 70.
 """
 from __future__ import annotations
 
@@ -20,12 +28,18 @@ from config.settings import (
 log = logging.getLogger(__name__)
 
 
-def get_broader_trend_from_alerts(symbol: str, limit: int = 50) -> str:
+def get_broader_trend_from_alerts(symbol: str, limit: int = 50, cached: str | None = None) -> str:
     """
     Derive a broader trend label from the last `limit` alert verdicts.
     Returns one of: 'Strong Bullish Trend', 'Moderate Bullish Trend',
     'Strong Bearish Trend', 'Moderate Bearish Trend', 'Mixed/Unclear Trend'.
+
+    Pass `cached` to skip the DB query when the caller already has the result
+    (e.g. from a earlier call in the same pipeline iteration).
     """
+    if cached is not None:
+        return cached
+
     rows = get_recent_alerts_for_symbol(symbol, limit)
     if not rows:
         return "Mixed/Unclear Trend"
@@ -84,26 +98,30 @@ def check_trend_persistence(
     verdict: str,
     confidence: int,
     ctx: dict,
+    broader_trend: str | None = None,
 ) -> tuple[bool, str]:
     """
     Check whether the current verdict is part of a persistent trend.
     Returns (is_persistent, reason_string).
+
+    Pass `broader_trend` when the caller already has the result from
+    get_broader_trend_from_alerts() to avoid a redundant DB round-trip.
     """
-    broader_trend = get_broader_trend_from_alerts(symbol)
+    bt = get_broader_trend_from_alerts(symbol, cached=broader_trend)
 
     if is_bullish(verdict):
-        if "Bearish" in broader_trend:
-            return False, f"Counter-trend BUY — broader trend is {broader_trend}"
-        if "Mixed" in broader_trend and confidence < MIN_CONFIDENCE_CORE:
+        if "Bearish" in bt:
+            return False, f"Counter-trend BUY — broader trend is {bt}"
+        if "Mixed" in bt and confidence < MIN_CONFIDENCE_CORE:
             return False, f"Mixed trend + low confidence ({confidence}%) — no persistence"
-        return True, f"Trend persistent: {broader_trend} | conf={confidence}%"
+        return True, f"Trend persistent: {bt} | conf={confidence}%"
 
     if is_bearish(verdict):
-        if "Bullish" in broader_trend:
-            return False, f"Counter-trend SELL — broader trend is {broader_trend}"
-        if "Mixed" in broader_trend and confidence < MIN_CONFIDENCE_CORE:
+        if "Bullish" in bt:
+            return False, f"Counter-trend SELL — broader trend is {bt}"
+        if "Mixed" in bt and confidence < MIN_CONFIDENCE_CORE:
             return False, f"Mixed trend + low confidence ({confidence}%) — no persistence"
-        return True, f"Trend persistent: {broader_trend} | conf={confidence}%"
+        return True, f"Trend persistent: {bt} | conf={confidence}%"
 
     return False, f"Non-directional verdict '{verdict}'"
 
@@ -113,6 +131,7 @@ def calculate_momentum_score(
     verdict: str,
     confidence: int,
     ctx: dict,
+    broader_trend: str | None = None,
 ) -> int:
     """
     Score 0-100 combining recent trend strength, scan agreement, and chart signals.
@@ -121,20 +140,23 @@ def calculate_momentum_score(
       - Recent scan agreement (last 5)      : 0-30
       - Chart indicator alignment           : 0-20
       - Current confidence contribution     : 0-10
+
+    Pass `broader_trend` when the caller already has the result from
+    get_broader_trend_from_alerts() to avoid a redundant DB round-trip.
     """
     score = 0
 
-    # Component 1: broader trend strength
-    broader_trend = get_broader_trend_from_alerts(symbol)
-    if "Strong Bullish" in broader_trend and is_bullish(verdict):
+    # Component 1: broader trend strength (uses cache if provided)
+    bt = get_broader_trend_from_alerts(symbol, cached=broader_trend)
+    if "Strong Bullish" in bt and is_bullish(verdict):
         score += 40
-    elif "Strong Bearish" in broader_trend and is_bearish(verdict):
+    elif "Strong Bearish" in bt and is_bearish(verdict):
         score += 40
-    elif "Moderate Bullish" in broader_trend and is_bullish(verdict):
+    elif "Moderate Bullish" in bt and is_bullish(verdict):
         score += 25
-    elif "Moderate Bearish" in broader_trend and is_bearish(verdict):
+    elif "Moderate Bearish" in bt and is_bearish(verdict):
         score += 25
-    elif "Mixed" in broader_trend:
+    elif "Mixed" in bt:
         score += 10
 
     # Component 2: recent scan agreement
@@ -254,7 +276,7 @@ def detect_reversal_from_scans(
         )
         if older_support >= 1:
             return True, (
-                f"Reversal confirmed: {opposite}→{current_dir} "
+                f"Reversal confirmed: {opposite}\u2192{current_dir} "
                 f"(last 2 historical scans {opposite}, older support={older_support}/2)"
             )
         return False, f"Prior direction ({opposite}) not sustained in older scans"

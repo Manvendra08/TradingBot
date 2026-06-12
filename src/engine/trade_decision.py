@@ -3,6 +3,11 @@ Trade Decision Engine — combines all layers into final trade decision.
 B5 fix: NO_TRADE regime tags EXPERIMENTAL instead of hard-blocking in research mode.
 
 Phase 4: Full hybrid trend-based trading logic integration.
+
+P2 fix (#1): broader_trend is computed once at the top of make_trade_decision()
+  and passed into check_trend_persistence() and calculate_momentum_score() via
+  the new `broader_trend` kwarg. Eliminates 2-3 redundant DB round trips per
+  scan cycle in hybrid/conservative/balanced modes.
 """
 from __future__ import annotations
 
@@ -95,11 +100,18 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict) -> dict:
         "regime_score":    regime_sc,
     }
 
+    # ── Pre-fetch broader trend once — shared by all mode branches ─────────
+    # Avoids 2-3 redundant get_recent_alerts_for_symbol() DB calls in hybrid
+    # mode where check_trend_persistence and calculate_momentum_score both
+    # need it. Passed via the broader_trend kwarg added in P2 fix #1.
+    broader_trend = get_broader_trend_from_alerts(symbol)
+
     # ── Apply Trend-Based Trading Logic Based on Mode ─────────────────────
     
     if TREND_FILTER_MODE == "conservative":
-        # Conservative mode: Only trend persistence filter
-        is_persistent, persist_reason = check_trend_persistence(symbol, verdict, confidence, ctx)
+        is_persistent, persist_reason = check_trend_persistence(
+            symbol, verdict, confidence, ctx, broader_trend=broader_trend
+        )
         if not is_persistent:
             return _blocked(f"Conservative filter: {persist_reason}")
         
@@ -110,8 +122,9 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict) -> dict:
             return _blocked(f"Entry quality ({entry_quality}) or regime ({regime_sc}) insufficient")
     
     elif TREND_FILTER_MODE == "balanced":
-        # Balanced mode: Momentum scoring only
-        momentum_score = calculate_momentum_score(symbol, verdict, confidence, ctx)
+        momentum_score = calculate_momentum_score(
+            symbol, verdict, confidence, ctx, broader_trend=broader_trend
+        )
         scores["momentum_score"] = momentum_score
         
         if momentum_score >= MOMENTUM_SCORE_THRESHOLD:
@@ -124,7 +137,6 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict) -> dict:
             return _blocked(f"Momentum score too low ({momentum_score} < {MOMENTUM_SCORE_THRESHOLD})")
     
     elif TREND_FILTER_MODE == "aggressive":
-        # Aggressive mode: Reversal detection only
         is_rev, rev_reason = detect_reversal_from_scans(symbol, verdict, confidence)
         if is_rev and entry_quality >= MIN_ENTRY_QUALITY_CORE:
             return _decision("TRIGGERED_CORE", "CONFIRMED_REVERSAL", rev_reason, soft_conflicts, scores)
@@ -132,21 +144,23 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict) -> dict:
             return _blocked(f"No reversal detected or poor entry quality: {rev_reason}")
     
     elif TREND_FILTER_MODE == "hybrid":
-        # Hybrid mode: Priority-based logic (reversal → persistence → momentum)
-        
         # Priority 1: Reversal (high R:R)
         is_rev, rev_reason = detect_reversal_from_scans(symbol, verdict, confidence)
         if is_rev and entry_quality >= MIN_ENTRY_QUALITY_CORE:
             return _decision("TRIGGERED_CORE", "CONFIRMED_REVERSAL", rev_reason, soft_conflicts, scores)
         
         # Priority 2: Trend persistence (safe, high win rate)
-        is_persistent, persist_reason = check_trend_persistence(symbol, verdict, confidence, ctx)
+        is_persistent, persist_reason = check_trend_persistence(
+            symbol, verdict, confidence, ctx, broader_trend=broader_trend
+        )
         if is_persistent and entry_quality >= MIN_ENTRY_QUALITY_CORE and regime_sc >= MIN_REGIME_SCORE_CORE:
             return _decision("TRIGGERED_CORE", "TREND_CONTINUATION",
                            persist_reason, soft_conflicts, scores)
         
         # Priority 3: Momentum scoring (balanced fallback)
-        momentum_score = calculate_momentum_score(symbol, verdict, confidence, ctx)
+        momentum_score = calculate_momentum_score(
+            symbol, verdict, confidence, ctx, broader_trend=broader_trend
+        )
         scores["momentum_score"] = momentum_score
         
         if momentum_score >= 80:  # higher threshold for fallback
@@ -179,9 +193,8 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict) -> dict:
     
     else:
         # Unknown mode — fall back to legacy logic
-        log.warning(f"Unknown TREND_FILTER_MODE: {TREND_FILTER_MODE}, using legacy logic")
+        log.warning("Unknown TREND_FILTER_MODE: %s, using legacy logic", TREND_FILTER_MODE)
         
-        # Legacy logic (original Phase 2 implementation)
         is_rev, rev_reason = detect_reversal_from_scans(symbol, verdict, confidence)
         if is_rev and entry_quality >= MIN_ENTRY_QUALITY_CORE:
             return _decision("TRIGGERED_CORE", "CONFIRMED_REVERSAL", rev_reason, soft_conflicts, scores)
