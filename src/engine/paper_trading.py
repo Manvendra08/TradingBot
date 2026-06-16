@@ -350,6 +350,7 @@ def run_paper_trading(symbol: str, scan_context: dict, digest_id: str, intel: di
     trade_data = {
         "opened_at":             now_iso,
         "symbol":                symbol,
+        "expiry":                expiry,
         "verdict_label":         plan["verdict_label"],
         "side":                  plan.get("side", "BUY"),
         "option_type":           plan["option_type"],
@@ -770,6 +771,7 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
         trade_data = {
             "opened_at": now_iso,
             "symbol": symbol,
+            "expiry": expiry,
             "verdict_label": "LONG",
             "side": "BUY",
             "option_type": opt_type,
@@ -820,6 +822,7 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
         trade_data = {
             "opened_at": now_iso,
             "symbol": symbol,
+            "expiry": expiry,
             "verdict_label": "SHORT",
             "side": "SELL" if opt_type == "FUT" else "BUY",
             "option_type": opt_type,

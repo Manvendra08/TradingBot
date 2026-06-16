@@ -22,28 +22,51 @@ def _clamp_minutes(value: int) -> int:
 
 def load_runtime_config() -> dict:
     default_freq = _clamp_minutes(int(FETCH_INTERVAL_MINUTES))
+    defaults = {
+        "scan_frequency_minutes": default_freq,
+        "scan_frequency_nse": default_freq,
+        "scan_frequency_mcx": default_freq,
+        "live_shadow_mode": True,
+        "live_capital_per_trade_inr": 20000,
+        "live_max_capital_utilisation_pct": 80,
+        "live_max_concurrent_positions": 2,
+        "live_symbol_lots": {
+            "NIFTY": 1,
+            "BANKNIFTY": 1,
+            "FINNIFTY": 1,
+            "MIDCPNIFTY": 1,
+            "NATURALGAS": 1,
+            "CRUDEOIL": 1
+        },
+        "live_enabled_broker_symbols": ["NIFTY", "BANKNIFTY", "NATURALGAS", "CRUDEOIL"],
+        "oi_spike_threshold_pct": 10.0,
+        "price_spike_threshold_pct": 2.0,
+        "dashboard_auth_enabled": False
+    }
     if not RUNTIME_CONFIG_PATH.exists():
-        return {
-            "scan_frequency_minutes": default_freq,
-            "scan_frequency_nse": default_freq,
-            "scan_frequency_mcx": default_freq,
-        }
+        return defaults
     try:
         data = json.loads(RUNTIME_CONFIG_PATH.read_text(encoding="utf-8"))
-        minutes = _clamp_minutes(data.get("scan_frequency_minutes", FETCH_INTERVAL_MINUTES))
-        nse = _clamp_minutes(data.get("scan_frequency_nse", minutes))
-        mcx = _clamp_minutes(data.get("scan_frequency_mcx", minutes))
-        return {
-            "scan_frequency_minutes": minutes,
-            "scan_frequency_nse": nse,
-            "scan_frequency_mcx": mcx,
-        }
+        for k, v in data.items():
+            defaults[k] = v
+        defaults["scan_frequency_minutes"] = _clamp_minutes(defaults.get("scan_frequency_minutes", default_freq))
+        defaults["scan_frequency_nse"] = _clamp_minutes(defaults.get("scan_frequency_nse", defaults["scan_frequency_minutes"]))
+        defaults["scan_frequency_mcx"] = _clamp_minutes(defaults.get("scan_frequency_mcx", defaults["scan_frequency_minutes"]))
+        return defaults
     except Exception:
-        return {
-            "scan_frequency_minutes": default_freq,
-            "scan_frequency_nse": default_freq,
-            "scan_frequency_mcx": default_freq,
-        }
+        return defaults
+
+
+def save_runtime_config(config: dict) -> None:
+    if "scan_frequency_minutes" in config:
+        config["scan_frequency_minutes"] = _clamp_minutes(config["scan_frequency_minutes"])
+    if "scan_frequency_nse" in config:
+        config["scan_frequency_nse"] = _clamp_minutes(config["scan_frequency_nse"])
+    if "scan_frequency_mcx" in config:
+        config["scan_frequency_mcx"] = _clamp_minutes(config["scan_frequency_mcx"])
+        
+    RUNTIME_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    RUNTIME_CONFIG_PATH.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
 
 def get_scan_frequency_minutes() -> int:
@@ -64,8 +87,7 @@ def set_scan_frequency_minutes(minutes: int) -> int:
     config["scan_frequency_minutes"] = val
     config["scan_frequency_nse"] = val
     config["scan_frequency_mcx"] = val
-    RUNTIME_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    RUNTIME_CONFIG_PATH.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    save_runtime_config(config)
     return val
 
 
@@ -73,8 +95,7 @@ def set_scan_frequency_nse(minutes: int) -> int:
     val = _clamp_minutes(minutes)
     config = load_runtime_config()
     config["scan_frequency_nse"] = val
-    RUNTIME_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    RUNTIME_CONFIG_PATH.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    save_runtime_config(config)
     return val
 
 
@@ -82,6 +103,5 @@ def set_scan_frequency_mcx(minutes: int) -> int:
     val = _clamp_minutes(minutes)
     config = load_runtime_config()
     config["scan_frequency_mcx"] = val
-    RUNTIME_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    RUNTIME_CONFIG_PATH.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    save_runtime_config(config)
     return val

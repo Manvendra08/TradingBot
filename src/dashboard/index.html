@@ -46,26 +46,128 @@
     min-height: 100vh;
   }
 
-  header {
+  /* App Header & Navigation */
+  .app-header {
     display: flex;
     align-items: center;
-    gap: 16px;
-    padding: 12px 24px;
+    justify-content: space-between;
+    padding: 0 24px;
+    height: 64px;
     background: var(--surface);
     border-bottom: 1px solid var(--border);
     position: sticky;
     top: 0;
     z-index: 100;
   }
-  .logo {
+  .header-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .logo-stack {
+    display: flex;
+    flex-direction: column;
+  }
+  .logo-text {
+    font-family: var(--sans);
+    font-weight: 800;
+    font-size: 16px;
+    letter-spacing: 1.5px;
+    color: var(--text);
+  }
+  .logo-sub {
     font-family: var(--mono);
-    font-size: 13px;
-    font-weight: 700;
+    font-size: 9px;
     color: var(--accent);
     letter-spacing: 2px;
     text-transform: uppercase;
   }
-  .separator { flex: 1; }
+  .header-nav {
+    display: flex;
+    background: rgba(0, 0, 0, 0.15);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 3px;
+    gap: 2px;
+  }
+  .nav-tab {
+    color: var(--text-dim);
+    text-decoration: none;
+    padding: 6px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    border-radius: 6px;
+    transition: all 0.2s ease;
+    border: 1px solid transparent;
+    font-family: var(--sans);
+  }
+  .nav-tab:hover {
+    color: var(--text);
+    background: rgba(255, 255, 255, 0.03);
+  }
+  .nav-tab.active {
+    color: var(--accent);
+    background: var(--surface-2);
+    border-color: var(--border);
+  }
+  .theme-toggle-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text);
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    transition: all 0.2s ease;
+  }
+  .theme-toggle-btn:hover {
+    border-color: var(--accent);
+    background: var(--surface-2);
+  }
+  [data-theme="light"] .header-nav {
+    background: rgba(0, 0, 0, 0.03);
+  }
+  [data-theme="light"] .nav-tab:hover {
+    background: rgba(0, 0, 0, 0.02);
+  }
+  [data-theme="light"] .nav-tab.active {
+    background: #ffffff;
+    border-color: #cbd5e1;
+  }
+  [data-theme="light"] .logo-sub {
+    color: var(--accent);
+  }
+
+  /* Sub Header / Controls */
+  .sub-header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 8px 24px;
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .sub-header .controls-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .sub-header label {
+    font-size: 10px;
+    color: var(--text-dim);
+    font-weight: 600;
+    letter-spacing: 0.5px;
+  }
+  .sub-header .spacer {
+    flex: 1;
+  }
+  
   select, button {
     background: var(--bg);
     border: 1px solid var(--border);
@@ -168,35 +270,61 @@
   #scan-freq-status { font-family: var(--mono); font-size: 11px; color: var(--accent); }
 </style>
 <script>
-  const savedTheme = localStorage.getItem('theme') || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
-  document.documentElement.setAttribute('data-theme', savedTheme);
+  (function() {
+    const KEY = 'nsebot-theme';
+    const saved = localStorage.getItem(KEY) || 'dark';
+    document.documentElement.setAttribute('data-theme', saved);
+  })();
 </script>
 </head>
 <body>
 
-<header>
-  <div class="logo">NSEBOT</div>
-  <div class="controls">
-    <button onclick="location.href='/paper'">PAPER</button>
-    <button onclick="toggleTheme()" title="Toggle Theme" style="padding:4px 8px; font-size:14px; border:none; background:transparent;">🌓</button>
+<header class="app-header">
+  <div class="header-left">
+    <div class="logo-stack">
+      <span class="logo-text">NSEBOT</span>
+      <span class="logo-sub">OPTION MONITOR</span>
+    </div>
+  </div>
+
+  <div class="header-nav">
+    <a href="/" class="nav-tab active" id="tab-dashboard">Dashboard</a>
+    <a href="/paper" class="nav-tab" id="tab-paper">Paper Trades</a>
+    <a href="/broker" class="nav-tab" id="tab-broker">Broker Console</a>
+    <a href="/settings" class="nav-tab" id="tab-settings">Settings</a>
+  </div>
+
+  <div class="header-right" style="display:flex; align-items:center; gap:12px;">
+    <button id="theme-toggle-btn" class="theme-toggle-btn" title="Toggle Day/Night">🌙</button>
+    <button class="primary" onclick="loadAll()" style="font-family:var(--sans); font-weight:600; padding:6px 12px;">⟳ REFRESH</button>
+  </div>
+</header>
+
+<div class="sub-header">
+  <div class="controls-group">
     <label>SYMBOL</label>
     <select id="symbol-sel"></select>
+  </div>
+  <div class="controls-group">
     <label>HISTORY (CHARTS)</label>
     <input type="range" id="hours" min="1" max="48" value="6">
     <span id="hours-val">6h</span>
+  </div>
+  <div class="controls-group">
     <label>NSE SCAN</label>
     <select id="scan-freq-nse"></select>
     <button onclick="saveScanFrequency('nse')">SET</button>
+  </div>
+  <div class="controls-group">
     <label>MCX SCAN</label>
     <select id="scan-freq-mcx"></select>
     <button onclick="saveScanFrequency('mcx')">SET</button>
     <span id="scan-freq-status">—</span>
   </div>
-  <div class="separator"></div>
+  <div class="spacer"></div>
   <span id="last-update">—</span>
   <div id="status-dot"></div>
-  <button class="primary" onclick="loadAll()">⟳ REFRESH</button>
-</header>
+</div>
 
 <main>
   <div class="kpi-row">
@@ -287,7 +415,9 @@ function toggleTheme() {
   const root = document.documentElement;
   const newTheme = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
   root.setAttribute('data-theme', newTheme);
-  localStorage.setItem('theme', newTheme);
+  localStorage.setItem('nsebot-theme', newTheme);
+  const btn = document.getElementById('theme-toggle-btn');
+  if (btn) btn.textContent = newTheme === 'light' ? '🌙' : '☀️';
   // Dispatch theme change event to trigger chart reload
   document.dispatchEvent(new CustomEvent('themechange', { detail: { theme: newTheme } }));
 }
@@ -525,10 +655,20 @@ function renderIntelligence(intel) {
 }
 
 async function init() {
+  const themeBtn = document.getElementById('theme-toggle-btn');
+  if (themeBtn) {
+    const current = document.documentElement.getAttribute('data-theme') || 'dark';
+    themeBtn.textContent = current === 'light' ? '🌙' : '☀️';
+    themeBtn.onclick = toggleTheme;
+  }
+
   await loadRuntime();
   const symbols = await api('/api/symbols');
   const sel = document.getElementById('symbol-sel');
-  sel.innerHTML = symbols.map(s => `<option value="${s}">${s}</option>`).join('');
+  sel.innerHTML = symbols.map(s => {
+    const isSelected = s === 'NATURALGAS' ? ' selected' : '';
+    return `<option value="${s}"${isSelected}>${s}</option>`;
+  }).join('');
   sel.onchange = loadAll;
   
   const slider = document.getElementById('hours');

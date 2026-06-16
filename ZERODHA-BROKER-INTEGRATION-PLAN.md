@@ -55,13 +55,13 @@ Connecting the intelligence engine's entry signals to Kite's Order Placement API
    - Source the instrument list via `kite.instruments("NFO")` / `kite.instruments("MCX")` at session start and cache for the day. Refresh on `TokenException`.
    - This is a standalone, fully-tested module — not a single utility function.
 
-2. **Capital Allocation Settings (`config/settings.py`):**
-   The following parameters must be defined before Phase 3 implementation begins:
-   - `LIVE_CAPITAL_PER_TRADE_INR` — fixed ₹ amount allocated per trade entry
-   - `LIVE_MAX_CAPITAL_UTILISATION_PCT` — max % of available margin to use across all open positions
-   - `LIVE_MAX_CONCURRENT_POSITIONS` — hard cap on simultaneous open live trades
-   - `LIVE_LOT_SIZE_OVERRIDE` — optional manual lot override (default: auto-calculate from `LIVE_CAPITAL_PER_TRADE_INR ÷ option_premium × lot_size`)
-   Lot size at order time = `floor(LIVE_CAPITAL_PER_TRADE_INR / (entry_premium * instrument_lot_size))`, capped by `LIVE_MAX_CONCURRENT_POSITIONS` and margin check.
+2. **Dynamic Capital Allocation & Symbol-Specific Lot Sizes:**
+   Instead of a single lot override, lot sizes will be configurable **per symbol** in the settings. These parameters will be managed via `config/runtime_config.py` and persisted in `data/runtime_config.json`:
+   - `LIVE_CAPITAL_PER_TRADE_INR` — fixed ₹ amount allocated per trade entry (default: 50,000)
+   - `LIVE_MAX_CAPITAL_UTILISATION_PCT` — max % of available margin to use across all open positions (default: 80)
+   - `LIVE_MAX_CONCURRENT_POSITIONS` — hard cap on simultaneous open live trades (default: 2)
+   - `LIVE_SYMBOL_LOTS` — mapping of symbol-specific manual lot sizes (e.g. `{"NIFTY": 1, "BANKNIFTY": 2, "NATURALGAS": 1, "CRUDEOIL": 1}`)
+   - Order lot size calculation: If `LIVE_SYMBOL_LOTS` contains an override for the symbol, use it. Otherwise, auto-calculate: `floor(LIVE_CAPITAL_PER_TRADE_INR / (entry_premium * instrument_lot_size))`, capped by `LIVE_MAX_CONCURRENT_POSITIONS` and margin checks.
 
 3. **Market/Limit Orders:** Implement a service wrapper around the official `kiteconnect` Python library to place `REGULAR` orders on NFO/MCX.
 
@@ -83,7 +83,10 @@ Connecting the intelligence engine's entry signals to Kite's Order Placement API
    - **Error boundaries:** Every state transition catches `KiteException` sub-types (`TokenException`, `NetworkException`, `OrderException`) and routes to appropriate recovery or alert path — never silently swallows.
    - Estimated effort: 3–4x a standard service wrapper. Plan a dedicated sprint.
 
-6. **Execution Abstraction:** `TradingInterface` is injected into the pipeline so the engine has no direct Kite API calls — paper and live modes are interchangeable at the interface boundary.
+6. **Concurrent Dual Execution (Paper + Live):** Rather than choosing either paper or live mode, the engine must execute both side-by-side to preserve the existing paper trading telemetry.
+   - The data pipeline orchestrator (`_process_symbol` in `src/engine/pipeline.py`) will run `run_paper_trading(...)` and `run_live_trading(...)` sequentially.
+   - Paper trades continue to log to the `paper_trades` table.
+   - Live (or shadow) trades will be routed to the `TradingInterface` and log exclusively to the `live_trades` table. This isolates live account margins/rejections from paper trading statistics.
 
 ---
 
@@ -135,14 +138,23 @@ The system needs to know exactly what happens to an order after it is sent to Ze
 
 ---
 
-## 7. Phase 6: UI/UX & Live Dashboard
-The frontend must distinctly separate Paper Trades from Live Trades and provide manual overrides.
+## 7. Phase 6: UI/UX & Live Broker Dashboard
+Instead of just a toggle, a dedicated, fresh broker monitoring page (`src/dashboard/broker.html` served at `/broker`) will be added to distinctively track live broker activities, authentication, and positions.
 
 **Tasks:**
-1. **Live vs Paper Toggle:** A global toggle on the dashboard to view either Paper tracking or Live tracking.
-2. **Shadow Mode Indicator:** When `LIVE_SHADOW_MODE = True`, display a persistent yellow banner: `SHADOW MODE — Orders suppressed. No real capital at risk.`
-3. **Action Controls:** Buttons on active live trades to "Exit Market" (which cancels the GTT and fires a market exit order) or "Modify SL".
-4. **Account Widget:** Display Live Margin Available, Used Margin, and Live M2M (Mark to Market) pulled from the Kite API.
+1. **FastAPI Endpoints:** Add a new `@app.get("/broker")` HTML endpoint, and telemetry endpoints (`/api/live_trades`, `/api/broker_status`, `/api/broker_margin`) in `dashboard_server.py`. Add endpoints to read (`GET /api/settings`) and write (`POST /api/settings`) runtime configurations dynamically.
+2. **Broker Auth & Token Panel:** Display access token validity, connection status, and daily TOTP integration status.
+3. **Active Positions Widget:** Tabulate live/shadow positions from the `live_trades` table showing symbol, side, qty, entry price, current premium, and real-time M2M P&L.
+4. **Live GTT Leg Monitor:** Expose active GTT triggers (Target/SL leg trigger prices).
+5. **Emergency Kill Switch:** A red button to trigger global square-off, cancel pending orders/GTTs, and halt live scans immediately.
+6. **Account Widget:** Show Live Margin Available, Used Margin, and Free cash telemetry pulled from the Kite API.
+7. **Shadow Mode Indicator:** If `LIVE_SHADOW_MODE = True`, display a warning banner: `SHADOW MODE — Orders are simulated and logged as 'SHADOW'. No real capital is at risk.`
+8. **Settings Management UI Panel:** Add a configuration form on the dashboard to view and modify runtime parameters instantly without restarting the bot:
+   - Toggle `LIVE_SHADOW_MODE` (True/False).
+   - Edit symbol-specific lot sizes (`LIVE_SYMBOL_LOTS` overrides).
+   - Set scan frequencies per market class (NSE index vs MCX commodity).
+   - Set risk parameters (Max concurrent positions, max capital utilisation, max daily loss).
+   - Adjust trigger thresholds (OI spike %, Price spike %).
 
 ---
 

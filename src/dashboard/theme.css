@@ -19,6 +19,9 @@
   --muted: #4a5568;
   --mono: 'Space Mono', monospace;
   --sans: 'DM Sans', sans-serif;
+  --grad-accent: linear-gradient(135deg, #00e5a0 0%, #00b4d8 100%);
+  --grad-red: linear-gradient(135deg, #ff3355 0%, #f72585 100%);
+  --transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 /* ── Light Theme ── */
@@ -35,6 +38,8 @@
   --text: #0f172a;
   --text-dim: #334155;
   --muted: #78716c;
+  --grad-accent: linear-gradient(135deg, #0284c7 0%, #00b4d8 100%);
+  --grad-red: linear-gradient(135deg, #dc2626 0%, #ff4d6d 100%);
 }
 
 /* ── Global Styles ── */
@@ -291,4 +296,153 @@ button.primary:hover {
 
 .border-accent {
   border-color: var(--accent);
+}
+
+/* ── App Header & Navigation ── */
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+  height: 64px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.logo-stack {
+  display: flex;
+  flex-direction: column;
+}
+.logo-text {
+  font-family: var(--sans);
+  font-weight: 800;
+  font-size: 16px;
+  letter-spacing: 1.5px;
+  color: var(--text);
+}
+.logo-sub {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--accent);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+.header-nav {
+  display: flex;
+  background: rgba(0, 0, 0, 0.15);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 3px;
+  gap: 2px;
+}
+.nav-tab {
+  color: var(--text-dim);
+  text-decoration: none;
+  padding: 6px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 6px;
+  transition: all 0.2s ease;
+  border: 1px solid transparent;
+  font-family: var(--sans);
+}
+.nav-tab:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.03);
+}
+.nav-tab.active {
+  color: var(--accent);
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+.theme-toggle-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  transition: all 0.2s ease;
+}
+.theme-toggle-btn:hover {
+  border-color: var(--accent);
+  background: var(--surface-2);
+}
+[data-theme="light"] .header-nav {
+  background: rgba(0, 0, 0, 0.03);
+}
+[data-theme="light"] .nav-tab:hover {
+  background: rgba(0, 0, 0, 0.02);
+}
+[data-theme="light"] .nav-tab.active {
+  background: #ffffff;
+  border-color: #cbd5e1;
+}
+[data-theme="light"] .logo-sub {
+  color: var(--accent);
+}
+
+/* ── Standard Styled Buttons ── */
+.btn {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  transition: var(--transition);
+  text-decoration: none;
+}
+.btn:hover {
+  background: var(--border);
+  border-color: var(--text-dim);
+}
+.btn-primary {
+  background: var(--grad-accent);
+  color: #000;
+  font-weight: 600;
+  border: none;
+  box-shadow: 0 4px 15px rgba(0, 229, 160, 0.2);
+}
+.btn-primary:hover {
+  background: linear-gradient(135deg, #05f2ac 0%, #00c4f0 100%);
+  box-shadow: 0 4px 20px rgba(0, 229, 160, 0.4);
+  color: #000;
+}
+.btn-red {
+  background: var(--grad-red);
+  color: #fff;
+  border: none;
+  font-weight: 600;
+  box-shadow: 0 4px 15px rgba(255, 51, 85, 0.2);
+}
+.btn-red:hover {
+  background: linear-gradient(135deg, #ff4d6d 0%, #f72585 100%);
+  box-shadow: 0 4px 20px rgba(255, 51, 85, 0.4);
+}
+
+/* Infinity/Unlimited Symbol size enhancement (+2pt) */
+.infinity-symbol {
+  font-size: calc(100% + 2px) !important;
+  font-weight: bold;
+  display: inline-block;
+  line-height: 1;
 }

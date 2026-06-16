@@ -36,10 +36,10 @@ WATCH_SYMBOLS = WATCH_NSE + WATCH_MCX   # merged for backward compat
 
 # ── Lot Sizes (for P&L calculation in ₹) ──────────────────────────────────
 LOT_SIZES = {
-    "NIFTY": 25,           # NIFTY options/futures lot size
-    "BANKNIFTY": 15,       # BANKNIFTY options/futures lot size
-    "FINNIFTY": 25,        # FINNIFTY options/futures lot size
-    "MIDCPNIFTY": 50,      # MIDCPNIFTY options/futures lot size
+    "NIFTY": 65,           # NIFTY options/futures lot size
+    "BANKNIFTY": 30,       # BANKNIFTY options/futures lot size
+    "FINNIFTY": 60,        # FINNIFTY options/futures lot size
+    "MIDCPNIFTY": 120,      # MIDCPNIFTY options/futures lot size
     "NATURALGAS": 1250,    # NATURALGAS futures lot size (MCX)
     "CRUDEOIL": 100,       # CRUDEOIL futures lot size (MCX)
     "GOLD": 100,           # GOLD futures lot size (MCX)
@@ -147,6 +147,10 @@ NSE_HEADERS = {
 TELEGRAM_BOT_TOKEN = _optional_env("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID   = _optional_env("TELEGRAM_CHAT_ID")
 
+# ── Dashboard Authentication ────────────────────────────────────────────────
+DASHBOARD_USERNAME = _optional_env("DASHBOARD_USERNAME", "admin")
+DASHBOARD_PASSWORD = _optional_env("DASHBOARD_PASSWORD", "admin")
+
 STRIKES_AROUND_ATM  = 10
 LOG_LEVEL           = "INFO"
 LOG_ROTATION        = "midnight"
@@ -205,9 +209,9 @@ MIN_ENTRY_QUALITY_EXPERIMENTAL = 40
 REVERSAL_MIN_CONFIDENCE        = 75
 
 # Risk engine — applies to paper trading too (overtrading distorts results)
-MAX_OPEN_TRADES_PER_SYMBOL     = 1
-MAX_OPEN_TRADES_TOTAL          = 4
-MAX_TRADES_PER_SYMBOL_PER_DAY  = 2
+MAX_OPEN_TRADES_PER_SYMBOL     = 2
+MAX_OPEN_TRADES_TOTAL          = 5
+MAX_TRADES_PER_SYMBOL_PER_DAY  = 4
 MAX_DAILY_LOSS_RUPEES          = 200000
 LOSS_COOLDOWN_MINUTES          = 30
 

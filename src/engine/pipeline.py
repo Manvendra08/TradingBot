@@ -21,6 +21,7 @@ from src.models.schema import (
 from src.engine.anomaly_detector import detect_anomalies
 from src.engine.intelligence import generate_intelligence_structured
 from src.engine.paper_trading import run_paper_trading, run_timeframe_strategy
+from src.engine.live_trading import run_live_trading, run_live_timeframe_strategy
 from src.engine.scan_summary import save_scan_summary
 from src.alerts.dedup import is_duplicate, record_alert, should_send_zero_signal
 from src.alerts.digest import build_digest_wrapper as build_digest
@@ -113,18 +114,31 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
 
     import uuid
     digest_id = str(uuid.uuid4())[:8]
-    trade_report = None
+    paper_trade_report = None
     try:
         pt_report = run_paper_trading(symbol, scan_context, digest_id, intel)
         tf_report = run_timeframe_strategy(symbol, scan_context, digest_id, intel)
         if pt_report and pt_report.get("action") in ("EXECUTED", "CLOSED"):
-            trade_report = pt_report
+            paper_trade_report = pt_report
         elif tf_report and tf_report.get("action") in ("EXECUTED", "CLOSED"):
-            trade_report = tf_report
+            paper_trade_report = tf_report
         else:
-            trade_report = pt_report or tf_report
+            paper_trade_report = pt_report or tf_report
     except Exception:
         log.exception("%s: paper-trading engine failed", symbol)
+
+    live_trade_report = None
+    try:
+        lt_report = run_live_trading(symbol, scan_context, digest_id, intel)
+        lt_tf_report = run_live_timeframe_strategy(symbol, scan_context, digest_id, intel)
+        if lt_report and lt_report.get("action") in ("EXECUTED", "CLOSED"):
+            live_trade_report = lt_report
+        elif lt_tf_report and lt_tf_report.get("action") in ("EXECUTED", "CLOSED"):
+            live_trade_report = lt_tf_report
+        else:
+            live_trade_report = lt_report or lt_tf_report
+    except Exception:
+        log.exception("%s: live-trading engine failed", symbol)
 
     digest_id, digest_msg = build_digest(
         symbol, new_alerts, fetched_at,
@@ -133,7 +147,8 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
         detected_count=len(alerts),
         dedup_suppressed_count=dedup_suppressed,
         digest_id=digest_id,
-        paper_trade_status=trade_report,
+        paper_trade_status=paper_trade_report,
+        live_trade_status=live_trade_report,
     )
     for a in new_alerts:
         a["digest_id"] = digest_id

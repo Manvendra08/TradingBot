@@ -781,7 +781,7 @@ def _compute_broader_trend(symbol: str, alerts: list[dict]) -> str:
     if bull_score >= 5 and bull_score > bear_score * 1.5:
         return "🟡 Mild Bullish — support building, buyers active"
     if active_flow >= 10:
-        return "âšª High Activity â€” aggressive flow on both sides"
+        return "⚪ High Activity — aggressive flow on both sides"
     if oi_spikes_ce > 3 and oi_spikes_pe > 3 and abs(oi_spikes_ce - oi_spikes_pe) <= 2:
         return "⚪ Rangebound — balanced OI activity on both sides"
     if bull_score + bear_score < 3:

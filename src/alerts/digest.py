@@ -390,9 +390,10 @@ def _fit_telegram(message: str, digest_id: str) -> str:
     return f"{clipped}\n...trimmed\n_#{digest_id}_"
 
 
-def _format_paper_trade_status(status: dict | None) -> str:
+def _format_trade_status(status: dict | None, is_live: bool = False) -> str:
+    label_prefix = "live" if is_live else "paper"
     if not status:
-        return "• *Status:* NO_ACTION | No paper trade logic evaluated."
+        return f"• *Status:* NO_ACTION | No {label_prefix} trade logic evaluated."
 
     action = status.get("action")
     if action == "EXECUTED":
@@ -464,6 +465,9 @@ def _format_paper_trade_status(status: dict | None) -> str:
     else:
         return f"• *Status:* NO_TRADE | *Reason:* {status.get('reason', 'No directional setup')}"
 
+def _format_paper_trade_status(status: dict | None) -> str:
+    return _format_trade_status(status, is_live=False)
+
 
 def build_digest(
     symbol: str,
@@ -475,6 +479,7 @@ def build_digest(
     dedup_suppressed_count: int | None = None,
     digest_id: str | None = None,
     paper_trade_status: dict | None = None,
+    live_trade_status: dict | None = None,
 ) -> tuple[str, str]:
     if digest_id is None:
         digest_id = str(uuid.uuid4())[:8]
@@ -633,6 +638,8 @@ def build_digest(
     lines += ["", f"\U0001F30A *Trend:* {_trend_text(intel['trend'], intel['verdict'])}"]
     if paper_trade_status:
         lines += ["", "🤖 *PAPER TRADE STATUS*", _format_paper_trade_status(paper_trade_status)]
+    if live_trade_status:
+        lines += ["", "🟢 *LIVE/SHADOW TRADE STATUS*", _format_trade_status(live_trade_status, is_live=True)]
     lines += ["", f"_#{digest_id} · {n} signals · all symbols enabled_"]
     lines += [f"{'━' * 20}"]
     return digest_id, _fit_telegram("\n".join(lines), digest_id)
@@ -1063,6 +1070,7 @@ def build_enhanced_digest(
     dedup_suppressed_count: int | None = None,
     digest_id: str | None = None,
     paper_trade_status: dict | None = None,
+    live_trade_status: dict | None = None,
 ) -> tuple[str, str]:
     if digest_id is None:
         digest_id = str(uuid.uuid4())[:8]
@@ -1081,7 +1089,7 @@ def build_enhanced_digest(
     px_label = _price_label(symbol)
  
     if not alerts:
-        return build_digest(symbol, alerts, fetched_at, scan_context, intelligence_text, detected_count, dedup_suppressed_count)
+        return build_digest(symbol, alerts, fetched_at, scan_context, intelligence_text, detected_count, dedup_suppressed_count, digest_id=digest_id, paper_trade_status=paper_trade_status, live_trade_status=live_trade_status)
  
     intel_raw = intelligence_text if intelligence_text is not None else generate_intelligence(symbol, alerts, scan_context=scan_context)
     intel = _parse_intelligence(intel_raw)
@@ -1166,6 +1174,8 @@ def build_enhanced_digest(
         lines += sec("\U0001F4C8 *CONFIRMATION*", confirmation)
         if paper_trade_status:
             lines += sec("🤖 *PAPER TRADE STATUS*", _format_paper_trade_status(paper_trade_status))
+        if live_trade_status:
+            lines += sec("🟢 *LIVE/SHADOW TRADE STATUS*", _format_trade_status(live_trade_status, is_live=True))
         lines += ["", f"_#{digest_id}_", DIVIDER]
         return digest_id, _fit_telegram("\n".join(lines), digest_id)
 
@@ -1221,6 +1231,8 @@ def build_enhanced_digest(
     lines += sec("\U0001F4A1 *BOTTOM LINE*", bottom_line)
     if paper_trade_status:
         lines += sec("🤖 *PAPER TRADE STATUS*", _format_paper_trade_status(paper_trade_status))
+    if live_trade_status:
+        lines += sec("🟢 *LIVE/SHADOW TRADE STATUS*", _format_trade_status(live_trade_status, is_live=True))
     lines += ["", f"_#{digest_id}_", DIVIDER]
 
     return digest_id, _fit_telegram("\n".join(lines), digest_id)
@@ -1275,15 +1287,18 @@ def build_digest_wrapper(
     dedup_suppressed_count: int | None = None,
     digest_id: str | None = None,
     paper_trade_status: dict | None = None,
+    live_trade_status: dict | None = None,
 ) -> tuple[str, str]:
     if USE_ENHANCED_TEMPLATE:
         return build_enhanced_digest(
             symbol, alerts, fetched_at, scan_context, intelligence_text,
             detected_count, dedup_suppressed_count, digest_id=digest_id,
-            paper_trade_status=paper_trade_status
+            paper_trade_status=paper_trade_status,
+            live_trade_status=live_trade_status,
         )
     return build_digest(
         symbol, alerts, fetched_at, scan_context, intelligence_text,
         detected_count, dedup_suppressed_count, digest_id=digest_id,
-        paper_trade_status=paper_trade_status
+        paper_trade_status=paper_trade_status,
+        live_trade_status=live_trade_status,
     )

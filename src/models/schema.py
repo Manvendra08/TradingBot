@@ -97,6 +97,7 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     opened_at           TEXT NOT NULL,
     closed_at           TEXT,
     symbol              TEXT NOT NULL,
+    expiry              TEXT,
     verdict_label       TEXT,
     side                TEXT DEFAULT 'BUY',
     option_type         TEXT NOT NULL,      -- CE | PE | FUT
@@ -157,7 +158,70 @@ CREATE TABLE IF NOT EXISTS scan_summaries (
 
 CREATE INDEX IF NOT EXISTS idx_scan_summaries_symbol_time
     ON scan_summaries (symbol, fetched_at DESC);
+
+CREATE TABLE IF NOT EXISTS broker_configs (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    api_key             TEXT,
+    api_secret          TEXT,
+    access_token        TEXT,
+    request_token       TEXT,
+    totp_secret         TEXT,
+    kill_switch_active  INTEGER DEFAULT 0,
+    last_login_date     TEXT
+);
+
+CREATE TABLE IF NOT EXISTS live_trades (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    opened_at           TEXT NOT NULL,
+    closed_at           TEXT,
+    symbol              TEXT NOT NULL,
+    expiry              TEXT,
+    verdict_label       TEXT,
+    side                TEXT DEFAULT 'BUY',
+    option_type         TEXT NOT NULL,      -- CE | PE | FUT
+    strike              REAL,
+    entry_underlying    REAL NOT NULL,      -- spot/futures price at entry
+    exit_underlying     REAL,               -- spot/futures price at exit
+    entry_premium       REAL,               -- option premium at entry (for options)
+    exit_premium        REAL,               -- option premium at exit (for options)
+    sl_underlying       REAL,               -- SL in underlying terms
+    target_underlying   REAL,               -- Target in underlying terms
+    sl_premium          REAL,               -- SL in premium terms (for options)
+    target_premium      REAL,               -- Target in premium terms (for options)
+    lots                INTEGER DEFAULT 1,  -- number of lots traded
+    pnl_points          REAL DEFAULT 0,
+    pnl_rupees          REAL DEFAULT 0,
+    status              TEXT NOT NULL,      -- OPEN | CLOSED_TARGET | CLOSED_SL | CLOSED_MANUAL | SHADOW | REJECTED
+    reason              TEXT,
+    digest_id           TEXT,
+    signal_key          TEXT UNIQUE,
+    pyramid_level       INTEGER DEFAULT 1,
+    max_favorable_r     REAL DEFAULT 0,
+    broker_order_id     TEXT,
+    gtt_order_id        TEXT,
+    broker_status       TEXT,               -- OPEN, REJECTED, COMPLETE, CANCELLED
+    broker_message      TEXT,
+    exit_mode           TEXT,               -- GTT | POLL
+    trade_status        TEXT DEFAULT 'TRIGGERED_CORE',
+    setup_type          TEXT,
+    decision_reason     TEXT,
+    confidence_score    INTEGER,
+    entry_quality_score INTEGER,
+    trend_alignment_score INTEGER,
+    regime_score        INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_live_symbol_status
+    ON live_trades (symbol, status, opened_at);
+
+CREATE TABLE IF NOT EXISTS daily_equity_peaks (
+    date            TEXT NOT NULL,
+    mode            TEXT NOT NULL,
+    peak_equity     REAL NOT NULL,
+    PRIMARY KEY (date, mode)
+);
 """
+
 
 
 @contextlib.contextmanager
@@ -202,6 +266,16 @@ _MIGRATIONS = [
     "ALTER TABLE paper_trades ADD COLUMN side TEXT DEFAULT 'BUY'",
     # B8: stale fallback tagging for regime isolation
     "ALTER TABLE scan_summaries ADD COLUMN is_fallback INTEGER DEFAULT 0",
+    # Live trades decision metadata
+    "ALTER TABLE live_trades ADD COLUMN trade_status TEXT DEFAULT 'TRIGGERED_CORE'",
+    "ALTER TABLE live_trades ADD COLUMN setup_type TEXT",
+    "ALTER TABLE live_trades ADD COLUMN decision_reason TEXT",
+    "ALTER TABLE live_trades ADD COLUMN confidence_score INTEGER",
+    "ALTER TABLE live_trades ADD COLUMN entry_quality_score INTEGER",
+    "ALTER TABLE live_trades ADD COLUMN trend_alignment_score INTEGER",
+    "ALTER TABLE live_trades ADD COLUMN regime_score INTEGER",
+    "ALTER TABLE paper_trades ADD COLUMN expiry TEXT",
+    "ALTER TABLE live_trades ADD COLUMN expiry TEXT",
 ]
 
 
@@ -530,14 +604,14 @@ def insert_paper_trade(trade: dict) -> int:
 
     sql = f"""
         {verb} INTO paper_trades
-            (opened_at, symbol, verdict_label, side, option_type, strike, entry_underlying,
+            (opened_at, symbol, expiry, verdict_label, side, option_type, strike, entry_underlying,
              entry_premium, sl_underlying, sl_premium, target_underlying, target_premium,
              lots, status, reason, digest_id,
              trade_status, setup_type, decision_reason,
              confidence_score, entry_quality_score, trend_alignment_score, regime_score,
              signal_key, pyramid_level, max_favorable_r)
         VALUES
-            (:opened_at, :symbol, :verdict_label, :side, :option_type, :strike, :entry_underlying,
+            (:opened_at, :symbol, :expiry, :verdict_label, :side, :option_type, :strike, :entry_underlying,
              :entry_premium, :sl_underlying, :sl_premium, :target_underlying, :target_premium,
              :lots, :status, :reason, :digest_id,
              :trade_status, :setup_type, :decision_reason,
@@ -558,7 +632,7 @@ def insert_paper_trade(trade: dict) -> int:
         "pyramid_level":         trade.get("pyramid_level", 1),
         "max_favorable_r":       trade.get("max_favorable_r", 0.0),
         **{k: trade.get(k) for k in (
-            "opened_at", "symbol", "verdict_label", "option_type", "strike",
+            "opened_at", "symbol", "expiry", "verdict_label", "option_type", "strike",
             "entry_underlying", "entry_premium", "sl_underlying", "sl_premium",
             "target_underlying", "target_premium", "lots", "status", "reason", "digest_id",
         )},
@@ -680,3 +754,257 @@ def delete_expired_contracts() -> int:
         cur2 = conn.execute("DELETE FROM scan_summaries WHERE expiry < ?", (today,))
         log.info("[db] Deleted %d expired snapshots and %d expired scan summaries.", cur1.rowcount, cur2.rowcount)
         return cur1.rowcount + cur2.rowcount
+
+
+def get_open_live_trade(symbol: str) -> dict | None:
+    sql = """
+        SELECT * FROM live_trades
+        WHERE symbol=? AND status='OPEN' AND (setup_type IS NULL OR setup_type != 'TIMEFRAME')
+        ORDER BY opened_at DESC
+        LIMIT 1
+    """
+    with get_conn() as conn:
+        row = conn.execute(sql, (symbol,)).fetchone()
+        return dict(row) if row else None
+
+
+def get_open_live_timeframe_trades(symbol: str) -> list[dict]:
+    sql = """
+        SELECT * FROM live_trades
+        WHERE symbol=? AND status='OPEN' AND setup_type='TIMEFRAME'
+        ORDER BY opened_at DESC
+    """
+    with get_conn() as conn:
+        rows = conn.execute(sql, (symbol,)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def insert_live_trade(trade: dict) -> int:
+    signal_key = trade.get("signal_key")
+    verb = "INSERT OR IGNORE" if signal_key else "INSERT"
+
+    sql = f"""
+        {verb} INTO live_trades
+            (opened_at, symbol, expiry, verdict_label, side, option_type, strike, entry_underlying,
+             entry_premium, sl_underlying, sl_premium, target_underlying, target_premium,
+             lots, status, reason, digest_id,
+             trade_status, setup_type, decision_reason,
+             confidence_score, entry_quality_score, trend_alignment_score, regime_score,
+             signal_key, pyramid_level, max_favorable_r,
+             broker_order_id, gtt_order_id, broker_status, broker_message, exit_mode)
+        VALUES
+            (:opened_at, :symbol, :expiry, :verdict_label, :side, :option_type, :strike, :entry_underlying,
+             :entry_premium, :sl_underlying, :sl_premium, :target_underlying, :target_premium,
+             :lots, :status, :reason, :digest_id,
+             :trade_status, :setup_type, :decision_reason,
+             :confidence_score, :entry_quality_score, :trend_alignment_score, :regime_score,
+             :signal_key, :pyramid_level, :max_favorable_r,
+             :broker_order_id, :gtt_order_id, :broker_status, :broker_message, :exit_mode)
+        RETURNING id
+    """
+    row_data = {
+        "side":                  trade.get("side", "BUY"),
+        "trade_status":          trade.get("trade_status", "TRIGGERED_CORE"),
+        "setup_type":            trade.get("setup_type"),
+        "decision_reason":       trade.get("decision_reason"),
+        "confidence_score":      trade.get("confidence_score"),
+        "entry_quality_score":   trade.get("entry_quality_score"),
+        "trend_alignment_score": trade.get("trend_alignment_score"),
+        "regime_score":          trade.get("regime_score"),
+        "signal_key":            signal_key,
+        "pyramid_level":         trade.get("pyramid_level", 1),
+        "max_favorable_r":       trade.get("max_favorable_r", 0.0),
+        "broker_order_id":       trade.get("broker_order_id"),
+        "gtt_order_id":          trade.get("gtt_order_id"),
+        "broker_status":         trade.get("broker_status", "OPEN"),
+        "broker_message":        trade.get("broker_message"),
+        "exit_mode":             trade.get("exit_mode"),
+        **{k: trade.get(k) for k in (
+            "opened_at", "symbol", "expiry", "verdict_label", "option_type", "strike",
+            "entry_underlying", "entry_premium", "sl_underlying", "sl_premium",
+            "target_underlying", "target_premium", "lots", "status", "reason", "digest_id",
+        )},
+    }
+    with get_conn() as conn:
+        row = conn.execute(sql, row_data).fetchone()
+        return int(row["id"]) if row else 0
+
+
+def update_live_trade_entry(
+    trade_id: int,
+    *,
+    broker_order_id: str | None = None,
+    gtt_order_id: str | None = None,
+    broker_status: str | None = None,
+    broker_message: str | None = None,
+    exit_mode: str | None = None,
+    status: str | None = None,
+    reason: str | None = None,
+) -> None:
+    updates: list[str] = []
+    params: list = []
+    for column, value in (
+        ("broker_order_id", broker_order_id),
+        ("gtt_order_id", gtt_order_id),
+        ("broker_status", broker_status),
+        ("broker_message", broker_message),
+        ("exit_mode", exit_mode),
+        ("status", status),
+        ("reason", reason),
+    ):
+        if value is not None:
+            updates.append(f"{column}=?")
+            params.append(value)
+
+    if not updates:
+        return
+
+    params.append(trade_id)
+    sql = f"UPDATE live_trades SET {', '.join(updates)} WHERE id=?"
+    with get_conn() as conn:
+        conn.execute(sql, tuple(params))
+
+
+def close_live_trade(trade_id: int, closed_at: str, exit_underlying: float, exit_premium: float | None, status: str, reason: str = "") -> None:
+    from config.settings import LOT_SIZES
+
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT symbol, option_type, verdict_label, entry_underlying, entry_premium, lots, strike, side FROM live_trades WHERE id=? AND status='OPEN'",
+            (trade_id,)
+        ).fetchone()
+        if not row:
+            log.debug("close_live_trade: trade %s not found or already closed, skipping", trade_id)
+            return
+
+        symbol = row["symbol"]
+        option_type = row["option_type"]
+        verdict_label = row["verdict_label"] or ""
+        entry_underlying = float(row["entry_underlying"] or 0.0)
+        entry_premium = float(row["entry_premium"] or 0.0)
+        lots = int(row["lots"] or 1)
+        side = row["side"] or "BUY"
+
+        lot_size = LOT_SIZES.get(symbol.upper(), LOT_SIZES.get(symbol, 1))
+
+        if option_type in ("CE", "PE"):
+            if entry_premium and entry_premium > 0 and exit_premium and exit_premium > 0:
+                if side == "SELL":
+                    pnl_points = entry_premium - exit_premium
+                else:
+                    pnl_points = exit_premium - entry_premium
+            elif entry_premium and entry_premium > 0:
+                strike = float(row["strike"] or 0.0)
+                snap_row = conn.execute(
+                    "SELECT ltp FROM option_chain_snapshots WHERE symbol=? AND strike=? AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
+                    (symbol.upper(), strike, option_type)
+                ).fetchone()
+                if snap_row:
+                    estimated_exit = float(snap_row["ltp"])
+                else:
+                    if option_type == "CE":
+                        estimated_exit = max(0.0, float(exit_underlying) - strike)
+                    else:
+                        estimated_exit = max(0.0, strike - float(exit_underlying))
+                if side == "SELL":
+                    pnl_points = entry_premium - estimated_exit
+                else:
+                    pnl_points = estimated_exit - entry_premium
+                exit_premium = estimated_exit
+            else:
+                pnl_points = 0.0
+        else:
+            from src.engine.verdict_sets import is_bearish
+            if side == "SELL" or verdict_label == "SHORT" or is_bearish(verdict_label):
+                pnl_points = entry_underlying - float(exit_underlying)
+            else:
+                pnl_points = float(exit_underlying) - entry_underlying
+
+        pnl_rupees = pnl_points * lot_size * lots
+
+        conn.execute(
+            """
+            UPDATE live_trades
+            SET closed_at=?, exit_underlying=?, exit_premium=?, pnl_points=?, pnl_rupees=?, status=?, reason=?
+            WHERE id=? AND status='OPEN'
+            """,
+            (closed_at, exit_underlying, exit_premium, round(pnl_points, 4), round(pnl_rupees, 2), status, reason, trade_id),
+        )
+
+
+def list_live_trades(symbol: str | None = None, limit: int = 300) -> list[dict]:
+    sql = "SELECT * FROM live_trades"
+    params: list = []
+    if symbol:
+        sql += " WHERE symbol=?"
+        params.append(symbol)
+    sql += " ORDER BY opened_at DESC LIMIT ?"
+    params.append(limit)
+    with get_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_broker_config() -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM broker_configs ORDER BY id DESC LIMIT 1").fetchone()
+        if not row:
+            return None
+        config = dict(row)
+        
+        # Decrypt api_secret and access_token with plaintext fallback
+        try:
+            from src.services.zerodha_auth import _get_fernet
+            f = _get_fernet()
+            if config.get("api_secret"):
+                try:
+                    config["api_secret"] = f.decrypt(config["api_secret"].encode("utf-8")).decode("utf-8")
+                except Exception:
+                    pass
+            if config.get("access_token"):
+                try:
+                    config["access_token"] = f.decrypt(config["access_token"].encode("utf-8")).decode("utf-8")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return config
+
+
+def update_broker_config(**kwargs) -> None:
+    from src.services.zerodha_auth import encrypt_secret
+    
+    kwargs_copy = kwargs.copy()
+    if "api_secret" in kwargs_copy and kwargs_copy["api_secret"]:
+        kwargs_copy["api_secret"] = encrypt_secret(kwargs_copy["api_secret"])
+    if "access_token" in kwargs_copy and kwargs_copy["access_token"]:
+        kwargs_copy["access_token"] = encrypt_secret(kwargs_copy["access_token"])
+        
+    with get_conn() as conn:
+        row = conn.execute("SELECT id FROM broker_configs ORDER BY id DESC LIMIT 1").fetchone()
+        if row:
+            broker_id = row["id"]
+            sets = []
+            vals = []
+            for k, v in kwargs_copy.items():
+                sets.append(f"{k}=?")
+                vals.append(v)
+            vals.append(broker_id)
+            sql = f"UPDATE broker_configs SET {', '.join(sets)} WHERE id=?"
+            conn.execute(sql, tuple(vals))
+        else:
+            cols = list(kwargs_copy.keys())
+            vals = list(kwargs_copy.values())
+            placeholders = ", ".join(["?"] * len(cols))
+            sql = f"INSERT INTO broker_configs ({', '.join(cols)}) VALUES ({placeholders})"
+            conn.execute(sql, tuple(vals))
+
+
+def set_kill_switch(active: bool) -> None:
+    val = 1 if active else 0
+    with get_conn() as conn:
+        row = conn.execute("SELECT id FROM broker_configs ORDER BY id DESC LIMIT 1").fetchone()
+        if row:
+            conn.execute("UPDATE broker_configs SET kill_switch_active=? WHERE id=?", (val, row["id"]))
+        else:
+            conn.execute("INSERT INTO broker_configs (kill_switch_active) VALUES (?)", (val,))

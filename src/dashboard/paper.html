@@ -21,6 +21,13 @@
   --blue:#0284c7; --text:#0f172a; --text-dim:#475569; --muted:#78716c;
 }
 html,body { background:var(--bg); color:var(--text); font-family:var(--sans); font-size:14px; transition:background .3s,color .3s; }
+/* Infinity/Unlimited Symbol size enhancement (+2pt) */
+.infinity-symbol {
+  font-size: calc(100% + 2px) !important;
+  font-weight: bold;
+  display: inline-block;
+  line-height: 1;
+}
 </style>
 
 <!-- ── Inlined theme toggle logic (theme.js not served as static) ── -->
@@ -115,24 +122,137 @@ body {
 /* ════════════════════════════════════════════
    HEADER
 ════════════════════════════════════════════ */
-header {
-  position: sticky !important; top: 0; z-index: 200;
-  display: flex !important; align-items: center; gap: 10px;
-  padding: 0 24px; height: 56px;
+/* App Header & Navigation */
+.app-header {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  padding: 0 24px !important;
+  height: 64px !important;
   background: var(--surface) !important;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border) !important;
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 200 !important;
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
 }
-
-:not([data-theme="light"]) header {
+:not([data-theme="light"]) .app-header {
   background: rgba(17,20,24,.92) !important;
-  box-shadow: 0 1px 0 rgba(0,229,160,.06), 0 4px 20px rgba(0,0,0,.4);
+  box-shadow: 0 1px 0 rgba(0,229,160,.06), 0 4px 20px rgba(0,0,0,.4) !important;
+}
+[data-theme="light"] .app-header {
+  background: rgba(255,255,255,.95) !important;
+  box-shadow: 0 1px 12px rgba(15,23,42,.08) !important;
+}
+.header-left {
+  display: flex !important;
+  align-items: center !important;
+  gap: 12px !important;
+}
+.logo-stack {
+  display: flex !important;
+  flex-direction: column !important;
+}
+.logo-text {
+  font-family: var(--sans) !important;
+  font-weight: 800 !important;
+  font-size: 16px !important;
+  letter-spacing: 1.5px !important;
+  color: var(--text) !important;
+}
+.logo-sub {
+  font-family: var(--mono) !important;
+  font-size: 9px !important;
+  color: var(--accent) !important;
+  letter-spacing: 2px !important;
+  text-transform: uppercase !important;
+}
+.header-nav {
+  display: flex !important;
+  background: rgba(0, 0, 0, 0.15) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 8px !important;
+  padding: 3px !important;
+  gap: 2px !important;
+}
+.nav-tab {
+  color: var(--text-dim) !important;
+  text-decoration: none !important;
+  padding: 6px 16px !important;
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  border-radius: 6px !important;
+  transition: all 0.2s ease !important;
+  border: 1px solid transparent !important;
+  font-family: var(--sans) !important;
+}
+.nav-tab:hover {
+  color: var(--text) !important;
+  background: rgba(255, 255, 255, 0.03) !important;
+}
+.nav-tab.active {
+  color: var(--accent) !important;
+  background: var(--surface-2) !important;
+  border-color: var(--border) !important;
+}
+.theme-toggle-btn {
+  background: transparent !important;
+  border: 1px solid var(--border) !important;
+  color: var(--text) !important;
+  width: 36px !important;
+  height: 36px !important;
+  border-radius: 8px !important;
+  cursor: pointer !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  font-size: 16px !important;
+  transition: all 0.2s ease !important;
+}
+.theme-toggle-btn:hover {
+  border-color: var(--accent) !important;
+  background: var(--surface-2) !important;
+}
+[data-theme="light"] .header-nav {
+  background: rgba(0, 0, 0, 0.03) !important;
+}
+[data-theme="light"] .nav-tab:hover {
+  background: rgba(0, 0, 0, 0.02) !important;
+}
+[data-theme="light"] .nav-tab.active {
+  background: #ffffff !important;
+  border-color: #cbd5e1 !important;
+}
+[data-theme="light"] .logo-sub {
+  color: var(--accent) !important;
 }
 
-[data-theme="light"] header {
-  background: rgba(255,255,255,.95) !important;
-  box-shadow: 0 1px 12px rgba(15,23,42,.08);
+/* Sub Header / Controls */
+.sub-header {
+  display: flex !important;
+  align-items: center !important;
+  gap: 16px !important;
+  padding: 8px 24px !important;
+  background: var(--surface-2) !important;
+  border-bottom: 1px solid var(--border) !important;
+  font-family: var(--mono) !important;
+  font-size: 12px !important;
+}
+.sub-header .controls-group {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+}
+.sub-header label, .sub-header .hdr-label {
+  font-size: 9px !important;
+  color: var(--text-dim) !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.5px !important;
+  text-transform: uppercase !important;
+}
+.sub-header .spacer {
+  flex: 1 !important;
 }
 
 .logo {
@@ -946,40 +1066,56 @@ tr:hover td { background: rgba(0,229,160,.04); }
 .kpis .kpi:nth-child(4) { animation-delay: .12s; }
 .kpis .kpi:nth-child(5) { animation-delay: .15s; }
 .kpis .kpi:nth-child(6) { animation-delay: .18s; }
+.kpis .kpi:nth-child(7) { animation-delay: .21s; }
+.kpis .kpi:nth-child(8) { animation-delay: .24s; }
+.kpis .kpi:nth-child(9) { animation-delay: .27s; }
+.kpis .kpi:nth-child(10) { animation-delay: .30s; }
 </style>
 </head>
 
 <body>
-<header>
-  <div class="logo">
-    <div class="logo-icon">📊</div>
+<header class="app-header">
+  <div class="header-left">
     <div class="logo-stack">
-      <span class="logo-text">PAPER TRADING</span>
-      <span class="logo-sub">NSEBOT</span>
+      <span class="logo-text">NSEBOT</span>
+      <span class="logo-sub">PAPER TRADING</span>
     </div>
   </div>
 
-  <button class="btn" onclick="location.href='/'">← Dashboard</button>
-  <div class="live-dot" title="Auto-refresh active"></div>
+  <div class="header-nav">
+    <a href="/" class="nav-tab" id="tab-dashboard">Dashboard</a>
+    <a href="/paper" class="nav-tab active" id="tab-paper">Paper Trades</a>
+    <a href="/broker" class="nav-tab" id="tab-broker">Broker Console</a>
+    <a href="/settings" class="nav-tab" id="tab-settings">Settings</a>
+  </div>
 
-  <span class="hdr-label">Symbol</span>
-  <select id="symbol"></select>
-
-  <span class="hdr-label">Status</span>
-  <select id="status">
-    <option value="">ALL</option>
-    <option value="OPEN">OPEN</option>
-    <option value="CLOSED_TARGET">TARGET HIT</option>
-    <option value="CLOSED_SL">STOP LOSS</option>
-    <option value="CLOSED_MANUAL">MANUAL</option>
-  </select>
-
-  <button class="btn primary" onclick="loadAll()">⟳ Refresh</button>
-
-  <div class="hdr-sep"></div>
-  <div id="last">—</div>
-  <button id="theme-toggle-btn" class="theme-toggle" title="Toggle Day / Night" aria-label="Toggle theme" onclick="window.toggleTheme()">☀️</button>
+  <div class="header-right" style="display:flex; align-items:center; gap:12px;">
+    <button id="theme-toggle-btn" class="theme-toggle-btn" title="Toggle Day/Night">🌙</button>
+    <button class="btn primary" onclick="loadAll()" style="font-family:var(--sans); font-weight:600; padding:6px 12px;">⟳ REFRESH</button>
+  </div>
 </header>
+
+<div class="sub-header">
+  <div class="controls-group">
+    <span class="hdr-label">Symbol</span>
+    <select id="symbol"></select>
+  </div>
+  <div class="controls-group">
+    <span class="hdr-label">Status</span>
+    <select id="status">
+      <option value="">ALL</option>
+      <option value="OPEN">OPEN</option>
+      <option value="CLOSED_TARGET">TARGET HIT</option>
+      <option value="CLOSED_SL">STOP LOSS</option>
+      <option value="CLOSED_MANUAL">MANUAL</option>
+      <option value="TF-1H-Cross">1H CROSS</option>
+      <option value="Dead Trade">DEAD TRADE</option>
+    </select>
+  </div>
+  <div class="spacer"></div>
+  <div class="live-dot" title="Auto-refresh active"></div>
+  <div id="last">—</div>
+</div>
 
 <main>
 
@@ -1365,7 +1501,11 @@ function renderSummary(s) {
   document.getElementById('k-avg-sub').textContent=`W: ${frs(s.avg_win)} | L: ${frs(s.avg_loss)}`;
 
   const pfEl=document.getElementById('k-pf');
-  pfEl.textContent=pf>0?pf.toFixed(2):'∞';
+  if (pf > 0) {
+    pfEl.textContent = pf.toFixed(2);
+  } else {
+    pfEl.innerHTML = '<span class="infinity-symbol">∞</span>';
+  }
   pfEl.className=`val ${pf>=1.5?'good':pf>=1?'warn':'bad'}`;
 
   document.getElementById('k-streak').textContent=s.consecutive_wins??0;

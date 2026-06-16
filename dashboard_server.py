@@ -58,9 +58,11 @@ except ImportError:
         return int(minutes)
 
 try:
-    from fastapi import FastAPI, Query
+    from fastapi import FastAPI, Query, Depends, HTTPException, status
     from fastapi.responses import HTMLResponse, JSONResponse
+    from fastapi.security import HTTPBasic, HTTPBasicCredentials
     import uvicorn
+    import secrets
 except ImportError:
     print("[ERROR] Run: python -m pip install fastapi uvicorn")
     sys.exit(1)
@@ -79,6 +81,38 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="NSEBOT Dashboard API", lifespan=lifespan)
 log = logging.getLogger("nsebot.dashboard")
+
+security = HTTPBasic(auto_error=False)
+
+def authenticate(credentials: HTTPBasicCredentials = Depends(security)):
+    import secrets
+    from fastapi import HTTPException, status
+    from config.runtime_config import load_runtime_config
+    
+    runtime_config = load_runtime_config()
+    
+    # If authentication is disabled (default), bypass credentials check
+    if not runtime_config.get("dashboard_auth_enabled", False):
+        return "anonymous"
+        
+    # Authentication is enabled, check credentials
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+        
+    from config.settings import DASHBOARD_USERNAME, DASHBOARD_PASSWORD
+    correct_username = secrets.compare_digest(credentials.username, DASHBOARD_USERNAME)
+    correct_password = secrets.compare_digest(credentials.password, DASHBOARD_PASSWORD)
+    if not (correct_username and correct_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
 
 # Graceful Disconnect Middleware to suppress noisy ASGI connection reset tracebacks
 try:
@@ -161,8 +195,12 @@ def _db():
 
 
 def _q(sql: str, params: tuple = ()):
-    with _db() as conn:
-        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+    conn = _db()
+    try:
+        with conn:
+            return [dict(r) for r in conn.execute(sql, params).fetchall()]
+    finally:
+        conn.close()
 
 
 def _cache_get(key: str, ttl_sec: int):
@@ -662,6 +700,65 @@ async def get_price(symbol: str, hours: int = 6):
     return rows
 
 
+@app.get("/api/topbar_cmps")
+def get_topbar_cmps():
+    symbols = ["NIFTY", "BANKNIFTY", "NATURALGAS", "CRUDEOIL"]
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    res = {}
+    for sym in symbols:
+        # Find latest price
+        latest_price = None
+        latest_sym = sym
+        row = _q("SELECT symbol, price FROM underlying_price WHERE symbol=? ORDER BY fetched_at DESC LIMIT 1", (sym,))
+        if row:
+            latest_price = float(row[0]["price"])
+            latest_sym = row[0]["symbol"]
+        else:
+            row2 = _q("SELECT symbol, price FROM underlying_price WHERE symbol LIKE ? ORDER BY fetched_at DESC LIMIT 20", (f"{sym}%",))
+            for r in row2:
+                if _canonical_symbol(r["symbol"]) == sym:
+                    latest_price = float(r["price"])
+                    latest_sym = r["symbol"]
+                    break
+        
+        if latest_price is not None:
+            # Find previous close price (last price before today_start UTC)
+            prev_price = None
+            prev_row = _q(
+                "SELECT price FROM underlying_price WHERE symbol=? AND fetched_at < ? ORDER BY fetched_at DESC LIMIT 1",
+                (latest_sym, today_start)
+            )
+            if prev_row:
+                prev_price = float(prev_row[0]["price"])
+            else:
+                # Fallback to general LIKE search
+                prev_row2 = _q(
+                    "SELECT symbol, price FROM underlying_price WHERE symbol LIKE ? AND fetched_at < ? ORDER BY fetched_at DESC LIMIT 20",
+                    (f"{sym}%", today_start)
+                )
+                for pr in prev_row2:
+                    if _canonical_symbol(pr["symbol"]) == sym:
+                        prev_price = float(pr["price"])
+                        break
+            
+            if prev_price is not None and prev_price > 0:
+                change = latest_price - prev_price
+                pct_change = (change / prev_price) * 100
+            else:
+                change = 0.0
+                pct_change = 0.0
+                
+            res[sym] = {
+                "price": round(latest_price, 2),
+                "change": round(change, 2),
+                "pct_change": round(pct_change, 2)
+            }
+        else:
+            res[sym] = None
+    return res
+
+
+
 @app.get("/api/oi")
 async def get_oi(symbol: str):
     symbols = _matching_symbols(symbol)
@@ -994,8 +1091,8 @@ async def get_paper_trades(symbol: str = "", status: str = "", limit: int = 300)
         clauses.append("symbol=?")
         params.append(symbol.upper().strip())
     if status:
-        clauses.append("status=?")
-        params.append(status.upper().strip())
+        clauses.append("status=? COLLATE NOCASE")
+        params.append(status.strip())
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     rows = _q(
         f"SELECT * FROM paper_trades {where} ORDER BY opened_at DESC LIMIT ?",
@@ -1403,9 +1500,13 @@ async def delete_paper_trades(date_from: str = "", date_to: str = ""):
     # Count first so we can report how many were deleted
     count_rows = _q(f"SELECT COUNT(*) AS n FROM paper_trades {where}", tuple(params))
     n = int((count_rows[0] if count_rows else {}).get("n") or 0)
-    with _db() as conn:
-        conn.execute(f"DELETE FROM paper_trades {where}", tuple(params))
-        conn.commit()
+    conn = _db()
+    try:
+        with conn:
+            conn.execute(f"DELETE FROM paper_trades {where}", tuple(params))
+            conn.commit()
+    finally:
+        conn.close()
     return {"ok": True, "deleted": n, "date_from": date_from, "date_to": date_to}
 
 
@@ -1433,7 +1534,1032 @@ async def get_paper_equity(symbol: str = ""):
     return out
 
 
+# ── Zerodha Broker and Settings API Endpoints ───────────────────────────────
+
+@app.get("/api/settings", dependencies=[Depends(authenticate)])
+async def get_settings():
+    from config.runtime_config import load_runtime_config
+    return load_runtime_config()
+
+
+@app.post("/api/settings", dependencies=[Depends(authenticate)])
+async def post_settings(data: dict):
+    from config.runtime_config import save_runtime_config
+    save_runtime_config(data)
+    return {"status": "SUCCESS", "message": "Runtime settings updated successfully"}
+
+
+_positions_cache = None
+_positions_cache_ts = 0.0
+
+def _fetch_real_kite_positions(kite) -> list[dict]:
+    global _positions_cache, _positions_cache_ts
+    now = time.time()
+    if _positions_cache is not None and (now - _positions_cache_ts) < 3.0:
+        return _positions_cache
+        
+    try:
+        from src.engine.symbol_resolver import resolve_instrument
+        positions_data = kite.positions()
+        net_positions = positions_data.get("net", [])
+        
+        open_db_trades = _q("SELECT * FROM live_trades WHERE status='OPEN' AND (trade_status IS NULL OR trade_status != 'SHADOW')")
+        db_map = {}
+        db_fallback_map = {}
+        for t in open_db_trades:
+            strike_val = float(t["strike"]) if t.get("strike") is not None else None
+            expiry_val = t.get("expiry") or ""
+            resolved = None
+            if expiry_val:
+                resolved = resolve_instrument(t["symbol"], expiry_val, strike_val or 0.0, t["option_type"])
+            if resolved and resolved.get("tradingsymbol"):
+                db_map[resolved["tradingsymbol"].upper()] = t
+            else:
+                key = (t["symbol"].upper(), t["option_type"].upper(), strike_val)
+                db_fallback_map[key] = t
+        
+        parsed_positions = []
+        for pos in net_positions:
+            qty = int(pos.get("quantity", 0))
+            if qty == 0:
+                continue
+                
+            tradingsymbol = pos.get("tradingsymbol", "")
+            
+            symbol = tradingsymbol
+            option_type = "FUT"
+            strike = None
+            
+            m_opt = re.match(r"^([A-Z\-]+)(\d{2}[A-Z]{3})(\d+)(CE|PE)$", tradingsymbol, re.IGNORECASE)
+            if m_opt:
+                symbol = m_opt.group(1).upper()
+                option_type = m_opt.group(4).upper()
+                strike = float(m_opt.group(3))
+            else:
+                m_fut = re.match(r"^([A-Z\-]+)(\d{2}[A-Z]{3})(FUT)?$", tradingsymbol, re.IGNORECASE)
+                if m_fut:
+                    symbol = m_fut.group(1).upper()
+                    option_type = "FUT"
+            
+            side = "BUY" if qty > 0 else "SELL"
+            exchange = pos.get("exchange", "")
+            
+            lot_size = LOT_SIZES.get(symbol.upper(), LOT_SIZES.get(symbol, 1))
+            if exchange == "MCX":
+                lots_count = abs(qty)
+            else:
+                lots_count = round(abs(qty) / lot_size, 2)
+            
+            pnl = float(pos.get("pnl", 0.0))
+            cmp = float(pos.get("last_price", 0.0))
+            entry_px = float(pos.get("average_price") or pos.get("buy_price") or pos.get("sell_price") or 0.0)
+            
+            db_trade = db_map.get(tradingsymbol.upper())
+            
+            # Resolve position's expiry
+            from src.engine.symbol_resolver import get_expiry_for_tradingsymbol
+            expiry_val = get_expiry_for_tradingsymbol(tradingsymbol)
+            if not expiry_val:
+                m_opt = re.match(r"^([A-Z\-]+)(\d{2}[A-Z]{3}|\d{2}[0-9OND][0-9]{2})(\d+)(CE|PE)$", tradingsymbol, re.IGNORECASE)
+                if m_opt:
+                    expiry_val = m_opt.group(2).upper()
+                else:
+                    m_fut = re.match(r"^([A-Z\-]+)(\d{2}[A-Z]{3}|\d{2}[0-9OND][0-9]{2})(FUT)?$", tradingsymbol, re.IGNORECASE)
+                    if m_fut:
+                        expiry_val = m_fut.group(2).upper()
+            
+            if not expiry_val:
+                expiry_val = "—"
+                
+            if not db_trade:
+                candidate_db_trade = db_fallback_map.get((symbol, option_type, strike))
+                if candidate_db_trade:
+                    db_expiry = candidate_db_trade.get("expiry") or ""
+                    
+                    # Helper to smart-match expiries (YYYY-MM-DD vs YYMMM etc)
+                    def _expiries_match(e1: str, e2: str) -> bool:
+                        if not e1 or not e2 or e1 == "—" or e2 == "—":
+                            return True
+                        e1_clean = e1.strip().upper().replace("-", "")
+                        e2_clean = e2.strip().upper().replace("-", "")
+                        if e1_clean == e2_clean:
+                            return True
+                        
+                        def standardize(e: str) -> str:
+                            if len(e) == 8 and e.isdigit():
+                                return f"20{e[2:4]}-{e[4:6]}-{e[6:]}"
+                            m = re.match(r"^(\d{2})([A-Z]{3})$", e)
+                            if m:
+                                months = {"JAN": "01", "FEB": "02", "MAR": "03", "APR": "04", "MAY": "05", "JUN": "06",
+                                          "JUL": "07", "AUG": "08", "SEP": "09", "OCT": "10", "NOV": "11", "DEC": "12"}
+                                return f"20{m.group(1)}-{months.get(m.group(2), '01')}"
+                            return e
+                            
+                        s1 = standardize(e1_clean)
+                        s2 = standardize(e2_clean)
+                        return s1 == s2 or s1.startswith(s2) or s2.startswith(s1)
+                        
+                    if _expiries_match(expiry_val, db_expiry):
+                        db_trade = candidate_db_trade
+
+            if db_trade and db_trade.get("expiry"):
+                expiry_val = db_trade.get("expiry")
+            
+            if db_trade:
+                db_lots = int(db_trade.get("lots") or 1)
+                db_side = db_trade.get("side", "BUY").upper()
+                db_qty = db_lots if exchange == "MCX" else db_lots * lot_size
+                
+                sl_val = db_trade.get("sl_premium") or db_trade.get("sl_underlying") or "—"
+                tgt_val = db_trade.get("target_premium") or db_trade.get("target_underlying") or "—"
+                trade_status = db_trade.get("trade_status") or "LIVE"
+                
+                # Check for same-expiry split where user has manual overlay
+                if db_side == side and abs(qty) > db_qty:
+                    # 1. BOT portion
+                    if option_type == "FUT":
+                        bot_entry = float(db_trade.get("entry_underlying") or entry_px)
+                    else:
+                        bot_entry = float(db_trade.get("entry_premium") or db_trade.get("entry_underlying") or entry_px)
+                    
+                    bot_pnl = (cmp - bot_entry) * db_lots * lot_size if side == "BUY" else (bot_entry - cmp) * db_lots * lot_size
+                    
+                    parsed_positions.append({
+                        "symbol": symbol,
+                        "expiry": expiry_val,
+                        "side": side,
+                        "option_type": option_type,
+                        "strike": strike,
+                        "lots": db_lots,
+                        "entry_premium": bot_entry,
+                        "cmp": cmp,
+                        "sl_premium": sl_val,
+                        "target_premium": tgt_val,
+                        "pnl_rupees": round(bot_pnl, 2),
+                        "exit_mode": "BOT",
+                        "trade_status": trade_status,
+                        "status": "OPEN",
+                        "tradingsymbol": tradingsymbol
+                    })
+                    
+                    # 2. KITE/Manual portion
+                    manual_lots = lots_count - db_lots
+                    manual_pnl = pnl - bot_pnl
+                    
+                    parsed_positions.append({
+                        "symbol": symbol,
+                        "expiry": expiry_val,
+                        "side": side,
+                        "option_type": option_type,
+                        "strike": strike,
+                        "lots": manual_lots,
+                        "entry_premium": entry_px,
+                        "cmp": cmp,
+                        "sl_premium": "—",
+                        "target_premium": "—",
+                        "pnl_rupees": round(manual_pnl, 2),
+                        "exit_mode": "KITE",
+                        "trade_status": "LIVE",
+                        "status": "OPEN",
+                        "tradingsymbol": tradingsymbol
+                    })
+                else:
+                    # Single BOT trade display (either same qty or reduced qty)
+                    if option_type == "FUT":
+                        bot_entry = float(db_trade.get("entry_underlying") or entry_px)
+                    else:
+                        bot_entry = float(db_trade.get("entry_premium") or db_trade.get("entry_underlying") or entry_px)
+                    
+                    parsed_positions.append({
+                        "symbol": symbol,
+                        "expiry": expiry_val,
+                        "side": side,
+                        "option_type": option_type,
+                        "strike": strike,
+                        "lots": lots_count,
+                        "entry_premium": bot_entry,
+                        "cmp": cmp,
+                        "sl_premium": sl_val,
+                        "target_premium": tgt_val,
+                        "pnl_rupees": pnl,
+                        "exit_mode": "BOT",
+                        "trade_status": trade_status,
+                        "status": "OPEN",
+                        "tradingsymbol": tradingsymbol
+                    })
+            else:
+                parsed_positions.append({
+                    "symbol": symbol,
+                    "expiry": expiry_val,
+                    "side": side,
+                    "option_type": option_type,
+                    "strike": strike,
+                    "lots": lots_count,
+                    "entry_premium": entry_px,
+                    "cmp": cmp,
+                    "sl_premium": "—",
+                    "target_premium": "—",
+                    "pnl_rupees": pnl,
+                    "exit_mode": "KITE",
+                    "trade_status": "LIVE",
+                    "status": "OPEN",
+                    "tradingsymbol": tradingsymbol
+                })
+        _positions_cache = parsed_positions
+        _positions_cache_ts = now
+        return parsed_positions
+    except Exception as e:
+        log.error("Failed to fetch positions from Kite: %s", e)
+        if _positions_cache is not None:
+            return _positions_cache
+        return []
+
+
+@app.get("/api/live_trades")
+def get_live_trades(symbol: str = "", status: str = "", limit: int = 300):
+    from config.runtime_config import load_runtime_config
+    config = load_runtime_config()
+    shadow_mode = config.get("live_shadow_mode", True)
+    
+    if status.upper() == "OPEN":
+        from src.engine.live_trading import get_kite_client
+        kite = get_kite_client()
+        real_positions = []
+        if kite:
+            real_positions = _fetch_real_kite_positions(kite)
+            
+        if shadow_mode:
+            db_rows = _q("SELECT * FROM live_trades WHERE status='OPEN'")
+            _enrich_open_trades_with_live_pnl(db_rows)
+            _enrich_trade_details(db_rows)
+            
+            real_tsyms = {p["tradingsymbol"].upper() for p in real_positions if p.get("tradingsymbol")}
+            real_keys = {(p["symbol"].upper(), p["option_type"].upper(), float(p["strike"]) if p.get("strike") is not None else None) 
+                         for p in real_positions if not p.get("tradingsymbol")}
+            
+            from src.engine.symbol_resolver import resolve_instrument
+            for row in db_rows:
+                strike_val = float(row["strike"]) if row.get("strike") is not None else None
+                expiry_val = row.get("expiry") or ""
+                resolved = None
+                if expiry_val:
+                    resolved = resolve_instrument(row["symbol"], expiry_val, strike_val or 0.0, row["option_type"])
+                
+                db_tsym = resolved["tradingsymbol"].upper() if (resolved and resolved.get("tradingsymbol")) else ""
+                
+                is_duplicate = False
+                if db_tsym:
+                    if db_tsym in real_tsyms:
+                        is_duplicate = True
+                else:
+                    key = (row["symbol"].upper(), row["option_type"].upper(), strike_val)
+                    if key in real_keys:
+                        is_duplicate = True
+                        
+                if not is_duplicate:
+                    real_positions.append(row)
+                    
+        if symbol:
+            sym_upper = symbol.upper().strip()
+            real_positions = [p for p in real_positions if p["symbol"] == sym_upper]
+            
+        return real_positions
+        
+    clauses = []
+    params: list = []
+    if symbol:
+        clauses.append("symbol=?")
+        params.append(symbol.upper().strip())
+    if status:
+        stat_up = status.upper().strip()
+        if stat_up == "CLOSED":
+            clauses.append("(status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross'))")
+        else:
+            clauses.append("status=?")
+            params.append(stat_up)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    rows = _q(
+        f"SELECT * FROM live_trades {where} ORDER BY opened_at DESC LIMIT ?",
+        (*params, int(limit)),
+    )
+    _enrich_open_trades_with_live_pnl(rows)
+    _enrich_trade_details(rows)
+    return rows
+
+
+@app.get("/api/portfolio_metrics")
+def get_portfolio_metrics():
+    try:
+        # Fetch live open trades (reusing logic from get_live_trades)
+        open_positions = get_live_trades(symbol="", status="OPEN", limit=300)
+    except Exception as e:
+        log.error("Failed to get_live_trades in portfolio_metrics: %s", e)
+        return {}
+        
+    # Group by base symbol
+    groups = {}
+    for p in open_positions:
+        sym = p.get("symbol", "")
+        base = sym
+        if sym.startswith("NATURALGAS"): base = "NATURALGAS"
+        elif sym.startswith("NIFTY"): base = "NIFTY"
+        elif sym.startswith("BANKNIFTY"): base = "BANKNIFTY"
+        elif sym.startswith("CRUDEOIL"): base = "CRUDEOIL"
+        elif sym.startswith("GOLD"): base = "GOLD"
+        elif sym.startswith("MCX"): base = "MCX"
+        else:
+            import re
+            m = re.match(r"^[A-Z]+", sym)
+            if m: base = m.group(0)
+            
+        if base not in groups:
+            groups[base] = []
+        groups[base].append(p)
+        
+    metrics = {}
+    for base, positions in groups.items():
+        from config.settings import LOT_SIZES
+        lot_size = LOT_SIZES.get(base, 1)
+        
+        # Get the latest underlying and delta from DB for options
+        rows = _q("SELECT * FROM option_chain_snapshots WHERE symbol=? ORDER BY id DESC LIMIT 200", (base,))
+        if rows:
+            latest_time = rows[0]["fetched_at"]
+            rows = [r for r in rows if r["fetched_at"] == latest_time]
+            
+        net_delta = 0.0
+        min_strike = float('inf')
+        max_strike = 0.0
+        underlying = None
+        
+        for p in positions:
+            side = 1 if p.get("side") == "BUY" else -1
+            # Robust lots: prefer "lots" field, fallback to raw quantity / lot_size
+            raw_lots = p.get("lots")
+            if raw_lots is None or raw_lots == "" or float(raw_lots or 0) == 0:
+                raw_qty = float(p.get("quantity", 0) or p.get("qty", 0) or 0)
+                raw_lots = raw_qty / lot_size if lot_size else 0
+            lots_val = float(raw_lots or 0)
+            qty = lots_val * lot_size
+            opt_type = (p.get("option_type") or "").upper()
+            
+            if opt_type == "FUT":
+                delta = lots_val * side * 1.0
+                if not (delta != delta):  # NaN guard
+                    net_delta += delta
+            elif opt_type in ("CE", "PE"):
+                strike = p.get("strike")
+                if strike is not None:
+                    try:
+                        strike = float(strike)
+                    except (ValueError, TypeError):
+                        strike = None
+                if strike:
+                    min_strike = min(min_strike, strike)
+                    max_strike = max(max_strike, strike)
+                    match = next((r for r in rows if abs(float(r["strike"] or 0) - strike) < 0.01 and r["option_type"] == opt_type), None)
+                    if match:
+                        d = float(match["delta"] or 0)
+                        if not (d != d):  # NaN guard
+                            net_delta += lots_val * side * d
+                        if underlying is None:
+                            u = match.get("underlying_price")
+                            if u:
+                                underlying = float(u)
+        
+        if underlying is None and rows:
+            u = rows[0].get("underlying_price")
+            if u:
+                underlying = float(u)
+            
+        if underlying is None or underlying == 0:
+            metrics[base] = {"net_delta": round(net_delta, 2), "max_profit": "N/A", "max_loss": "N/A"}
+            continue
+            
+        if min_strike == float('inf'):
+            min_strike = underlying
+            max_strike = underlying
+            
+        sim_min = min_strike * 0.7
+        sim_max = max_strike * 1.3
+        prices = [sim_min + i * (sim_max - sim_min) / 100 for i in range(101)]
+        
+        payoffs = []
+        for S in prices:
+            pnl = 0.0
+            for p in positions:
+                side = 1 if p.get("side") == "BUY" else -1
+                raw_lots = p.get("lots")
+                if raw_lots is None or raw_lots == "" or float(raw_lots or 0) == 0:
+                    raw_qty = float(p.get("quantity", 0) or p.get("qty", 0) or 0)
+                    raw_lots = raw_qty / lot_size if lot_size else 0
+                lots_val = float(raw_lots or 0)
+                qty = lots_val * lot_size
+                opt_type = (p.get("option_type") or "").upper()
+                
+                if opt_type == "FUT":
+                    entry = float(p.get("entry_underlying") or p.get("entry_premium") or 0)
+                    if entry > 0:  # Only include in payoff if valid entry
+                        pnl += side * qty * (S - entry)
+                elif opt_type == "CE":
+                    entry = float(p.get("entry_premium") or 0)
+                    strike = float(p.get("strike") or 0)
+                    if strike > 0:  # Valid position
+                        pnl += side * qty * (max(0, S - strike) - entry)
+                elif opt_type == "PE":
+                    entry = float(p.get("entry_premium") or 0)
+                    strike = float(p.get("strike") or 0)
+                    if strike > 0:  # Valid position
+                        pnl += side * qty * (max(0, strike - S) - entry)
+            payoffs.append(pnl)
+            
+        if not payoffs:
+            metrics[base] = {"net_delta": round(net_delta, 2), "max_profit": 0, "max_loss": 0}
+            continue
+            
+        max_p = max(payoffs)
+        min_p = min(payoffs)
+        
+        is_max_inf = (max_p == payoffs[-1] and payoffs[-1] > payoffs[-2]) or (max_p == payoffs[0] and payoffs[0] > payoffs[1])
+        is_min_inf = (min_p == payoffs[-1] and payoffs[-1] < payoffs[-2]) or (min_p == payoffs[0] and payoffs[0] < payoffs[1])
+        
+        has_fut = any((p.get("option_type") or "").upper() == "FUT" for p in positions)
+        has_options = any((p.get("option_type") or "").upper() in ("CE", "PE") for p in positions)
+        is_naked_fut = has_fut and not has_options
+        if is_naked_fut:
+            is_max_inf = True
+            is_min_inf = True
+            
+        metrics[base] = {
+            "net_delta": round(net_delta, 2),
+            "max_profit": "∞" if is_max_inf else round(max_p, 2),
+            "max_loss": "∞" if is_min_inf else round(min_p, 2)
+        }
+        
+    return metrics
+
+
+@app.get("/api/risk_metrics")
+def get_risk_metrics(mode: str = "live"):
+    from config.settings import MAX_DAILY_LOSS_RUPEES, LOT_SIZES
+    from src.models.schema import get_conn
+    import pytz
+    
+    IST = pytz.timezone("Asia/Kolkata")
+    now_ist = datetime.now(IST)
+    today_str = now_ist.strftime("%Y-%m-%d")
+    
+    # today_start in UTC for day boundary calculations
+    ist_midnight = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = ist_midnight.astimezone(timezone.utc).isoformat()
+    
+    # 1. Fetch available cash
+    available_cash = 0.0
+    if mode == "live":
+        from src.engine.live_trading import get_kite_client
+        kite = get_kite_client()
+        if kite:
+            try:
+                margins = kite.margins()
+                section = margins.get("equity", {})
+                if isinstance(section, dict):
+                    if "net" in section and isinstance(section["net"], (int, float)):
+                        available_cash = float(section["net"])
+                    else:
+                        avail = section.get("available", {})
+                        if isinstance(avail, dict):
+                            available_cash = float(avail.get("live_balance", avail.get("cash", avail.get("opening_balance", 0.0))))
+                        else:
+                            available_cash = float(avail or 0.0)
+            except Exception as e:
+                log.error("Failed to fetch margins from Kite in risk_metrics: %s", e)
+                available_cash = 1000000.0  # fallback
+        else:
+            available_cash = 1000000.0  # fallback mock cash
+    else:
+        # For paper: available_cash = 1,000,000 + closed_pnl
+        closed_pnl = 0.0
+        with get_conn() as conn:
+            row = conn.execute(
+                "SELECT SUM(pnl_rupees) AS total FROM paper_trades WHERE (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross'))"
+            ).fetchone()
+            if row and row["total"] is not None:
+                closed_pnl = float(row["total"])
+        available_cash = 1000000.0 + closed_pnl
+
+    # 2. Fetch open positions & calculate MTM (total_open_pnl)
+    open_positions = []
+    if mode == "live":
+        try:
+            open_positions = get_live_trades(symbol="", status="OPEN", limit=300)
+        except Exception as e:
+            log.error("Failed to get live trades in risk_metrics: %s", e)
+    else:
+        # Paper open trades
+        with get_conn() as conn:
+            open_rows = conn.execute("SELECT * FROM paper_trades WHERE status='OPEN'").fetchall()
+            open_positions = [dict(r) for r in open_rows]
+            _enrich_open_trades_with_live_pnl(open_positions)
+            _enrich_trade_details(open_positions)
+            
+    total_open_pnl = sum(float(p.get("pnl_rupees") or 0.0) for p in open_positions)
+    current_equity = available_cash + total_open_pnl
+    
+    # 3. Update & fetch Peak Equity / calculate Max Drawdown
+    peak_equity = current_equity
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT peak_equity FROM daily_equity_peaks WHERE date=? AND mode=?",
+            (today_str, mode)
+        ).fetchone()
+        if row:
+            peak_equity = max(float(row["peak_equity"]), current_equity)
+            if current_equity > float(row["peak_equity"]):
+                conn.execute(
+                    "UPDATE daily_equity_peaks SET peak_equity=? WHERE date=? AND mode=?",
+                    (current_equity, today_str, mode)
+                )
+        else:
+            conn.execute(
+                "INSERT INTO daily_equity_peaks (date, mode, peak_equity) VALUES (?, ?, ?)",
+                (today_str, mode, current_equity)
+            )
+            
+    drawdown_abs = max(0.0, peak_equity - current_equity)
+    drawdown_pct = (drawdown_abs / peak_equity * 100.0) if peak_equity > 0 else 0.0
+    
+    # 4. Profit Factor
+    table_name = "live_trades" if mode == "live" else "paper_trades"
+    total_wins = 0.0
+    total_losses = 0.0
+    with get_conn() as conn:
+        wins_row = conn.execute(
+            f"SELECT SUM(pnl_rupees) AS total FROM {table_name} WHERE (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees > 0"
+        ).fetchone()
+        if wins_row and wins_row["total"] is not None:
+            total_wins = float(wins_row["total"])
+            
+        losses_row = conn.execute(
+            f"SELECT SUM(pnl_rupees) AS total FROM {table_name} WHERE (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees < 0"
+        ).fetchone()
+        if losses_row and losses_row["total"] is not None:
+            total_losses = abs(float(losses_row["total"]))
+            
+    profit_factor = round(total_wins / total_losses, 2) if total_losses > 0 else (99.99 if total_wins > 0 else 0.0)
+
+    # 5. Daily Loss Limit %
+    # Fetch realized daily PnL (closed today)
+    today_realized_pnl = 0.0
+    with get_conn() as conn:
+        row = conn.execute(
+            f"SELECT SUM(pnl_rupees) AS total FROM {table_name} WHERE closed_at >= ? AND (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross'))",
+            (today_start,)
+        ).fetchone()
+        if row and row["total"] is not None:
+            today_realized_pnl = float(row["total"])
+            
+    # Daily running PnL = realized today + unrealized today (all open positions)
+    today_running_pnl = today_realized_pnl + total_open_pnl
+    daily_loss_limit = float(MAX_DAILY_LOSS_RUPEES)
+    
+    # Daily loss limit % utilization is calculated only if running pnl is negative (a loss)
+    if today_running_pnl < 0:
+        daily_loss_pct = round((abs(today_running_pnl) / daily_loss_limit) * 100.0, 2)
+    else:
+        daily_loss_pct = 0.0
+        
+    # 6. Risk-to-Reward Ratio (Avg Active R:R)
+    rr_values = []
+    for p in open_positions:
+        opt_type = (p.get("option_type") or "").upper()
+        if opt_type == "FUT":
+            entry = float(p.get("entry_underlying") or 0.0)
+            sl = float(p.get("sl_underlying") or 0.0)
+            target = float(p.get("target_underlying") or 0.0)
+        else:
+            entry = float(p.get("entry_premium") or p.get("entry_underlying") or 0.0)
+            sl = float(p.get("sl_premium") or p.get("sl_underlying") or 0.0)
+            target = float(p.get("target_premium") or p.get("target_underlying") or 0.0)
+            
+        if entry > 0 and sl > 0 and target > 0:
+            target_diff = abs(target - entry)
+            sl_diff = abs(entry - sl)
+            if sl_diff > 0:
+                rr_values.append(target_diff / sl_diff)
+                
+    avg_rr = round(sum(rr_values) / len(rr_values), 2) if rr_values else 0.0
+    
+    # 7. Total Exposure (Notional Exposure)
+    total_notional_exposure = 0.0
+    for p in open_positions:
+        sym = p.get("symbol", "")
+        base = sym
+        if sym.startswith("NATURALGAS"): base = "NATURALGAS"
+        elif sym.startswith("NIFTY"): base = "NIFTY"
+        elif sym.startswith("BANKNIFTY"): base = "BANKNIFTY"
+        elif sym.startswith("CRUDEOIL"): base = "CRUDEOIL"
+        elif sym.startswith("GOLD"): base = "GOLD"
+        elif sym.startswith("MCX"): base = "MCX"
+        else:
+            import re
+            m = re.match(r"^[A-Z]+", sym)
+            if m: base = m.group(0)
+            
+        lot_size = LOT_SIZES.get(base, 1)
+        
+        # Prefer "lots", fallback to qty / lot_size
+        raw_lots = p.get("lots")
+        if raw_lots is None or raw_lots == "" or float(raw_lots or 0) == 0:
+            raw_qty = float(p.get("quantity", 0) or p.get("qty", 0) or 0)
+            raw_lots = raw_qty / lot_size if lot_size else 0
+        lots_val = float(raw_lots or 0)
+        qty = lots_val * lot_size
+        
+        opt_type = (p.get("option_type") or "").upper()
+        
+        if opt_type == "FUT":
+            val = qty * float(p.get("entry_underlying") or 0.0)
+        else:
+            strike = p.get("strike")
+            if strike is not None:
+                try: strike = float(strike)
+                except: strike = None
+            if strike:
+                val = qty * strike
+            else:
+                val = qty * float(p.get("entry_underlying") or 0.0)
+        total_notional_exposure += val
+        
+    return {
+        "mode": mode,
+        "available_cash": round(available_cash, 2),
+        "total_open_pnl": round(total_open_pnl, 2),
+        "current_equity": round(current_equity, 2),
+        "peak_equity": round(peak_equity, 2),
+        "drawdown_abs": round(drawdown_abs, 2),
+        "drawdown_pct": round(drawdown_pct, 2),
+        "profit_factor": profit_factor,
+        "today_running_pnl": round(today_running_pnl, 2),
+        "daily_loss_pct": daily_loss_pct,
+        "avg_rr": avg_rr,
+        "total_notional_exposure": round(total_notional_exposure, 2),
+        "max_daily_loss_limit": daily_loss_limit
+    }
+
+
+@app.get("/api/broker_status", dependencies=[Depends(authenticate)])
+def get_broker_status():
+    from src.models.schema import get_broker_config
+    config = get_broker_config()
+    if not config:
+        return {
+            "status": "NOT_CONFIGURED",
+            "api_key": None,
+            "last_login_date": None,
+            "kill_switch_active": 0,
+            "has_totp": False
+        }
+    
+    from datetime import datetime, timezone, timedelta
+    today = datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime("%Y-%m-%d")
+    is_connected = bool(config.get("access_token")) and config.get("last_login_date") == today
+    
+    return {
+        "status": "CONNECTED" if is_connected else "DISCONNECTED",
+        "api_key": config.get("api_key"),
+        "last_login_date": config.get("last_login_date"),
+        "kill_switch_active": config.get("kill_switch_active", 0),
+        "has_totp": bool(config.get("totp_secret"))
+    }
+
+
+@app.post("/api/broker_config", dependencies=[Depends(authenticate)])
+async def post_broker_config(data: dict):
+    api_key = data.get("api_key")
+    api_secret = data.get("api_secret")
+    totp_secret = data.get("totp_secret")
+    
+    if api_key == "": api_key = None
+    if api_secret == "": api_secret = None
+    if totp_secret == "": totp_secret = None
+    
+    encrypted_totp = None
+    if totp_secret:
+        from src.services.zerodha_auth import encrypt_secret
+        encrypted_totp = encrypt_secret(totp_secret)
+        
+    from src.models.schema import update_broker_config
+    update_broker_config(
+        api_key=api_key,
+        api_secret=api_secret,
+        totp_secret=encrypted_totp
+    )
+    return {"status": "SUCCESS", "message": "Broker configurations updated successfully"}
+
+
+@app.post("/api/broker/killswitch", dependencies=[Depends(authenticate)])
+async def toggle_kill_switch(data: dict):
+    active = bool(data.get("active", False))
+    from src.models.schema import set_kill_switch
+    set_kill_switch(active)
+    return {"status": "SUCCESS", "message": f"Kill Switch set to {active}"}
+
+
+_margins_cache = None
+_margins_cache_ts = 0.0
+
+@app.get("/api/broker_margin", dependencies=[Depends(authenticate)])
+def get_broker_margin():
+    global _margins_cache, _margins_cache_ts
+    now = time.time()
+    from config.runtime_config import load_runtime_config
+    config = load_runtime_config()
+    
+    if _margins_cache is not None and (now - _margins_cache_ts) < 10.0:
+        # Update shadow_mode to reflect latest config dynamically
+        _margins_cache["shadow_mode"] = config.get("live_shadow_mode", True)
+        return _margins_cache
+
+    from src.engine.live_trading import get_kite_client
+    
+    # ALWAYS try to get real margins if connected, regardless of shadow mode
+    kite = get_kite_client()
+    if kite:
+        try:
+            margins = kite.margins()
+            
+            # Helper to extract available margin safely
+            def get_avail(sec):
+                section = margins.get(sec, {})
+                if not isinstance(section, dict):
+                    return 0.0
+                if "net" in section and isinstance(section["net"], (int, float)):
+                    return float(section["net"])
+                avail = section.get("available", {})
+                if isinstance(avail, dict):
+                    return float(avail.get("live_balance", avail.get("cash", avail.get("opening_balance", 0.0))))
+                return 0.0
+
+            # Helper to extract utilized margin safely
+            def get_util(sec):
+                section = margins.get(sec, {})
+                if not isinstance(section, dict):
+                    return 0.0
+                utilised = section.get("utilised", {})
+                if isinstance(utilised, dict):
+                    return float(utilised.get("debits", utilised.get("exposure", 0.0)))
+                elif isinstance(utilised, (int, float)):
+                    return float(utilised)
+                return 0.0
+
+            result = {
+                "shadow_mode": config.get("live_shadow_mode", True),
+                "equity": {
+                    "available": get_avail("equity"),
+                    "utilized": get_util("equity")
+                },
+                "commodity": {
+                    "available": get_avail("commodity"),
+                    "utilized": get_util("commodity")
+                }
+            }
+            _margins_cache = result
+            _margins_cache_ts = now
+            return result
+        except Exception as e:
+            log.error("Failed to fetch margins from Kite: %s", e)
+            if _margins_cache is not None:
+                _margins_cache["shadow_mode"] = config.get("live_shadow_mode", True)
+                return _margins_cache
+            
+    # Mock data fallback
+    return {
+        "shadow_mode": True,
+        "equity": {
+            "available": 1000000.0,
+            "utilized": 0.0
+        },
+        "commodity": {
+            "available": 500000.0,
+            "utilized": 0.0
+        }
+    }
+
+
+@app.post("/api/broker/logout", dependencies=[Depends(authenticate)])
+async def broker_logout():
+    global _positions_cache, _positions_cache_ts, _margins_cache, _margins_cache_ts
+    from src.models.schema import update_broker_config
+    update_broker_config(
+        access_token="",
+        request_token="",
+        last_login_date=""
+    )
+    try:
+        from src.engine.live_trading import clear_kite_client_cache
+        clear_kite_client_cache()
+    except Exception:
+        log.exception("Failed to clear Kite client cache during logout")
+    _positions_cache = None
+    _positions_cache_ts = 0.0
+    _margins_cache = None
+    _margins_cache_ts = 0.0
+    return {"status": "SUCCESS", "message": "Logged out successfully"}
+
+
+@app.get("/api/zerodha/callback")
+@app.get("/brokers/zerodha/redirect/{client_id}")
+def zerodha_callback(client_id: str = None, request_token: str = None):
+    if not request_token:
+        return HTMLResponse("<h1>Error: request_token is missing</h1>", status_code=400)
+    
+    from src.models.schema import get_broker_config, update_broker_config
+    config = get_broker_config()
+    if not config or not config.get("api_key") or not config.get("api_secret"):
+        return HTMLResponse("<h1>Error: Zerodha api_key or api_secret not configured in database</h1>", status_code=400)
+    
+    from kiteconnect import KiteConnect
+    try:
+        kite = KiteConnect(api_key=config["api_key"])
+        session = kite.generate_session(request_token, api_secret=config["api_secret"])
+        access_token = session["access_token"]
+        
+        from datetime import datetime, timezone, timedelta
+        today = datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime("%Y-%m-%d")
+        
+        update_broker_config(
+            access_token=access_token,
+            request_token=request_token,
+            last_login_date=today
+        )
+        return HTMLResponse("""
+            <html>
+                <body style="background:#121212; color:#fff; font-family: sans-serif; text-align:center; padding-top:100px;">
+                    <h1 style="color:#4caf50;">Authentication Successful!</h1>
+                    <p>Zerodha Access Token has been updated. You can close this window now.</p>
+                    <script>
+                        if (window.opener) {
+                            window.opener.postMessage("kite_login_success", "*");
+                        }
+                        setTimeout(function() { window.close(); }, 3000);
+                    </script>
+                </body>
+            </html>
+        """)
+    except Exception as e:
+        log.exception("Failed to generate Zerodha session")
+        return HTMLResponse(f"<h1>Failed to generate Zerodha session: {e}</h1>", status_code=500)
+
+
+from fastapi import Request
+
+@app.post("/api/zerodha/postback")
+async def zerodha_postback(request: Request):
+    from src.models.schema import get_broker_config, get_conn, close_live_trade
+    import hmac, hashlib
+
+    body = await request.body()
+
+    config = get_broker_config()
+    if not config or not config.get("api_secret"):
+        log.warning("Postback received but api_secret is not configured")
+        return JSONResponse({"error": "Broker config missing"}, status_code=400)
+
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    log.info("Zerodha postback received: %s", payload)
+
+    order_id = str(payload.get("order_id") or "")
+    order_timestamp = str(payload.get("order_timestamp") or "")
+    status = str(payload.get("status") or "").upper()
+    checksum = str(payload.get("checksum") or "")
+    tradingsymbol = str(payload.get("tradingsymbol") or "")
+
+    if not order_id or not order_timestamp or not status or not checksum:
+        return JSONResponse({"error": "Missing required postback fields"}, status_code=400)
+
+    expected = hashlib.sha256(f"{order_id}{order_timestamp}{config['api_secret']}".encode("utf-8")).hexdigest()
+    if not hmac.compare_digest(checksum, expected):
+        log.warning("Postback received with invalid checksum")
+        return JSONResponse({"error": "Invalid checksum"}, status_code=401)
+
+    close_args = None
+    with get_conn() as conn:
+        trade = conn.execute("SELECT * FROM live_trades WHERE broker_order_id=? AND status='OPEN'", (order_id,)).fetchone()
+        if trade:
+            trade = dict(trade)
+            if status in ("REJECTED", "CANCELLED"):
+                close_args = (
+                    trade["id"],
+                    datetime.now(timezone.utc).isoformat(),
+                    trade["entry_underlying"],
+                    0.0,
+                    f"CLOSED_{status}",
+                    f"Entry order {status}: {payload.get('status_message')}"
+                )
+                log.info("Live trade %s closed because entry order was %s", trade["id"], status)
+            elif status == "COMPLETE":
+                conn.execute("UPDATE live_trades SET broker_status='COMPLETE' WHERE id=?", (trade["id"],))
+                log.info("Live trade %s entry order COMPLETE", trade["id"])
+            if not close_args:
+                return {"status": "processed"}
+
+        trade = None
+        if payload.get("gtt_id"):
+            trade = conn.execute("SELECT * FROM live_trades WHERE gtt_order_id=? AND status='OPEN'", (str(payload.get("gtt_id")),)).fetchone()
+
+        if not trade and status == "COMPLETE" and tradingsymbol:
+            tx_side = str(payload.get("transaction_type") or "").upper()
+            open_trades = conn.execute("SELECT * FROM live_trades WHERE status='OPEN'").fetchall()
+            from src.engine.symbol_resolver import resolve_instrument
+            matches = []
+            for ot in open_trades:
+                ot = dict(ot)
+                resolved = resolve_instrument(ot["symbol"], ot["expiry"], ot["strike"], ot["option_type"])
+                expected_exit_side = "SELL" if ot.get("side") == "BUY" else "BUY"
+                if (
+                    resolved
+                    and resolved.get("tradingsymbol") == tradingsymbol
+                    and tx_side == expected_exit_side
+                    and order_id != ot.get("broker_order_id")
+                ):
+                    matches.append(ot)
+            if len(matches) == 1:
+                trade = matches[0]
+            elif len(matches) > 1:
+                log.warning("Ambiguous Zerodha exit postback for %s matched %d open trades", tradingsymbol, len(matches))
+
+        if trade and status == "COMPLETE":
+            trade = dict(trade)
+            exit_premium = float(payload.get("average_price") or payload.get("price") or 0.0)
+            res_u = conn.execute("SELECT price FROM underlying_price WHERE symbol=? ORDER BY fetched_at DESC LIMIT 1", (trade["symbol"],)).fetchone()
+            exit_underlying = res_u["price"] if res_u else trade["entry_underlying"]
+            close_args = (
+                trade["id"],
+                datetime.now(timezone.utc).isoformat(),
+                exit_underlying,
+                exit_premium,
+                "CLOSED_GTT",
+                "Closed via verified Zerodha postback"
+            )
+            log.info("Live trade %s closed via verified Zerodha postback", trade["id"])
+
+    if close_args:
+        close_live_trade(*close_args)
+    return {"status": "processed"}
+
+
+# ── Serve Static Assets ────────────────────────────────────────────────────
+
+@app.get("/static/theme.css")
+def get_theme_css():
+    from fastapi import Response
+    css_path = ROOT / "src" / "dashboard" / "theme.css"
+    if css_path.exists():
+        return Response(content=css_path.read_text(encoding="utf-8"), media_type="text/css")
+    return Response(status_code=404)
+
+
+@app.get("/static/theme.js")
+def get_theme_js():
+    from fastapi import Response
+    js_path = ROOT / "src" / "dashboard" / "theme.js"
+    if js_path.exists():
+        return Response(content=js_path.read_text(encoding="utf-8"), media_type="application/javascript")
+    return Response(status_code=404)
+
+
+@app.get("/static/kite-logo.png")
+def get_kite_logo():
+    from fastapi.responses import FileResponse
+    logo_path = ROOT / "src" / "dashboard" / "kite-logo.png"
+    if logo_path.exists():
+        return FileResponse(logo_path, media_type="image/png")
+    from fastapi import Response
+    return Response(status_code=404)
+
+
+
 # ── Serve dashboard HTML ───────────────────────────────────────────────────
+
+@app.get("/broker", response_class=HTMLResponse)
+async def broker_page(username: str = Depends(authenticate)):
+    html_path = ROOT / "src" / "dashboard" / "broker.html"
+    if html_path.exists():
+        return HTMLResponse(html_path.read_text(encoding="utf-8"))
+    return HTMLResponse("<h1>broker.html not found</h1>", status_code=404)
+
+
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_page(username: str = Depends(authenticate)):
+    html_path = ROOT / "src" / "dashboard" / "settings.html"
+    if html_path.exists():
+        return HTMLResponse(html_path.read_text(encoding="utf-8"))
+    return HTMLResponse("<h1>settings.html not found</h1>", status_code=404)
+
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
@@ -1454,4 +2580,4 @@ async def paper_dashboard():
 if __name__ == "__main__":
     print(f"  DB: {DB_PATH}")
     print(f"  Dashboard: http://localhost:8080")
-    uvicorn.run(app, host="0.0.0.0", port=8080, log_level="warning")
+    uvicorn.run(app, host="127.0.0.1", port=8080, log_level="warning")

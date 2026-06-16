@@ -24,11 +24,11 @@ IF ERRORLEVEL 1 (
 )
 
 echo  [1/3] Checking dependencies...
-%PYTHON_EXE% -c "import fastapi, uvicorn, apscheduler, yfinance" >nul 2>&1
+%PYTHON_EXE% -c "import fastapi, uvicorn, apscheduler, yfinance, pyotp" >nul 2>&1
 IF ERRORLEVEL 1 (
     echo  [INFO] Installing missing packages...
     %PYTHON_EXE% -m pip uninstall python-telegram-bot -y >nul 2>&1
-    %PYTHON_EXE% -m pip install fastapi uvicorn apscheduler yfinance python-dotenv requests pytz dhanhq python-telegram-bot==21.5 --quiet
+    %PYTHON_EXE% -m pip install fastapi uvicorn apscheduler yfinance python-dotenv requests pytz dhanhq pyotp python-telegram-bot==21.5 --quiet
     IF ERRORLEVEL 1 (
         echo  [ERROR] pip install failed.
         pause & exit /b 1

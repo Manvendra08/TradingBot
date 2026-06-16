@@ -75,8 +75,9 @@ def _update_live_cmps() -> None:
     """Lightweight live CMP refresh for symbols with OPEN trades."""
     from src.models.schema import get_conn, insert_snapshots, insert_underlying_price
     with get_conn() as conn:
-        rows = conn.execute("SELECT DISTINCT symbol FROM paper_trades WHERE status='OPEN'").fetchall()
-        open_symbols = [r["symbol"] for r in rows]
+        paper_rows = conn.execute("SELECT DISTINCT symbol FROM paper_trades WHERE status='OPEN'").fetchall()
+        live_rows = conn.execute("SELECT DISTINCT symbol FROM live_trades WHERE status='OPEN'").fetchall()
+        open_symbols = list(set([r["symbol"] for r in paper_rows] + [r["symbol"] for r in live_rows]))
     
     if not open_symbols:
         return
