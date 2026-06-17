@@ -261,7 +261,7 @@ def _maybe_close_open_trade(
                     return
 
 
-def run_paper_trading(symbol: str, scan_context: dict, digest_id: str, intel: dict) -> dict | None:
+def run_paper_trading(symbol: str, scan_context: dict, digest_id: str, intel: dict, ai_verdict=None) -> dict | None:
     """
     intel: structured dict from generate_intelligence_structured().
     Accepts legacy str for backward-compat (extension_bridge etc.).
@@ -324,7 +324,7 @@ def run_paper_trading(symbol: str, scan_context: dict, digest_id: str, intel: di
 
     ctx = {**(scan_context or {}), "symbol": symbol, "expiry": expiry, "option_rows": option_rows}
 
-    decision = make_trade_decision(symbol, intel, ctx)
+    decision = make_trade_decision(symbol, intel, ctx, ai_verdict=ai_verdict)
     if decision["status"] == "BLOCKED":
         log.info("%s: paper trade blocked by decision engine — %s", symbol, decision["reason"])
         return {"action": "BLOCKED_DECISION", "reason": decision["reason"]}
@@ -396,7 +396,20 @@ def run_paper_trading(symbol: str, scan_context: dict, digest_id: str, intel: di
     }
 
 
-def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, intel: dict) -> dict | None:
+def _parse_llm_sl(exit_advice: str, fallback: float | None) -> float | None:
+    import re
+    if not exit_advice:
+        return fallback
+    m = re.search(r'SL\s+(?:at\s+)?[₹]?([\d.]+)', exit_advice, re.IGNORECASE)
+    if m:
+        try:
+            return float(m.group(1))
+        except ValueError:
+            pass
+    return fallback
+
+
+def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, intel: dict, ai_verdict=None) -> dict | None:
     """Run secondary timeframe trading strategy (3h Entry / 1h Exit) based on completed candle crossovers."""
     if not _is_market_open(symbol):
         return {"action": "SKIPPED_MARKET_CLOSED", "reason": "Outside market hours"}
@@ -524,6 +537,30 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
         with get_conn() as conn:
             conn.execute("UPDATE paper_trades SET max_favorable_r=? WHERE id=?", (max_fav, trade["id"]))
 
+        # LLM reversal exit check (Gate D)
+        if ai_verdict is not None:
+            if isinstance(ai_verdict, dict):
+                bias = ai_verdict.get("bias", "NEUTRAL")
+                confidence = ai_verdict.get("confidence", 0)
+            else:
+                bias = getattr(ai_verdict, "bias", "NEUTRAL")
+                confidence = getattr(ai_verdict, "confidence", 0)
+            
+            if confidence >= 70:
+                if (trade["verdict_label"] == "LONG" and bias == "BEARISH") or \
+                   (trade["verdict_label"] == "SHORT" and bias == "BULLISH"):
+                    close_paper_trade(
+                        trade["id"],
+                        now_iso,
+                        underlying,
+                        exit_premium if trade["option_type"] in ("CE", "PE") else underlying,
+                        "LLM_REVERSAL",
+                        f"LLM sentiment reversal: bias {bias} opposes {trade['verdict_label']} trade with confidence {confidence}%"
+                    )
+                    log.info("%s: Closed open TIMEFRAME trade (id=%d) due to LLM sentiment reversal (%s, confidence=%d%%)", 
+                             symbol, trade["id"], bias, confidence)
+                    continue
+
         # 2a. Options SL hit (Item 2)
         if trade["option_type"] in ("CE", "PE"):
             sl_prem = trade.get("sl_premium")
@@ -534,14 +571,26 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
                     is_sl_hit = (exit_premium >= float(sl_prem))
                 else:
                     is_sl_hit = (exit_premium <= float(sl_prem))
-            if is_sl_hit:
+
+            # Check underlying-based SL if set (e.g. by LLM override)
+            sl_und = trade.get("sl_underlying")
+            is_und_sl_hit = False
+            if sl_und:
+                sl_und_val = float(sl_und)
+                if trade["verdict_label"] == "LONG" and underlying <= sl_und_val:
+                    is_und_sl_hit = True
+                elif trade["verdict_label"] == "SHORT" and underlying >= sl_und_val:
+                    is_und_sl_hit = True
+
+            if is_sl_hit or is_und_sl_hit:
+                reason = f"Options SL hit: premium {exit_premium} vs SL {sl_prem} ({side})" if is_sl_hit else f"Options underlying SL hit: spot {underlying} vs SL {sl_und_val}"
                 close_paper_trade(
                     trade["id"],
                     now_iso,
                     underlying,
                     exit_premium,
                     "CLOSED_SL",
-                    f"Options SL hit: premium {exit_premium} vs SL {sl_prem} ({side})",
+                    reason,
                 )
                 log.info("%s: Closed open TIMEFRAME trade (id=%d) on Options SL", symbol, trade["id"])
                 continue
@@ -677,6 +726,29 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
         return None
 
     direction = "LONG" if is_long_trigger else "SHORT"
+
+    # LLM entry gates (Gate A and Gate B)
+    if ai_verdict is not None:
+        if isinstance(ai_verdict, dict):
+            bias = ai_verdict.get("bias", "NEUTRAL")
+            confidence = ai_verdict.get("confidence", 0)
+            risk_rating = ai_verdict.get("risk_rating", "LOW")
+        else:
+            bias = getattr(ai_verdict, "bias", "NEUTRAL")
+            confidence = getattr(ai_verdict, "confidence", 0)
+            risk_rating = getattr(ai_verdict, "risk_rating", "LOW")
+
+        # Gate A: Bias alignment check
+        if confidence >= 65:
+            if (direction == "LONG" and bias == "BEARISH") or (direction == "SHORT" and bias == "BULLISH"):
+                log.info("%s: Timeframe %s entry blocked by LLM bias alignment (bias=%s, confidence=%d%%)", symbol, direction, bias, confidence)
+                return {"action": "BLOCKED_PLAN", "reason": f"Timeframe entry blocked: LLM bias alignment (bias={bias}, confidence={confidence}%)"}
+
+        # Gate B: Risk rating check
+        if risk_rating == "HIGH":
+            log.info("%s: Timeframe %s entry blocked by LLM risk rating (risk_rating=HIGH)", symbol, direction)
+            return {"action": "BLOCKED_PLAN", "reason": "Timeframe entry blocked: LLM risk rating is HIGH"}
+
     signal_key = f"{symbol}:TIMEFRAME:3H:{direction}:{bar_end_3h}"
 
     # Check unique signal_key
@@ -768,6 +840,13 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
             sl_premium = entry_premium * 0.75
             sl_underlying = None
 
+        if ai_verdict is not None:
+            if isinstance(ai_verdict, dict):
+                exit_advice = ai_verdict.get("exit_advice", "")
+            else:
+                exit_advice = getattr(ai_verdict, "exit_advice", "")
+            sl_underlying = _parse_llm_sl(exit_advice, sl_underlying)
+
         trade_data = {
             "opened_at": now_iso,
             "symbol": symbol,
@@ -818,6 +897,13 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
                 return {"action": "BLOCKED_PLAN", "reason": f"Timeframe entry skipped: option premium unavailable for PE strike {strike}"}
             sl_premium = entry_premium * 0.75
             sl_underlying = None
+
+        if ai_verdict is not None:
+            if isinstance(ai_verdict, dict):
+                exit_advice = ai_verdict.get("exit_advice", "")
+            else:
+                exit_advice = getattr(ai_verdict, "exit_advice", "")
+            sl_underlying = _parse_llm_sl(exit_advice, sl_underlying)
 
         trade_data = {
             "opened_at": now_iso,

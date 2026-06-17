@@ -42,6 +42,14 @@ def run_pipeline(symbols: list[str] | None = None, force: bool = False) -> None:
     symbols = symbols or WATCH_SYMBOLS
     fetched_at = datetime.now(timezone.utc).isoformat()
     log.info("Pipeline run started | %s | symbols: %s | force=%s", fetched_at, symbols, force)
+    
+    # B7: Sync manual Kite direct positions to SQLite for AI Exit Advisor monitoring
+    try:
+        from src.engine.live_trading import sync_direct_kite_positions
+        sync_direct_kite_positions()
+    except Exception:
+        log.exception("Direct Kite position synchronization failed")
+
     for symbol in symbols:
         try:
             _process_symbol(symbol, fetched_at)
@@ -112,12 +120,96 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
     intel = generate_intelligence_structured(symbol, new_alerts, scan_context=scan_context)
     intel_text = intel["telegram_text"]
 
+    # 3a. Fetch news data for AI context
+    news_data = None
+    try:
+        from src.fetchers.news_fetcher import fetch_news
+        news_data = fetch_news(symbol)
+        if news_data and news_data.get("count_24h", 0) > 0:
+            log.info("%s: news fetched — %d articles, direction: %s",
+                     symbol, news_data["count_24h"], news_data.get("current_news_direction"))
+    except Exception:
+        log.debug("%s: news fetch unavailable", symbol)
+
+    # 3b. Check for open paper trade (context for AI)
+    open_trade = None
+    try:
+        from src.models.schema import get_open_paper_trade
+        open_trade = get_open_paper_trade(symbol)
+        if open_trade:
+            open_trade = dict(open_trade)
+    except Exception:
+        log.debug("%s: could not fetch open trade for AI context", symbol)
+
+    # 3c. AI Enrichment (Gemini — Deep Context)
+    from src.engine.llm_enrichment import get_llm_verdict
+    llm_verdict = None
+    try:
+        llm_verdict = get_llm_verdict(
+            symbol, intel, scan_context,
+            alerts=new_alerts,
+            news_data=news_data,
+            open_trade=open_trade,
+        )
+        if llm_verdict:
+            log.info("%s: AI verdict — %s (%d%%) risk=%s | Strategy: %s",
+                     symbol, llm_verdict.bias, llm_verdict.confidence,
+                     llm_verdict.risk_rating, llm_verdict.strategy)
+            intel_text += f"\n\n🧠 *AI Verdict* ({llm_verdict.bias}, {llm_verdict.confidence}%)\n"
+            intel_text += f"Strategy: {llm_verdict.strategy}\n"
+            intel_text += f"Target: {llm_verdict.strike_selection}\n"
+            intel_text += f"Risk: {llm_verdict.risk_rating}\n"
+            if llm_verdict.news_synthesis and llm_verdict.news_synthesis != "No news data":
+                intel_text += f"📰 {llm_verdict.news_synthesis}\n"
+            if llm_verdict.exit_advice:
+                intel_text += f"🚪 Exit: {llm_verdict.exit_advice}\n"
+            intel_text += f"_{llm_verdict.reasoning}_\n"
+    except Exception:
+        log.exception("%s: AI enrichment failed gracefully", symbol)
+
+    # 3d. AI Exit Advisor — evaluate open trades
+    try:
+        from config.runtime_config import load_runtime_config
+        rconf = load_runtime_config()
+        ai_exit_advisor_enabled = rconf.get("live_ai_exit_advisor_enabled", False)
+        if ai_exit_advisor_enabled and open_trade:
+            from src.engine.llm_enrichment import get_exit_advice
+            exit_advice = get_exit_advice(symbol, open_trade, scan_context, news_data)
+            if exit_advice:
+                log.info("%s: AI exit advice — %s (urgency=%s): %s",
+                         symbol, exit_advice.action, exit_advice.urgency, exit_advice.reasoning)
+                if exit_advice.action == "TRAIL_SL" and exit_advice.new_sl_premium is not None:
+                    from src.models.schema import get_conn
+                    with get_conn() as conn:
+                        conn.execute(
+                            "UPDATE paper_trades SET sl_premium=? WHERE id=? AND status='OPEN'",
+                            (exit_advice.new_sl_premium, open_trade["id"]),
+                        )
+                    log.info("%s: AI trailed SL to %.2f", symbol, exit_advice.new_sl_premium)
+                    intel_text += f"\n🤖 *AI Trail*: SL moved to ₹{exit_advice.new_sl_premium:.2f} — {exit_advice.reasoning}\n"
+                elif exit_advice.action == "CLOSE_EARLY" and exit_advice.urgency == "HIGH":
+                    from src.models.schema import close_paper_trade
+                    exit_premium = open_trade.get("entry_premium")  # approximate
+                    close_paper_trade(
+                        open_trade["id"],
+                        datetime.now(timezone.utc).isoformat(),
+                        scan_context.get("underlying", 0),
+                        exit_premium,
+                        "AI_CLOSE_EARLY",
+                        f"AI exit: {exit_advice.reasoning}",
+                    )
+                    log.info("%s: AI closed trade early — %s", symbol, exit_advice.reasoning)
+                    intel_text += f"\n🤖 *AI Close*: {exit_advice.reasoning}\n"
+    except Exception:
+        log.debug("%s: AI exit advisor failed gracefully", symbol)
+
+
     import uuid
     digest_id = str(uuid.uuid4())[:8]
     paper_trade_report = None
     try:
-        pt_report = run_paper_trading(symbol, scan_context, digest_id, intel)
-        tf_report = run_timeframe_strategy(symbol, scan_context, digest_id, intel)
+        pt_report = run_paper_trading(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
+        tf_report = run_timeframe_strategy(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
         if pt_report and pt_report.get("action") in ("EXECUTED", "CLOSED"):
             paper_trade_report = pt_report
         elif tf_report and tf_report.get("action") in ("EXECUTED", "CLOSED"):
@@ -129,7 +221,7 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
 
     live_trade_report = None
     try:
-        lt_report = run_live_trading(symbol, scan_context, digest_id, intel)
+        lt_report = run_live_trading(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
         lt_tf_report = run_live_timeframe_strategy(symbol, scan_context, digest_id, intel)
         if lt_report and lt_report.get("action") in ("EXECUTED", "CLOSED"):
             live_trade_report = lt_report
@@ -149,6 +241,7 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
         digest_id=digest_id,
         paper_trade_status=paper_trade_report,
         live_trade_status=live_trade_report,
+        llm_verdict=llm_verdict,
     )
     for a in new_alerts:
         a["digest_id"] = digest_id

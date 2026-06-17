@@ -138,11 +138,12 @@ def run_with_timeout(func, timeout, *args, **kwargs) -> bool:
     return True
 
 
-def start_scheduler():
+def start_scheduler(immediate: bool = False):
     from src.models.schema import delete_expired_contracts
     
     log.info(
-        "Scheduler started — default interval: %d min | NSE interval: %d min | MCX interval: %d min | symbols: %s",
+        "Scheduler started (immediate_scan=%s) — default interval: %d min | NSE interval: %d min | MCX interval: %d min | symbols: %s",
+        immediate,
         FETCH_INTERVAL_MINUTES,
         get_scan_frequency_nse(),
         get_scan_frequency_mcx(),
@@ -151,12 +152,52 @@ def start_scheduler():
     # Run a cleanup of expired data on startup
     delete_expired_contracts()
     
+    # ── Instrument cache warm-up at scheduler start ────────────────────────
+    def _warmup_instrument_cache():
+        try:
+            from src.engine.symbol_resolver import _instrument_cache_is_ready, fetch_and_cache_instruments
+            from src.engine.live_trading import get_kite_client
+            if not _instrument_cache_is_ready():
+                kite = get_kite_client()
+                if kite:
+                    log.info("[scheduler] Warming up instrument cache...")
+                    fetch_and_cache_instruments(kite)
+                else:
+                    log.info("[scheduler] Kite not connected; instrument cache warm-up skipped.")
+        except Exception as exc:
+            log.warning("[scheduler] Instrument cache warm-up failed: %s", exc)
+
+    threading.Thread(target=_warmup_instrument_cache, daemon=True, name="instrument-cache-startup").start()
+
     current_date = datetime.now(IST).date()
     last_scanned_interval: dict[str, int] = {}
     has_done_startup_scan: dict[str, bool] = {}
     
-    last_cmp_refresh = 0.0
+    # If immediate scan is NOT requested, skip the first scan for the current interval
+    if not immediate:
+        import math
+        from config.symbol_classes import get_symbol_class, MARKET_WINDOWS
+        now_ist = datetime.now(IST)
+        for class_key in MARKET_WINDOWS:
+            open_t, _, _ = MARKET_WINDOWS[class_key]
+            open_h, open_m = map(int, open_t.split(":"))
+            market_open_time = now_ist.replace(hour=open_h, minute=open_m, second=0, microsecond=0)
+            delta_minutes = (now_ist - market_open_time).total_seconds() / 60.0
+            if delta_minutes >= 0:
+                if class_key == "MCX_COMMODITY":
+                    interval_min = get_scan_frequency_mcx()
+                else:
+                    interval_min = get_scan_frequency_nse()
+                current_interval_idx = math.floor(delta_minutes / interval_min)
+                
+                has_done_startup_scan[class_key] = True
+                last_scanned_interval[class_key] = current_interval_idx
+                log.info("Bypassing immediate startup scan for %s. Next scan will trigger at interval index %d.", class_key, current_interval_idx + 1)
     
+    last_cmp_refresh = 0.0
+    last_instrument_cache_refresh = time.time()  # mark as refreshed now (warmup thread handles first)
+    _INSTRUMENT_CACHE_REFRESH_INTERVAL = 4 * 60 * 60  # 4 hours
+
     try:
         while True:
             now_ts = time.time()
@@ -230,9 +271,25 @@ def start_scheduler():
                 last_cmp_refresh = time.time()
                 if elapsed > 0.5:
                     log.debug("Live CMP refresh completed in %.1fs (success=%s)", elapsed, success)
-            
+
+            # 3. Instrument cache periodic refresh (every 4 hours)
+            if time.time() - last_instrument_cache_refresh >= _INSTRUMENT_CACHE_REFRESH_INTERVAL:
+                last_instrument_cache_refresh = time.time()
+                def _refresh_cache():
+                    try:
+                        from src.engine.symbol_resolver import fetch_and_cache_instruments
+                        from src.engine.live_trading import get_kite_client
+                        kite = get_kite_client()
+                        if kite:
+                            log.info("[scheduler] Periodic instrument cache refresh...")
+                            fetch_and_cache_instruments(kite)
+                    except Exception as exc:
+                        log.warning("[scheduler] Periodic instrument cache refresh failed: %s", exc)
+                threading.Thread(target=_refresh_cache, daemon=True, name="instrument-cache-periodic").start()
+
             # Sleep in short increments to remain responsive to intervals and changes
             time.sleep(10)
     except (KeyboardInterrupt, SystemExit):
         log.info("Scheduler stopped")
+
 

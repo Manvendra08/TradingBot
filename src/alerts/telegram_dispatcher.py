@@ -44,13 +44,45 @@ def _ensure_loop():
         import time; time.sleep(0.2)   # let loop start
 
 
-def _reset_loop():
-    global _loop, _loop_thread
+async def _cleanup_loop() -> None:
+    """Cancels all pending tasks in the event loop and stops the loop."""
     try:
-        if _loop and _loop.is_running():
-            _loop.call_soon_threadsafe(_loop.stop)
+        current_task = asyncio.current_task()
+        tasks = [t for t in asyncio.all_tasks() if t is not current_task]
+        for t in tasks:
+            t.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
     except Exception:
         pass
+    finally:
+        try:
+            asyncio.get_running_loop().stop()
+        except Exception:
+            pass
+
+
+def _reset_loop():
+    global _loop, _loop_thread
+    if _loop and _loop.is_running():
+        try:
+            future = asyncio.run_coroutine_threadsafe(_cleanup_loop(), _loop)
+            future.result(timeout=3.0)
+        except Exception as e:
+            log.warning("Loop cleanup failed or timed out: %s. Stopping loop directly.", e)
+            try:
+                _loop.call_soon_threadsafe(_loop.stop)
+            except Exception:
+                pass
+        
+        if _loop_thread and _loop_thread.is_alive():
+            _loop_thread.join(timeout=3.0)
+            
+        try:
+            _loop.close()
+        except Exception:
+            pass
+
     _loop = None
     _loop_thread = None
     _ensure_loop()
@@ -273,6 +305,44 @@ def _send_text_http_fallback(text: str, timeout_seconds: int = 15) -> bool:
         return False
 
 
+async def _send_async_safe(message: str, symbol: str = None, atype: str = None) -> None:
+    try:
+        async with Bot(token=TELEGRAM_BOT_TOKEN) as bot:
+            await asyncio.wait_for(
+                bot.send_message(
+                    chat_id=TELEGRAM_CHAT_ID,
+                    text=message,
+                    parse_mode="Markdown",
+                ),
+                timeout=5.0
+            )
+        if symbol and atype:
+            log.info("Telegram sent (bg): %s | %s", symbol, atype)
+        else:
+            first_line = (message or "").splitlines()[0][:90] if message else ""
+            log.info("Telegram sent text (bg): %s", first_line)
+    except Exception as exc:
+        log.warning("Telegram async send failed: %s; trying HTTP fallback in background", exc)
+        try:
+            loop = asyncio.get_running_loop()
+            success = await loop.run_in_executor(
+                None,
+                _send_text_http_fallback,
+                message,
+                5 # timeout_seconds
+            )
+            if success:
+                if symbol and atype:
+                    log.info("Telegram sent via HTTP fallback (bg): %s | %s", symbol, atype)
+                else:
+                    first_line = (message or "").splitlines()[0][:90] if message else ""
+                    log.info("Telegram sent text via HTTP fallback (bg): %s", first_line)
+            else:
+                log.error("Telegram HTTP fallback failed in bg")
+        except Exception as e:
+            log.error("Telegram HTTP fallback exception in bg: %s", e)
+
+
 def send_alert(alert: dict) -> bool:
     """Sync wrapper — safe to call from APScheduler thread. Returns True on success."""
     if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "YOUR_BOT_TOKEN":
@@ -283,70 +353,27 @@ def send_alert(alert: dict) -> bool:
     message = _format_message(alert)
 
     try:
-        future = asyncio.run_coroutine_threadsafe(_send_async(message), _loop)
-        future.result(timeout=35)
-        log.info("Telegram sent: %s | %s", alert["symbol"], alert["alert_type"])
+        asyncio.run_coroutine_threadsafe(
+            _send_async_safe(message, alert.get("symbol"), alert.get("alert_type")),
+            _loop
+        )
         return True
-    except TelegramError as exc:
-        log.error("Telegram API error: %s", exc)
-        return False
-    except FuturesTimeoutError:
-        log.error("Telegram send_alert timed out; retrying once")
-        try:
-            future.cancel()
-        except Exception:
-            pass
-        try:
-            _reset_loop()
-            future = asyncio.run_coroutine_threadsafe(_send_async(message), _loop)
-            future.result(timeout=35)
-            log.info("Telegram sent on retry: %s | %s", alert["symbol"], alert["alert_type"])
-            return True
-        except Exception:
-            if _send_text_http_fallback(message):
-                log.info("Telegram sent via HTTP fallback: %s | %s", alert["symbol"], alert["alert_type"])
-                return True
-            log.error("Telegram send_alert retry failed")
-            return False
     except Exception as exc:
-        log.error("Telegram unexpected error submitting alert: %s", exc)
+        log.error("Telegram unexpected error queueing alert: %s", exc)
         return False
 
 
 def send_text(text: str) -> bool:
-    """Sends raw text to Telegram."""
+    """Sends raw text to Telegram in background."""
     if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "YOUR_BOT_TOKEN":
         return False
     _ensure_loop()
     try:
-        future = asyncio.run_coroutine_threadsafe(_send_async(text), _loop)
-        future.result(timeout=35)
-        first_line = (text or "").splitlines()[0][:90]
-        log.info("Telegram sent text: %s", first_line)
+        asyncio.run_coroutine_threadsafe(
+            _send_async_safe(text),
+            _loop
+        )
         return True
-    except TelegramError as exc:
-        log.error("Telegram send_text API error: %s", exc)
-        return False
-    except FuturesTimeoutError:
-        log.error("Telegram send_text timed out; retrying once")
-        try:
-            future.cancel()
-        except Exception:
-            pass
-        try:
-            _reset_loop()
-            future = asyncio.run_coroutine_threadsafe(_send_async(text), _loop)
-            future.result(timeout=35)
-            first_line = (text or "").splitlines()[0][:90]
-            log.info("Telegram sent text on retry: %s", first_line)
-            return True
-        except Exception:
-            if _send_text_http_fallback(text):
-                first_line = (text or "").splitlines()[0][:90]
-                log.info("Telegram sent text via HTTP fallback: %s", first_line)
-                return True
-            log.error("Telegram send_text retry failed")
-            return False
     except Exception as exc:
-        log.error("Telegram send_text submit error: %s", exc)
+        log.error("Telegram unexpected error queueing text: %s", exc)
         return False

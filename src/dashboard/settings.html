@@ -47,6 +47,59 @@ body {
   display: grid;
   grid-template-columns: 1.2fr 1fr;
   gap: 32px;
+  border-top: 2px solid transparent;
+  padding-top: 24px;
+  transition: border-color 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+body[data-env="shadow"] #cockpit-settings-grid {
+  border-top-color: transparent;
+}
+body[data-env="live"] #cockpit-settings-grid {
+  border-top-color: var(--red);
+}
+
+/* ── Live Accent Animation separating the header from content ── */
+body[data-env="live"] .app-header {
+  border-bottom: 2px solid #dc2626 !important;
+  box-shadow: 0 1px 10px rgba(220, 38, 38, 0.3);
+  animation: live-header-pulse 2s infinite ease-in-out;
+}
+@keyframes live-header-pulse {
+  0% {
+    border-bottom-color: #dc2626;
+    box-shadow: 0 1px 6px rgba(220, 38, 38, 0.25);
+  }
+  50% {
+    border-bottom-color: #ef4444;
+    box-shadow: 0 1px 14px rgba(220, 38, 38, 0.55);
+  }
+  100% {
+    border-bottom-color: #dc2626;
+    box-shadow: 0 1px 6px rgba(220, 38, 38, 0.25);
+  }
+}
+
+/* Cockpit Control Bar layout */
+.cockpit-control-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 20px;
+  margin-bottom: 24px;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.cockpit-control-bar-left {
+  display: flex;
+  align-items: center;
+}
+.cockpit-control-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 @media(max-width: 950px) {
@@ -175,6 +228,7 @@ input:checked + .slider:before {
   font-size: 13px;
   outline: none;
   transition: border-color 0.2s, box-shadow 0.2s;
+  width: 100%;
 }
 
 .form-group input:focus, .form-group select:focus {
@@ -275,26 +329,49 @@ input:checked + .slider:before {
   opacity: 1;
 }
 
-/* Input with Inline Unit */
+/* Input with Inline Unit (Prefix Badge) */
 .input-with-unit {
-  position: relative;
   display: flex;
-  align-items: center;
+  flex-direction: row-reverse;
+  align-items: stretch;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.2s, box-shadow 0.2s;
 }
-.input-with-unit input {
+.input-with-unit:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 8px rgba(0, 229, 160, 0.15);
+}
+.form-group .input-with-unit input, .input-with-unit input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 12px 14px;
   width: 100%;
-  padding-right: 44px;
   font-family: var(--mono) !important;
   font-weight: 700 !important;
+  text-align: left;
+}
+.form-group .input-with-unit input:focus, .input-with-unit input:focus {
+  box-shadow: none;
 }
 .input-with-unit .unit {
-  position: absolute;
-  right: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(128, 128, 128, 0.1);
   color: var(--text-dim);
   font-family: var(--sans);
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 0 14px;
+  border-right: 1px solid var(--border);
   pointer-events: none;
+  border-top-left-radius: inherit;
+  border-bottom-left-radius: inherit;
 }
 
 /* Range Slider Styling */
@@ -326,32 +403,122 @@ input[type="range"]::-webkit-slider-thumb:hover {
 
 /* Dormant/Disabled Fields state */
 .dormant {
-  opacity: 0.35;
-  filter: grayscale(0.8);
+  opacity: 0.4;
+  filter: grayscale(1) blur(0.5px);
   pointer-events: none;
+  cursor: not-allowed;
   transition: all 0.3s ease;
 }
 
-/* Floating Save Action Banner */
+/* Suffix and Prefix styles */
+.input-with-prefix {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.input-with-prefix:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 8px rgba(0, 229, 160, 0.15);
+}
+.input-with-prefix input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  padding: 12px 14px;
+  width: 100%;
+  color: var(--text);
+  font-family: var(--mono) !important;
+  font-weight: 700 !important;
+  outline: none;
+}
+.input-with-prefix .prefix {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--border);
+  color: var(--accent);
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 700;
+  padding: 0 16px;
+  border-right: 1px solid var(--border);
+  pointer-events: none;
+  border-top-left-radius: inherit;
+  border-bottom-left-radius: inherit;
+}
+
+.input-with-suffix {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.input-with-suffix:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 8px rgba(0, 229, 160, 0.15);
+}
+.input-with-suffix input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  padding: 12px 14px;
+  width: 100%;
+  color: var(--text);
+  font-family: var(--mono) !important;
+  font-weight: 700 !important;
+  outline: none;
+}
+.input-with-suffix .suffix {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(128, 128, 128, 0.15);
+  color: var(--text-dim);
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 700;
+  padding: 0 16px;
+  border-left: 1px solid var(--border);
+  pointer-events: none;
+  border-top-right-radius: inherit;
+  border-bottom-right-radius: inherit;
+}
+
+/* Floating Save Action Banner (Overlay Toast) */
 .unsaved-banner {
   position: fixed;
   bottom: 24px;
   left: 50%;
-  transform: translateX(-50%) translateY(120px);
-  background: #111418;
+  transform: translateX(-50%) translateY(150px);
+  opacity: 0;
+  pointer-events: none;
+  background: rgba(17, 20, 24, 0.9);
+  backdrop-filter: blur(12px) saturate(180%);
+  -webkit-backdrop-filter: blur(12px) saturate(180%);
   border: 1px solid var(--accent);
-  border-radius: 12px;
-  padding: 16px 24px;
+  border-radius: 16px;
+  padding: 18px 28px;
   width: calc(100% - 48px);
-  max-width: 600px;
-  box-shadow: 0 10px 30px rgba(0, 229, 160, 0.15);
-  z-index: 2000;
+  max-width: 580px;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5), 0 0 30px rgba(0, 229, 160, 0.1);
+  z-index: 50;
   display: flex;
   align-items: center;
-  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.4s ease;
 }
 .unsaved-banner.show {
   transform: translateX(-50%) translateY(0);
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .btn-dirty {
@@ -365,9 +532,220 @@ input[type="range"]::-webkit-slider-thumb:hover {
   50% { box-shadow: 0 0 20px rgba(0, 229, 160, 0.7); }
   100% { box-shadow: 0 0 5px rgba(0, 229, 160, 0.3); }
 }
+
+/* Toast Backdrop Blur */
+.toast-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.25);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  z-index: 49;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.toast-backdrop.show {
+  opacity: 1;
+}
+
+/* Integrated range sliders */
+.slider-integrated-container {
+  display: flex;
+  align-items: center;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 12px;
+  height: 40px;
+  gap: 12px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.slider-integrated-container:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 8px rgba(0, 229, 160, 0.15);
+}
+.integrated-slider {
+  flex: 1;
+  margin: 0;
+  border: none !important;
+  background: transparent !important;
+  height: 6px;
+  outline: none;
+}
+.integrated-badge {
+  display: flex;
+  align-items: center;
+  border-left: 1px solid var(--border);
+  padding-left: 10px;
+  height: 24px;
+  flex-shrink: 0;
+}
+.integrated-input {
+  width: 42px;
+  background: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  text-align: right;
+  font-family: var(--mono) !important;
+  font-weight: 700 !important;
+  color: var(--accent) !important;
+  outline: none;
+  font-size: 13px;
+  box-shadow: none !important;
+}
+.integrated-input::-webkit-inner-spin-button,
+.integrated-input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.suffix-percent {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-left: 2px;
+  font-weight: 700;
+  font-family: var(--mono);
+}
+
+/* ── Redesigned Features ── */
+
+/* Animated pulse border */
+html::before {
+  content: "";
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  z-index: 9999;
+  transition: background-color 0.5s ease, box-shadow 0.5s ease;
+}
+html[data-env="shadow"]::before {
+  background-color: var(--green);
+  box-shadow: 0 0 10px rgba(0, 229, 160, 0.4);
+}
+html[data-env="live"]::before {
+  background-color: var(--red);
+  box-shadow: 0 0 12px rgba(255, 77, 109, 0.6);
+  animation: live-pulse-bar 2s infinite ease-in-out;
+}
+@keyframes live-pulse-bar {
+  0% { opacity: 0.6; box-shadow: 0 0 6px rgba(255, 77, 109, 0.4); }
+  50% { opacity: 1; box-shadow: 0 0 16px rgba(255, 77, 109, 0.8); }
+  100% { opacity: 0.6; box-shadow: 0 0 6px rgba(255, 77, 109, 0.4); }
+}
+
+/* Segment Switcher Styling */
+.segment-control {
+  display: flex;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 30px;
+  padding: 4px;
+  position: relative;
+  width: 280px;
+  height: 40px;
+  cursor: pointer;
+  user-select: none;
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.15);
+}
+
+.segment-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-dim);
+  z-index: 2;
+  transition: color 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  background: none !important;
+  border: none !important;
+  cursor: pointer;
+  font-family: var(--sans);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+#segment-glow {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 4px;
+  width: calc(50% - 4px);
+  border-radius: 26px;
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.3s ease, box-shadow 0.3s ease;
+  z-index: 1;
+}
+
+html[data-env="shadow"] #segment-glow {
+  transform: translateX(0);
+  background-color: var(--green);
+  box-shadow: 0 0 12px rgba(0, 229, 160, 0.4);
+}
+html[data-env="shadow"] #btn-env-shadow {
+  color: #0a0c0f !important;
+}
+[data-theme="light"] html[data-env="shadow"] #btn-env-shadow {
+  color: #ffffff !important;
+}
+
+html[data-env="live"] #segment-glow {
+  transform: translateX(100%);
+  background-color: var(--red);
+  box-shadow: 0 0 12px rgba(255, 77, 109, 0.5);
+}
+html[data-env="live"] #btn-env-live {
+  color: #ffffff !important;
+}
+
+/* Subtabs styling */
+.settings-subtabs {
+  display: flex;
+  gap: 24px;
+  margin-bottom: 32px;
+  border-bottom: 1px solid var(--border);
+}
+
+.subtab-btn {
+  background: none !important;
+  border: none !important;
+  color: var(--text-dim);
+  font-weight: 600;
+  font-size: 13px;
+  padding: 12px 0;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: var(--sans);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.subtab-btn:hover {
+  color: var(--text) !important;
+}
+
+.subtab-btn.active {
+  color: var(--text) !important;
+  font-weight: 700;
+  border-bottom-color: var(--accent) !important;
+}
+
+#ai-advanced-chevron {
+  display: inline-block;
+}
 </style>
 </head>
-<body>
+<body data-env="shadow">
 
 <header class="app-header">
   <div class="header-left">
@@ -391,16 +769,41 @@ input[type="range"]::-webkit-slider-thumb:hover {
 
 <div class="main-container" style="padding: 32px 24px; max-width: 1200px; margin: 0 auto;">
   <form id="settings-form" onsubmit="saveSettings(event)">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:32px; gap:16px;">
+    <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-bottom:24px; gap:16px; flex-wrap: wrap;">
       <div>
         <h2 style="font-size:24px; font-weight:700; letter-spacing:-0.5px;">Cockpit Settings</h2>
         <p style="font-size:13px; color:var(--text-dim); margin-top:4px;">Configure scanning intervals, risk engines, and execution parameters.</p>
       </div>
-      <button type="submit" id="save-btn" class="btn btn-primary" style="padding: 10px 24px; font-weight:600;">Save All Settings</button>
+      <!-- Navigation Subtabs for Cockpit vs System configuration -->
+      <div class="settings-subtabs" style="margin-bottom:0; border-bottom:none;">
+        <button type="button" class="subtab-btn active" id="btn-subtab-cockpit" onclick="switchSubTab('cockpit')" style="padding: 6px 0;">
+          <span>⚡</span> Trading Cockpit
+        </button>
+        <button type="button" class="subtab-btn" id="btn-subtab-system" onclick="switchSubTab('system')" style="padding: 6px 0; margin-left: 20px;">
+          <span>🔐</span> System Security
+        </button>
+      </div>
     </div>
 
-    <div class="settings-grid">
-      <!-- Left Column: Scan Settings & Overrides -->
+    <!-- A clean, premium unified actions row -->
+    <div class="cockpit-control-bar">
+      <div class="cockpit-control-bar-left">
+        <input type="checkbox" id="sett-shadow-mode" style="display: none;">
+        <div class="segment-control" style="margin: 0;">
+          <div id="segment-glow"></div>
+          <button type="button" class="segment-btn active" id="btn-env-shadow" onclick="setEnvironmentMode(true)">Simulate (Shadow)</button>
+          <button type="button" class="segment-btn" id="btn-env-live" onclick="setEnvironmentMode(false)">Live Execution</button>
+        </div>
+      </div>
+      <div class="cockpit-control-bar-right">
+        <button type="button" class="btn" onclick="fetchSettings()" style="padding: 8px 16px; font-weight: 600; font-size: 13px; background: transparent; border: 1px solid var(--border); color: var(--text); border-radius:8px; cursor:pointer;">Discard</button>
+        <button type="submit" id="save-btn" class="btn btn-primary" style="padding: 8px 20px; font-weight: 600; font-size: 13px; border-radius:8px; cursor:pointer;">Save All Settings</button>
+      </div>
+    </div>
+
+    <!-- Cockpit Settings Grid (Tab 1: Default) -->
+    <div class="settings-grid" id="cockpit-settings-grid">
+      <!-- Left Column: The Market & Machine (Inputs) -->
       <div style="display: flex; flex-direction: column; gap: 32px;">
         
         <!-- Card 1: General Scan & Strategy Frequencies -->
@@ -412,8 +815,8 @@ input[type="range"]::-webkit-slider-thumb:hover {
             Configure the signal fetch intervals and thresholds for both Paper and Live execution.
           </p>
           
-          <div class="form-row">
-            <div class="form-group">
+          <div style="display: flex; flex-direction: column; gap: 16px; margin-bottom: 20px;">
+            <div class="form-group" style="margin-bottom: 0;">
               <label style="display:inline-flex; align-items:center;">
                 NSE Index Scan Frequency
                 <span class="info-icon" data-tooltip="Interval for checking Nifty/BankNifty signals. Lower values react faster but consume more resources.">i</span>
@@ -427,7 +830,7 @@ input[type="range"]::-webkit-slider-thumb:hover {
                 <option value="1440">1 Day</option>
               </select>
             </div>
-            <div class="form-group">
+            <div class="form-group" style="margin-bottom: 0;">
               <label style="display:inline-flex; align-items:center;">
                 MCX Scan Frequency
                 <span class="info-icon" data-tooltip="Interval for scanning commodity triggers like Natural Gas or Crude Oil.">i</span>
@@ -448,11 +851,11 @@ input[type="range"]::-webkit-slider-thumb:hover {
               OI Spike Threshold
               <span class="info-icon" data-tooltip="Percentage increase in Open Interest required within an interval to trigger an OI Surge alert.">i</span>
             </label>
-            <div style="display:flex; align-items:center; gap:16px;">
-              <input type="range" id="sett-oi-spike-slider" min="1" max="50" step="0.5" style="flex:1;">
-              <div class="input-with-unit" style="width:100px;">
-                <input type="number" id="sett-oi-spike" step="0.1" required>
-                <span class="unit">%</span>
+            <div class="slider-integrated-container">
+              <input type="range" id="sett-oi-spike-slider" min="1" max="50" step="0.5" class="integrated-slider">
+              <div class="integrated-badge">
+                <input type="number" id="sett-oi-spike" step="0.1" required class="integrated-input">
+                <span class="suffix-percent">%</span>
               </div>
             </div>
           </div>
@@ -462,38 +865,188 @@ input[type="range"]::-webkit-slider-thumb:hover {
               Price Spike Threshold
               <span class="info-icon" data-tooltip="Percentage price change within a scan interval to trigger a price surge signal.">i</span>
             </label>
-            <div style="display:flex; align-items:center; gap:16px;">
-              <input type="range" id="sett-price-spike-slider" min="0.5" max="10" step="0.1" style="flex:1;">
-              <div class="input-with-unit" style="width:100px;">
-                <input type="number" id="sett-price-spike" step="0.1" required>
-                <span class="unit">%</span>
+            <div class="slider-integrated-container">
+              <input type="range" id="sett-price-spike-slider" min="0.5" max="10" step="0.1" class="integrated-slider">
+              <div class="integrated-badge">
+                <input type="number" id="sett-price-spike" step="0.1" required class="integrated-input">
+                <span class="suffix-percent">%</span>
               </div>
             </div>
           </div>
         </div>
 
-        <!-- Card: Security & Authentication Settings -->
+        <!-- Card 2: AI Configuration & Strategy Controls -->
         <div class="card">
           <div class="card-title">
-            <span>🔐 Dashboard Security</span>
+            <span>🧠 AI Configuration & Strategy Controls</span>
           </div>
           <p style="font-size: 12px; color: var(--text-dim); margin-bottom: 20px; line-height: 1.4;">
-            Secure administrative console pages and settings changes with HTTP Basic Auth.
+            Configure AI brain parameters, boost/veto overrides, and active exit advisory logic.
           </p>
-          
-          <div class="switch-group">
+
+          <div class="form-group" style="margin-bottom:20px;">
+            <label style="display:inline-flex; align-items:center;">
+              AI Decision Mode
+              <span class="info-icon" data-tooltip="Controls AI influence on trade decisions: Advisory (log only), Boost Only (promote entries), or Full (both promote and veto entries).">i</span>
+            </label>
+            <select id="sett-ai-decision-mode">
+              <option value="advisory">Advisory Only</option>
+              <option value="boost_only">AI Boost Only</option>
+              <option value="full">Full AI Authority</option>
+            </select>
+          </div>
+
+          <div class="switch-group" style="margin-bottom:24px;">
             <div class="switch-label">
-              <span>Require Authentication</span>
-              <span class="switch-sub">Ask for Username and Password on administrative pages (defaults to admin/admin)</span>
+              <span>AI Exit Advisor</span>
+              <span class="switch-sub">Enable real-time AI exit evaluations and trailing SL recommendations</span>
             </div>
             <label class="switch">
-              <input type="checkbox" id="sett-auth-enabled">
+              <input type="checkbox" id="sett-ai-exit-enabled">
               <span class="slider"></span>
             </label>
           </div>
+
+          <div class="switch-group" style="margin-bottom:24px; border-top:1px solid var(--border); padding-top:20px;">
+            <div class="switch-label">
+              <span>Manage Direct Kite Positions</span>
+              <span class="switch-sub">Adopt manually placed Kite trades into the bot for AI Exit Monitoring</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="sett-manage-direct-kite">
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <!-- Adopted manual position configuration block -->
+          <div id="direct-kite-settings-wrapper" style="display:none; background: rgba(255,255,255,0.015); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-top: 16px; margin-bottom: 24px; transition: all 0.3s ease;">
+            <div class="form-group" style="margin-bottom:20px;">
+              <label style="display:inline-flex; align-items:center;">
+                Direct Position SL/Tgt Mode
+                <span class="info-icon" data-tooltip="Fixed Percentages: Uses default % inputs. AI Dynamic: Adjusts SL/Tgt based on underlying ATR/volatility.">i</span>
+              </label>
+              <select id="sett-direct-kite-mode">
+                <option value="fixed_pct">Fixed Percentages</option>
+                <option value="dynamic">AI Dynamic (ATR Volatility)</option>
+              </select>
+            </div>
+            
+            <div class="form-row" id="direct-kite-sl-tgt-row" style="margin-bottom:0; gap:20px;">
+              <div class="form-group" style="margin-bottom:0; flex:1;">
+                <label>Default Stop Loss (Fallback)</label>
+                <div class="input-with-suffix">
+                  <input type="number" id="sett-direct-kite-sl" step="0.1" required>
+                  <span class="suffix">%</span>
+                </div>
+              </div>
+              <div class="form-group" style="margin-bottom:0; flex:1;">
+                <label>Default Target (Fallback)</label>
+                <div class="input-with-suffix">
+                  <input type="number" id="sett-direct-kite-tgt" step="0.1" required>
+                  <span class="suffix">%</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Advanced AI Section Trigger -->
+          <div id="ai-advanced-toggle" onclick="toggleAIAdvanced()" style="display:flex; justify-content:space-between; align-items:center; cursor:pointer; padding:12px 0; margin-top:20px; border-top:1px solid var(--border); color:var(--text-dim); font-size:11px; font-weight:700; user-select:none; transition: color 0.2s;">
+            <span>ADVANCED AI CRITERIA</span>
+            <span id="ai-advanced-chevron" style="transition: transform 0.2s; font-size:10px;">▼</span>
+          </div>
+
+          <!-- Collapsible Advanced AI Section -->
+          <div id="ai-advanced-section" style="display:none; padding-top:16px; border-top:1px dashed var(--border); margin-top:4px;">
+            <div class="form-group" style="margin-bottom:20px;">
+              <label style="display:inline-flex; align-items:center;">
+                Min Boost Confidence
+                <span class="info-icon" data-tooltip="Minimum AI confidence required to promote blocked trades to Experimental status.">i</span>
+              </label>
+              <div class="slider-integrated-container">
+                <input type="range" id="sett-ai-boost-slider" min="50" max="100" step="5" class="integrated-slider">
+                <div class="integrated-badge">
+                  <input type="number" id="sett-ai-boost" min="50" max="100" required class="integrated-input">
+                  <span class="suffix-percent">%</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label style="display:inline-flex; align-items:center;">
+                Min Veto Confidence
+                <span class="info-icon" data-tooltip="Minimum AI confidence required to veto and block a triggered trade.">i</span>
+              </label>
+              <div class="slider-integrated-container">
+                <input type="range" id="sett-ai-veto-slider" min="50" max="100" step="5" class="integrated-slider">
+                <div class="integrated-badge">
+                  <input type="number" id="sett-ai-veto" min="50" max="100" required class="integrated-input">
+                  <span class="suffix-percent">%</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Column: Risk & Execution (Controls) -->
+      <div id="right-risk-column" style="display: flex; flex-direction: column; gap: 32px; transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);">
+        
+        <!-- Card 1: Live Risk Controls -->
+        <div class="card" id="broker-risk-card">
+          <div class="card-title">
+            <span>⚙️ Live Risk Controls</span>
+            <span class="info-icon" data-tooltip="Capital limits and max concurrent exposure. Inactive when Shadow Mode is enabled.">i</span>
+          </div>
+          <p style="font-size: 12px; color: var(--text-dim); margin-bottom: 20px; line-height: 1.4;">
+            Configure account-wide deployment limits and loss safety stops for live execution.
+          </p>
+          
+          <div class="form-group" style="margin-bottom:20px;">
+            <label style="display:inline-flex; align-items:center;">
+              Capital Per Trade
+            </label>
+            <div class="input-with-prefix">
+              <span class="prefix">₹</span>
+              <input type="number" id="sett-capital" required>
+            </div>
+          </div>
+
+          <div class="form-group" style="margin-bottom:24px;">
+            <label style="display:inline-flex; align-items:center;">
+              Max Capital Utilisation
+            </label>
+            <div class="slider-integrated-container">
+              <input type="range" id="sett-max-util-slider" min="10" max="100" step="5" class="integrated-slider">
+              <div class="integrated-badge">
+                <input type="number" id="sett-max-util" min="10" max="100" required class="integrated-input">
+                <span class="suffix-percent">%</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label style="display:inline-flex; align-items:center;">
+              Max Concurrent Positions
+            </label>
+            <div class="input-with-suffix">
+              <input type="number" id="sett-max-pos" min="1" max="10" required>
+              <span class="suffix">Slots</span>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label style="display:inline-flex; align-items:center;">
+              Max Daily Loss Limit
+              <span class="info-icon" data-tooltip="Maximum acceptable realized + unrealized loss in Rupees before live order placement is blocked today.">i</span>
+            </label>
+            <div class="input-with-prefix">
+              <span class="prefix">₹</span>
+              <input type="number" id="sett-max-daily-loss" required>
+            </div>
+          </div>
         </div>
 
-        <!-- Card 4: Symbol Lot & Trade Controls -->
+        <!-- Card 2: Symbol Lot & Trade Controls -->
         <div class="card" id="broker-lots-card">
           <div class="card-title">
             <span>📊 Broker (Live) Symbol & Trade Controls</span>
@@ -503,90 +1056,40 @@ input[type="range"]::-webkit-slider-thumb:hover {
             Enable or disable broker order routing and set default lots for each watch symbol.
           </p>
           <div class="symbol-lots-list" id="lots-container">
-            <!-- Dynamically populated -->
-          </div>
-        </div>
-      </div>
-
-      <!-- Right Column: Safety & Live Risk parameters -->
-      <div style="display: flex; flex-direction: column; gap: 32px;">
-        
-        <!-- Safety First Card: Shadow Mode & Broker Controls wrapped together -->
-        <div class="card safety-zone-card" id="safety-zone-card" style="position:relative; overflow:hidden;">
-          
-          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:20px; gap:8px;">
-            <div class="card-title" style="margin-bottom:0;">
-              <span>🛡️ Execution Environment</span>
-            </div>
-            <!-- Shadow Mode Indicator Badge -->
-            <span id="shadow-badge" class="badge" style="padding: 4px 10px; border-radius:12px; font-weight:700;"></span>
-          </div>
-          
-          <p style="font-size:12px; color:var(--text-dim); margin-bottom:20px; line-height:1.4;">
-            Control whether trades are simulated locally or routed directly to your live Zerodha broker.
-          </p>
-
-          <div class="switch-group" style="margin-bottom:24px;">
-            <div class="switch-label">
-              <span>Shadow Mode</span>
-              <span class="switch-sub">Simulate trades locally without deploying actual capital</span>
-            </div>
-            <label class="switch">
-              <input type="checkbox" id="sett-shadow-mode">
-              <span class="slider"></span>
-            </label>
-          </div>
-
-          <!-- Dynamic Safety Warning Banner -->
-          <div id="safety-banner" style="display:flex; align-items:center; gap:12px; padding:16px; border-radius:10px; font-size:12px; line-height:1.5; margin-bottom:24px; font-weight:500; transition: all 0.3s ease;">
-            <!-- Content loaded dynamically by JS -->
-          </div>
-
-          <!-- Section 3 inside Safety Card: Broker (Live) Risk Management -->
-          <div id="broker-risk-section">
-            <div style="font-size: 13px; font-weight: 700; color: var(--text); border-top: 1px solid var(--border); padding-top:20px; margin-bottom:16px; display:flex; align-items:center; gap:6px;">
-              <span>⚙️ Live Risk Controls</span>
-              <span class="info-icon" data-tooltip="Capital limits and max concurrent exposure. Inactive when Shadow Mode is enabled.">i</span>
-            </div>
-            
-            <div class="form-group" style="margin-bottom:20px;">
-              <label style="display:inline-flex; align-items:center;">
-                Capital Per Trade
-              </label>
-              <div class="input-with-unit">
-                <input type="number" id="sett-capital" required>
-                <span class="unit">₹</span>
-              </div>
-            </div>
-
-            <div class="form-group" style="margin-bottom:24px;">
-              <label style="display:inline-flex; align-items:center;">
-                Max Capital Utilisation
-              </label>
-              <div style="display:flex; align-items:center; gap:16px;">
-                <input type="range" id="sett-max-util-slider" min="10" max="100" step="5" style="flex:1;">
-                <div class="input-with-unit" style="width:100px;">
-                  <input type="number" id="sett-max-util" min="10" max="100" required>
-                  <span class="unit">%</span>
-                </div>
-              </div>
-            </div>
-
-            <div class="form-group">
-              <label style="display:inline-flex; align-items:center;">
-                Max Concurrent Positions
-              </label>
-              <div class="input-with-unit">
-                <input type="number" id="sett-max-pos" min="1" max="10" required>
-                <span class="unit">Slots</span>
-              </div>
-            </div>
+            <!-- Dynamically populated by JS -->
           </div>
         </div>
       </div>
     </div>
+
+    <!-- System Settings Tab (Tab 2: Hidden by default) -->
+    <div id="system-settings-card" style="display: none; max-width: 600px; margin: 0 auto;">
+      <div class="card">
+        <div class="card-title">
+          <span>🔐 Dashboard Security</span>
+        </div>
+        <p style="font-size: 12px; color: var(--text-dim); margin-bottom: 20px; line-height: 1.4;">
+          Secure administrative console pages and settings changes with HTTP Basic Auth.
+        </p>
+        
+        <div class="switch-group">
+          <div class="switch-label">
+            <span>Require Authentication</span>
+            <span class="switch-sub">Ask for Username and Password on administrative pages (defaults to admin/admin)</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="sett-auth-enabled">
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+    </div>
+
   </form>
 </div>
+
+<!-- Unsaved Changes Floating Banner Backdrop -->
+<div id="toast-backdrop" class="toast-backdrop"></div>
 
 <!-- Unsaved Changes Floating Banner -->
 <div id="unsaved-banner" class="unsaved-banner">
@@ -635,6 +1138,24 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
+  // Wire manage direct kite checkbox change
+  const directKiteCheckbox = document.getElementById("sett-manage-direct-kite");
+  if (directKiteCheckbox) {
+    directKiteCheckbox.addEventListener("change", () => {
+      document.getElementById("direct-kite-settings-wrapper").style.display = directKiteCheckbox.checked ? "block" : "none";
+      checkDirty();
+    });
+  }
+
+  // Wire AI decision mode change for dormant fields
+  const decisionModeSelect = document.getElementById("sett-ai-decision-mode");
+  if (decisionModeSelect) {
+    decisionModeSelect.addEventListener("change", () => {
+      updateAIDecisionFields();
+      checkDirty();
+    });
+  }
+
   fetchSettings();
 });
 
@@ -642,7 +1163,9 @@ function setupSyncSliders() {
   const pairs = [
     { slider: "sett-oi-spike-slider", num: "sett-oi-spike" },
     { slider: "sett-price-spike-slider", num: "sett-price-spike" },
-    { slider: "sett-max-util-slider", num: "sett-max-util" }
+    { slider: "sett-max-util-slider", num: "sett-max-util" },
+    { slider: "sett-ai-boost-slider", num: "sett-ai-boost" },
+    { slider: "sett-ai-veto-slider", num: "sett-ai-veto" }
   ];
 
   pairs.forEach(pair => {
@@ -661,37 +1184,118 @@ function setupSyncSliders() {
   });
 }
 
+function setEnvironmentMode(isShadow) {
+  const checkbox = document.getElementById("sett-shadow-mode");
+  if (checkbox && checkbox.checked !== isShadow) {
+    checkbox.checked = isShadow;
+    checkbox.dispatchEvent(new Event('change'));
+  }
+}
+
 function updateSafetyZoneUI(isShadow) {
-  const card = document.getElementById("safety-zone-card");
-  const badge = document.getElementById("shadow-badge");
-  const banner = document.getElementById("safety-banner");
-  const riskSection = document.getElementById("broker-risk-section");
-  const lotsCard = document.getElementById("broker-lots-card");
+  const riskColumn = document.getElementById("right-risk-column");
+  const btnShadow = document.getElementById("btn-env-shadow");
+  const btnLive = document.getElementById("btn-env-live");
+
+  document.body.setAttribute('data-env', isShadow ? 'shadow' : 'live');
+  document.documentElement.setAttribute('data-env', isShadow ? 'shadow' : 'live');
 
   if (isShadow) {
-    // Paper/Shadow Mode
-    card.classList.remove("live-active");
-    badge.textContent = "PAPER MODE";
-    badge.className = "badge b-win";
-    banner.style.background = "rgba(0, 229, 160, 0.08)";
-    banner.style.border = "1px solid rgba(0, 229, 160, 0.2)";
-    banner.style.color = "var(--green)";
-    banner.innerHTML = `<span>💡 <strong>Paper Mode Active:</strong> All execution is simulated locally using live feed. Real broker orders are bypassed.</span>`;
-    riskSection.classList.add("dormant");
-    lotsCard.classList.add("dormant");
+    if (btnShadow) btnShadow.classList.add("active");
+    if (btnLive) btnLive.classList.remove("active");
+    if (riskColumn) riskColumn.classList.add("dormant");
   } else {
-    // Live Broker Mode
-    card.classList.add("live-active");
-    badge.textContent = "LIVE BROKER";
-    badge.className = "badge b-loss";
-    banner.style.background = "rgba(255, 77, 109, 0.08)";
-    banner.style.border = "1px solid rgba(255, 77, 109, 0.2)";
-    banner.style.color = "var(--red)";
-    banner.innerHTML = `<span>⚠️ <strong>WARNING: LIVE ORDER ROUTING ACTIVE</strong> — Trades will execute real capital via Zerodha Kite. Use extreme caution.</span>`;
-    riskSection.classList.remove("dormant");
-    lotsCard.classList.remove("dormant");
+    if (btnShadow) btnShadow.classList.remove("active");
+    if (btnLive) btnLive.classList.add("active");
+    if (riskColumn) riskColumn.classList.remove("dormant");
   }
-}function checkDirty() {
+}
+
+function switchSubTab(tabName) {
+  const cockpitGrid = document.getElementById("cockpit-settings-grid");
+  const systemCard = document.getElementById("system-settings-card");
+  const btnCockpit = document.getElementById("btn-subtab-cockpit");
+  const btnSystem = document.getElementById("btn-subtab-system");
+
+  if (tabName === 'cockpit') {
+    if (cockpitGrid) cockpitGrid.style.display = "grid";
+    if (systemCard) systemCard.style.display = "none";
+    if (btnCockpit) btnCockpit.classList.add("active");
+    if (btnSystem) btnSystem.classList.remove("active");
+  } else {
+    if (cockpitGrid) cockpitGrid.style.display = "none";
+    if (systemCard) systemCard.style.display = "block";
+    if (btnCockpit) btnCockpit.classList.remove("active");
+    if (btnSystem) btnSystem.classList.add("active");
+  }
+}
+
+function toggleAIAdvanced() {
+  const sect = document.getElementById("ai-advanced-section");
+  const chev = document.getElementById("ai-advanced-chevron");
+  if (sect) {
+    if (sect.style.display === "none") {
+      sect.style.display = "block";
+      if (chev) chev.style.transform = "rotate(180deg)";
+    } else {
+      sect.style.display = "none";
+      if (chev) chev.style.transform = "rotate(0deg)";
+    }
+  }
+}
+
+function updateAIDecisionFields() {
+  const mode = document.getElementById("sett-ai-decision-mode").value;
+  const boostSlider = document.getElementById("sett-ai-boost-slider");
+  const boostInput = document.getElementById("sett-ai-boost");
+  const vetoSlider = document.getElementById("sett-ai-veto-slider");
+  const vetoInput = document.getElementById("sett-ai-veto");
+  const advancedToggle = document.getElementById("ai-advanced-toggle");
+  const advancedSection = document.getElementById("ai-advanced-section");
+  const chevron = document.getElementById("ai-advanced-chevron");
+
+  if (!boostSlider || !vetoSlider) return;
+
+  const boostGroup = boostSlider.closest(".slider-integrated-container") || boostSlider.closest(".form-group");
+  const vetoGroup = vetoSlider.closest(".slider-integrated-container") || vetoSlider.closest(".form-group");
+
+  if (mode === "advisory") {
+    // Automatically collapse and hide advanced AI criteria for advisory mode
+    if (advancedToggle) advancedToggle.style.display = "none";
+    if (advancedSection) advancedSection.style.display = "none";
+    if (chevron) chevron.style.transform = "rotate(0deg)";
+
+    if (boostGroup) boostGroup.classList.add("dormant");
+    boostSlider.disabled = true;
+    boostInput.disabled = true;
+    
+    if (vetoGroup) vetoGroup.classList.add("dormant");
+    vetoSlider.disabled = true;
+    vetoInput.disabled = true;
+  } else {
+    if (advancedToggle) advancedToggle.style.display = "flex";
+
+    if (mode === "boost_only") {
+      if (boostGroup) boostGroup.classList.remove("dormant");
+      boostSlider.disabled = false;
+      boostInput.disabled = false;
+      
+      if (vetoGroup) vetoGroup.classList.add("dormant");
+      vetoSlider.disabled = true;
+      vetoInput.disabled = true;
+    } else {
+      if (boostGroup) boostGroup.classList.remove("dormant");
+      boostSlider.disabled = false;
+      boostInput.disabled = false;
+      
+      if (vetoGroup) vetoGroup.classList.remove("dormant");
+      vetoSlider.disabled = false;
+      vetoInput.disabled = false;
+    }
+  }
+}
+
+function checkDirty() {
   if (!runtimeConfig || Object.keys(runtimeConfig).length === 0) return;
 
   const isDirty = (
@@ -702,27 +1306,41 @@ function updateSafetyZoneUI(isShadow) {
     parseInt(document.getElementById("sett-capital").value) !== runtimeConfig.live_capital_per_trade_inr ||
     parseInt(document.getElementById("sett-max-util").value) !== runtimeConfig.live_max_capital_utilisation_pct ||
     parseInt(document.getElementById("sett-max-pos").value) !== runtimeConfig.live_max_concurrent_positions ||
+    parseInt(document.getElementById("sett-max-daily-loss").value) !== (runtimeConfig.live_max_daily_loss_rupees || 200000) ||
     parseFloat(document.getElementById("sett-oi-spike").value) !== runtimeConfig.oi_spike_threshold_pct ||
     parseFloat(document.getElementById("sett-price-spike").value) !== runtimeConfig.price_spike_threshold_pct ||
+    document.getElementById("sett-ai-decision-mode").value !== (runtimeConfig.live_ai_decision_mode || "advisory") ||
+    document.getElementById("sett-ai-exit-enabled").checked !== (runtimeConfig.live_ai_exit_advisor_enabled || false) ||
+    parseInt(document.getElementById("sett-ai-boost").value) !== (runtimeConfig.live_ai_min_confidence_boost || 80) ||
+    parseInt(document.getElementById("sett-ai-veto").value) !== (runtimeConfig.live_ai_min_confidence_veto || 85) ||
+    document.getElementById("sett-manage-direct-kite").checked !== (runtimeConfig.manage_direct_kite_positions || false) ||
+    document.getElementById("sett-direct-kite-mode").value !== (runtimeConfig.direct_kite_initialization_mode || "fixed_pct") ||
+    parseFloat(document.getElementById("sett-direct-kite-sl").value) !== (runtimeConfig.direct_kite_default_sl_pct || 30.0) ||
+    parseFloat(document.getElementById("sett-direct-kite-tgt").value) !== (runtimeConfig.direct_kite_default_tgt_pct || 50.0) ||
     isLotsDirty() ||
     isSymbolsDirty()
   );
 
   const banner = document.getElementById("unsaved-banner");
+  const backdrop = document.getElementById("toast-backdrop");
   const saveBtn = document.getElementById("save-btn");
   
   if (isDirty) {
-    banner.classList.add("show");
-    saveBtn.classList.add("btn-dirty");
+    if (banner) banner.classList.add("show");
+    if (backdrop) backdrop.classList.add("show");
+    if (saveBtn) saveBtn.classList.add("btn-dirty");
   } else {
-    banner.classList.remove("show");
-    saveBtn.classList.remove("btn-dirty");
+    if (banner) banner.classList.remove("show");
+    if (backdrop) backdrop.classList.remove("show");
+    if (saveBtn) saveBtn.classList.remove("btn-dirty");
   }
 }
 
 function isLotsDirty() {
   const lotsObj = runtimeConfig.live_symbol_lots || {};
-  const inputs = document.getElementById("lots-container").querySelectorAll("input[type='number']");
+  const container = document.getElementById("lots-container");
+  if (!container) return false;
+  const inputs = container.querySelectorAll("input[type='number']");
   let dirty = false;
   inputs.forEach(input => {
     const sym = input.name.replace("lot-", "");
@@ -764,23 +1382,40 @@ function fetchSettings() {
       runtimeConfig = data;
       
       const shadowCheckbox = document.getElementById("sett-shadow-mode");
-      shadowCheckbox.checked = data.live_shadow_mode;
-      updateSafetyZoneUI(data.live_shadow_mode);
+      if (shadowCheckbox) {
+        shadowCheckbox.checked = data.live_shadow_mode;
+        updateSafetyZoneUI(data.live_shadow_mode);
+      }
       
-      document.getElementById("sett-auth-enabled").checked = data.dashboard_auth_enabled || false;
+      const authCheckbox = document.getElementById("sett-auth-enabled");
+      if (authCheckbox) authCheckbox.checked = data.dashboard_auth_enabled || false;
       
-      document.getElementById("sett-capital").value = data.live_capital_per_trade_inr;
+      const capInput = document.getElementById("sett-capital");
+      if (capInput) capInput.value = data.live_capital_per_trade_inr;
       
-      document.getElementById("sett-max-util").value = data.live_max_capital_utilisation_pct;
-      document.getElementById("sett-max-util-slider").value = data.live_max_capital_utilisation_pct;
+      const utilInput = document.getElementById("sett-max-util");
+      if (utilInput) {
+        utilInput.value = data.live_max_capital_utilisation_pct;
+        document.getElementById("sett-max-util-slider").value = data.live_max_capital_utilisation_pct;
+      }
       
-      document.getElementById("sett-max-pos").value = data.live_max_concurrent_positions;
+      const posInput = document.getElementById("sett-max-pos");
+      if (posInput) posInput.value = data.live_max_concurrent_positions;
       
-      document.getElementById("sett-oi-spike").value = data.oi_spike_threshold_pct;
-      document.getElementById("sett-oi-spike-slider").value = data.oi_spike_threshold_pct;
+      const lossInput = document.getElementById("sett-max-daily-loss");
+      if (lossInput) lossInput.value = data.live_max_daily_loss_rupees || 200000;
       
-      document.getElementById("sett-price-spike").value = data.price_spike_threshold_pct;
-      document.getElementById("sett-price-spike-slider").value = data.price_spike_threshold_pct;
+      const oiInput = document.getElementById("sett-oi-spike");
+      if (oiInput) {
+        oiInput.value = data.oi_spike_threshold_pct;
+        document.getElementById("sett-oi-spike-slider").value = data.oi_spike_threshold_pct;
+      }
+      
+      const priceInput = document.getElementById("sett-price-spike");
+      if (priceInput) {
+        priceInput.value = data.price_spike_threshold_pct;
+        document.getElementById("sett-price-spike-slider").value = data.price_spike_threshold_pct;
+      }
       
       // Select boxes
       const nseSelect = document.getElementById("sett-scan-nse");
@@ -789,33 +1424,75 @@ function fetchSettings() {
       const mcxSelect = document.getElementById("sett-scan-mcx");
       if(mcxSelect) mcxSelect.value = data.scan_frequency_mcx || data.scan_frequency_minutes || 15;
 
+      const aiModeSelect = document.getElementById("sett-ai-decision-mode");
+      if (aiModeSelect) aiModeSelect.value = data.live_ai_decision_mode || "advisory";
+      
+      const aiExitCheckbox = document.getElementById("sett-ai-exit-enabled");
+      if (aiExitCheckbox) aiExitCheckbox.checked = data.live_ai_exit_advisor_enabled || false;
+      
+      const boostInput = document.getElementById("sett-ai-boost");
+      if (boostInput) {
+        boostInput.value = data.live_ai_min_confidence_boost || 80;
+        document.getElementById("sett-ai-boost-slider").value = data.live_ai_min_confidence_boost || 80;
+      }
+      
+      const vetoInput = document.getElementById("sett-ai-veto");
+      if (vetoInput) {
+        vetoInput.value = data.live_ai_min_confidence_veto || 85;
+        document.getElementById("sett-ai-veto-slider").value = data.live_ai_min_confidence_veto || 85;
+      }
+
+      const manageDirectCheckbox = document.getElementById("sett-manage-direct-kite");
+      if (manageDirectCheckbox) manageDirectCheckbox.checked = data.manage_direct_kite_positions || false;
+      
+      const directModeSelect = document.getElementById("sett-direct-kite-mode");
+      if (directModeSelect) directModeSelect.value = data.direct_kite_initialization_mode || "fixed_pct";
+      
+      const slInput = document.getElementById("sett-direct-kite-sl");
+      if (slInput) slInput.value = data.direct_kite_default_sl_pct || 30.0;
+      
+      const tgtInput = document.getElementById("sett-direct-kite-tgt");
+      if (tgtInput) tgtInput.value = data.direct_kite_default_tgt_pct || 50.0;
+      
+      const directWrapper = document.getElementById("direct-kite-settings-wrapper");
+      if (directWrapper) directWrapper.style.display = data.manage_direct_kite_positions ? "block" : "none";
+
+      updateAIDecisionFields();
+
       // Render lot overrides and checkboxes
       const lotsContainer = document.getElementById("lots-container");
-      let lotsHtml = "";
-      const symbolsList = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NATURALGAS", "CRUDEOIL"];
-      const lotsObj = data.live_symbol_lots || {};
-      const enabledSymbols = data.live_enabled_broker_symbols || ["NIFTY", "BANKNIFTY", "NATURALGAS", "CRUDEOIL"];
+      if (lotsContainer) {
+        let lotsHtml = "";
+        const symbolsList = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NATURALGAS", "CRUDEOIL"];
+        const lotsObj = data.live_symbol_lots || {};
+        const enabledSymbols = data.live_enabled_broker_symbols || ["NIFTY", "BANKNIFTY", "NATURALGAS", "CRUDEOIL"];
+        
+        symbolsList.forEach(sym => {
+          const currentLot = lotsObj[sym] || 1;
+          const isChecked = enabledSymbols.includes(sym) ? "checked" : "";
+          lotsHtml += `
+            <div class="symbol-lot-item" style="display:flex; justify-content:space-between; align-items:center; gap: 8px;">
+              <div style="display:flex; align-items:center; gap:10px;">
+                <input type="checkbox" name="enable-${sym}" ${isChecked} style="width:16px; height:16px; cursor:pointer; accent-color:var(--accent);">
+                <label>${sym}</label>
+              </div>
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span style="font-size:11px; color:var(--text-dim);">Lots:</span>
+                <input type="number" name="lot-${sym}" min="1" max="100" value="${currentLot}" required style="width:60px; padding:4px 8px; border-radius:6px; text-align:right;">
+              </div>
+            </div>
+          `;
+        });
+        lotsContainer.innerHTML = lotsHtml;
+      }
       
-      symbolsList.forEach(sym => {
-        const currentLot = lotsObj[sym] || 1;
-        const isChecked = enabledSymbols.includes(sym) ? "checked" : "";
-        lotsHtml += `
-          <div class="symbol-lot-item" style="display:flex; justify-content:space-between; align-items:center; gap: 8px;">
-            <div style="display:flex; align-items:center; gap:10px;">
-              <input type="checkbox" name="enable-${sym}" ${isChecked} style="width:16px; height:16px; cursor:pointer; accent-color:var(--accent);">
-              <label>${sym}</label>
-            </div>
-            <div style="display:flex; align-items:center; gap:8px;">
-              <span style="font-size:11px; color:var(--text-dim);">Lots:</span>
-              <input type="number" name="lot-${sym}" min="1" max="100" value="${currentLot}" required style="width:60px; padding:4px 8px; border-radius:6px; text-align:right;">
-            </div>
-          </div>
-        `;
-      });
-      lotsContainer.innerHTML = lotsHtml;
       // Reset dirty state indicators
-      document.getElementById("unsaved-banner").classList.remove("show");
-      document.getElementById("save-btn").classList.remove("btn-dirty");
+      const unsavedBanner = document.getElementById("unsaved-banner");
+      const toastBackdrop = document.getElementById("toast-backdrop");
+      const saveBtn = document.getElementById("save-btn");
+      if (unsavedBanner) unsavedBanner.classList.remove("show");
+      if (toastBackdrop) toastBackdrop.classList.remove("show");
+      if (saveBtn) saveBtn.classList.remove("btn-dirty");
 
       // Bind input events to detect dirty edits dynamically
       setTimeout(() => {
@@ -835,11 +1512,14 @@ function saveSettings(e) {
   if (e) e.preventDefault();
   
   const lots = {};
-  const inputs = document.getElementById("lots-container").querySelectorAll("input[type='number']");
-  inputs.forEach(input => {
-    const sym = input.name.replace("lot-", "");
-    lots[sym] = parseInt(input.value);
-  });
+  const container = document.getElementById("lots-container");
+  if (container) {
+    const inputs = container.querySelectorAll("input[type='number']");
+    inputs.forEach(input => {
+      const sym = input.name.replace("lot-", "");
+      lots[sym] = parseInt(input.value);
+    });
+  }
   
   const enabledSymbols = getEnabledSymbolsFromUI();
   
@@ -852,10 +1532,19 @@ function saveSettings(e) {
     live_capital_per_trade_inr: parseInt(document.getElementById("sett-capital").value),
     live_max_capital_utilisation_pct: parseInt(document.getElementById("sett-max-util").value),
     live_max_concurrent_positions: parseInt(document.getElementById("sett-max-pos").value),
+    live_max_daily_loss_rupees: parseInt(document.getElementById("sett-max-daily-loss").value),
     oi_spike_threshold_pct: parseFloat(document.getElementById("sett-oi-spike").value),
     price_spike_threshold_pct: parseFloat(document.getElementById("sett-price-spike").value),
     live_symbol_lots: lots,
-    live_enabled_broker_symbols: enabledSymbols
+    live_enabled_broker_symbols: enabledSymbols,
+    live_ai_decision_mode: document.getElementById("sett-ai-decision-mode").value,
+    live_ai_exit_advisor_enabled: document.getElementById("sett-ai-exit-enabled").checked,
+    live_ai_min_confidence_boost: parseInt(document.getElementById("sett-ai-boost").value),
+    live_ai_min_confidence_veto: parseInt(document.getElementById("sett-ai-veto").value),
+    manage_direct_kite_positions: document.getElementById("sett-manage-direct-kite").checked,
+    direct_kite_initialization_mode: document.getElementById("sett-direct-kite-mode").value,
+    direct_kite_default_sl_pct: parseFloat(document.getElementById("sett-direct-kite-sl").value),
+    direct_kite_default_tgt_pct: parseFloat(document.getElementById("sett-direct-kite-tgt").value)
   };
   
   fetch("/api/settings", {

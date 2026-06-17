@@ -4,6 +4,13 @@ Run: python dashboard_server.py
 Deps: pip install fastapi uvicorn
 No pandas required.
 """
+# ── Force IPv4 globally (Kite whitelists IPv4 only) ───────────────────────
+import socket as _socket
+_orig_getaddrinfo = _socket.getaddrinfo
+def _ipv4_only_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    return _orig_getaddrinfo(host, port, _socket.AF_INET, type, proto, flags)
+_socket.getaddrinfo = _ipv4_only_getaddrinfo
+
 import json
 import logging
 import re
@@ -76,6 +83,26 @@ async def lifespan(app: FastAPI):
         log.info("Startup: Limited AnyIO default thread pool capacity to 15 to prevent thread/memory exhaustion")
     except Exception as exc:
         log.warning("Could not set AnyIO thread pool limit: %s", exc)
+
+    # Warm up instrument cache at startup so resolve_instrument() doesn't miss
+    import threading
+    def _warmup_instrument_cache():
+        try:
+            from src.engine.symbol_resolver import _instrument_cache_is_ready, fetch_and_cache_instruments
+            if _instrument_cache_is_ready():
+                return
+            from src.engine.live_trading import get_kite_client
+            kite = get_kite_client()
+            if kite:
+                log.info("[startup] Warming up instrument cache in background...")
+                fetch_and_cache_instruments(kite)
+            else:
+                log.info("[startup] Kite not connected; instrument cache warm-up skipped.")
+        except Exception as exc:
+            log.warning("[startup] Instrument cache warm-up failed: %s", exc)
+
+    threading.Thread(target=_warmup_instrument_cache, daemon=True, name="instrument-cache-warmup").start()
+
     yield
 
 
@@ -432,7 +459,13 @@ def _fetch_natgas_news() -> dict:
             if pub < cutoff:
                 continue
             title = str(item.get("title") or "").strip()
-            provider = ((item.get("provider") or {}).get("name") or "").strip()
+            prov_val = item.get("provider")
+            if isinstance(prov_val, dict):
+                provider = (prov_val.get("name") or "").strip()
+            elif isinstance(prov_val, str):
+                provider = prov_val.strip()
+            else:
+                provider = ""
             story_path = str(item.get("storyPath") or "").strip()
             story_url = f"https://in.tradingview.com{story_path}" if story_path.startswith("/") else ""
             rows.append(
@@ -1563,6 +1596,19 @@ def _fetch_real_kite_positions(kite) -> list[dict]:
         positions_data = kite.positions()
         net_positions = positions_data.get("net", [])
         
+        # Fetch active GTTs to map to positions
+        gtt_map = {}
+        try:
+            gtt_list = kite.get_gtts() or []
+            for gtt in gtt_list:
+                if gtt.get("status") == "active":
+                    cond = gtt.get("condition", {})
+                    tsym = cond.get("tradingsymbol")
+                    if tsym:
+                        gtt_map[str(tsym).upper()] = gtt
+        except Exception as ge:
+            log.warning("Failed to fetch GTTs from Kite in _fetch_real_kite_positions: %s", ge)
+
         open_db_trades = _q("SELECT * FROM live_trades WHERE status='OPEN' AND (trade_status IS NULL OR trade_status != 'SHADOW')")
         db_map = {}
         db_fallback_map = {}
@@ -1573,9 +1619,9 @@ def _fetch_real_kite_positions(kite) -> list[dict]:
             if expiry_val:
                 resolved = resolve_instrument(t["symbol"], expiry_val, strike_val or 0.0, t["option_type"])
             if resolved and resolved.get("tradingsymbol"):
-                db_map[resolved["tradingsymbol"].upper()] = t
+                db_map[(resolved["tradingsymbol"].upper(), t["side"].upper())] = t
             else:
-                key = (t["symbol"].upper(), t["option_type"].upper(), strike_val)
+                key = (t["symbol"].upper(), t["option_type"].upper(), strike_val, t["side"].upper())
                 db_fallback_map[key] = t
         
         parsed_positions = []
@@ -1601,23 +1647,8 @@ def _fetch_real_kite_positions(kite) -> list[dict]:
                     symbol = m_fut.group(1).upper()
                     option_type = "FUT"
             
-            side = "BUY" if qty > 0 else "SELL"
-            exchange = pos.get("exchange", "")
-            
-            lot_size = LOT_SIZES.get(symbol.upper(), LOT_SIZES.get(symbol, 1))
-            if exchange == "MCX":
-                lots_count = abs(qty)
-            else:
-                lots_count = round(abs(qty) / lot_size, 2)
-            
-            pnl = float(pos.get("pnl", 0.0))
-            cmp = float(pos.get("last_price", 0.0))
-            entry_px = float(pos.get("average_price") or pos.get("buy_price") or pos.get("sell_price") or 0.0)
-            
-            db_trade = db_map.get(tradingsymbol.upper())
-            
-            # Resolve position's expiry
-            from src.engine.symbol_resolver import get_expiry_for_tradingsymbol
+            # Resolve position's expiry first
+            from src.engine.symbol_resolver import get_expiry_for_tradingsymbol, resolve_instrument
             expiry_val = get_expiry_for_tradingsymbol(tradingsymbol)
             if not expiry_val:
                 m_opt = re.match(r"^([A-Z\-]+)(\d{2}[A-Z]{3}|\d{2}[0-9OND][0-9]{2})(\d+)(CE|PE)$", tradingsymbol, re.IGNORECASE)
@@ -1630,9 +1661,35 @@ def _fetch_real_kite_positions(kite) -> list[dict]:
             
             if not expiry_val:
                 expiry_val = "—"
+
+            # Resolve lot_size using the resolved expiry and instrument details
+            lot_size = 1
+            if expiry_val and expiry_val != "—":
+                try:
+                    res_inst = resolve_instrument(symbol, expiry_val, strike or 0.0, option_type)
+                    if res_inst and res_inst.get("lot_size"):
+                        lot_size = int(res_inst["lot_size"])
+                except Exception as le:
+                    log.debug("Failed to resolve instrument lot_size: %s", le)
+            if lot_size == 1:
+                lot_size = LOT_SIZES.get(symbol.upper(), LOT_SIZES.get(symbol, 1))
+
+            side = "BUY" if qty > 0 else "SELL"
+            exchange = pos.get("exchange", "")
+            
+            if exchange == "MCX":
+                lots_count = abs(qty)
+            else:
+                lots_count = round(abs(qty) / lot_size, 2)
+            
+            pnl = float(pos.get("pnl", 0.0))
+            cmp = float(pos.get("last_price", 0.0))
+            entry_px = float(pos.get("average_price") or pos.get("buy_price") or pos.get("sell_price") or 0.0)
+            
+            db_trade = db_map.get((tradingsymbol.upper(), side.upper()))
                 
             if not db_trade:
-                candidate_db_trade = db_fallback_map.get((symbol, option_type, strike))
+                candidate_db_trade = db_fallback_map.get((symbol, option_type, strike, side.upper()))
                 if candidate_db_trade:
                     db_expiry = candidate_db_trade.get("expiry") or ""
                     
@@ -1672,6 +1729,33 @@ def _fetch_real_kite_positions(kite) -> list[dict]:
                 
                 sl_val = db_trade.get("sl_premium") or db_trade.get("sl_underlying") or "—"
                 tgt_val = db_trade.get("target_premium") or db_trade.get("target_underlying") or "—"
+                
+                if sl_val == "—" or tgt_val == "—":
+                    gtt = gtt_map.get(tradingsymbol.upper())
+                    if gtt and gtt.get("status") == "active":
+                        cond = gtt.get("condition", {})
+                        triggers = [float(x) for x in cond.get("trigger_values", [])]
+                        if len(triggers) == 2:
+                            t1, t2 = triggers[0], triggers[1]
+                            if side == "BUY":
+                                if sl_val == "—": sl_val = min(t1, t2)
+                                if tgt_val == "—": tgt_val = max(t1, t2)
+                            else:
+                                if sl_val == "—": sl_val = max(t1, t2)
+                                if tgt_val == "—": tgt_val = min(t1, t2)
+                        elif len(triggers) == 1:
+                            t = triggers[0]
+                            if side == "BUY":
+                                if t < entry_px:
+                                    if sl_val == "—": sl_val = t
+                                else:
+                                    if tgt_val == "—": tgt_val = t
+                            else:
+                                if t > entry_px:
+                                    if sl_val == "—": sl_val = t
+                                else:
+                                    if tgt_val == "—": tgt_val = t
+
                 trade_status = db_trade.get("trade_status") or "LIVE"
                 
                 # Check for same-expiry split where user has manual overlay
@@ -1748,6 +1832,29 @@ def _fetch_real_kite_positions(kite) -> list[dict]:
                         "tradingsymbol": tradingsymbol
                     })
             else:
+                sl_val = "—"
+                tgt_val = "—"
+                gtt = gtt_map.get(tradingsymbol.upper())
+                if gtt and gtt.get("status") == "active":
+                    cond = gtt.get("condition", {})
+                    triggers = [float(x) for x in cond.get("trigger_values", [])]
+                    if len(triggers) == 2:
+                        t1, t2 = triggers[0], triggers[1]
+                        if side == "BUY":
+                            sl_val = min(t1, t2)
+                            tgt_val = max(t1, t2)
+                        else:
+                            sl_val = max(t1, t2)
+                            tgt_val = min(t1, t2)
+                    elif len(triggers) == 1:
+                        t = triggers[0]
+                        if side == "BUY":
+                            if t < entry_px: sl_val = t
+                            else: tgt_val = t
+                        else:
+                            if t > entry_px: sl_val = t
+                            else: tgt_val = t
+
                 parsed_positions.append({
                     "symbol": symbol,
                     "expiry": expiry_val,
@@ -1757,8 +1864,8 @@ def _fetch_real_kite_positions(kite) -> list[dict]:
                     "lots": lots_count,
                     "entry_premium": entry_px,
                     "cmp": cmp,
-                    "sl_premium": "—",
-                    "target_premium": "—",
+                    "sl_premium": sl_val,
+                    "target_premium": tgt_val,
                     "pnl_rupees": pnl,
                     "exit_mode": "KITE",
                     "trade_status": "LIVE",
@@ -1775,6 +1882,215 @@ def _fetch_real_kite_positions(kite) -> list[dict]:
         return []
 
 
+def _get_kite_closed_trades(kite) -> list[dict]:
+    import re
+    from datetime import datetime
+    import pytz
+    from config.settings import LOT_SIZES
+    
+    try:
+        positions_data = kite.positions()
+        net_positions = positions_data.get("net", [])
+    except Exception as e:
+        log.error("Failed to fetch positions in _get_kite_closed_trades: %s", e)
+        return []
+        
+    closed_positions = []
+    
+    # Fetch orders to map exact close times and entry sides
+    orders = []
+    try:
+        orders = kite.orders() or []
+    except Exception as oe:
+        log.warning("Failed to fetch orders in _get_kite_closed_trades: %s", oe)
+        
+    completed_orders_map = {}
+    for o in orders:
+        if o.get("status") == "COMPLETE":
+            tsym = o.get("tradingsymbol", "").upper()
+            if tsym:
+                if tsym not in completed_orders_map:
+                    completed_orders_map[tsym] = []
+                completed_orders_map[tsym].append(o)
+                
+    for tsym in completed_orders_map:
+        completed_orders_map[tsym].sort(key=lambda x: str(x.get("order_timestamp") or ""))
+        
+    for pos in net_positions:
+        qty = int(pos.get("quantity", 0))
+        if qty != 0:
+            continue
+            
+        buy_qty = int(pos.get("buy_quantity", 0))
+        sell_qty = int(pos.get("sell_quantity", 0))
+        if buy_qty == 0 and sell_qty == 0:
+            continue
+            
+        tradingsymbol = pos.get("tradingsymbol", "").upper()
+        pnl = float(pos.get("pnl", 0.0))
+        
+        # Parse fields
+        symbol = tradingsymbol
+        option_type = "FUT"
+        strike = None
+        
+        m_opt = re.match(r"^([A-Z\-]+)(\d{2}[A-Z]{3})(\d+)(CE|PE)$", tradingsymbol, re.IGNORECASE)
+        if m_opt:
+            symbol = m_opt.group(1).upper()
+            option_type = m_opt.group(4).upper()
+            strike = float(m_opt.group(3))
+        else:
+            m_fut = re.match(r"^([A-Z\-]+)(\d{2}[A-Z]{3})(FUT)?$", tradingsymbol, re.IGNORECASE)
+            if m_fut:
+                symbol = m_fut.group(1).upper()
+                option_type = "FUT"
+                
+        # Expiry
+        from src.engine.symbol_resolver import get_expiry_for_tradingsymbol
+        expiry_val = get_expiry_for_tradingsymbol(tradingsymbol)
+        if not expiry_val:
+            m_opt = re.match(r"^([A-Z\-]+)(\d{2}[A-Z]{3}|\d{2}[0-9OND][0-9]{2})(\d+)(CE|PE)$", tradingsymbol, re.IGNORECASE)
+            if m_opt:
+                expiry_val = m_opt.group(2).upper()
+            else:
+                m_fut = re.match(r"^([A-Z\-]+)(\d{2}[A-Z]{3}|\d{2}[0-9OND][0-9]{2})(FUT)?$", tradingsymbol, re.IGNORECASE)
+                if m_fut:
+                    expiry_val = m_fut.group(2).upper()
+                    
+        if not expiry_val:
+            expiry_val = "—"
+            
+        side = "BUY"
+        closed_at = None
+        
+        tsym_orders = completed_orders_map.get(tradingsymbol, [])
+        if tsym_orders:
+            entry_order = tsym_orders[0]
+            exit_order = tsym_orders[-1]
+            side = entry_order.get("transaction_type", "BUY").upper()
+            
+            raw_ts = exit_order.get("order_timestamp")
+            if raw_ts:
+                if isinstance(raw_ts, str):
+                    closed_at = raw_ts.replace(" ", "T")
+                else:
+                    closed_at = raw_ts.isoformat()
+        else:
+            overnight_qty = int(pos.get("overnight_quantity", 0))
+            if overnight_qty > 0:
+                side = "BUY"
+            elif overnight_qty < 0:
+                side = "SELL"
+            else:
+                side = "BUY"
+                
+        buy_price = float(pos.get("buy_price") or pos.get("average_price") or 0.0)
+        sell_price = float(pos.get("sell_price") or pos.get("average_price") or 0.0)
+        
+        if side == "BUY":
+            entry_px = buy_price
+            exit_px = sell_price
+        else:
+            entry_px = sell_price
+            exit_px = buy_price
+            
+        if not closed_at:
+            IST = pytz.timezone("Asia/Kolkata")
+            closed_at = datetime.now(IST).isoformat()
+            
+        lot_size = LOT_SIZES.get(symbol, 1)
+        lots_traded = max(buy_qty, sell_qty)
+        lots_count = round(lots_traded / lot_size, 2) if lot_size else lots_traded
+        
+        closed_positions.append({
+            "id": f"kite-{tradingsymbol}",
+            "symbol": symbol,
+            "expiry": expiry_val,
+            "side": side,
+            "option_type": option_type,
+            "strike": strike,
+            "lots": lots_count,
+            "entry_premium": entry_px,
+            "exit_premium": exit_px,
+            "pnl_rupees": round(pnl, 2),
+            "status": "CLOSED",
+            "closed_at": closed_at,
+            "opened_at": None,
+            "reason": "Kite Manual Exit",
+            "trade_status": "LIVE",
+            "exit_mode": "KITE",
+            "tradingsymbol": tradingsymbol
+        })
+        
+    return closed_positions
+
+
+def _is_duplicate_closed_trade(kite_pos, db_trades, today_str) -> bool:
+    from src.engine.symbol_resolver import resolve_instrument
+    ktsym = kite_pos.get("tradingsymbol", "").upper()
+    k_strike = float(kite_pos["strike"]) if kite_pos.get("strike") is not None else None
+    k_opt = kite_pos.get("option_type", "").upper()
+    k_sym = kite_pos.get("symbol", "").upper()
+    
+    for t in db_trades:
+        db_close = t.get("closed_at") or ""
+        if not db_close.startswith(today_str):
+            continue
+            
+        db_strike = float(t["strike"]) if t.get("strike") is not None else None
+        db_opt = t.get("option_type", "").upper()
+        db_sym = t.get("symbol", "").upper()
+        
+        db_tsym = ""
+        db_expiry = t.get("expiry") or ""
+        if db_expiry:
+            try:
+                resolved = resolve_instrument(db_sym, db_expiry, db_strike or 0.0, db_opt)
+                if resolved:
+                    db_tsym = resolved.get("tradingsymbol", "").upper()
+            except Exception:
+                pass
+                
+        if db_tsym and ktsym:
+            if db_tsym == ktsym:
+                return True
+        else:
+            if db_sym == k_sym and db_opt == k_opt:
+                if k_strike is None or db_strike is None or abs(db_strike - k_strike) < 0.01:
+                    return True
+    return False
+
+
+@app.get("/api/open_orders")
+def get_open_orders():
+    from src.engine.live_trading import get_kite_client
+    kite = get_kite_client()
+    if not kite:
+        return []
+    try:
+        orders = kite.orders() or []
+        open_orders = []
+        for o in orders:
+            status = o.get("status", "")
+            if status not in ("COMPLETE", "REJECTED", "CANCELLED"):
+                open_orders.append({
+                    "order_timestamp": str(o.get("order_timestamp")),
+                    "tradingsymbol": o.get("tradingsymbol"),
+                    "transaction_type": o.get("transaction_type"),
+                    "order_type": o.get("order_type"),
+                    "quantity": o.get("quantity"),
+                    "price": o.get("price"),
+                    "trigger_price": o.get("trigger_price"),
+                    "status": status,
+                    "status_message": o.get("status_message") or ""
+                })
+        open_orders.sort(key=lambda x: x["order_timestamp"], reverse=True)
+        return open_orders
+    except Exception as e:
+        log.error("Failed to fetch open orders: %s", e)
+        return []
+
+
 @app.get("/api/live_trades")
 def get_live_trades(symbol: str = "", status: str = "", limit: int = 300):
     from config.runtime_config import load_runtime_config
@@ -1787,14 +2103,16 @@ def get_live_trades(symbol: str = "", status: str = "", limit: int = 300):
         real_positions = []
         if kite:
             real_positions = _fetch_real_kite_positions(kite)
+            # Filter out any closed manual positions (with status="CLOSED")
+            real_positions = [p for p in real_positions if p.get("status") != "CLOSED" and float(p.get("lots") or p.get("quantity", 0)) != 0]
             
         if shadow_mode:
             db_rows = _q("SELECT * FROM live_trades WHERE status='OPEN'")
             _enrich_open_trades_with_live_pnl(db_rows)
             _enrich_trade_details(db_rows)
             
-            real_tsyms = {p["tradingsymbol"].upper() for p in real_positions if p.get("tradingsymbol")}
-            real_keys = {(p["symbol"].upper(), p["option_type"].upper(), float(p["strike"]) if p.get("strike") is not None else None) 
+            real_tsyms = {(p["tradingsymbol"].upper(), p["side"].upper()) for p in real_positions if p.get("tradingsymbol")}
+            real_keys = {(p["symbol"].upper(), p["option_type"].upper(), float(p["strike"]) if p.get("strike") is not None else None, p["side"].upper()) 
                          for p in real_positions if not p.get("tradingsymbol")}
             
             from src.engine.symbol_resolver import resolve_instrument
@@ -1809,10 +2127,10 @@ def get_live_trades(symbol: str = "", status: str = "", limit: int = 300):
                 
                 is_duplicate = False
                 if db_tsym:
-                    if db_tsym in real_tsyms:
+                    if (db_tsym, row["side"].upper()) in real_tsyms:
                         is_duplicate = True
                 else:
-                    key = (row["symbol"].upper(), row["option_type"].upper(), strike_val)
+                    key = (row["symbol"].upper(), row["option_type"].upper(), strike_val, row["side"].upper())
                     if key in real_keys:
                         is_duplicate = True
                         
@@ -1838,12 +2156,46 @@ def get_live_trades(symbol: str = "", status: str = "", limit: int = 300):
             clauses.append("status=?")
             params.append(stat_up)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    
+    order_by = "closed_at DESC" if status.upper() == "CLOSED" else "opened_at DESC"
+    
     rows = _q(
-        f"SELECT * FROM live_trades {where} ORDER BY opened_at DESC LIMIT ?",
+        f"SELECT * FROM live_trades {where} ORDER BY {order_by} LIMIT ?",
         (*params, int(limit)),
     )
     _enrich_open_trades_with_live_pnl(rows)
     _enrich_trade_details(rows)
+    
+    if status.upper() == "CLOSED":
+        from src.engine.live_trading import get_kite_client
+        kite = get_kite_client()
+        if kite:
+            try:
+                import pytz
+                IST = pytz.timezone("Asia/Kolkata")
+                today_str = datetime.now(IST).strftime("%Y-%m-%d")
+                
+                kite_closed = _get_kite_closed_trades(kite)
+                unique_kite_closed = []
+                for kp in kite_closed:
+                    if not _is_duplicate_closed_trade(kp, rows, today_str):
+                        unique_kite_closed.append(kp)
+                
+                if symbol:
+                    sym_upper = symbol.upper().strip()
+                    unique_kite_closed = [kp for kp in unique_kite_closed if kp["symbol"] == sym_upper]
+                    
+                rows.extend(unique_kite_closed)
+                
+                def get_closed_at_key(x):
+                    ca = x.get("closed_at") or ""
+                    return ca.replace("T", " ").replace("Z", "")
+                    
+                rows.sort(key=get_closed_at_key, reverse=True)
+                rows = rows[:limit]
+            except Exception as ke:
+                log.error("Failed to merge closed Kite positions in live_trades: %s", ke)
+                
     return rows
 
 
@@ -1917,24 +2269,47 @@ def get_portfolio_metrics():
                 if strike:
                     min_strike = min(min_strike, strike)
                     max_strike = max(max_strike, strike)
-                    match = next((r for r in rows if abs(float(r["strike"] or 0) - strike) < 0.01 and r["option_type"] == opt_type), None)
+                    match = None
+                    if rows:
+                        match = next((r for r in rows if abs(float(r["strike"] or 0) - strike) < 0.01 and r["option_type"] == opt_type), None)
+                    
+                    d = None
                     if match:
                         d = float(match["delta"] or 0)
-                        if not (d != d):  # NaN guard
-                            net_delta += lots_val * side * d
                         if underlying is None:
                             u = match.get("underlying_price")
                             if u:
                                 underlying = float(u)
+                    else:
+                        d = 0.5 if opt_type == "CE" else -0.5
+                        
+                    if d is not None and not (d != d):  # NaN guard
+                        net_delta += lots_val * side * d
         
         if underlying is None and rows:
             u = rows[0].get("underlying_price")
             if u:
                 underlying = float(u)
-            
+                
+        # Additional robust fallbacks for underlying spot price
         if underlying is None or underlying == 0:
-            metrics[base] = {"net_delta": round(net_delta, 2), "max_profit": "N/A", "max_loss": "N/A"}
-            continue
+            res_up = _q("SELECT price FROM underlying_price WHERE symbol=? ORDER BY fetched_at DESC LIMIT 1", (base,))
+            if res_up:
+                underlying = float(res_up[0]["price"])
+                
+        if underlying is None or underlying == 0:
+            if min_strike != float('inf') and min_strike > 0:
+                underlying = min_strike
+                
+        if underlying is None or underlying == 0:
+            for p in positions:
+                u = p.get("cmp") or p.get("entry_underlying") or p.get("entry_premium")
+                if u and float(u) > 0:
+                    underlying = float(u)
+                    break
+                    
+        if underlying is None or underlying == 0:
+            underlying = 100.0  # Fallback to prevent division by zero or empty values
             
         if min_strike == float('inf'):
             min_strike = underlying
@@ -2023,14 +2398,9 @@ def get_risk_metrics(mode: str = "live"):
                 margins = kite.margins()
                 section = margins.get("equity", {})
                 if isinstance(section, dict):
-                    if "net" in section and isinstance(section["net"], (int, float)):
-                        available_cash = float(section["net"])
-                    else:
-                        avail = section.get("available", {})
-                        if isinstance(avail, dict):
-                            available_cash = float(avail.get("live_balance", avail.get("cash", avail.get("opening_balance", 0.0))))
-                        else:
-                            available_cash = float(avail or 0.0)
+                    net = float(section.get("net") or 0.0)
+                    debits = float(section.get("utilised", {}).get("debits") or 0.0)
+                    available_cash = net + debits
             except Exception as e:
                 log.error("Failed to fetch margins from Kite in risk_metrics: %s", e)
                 available_cash = 1000000.0  # fallback
@@ -2062,7 +2432,7 @@ def get_risk_metrics(mode: str = "live"):
             _enrich_open_trades_with_live_pnl(open_positions)
             _enrich_trade_details(open_positions)
             
-    total_open_pnl = sum(float(p.get("pnl_rupees") or 0.0) for p in open_positions)
+    total_open_pnl = sum(_safe_float(p.get("pnl_rupees")) for p in open_positions)
     current_equity = available_cash + total_open_pnl
     
     # 3. Update & fetch Peak Equity / calculate Max Drawdown
@@ -2105,22 +2475,48 @@ def get_risk_metrics(mode: str = "live"):
         if losses_row and losses_row["total"] is not None:
             total_losses = abs(float(losses_row["total"]))
             
-    profit_factor = round(total_wins / total_losses, 2) if total_losses > 0 else (99.99 if total_wins > 0 else 0.0)
-
     # 5. Daily Loss Limit %
     # Fetch realized daily PnL (closed today)
     today_realized_pnl = 0.0
+    db_today_closed_pnl = 0.0
     with get_conn() as conn:
         row = conn.execute(
             f"SELECT SUM(pnl_rupees) AS total FROM {table_name} WHERE closed_at >= ? AND (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross'))",
             (today_start,)
         ).fetchone()
         if row and row["total"] is not None:
-            today_realized_pnl = float(row["total"])
+            db_today_closed_pnl = float(row["total"])
+            
+    today_realized_pnl = db_today_closed_pnl
+    
+    if mode == "live":
+        from src.engine.live_trading import get_kite_client
+        kite = get_kite_client()
+        if kite:
+            try:
+                db_today_trades = _q(
+                    f"SELECT * FROM {table_name} WHERE closed_at >= ? AND (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross'))",
+                    (today_start,)
+                )
+                kite_closed = _get_kite_closed_trades(kite)
+                for kp in kite_closed:
+                    if not _is_duplicate_closed_trade(kp, db_today_trades, today_str):
+                        kp_pnl = kp.get("pnl_rupees", 0.0)
+                        if kp_pnl > 0:
+                            total_wins += kp_pnl
+                        else:
+                            total_losses += abs(kp_pnl)
+                        today_realized_pnl += kp_pnl
+            except Exception as e:
+                log.error("Failed to merge closed trades for Profit Factor and realized PnL: %s", e)
+                
+    profit_factor = round(total_wins / total_losses, 2) if total_losses > 0 else (99.99 if total_wins > 0 else 0.0)
             
     # Daily running PnL = realized today + unrealized today (all open positions)
     today_running_pnl = today_realized_pnl + total_open_pnl
-    daily_loss_limit = float(MAX_DAILY_LOSS_RUPEES)
+    from config.runtime_config import load_runtime_config
+    runtime_config = load_runtime_config()
+    daily_loss_limit = float(runtime_config.get("live_max_daily_loss_rupees", MAX_DAILY_LOSS_RUPEES))
     
     # Daily loss limit % utilization is calculated only if running pnl is negative (a loss)
     if today_running_pnl < 0:
@@ -2133,13 +2529,13 @@ def get_risk_metrics(mode: str = "live"):
     for p in open_positions:
         opt_type = (p.get("option_type") or "").upper()
         if opt_type == "FUT":
-            entry = float(p.get("entry_underlying") or 0.0)
-            sl = float(p.get("sl_underlying") or 0.0)
-            target = float(p.get("target_underlying") or 0.0)
+            entry = _safe_float(p.get("entry_underlying"))
+            sl = _safe_float(p.get("sl_underlying"))
+            target = _safe_float(p.get("target_underlying"))
         else:
-            entry = float(p.get("entry_premium") or p.get("entry_underlying") or 0.0)
-            sl = float(p.get("sl_premium") or p.get("sl_underlying") or 0.0)
-            target = float(p.get("target_premium") or p.get("target_underlying") or 0.0)
+            entry = _safe_float(p.get("entry_premium") or p.get("entry_underlying"))
+            sl = _safe_float(p.get("sl_premium") or p.get("sl_underlying"))
+            target = _safe_float(p.get("target_premium") or p.get("target_underlying"))
             
         if entry > 0 and sl > 0 and target > 0:
             target_diff = abs(target - entry)
@@ -2379,9 +2775,76 @@ def zerodha_callback(client_id: str = None, request_token: str = None):
         return HTMLResponse("<h1>Error: Zerodha api_key or api_secret not configured in database</h1>", status_code=400)
     
     from kiteconnect import KiteConnect
+    import time
     try:
         kite = KiteConnect(api_key=config["api_key"])
-        session = kite.generate_session(request_token, api_secret=config["api_secret"])
+        
+        # Mount TLSAdapter and Retry to avoid SSL: UNEXPECTED_EOF_WHILE_READING error
+        try:
+            import ssl
+            from requests.adapters import HTTPAdapter
+            from urllib3.util import Retry
+            
+            class TLSAdapter(HTTPAdapter):
+                def __init__(self, *args, **kwargs):
+                    self.ssl_context = ssl.create_default_context()
+                    self.ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
+                    if hasattr(ssl, "OP_IGNORE_UNEXPECTED_EOF"):
+                        self.ssl_context.options |= ssl.OP_IGNORE_UNEXPECTED_EOF
+                    super().__init__(*args, **kwargs)
+                
+                def init_poolmanager(self, *args, **kwargs):
+                    kwargs['ssl_context'] = self.ssl_context
+                    return super().init_poolmanager(*args, **kwargs)
+                
+                def proxy_manager_for(self, *args, **kwargs):
+                    kwargs['ssl_context'] = self.ssl_context
+                    return super().proxy_manager_for(*args, **kwargs)
+
+                def send(self, request, *args, **kwargs):
+                    import time
+                    from requests.exceptions import ConnectionError, SSLError
+                    for attempt in range(3):
+                        try:
+                            return super().send(request, *args, **kwargs)
+                        except (SSLError, ConnectionError) as e:
+                            err_msg = str(e).lower()
+                            if any(k in err_msg for k in ("closed (eof)", "unexpected eof", "sslzeroreturnerror", "eof occurred")):
+                                if attempt < 2:
+                                    log.warning("TLSAdapter caught transient SSL EOF error (attempt %d/3), retrying in 0.15s... Error: %s", attempt + 1, e)
+                                    time.sleep(0.15)
+                                    continue
+                            raise
+
+            retries = Retry(
+                total=3,
+                backoff_factor=0.2,
+                status_forcelist=[500, 502, 503, 504],
+                raise_on_status=False
+            )
+            adapter = TLSAdapter(max_retries=retries)
+            kite.reqsession.mount("https://", adapter)
+        except Exception as ssl_err:
+            log.warning("Failed to configure TLSAdapter for Zerodha callback: %s", ssl_err)
+
+        # Retry generate_session up to 3 times to handle transient SSL EOFs or timeouts
+        session = None
+        last_err = None
+        for attempt in range(1, 4):
+            try:
+                session = kite.generate_session(request_token, api_secret=config["api_secret"])
+                break
+            except Exception as err:
+                last_err = err
+                err_msg = str(err).lower()
+                if "token is invalid" in err_msg or "token" in err_msg:
+                    break
+                log.warning("generate_session attempt %d/3 failed: %s. Retrying in 1s...", attempt, err)
+                time.sleep(1)
+
+        if not session:
+            raise last_err or Exception("Failed to generate session after 3 attempts")
+
         access_token = session["access_token"]
         
         from datetime import datetime, timezone, timedelta

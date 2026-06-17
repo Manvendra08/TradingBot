@@ -413,6 +413,17 @@ main { padding: 22px 24px; display: grid; gap: 20px; max-width: 1920px; margin: 
 :not([data-theme="light"]) .cyan { color: #22d3ee !important; }
 :not([data-theme="light"]) .orng { color: #fb923c !important; }
 
+/* Color overrides specifically for KPI values due to specificity */
+.kpi .val.good { color: var(--green) !important; }
+.kpi .val.bad  { color: var(--red) !important; }
+.kpi .val.warn { color: var(--yellow) !important; }
+.kpi .val.info { color: var(--indigo) !important; }
+
+:not([data-theme="light"]) .kpi .val.good { color: #00e5a0 !important; }
+:not([data-theme="light"]) .kpi .val.bad  { color: #ff4d6d !important; }
+:not([data-theme="light"]) .kpi .val.warn { color: #ffd666 !important; }
+:not([data-theme="light"]) .kpi .val.info { color: #818cf8 !important; }
+
 /* ════════════════════════════════════════════
    SECTION CARDS
 ════════════════════════════════════════════ */
@@ -1049,6 +1060,11 @@ tr:hover td { background: rgba(0,229,160,.04); }
 [data-theme="light"] .btn-confirm-del:not(:disabled):hover { background: rgba(220,38,38,.08) !important; }
 [data-theme="light"] .btn-confirm-del:disabled { opacity: .4 !important; }
 
+[data-theme="light"] .kpi .val.good { color: #059669 !important; }
+[data-theme="light"] .kpi .val.bad  { color: #dc2626 !important; }
+[data-theme="light"] .kpi .val.warn { color: #d97706 !important; }
+[data-theme="light"] .kpi .val.info { color: #4338ca !important; }
+
 /* Scrollbars */
 [data-theme="light"] ::-webkit-scrollbar { width: 8px; height: 8px; }
 [data-theme="light"] ::-webkit-scrollbar-track { background: #f1f5f9; }
@@ -1070,6 +1086,16 @@ tr:hover td { background: rgba(0,229,160,.04); }
 .kpis .kpi:nth-child(8) { animation-delay: .24s; }
 .kpis .kpi:nth-child(9) { animation-delay: .27s; }
 .kpis .kpi:nth-child(10) { animation-delay: .30s; }
+
+/* Enlarge KPI emojis */
+.kpi .lbl span[id$="-emoji"] {
+  font-size: 16px;
+  margin-left: 4px;
+  vertical-align: middle;
+  text-transform: none;
+  letter-spacing: normal;
+  display: inline-block;
+}
 </style>
 </head>
 
@@ -1122,37 +1148,37 @@ tr:hover td { background: rgba(0,229,160,.04); }
 <!-- KPI Strip -->
 <div class="kpis">
   <div class="kpi kpi-total">
-    <div class="lbl">Total Trades</div>
+    <div class="lbl">Total Trades <span id="k-total-emoji"></span></div>
     <div class="val info" id="k-total">—</div>
     <div class="sub" id="k-open-sub">— open</div>
     <div class="kpi-icon">📈</div>
   </div>
   <div class="kpi kpi-winrate">
-    <div class="lbl">Win Rate</div>
+    <div class="lbl">Win Rate <span id="k-win-emoji"></span></div>
     <div class="val" id="k-win">—</div>
     <div class="sub" id="k-win-sub">— W / — L</div>
     <div class="kpi-icon">🎯</div>
   </div>
   <div class="kpi kpi-pnl">
-    <div class="lbl">Total P&amp;L (₹)</div>
+    <div class="lbl">Total P&amp;L (₹) <span id="k-pnl-emoji"></span></div>
     <div class="val" id="k-pnl">—</div>
     <div class="sub">closed trades</div>
     <div class="kpi-icon">💰</div>
   </div>
   <div class="kpi kpi-avg">
-    <div class="lbl">Avg P&amp;L / Trade</div>
+    <div class="lbl">Avg P&amp;L / Trade <span id="k-avg-emoji"></span></div>
     <div class="val" id="k-avg">—</div>
     <div class="sub" id="k-avg-sub">W: — | L: —</div>
     <div class="kpi-icon">⚖️</div>
   </div>
   <div class="kpi kpi-pf">
-    <div class="lbl">Profit Factor</div>
+    <div class="lbl">Profit Factor <span id="k-pf-emoji"></span></div>
     <div class="val" id="k-pf">—</div>
     <div class="sub">gross wins ÷ losses</div>
     <div class="kpi-icon">⚡</div>
   </div>
   <div class="kpi kpi-streak">
-    <div class="lbl">Win Streak</div>
+    <div class="lbl">Win Streak <span id="k-streak-emoji"></span></div>
     <div class="val good" id="k-streak">—</div>
     <div class="sub">consecutive wins</div>
     <div class="kpi-icon">🔥</div>
@@ -1485,20 +1511,30 @@ function renderSummary(s) {
 
   document.getElementById('k-total').textContent = s.total??0;
   document.getElementById('k-open-sub').textContent = `${s.open_count??0} open`;
+  
+  // Total Trades Emoji
+  const totalTrades = s.total ?? 0;
+  document.getElementById('k-total-emoji').textContent = totalTrades > 0 ? '🙂' : '😐';
 
   const wEl=document.getElementById('k-win');
   wEl.textContent=`${wr.toFixed(1)}%`;
   wEl.className=`val ${wr>=60?'good':wr>=40?'warn':'bad'}`;
   document.getElementById('k-win-sub').textContent=`${s.wins??0} W / ${s.losses??0} L`;
+  // Win Rate Emoji
+  document.getElementById('k-win-emoji').textContent = wr >= 60 ? '😊' : wr >= 40 ? '😐' : '😢';
 
   const pEl=document.getElementById('k-pnl');
   pEl.textContent=frsLong(pnl);
-  pEl.className=`val ${pnl>=0?'good':'bad'}`;
+  pEl.className=`val ${pnl>0?'good':pnl<0?'bad':''}`;
+  // P&L Emoji
+  document.getElementById('k-pnl-emoji').textContent = pnl > 0 ? '😊' : pnl < 0 ? '😢' : '😐';
 
   const aEl=document.getElementById('k-avg');
   aEl.textContent=frsLong(avg);
-  aEl.className=`val ${avg>=0?'good':'bad'}`;
+  aEl.className=`val ${avg>0?'good':avg<0?'bad':''}`;
   document.getElementById('k-avg-sub').textContent=`W: ${frs(s.avg_win)} | L: ${frs(s.avg_loss)}`;
+  // Avg P&L Emoji
+  document.getElementById('k-avg-emoji').textContent = avg > 0 ? '😊' : avg < 0 ? '😢' : '😐';
 
   const pfEl=document.getElementById('k-pf');
   if (pf > 0) {
@@ -1507,8 +1543,21 @@ function renderSummary(s) {
     pfEl.innerHTML = '<span class="infinity-symbol">∞</span>';
   }
   pfEl.className=`val ${pf>=1.5?'good':pf>=1?'warn':'bad'}`;
+  // Profit Factor Emoji
+  const hasWins = (s.wins ?? 0) > 0;
+  const hasLosses = (s.losses ?? 0) > 0;
+  if (pf >= 1.5 || (!hasLosses && hasWins)) {
+    document.getElementById('k-pf-emoji').textContent = '😊';
+  } else if (pf > 0 && pf < 1.0) {
+    document.getElementById('k-pf-emoji').textContent = '😢';
+  } else {
+    document.getElementById('k-pf-emoji').textContent = '😐';
+  }
 
   document.getElementById('k-streak').textContent=s.consecutive_wins??0;
+  // Win Streak Emoji
+  const streak = s.consecutive_wins ?? 0;
+  document.getElementById('k-streak-emoji').textContent = streak >= 3 ? '😊' : streak >= 1 ? '🙂' : '😐';
 
   /* Symbol breakdown */
   const bd=s.symbol_breakdown||[];

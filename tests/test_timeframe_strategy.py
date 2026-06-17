@@ -157,7 +157,7 @@ def test_timeframe_strategy_exit_long():
         assert trade["status"] == "TF-1H-Cross"
         assert trade["exit_premium"] == 120.0
         assert trade["pnl_points"] == -130.0  # 120 - 250
-        assert trade["pnl_rupees"] == -3250.0  # -130 * 25 (lot size)
+        assert trade["pnl_rupees"] == -8450.0  # -130 * 65 (lot size)
 
 def test_timeframe_strategy_natgas_future():
     scan_context = {
@@ -673,5 +673,202 @@ def test_run_timeframe_strategy_scan_frequency_gating():
         with patch("src.engine.paper_trading.get_scan_frequency_nse", return_value=15):
             res = run_timeframe_strategy("NIFTY", scan_context, "digest-123", {"verdict_label": "Long Buildup", "confidence": 80})
             assert res is None or res.get("action") != "SKIPPED_TIMEFRAME_BOUNDARY"
+
+
+class MockLLMVerdict:
+    def __init__(self, bias="NEUTRAL", confidence=50, risk_rating="LOW", exit_advice=""):
+        self.bias = bias
+        self.confidence = confidence
+        self.risk_rating = risk_rating
+        self.exit_advice = exit_advice
+
+
+def test_timeframe_strategy_llm_gate_a_bias_blocking():
+    scan_context = {
+        "underlying": 23000.0,
+        "atm_strike": 23000.0,
+        "expiry": "2026-06-11",
+        "total_ce_oi": 1000000,
+        "total_pe_oi": 1500000,
+        "fetched_at": "2026-06-01T12:00:00Z",
+        "chart_indicators": {
+            "3h": {
+                "ohlc": {"open": 22950, "high": 23050, "low": 22900, "close": 23050},
+                "prev_ohlc": {"open": 22800, "high": 23000, "low": 22800, "close": 22950},
+                "bar_end_utc": "2026-06-01T12:00:00Z"
+            },
+            "1h": {
+                "ohlc": {"open": 22980, "high": 23020, "low": 22970, "close": 23020},
+                "prev_ohlc": {"open": 22950, "high": 22990, "low": 22940, "close": 22980},
+                "bar_end_utc": "2026-06-01T12:00:00Z"
+            }
+        },
+        "option_rows": [
+            {"strike": 22800.0, "option_type": "CE", "ltp": 250.0}
+        ]
+    }
+
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO scan_summaries (symbol, expiry, fetched_at, total_ce_oi, total_pe_oi) VALUES (?, ?, ?, ?, ?)",
+            ("NIFTY", "2026-06-11", "2026-06-01T10:30:00Z", 1000000, 1000000)
+        )
+
+    ai_verdict = MockLLMVerdict(bias="BEARISH", confidence=80)
+
+    with patch("src.engine.paper_trading._is_market_open", return_value=True), \
+         patch("src.engine.paper_trading.check_risk_limits", return_value=(True, "")):
+        res = run_timeframe_strategy("NIFTY", scan_context, "digest-123", {"verdict_label": "Long Buildup", "confidence": 80}, ai_verdict=ai_verdict)
+
+    assert res is not None
+    assert res["action"] == "BLOCKED_PLAN"
+    assert "LLM bias alignment" in res["reason"]
+
+    # Assert no trade was opened
+    with get_conn() as conn:
+        trades = conn.execute("SELECT * FROM paper_trades WHERE symbol='NIFTY'").fetchall()
+        assert len(trades) == 0
+
+
+def test_timeframe_strategy_llm_gate_b_risk_blocking():
+    scan_context = {
+        "underlying": 23000.0,
+        "atm_strike": 23000.0,
+        "expiry": "2026-06-11",
+        "total_ce_oi": 1000000,
+        "total_pe_oi": 1500000,
+        "fetched_at": "2026-06-01T12:00:00Z",
+        "chart_indicators": {
+            "3h": {
+                "ohlc": {"open": 22950, "high": 23050, "low": 22900, "close": 23050},
+                "prev_ohlc": {"open": 22800, "high": 23000, "low": 22800, "close": 22950},
+                "bar_end_utc": "2026-06-01T12:00:00Z"
+            },
+            "1h": {
+                "ohlc": {"open": 22980, "high": 23020, "low": 22970, "close": 23020},
+                "prev_ohlc": {"open": 22950, "high": 22990, "low": 22940, "close": 22980},
+                "bar_end_utc": "2026-06-01T12:00:00Z"
+            }
+        },
+        "option_rows": [
+            {"strike": 22800.0, "option_type": "CE", "ltp": 250.0}
+        ]
+    }
+
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO scan_summaries (symbol, expiry, fetched_at, total_ce_oi, total_pe_oi) VALUES (?, ?, ?, ?, ?)",
+            ("NIFTY", "2026-06-11", "2026-06-01T10:30:00Z", 1000000, 1000000)
+        )
+
+    ai_verdict = MockLLMVerdict(bias="BULLISH", confidence=85, risk_rating="HIGH")
+
+    with patch("src.engine.paper_trading._is_market_open", return_value=True), \
+         patch("src.engine.paper_trading.check_risk_limits", return_value=(True, "")):
+        res = run_timeframe_strategy("NIFTY", scan_context, "digest-123", {"verdict_label": "Long Buildup", "confidence": 80}, ai_verdict=ai_verdict)
+
+    assert res is not None
+    assert res["action"] == "BLOCKED_PLAN"
+    assert "LLM risk rating" in res["reason"]
+
+
+def test_timeframe_strategy_llm_gate_c_sl_override():
+    scan_context = {
+        "underlying": 23000.0,
+        "atm_strike": 23000.0,
+        "expiry": "2026-06-11",
+        "total_ce_oi": 1000000,
+        "total_pe_oi": 1500000,
+        "fetched_at": "2026-06-01T12:00:00Z",
+        "chart_indicators": {
+            "3h": {
+                "ohlc": {"open": 22950, "high": 23050, "low": 22900, "close": 23050},
+                "prev_ohlc": {"open": 22800, "high": 23000, "low": 22800, "close": 22950},
+                "bar_end_utc": "2026-06-01T12:00:00Z"
+            },
+            "1h": {
+                "ohlc": {"open": 22980, "high": 23020, "low": 22970, "close": 23020},
+                "prev_ohlc": {"open": 22950, "high": 22990, "low": 22940, "close": 22980},
+                "bar_end_utc": "2026-06-01T12:00:00Z"
+            }
+        },
+        "option_rows": [
+            {"strike": 22800.0, "option_type": "CE", "ltp": 250.0}
+        ]
+    }
+
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO scan_summaries (symbol, expiry, fetched_at, total_ce_oi, total_pe_oi) VALUES (?, ?, ?, ?, ?)",
+            ("NIFTY", "2026-06-11", "2026-06-01T10:30:00Z", 1000000, 1000000)
+        )
+
+    ai_verdict = MockLLMVerdict(bias="BULLISH", confidence=85, exit_advice="Suggest placing structural SL at ₹22915.0 to protect capital.")
+
+    with patch("src.engine.paper_trading._is_market_open", return_value=True), \
+         patch("src.engine.paper_trading.check_risk_limits", return_value=(True, "")):
+        res = run_timeframe_strategy("NIFTY", scan_context, "digest-123", {"verdict_label": "Long Buildup", "confidence": 80}, ai_verdict=ai_verdict)
+
+    assert res is not None
+    assert res["action"] == "EXECUTED"
+
+    with get_conn() as conn:
+        trades = conn.execute("SELECT * FROM paper_trades WHERE symbol='NIFTY'").fetchall()
+        assert len(trades) == 1
+        trade = dict(trades[0])
+        assert trade["sl_underlying"] == 22915.0
+
+
+def test_timeframe_strategy_llm_gate_d_reversal_exit():
+    # Insert an open trade first
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO paper_trades (
+                opened_at, symbol, expiry, verdict_label, side, option_type, strike,
+                entry_underlying, entry_premium, sl_underlying, sl_premium, lots, status, setup_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            "2026-06-01T10:00:00Z", "NIFTY", "2026-06-11", "LONG", "BUY", "CE", 22800.0,
+            23000.0, 250.0, None, 187.5, 1, "OPEN", "TIMEFRAME"
+        ))
+        conn.execute(
+            "INSERT INTO scan_summaries (symbol, expiry, fetched_at, total_ce_oi, total_pe_oi) VALUES (?, ?, ?, ?, ?)",
+            ("NIFTY", "2026-06-11", "2026-06-01T11:00:00Z", 1000000, 1000000)
+        )
+
+    scan_context = {
+        "underlying": 23000.0,
+        "atm_strike": 23000.0,
+        "expiry": "2026-06-11",
+        "total_ce_oi": 1000000,
+        "total_pe_oi": 1500000,
+        "fetched_at": "2026-06-01T12:00:00Z",
+        "chart_indicators": {
+            "3h": {
+                "ohlc": {"open": 22950, "high": 23050, "low": 22900, "close": 23050},
+                "prev_ohlc": {"open": 22800, "high": 23000, "low": 22800, "close": 22950},
+                "bar_end_utc": "2026-06-01T12:00:00Z"
+            },
+            "1h": {
+                "ohlc": {"open": 22980, "high": 23020, "low": 22970, "close": 23020},
+                "prev_ohlc": {"open": 22950, "high": 22990, "low": 22940, "close": 22980},
+                "bar_end_utc": "2026-06-01T12:00:00Z"
+            }
+        },
+        "option_rows": [
+            {"strike": 22800.0, "option_type": "CE", "ltp": 240.0}
+        ]
+    }
+
+    ai_verdict = MockLLMVerdict(bias="BEARISH", confidence=75)
+
+    with patch("src.engine.paper_trading._is_market_open", return_value=True), \
+         patch("src.engine.paper_trading.check_risk_limits", return_value=(True, "")):
+        res = run_timeframe_strategy("NIFTY", scan_context, "digest-123", {}, ai_verdict=ai_verdict)
+
+    assert res is not None
+    assert res["action"] == "CLOSED"
+    assert res["trade"]["status"] == "LLM_REVERSAL"
+    assert "LLM sentiment reversal" in res["trade"]["reason"]
 
 

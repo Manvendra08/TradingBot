@@ -9,5 +9,5 @@ IF NOT EXIST ".env" (
 )
 
 echo [NSEBOT] Starting scheduler...
-"%PYTHON_EXE%" main.py
+"%PYTHON_EXE%" main.py %*
 pause

@@ -1,5 +1,34 @@
 {
   "scan_frequency_minutes": 60,
   "scan_frequency_nse": 30,
-  "scan_frequency_mcx": 60
+  "scan_frequency_mcx": 60,
+  "live_shadow_mode": false,
+  "live_capital_per_trade_inr": 300000,
+  "live_max_capital_utilisation_pct": 80,
+  "live_max_concurrent_positions": 5,
+  "live_max_daily_loss_rupees": 200000,
+  "live_symbol_lots": {
+    "NIFTY": 1,
+    "BANKNIFTY": 1,
+    "FINNIFTY": 1,
+    "MIDCPNIFTY": 1,
+    "NATURALGAS": 1,
+    "CRUDEOIL": 1
+  },
+  "live_enabled_broker_symbols": [
+    "NIFTY",
+    "BANKNIFTY",
+    "NATURALGAS"
+  ],
+  "oi_spike_threshold_pct": 35,
+  "price_spike_threshold_pct": 3,
+  "dashboard_auth_enabled": false,
+  "live_ai_decision_mode": "full",
+  "live_ai_min_confidence_boost": 80,
+  "live_ai_min_confidence_veto": 85,
+  "live_ai_exit_advisor_enabled": true,
+  "manage_direct_kite_positions": false,
+  "direct_kite_initialization_mode": "dynamic",
+  "direct_kite_default_sl_pct": 30,
+  "direct_kite_default_tgt_pct": 50
 }

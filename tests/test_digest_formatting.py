@@ -70,5 +70,5 @@ def test_format_paper_trade_status_none_values():
     assert "—" in res_held
 
     # Test None/empty status
-    assert "NO_ACTION" in _format_paper_trade_status(None)
-    assert "NO_ACTION" in _format_paper_trade_status({})
+    assert "NO ACTION" in _format_paper_trade_status(None)
+    assert "NO ACTION" in _format_paper_trade_status({})

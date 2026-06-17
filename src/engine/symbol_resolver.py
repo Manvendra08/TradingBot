@@ -11,14 +11,18 @@ import calendar
 _INSTRUMENT_CACHE = {}
 _TSYM_EXPIRY_CACHE = {}
 _INSTRUMENT_CACHE_TS = 0.0
-_INSTRUMENT_CACHE_TTL_SEC = 6 * 60 * 60  # 6 hours
+_INSTRUMENT_CACHE_TTL_SEC = 4 * 60 * 60  # 4 hours (refresh well within trading day)
 
 _REFRESH_IN_PROGRESS = False
 _REFRESH_IN_PROGRESS_TS = 0.0
 
 # Rate-limit cache-miss warnings (per key, per TTL window)
 _CACHE_MISS_WARNED: dict[tuple, float] = {}
-_CACHE_MISS_WARN_TTL_SEC = 15 * 60  # 15 minutes
+_CACHE_MISS_WARN_TTL_SEC = 30 * 60  # 30 minutes (less noise)
+
+# Track last async-refresh triggered on cache miss (to avoid storm)
+_LAST_MISS_REFRESH_TS = 0.0
+_MISS_REFRESH_INTERVAL_SEC = 5 * 60  # 5 minutes
 
 
 def _instrument_cache_is_ready() -> bool:
@@ -65,8 +69,20 @@ def fetch_and_cache_instruments(
 
                 log.info("Fetching instruments from Kite (attempt %d)...", attempt + 1)
 
-                nfo = kite_client.instruments("NFO")
-                mcx = kite_client.instruments("MCX")
+                # Temporarily disable keep-alive for the large instruments download to prevent transient SSL EOF errors
+                req_sess = getattr(kite_client, "reqsession", None)
+                old_conn_header = req_sess.headers.get("Connection") if req_sess else None
+                if req_sess:
+                    req_sess.headers["Connection"] = "close"
+                try:
+                    nfo = kite_client.instruments("NFO")
+                    mcx = kite_client.instruments("MCX")
+                finally:
+                    if req_sess:
+                        if old_conn_header:
+                            req_sess.headers["Connection"] = old_conn_header
+                        else:
+                            req_sess.headers.pop("Connection", None)
 
                 for inst in nfo + mcx:
                     name = inst.get("name")
@@ -94,6 +110,7 @@ def fetch_and_cache_instruments(
                         "tradingsymbol": tsym,
                         "instrument_token": token,
                         "lot_size": lot_size,
+                        "tick_size": float(inst.get("tick_size") or 0.05),
                     }
                     if tsym:
                         tsym_expiry_cache[str(tsym).upper()] = exp_str
@@ -195,9 +212,46 @@ def resolve_instrument(symbol: str, expiry: str, strike: float, option_type: str
     option_type = option_type.upper()
     key = (symbol, expiry, float(strike), option_type)
 
+    if not _instrument_cache_is_ready():
+        try:
+            from src.engine.live_trading import get_kite_client
+            kite = get_kite_client()
+            if kite:
+                log.info("[resolver] Cache not ready during resolve. Fetching instruments synchronously...")
+                fetch_and_cache_instruments(kite)
+        except Exception as e:
+            log.warning("[resolver] Failed to auto-initialize cache: %s", e)
+
     res = _INSTRUMENT_CACHE.get(key)
     if res:
         return res
+
+    # Fallback search if exact key lookup fails (e.g., missing expiry or futures strike mismatch)
+    matching_keys = []
+    # For FUT: match any strike (Kite stores FUT with strike=0 but some calls pass non-zero)
+    # For options: match the requested strike
+    target_strike = float(strike)
+    for k, val in _INSTRUMENT_CACHE.items():
+        # k is (name, exp_str, strike_val, otype)
+        if k[0] == symbol and k[3] == option_type:
+            if option_type == "FUT":
+                # FUT: ignore strike entirely — any expiry match is valid
+                matching_keys.append((k, val))
+            elif abs(k[2] - target_strike) < 0.01:
+                matching_keys.append((k, val))
+
+    if matching_keys:
+        # Sort matching expiries to find nearest future/today contract
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        future_matches = [m for m in matching_keys if m[0][1] >= today_str]
+        if not future_matches:
+            future_matches = matching_keys
+        # Sort by expiry string ascending
+        future_matches.sort(key=lambda m: m[0][1])
+        best_k, best_val = future_matches[0]
+        log.debug("[resolver] Resolved %s (%s, %g, %s) via cache search fallback (found expiry: %s)",
+                  symbol, expiry, strike, option_type, best_k[1])
+        return best_val
 
     now = time.time()
     last = _CACHE_MISS_WARNED.get(key) or 0.0
@@ -205,12 +259,33 @@ def resolve_instrument(symbol: str, expiry: str, strike: float, option_type: str
         log.warning("Instrument not found in cache for %s. Generating fallback tradingsymbol...", key)
         _CACHE_MISS_WARNED[key] = now
 
+    # Trigger a background cache refresh if Kite available and haven't recently refreshed
+    global _LAST_MISS_REFRESH_TS
+    if (now - float(_LAST_MISS_REFRESH_TS)) > _MISS_REFRESH_INTERVAL_SEC:
+        _LAST_MISS_REFRESH_TS = now
+        try:
+            import threading
+            from src.engine.live_trading import get_kite_client
+            kite = get_kite_client()
+            if kite and not _REFRESH_IN_PROGRESS:
+                log.info("[resolver] Cache miss triggered background instrument refresh...")
+                threading.Thread(
+                    target=fetch_and_cache_instruments,
+                    args=(kite,),
+                    daemon=True,
+                    name="instrument-cache-miss-refresh",
+                ).start()
+        except Exception as _re:
+            log.debug("[resolver] Could not trigger background refresh on cache miss: %s", _re)
+
     fallback_tsym = generate_fallback_tradingsymbol(symbol, expiry, strike, option_type)
     return {
         "tradingsymbol": fallback_tsym,
         "instrument_token": None,
         "lot_size": None,
+        "tick_size": 0.05,
     }
+
 
 def generate_fallback_tradingsymbol(symbol: str, expiry_str: str, strike: float, option_type: str) -> str:
     """

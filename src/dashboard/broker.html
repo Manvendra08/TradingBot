@@ -456,6 +456,11 @@ body {
   100% { box-shadow: 0 0 25px rgba(255, 51, 85, 0.8); }
 }
 
+@keyframes pulse-yellow {
+  0% { box-shadow: 0 0 5px rgba(255, 183, 3, 0.3); opacity: 0.8; }
+  100% { box-shadow: 0 0 15px rgba(255, 183, 3, 0.8); opacity: 1; }
+}
+
 .auth-indicator {
   display: flex;
   align-items: center;
@@ -1268,8 +1273,8 @@ html[data-theme="light"] .symbol-metrics {
 
       <!-- User/Status Profile Menu -->
       <div class="auth-dropdown-wrap" id="auth-dropdown-wrap">
-        <button class="auth-dropdown-btn" onclick="toggleAuthDropdown()" id="auth-dropdown-toggle" title="User Profile / Status" style="display:flex; align-items:center; gap:8px; height: 32px; border-radius: 16px; padding: 0 12px;">
-          <span style="font-size:13px;">👤</span>
+        <button class="auth-dropdown-btn" onclick="toggleAuthDropdown()" id="auth-dropdown-toggle" title="Zerodha connection status" style="display:flex; align-items:center; gap:8px; height: 32px; border-radius: 16px; padding: 0 12px;">
+          <img src="/static/kite-logo.png" style="width: 16px; height: 16px; object-fit: contain;" alt="Kite">
           <span id="auth-label" style="font-weight:600; font-size: 11px;">LOADING...</span>
           <span class="dot" id="auth-dot" style="width: 6px; height: 6px;"></span>
         </button>
@@ -1336,14 +1341,10 @@ html[data-theme="light"] .symbol-metrics {
           <!-- Equity Section -->
           <div>
             <div style="font-size:10px; font-weight:700; text-transform:uppercase; color:var(--accent); letter-spacing:0.5px; margin-bottom:4px;">Equity Cash</div>
-            <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:8px; font-size:12px;">
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px; font-size:12px;">
               <div>
                 <span style="color:var(--text-dim); display:block; font-size:10px; text-transform:uppercase; margin-bottom:2px;">Available</span>
                 <span id="eq-avail" style="font-family:var(--mono); font-weight:700;">₹0.00</span>
-              </div>
-              <div>
-                <span style="color:var(--text-dim); display:block; font-size:10px; text-transform:uppercase; margin-bottom:2px;">Used</span>
-                <span id="eq-util" style="font-family:var(--mono); font-weight:700;">₹0.00</span>
               </div>
               <div>
                 <span style="color:var(--text-dim); display:block; font-size:10px; text-transform:uppercase; margin-bottom:2px;">Total</span>
@@ -1360,34 +1361,39 @@ html[data-theme="light"] .symbol-metrics {
       <div class="card-title" style="margin-bottom:12px;">Risk Dashboard</div>
       <div class="risk-metrics-wrapper" style="display:flex; flex-direction:column; gap:14px; font-size:12px;">
         <!-- Max Drawdown -->
-        <div style="display:flex; justify-content:space-between; align-items:center; cursor:help;" title="Max Drawdown = Peak Equity Today - Current Equity (where Equity = Available Cash + Open P&L)">
-          <span style="color:var(--text-dim);">Max Drawdown</span>
-          <span id="risk-max-drawdown" style="font-family:var(--mono); font-weight:700; color:var(--text);">₹0.00 (0.00%)</span>
+        <div style="display:flex; align-items:center; justify-content:space-between; cursor:help;" title="Max Drawdown = Peak Equity Today - Current Equity (where Equity = Available Cash + Open P&L)">
+          <span style="color:var(--text-dim); font-size:12.5px; width:135px; flex-shrink:0;">Max Drawdown</span>
+          <span id="risk-drawdown-emoji" style="font-size:16px; width:30px; text-align:center; flex-shrink:0; cursor:help;"></span>
+          <span id="risk-max-drawdown" style="font-family:var(--mono); font-weight:700; color:var(--text); font-size:14px; text-align:right; flex-grow:1;">₹0.00 (0.00%)</span>
         </div>
         <!-- Profit Factor -->
-        <div style="display:flex; justify-content:space-between; align-items:center; cursor:help;" title="Profit Factor = Gross Profits / Gross Losses (closed trades in database)">
-          <span style="color:var(--text-dim);">Profit Factor</span>
-          <span id="risk-profit-factor" style="font-family:var(--mono); font-weight:700;">—</span>
+        <div style="display:flex; align-items:center; justify-content:space-between; cursor:help;" title="Profit Factor = Gross Profits / Gross Losses (closed trades in database)">
+          <span style="color:var(--text-dim); font-size:12.5px; width:135px; flex-shrink:0;">Profit Factor</span>
+          <span id="risk-pf-emoji" style="font-size:16px; width:30px; text-align:center; flex-shrink:0; cursor:help;"></span>
+          <span id="risk-profit-factor" style="font-family:var(--mono); font-weight:700; font-size:14px; text-align:right; flex-grow:1;">—</span>
         </div>
         <!-- Daily Loss Limit % -->
-        <div style="display:flex; flex-direction:column; gap:4px; cursor:help;" title="Daily Loss Limit Utilization = (|Realised P&L Today + Open P&L| / Max Daily Loss Limit) * 100">
-          <div style="display:flex; justify-content:space-between; align-items:center;">
-            <span style="color:var(--text-dim);">Daily Loss Limit</span>
-            <span id="risk-daily-loss" style="font-family:var(--mono); font-weight:700;">0.00%</span>
+        <div style="display:flex; flex-direction:column; gap:6px; cursor:help;" title="Daily Loss Limit Utilization = (|Realised P&L Today + Open P&L| / Max Daily Loss Limit) * 100">
+          <div style="display:flex; align-items:center; justify-content:space-between;">
+            <span style="color:var(--text-dim); font-size:12.5px; width:135px; flex-shrink:0;">Daily Loss Limit</span>
+            <span id="risk-daily-loss-emoji" style="font-size:16px; width:30px; text-align:center; flex-shrink:0; cursor:help;"></span>
+            <span id="risk-daily-loss" style="font-family:var(--mono); font-weight:700; font-size:14px; text-align:right; flex-grow:1;">0.00%</span>
           </div>
           <div style="width:100%; height:6px; background:var(--border); border-radius:3px; overflow:hidden;">
             <div id="risk-daily-loss-bar" style="width:0%; height:100%; background:var(--accent); border-radius:3px; transition:width 0.3s;"></div>
           </div>
         </div>
         <!-- Risk-to-Reward Ratio (R:R) -->
-        <div style="display:flex; justify-content:space-between; align-items:center; cursor:help;" title="Active Avg R:R = Average of (Target Distance / SL Distance) for all active positions">
-          <span style="color:var(--text-dim);">Active Avg R:R</span>
-          <span id="risk-rr" style="font-family:var(--mono); font-weight:700;">—</span>
+        <div style="display:flex; align-items:center; justify-content:space-between; cursor:help;" title="Active Avg R:R = Average of (Target Distance / SL Distance) for all active positions">
+          <span style="color:var(--text-dim); font-size:12.5px; width:135px; flex-shrink:0;">Active Avg R:R</span>
+          <span id="risk-rr-emoji" style="font-size:16px; width:30px; text-align:center; flex-shrink:0; cursor:help;"></span>
+          <span id="risk-rr" style="font-family:var(--mono); font-weight:700; font-size:14px; text-align:right; flex-grow:1;">—</span>
         </div>
         <!-- Total Exposure -->
-        <div style="display:flex; justify-content:space-between; align-items:center; cursor:help;" title="Notional Exposure = Sum of (Position Size * Spot or Strike Price) for all active positions">
-          <span style="color:var(--text-dim);">Notional Exposure</span>
-          <span id="risk-exposure" style="font-family:var(--mono); font-weight:700; color:var(--text);">₹0.00</span>
+        <div style="display:flex; align-items:center; justify-content:space-between; cursor:help;" title="Notional Exposure = Sum of (Position Size * Spot or Strike Price) for all active positions">
+          <span style="color:var(--text-dim); font-size:12.5px; width:135px; flex-shrink:0;">Notional Exposure</span>
+          <span id="risk-exposure-emoji" style="font-size:16px; width:30px; text-align:center; flex-shrink:0; cursor:help;"></span>
+          <span id="risk-exposure" style="font-family:var(--mono); font-weight:700; color:var(--text); font-size:14px; text-align:right; flex-grow:1;">₹0.00</span>
         </div>
       </div>
     </div>
@@ -1442,6 +1448,34 @@ html[data-theme="light"] .symbol-metrics {
       </div>
     </div>
 
+    <!-- Open Orders -->
+    <div class="card no-clip" id="open-orders-card" style="display: none; border-color: var(--yellow); box-shadow: 0 0 20px rgba(255, 183, 3, 0.15);">
+      <div class="card-title" style="display:flex; justify-content:space-between; align-items:center; color: var(--yellow);">
+        <span style="display:flex; align-items:center; gap:8px;">⚠️ Pending / Open Orders</span>
+        <span class="badge badge-shadow" style="animation: pulse-yellow 1.5s infinite alternate;" id="open-orders-count">0 Pending</span>
+      </div>
+      <div class="grid-wrapper">
+        <table style="width: 100% !important; table-layout: auto !important;">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Instrument</th>
+              <th>Side</th>
+              <th>Type</th>
+              <th>Qty</th>
+              <th>Price</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="open-orders-tbody">
+            <tr>
+              <td colspan="7" class="empty-row">Loading open orders...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- Closed Trades -->
     <div class="card no-clip">
       <div class="card-title">Live Execution History</div>
@@ -1450,8 +1484,7 @@ html[data-theme="light"] .symbol-metrics {
           <thead>
             <tr>
               <th>Closed At</th>
-              <th>Symbol</th>
-              <th>Expiry</th>
+              <th>Instrument</th>
               <th>Side / Type</th>
               <th>Lots/Qty</th>
               <th>Entry Px</th>
@@ -1616,6 +1649,7 @@ function refreshAll() {
   fetchBrokerStatus();
   fetchMargins();
   fetchPositions();
+  fetchOpenOrders();
   fetchClosedTrades();
   fetchTopbarCMPs();
   fetchRiskMetrics();
@@ -1800,6 +1834,19 @@ function fetchRiskMetrics() {
         drawdownEl.textContent = `${ddAbs} (${ddPct})`;
         drawdownEl.style.color = data.drawdown_pct > 0.0 ? "var(--red)" : "var(--text)";
       }
+      const ddEmojiEl = document.getElementById("risk-drawdown-emoji");
+      if (ddEmojiEl) {
+        if (data.drawdown_pct === 0.0) {
+          ddEmojiEl.textContent = "😊";
+          ddEmojiEl.title = "Excellent: No drawdown today.";
+        } else if (data.drawdown_pct <= 5.0) {
+          ddEmojiEl.textContent = "😐";
+          ddEmojiEl.title = `Acceptable: Low drawdown of ${ddPct}.`;
+        } else {
+          ddEmojiEl.textContent = "😢";
+          ddEmojiEl.title = `Warning: High drawdown of ${ddPct}!`;
+        }
+      }
       
       // Profit Factor
       const pf = data.profit_factor;
@@ -1811,6 +1858,19 @@ function fetchRiskMetrics() {
         } else {
           pfEl.textContent = pf.toFixed(2);
           pfEl.style.color = pf >= 1.5 ? "var(--green)" : (pf >= 1.0 ? "var(--yellow)" : "var(--red)");
+        }
+      }
+      const pfEmojiEl = document.getElementById("risk-pf-emoji");
+      if (pfEmojiEl) {
+        if (pf === 99.99 || pf >= 1.5) {
+          pfEmojiEl.textContent = "😊";
+          pfEmojiEl.title = pf === 99.99 ? "Excellent: Infinite Profit Factor (no losses)." : `Excellent: High Profit Factor of ${pf.toFixed(2)}.`;
+        } else if (pf >= 1.0 && pf < 1.5) {
+          pfEmojiEl.textContent = "😐";
+          pfEmojiEl.title = `Acceptable: Moderate Profit Factor of ${pf.toFixed(2)}.`;
+        } else {
+          pfEmojiEl.textContent = "😢";
+          pfEmojiEl.title = `Warning: Poor Profit Factor of ${pf.toFixed(2)} (gross losses exceed gross profits)!`;
         }
       }
       
@@ -1832,6 +1892,19 @@ function fetchRiskMetrics() {
           dlBar.style.backgroundColor = "var(--accent)";
         }
       }
+      const dlEmojiEl = document.getElementById("risk-daily-loss-emoji");
+      if (dlEmojiEl) {
+        if (dlPct < 50.0) {
+          dlEmojiEl.textContent = "😊";
+          dlEmojiEl.title = `Safe: Daily loss limit utilization is low (${dlPct.toFixed(2)}%).`;
+        } else if (dlPct < 80.0) {
+          dlEmojiEl.textContent = "😐";
+          dlEmojiEl.title = `Caution: Daily loss limit utilization is moderate (${dlPct.toFixed(2)}%).`;
+        } else {
+          dlEmojiEl.textContent = "😢";
+          dlEmojiEl.title = `Critical Warning: Daily loss limit utilization is high (${dlPct.toFixed(2)}%)!`;
+        }
+      }
       
       // Risk to Reward
       const rr = data.avg_rr;
@@ -1845,12 +1918,38 @@ function fetchRiskMetrics() {
           rrEl.style.color = "var(--text-dim)";
         }
       }
+      const rrEmojiEl = document.getElementById("risk-rr-emoji");
+      if (rrEmojiEl) {
+        if (rr >= 1.5) {
+          rrEmojiEl.textContent = "😊";
+          rrEmojiEl.title = `Excellent: Active Avg R:R is ${rr.toFixed(2)}.`;
+        } else if (rr >= 1.0 && rr < 1.5) {
+          rrEmojiEl.textContent = "😐";
+          rrEmojiEl.title = `Acceptable: Active Avg R:R is ${rr.toFixed(2)}.`;
+        } else if (rr > 0 && rr < 1.0) {
+          rrEmojiEl.textContent = "😢";
+          rrEmojiEl.title = `Warning: Poor Active Avg R:R of ${rr.toFixed(2)} (risk exceeds reward).`;
+        } else {
+          rrEmojiEl.textContent = "😐";
+          rrEmojiEl.title = "No active positions to calculate R:R.";
+        }
+      }
       
       // Notional Exposure
       const exp = `₹${data.total_notional_exposure.toLocaleString('en-IN', {minimumFractionDigits: 2})}`;
       const expEl = document.getElementById("risk-exposure");
       if (expEl) {
         expEl.textContent = exp;
+      }
+      const expEmojiEl = document.getElementById("risk-exposure-emoji");
+      if (expEmojiEl) {
+        if (data.total_notional_exposure > 0) {
+          expEmojiEl.textContent = "🙂";
+          expEmojiEl.title = `Active Exposure: Current total notional size of open positions is ₹${data.total_notional_exposure.toLocaleString('en-IN')}.`;
+        } else {
+          expEmojiEl.textContent = "😐";
+          expEmojiEl.title = "No active exposure: no open positions.";
+        }
       }
     })
     .catch(err => console.error("Error fetching risk metrics:", err));
@@ -1861,8 +1960,8 @@ function fetchMargins() {
     .then(r => r.json())
     .then(data => {
       if (data.error) {
-        document.getElementById("eq-avail").textContent = "N/A";
-        document.getElementById("eq-util").textContent = "N/A";
+        if (document.getElementById("eq-avail")) document.getElementById("eq-avail").textContent = "N/A";
+        if (document.getElementById("eq-util")) document.getElementById("eq-util").textContent = "N/A";
         if (document.getElementById("eq-total")) document.getElementById("eq-total").textContent = "N/A";
         return;
       }
@@ -1873,8 +1972,8 @@ function fetchMargins() {
       const eqUtil = `₹${data.equity.utilized.toLocaleString('en-IN', {minimumFractionDigits: 2})}`;
       const eqTotal = `₹${eqTotalVal.toLocaleString('en-IN', {minimumFractionDigits: 2})}`;
       
-      document.getElementById("eq-avail").textContent = eqAvail;
-      document.getElementById("eq-util").textContent = eqUtil;
+      if (document.getElementById("eq-avail")) document.getElementById("eq-avail").textContent = eqAvail;
+      if (document.getElementById("eq-util")) document.getElementById("eq-util").textContent = eqUtil;
       if (document.getElementById("eq-total")) document.getElementById("eq-total").textContent = eqTotal;
       
       // Update Tier 2 Margin legends
@@ -2341,13 +2440,61 @@ function renderMetricsHTML(data) {
   });
 }
 
+function fetchOpenOrders() {
+  fetch("/api/open_orders")
+    .then(r => r.json())
+    .then(data => {
+      const card = document.getElementById("open-orders-card");
+      const tbody = document.getElementById("open-orders-tbody");
+      if (!data || data.length === 0) {
+        card.style.display = "none";
+        return;
+      }
+      card.style.display = "flex";
+      
+      const countBadge = document.getElementById("open-orders-count");
+      if (countBadge) {
+        countBadge.textContent = `${data.length} Pending`;
+      }
+      
+      let html = "";
+      data.forEach(o => {
+        let timeStr = "—";
+        if (o.order_timestamp && o.order_timestamp !== "None") {
+          const d = new Date(o.order_timestamp);
+          timeStr = d.toLocaleTimeString('en-IN', {hour: '2-digit', minute:'2-digit', second:'2-digit'});
+        }
+        const sideColor = o.transaction_type === 'BUY' ? 'var(--blue)' : 'var(--red)';
+        
+        html += `
+          <tr>
+            <td style="color:var(--text-dim);">${timeStr}</td>
+            <td><strong>${o.tradingsymbol || '—'}</strong></td>
+            <td><span style="color:${sideColor}; font-weight:600;">${o.transaction_type}</span></td>
+            <td>${o.order_type}</td>
+            <td>${o.quantity}</td>
+            <td>${formatNumeric(o.price)} ${o.trigger_price ? `<br><span style="font-size:10px; color:var(--text-dim);">Trg: ${o.trigger_price}</span>` : ''}</td>
+            <td><span class="badge badge-open">${o.status}</span> <span style="font-size:10px; color:var(--text-dim);">${o.status_message}</span></td>
+          </tr>
+        `;
+      });
+      tbody.innerHTML = html;
+    })
+    .catch(err => console.error("Error fetching open orders:", err));
+}
+
 function fetchClosedTrades() {
   fetch("/api/live_trades?status=CLOSED&limit=20")
     .then(r => r.json())
     .then(data => {
+      data.sort((a, b) => {
+        const tA = a.closed_at && a.closed_at !== "None" ? new Date(a.closed_at).getTime() : 0;
+        const tB = b.closed_at && b.closed_at !== "None" ? new Date(b.closed_at).getTime() : 0;
+        return tB - tA;
+      });
       const tbody = document.getElementById("closed-trades-tbody");
       if (data.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="10" class="empty-row">No execution history</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="9" class="empty-row">No execution history</td></tr>`;
         return;
       }
       
@@ -2382,8 +2529,10 @@ function fetchClosedTrades() {
         html += `
           <tr>
             <td style="color:var(--text-dim);">${closeTime}</td>
-            <td><strong>${p.symbol}</strong></td>
-            <td>${p.expiry || '—'}</td>
+            <td>
+              <strong>${p.symbol}</strong>
+              ${p.expiry ? `<div style="font-size:11px; color:var(--text-dim); margin-top:2px;">${p.expiry}</div>` : ''}
+            </td>
             <td><span style="color:${p.side === 'BUY' ? 'var(--blue)' : 'var(--red)'}">${p.side}</span> ${p.option_type}</td>
             <td>${lotsDisplay}</td>
             <td>${formatNumeric(p.entry_premium || p.entry_underlying)}</td>

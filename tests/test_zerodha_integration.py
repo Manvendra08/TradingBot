@@ -177,3 +177,104 @@ def test_zerodha_postback_valid_checksum_does_not_fallback_close_wrong_trade():
     with get_conn() as conn:
         row = conn.execute("SELECT status FROM live_trades WHERE id=?", (trade_id,)).fetchone()
     assert row["status"] == "OPEN"
+
+
+def test_fetch_real_kite_positions_side_aware_matching():
+    from src.models.schema import get_conn, insert_live_trade
+    from dashboard_server import _fetch_real_kite_positions, get_live_trades
+    from config.runtime_config import load_runtime_config, save_runtime_config
+    
+    # Clean database
+    with get_conn() as conn:
+        conn.execute("DELETE FROM live_trades")
+        
+    # Insert a SELL FUT trade in live_trades
+    trade_id = insert_live_trade({
+        "opened_at": "2026-06-17T14:30:29.808812+00:00",
+        "symbol": "NATURALGAS",
+        "expiry": "2026-06-23",
+        "option_type": "FUT",
+        "strike": 295.0,
+        "side": "SELL",
+        "lots": 1,
+        "status": "OPEN",
+        "entry_underlying": 296.8,
+        "entry_premium": 296.8,
+        "sl_underlying": 305.72,
+        "target_underlying": 284.91,
+        "sl_premium": 305.72,
+        "target_premium": 284.91,
+        "trade_status": "TRIGGERED_EXPERIMENTAL",
+        "exit_mode": "POLL"
+    })
+    
+    # Mock Kite client and its positions response
+    mock_kite = MagicMock()
+    mock_kite.positions.return_value = {
+        "net": [
+            {
+                "tradingsymbol": "NATURALGAS26JUNFUT",
+                "exchange": "MCX",
+                "quantity": -1,  # SELL 1 lot
+                "average_price": 296.8,
+                "last_price": 298.3,
+                "pnl": -1750.0
+            },
+            {
+                "tradingsymbol": "NATURALGAS26JUNFUT",
+                "exchange": "MCX",
+                "quantity": 3,   # BUY 3 lots
+                "average_price": 296.8,
+                "last_price": 298.3,
+                "pnl": 58000.0
+            }
+        ]
+    }
+    mock_kite.get_gtts.return_value = []
+    
+    # Run _fetch_real_kite_positions
+    with patch("src.engine.symbol_resolver._INSTRUMENT_CACHE", {
+        ("NATURALGAS", "2026-06-23", 0.0, "FUT"): {
+            "tradingsymbol": "NATURALGAS26JUNFUT",
+            "instrument_token": 12345,
+            "lot_size": 1,
+            "tick_size": 0.05
+        }
+    }), patch("src.engine.live_trading.get_kite_client", return_value=mock_kite):
+        parsed = _fetch_real_kite_positions(mock_kite)
+        
+        # Verify two positions parsed
+        assert len(parsed) == 2
+        
+        # Find SELL FUT parsed position (should match bot trade)
+        sell_pos = next(p for p in parsed if p["side"] == "SELL")
+        assert sell_pos["lots"] == 1
+        assert sell_pos["exit_mode"] == "BOT"
+        assert sell_pos["sl_premium"] == 305.72
+        assert sell_pos["target_premium"] == 284.91
+        assert sell_pos["pnl_rupees"] == -1750.0
+        
+        # Find BUY FUT parsed position (should be KITE manual trade)
+        buy_pos = next(p for p in parsed if p["side"] == "BUY")
+        assert buy_pos["lots"] == 3
+        assert buy_pos["exit_mode"] == "KITE"
+        assert buy_pos["sl_premium"] == "—"
+        assert buy_pos["target_premium"] == "—"
+        assert buy_pos["pnl_rupees"] == 58000.0
+        
+        # Now check get_live_trades duplicate checking
+        # Save shadow mode settings to True
+        conf = load_runtime_config()
+        original_shadow = conf.get("live_shadow_mode", True)
+        conf["live_shadow_mode"] = True
+        save_runtime_config(conf)
+        
+        try:
+            live_positions = get_live_trades(symbol="", status="OPEN")
+            assert len(live_positions) == 2
+            
+            sides = {p["side"] for p in live_positions}
+            assert sides == {"BUY", "SELL"}
+        finally:
+            conf["live_shadow_mode"] = original_shadow
+            save_runtime_config(conf)

@@ -2,9 +2,10 @@
 NSEBOT entry point.
 
 Usage:
-  python main.py                          → start scheduler (blocking)
-  python main.py --now                    → single pipeline run (test / manual)
-  python main.py --now --symbols NIFTY    → single run for specific symbol(s)
+  python main.py                          → start scheduler (blocking, waits for interval boundary)
+  python main.py --now                    → start scheduler and trigger immediate scan on launch
+  python main.py --once                   → single pipeline run and exit (test / manual)
+  python main.py --once --symbols NIFTY   → single run for specific symbol(s) and exit
   python main.py --dashboard              → print Streamlit launch command
   python main.py --bridge                 → start Chrome Extension HTTP bridge
 
@@ -14,6 +15,16 @@ import sys
 import argparse
 import logging
 from pathlib import Path
+
+# ── Force IPv4 globally ─────────────────────────────────────────────────────
+# Zerodha Kite whitelists IPv4 only. When the OS prefers IPv6, requests
+# originate from a non-whitelisted address and get rejected.
+import socket
+_orig_getaddrinfo = socket.getaddrinfo
+def _ipv4_only_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    return _orig_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+socket.getaddrinfo = _ipv4_only_getaddrinfo
+
 
 # ── Load .env first, before any config import ──────────────────────────────
 try:
@@ -41,21 +52,24 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python main.py                           # start 15-min scheduler
-  python main.py --now                     # one-shot run, all symbols
-  python main.py --now --symbols NIFTY     # one-shot for NIFTY only
+  python main.py                           # start scheduler (waits for next interval boundary)
+  python main.py --now                     # start scheduler with an immediate scan on launch
+  python main.py --once                    # one-shot run, all symbols and exit
+  python main.py --once --symbols NIFTY    # one-shot for NIFTY only and exit
   python main.py --dashboard               # show Streamlit command
   python main.py --bridge                  # start extension HTTP bridge
         """,
     )
     parser.add_argument("--now",       action="store_true",
+                        help="Start scheduler and trigger an immediate scan loop on launch")
+    parser.add_argument("--once",      action="store_true",
                         help="Run pipeline once immediately and exit")
     parser.add_argument("--dashboard", action="store_true",
                         help="Print Streamlit dashboard launch command")
     parser.add_argument("--bridge",    action="store_true",
                         help="Start Chrome Extension HTTP bridge on localhost:8765")
     parser.add_argument("--symbols",   nargs="*", metavar="SYM",
-                        help="Override WATCH_SYMBOLS for --now runs")
+                        help="Override WATCH_SYMBOLS for --once runs")
     args = parser.parse_args()
 
     configure_logging("bridge" if args.bridge else "main")
@@ -79,7 +93,7 @@ Examples:
         run()
         return
 
-    if args.now:
+    if args.once:
         from src.engine.pipeline import run_pipeline
         log.info("One-shot pipeline run%s",
                  f" for {args.symbols}" if args.symbols else " for all configured symbols")
@@ -90,7 +104,7 @@ Examples:
     # Default: blocking scheduler
     log.info("Starting APScheduler — press Ctrl+C to stop")
     from src.scheduler.job_runner import start_scheduler
-    start_scheduler()
+    start_scheduler(immediate=args.now)
 
 
 if __name__ == "__main__":

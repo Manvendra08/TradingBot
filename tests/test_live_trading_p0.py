@@ -237,3 +237,132 @@ def test_live_entry_blocks_fallback_symbol_before_broker_order():
     assert row["status"] == "REJECTED"
     assert row["broker_status"] == "REJECTED"
     assert "fallback tradingsymbol" in row["reason"]
+
+
+def test_place_kite_order_pricing_rules():
+    from src.engine.live_trading import place_kite_order
+    fake_kite = MagicMock()
+
+    # 1. Futures (transaction_type="BUY", tick_size=0.05, 0.2% buffer)
+    # expected limit_price: ltp = 300.0, price = 300.0 * 1.002 = 300.60
+    fake_kite.ltp.return_value = {"MCX:NATURALGAS26JUNFUT": {"last_price": 300.0}}
+    place_kite_order(fake_kite, "NATURALGAS", "MCX", "NATURALGAS26JUNFUT", "BUY", 1250, shadow_mode=False, tick_size=0.05)
+    fake_kite.place_order.assert_called_with(
+        variety=fake_kite.VARIETY_REGULAR,
+        exchange="MCX",
+        tradingsymbol="NATURALGAS26JUNFUT",
+        transaction_type="BUY",
+        quantity=1250,
+        product=fake_kite.PRODUCT_MIS,
+        order_type=fake_kite.ORDER_TYPE_LIMIT,
+        price=300.60
+    )
+
+    fake_kite.place_order.reset_mock()
+
+    # 2. Options (transaction_type="BUY", tick_size=0.05, 5% buffer, check tick rounding)
+    # expected limit_price: ltp = 496.91 * 1.05 = 521.7555, rounded to 0.05 multiple = 521.75
+    fake_kite.ltp.return_value = {"NFO:BANKNIFTY26JUN58000CE": {"last_price": 496.91}}
+    place_kite_order(fake_kite, "BANKNIFTY", "NFO", "BANKNIFTY26JUN58000CE", "BUY", 30, shadow_mode=False, tick_size=0.05)
+    fake_kite.place_order.assert_called_with(
+        variety=fake_kite.VARIETY_REGULAR,
+        exchange="NFO",
+        tradingsymbol="BANKNIFTY26JUN58000CE",
+        transaction_type="BUY",
+        quantity=30,
+        product=fake_kite.PRODUCT_MIS,
+        order_type=fake_kite.ORDER_TYPE_LIMIT,
+        price=521.75
+    )
+
+
+def test_llm_caching_and_cooldown():
+    from src.engine import llm_enrichment
+    from src.engine.llm_enrichment import get_llm_verdict, LLMTradeVerdict
+    import os
+
+    # Enable API client path in tests
+    llm_enrichment.genai = MagicMock()
+    os.environ["GEMINI_API_KEY"] = "fake-api-key"
+
+    # Reset caches and state
+    llm_enrichment._VERDICT_CACHE = {}
+    llm_enrichment._API_QUOTA_EXHAUSTED_UNTIL = 0.0
+
+    # Mock _call_gemini_api
+    dummy_verdict = LLMTradeVerdict(
+        bias="BULLISH",
+        confidence=80,
+        strategy="Bull Call Spread",
+        strike_selection="ATM CE",
+        reasoning="Test reasoning",
+        risk_rating="LOW",
+        exit_advice="Hold",
+        news_synthesis="Positive"
+    )
+
+    with patch("src.engine.llm_enrichment._call_gemini_api", return_value=dummy_verdict) as mock_api:
+        intel = {"verdict_label": "Long Buildup", "confidence": 80}
+        scan_ctx = {"underlying": 24000.0}
+
+        # 1. First call -> should query API
+        v1 = get_llm_verdict("NIFTY", intel, scan_ctx)
+        assert v1 == dummy_verdict
+        assert mock_api.call_count == 1
+
+        # 2. Second call with same parameters and minor price change -> should reuse cache
+        scan_ctx_minor = {"underlying": 24010.0}  # 10 / 24000 = 0.04% move (< 0.2%)
+        v2 = get_llm_verdict("NIFTY", intel, scan_ctx_minor)
+        assert v2 == dummy_verdict
+        assert mock_api.call_count == 1  # call count still 1
+
+        # 3. Third call with significant price change -> should bypass cache and query API
+        scan_ctx_major = {"underlying": 24100.0}  # 100 / 24000 = 0.41% move (> 0.2%)
+        v3 = get_llm_verdict("NIFTY", intel, scan_ctx_major)
+        assert v3 == dummy_verdict
+        assert mock_api.call_count == 2
+
+        # 4. Fourth call triggering a trade -> should bypass cache
+        trade_decision = {"status": "TRIGGERED_CORE"}
+        v4 = get_llm_verdict("NIFTY", intel, scan_ctx_major, trade_decision=trade_decision)
+        assert v4 == dummy_verdict
+        assert mock_api.call_count == 3
+
+
+def test_llm_alternative_fallbacks():
+    from src.engine import llm_enrichment
+    from src.engine.llm_enrichment import _call_gemini_api, LLMTradeVerdict
+    import os
+
+    # Mock requests.post
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "choices": [{
+            "message": {
+                "content": '{"bias": "BEARISH", "confidence": 75, "strategy": "Bear Call Spread", "strike_selection": "ATM PE", "reasoning": "Test", "risk_rating": "LOW", "exit_advice": "Hold", "news_synthesis": "Negative"}'
+            }
+        }]
+    }
+
+    # Enable alternative provider keys
+    os.environ["GROQ_API_KEY"] = "fake-groq-key"
+    old_gemini_key = os.environ.get("GEMINI_API_KEY")
+    if "GEMINI_API_KEY" in os.environ:
+        del os.environ["GEMINI_API_KEY"]
+
+    try:
+        with patch("requests.post", return_value=mock_resp) as mock_post:
+            # Call it with no Gemini API key -> should go straight to alternative (Groq)
+            result = _call_gemini_api("NIFTY", "dummy prompt", LLMTradeVerdict)
+            assert result is not None
+            assert result.bias == "BEARISH"
+            assert result.confidence == 75
+            assert mock_post.call_count >= 1
+    finally:
+        # Restore key
+        if old_gemini_key:
+            os.environ["GEMINI_API_KEY"] = old_gemini_key
+
+
+

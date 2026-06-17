@@ -37,6 +37,9 @@ from config.settings import (
     TREND_FILTER_MODE,
     MOMENTUM_SCORE_THRESHOLD,
     TREND_MIN_SCANS,
+    AI_DECISION_MODE,
+    AI_MIN_CONFIDENCE_BOOST,
+    AI_MIN_CONFIDENCE_VETO,
 )
 
 log = logging.getLogger(__name__)
@@ -57,7 +60,7 @@ def _count_valid_scans(symbol: str) -> int:
     return int(row[0]) if row else 0
 
 
-def make_trade_decision(symbol: str, intel: dict, ctx: dict) -> dict:
+def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None) -> dict:
     """
     Combine all layers → TRIGGERED_CORE / TRIGGERED_EXPERIMENTAL / BLOCKED.
 
@@ -72,6 +75,11 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict) -> dict:
             "scores": dict,
         }
     """
+    from config.runtime_config import load_runtime_config
+    rconf = load_runtime_config()
+    ai_decision_mode = rconf.get("live_ai_decision_mode", "advisory")
+    ai_min_confidence_boost = int(rconf.get("live_ai_min_confidence_boost", 80))
+
     verdict    = intel.get("verdict_label", "")
     confidence = int(intel.get("confidence") or 0)
     soft_conflicts: list[str] = []
@@ -128,6 +136,20 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict) -> dict:
         "trend_alignment": trend_alignment,
         "regime_score":    regime_sc,
     }
+
+    # ── AI verdict influence (Phase 2) ────────────────────────────────────
+    if ai_verdict:
+        ai_bias = getattr(ai_verdict, 'bias', None) or (ai_verdict.get('bias') if isinstance(ai_verdict, dict) else None)
+        ai_conf = getattr(ai_verdict, 'confidence', 0) or (ai_verdict.get('confidence', 0) if isinstance(ai_verdict, dict) else 0)
+        ai_risk = getattr(ai_verdict, 'risk_rating', '') or (ai_verdict.get('risk_rating', '') if isinstance(ai_verdict, dict) else '')
+        verdict_bias = 'BULLISH' if is_bullish(verdict) else 'BEARISH'
+        ai_agrees = (ai_bias == verdict_bias)
+        scores['ai_confidence'] = ai_conf
+        scores['ai_bias'] = ai_bias
+        scores['ai_agrees'] = ai_agrees
+        scores['ai_risk_rating'] = ai_risk
+        log.info("%s: AI verdict — bias=%s conf=%d%% risk=%s agrees=%s (mode=%s)",
+                 symbol, ai_bias, ai_conf, ai_risk, ai_agrees, AI_DECISION_MODE)
 
     # ── Pre-fetch broader trend once — shared by all mode branches ─────────
     broader_trend = get_broader_trend_from_alerts(symbol)
@@ -213,7 +235,23 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict) -> dict:
         if entry_quality < MIN_ENTRY_QUALITY_EXPERIMENTAL:
             block_parts.append(f"Poor entry quality ({entry_quality}/100): {'; '.join(entry_reasons)}")
 
-        return _blocked("; ".join(block_parts) or "No qualifying condition met")
+        block_reason = "; ".join(block_parts) or "No qualifying condition met"
+
+        # Priority 5: AI boost — if AI is confident and agrees, promote to EXPERIMENTAL
+        if ai_verdict and ai_decision_mode in ("boost_only", "full"):
+            ai_conf = scores.get('ai_confidence', 0)
+            ai_agrees = scores.get('ai_agrees', False)
+            if ai_agrees and ai_conf >= ai_min_confidence_boost:
+                log.info("%s: AI BOOST — promoting BLOCKED to TRIGGERED_EXPERIMENTAL (AI conf=%d%%)",
+                         symbol, ai_conf)
+                soft_conflicts.append("AI_PROMOTED")
+                return _decision(
+                    "TRIGGERED_EXPERIMENTAL", "AI_PROMOTED",
+                    f"AI boost: conf={ai_conf}% agrees with {verdict} | Rule blocked: {block_reason}",
+                    soft_conflicts, scores,
+                )
+
+        return _blocked(block_reason)
 
     else:
         # Unknown mode — fall back to legacy logic
@@ -254,7 +292,31 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict) -> dict:
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 def _decision(status: str, setup_type: str, reason: str,
-              soft_conflicts: list[str], scores: dict) -> dict:
+              soft_conflicts: list[str], scores: dict,
+              ai_verdict=None) -> dict:
+    # Phase 2: AI veto check — if AI strongly disagrees, can block a TRIGGERED trade
+    from config.runtime_config import load_runtime_config
+    rconf = load_runtime_config()
+    ai_decision_mode = rconf.get("live_ai_decision_mode", "advisory")
+    ai_min_confidence_veto = int(rconf.get("live_ai_min_confidence_veto", 85))
+
+    if (("ai_bias" in scores or ai_verdict) and ai_decision_mode == "full"
+            and status.startswith("TRIGGERED")):
+        ai_conf = scores.get('ai_confidence', 0)
+        ai_agrees = scores.get('ai_agrees', True)  # default True = no veto
+        ai_risk = scores.get('ai_risk_rating', '')
+        if not ai_agrees and ai_conf >= ai_min_confidence_veto:
+            log.warning(
+                "Trade VETOED by AI: %s | AI bias disagrees (conf=%d%%, risk=%s)",
+                status, ai_conf, ai_risk,
+            )
+            return {
+                "status":        "BLOCKED",
+                "setup_type":    None,
+                "reason":        f"AI VETO: conf={ai_conf}% disagrees, risk={ai_risk} | was {status}: {reason}",
+                "soft_conflicts": soft_conflicts + ["AI_VETOED"],
+                "scores":        scores,
+            }
     log.info("Trade decision: %s | %s | %s", status, setup_type, reason)
     return {
         "status":        status,

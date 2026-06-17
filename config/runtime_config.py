@@ -30,6 +30,7 @@ def load_runtime_config() -> dict:
         "live_capital_per_trade_inr": 20000,
         "live_max_capital_utilisation_pct": 80,
         "live_max_concurrent_positions": 2,
+        "live_max_daily_loss_rupees": 200000,
         "live_symbol_lots": {
             "NIFTY": 1,
             "BANKNIFTY": 1,
@@ -41,7 +42,15 @@ def load_runtime_config() -> dict:
         "live_enabled_broker_symbols": ["NIFTY", "BANKNIFTY", "NATURALGAS", "CRUDEOIL"],
         "oi_spike_threshold_pct": 10.0,
         "price_spike_threshold_pct": 2.0,
-        "dashboard_auth_enabled": False
+        "dashboard_auth_enabled": False,
+        "live_ai_decision_mode": "advisory",
+        "live_ai_min_confidence_boost": 80,
+        "live_ai_min_confidence_veto": 85,
+        "live_ai_exit_advisor_enabled": False,
+        "manage_direct_kite_positions": False,
+        "direct_kite_initialization_mode": "fixed_pct",
+        "direct_kite_default_sl_pct": 30.0,
+        "direct_kite_default_tgt_pct": 50.0
     }
     if not RUNTIME_CONFIG_PATH.exists():
         return defaults

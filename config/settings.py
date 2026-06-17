@@ -245,3 +245,28 @@ MAX_LEVEL_DISTANCE_STEPS       = 3
 
 # Timeframe Strategy Settings
 TIMEFRAME_OI_MIN_DIFF_PCT      = 0.005  # 0.5% of base side's previous OI
+
+TF_CANDLE_BODY_MIN_RATIO      = 0.45
+TF_CANDLE_CLOSE_POSITION_LONG  = 0.65   # close must be in top 35%
+TF_CANDLE_CLOSE_POSITION_SHORT = 0.35   # close must be in bottom 35%
+TF_BREAKOUT_RANGE_PCT          = 0.25   # 25% of prev candle range
+TF_BREAKOUT_CMP_CAP_PCT        = 0.002  # 0.2% of CMP
+TF_EXHAUSTION_HARD_BLOCK       = 4      # block at 4+ with weak OI
+TF_REENTRY_COOLDOWN_BARS       = 1      # wait 1 3H bar after SL
+TF_CONTINUATION_OI_MULTIPLIER  = 2.0    # 2x OI threshold for non-reversal entries
+
+
+# ── AI Brain Settings ─────────────────────────────────────────────────────
+# Controls how the AI verdict influences trade decisions.
+#   advisory   — AI verdict logged and displayed, but does NOT change trade outcomes (default, safe)
+#   boost_only — AI can promote BLOCKED → TRIGGERED_EXPERIMENTAL (never veto)
+#   full       — AI can both promote and veto trade decisions
+AI_DECISION_MODE               = os.environ.get("AI_DECISION_MODE", "advisory")
+
+# Minimum AI confidence to influence trade decisions (boost/veto)
+AI_MIN_CONFIDENCE_BOOST        = int(os.environ.get("AI_MIN_CONFIDENCE_BOOST", "80"))
+AI_MIN_CONFIDENCE_VETO         = int(os.environ.get("AI_MIN_CONFIDENCE_VETO", "85"))
+
+# Whether to call AI exit advisor for open trades during each scan
+AI_EXIT_ADVISOR_ENABLED        = os.environ.get("AI_EXIT_ADVISOR_ENABLED", "false").lower() == "true"
+

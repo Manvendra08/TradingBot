@@ -4,6 +4,11 @@ from src.models.schema import get_conn
 from dashboard_server import get_risk_metrics
 
 def test_risk_metrics_endpoint(isolated_db):
+    # Clean database before running to ensure isolation
+    with get_conn() as conn:
+        conn.execute("DELETE FROM paper_trades")
+        conn.execute("DELETE FROM daily_equity_peaks")
+
     # Initial state
     metrics = get_risk_metrics(mode="paper")
     assert metrics["mode"] == "paper"
