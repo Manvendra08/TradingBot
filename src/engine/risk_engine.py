@@ -138,10 +138,12 @@ def _check_risk_limits_for_table(
     return True, "OK"
 
 
-def check_risk_limits(symbol: str) -> tuple[bool, str]:
+def check_risk_limits(symbol: str, setup_type: str | None = None) -> tuple[bool, str]:
     """
     Paper-trading risk check.  Queries paper_trades table.
     Return (allowed: bool, reason: str).
+
+    setup_type is accepted for call-site compatibility but not used in checks.
     """
     return _check_risk_limits_for_table(symbol, "paper_trades", "paper")
 
