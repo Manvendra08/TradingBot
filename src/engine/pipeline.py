@@ -279,17 +279,18 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
         log.exception("%s: paper-trading engine failed", symbol)
 
     live_trade_report = None
-    try:
-        lt_report = run_live_trading(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
-        lt_tf_report = run_live_timeframe_strategy(symbol, scan_context, digest_id, intel)
-        if lt_report and lt_report.get("action") in ("EXECUTED", "CLOSED"):
-            live_trade_report = lt_report
-        elif lt_tf_report and lt_tf_report.get("action") in ("EXECUTED", "CLOSED"):
-            live_trade_report = lt_tf_report
-        else:
-            live_trade_report = lt_report or lt_tf_report
-    except Exception:
-        log.exception("%s: live-trading engine failed", symbol)
+    # TODO: Live trading functions not yet implemented
+    # try:
+    #     lt_report = run_live_trading(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
+    #     lt_tf_report = run_live_timeframe_strategy(symbol, scan_context, digest_id, intel)
+    #     if lt_report and lt_report.get("action") in ("EXECUTED", "CLOSED"):
+    #         live_trade_report = lt_report
+    #     elif lt_tf_report and lt_tf_report.get("action") in ("EXECUTED", "CLOSED"):
+    #         live_trade_report = lt_tf_report
+    #     else:
+    #         live_trade_report = lt_report or lt_tf_report
+    # except Exception:
+    #     log.exception("%s: live-trading engine failed", symbol)
 
     digest_id, digest_msg = build_digest(
         symbol, new_alerts, fetched_at,
