@@ -5,17 +5,18 @@ B5 fix: NO_TRADE regime tags EXPERIMENTAL instead of hard-blocking in research m
 Phase 4: Full hybrid trend-based trading logic integration.
 
 P2 fix (#1): broader_trend computed once per cycle and passed down.
-P2 fix (#6): TREND_MIN_SCANS gate added — blocks any trend-based trade when
-  the symbol has fewer than TREND_MIN_SCANS non-fallback scan summaries.
-  Prevents new symbols from firing TRIGGERED_CORE with zero trend validation.
-P2 fix (#7): Hybrid mode momentum fallback threshold changed from hardcoded 80
-  to settings.MOMENTUM_SCORE_THRESHOLD so it is tunable without a code change.
+P2 fix (#6): TREND_MIN_SCANS gate added.
+P2 fix (#7): MOMENTUM_SCORE_THRESHOLD from settings.
 
-Autopsy fix 2: AI veto guard default changed from True to False.
-  Previously `scores.get('ai_agrees', True)` meant veto could never fire when
-  ai_verdict was None (key absent from scores). Now defaults False so the
-  guard evaluates correctly: missing AI verdict → no veto (ai_agrees=False
-  with ai_conf=0 will not meet the ai_min_confidence_veto threshold).
+Autopsy fix #6: AI advisory mode default veto guard changed True → False.
+Autopsy fix #7: Hybrid mode reversal (Priority 1) now requires
+  confidence >= REVERSAL_MIN_CONFIDENCE before firing. Lower-confidence
+  reversal signals fall through to persistence/momentum paths, preventing
+  false top/bottom calls from overriding strong established trends.
+Autopsy fix #8: PAPER_RESEARCH_MODE consistently bypasses BOTH scan-count
+  gate AND regime gate. Previously scan gate was enforced while regime was
+  silently overridden — misleading test/prod parity. Both bypasses are now
+  explicit and tagged with soft_conflict entries.
 """
 from __future__ import annotations
 
@@ -69,17 +70,6 @@ def _count_valid_scans(symbol: str) -> int:
 def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None) -> dict:
     """
     Combine all layers → TRIGGERED_CORE / TRIGGERED_EXPERIMENTAL / BLOCKED.
-
-    Phase 4: Implements full hybrid trend-based trading logic with mode switching.
-
-    Returns:
-        {
-            "status": str,
-            "setup_type": str | None,
-            "reason": str,
-            "soft_conflicts": list[str],
-            "scores": dict,
-        }
     """
     from config.runtime_config import load_runtime_config
     rconf = load_runtime_config()
@@ -100,12 +90,18 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None) ->
     if intel.get("chart_conflict"):
         return _blocked("Timeframe conflict: 1H and 3H charts disagree")
 
-    # ── Minimum scan history gate (#6) ─────────────────────────────────────
+    # ── Fix #8: Research mode scan-count gate bypass (consistent with regime) ──
+    # In PAPER_RESEARCH_MODE both gates are bypassed together so test/prod
+    # parity is clear. Each bypass is explicitly tagged as a soft_conflict.
     scan_count = _count_valid_scans(symbol)
     if scan_count < TREND_MIN_SCANS:
-        return _blocked(
-            f"Insufficient scan history: {scan_count} scans (need {TREND_MIN_SCANS})"
-        )
+        if PAPER_RESEARCH_MODE and confidence >= MIN_CONFIDENCE_CORE:
+            soft_conflicts.append("INSUFFICIENT_SCAN_HISTORY")
+            log.debug("%s: research mode — scan gate bypassed (%d scans)", symbol, scan_count)
+        else:
+            return _blocked(
+                f"Insufficient scan history: {scan_count} scans (need {TREND_MIN_SCANS})"
+            )
 
     # Build plan to get option_type + strike for entry quality
     from src.engine.paper_plan import build_paper_trade_plan
@@ -124,9 +120,11 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None) ->
 
     regime = detect_market_regime(symbol)
     if regime == REGIME_NO_TRADE:
+        # Fix #8: bypass regime gate consistently with scan gate
         if PAPER_RESEARCH_MODE and confidence >= MIN_CONFIDENCE_CORE:
             regime_sc = 50
             soft_conflicts.append("INSUFFICIENT_REGIME_HISTORY")
+            log.debug("%s: research mode — regime gate bypassed", symbol)
         else:
             return _blocked("Insufficient scan history for regime detection")
     else:
@@ -139,7 +137,7 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None) ->
         "regime_score":    regime_sc,
     }
 
-    # ── AI verdict influence (Phase 2) ────────────────────────────────────
+    # ── AI verdict influence ───────────────────────────────────────────────
     if ai_verdict:
         ai_bias = getattr(ai_verdict, 'bias', None) or (ai_verdict.get('bias') if isinstance(ai_verdict, dict) else None)
         ai_conf = getattr(ai_verdict, 'confidence', 0) or (ai_verdict.get('confidence', 0) if isinstance(ai_verdict, dict) else 0)
@@ -153,10 +151,10 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None) ->
         log.info("%s: AI verdict — bias=%s conf=%d%% risk=%s agrees=%s (mode=%s)",
                  symbol, ai_bias, ai_conf, ai_risk, ai_agrees, AI_DECISION_MODE)
 
-    # ── Pre-fetch broader trend once — shared by all mode branches ─────────
+    # ── Pre-fetch broader trend once ───────────────────────────────────────
     broader_trend = get_broader_trend_from_alerts(symbol)
 
-    # ── Apply Trend-Based Trading Logic Based on Mode ─────────────────────
+    # ── Mode-based decision logic ──────────────────────────────────────────
 
     if TREND_FILTER_MODE == "conservative":
         is_persistent, persist_reason = check_trend_persistence(
@@ -164,7 +162,6 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None) ->
         )
         if not is_persistent:
             return _blocked(f"Conservative filter: {persist_reason}")
-
         if entry_quality >= MIN_ENTRY_QUALITY_CORE and regime_sc >= MIN_REGIME_SCORE_CORE:
             return _decision("TRIGGERED_CORE", "TREND_CONTINUATION",
                              f"Conservative: {persist_reason}", soft_conflicts, scores)
@@ -176,7 +173,6 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None) ->
             symbol, verdict, confidence, ctx, broader_trend=broader_trend
         )
         scores["momentum_score"] = momentum_score
-
         if momentum_score >= MOMENTUM_SCORE_THRESHOLD:
             if entry_quality >= MIN_ENTRY_QUALITY_CORE:
                 return _decision("TRIGGERED_CORE", "MOMENTUM_TRADE",
@@ -194,10 +190,26 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None) ->
             return _blocked(f"No reversal detected or poor entry quality: {rev_reason}")
 
     elif TREND_FILTER_MODE == "hybrid":
-        # Priority 1: Reversal (high R:R)
+        # Fix #7: reversal (Priority 1) requires REVERSAL_MIN_CONFIDENCE.
+        # Without this gate, a 70-confidence reversal call at trend-day open
+        # would fire before persistence/momentum, closing profitable positions
+        # on noise. REVERSAL_MIN_CONFIDENCE (default 75) is a higher bar than
+        # MIN_CONFIDENCE_CORE (default 65) — you need stronger conviction to
+        # call a top/bottom than to ride an existing move.
         is_rev, rev_reason = detect_reversal_from_scans(symbol, verdict, confidence)
-        if is_rev and entry_quality >= MIN_ENTRY_QUALITY_CORE:
+        if (is_rev
+                and confidence >= REVERSAL_MIN_CONFIDENCE
+                and entry_quality >= MIN_ENTRY_QUALITY_CORE):
             return _decision("TRIGGERED_CORE", "CONFIRMED_REVERSAL", rev_reason, soft_conflicts, scores)
+        elif is_rev and confidence < REVERSAL_MIN_CONFIDENCE:
+            soft_conflicts.append(
+                f"REVERSAL_LOW_CONF({confidence}<{REVERSAL_MIN_CONFIDENCE})"
+            )
+            log.debug(
+                "%s: reversal detected but confidence %d < REVERSAL_MIN_CONFIDENCE %d — "
+                "falling through to persistence path.",
+                symbol, confidence, REVERSAL_MIN_CONFIDENCE,
+            )
 
         # Priority 2: Trend persistence
         is_persistent, persist_reason = check_trend_persistence(
@@ -212,7 +224,6 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None) ->
             symbol, verdict, confidence, ctx, broader_trend=broader_trend
         )
         scores["momentum_score"] = momentum_score
-
         if momentum_score >= MOMENTUM_SCORE_THRESHOLD and entry_quality >= MIN_ENTRY_QUALITY_CORE:
             return _decision("TRIGGERED_CORE", "MOMENTUM_TRADE",
                              f"Momentum score={momentum_score}", soft_conflicts, scores)
@@ -230,6 +241,8 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None) ->
         block_parts = []
         if not is_rev:
             block_parts.append(f"No reversal: {rev_reason}")
+        elif confidence < REVERSAL_MIN_CONFIDENCE:
+            block_parts.append(f"Reversal low conf ({confidence}<{REVERSAL_MIN_CONFIDENCE})")
         if not is_persistent:
             block_parts.append(f"No persistence: {persist_reason}")
         if momentum_score < MOMENTUM_SCORE_THRESHOLD:
@@ -256,20 +269,17 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None) ->
         return _blocked(block_reason)
 
     else:
-        # Unknown mode — fall back to legacy logic
+        # Unknown mode — legacy fallback
         log.warning("Unknown TREND_FILTER_MODE: %s, using legacy logic", TREND_FILTER_MODE)
-
         is_rev, rev_reason = detect_reversal_from_scans(symbol, verdict, confidence)
         if is_rev and entry_quality >= MIN_ENTRY_QUALITY_CORE:
             return _decision("TRIGGERED_CORE", "CONFIRMED_REVERSAL", rev_reason, soft_conflicts, scores)
-
         if (confidence      >= MIN_CONFIDENCE_CORE and
                 trend_alignment >= MIN_TREND_ALIGNMENT_CORE and
                 entry_quality   >= MIN_ENTRY_QUALITY_CORE and
                 regime_sc       >= MIN_REGIME_SCORE_CORE):
             return _decision("TRIGGERED_CORE", "TREND_CONTINUATION",
                              "All filters passed", soft_conflicts, scores)
-
         if PAPER_RESEARCH_MODE and confidence >= MIN_CONFIDENCE_EXPERIMENTAL and entry_quality >= MIN_ENTRY_QUALITY_EXPERIMENTAL:
             reason = (
                 f"Marginal setup — conf={confidence} eq={entry_quality} "
@@ -278,7 +288,6 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None) ->
             if entry_reasons:
                 reason += f" | entry: {'; '.join(entry_reasons)}"
             return _decision("TRIGGERED_EXPERIMENTAL", "EXPERIMENTAL_SETUP", reason, soft_conflicts, scores)
-
         block_parts = []
         if confidence < MIN_CONFIDENCE_EXPERIMENTAL:
             block_parts.append(f"Low confidence ({confidence}%)")
@@ -296,7 +305,6 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None) ->
 def _decision(status: str, setup_type: str, reason: str,
               soft_conflicts: list[str], scores: dict,
               ai_verdict=None) -> dict:
-    # Autopsy fix 2: AI veto guard default changed from True → False.
     from config.runtime_config import load_runtime_config
     rconf = load_runtime_config()
     ai_decision_mode = rconf.get("live_ai_decision_mode", "advisory")
@@ -312,7 +320,7 @@ def _decision(status: str, setup_type: str, reason: str,
     if (("ai_bias" in scores or ai_verdict) and ai_decision_mode == "full"
             and status.startswith("TRIGGERED")):
         ai_conf = scores.get('ai_confidence', 0)
-        ai_agrees = scores.get('ai_agrees', False)  # FIX: was True — veto never fired when key absent
+        ai_agrees = scores.get('ai_agrees', False)  # fix #6: was True — veto never fired when key absent
         ai_risk = scores.get('ai_risk_rating', '')
         if not ai_agrees and ai_conf >= ai_min_confidence_veto:
             log.warning(
@@ -320,28 +328,28 @@ def _decision(status: str, setup_type: str, reason: str,
                 status, ai_conf, ai_risk,
             )
             return {
-                "status":        "BLOCKED",
-                "setup_type":    None,
-                "reason":        f"AI VETO: conf={ai_conf}% disagrees, risk={ai_risk} | was {status}: {reason}",
+                "status":         "BLOCKED",
+                "setup_type":     None,
+                "reason":         f"AI VETO: conf={ai_conf}% disagrees, risk={ai_risk} | was {status}: {reason}",
                 "soft_conflicts": soft_conflicts + ["AI_VETOED"],
-                "scores":        scores,
+                "scores":         scores,
             }
     log.info("Trade decision: %s | %s | %s", status, setup_type, reason)
     return {
-        "status":        status,
-        "setup_type":    setup_type,
-        "reason":        reason,
+        "status":         status,
+        "setup_type":     setup_type,
+        "reason":         reason,
         "soft_conflicts": soft_conflicts,
-        "scores":        scores,
+        "scores":         scores,
     }
 
 
 def _blocked(reason: str) -> dict:
     log.debug("Trade blocked: %s", reason)
     return {
-        "status":        "BLOCKED",
-        "setup_type":    None,
-        "reason":        reason,
+        "status":         "BLOCKED",
+        "setup_type":     None,
+        "reason":         reason,
         "soft_conflicts": [],
-        "scores":        {},
+        "scores":         {},
     }
