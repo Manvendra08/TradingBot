@@ -345,35 +345,68 @@ async def _send_async_safe(message: str, symbol: str = None, atype: str = None) 
 
 def send_alert(alert: dict) -> bool:
     """Sync wrapper — safe to call from APScheduler thread. Returns True on success."""
-    if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "YOUR_BOT_TOKEN":
-        log.warning("Telegram not configured — alert suppressed: %s", alert["alert_type"])
-        return False
-
-    _ensure_loop()
     message = _format_message(alert)
+    tg_queued = False
+    discord_queued = False
 
-    try:
-        asyncio.run_coroutine_threadsafe(
-            _send_async_safe(message, alert.get("symbol"), alert.get("alert_type")),
-            _loop
-        )
-        return True
-    except Exception as exc:
-        log.error("Telegram unexpected error queueing alert: %s", exc)
+    # 1. Telegram
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_BOT_TOKEN != "YOUR_BOT_TOKEN":
+        _ensure_loop()
+        try:
+            asyncio.run_coroutine_threadsafe(
+                _send_async_safe(message, alert.get("symbol"), alert.get("alert_type")),
+                _loop
+            )
+            tg_queued = True
+        except Exception as exc:
+            log.error("Telegram unexpected error queueing alert: %s", exc)
+
+    # 2. Discord
+    from src.alerts.discord_dispatcher import send_to_discord
+    from config.settings import DISCORD_WEBHOOK_URL
+    if DISCORD_WEBHOOK_URL and DISCORD_WEBHOOK_URL != "your_discord_webhook_url":
+        _ensure_loop()
+        try:
+            loop = _loop or asyncio.get_event_loop()
+            loop.run_in_executor(None, send_to_discord, message)
+            discord_queued = True
+        except Exception as exc:
+            log.error("Discord unexpected error queueing alert: %s", exc)
+
+    if not tg_queued and not discord_queued:
+        log.warning("Neither Telegram nor Discord configured — alert suppressed: %s", alert.get("alert_type"))
         return False
+
+    return True
 
 
 def send_text(text: str) -> bool:
-    """Sends raw text to Telegram in background."""
-    if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "YOUR_BOT_TOKEN":
-        return False
-    _ensure_loop()
-    try:
-        asyncio.run_coroutine_threadsafe(
-            _send_async_safe(text),
-            _loop
-        )
-        return True
-    except Exception as exc:
-        log.error("Telegram unexpected error queueing text: %s", exc)
-        return False
+    """Sends raw text to Telegram and Discord in background."""
+    tg_queued = False
+    discord_queued = False
+
+    # 1. Telegram
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_BOT_TOKEN != "YOUR_BOT_TOKEN":
+        _ensure_loop()
+        try:
+            asyncio.run_coroutine_threadsafe(
+                _send_async_safe(text),
+                _loop
+            )
+            tg_queued = True
+        except Exception as exc:
+            log.error("Telegram unexpected error queueing text: %s", exc)
+
+    # 2. Discord
+    from src.alerts.discord_dispatcher import send_to_discord
+    from config.settings import DISCORD_WEBHOOK_URL
+    if DISCORD_WEBHOOK_URL and DISCORD_WEBHOOK_URL != "your_discord_webhook_url":
+        _ensure_loop()
+        try:
+            loop = _loop or asyncio.get_event_loop()
+            loop.run_in_executor(None, send_to_discord, text)
+            discord_queued = True
+        except Exception as exc:
+            log.error("Discord unexpected error queueing text: %s", exc)
+
+    return tg_queued or discord_queued

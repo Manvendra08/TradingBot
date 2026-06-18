@@ -548,3 +548,58 @@ def get_exit_advice(
         log.error("[llm] Unexpected error in get_exit_advice for %s: %s", symbol, e)
         return None
 
+def get_strategy_optimization_advice(trades: list[dict]) -> LLMStrategyOptimization | None:
+    """
+    Review batch of closed trades to find systematic errors and suggest config tuning.
+    'trades' should be a list of dicts from paper_trades or live_trades table.
+    """
+    if not trades:
+        return None
+
+    # Token-saving compression: Sym|Side|Verdict|Conf|PnL|Status
+    summary_lines = []
+    for t in trades:
+        pnl = round(float(t.get("pnl_rupees") or 0))
+        # Abbreviate status
+        status_map = {"CLOSED_SL": "SL", "CLOSED_TARGET": "TGT", "CLOSED_MANUAL": "MAN", "AI_CLOSE_EARLY": "AI_EX"}
+        stat = status_map.get(t.get("status", ""), "??")
+        
+        line = f"{t.get('symbol')}|{t.get('side')}|{t.get('verdict_label')}|{t.get('confidence_score')}%|{pnl}|{stat}"
+        summary_lines.append(line)
+    
+    trade_data = "\n".join(summary_lines)
+
+    prompt = f"""You are a Quantitative Strategy Optimizer. Review the following trade history summary to optimize the bot's risk and entry parameters.
+
+TRADE HISTORY (Symbol|Side|Verdict|Conf|PnL|Status):
+{trade_data}
+
+TARGET PARAMETERS TO TUNE:
+- live_min_confidence_core (0-100): Entry threshold for safe trades.
+- live_max_concurrent_positions (1-5): Risk limit.
+- live_ai_decision_mode: 'advisory' (Human must confirm), 'boost_only' (AI promotes marginal setups), 'full' (AI can veto/approve).
+- live_ai_min_confidence_boost (0-100): Bar for AI promotion.
+
+INSTRUCTIONS:
+1. Identify if specific symbols or verdicts (e.g. 'Short Covering') are consistently losing money.
+2. If win rate is high (>80%) but PnL is low, suggest increasing max concurrent positions.
+3. If confidence scores for losses are high (>90), suggest increasing the min_confidence threshold.
+4. Provide a JSON response with 'suggested_config_changes' mapping keys to new values.
+"""
+
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        return None
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            # Reusing the existing API caller with the optimization schema
+            future = executor.submit(_call_gemini_api, "portfolio", prompt, LLMStrategyOptimization)
+            result = future.result(timeout=30.0)
+            if result:
+                log.info("[llm] Portfolio optimization generated with %d suggestions", 
+                         len(result.suggested_config_changes))
+            return result
+    except Exception as e:
+        log.error("[llm] Strategy optimization call failed: %s", e)
+        return None

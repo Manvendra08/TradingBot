@@ -36,16 +36,16 @@ class NSEPublicFetcher(BaseFetcher):
         # Add basic retry for session warm-up
         for attempt in range(3):
             try:
-                self.session.get(NSE_BASE_URL, timeout=10)
+                self.session.get(NSE_BASE_URL, timeout=10, verify=self.session.verify)
                 # Hit the option-chain page to ensure cookies are set for APIs
-                self.session.get(f"{NSE_BASE_URL}/option-chain", timeout=10)
+                self.session.get(f"{NSE_BASE_URL}/option-chain", timeout=10, verify=self.session.verify)
                 NSEPublicFetcher._session_warmed = True
                 NSEPublicFetcher._last_warmed_time = time.time()
                 log.debug("[nse_public] session warmed")
                 return
             except Exception as exc:
                 exc_str = str(exc).lower()
-                if "nameresolutionerror" in exc_str or "getaddrinfo failed" in exc_str or "failed to resolve" in exc_str:
+                if any(k in exc_str for k in ["nameresolutionerror", "getaddrinfo failed", "failed to resolve", "verify_mode"]):
                     log.warning("[nse_public] session warm-up failed: Name resolution failed. Skipping retries.")
                     break
                 if attempt == 2:

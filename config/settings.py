@@ -118,6 +118,7 @@ NSE_HEADERS = {
 
 TELEGRAM_BOT_TOKEN = _optional_env("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID   = _optional_env("TELEGRAM_CHAT_ID")
+DISCORD_WEBHOOK_URL = _optional_env("DISCORD_WEBHOOK_URL")
 
 # ── Dashboard Authentication ────────────────────────────────────────────────
 DASHBOARD_USERNAME = _optional_env("DASHBOARD_USERNAME", "admin")

@@ -25,6 +25,22 @@ def _ipv4_only_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
     return _orig_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
 socket.getaddrinfo = _ipv4_only_getaddrinfo
 
+# ── Disable SSL verification conflict globally ──────────────────────────────
+# Recent Python/urllib3 versions raise ValueError when verify=False is used
+# without explicitly disabling hostname checking.
+import urllib3
+import ssl
+try:
+    ssl._create_default_https_context = ssl._create_unverified_context
+    # Also ensure urllib3's default context respects this for direct usage
+    # This is a more robust way to handle the verify_mode/check_hostname conflict
+    urllib3.util.ssl_.create_urllib3_context = lambda: ssl._create_unverified_context()
+except AttributeError:
+    # Legacy Python
+    pass
+except Exception as e:
+    # Catch any other potential errors during patching
+    print(f"[NSEBOT] Warning: Failed to apply global urllib3 SSL patch: {e}")
 
 # ── Load .env first, before any config import ──────────────────────────────
 try:

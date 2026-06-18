@@ -56,14 +56,16 @@ def get_dhan_security_id(symbol: str) -> int | None:
             data = json.loads(match_next.group(1))
             props = data.get("props", {}).get("pageProps", {})
             scrip_info = props.get("scripData", {}) or props.get("optionChainData", {}).get("scripData", {})
-            if scrip_info and scrip_info.get("scripId"):
-                sec_id = int(scrip_info["scripId"])
-                _CACHE[symbol] = sec_id
-                log.info("[resolver] Dynamically resolved Dhan security ID for %s: %d", symbol, sec_id)
-                return sec_id
+            if scrip_info:
+                sec_id_val = scrip_info.get("sid") or scrip_info.get("scripId") or scrip_info.get("nr_f_sid")
+                if sec_id_val:
+                    sec_id = int(sec_id_val)
+                    _CACHE[symbol] = sec_id
+                    log.info("[resolver] Dynamically resolved Dhan security ID for %s: %d", symbol, sec_id)
+                    return sec_id
                 
         # Regex fallback
-        match_sid = re.search(r'"scripId"\s*:\s*(\d+)', html)
+        match_sid = re.search(r'"(?:scripId|sid)"\s*:\s*(\d+)', html)
         if match_sid:
             sec_id = int(match_sid.group(1))
             _CACHE[symbol] = sec_id

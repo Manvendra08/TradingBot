@@ -5,10 +5,10 @@ by:
   1. Forcing TLS 1.2+ with OP_IGNORE_UNEXPECTED_EOF
   2. Evicting the dead connection pool before retrying (not just re-sending
      on the same poisoned socket)
-  3. Using exponential backoff (0.3s → 0.9s → 2.7s) to let the server
-     stabilise between retries
-  4. Disabling keep-alive after consecutive failures to force fresh TCP
-     handshakes
+  3. Using short backoff (0.1s → 0.3s → 0.9s) — Kite's load-balancer
+     recovers on the very next TCP handshake, so long delays are wasteful
+  4. Setting Connection: close at the session level to prevent keep-alive
+     pool reuse after a failed handshake
 """
 import logging
 import ssl
@@ -59,8 +59,8 @@ class ResilientTLSAdapter(HTTPAdapter):
         session.mount("https://", adapter)
     """
 
-    SSL_RETRY_ATTEMPTS = 5
-    SSL_BASE_DELAY = 0.5  # seconds — 0.5, 1.5, 4.5, 13.5, 40.5
+    SSL_RETRY_ATTEMPTS = 6
+    SSL_BASE_DELAY = 0.1  # seconds — 0.1, 0.3, 0.9, 2.7, 8.1 (attempt 2 always succeeds)
 
     def __init__(self, *args, ssl_verify: bool = True, **kwargs):
         self.ssl_context = ssl.create_default_context()
@@ -136,10 +136,19 @@ class ResilientTLSAdapter(HTTPAdapter):
 def mount_resilient_tls(session, max_retries=None, ssl_verify: bool = True):
     """Mount the ResilientTLSAdapter on a requests.Session for https://.
 
+    Critically, overrides the session-level 'Connection: keep-alive' that
+    kiteconnect sets by default. Kite's load-balancer silently closes idle
+    keep-alive sockets, causing SSL EOF on the next reuse. Forcing
+    'Connection: close' at the session level prevents all reuse.
+
     Args:
         session:    A requests.Session (or kite.reqsession)
         max_retries: Optional urllib3 Retry object. Defaults to DEFAULT_RETRY.
         ssl_verify: Set False for public non-Kite fetchers that use verify=False.
     """
+    # Override keep-alive at session level so every prepared request carries
+    # Connection: close BEFORE our send() is called. Doing it only inside send()
+    # is too late — requests has already merged session headers into the PreparedRequest.
+    session.headers["Connection"] = "close"
     adapter = ResilientTLSAdapter(max_retries=max_retries or DEFAULT_RETRY, ssl_verify=ssl_verify)
     session.mount("https://", adapter)

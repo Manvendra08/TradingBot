@@ -177,8 +177,18 @@ def start_scheduler(immediate: bool = False):
     if not immediate:
         import math
         from config.symbol_classes import get_symbol_class, MARKET_WINDOWS
+        import datetime as dt_mod
         now_ist = datetime.now(IST)
+        now_time = now_ist.time()
         for class_key in MARKET_WINDOWS:
+            # Enforce custom scan start times: 9:15 am for MCX, 9:30 am for NSE
+            if class_key in ("MCX_COMMODITY", "MCX_AGRI"):
+                if now_time < dt_mod.time(9, 15):
+                    continue
+            else:
+                if now_time < dt_mod.time(9, 30):
+                    continue
+
             open_t, _, _ = MARKET_WINDOWS[class_key]
             open_h, open_m = map(int, open_t.split(":"))
             market_open_time = now_ist.replace(hour=open_h, minute=open_m, second=0, microsecond=0)
@@ -224,6 +234,15 @@ def start_scheduler(immediate: bool = False):
                 delta_minutes = (now_ist - market_open_time).total_seconds() / 60.0
                 if delta_minutes < 0:
                     continue
+                
+                import datetime as dt_mod
+                now_time = now_ist.time()
+                if class_key in ("MCX_COMMODITY", "MCX_AGRI"):
+                    if now_time < dt_mod.time(9, 15):
+                        continue
+                else:
+                    if now_time < dt_mod.time(9, 30):
+                        continue
                 
                 if class_key == "MCX_COMMODITY":
                     interval_min = get_scan_frequency_mcx()

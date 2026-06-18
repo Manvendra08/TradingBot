@@ -255,15 +255,16 @@ def _pick_option_expj(page_props: dict) -> Optional[int]:
 
 
 def _extract_underlying_from_page_props(page_props: dict, symbol: str) -> Optional[float]:
-    fno_data = page_props.get("fnoData")
-    if isinstance(fno_data, dict):
-        v = _parse_float(str(fno_data.get("sltp") or ""))
-        if v is not None:
-            return v
+    # For MCX commodities we trade futures, so prefer futures scrip LTP (Ltp) over options index sltp
     scrip = page_props.get("scripData")
     if isinstance(scrip, dict):
         v = _parse_float(str(scrip.get("Ltp") or ""))
-        if v is not None:
+        if v is not None and v > 0:
+            return v
+    fno_data = page_props.get("fnoData")
+    if isinstance(fno_data, dict):
+        v = _parse_float(str(fno_data.get("sltp") or ""))
+        if v is not None and v > 0:
             return v
     return _extract_underlying(json.dumps(page_props), symbol)
 
@@ -663,8 +664,10 @@ class DhanCommodityFetcher(BaseFetcher):
                 strikes = _normalise_scanx_oc(raw or {})
                 if strikes:
                     api_underlying = _parse_float(str(((raw or {}).get("data") or {}).get("sltp") or ""))
-                    if api_underlying is not None:
-                        underlying = api_underlying
+                    if api_underlying is not None and api_underlying > 0:
+                        # Prefer futures contract LTP from page props if already resolved
+                        if not underlying:
+                            underlying = api_underlying
                     log.debug(
                         "[dhan_commodity] parsed %d strikes via optchainactive for %s (sid=%s expj=%s)",
                         len({r["strike"] for r in strikes}),
