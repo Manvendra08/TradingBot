@@ -30,9 +30,16 @@ _SSL_EOF_MARKERS = frozenset((
     "connection aborted",
 ))
 
-# Default retry config for non-SSL HTTP errors (5xx, etc.)
+# urllib3-level retry: ONLY handles 5xx HTTP status codes.
+# SSL/connection retries are intentionally disabled here (total=0 for
+# connection errors) — our ResilientTLSAdapter.send() owns that logic.
+# If urllib3 also retries SSL errors its MaxRetryError fires before our
+# send() pool-eviction code can run, making retries useless.
 DEFAULT_RETRY = Retry(
-    total=3,
+    total=0,                       # don't let urllib3 retry anything by default
+    connect=0,                     # no urllib3-level connect retries
+    read=0,                        # no urllib3-level read retries
+    status=3,                      # do retry 5xx HTTP status codes
     backoff_factor=0.3,
     status_forcelist=[500, 502, 503, 504],
     raise_on_status=False,
@@ -43,13 +50,17 @@ class ResilientTLSAdapter(HTTPAdapter):
     """HTTPAdapter that handles SSL EOF errors by evicting stale connections
     and retrying with exponential backoff.
 
+    All SSL/connection retry logic lives here in send() — not in urllib3 Retry.
+    This prevents the dual-retry conflict where urllib3 exhausts MaxRetryError
+    before send() can evict the pool and open a fresh TCP+TLS handshake.
+
     Usage:
-        adapter = ResilientTLSAdapter(max_retries=DEFAULT_RETRY)
+        adapter = ResilientTLSAdapter()
         session.mount("https://", adapter)
     """
 
-    SSL_RETRY_ATTEMPTS = 4
-    SSL_BASE_DELAY = 0.3  # seconds — 0.3, 0.9, 2.7, 8.1
+    SSL_RETRY_ATTEMPTS = 5
+    SSL_BASE_DELAY = 0.5  # seconds — 0.5, 1.5, 4.5, 13.5, 40.5
 
     def __init__(self, *args, **kwargs):
         self.ssl_context = ssl.create_default_context()
@@ -74,18 +85,15 @@ class ResilientTLSAdapter(HTTPAdapter):
                 return super().send(request, *args, **kwargs)
             except (SSLError, ReqConnectionError, OSError) as exc:
                 last_err = exc
-                err_msg = str(exc).lower()
-                if not any(m in err_msg for m in _SSL_EOF_MARKERS):
+                if not self._is_ssl_eof(exc):
                     raise  # not a transient SSL EOF — propagate immediately
 
                 if attempt < self.SSL_RETRY_ATTEMPTS - 1:
                     delay = self.SSL_BASE_DELAY * (3 ** attempt)
                     log.warning(
-                        "SSL EOF on %s (attempt %d/%d), evicting pool & retrying in %.1fs… %s",
-                        request.url, attempt + 1, self.SSL_RETRY_ATTEMPTS, delay, exc,
+                        "SSL EOF on %s (attempt %d/%d), evicting pool & retrying in %.1fs…",
+                        request.url, attempt + 1, self.SSL_RETRY_ATTEMPTS, delay,
                     )
-                    # Evict ALL stale connections from urllib3's pool so the
-                    # next send() opens a fresh TCP+TLS handshake.
                     self._evict_connections()
                     time.sleep(delay)
                     continue
@@ -100,6 +108,25 @@ class ResilientTLSAdapter(HTTPAdapter):
                 pm.clear()
         except Exception:
             pass
+        # Also clear any proxy pools
+        try:
+            for proxy_pool in getattr(self, "proxy_manager", {}).values():
+                proxy_pool.clear()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _is_ssl_eof(exc) -> bool:
+        """Check exc or its inner cause for SSL EOF markers."""
+        # Unwrap requests → urllib3 → socket chain
+        msgs_to_check = [str(exc).lower()]
+        cause = getattr(exc, "__cause__", None) or getattr(exc, "reason", None)
+        if cause:
+            msgs_to_check.append(str(cause).lower())
+            inner = getattr(cause, "reason", None)
+            if inner:
+                msgs_to_check.append(str(inner).lower())
+        return any(m in s for m in _SSL_EOF_MARKERS for s in msgs_to_check)
 
 
 def mount_resilient_tls(session, max_retries=None):
@@ -107,7 +134,9 @@ def mount_resilient_tls(session, max_retries=None):
 
     Args:
         session: A requests.Session (or kite.reqsession)
-        max_retries: Optional urllib3 Retry object. Defaults to DEFAULT_RETRY.
+        max_retries: Optional urllib3 Retry object. Defaults to DEFAULT_RETRY
+                     (which disables urllib3-level SSL retries so our send()
+                     loop can handle pool eviction correctly).
     """
     adapter = ResilientTLSAdapter(max_retries=max_retries or DEFAULT_RETRY)
     session.mount("https://", adapter)
