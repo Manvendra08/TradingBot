@@ -71,7 +71,7 @@ def _handle_kite_ip_error(e: Exception) -> None:
             public_ip = _get_public_ip()
             log.error(
                 "\n============================================================\n"
-                "🚨 ZERODHA KITE IP ERROR DETECTED 🚨\n"
+                "\U0001f6a8 ZERODHA KITE IP ERROR DETECTED \U0001f6a8\n"
                 "Your public IP: %s\n"
                 "Zerodha requires you to whitelist this IP on the Kite developer console.\n"
                 "To resolve this for FREE ($0 cost):\n"
@@ -175,7 +175,26 @@ def _is_reversal_against_open_trade(open_trade: dict, verdict: str, confidence: 
         return True
     return False
 
-def _parse_verdict_and_confidence(intel_text: str) -> tuple[str, int]:
+# ---------------------------------------------------------------------------
+# FIX #10: Structured LLMVerdict parsing
+# Accept optional ai_verdict (LLMVerdict dataclass). When present, read
+# .verdict and .confidence directly instead of regex-scanning telegram_text.
+# Regex fallback retained so legacy callers without ai_verdict still work.
+# ---------------------------------------------------------------------------
+def _parse_verdict_and_confidence(
+    intel_text: str,
+    ai_verdict=None,  # LLMVerdict dataclass or None
+) -> tuple[str, int]:
+    # Prefer structured object — immune to telegram formatting changes
+    if ai_verdict is not None:
+        try:
+            v = (getattr(ai_verdict, "verdict", None) or "").strip()
+            c = int(getattr(ai_verdict, "confidence", 0) or 0)
+            if v:
+                return v, c
+        except Exception:
+            pass
+    # Fallback: regex over telegram_text
     verdict = ""
     confidence = 0
     m_v = re.search(r"\*Verdict:\s*([^\*]+)\*", intel_text or "")
@@ -221,24 +240,102 @@ def _trade_plan_from_verdict(verdict: str, confidence: int, ctx: dict) -> dict |
     plan["target_premium"] = target_premium
     return plan
 
+# ---------------------------------------------------------------------------
+# FIX #7: Live risk engine — daily loss cap + consecutive-loss cooldown +
+# daily trade count. Mirrors paper engine feature parity.
+# All thresholds sourced from runtime_config to allow hot-reload.
+# ---------------------------------------------------------------------------
 def check_live_risk_limits(symbol: str, setup_type: str | None = None) -> tuple[bool, str]:
     config = load_runtime_config()
     max_concurrent = int(config.get("live_max_concurrent_positions") or 2)
-    
-    # Check open positions count
-    import sqlite3
+    max_daily_trades = int(config.get("live_max_daily_trades") or 10)
+    daily_loss_cap = float(config.get("live_daily_loss_cap_pct") or 3.0)   # % of capital
+    consec_loss_limit = int(config.get("live_consecutive_loss_limit") or 3)
+    cooldown_minutes = int(config.get("live_loss_cooldown_minutes") or 60)
+
     from src.models.schema import get_conn
+    today_str = datetime.now(IST).strftime("%Y-%m-%d")
+
     with get_conn() as conn:
-        open_count = conn.execute("SELECT COUNT(*) AS c FROM live_trades WHERE status='OPEN'").fetchone()["c"]
+        # --- existing: concurrent open positions ---
+        open_count = conn.execute(
+            "SELECT COUNT(*) AS c FROM live_trades WHERE status='OPEN'"
+        ).fetchone()["c"]
         if open_count >= max_concurrent:
             return False, f"Max concurrent live positions reached ({open_count}/{max_concurrent})"
-        
-        if setup_type != 'TIMEFRAME':
-            # Max 1 open per symbol
-            symbol_open = conn.execute("SELECT COUNT(*) AS c FROM live_trades WHERE symbol=? AND status='OPEN'", (symbol,)).fetchone()["c"]
+
+        if setup_type != "TIMEFRAME":
+            symbol_open = conn.execute(
+                "SELECT COUNT(*) AS c FROM live_trades WHERE symbol=? AND status='OPEN'",
+                (symbol,)
+            ).fetchone()["c"]
             if symbol_open >= 1:
                 return False, f"Already have an open live trade for {symbol}"
-                
+
+        # --- FIX #7a: daily trade count ---
+        daily_count = conn.execute(
+            "SELECT COUNT(*) AS c FROM live_trades WHERE DATE(opened_at)=?",
+            (today_str,)
+        ).fetchone()["c"]
+        if daily_count >= max_daily_trades:
+            return False, f"Daily live trade limit reached ({daily_count}/{max_daily_trades})"
+
+        # --- FIX #7b: daily P&L loss cap ---
+        # Requires pnl column in live_trades; gracefully skips if column absent
+        try:
+            daily_pnl = conn.execute(
+                "SELECT COALESCE(SUM(pnl), 0) AS total FROM live_trades "
+                "WHERE DATE(closed_at)=? AND status IN ('CLOSED_SL','CLOSED_TARGET','CLOSED_REVERSAL','CLOSED_SHADOW')",
+                (today_str,)
+            ).fetchone()["total"]
+
+            if daily_pnl is not None and daily_pnl < 0:
+                # Fetch allocated capital to compute loss %
+                capital_row = conn.execute(
+                    "SELECT COALESCE(SUM(entry_premium * lots), 0) AS cap "
+                    "FROM live_trades WHERE DATE(opened_at)=?",
+                    (today_str,)
+                ).fetchone()
+                day_capital = float(capital_row["cap"]) if capital_row else 0.0
+                if day_capital > 0:
+                    loss_pct = abs(float(daily_pnl)) / day_capital * 100.0
+                    if loss_pct >= daily_loss_cap:
+                        return False, (
+                            f"Daily loss cap breached: {loss_pct:.1f}% >= {daily_loss_cap}% limit "
+                            f"(realised PnL: {daily_pnl:.0f})"
+                        )
+        except Exception as pnl_err:
+            log.debug("PnL loss-cap check skipped (column may be absent): %s", pnl_err)
+
+        # --- FIX #7c: consecutive-loss cooldown ---
+        try:
+            recent_closed = conn.execute(
+                "SELECT status, closed_at FROM live_trades "
+                "WHERE symbol=? AND status IN ('CLOSED_SL','CLOSED_TARGET','CLOSED_REVERSAL') "
+                "ORDER BY closed_at DESC LIMIT ?",
+                (symbol, consec_loss_limit)
+            ).fetchall()
+
+            if len(recent_closed) >= consec_loss_limit:
+                all_sl = all(r["status"] == "CLOSED_SL" for r in recent_closed)
+                if all_sl:
+                    last_closed_at_str = recent_closed[0]["closed_at"]
+                    try:
+                        last_closed_dt = datetime.fromisoformat(last_closed_at_str.replace("Z", "+00:00"))
+                        elapsed_minutes = (
+                            datetime.now(timezone.utc) - last_closed_dt
+                        ).total_seconds() / 60.0
+                        if elapsed_minutes < cooldown_minutes:
+                            remaining = int(cooldown_minutes - elapsed_minutes)
+                            return False, (
+                                f"{consec_loss_limit} consecutive SL hits on {symbol}; "
+                                f"cooldown active — {remaining}m remaining"
+                            )
+                    except Exception:
+                        pass
+        except Exception as cl_err:
+            log.debug("Consecutive-loss cooldown check skipped: %s", cl_err)
+
     return True, "Risk limits OK"
 
 
@@ -387,6 +484,16 @@ def _run_live_trading_legacy(symbol: str, scan_context: dict, digest_id: str, in
     if not _is_market_open(symbol):
         return {"action": "SKIPPED_MARKET_CLOSED", "reason": "Outside market hours"}
 
+    # ---------------------------------------------------------------------------
+    # FIX #3 (legacy path): Kill switch checked FIRST — before any order logic.
+    # Previous code checked it only after open-trade management, so reversal
+    # square-offs could still fire while the kill switch was active.
+    # ---------------------------------------------------------------------------
+    broker_conf = get_broker_config()
+    if broker_conf and broker_conf.get("kill_switch_active"):
+        log.warning("Live trading skipped (legacy): Kill Switch is active!")
+        return {"action": "BLOCKED_KILL_SWITCH", "reason": "Kill Switch active"}
+
     config = load_runtime_config()
     shadow_mode = config.get("live_shadow_mode", True)
     
@@ -445,7 +552,7 @@ def _run_live_trading_legacy(symbol: str, scan_context: dict, digest_id: str, in
                         closed_trade = dict(row)
 
                 from src.alerts.telegram_dispatcher import send_text
-                prefix = "[SHADOW]" if shadow_mode else "🚨 [LIVE]"
+                prefix = "[SHADOW]" if shadow_mode else "\U0001f6a8 [LIVE]"
                 send_text(f"{prefix} **Trend Reversal Square-Off** | Closed `{symbol}` `{current_open_trade['option_type']}` position at underlying `{underlying}`.")
                 return {"action": "CLOSED", "trade": closed_trade, "reason": "reversal"}
             except Exception as e:
@@ -499,18 +606,13 @@ def _run_live_trading_legacy(symbol: str, scan_context: dict, digest_id: str, in
                                 closed_trade = dict(row)
 
                         from src.alerts.telegram_dispatcher import send_text
-                        prefix = "[SHADOW]" if shadow_mode else "🚨 [LIVE]"
+                        prefix = "[SHADOW]" if shadow_mode else "\U0001f6a8 [LIVE]"
                         send_text(f"{prefix} **Fallback Poll Exit** | Closed `{symbol}` `{current_open_trade['option_type']}` — `{close_reason}` at premium `{exit_premium}`.")
                         return {"action": "CLOSED", "trade": closed_trade, "reason": close_reason}
                     except Exception as e:
                         log.error("Failed fallback exit square-off: %s", e)
                         
         return {"action": "HELD", "trade": current_open_trade}
-
-    broker_conf = get_broker_config()
-    if broker_conf and broker_conf.get("kill_switch_active"):
-        log.warning("Live trading skipped: Kill Switch is active!")
-        return {"action": "BLOCKED_KILL_SWITCH", "reason": "Kill Switch active"}
 
     # 2. Evaluate new live entry
     base_sym = _get_base_symbol(symbol)
@@ -537,11 +639,12 @@ def _run_live_trading_legacy(symbol: str, scan_context: dict, digest_id: str, in
     lots = calculate_trade_lots(symbol, entry_premium)
     scores = decision.get("scores") or {}
 
-    # Signal deduplication key
+    # Signal deduplication key (FIX #13 note: verdict excluded; keyed on direction+strike)
     today_date = datetime.now(IST).strftime("%Y%m%d")
     option_type_key = plan.get("option_type", "")
     strike_key = int(plan.get("strike") or 0)
-    signal_key = f"{symbol}:{option_type_key}:{strike_key}:{verdict}:{today_date}:live"
+    side_key = plan.get("side", "BUY")
+    signal_key = f"{symbol}:{option_type_key}:{strike_key}:{side_key}:{today_date}:live"
 
     exchange = _get_exchange(symbol)
     resolved = resolve_instrument(symbol, expiry, plan["strike"], plan["option_type"])
@@ -585,7 +688,7 @@ def _run_live_trading_legacy(symbol: str, scan_context: dict, digest_id: str, in
             log.error("%s: GTT placement failed, switching to POLL exit fallback: %s", symbol, e)
             exit_mode = "POLL"
             from src.alerts.telegram_dispatcher import send_text
-            send_text(f"⚠️ **[GTT FAILED]** `{symbol}` — GTT creation failed ({e}); falling back to premium-poll exit.")
+            send_text(f"\u26a0\ufe0f **[GTT FAILED]** `{symbol}` — GTT creation failed ({e}); falling back to premium-poll exit.")
 
     trade_data = {
         "opened_at":             now_iso,
@@ -627,7 +730,7 @@ def _run_live_trading_legacy(symbol: str, scan_context: dict, digest_id: str, in
 
     # Notify Telegram
     from src.alerts.telegram_dispatcher import send_text
-    prefix = "[SHADOW]" if shadow_mode else "🟢 [LIVE]"
+    prefix = "[SHADOW]" if shadow_mode else "\U0001f7e2 [LIVE]"
     send_text(f"{prefix} **Order Placed** | `{plan['side']}` `{symbol}` `{plan['option_type']}` Strike `{plan['strike']}`. Entry `{entry_premium}`, SL `{plan['sl_premium']}`, Target `{plan['target_premium']}`. Lots: `{lots}` (Qty: `{quantity}`).")
 
     return {
@@ -685,6 +788,15 @@ def run_live_trading(symbol: str, scan_context: dict, digest_id: str, intel: dic
     if not _is_market_open(symbol):
         return {"action": "SKIPPED_MARKET_CLOSED", "reason": "Outside market hours"}
 
+    # ---------------------------------------------------------------------------
+    # FIX #3: Kill switch hoisted to TOP — before open-trade management.
+    # Blocks ALL order execution: new entries AND reversal square-offs.
+    # ---------------------------------------------------------------------------
+    broker_conf = get_broker_config()
+    if broker_conf and broker_conf.get("kill_switch_active"):
+        log.warning("Live trading skipped: Kill Switch is active!")
+        return {"action": "BLOCKED_KILL_SWITCH", "reason": "Kill Switch active"}
+
     config = load_runtime_config()
     shadow_mode = config.get("live_shadow_mode", True)
     kite = get_kite_client()
@@ -697,7 +809,12 @@ def run_live_trading(symbol: str, scan_context: dict, digest_id: str, intel: dic
     underlying = float(scan_context.get("underlying") or 0.0)
     expiry = scan_context.get("expiry", "")
     option_rows = scan_context.get("option_rows") or []
-    verdict, confidence = _parse_verdict_and_confidence(intel.get("telegram_text") or "")
+
+    # FIX #10: Pass ai_verdict to structured parser; regex is the fallback.
+    verdict, confidence = _parse_verdict_and_confidence(
+        intel.get("telegram_text") or "",
+        ai_verdict=ai_verdict,
+    )
 
     current_open_trade = get_open_live_trade(symbol)
     if current_open_trade:
@@ -776,11 +893,6 @@ def run_live_trading(symbol: str, scan_context: dict, digest_id: str, intel: dic
 
         return {"action": "HELD", "trade": current_open_trade}
 
-    broker_conf = get_broker_config()
-    if broker_conf and broker_conf.get("kill_switch_active"):
-        log.warning("Live trading skipped: Kill Switch is active!")
-        return {"action": "BLOCKED_KILL_SWITCH", "reason": "Kill Switch active"}
-
     base_sym = _get_base_symbol(symbol)
     enabled_symbols = config.get("live_enabled_broker_symbols")
     if enabled_symbols is not None and base_sym not in enabled_symbols:
@@ -802,7 +914,11 @@ def run_live_trading(symbol: str, scan_context: dict, digest_id: str, intel: dic
     entry_premium = plan["entry_premium"]
     lots = calculate_trade_lots(symbol, entry_premium)
     today_date = datetime.now(IST).strftime("%Y%m%d")
-    signal_key = f"{symbol}:{plan.get('option_type', '')}:{int(plan.get('strike') or 0)}:{verdict}:{today_date}:live"
+    # FIX #13 (signal dedup): verdict text excluded from key — direction+strike is canonical
+    option_type_key = plan.get("option_type", "")
+    strike_key = int(plan.get("strike") or 0)
+    side_key = plan.get("side", "BUY")
+    signal_key = f"{symbol}:{option_type_key}:{strike_key}:{side_key}:{today_date}:live"
     exit_mode = "POLL" if plan["option_type"] == "FUT" else "GTT"
     scores = decision.get("scores") or {}
     trade_data = {
@@ -995,6 +1111,17 @@ def sync_direct_kite_positions() -> None:
             if sig in open_db_signatures:
                 continue 
 
+            # ---------------------------------------------------------------------------
+            # FIX #1: Kite positions API returns 'average_price', not 'avg_price'.
+            # Assign avg_price once here, before FUT/CE/PE branch, so both legs use it.
+            # Fallback chain: average_price -> avg_price -> 0.0
+            # ---------------------------------------------------------------------------
+            avg_price = float(
+                p.get("average_price")
+                or p.get("avg_price")
+                or 0.0
+            )
+
             init_mode = config.get("direct_kite_initialization_mode", "fixed_pct")
             sl_premium = 0.0
             tgt_premium = 0.0
@@ -1098,4 +1225,4 @@ def sync_direct_kite_positions() -> None:
                 open_db_signatures.append(sig) 
                 log.info("Adopted Kite direct position: %s as %s", ts, sig)
                 from src.alerts.telegram_dispatcher import send_text
-                send_text(f"🤖 **[KITE DIRECT]** Adopted manual position `{ts}` ({side} Qty: {abs(net_qty)}) at `₹{avg_price}`. AI Exit Advisor will monitor it (SL: `₹{sl_premium}`, Target: `₹{tgt_premium}`).")
+                send_text(f"\U0001f916 **[KITE DIRECT]** Adopted manual position `{ts}` ({side} Qty: {abs(net_qty)}) at `\u20b9{avg_price}`. AI Exit Advisor will monitor it (SL: `\u20b9{sl_premium}`, Target: `\u20b9{tgt_premium}`).")
