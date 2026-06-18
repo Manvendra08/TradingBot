@@ -135,6 +135,14 @@ def fetch_and_cache_instruments(
         else:
             log.info("Instrument refresh failed but existing cache is available. err=%s", last_exc)
 
+        # IMPORTANT: If fetching failed, the Kite client might be in a bad state.
+        # Invalidate it to force a re-initialization on the next attempt.
+        try:
+            from src.engine.live_trading import clear_kite_client_cache
+            clear_kite_client_cache()
+            log.warning("Cleared Kite client cache due to instrument fetch failure.")
+        except Exception as e:
+            log.error("Failed to clear Kite client cache after instrument fetch failure: %s", e)
     finally:
         _REFRESH_IN_PROGRESS = False
 
@@ -256,7 +264,7 @@ def resolve_instrument(symbol: str, expiry: str, strike: float, option_type: str
     now = time.time()
     last = _CACHE_MISS_WARNED.get(key) or 0.0
     if (now - float(last)) > _CACHE_MISS_WARN_TTL_SEC:
-        log.warning("Instrument not found in cache for %s. Generating fallback tradingsymbol...", key)
+        log.warning("Instrument not found in cache for %s. Generating fallback tradingsymbol. Consider manual cache refresh or check Kite API status.", key)
         _CACHE_MISS_WARNED[key] = now
 
     # Trigger a background cache refresh if Kite available and haven't recently refreshed

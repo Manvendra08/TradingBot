@@ -477,7 +477,7 @@ def _generate_trade_idea(verdict_label: str, scan_ctx: dict,
     # If there is a timeframe conflict, warn immediately in the trade plan
     if chart_conflict:
         idea_parts.append("⚠️ *Timeframe conflict (1H vs 3H charts disagree) — Stand aside / Reduce size.*")
-
+    
     # If charts contradict verdict bias
     v_bias = "BULLISH" if is_bullish(verdict_label) else ("BEARISH" if is_bearish(verdict_label) else "NEUTRAL")
     if v_bias == "BULLISH" and tf_1h == "BEARISH" and tf_3h == "BEARISH":
@@ -560,7 +560,7 @@ def _generate_trade_idea(verdict_label: str, scan_ctx: dict,
     # Risk note
     risk = _generate_risk_note(verdict_label, scan_ctx)
     if risk:
-        idea_parts.append(f"⚠️ _{risk}_")
+        idea_parts.append(f"⚠️ _{risk}_") # Keep this, but ensure it's not redundant with confidence-based advice
 
     return "\n".join(idea_parts)
 
@@ -946,6 +946,9 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
     if confidence < 50:
         telegram_text = "\n".join([
             f"🤖 *Bot Intelligence | {symbol}*",
+            # Add trading mode indicator here as well for consistency
+            _get_trading_mode_indicator(),
+            "",
             "⚪ *Verdict: Low Conviction*",
             "_No actionable edge — wait for alignment_",
             f"Confidence: {confidence}%",
@@ -964,6 +967,16 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
             days_to_expiry=days_to_expiry,
         )
 
+def _get_trading_mode_indicator() -> str:
+    try:
+        from config.settings import TREND_FILTER_MODE, PAPER_RESEARCH_MODE
+        mode_emoji = {
+            "conservative": "🛡️", "balanced": "⚖️", "aggressive": "⚡", "hybrid": "🎯",
+        }.get(TREND_FILTER_MODE, "📊")
+        research_tag = " [RESEARCH]" if PAPER_RESEARCH_MODE else ""
+        return f"_{mode_emoji} Mode: {TREND_FILTER_MODE.title()}{research_tag}_"
+    except Exception:
+        return ""
     msg = [f"🤖 *Bot Intelligence | {symbol}*"]
     
     # Add trading mode indicator

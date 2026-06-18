@@ -304,12 +304,13 @@ def _call_gemini_api(symbol: str, prompt: str, response_schema=None) -> BaseMode
     openrouter_key = os.environ.get("OPENROUTER_API_KEY")
     if openrouter_key:
         # Expanded list of free OpenRouter models with best-performing first
+        # Verified available: https://openrouter.ai/models
         openrouter_models = [
-            "meta-llama/llama-3.3-70b-instruct:free",      # Best free model, 70B params
-            "google/gemini-2.0-flash-exp:free",             # Fast and capable
-            "qwen/qwen-2.5-7b-instruct:free",               # Good reasoning
-            "microsoft/phi-3.5-mini-128k-instruct:free",    # Long context
-            "meta-llama/llama-3.2-3b-instruct:free",        # Fast, lightweight
+            "meta-llama/llama-2-70b-chat:free",             # Proven stable free model
+            "mistralai/mistral-7b-instruct:free",           # Reliable fallback
+            "meta-llama/llama-3-8b-instruct:free",          # Good reasoning
+            "teknium/openhermes-2.5-mistral-7b:free",       # Alternative capable model
+            "gryphe/mythomist-7b:free",                     # Compact but capable
         ]
         schema_json = json.dumps(schema.model_json_schema())
         system_prompt = (

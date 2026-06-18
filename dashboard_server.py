@@ -2814,6 +2814,12 @@ def zerodha_callback(client_id: str = None, request_token: str = None):
             request_token=request_token,
             last_login_date=today
         )
+        # Invalidate cached Kite client so live_trading picks up the new token
+        try:
+            from src.engine.live_trading import clear_kite_client_cache
+            clear_kite_client_cache()
+        except Exception:
+            pass
         return HTMLResponse("""
             <html>
                 <body style="background:#121212; color:#fff; font-family: sans-serif; text-align:center; padding-top:100px;">

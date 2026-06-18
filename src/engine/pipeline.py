@@ -151,8 +151,17 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
         )
 
     # 3. Build digest
-    intel = generate_intelligence_structured(symbol, new_alerts, scan_context=scan_context)
-    intel_text = intel["telegram_text"]
+    try:
+        intel = generate_intelligence_structured(symbol, new_alerts, scan_context=scan_context)
+    except Exception as e:
+        log.exception("%s: intelligence generation failed with exception: %s", symbol, str(e)[:500])
+        intel = None
+    
+    if not intel:
+        log.warning("%s: intel is None, using fallback digest", symbol)
+        intel_text = f"⚠️ Intelligence generation failed for {symbol}"
+    else:
+        intel_text = intel.get("telegram_text", "")
 
     # 3a. Fetch news data for AI context
     news_data = None
@@ -182,10 +191,10 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
     
     if DISABLE_LLM_ENRICHMENT:
         log.info("%s: LLM enrichment disabled (DISABLE_LLM_ENRICHMENT=true)", symbol)
-    else:
+    elif intel:
         try:
             llm_verdict = get_llm_verdict(
-                symbol, intel, scan_context,
+                symbol, dict(intel) if intel else {}, scan_context,
                 alerts=new_alerts,
                 news_data=news_data,
                 open_trade=open_trade,
@@ -205,6 +214,8 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
                 intel_text += f"_{llm_verdict.reasoning}_\n"
         except Exception:
             log.exception("%s: AI enrichment failed gracefully", symbol)
+    else:
+        log.debug("%s: Skipping LLM enrichment due to missing intelligence data", symbol)
 
     # 3d. AI Exit Advisor — evaluate open paper trades
     try:
@@ -314,8 +325,11 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
 
     # 3b. Save scan summary — pass is_fallback so regime_detector can exclude stale rows
     try:
-        save_scan_summary(symbol, scan_context, new_alerts, intel, digest_id, fetched_at,
-                          is_fallback=is_fallback)
+        if intel:
+            save_scan_summary(symbol, scan_context, new_alerts, dict(intel), digest_id, fetched_at,
+                              is_fallback=is_fallback)
+        else:
+            log.warning("%s: skipping scan summary save due to missing intelligence data", symbol)
     except Exception:
         log.exception("%s: scan summary save failed", symbol)
 

@@ -2,7 +2,7 @@
   "scan_frequency_minutes": 60,
   "scan_frequency_nse": 30,
   "scan_frequency_mcx": 60,
-  "live_shadow_mode": false,
+  "live_shadow_mode": true,
   "live_capital_per_trade_inr": 300000,
   "live_max_capital_utilisation_pct": 80,
   "live_max_concurrent_positions": 5,

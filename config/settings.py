@@ -29,7 +29,7 @@ def _optional_env(key: str, default: str | None = None) -> str | None:
 
 
 # ── Broker Selection ────────────────────────────────────────────────────────────────────────────────────────
-ACTIVE_BROKER = os.environ.get("ACTIVE_BROKER", "dhan").lower()
+ACTIVE_BROKER = os.environ.get("ACTIVE_BROKER", "zerodha").lower()
 
 # ── Dhan Credentials ────────────────────────────────────────────────────────────────────────────────────
 DHAN_CLIENT_ID   = _optional_env("DHAN_CLIENT_ID")
