@@ -177,29 +177,34 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
 
     # 3c. AI Enrichment (Gemini — Deep Context)
     from src.engine.llm_enrichment import get_llm_verdict
+    from config.settings import DISABLE_LLM_ENRICHMENT
     llm_verdict = None
-    try:
-        llm_verdict = get_llm_verdict(
-            symbol, intel, scan_context,
-            alerts=new_alerts,
-            news_data=news_data,
-            open_trade=open_trade,
-        )
-        if llm_verdict:
-            log.info("%s: AI verdict — %s (%d%%) risk=%s | Strategy: %s",
-                     symbol, llm_verdict.bias, llm_verdict.confidence,
-                     llm_verdict.risk_rating, llm_verdict.strategy)
-            intel_text += f"\n\n🧠 *AI Verdict* ({llm_verdict.bias}, {llm_verdict.confidence}%)\n"
-            intel_text += f"Strategy: {llm_verdict.strategy}\n"
-            intel_text += f"Target: {llm_verdict.strike_selection}\n"
-            intel_text += f"Risk: {llm_verdict.risk_rating}\n"
-            if llm_verdict.news_synthesis and llm_verdict.news_synthesis != "No news data":
-                intel_text += f"📰 {llm_verdict.news_synthesis}\n"
-            if llm_verdict.exit_advice:
-                intel_text += f"🚶 Exit: {llm_verdict.exit_advice}\n"
-            intel_text += f"_{llm_verdict.reasoning}_\n"
-    except Exception:
-        log.exception("%s: AI enrichment failed gracefully", symbol)
+    
+    if DISABLE_LLM_ENRICHMENT:
+        log.info("%s: LLM enrichment disabled (DISABLE_LLM_ENRICHMENT=true)", symbol)
+    else:
+        try:
+            llm_verdict = get_llm_verdict(
+                symbol, intel, scan_context,
+                alerts=new_alerts,
+                news_data=news_data,
+                open_trade=open_trade,
+            )
+            if llm_verdict:
+                log.info("%s: AI verdict — %s (%d%%) risk=%s | Strategy: %s",
+                         symbol, llm_verdict.bias, llm_verdict.confidence,
+                         llm_verdict.risk_rating, llm_verdict.strategy)
+                intel_text += f"\n\n🧠 *AI Verdict* ({llm_verdict.bias}, {llm_verdict.confidence}%)\n"
+                intel_text += f"Strategy: {llm_verdict.strategy}\n"
+                intel_text += f"Target: {llm_verdict.strike_selection}\n"
+                intel_text += f"Risk: {llm_verdict.risk_rating}\n"
+                if llm_verdict.news_synthesis and llm_verdict.news_synthesis != "No news data":
+                    intel_text += f"📰 {llm_verdict.news_synthesis}\n"
+                if llm_verdict.exit_advice:
+                    intel_text += f"🚶 Exit: {llm_verdict.exit_advice}\n"
+                intel_text += f"_{llm_verdict.reasoning}_\n"
+        except Exception:
+            log.exception("%s: AI enrichment failed gracefully", symbol)
 
     # 3d. AI Exit Advisor — evaluate open paper trades
     try:

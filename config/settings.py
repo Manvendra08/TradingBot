@@ -310,3 +310,7 @@ AI_MIN_CONFIDENCE_VETO         = int(os.environ.get("AI_MIN_CONFIDENCE_VETO", "8
 
 # Whether to call AI exit advisor for open trades during each scan
 AI_EXIT_ADVISOR_ENABLED        = os.environ.get("AI_EXIT_ADVISOR_ENABLED", "false").lower() == "true"
+
+# Disable LLM enrichment entirely when quota is exhausted or to reduce API calls
+# Set to True to skip all Gemini/Groq/OpenRouter calls
+DISABLE_LLM_ENRICHMENT         = os.environ.get("DISABLE_LLM_ENRICHMENT", "false").lower() == "true"
