@@ -18,6 +18,10 @@ WATCH_SYMBOLS = WATCH_NSE + WATCH_MCX
 
 FETCH_INTERVAL_MINUTES = 5
 
+HTTP_TIMEOUT_SECONDS  = 15
+HTTP_MAX_RETRIES      = 3
+HTTP_BACKOFF_FACTOR   = 2
+
 
 
 def _optional_env(key: str, default: str | None = None) -> str | None:
