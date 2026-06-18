@@ -3,11 +3,18 @@ import abc
 import logging
 import time
 import requests
+import ssl
 import urllib3
 from config.settings import HTTP_TIMEOUT_SECONDS, HTTP_MAX_RETRIES, HTTP_BACKOFF_FACTOR
 from src.utils.tls_adapter import ResilientTLSAdapter, DEFAULT_RETRY
 
 log = logging.getLogger(__name__)
+
+# Fix: Ensure global SSL context handles unverified requests gracefully
+try:
+    ssl._create_default_https_context = ssl._create_unverified_context
+except AttributeError:
+    pass
 
 # Suppress insecure request warnings from urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -20,7 +27,7 @@ class BaseFetcher(abc.ABC):
         self.session = requests.Session()
         self.session.trust_env = False
         self.session.verify = False
-        adapter = ResilientTLSAdapter(max_retries=DEFAULT_RETRY)
+        adapter = ResilientTLSAdapter(max_retries=DEFAULT_RETRY, ssl_verify=False)
         self.session.mount("https://", adapter)
 
     def _get(self, url: str, params: dict = None, headers: dict = None) -> dict | None:
@@ -29,7 +36,8 @@ class BaseFetcher(abc.ABC):
             try:
                 r = self.session.get(
                     url, params=params, headers=headers,
-                    timeout=HTTP_TIMEOUT_SECONDS
+                    timeout=HTTP_TIMEOUT_SECONDS,
+                    verify=self.session.verify
                 )
                 r.raise_for_status()
                 return r.json()

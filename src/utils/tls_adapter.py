@@ -62,11 +62,15 @@ class ResilientTLSAdapter(HTTPAdapter):
     SSL_RETRY_ATTEMPTS = 5
     SSL_BASE_DELAY = 0.5  # seconds — 0.5, 1.5, 4.5, 13.5, 40.5
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, ssl_verify: bool = True, **kwargs):
         self.ssl_context = ssl.create_default_context()
         self.ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
         if hasattr(ssl, "OP_IGNORE_UNEXPECTED_EOF"):
             self.ssl_context.options |= ssl.OP_IGNORE_UNEXPECTED_EOF
+        if not ssl_verify:
+            # Must disable check_hostname BEFORE setting CERT_NONE
+            self.ssl_context.check_hostname = False
+            self.ssl_context.verify_mode = ssl.CERT_NONE
         super().__init__(*args, **kwargs)
 
     def init_poolmanager(self, *args, **kwargs):
@@ -129,14 +133,13 @@ class ResilientTLSAdapter(HTTPAdapter):
         return any(m in s for m in _SSL_EOF_MARKERS for s in msgs_to_check)
 
 
-def mount_resilient_tls(session, max_retries=None):
+def mount_resilient_tls(session, max_retries=None, ssl_verify: bool = True):
     """Mount the ResilientTLSAdapter on a requests.Session for https://.
 
     Args:
-        session: A requests.Session (or kite.reqsession)
-        max_retries: Optional urllib3 Retry object. Defaults to DEFAULT_RETRY
-                     (which disables urllib3-level SSL retries so our send()
-                     loop can handle pool eviction correctly).
+        session:    A requests.Session (or kite.reqsession)
+        max_retries: Optional urllib3 Retry object. Defaults to DEFAULT_RETRY.
+        ssl_verify: Set False for public non-Kite fetchers that use verify=False.
     """
-    adapter = ResilientTLSAdapter(max_retries=max_retries or DEFAULT_RETRY)
+    adapter = ResilientTLSAdapter(max_retries=max_retries or DEFAULT_RETRY, ssl_verify=ssl_verify)
     session.mount("https://", adapter)
