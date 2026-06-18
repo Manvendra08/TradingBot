@@ -3,6 +3,11 @@
 P3 fix (#13): MAX_LEVEL_DISTANCE_STEPS moved to config/settings.py.
   Imported from there so the value is tunable per-deployment without a
   code change. Local module constant removed.
+
+Autopsy fix 1: SELL OTM fallback strike now defaults to ATM ± 2 steps
+  (properly OTM) when support/resistance level is absent or too distant.
+  Previously defaulted to ATM ± 1 step which could produce near-ATM or
+  ITM credit legs with high delta and unlimited loss potential.
 """
 from __future__ import annotations
 
@@ -11,6 +16,11 @@ from config.settings import MAX_LEVEL_DISTANCE_STEPS
 from src.engine.verdict_sets import BULLISH_VERDICTS, BEARISH_VERDICTS, is_bullish, is_bearish
 
 MIN_PAPER_CONFIDENCE = 65
+
+# Minimum OTM distance (in steps) for SELL option legs when no S/R level is
+# available. 2 steps keeps the short strike meaningfully OTM on Nifty (100pts)
+# and reduces delta to ~0.30 range, which is a reasonable credit-spread entry.
+SELL_FALLBACK_OTM_STEPS = 2
 
 LONG_CE_VERDICTS = BULLISH_VERDICTS   # backward-compat alias
 LONG_PE_VERDICTS = BEARISH_VERDICTS   # backward-compat alias
@@ -96,12 +106,27 @@ def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | N
     resistance = _safe_float(ctx.get("resistance"))
 
     # Strike selection: OTM for SELL, ATM for BUY
+    # Autopsy fix 1: SELL fallback uses SELL_FALLBACK_OTM_STEPS (2) instead
+    # of 1 step, ensuring the short strike remains genuinely OTM when no
+    # support/resistance level is available from the scan context.
     if option_type in ("CE", "PE"):
         if side == "SELL":
             if option_type == "CE":
-                strike = _round_to_step(resistance, step) if (resistance and resistance > underlying) else _round_to_step(underlying + step * MAX_LEVEL_DISTANCE_STEPS, step)
+                # Prefer resistance level if it's meaningfully above spot;
+                # fall back to ATM + 2 steps (OTM) so we avoid writing ITM calls.
+                strike = (
+                    _round_to_step(resistance, step)
+                    if (resistance and resistance > underlying)
+                    else _round_to_step(underlying + SELL_FALLBACK_OTM_STEPS * step, step)
+                )
             else:
-                strike = _round_to_step(support, step) if (support and support < underlying) else _round_to_step(underlying - step * MAX_LEVEL_DISTANCE_STEPS, step)
+                # Prefer support level if it's meaningfully below spot;
+                # fall back to ATM - 2 steps (OTM) so we avoid writing ITM puts.
+                strike = (
+                    _round_to_step(support, step)
+                    if (support and support < underlying)
+                    else _round_to_step(underlying - SELL_FALLBACK_OTM_STEPS * step, step)
+                )
         else:
             strike = atm
     else:

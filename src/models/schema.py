@@ -12,6 +12,16 @@ B10 fix: insert_paper_trade uses INSERT OR IGNORE on signal_key to prevent dupli
 P3 fix (#14): get_today_scan_count() now uses IST midnight (UTC+05:30) as the
   day boundary instead of UTC midnight. A trade at 00:30 UTC (06:00 IST) on a
   new IST calendar day was previously counted in the prior day's quota.
+
+Autopsy fix 4: close_paper_trade() and close_live_trade() now deduct
+  transaction costs before writing pnl_rupees. Costs are modelled per
+  instrument class via _calc_transaction_costs():
+    Options: STT 0.0625% of sell-side turnover + ₹20 brokerage + ₹5 exchange
+    Futures: STT 0.01% of sell-side turnover  + ₹20 brokerage + ₹5 exchange
+  gross_pnl_rupees (pre-cost) is preserved in memory so callers can log it;
+  pnl_rupees written to DB is always the net (post-cost) figure.
+  The schema does NOT add a gross_pnl_rupees column to avoid a migration — the
+  column can be added later when historical comparison is required.
 """
 import sqlite3
 import contextlib
@@ -112,7 +122,7 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     target_premium      REAL,               -- Target in premium terms (for options)
     lots                INTEGER DEFAULT 1,  -- number of lots traded
     pnl_points          REAL DEFAULT 0,     -- P&L in points (legacy)
-    pnl_rupees          REAL DEFAULT 0,     -- P&L in \u20b9 (lot size adjusted)
+    pnl_rupees          REAL DEFAULT 0,     -- P&L in ₹ net of transaction costs
     status              TEXT NOT NULL,      -- OPEN | CLOSED_TARGET | CLOSED_SL | CLOSED_MANUAL
     reason              TEXT,
     digest_id           TEXT,
@@ -190,7 +200,7 @@ CREATE TABLE IF NOT EXISTS live_trades (
     target_premium      REAL,               -- Target in premium terms (for options)
     lots                INTEGER DEFAULT 1,  -- number of lots traded
     pnl_points          REAL DEFAULT 0,
-    pnl_rupees          REAL DEFAULT 0,
+    pnl_rupees          REAL DEFAULT 0,     -- net of transaction costs
     status              TEXT NOT NULL,      -- OPEN | CLOSED_TARGET | CLOSED_SL | CLOSED_MANUAL | SHADOW | REJECTED
     reason              TEXT,
     digest_id           TEXT,
@@ -664,9 +674,55 @@ def insert_scan_summary(summary: dict, is_fallback: bool = False) -> None:
         conn.execute(sql, row_data)
 
 
-def close_paper_trade(trade_id: int, closed_at: str, exit_underlying: float, exit_premium: float | None, status: str, reason: str = "") -> None:
-    """Close a paper trade and calculate P&L in both points and rupees."""
-    from config.settings import LOT_SIZES, TRANSACTION_COSTS
+# ── Transaction cost model (Autopsy fix 4) ─────────────────────────────────
+# Costs are approximate but directionally correct for NSE/MCX retail accounts:
+#   Options: STT 0.0625% on sell-side premium turnover + ₹20 brokerage + ₹5 exchange
+#   Futures: STT 0.01%   on sell-side notional turnover + ₹20 brokerage + ₹5 exchange
+# These are per-leg figures. Round-trip (entry + exit) costs are 2× this amount.
+# Override this function to plug in broker-specific actuals (e.g. Zerodha / Dhan).
+
+def _calc_transaction_costs(
+    option_type: str,
+    side: str,
+    exit_premium: float,
+    exit_underlying: float,
+    lot_size: int,
+    lots: int,
+) -> float:
+    """
+    Return total round-trip transaction costs in ₹ for one closed trade.
+
+    Modelled as entry leg + exit leg where:
+      - Options turnover = premium × lot_size × lots
+      - Futures turnover = underlying × lot_size × lots
+    STT is only on the sell-side leg for each round-trip direction.
+    Brokerage (₹20) and exchange charges (₹5) apply to each leg.
+    """
+    flat_per_leg = 20.0 + 5.0  # brokerage + exchange
+    round_trip_flat = flat_per_leg * 2  # entry + exit
+
+    if option_type in ("CE", "PE"):
+        # For options: STT charged only on the sell leg premium turnover
+        sell_turnover = float(exit_premium or 0.0) * lot_size * lots
+        stt = sell_turnover * 0.000625  # 0.0625%
+    else:
+        # Futures: STT on sell-side notional
+        sell_turnover = float(exit_underlying or 0.0) * lot_size * lots
+        stt = sell_turnover * 0.0001  # 0.01%
+
+    return round(stt + round_trip_flat, 2)
+
+
+def close_paper_trade(
+    trade_id: int,
+    closed_at: str,
+    exit_underlying: float,
+    exit_premium: float | None,
+    status: str,
+    reason: str = "",
+) -> None:
+    """Close a paper trade and calculate net P&L (post transaction costs)."""
+    from config.settings import LOT_SIZES
 
     with get_conn() as conn:
         row = conn.execute(
@@ -720,6 +776,7 @@ def close_paper_trade(trade_id: int, closed_at: str, exit_underlying: float, exi
             else:
                 pnl_points = float(exit_underlying) - entry_underlying
 
+<<<<<<< HEAD
         pnl_rupees = pnl_points * lot_size * lots
 
         # ── Transaction Cost Model ─────────────────────────────────────────────
@@ -746,6 +803,21 @@ def close_paper_trade(trade_id: int, closed_at: str, exit_underlying: float, exi
                 
         total_costs = brokerage + stt
         pnl_rupees = pnl_rupees - total_costs
+=======
+        gross_pnl_rupees = pnl_points * lot_size * lots
+
+        # Autopsy fix 4: deduct transaction costs so pnl_rupees is net.
+        tx_cost = _calc_transaction_costs(
+            option_type, side,
+            exit_premium if exit_premium is not None else 0.0,
+            exit_underlying, lot_size, lots,
+        )
+        pnl_rupees = gross_pnl_rupees - tx_cost
+        log.debug(
+            "close_paper_trade id=%s: gross=%.2f tx_cost=%.2f net=%.2f",
+            trade_id, gross_pnl_rupees, tx_cost, pnl_rupees,
+        )
+>>>>>>> origin/fix/autopsy-4-critical-bugs
 
         conn.execute(
             """
@@ -757,7 +829,10 @@ def close_paper_trade(trade_id: int, closed_at: str, exit_underlying: float, exi
         )
 
 
+<<<<<<< HEAD
 
+=======
+>>>>>>> origin/fix/autopsy-4-critical-bugs
 def list_paper_trades(symbol: str | None = None, limit: int = 300) -> list[dict]:
     sql = "SELECT * FROM paper_trades"
     params: list = []
@@ -891,7 +966,19 @@ def update_live_trade_entry(
         conn.execute(sql, tuple(params))
 
 
+<<<<<<< HEAD
 def close_live_trade(trade_id: int, closed_at: str, exit_underlying: float, exit_premium: float | None, status: str, reason: str = "") -> None:
+=======
+def close_live_trade(
+    trade_id: int,
+    closed_at: str,
+    exit_underlying: float,
+    exit_premium: float | None,
+    status: str,
+    reason: str = "",
+) -> None:
+    """Close a live trade and calculate net P&L (post transaction costs)."""
+>>>>>>> origin/fix/autopsy-4-critical-bugs
     from config.settings import LOT_SIZES
 
     with get_conn() as conn:
@@ -946,7 +1033,23 @@ def close_live_trade(trade_id: int, closed_at: str, exit_underlying: float, exit
             else:
                 pnl_points = float(exit_underlying) - entry_underlying
 
+<<<<<<< HEAD
         pnl_rupees = pnl_points * lot_size * lots
+=======
+        gross_pnl_rupees = pnl_points * lot_size * lots
+
+        # Autopsy fix 4: deduct transaction costs so pnl_rupees is net.
+        tx_cost = _calc_transaction_costs(
+            option_type, side,
+            exit_premium if exit_premium is not None else 0.0,
+            exit_underlying, lot_size, lots,
+        )
+        pnl_rupees = gross_pnl_rupees - tx_cost
+        log.debug(
+            "close_live_trade id=%s: gross=%.2f tx_cost=%.2f net=%.2f",
+            trade_id, gross_pnl_rupees, tx_cost, pnl_rupees,
+        )
+>>>>>>> origin/fix/autopsy-4-critical-bugs
 
         conn.execute(
             """

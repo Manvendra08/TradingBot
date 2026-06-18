@@ -43,7 +43,7 @@ def _ist_day_start_utc() -> str:
     return midnight_utc.strftime("%Y-%m-%dT%H:%M:%S")
 
 
-def check_risk_limits(symbol: str) -> tuple[bool, str]:
+def check_risk_limits(symbol: str, setup_type: str | None = None) -> tuple[bool, str]:
     """
     Return (allowed: bool, reason: str).
     'allowed' is True when a new trade for `symbol` may be opened.
@@ -51,16 +51,17 @@ def check_risk_limits(symbol: str) -> tuple[bool, str]:
     today_start = _ist_day_start_utc()
 
     with get_conn() as conn:
-        # 1. Max open trades per symbol
-        open_symbol = conn.execute(
-            "SELECT COUNT(*) AS cnt FROM paper_trades WHERE symbol = ? AND status = 'OPEN'",
-            (symbol,),
-        ).fetchone()["cnt"]
-        if open_symbol >= MAX_OPEN_TRADES_PER_SYMBOL:
-            return False, (
-                f"Max open trades for {symbol} reached "
-                f"({open_symbol}/{MAX_OPEN_TRADES_PER_SYMBOL})"
-            )
+        # 1. Max open trades per symbol (skip for TIMEFRAME as it has its own pyramid logic)
+        if setup_type != 'TIMEFRAME':
+            open_symbol = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM paper_trades WHERE symbol = ? AND status = 'OPEN'",
+                (symbol,),
+            ).fetchone()["cnt"]
+            if open_symbol >= MAX_OPEN_TRADES_PER_SYMBOL:
+                return False, (
+                    f"Max open trades for {symbol} reached "
+                    f"({open_symbol}/{MAX_OPEN_TRADES_PER_SYMBOL})"
+                )
 
         # 2. Max total open trades
         open_total = conn.execute(

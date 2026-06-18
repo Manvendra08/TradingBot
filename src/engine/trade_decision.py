@@ -10,6 +10,12 @@ P2 fix (#6): TREND_MIN_SCANS gate added — blocks any trend-based trade when
   Prevents new symbols from firing TRIGGERED_CORE with zero trend validation.
 P2 fix (#7): Hybrid mode momentum fallback threshold changed from hardcoded 80
   to settings.MOMENTUM_SCORE_THRESHOLD so it is tunable without a code change.
+
+Autopsy fix 2: AI veto guard default changed from True to False.
+  Previously `scores.get('ai_agrees', True)` meant veto could never fire when
+  ai_verdict was None (key absent from scores). Now defaults False so the
+  guard evaluates correctly: missing AI verdict → no veto (ai_agrees=False
+  with ai_conf=0 will not meet the ai_min_confidence_veto threshold).
 """
 from __future__ import annotations
 
@@ -95,10 +101,6 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None) ->
         return _blocked("Timeframe conflict: 1H and 3H charts disagree")
 
     # ── Minimum scan history gate (#6) ─────────────────────────────────────
-    # Blocks trade on any symbol that has fewer than TREND_MIN_SCANS valid
-    # scan summaries. Without this, get_trend_alignment_score() returns a
-    # neutral 50 and calculate_momentum_score() component 2 uses 0 rows —
-    # both silently allow a TRIGGERED_CORE with zero trend validation.
     scan_count = _count_valid_scans(symbol)
     if scan_count < TREND_MIN_SCANS:
         return _blocked(
@@ -107,14 +109,14 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None) ->
 
     # Build plan to get option_type + strike for entry quality
     from src.engine.paper_plan import build_paper_trade_plan
-    plan_ctx = {**ctx, "symbol": symbol}   # ensure symbol is in ctx for paper_plan
+    plan_ctx = {**ctx, "symbol": symbol}
     plan = build_paper_trade_plan(verdict, confidence, plan_ctx)
     if not plan:
         return _blocked("No valid trade plan from verdict")
 
     option_type = plan["option_type"]
     strike      = plan["strike"]
-    plan_ctx    = {**plan_ctx, **plan}   # merge so entry_quality sees sl/target (B6)
+    plan_ctx    = {**plan_ctx, **plan}
 
     # ── Score all layers ───────────────────────────────────────────────────
     entry_quality, entry_reasons = calculate_entry_quality(symbol, option_type, strike, plan_ctx)
@@ -205,7 +207,8 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None) ->
             return _decision("TRIGGERED_CORE", "TREND_CONTINUATION",
                              persist_reason, soft_conflicts, scores)
 
-        # Priority 3: Momentum scoring — threshold from settings (#7)
+<<<<<<< HEAD
+        # Priority 3: Momentum scoring
         momentum_score = calculate_momentum_score(
             symbol, verdict, confidence, ctx, broader_trend=broader_trend
         )
@@ -237,7 +240,7 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None) ->
 
         block_reason = "; ".join(block_parts) or "No qualifying condition met"
 
-        # Priority 5: AI boost — if AI is confident and agrees, promote to EXPERIMENTAL
+        # Priority 5: AI boost
         if ai_verdict and ai_decision_mode in ("boost_only", "full"):
             ai_conf = scores.get('ai_confidence', 0)
             ai_agrees = scores.get('ai_agrees', False)
@@ -294,13 +297,12 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None) ->
 def _decision(status: str, setup_type: str, reason: str,
               soft_conflicts: list[str], scores: dict,
               ai_verdict=None) -> dict:
-    # Phase 2: AI veto check — if AI strongly disagrees, can block a TRIGGERED trade
+    # Autopsy fix 2: AI veto guard default changed from True → False.
     from config.runtime_config import load_runtime_config
     rconf = load_runtime_config()
     ai_decision_mode = rconf.get("live_ai_decision_mode", "advisory")
     ai_min_confidence_veto = int(rconf.get("live_ai_min_confidence_veto", 85))
 
-    # Warn and demote if in full mode but no AI verdict was provided
     if ai_decision_mode == "full" and "ai_bias" not in scores and not ai_verdict:
         log.warning("AI decision mode is 'full' but no AI verdict was provided. Demoting trade.")
         if status == "TRIGGERED_CORE":
@@ -311,7 +313,7 @@ def _decision(status: str, setup_type: str, reason: str,
     if (("ai_bias" in scores or ai_verdict) and ai_decision_mode == "full"
             and status.startswith("TRIGGERED")):
         ai_conf = scores.get('ai_confidence', 0)
-        ai_agrees = scores.get('ai_agrees', False)  # default False (conservative) = veto if no agreement details
+        ai_agrees = scores.get('ai_agrees', False)  # FIX: was True — veto never fired when key absent
         ai_risk = scores.get('ai_risk_rating', '')
         if not ai_agrees and ai_conf >= ai_min_confidence_veto:
             log.warning(

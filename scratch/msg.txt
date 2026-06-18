@@ -1,0 +1,43 @@
+📊 *NATURALGAS* (Exp: 23 Jun | 7 DTE) | 16 Jun, 13:00
+Future `299.10` | ATM `300.00` | PCR `1.20`
+Net OI Δ: CE `-71` | PE `-163` (Both Unwinding)
+────────────────────
+🟡 *TRADE: BUY CE* - BULLISH BIAS
+`Signal strength: █████░░░░░ 53/100 (WEAK)`
+
+⚡ *KEY SIGNALS & LEVELS*
+• *Key Levels:* Support `280.00` | Resistance `320.00`
+• *Headline:* Aggressive Flow (high vol vs OI delta) 290 PE | ratio 125.1x  *[⚠️ Disagrees with verdict]*
+
+🎯 *TRADING PLAN*
+Recommended:
+• Sell 280.00 PE / 275.00 PE (premium at support)
+• Buy 320.00 CE only if future breaks 320.00 with volume
+
+Avoid:
+• Buying PEs (trend is upward)
+• Selling CEs above 320.00
+
+Levels:
+• Stop: future closes below 275.00
+• Target: 320.00, then 325.00
+
+• Low signal strength -> reduce size
+
+📈 *CONFIRMATION*
+• *Candles:* 1H BULLISH 🟢 ▲ | 3H BULLISH 🟢 ▲
+• *OI Flow:* Both unwinding, PE exits faster -> BEARISH *[disagrees with verdict]*
+
+💡 *BOTTOM LINE*
+Weak bullish setup, 280.00 as support. Low strength (53/100) - avoid directional. Trade: Sell PEs 280.00-275.00. Break of 320.00 = rally.
+
+🤖 *PAPER TRADE STATUS*
+• *Status:* EXECUTED (TIMEFRAME)
+• *Details:* Buy FUT @ 299.10 | SL: 296.20 | Target: — (Lots: 10)
+• *Reason:* timeframe entry | 3H close 300.30 > p3H_high 295.24 | level 1
+
+🟢 *LIVE/SHADOW TRADE STATUS*
+• *Status:* NO_TRADE | *Reason:* poll square-off failed: Kite instrument cache miss for NATURALGAS; refusing live broker order on fallback tradingsymbol
+
+_#57d1e3e9_
+────────────────────
