@@ -300,55 +300,53 @@ def _call_gemini_api(symbol: str, prompt: str, response_schema=None) -> BaseMode
     schema = response_schema or LLMTradeVerdict
     now = time.time()
 
-    # 1. Try OpenRouter (Primary) — 1000+ free req/day, diverse free models
+    # 1. Try OpenRouter (Primary) — DISABLED: all free models removed as of 2026
+    # OpenRouter discontinued free tier endpoints. Skip unless explicitly enabled.
     openrouter_key = os.environ.get("OPENROUTER_API_KEY")
-    if openrouter_key:
-        # Expanded list of free OpenRouter models with best-performing first
-        # Verified available: https://openrouter.ai/models
-        openrouter_models = [
-            "meta-llama/llama-2-70b-chat:free",             # Proven stable free model
-            "mistralai/mistral-7b-instruct:free",           # Reliable fallback
-            "meta-llama/llama-3-8b-instruct:free",          # Good reasoning
-            "teknium/openhermes-2.5-mistral-7b:free",       # Alternative capable model
-            "gryphe/mythomist-7b:free",                     # Compact but capable
-        ]
-        schema_json = json.dumps(schema.model_json_schema())
-        system_prompt = (
-            "You are a professional trading analyst. "
-            "You MUST respond with a valid JSON object matching this JSON Schema. "
-            "Make sure all field types and values match the schema definition exactly. "
-            f"JSON Schema:\n{schema_json}"
-        )
-        import requests
-        for model in openrouter_models:
-            try:
-                log.info("[llm] Attempting OpenRouter call with model: %s (PRIMARY)", model)
-                headers = {
-                    "Authorization": f"Bearer {openrouter_key}",
-                    "Content-Type": "application/json",
-                    "HTTP-Referer": "https://github.com/Manvendra08/TradingBot",
-                    "X-Title": "NSEBOT F&O"
-                }
-                body = {
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": prompt}
-                    ],
-                    "response_format": {"type": "json_object"},
-                    "temperature": 0.2
-                }
-                resp = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=body, timeout=15)
-                if resp.status_code == 200:
-                    content = resp.json()["choices"][0]["message"]["content"]
-                    result = schema.model_validate_json(content)
-                    log.info("[llm] %s successfully generated via OpenRouter model: %s (PRIMARY)", schema.__name__, model)
-                    return result
-                else:
-                    log.warning("[llm] OpenRouter model %s failed: status=%d error=%s", model, resp.status_code, resp.text[:200])
-            except Exception as ore:
-                log.warning("[llm] OpenRouter model %s failed with exception: %s", model, str(ore)[:200])
-                continue
+    enable_openrouter = os.environ.get("OPENROUTER_ENABLE_FREE", "false").lower() == "true"
+    if openrouter_key and enable_openrouter:
+        # Empty list by default. Set OPENROUTER_ENABLE_FREE=true to try paid endpoints if configured
+        openrouter_models = []
+        if openrouter_models:
+            schema_json = json.dumps(schema.model_json_schema())
+            system_prompt = (
+                "You are a professional trading analyst. "
+                "You MUST respond with a valid JSON object matching this JSON Schema. "
+                "Make sure all field types and values match the schema definition exactly. "
+                f"JSON Schema:\n{schema_json}"
+            )
+            import requests
+            for model in openrouter_models:
+                try:
+                    log.info("[llm] Attempting OpenRouter call with model: %s (PRIMARY)", model)
+                    headers = {
+                        "Authorization": f"Bearer {openrouter_key}",
+                        "Content-Type": "application/json",
+                        "HTTP-Referer": "https://github.com/Manvendra08/TradingBot",
+                        "X-Title": "NSEBOT F&O"
+                    }
+                    body = {
+                        "model": model,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": prompt}
+                        ],
+                        "response_format": {"type": "json_object"},
+                        "temperature": 0.2
+                    }
+                    resp = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=body, timeout=15)
+                    if resp.status_code == 200:
+                        content = resp.json()["choices"][0]["message"]["content"]
+                        result = schema.model_validate_json(content)
+                        log.info("[llm] %s successfully generated via OpenRouter model: %s (PRIMARY)", schema.__name__, model)
+                        return result
+                    else:
+                        log.warning("[llm] OpenRouter model %s failed: status=%d error=%s", model, resp.status_code, resp.text[:200])
+                except Exception as ore:
+                    log.warning("[llm] OpenRouter model %s failed with exception: %s", model, str(ore)[:200])
+                    continue
+        else:
+            log.debug("[llm] OpenRouter free tier disabled (no free models available)")
 
     # 2. Try Groq (First Fallback) — 3000+ free req/day, ultra-fast inference
     groq_key = os.environ.get("GROQ_API_KEY")

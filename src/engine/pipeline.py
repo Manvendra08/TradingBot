@@ -194,7 +194,7 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
     elif intel:
         try:
             llm_verdict = get_llm_verdict(
-                symbol, dict(intel) if intel else {}, scan_context,
+                symbol, intel, scan_context,
                 alerts=new_alerts,
                 news_data=news_data,
                 open_trade=open_trade,
@@ -326,7 +326,7 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
     # 3b. Save scan summary — pass is_fallback so regime_detector can exclude stale rows
     try:
         if intel:
-            save_scan_summary(symbol, scan_context, new_alerts, dict(intel), digest_id, fetched_at,
+            save_scan_summary(symbol, scan_context, new_alerts, intel, digest_id, fetched_at,
                               is_fallback=is_fallback)
         else:
             log.warning("%s: skipping scan summary save due to missing intelligence data", symbol)
