@@ -12,8 +12,8 @@ LOG_DIR  = BASE_DIR / "logs"
 DATA_DIR.mkdir(exist_ok=True)
 LOG_DIR.mkdir(exist_ok=True)
 
-WATCH_NSE = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"]
-WATCH_MCX = ["NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"]
+WATCH_NSE = ["NIFTY", "BANKNIFTY"]
+WATCH_MCX = ["NATURALGAS", "CRUDEOIL"]
 WATCH_SYMBOLS = WATCH_NSE + WATCH_MCX
 
 FETCH_INTERVAL_MINUTES = 5
@@ -35,6 +35,7 @@ ACTIVE_BROKER = os.environ.get("ACTIVE_BROKER", "dhan").lower()
 # ── Dhan Credentials ────────────────────────────────────────────────────────
 DHAN_CLIENT_ID   = _optional_env("DHAN_CLIENT_ID")
 DHAN_ACCESS_TOKEN = _optional_env("DHAN_ACCESS_TOKEN")
+DHAN_BASE_URL    = _optional_env("DHAN_BASE_URL", "https://api.dhan.co")
 
 # ── Shoonya / Finvasia Credentials ─────────────────────────────────────────
 SHOONYA_USER_ID   = _optional_env("SHOONYA_USER_ID")
@@ -143,6 +144,12 @@ DASHBOARD_USERNAME = _optional_env("DASHBOARD_USERNAME", "admin")
 DASHBOARD_PASSWORD = _optional_env("DASHBOARD_PASSWORD", "admin")
 
 STRIKES_AROUND_ATM  = 10
+
+# ── Fetcher Priority ────────────────────────────────────────────────────────
+# Order in which fetchers are tried for NSE indices. MCX commodities have
+# their own priority: ["dhan_commodity", "moneycontrol", "dhan", "dhan_headless"]
+FETCHER_PRIORITY    = ["dhan", "dhan_headless", "nse_public"]
+
 LOG_LEVEL           = "INFO"
 LOG_ROTATION        = "midnight"
 LOG_BACKUP_COUNT    = 30
@@ -181,7 +188,32 @@ def get_symbol_thresholds(symbol: str) -> dict:
     return SYMBOL_THRESHOLD_OVERRIDES.get(base, {})
 
 
-# ── Trading System V2.2 ────────────────────────────────────────────────────
+# ── Anomaly Detection Thresholds ─────────────────────────────────────────
+OI_SPIKE_THRESHOLD_PCT         = 15.0    # % change in OI to trigger spike alert
+PRICE_SPIKE_THRESHOLD_PCT      = 2.0     # % change in LTP to trigger price spike
+PCR_EXTREME_LOW                = 0.5     # PCR below this is extreme bearish
+PCR_EXTREME_HIGH               = 1.8     # PCR above this is extreme bullish
+PCR_SHIFT_THRESHOLD            = 0.3     # min PCR change to trigger alert
+PCR_EXTREME_SEVERITY_BAND      = 0.1     # band around extremes for severity bump
+IV_SPIKE_ATM_THRESHOLD         = 20.0    # % IV change at ATM to trigger alert
+MAX_PAIN_SHIFT_THRESHOLD       = 50      # rupees max pain shift to trigger alert
+SEVERITY_HIGH_MULT             = 1.5     # multiplier for HIGH severity thresholds
+SEVERITY_MED_MULT              = 1.0     # multiplier for MEDIUM severity thresholds
+BUILDUP_OI_MIN_PCT             = 10.0    # min OI change % for buildup detection
+BUILDUP_LTP_MIN_PCT            = 3.0     # min LTP change % for buildup detection
+OTM_STRIKE_RANGE               = 3       # strikes to check for OTM unusual moves
+OTM_OI_SPIKE_PCT               = 20.0    # OI spike % threshold for OTM unusual
+VOLUME_AGGRESSION_HIGH         = 2.5     # volume multiplier for high aggression
+VOLUME_AGGRESSION_LOW          = 1.5     # volume multiplier for low aggression
+IV_CRUSH_THRESHOLD             = 15.0    # % IV drop to trigger crush alert
+STRADDLE_DELTA_PCT             = 5.0     # delta move % for straddle premium alert
+ATM_LEG_MOVE_PCT               = 2.0     # ATM premium move % for straddle
+PCR_VELOCITY_WINDOW            = 3       # number of snapshots to track PCR velocity
+MIN_OI_THRESHOLD               = 1000    # min OI for a strike to be considered
+ALERT_COOLDOWN_MINUTES         = 60      # don't re-alert same type within N minutes
+ALERT_COOLDOWN_HIGH_MINUTES    = 30      # shorter cooldown for HIGH severity
+INDIVIDUAL_ALERT_MIN_SEVERITY  = "LOW"   # min severity to send individual alerts
+DEDUP_CLUSTER_STRIKES          = 2       # cluster strikes within N steps of fired key
 
 # Research mode: True = EXPERIMENTAL trades allowed; False = CORE only
 PAPER_RESEARCH_MODE = True

@@ -207,7 +207,6 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None) ->
             return _decision("TRIGGERED_CORE", "TREND_CONTINUATION",
                              persist_reason, soft_conflicts, scores)
 
-<<<<<<< HEAD
         # Priority 3: Momentum scoring
         momentum_score = calculate_momentum_score(
             symbol, verdict, confidence, ctx, broader_trend=broader_trend

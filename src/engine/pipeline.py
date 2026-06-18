@@ -27,7 +27,7 @@ from src.models.schema import (
 from src.engine.anomaly_detector import detect_anomalies
 from src.engine.intelligence import generate_intelligence_structured
 from src.engine.paper_trading import run_paper_trading, run_timeframe_strategy
-from src.engine.live_trading import run_live_trading, run_live_timeframe_strategy
+# from src.engine.live_trading import run_live_trading, run_live_timeframe_strategy
 from src.engine.scan_summary import save_scan_summary
 from src.alerts.dedup import is_duplicate, record_alert, should_send_zero_signal
 from src.alerts.digest import build_digest_wrapper as build_digest
