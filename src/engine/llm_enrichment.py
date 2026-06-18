@@ -51,12 +51,8 @@ class LLMExitAdvice(BaseModel):
 
 
 class LLMStrategyOptimization(BaseModel):
-    overall_assessment: str = Field(description="Summary of systematic trading errors or opportunities")
-    config_tuning_suggestions: list[str] = Field(description="List of specific config changes to improve results")
-    risk_adjustments: str = Field(description="Recommendations on risk parameters (stops, targets, position sizing)")
-    edge_analysis: str = Field(description="Where is the trading edge strongest, weakest, and how to exploit it")
-    confidence: int = Field(description="Confidence in these recommendations (0-100)")
-
+    suggested_config_changes: dict[str, float | str | int] = Field(description="Dictionary of configuration keys and their new recommended values")
+    analysis: str = Field(description="Brief analysis explaining why these changes were suggested based on trade history")
 
 
 # ── Client management ────────────────────────────────────────────────────
@@ -243,6 +239,8 @@ SYMBOL: {symbol}
 INSTRUCTIONS
 ═══════════════════════════════════════════════════════
 - Synthesize ALL the data above. Do not just echo the rule engine verdict.
+- Ensure 'Strategy' and 'strike_selection' are logically consistent (e.g., 'Put Writing' implies selling PEs, not buying).
+- If your trend analysis differs from the provided chart data, explicitly state why (e.g., 'broader trend vs. short-term candle').
 - If chart and OI signals conflict, explain which signal you trust more and why.
 - If news contradicts technical signals, flag the risk clearly.
 - Provide a specific, actionable trade plan (not vague suggestions).
@@ -302,53 +300,16 @@ def _call_gemini_api(symbol: str, prompt: str, response_schema=None) -> BaseMode
     schema = response_schema or LLMTradeVerdict
     now = time.time()
 
-    # 1. Try Groq (Primary) — 3000+ free req/day, lightning fast
-    groq_key = os.environ.get("GROQ_API_KEY")
-    if groq_key:
-        groq_models = ["llama-3.3-70b-versatile", "llama-3.1-70b-versatile", "llama-3.1-8b-instant", "gemma2-9b-it"]
-        schema_json = json.dumps(schema.model_json_schema())
-        system_prompt = (
-            "You are a professional trading analyst. "
-            "You MUST respond with a valid JSON object matching this JSON Schema. "
-            "Make sure all field types and values match the schema definition exactly. "
-            f"JSON Schema:\n{schema_json}"
-        )
-        import requests
-        for model in groq_models:
-            try:
-                log.info("[llm] Attempting Groq call with model: %s (PRIMARY)", model)
-                headers = {
-                    "Authorization": f"Bearer {groq_key}",
-                    "Content-Type": "application/json"
-                }
-                body = {
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": prompt}
-                    ],
-                    "response_format": {"type": "json_object"},
-                    "temperature": 0.2
-                }
-                resp = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=body, timeout=15)
-                if resp.status_code == 200:
-                    content = resp.json()["choices"][0]["message"]["content"]
-                    result = schema.model_validate_json(content)
-                    log.info("[llm] %s successfully generated via Groq model: %s (PRIMARY)", schema.__name__, model)
-                    return result
-                else:
-                    log.warning("[llm] Groq model %s failed: status=%d error=%s", model, resp.status_code, resp.text)
-            except Exception as ge:
-                log.warning("[llm] Groq model %s failed with exception: %s", model, ge)
-                continue
-
-    # 2. Try OpenRouter (First Fallback) — 1000+ free req/day
+    # 1. Try OpenRouter (Primary) — 1000+ free req/day, diverse free models
     openrouter_key = os.environ.get("OPENROUTER_API_KEY")
     if openrouter_key:
+        # Expanded list of free OpenRouter models with best-performing first
         openrouter_models = [
-            "meta-llama/llama-3.3-70b-instruct:free",
-            "openrouter/free",
-            "qwen/qwen-2-7b-instruct:free"
+            "meta-llama/llama-3.3-70b-instruct:free",      # Best free model, 70B params
+            "google/gemini-2.0-flash-exp:free",             # Fast and capable
+            "qwen/qwen-2.5-7b-instruct:free",               # Good reasoning
+            "microsoft/phi-3.5-mini-128k-instruct:free",    # Long context
+            "meta-llama/llama-3.2-3b-instruct:free",        # Fast, lightweight
         ]
         schema_json = json.dumps(schema.model_json_schema())
         system_prompt = (
@@ -360,7 +321,7 @@ def _call_gemini_api(symbol: str, prompt: str, response_schema=None) -> BaseMode
         import requests
         for model in openrouter_models:
             try:
-                log.info("[llm] Attempting OpenRouter call with model: %s (FALLBACK 1)", model)
+                log.info("[llm] Attempting OpenRouter call with model: %s (PRIMARY)", model)
                 headers = {
                     "Authorization": f"Bearer {openrouter_key}",
                     "Content-Type": "application/json",
@@ -380,19 +341,65 @@ def _call_gemini_api(symbol: str, prompt: str, response_schema=None) -> BaseMode
                 if resp.status_code == 200:
                     content = resp.json()["choices"][0]["message"]["content"]
                     result = schema.model_validate_json(content)
-                    log.info("[llm] %s successfully generated via OpenRouter model: %s (FALLBACK 1)", schema.__name__, model)
+                    log.info("[llm] %s successfully generated via OpenRouter model: %s (PRIMARY)", schema.__name__, model)
                     return result
                 else:
-                    log.warning("[llm] OpenRouter model %s failed: status=%d error=%s", model, resp.status_code, resp.text)
+                    log.warning("[llm] OpenRouter model %s failed: status=%d error=%s", model, resp.status_code, resp.text[:200])
             except Exception as ore:
-                log.warning("[llm] OpenRouter model %s failed with exception: %s", model, ore)
+                log.warning("[llm] OpenRouter model %s failed with exception: %s", model, str(ore)[:200])
+                continue
+
+    # 2. Try Groq (First Fallback) — 3000+ free req/day, ultra-fast inference
+    groq_key = os.environ.get("GROQ_API_KEY")
+    if groq_key:
+        # Expanded Groq free models list, ordered by performance
+        groq_models = [
+            "llama-3.3-70b-versatile",      # Best overall, 128K context
+            "llama-3.1-70b-versatile",      # Previous gen, still excellent
+            "mixtral-8x7b-32768",           # MoE, good at reasoning
+            "llama-3.1-8b-instant",         # Ultra-fast, good for quick calls
+            "gemma2-9b-it",                 # Google Gemma 2, efficient
+        ]
+        schema_json = json.dumps(schema.model_json_schema())
+        system_prompt = (
+            "You are a professional trading analyst. "
+            "You MUST respond with a valid JSON object matching this JSON Schema. "
+            "Make sure all field types and values match the schema definition exactly. "
+            f"JSON Schema:\n{schema_json}"
+        )
+        import requests
+        for model in groq_models:
+            try:
+                log.info("[llm] Attempting Groq call with model: %s (FALLBACK 1)", model)
+                headers = {
+                    "Authorization": f"Bearer {groq_key}",
+                    "Content-Type": "application/json"
+                }
+                body = {
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "response_format": {"type": "json_object"},
+                    "temperature": 0.2
+                }
+                resp = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=body, timeout=15)
+                if resp.status_code == 200:
+                    content = resp.json()["choices"][0]["message"]["content"]
+                    result = schema.model_validate_json(content)
+                    log.info("[llm] %s successfully generated via Groq model: %s (FALLBACK 1)", schema.__name__, model)
+                    return result
+                else:
+                    log.warning("[llm] Groq model %s failed: status=%d error=%s", model, resp.status_code, resp.text[:200])
+            except Exception as ge:
+                log.warning("[llm] Groq model %s failed with exception: %s", model, str(ge)[:200])
                 continue
 
     # 3. Try Gemini (Second Fallback) — 20 req/day free tier
     api_key = os.environ.get("GEMINI_API_KEY")
     if api_key and genai and now >= _API_QUOTA_EXHAUSTED_UNTIL:
-        # Fallback list of models: gemini-2.5-flash (primary), gemini-2.0-flash (fallback)
-        models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash"]
+        models_to_try = ["gemini-2.5-flash", "gemini-3.0-flash"]
         try:
             all_failed_429 = True
             c = _get_client(api_key)
@@ -415,7 +422,7 @@ def _call_gemini_api(symbol: str, prompt: str, response_schema=None) -> BaseMode
                     err_str = str(inner_e)
                     if "429" not in err_str and "RESOURCE_EXHAUSTED" not in err_str.upper():
                         all_failed_429 = False
-                    log.warning("[llm] Model %s failed for %s: %s", model_name, symbol, inner_e)
+                    log.warning("[llm] Model %s failed for %s: %s", model_name, symbol, str(inner_e)[:200])
                     continue
 
             if all_failed_429:
