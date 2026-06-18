@@ -1,5 +1,5 @@
 """
-Risk engine for paper trading.
+Risk engine — paper AND live trading.
 
 Checks performed before allowing a new trade:
   1. Max open trades per symbol
@@ -7,6 +7,9 @@ Checks performed before allowing a new trade:
   3. Max trades per symbol per day
   4. Daily loss cap
   5. Loss cooldown (wait N minutes after a loss before re-entering)
+
+Both check_risk_limits() (paper) and check_live_risk_limits() (live) share
+identical logic — they only differ in which DB table they query.
 
 Note: IST-aligned day boundaries are used so that trade
 counts and daily loss cap align with the actual Indian market day.
@@ -43,62 +46,68 @@ def _ist_day_start_utc() -> str:
     return midnight_utc.strftime("%Y-%m-%dT%H:%M:%S")
 
 
-def check_risk_limits(symbol: str, setup_type: str | None = None) -> tuple[bool, str]:
+def _check_risk_limits_for_table(
+    symbol: str,
+    trades_table: str,
+    label: str,
+) -> tuple[bool, str]:
     """
-    Return (allowed: bool, reason: str).
-    'allowed' is True when a new trade for `symbol` may be opened.
+    Core risk-check logic, parameterised over the trades table name.
+    Used by both check_risk_limits (paper) and check_live_risk_limits (live).
     """
     today_start = _ist_day_start_utc()
 
     with get_conn() as conn:
-        # 1. Max open trades per symbol (skip for TIMEFRAME as it has its own pyramid logic)
-        if setup_type != 'TIMEFRAME':
-            open_symbol = conn.execute(
-                "SELECT COUNT(*) AS cnt FROM paper_trades WHERE symbol = ? AND status = 'OPEN'",
-                (symbol,),
-            ).fetchone()["cnt"]
-            if open_symbol >= MAX_OPEN_TRADES_PER_SYMBOL:
-                return False, (
-                    f"Max open trades for {symbol} reached "
-                    f"({open_symbol}/{MAX_OPEN_TRADES_PER_SYMBOL})"
-                )
+        # 1. Max open trades per symbol
+        open_symbol = conn.execute(
+            f"SELECT COUNT(*) AS cnt FROM {trades_table} WHERE symbol = ? AND status = 'OPEN'",
+            (symbol,),
+        ).fetchone()["cnt"]
+        if open_symbol >= MAX_OPEN_TRADES_PER_SYMBOL:
+            return False, (
+                f"[{label}] Max open trades for {symbol} reached "
+                f"({open_symbol}/{MAX_OPEN_TRADES_PER_SYMBOL})"
+            )
 
         # 2. Max total open trades
         open_total = conn.execute(
-            "SELECT COUNT(*) AS cnt FROM paper_trades WHERE status = 'OPEN'"
+            f"SELECT COUNT(*) AS cnt FROM {trades_table} WHERE status = 'OPEN'"
         ).fetchone()["cnt"]
         if open_total >= MAX_OPEN_TRADES_TOTAL:
             return False, (
-                f"Max total open trades reached ({open_total}/{MAX_OPEN_TRADES_TOTAL})"
+                f"[{label}] Max total open trades reached ({open_total}/{MAX_OPEN_TRADES_TOTAL})"
             )
 
         # 3. Max trades per symbol per day
         day_count = conn.execute(
-            """
-            SELECT COUNT(*) AS cnt FROM paper_trades
+            f"""
+            SELECT COUNT(*) AS cnt FROM {trades_table}
             WHERE symbol = ? AND opened_at >= ?
             """,
             (symbol, today_start),
         ).fetchone()["cnt"]
         if day_count >= MAX_TRADES_PER_SYMBOL_PER_DAY:
             return False, (
-                f"Daily trade limit for {symbol} reached "
+                f"[{label}] Daily trade limit for {symbol} reached "
                 f"({day_count}/{MAX_TRADES_PER_SYMBOL_PER_DAY})"
             )
 
         # 4. Daily loss cap
         today_pnl_row = conn.execute(
-            "SELECT COALESCE(SUM(pnl_rupees), 0) AS total FROM paper_trades WHERE closed_at >= ?",
+            f"SELECT COALESCE(SUM(pnl_rupees), 0) AS total FROM {trades_table} WHERE closed_at >= ?",
             (today_start,),
         ).fetchone()
         today_pnl = float(today_pnl_row["total"] if today_pnl_row else 0.0)
         if today_pnl < -abs(MAX_DAILY_LOSS_RUPEES):
-            return False, f"Daily loss limit hit (₹{today_pnl:,.0f} / limit -₹{MAX_DAILY_LOSS_RUPEES:,.0f})"
+            return False, (
+                f"[{label}] Daily loss limit hit "
+                f"(₹{today_pnl:,.0f} / limit -₹{MAX_DAILY_LOSS_RUPEES:,.0f})"
+            )
 
         # 5. Cooldown after SL/loss
         last_loss = conn.execute(
-            """
-            SELECT closed_at FROM paper_trades
+            f"""
+            SELECT closed_at FROM {trades_table}
             WHERE symbol = ? AND status IN ('SL_HIT', 'CLOSED') AND pnl_rupees < 0
               AND closed_at >= ?
             ORDER BY closed_at DESC
@@ -108,17 +117,52 @@ def check_risk_limits(symbol: str, setup_type: str | None = None) -> tuple[bool,
         ).fetchone()
         if last_loss:
             try:
-                last_loss_dt = datetime.fromisoformat(last_loss["closed_at"].replace("Z", "+00:00"))
+                last_loss_dt = datetime.fromisoformat(
+                    last_loss["closed_at"].replace("Z", "+00:00")
+                )
                 if last_loss_dt.tzinfo is None:
                     last_loss_dt = last_loss_dt.replace(tzinfo=timezone.utc)
                 elapsed = (datetime.now(timezone.utc) - last_loss_dt).total_seconds() / 60
                 if elapsed < LOSS_COOLDOWN_MINUTES:
                     remaining = int(LOSS_COOLDOWN_MINUTES - elapsed)
                     return False, (
-                        f"Loss cooldown active for {symbol} — "
+                        f"[{label}] Loss cooldown active for {symbol} — "
                         f"{remaining} min remaining"
                     )
             except Exception as exc:
-                log.warning("Could not parse last_loss closed_at for %s: %s", symbol, exc)
+                log.warning(
+                    "[%s] Could not parse last_loss closed_at for %s: %s",
+                    label, symbol, exc,
+                )
 
     return True, "OK"
+
+
+def check_risk_limits(symbol: str, setup_type: str | None = None) -> tuple[bool, str]:
+    """
+    Paper-trading risk check.  Queries paper_trades table.
+    Return (allowed: bool, reason: str).
+
+    setup_type is accepted for call-site compatibility but not used in checks.
+    """
+    return _check_risk_limits_for_table(symbol, "paper_trades", "paper")
+
+
+def check_live_risk_limits(symbol: str) -> tuple[bool, str]:
+    """
+    Live-trading risk check.  Queries live_trades table.
+
+    Full parity with check_risk_limits():
+      - daily loss cap
+      - loss cooldown
+      - max trades per symbol per day
+      - max open per symbol
+      - max total open
+
+    Previously the live engine only blocked duplicate open positions and
+    concurrent-trade limits, with no daily loss circuit-breaker or cooldown.
+    This closes that safety gap.
+
+    Return (allowed: bool, reason: str).
+    """
+    return _check_risk_limits_for_table(symbol, "live_trades", "live")
