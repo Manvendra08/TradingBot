@@ -50,11 +50,12 @@ def run_pipeline(symbols: list[str] | None = None, force: bool = False) -> None:
     log.info("Pipeline run started | %s | symbols: %s | force=%s", fetched_at, symbols, force)
     
     # B7: Sync manual Kite direct positions to SQLite for AI Exit Advisor monitoring
-    try:
-        from src.engine.live_trading import sync_direct_kite_positions
-        sync_direct_kite_positions()
-    except Exception:
-        log.exception("Direct Kite position synchronization failed")
+    # TODO: sync_direct_kite_positions() not yet implemented
+    # try:
+    #     from src.engine.live_trading import sync_direct_kite_positions
+    #     sync_direct_kite_positions()
+    # except Exception:
+    #     log.exception("Direct Kite position synchronization failed")
 
     for symbol in symbols:
         try:
