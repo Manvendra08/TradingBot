@@ -34,7 +34,7 @@ from src.models.schema import (
     close_paper_trade,
 )
 from src.engine.capital_allocator import calculate_trade_lots
-from src.engine.risk_engine import check_paper_risk_limits
+from src.engine.risk_engine import check_risk_limits
 from src.engine.entry_quality import calculate_entry_quality
 from src.engine.trend_analysis import get_trend_alignment_score
 from src.engine.verdict_sets import is_bullish, is_bearish
@@ -224,7 +224,7 @@ def execute_paper_trade(
                     "reason": "Open trade exists, no valid reversal"}
 
     # Risk limits
-    risk_ok, risk_reason = check_paper_risk_limits(symbol)
+    risk_ok, risk_reason = check_risk_limits(symbol)
     if not risk_ok:
         return {"action": "BLOCKED_RISK", "trade_id": None, "reason": risk_reason}
 
