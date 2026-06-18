@@ -776,34 +776,6 @@ def close_paper_trade(
             else:
                 pnl_points = float(exit_underlying) - entry_underlying
 
-<<<<<<< HEAD
-        pnl_rupees = pnl_points * lot_size * lots
-
-        # ── Transaction Cost Model ─────────────────────────────────────────────
-        is_option = option_type in ("CE", "PE")
-        cost_key = "OPTIONS" if is_option else "FUTURES"
-        costs_cfg = TRANSACTION_COSTS.get(cost_key, {"flat_brokerage": 20.0, "stt_pct_turnover": 0.0})
-        
-        # Flat brokerage: typically ₹20 per order, round-trip is 2 orders
-        brokerage = float(costs_cfg.get("flat_brokerage", 20.0)) * 2
-        
-        # STT calculation
-        stt = 0.0
-        stt_pct = float(costs_cfg.get("stt_pct_turnover", 0.0))
-        if is_option:
-            # Options STT is 0.0625% of sell-side premium turnover
-            sell_premium = exit_premium if side == "BUY" else entry_premium
-            if sell_premium and sell_premium > 0:
-                stt = sell_premium * lot_size * lots * stt_pct
-        else:
-            # Futures STT is 0.01% of sell-side turnover
-            sell_price = exit_underlying if side == "BUY" else entry_underlying
-            if sell_price and sell_price > 0:
-                stt = sell_price * lot_size * lots * stt_pct
-                
-        total_costs = brokerage + stt
-        pnl_rupees = pnl_rupees - total_costs
-=======
         gross_pnl_rupees = pnl_points * lot_size * lots
 
         # Autopsy fix 4: deduct transaction costs so pnl_rupees is net.
@@ -817,7 +789,6 @@ def close_paper_trade(
             "close_paper_trade id=%s: gross=%.2f tx_cost=%.2f net=%.2f",
             trade_id, gross_pnl_rupees, tx_cost, pnl_rupees,
         )
->>>>>>> origin/fix/autopsy-4-critical-bugs
 
         conn.execute(
             """
@@ -829,10 +800,6 @@ def close_paper_trade(
         )
 
 
-<<<<<<< HEAD
-
-=======
->>>>>>> origin/fix/autopsy-4-critical-bugs
 def list_paper_trades(symbol: str | None = None, limit: int = 300) -> list[dict]:
     sql = "SELECT * FROM paper_trades"
     params: list = []
@@ -966,9 +933,6 @@ def update_live_trade_entry(
         conn.execute(sql, tuple(params))
 
 
-<<<<<<< HEAD
-def close_live_trade(trade_id: int, closed_at: str, exit_underlying: float, exit_premium: float | None, status: str, reason: str = "") -> None:
-=======
 def close_live_trade(
     trade_id: int,
     closed_at: str,
@@ -978,7 +942,6 @@ def close_live_trade(
     reason: str = "",
 ) -> None:
     """Close a live trade and calculate net P&L (post transaction costs)."""
->>>>>>> origin/fix/autopsy-4-critical-bugs
     from config.settings import LOT_SIZES
 
     with get_conn() as conn:
@@ -1033,9 +996,6 @@ def close_live_trade(
             else:
                 pnl_points = float(exit_underlying) - entry_underlying
 
-<<<<<<< HEAD
-        pnl_rupees = pnl_points * lot_size * lots
-=======
         gross_pnl_rupees = pnl_points * lot_size * lots
 
         # Autopsy fix 4: deduct transaction costs so pnl_rupees is net.
@@ -1049,7 +1009,6 @@ def close_live_trade(
             "close_live_trade id=%s: gross=%.2f tx_cost=%.2f net=%.2f",
             trade_id, gross_pnl_rupees, tx_cost, pnl_rupees,
         )
->>>>>>> origin/fix/autopsy-4-critical-bugs
 
         conn.execute(
             """
