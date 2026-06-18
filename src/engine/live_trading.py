@@ -38,10 +38,26 @@ def _is_market_open(symbol: str) -> bool:
     t = now.strftime("%H:%M")
     return open_t <= t <= close_t
 
+# ---------------------------------------------------------------------------
+# FIX #11: Harden MCX exchange routing.
+# Contains only actively traded symbols. To add a new MCX instrument, append
+# its uppercase Kite tradingsymbol here — one line, no other change needed.
+# NIFTY and BANKNIFTY are NFO and correctly fall through to the else branch.
+# ---------------------------------------------------------------------------
+_MCX_SYMBOLS: frozenset[str] = frozenset({
+    "NATURALGAS",
+    "CRUDEOIL",
+})
+
 def _get_exchange(symbol: str) -> str:
-    if symbol.upper() in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"):
-        return "MCX"
-    return "NFO"
+    """Return the correct Kite exchange segment for *symbol*.
+
+    MCX commodities route to ``MCX``; all equity/index derivatives route to
+    ``NFO``.  The MCX set is maintained as a module-level frozenset so that
+    adding a new commodity requires a single-line change here rather than a
+    buried tuple update.
+    """
+    return "MCX" if symbol.upper() in _MCX_SYMBOLS else "NFO"
 
 _cached_kite_client = None
 _cached_access_token = None
@@ -232,4 +248,42 @@ def _compute_option_sl_target(
         # prefer 3h ATR; fall back to 1h
         atr = (
             (sym_chart.get("3h") or {}).get("atr_14")
-            or (sym_chart.get("1h
+            or (sym_chart.get("1h") or {}).get("atr_14")
+        )
+        if atr and underlying_price > 0:
+            atr = float(atr)
+            # Map ATR as % of underlying to a premium volatility multiplier.
+            # A 1% ATR move in the underlying implies ~10-15% option premium swing
+            # (rough vega-weighted estimate for near-ATM options).
+            atr_pct = atr / underlying_price
+            premium_vol_pct = min(atr_pct * 12, 0.60)  # cap at 60% of premium
+
+            if side == "SELL":
+                sl_premium = round(entry_premium * (1 + premium_vol_pct * 1.5), 2)
+                target_premium = round(entry_premium * (1 - premium_vol_pct), 2)
+            else:
+                sl_premium = round(entry_premium * (1 - premium_vol_pct * 1.5), 2)
+                target_premium = round(entry_premium * (1 + premium_vol_pct * 2), 2)
+
+            # Sanity bounds: SL must be < entry for BUY, > entry for SELL
+            if side == "SELL":
+                sl_premium = max(sl_premium, entry_premium * 1.10)
+                target_premium = min(target_premium, entry_premium * 0.90)
+            else:
+                sl_premium = min(sl_premium, entry_premium * 0.90)
+                target_premium = max(target_premium, entry_premium * 1.20)
+
+            log.debug(
+                "ATR-based SL/Target: atr=%.4f atr_pct=%.4f vol_pct=%.4f "
+                "entry=%.2f sl=%.2f target=%.2f side=%s",
+                atr, atr_pct, premium_vol_pct,
+                entry_premium, sl_premium, target_premium, side,
+            )
+            return sl_premium, target_premium
+    except Exception as exc:
+        log.debug("ATR-based SL/Target failed (%s) — falling back to fixed pct", exc)
+
+    # --- fixed-percentage fallback ---
+    if side == "SELL":
+        return round(entry_premium * 1.50, 2), round(entry_premium * 0.60, 2)
+    return round(entry_premium * 0.70, 2), round(entry_premium * 1.50, 2)

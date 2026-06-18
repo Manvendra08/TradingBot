@@ -341,11 +341,22 @@ def run_paper_trading(symbol: str, scan_context: dict, digest_id: str, intel: di
     lots = DEFAULT_LOTS_PER_TRADE
     scores = decision.get("scores") or {}
 
-    # Deterministic signal_key for INSERT OR IGNORE deduplication on retry.
+    # ---------------------------------------------------------------------------
+    # FIX #13: Signal dedup key — verdict text removed.
+    #
+    # Old key: {symbol}:{opt_type}:{strike}:{verdict}:{date}
+    # Problem: LLM paraphrasing ('STRONG BULLISH' vs 'BULLISH BREAKOUT') on the
+    # same underlying/strike produced two distinct keys, bypassing INSERT OR IGNORE
+    # dedup and opening duplicate positions on the same signal.
+    #
+    # New key: {symbol}:{opt_type}:{strike}:{date}:paper
+    # Dedup is now purely structural — same symbol + instrument + date = same signal.
+    # ':paper' suffix namespaces away from live_trading keys which use ':live'.
+    # ---------------------------------------------------------------------------
     today_date = datetime.now(IST).strftime("%Y%m%d")
     option_type_key = plan.get("option_type", "")
     strike_key = int(plan.get("strike") or 0)
-    signal_key = f"{symbol}:{option_type_key}:{strike_key}:{verdict}:{today_date}"
+    signal_key = f"{symbol}:{option_type_key}:{strike_key}:{today_date}:paper"
 
     trade_data = {
         "opened_at":             now_iso,
@@ -895,7 +906,7 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
             if not entry_premium or entry_premium <= 0:
                 log.warning("%s: timeframe short entry skipped — option premium unavailable for PE strike %g", symbol, strike)
                 return {"action": "BLOCKED_PLAN", "reason": f"Timeframe entry skipped: option premium unavailable for PE strike {strike}"}
-            sl_premium = entry_premium * 0.75
+            sl_premium = entry_premium * 1.25
             sl_underlying = None
 
         if ai_verdict is not None:
@@ -910,7 +921,7 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
             "symbol": symbol,
             "expiry": expiry,
             "verdict_label": "SHORT",
-            "side": "SELL" if opt_type == "FUT" else "BUY",
+            "side": "BUY",
             "option_type": opt_type,
             "strike": strike,
             "entry_underlying": underlying,
