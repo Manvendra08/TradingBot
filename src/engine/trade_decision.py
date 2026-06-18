@@ -313,6 +313,14 @@ def _decision(status: str, setup_type: str, reason: str,
     ai_decision_mode = rconf.get("live_ai_decision_mode", "advisory")
     ai_min_confidence_veto = int(rconf.get("live_ai_min_confidence_veto", 85))
 
+    # Warn and demote if in full mode but no AI verdict was provided
+    if ai_decision_mode == "full" and "ai_bias" not in scores and not ai_verdict:
+        log.warning("AI decision mode is 'full' but no AI verdict was provided. Demoting trade.")
+        if status == "TRIGGERED_CORE":
+            status = "TRIGGERED_EXPERIMENTAL"
+            soft_conflicts = soft_conflicts + ["AI_NO_VERDICT_DEMOTED"]
+            reason = f"Demoted from CORE due to missing AI verdict | {reason}"
+
     if (("ai_bias" in scores or ai_verdict) and ai_decision_mode == "full"
             and status.startswith("TRIGGERED")):
         ai_conf = scores.get('ai_confidence', 0)
