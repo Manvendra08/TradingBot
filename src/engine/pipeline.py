@@ -271,17 +271,18 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
     import uuid
     digest_id = str(uuid.uuid4())[:8]
     paper_trade_report = None
-    try:
-        pt_report = run_paper_trading(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
-        tf_report = run_timeframe_strategy(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
-        if pt_report and pt_report.get("action") in ("EXECUTED", "CLOSED"):
-            paper_trade_report = pt_report
-        elif tf_report and tf_report.get("action") in ("EXECUTED", "CLOSED"):
-            paper_trade_report = tf_report
-        else:
-            paper_trade_report = pt_report or tf_report
-    except Exception:
-        log.exception("%s: paper-trading engine failed", symbol)
+    # TODO: Paper trading refactored to execute_paper_trade() + monitor_paper_trades()
+    # try:
+    #     pt_report = run_paper_trading(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
+    #     tf_report = run_timeframe_strategy(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
+    #     if pt_report and pt_report.get("action") in ("EXECUTED", "CLOSED"):
+    #         paper_trade_report = pt_report
+    #     elif tf_report and tf_report.get("action") in ("EXECUTED", "CLOSED"):
+    #         paper_trade_report = tf_report
+    #     else:
+    #         paper_trade_report = pt_report or tf_report
+    # except Exception:
+    #     log.exception("%s: paper-trading engine failed", symbol)
 
     live_trade_report = None
     # TODO: Live trading functions not yet implemented
