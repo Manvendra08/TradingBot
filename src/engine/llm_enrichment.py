@@ -579,16 +579,22 @@ TARGET PARAMETERS TO TUNE:
 - live_max_concurrent_positions (1-5): Risk limit.
 - live_ai_decision_mode: 'advisory' (Human must confirm), 'boost_only' (AI promotes marginal setups), 'full' (AI can veto/approve).
 - live_ai_min_confidence_boost (0-100): Bar for AI promotion.
+- live_ai_min_confidence_veto (0-100): Bar for AI veto.
 
 INSTRUCTIONS:
 1. Identify if specific symbols or verdicts (e.g. 'Short Covering') are consistently losing money.
 2. If win rate is high (>80%) but PnL is low, suggest increasing max concurrent positions.
 3. If confidence scores for losses are high (>90), suggest increasing the min_confidence threshold.
-4. Provide a JSON response with 'suggested_config_changes' mapping keys to new values.
+4. If AI decision mode is 'advisory' and performance is good, suggest 'boost_only'. If performance is poor, suggest 'full' or 'advisory' with higher veto.
+5. Provide a JSON response with 'suggested_config_changes' mapping keys to new values.
+6. Ensure suggested values are within reasonable bounds (e.g., confidence 0-100, positions 1-5).
 """
 
     api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
+    groq_key = os.environ.get("GROQ_API_KEY")
+    openrouter_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key and not groq_key and not openrouter_key:
+        log.warning("[llm] Strategy optimization skipped: No LLM API key configured.")
         return None
 
     try:

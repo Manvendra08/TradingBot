@@ -5,6 +5,20 @@ from dotenv import load_dotenv
 # Load .env from project root (works whether you run from root or a subdirectory)
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
+BASE_DIR = Path(__file__).resolve().parent.parent
+DATA_DIR = BASE_DIR / "data"
+DB_PATH  = DATA_DIR / "nsebot.db"
+LOG_DIR  = BASE_DIR / "logs"
+DATA_DIR.mkdir(exist_ok=True)
+LOG_DIR.mkdir(exist_ok=True)
+
+WATCH_NSE = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"]
+WATCH_MCX = ["NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"]
+WATCH_SYMBOLS = WATCH_NSE + WATCH_MCX
+
+FETCH_INTERVAL_MINUTES = 5
+
+
 
 def _optional_env(key: str, default: str | None = None) -> str | None:
     return os.environ.get(key, default)
