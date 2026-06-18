@@ -1,10 +1,16 @@
 """
-Data Pipeline Orchestrator v2.8
+Data Pipeline Orchestrator v2.9
 fetch → detect → dedup → digest → alert
 
-Fixes (v2.8):
+Fixes (v2.9):
   - B5: Track when underlying fell back to prev_price (is_fallback=True).
         Pass to save_scan_summary so regime_detector filters these rows out.
+  - #9:  AI CLOSE_EARLY now fetches current LTP from option snapshots before
+        calling close_paper_trade(); falls back to entry_premium only when
+        LTP is unavailable, with a warning log for visibility.
+  - #13: Signal dedup key in live_trading no longer includes verdict text;
+        pipeline ensures llm_verdict is passed through so live engine uses
+        the structured object directly (see live_trading._parse_verdict_and_confidence).
 """
 import logging
 from datetime import datetime, timezone
@@ -56,6 +62,33 @@ def run_pipeline(symbols: list[str] | None = None, force: bool = False) -> None:
         except Exception:
             log.exception("Unhandled pipeline error for %s — continuing with next symbol", symbol)
     log.info("Pipeline run complete | %s", fetched_at)
+
+
+def _get_current_option_ltp(
+    symbol: str,
+    expiry: str,
+    strike: float | None,
+    option_type: str | None,
+    option_rows: list[dict] | None,
+) -> float | None:
+    """
+    Resolve the current LTP for an option position from the freshly-fetched
+    option chain rows.  Returns None when the data is unavailable so callers
+    can fall back gracefully.
+    """
+    if not strike or not option_type:
+        return None
+    for row in option_rows or []:
+        try:
+            if (
+                abs(float(row.get("strike") or 0) - float(strike)) < 0.01
+                and str(row.get("option_type") or "").upper() == str(option_type).upper()
+            ):
+                ltp = float(row.get("ltp") or 0.0)
+                return ltp if ltp > 0 else None
+        except Exception:
+            continue
+    return None
 
 
 def _process_symbol(symbol: str, fetched_at: str) -> None:
@@ -162,12 +195,12 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
             if llm_verdict.news_synthesis and llm_verdict.news_synthesis != "No news data":
                 intel_text += f"📰 {llm_verdict.news_synthesis}\n"
             if llm_verdict.exit_advice:
-                intel_text += f"🚪 Exit: {llm_verdict.exit_advice}\n"
+                intel_text += f"🚶 Exit: {llm_verdict.exit_advice}\n"
             intel_text += f"_{llm_verdict.reasoning}_\n"
     except Exception:
         log.exception("%s: AI enrichment failed gracefully", symbol)
 
-    # 3d. AI Exit Advisor — evaluate open trades
+    # 3d. AI Exit Advisor — evaluate open paper trades
     try:
         from config.runtime_config import load_runtime_config
         rconf = load_runtime_config()
@@ -188,8 +221,30 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
                     log.info("%s: AI trailed SL to %.2f", symbol, exit_advice.new_sl_premium)
                     intel_text += f"\n🤖 *AI Trail*: SL moved to ₹{exit_advice.new_sl_premium:.2f} — {exit_advice.reasoning}\n"
                 elif exit_advice.action == "CLOSE_EARLY" and exit_advice.urgency == "HIGH":
+                    # FIX #9: use real current LTP, not entry_premium, to avoid P&L = 0
                     from src.models.schema import close_paper_trade
-                    exit_premium = open_trade.get("entry_premium")  # approximate
+                    option_rows = scan_context.get("option_rows") or []
+                    current_ltp = _get_current_option_ltp(
+                        symbol,
+                        open_trade.get("expiry"),
+                        open_trade.get("strike"),
+                        open_trade.get("option_type"),
+                        option_rows,
+                    )
+                    if current_ltp is not None:
+                        exit_premium = current_ltp
+                    else:
+                        # Genuine fallback: LTP unavailable (e.g. expiry day, illiquid strike)
+                        exit_premium = float(open_trade.get("entry_premium") or 0.0)
+                        log.warning(
+                            "%s: AI CLOSE_EARLY — current LTP unavailable for "
+                            "strike=%.2f %s; falling back to entry_premium=%.2f "
+                            "(P&L will be zero — check snapshot coverage)",
+                            symbol,
+                            open_trade.get("strike", 0),
+                            open_trade.get("option_type", ""),
+                            exit_premium,
+                        )
                     close_paper_trade(
                         open_trade["id"],
                         datetime.now(timezone.utc).isoformat(),
@@ -198,8 +253,11 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
                         "AI_CLOSE_EARLY",
                         f"AI exit: {exit_advice.reasoning}",
                     )
-                    log.info("%s: AI closed trade early — %s", symbol, exit_advice.reasoning)
-                    intel_text += f"\n🤖 *AI Close*: {exit_advice.reasoning}\n"
+                    log.info(
+                        "%s: AI closed trade early at LTP=%.2f — %s",
+                        symbol, exit_premium, exit_advice.reasoning,
+                    )
+                    intel_text += f"\n🤖 *AI Close* @ ₹{exit_premium:.2f}: {exit_advice.reasoning}\n"
     except Exception:
         log.debug("%s: AI exit advisor failed gracefully", symbol)
 
