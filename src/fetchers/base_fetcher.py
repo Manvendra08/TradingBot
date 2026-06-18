@@ -2,28 +2,15 @@
 import abc
 import logging
 import time
-import ssl
 import requests
 import urllib3
-from urllib3.util import create_urllib3_context
 from config.settings import HTTP_TIMEOUT_SECONDS, HTTP_MAX_RETRIES, HTTP_BACKOFF_FACTOR
+from src.utils.tls_adapter import ResilientTLSAdapter, DEFAULT_RETRY
 
 log = logging.getLogger(__name__)
 
 # Suppress insecure request warnings from urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-
-class TLSAdapter(requests.adapters.HTTPAdapter):
-    """Custom HTTP adapter to force a clean TLS handshake and bypass Cloudflare/SSL EOF blocks."""
-    def init_poolmanager(self, *args, **kwargs):
-        context = create_urllib3_context(ssl_version=ssl.PROTOCOL_TLS_CLIENT)
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
-        if hasattr(ssl, "OP_IGNORE_UNEXPECTED_EOF"):
-            context.options |= ssl.OP_IGNORE_UNEXPECTED_EOF
-        kwargs['ssl_context'] = context
-        return super().init_poolmanager(*args, **kwargs)
 
 
 class BaseFetcher(abc.ABC):
@@ -33,7 +20,7 @@ class BaseFetcher(abc.ABC):
         self.session = requests.Session()
         self.session.trust_env = False
         self.session.verify = False
-        adapter = TLSAdapter()
+        adapter = ResilientTLSAdapter(max_retries=DEFAULT_RETRY)
         self.session.mount("https://", adapter)
 
     def _get(self, url: str, params: dict = None, headers: dict = None) -> dict | None:

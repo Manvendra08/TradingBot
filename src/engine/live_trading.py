@@ -101,53 +101,12 @@ def get_kite_client() -> KiteConnect | None:
         kite = KiteConnect(api_key=config["api_key"])
         kite.set_access_token(config["access_token"])
         
-        # Mount retry adapter to requests session
+        # Mount resilient TLS adapter with pool-eviction retry logic
         try:
-            import ssl
-            from requests.adapters import HTTPAdapter
-            from urllib3.util import Retry
-            
-            class TLSAdapter(HTTPAdapter):
-                def __init__(self, *args, **kwargs):
-                    self.ssl_context = ssl.create_default_context()
-                    self.ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
-                    if hasattr(ssl, "OP_IGNORE_UNEXPECTED_EOF"):
-                        self.ssl_context.options |= ssl.OP_IGNORE_UNEXPECTED_EOF
-                    super().__init__(*args, **kwargs)
-                
-                def init_poolmanager(self, *args, **kwargs):
-                    kwargs['ssl_context'] = self.ssl_context
-                    return super().init_poolmanager(*args, **kwargs)
-                
-                def proxy_manager_for(self, *args, **kwargs):
-                    kwargs['ssl_context'] = self.ssl_context
-                    return super().proxy_manager_for(*args, **kwargs)
-
-                def send(self, request, *args, **kwargs):
-                    import time
-                    from requests.exceptions import ConnectionError, SSLError
-                    for attempt in range(3):
-                        try:
-                            return super().send(request, *args, **kwargs)
-                        except (SSLError, ConnectionError) as e:
-                            err_msg = str(e).lower()
-                            if any(k in err_msg for k in ("closed (eof)", "unexpected eof", "sslzeroreturnerror", "eof occurred")):
-                                if attempt < 2:
-                                    log.warning("TLSAdapter caught transient SSL EOF error (attempt %d/3), retrying in 0.15s... Error: %s", attempt + 1, e)
-                                    time.sleep(0.15)
-                                    continue
-                            raise
-
-            retries = Retry(
-                total=3,
-                backoff_factor=0.2,
-                status_forcelist=[500, 502, 503, 504],
-                raise_on_status=False
-            )
-            adapter = TLSAdapter(max_retries=retries)
-            kite.reqsession.mount("https://", adapter)
+            from src.utils.tls_adapter import mount_resilient_tls
+            mount_resilient_tls(kite.reqsession)
         except Exception as e:
-            log.warning("Failed to configure TLSAdapter Retry Adapter: %s", e)
+            log.warning("Failed to configure TLS adapter: %s", e)
             
         _cached_kite_client = kite
         _cached_access_token = config["access_token"]

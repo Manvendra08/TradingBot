@@ -2779,53 +2779,12 @@ def zerodha_callback(client_id: str = None, request_token: str = None):
     try:
         kite = KiteConnect(api_key=config["api_key"])
         
-        # Mount TLSAdapter and Retry to avoid SSL: UNEXPECTED_EOF_WHILE_READING error
+        # Mount resilient TLS adapter with pool-eviction retry logic
         try:
-            import ssl
-            from requests.adapters import HTTPAdapter
-            from urllib3.util import Retry
-            
-            class TLSAdapter(HTTPAdapter):
-                def __init__(self, *args, **kwargs):
-                    self.ssl_context = ssl.create_default_context()
-                    self.ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
-                    if hasattr(ssl, "OP_IGNORE_UNEXPECTED_EOF"):
-                        self.ssl_context.options |= ssl.OP_IGNORE_UNEXPECTED_EOF
-                    super().__init__(*args, **kwargs)
-                
-                def init_poolmanager(self, *args, **kwargs):
-                    kwargs['ssl_context'] = self.ssl_context
-                    return super().init_poolmanager(*args, **kwargs)
-                
-                def proxy_manager_for(self, *args, **kwargs):
-                    kwargs['ssl_context'] = self.ssl_context
-                    return super().proxy_manager_for(*args, **kwargs)
-
-                def send(self, request, *args, **kwargs):
-                    import time
-                    from requests.exceptions import ConnectionError, SSLError
-                    for attempt in range(3):
-                        try:
-                            return super().send(request, *args, **kwargs)
-                        except (SSLError, ConnectionError) as e:
-                            err_msg = str(e).lower()
-                            if any(k in err_msg for k in ("closed (eof)", "unexpected eof", "sslzeroreturnerror", "eof occurred")):
-                                if attempt < 2:
-                                    log.warning("TLSAdapter caught transient SSL EOF error (attempt %d/3), retrying in 0.15s... Error: %s", attempt + 1, e)
-                                    time.sleep(0.15)
-                                    continue
-                            raise
-
-            retries = Retry(
-                total=3,
-                backoff_factor=0.2,
-                status_forcelist=[500, 502, 503, 504],
-                raise_on_status=False
-            )
-            adapter = TLSAdapter(max_retries=retries)
-            kite.reqsession.mount("https://", adapter)
+            from src.utils.tls_adapter import mount_resilient_tls
+            mount_resilient_tls(kite.reqsession)
         except Exception as ssl_err:
-            log.warning("Failed to configure TLSAdapter for Zerodha callback: %s", ssl_err)
+            log.warning("Failed to configure TLS adapter for Zerodha callback: %s", ssl_err)
 
         # Retry generate_session up to 3 times to handle transient SSL EOFs or timeouts
         session = None
