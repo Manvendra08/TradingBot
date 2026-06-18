@@ -1,4 +1,9 @@
-"""Auto paper-trading engine based on bot verdict + scan context."""
+"""Auto paper-trading engine based on bot verdict + scan context.
+
+FIX #1: SL/Target computation now uses ATR-based logic (_compute_option_sl_target)
+        instead of fixed-percentage multipliers. This makes paper and live P&L
+        stats directly comparable.
+"""
 from __future__ import annotations
 
 import logging
@@ -33,6 +38,19 @@ from config.runtime_config import get_scan_frequency_minutes, get_scan_frequency
 
 
 IST = pytz.timezone("Asia/Kolkata")
+
+# ATR multipliers for paper SL/Target — mirrors live_trading.py constants.
+# BUY:  SL @ 1.5x ATR below entry, Target @ 2.0x ATR above entry.
+# SELL: SL @ 1.5x ATR above entry, Target @ 1.5x ATR below entry.
+# When ATR is unavailable, fall back to percentage-of-premium floor values.
+_BUY_SL_ATR_MULT    = 1.5
+_BUY_TGT_ATR_MULT   = 2.0
+_SELL_SL_ATR_MULT   = 1.5
+_SELL_TGT_ATR_MULT  = 1.5
+_BUY_SL_PCT_FLOOR   = 0.20   # 20% premium drop as minimum SL distance
+_BUY_TGT_PCT_FLOOR  = 0.40   # 40% premium gain as minimum Target
+_SELL_SL_PCT_FLOOR  = 0.20   # 20% premium rise as maximum SL distance
+_SELL_TGT_PCT_FLOOR = 0.30   # 30% premium decay as minimum Target
 
 
 def _is_market_open(symbol: str) -> bool:
@@ -77,30 +95,65 @@ def _get_option_premium(
     return None
 
 
-def _calculate_buy_sl_target(entry_premium: float) -> tuple[float, float]:
+def _compute_option_sl_target(
+    entry_premium: float,
+    side: str,
+    ctx: dict | None = None,
+) -> tuple[float, float]:
     """
-    Calculate SL and Target in premium terms for BUY option trades.
-      SL     = entry * 0.70  (exit if premium drops 30%)
-      Target = entry * 1.50  (exit when premium rises 50%)
+    FIX #1: ATR-based SL/Target for paper option trades.
+
+    Logic mirrors live_trading._compute_option_sl_target():
+      - Attempt to use ATR from ctx for dynamic SL sizing.
+      - Fall back to percentage-of-premium when ATR is absent or zero.
+
+    BUY:
+      SL     = entry - max(entry * _BUY_SL_PCT_FLOOR,  _BUY_SL_ATR_MULT  * ATR)
+      Target = entry + max(entry * _BUY_TGT_PCT_FLOOR, _BUY_TGT_ATR_MULT * ATR)
+    SELL:
+      SL     = entry + max(entry * _SELL_SL_PCT_FLOOR,  _SELL_SL_ATR_MULT  * ATR)
+      Target = entry - max(entry * _SELL_TGT_PCT_FLOOR, _SELL_TGT_ATR_MULT * ATR)
+
+    Minimum SL floor: ₹0.50 — prevents sub-tick SL on very cheap options.
     """
     if entry_premium <= 0:
         return 0.0, 0.0
-    sl     = round(entry_premium * 0.70, 2)
-    target = round(entry_premium * 1.50, 2)
+
+    atr = 0.0
+    if ctx:
+        try:
+            atr = float(ctx.get("atr") or 0.0)
+        except (TypeError, ValueError):
+            atr = 0.0
+
+    if side.upper() == "SELL":
+        sl_distance  = max(entry_premium * _SELL_SL_PCT_FLOOR,  _SELL_SL_ATR_MULT  * atr)
+        tgt_distance = max(entry_premium * _SELL_TGT_PCT_FLOOR, _SELL_TGT_ATR_MULT * atr)
+        sl     = round(max(0.5, entry_premium + sl_distance), 2)
+        target = round(max(0.5, entry_premium - tgt_distance), 2)
+    else:  # BUY
+        sl_distance  = max(entry_premium * _BUY_SL_PCT_FLOOR,  _BUY_SL_ATR_MULT  * atr)
+        tgt_distance = max(entry_premium * _BUY_TGT_PCT_FLOOR, _BUY_TGT_ATR_MULT * atr)
+        sl     = round(max(0.5, entry_premium - sl_distance), 2)
+        target = round(max(0.5, entry_premium + tgt_distance), 2)
+
     return sl, target
 
 
-def _calculate_sell_sl_target(entry_premium: float) -> tuple[float, float]:
+def _calculate_buy_sl_target(entry_premium: float, ctx: dict | None = None) -> tuple[float, float]:
     """
-    Calculate SL and Target in premium terms for SELL option trades.
-      SL     = entry * 1.50  (exit if premium rises 50% against us)
-      Target = entry * 0.60  (exit when premium decays 40%)
+    Shim retained for backward-compat with external callers.
+    Delegates to _compute_option_sl_target(BUY).
     """
-    if entry_premium <= 0:
-        return 0.0, 0.0
-    sl     = round(entry_premium * 1.50, 2)
-    target = round(entry_premium * 0.60, 2)
-    return sl, target
+    return _compute_option_sl_target(entry_premium, "BUY", ctx)
+
+
+def _calculate_sell_sl_target(entry_premium: float, ctx: dict | None = None) -> tuple[float, float]:
+    """
+    Shim retained for backward-compat with external callers.
+    Delegates to _compute_option_sl_target(SELL).
+    """
+    return _compute_option_sl_target(entry_premium, "SELL", ctx)
 
 
 def _parse_verdict_and_confidence(intel_text: str) -> tuple[str, int]:
@@ -155,10 +208,8 @@ def _trade_plan_from_verdict(verdict: str, confidence: int, ctx: dict) -> dict |
                         symbol, option_type, expiry, strike)
             return None
 
-        if side == "SELL":
-            sl_premium, target_premium = _calculate_sell_sl_target(entry_premium)
-        else:
-            sl_premium, target_premium = _calculate_buy_sl_target(entry_premium)
+        # FIX #1: Pass ctx so ATR is used when available.
+        sl_premium, target_premium = _compute_option_sl_target(entry_premium, side, ctx)
 
     return {
         **plan,
@@ -214,10 +265,6 @@ def _maybe_close_open_trade(
     else:
         is_bull = is_bullish_verdict(verdict_label)
 
-    # Underlying-based exit — evaluated only when both levels are set.
-    # For FUT: this is the only exit mechanism (exit_premium == underlying).
-    # For options: only closes if underlying level is definitively hit;
-    #              if not hit, fall through to premium check below.
     underlying_closed = False
     if target_underlying > 0 and sl_underlying > 0:
         if is_bull:
@@ -238,9 +285,6 @@ def _maybe_close_open_trade(
     if underlying_closed:
         return
 
-    # Premium-based exit for options — always evaluated if underlying did not close the trade.
-    # This ensures options that have decayed/spiked past their premium SL/target are closed
-    # even when spot price has not yet reached the underlying SL/target level.
     if option_type != "FUT" and exit_premium is not None:
         sl_premium = open_trade.get("sl_premium")
         target_premium = open_trade.get("target_premium")
@@ -341,18 +385,6 @@ def run_paper_trading(symbol: str, scan_context: dict, digest_id: str, intel: di
     lots = DEFAULT_LOTS_PER_TRADE
     scores = decision.get("scores") or {}
 
-    # ---------------------------------------------------------------------------
-    # FIX #13: Signal dedup key — verdict text removed.
-    #
-    # Old key: {symbol}:{opt_type}:{strike}:{verdict}:{date}
-    # Problem: LLM paraphrasing ('STRONG BULLISH' vs 'BULLISH BREAKOUT') on the
-    # same underlying/strike produced two distinct keys, bypassing INSERT OR IGNORE
-    # dedup and opening duplicate positions on the same signal.
-    #
-    # New key: {symbol}:{opt_type}:{strike}:{date}:paper
-    # Dedup is now purely structural — same symbol + instrument + date = same signal.
-    # ':paper' suffix namespaces away from live_trading keys which use ':live'.
-    # ---------------------------------------------------------------------------
     today_date = datetime.now(IST).strftime("%Y%m%d")
     option_type_key = plan.get("option_type", "")
     strike_key = int(plan.get("strike") or 0)
@@ -386,9 +418,6 @@ def run_paper_trading(symbol: str, scan_context: dict, digest_id: str, intel: di
         "signal_key":            signal_key,
     }
 
-    # P1 fix: INSERT OR IGNORE silently drops duplicate rows and still returns
-    # lastrowid=0 (or the prior rowid). Check lastrowid explicitly so the caller
-    # can distinguish a real insert from a dedup-blocked one.
     inserted_id = insert_paper_trade(trade_data)
     if not inserted_id:
         log.warning("%s: paper trade INSERT skipped — duplicate signal_key=%s", symbol, signal_key)
@@ -498,30 +527,24 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
     ce_diff = current_ce - prev_ce
     pe_diff = current_pe - prev_pe
 
-    # Add a minimum threshold in % terms (Item 2)
     min_diff_pct = TIMEFRAME_OI_MIN_DIFF_PCT
     long_oi_support = (pe_diff - ce_diff) > (prev_pe * min_diff_pct)
     short_oi_support = (ce_diff - pe_diff) > (prev_ce * min_diff_pct)
 
-    # Calculate breakout buffer (Strictly 0.1% of underlying CMP, no ATR dependency)
     breakout_buffer = underlying * 0.001
 
     log.info("%s: Timeframe strategy | 3h close=%g p3h_high=%g p3h_low=%g (buffer=%g) | 1h close=%g p1h_high=%g p1h_low=%g | pe_diff=%g ce_diff=%g",
              symbol, c_3h_close, p_3h_high, p_3h_low, breakout_buffer, c_1h_close, p_1h_high, p_1h_low, pe_diff, ce_diff)
 
-    # ── 1. EXIT LOGIC ──
-    # Check exits first
     open_trades = get_open_timeframe_trades(symbol)
     now_iso = datetime.now(timezone.utc).isoformat()
     bar_end_1h = pay_1h.get("bar_end_utc")
 
     for trade in open_trades:
-        # Get current premium for options
         exit_premium = None
         if trade["option_type"] in ("CE", "PE"):
             exit_premium = _get_option_premium(symbol, ctx.get("expiry", ""), trade["strike"], trade["option_type"], ctx.get("option_rows"))
 
-        # Update max favorable R in database
         r_current = 0.0
         if trade["option_type"] in ("CE", "PE"):
             entry_prem = float(trade.get("entry_premium") or 0.0)
@@ -534,7 +557,6 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
                 if entry_prem > sl_prem and exit_premium:
                     r_current = (float(exit_premium) - entry_prem) / (entry_prem - sl_prem)
         else:
-            # Futures
             entry_und = float(trade.get("entry_underlying") or 0.0)
             sl_und = float(trade.get("sl_underlying") or 0.0)
             if trade.get("side", "BUY") == "BUY":
@@ -543,12 +565,11 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
             else:
                 if sl_und > entry_und:
                     r_current = (entry_und - underlying) / (sl_und - entry_und)
-        
+
         max_fav = max(float(trade.get("max_favorable_r") or 0.0), r_current)
         with get_conn() as conn:
             conn.execute("UPDATE paper_trades SET max_favorable_r=? WHERE id=?", (max_fav, trade["id"]))
 
-        # LLM reversal exit check (Gate D)
         if ai_verdict is not None:
             if isinstance(ai_verdict, dict):
                 bias = ai_verdict.get("bias", "NEUTRAL")
@@ -556,23 +577,20 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
             else:
                 bias = getattr(ai_verdict, "bias", "NEUTRAL")
                 confidence = getattr(ai_verdict, "confidence", 0)
-            
+
             if confidence >= 70:
                 if (trade["verdict_label"] == "LONG" and bias == "BEARISH") or \
                    (trade["verdict_label"] == "SHORT" and bias == "BULLISH"):
                     close_paper_trade(
-                        trade["id"],
-                        now_iso,
-                        underlying,
+                        trade["id"], now_iso, underlying,
                         exit_premium if trade["option_type"] in ("CE", "PE") else underlying,
                         "LLM_REVERSAL",
                         f"LLM sentiment reversal: bias {bias} opposes {trade['verdict_label']} trade with confidence {confidence}%"
                     )
-                    log.info("%s: Closed open TIMEFRAME trade (id=%d) due to LLM sentiment reversal (%s, confidence=%d%%)", 
+                    log.info("%s: Closed open TIMEFRAME trade (id=%d) due to LLM sentiment reversal (%s, confidence=%d%%)",
                              symbol, trade["id"], bias, confidence)
                     continue
 
-        # 2a. Options SL hit (Item 2)
         if trade["option_type"] in ("CE", "PE"):
             sl_prem = trade.get("sl_premium")
             side = trade.get("side") or "BUY"
@@ -583,7 +601,6 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
                 else:
                     is_sl_hit = (exit_premium <= float(sl_prem))
 
-            # Check underlying-based SL if set (e.g. by LLM override)
             sl_und = trade.get("sl_underlying")
             is_und_sl_hit = False
             if sl_und:
@@ -595,114 +612,66 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
 
             if is_sl_hit or is_und_sl_hit:
                 reason = f"Options SL hit: premium {exit_premium} vs SL {sl_prem} ({side})" if is_sl_hit else f"Options underlying SL hit: spot {underlying} vs SL {sl_und_val}"
-                close_paper_trade(
-                    trade["id"],
-                    now_iso,
-                    underlying,
-                    exit_premium,
-                    "CLOSED_SL",
-                    reason,
-                )
+                close_paper_trade(trade["id"], now_iso, underlying, exit_premium, "CLOSED_SL", reason)
                 log.info("%s: Closed open TIMEFRAME trade (id=%d) on Options SL", symbol, trade["id"])
                 continue
-        # 2b. Futures SL hit (Item 2)
         else:
             sl_und = trade.get("sl_underlying")
             if sl_und:
                 sl_und_val = float(sl_und)
                 if trade["verdict_label"] == "LONG" and underlying <= sl_und_val:
-                    close_paper_trade(
-                        trade["id"],
-                        now_iso,
-                        underlying,
-                        underlying,
-                        "CLOSED_SL",
-                        f"Futures SL hit: underlying {underlying} <= SL {sl_und_val}",
-                    )
+                    close_paper_trade(trade["id"], now_iso, underlying, underlying, "CLOSED_SL",
+                                      f"Futures SL hit: underlying {underlying} <= SL {sl_und_val}")
                     log.info("%s: Closed open TIMEFRAME trade (id=%d) on Futures SL", symbol, trade["id"])
                     continue
                 elif trade["verdict_label"] == "SHORT" and underlying >= sl_und_val:
-                    close_paper_trade(
-                        trade["id"],
-                        now_iso,
-                        underlying,
-                        underlying,
-                        "CLOSED_SL",
-                        f"Futures SL hit: underlying {underlying} >= SL {sl_und_val}",
-                    )
+                    close_paper_trade(trade["id"], now_iso, underlying, underlying, "CLOSED_SL",
+                                      f"Futures SL hit: underlying {underlying} >= SL {sl_und_val}")
                     log.info("%s: Closed open TIMEFRAME trade (id=%d) on Futures SL", symbol, trade["id"])
                     continue
 
-        # Check Dead Trade exit (Item 3)
         opened_dt = datetime.fromisoformat(trade["opened_at"].replace("Z", "+00:00"))
         if bar_end_1h:
             bar_end_dt = datetime.fromisoformat(bar_end_1h.replace("Z", "+00:00"))
             time_diff = (bar_end_dt - opened_dt).total_seconds()
-            if time_diff >= 3.0 * 3600 - 60: # 3 completed 1H candles
+            if time_diff >= 3.0 * 3600 - 60:
                 if max_fav < 0.5:
                     close_paper_trade(
-                        trade["id"],
-                        now_iso,
-                        underlying,
+                        trade["id"], now_iso, underlying,
                         exit_premium if trade["option_type"] in ("CE", "PE") else underlying,
-                        "Dead Trade",
-                        f"Dead trade exit: 3 hours passed, max favorable R {max_fav:.2f} < 0.5",
+                        "Dead Trade", f"Dead trade exit: 3 hours passed, max favorable R {max_fav:.2f} < 0.5"
                     )
                     log.info("%s: Closed open TIMEFRAME trade (id=%d) on dead-trade exit", symbol, trade["id"])
                     continue
 
-        # Exit Long trade (Crossover) (Item 1)
         if trade["option_type"] in ("CE", "FUT") and trade["verdict_label"] == "LONG":
             if bar_end_1h and trade["opened_at"] < bar_end_1h:
                 if c_1h_close < p_1h_low:
                     crossover_size = p_1h_low - c_1h_close
-                    # Exit immediately if move is large (2x breakout_buffer), otherwise require OI support
                     if crossover_size > 2 * breakout_buffer:
-                        close_paper_trade(
-                            trade["id"],
-                            now_iso,
-                            underlying,
-                            exit_premium if trade["option_type"] == "CE" else underlying,
-                            "TF-1H-Cross",
-                            f"timeframe exit | Large reversal move ({crossover_size:.2f} > 2x buffer {2 * breakout_buffer:.2f})",
-                        )
+                        close_paper_trade(trade["id"], now_iso, underlying,
+                                          exit_premium if trade["option_type"] == "CE" else underlying,
+                                          "TF-1H-Cross", f"timeframe exit | Large reversal move ({crossover_size:.2f} > 2x buffer {2 * breakout_buffer:.2f})")
                         log.info("%s: Closed open TIMEFRAME LONG trade (id=%d) on large 1H close reversal", symbol, trade["id"])
                     elif short_oi_support:
-                        close_paper_trade(
-                            trade["id"],
-                            now_iso,
-                            underlying,
-                            exit_premium if trade["option_type"] == "CE" else underlying,
-                            "TF-1H-Cross",
-                            f"timeframe exit | 1H close {c_1h_close:.2f} < p1H_low {p_1h_low:.2f} + Short OI bias",
-                        )
+                        close_paper_trade(trade["id"], now_iso, underlying,
+                                          exit_premium if trade["option_type"] == "CE" else underlying,
+                                          "TF-1H-Cross", f"timeframe exit | 1H close {c_1h_close:.2f} < p1H_low {p_1h_low:.2f} + Short OI bias")
                         log.info("%s: Closed open TIMEFRAME LONG trade (id=%d) on 1H close crossover with OI bias", symbol, trade["id"])
 
-        # Exit Short trade (Crossover) (Item 1)
         elif trade["option_type"] in ("PE", "FUT") and trade["verdict_label"] == "SHORT":
             if bar_end_1h and trade["opened_at"] < bar_end_1h:
                 if c_1h_close > p_1h_high:
                     crossover_size = c_1h_close - p_1h_high
-                    # Exit immediately if move is large (2x breakout_buffer), otherwise require OI support
                     if crossover_size > 2 * breakout_buffer:
-                        close_paper_trade(
-                            trade["id"],
-                            now_iso,
-                            underlying,
-                            exit_premium if trade["option_type"] == "PE" else underlying,
-                            "TF-1H-Cross",
-                            f"timeframe exit | Large reversal move ({crossover_size:.2f} > 2x buffer {2 * breakout_buffer:.2f})",
-                        )
+                        close_paper_trade(trade["id"], now_iso, underlying,
+                                          exit_premium if trade["option_type"] == "PE" else underlying,
+                                          "TF-1H-Cross", f"timeframe exit | Large reversal move ({crossover_size:.2f} > 2x buffer {2 * breakout_buffer:.2f})")
                         log.info("%s: Closed open TIMEFRAME SHORT trade (id=%d) on large 1H close reversal", symbol, trade["id"])
                     elif long_oi_support:
-                        close_paper_trade(
-                            trade["id"],
-                            now_iso,
-                            underlying,
-                            exit_premium if trade["option_type"] == "PE" else underlying,
-                            "TF-1H-Cross",
-                            f"timeframe exit | 1H close {c_1h_close:.2f} > p1H_high {p_1h_high:.2f} + Long OI bias",
-                        )
+                        close_paper_trade(trade["id"], now_iso, underlying,
+                                          exit_premium if trade["option_type"] == "PE" else underlying,
+                                          "TF-1H-Cross", f"timeframe exit | 1H close {c_1h_close:.2f} > p1H_high {p_1h_high:.2f} + Long OI bias")
                         log.info("%s: Closed open TIMEFRAME SHORT trade (id=%d) on 1H close crossover with OI bias", symbol, trade["id"])
 
     open_trades_after = get_open_timeframe_trades(symbol)
@@ -723,13 +692,10 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
                     "reason": f"Timeframe exit: {closed.get('reason')} (P&L: ₹{closed.get('pnl_rupees', 0.0):,.2f})"
                 }
 
-    # ── 2. ENTRY LOGIC ──
-    # Check if we already opened a trade in this 3h bar window for same signal/direction (Item 5)
     bar_end_3h = pay_3h.get("bar_end_utc")
     if not bar_end_3h:
         return None
 
-    # Check direction
     is_long_trigger = c_3h_close > p_3h_high + breakout_buffer and long_oi_support
     is_short_trigger = c_3h_close < p_3h_low - breakout_buffer and short_oi_support
 
@@ -738,7 +704,6 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
 
     direction = "LONG" if is_long_trigger else "SHORT"
 
-    # LLM entry gates (Gate A and Gate B)
     if ai_verdict is not None:
         if isinstance(ai_verdict, dict):
             bias = ai_verdict.get("bias", "NEUTRAL")
@@ -749,20 +714,17 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
             confidence = getattr(ai_verdict, "confidence", 0)
             risk_rating = getattr(ai_verdict, "risk_rating", "LOW")
 
-        # Gate A: Bias alignment check
         if confidence >= 65:
             if (direction == "LONG" and bias == "BEARISH") or (direction == "SHORT" and bias == "BULLISH"):
                 log.info("%s: Timeframe %s entry blocked by LLM bias alignment (bias=%s, confidence=%d%%)", symbol, direction, bias, confidence)
                 return {"action": "BLOCKED_PLAN", "reason": f"Timeframe entry blocked: LLM bias alignment (bias={bias}, confidence={confidence}%)"}
 
-        # Gate B: Risk rating check
         if risk_rating == "HIGH":
             log.info("%s: Timeframe %s entry blocked by LLM risk rating (risk_rating=HIGH)", symbol, direction)
             return {"action": "BLOCKED_PLAN", "reason": "Timeframe entry blocked: LLM risk rating is HIGH"}
 
     signal_key = f"{symbol}:TIMEFRAME:3H:{direction}:{bar_end_3h}"
 
-    # Check unique signal_key
     with get_conn() as conn:
         cnt = conn.execute(
             "SELECT COUNT(*) AS c FROM paper_trades WHERE signal_key=?",
@@ -772,26 +734,21 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
             log.debug("%s: Timeframe strategy entry skipped — duplicate signal key %s", symbol, signal_key)
             return {"action": "BLOCKED_PLAN", "reason": f"Timeframe entry skipped: duplicate signal key {signal_key}"}
 
-    # Check risk limits (with setup_type='TIMEFRAME')
     risk_ok, risk_reason = check_risk_limits(symbol, "TIMEFRAME")
     if not risk_ok:
         log.info("%s: Timeframe trade blocked by risk engine — %s", symbol, risk_reason)
         return {"action": "BLOCKED_RISK", "reason": f"Timeframe entry skipped: {risk_reason}"}
 
-    # Pyramid validation (Item 9)
-    # Re-fetch open trades to count
     open_trades = get_open_timeframe_trades(symbol)
     if len(open_trades) >= 3:
         log.info("%s: Timeframe entry skipped — maximum pyramid level (3) reached", symbol)
         return {"action": "BLOCKED_PLAN", "reason": "Timeframe entry skipped: maximum pyramid level (3) reached"}
 
     if len(open_trades) > 0:
-        # Must be in the same direction
         if any(t["verdict_label"] != direction for t in open_trades):
             log.info("%s: Timeframe entry skipped — cannot pyramid in opposite direction", symbol)
             return {"action": "BLOCKED_PLAN", "reason": "Timeframe entry skipped: cannot pyramid in opposite direction"}
 
-        # At least one existing trade must be profitable
         any_profitable = False
         for t in open_trades:
             if t["option_type"] in ("CE", "PE"):
@@ -806,7 +763,6 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
                         any_profitable = True
                         break
             else:
-                # Futures
                 if t["verdict_label"] == "LONG" and underlying > float(t["entry_underlying"]):
                     any_profitable = True
                     break
@@ -817,7 +773,6 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
             log.info("%s: Timeframe entry skipped — no profitable open trades to pyramid", symbol)
             return {"action": "BLOCKED_PLAN", "reason": "Timeframe entry skipped: no profitable open trades to pyramid"}
 
-    # Sizing scaling
     pyramid_level = len(open_trades) + 1
     lot_multiplier = 1.0
     if pyramid_level == 2:
@@ -848,7 +803,8 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
             if not entry_premium or entry_premium <= 0:
                 log.warning("%s: timeframe long entry skipped — option premium unavailable for CE strike %g", symbol, strike)
                 return {"action": "BLOCKED_PLAN", "reason": f"Timeframe entry skipped: option premium unavailable for CE strike {strike}"}
-            sl_premium = entry_premium * 0.75
+            # FIX #1: Use ATR-based SL for timeframe entries too.
+            sl_premium, _ = _compute_option_sl_target(entry_premium, "BUY", ctx)
             sl_underlying = None
 
         if ai_verdict is not None:
@@ -859,36 +815,19 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
             sl_underlying = _parse_llm_sl(exit_advice, sl_underlying)
 
         trade_data = {
-            "opened_at": now_iso,
-            "symbol": symbol,
-            "expiry": expiry,
-            "verdict_label": "LONG",
-            "side": "BUY",
-            "option_type": opt_type,
-            "strike": strike,
-            "entry_underlying": underlying,
-            "entry_premium": entry_premium,
-            "sl_underlying": sl_underlying,
-            "sl_premium": sl_premium,
-            "lots": lots,
+            "opened_at": now_iso, "symbol": symbol, "expiry": expiry,
+            "verdict_label": "LONG", "side": "BUY", "option_type": opt_type,
+            "strike": strike, "entry_underlying": underlying, "entry_premium": entry_premium,
+            "sl_underlying": sl_underlying, "sl_premium": sl_premium, "lots": lots,
             "status": "OPEN",
             "reason": f"timeframe entry | 3H close {c_3h_close:.2f} > p3H_high {p_3h_high:.2f} | level {pyramid_level}",
-            "digest_id": digest_id,
-            "trade_status": "TRIGGERED_TIMEFRAME",
-            "setup_type": "TIMEFRAME",
-            "signal_key": signal_key,
-            "pyramid_level": pyramid_level,
-            "max_favorable_r": 0.0,
+            "digest_id": digest_id, "trade_status": "TRIGGERED_TIMEFRAME", "setup_type": "TIMEFRAME",
+            "signal_key": signal_key, "pyramid_level": pyramid_level, "max_favorable_r": 0.0,
         }
         insert_paper_trade(trade_data)
         log.info("%s: Timeframe Strategy LONG entry triggered! Strike %g Premium %g Lots %d (Level %d)", symbol, strike, entry_premium, lots, pyramid_level)
-        return {
-            "action": "EXECUTED",
-            "trade": trade_data,
-            "setup_type": "TIMEFRAME",
-            "reason": f"timeframe entry | level {pyramid_level}",
-            "lots": lots
-        }
+        return {"action": "EXECUTED", "trade": trade_data, "setup_type": "TIMEFRAME",
+                "reason": f"timeframe entry | level {pyramid_level}", "lots": lots}
 
     elif direction == "SHORT":
         if is_natgas:
@@ -906,7 +845,8 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
             if not entry_premium or entry_premium <= 0:
                 log.warning("%s: timeframe short entry skipped — option premium unavailable for PE strike %g", symbol, strike)
                 return {"action": "BLOCKED_PLAN", "reason": f"Timeframe entry skipped: option premium unavailable for PE strike {strike}"}
-            sl_premium = entry_premium * 1.25
+            # FIX #1: Use ATR-based SL for timeframe entries too.
+            sl_premium, _ = _compute_option_sl_target(entry_premium, "SELL", ctx)
             sl_underlying = None
 
         if ai_verdict is not None:
@@ -917,35 +857,18 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
             sl_underlying = _parse_llm_sl(exit_advice, sl_underlying)
 
         trade_data = {
-            "opened_at": now_iso,
-            "symbol": symbol,
-            "expiry": expiry,
-            "verdict_label": "SHORT",
-            "side": "BUY",
-            "option_type": opt_type,
-            "strike": strike,
-            "entry_underlying": underlying,
-            "entry_premium": entry_premium,
-            "sl_underlying": sl_underlying,
-            "sl_premium": sl_premium,
-            "lots": lots,
+            "opened_at": now_iso, "symbol": symbol, "expiry": expiry,
+            "verdict_label": "SHORT", "side": "BUY", "option_type": opt_type,
+            "strike": strike, "entry_underlying": underlying, "entry_premium": entry_premium,
+            "sl_underlying": sl_underlying, "sl_premium": sl_premium, "lots": lots,
             "status": "OPEN",
             "reason": f"timeframe entry | 3H close {c_3h_close:.2f} < p3H_low {p_3h_low:.2f} | level {pyramid_level}",
-            "digest_id": digest_id,
-            "trade_status": "TRIGGERED_TIMEFRAME",
-            "setup_type": "TIMEFRAME",
-            "signal_key": signal_key,
-            "pyramid_level": pyramid_level,
-            "max_favorable_r": 0.0,
+            "digest_id": digest_id, "trade_status": "TRIGGERED_TIMEFRAME", "setup_type": "TIMEFRAME",
+            "signal_key": signal_key, "pyramid_level": pyramid_level, "max_favorable_r": 0.0,
         }
         insert_paper_trade(trade_data)
         log.info("%s: Timeframe Strategy SHORT entry triggered! Strike %g Premium %g Lots %d (Level %d)", symbol, strike, entry_premium, lots, pyramid_level)
-        return {
-            "action": "EXECUTED",
-            "trade": trade_data,
-            "setup_type": "TIMEFRAME",
-            "reason": f"timeframe entry | level {pyramid_level}",
-            "lots": lots
-        }
+        return {"action": "EXECUTED", "trade": trade_data, "setup_type": "TIMEFRAME",
+                "reason": f"timeframe entry | level {pyramid_level}", "lots": lots}
 
     return None
