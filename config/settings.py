@@ -28,16 +28,15 @@ def _optional_env(key: str, default: str | None = None) -> str | None:
     return os.environ.get(key, default)
 
 
-# ── Broker Selection ────────────────────────────────────────────────────────
-# Set ACTIVE_BROKER to one of: "dhan", "shoonya", "zerodha", "icicidirect"
+# ── Broker Selection ────────────────────────────────────────────────────────────────────────────────────────
 ACTIVE_BROKER = os.environ.get("ACTIVE_BROKER", "dhan").lower()
 
-# ── Dhan Credentials ────────────────────────────────────────────────────────
+# ── Dhan Credentials ────────────────────────────────────────────────────────────────────────────────────
 DHAN_CLIENT_ID   = _optional_env("DHAN_CLIENT_ID")
 DHAN_ACCESS_TOKEN = _optional_env("DHAN_ACCESS_TOKEN")
 DHAN_BASE_URL    = _optional_env("DHAN_BASE_URL", "https://api.dhan.co")
 
-# ── Shoonya / Finvasia Credentials ─────────────────────────────────────────
+# ── Shoonya / Finvasia Credentials ───────────────────────────────────────────────────────────────────────
 SHOONYA_USER_ID   = _optional_env("SHOONYA_USER_ID")
 SHOONYA_PASSWORD  = _optional_env("SHOONYA_PASSWORD")
 SHOONYA_TOTP_KEY  = _optional_env("SHOONYA_TOTP_KEY")
@@ -45,17 +44,17 @@ SHOONYA_VENDOR_CODE = _optional_env("SHOONYA_VENDOR_CODE")
 SHOONYA_API_SECRET  = _optional_env("SHOONYA_API_SECRET")
 SHOONYA_IMEI        = _optional_env("SHOONYA_IMEI", "abc1234")
 
-# ── Zerodha Credentials ─────────────────────────────────────────────────────
+# ── Zerodha Credentials ─────────────────────────────────────────────────────────────────────────────────────────
 ZERODHA_API_KEY    = _optional_env("ZERODHA_API_KEY")
 ZERODHA_API_SECRET = _optional_env("ZERODHA_API_SECRET")
 ZERODHA_ACCESS_TOKEN = _optional_env("ZERODHA_ACCESS_TOKEN")
 
-# ── ICICIDirect Credentials ─────────────────────────────────────────────────
+# ── ICICIDirect Credentials ────────────────────────────────────────────────────────────────────────────────────────
 ICICI_API_KEY     = _optional_env("ICICI_API_KEY")
 ICICI_API_SECRET  = _optional_env("ICICI_API_SECRET")
 ICICI_SESSION_TOKEN = _optional_env("ICICI_SESSION_TOKEN")
 
-# ── Market Windows ─────────────────────────────────────────────────────────
+# ── Market Windows ─────────────────────────────────────────────────────────────────────────────────────────
 # Format: (open_time, close_time, weekdays)  — weekdays: 0=Mon … 6=Sun
 MARKET_WINDOWS = {
     "NSE_INDEX":     ("09:15", "15:30", [0, 1, 2, 3, 4]),
@@ -64,7 +63,7 @@ MARKET_WINDOWS = {
     "MCX_COMMODITY": ("09:00", "23:30", [0, 1, 2, 3, 4, 5]),  # Saturday MCX session included
 }
 
-# ── Symbol → Market Window mapping ─────────────────────────────────────────
+# ── Symbol → Market Window mapping ───────────────────────────────────────────────────────────────────────
 SYMBOL_MARKET = {
     "NIFTY":      "NSE_INDEX",
     "BANKNIFTY":  "NSE_INDEX",
@@ -76,7 +75,7 @@ SYMBOL_MARKET = {
     "SILVER":     "MCX_COMMODITY",
 }
 
-# ── Lot Sizes ────────────────────────────────────────────────────────────────
+# ── Lot Sizes ────────────────────────────────────────────────────────────────────────────────────────────
 LOT_SIZES = {
     "NIFTY":      50,
     "BANKNIFTY":  15,
@@ -91,7 +90,7 @@ LOT_SIZES = {
 # Default lots per trade (used as fallback when capital allocator is not active)
 DEFAULT_LOTS_PER_TRADE = 1
 
-# ── Strike Step Sizes ────────────────────────────────────────────────────────
+# ── Strike Step Sizes ────────────────────────────────────────────────────────────────────────────────────────────
 STRIKE_STEPS = {
     "NIFTY":      50,
     "BANKNIFTY":  100,
@@ -103,16 +102,21 @@ STRIKE_STEPS = {
     "SILVER":     100,
 }
 
-# ── Dhan Security IDs ────────────────────────────────────────────────────────
+# ── Dhan Security IDs ────────────────────────────────────────────────────────────────────────────────────────────
 DHAN_SECURITY_IDS = {
     "NIFTY":      13,
     "BANKNIFTY":  25,
     "FINNIFTY":   27,
     "MIDCPNIFTY": 442,
-    "NATURALGAS": 434817,      # NATURALGAS JUN FUT
-    "CRUDEOIL":   435021,      # CRUDEOIL JUN FUT
-    "GOLD": 459277,        # GOLD JUN FUT
-    "SILVER": 464150,      # SILVER JUL FUT
+    # FIX #15: MCX contract IDs expire at month-end.  These IDs MUST be updated
+    # manually before each monthly rollover (or automated via Dhan instrument dump).
+    # Update procedure: download https://images.dhan.co/api-data/api-scrip-master.csv,
+    # filter SEM_SMST_SECURITY_ID where SEM_TRADING_SYMBOL matches the near-month
+    # continuous contract (e.g. NATURALGAS25JUNFUT), and replace the values below.
+    "NATURALGAS": 434817,      # NATURALGAS JUN 2026 FUT  <-- update on rollover
+    "CRUDEOIL":   435021,      # CRUDEOIL   JUN 2026 FUT  <-- update on rollover
+    "GOLD":       459277,      # GOLD       JUN 2026 FUT  <-- update on rollover
+    "SILVER":     464150,      # SILVER     JUL 2026 FUT  <-- update on rollover
 }
 DHAN_SEGMENTS = {
     "NIFTY": "IDX_I",
@@ -139,13 +143,16 @@ TELEGRAM_BOT_TOKEN = _optional_env("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID   = _optional_env("TELEGRAM_CHAT_ID")
 DISCORD_WEBHOOK_URL = _optional_env("DISCORD_WEBHOOK_URL")
 
-# ── Dashboard Authentication ────────────────────────────────────────────────
-DASHBOARD_USERNAME = _optional_env("DASHBOARD_USERNAME", "admin")
-DASHBOARD_PASSWORD = _optional_env("DASHBOARD_PASSWORD", "admin")
+# ── Dashboard Authentication ────────────────────────────────────────────────────────────────────────────
+# FIX #13: Removed insecure admin/admin defaults.
+# Both vars MUST be set in .env — the dashboard will refuse to start if either
+# is absent.  Set DASHBOARD_USERNAME and DASHBOARD_PASSWORD in your .env file.
+DASHBOARD_USERNAME = _optional_env("DASHBOARD_USERNAME")
+DASHBOARD_PASSWORD = _optional_env("DASHBOARD_PASSWORD")
 
 STRIKES_AROUND_ATM  = 10
 
-# ── Fetcher Priority ────────────────────────────────────────────────────────
+# ── Fetcher Priority ────────────────────────────────────────────────────────────────────────────────────────────
 # Order in which fetchers are tried for NSE indices. MCX commodities have
 # their own priority: ["dhan_commodity", "moneycontrol", "dhan", "dhan_headless"]
 FETCHER_PRIORITY    = ["dhan", "dhan_headless", "nse_public"]
@@ -154,7 +161,7 @@ LOG_LEVEL           = "INFO"
 LOG_ROTATION        = "midnight"
 LOG_BACKUP_COUNT    = 30
 
-# ── Per-symbol threshold overrides ────────────────────────────────────────
+# ── Per-symbol threshold overrides ──────────────────────────────────────────────────────────────────────────────
 # MCX commodities have lower absolute OI volumes than NSE indices.
 # Use tighter thresholds so the engine fires on meaningful but smaller moves.
 SYMBOL_THRESHOLD_OVERRIDES: dict[str, dict] = {
@@ -188,7 +195,7 @@ def get_symbol_thresholds(symbol: str) -> dict:
     return SYMBOL_THRESHOLD_OVERRIDES.get(base, {})
 
 
-# ── Anomaly Detection Thresholds ─────────────────────────────────────────
+# ── Anomaly Detection Thresholds ────────────────────────────────────────────────────────────────────────────────────
 OI_SPIKE_THRESHOLD_PCT         = 15.0    # % change in OI to trigger spike alert
 PRICE_SPIKE_THRESHOLD_PCT      = 2.0     # % change in LTP to trigger price spike
 PCR_EXTREME_LOW                = 0.5     # PCR below this is extreme bearish
@@ -238,7 +245,7 @@ MAX_TRADES_PER_SYMBOL_PER_DAY  = 4
 MAX_DAILY_LOSS_RUPEES          = 200000
 LOSS_COOLDOWN_MINUTES          = 30
 
-# ── Trend-Based Trading Logic ──────────────────────────────────────────────
+# ── Trend-Based Trading Logic ──────────────────────────────────────────────────────────────────────────────────────
 # Mode: "conservative" | "balanced" | "aggressive" | "hybrid"
 TREND_FILTER_MODE              = "hybrid"
 
@@ -254,14 +261,14 @@ TREND_CONSISTENCY_THRESHOLD    = 0.6
 # Used as the momentum fallback gate in hybrid mode (#7)
 MOMENTUM_SCORE_THRESHOLD       = 75
 
-# ── Regime Detection ──────────────────────────────────────────────────────
+# ── Regime Detection ──────────────────────────────────────────────────────────────────────────────────────────────
 # Thresholds for the explicit RANGE classification branch (#10).
 # A session where abs(price_change_pct) < MAX_CHANGE and
 # price_range_pct < MAX_RANGE is classified as RANGE rather than NO_TRADE.
 REGIME_RANGE_MAX_CHANGE_PCT    = 0.5   # % half-session price drift
 REGIME_RANGE_MAX_RANGE_PCT     = 1.5   # % high-low range over session
 
-# ── Trade Plan ────────────────────────────────────────────────────────────
+# ── Trade Plan ──────────────────────────────────────────────────────────────────────────────────────────────────
 # Maximum strike-steps between current underlying and support/resistance
 # before the level is considered "too far" and ATM is used instead (#13)
 MAX_LEVEL_DISTANCE_STEPS       = 3
@@ -279,7 +286,7 @@ TF_REENTRY_COOLDOWN_BARS       = 1      # wait 1 3H bar after SL
 TF_CONTINUATION_OI_MULTIPLIER  = 2.0    # 2x OI threshold for non-reversal entries
 
 
-# ── Transaction Cost Model ─────────────────────────────────────────────────
+# ── Transaction Cost Model ──────────────────────────────────────────────────────────────────────────────────────────
 # Per-trade round-trip costs in rupees (both legs combined).
 # STT rates are approximate based on NSE/MCX exchange circulars.
 # Options STT: 0.0625% of sell-side premium turnover (NSE)
@@ -297,7 +304,7 @@ TRANSACTION_COSTS = {
 }
 
 
-# ── AI Brain Settings ─────────────────────────────────────────────────────
+# ── AI Brain Settings ─────────────────────────────────────────────────────────────────────────────────────────────────
 # Controls how the AI verdict influences trade decisions.
 #   advisory   — AI verdict logged and displayed, but does NOT change trade outcomes (default, safe)
 #   boost_only — AI can promote BLOCKED → TRIGGERED_EXPERIMENTAL (never veto)

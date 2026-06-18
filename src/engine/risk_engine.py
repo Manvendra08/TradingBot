@@ -5,8 +5,9 @@ Checks performed before allowing a new trade:
   1. Max open trades per symbol
   2. Max total open trades
   3. Max trades per symbol per day
-  4. Daily loss cap
+  4. Daily loss cap  [FIX #3: sums only negative P&L so profits don't mask losses]
   5. Loss cooldown (wait N minutes after a loss before re-entering)
+  6. Account-level consecutive-loss circuit breaker [FIX #11: new]
 
 Both check_risk_limits() (paper) and check_live_risk_limits() (live) share
 identical logic — they only differ in which DB table they query.
@@ -32,6 +33,12 @@ log = logging.getLogger(__name__)
 
 IST_OFFSET = timedelta(hours=5, minutes=30)
 
+# FIX #11: Account-level consecutive-loss circuit breaker.
+# If this many losing trades close within CONSECUTIVE_LOSS_WINDOW_MINUTES across
+# ANY symbols, all new trading is halted until the window expires.
+CONSECUTIVE_LOSS_LIMIT = 3
+CONSECUTIVE_LOSS_WINDOW_MINUTES = 30
+
 
 def _ist_day_start_utc() -> str:
     """
@@ -44,6 +51,36 @@ def _ist_day_start_utc() -> str:
     midnight_ist = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
     midnight_utc = midnight_ist - IST_OFFSET
     return midnight_utc.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _check_consecutive_loss_breaker(conn, trades_table: str, label: str) -> tuple[bool, str]:
+    """
+    FIX #11: Account-level consecutive-loss circuit breaker.
+    Counts losing trades closed across ALL symbols in the last
+    CONSECUTIVE_LOSS_WINDOW_MINUTES.  If >= CONSECUTIVE_LOSS_LIMIT, blocks
+    all new entries until the rolling window moves past those losses.
+    """
+    window_start = (
+        datetime.now(timezone.utc) - timedelta(minutes=CONSECUTIVE_LOSS_WINDOW_MINUTES)
+    ).strftime("%Y-%m-%dT%H:%M:%S")
+
+    recent_losses = conn.execute(
+        f"""
+        SELECT COUNT(*) AS cnt FROM {trades_table}
+        WHERE pnl_rupees < 0
+          AND closed_at >= ?
+          AND status IN ('SL_HIT', 'CLOSED')
+        """,
+        (window_start,),
+    ).fetchone()["cnt"]
+
+    if recent_losses >= CONSECUTIVE_LOSS_LIMIT:
+        return False, (
+            f"[{label}] Account-level circuit breaker: {recent_losses} losing trades "
+            f"in the last {CONSECUTIVE_LOSS_WINDOW_MINUTES} min across all symbols — "
+            "all new entries halted until the window clears."
+        )
+    return True, "OK"
 
 
 def _check_risk_limits_for_table(
@@ -93,18 +130,26 @@ def _check_risk_limits_for_table(
             )
 
         # 4. Daily loss cap
-        today_pnl_row = conn.execute(
-            f"SELECT COALESCE(SUM(pnl_rupees), 0) AS total FROM {trades_table} WHERE closed_at >= ?",
+        # FIX #3: Only sum negative P&L rows.  Previously SUM(pnl_rupees) included
+        # profitable trades, so a day with +50k profit and -45k losses showed net
+        # +5k — the cap never fired even though real losses were 45k.
+        today_loss_row = conn.execute(
+            f"""
+            SELECT COALESCE(SUM(pnl_rupees), 0) AS total
+            FROM {trades_table}
+            WHERE closed_at >= ? AND pnl_rupees < 0
+            """,
             (today_start,),
         ).fetchone()
-        today_pnl = float(today_pnl_row["total"] if today_pnl_row else 0.0)
-        if today_pnl < -abs(MAX_DAILY_LOSS_RUPEES):
+        today_realized_loss = float(today_loss_row["total"] if today_loss_row else 0.0)
+        if today_realized_loss < -abs(MAX_DAILY_LOSS_RUPEES):
             return False, (
                 f"[{label}] Daily loss limit hit "
-                f"(₹{today_pnl:,.0f} / limit -₹{MAX_DAILY_LOSS_RUPEES:,.0f})"
+                f"(realized losses \u20b9{today_realized_loss:,.0f} / "
+                f"limit -\u20b9{MAX_DAILY_LOSS_RUPEES:,.0f})"
             )
 
-        # 5. Cooldown after SL/loss
+        # 5. Cooldown after SL/loss (per-symbol)
         last_loss = conn.execute(
             f"""
             SELECT closed_at FROM {trades_table}
@@ -135,6 +180,11 @@ def _check_risk_limits_for_table(
                     label, symbol, exc,
                 )
 
+        # 6. Account-level consecutive-loss circuit breaker (FIX #11)
+        ok, reason = _check_consecutive_loss_breaker(conn, trades_table, label)
+        if not ok:
+            return False, reason
+
     return True, "OK"
 
 
@@ -153,15 +203,12 @@ def check_live_risk_limits(symbol: str) -> tuple[bool, str]:
     Live-trading risk check.  Queries live_trades table.
 
     Full parity with check_risk_limits():
-      - daily loss cap
+      - daily loss cap (losses only — FIX #3)
       - loss cooldown
       - max trades per symbol per day
       - max open per symbol
       - max total open
-
-    Previously the live engine only blocked duplicate open positions and
-    concurrent-trade limits, with no daily loss circuit-breaker or cooldown.
-    This closes that safety gap.
+      - account-level consecutive-loss circuit breaker (FIX #11)
 
     Return (allowed: bool, reason: str).
     """

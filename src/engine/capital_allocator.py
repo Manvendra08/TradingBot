@@ -9,15 +9,28 @@ log = logging.getLogger("nsebot.capital_allocator")
 # (capital / premium) blows up to absurd lot counts.
 _DEFAULT_MAX_AUTO_LOTS = 10
 
+# FIX #4: Approximate SPAN+exposure margin multiplier for SELL legs.
+# Index/commodity option selling requires full SPAN+exposure margin, which
+# is typically ~10-12x the premium collected.  Using 10x as a conservative
+# lower bound.  If the broker API exposes live margin data, prefer that.
+_SELL_MARGIN_PREMIUM_MULTIPLIER = 10.0
 
-def calculate_trade_lots(symbol: str, entry_premium: float) -> int:
+
+def calculate_trade_lots(symbol: str, entry_premium: float, side: str = "BUY") -> int:
     """
     Calculate the number of lots to trade for a symbol based on settings and premium.
 
     Priority order:
       1. Symbol-specific override in runtime config (live_symbol_lots).
-      2. Auto-calculate from capital_per_trade / (premium * lot_size),
+      2. Auto-calculate from capital_per_trade / effective_cost_per_lot,
          capped at max_auto_lots (default 10) to prevent blowup on cheap options.
+
+    FIX #4: For SELL legs, effective_cost_per_lot uses an estimated margin
+    (premium * lot_size * _SELL_MARGIN_PREMIUM_MULTIPLIER) instead of just
+    premium * lot_size.  This prevents over-allocation where a 50k capital
+    config would attempt to sell 10 lots needing 5-8L SPAN margin, resulting
+    in rejected orders and phantom OPEN positions in the DB.
+    BUY legs are unaffected (margin = premium paid = actual capital consumed).
     """
     config = load_runtime_config()
 
@@ -37,7 +50,24 @@ def calculate_trade_lots(symbol: str, entry_premium: float) -> int:
 
     # 2. Auto-calculate with safety cap.
     max_auto_lots = int(config.get("live_max_auto_lots") or _DEFAULT_MAX_AUTO_LOTS)
-    calculated = int(capital_per_trade // (entry_premium * instrument_lot_size))
+
+    # FIX #4: Margin-aware sizing for SELL legs.
+    # BUY : cost = premium * lot_size          (actual capital consumed)
+    # SELL: cost = premium * lot_size * mult   (estimated SPAN+exposure margin)
+    if side.upper() == "SELL":
+        effective_cost_per_lot = (
+            entry_premium * instrument_lot_size * _SELL_MARGIN_PREMIUM_MULTIPLIER
+        )
+        log.debug(
+            "%s: SELL leg — margin-adjusted cost/lot: %.2f "
+            "(premium=%.2f * lot_size=%d * margin_mult=%.1f)",
+            symbol, effective_cost_per_lot,
+            entry_premium, instrument_lot_size, _SELL_MARGIN_PREMIUM_MULTIPLIER,
+        )
+    else:
+        effective_cost_per_lot = entry_premium * instrument_lot_size
+
+    calculated = int(capital_per_trade // effective_cost_per_lot)
     lots = min(max(1, calculated), max_auto_lots)
 
     if calculated > max_auto_lots:
@@ -48,7 +78,9 @@ def calculate_trade_lots(symbol: str, entry_premium: float) -> int:
         )
 
     log.info(
-        "%s: auto-calculated %d lots (capital: %g, premium: %g, lot_size: %d, cap: %d)",
-        symbol, lots, capital_per_trade, entry_premium, instrument_lot_size, max_auto_lots,
+        "%s: auto-calculated %d lots (capital: %g, premium: %g, lot_size: %d, "
+        "side: %s, effective_cost/lot: %g, cap: %d)",
+        symbol, lots, capital_per_trade, entry_premium, instrument_lot_size,
+        side, effective_cost_per_lot, max_auto_lots,
     )
     return lots
