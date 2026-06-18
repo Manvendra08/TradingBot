@@ -302,52 +302,10 @@ def _call_gemini_api(symbol: str, prompt: str, response_schema=None) -> BaseMode
     schema = response_schema or LLMTradeVerdict
     now = time.time()
 
-    # 1. Try Gemini (Primary)
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if api_key and genai and now >= _API_QUOTA_EXHAUSTED_UNTIL:
-        # Fallback list of models: gemini-2.5-flash (primary), gemini-2.0-flash (fallback)
-        models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash"]
-        try:
-            all_failed_429 = True
-            c = _get_client(api_key)
-            for model_name in models_to_try:
-                try:
-                    log.info("[llm] Attempting Gemini call with model: %s", model_name)
-                    response = c.models.generate_content(
-                        model=model_name,
-                        contents=prompt,
-                        config=types.GenerateContentConfig(
-                            response_mime_type="application/json",
-                            response_schema=schema,
-                            temperature=0.2,
-                        )
-                    )
-                    result = schema.model_validate_json(response.text)
-                    log.info("[llm] %s verdict generated for %s using model: %s", schema.__name__, symbol, model_name)
-                    return result
-                except Exception as inner_e:
-                    err_str = str(inner_e)
-                    if "429" not in err_str and "RESOURCE_EXHAUSTED" not in err_str.upper():
-                        all_failed_429 = False
-                    log.warning("[llm] Model %s failed for %s: %s", model_name, symbol, inner_e)
-                    continue
-
-            if all_failed_429:
-                log.warning("[llm] All Gemini models failed with 429 RESOURCE_EXHAUSTED. Activating 10-minute API cooldown.")
-                _API_QUOTA_EXHAUSTED_UNTIL = now + 600.0
-
-        except Exception as e:
-            log.warning("[llm] Gemini API client initialization failed for %s: %s", symbol, e)
-    else:
-        if not api_key or not genai:
-            log.debug("[llm] Skipping Gemini (missing API key or SDK)")
-        else:
-            log.debug("[llm] Skipping Gemini due to active quota cooldown")
-
-    # 2. Try Groq (Secondary Fallback)
+    # 1. Try Groq (Primary) — 3000+ free req/day, lightning fast
     groq_key = os.environ.get("GROQ_API_KEY")
     if groq_key:
-        groq_models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "gemma2-9b-it"]
+        groq_models = ["llama-3.3-70b-versatile", "llama-3.1-70b-versatile", "llama-3.1-8b-instant", "gemma2-9b-it"]
         schema_json = json.dumps(schema.model_json_schema())
         system_prompt = (
             "You are a professional trading analyst. "
@@ -358,7 +316,7 @@ def _call_gemini_api(symbol: str, prompt: str, response_schema=None) -> BaseMode
         import requests
         for model in groq_models:
             try:
-                log.info("[llm] Attempting Groq call with model: %s", model)
+                log.info("[llm] Attempting Groq call with model: %s (PRIMARY)", model)
                 headers = {
                     "Authorization": f"Bearer {groq_key}",
                     "Content-Type": "application/json"
@@ -376,7 +334,7 @@ def _call_gemini_api(symbol: str, prompt: str, response_schema=None) -> BaseMode
                 if resp.status_code == 200:
                     content = resp.json()["choices"][0]["message"]["content"]
                     result = schema.model_validate_json(content)
-                    log.info("[llm] %s successfully generated via Groq model: %s", schema.__name__, model)
+                    log.info("[llm] %s successfully generated via Groq model: %s (PRIMARY)", schema.__name__, model)
                     return result
                 else:
                     log.warning("[llm] Groq model %s failed: status=%d error=%s", model, resp.status_code, resp.text)
@@ -384,13 +342,13 @@ def _call_gemini_api(symbol: str, prompt: str, response_schema=None) -> BaseMode
                 log.warning("[llm] Groq model %s failed with exception: %s", model, ge)
                 continue
 
-    # 3. Try OpenRouter (Last Fallback)
+    # 2. Try OpenRouter (First Fallback) — 1000+ free req/day
     openrouter_key = os.environ.get("OPENROUTER_API_KEY")
     if openrouter_key:
         openrouter_models = [
-            "openrouter/free",
             "meta-llama/llama-3.3-70b-instruct:free",
-            "qwen/qwen3-coder:free"
+            "openrouter/free",
+            "qwen/qwen-2-7b-instruct:free"
         ]
         schema_json = json.dumps(schema.model_json_schema())
         system_prompt = (
@@ -402,7 +360,7 @@ def _call_gemini_api(symbol: str, prompt: str, response_schema=None) -> BaseMode
         import requests
         for model in openrouter_models:
             try:
-                log.info("[llm] Attempting OpenRouter call with model: %s", model)
+                log.info("[llm] Attempting OpenRouter call with model: %s (FALLBACK 1)", model)
                 headers = {
                     "Authorization": f"Bearer {openrouter_key}",
                     "Content-Type": "application/json",
@@ -422,13 +380,55 @@ def _call_gemini_api(symbol: str, prompt: str, response_schema=None) -> BaseMode
                 if resp.status_code == 200:
                     content = resp.json()["choices"][0]["message"]["content"]
                     result = schema.model_validate_json(content)
-                    log.info("[llm] %s successfully generated via OpenRouter model: %s", schema.__name__, model)
+                    log.info("[llm] %s successfully generated via OpenRouter model: %s (FALLBACK 1)", schema.__name__, model)
                     return result
                 else:
                     log.warning("[llm] OpenRouter model %s failed: status=%d error=%s", model, resp.status_code, resp.text)
             except Exception as ore:
                 log.warning("[llm] OpenRouter model %s failed with exception: %s", model, ore)
                 continue
+
+    # 3. Try Gemini (Second Fallback) — 20 req/day free tier
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if api_key and genai and now >= _API_QUOTA_EXHAUSTED_UNTIL:
+        # Fallback list of models: gemini-2.5-flash (primary), gemini-2.0-flash (fallback)
+        models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash"]
+        try:
+            all_failed_429 = True
+            c = _get_client(api_key)
+            for model_name in models_to_try:
+                try:
+                    log.info("[llm] Attempting Gemini call with model: %s (FALLBACK 2)", model_name)
+                    response = c.models.generate_content(
+                        model=model_name,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            response_mime_type="application/json",
+                            response_schema=schema,
+                            temperature=0.2,
+                        )
+                    )
+                    result = schema.model_validate_json(response.text)
+                    log.info("[llm] %s verdict generated for %s using model: %s (FALLBACK 2)", schema.__name__, symbol, model_name)
+                    return result
+                except Exception as inner_e:
+                    err_str = str(inner_e)
+                    if "429" not in err_str and "RESOURCE_EXHAUSTED" not in err_str.upper():
+                        all_failed_429 = False
+                    log.warning("[llm] Model %s failed for %s: %s", model_name, symbol, inner_e)
+                    continue
+
+            if all_failed_429:
+                log.warning("[llm] All Gemini models failed with 429 RESOURCE_EXHAUSTED. Activating 10-minute API cooldown.")
+                _API_QUOTA_EXHAUSTED_UNTIL = now + 600.0
+
+        except Exception as e:
+            log.warning("[llm] Gemini API client initialization failed for %s: %s", symbol, e)
+    else:
+        if not api_key or not genai:
+            log.debug("[llm] Skipping Gemini (missing API key or SDK)")
+        else:
+            log.debug("[llm] Skipping Gemini due to active quota cooldown")
 
     return None
 
