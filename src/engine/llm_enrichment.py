@@ -50,6 +50,15 @@ class LLMExitAdvice(BaseModel):
     urgency: str = Field(description="LOW, MEDIUM, or HIGH — how urgently this action should be taken")
 
 
+class LLMStrategyOptimization(BaseModel):
+    overall_assessment: str = Field(description="Summary of systematic trading errors or opportunities")
+    config_tuning_suggestions: list[str] = Field(description="List of specific config changes to improve results")
+    risk_adjustments: str = Field(description="Recommendations on risk parameters (stops, targets, position sizing)")
+    edge_analysis: str = Field(description="Where is the trading edge strongest, weakest, and how to exploit it")
+    confidence: int = Field(description="Confidence in these recommendations (0-100)")
+
+
+
 # ── Client management ────────────────────────────────────────────────────
 
 _client = None
