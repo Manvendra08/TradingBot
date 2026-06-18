@@ -1,1 +1,1 @@
-# Schema file placeholder
+# see /tmp/tradingbot/src/models/schema.py — placeholder intentional, full content follows in next commit
