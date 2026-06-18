@@ -40,25 +40,13 @@ def _is_market_open(symbol: str) -> bool:
 
 # ---------------------------------------------------------------------------
 # FIX #11: Harden MCX exchange routing.
-# Original code only recognised 4 MCX symbols — new commodities added to
-# WATCH_SYMBOLS (COPPER, ZINC, ALUMINIUM, etc.) would silently route to NFO
-# and be rejected by Kite with an invalid-exchange error.
-# Named frozenset makes additions explicit and lookup O(1).
+# Contains only actively traded symbols. To add a new MCX instrument, append
+# its uppercase Kite tradingsymbol here — one line, no other change needed.
+# NIFTY and BANKNIFTY are NFO and correctly fall through to the else branch.
 # ---------------------------------------------------------------------------
 _MCX_SYMBOLS: frozenset[str] = frozenset({
     "NATURALGAS",
-    "NATURALGAS_MINI",
     "CRUDEOIL",
-    "CRUDEOILM",
-    "GOLD",
-    "GOLDM",
-    "SILVER",
-    "SILVERM",
-    "COPPER",
-    "ZINC",
-    "ALUMINIUM",
-    "NICKEL",
-    "LEAD",
 })
 
 def _get_exchange(symbol: str) -> str:
