@@ -17,7 +17,6 @@ The AI receives the full scan context including:
 import json
 import os
 import logging
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from pydantic import BaseModel, Field
 
 try:
@@ -415,8 +414,13 @@ _CIRCUIT_BREAKER_THRESHOLD = 3
 _CIRCUIT_BREAKER_COOLDOWN = 300.0  # 5 minutes
 _CIRCUIT_OPEN_UNTIL = 0.0
 
-def _call_llm_api(symbol: str, prompt: str, response_schema=None) -> BaseModel | None:
-    """Call LLM APIs in priority order: Groq (primary) → Gemini (ultimate fallback)."""
+def _call_llm_api(symbol: str, prompt: str, response_schema=None, deadline: float | None = None) -> BaseModel | None:
+    """Call LLM APIs in priority order: Groq (primary) → Gemini (ultimate fallback).
+    
+    Args:
+        deadline: Unix timestamp by which we must finish. Each model attempt uses
+                  remaining_time as its HTTP timeout, so we never overshoot.
+    """
     global _API_QUOTA_EXHAUSTED_UNTIL, _CONSECUTIVE_FAILURES, _CIRCUIT_OPEN_UNTIL
     schema = response_schema or LLMTradeVerdict
     now = time.time()
@@ -425,6 +429,12 @@ def _call_llm_api(symbol: str, prompt: str, response_schema=None) -> BaseModel |
     if _CIRCUIT_OPEN_UNTIL > now:
         log.warning("[llm] Circuit breaker OPEN for %s (cooldown ends in %.0fs)", symbol, _CIRCUIT_OPEN_UNTIL - now)
         return None
+
+    def _remaining() -> float:
+        """Seconds left before deadline, or large number if no deadline."""
+        if deadline is None:
+            return 120.0
+        return max(5.0, deadline - time.time())
 
     import requests
     from requests.adapters import HTTPAdapter
@@ -459,22 +469,27 @@ def _call_llm_api(symbol: str, prompt: str, response_schema=None) -> BaseModel |
     # ── PRIMARY: Groq free tier — 14,400+ req/day, ultra-fast inference ──
     groq_key = os.environ.get("GROQ_API_KEY")
     if groq_key:
-        # Reduced list: Try fewer models to fail faster under network issues
         groq_models = [
             "llama-3.3-70b-versatile",                   # Best quality
             "llama-3.1-8b-instant",                      # Ultra-fast fallback
             "llama3-8b-8192",                            # Lightest, max rate limits
         ]
         for idx, model in enumerate(groq_models):
+            # Skip attempt if deadline already passed
+            remaining = _remaining()
+            if deadline and time.time() >= deadline - 3:
+                log.warning("[llm] Skipping %s — deadline reached", model)
+                break
+
             tier = "PRIMARY" if idx == 0 else f"GROQ-FALLBACK-{idx}"
             try:
-                log.info("[llm] Groq %s → %s", tier, model)
+                log.info("[llm] Groq %s → %s (%.0fs remaining)", tier, model, remaining)
                 resp = session.post(
                     "https://api.groq.com/openai/v1/chat/completions",
                     headers={
                         "Authorization": f"Bearer {groq_key}",
                         "Content-Type": "application/json",
-                        "Connection": "close"  # Prevent keep-alive issues
+                        "Connection": "close"
                     },
                     json={
                         "model": model,
@@ -485,12 +500,11 @@ def _call_llm_api(symbol: str, prompt: str, response_schema=None) -> BaseModel |
                         "response_format": {"type": "json_object"},
                         "temperature": 0.2,
                     },
-                    timeout=8,  # 8s per model: 3 models = max 24s < 30s outer timeout
+                    timeout=min(remaining, 140.0),  # use remaining time, cap at 140s
                 )
                 if resp.status_code == 200:
                     result = schema.model_validate_json(resp.json()["choices"][0]["message"]["content"])
                     log.info("[llm] %s OK via Groq %s", schema.__name__, model)
-                    # Reset failure counter on success
                     _CONSECUTIVE_FAILURES = 0
                     return result
                 log.warning("[llm] Groq %s failed: status=%d %s", model, resp.status_code, resp.text[:200])
@@ -598,22 +612,16 @@ def get_llm_verdict(
         trade_decision=trade_decision,
     )
     try:
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(_call_llm_api, symbol, prompt, LLMTradeVerdict)
-            result = future.result(timeout=30.0)
-            if result:
-                # Update cache on success
-                _VERDICT_CACHE[symbol] = {
-                    "timestamp": now,
-                    "verdict_label": intel_dict.get("verdict_label"),
-                    "confidence": intel_dict.get("confidence"),
-                    "underlying": current_underlying,
-                    "verdict": result
-                }
-            return result
-    except TimeoutError:
-        log.warning("[llm] LLM API timed out after 30s for %s", symbol)
-        return None
+        result = _call_llm_api(symbol, prompt, LLMTradeVerdict)
+        if result:
+            _VERDICT_CACHE[symbol] = {
+                "timestamp": now,
+                "verdict_label": intel_dict.get("verdict_label"),
+                "confidence": intel_dict.get("confidence"),
+                "underlying": current_underlying,
+                "verdict": result
+            }
+        return result
     except Exception as e:
         log.error("[llm] Unexpected error in get_llm_verdict for %s: %s", symbol, e)
         return None
@@ -650,21 +658,15 @@ def get_exit_advice(
 
     prompt = _build_exit_prompt(symbol, open_trade, scan_context, news_data)
     try:
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(_call_llm_api, symbol, prompt, LLMExitAdvice)
-            result = future.result(timeout=15.0)
-            if result:
-                # Update cache on success
-                _EXIT_CACHE[symbol] = {
-                    "timestamp": now,
-                    "trade_id": trade_id,
-                    "underlying": current_underlying,
-                    "advice": result
-                }
-            return result
-    except TimeoutError:
-        log.warning("[llm] Exit advice LLM timed out after 15s for %s", symbol)
-        return None
+        result = _call_llm_api(symbol, prompt, LLMExitAdvice)
+        if result:
+            _EXIT_CACHE[symbol] = {
+                "timestamp": now,
+                "trade_id": trade_id,
+                "underlying": current_underlying,
+                "advice": result
+            }
+        return result
     except Exception as e:
         log.error("[llm] Unexpected error in get_exit_advice for %s: %s", symbol, e)
         return None
@@ -716,13 +718,11 @@ INSTRUCTIONS:
         return None
 
     try:
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(_call_llm_api, "portfolio", prompt, LLMStrategyOptimization)
-            result = future.result(timeout=30.0)
-            if result:
-                log.info("[llm] Portfolio optimization generated with %d suggestions", 
-                         len(result.suggested_config_changes))
-            return result
+        result = _call_llm_api("portfolio", prompt, LLMStrategyOptimization)
+        if result:
+            log.info("[llm] Portfolio optimization generated with %d suggestions",
+                     len(result.suggested_config_changes))
+        return result
     except Exception as e:
         log.error("[llm] Strategy optimization call failed: %s", e)
         return None
