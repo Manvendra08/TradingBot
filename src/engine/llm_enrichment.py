@@ -294,117 +294,100 @@ import time
 _VERDICT_CACHE = {}
 _EXIT_CACHE = {}
 _API_QUOTA_EXHAUSTED_UNTIL = 0.0
+_CONSECUTIVE_FAILURES = 0
+_CIRCUIT_BREAKER_THRESHOLD = 3
+_CIRCUIT_BREAKER_COOLDOWN = 300.0  # 5 minutes
+_CIRCUIT_OPEN_UNTIL = 0.0
 
-def _call_gemini_api(symbol: str, prompt: str, response_schema=None) -> BaseModel | None:
-    global _API_QUOTA_EXHAUSTED_UNTIL
+def _call_llm_api(symbol: str, prompt: str, response_schema=None) -> BaseModel | None:
+    """Call LLM APIs in priority order: Groq (primary) → Gemini (ultimate fallback)."""
+    global _API_QUOTA_EXHAUSTED_UNTIL, _CONSECUTIVE_FAILURES, _CIRCUIT_OPEN_UNTIL
     schema = response_schema or LLMTradeVerdict
     now = time.time()
 
-    # 1. Try OpenRouter (Primary) — DISABLED: all free models removed as of 2026
-    # OpenRouter discontinued free tier endpoints. Skip unless explicitly enabled.
-    openrouter_key = os.environ.get("OPENROUTER_API_KEY")
-    enable_openrouter = os.environ.get("OPENROUTER_ENABLE_FREE", "false").lower() == "true"
-    if openrouter_key and enable_openrouter:
-        # Empty list by default. Set OPENROUTER_ENABLE_FREE=true to try paid endpoints if configured
-        openrouter_models = []
-        if openrouter_models:
-            schema_json = json.dumps(schema.model_json_schema())
-            system_prompt = (
-                "You are a professional trading analyst. "
-                "You MUST respond with a valid JSON object matching this JSON Schema. "
-                "Make sure all field types and values match the schema definition exactly. "
-                f"JSON Schema:\n{schema_json}"
-            )
-            import requests
-            for model in openrouter_models:
-                try:
-                    log.info("[llm] Attempting OpenRouter call with model: %s (PRIMARY)", model)
-                    headers = {
-                        "Authorization": f"Bearer {openrouter_key}",
+    # Circuit breaker: If we've had too many consecutive failures, pause LLM calls
+    if _CIRCUIT_OPEN_UNTIL > now:
+        log.warning("[llm] Circuit breaker OPEN for %s (cooldown ends in %.0fs)", symbol, _CIRCUIT_OPEN_UNTIL - now)
+        return None
+
+    import requests
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+    
+    schema_json = json.dumps(schema.model_json_schema())
+    system_prompt = (
+        "You are a professional trading analyst. "
+        "You MUST respond with a valid JSON object matching this JSON Schema. "
+        "Make sure all field types and values match the schema definition exactly. "
+        f"JSON Schema:\n{schema_json}"
+    )
+
+    # Configure retry strategy for transient network errors
+    retry_strategy = Retry(
+        total=1,  # Reduced retries to fail fast
+        backoff_factor=0.3,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["POST"],
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session = requests.Session()
+    session.mount("https://", adapter)
+
+    # ── PRIMARY: Groq free tier — 14,400+ req/day, ultra-fast inference ──
+    groq_key = os.environ.get("GROQ_API_KEY")
+    if groq_key:
+        # Reduced list: Try fewer models to fail faster under network issues
+        groq_models = [
+            "llama-3.3-70b-versatile",                   # Best quality
+            "llama-3.1-8b-instant",                      # Ultra-fast fallback
+            "llama3-8b-8192",                            # Lightest, max rate limits
+        ]
+        for idx, model in enumerate(groq_models):
+            tier = "PRIMARY" if idx == 0 else f"GROQ-FALLBACK-{idx}"
+            try:
+                log.info("[llm] Groq %s → %s", tier, model)
+                resp = session.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {groq_key}",
                         "Content-Type": "application/json",
-                        "HTTP-Referer": "https://github.com/Manvendra08/TradingBot",
-                        "X-Title": "NSEBOT F&O"
-                    }
-                    body = {
+                        "Connection": "close"  # Prevent keep-alive issues
+                    },
+                    json={
                         "model": model,
                         "messages": [
                             {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": prompt}
+                            {"role": "user", "content": prompt},
                         ],
                         "response_format": {"type": "json_object"},
-                        "temperature": 0.2
-                    }
-                    resp = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=body, timeout=15)
-                    if resp.status_code == 200:
-                        content = resp.json()["choices"][0]["message"]["content"]
-                        result = schema.model_validate_json(content)
-                        log.info("[llm] %s successfully generated via OpenRouter model: %s (PRIMARY)", schema.__name__, model)
-                        return result
-                    else:
-                        log.warning("[llm] OpenRouter model %s failed: status=%d error=%s", model, resp.status_code, resp.text[:200])
-                except Exception as ore:
-                    log.warning("[llm] OpenRouter model %s failed with exception: %s", model, str(ore)[:200])
-                    continue
-        else:
-            log.debug("[llm] OpenRouter free tier disabled (no free models available)")
-
-    # 2. Try Groq (First Fallback) — 3000+ free req/day, ultra-fast inference
-    groq_key = os.environ.get("GROQ_API_KEY")
-    if groq_key:
-        # Expanded Groq free models list, ordered by performance
-        groq_models = [
-            "llama-3.3-70b-versatile",      # Best overall, 128K context
-            "llama-3.1-70b-versatile",      # Previous gen, still excellent
-            "mixtral-8x7b-32768",           # MoE, good at reasoning
-            "llama-3.1-8b-instant",         # Ultra-fast, good for quick calls
-            "gemma2-9b-it",                 # Google Gemma 2, efficient
-        ]
-        schema_json = json.dumps(schema.model_json_schema())
-        system_prompt = (
-            "You are a professional trading analyst. "
-            "You MUST respond with a valid JSON object matching this JSON Schema. "
-            "Make sure all field types and values match the schema definition exactly. "
-            f"JSON Schema:\n{schema_json}"
-        )
-        import requests
-        for model in groq_models:
-            try:
-                log.info("[llm] Attempting Groq call with model: %s (FALLBACK 1)", model)
-                headers = {
-                    "Authorization": f"Bearer {groq_key}",
-                    "Content-Type": "application/json"
-                }
-                body = {
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": prompt}
-                    ],
-                    "response_format": {"type": "json_object"},
-                    "temperature": 0.2
-                }
-                resp = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=body, timeout=15)
+                        "temperature": 0.2,
+                    },
+                    timeout=8,  # 8s per model: 3 models = max 24s < 30s outer timeout
+                )
                 if resp.status_code == 200:
-                    content = resp.json()["choices"][0]["message"]["content"]
-                    result = schema.model_validate_json(content)
-                    log.info("[llm] %s successfully generated via Groq model: %s (FALLBACK 1)", schema.__name__, model)
+                    result = schema.model_validate_json(resp.json()["choices"][0]["message"]["content"])
+                    log.info("[llm] %s OK via Groq %s", schema.__name__, model)
+                    # Reset failure counter on success
+                    _CONSECUTIVE_FAILURES = 0
                     return result
-                else:
-                    log.warning("[llm] Groq model %s failed: status=%d error=%s", model, resp.status_code, resp.text[:200])
+                log.warning("[llm] Groq %s failed: status=%d %s", model, resp.status_code, resp.text[:200])
             except Exception as ge:
-                log.warning("[llm] Groq model %s failed with exception: %s", model, str(ge)[:200])
-                continue
+                log.warning("[llm] Groq %s exception: %s", model, str(ge)[:200])
 
-    # 3. Try Gemini (Second Fallback) — 20 req/day free tier
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if api_key and genai and now >= _API_QUOTA_EXHAUSTED_UNTIL:
-        models_to_try = ["gemini-2.5-flash", "gemini-3.0-flash"]
+    # ── ULTIMATE FALLBACK: Gemini free tier — 1500 req/day ──────────────
+    gemini_key = os.environ.get("GEMINI_API_KEY")
+    if gemini_key and genai and now >= _API_QUOTA_EXHAUSTED_UNTIL:
+        gemini_models = [
+            "gemini-2.5-flash",   # Best free Gemini model
+            "gemini-2.0-flash",   # Stable alternative
+        ]
         try:
-            all_failed_429 = True
-            c = _get_client(api_key)
-            for model_name in models_to_try:
+            all_429 = True
+            c = _get_client(gemini_key)
+            for idx, model_name in enumerate(gemini_models):
+                tier = "GEMINI-FALLBACK" if idx == 0 else f"GEMINI-FALLBACK-{idx + 1}"
                 try:
-                    log.info("[llm] Attempting Gemini call with model: %s (FALLBACK 2)", model_name)
+                    log.info("[llm] %s → %s", tier, model_name)
                     response = c.models.generate_content(
                         model=model_name,
                         contents=prompt,
@@ -412,30 +395,36 @@ def _call_gemini_api(symbol: str, prompt: str, response_schema=None) -> BaseMode
                             response_mime_type="application/json",
                             response_schema=schema,
                             temperature=0.2,
-                        )
+                        ),
                     )
                     result = schema.model_validate_json(response.text)
-                    log.info("[llm] %s verdict generated for %s using model: %s (FALLBACK 2)", schema.__name__, symbol, model_name)
+                    log.info("[llm] %s OK via Gemini %s for %s", schema.__name__, model_name, symbol)
+                    # Reset failure counter on success
+                    _CONSECUTIVE_FAILURES = 0
                     return result
                 except Exception as inner_e:
-                    err_str = str(inner_e)
-                    if "429" not in err_str and "RESOURCE_EXHAUSTED" not in err_str.upper():
-                        all_failed_429 = False
-                    log.warning("[llm] Model %s failed for %s: %s", model_name, symbol, str(inner_e)[:200])
-                    continue
-
-            if all_failed_429:
-                log.warning("[llm] All Gemini models failed with 429 RESOURCE_EXHAUSTED. Activating 10-minute API cooldown.")
+                    err = str(inner_e)
+                    if "429" not in err and "RESOURCE_EXHAUSTED" not in err.upper():
+                        all_429 = False
+                    log.warning("[llm] Gemini %s failed for %s: %s", model_name, symbol, err[:200])
+            if all_429:
+                log.warning("[llm] All Gemini models hit quota. 10-min cooldown activated.")
                 _API_QUOTA_EXHAUSTED_UNTIL = now + 600.0
-
         except Exception as e:
-            log.warning("[llm] Gemini API client initialization failed for %s: %s", symbol, e)
+            log.warning("[llm] Gemini client init failed for %s: %s", symbol, e)
+    elif not gemini_key or not genai:
+        log.debug("[llm] Gemini skipped (no API key or SDK)")
     else:
-        if not api_key or not genai:
-            log.debug("[llm] Skipping Gemini (missing API key or SDK)")
-        else:
-            log.debug("[llm] Skipping Gemini due to active quota cooldown")
+        log.debug("[llm] Gemini skipped — quota cooldown active until %.0fs", _API_QUOTA_EXHAUSTED_UNTIL - now)
 
+    # Track consecutive failures and activate circuit breaker
+    _CONSECUTIVE_FAILURES += 1
+    if _CONSECUTIVE_FAILURES >= _CIRCUIT_BREAKER_THRESHOLD:
+        _CIRCUIT_OPEN_UNTIL = now + _CIRCUIT_BREAKER_COOLDOWN
+        log.error("[llm] Circuit breaker ACTIVATED after %d failures. Pausing LLM calls for %.0fs.", 
+                  _CONSECUTIVE_FAILURES, _CIRCUIT_BREAKER_COOLDOWN)
+
+    log.warning("[llm] All LLM providers exhausted for %s (failures: %d)", symbol, _CONSECUTIVE_FAILURES)
     return None
 
 
@@ -454,13 +443,10 @@ def get_llm_verdict(
     Generate a comprehensive AI trade verdict using all available market data.
 
     Phase 1: Deep context prompt feeding AI everything the bot knows.
-    Executes with a 20-second timeout to prevent pipeline stalls.
+    Executes with a 30-second timeout to prevent pipeline stalls.
     Supports in-memory caching to save tokens and prevent 429 quota exhaustion.
     """
-    api_key = os.environ.get("GEMINI_API_KEY")
-    groq_key = os.environ.get("GROQ_API_KEY")
-    openrouter_key = os.environ.get("OPENROUTER_API_KEY")
-    if not api_key and not groq_key and not openrouter_key:
+    if not os.environ.get("GEMINI_API_KEY") and not os.environ.get("GROQ_API_KEY"):
         return None
 
     # Check cache first
@@ -490,8 +476,8 @@ def get_llm_verdict(
     )
     try:
         with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(_call_gemini_api, symbol, prompt, LLMTradeVerdict)
-            result = future.result(timeout=20.0)
+            future = executor.submit(_call_llm_api, symbol, prompt, LLMTradeVerdict)
+            result = future.result(timeout=30.0)
             if result:
                 # Update cache on success
                 _VERDICT_CACHE[symbol] = {
@@ -503,7 +489,7 @@ def get_llm_verdict(
                 }
             return result
     except TimeoutError:
-        log.warning("[llm] Gemini API timed out after 20s for %s", symbol)
+        log.warning("[llm] LLM API timed out after 30s for %s", symbol)
         return None
     except Exception as e:
         log.error("[llm] Unexpected error in get_llm_verdict for %s: %s", symbol, e)
@@ -521,10 +507,7 @@ def get_exit_advice(
     Returns dynamic SL/target adjustment recommendations.
     Supports in-memory caching to save tokens and prevent 429 quota exhaustion.
     """
-    api_key = os.environ.get("GEMINI_API_KEY")
-    groq_key = os.environ.get("GROQ_API_KEY")
-    openrouter_key = os.environ.get("OPENROUTER_API_KEY")
-    if not api_key and not groq_key and not openrouter_key:
+    if not os.environ.get("GEMINI_API_KEY") and not os.environ.get("GROQ_API_KEY"):
         return None
 
     # Check cache first
@@ -545,7 +528,7 @@ def get_exit_advice(
     prompt = _build_exit_prompt(symbol, open_trade, scan_context, news_data)
     try:
         with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(_call_gemini_api, symbol, prompt, LLMExitAdvice)
+            future = executor.submit(_call_llm_api, symbol, prompt, LLMExitAdvice)
             result = future.result(timeout=15.0)
             if result:
                 # Update cache on success
@@ -557,7 +540,7 @@ def get_exit_advice(
                 }
             return result
     except TimeoutError:
-        log.warning("[llm] Exit advice timed out after 15s for %s", symbol)
+        log.warning("[llm] Exit advice LLM timed out after 15s for %s", symbol)
         return None
     except Exception as e:
         log.error("[llm] Unexpected error in get_exit_advice for %s: %s", symbol, e)
@@ -605,17 +588,13 @@ INSTRUCTIONS:
 6. Ensure suggested values are within reasonable bounds (e.g., confidence 0-100, positions 1-5).
 """
 
-    api_key = os.environ.get("GEMINI_API_KEY")
-    groq_key = os.environ.get("GROQ_API_KEY")
-    openrouter_key = os.environ.get("OPENROUTER_API_KEY")
-    if not api_key and not groq_key and not openrouter_key:
+    if not os.environ.get("GEMINI_API_KEY") and not os.environ.get("GROQ_API_KEY"):
         log.warning("[llm] Strategy optimization skipped: No LLM API key configured.")
         return None
 
     try:
         with ThreadPoolExecutor(max_workers=1) as executor:
-            # Reusing the existing API caller with the optimization schema
-            future = executor.submit(_call_gemini_api, "portfolio", prompt, LLMStrategyOptimization)
+            future = executor.submit(_call_llm_api, "portfolio", prompt, LLMStrategyOptimization)
             result = future.result(timeout=30.0)
             if result:
                 log.info("[llm] Portfolio optimization generated with %d suggestions", 

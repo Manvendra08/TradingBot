@@ -383,7 +383,7 @@ def _get_base_symbol(symbol: str) -> str:
     m = re.match(r"^[A-Z]+", sym)
     return m.group(0) if m else sym
 
-def _run_live_trading_legacy(symbol: str, scan_context: dict, digest_id: str, intel: dict) -> dict | None:
+def _run_live_trading_legacy(symbol: str, scan_context: dict, digest_id: str, intel: dict, ai_verdict=None) -> dict | None:
     if not _is_market_open(symbol):
         return {"action": "SKIPPED_MARKET_CLOSED", "reason": "Outside market hours"}
 
@@ -520,7 +520,7 @@ def _run_live_trading_legacy(symbol: str, scan_context: dict, digest_id: str, in
         return {"action": "BLOCKED_DISABLED_SYMBOL", "reason": f"Live trading disabled for {base_sym}"}
 
     ctx = {**(scan_context or {}), "symbol": symbol, "expiry": expiry, "option_rows": option_rows}
-    decision = make_trade_decision(symbol, intel, ctx)
+    decision = make_trade_decision(symbol, intel, ctx, ai_verdict=ai_verdict)
     if decision["status"] == "BLOCKED":
         return {"action": "BLOCKED_DECISION", "reason": decision["reason"]}
 

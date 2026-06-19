@@ -83,7 +83,30 @@ def _fetch_tv_commodity_news(symbol: str) -> dict:
     url = f"https://news-headlines.tradingview.com/v2/view/headlines/symbol?client=web&lang=en&category=base&symbol={stream_sym}"
 
     try:
-        res = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+
+        # Configure retry strategy
+        retry_strategy = Retry(
+            total=2,
+            backoff_factor=0.5,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET"],
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session = requests.Session()
+        session.mount("https://", adapter)
+
+        log.debug("[news] Sending request to TradingView for %s", symbol)
+        res = session.get(
+            url,
+            timeout=20,
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Connection": "close"  # Prevent keep-alive issues
+            }
+        )
+        log.debug("[news] Received response status %s from TradingView for %s", res.status_code, symbol)
         res.raise_for_status()
         payload = res.json() if res.content else {}
         items = payload.get("items") if isinstance(payload, dict) else []
@@ -149,7 +172,21 @@ def _fetch_icici_commentary() -> list[dict]:
     }
     rows = []
     try:
-        res = requests.get(url, headers=headers, timeout=10)
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+
+        # Configure retry strategy
+        retry_strategy = Retry(
+            total=2,
+            backoff_factor=0.5,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET"],
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session = requests.Session()
+        session.mount("https://", adapter)
+
+        res = session.get(url, headers=headers, timeout=10)
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, "html.parser")
             elements = soup.find_all(["p", "div", "span", "li"])
@@ -179,12 +216,28 @@ def _fetch_way2wealth_commentary() -> list[dict]:
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Connection": "close",
     }
     rows = []
     try:
         import urllib3
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-        res = requests.get(url, headers=headers, verify=False, timeout=10)
+
+        # Configure retry strategy
+        retry_strategy = Retry(
+            total=2,
+            backoff_factor=0.5,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET"],
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session = requests.Session()
+        session.mount("https://", adapter)
+
+        res = session.get(url, headers=headers, verify=False, timeout=10)
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, "html.parser")
             for el in soup.find_all(["p", "div", "td", "span"]):
