@@ -1197,7 +1197,7 @@ def build_enhanced_digest(
     c3 = chart_payload.get("3h", {}).get("sentiment", "NEUTRAL").upper()
     has_conflict = (vbias == "BULLISH" and "BEARISH" in (c1, c3)) or (vbias == "BEARISH" and "BULLISH" in (c1, c3))
  
-    confirmation = _build_confirmation_section(chart_payload, ctx, verdict)
+    confirmation = _compress_fallback_section(_build_confirmation_section(chart_payload, ctx, verdict))
  
     if no_trade:
         # NO-TRADE banner. Plan suppressed — no fake entries on squaring.
@@ -1221,9 +1221,9 @@ def build_enhanced_digest(
         return digest_id, _fit_telegram("\n".join(lines), digest_id)
 
     # ── TRADEABLE path ─────────────────────────────────────────────────────
-    market_structure = _build_market_structure(alerts, verdict)
-    trading_plan = _build_trading_plan(symbol, verdict, strength, ctx, intel)
-    bottom_line = _build_bottom_line(symbol, verdict, strength, key_signal_alert, ctx)
+    market_structure = _compress_fallback_section(_build_market_structure(alerts, verdict))
+    trading_plan = _compress_fallback_section(_build_trading_plan(symbol, verdict, strength, ctx, intel))
+    bottom_line = _to_caveman(_build_bottom_line(symbol, verdict, strength, key_signal_alert, ctx))
 
     levels_parts = []
     if ctx.get("support"):
@@ -1331,6 +1331,305 @@ def _build_biggest_moves(alerts: list[dict], cap: int = 4) -> str:
     return "\n".join(lines) if lines else "No OI moves"
 
 
+def _to_caveman(text: str) -> str:
+    if not text:
+        return ""
+    reps = {
+        r"\bthe\b": "",
+        r"\ba\b": "",
+        r"\ban\b": "",
+        r"\bjust\b": "",
+        r"\breally\b": "",
+        r"\bbasically\b": "",
+        r"\bactually\b": "",
+        r"\bsimply\b": "",
+        r"\bplease\b": "",
+        r"\bshould\b": "",
+        r"\bwould\b": "",
+        r"\bcould\b": "",
+        r"\bvery\b": "",
+        r"\bwill\b": "",
+        r"\bis\b": "",
+        r"\bare\b": "",
+        r"\bwas\b": "",
+        r"\bwere\b": "",
+        r"\bbe\b": "",
+        r"\bbeen\b": "",
+        r"\bhave\b": "",
+        r"\bhas\b": "",
+        r"\bhad\b": "",
+        r"\bwith\b": "",
+        r"\bfor\b": "",
+        r"\bfrom\b": "",
+        r"\bby\b": "",
+        r"\bat\b": "",
+        r"\bon\b": "",
+        r"\bof\b": "",
+        r"\bto\b": "",
+        r"\band\b": "",
+        r"\bbut\b": "",
+        r"\bthat\b": "",
+        r"\bthis\b": "",
+        r"\bthese\b": "",
+        r"\bthose\b": "",
+        r"\bbecause\b": "",
+        r"\bsince\b": "",
+        r"\btherefore\b": "",
+        r"\bthus\b": "",
+        r"\bhence\b": "",
+        r"\bso\b": "",
+        r"\bdatabase\b": "DB",
+        r"\bauthentication\b": "auth",
+        r"\bconfiguration\b": "config",
+        r"\brequest\b": "req",
+        r"\bresponse\b": "res",
+        r"\bfunction\b": "fn",
+        r"\bimplementation\b": "impl",
+        r"\bstrategy\b": "strat",
+        r"\bstop loss\b": "SL",
+        r"\bstop-loss\b": "SL",
+        r"\bconfidence\b": "conf",
+        r"\bunderlying\b": "und",
+        r"\bsetup\b": "stp",
+        r"\bsupport\b": "supp",
+        r"\bresistance\b": "res",
+        r"\btarget\b": "tgt",
+        r"\bleads to\b": "→",
+        r"\bresults in\b": "→",
+        r"\bthen\b": "→",
+        r"\bgoes to\b": "→",
+    }
+    out = text
+    for pattern, replacement in reps.items():
+        out = re.sub(pattern, replacement, out, flags=re.IGNORECASE)
+    out = re.sub(r"\s+", " ", out).strip()
+    return out
+
+
+def _format_trade_status_caveman(status: dict | None, is_live: bool = False) -> str:
+    if not status:
+        return "No action"
+    action = status.get("action")
+    if action == "EXECUTED":
+        trade = status.get("trade", {})
+        opt = trade.get("option_type", "CE")
+        strike = trade.get("strike")
+        entry = trade.get("entry_premium") or trade.get("entry_underlying")
+        sl = trade.get("sl_premium") or trade.get("sl_underlying")
+        tgt = trade.get("target_premium") or trade.get("target_underlying")
+        side = str(trade.get("side") or status.get("side") or "BUY").upper()
+        
+        entry_str = f"{entry:.1f}" if entry is not None else "—"
+        sl_str = f"{sl:.1f}" if sl is not None else "—"
+        tgt_str = f"{tgt:.1f}" if tgt is not None else "—"
+        strike_str = f"{strike:g}" if strike is not None else "—"
+        
+        if opt == "FUT":
+            return f"Exec {side} FUT @ {entry_str} | SL {sl_str} | Tgt {tgt_str}"
+        return f"Exec {side} {strike_str}{opt} @ {entry_str} | SL {sl_str} | Tgt {tgt_str}"
+    elif action == "CLOSED":
+        trade = status.get("trade", {})
+        opt = trade.get("option_type", "CE")
+        strike = trade.get("strike")
+        pnl = trade.get("pnl_rupees") or 0.0
+        pnl_sign = "+" if pnl > 0 else ""
+        side = str(trade.get("side") or "BUY").upper()
+        strike_str = f"{strike:g}" if strike is not None else "—"
+        if opt == "FUT":
+            return f"Closed {side} FUT | PnL: {pnl_sign}₹{pnl:.1f}"
+        return f"Closed {side} {strike_str}{opt} | PnL: {pnl_sign}₹{pnl:.1f}"
+    elif action == "HELD":
+        trade = status.get("trade", {})
+        opt = trade.get("option_type", "CE")
+        strike = trade.get("strike")
+        side = str(trade.get("side") or "BUY").upper()
+        strike_str = f"{strike:g}" if strike is not None else "—"
+        if opt == "FUT":
+            return f"Held {side} FUT"
+        return f"Held {side} {strike_str}{opt}"
+    elif action and action.startswith("BLOCKED"):
+        return f"Blocked: {status.get('reason', 'Filters')}"
+    elif action == "SKIPPED_MARKET_CLOSED":
+        return "Skipped: market closed"
+    else:
+        return f"No trade: {status.get('reason', 'No setup')}"
+
+
+def _compress_fallback_section(text: str) -> str:
+    if not text:
+        return ""
+    lines = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        compressed = _to_caveman(line)
+        if compressed:
+            lines.append(compressed)
+    return "\n".join(lines)
+
+
+def build_llm_consolidated_digest(
+    symbol: str,
+    alerts: list[dict],
+    fetched_at: str | None = None,
+    scan_context: dict | None = None,
+    detected_count: int | None = None,
+    dedup_suppressed_count: int | None = None,
+    digest_id: str | None = None,
+    paper_trade_status: dict | None = None,
+    live_trade_status: dict | None = None,
+    llm_verdict: dict | None = None,
+) -> tuple[str, str]:
+    if digest_id is None:
+        digest_id = str(uuid.uuid4())[:8]
+    try:
+        dt = datetime.fromisoformat(fetched_at or "").astimezone(IST)
+    except Exception:
+        dt = datetime.now(IST)
+    ts = dt.strftime("%d %b, %H:%M")
+
+    ctx = scan_context or {}
+    expiry_val = ctx.get("expiry")
+    exp_fmt, dte_lbl = _format_expiry_and_dte(expiry_val)
+    header_extra = f" ({exp_fmt} | {dte_lbl})" if exp_fmt and dte_lbl else (f" ({exp_fmt})" if exp_fmt else "")
+
+    spot_val = _fmt_val(ctx.get('underlying'), symbol)
+    atm_val = _fmt_val(ctx.get('atm_strike'), symbol)
+    pcr_val = _fmt_num(ctx.get('pcr'), 2)
+    px_label = _price_label(symbol)
+
+    pcp = ctx.get("price_change_pct")
+    pcpt = ctx.get("price_change_points")
+    try:
+        d_spot = float(pcp) if pcp is not None else 0.0
+    except Exception:
+        d_spot = 0.0
+    try:
+        d_points = float(pcpt or 0.0)
+    except Exception:
+        d_points = 0.0
+    pct_digits = 3 if abs(d_spot) < 0.01 and d_spot != 0 else 2
+    if pcp is None:
+        spot_delta = "no prev data"
+    elif abs(d_points) < 0.05 and abs(d_spot) < 0.005:
+        spot_delta = "flat"
+    else:
+        spot_delta = f"{_fmt_signed(d_points, 1)} ({_fmt_signed(d_spot, pct_digits)}%)"
+
+    spot_delta_clean = spot_delta.replace("`", "")
+    spot_delta_str = f" ({spot_delta_clean})" if spot_delta != "flat" and spot_delta != "no prev data" else ""
+
+    lines = [
+        f"\U0001F4CA *{symbol}*{header_extra} | {ts}",
+        f"{px_label} `{spot_val}{spot_delta_str}` | ATM `{atm_val}` | PCR `{pcr_val}`",
+    ]
+
+    ce_net, pe_net = _net_oi_delta(alerts, ctx)
+    oi_unwind_note = ""
+    if ce_net < 0 and pe_net < 0:
+        oi_unwind_note = " (Both Unwind)"
+    elif ce_net > 0 and pe_net > 0:
+        oi_unwind_note = " (Both Build)"
+    lines.append(f"Net OI \u0394: CE `{_fmt_oi(ce_net)}` | PE `{_fmt_oi(pe_net)}`{oi_unwind_note}")
+    lines.append(DIVIDER)
+
+    def get_val(obj, key, default=""):
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        return getattr(obj, key, default)
+
+    bias = get_val(llm_verdict, "bias")
+    conf = get_val(llm_verdict, "confidence", 0)
+    strat = get_val(llm_verdict, "strategy")
+    strike = get_val(llm_verdict, "strike_selection")
+    reason = get_val(llm_verdict, "reasoning")
+    risk = get_val(llm_verdict, "risk_rating")
+    exit_adv = get_val(llm_verdict, "exit_advice")
+    news = get_val(llm_verdict, "news_synthesis")
+
+    bias_upper = str(bias).upper().strip()
+    emoji = "🟢" if "BULL" in bias_upper else ("🔴" if "BEAR" in bias_upper else "⚪")
+
+    lines.append(f"{emoji} *AI: {_esc(bias_upper)} ({conf}%)*")
+    if risk:
+        lines.append(f"Risk: {_esc(risk.upper())}")
+
+    action_parts = []
+    if strike:
+        action_parts.append(strike.strip())
+    if strat:
+        action_parts.append(strat.strip())
+    
+    action_str = " → ".join(action_parts)
+    if action_str:
+        lines.append(f"Action: {_esc(action_str)}")
+        
+    if exit_adv:
+        lines.append(f"Exit: {_esc(exit_adv.strip())}")
+        
+    if reason:
+        lines.append(f"Reason: {_esc(reason.strip())}")
+        
+    if news and str(news).lower() != "no news data":
+        lines.append(f"News: {_esc(news.strip())}")
+
+    # key levels and candles
+    levels_parts = []
+    if ctx.get("support"):
+        levels_parts.append(f"S:{_fmt_val(ctx.get('support'), symbol)}")
+    if ctx.get("resistance"):
+        levels_parts.append(f"R:{_fmt_val(ctx.get('resistance'), symbol)}")
+    if levels_parts:
+        lines.append(f"Levels: {' | '.join(levels_parts)}")
+
+    chart_payload = _chart_payload_for_symbol(ctx, symbol)
+    c1 = chart_payload.get("1h", {}).get("sentiment", "NEUTRAL").upper()
+    c3 = chart_payload.get("3h", {}).get("sentiment", "NEUTRAL").upper()
+
+    def arrow(s):
+        if s == "BULLISH":
+            return "▲"
+        if s == "BEARISH":
+            return "▼"
+        return "→"
+    lines.append(f"Candles: 1H {c1} {arrow(c1)} | 3H {c3} {arrow(c3)}")
+
+    # Signals
+    if alerts:
+        sorted_alerts = sorted(alerts, key=lambda a: _SEV_ORDER.get(a.get("severity", "LOW"), 2))
+        high = sum(a.get("severity") == "HIGH" for a in alerts)
+        med = sum(a.get("severity") == "MEDIUM" for a in alerts)
+        low = sum(a.get("severity") == "LOW" for a in alerts)
+        
+        counts = " ".join(x for x in [
+            f"🔴{high} HIGH" if high else "",
+            f"🟡{med} MED" if med else "",
+            f"🔵{low} LOW" if low else "",
+        ] if x)
+        if counts:
+            lines.append(f"Alerts: {counts}")
+            
+        signal_lines = []
+        for alert in sorted_alerts[:3]:
+            badge = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🔵"}.get(alert.get("severity", "LOW"), "🔵")
+            sig_text = _to_caveman(_signal_line(alert))
+            signal_lines.append(f"{badge} {sig_text}")
+        if signal_lines:
+            lines.append("Signals:")
+            lines.extend(signal_lines)
+
+    if paper_trade_status:
+        lines.append(f"Paper: {_esc(_format_trade_status_caveman(paper_trade_status, is_live=False))}")
+    if live_trade_status:
+        lines.append(f"Live: {_esc(_format_trade_status_caveman(live_trade_status, is_live=True))}")
+
+    lines.append(f"_#{digest_id}_")
+    lines.append(DIVIDER)
+
+    return digest_id, _fit_telegram("\n".join(lines), digest_id)
+
+
 def build_digest_wrapper(
     symbol: str,
     alerts: list[dict],
@@ -1344,18 +1643,24 @@ def build_digest_wrapper(
     live_trade_status: dict | None = None,
     llm_verdict: dict | None = None,
 ) -> tuple[str, str]:
+    if llm_verdict:
+        return build_llm_consolidated_digest(
+            symbol, alerts, fetched_at, scan_context,
+            detected_count, dedup_suppressed_count, digest_id,
+            paper_trade_status, live_trade_status, llm_verdict
+        )
     if USE_ENHANCED_TEMPLATE:
         return build_enhanced_digest(
             symbol, alerts, fetched_at, scan_context, intelligence_text,
             detected_count, dedup_suppressed_count, digest_id=digest_id,
             paper_trade_status=paper_trade_status,
             live_trade_status=live_trade_status,
-            llm_verdict=llm_verdict,
+            llm_verdict=None,
         )
     return build_digest(
         symbol, alerts, fetched_at, scan_context, intelligence_text,
         detected_count, dedup_suppressed_count, digest_id=digest_id,
         paper_trade_status=paper_trade_status,
         live_trade_status=live_trade_status,
-        llm_verdict=llm_verdict,
+        llm_verdict=None,
     )
