@@ -129,6 +129,94 @@ def _format_news(news_data: dict | None) -> str:
     return "\n".join(lines)
 
 
+def _format_macro_context(symbol: str) -> str:
+    """
+    Inject symbol-specific fundamental & macro context into the LLM prompt.
+    This runs regardless of whether live news is available — it gives the LLM
+    the structural knowledge of what DRIVES this instrument, so it can flag
+    risks even in the absence of fresh headlines.
+    """
+    base = symbol.upper().strip()
+
+    # ── MCX Commodities ──────────────────────────────────────────────────
+    if "NATURALGAS" in base:
+        return """  Symbol type: MCX Natural Gas Futures (USD-denominated, INR-settled)
+  Primary drivers:
+    - EIA Weekly Natural Gas Storage Report (every Thursday ~8:30 PM IST)
+      → Surprise builds = bearish pressure; surprise draws = bullish spike
+    - Henry Hub spot price (US benchmark): MCX closely tracks it with INR/USD multiplier
+    - Weather demand: Summer cooling (US/EU) and winter heating drive consumption
+    - LNG export demand from US Gulf Coast terminals
+    - INR/USD rate: Every 1 rupee depreciation in INR adds ~1.5-2% to MCX price
+  Key risk events to flag:
+    - EIA report day (Thursday): avoid fresh entries 2h before/after report
+    - US weather model updates (Mon/Wed): can move Henry Hub 3-5% intraday
+  Seasonality: Jun-Aug = low demand (shoulder season) → structurally bearish bias
+  Correlation: Positive with crude (energy complex); negative with renewable output"""
+
+    if "CRUDEOIL" in base:
+        return """  Symbol type: MCX Crude Oil Futures (Brent/WTI proxy, USD-denominated, INR-settled)
+  Primary drivers:
+    - EIA Weekly Petroleum Status Report (every Wednesday ~8:00 PM IST)
+      → Inventory build = bearish; inventory draw = bullish
+    - API Crude Inventory (Tuesday ~4:30 AM IST, unofficial early signal)
+    - OPEC+ production quota decisions and compliance rates
+    - USD Index (DXY): Strong USD → lower crude; weak USD → higher crude
+    - INR/USD rate: Direct multiplier on MCX price (1% INR move = ~1% MCX move)
+    - Geopolitical risk premium: Middle East tensions, Russia-Ukraine supply routes
+  Key risk events to flag:
+    - EIA report Wednesday: major volatility event — flag HIGH risk if trade near report
+    - OPEC+ meetings (quarterly): binary risk for trend trades
+  Seasonality: Summer driving season (Jun-Aug) supports demand; shoulder in Sep-Oct
+  Correlation: Natural Gas (energy complex), DXY (inverse), equities (risk-on)"""
+
+    if "GOLD" in base:
+        return """  Symbol type: MCX Gold Futures (USD-denominated, INR-settled)
+  Primary drivers:
+    - US Federal Reserve rate decisions and dot-plot guidance
+    - US CPI/PCE inflation prints (monthly) — higher inflation = bullish gold
+    - USD Index (DXY): Strong USD = bearish gold; weak USD = bullish gold
+    - INR/USD: Weaker INR inflates MCX gold price independently of spot
+    - Geopolitical safe-haven demand; central bank gold buying (RBI, PBoC)
+  Key risk: Fed FOMC statements, US NFP, CPI day volatility is extreme
+  Seasonality: Akshaya Tritiya / Dhanteras / wedding season → INR demand spikes"""
+
+    if "SILVER" in base:
+        return """  Symbol type: MCX Silver Futures (USD-denominated, INR-settled)
+  Primary drivers: Industrial demand (solar panels, EVs), Gold correlation (~0.85)
+  Key risk: More volatile than gold; tracks gold direction but amplifies moves 2-3x
+  Watch: US manufacturing PMI (industrial demand signal), Gold/Silver ratio extremes"""
+
+    # ── NSE Index Options ────────────────────────────────────────────────
+    if "BANKNIFTY" in base:
+        return """  Symbol type: NSE BANKNIFTY Index Options (INR)
+  Primary drivers:
+    - RBI Monetary Policy Committee (MPC) — rate decisions & stance (every 2 months)
+    - Bank credit growth, NPA cycles, PSU bank disinvestment news
+    - FII/DII net flows (daily): Sustained FII selling → index headwind
+    - US Fed policy (risk-on/risk-off global sentiment)
+    - India VIX: VIX > 20 = elevated uncertainty; VIX < 12 = complacency risk
+  BANKNIFTY-specific: Beta ~1.5x vs Nifty; highly sensitive to RBI rate surprises
+  Expiry behaviour: Weekly expiry (Thursday) → gamma squeeze risk near ATM last 2 days
+  Key risk: RBI policy day, budget day, election results = binary events"""
+
+    if "NIFTY" in base:
+        return """  Symbol type: NSE NIFTY 50 Index Options (INR)
+  Primary drivers:
+    - RBI Monetary Policy Committee (MPC) — rate decisions & stance (every 2 months)
+    - FII/DII net flows (daily): Sustained FII selling → index headwind
+    - US Fed policy, DXY, US equity overnight moves (SGX Nifty pre-market)
+    - India macro: GDP, CPI, IIP prints (monthly)
+    - India VIX: VIX > 20 = elevated uncertainty; VIX < 12 = complacency risk
+  Expiry behaviour: Weekly expiry (Thursday) → gamma squeeze risk near ATM last 2 days
+  Key risk: Budget day, election results, RBI policy day = binary events"""
+
+    # ── Generic fallback ─────────────────────────────────────────────────
+    return """  No specific macro context available for this symbol.
+  General reminder: Consider broader market sentiment, FII flows, and any
+  scheduled economic events before taking directional positions."""
+
+
 def _format_open_trade(open_trade: dict | None) -> str:
     """Format open trade status for the AI prompt."""
     if not open_trade:
@@ -218,16 +306,19 @@ SYMBOL: {symbol}
 5. ANOMALY ALERTS
 {_summarize_alerts(alerts or [])}
 
-6. NEWS SENTIMENT
+6. MACRO & FUNDAMENTAL CONTEXT
+{_format_macro_context(symbol)}
+
+7. NEWS SENTIMENT (live headlines — may be unavailable)
 {_format_news(news_data)}
 
-7. CURRENT OPEN TRADE
+8. CURRENT OPEN TRADE
 {_format_open_trade(open_trade)}
 """
 
     if trade_decision:
         prompt += f"""
-8. TRADE DECISION ENGINE OUTPUT
+9. TRADE DECISION ENGINE OUTPUT
    Status: {trade_decision.get('status')}
    Setup Type: {trade_decision.get('setup_type')}
    Reason: {trade_decision.get('reason')}
@@ -238,15 +329,31 @@ SYMBOL: {symbol}
 ═══════════════════════════════════════════════════════
 INSTRUCTIONS
 ═══════════════════════════════════════════════════════
-- Synthesize ALL the data above. Do not just echo the rule engine verdict.
-- Ensure 'Strategy' and 'strike_selection' are logically consistent (e.g., 'Put Writing' implies selling PEs, not buying).
-- If your trend analysis differs from the provided chart data, explicitly state why (e.g., 'broader trend vs. short-term candle').
-- If chart and OI signals conflict, explain which signal you trust more and why.
-- If news contradicts technical signals, flag the risk clearly.
-- Provide a specific, actionable trade plan (not vague suggestions).
-- Your exit_advice should reference specific price/premium levels.
-- Your risk_rating should account for chart conflict, low confidence, adverse news, and DTE.
-- If there is an open trade, your exit_advice should focus on whether to hold, trail, or close it.
+1. SYNTHESIS: Analyze ALL data above. Do not merely echo the rule engine verdict.
+2. MACRO CONTEXT: Section 6 contains fundamental drivers. If a scheduled event (EIA report, 
+   RBI policy, FOMC) is imminent, flag it explicitly with HIGH risk_rating.
+3. NEWS INTERPRETATION: If section 7 is empty, reference section 6 to explain what 
+   fundamental factors matter and whether risk events are near.
+4. CONSISTENCY CHECK: Strategy and strike_selection must be logically aligned.
+   Example: 'Put Writing' means selling PEs at specific strikes, not buying.
+5. DIVERGENCE ANALYSIS: If your analysis differs from provided charts/OI, explain why 
+   (e.g., 'broader trend overrides short-term candle noise').
+6. CONFLICT RESOLUTION: When chart and OI signals conflict, state which you trust and why.
+7. MACRO OVERRIDE: If fundamental drivers (EIA, OPEC, RBI, FII flows) could override OI, 
+   mention this in news_synthesis or reasoning.
+8. ACTIONABLE SPECIFICITY: Every recommendation must include exact price/premium levels. 
+   NO vague suggestions like 'consider watching support'. 
+   INSTEAD: 'Close if underlying drops below 308.5 or premium rises above 45'.
+9. EXIT ADVICE: Must be concrete. For example:
+   - Instead of: 'consider trailing stop around 305'
+   - Write: 'Trail stop loss to 1.5 premium per 1-point underlying move if position moves favorably'
+   - Include specific premium levels or price points tied to real market levels (support/resistance/max pain).
+10. REASONING: 2-3 sentences maximum. Link each factor (rule verdict, chart, OI, news) 
+    to your final recommendation. Be direct.
+11. RISK RATING: Account for chart conflict, low confidence, adverse news, proximity to 
+    macro events, and days to expiry.
+12. OPEN TRADES: If analyzing an open position, focus exit_advice on HOLD, TRAIL, CLOSE, 
+    or EXTEND with specific action triggers.
 """
 
     return prompt
@@ -263,27 +370,36 @@ def _build_exit_prompt(
 
     return f"""You are an options trade management specialist. Evaluate whether to HOLD, TRAIL_SL, CLOSE_EARLY, or EXTEND_TARGET.
 
+CRITICAL: Write in clear, grammatically correct English. Use complete words, not abbreviations (underlying not 'und', target not 'tgt'). 
+Include specific price levels and premium amounts in all recommendations. No vague suggestions.
+
 OPEN TRADE:
 {_format_open_trade(open_trade)}
 
 CURRENT MARKET:
   Underlying: {ctx.get('underlying')}
-  Price Change: {ctx.get('price_change_points', 0)} pts ({ctx.get('price_change_pct', 'N/A')}%)
-  PCR: {ctx.get('pcr')}
-  Support: {ctx.get('support')} | Resistance: {ctx.get('resistance')}
+  Price Change: {ctx.get('price_change_points', 0)} points ({ctx.get('price_change_pct', 'N/A')}%)
+  Put Call Ratio: {ctx.get('pcr')}
+  Support Level: {ctx.get('support')} | Resistance Level: {ctx.get('resistance')}
 
-CHART:
+CHART ANALYSIS:
 {_format_chart_data(ctx.get('chart_indicators'))}
 
-NEWS:
+NEWS AND FUNDAMENTALS:
 {_format_news(news_data)}
 
-RULES:
-- HOLD: Market conditions still support the trade thesis. No action needed.
-- TRAIL_SL: Trade is in profit — suggest moving SL to lock gains. Provide new_sl_premium.
-- CLOSE_EARLY: Market conditions have changed against the trade. Close now to limit loss or lock profit.
-- EXTEND_TARGET: Strong momentum continues — suggest raising target. Provide new_target_premium.
-- Set urgency to HIGH only if immediate action is needed (e.g., sharp adverse move).
+DECISION FRAMEWORK:
+- HOLD: Market conditions continue to support the original trade thesis. No action required.
+- TRAIL_SL: Trade is profitable. Move stop loss to lock in gains. Provide exact new premium level.
+- CLOSE_EARLY: Market conditions have turned against the trade. Close now to limit losses or lock existing profit. Give specific exit premium.
+- EXTEND_TARGET: Strong momentum continues. Raise profit target. Provide exact new premium level.
+- Urgency: Set to HIGH only if immediate action is needed (example: sharp adverse price move or approaching key support/resistance).
+
+OUTPUT MUST INCLUDE:
+- Action: One of HOLD, TRAIL_SL, CLOSE_EARLY, EXTEND_TARGET
+- New stop loss premium (if applicable) or new target premium (if applicable)
+- Reasoning: Clear explanation linking current market levels to your recommendation
+- Urgency: LOW, MEDIUM, or HIGH with justification
 """
 
 
@@ -316,9 +432,16 @@ def _call_llm_api(symbol: str, prompt: str, response_schema=None) -> BaseModel |
     
     schema_json = json.dumps(schema.model_json_schema())
     system_prompt = (
-        "You are a professional trading analyst. "
-        "You MUST respond with a valid JSON object matching this JSON Schema. "
-        "Make sure all field types and values match the schema definition exactly. "
+        "You are a professional trading analyst with expertise in options trading. "
+        "You MUST respond with a valid JSON object matching this JSON Schema exactly. "
+        "CRITICAL LANGUAGE REQUIREMENTS:\n"
+        "- Write complete, grammatically correct English sentences.\n"
+        "- Use clear, professional terminology (no abbreviations like 'und', 'tgt', 'res').\n"
+        "- Avoid abbreviations: write 'underlying', 'target', 'resistance', 'support' in full.\n"
+        "- Spell check all words for accuracy.\n"
+        "- Use complete phrases, not fragments: 'If the underlying price reaches 310' not 'und price reaches 310'.\n"
+        "- Be specific and actionable: give exact price levels, not vague suggestions.\n"
+        "- Ensure reasoning is clear and easy to understand by traders with no jargon confusion.\n"
         f"JSON Schema:\n{schema_json}"
     )
 
