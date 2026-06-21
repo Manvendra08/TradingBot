@@ -7,8 +7,11 @@ import re
 import urllib.request
 import json
 import logging
+import csv
+import os
+import time
 from datetime import datetime
-from config.settings import DHAN_SECURITY_IDS, DHAN_FALLBACK_EXPIRIES
+from config.settings import DHAN_SECURITY_IDS, DHAN_FALLBACK_EXPIRIES, DATA_DIR
 
 log = logging.getLogger(__name__)
 
@@ -20,6 +23,86 @@ _SYMBOL_SLUGS = {
 }
 
 _CACHE = {}
+
+
+def _download_dhan_master_if_needed() -> str:
+    """Download the Dhan master CSV to DATA_DIR, caching it for 24 hours."""
+    dest_path = os.path.join(DATA_DIR, "dhan_scrip_master.csv")
+    if os.path.exists(dest_path):
+        mtime = os.path.getmtime(dest_path)
+        if (time.time() - mtime) < 86400:
+            return dest_path
+            
+    log.info("Downloading/updating Dhan scrip master CSV...")
+    url = "https://images.dhan.co/api-data/api-scrip-master.csv"
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        with urllib.request.urlopen(req, timeout=30) as response:
+            data = response.read()
+        with open(dest_path, "wb") as f:
+            f.write(data)
+        log.info("Successfully saved Dhan scrip master to %s", dest_path)
+    except Exception as e:
+        log.error("Failed to download Dhan scrip master CSV: %s", e)
+        if os.path.exists(dest_path):
+            log.warning("Falling back to existing (older) Dhan scrip master file")
+        else:
+            raise e
+            
+    return dest_path
+
+
+def _resolve_from_master_csv(symbol: str) -> int | None:
+    """Query local Dhan master CSV to find the near-month FUTCOM contract ID for MCX."""
+    try:
+        csv_path = _download_dhan_master_if_needed()
+        if not os.path.exists(csv_path):
+            return None
+            
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        matches = []
+        
+        with open(csv_path, "r", encoding="utf-8", errors="ignore") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                exch = row.get("SEM_EXM_EXCH_ID")
+                inst = row.get("SEM_INSTRUMENT_NAME")
+                sym_name = row.get("SM_SYMBOL_NAME")
+                
+                if exch == "MCX" and inst == "FUTCOM" and sym_name == symbol:
+                    exp_date_str = row.get("SEM_EXPIRY_DATE")
+                    sec_id_str = row.get("SEM_SMST_SECURITY_ID")
+                    if exp_date_str and sec_id_str:
+                        matches.append({
+                            "sec_id": int(sec_id_str),
+                            "expiry": exp_date_str,
+                            "trading_symbol": row.get("SEM_TRADING_SYMBOL")
+                        })
+                        
+        if not matches:
+            log.warning("No MCX FUTCOM instruments found in Dhan master for %s", symbol)
+            return None
+            
+        # Filter for future/today expiries
+        valid_matches = [m for m in matches if m["expiry"] >= now_str]
+        if not valid_matches:
+            valid_matches = matches
+            
+        # Sort to find the nearest future contract
+        valid_matches.sort(key=lambda x: x["expiry"])
+        best_match = valid_matches[0]
+        log.info(
+            "[resolver] Resolved near-month Dhan ID for MCX %s via master CSV: %d (%s, Expiry: %s)",
+            symbol, best_match["sec_id"], best_match["trading_symbol"], best_match["expiry"]
+        )
+        return best_match["sec_id"]
+        
+    except Exception as e:
+        log.error("Error resolving Dhan security ID from master CSV: %s", e)
+        return None
 
 
 def get_dhan_security_id(symbol: str) -> int | None:
@@ -37,44 +120,48 @@ def get_dhan_security_id(symbol: str) -> int | None:
         return _CACHE[symbol]
         
     slug = _SYMBOL_SLUGS.get(symbol)
-    if not slug:
-        return DHAN_SECURITY_IDS.get(symbol)
-        
-    url = f"https://dhan.co/commodity/{slug}-option-chain/"
-    try:
-        req = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            }
-        )
-        with urllib.request.urlopen(req, timeout=15) as res:
-            html = res.read().decode("utf-8")
-            
-        # Try NextData JSON extraction
-        match_next = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
-        if match_next:
-            data = json.loads(match_next.group(1))
-            props = data.get("props", {}).get("pageProps", {})
-            scrip_info = props.get("scripData", {}) or props.get("optionChainData", {}).get("scripData", {})
-            if scrip_info:
-                sec_id_val = scrip_info.get("sid") or scrip_info.get("scripId") or scrip_info.get("nr_f_sid")
-                if sec_id_val:
-                    sec_id = int(sec_id_val)
-                    _CACHE[symbol] = sec_id
-                    log.info("[resolver] Dynamically resolved Dhan security ID for %s: %d", symbol, sec_id)
-                    return sec_id
+    if slug:
+        url = f"https://dhan.co/commodity/{slug}-option-chain/"
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                }
+            )
+            with urllib.request.urlopen(req, timeout=15) as res:
+                html = res.read().decode("utf-8")
                 
-        # Regex fallback
-        match_sid = re.search(r'"(?:scripId|sid)"\s*:\s*(\d+)', html)
-        if match_sid:
-            sec_id = int(match_sid.group(1))
-            _CACHE[symbol] = sec_id
-            log.info("[resolver] Dynamically resolved Dhan security ID (regex fallback) for %s: %d", symbol, sec_id)
-            return sec_id
+            # Try NextData JSON extraction
+            match_next = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
+            if match_next:
+                data = json.loads(match_next.group(1))
+                props = data.get("props", {}).get("pageProps", {})
+                scrip_info = props.get("scripData", {}) or props.get("optionChainData", {}).get("scripData", {})
+                if scrip_info:
+                    sec_id_val = scrip_info.get("sid") or scrip_info.get("scripId") or scrip_info.get("nr_f_sid")
+                    if sec_id_val:
+                        sec_id = int(sec_id_val)
+                        _CACHE[symbol] = sec_id
+                        log.info("[resolver] Dynamically resolved Dhan security ID for %s: %d", symbol, sec_id)
+                        return sec_id
+                    
+            # Regex fallback
+            match_sid = re.search(r'"(?:scripId|sid)"\s*:\s*(\d+)', html)
+            if match_sid:
+                sec_id = int(match_sid.group(1))
+                _CACHE[symbol] = sec_id
+                log.info("[resolver] Dynamically resolved Dhan security ID (regex fallback) for %s: %d", symbol, sec_id)
+                return sec_id
+                
+        except Exception as e:
+            log.warning("[resolver] Dynamic Dhan web scraping failed for %s: %s", symbol, e)
             
-    except Exception as e:
-        log.warning("[resolver] Dynamic Dhan security ID resolution failed for %s: %s. Checking fallback.", symbol, e)
+    # 2. Try dynamic scrip master CSV resolution (robust secondary backup)
+    sec_id = _resolve_from_master_csv(symbol)
+    if sec_id:
+        _CACHE[symbol] = sec_id
+        return sec_id
         
     # Check if the fallback is stale to avoid silent data failures
     fallback_id = DHAN_SECURITY_IDS.get(symbol)

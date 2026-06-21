@@ -47,14 +47,18 @@ def _get_exchange(symbol: str) -> str:
         return "MCX"
     return "NFO"
 
+import threading
+
 _cached_kite_client = None
 _cached_access_token = None
+_kite_client_lock = threading.RLock()
 
 
 def clear_kite_client_cache() -> None:
     global _cached_kite_client, _cached_access_token
-    _cached_kite_client = None
-    _cached_access_token = None
+    with _kite_client_lock:
+        _cached_kite_client = None
+        _cached_access_token = None
 
 def _get_public_ip() -> str:
     import urllib.request
@@ -91,51 +95,52 @@ def _handle_kite_ip_error(e: Exception) -> None:
 
 def get_kite_client() -> KiteConnect | None:
     global _cached_kite_client, _cached_access_token
-    config = get_broker_config()
-    if not config or not config.get("api_key") or not config.get("access_token"):
-        _cached_kite_client = None
-        _cached_access_token = None
-        return None
-    
-    # Reuse cached client if access token matches
-    if _cached_kite_client and _cached_access_token == config["access_token"]:
-        return _cached_kite_client
+    with _kite_client_lock:
+        config = get_broker_config()
+        if not config or not config.get("api_key") or not config.get("access_token"):
+            _cached_kite_client = None
+            _cached_access_token = None
+            return None
         
-    try:
-        kite = KiteConnect(api_key=config["api_key"])
-        kite.set_access_token(config["access_token"])
-        
-        # Mount resilient TLS adapter with pool-eviction retry logic
-        try:
-            from src.utils.tls_adapter import mount_resilient_tls
-            mount_resilient_tls(kite.reqsession)
-        except Exception as e:
-            log.warning("Failed to configure TLS adapter: %s", e)
+        # Reuse cached client if access token matches
+        if _cached_kite_client and _cached_access_token == config["access_token"]:
+            return _cached_kite_client
             
-        _cached_kite_client = kite
-        _cached_access_token = config["access_token"]
-        
-        # Asynchronously populate instrument cache during Kite client init if not ready
         try:
-            from src.engine.symbol_resolver import _instrument_cache_is_ready, fetch_and_cache_instruments
-            import threading
-            if not _instrument_cache_is_ready():
-                log.info("Instrument cache not ready. Spawning background thread to fetch instruments...")
-                threading.Thread(
-                    target=fetch_and_cache_instruments,
-                    args=(kite,),
-                    daemon=True
-                ).start()
-        except Exception as e:
-            log.warning("Failed to spawn background thread for instrument cache: %s", e)
+            kite = KiteConnect(api_key=config["api_key"])
+            kite.set_access_token(config["access_token"])
             
-        return kite
-    except Exception as e:
-        _handle_kite_ip_error(e)
-        log.exception("Failed to initialize Kite client")
-        _cached_kite_client = None
-        _cached_access_token = None
-        return None
+            # Mount resilient TLS adapter with pool-eviction retry logic
+            try:
+                from src.utils.tls_adapter import mount_resilient_tls
+                mount_resilient_tls(kite.reqsession)
+            except Exception as e:
+                log.warning("Failed to configure TLS adapter: %s", e)
+                
+            _cached_kite_client = kite
+            _cached_access_token = config["access_token"]
+            
+            # Asynchronously populate instrument cache during Kite client init if not ready
+            try:
+                from src.engine.symbol_resolver import _instrument_cache_is_ready, fetch_and_cache_instruments
+                import threading
+                if not _instrument_cache_is_ready():
+                    log.info("Instrument cache not ready. Spawning background thread to fetch instruments...")
+                    threading.Thread(
+                        target=fetch_and_cache_instruments,
+                        args=(kite,),
+                        daemon=True
+                    ).start()
+            except Exception as e:
+                log.warning("Failed to spawn background thread for instrument cache: %s", e)
+                
+            return kite
+        except Exception as e:
+            _handle_kite_ip_error(e)
+            log.exception("Failed to initialize Kite client")
+            _cached_kite_client = None
+            _cached_access_token = None
+            return None
 
 # Unified helpers imported from src.engine.trade_plan
 from src.engine.trade_plan import (
@@ -360,6 +365,52 @@ def place_kite_order(kite, symbol: str, exchange: str, tradingsymbol: str, trans
         log.error("Kite order placement failed: %s", e)
         raise e
 
+def confirm_order_fill(kite, order_id: str, shadow_mode: bool) -> tuple[str, str]:
+    """
+    Poll Kite API to confirm if the order is filled, rejected, or still pending.
+    Returns a tuple of (broker_status, broker_message).
+    """
+    if shadow_mode or not order_id:
+        return "SHADOW", "Shadow trade executed"
+        
+    import time
+    max_retries = 5
+    delay_sec = 0.5
+    
+    for attempt in range(max_retries):
+        try:
+            history = kite.order_history(order_id)
+            if history:
+                latest = history[-1]
+                status = latest.get("status")
+                reason = latest.get("status_message") or "No status message"
+                
+                if status == "COMPLETE":
+                    return "COMPLETE", "Executed and filled on Kite Connect"
+                elif status in ("REJECTED", "CANCELLED"):
+                    return status, f"Order {status.lower()}: {reason}"
+                
+                log.info("Order %s status is %s (attempt %d/%d)...", order_id, status, attempt + 1, max_retries)
+            else:
+                log.warning("No order history found for %s", order_id)
+        except Exception as e:
+            log.warning("Failed to fetch order history for %s: %s", order_id, e)
+            
+        time.sleep(delay_sec)
+        
+    # If still not complete/rejected/cancelled, return PENDING
+    try:
+        history = kite.order_history(order_id)
+        if history:
+            latest = history[-1]
+            status = latest.get("status") or "PENDING"
+            reason = latest.get("status_message") or "Order is active/pending at exchange"
+            return "PENDING", f"Status: {status} | {reason}"
+    except Exception:
+        pass
+        
+    return "PENDING", "Order placed but fill confirmation timed out"
+
 def place_kite_gtt(kite, symbol: str, exchange: str, tradingsymbol: str, transaction_type: str, quantity: int, trigger_values: list[float], limit_prices: list[float], last_price: float, shadow_mode: bool) -> str:
     if shadow_mode:
         import uuid
@@ -441,6 +492,56 @@ def _run_live_trading_legacy(symbol: str, scan_context: dict, digest_id: str, in
     # 1. Manage existing live trades
     current_open_trade = get_open_live_trade(symbol)
     if current_open_trade:
+        # Check if the broker_status is PENDING. If so, reconcile/verify fill!
+        if current_open_trade.get("broker_status") == "PENDING":
+            log.info("%s: Open trade is PENDING at broker. Checking for fill...", symbol)
+            b_status, b_msg = confirm_order_fill(kite, current_open_trade.get("broker_order_id"), shadow_mode)
+            if b_status == "COMPLETE":
+                log.info("%s: PENDING trade filled! Updating database status to COMPLETE.", symbol)
+                # Try placing GTT now that the order is complete
+                gtt_order_id = None
+                exit_mode = current_open_trade.get("exit_mode")
+                if current_open_trade.get("option_type") != "FUT":
+                    try:
+                        resolved = resolve_instrument(symbol, current_open_trade["expiry"], current_open_trade["strike"], current_open_trade["option_type"])
+                        tradingsymbol = resolved["tradingsymbol"] if resolved else symbol
+                        quantity = _resolve_trade_quantity(symbol, int(current_open_trade.get("lots") or 1), resolved)
+                        sl_trigger = float(current_open_trade["sl_premium"])
+                        target_trigger = float(current_open_trade["target_premium"])
+                        sl_limit = round(sl_trigger * 0.95, 2) if current_open_trade["side"] == "BUY" else round(sl_trigger * 1.05, 2)
+                        target_limit = round(target_trigger * 0.95, 2) if current_open_trade["side"] == "BUY" else round(target_trigger * 1.05, 2)
+                        gtt_order_id = place_kite_gtt(
+                            kite, symbol, _get_exchange(symbol), tradingsymbol,
+                            "SELL" if current_open_trade["side"] == "BUY" else "BUY",
+                            quantity, [sl_trigger, target_trigger], [sl_limit, target_limit],
+                            current_open_trade["entry_premium"], shadow_mode
+                        )
+                        exit_mode = "GTT"
+                    except Exception as ge:
+                        log.warning("%s: GTT placement failed on fill reconciliation: %s", symbol, ge)
+                
+                update_live_trade_entry(
+                    current_open_trade["id"],
+                    broker_status="COMPLETE",
+                    broker_message="Reconciled: order filled",
+                    gtt_order_id=gtt_order_id,
+                    exit_mode=exit_mode
+                )
+                current_open_trade = _latest_live_trade(current_open_trade["id"])
+            elif b_status in ("REJECTED", "CANCELLED"):
+                log.warning("%s: PENDING trade was %s at broker! Cleaning up trade record.", symbol, b_status)
+                update_live_trade_entry(
+                    current_open_trade["id"],
+                    status="REJECTED",
+                    broker_status=b_status,
+                    broker_message=b_msg,
+                    reason=f"Order {b_status.lower()} on reconciliation"
+                )
+                return {"action": "BLOCKED_ORDER_FAILED", "reason": b_msg}
+            else:
+                log.info("%s: PENDING trade still not filled. Status: %s. Holding...", symbol, b_msg)
+                return {"action": "HELD_PENDING", "trade": current_open_trade}
+
         # Check Trend Reversal (C1: aligned with paper trading guards)
         if _is_reversal_against_open_trade(
             current_open_trade, verdict, confidence,
@@ -464,7 +565,10 @@ def _run_live_trading_legacy(symbol: str, scan_context: dict, digest_id: str, in
             quantity = _resolve_trade_quantity(symbol, int(current_open_trade.get("lots") or 1), resolved)
             
             try:
-                place_kite_order(kite, symbol, exchange, tradingsymbol, exit_side, quantity, shadow_mode, expected_price=exit_premium or 0.0, tick_size=resolved.get("tick_size", 0.05) if resolved else 0.05)
+                order_id = place_kite_order(kite, symbol, exchange, tradingsymbol, exit_side, quantity, shadow_mode, expected_price=exit_premium or 0.0, tick_size=resolved.get("tick_size", 0.05) if resolved else 0.05)
+                broker_status, broker_message = confirm_order_fill(kite, order_id, shadow_mode)
+                if broker_status in ("REJECTED", "CANCELLED"):
+                    raise RuntimeError(f"Exit order {broker_status.lower()}: {broker_message}")
                 if current_open_trade.get("gtt_order_id"):
                     cancel_kite_gtt(kite, current_open_trade["gtt_order_id"], shadow_mode)
                 
@@ -528,7 +632,10 @@ def _run_live_trading_legacy(symbol: str, scan_context: dict, digest_id: str, in
                     quantity = _resolve_trade_quantity(symbol, int(current_open_trade.get("lots") or 1), resolved)
                     
                     try:
-                        place_kite_order(kite, symbol, exchange, tradingsymbol, exit_side, quantity, shadow_mode, expected_price=exit_premium or 0.0, tick_size=resolved.get("tick_size", 0.05) if resolved else 0.05)
+                        order_id = place_kite_order(kite, symbol, exchange, tradingsymbol, exit_side, quantity, shadow_mode, expected_price=exit_premium or 0.0, tick_size=resolved.get("tick_size", 0.05) if resolved else 0.05)
+                        broker_status, broker_message = confirm_order_fill(kite, order_id, shadow_mode)
+                        if broker_status in ("REJECTED", "CANCELLED"):
+                            raise RuntimeError(f"Exit order {broker_status.lower()}: {broker_message}")
                         close_live_trade(current_open_trade["id"], now_iso, underlying, exit_premium, close_status if not shadow_mode else "CLOSED_SHADOW", close_reason)
                         
                         closed_trade = None
@@ -600,10 +707,16 @@ def _run_live_trading_legacy(symbol: str, scan_context: dict, digest_id: str, in
         log.error("%s: failed to place live order, skipping DB entry", symbol)
         return {"action": "BLOCKED_ORDER_FAILED", "reason": str(e)}
 
+    # Verify order fill
+    broker_status, broker_message = confirm_order_fill(kite, order_id, shadow_mode)
+    if broker_status in ("REJECTED", "CANCELLED"):
+        log.error("%s: live order placed but got %s: %s", symbol, broker_status, broker_message)
+        return {"action": "BLOCKED_ORDER_FAILED", "reason": f"Order {broker_status.lower()}: {broker_message}"}
+
     # Place GTT target/SL Leg
     gtt_order_id = None
     exit_mode = "GTT"
-    if plan["option_type"] != "FUT":
+    if plan["option_type"] != "FUT" and broker_status == "COMPLETE":
         try:
             # target/SL triggers
             sl_trigger = float(plan["sl_premium"])
@@ -626,6 +739,8 @@ def _run_live_trading_legacy(symbol: str, scan_context: dict, digest_id: str, in
             exit_mode = "POLL"
             from src.alerts.telegram_dispatcher import send_text
             send_text(f"⚠️ **[GTT FAILED]** `{symbol}` — GTT creation failed ({e}); falling back to premium-poll exit.")
+    elif plan["option_type"] != "FUT" and broker_status == "PENDING":
+        exit_mode = "POLL"
 
     trade_data = {
         "opened_at":             now_iso,
@@ -655,8 +770,8 @@ def _run_live_trading_legacy(symbol: str, scan_context: dict, digest_id: str, in
         "signal_key":            signal_key,
         "broker_order_id":       order_id,
         "gtt_order_id":          gtt_order_id,
-        "broker_status":         "COMPLETE" if not shadow_mode else "SHADOW",
-        "broker_message":        "Shadow trade executed" if shadow_mode else "Executed on Kite Connect",
+        "broker_status":         broker_status,
+        "broker_message":        broker_message,
         "exit_mode":             exit_mode
     }
 
@@ -706,7 +821,12 @@ def _exit_open_live_trade(
     tradingsymbol = resolved["tradingsymbol"] if resolved and resolved.get("tradingsymbol") else symbol
     quantity = _resolve_trade_quantity(symbol, int(trade.get("lots") or 1), resolved)
 
-    place_kite_order(kite, symbol, exchange, tradingsymbol, exit_side, quantity, shadow_mode, expected_price=exit_premium or 0.0, tick_size=resolved.get("tick_size", 0.05) if resolved else 0.05)
+    order_id = place_kite_order(kite, symbol, exchange, tradingsymbol, exit_side, quantity, shadow_mode, expected_price=exit_premium or 0.0, tick_size=resolved.get("tick_size", 0.05) if resolved else 0.05)
+    
+    broker_status, broker_message = confirm_order_fill(kite, order_id, shadow_mode)
+    if broker_status in ("REJECTED", "CANCELLED"):
+        raise RuntimeError(f"Exit order {broker_status.lower()}: {broker_message}")
+
     if trade.get("gtt_order_id"):
         cancel_kite_gtt(kite, trade["gtt_order_id"], shadow_mode)
 
@@ -741,6 +861,56 @@ def run_live_trading(symbol: str, scan_context: dict, digest_id: str, intel: dic
 
     current_open_trade = get_open_live_trade(symbol)
     if current_open_trade:
+        # Check if the broker_status is PENDING. If so, reconcile/verify fill!
+        if current_open_trade.get("broker_status") == "PENDING":
+            log.info("%s: Open trade is PENDING at broker. Checking for fill...", symbol)
+            b_status, b_msg = confirm_order_fill(kite, current_open_trade.get("broker_order_id"), shadow_mode)
+            if b_status == "COMPLETE":
+                log.info("%s: PENDING trade filled! Updating database status to COMPLETE.", symbol)
+                # Try placing GTT now that the order is complete
+                gtt_order_id = None
+                exit_mode = current_open_trade.get("exit_mode")
+                if current_open_trade.get("option_type") != "FUT":
+                    try:
+                        resolved = resolve_instrument(symbol, current_open_trade["expiry"], current_open_trade["strike"], current_open_trade["option_type"])
+                        tradingsymbol = resolved["tradingsymbol"] if resolved else symbol
+                        quantity = _resolve_trade_quantity(symbol, int(current_open_trade.get("lots") or 1), resolved)
+                        sl_trigger = float(current_open_trade["sl_premium"])
+                        target_trigger = float(current_open_trade["target_premium"])
+                        sl_limit = round(sl_trigger * 0.95, 2) if current_open_trade["side"] == "BUY" else round(sl_trigger * 1.05, 2)
+                        target_limit = round(target_trigger * 0.95, 2) if current_open_trade["side"] == "BUY" else round(target_trigger * 1.05, 2)
+                        gtt_order_id = place_kite_gtt(
+                            kite, symbol, _get_exchange(symbol), tradingsymbol,
+                            "SELL" if current_open_trade["side"] == "BUY" else "BUY",
+                            quantity, [sl_trigger, target_trigger], [sl_limit, target_limit],
+                            current_open_trade["entry_premium"], shadow_mode
+                        )
+                        exit_mode = "GTT"
+                    except Exception as ge:
+                        log.warning("%s: GTT placement failed on fill reconciliation: %s", symbol, ge)
+                
+                update_live_trade_entry(
+                    current_open_trade["id"],
+                    broker_status="COMPLETE",
+                    broker_message="Reconciled: order filled",
+                    gtt_order_id=gtt_order_id,
+                    exit_mode=exit_mode
+                )
+                current_open_trade = _latest_live_trade(current_open_trade["id"])
+            elif b_status in ("REJECTED", "CANCELLED"):
+                log.warning("%s: PENDING trade was %s at broker! Cleaning up trade record.", symbol, b_status)
+                update_live_trade_entry(
+                    current_open_trade["id"],
+                    status="REJECTED",
+                    broker_status=b_status,
+                    broker_message=b_msg,
+                    reason=f"Order {b_status.lower()} on reconciliation"
+                )
+                return {"action": "BLOCKED_ORDER_FAILED", "reason": b_msg}
+            else:
+                log.info("%s: PENDING trade still not filled. Status: %s. Holding...", symbol, b_msg)
+                return {"action": "HELD_PENDING", "trade": current_open_trade}
+
         # C1: aligned reversal guard with paper trading
         if _is_reversal_against_open_trade(
             current_open_trade, verdict, confidence,
@@ -917,8 +1087,21 @@ def run_live_trading(symbol: str, scan_context: dict, digest_id: str, intel: dic
         )
         return {"action": "BLOCKED_ORDER_FAILED", "reason": str(e)}
 
+    # Verify order fill
+    broker_status, broker_message = confirm_order_fill(kite, order_id, shadow_mode)
+    if broker_status in ("REJECTED", "CANCELLED"):
+        update_live_trade_entry(
+            inserted_id,
+            status="REJECTED",
+            broker_status=broker_status,
+            broker_message=broker_message,
+            reason=f"Order not filled: {broker_message}",
+        )
+        return {"action": "BLOCKED_ORDER_FAILED", "reason": broker_message}
+
     gtt_order_id = None
-    if plan["option_type"] != "FUT":
+    if plan["option_type"] != "FUT" and broker_status == "COMPLETE":
+        # Only place GTT if order is complete/filled to avoid placing target/SL on unfilled orders
         try:
             sl_trigger = float(plan["sl_premium"])
             target_trigger = float(plan["target_premium"])
@@ -940,9 +1123,10 @@ def run_live_trading(symbol: str, scan_context: dict, digest_id: str, intel: dic
             exit_mode = "POLL"
             from src.alerts.telegram_dispatcher import send_text
             send_text(f"[GTT FAILED] `{symbol}` - {e}; falling back to premium-poll exit.")
+    elif plan["option_type"] != "FUT" and broker_status == "PENDING":
+        # Defer GTT and use POLL exit fallback for safety until resolved
+        exit_mode = "POLL"
 
-    broker_status = "SHADOW" if shadow_mode else "COMPLETE"
-    broker_message = "Shadow trade executed" if shadow_mode else "Executed on Kite Connect"
     update_live_trade_entry(
         inserted_id,
         broker_order_id=order_id,
@@ -964,7 +1148,8 @@ def run_live_trading(symbol: str, scan_context: dict, digest_id: str, intel: dic
     send_text(
         f"{prefix} **Order Placed** | `{plan['side']}` `{symbol}` `{plan['option_type']}` "
         f"Strike `{plan['strike']}`. Entry `{entry_premium}`, SL `{plan['sl_premium']}`, "
-        f"Target `{plan['target_premium']}`. Lots: `{lots}` (Qty: `{quantity}`)."
+        f"Target `{plan['target_premium']}`. Lots: `{lots}` (Qty: `{quantity}`). "
+        f"Status: `{broker_status}`."
     )
     return {"action": "EXECUTED", "trade": trade_data, "setup_type": decision["setup_type"], "lots": lots}
 
