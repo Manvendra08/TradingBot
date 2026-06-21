@@ -5,7 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 from unittest.mock import patch, MagicMock
-from fastapi.testclient import TestClient
+import httpx
 from src.services.zerodha_auth import encrypt_secret, decrypt_secret, get_current_totp
 from config.runtime_config import load_runtime_config, save_runtime_config
 from dashboard_server import app
@@ -68,6 +68,7 @@ def test_runtime_config_io():
             pass
 
 def test_zerodha_postback_signature_validation():
+    from starlette.testclient import TestClient
     client = TestClient(app)
     
     # Test case 1: No api_secret configured
@@ -171,6 +172,7 @@ def test_zerodha_postback_valid_checksum_does_not_fallback_close_wrong_trade():
     }
     payload["checksum"] = _kite_checksum(payload, secret)
 
+    from starlette.testclient import TestClient
     response = TestClient(app).post("/api/zerodha/postback", content=json.dumps(payload).encode("utf-8"))
 
     assert response.status_code == 200

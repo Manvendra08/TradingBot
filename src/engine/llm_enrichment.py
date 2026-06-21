@@ -17,6 +17,7 @@ The AI receives the full scan context including:
 import json
 import os
 import logging
+from datetime import datetime
 from pydantic import BaseModel, Field
 
 try:
@@ -31,14 +32,32 @@ log = logging.getLogger(__name__)
 # ── Response Schemas ─────────────────────────────────────────────────────
 
 class LLMTradeVerdict(BaseModel):
-    bias: str = Field(description="BULLISH, BEARISH, or NEUTRAL")
-    confidence: int = Field(description="Confidence score from 0 to 100")
-    strategy: str = Field(description="Suggested Option strategy (e.g., 'Bull Call Spread', 'Stand aside')")
-    strike_selection: str = Field(description="Specific contract strikes logic (e.g., 'Buy ATM CE')")
-    reasoning: str = Field(description="2-3 sentence rationale synthesising all data points")
-    risk_rating: str = Field(description="HIGH, MEDIUM, or LOW — overall risk of taking this trade")
-    exit_advice: str = Field(description="Dynamic SL/target suggestion based on current levels")
-    news_synthesis: str = Field(description="How news headlines impact the trade thesis (or 'No news data' if unavailable)")
+    """
+    Action-oriented trade verdict for traders.
+    Structured for quick decision-making with specific levels.
+    """
+    # Decision signal
+    action: str = Field(description="GO_LONG, GO_SHORT, or NO_TRADE — clear executable signal")
+    confidence: int = Field(description="Confidence 0-100 in this specific setup")
+    
+    # Trade specification
+    instrument: str = Field(description="Exact contract: e.g., 'NIFTY 24500 CE 27Jun' or 'CRUDEOIL 7100 PE 20Jun'")
+    entry_trigger: str = Field(description="Specific condition to enter: e.g., 'Underlying crosses above 24520' or 'Premium breaks 185'")
+    entry_premium_range: str = Field(description="Acceptable entry premium range: e.g., '180-195' or 'ATM ± 1 strike'")
+    
+    # Risk management
+    stop_loss: str = Field(description="Exact SL level: 'Premium 140' or 'Underlying 24450' — must be specific number")
+    target_1: str = Field(description="First profit target: 'Premium 230' or 'Underlying 24600'")
+    target_2: str = Field(description="Extended target if momentum continues: 'Premium 280' or 'Underlying 24700'")
+    risk_reward: str = Field(description="Calculated R:R ratio: e.g., '1:1.8' or '1:2.5'")
+    
+    # Thesis and invalidation
+    thesis: str = Field(description="1-sentence core thesis: why this trade works NOW")
+    invalidation: str = Field(description="What kills the trade: 'If underlying drops below 24400' or 'If PCR falls below 0.8'")
+    
+    # Context
+    risk_rating: str = Field(description="LOW, MEDIUM, HIGH — overall risk considering macro events, expiry proximity, volatility")
+    catalyst: str = Field(description="Upcoming event that could accelerate or invalidate: 'EIA report Thursday 8:30PM' or 'No major catalyst'")
 
 
 class LLMExitAdvice(BaseModel):
@@ -254,6 +273,128 @@ def _format_forces(intel: dict) -> str:
     return "\n".join(lines) if lines else "  No force breakdown available."
 
 
+def _format_historical_oi(symbol: str) -> str:
+    """
+    Fetch last 10 scans and format OI/price trend for the LLM prompt.
+    Includes price-impact analysis (OI vs price correlation).
+    """
+    from src.models.schema import get_conn
+
+    try:
+        with get_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT fetched_at, underlying, pcr, max_pain,
+                       ce_oi_change, pe_oi_change, verdict_label, confidence
+                FROM scan_summaries
+                WHERE symbol = ?
+                  AND (is_fallback IS NULL OR is_fallback = 0)
+                ORDER BY fetched_at DESC
+                LIMIT 10
+                """,
+                (symbol,),
+            ).fetchall()
+    except Exception as e:
+        log.debug("[llm] Historical OI query failed for %s: %s", symbol, e)
+        return "  Historical data unavailable."
+
+    if not rows or len(rows) < 3:
+        return "  Insufficient historical data (<3 scans)."
+
+    lines = []
+    lines.append(f"  Last {len(rows)} scans (newest first):")
+
+    pcr_vals: list[float] = []
+    oi_net: list[int] = []
+    price_vals: list[float] = []
+
+    for row in rows:
+        fetched_at = row["fetched_at"] or ""
+        underlying = float(row["underlying"] or 0)
+        pcr = float(row["pcr"] or 0)
+        ce_chg = int(row["ce_oi_change"] or 0)
+        pe_chg = int(row["pe_oi_change"] or 0)
+        verdict = row["verdict_label"] or "N/A"
+
+        # Extract time portion for display (HH:MM)
+        time_str = fetched_at[11:16] if len(fetched_at) > 16 else fetched_at
+
+        lines.append(
+            f"    {time_str}: Und {underlying:.0f} | PCR {pcr:.2f} | "
+            f"CE \u0394{ce_chg:+,} | PE \u0394{pe_chg:+,} | {verdict}"
+        )
+
+        if pcr > 0:
+            pcr_vals.append(pcr)
+        oi_net.append(ce_chg + pe_chg)
+        if underlying > 0:
+            price_vals.append(underlying)
+
+    # ── Trend summaries ──────────────────────────────────────────────────
+    if len(pcr_vals) >= 3:
+        pcr_newest = pcr_vals[0]
+        pcr_oldest = pcr_vals[-1]
+        pcr_dir = "rising" if pcr_newest > pcr_oldest + 0.05 else (
+            "falling" if pcr_newest < pcr_oldest - 0.05 else "stable"
+        )
+        lines.append(f"  PCR Trend: {pcr_dir} ({pcr_oldest:.2f} \u2192 {pcr_newest:.2f})")
+
+    if len(oi_net) >= 3:
+        recent_net = sum(oi_net[:3])
+        prior_net = sum(oi_net[3:6]) if len(oi_net) >= 6 else 0
+        if recent_net > 0 and recent_net > prior_net:
+            oi_dir = "accelerating buildup"
+        elif recent_net > 0:
+            oi_dir = "decelerating buildup"
+        elif recent_net < 0 and recent_net < prior_net:
+            oi_dir = "accelerating unwinding"
+        elif recent_net < 0:
+            oi_dir = "decelerating unwinding"
+        else:
+            oi_dir = "flat"
+        lines.append(f"  OI Trend: {oi_dir} (recent 3: {recent_net:+,} vs prior 3: {prior_net:+,})")
+
+    # ── Price impact analysis (Fix 3) ────────────────────────────────────
+    if len(price_vals) >= 3 and len(oi_net) >= 3:
+        price_newest = price_vals[0]
+        price_oldest = price_vals[-1]
+        price_chg = price_newest - price_oldest
+        price_pct = (price_chg / price_oldest) * 100 if price_oldest > 0 else 0.0
+        net_oi_5 = sum(oi_net[:5])
+
+        if net_oi_5 > 0 and price_pct > 0.1:
+            impact = "OI building + price rising = Long buildup confirmed"
+        elif net_oi_5 > 0 and price_pct < -0.1:
+            impact = "OI building + price falling = Short buildup confirmed"
+        elif net_oi_5 < 0 and price_pct > 0.1:
+            impact = "OI unwinding + price rising = Short covering"
+        elif net_oi_5 < 0 and price_pct < -0.1:
+            impact = "OI unwinding + price falling = Long liquidation"
+        elif abs(price_pct) <= 0.1 and abs(net_oi_5) > 0:
+            impact = "OI moving but price flat = Consolidation / trap risk"
+        else:
+            impact = "Mixed signals \u2014 price and OI not aligned"
+
+        lines.append(
+            f"  Price Impact: {impact} (\u0394{price_pct:+.2f}% over {len(rows)} scans, "
+            f"net OI: {net_oi_5:+,})"
+        )
+
+    # ── Verdict persistence ──────────────────────────────────────────────
+    verdicts = [row["verdict_label"] for row in rows if row["verdict_label"]]
+    if len(verdicts) >= 3:
+        from collections import Counter
+        vc = Counter(verdicts)
+        most_common_label, most_common_count = vc.most_common(1)[0]
+        pct = (most_common_count / len(verdicts)) * 100
+        lines.append(
+            f"  Verdict Persistence: '{most_common_label}' in {most_common_count}/{len(verdicts)} "
+            f"scans ({pct:.0f}%)"
+        )
+
+    return "\n".join(lines)
+
+
 def _build_deep_prompt(
     symbol: str,
     intel: dict,
@@ -263,97 +404,52 @@ def _build_deep_prompt(
     open_trade: dict | None = None,
     trade_decision: dict | None = None,
 ) -> str:
-    """Construct a comprehensive prompt feeding the AI all available data."""
+    """Construct an action-oriented prompt for structured trade recommendations."""
 
     ctx = scan_context or {}
 
-    prompt = f"""You are the Chief Trading Strategist at a proprietary F&O desk specializing in Indian NSE/MCX options.
-Your job is to synthesize ALL data below into a single, actionable trade recommendation.
+    prompt = f"""Deliver a TRADE PLAN with specific levels. No analysis prose.
 
-═══════════════════════════════════════════════════════
-SYMBOL: {symbol}
-═══════════════════════════════════════════════════════
+{symbol} | {datetime.now().strftime("%a %H:%M")} | Underlying: {ctx.get('underlying')} | ATM: {ctx.get('atm_strike')}
 
-1. RULE ENGINE OUTPUT
-   Verdict: {intel.get('verdict_label')} ({intel.get('verdict_desc', '')})
-   Bias: {intel.get('bias', 'UNKNOWN')}
-   Confidence: {intel.get('confidence', 0)}%
-   Trend: {intel.get('trend', 'UNKNOWN')}
-   Chart Conflict (1H vs 3H): {intel.get('chart_conflict', False)}
-   Days to Expiry: {intel.get('days_to_expiry', -1)}
+DATA:
+• Verdict: {intel.get('verdict_label')} @ {intel.get('confidence', 0)}% | Trend: {intel.get('trend', 'N/A')}
+• S/R: {ctx.get('support')}/{ctx.get('resistance')} | MaxPain: {ctx.get('max_pain')} | PCR: {ctx.get('pcr')}
+• OIΔ CE:{ctx.get('ce_oi_change', 0):,} PE:{ctx.get('pe_oi_change', 0):,}
+• Chart: {_format_chart_data(ctx.get('chart_indicators'))}
+• Alerts: {_summarize_alerts(alerts or [])}
 
-2. FORCE ANALYSIS
-{_format_forces(intel)}
-
-3. OI & LEVELS
-   Underlying: {ctx.get('underlying')}
-   Prev Underlying: {ctx.get('prev_underlying')}
-   Price Change: {ctx.get('price_change_points', 0)} pts ({ctx.get('price_change_pct', 'N/A')}%)
-   ATM Strike: {ctx.get('atm_strike')}
-   Support (PE OI Wall): {ctx.get('support')}
-   Resistance (CE OI Wall): {ctx.get('resistance')}
-   Max Pain: {ctx.get('max_pain')}
-   PCR: {ctx.get('pcr')}
-   Total CE OI: {ctx.get('total_ce_oi', 0):,}
-   Total PE OI: {ctx.get('total_pe_oi', 0):,}
-   CE OI Change: {ctx.get('ce_oi_change', 0):,}
-   PE OI Change: {ctx.get('pe_oi_change', 0):,}
-
-4. CHART DATA (OHLC Candles)
-{_format_chart_data(ctx.get('chart_indicators'))}
-
-5. ANOMALY ALERTS
-{_summarize_alerts(alerts or [])}
-
-6. MACRO & FUNDAMENTAL CONTEXT
-{_format_macro_context(symbol)}
-
-7. NEWS SENTIMENT (live headlines — may be unavailable)
-{_format_news(news_data)}
-
-8. CURRENT OPEN TRADE
-{_format_open_trade(open_trade)}
+HISTORICAL:
+{_format_historical_oi(symbol)}
 """
+
+    if news_data and news_data.get("items"):
+        prompt += f"NEWS: {_format_news(news_data)}\n"
+    else:
+        prompt += f"MACRO: {_format_macro_context(symbol)}\n"
+
+    if open_trade:
+        prompt += f"POSITION: {_format_open_trade(open_trade)}\n"
 
     if trade_decision:
-        prompt += f"""
-9. TRADE DECISION ENGINE OUTPUT
-   Status: {trade_decision.get('status')}
-   Setup Type: {trade_decision.get('setup_type')}
-   Reason: {trade_decision.get('reason')}
-   Scores: {json.dumps(trade_decision.get('scores', {}), default=str)}
-"""
+        prompt += f"ENGINE: {trade_decision.get('status')} — {trade_decision.get('reason', '')}\n"
 
-    prompt += """
-═══════════════════════════════════════════════════════
-INSTRUCTIONS
-═══════════════════════════════════════════════════════
-1. SYNTHESIS: Analyze ALL data above. Do not merely echo the rule engine verdict.
-2. MACRO CONTEXT: Section 6 contains fundamental drivers. If a scheduled event (EIA report, 
-   RBI policy, FOMC) is imminent, flag it explicitly with HIGH risk_rating.
-3. NEWS INTERPRETATION: If section 7 is empty, reference section 6 to explain what 
-   fundamental factors matter and whether risk events are near.
-4. CONSISTENCY CHECK: Strategy and strike_selection must be logically aligned.
-   Example: 'Put Writing' means selling PEs at specific strikes, not buying.
-5. DIVERGENCE ANALYSIS: If your analysis differs from provided charts/OI, explain why 
-   (e.g., 'broader trend overrides short-term candle noise').
-6. CONFLICT RESOLUTION: When chart and OI signals conflict, state which you trust and why.
-7. MACRO OVERRIDE: If fundamental drivers (EIA, OPEC, RBI, FII flows) could override OI, 
-   mention this in news_synthesis or reasoning.
-8. ACTIONABLE SPECIFICITY: Every recommendation must include exact price/premium levels. 
-   NO vague suggestions like 'consider watching support'. 
-   INSTEAD: 'Close if underlying drops below 308.5 or premium rises above 45'.
-9. EXIT ADVICE: Must be concrete. For example:
-   - Instead of: 'consider trailing stop around 305'
-   - Write: 'Trail stop loss to 1.5 premium per 1-point underlying move if position moves favorably'
-   - Include specific premium levels or price points tied to real market levels (support/resistance/max pain).
-10. REASONING: 2-3 sentences maximum. Link each factor (rule verdict, chart, OI, news) 
-    to your final recommendation. Be direct.
-11. RISK RATING: Account for chart conflict, low confidence, adverse news, proximity to 
-    macro events, and days to expiry.
-12. OPEN TRADES: If analyzing an open position, focus exit_advice on HOLD, TRAIL, CLOSE, 
-    or EXTEND with specific action triggers.
-"""
+    prompt += """OUTPUT FIELDS (all required, specific numbers):
+• action: GO_LONG (buy CE/sell PE) | GO_SHORT (buy PE/sell CE) | NO_TRADE
+• confidence: 0-100
+• instrument: "NIFTY 24500 CE 27Jun" format
+• entry_trigger: exact condition (e.g., "Underlying breaks 24520 with volume")
+• entry_premium_range: "180-195"
+• stop_loss: exact level ("Premium 140" or "Underlying 24450")
+• target_1: first profit level
+• target_2: extended target
+• risk_reward: "1:1.8" format
+• thesis: one sentence why NOW
+• invalidation: what kills the trade
+• risk_rating: LOW | MEDIUM | HIGH (HIGH if macro event <2h, <2 DTE, or chart conflict)
+• catalyst: upcoming event or "None"
+
+RULES: Reference actual levels from data. If NO_TRADE, fill what WOULD trigger. Pick stronger signal on conflict."""
 
     return prompt
 
@@ -367,38 +463,21 @@ def _build_exit_prompt(
     """Build a focused prompt for exit/management advice on an open trade."""
     ctx = scan_context or {}
 
-    return f"""You are an options trade management specialist. Evaluate whether to HOLD, TRAIL_SL, CLOSE_EARLY, or EXTEND_TARGET.
+    return f"""Trade management decision. Complete English, specific premium levels.
 
-CRITICAL: Write in clear, grammatically correct English. Use complete words, not abbreviations (underlying not 'und', target not 'tgt'). 
-Include specific price levels and premium amounts in all recommendations. No vague suggestions.
+TIME: {datetime.now().strftime("%a %H:%M")}
+POSITION: {_format_open_trade(open_trade)}
+MARKET: Underlying {ctx.get('underlying')} | Chg {ctx.get('price_change_points', 0)}pts ({ctx.get('price_change_pct', 'N/A')}%) | PCR {ctx.get('pcr')} | S/R {ctx.get('support')}/{ctx.get('resistance')}
+CHART: {_format_chart_data(ctx.get('chart_indicators'))}
+NEWS: {_format_news(news_data)}
 
-OPEN TRADE:
-{_format_open_trade(open_trade)}
+ACTION OPTIONS:
+• HOLD: Thesis intact, no change needed
+• TRAIL_SL: Profitable — lock gains (provide new_sl_premium)
+• CLOSE_EARLY: Thesis broken — exit now (provide exit premium in reasoning)
+• EXTEND_TARGET: Strong momentum — raise target (provide new_target_premium)
 
-CURRENT MARKET:
-  Underlying: {ctx.get('underlying')}
-  Price Change: {ctx.get('price_change_points', 0)} points ({ctx.get('price_change_pct', 'N/A')}%)
-  Put Call Ratio: {ctx.get('pcr')}
-  Support Level: {ctx.get('support')} | Resistance Level: {ctx.get('resistance')}
-
-CHART ANALYSIS:
-{_format_chart_data(ctx.get('chart_indicators'))}
-
-NEWS AND FUNDAMENTALS:
-{_format_news(news_data)}
-
-DECISION FRAMEWORK:
-- HOLD: Market conditions continue to support the original trade thesis. No action required.
-- TRAIL_SL: Trade is profitable. Move stop loss to lock in gains. Provide exact new premium level.
-- CLOSE_EARLY: Market conditions have turned against the trade. Close now to limit losses or lock existing profit. Give specific exit premium.
-- EXTEND_TARGET: Strong momentum continues. Raise profit target. Provide exact new premium level.
-- Urgency: Set to HIGH only if immediate action is needed (example: sharp adverse price move or approaching key support/resistance).
-
-OUTPUT MUST INCLUDE:
-- Action: One of HOLD, TRAIL_SL, CLOSE_EARLY, EXTEND_TARGET
-- New stop loss premium (if applicable) or new target premium (if applicable)
-- Reasoning: Clear explanation linking current market levels to your recommendation
-- Urgency: LOW, MEDIUM, or HIGH with justification
+URGENCY: HIGH only for immediate threat (sharp adverse move, key level breach). Otherwise LOW/MEDIUM.
 """
 
 
@@ -415,7 +494,7 @@ _CIRCUIT_BREAKER_COOLDOWN = 300.0  # 5 minutes
 _CIRCUIT_OPEN_UNTIL = 0.0
 
 def _call_llm_api(symbol: str, prompt: str, response_schema=None, deadline: float | None = None) -> BaseModel | None:
-    """Call LLM APIs in priority order: Groq (primary) → Gemini (ultimate fallback).
+    """Call LLM APIs in priority order: OpenRouter (primary) → Gemini (Fallback 1) → Groq (Fallback 2).
     
     Args:
         deadline: Unix timestamp by which we must finish. Each model attempt uses
@@ -433,26 +512,21 @@ def _call_llm_api(symbol: str, prompt: str, response_schema=None, deadline: floa
     def _remaining() -> float:
         """Seconds left before deadline, or large number if no deadline."""
         if deadline is None:
-            return 120.0
+            return 15.0
         return max(5.0, deadline - time.time())
 
     import requests
     from requests.adapters import HTTPAdapter
     from urllib3.util.retry import Retry
     
+    from src.utils.tls_adapter import ResilientTLSAdapter
+    
     schema_json = json.dumps(schema.model_json_schema())
     system_prompt = (
-        "You are a professional trading analyst with expertise in options trading. "
-        "You MUST respond with a valid JSON object matching this JSON Schema exactly. "
-        "CRITICAL LANGUAGE REQUIREMENTS:\n"
-        "- Write complete, grammatically correct English sentences.\n"
-        "- Use clear, professional terminology (no abbreviations like 'und', 'tgt', 'res').\n"
-        "- Avoid abbreviations: write 'underlying', 'target', 'resistance', 'support' in full.\n"
-        "- Spell check all words for accuracy.\n"
-        "- Use complete phrases, not fragments: 'If the underlying price reaches 310' not 'und price reaches 310'.\n"
-        "- Be specific and actionable: give exact price levels, not vague suggestions.\n"
-        "- Ensure reasoning is clear and easy to understand by traders with no jargon confusion.\n"
-        f"JSON Schema:\n{schema_json}"
+        "Options trading analyst. Respond with valid JSON matching this schema exactly.\n"
+        "Rules: Complete English only. No abbreviations (use 'underlying' not 'und', 'target' not 'tgt'). "
+        "Specific numbers required. No vague language.\n"
+        f"Schema:\n{schema_json}"
     )
 
     # Configure retry strategy for transient network errors
@@ -462,11 +536,102 @@ def _call_llm_api(symbol: str, prompt: str, response_schema=None, deadline: floa
         status_forcelist=[429, 500, 502, 503, 504],
         allowed_methods=["POST"],
     )
-    adapter = HTTPAdapter(max_retries=retry_strategy)
+    adapter = ResilientTLSAdapter(max_retries=retry_strategy)
     session = requests.Session()
     session.mount("https://", adapter)
 
-    # ── PRIMARY: Groq free tier — 14,400+ req/day, ultra-fast inference ──
+    # ── PRIMARY: OpenRouter free tier — openrouter/free model ─────────────
+    openrouter_key = os.environ.get("OPENROUTER_API_KEY")
+    if openrouter_key:
+        remaining = _remaining()
+        if not (deadline and time.time() >= deadline - 3):
+            try:
+                log.info("[llm] PRIMARY → OpenRouter openrouter/free (%.0fs remaining)", remaining)
+                resp = session.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {openrouter_key}",
+                        "Content-Type": "application/json",
+                        "Connection": "close",
+                        "HTTP-Referer": "https://github.com/nsebot",
+                        "X-Title": "NSEBOT Trading Engine"
+                    },
+                    json={
+                        "model": "openrouter/free",
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": prompt},
+                        ],
+                        "response_format": {"type": "json_object"},
+                        "temperature": 0.2,
+                    },
+                    timeout=min(remaining, 15.0),
+                )
+                if resp.status_code == 200:
+                    raw_content = resp.json()["choices"][0]["message"]["content"]
+                    # Defensive: some free models return [{...}] instead of {...}
+                    parsed = json.loads(raw_content)
+                    if isinstance(parsed, list):
+                        if len(parsed) == 1 and isinstance(parsed[0], dict):
+                            parsed = parsed[0]
+                            log.debug("[llm] OpenRouter returned array — unwrapped single-element list")
+                        else:
+                            raise ValueError(f"OpenRouter returned unexpected array with {len(parsed)} items")
+                    result = schema.model_validate(parsed)
+                    log.info("[llm] %s OK via OpenRouter openrouter/free", schema.__name__)
+                    _CONSECUTIVE_FAILURES = 0
+                    return result
+                log.warning("[llm] OpenRouter failed: status=%d %s", resp.status_code, resp.text[:200])
+            except Exception as oe:
+                log.warning("[llm] OpenRouter exception: %s", str(oe)[:200])
+
+    # ── FALLBACK 1: Gemini free tier — 1500 req/day ───────────────────────
+    gemini_key = os.environ.get("GEMINI_API_KEY")
+    if gemini_key and genai and now >= _API_QUOTA_EXHAUSTED_UNTIL:
+        gemini_models = [
+            "gemini-2.5-flash",   # Best free Gemini model
+            "gemini-2.0-flash",   # Stable alternative
+        ]
+        try:
+            all_429 = True
+            c = _get_client(gemini_key)
+            for idx, model_name in enumerate(gemini_models):
+                remaining = _remaining()
+                if deadline and time.time() >= deadline - 3:
+                    log.warning("[llm] Skipping %s — deadline reached", model_name)
+                    break
+                tier = "FALLBACK-1" if idx == 0 else f"GEMINI-FALLBACK-{idx + 1}"
+                try:
+                    log.info("[llm] %s → %s (%.0fs remaining)", tier, model_name, remaining)
+                    response = c.models.generate_content(
+                        model=model_name,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            response_mime_type="application/json",
+                            response_schema=schema,
+                            temperature=0.2,
+                        ),
+                    )
+                    result = schema.model_validate_json(response.text)
+                    log.info("[llm] %s OK via Gemini %s for %s", schema.__name__, model_name, symbol)
+                    _CONSECUTIVE_FAILURES = 0
+                    return result
+                except Exception as inner_e:
+                    err = str(inner_e)
+                    if "429" not in err and "RESOURCE_EXHAUSTED" not in err.upper():
+                        all_429 = False
+                    log.warning("[llm] Gemini %s failed for %s: %s", model_name, symbol, err[:200])
+            if all_429:
+                log.warning("[llm] All Gemini models hit quota. 10-min cooldown activated.")
+                _API_QUOTA_EXHAUSTED_UNTIL = now + 600.0
+        except Exception as e:
+            log.warning("[llm] Gemini client init failed for %s: %s", symbol, e)
+    elif not gemini_key or not genai:
+        log.debug("[llm] Gemini skipped (no API key or SDK)")
+    else:
+        log.debug("[llm] Gemini skipped — quota cooldown active until %.0fs", _API_QUOTA_EXHAUSTED_UNTIL - now)
+
+    # ── FALLBACK 2: Groq free tier — 14,400+ req/day, ultra-fast inference ──
     groq_key = os.environ.get("GROQ_API_KEY")
     if groq_key:
         groq_models = [
@@ -481,7 +646,7 @@ def _call_llm_api(symbol: str, prompt: str, response_schema=None, deadline: floa
                 log.warning("[llm] Skipping %s — deadline reached", model)
                 break
 
-            tier = "PRIMARY" if idx == 0 else f"GROQ-FALLBACK-{idx}"
+            tier = "FALLBACK-2" if idx == 0 else f"GROQ-FALLBACK-{idx}"
             try:
                 log.info("[llm] Groq %s → %s (%.0fs remaining)", tier, model, remaining)
                 resp = session.post(
@@ -500,59 +665,25 @@ def _call_llm_api(symbol: str, prompt: str, response_schema=None, deadline: floa
                         "response_format": {"type": "json_object"},
                         "temperature": 0.2,
                     },
-                    timeout=min(remaining, 140.0),  # use remaining time, cap at 140s
+                    timeout=min(remaining, 15.0),  # use remaining time, cap at 15s
                 )
                 if resp.status_code == 200:
-                    result = schema.model_validate_json(resp.json()["choices"][0]["message"]["content"])
+                    raw_content = resp.json()["choices"][0]["message"]["content"]
+                    # Defensive: some models return [{...}] instead of {...}
+                    parsed = json.loads(raw_content)
+                    if isinstance(parsed, list):
+                        if len(parsed) == 1 and isinstance(parsed[0], dict):
+                            parsed = parsed[0]
+                            log.debug("[llm] Groq returned array — unwrapped single-element list")
+                        else:
+                            raise ValueError(f"Groq returned unexpected array with {len(parsed)} items")
+                    result = schema.model_validate(parsed)
                     log.info("[llm] %s OK via Groq %s", schema.__name__, model)
                     _CONSECUTIVE_FAILURES = 0
                     return result
                 log.warning("[llm] Groq %s failed: status=%d %s", model, resp.status_code, resp.text[:200])
             except Exception as ge:
                 log.warning("[llm] Groq %s exception: %s", model, str(ge)[:200])
-
-    # ── ULTIMATE FALLBACK: Gemini free tier — 1500 req/day ──────────────
-    gemini_key = os.environ.get("GEMINI_API_KEY")
-    if gemini_key and genai and now >= _API_QUOTA_EXHAUSTED_UNTIL:
-        gemini_models = [
-            "gemini-2.5-flash",   # Best free Gemini model
-            "gemini-2.0-flash",   # Stable alternative
-        ]
-        try:
-            all_429 = True
-            c = _get_client(gemini_key)
-            for idx, model_name in enumerate(gemini_models):
-                tier = "GEMINI-FALLBACK" if idx == 0 else f"GEMINI-FALLBACK-{idx + 1}"
-                try:
-                    log.info("[llm] %s → %s", tier, model_name)
-                    response = c.models.generate_content(
-                        model=model_name,
-                        contents=prompt,
-                        config=types.GenerateContentConfig(
-                            response_mime_type="application/json",
-                            response_schema=schema,
-                            temperature=0.2,
-                        ),
-                    )
-                    result = schema.model_validate_json(response.text)
-                    log.info("[llm] %s OK via Gemini %s for %s", schema.__name__, model_name, symbol)
-                    # Reset failure counter on success
-                    _CONSECUTIVE_FAILURES = 0
-                    return result
-                except Exception as inner_e:
-                    err = str(inner_e)
-                    if "429" not in err and "RESOURCE_EXHAUSTED" not in err.upper():
-                        all_429 = False
-                    log.warning("[llm] Gemini %s failed for %s: %s", model_name, symbol, err[:200])
-            if all_429:
-                log.warning("[llm] All Gemini models hit quota. 10-min cooldown activated.")
-                _API_QUOTA_EXHAUSTED_UNTIL = now + 600.0
-        except Exception as e:
-            log.warning("[llm] Gemini client init failed for %s: %s", symbol, e)
-    elif not gemini_key or not genai:
-        log.debug("[llm] Gemini skipped (no API key or SDK)")
-    else:
-        log.debug("[llm] Gemini skipped — quota cooldown active until %.0fs", _API_QUOTA_EXHAUSTED_UNTIL - now)
 
     # Track consecutive failures and activate circuit breaker
     _CONSECUTIVE_FAILURES += 1
@@ -583,7 +714,7 @@ def get_llm_verdict(
     Executes with a 30-second timeout to prevent pipeline stalls.
     Supports in-memory caching to save tokens and prevent 429 quota exhaustion.
     """
-    if not os.environ.get("GEMINI_API_KEY") and not os.environ.get("GROQ_API_KEY"):
+    if not os.environ.get("OPENROUTER_API_KEY") and not os.environ.get("GEMINI_API_KEY") and not os.environ.get("GROQ_API_KEY"):
         return None
 
     # Check cache first
@@ -638,7 +769,7 @@ def get_exit_advice(
     Returns dynamic SL/target adjustment recommendations.
     Supports in-memory caching to save tokens and prevent 429 quota exhaustion.
     """
-    if not os.environ.get("GEMINI_API_KEY") and not os.environ.get("GROQ_API_KEY"):
+    if not os.environ.get("OPENROUTER_API_KEY") and not os.environ.get("GEMINI_API_KEY") and not os.environ.get("GROQ_API_KEY"):
         return None
 
     # Check cache first
@@ -713,7 +844,7 @@ INSTRUCTIONS:
 6. Ensure suggested values are within reasonable bounds (e.g., confidence 0-100, positions 1-5).
 """
 
-    if not os.environ.get("GEMINI_API_KEY") and not os.environ.get("GROQ_API_KEY"):
+    if not os.environ.get("OPENROUTER_API_KEY") and not os.environ.get("GEMINI_API_KEY") and not os.environ.get("GROQ_API_KEY"):
         log.warning("[llm] Strategy optimization skipped: No LLM API key configured.")
         return None
 

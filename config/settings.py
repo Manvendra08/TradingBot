@@ -34,7 +34,7 @@ ACTIVE_BROKER = os.environ.get("ACTIVE_BROKER", "zerodha").lower()
 # ── Dhan Credentials ────────────────────────────────────────────────────────────────────────────────────
 DHAN_CLIENT_ID   = _optional_env("DHAN_CLIENT_ID")
 DHAN_ACCESS_TOKEN = _optional_env("DHAN_ACCESS_TOKEN")
-DHAN_BASE_URL    = _optional_env("DHAN_BASE_URL", "https://api.dhan.co")
+DHAN_BASE_URL    = _optional_env("DHAN_BASE_URL", "https://api.dhan.co/v2")
 
 # ── Shoonya / Finvasia Credentials ───────────────────────────────────────────────────────────────────────
 SHOONYA_USER_ID   = _optional_env("SHOONYA_USER_ID")
@@ -53,6 +53,11 @@ ZERODHA_ACCESS_TOKEN = _optional_env("ZERODHA_ACCESS_TOKEN")
 ICICI_API_KEY     = _optional_env("ICICI_API_KEY")
 ICICI_API_SECRET  = _optional_env("ICICI_API_SECRET")
 ICICI_SESSION_TOKEN = _optional_env("ICICI_SESSION_TOKEN")
+
+# ── TradingView Credentials ───────────────────────────────────────────────────────────────────────────────────────
+TV_USERNAME          = _optional_env("TV_USERNAME")
+TV_PASSWORD          = _optional_env("TV_PASSWORD")
+TV_SESSIONID         = _optional_env("TV_SESSIONID")
 
 # ── Market Windows ─────────────────────────────────────────────────────────────────────────────────────────
 # Format: (open_time, close_time, weekdays)  — weekdays: 0=Mon … 6=Sun
@@ -155,7 +160,7 @@ STRIKES_AROUND_ATM  = 10
 # ── Fetcher Priority ────────────────────────────────────────────────────────────────────────────────────────────
 # Order in which fetchers are tried for NSE indices. MCX commodities have
 # their own priority: ["dhan_commodity", "moneycontrol", "dhan", "dhan_headless"]
-FETCHER_PRIORITY    = ["dhan", "dhan_headless", "nse_public"]
+FETCHER_PRIORITY    = ["nse_public"]
 
 LOG_LEVEL           = "INFO"
 LOG_ROTATION        = "midnight"

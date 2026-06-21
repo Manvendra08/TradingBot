@@ -1247,12 +1247,12 @@ async def get_paper_summary(symbol: str = ""):
             COUNT(*) AS total,
             SUM(CASE WHEN status='OPEN' THEN 1 ELSE 0 END) AS open_count,
             SUM(CASE WHEN status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross') THEN 1 ELSE 0 END) AS closed_count,
-            SUM(CASE WHEN status='CLOSED_TARGET' OR (status IN ('Dead Trade', 'TF-1H-Cross') AND pnl_rupees > 0) THEN 1 ELSE 0 END) AS wins,
-            SUM(CASE WHEN status='CLOSED_SL' OR (status IN ('Dead Trade', 'TF-1H-Cross') AND pnl_rupees < 0) THEN 1 ELSE 0 END) AS losses,
+            SUM(CASE WHEN (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees > 0 THEN 1 ELSE 0 END) AS wins,
+            SUM(CASE WHEN (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees < 0 THEN 1 ELSE 0 END) AS losses,
             ROUND(COALESCE(SUM(CASE WHEN status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross') THEN pnl_rupees ELSE 0 END), 0), 2) AS closed_pnl,
             ROUND(COALESCE(AVG(CASE WHEN status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross') THEN pnl_rupees END), 0), 2) AS avg_pnl,
-            ROUND(COALESCE(AVG(CASE WHEN status='CLOSED_TARGET' OR (status IN ('Dead Trade', 'TF-1H-Cross') AND pnl_rupees > 0) THEN pnl_rupees END), 0), 2) AS avg_win,
-            ROUND(COALESCE(AVG(CASE WHEN status='CLOSED_SL' OR (status IN ('Dead Trade', 'TF-1H-Cross') AND pnl_rupees < 0) THEN pnl_rupees END), 0), 2) AS avg_loss,
+            ROUND(COALESCE(AVG(CASE WHEN (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees > 0 THEN pnl_rupees END), 0), 2) AS avg_win,
+            ROUND(COALESCE(AVG(CASE WHEN (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees < 0 THEN pnl_rupees END), 0), 2) AS avg_loss,
             MAX(CASE WHEN status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross') THEN pnl_rupees ELSE 0 END) AS max_win,
             MIN(CASE WHEN status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross') THEN pnl_rupees ELSE 0 END) AS max_loss
         FROM paper_trades
@@ -1273,8 +1273,8 @@ async def get_paper_summary(symbol: str = ""):
         SELECT
             UPPER(symbol) AS symbol,
             COUNT(*) AS total_trades,
-            SUM(CASE WHEN status='CLOSED_TARGET' OR (status IN ('Dead Trade', 'TF-1H-Cross') AND pnl_rupees > 0) THEN 1 ELSE 0 END) AS wins,
-            SUM(CASE WHEN status='CLOSED_SL' OR (status IN ('Dead Trade', 'TF-1H-Cross') AND pnl_rupees < 0) THEN 1 ELSE 0 END) AS losses,
+            SUM(CASE WHEN (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees > 0 THEN 1 ELSE 0 END) AS wins,
+            SUM(CASE WHEN (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees < 0 THEN 1 ELSE 0 END) AS losses,
             ROUND(COALESCE(SUM(CASE WHEN status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross') THEN pnl_rupees ELSE 0 END), 0), 2) AS total_pnl,
             ROUND(COALESCE(AVG(CASE WHEN status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross') THEN pnl_rupees END), 0), 2) AS avg_pnl,
             SUM(CASE WHEN status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross') THEN 1 ELSE 0 END) AS closed_count
@@ -1300,11 +1300,11 @@ async def get_paper_summary(symbol: str = ""):
     
     # Profit factor calculation
     if where:
-        wins_where = f"{where} AND (status='CLOSED_TARGET' OR (status IN ('Dead Trade', 'TF-1H-Cross') AND pnl_rupees > 0))"
-        losses_where = f"{where} AND (status='CLOSED_SL' OR (status IN ('Dead Trade', 'TF-1H-Cross') AND pnl_rupees < 0))"
+        wins_where = f"{where} AND (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees > 0"
+        losses_where = f"{where} AND (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees < 0"
     else:
-        wins_where = "WHERE (status='CLOSED_TARGET' OR (status IN ('Dead Trade', 'TF-1H-Cross') AND pnl_rupees > 0))"
-        losses_where = "WHERE (status='CLOSED_SL' OR (status IN ('Dead Trade', 'TF-1H-Cross') AND pnl_rupees < 0))"
+        wins_where = "WHERE (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees > 0"
+        losses_where = "WHERE (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees < 0"
     
     total_wins = sum(float(r.get("pnl_rupees") or 0) for r in _q(
         f"SELECT pnl_rupees FROM paper_trades {wins_where}",
@@ -1441,12 +1441,13 @@ def _calculate_consecutive_wins(where: str, params: tuple) -> int:
         sql_where = "WHERE (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross'))"
     
     rows = _q(
-        f"SELECT status FROM paper_trades {sql_where} ORDER BY closed_at DESC LIMIT 20",
+        f"SELECT status, pnl_rupees FROM paper_trades {sql_where} ORDER BY closed_at DESC LIMIT 20",
         params
     )
     streak = 0
     for r in rows:
-        if r.get("status") == "CLOSED_TARGET" or (r.get("status") in ("Dead Trade", "TF-1H-Cross") and (r.get("pnl_rupees") or 0.0) > 0):
+        pnl = float(r.get("pnl_rupees") or 0.0)
+        if pnl > 0:
             streak += 1
         else:
             break

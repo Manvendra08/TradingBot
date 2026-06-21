@@ -52,10 +52,10 @@ def test_risk_metrics_endpoint(isolated_db):
         )
 
     metrics = get_risk_metrics(mode="paper")
-    # NIFTY lot size is 65 in settings or fallback. In settings, it is 65.
-    # Qty = 2 lots * 65 = 130
-    # Notional Exposure = 130 * 22000 = 2,860,000
-    assert metrics["total_notional_exposure"] == 2860000.0
+    # NIFTY lot size is 50 in settings.
+    # Qty = 2 lots * 50 = 100
+    # Notional Exposure = 100 * 22000 = 2,200,000
+    assert metrics["total_notional_exposure"] == 2200000.0
     # R:R for CE: (200 - 100) / (100 - 50) = 100 / 50 = 2.0
     assert metrics["avg_rr"] == 2.0
 

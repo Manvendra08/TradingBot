@@ -3,14 +3,27 @@
 P3 fix (#13): MAX_LEVEL_DISTANCE_STEPS moved to config/settings.py.
   Imported from there so the value is tunable per-deployment without a
   code change. Local module constant removed.
+
+L5 fix: MCX commodities (NATURALGAS, CRUDEOIL) now use options when ATM
+  liquidity is sufficient (volume >= threshold AND OI >= threshold).
+  Falls back to FUT when options are illiquid.
 """
 from __future__ import annotations
+
+import logging
 
 from config.symbol_classes import get_strike_step
 from config.settings import MAX_LEVEL_DISTANCE_STEPS
 from src.engine.verdict_sets import BULLISH_VERDICTS, BEARISH_VERDICTS, is_bullish, is_bearish
 
+log = logging.getLogger(__name__)
+
 MIN_PAPER_CONFIDENCE = 65
+
+# L5: Liquidity thresholds for MCX commodity options.
+# If ATM option rows meet BOTH thresholds, use options instead of forced FUT.
+_MCX_OPTION_MIN_VOLUME = 500    # minimum total volume (CE + PE) at ATM
+_MCX_OPTION_MIN_OI = 2000       # minimum total open interest (CE + PE) at ATM
 
 LONG_CE_VERDICTS = BULLISH_VERDICTS   # backward-compat alias
 LONG_PE_VERDICTS = BEARISH_VERDICTS   # backward-compat alias
@@ -53,6 +66,55 @@ def _near_level(level: float, underlying: float, step: float, direction: str) ->
     return None
 
 
+def _mcx_option_liquidity_ok(symbol: str, atm_strike: float, ctx: dict) -> bool:
+    """
+    L5: Check if ATM option liquidity is sufficient for MCX commodities.
+    Returns True if BOTH volume and OI thresholds are met at the ATM strike.
+    Falls back to FUT if either threshold fails or data is unavailable.
+    """
+    if atm_strike <= 0:
+        return False
+
+    option_rows = ctx.get("option_rows") or []
+    total_volume = 0
+    total_oi = 0
+    found_any = False
+
+    for row in option_rows:
+        try:
+            row_strike = float(row.get("strike") or 0)
+            if abs(row_strike - atm_strike) < 0.01:
+                vol = int(row.get("volume") or 0)
+                oi = int(row.get("oi") or 0)
+                total_volume += vol
+                total_oi += oi
+                found_any = True
+        except (ValueError, TypeError):
+            continue
+
+    if not found_any:
+        log.debug("%s: MCX liquidity check — no ATM option rows found, falling back to FUT", symbol)
+        return False
+
+    volume_ok = total_volume >= _MCX_OPTION_MIN_VOLUME
+    oi_ok = total_oi >= _MCX_OPTION_MIN_OI
+
+    if volume_ok and oi_ok:
+        log.debug(
+            "%s: MCX liquidity OK — ATM vol=%d (min=%d), OI=%d (min=%d). Using options.",
+            symbol, total_volume, _MCX_OPTION_MIN_VOLUME, total_oi, _MCX_OPTION_MIN_OI,
+        )
+        return True
+
+    log.debug(
+        "%s: MCX liquidity INSUFFICIENT — ATM vol=%d (min=%d, ok=%s), OI=%d (min=%d, ok=%s). "
+        "Falling back to FUT.",
+        symbol, total_volume, _MCX_OPTION_MIN_VOLUME, volume_ok,
+        total_oi, _MCX_OPTION_MIN_OI, oi_ok,
+    )
+    return False
+
+
 VERDICT_ACTION_MAP = {
     # Bullish
     "Long Buildup":    ("BUY",  "CE"),
@@ -84,14 +146,18 @@ def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | N
     side, option_type = VERDICT_ACTION_MAP[verdict_str]
     bullish = is_bullish(verdict_str)
 
-    # Futures fallback/preference for Natural Gas and Crude Oil (MCX commodities with poor option liquidity)
-    is_natgas = "NATURALGAS" in symbol or "CRUDEOIL" in symbol
-    if is_natgas:
-        option_type = "FUT"
-        side = "BUY" if bullish else "SELL"
-
     step = float(get_strike_step(symbol) or 1)
     atm = _safe_float(ctx.get("atm_strike")) or _round_to_step(underlying, step)
+
+    # L5: MCX commodities — use options when ATM liquidity is sufficient,
+    # otherwise fall back to FUT. Previously forced FUT unconditionally.
+    is_mcx_commodity = "NATURALGAS" in symbol or "CRUDEOIL" in symbol
+    if is_mcx_commodity:
+        use_options = _mcx_option_liquidity_ok(symbol, atm, ctx)
+        if not use_options:
+            option_type = "FUT"
+            side = "BUY" if bullish else "SELL"
+        # else: keep the original option_type (CE/PE) and side from VERDICT_ACTION_MAP
     support = _safe_float(ctx.get("support"))
     resistance = _safe_float(ctx.get("resistance"))
 

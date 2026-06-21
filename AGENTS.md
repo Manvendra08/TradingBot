@@ -56,3 +56,9 @@ Rules:
   - `C:\Users\manve\AppData\Roaming\npm\agent-browser.cmd`
 - Ensure write permissions on `C:\Users\manve\.agent-browser` (grant CodexSandboxUsers Modify access if needed)
 - Validated: NATURALGAS news section, NIFTY/BANKNIFTY heatmap sections working correctly
+
+## Planning & Execution Rules
+
+- Do NOT create `implementation_plan.md` or `walkthrough.md` documents.
+- Do NOT run tests (e.g., pytest) unless the user explicitly approves.
+

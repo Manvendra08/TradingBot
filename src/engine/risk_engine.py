@@ -50,7 +50,7 @@ def _ist_day_start_utc() -> str:
     now_ist = now_utc + IST_OFFSET
     midnight_ist = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
     midnight_utc = midnight_ist - IST_OFFSET
-    return midnight_utc.strftime("%Y-%m-%dT%H:%M:%S")
+    return midnight_utc.isoformat()
 
 
 def _check_consecutive_loss_breaker(conn, trades_table: str, label: str) -> tuple[bool, str]:
@@ -62,14 +62,14 @@ def _check_consecutive_loss_breaker(conn, trades_table: str, label: str) -> tupl
     """
     window_start = (
         datetime.now(timezone.utc) - timedelta(minutes=CONSECUTIVE_LOSS_WINDOW_MINUTES)
-    ).strftime("%Y-%m-%dT%H:%M:%S")
+    ).isoformat()
 
     recent_losses = conn.execute(
         f"""
         SELECT COUNT(*) AS cnt FROM {trades_table}
         WHERE pnl_rupees < 0
           AND closed_at >= ?
-          AND status IN ('SL_HIT', 'CLOSED')
+          AND status IN ('CLOSED_SL', 'CLOSED_MANUAL', 'CLOSED', 'SL_HIT')
         """,
         (window_start,),
     ).fetchone()["cnt"]
@@ -150,15 +150,18 @@ def _check_risk_limits_for_table(
             )
 
         # 5. Cooldown after SL/loss (per-symbol)
+        cooldown_start = (
+            datetime.now(timezone.utc) - timedelta(minutes=LOSS_COOLDOWN_MINUTES)
+        ).isoformat()
         last_loss = conn.execute(
             f"""
             SELECT closed_at FROM {trades_table}
-            WHERE symbol = ? AND status IN ('SL_HIT', 'CLOSED') AND pnl_rupees < 0
+            WHERE symbol = ? AND status IN ('CLOSED_SL', 'CLOSED_MANUAL', 'CLOSED', 'SL_HIT') AND pnl_rupees < 0
               AND closed_at >= ?
             ORDER BY closed_at DESC
             LIMIT 1
             """,
-            (symbol, today_start),
+            (symbol, cooldown_start),
         ).fetchone()
         if last_loss:
             try:

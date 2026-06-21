@@ -32,6 +32,26 @@ from src.engine.trend_analysis import (
     get_broader_trend_from_alerts,
 )
 from src.engine.verdict_sets import is_bullish, is_bearish
+
+# Map LLM action-oriented schema → legacy bias for trade decision engine
+_ACTION_TO_BIAS = {
+    "GO_LONG": "BULLISH",
+    "GO_SHORT": "BEARISH",
+    "NO_TRADE": "NEUTRAL",
+}
+
+
+def _extract_ai_bias(ai_verdict) -> str | None:
+    """Extract bias from AI verdict, supporting both new (action) and old (bias) schemas."""
+    if ai_verdict is None:
+        return None
+    # New schema: action field (GO_LONG/GO_SHORT/NO_TRADE)
+    action = getattr(ai_verdict, 'action', None) or (ai_verdict.get('action') if isinstance(ai_verdict, dict) else None)
+    if action and action in _ACTION_TO_BIAS:
+        return _ACTION_TO_BIAS[action]
+    # Legacy schema: bias field (BULLISH/BEARISH/NEUTRAL)
+    bias = getattr(ai_verdict, 'bias', None) or (ai_verdict.get('bias') if isinstance(ai_verdict, dict) else None)
+    return bias
 from config.settings import (
     PAPER_RESEARCH_MODE,
     MIN_CONFIDENCE_CORE,
@@ -87,8 +107,10 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None) ->
     if not is_bullish(verdict) and not is_bearish(verdict):
         return _blocked(f"Verdict '{verdict}' is not directional")
 
-    if intel.get("chart_conflict"):
-        return _blocked("Timeframe conflict: 1H and 3H charts disagree")
+    # Chart conflict is NO LONGER a hard block. 1H/3H candle sentiments are
+    # for timeframe strategy only. Core OI-based trades should not be blocked
+    # by chart disagreement. Instead, a -20 penalty is applied to entry_quality
+    # below, allowing strong OI setups to proceed while filtering weak ones.
 
     # ── Fix #8: Research mode scan-count gate bypass (consistent with regime) ──
     # In PAPER_RESEARCH_MODE both gates are bypassed together so test/prod
@@ -116,6 +138,16 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None) ->
 
     # ── Score all layers ───────────────────────────────────────────────────
     entry_quality, entry_reasons = calculate_entry_quality(symbol, option_type, strike, plan_ctx)
+
+    # Chart conflict soft penalty: 1H/3H disagreement reduces entry quality
+    # but does NOT hard-block core OI trades. Timeframe strategy (which relies
+    # on chart crossovers) handles its own conflict checks independently.
+    if intel.get("chart_conflict"):
+        entry_quality = max(0, entry_quality - 20)
+        entry_reasons.append("Chart conflict: -20 penalty")
+        soft_conflicts.append("CHART_CONFLICT")
+        log.debug("%s: Chart conflict (1H/3H disagree) — entry_quality penalised to %d", symbol, entry_quality)
+
     trend_alignment = get_trend_alignment_score(symbol, verdict)
 
     regime = detect_market_regime(symbol)
@@ -139,7 +171,7 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None) ->
 
     # ── AI verdict influence ───────────────────────────────────────────────
     if ai_verdict:
-        ai_bias = getattr(ai_verdict, 'bias', None) or (ai_verdict.get('bias') if isinstance(ai_verdict, dict) else None)
+        ai_bias = _extract_ai_bias(ai_verdict)
         ai_conf = getattr(ai_verdict, 'confidence', 0) or (ai_verdict.get('confidence', 0) if isinstance(ai_verdict, dict) else 0)
         ai_risk = getattr(ai_verdict, 'risk_rating', '') or (ai_verdict.get('risk_rating', '') if isinstance(ai_verdict, dict) else '')
         verdict_bias = 'BULLISH' if is_bullish(verdict) else 'BEARISH'

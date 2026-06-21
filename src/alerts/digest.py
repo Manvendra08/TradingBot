@@ -522,16 +522,23 @@ def build_digest(
             
         ai_part = ""
         if llm_verdict:
-            bias = llm_verdict.get("bias") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "bias", "")
+            action = llm_verdict.get("action") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "action", "")
             conf = llm_verdict.get("confidence") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "confidence", 0)
-            strat = llm_verdict.get("strategy") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "strategy", "")
-            strike = llm_verdict.get("strike_selection") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "strike_selection", "")
-            reason = llm_verdict.get("reasoning") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "reasoning", "")
+            instrument = llm_verdict.get("instrument") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "instrument", "")
+            entry_trigger = llm_verdict.get("entry_trigger") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "entry_trigger", "")
+            stop_loss = llm_verdict.get("stop_loss") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "stop_loss", "")
+            target_1 = llm_verdict.get("target_1") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "target_1", "")
+            thesis = llm_verdict.get("thesis") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "thesis", "")
+            risk = llm_verdict.get("risk_rating") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "risk_rating", "")
+            
+            action_emoji = {"GO_LONG": "🟢", "GO_SHORT": "🔴", "NO_TRADE": "⚪"}.get(action, "❓")
             ai_part = (
-                f"\n🧠 *AI Verdict* ({_esc(bias)}, {conf}%)\n"
-                f"Strategy: {_esc(strat)}\n"
-                f"Target: {_esc(strike)}\n"
-                f"_{_esc(reason)}_\n"
+                f"\n{action_emoji} *AI Trade Plan* ({action}, {conf}%)\n"
+                f"📋 Contract: {_esc(instrument)}\n"
+                f"🎯 Entry: {_esc(entry_trigger)}\n"
+                f"🛑 SL: {_esc(stop_loss)} | T1: {_esc(target_1)}\n"
+                f"💡 {_esc(thesis)}\n"
+                f"⚠️ Risk: {_esc(risk)}\n"
             )
 
         msg = "\n".join([
@@ -663,18 +670,26 @@ def build_digest(
  
     lines += ["", f"\U0001F30A *Trend:* {_esc(_trend_text(intel['trend'], intel['verdict']))}"]
     if llm_verdict:
-        bias = llm_verdict.get("bias") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "bias", "")
+        # Support both new (action-oriented) and old (bias-oriented) schemas
+        action = llm_verdict.get("action") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "action", "")
         conf = llm_verdict.get("confidence") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "confidence", 0)
-        strat = llm_verdict.get("strategy") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "strategy", "")
-        strike = llm_verdict.get("strike_selection") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "strike_selection", "")
-        reason = llm_verdict.get("reasoning") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "reasoning", "")
+        instrument = llm_verdict.get("instrument") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "instrument", "")
+        entry_trigger = llm_verdict.get("entry_trigger") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "entry_trigger", "")
+        stop_loss = llm_verdict.get("stop_loss") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "stop_loss", "")
+        target_1 = llm_verdict.get("target_1") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "target_1", "")
+        thesis = llm_verdict.get("thesis") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "thesis", "")
+        risk = llm_verdict.get("risk_rating") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "risk_rating", "")
+        invalidation = llm_verdict.get("invalidation") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "invalidation", "")
+
+        action_emoji = {"GO_LONG": EMOJI_GREEN, "GO_SHORT": EMOJI_RED, "NO_TRADE": EMOJI_WHITE}.get(action, EMOJI_YELLOW)
         lines += [
             "",
-            "🧠 *AI Verdict*",
-            f"• *Bias:* {_esc(bias)} ({conf}%)",
-            f"• *Strategy:* {_esc(strat)}",
-            f"• *Target:* {_esc(strike)}",
-            f"• *Reason:* _{_esc(reason)}_"
+            f"{action_emoji} *AI Trade Plan* ({_esc(action)}, {conf}%)",
+            f"📋 {_esc(instrument)}",
+            f"🎯 Entry: {_esc(entry_trigger)}",
+            f"🛑 SL: {_esc(stop_loss)} | T1: {_esc(target_1)}",
+            f"💡 {_esc(thesis)}",
+            f"⚠️ Risk: {_esc(risk)} | Invalidation: {_esc(invalidation)}",
         ]
     if paper_trade_status:
         lines += ["", "🤖 *PAPER TRADE STATUS*", _format_paper_trade_status(paper_trade_status)]
@@ -1539,17 +1554,17 @@ def build_llm_consolidated_digest(
             return obj.get(key, default)
         return getattr(obj, key, default)
 
-    bias = get_val(llm_verdict, "bias")
+    bias = get_val(llm_verdict, "bias") or get_val(llm_verdict, "action")
     conf = get_val(llm_verdict, "confidence", 0)
-    strat = get_val(llm_verdict, "strategy")
-    strike = get_val(llm_verdict, "strike_selection")
-    reason = get_val(llm_verdict, "reasoning")
+    strat = get_val(llm_verdict, "strategy") or get_val(llm_verdict, "instrument")
+    strike = get_val(llm_verdict, "strike_selection") or get_val(llm_verdict, "entry_premium_range")
+    reason = get_val(llm_verdict, "reasoning") or get_val(llm_verdict, "thesis")
     risk = get_val(llm_verdict, "risk_rating")
     exit_adv = get_val(llm_verdict, "exit_advice")
     news = get_val(llm_verdict, "news_synthesis")
 
     bias_upper = str(bias).upper().strip()
-    emoji = "🟢" if "BULL" in bias_upper else ("🔴" if "BEAR" in bias_upper else "⚪")
+    emoji = "🟢" if "BULL" in bias_upper or "LONG" in bias_upper else ("🔴" if "BEAR" in bias_upper or "SHORT" in bias_upper else "⚪")
 
     lines.append(f"{emoji} *AI: {_esc(bias_upper)} ({conf}%)*")
     if risk:

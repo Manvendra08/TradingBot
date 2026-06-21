@@ -370,7 +370,7 @@ class TestNatGasIntelligence:
         assert "close above 9500" not in msg
 
     def test_paper_engine_uses_current_scan_premium_rows(self):
-        from src.engine.paper_trading import _trade_plan_from_verdict
+        from src.engine.live_trading import _trade_plan_from_verdict
 
         ctx = {
             "symbol": "CRUDEOIL",
@@ -390,11 +390,11 @@ class TestNatGasIntelligence:
         # CRUDEOIL routes to FUT: entry_premium = underlying price, option_rows unused
         assert plan["option_type"] == "FUT"
         assert plan["entry_premium"] == 9280.0
-        assert plan["sl_premium"] == 9200.0
-        assert plan["target_premium"] == 9400.0
+        assert plan["sl_premium"] == 9080.0
+        assert plan["target_premium"] == 9480.0
 
     def test_naturalgas_futures_trade_plan_and_execution(self):
-        from src.engine.paper_trading import _trade_plan_from_verdict
+        from src.engine.live_trading import _trade_plan_from_verdict
         from src.engine.intelligence import generate_intelligence
 
         alerts = [
@@ -439,8 +439,8 @@ class TestNatGasIntelligence:
         plan = _trade_plan_from_verdict("Long Buildup", 80, ctx)
         assert plan["option_type"] == "FUT"
         assert plan["entry_premium"] == 279.0
-        assert plan["sl_underlying"] == 270.0
-        assert plan["target_underlying"] == 290.0
+        assert plan["sl_underlying"] == 269.0
+        assert plan["target_underlying"] == 289.0
 
         # 2. Verify that generate_intelligence text outputs Futures style trade message
         msg = generate_intelligence("NATURALGAS", alerts, scan_context=ctx)
@@ -641,10 +641,10 @@ class TestTelegramDigestImprovements:
         # Verify warnings and labels
         assert "Chart timeframe conflict (1H vs 3H) - size down" in msg
         assert "Future `296.50`" in msg
-        assert "Sell 290.00 PE / 285.00 PE (premium at support)" in msg
-        assert "if future breaks 320.00 with volume" in msg
+        assert "Sell 290.00 PE / 285.00 PE (premium supp)" in msg
+        assert "only if future breaks 320.00 volume" in msg
         assert "Stop: future closes below 285.00" in msg
-        assert "Target: 320.00, then 325.00" in msg
+        assert "tgt: 320.00, \u2192 325.00" in msg
         assert "[High]" in msg  # Check titlecase severity tag
 
     def test_min_oi_threshold_filtering(self):

@@ -26,8 +26,8 @@ from src.models.schema import (
 )
 from src.engine.anomaly_detector import detect_anomalies
 from src.engine.intelligence import generate_intelligence_structured
-# from src.engine.paper_trading import run_paper_trading, run_timeframe_strategy
-# from src.engine.live_trading import run_live_trading, run_live_timeframe_strategy
+from src.engine.paper_trading import run_paper_trading, run_timeframe_strategy
+from src.engine.live_trading import run_live_trading, run_live_timeframe_strategy
 from src.engine.scan_summary import save_scan_summary
 from src.alerts.dedup import is_duplicate, record_alert, should_send_zero_signal
 from src.alerts.digest import build_digest_wrapper as build_digest
@@ -49,13 +49,15 @@ def run_pipeline(symbols: list[str] | None = None, force: bool = False) -> None:
     fetched_at = datetime.now(timezone.utc).isoformat()
     log.info("Pipeline run started | %s | symbols: %s | force=%s", fetched_at, symbols, force)
     
-    # B7: Sync manual Kite direct positions to SQLite for AI Exit Advisor monitoring
-    # TODO: sync_direct_kite_positions() not yet implemented
-    # try:
-    #     from src.engine.live_trading import sync_direct_kite_positions
-    #     sync_direct_kite_positions()
-    # except Exception:
-    #     log.exception("Direct Kite position synchronization failed")
+    # B7/L3: Sync manual Kite direct positions to SQLite for AI Exit Advisor monitoring.
+    # The sync function is fully implemented in live_trading.py. It is also called
+    # by the scheduler every 5 minutes independently (see job_runner.py).
+    # This pipeline call provides additional coverage on every full scan cycle.
+    try:
+        from src.engine.live_trading import sync_direct_kite_positions
+        sync_direct_kite_positions()
+    except Exception:
+        log.exception("Direct Kite position synchronization failed")
 
     for symbol in symbols:
         try:
@@ -200,18 +202,25 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
                 open_trade=open_trade,
             )
             if llm_verdict:
-                log.info("%s: AI verdict — %s (%d%%) risk=%s | Strategy: %s",
-                         symbol, llm_verdict.bias, llm_verdict.confidence,
-                         llm_verdict.risk_rating, llm_verdict.strategy)
-                intel_text += f"\n\n🧠 *AI Verdict* ({llm_verdict.bias}, {llm_verdict.confidence}%)\n"
-                intel_text += f"Strategy: {llm_verdict.strategy}\n"
-                intel_text += f"Target: {llm_verdict.strike_selection}\n"
-                intel_text += f"Risk: {llm_verdict.risk_rating}\n"
-                if llm_verdict.news_synthesis and llm_verdict.news_synthesis != "No news data":
-                    intel_text += f"📰 {llm_verdict.news_synthesis}\n"
-                if llm_verdict.exit_advice:
-                    intel_text += f"🚶 Exit: {llm_verdict.exit_advice}\n"
-                intel_text += f"_{llm_verdict.reasoning}_\n"
+                log.info("%s: AI verdict — %s (%d%%) risk=%s | Instrument: %s",
+                         symbol, llm_verdict.action, llm_verdict.confidence,
+                         llm_verdict.risk_rating, llm_verdict.instrument)
+                
+                # Action-oriented formatting for traders
+                action_emoji = {"GO_LONG": "🟢", "GO_SHORT": "🔴", "NO_TRADE": "⚪"}.get(llm_verdict.action, "❓")
+                risk_emoji = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🔴"}.get(llm_verdict.risk_rating, "❓")
+                
+                intel_text += f"\n\n{action_emoji} *AI Trade Plan* ({llm_verdict.action}, {llm_verdict.confidence}%)\n"
+                intel_text += f"📋 *Contract:* `{llm_verdict.instrument}`\n"
+                intel_text += f"🎯 *Entry:* {llm_verdict.entry_trigger}\n"
+                intel_text += f"💰 *Premium:* {llm_verdict.entry_premium_range}\n"
+                intel_text += f"🛑 *SL:* {llm_verdict.stop_loss}\n"
+                intel_text += f"🎯 *T1:* {llm_verdict.target_1} | *T2:* {llm_verdict.target_2}\n"
+                intel_text += f"📊 *R:R:* {llm_verdict.risk_reward} | {risk_emoji} *Risk:* {llm_verdict.risk_rating}\n"
+                intel_text += f"💡 *Thesis:* {llm_verdict.thesis}\n"
+                intel_text += f"⚠️ *Invalidation:* {llm_verdict.invalidation}\n"
+                if llm_verdict.catalyst and llm_verdict.catalyst != "No scheduled events":
+                    intel_text += f"📅 *Catalyst:* {llm_verdict.catalyst}\n"
         except Exception:
             log.exception("%s: AI enrichment failed gracefully", symbol)
     else:
@@ -238,7 +247,9 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
                     log.info("%s: AI trailed SL to %.2f", symbol, exit_advice.new_sl_premium)
                     intel_text += f"\n🤖 *AI Trail*: SL moved to ₹{exit_advice.new_sl_premium:.2f} — {exit_advice.reasoning}\n"
                 elif exit_advice.action == "CLOSE_EARLY" and exit_advice.urgency == "HIGH":
-                    # FIX #9: use real current LTP, not entry_premium, to avoid P&L = 0
+                    # FIX #9 + M4: use real current LTP only. If LTP is unavailable,
+                    # SKIP the close entirely — closing at entry_premium forces P&L=0
+                    # regardless of whether the trade was actually profitable.
                     from src.models.schema import close_paper_trade
                     option_rows = scan_context.get("option_rows") or []
                     current_ltp = _get_current_option_ltp(
@@ -250,31 +261,30 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
                     )
                     if current_ltp is not None:
                         exit_premium = current_ltp
+                        close_paper_trade(
+                            open_trade["id"],
+                            datetime.now(timezone.utc).isoformat(),
+                            scan_context.get("underlying", 0),
+                            exit_premium,
+                            "AI_CLOSE_EARLY",
+                            f"AI exit: {exit_advice.reasoning}",
+                        )
+                        log.info(
+                            "%s: AI closed trade early at LTP=%.2f — %s",
+                            symbol, exit_premium, exit_advice.reasoning,
+                        )
+                        intel_text += f"\n🤖 *AI Close* @ ₹{exit_premium:.2f}: {exit_advice.reasoning}\n"
                     else:
-                        # Genuine fallback: LTP unavailable (e.g. expiry day, illiquid strike)
-                        exit_premium = float(open_trade.get("entry_premium") or 0.0)
+                        # M4: Skip CLOSE_EARLY when LTP unavailable — don't force zero-P&L exit
                         log.warning(
-                            "%s: AI CLOSE_EARLY — current LTP unavailable for "
-                            "strike=%.2f %s; falling back to entry_premium=%.2f "
-                            "(P&L will be zero — check snapshot coverage)",
+                            "%s: AI CLOSE_EARLY SKIPPED — current LTP unavailable for "
+                            "strike=%.2f %s. Will retry next scan instead of closing at "
+                            "entry_premium (which would force P&L=0).",
                             symbol,
                             open_trade.get("strike", 0),
                             open_trade.get("option_type", ""),
-                            exit_premium,
                         )
-                    close_paper_trade(
-                        open_trade["id"],
-                        datetime.now(timezone.utc).isoformat(),
-                        scan_context.get("underlying", 0),
-                        exit_premium,
-                        "AI_CLOSE_EARLY",
-                        f"AI exit: {exit_advice.reasoning}",
-                    )
-                    log.info(
-                        "%s: AI closed trade early at LTP=%.2f — %s",
-                        symbol, exit_premium, exit_advice.reasoning,
-                    )
-                    intel_text += f"\n🤖 *AI Close* @ ₹{exit_premium:.2f}: {exit_advice.reasoning}\n"
+                        intel_text += f"\n🤖 *AI Close deferred*: LTP unavailable for {open_trade.get('option_type')} {open_trade.get('strike')} — will retry next scan\n"
     except Exception:
         log.debug("%s: AI exit advisor failed gracefully", symbol)
 
@@ -282,32 +292,30 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
     import uuid
     digest_id = str(uuid.uuid4())[:8]
     paper_trade_report = None
-    # TODO: Paper trading refactored to execute_paper_trade() + monitor_paper_trades()
-    # try:
-    #     pt_report = run_paper_trading(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
-    #     tf_report = run_timeframe_strategy(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
-    #     if pt_report and pt_report.get("action") in ("EXECUTED", "CLOSED"):
-    #         paper_trade_report = pt_report
-    #     elif tf_report and tf_report.get("action") in ("EXECUTED", "CLOSED"):
-    #         paper_trade_report = tf_report
-    #     else:
-    #         paper_trade_report = pt_report or tf_report
-    # except Exception:
-    #     log.exception("%s: paper-trading engine failed", symbol)
+    try:
+        pt_report = run_paper_trading(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
+        tf_report = run_timeframe_strategy(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
+        if pt_report and pt_report.get("action") in ("EXECUTED", "CLOSED"):
+            paper_trade_report = pt_report
+        elif tf_report and tf_report.get("action") in ("EXECUTED", "CLOSED"):
+            paper_trade_report = tf_report
+        else:
+            paper_trade_report = pt_report or tf_report
+    except Exception:
+        log.exception("%s: paper-trading engine failed", symbol)
 
     live_trade_report = None
-    # TODO: Live trading functions not yet implemented
-    # try:
-    #     lt_report = run_live_trading(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
-    #     lt_tf_report = run_live_timeframe_strategy(symbol, scan_context, digest_id, intel)
-    #     if lt_report and lt_report.get("action") in ("EXECUTED", "CLOSED"):
-    #         live_trade_report = lt_report
-    #     elif lt_tf_report and lt_tf_report.get("action") in ("EXECUTED", "CLOSED"):
-    #         live_trade_report = lt_tf_report
-    #     else:
-    #         live_trade_report = lt_report or lt_tf_report
-    # except Exception:
-    #     log.exception("%s: live-trading engine failed", symbol)
+    try:
+        lt_report = run_live_trading(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
+        lt_tf_report = run_live_timeframe_strategy(symbol, scan_context, digest_id, intel)
+        if lt_report and lt_report.get("action") in ("EXECUTED", "CLOSED"):
+            live_trade_report = lt_report
+        elif lt_tf_report and lt_tf_report.get("action") in ("EXECUTED", "CLOSED"):
+            live_trade_report = lt_tf_report
+        else:
+            live_trade_report = lt_report or lt_tf_report
+    except Exception:
+        log.exception("%s: live-trading engine failed", symbol)
 
     digest_id, digest_msg = build_digest(
         symbol, new_alerts, fetched_at,

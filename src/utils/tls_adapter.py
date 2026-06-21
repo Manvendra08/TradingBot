@@ -121,10 +121,13 @@ class ResilientTLSAdapter(HTTPAdapter):
         for attempt in range(self.SSL_RETRY_ATTEMPTS):
             try:
                 with self._send_lock:
+                    log.debug("[tls] Attempting request to %s (attempt %d/%d)", request.url, attempt + 1, self.SSL_RETRY_ATTEMPTS)
                     return super().send(request, *args, **kwargs)
             except (SSLError, ReqConnectionError, OSError) as exc:
                 last_err = exc
+                log.debug("[tls] Exception on %s: %s", request.url, exc)
                 if not self._is_ssl_eof(exc):
+                    log.debug("[tls] Non-SSL EOF exception, re-raising")
                     raise
 
                 if attempt < self.SSL_RETRY_ATTEMPTS - 1:
@@ -136,6 +139,8 @@ class ResilientTLSAdapter(HTTPAdapter):
                     self._evict_connections()
                     time.sleep(delay)
                     continue
+                else:
+                    log.warning("[tls] SSL EOF exhausted for %s after %d attempts", request.url, self.SSL_RETRY_ATTEMPTS)
         raise last_err
 
     def _evict_connections(self):

@@ -9,11 +9,89 @@ log = logging.getLogger("nsebot.capital_allocator")
 # (capital / premium) blows up to absurd lot counts.
 _DEFAULT_MAX_AUTO_LOTS = 10
 
-# FIX #4: Approximate SPAN+exposure margin multiplier for SELL legs.
-# Index/commodity option selling requires full SPAN+exposure margin, which
-# is typically ~10-12x the premium collected.  Using 10x as a conservative
-# lower bound.  If the broker API exposes live margin data, prefer that.
-_SELL_MARGIN_PREMIUM_MULTIPLIER = 10.0
+# M5 fix: SPAN+exposure margin multiplier for SELL legs.
+# Actual SPAN+exposure margin for index/commodity options is typically 12-15x
+# the premium collected.  Previous 10x caused over-allocation where the broker
+# would reject orders due to insufficient margin.
+# Increased to 12x as a safer baseline.  If broker margin API is available,
+# the live margin requirement is preferred over this static estimate.
+_SELL_MARGIN_PREMIUM_MULTIPLIER = 12.0
+
+# Broker margin API timeout (seconds). If the call takes longer, fall back
+# to the static multiplier above.
+_BROKER_MARGIN_API_TIMEOUT = 3.0
+
+
+def _fetch_broker_margin_requirement(
+    symbol: str,
+    tradingsymbol: str,
+    exchange: str,
+    transaction_type: str,
+    quantity: int,
+    premium: float,
+) -> float | None:
+    """
+    Try to fetch actual SPAN+exposure margin from Zerodha broker API.
+
+    M5 fix: Uses the Kite margin calculator API when available to get the
+    real margin requirement for SELL legs. Returns None if the API is
+    unavailable, times out, or returns an error — callers should fall back
+    to the static _SELL_MARGIN_PREMIUM_MULTIPLIER.
+
+    Returns:
+        Margin requirement in INR, or None on failure.
+    """
+    if transaction_type.upper() != "SELL":
+        return None
+
+    try:
+        from src.engine.live_trading import get_kite_client
+        kite = get_kite_client()
+        if not kite:
+            return None
+
+        # KiteConnect margin API: POST /margins/orders
+        orders = [{
+            "exchange": exchange,
+            "tradingsymbol": tradingsymbol,
+            "transaction_type": transaction_type,
+            "variety": kite.VARIETY_REGULAR,
+            "product": kite.PRODUCT_NRML,
+            "order_type": kite.ORDER_TYPE_LIMIT,
+            "quantity": quantity,
+            "price": premium,
+            "trigger_price": 0,
+        }]
+
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future = executor.submit(kite.margins, "orders", orders)
+            result = future.result(timeout=_BROKER_MARGIN_API_TIMEOUT)
+
+        if result and isinstance(result, list) and len(result) > 0:
+            margin_data = result[0]
+            # Total margin = SPAN + exposure + option premium
+            total = float(
+                (margin_data.get("span") or 0)
+                + (margin_data.get("exposure") or 0)
+                + (margin_data.get("option_premium") or 0)
+            )
+            if total > 0:
+                log.debug(
+                    "%s: broker margin API returned ₹%.2f for %s %s (SPAN=%.0f + Exp=%.0f + Prem=%.0f)",
+                    symbol, total, tradingsymbol, transaction_type,
+                    margin_data.get("span", 0),
+                    margin_data.get("exposure", 0),
+                    margin_data.get("option_premium", 0),
+                )
+                return total
+    except Exception as e:
+        log.debug(
+            "%s: broker margin API unavailable (%s), falling back to static multiplier",
+            symbol, str(e)[:80],
+        )
+
+    return None
 
 
 def calculate_trade_lots(symbol: str, entry_premium: float, side: str = "BUY") -> int:
@@ -25,11 +103,9 @@ def calculate_trade_lots(symbol: str, entry_premium: float, side: str = "BUY") -
       2. Auto-calculate from capital_per_trade / effective_cost_per_lot,
          capped at max_auto_lots (default 10) to prevent blowup on cheap options.
 
-    FIX #4: For SELL legs, effective_cost_per_lot uses an estimated margin
-    (premium * lot_size * _SELL_MARGIN_PREMIUM_MULTIPLIER) instead of just
-    premium * lot_size.  This prevents over-allocation where a 50k capital
-    config would attempt to sell 10 lots needing 5-8L SPAN margin, resulting
-    in rejected orders and phantom OPEN positions in the DB.
+    M5 fix: For SELL legs, tries to fetch actual SPAN+exposure margin from
+    broker API first. If unavailable, uses _SELL_MARGIN_PREMIUM_MULTIPLIER
+    (12x, increased from 10x) as a safer static estimate.
     BUY legs are unaffected (margin = premium paid = actual capital consumed).
     """
     config = load_runtime_config()

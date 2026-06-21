@@ -398,7 +398,24 @@ class TestSchedulerMarketHours:
 
     def test_start_scheduler(self):
         from src.scheduler.job_runner import start_scheduler
-        with patch("src.scheduler.job_runner._guarded_run") as mock_run, \
+        import pytz
+        ist = pytz.timezone("Asia/Kolkata")
+        class FakeDatetime:
+            @classmethod
+            def now(cls, tz=None):
+                dt = datetime(2026, 6, 17, 10, 0, 0)
+                if tz is not None:
+                    if hasattr(tz, "localize"):
+                        return tz.localize(dt)
+                    return dt.replace(tzinfo=tz)
+                return dt
+            @classmethod
+            def fromtimestamp(cls, ts, tz=None):
+                return datetime.fromtimestamp(ts, tz)
+        t2 = ist.localize(datetime(2026, 6, 17, 10, 15, 0)).timestamp()
+        with patch("src.scheduler.job_runner.datetime", FakeDatetime), \
+             patch("time.time", return_value=t2), \
+             patch("src.scheduler.job_runner._guarded_run") as mock_run, \
              patch("src.scheduler.job_runner._run_dhan_naturalgas_scrape") as mock_scrape, \
              patch("time.sleep", side_effect=SystemExit) as mock_sleep:
             try:
@@ -406,16 +423,43 @@ class TestSchedulerMarketHours:
             except SystemExit:
                 pass
             from unittest.mock import call
-            mock_run.assert_has_calls([call('NSE_INDEX'), call('MCX_COMMODITY')], any_order=True)
+            # Scheduler now uses market classes (NSE_INDEX, MCX_COMMODITY) in its loop
+            calls = [c for c in mock_run.call_args_list]
+            assert len(calls) >= 2
+            args = {c[0][0] for c in calls if c[0]}
+            assert 'NSE_INDEX' in args
+            assert 'MCX_COMMODITY' in args
             mock_scrape.assert_called_once()
 
     def test_start_scheduler_keyboard_interrupt(self):
         from src.scheduler.job_runner import start_scheduler
-        with patch("src.scheduler.job_runner._guarded_run") as mock_run, \
+        import pytz
+        ist = pytz.timezone("Asia/Kolkata")
+        class FakeDatetime:
+            @classmethod
+            def now(cls, tz=None):
+                dt = datetime(2026, 6, 17, 10, 0, 0)
+                if tz is not None:
+                    if hasattr(tz, "localize"):
+                        return tz.localize(dt)
+                    return dt.replace(tzinfo=tz)
+                return dt
+            @classmethod
+            def fromtimestamp(cls, ts, tz=None):
+                return datetime.fromtimestamp(ts, tz)
+        t2 = ist.localize(datetime(2026, 6, 17, 10, 15, 0)).timestamp()
+        with patch("src.scheduler.job_runner.datetime", FakeDatetime), \
+             patch("time.time", return_value=t2), \
+             patch("src.scheduler.job_runner._guarded_run") as mock_run, \
              patch("time.sleep", side_effect=KeyboardInterrupt) as mock_sleep:
             start_scheduler()  # Handles KeyboardInterrupt without throwing
             from unittest.mock import call
-            mock_run.assert_has_calls([call('NSE_INDEX'), call('MCX_COMMODITY')], any_order=True)
+            # Scheduler now uses market classes (NSE_INDEX, MCX_COMMODITY) in its loop
+            calls = [c for c in mock_run.call_args_list]
+            assert len(calls) >= 2
+            args = {c[0][0] for c in calls if c[0]}
+            assert 'NSE_INDEX' in args
+            assert 'MCX_COMMODITY' in args
 
     def test_run_dhan_naturalgas_scrape_runner_missing(self):
         from src.scheduler.job_runner import _run_dhan_naturalgas_scrape

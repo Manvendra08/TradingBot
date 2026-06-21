@@ -77,6 +77,8 @@ def test_entry_quality_chasing():
     assert any("Chasing after" in r for r in reasons)
 
     ctx["price_change_pct"] = -2.0
+    ctx["sl_underlying"] = 110.0
+    ctx["target_underlying"] = 100.0
     score, reasons = calculate_entry_quality("TEST", "PE", 105.0, ctx)
     assert score == 85
     assert any("Chasing after" in r for r in reasons)
@@ -125,8 +127,8 @@ def test_entry_quality_sell_option_no_penalties():
     # 3. Chasing check for side=SELL -> should NOT be penalized
     ctx_chase = {
         "underlying": 105.0,
-        "sl_underlying": 100.0,
-        "target_underlying": 110.0,
+        "sl_underlying": 110.0,
+        "target_underlying": 100.0,
         "price_change_pct": 2.0,
         "side": "SELL",
     }
@@ -135,6 +137,9 @@ def test_entry_quality_sell_option_no_penalties():
     assert not any("Chasing after" in r for r in reasons)
 
     ctx_chase["price_change_pct"] = -2.0
+    ctx_chase["sl_underlying"] = 100.0
+    ctx_chase["target_underlying"] = 110.0
     score, reasons = calculate_entry_quality("TEST", "PE", 105.0, ctx_chase)
     assert score == 100
     assert not any("Chasing after" in r for r in reasons)
+

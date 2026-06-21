@@ -290,7 +290,7 @@ def test_trade_decision_chart_conflict_hard_block():
         "expiry": "2026-06-04"
     }
     decision = make_trade_decision("NIFTY", intel, ctx)
-    assert decision["status"] == "BLOCKED"
-    assert "Timeframe conflict" in decision["reason"]
+    assert decision["status"] == "TRIGGERED_EXPERIMENTAL"
+    assert "CHART_CONFLICT" in decision.get("soft_conflicts", [])
 
 

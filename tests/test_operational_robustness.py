@@ -141,7 +141,7 @@ def test_pnl_fallback_time_value():
 
 
 def test_underlying_cmp_prioritized_exit():
-    from src.engine.paper_trading import _maybe_close_open_trade
+    from src.engine.paper_trading import monitor_paper_trades
     from src.models.schema import get_conn
     
     with get_conn() as conn:
@@ -157,7 +157,7 @@ def test_underlying_cmp_prioritized_exit():
         
     # Test exit when underlying CMP crosses target (161.0 >= 160.0) but option premium hasn't hit target_premium (premium is e.g. 12.0)
     # The trade should close immediately because the underlying CMP crossed target
-    _maybe_close_open_trade("NATURALGAS", 161.0, "2026-06-25", "2026-06-10T10:05:00", option_rows=[{"strike": 150.0, "option_type": "CE", "ltp": 12.0}])
+    monitor_paper_trades("NATURALGAS", {"underlying": 161.0, "option_rows": [{"strike": 150.0, "option_type": "CE", "ltp": 12.0}]})
     
     with get_conn() as conn:
         trade = conn.execute("SELECT * FROM paper_trades WHERE id=?", (trade_id,)).fetchone()

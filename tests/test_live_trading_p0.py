@@ -289,19 +289,23 @@ def test_llm_caching_and_cooldown():
     llm_enrichment._VERDICT_CACHE = {}
     llm_enrichment._API_QUOTA_EXHAUSTED_UNTIL = 0.0
 
-    # Mock _call_gemini_api
     dummy_verdict = LLMTradeVerdict(
-        bias="BULLISH",
+        action="GO_LONG",
         confidence=80,
-        strategy="Bull Call Spread",
-        strike_selection="ATM CE",
-        reasoning="Test reasoning",
+        instrument="NIFTY 24500 CE 27Jun",
+        entry_trigger="Underlying breaks above 24520",
+        entry_premium_range="180-195",
+        stop_loss="Premium 140",
+        target_1="Premium 230",
+        target_2="Premium 280",
+        risk_reward="1:1.8",
+        thesis="Short covering at support",
+        invalidation="Below 24400 on 1H",
         risk_rating="LOW",
-        exit_advice="Hold",
-        news_synthesis="Positive"
+        catalyst="EIA report Thursday"
     )
 
-    with patch("src.engine.llm_enrichment._call_gemini_api", return_value=dummy_verdict) as mock_api:
+    with patch("src.engine.llm_enrichment._call_llm_api", return_value=dummy_verdict) as mock_api:
         intel = {"verdict_label": "Long Buildup", "confidence": 80}
         scan_ctx = {"underlying": 24000.0}
 
@@ -331,7 +335,7 @@ def test_llm_caching_and_cooldown():
 
 def test_llm_alternative_fallbacks():
     from src.engine import llm_enrichment
-    from src.engine.llm_enrichment import _call_gemini_api, LLMTradeVerdict
+    from src.engine.llm_enrichment import _call_llm_api, LLMTradeVerdict
     import os
 
     # Mock requests.post
@@ -340,7 +344,7 @@ def test_llm_alternative_fallbacks():
     mock_resp.json.return_value = {
         "choices": [{
             "message": {
-                "content": '{"bias": "BEARISH", "confidence": 75, "strategy": "Bear Call Spread", "strike_selection": "ATM PE", "reasoning": "Test", "risk_rating": "LOW", "exit_advice": "Hold", "news_synthesis": "Negative"}'
+                "content": '{"action": "GO_SHORT", "confidence": 75, "instrument": "NIFTY 24000 PE 27Jun", "entry_trigger": "Underlying below 24000", "entry_premium_range": "180-195", "stop_loss": "Premium 140", "target_1": "Premium 230", "target_2": "Premium 280", "risk_reward": "1:1.8", "thesis": "Short", "invalidation": "Invalid", "risk_rating": "LOW", "catalyst": "None"}'
             }
         }]
     }
@@ -352,11 +356,11 @@ def test_llm_alternative_fallbacks():
         del os.environ["GEMINI_API_KEY"]
 
     try:
-        with patch("requests.post", return_value=mock_resp) as mock_post:
+        with patch("requests.Session.post", return_value=mock_resp) as mock_post:
             # Call it with no Gemini API key -> should go straight to alternative (Groq)
-            result = _call_gemini_api("NIFTY", "dummy prompt", LLMTradeVerdict)
+            result = _call_llm_api("NIFTY", "dummy prompt", LLMTradeVerdict)
             assert result is not None
-            assert result.bias == "BEARISH"
+            assert result.action == "GO_SHORT"
             assert result.confidence == 75
             assert mock_post.call_count >= 1
     finally:

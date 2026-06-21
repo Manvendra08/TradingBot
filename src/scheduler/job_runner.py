@@ -71,6 +71,117 @@ def _run_dhan_naturalgas_scrape():
         log.warning("Dhan scrape runner error: %s", exc)
 
 
+def _check_live_exits(symbol: str, underlying: float, strikes: list[dict]) -> None:
+    """
+    H4 fix: Check open live trades for SL/Target hits using freshly fetched
+    option premiums.  Runs every 2 minutes inside _update_live_cmps() so exits
+    are detected between the 5-minute full pipeline scans.
+
+    Only handles premium-poll exits (shadow mode, FUT, or POLL exit_mode).
+    GTT-managed exits are handled by the broker itself.
+    """
+    from src.models.schema import get_conn
+    from src.engine.live_trading import (
+        get_kite_client, _get_exchange, _resolve_trade_quantity,
+        place_kite_order, cancel_kite_gtt, _exit_open_live_trade,
+    )
+    from src.engine.symbol_resolver import resolve_instrument
+    from src.alerts.telegram_dispatcher import send_text
+    from config.runtime_config import load_runtime_config
+    from datetime import datetime, timezone
+
+    config = load_runtime_config()
+    shadow_mode = config.get("live_shadow_mode", True)
+    kite = get_kite_client()
+
+    with get_conn() as conn:
+        open_trades = conn.execute(
+            "SELECT * FROM live_trades WHERE symbol=? AND status='OPEN'",
+            (symbol,),
+        ).fetchall()
+
+    if not open_trades:
+        return
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    for trade_row in open_trades:
+        trade = dict(trade_row)
+        exit_mode = trade.get("exit_mode") or "GTT"
+
+        # Only poll-exit if: shadow mode, FUT, or explicit POLL fallback
+        if not (shadow_mode or exit_mode == "POLL" or trade.get("option_type") == "FUT"):
+            continue
+
+        # Resolve current premium
+        exit_premium = None
+        if trade.get("option_type") == "FUT":
+            exit_premium = underlying
+        else:
+            strike = float(trade.get("strike") or 0)
+            option_type = str(trade.get("option_type") or "")
+            for row in strikes:
+                try:
+                    if (
+                        abs(float(row.get("strike") or 0) - strike) < 0.01
+                        and str(row.get("option_type") or "").upper() == option_type.upper()
+                    ):
+                        ltp = float(row.get("ltp") or 0.0)
+                        if ltp > 0:
+                            exit_premium = ltp
+                        break
+                except Exception:
+                    continue
+
+        if exit_premium is None:
+            continue
+
+        sl_premium = float(trade.get("sl_premium") or 0.0)
+        target_premium = float(trade.get("target_premium") or 0.0)
+        is_sell = trade.get("side") == "SELL"
+        close_status = ""
+        close_reason = ""
+
+        if is_sell and sl_premium > 0 and exit_premium >= sl_premium:
+            close_status, close_reason = "CLOSED_SL", "stop loss hit (CMP poll)"
+        elif is_sell and target_premium > 0 and exit_premium <= target_premium:
+            close_status, close_reason = "CLOSED_TARGET", "target hit (CMP poll)"
+        elif not is_sell and sl_premium > 0 and exit_premium <= sl_premium:
+            close_status, close_reason = "CLOSED_SL", "stop loss hit (CMP poll)"
+        elif not is_sell and target_premium > 0 and exit_premium >= target_premium:
+            close_status, close_reason = "CLOSED_TARGET", "target hit (CMP poll)"
+
+        if not close_status:
+            continue
+
+        try:
+            if kite:
+                closed = _exit_open_live_trade(
+                    kite=kite,
+                    symbol=symbol,
+                    trade=trade,
+                    underlying=underlying,
+                    exit_premium=exit_premium,
+                    status=close_status,
+                    reason=close_reason,
+                    shadow_mode=shadow_mode,
+                    now_iso=now_iso,
+                )
+                prefix = "[SHADOW]" if shadow_mode else "🚨 [LIVE]"
+                send_text(
+                    f"{prefix} **CMP Poll Exit** | Closed `{symbol}` "
+                    f"`{trade.get('option_type')}` — `{close_reason}` at premium "
+                    f"`{exit_premium}`."
+                )
+                log.info(
+                    "%s: CMP poll exit — %s %s at premium %.2f (%s)",
+                    symbol, trade.get("option_type"), close_reason,
+                    exit_premium, close_status,
+                )
+        except Exception as e:
+            log.error("%s: CMP poll exit square-off failed: %s", symbol, e)
+
+
 def _update_live_cmps() -> None:
     """Lightweight live CMP refresh for symbols with OPEN trades."""
     from src.models.schema import get_conn, insert_snapshots, insert_underlying_price
@@ -121,6 +232,9 @@ def _update_live_cmps() -> None:
                     })
                 insert_snapshots(rows_to_insert)
                 log.debug("Live CMP refresh completed for %s (%d strikes)", symbol, len(rows_to_insert))
+
+                # H4 fix: check live trade SL/Target exits between full scans
+                _check_live_exits(symbol, underlying, oc_data.get("strikes") or [])
         except Exception as e:
             log.warning("Live CMP refresh failed for %s: %s", symbol, e)
 
@@ -153,6 +267,7 @@ def start_scheduler(immediate: bool = False):
     delete_expired_contracts()
     
     # ── Instrument cache warm-up at scheduler start ────────────────────────
+    cache_warmed_event = threading.Event()
     def _warmup_instrument_cache():
         try:
             from src.engine.symbol_resolver import _instrument_cache_is_ready, fetch_and_cache_instruments
@@ -166,6 +281,8 @@ def start_scheduler(immediate: bool = False):
                     log.info("[scheduler] Kite not connected; instrument cache warm-up skipped.")
         except Exception as exc:
             log.warning("[scheduler] Instrument cache warm-up failed: %s", exc)
+        finally:
+            cache_warmed_event.set()
 
     threading.Thread(target=_warmup_instrument_cache, daemon=True, name="instrument-cache-startup").start()
 
@@ -173,8 +290,41 @@ def start_scheduler(immediate: bool = False):
     last_scanned_interval: dict[str, int] = {}
     has_done_startup_scan: dict[str, bool] = {}
     
-    # If immediate scan is NOT requested, skip the first scan for the current interval
-    if not immediate:
+    # If immediate scan is requested, run it once now (bypassing time/day guards)
+    if immediate:
+        log.info("[scheduler] --now flag detected: waiting for instrument cache to warm up...")
+        cache_warmed_event.wait(timeout=60)
+        log.info("[scheduler] Triggering initial scan immediately, bypassing market hours guards...")
+        try:
+            run_pipeline(symbols=WATCH_SYMBOLS)
+            log.info("[scheduler] Initial scan completed successfully.")
+        except Exception as e:
+            log.error("[scheduler] Initial scan failed: %s", e)
+            
+        # Initialize scheduling state so it doesn't double-scan inside market hours
+        import math
+        from config.symbol_classes import get_symbol_class, MARKET_WINDOWS
+        import datetime as dt_mod
+        now_ist = datetime.now(IST)
+        now_time = now_ist.time()
+        for class_key in MARKET_WINDOWS:
+            open_t, _, _ = MARKET_WINDOWS[class_key]
+            open_h, open_m = map(int, open_t.split(":"))
+            market_open_time = now_ist.replace(hour=open_h, minute=open_m, second=0, microsecond=0)
+            delta_minutes = (now_ist - market_open_time).total_seconds() / 60.0
+            
+            has_done_startup_scan[class_key] = True
+            if delta_minutes >= 0:
+                if class_key == "MCX_COMMODITY":
+                    interval_min = get_scan_frequency_mcx()
+                else:
+                    interval_min = get_scan_frequency_nse()
+                current_interval_idx = math.floor(delta_minutes / interval_min)
+                last_scanned_interval[class_key] = current_interval_idx
+            else:
+                last_scanned_interval[class_key] = -1
+    else:
+        # If immediate scan is NOT requested, skip the first scan for the current interval
         import math
         from config.symbol_classes import get_symbol_class, MARKET_WINDOWS
         import datetime as dt_mod
@@ -207,6 +357,8 @@ def start_scheduler(immediate: bool = False):
     last_cmp_refresh = 0.0
     last_instrument_cache_refresh = time.time()  # mark as refreshed now (warmup thread handles first)
     _INSTRUMENT_CACHE_REFRESH_INTERVAL = 4 * 60 * 60  # 4 hours
+    last_kite_sync_refresh = 0.0
+    _KITE_POSITION_SYNC_INTERVAL = 5 * 60  # L3: sync Kite positions every 5 minutes
 
     try:
         while True:
@@ -282,7 +434,18 @@ def start_scheduler(immediate: bool = False):
                     elapsed = time.time() - cycle_start
                     log.debug("Full scan cycle completed for %s in %.1fs (success=%s)", class_key, elapsed, success)
                 
-            # 2. Live CMP Refresh Loop (every 2 minutes)
+            # 2a. L3: Kite Position Sync Loop (every 5 minutes)
+            if time.time() - last_kite_sync_refresh >= _KITE_POSITION_SYNC_INTERVAL:
+                last_kite_sync_refresh = time.time()
+                def _sync_kite_positions():
+                    try:
+                        from src.engine.live_trading import sync_direct_kite_positions
+                        sync_direct_kite_positions()
+                    except Exception as exc:
+                        log.warning("[scheduler] Kite position sync failed: %s", exc)
+                threading.Thread(target=_sync_kite_positions, daemon=True, name="kite-position-sync").start()
+
+            # 2b. Live CMP Refresh Loop (every 2 minutes)
             if time.time() - last_cmp_refresh >= 120:
                 cycle_start = time.time()
                 success = run_with_timeout(_update_live_cmps, timeout=90)

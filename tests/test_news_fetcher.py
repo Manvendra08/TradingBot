@@ -29,7 +29,7 @@ def test_fetch_news_tv_dict_provider():
     mock_response.json.return_value = mock_payload
     mock_response.status_code = 200
 
-    with patch("requests.get", return_value=mock_response) as mock_get:
+    with patch("requests.Session.get", return_value=mock_response) as mock_get:
         data = fetch_news("NATURALGAS")
         mock_get.assert_called_once()
         assert data["count_24h"] == 1
@@ -56,7 +56,7 @@ def test_fetch_news_tv_str_provider():
     mock_response.json.return_value = mock_payload
     mock_response.status_code = 200
 
-    with patch("requests.get", return_value=mock_response) as mock_get:
+    with patch("requests.Session.get", return_value=mock_response) as mock_get:
         data = fetch_news("CRUDEOIL")
         mock_get.assert_called_once()
         assert data["count_24h"] == 1
@@ -82,7 +82,7 @@ def test_fetch_news_tv_empty_or_missing_provider():
     mock_response.json.return_value = mock_payload
     mock_response.status_code = 200
 
-    with patch("requests.get", return_value=mock_response) as mock_get:
+    with patch("requests.Session.get", return_value=mock_response) as mock_get:
         data = fetch_news("CRUDEOIL")
         mock_get.assert_called_once()
         assert data["count_24h"] == 1

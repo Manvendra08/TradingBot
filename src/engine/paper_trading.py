@@ -72,112 +72,18 @@ def _is_market_open(symbol: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# SL / Target calculation — ATR-based (unified with live_trading.py)
+# SL / Target calculation — imported from unified trade_plan.py
 # ---------------------------------------------------------------------------
-
-def _get_atr(ctx: dict) -> Optional[float]:
-    """Extract ATR-14 from chart_indicators, trying 3h then 1h then any TF."""
-    chart_indicators = ctx.get("chart_indicators") or {}
-    tf_data = chart_indicators
-    if not any(k in chart_indicators for k in ("1h", "3h")):
-        tf_data = next(iter(chart_indicators.values()), {}) if chart_indicators else {}
-    pay_3h = tf_data.get("3h") or {}
-    pay_1h = tf_data.get("1h") or {}
-    atr = pay_3h.get("atr_14") or pay_1h.get("atr_14")
-    if atr is None:
-        for _tf, payload in tf_data.items():
-            if isinstance(payload, dict) and payload.get("atr_14"):
-                return float(payload["atr_14"])
-    return float(atr) if atr else None
+from src.engine.trade_plan import (
+    get_atr as _get_atr,
+    calculate_buy_sl_target as _calculate_buy_sl_target,
+    calculate_sell_sl_target as _calculate_sell_sl_target,
+    get_option_premium as _get_option_premium,
+    parse_verdict_and_confidence as _parse_verdict_and_confidence,
+)
 
 
-def _calculate_buy_sl_target(
-    entry_premium: float,
-    underlying: float,
-    ctx: dict,
-    step: float = 50.0,
-) -> tuple[float, float]:
-    """
-    ATR-based SL/Target for BUY legs (unified with live_trading.py).
-    Falls back to 2-step underlying distance when ATR unavailable.
-    Previously used fixed 0.70× / 1.50× premium multipliers — those
-    were premium-only, making OTM options near-zero delta effectively
-    un-stoppable on noise. ATR on the underlying is the correct unit.
-    """
-    atr = _get_atr(ctx)
-    if atr and atr > 0:
-        sl_underlying     = underlying - 1.5 * atr
-        target_underlying = underlying + 2.0 * atr
-    else:
-        sl_underlying     = underlying - 2 * step
-        target_underlying = underlying + 2 * step
-    return round(sl_underlying, 2), round(target_underlying, 2)
-
-
-def _calculate_sell_sl_target(
-    entry_premium: float,
-    underlying: float,
-    ctx: dict,
-    step: float = 50.0,
-) -> tuple[float, float]:
-    """
-    ATR-based SL/Target for SELL legs (unified with live_trading.py).
-    Falls back to 2-step underlying distance when ATR unavailable.
-    """
-    atr = _get_atr(ctx)
-    if atr and atr > 0:
-        sl_underlying     = underlying + 1.5 * atr
-        target_underlying = underlying - 2.0 * atr
-    else:
-        sl_underlying     = underlying + 2 * step
-        target_underlying = underlying - 2 * step
-    return round(sl_underlying, 2), round(target_underlying, 2)
-
-
-# ---------------------------------------------------------------------------
-# Helpers for Option Premium & Verdict Parsing
-# ---------------------------------------------------------------------------
-
-def _get_option_premium(
-    symbol: str,
-    expiry: str,
-    strike: float,
-    option_type: str,
-    option_rows: list[dict] | None = None,
-) -> float | None:
-    """Fetch current option premium (LTP) from option chain rows or database snapshots."""
-    for row in option_rows or []:
-        try:
-            if (
-                abs(float(row.get("strike") or 0) - strike) < 0.01
-                and str(row.get("option_type") or "").upper() == option_type.upper()
-            ):
-                premium = float(row.get("ltp") or 0.0)
-                return premium if premium > 0 else None
-        except Exception:
-            continue
-    try:
-        snapshots = get_latest_snapshots_for_symbol(symbol, expiry)
-        for snap in snapshots:
-            if (abs(snap.get("strike", 0) - strike) < 0.01 and 
-                str(snap.get("option_type") or "").upper() == option_type.upper()):
-                return float(snap.get("ltp") or 0.0)
-    except Exception:
-        pass
-    return None
-
-
-def _parse_verdict_and_confidence(intel_text: str) -> tuple[str, int]:
-    """Extract verdict and confidence from intelligence text."""
-    verdict = ""
-    confidence = 0
-    m_v = re.search(r"\*Verdict:\s*([^\*]+)\*", intel_text or "")
-    if m_v:
-        verdict = m_v.group(1).strip()
-    m_c = re.search(r"Confidence:\s*(\d+)%", intel_text or "")
-    if m_c:
-        confidence = int(m_c.group(1))
-    return verdict, confidence
+# Helpers now imported from src.engine.trade_plan (see top of file)
 
 
 # ---------------------------------------------------------------------------
@@ -322,12 +228,22 @@ def execute_paper_trade(
     if lots <= 0:
         return {"action": "BLOCKED_LOTS", "trade_id": None, "reason": "Zero lots calculated"}
 
-    # SL / Target
+    # SL / Target — M2 fix: prefer plan values (already computed by build_paper_trade_plan)
+    # so the Telegram digest matches what is actually stored. Only recalculate
+    # if plan values are missing or invalid.
     entry_premium = float(plan.get("entry_premium") or 0)
-    if side == "BUY":
-        sl_ul, tgt_ul = _calculate_buy_sl_target(entry_premium, underlying, ctx, step)
+    plan_sl = plan.get("sl_underlying")
+    plan_tgt = plan.get("target_underlying")
+    if (plan_sl is not None and plan_tgt is not None
+            and float(plan_sl) > 0 and float(plan_tgt) > 0):
+        sl_ul = float(plan_sl)
+        tgt_ul = float(plan_tgt)
     else:
-        sl_ul, tgt_ul = _calculate_sell_sl_target(entry_premium, underlying, ctx, step)
+        # Fallback: recalculate if plan values are missing/invalid
+        if side == "BUY":
+            sl_ul, tgt_ul = _calculate_buy_sl_target(entry_premium, underlying, ctx, step)
+        else:
+            sl_ul, tgt_ul = _calculate_sell_sl_target(entry_premium, underlying, ctx, step)
 
     now_iso = datetime.now(timezone.utc).isoformat()
     today_date = datetime.now(IST).strftime("%Y%m%d")
@@ -396,6 +312,29 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
     hit_sl     = hit_sl or (side == "SELL" and sl_ul  > 0 and underlying >= sl_ul)
     hit_target = (side == "BUY"  and tgt_ul > 0 and underlying >= tgt_ul)
     hit_target = hit_target or (side == "SELL" and tgt_ul > 0 and underlying <= tgt_ul)
+
+    # C5: Also check premium-based SL/Target for options
+    if not hit_sl and not hit_target and open_trade.get("option_type") in ("CE", "PE"):
+        exit_premium_check = _get_option_premium(
+            symbol,
+            open_trade.get("expiry"),
+            open_trade.get("strike"),
+            open_trade.get("option_type"),
+            current_ctx.get("option_rows"),
+        )
+        if exit_premium_check and exit_premium_check > 0:
+            sl_prem = float(open_trade.get("sl_premium") or 0)
+            tgt_prem = float(open_trade.get("target_premium") or 0)
+            if side == "BUY":
+                if sl_prem > 0 and exit_premium_check <= sl_prem:
+                    hit_sl = True
+                if tgt_prem > 0 and exit_premium_check >= tgt_prem:
+                    hit_target = True
+            elif side == "SELL":
+                if sl_prem > 0 and exit_premium_check >= sl_prem:
+                    hit_sl = True
+                if tgt_prem > 0 and exit_premium_check <= tgt_prem:
+                    hit_target = True
 
     if hit_sl or hit_target:
         reason = "SL_HIT" if hit_sl else "TARGET_HIT"
@@ -604,7 +543,10 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
     long_oi_support = (pe_diff - ce_diff) > (prev_pe * min_diff_pct)
     short_oi_support = (ce_diff - pe_diff) > (prev_ce * min_diff_pct)
 
-    breakout_buffer = underlying * 0.001
+    # M1 fix: ATR-based breakout buffer (0.5x ATR) with 0.3% minimum floor.
+    # Old 0.1% floor (e.g. 24pts on NIFTY, 0.3pts on NATURALGAS) was noise-level.
+    atr_val = _get_atr(ctx)
+    breakout_buffer = max((atr_val or 0) * 0.5, underlying * 0.003)
 
     # ── 1. EXIT LOGIC ──
     open_trades = get_open_timeframe_trades(symbol)

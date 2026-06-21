@@ -230,12 +230,12 @@ class TestRouterHeadlessIntegration:
         assert "moneycontrol" in router._FETCHERS
 
     def test_fetcher_priority_includes_headless(self):
-        from config.settings import FETCHER_PRIORITY
-        assert "dhan_headless" in FETCHER_PRIORITY
+        from src.fetchers.router import _priority_for
+        assert "dhan_headless" in _priority_for("NATURALGAS")
 
     def test_fetcher_priority_includes_moneycontrol(self):
-        from config.settings import FETCHER_PRIORITY
-        assert "moneycontrol" in FETCHER_PRIORITY
+        from src.fetchers.router import _priority_for
+        assert "moneycontrol" in _priority_for("NATURALGAS")
 
 
 # ──────────────────────────────────────────────────────────────────────────────

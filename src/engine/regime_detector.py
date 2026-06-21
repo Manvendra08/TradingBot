@@ -12,11 +12,15 @@ P3 fix (#10): Added explicit REGIME_RANGE branch before the REGIME_NO_TRADE
         rather than NO_TRADE (regime_score=50 in research mode, hard-block live).
         Thresholds are sourced from REGIME_RANGE_MAX_CHANGE_PCT and
         REGIME_RANGE_MAX_RANGE_PCT in settings.py.
+M3 fix: Time-weighted decay — combines index-based decay with wall-clock time
+        gap weighting so scans separated by hours (e.g. failed/skipped scans)
+        are down-weighted appropriately, not treated as adjacent.
 """
 from __future__ import annotations
 
 import logging
 import math
+from datetime import datetime, timezone
 
 from src.models.schema import get_conn
 from src.engine.verdict_sets import is_bullish, is_bearish
@@ -53,7 +57,7 @@ def detect_market_regime(symbol: str) -> str:
     with get_conn() as conn:
         rows = conn.execute(
             """
-            SELECT verdict_label, underlying, confidence
+            SELECT verdict_label, underlying, confidence, fetched_at
             FROM scan_summaries
             WHERE symbol = ?
               AND (is_fallback IS NULL OR is_fallback = 0)
@@ -82,12 +86,43 @@ def detect_market_regime(symbol: str) -> str:
     price_range_pct  = (max(prices) - min(prices)) / min(prices) * 100
 
     # --- Recency-weighted verdict scores ---
+    # M3 fix: combine index-based decay with wall-clock time gap weighting.
+    # Time decay: exp(-time_gap_hours / DECAY_HOURS) where DECAY_HOURS=1.5
+    # means a scan from 1.5 hours ago has ~37% weight vs newest scan.
+    # This ensures that scans separated by hours (e.g. failed/skipped scans)
+    # are down-weighted appropriately, not treated as adjacent.
+    DECAY_HOURS = 1.5
+    now_utc = datetime.now(timezone.utc)
+
     bullish_score = 0.0
     bearish_score = 0.0
     total_weight  = 0.0
 
+    # Parse newest timestamp for time-gap calculation
+    newest_ts = None
+    try:
+        newest_raw = rows[-1]["fetched_at"]
+        if newest_raw:
+            newest_ts = datetime.fromisoformat(str(newest_raw).replace("Z", "+00:00"))
+    except Exception:
+        pass
+
     for i, row in enumerate(rows):
-        w = _DECAY ** (n - 1 - i)
+        # Index-based decay (unchanged)
+        index_w = _DECAY ** (n - 1 - i)
+
+        # M3: Time-based decay
+        time_w = 1.0
+        if newest_ts and row["fetched_at"]:
+            try:
+                row_ts = datetime.fromisoformat(str(row["fetched_at"]).replace("Z", "+00:00"))
+                gap_hours = (newest_ts - row_ts).total_seconds() / 3600.0
+                time_w = math.exp(-max(0, gap_hours) / DECAY_HOURS)
+            except Exception:
+                pass
+
+        # Combine: geometric mean of index and time weights
+        w = math.sqrt(index_w * time_w)
         total_weight += w
         label = row["verdict_label"] or ""
         if is_bullish(label):

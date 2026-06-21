@@ -136,7 +136,7 @@ class TestTrendAnalysis:
         """Reversal requires confidence >=75."""
         is_rev, reason = detect_reversal_from_scans("NIFTY", "Long Buildup", 70)
         assert not is_rev
-        assert "Confidence too low" in reason
+        assert "below reversal threshold" in reason
 
 
 class TestRiskEngine:
@@ -146,7 +146,7 @@ class TestRiskEngine:
         """With no open trades, risk check should pass."""
         ok, reason = check_risk_limits("NONEXISTENT_SYMBOL_XYZ")
         assert ok
-        assert "passed" in reason.lower()
+        assert "ok" in reason.lower()
 
 
 class TestTradeDecision:

@@ -43,7 +43,10 @@ def test_detect_reversal_from_scans():
         
     # Broader trend (older 8): Bearish (Call Writing)
     # Recent trend (last 2): Bullish (Put Writing)
-    verdicts = ["Put Writing", "Put Writing"] + ["Call Writing"] * 8
+    # With skip_latest=True, offset 1 is used, so the first row in DB (current scan)
+    # is ignored. We need the next 2 rows (historical scans) to be Call Writing (opposite),
+    # and the current verdict to be Put Writing (bullish).
+    verdicts = ["Put Writing", "Call Writing", "Call Writing"] + ["Call Writing"] * 7
     for i, v in enumerate(verdicts):
         # We need fetched_at to be descending, so oldest is higher i. Wait, limit 10 order desc.
         # So lower i should be higher fetched_at (newer).
@@ -59,15 +62,15 @@ def test_detect_reversal_from_scans():
     assert reversing_low_conf is False
 
 
-@patch("src.engine.trend_analysis.get_alert_history")
-def test_get_broader_trend_from_alerts(mock_history):
-    # Mocking alerts history
-    mock_history.return_value = [
-        {"alert_type": "BUILDUP_CLASSIFY", "detail_json": '{"buildup_type": "Long Buildup"}'},
-        {"alert_type": "BUILDUP_CLASSIFY", "detail_json": '{"buildup_type": "Long Buildup"}'},
-        {"alert_type": "OI_SPIKE", "option_type": "PE"},
-        {"alert_type": "OI_SPIKE", "option_type": "PE"},
-        {"alert_type": "VOLUME_AGGRESSION", "option_type": "PE"},
+@patch("src.engine.trend_analysis.get_recent_alerts_for_symbol")
+def test_get_broader_trend_from_alerts(mock_alerts):
+    # Mocking alerts history returning dicts with verdict_label
+    mock_alerts.return_value = [
+        {"verdict_label": "Long Buildup"},
+        {"verdict_label": "Long Buildup"},
+        {"verdict_label": "Put Writing"},
+        {"verdict_label": "Put Writing"},
+        {"verdict_label": "Put Writing"},
     ] * 2  # Strong bullish factors
     
     trend = get_broader_trend_from_alerts("TEST_SYM")
@@ -91,14 +94,15 @@ def test_check_trend_persistence(mock_broader):
     assert should_trade is True
     
     # Low confidence
+    mock_broader.return_value = "Mixed/Unclear Trend"
     should_trade, reason = check_trend_persistence("TEST_SYM", "Put Writing", 65, {})
     assert should_trade is False
-    assert "Confidence too low" in reason
+    assert "Mixed trend + low confidence" in reason
 
 
 @patch("src.engine.trend_analysis.get_broader_trend_from_alerts")
 def test_calculate_momentum_score(mock_broader):
-    mock_broader.return_value = "🟢 Strong Bullish Trend" # +30
+    mock_broader.return_value = "🟢 Strong Bullish Trend" # +40
     
     with get_conn() as conn:
         conn.execute("DELETE FROM scan_summaries")
@@ -106,16 +110,15 @@ def test_calculate_momentum_score(mock_broader):
     
     for i in range(5):
         with get_conn() as conn:
-            insert_scan_summary(conn, "TEST_SYM", f"2026-05-28T10:{59-i:02d}:00Z", "Put Writing", 80) # 100% consistency = +20
+            insert_scan_summary(conn, "TEST_SYM", f"2026-05-28T10:{59-i:02d}:00Z", "Put Writing", 80) # 100% consistency = +30
             
     ctx = {
         "chart_indicators": {
-            "1h": {"sentiment": "BULLISH"},
-            "3h": {"sentiment": "BULLISH"} # +10
+            "1h": {"verdict": "Long Buildup"},
+            "3h": {"verdict": "Long Buildup"} # +20
         }
     }
     
-    # current_confidence = 80 -> 80 * 0.4 = 32
-    # Total = 32 + 30 + 20 + 10 = 92
+    # Broader: 40, Scan: 30, Chart: 20, Conf: 8 -> Total = 98
     score = calculate_momentum_score("TEST_SYM", "Put Writing", 80, ctx)
-    assert score == 92
+    assert score == 98

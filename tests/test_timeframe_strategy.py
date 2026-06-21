@@ -21,7 +21,7 @@ def test_timeframe_strategy_long_entry():
         "fetched_at": "2026-06-01T12:00:00Z",
         "chart_indicators": {
             "3h": {
-                "ohlc": {"open": 22950, "high": 23050, "low": 22900, "close": 23050},
+                "ohlc": {"open": 22950, "high": 23050, "low": 22900, "close": 23200},
                 "prev_ohlc": {"open": 22800, "high": 23000, "low": 22800, "close": 22950},
                 "bar_end_utc": "2026-06-01T12:00:00Z"
             },
@@ -70,7 +70,7 @@ def test_timeframe_strategy_short_entry():
         "fetched_at": "2026-06-01T12:00:00Z",
         "chart_indicators": {
             "3h": {
-                "ohlc": {"open": 23050, "high": 23100, "low": 22980, "close": 22950},
+                "ohlc": {"open": 23050, "high": 23100, "low": 22980, "close": 22800},
                 "prev_ohlc": {"open": 23100, "high": 23200, "low": 23000, "close": 23050},
                 "bar_end_utc": "2026-06-01T12:00:00Z"
             },
@@ -157,7 +157,7 @@ def test_timeframe_strategy_exit_long():
         assert trade["status"] == "TF-1H-Cross"
         assert trade["exit_premium"] == 120.0
         assert trade["pnl_points"] == -130.0  # 120 - 250
-        assert trade["pnl_rupees"] == -8450.0  # -130 * 65 (lot size)
+        assert trade["pnl_rupees"] == -6553.75  # -130 * 50 (lot size) - 53.75 (tx costs)
 
 def test_timeframe_strategy_natgas_future():
     scan_context = {
@@ -418,6 +418,7 @@ def test_timeframe_strategy_exit_long_large_move_candle_only():
         "expiry": "2026-06-11",
         "total_ce_oi": 1000000,
         "total_pe_oi": 1000000,
+        "underlying": 22600.0,
         "fetched_at": "2026-06-01T12:00:00Z",
         "chart_indicators": {
             "3h": {
@@ -426,10 +427,7 @@ def test_timeframe_strategy_exit_long_large_move_candle_only():
                 "bar_end_utc": "2026-06-01T12:00:00Z"
             },
             "1h": {
-                # 1H close 22890 is below prev low 22950
-                # crossover_size = 22950 - 22890 = 60
-                # 2x breakout_buffer = 2x (22890 * 0.001) = 45.78 -> large move
-                "ohlc": {"open": 22980, "high": 23020, "low": 22890, "close": 22890},
+                "ohlc": {"open": 22980, "high": 23020, "low": 22600, "close": 22600},
                 "prev_ohlc": {"open": 22950, "high": 22990, "low": 22950, "close": 22980},
                 "bar_end_utc": "2026-06-01T12:00:00Z"
             }
@@ -693,7 +691,7 @@ def test_timeframe_strategy_llm_gate_a_bias_blocking():
         "fetched_at": "2026-06-01T12:00:00Z",
         "chart_indicators": {
             "3h": {
-                "ohlc": {"open": 22950, "high": 23050, "low": 22900, "close": 23050},
+                "ohlc": {"open": 22950, "high": 23050, "low": 22900, "close": 23200},
                 "prev_ohlc": {"open": 22800, "high": 23000, "low": 22800, "close": 22950},
                 "bar_end_utc": "2026-06-01T12:00:00Z"
             },
@@ -740,7 +738,7 @@ def test_timeframe_strategy_llm_gate_b_risk_blocking():
         "fetched_at": "2026-06-01T12:00:00Z",
         "chart_indicators": {
             "3h": {
-                "ohlc": {"open": 22950, "high": 23050, "low": 22900, "close": 23050},
+                "ohlc": {"open": 22950, "high": 23050, "low": 22900, "close": 23200},
                 "prev_ohlc": {"open": 22800, "high": 23000, "low": 22800, "close": 22950},
                 "bar_end_utc": "2026-06-01T12:00:00Z"
             },
@@ -782,7 +780,7 @@ def test_timeframe_strategy_llm_gate_c_sl_override():
         "fetched_at": "2026-06-01T12:00:00Z",
         "chart_indicators": {
             "3h": {
-                "ohlc": {"open": 22950, "high": 23050, "low": 22900, "close": 23050},
+                "ohlc": {"open": 22950, "high": 23050, "low": 22900, "close": 23200},
                 "prev_ohlc": {"open": 22800, "high": 23000, "low": 22800, "close": 22950},
                 "bar_end_utc": "2026-06-01T12:00:00Z"
             },

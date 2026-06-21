@@ -835,6 +835,18 @@ def _parse_chart_indicators(raw_indicators) -> dict:
     return result
 
 
+def _get_trading_mode_indicator() -> str:
+    try:
+        from config.settings import TREND_FILTER_MODE, PAPER_RESEARCH_MODE
+        mode_emoji = {
+            "conservative": "🛡️", "balanced": "⚖️", "aggressive": "⚡", "hybrid": "🎯",
+        }.get(TREND_FILTER_MODE, "📊")
+        research_tag = " [RESEARCH]" if PAPER_RESEARCH_MODE else ""
+        return f"_{mode_emoji} Mode: {TREND_FILTER_MODE.title()}{research_tag}_"
+    except Exception:
+        return ""
+
+
 def generate_intelligence(symbol: str, current_alerts: list[dict],
                           scan_context: dict | None = None) -> "IntelligenceResult":
     """
@@ -934,11 +946,46 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
             log.debug("[intel] Chart confluence +10%% | %s %s BEARISH aligns Short Buildup", symbol, tf)
 
     # ── Build Message ──────────────────────────────────────────────────────
+    # H5 fix: apply ALL confidence ceilings in one pass after the confluence boost.
+    # Previously only volume-dominant (88) and chart-conflict (85) were re-applied
+    # here; flat-price (65) and squaring-guard (45) caps from _compute_confidence
+    # were lost when the boost pushed above them.
     alert_types = [a.get("alert_type") for a in current_alerts]
+    ceiling = 98  # absolute max
+
+    # Volume-dominant cap: mostly volume aggression, few directional signals
     if current_alerts and alert_types.count("VOLUME_AGGRESSION") / max(len(current_alerts), 1) >= 0.70:
-        confidence = min(confidence, 88)
+        ceiling = min(ceiling, 88)
+
+    # Chart conflict cap: 1H vs 3H disagree
     if chart_conflict:
-        confidence = min(confidence, 85)
+        ceiling = min(ceiling, 85)
+
+    # Flat price + balanced OI cap: no clear directional edge
+    abs_ce = abs(ctx.get("ce_oi_change", 0))
+    abs_pe = abs(ctx.get("pe_oi_change", 0))
+    p_pct = (ctx.get("price_change_pct") or 0)
+    is_flat_price = abs(p_pct) <= 0.05
+    no_dominant_oi = abs_ce > 0 and abs_pe > 0 and max(abs_ce, abs_pe) < min(abs_ce, abs_pe) * 1.5
+    if is_flat_price and no_dominant_oi:
+        ceiling = min(ceiling, 65)
+
+    # Squaring guard cap: mostly unwinds + both sides shrinking
+    if current_alerts:
+        ce_chg = ctx.get("ce_oi_change", 0)
+        pe_chg = ctx.get("pe_oi_change", 0)
+        unwinds = sum(
+            1 for a in current_alerts
+            if a.get("alert_type") == "OI_UNWIND"
+            or (a.get("alert_type") == "BUILDUP_CLASSIFY"
+                and "Unwinding" in (a.get("detail_json") or ""))
+        )
+        unwind_ratio = unwinds / len(current_alerts)
+        both_shrinking = (ce_chg < 0) and (pe_chg < 0)
+        if unwind_ratio >= 0.7 and both_shrinking:
+            ceiling = min(ceiling, 45)
+
+    confidence = min(confidence, ceiling)
 
     # Derive bias from verdict (no regex — direct set membership)
     bias = "BULLISH" if is_bullish(verdict_label) else ("BEARISH" if is_bearish(verdict_label) else "NEUTRAL")
@@ -967,16 +1014,6 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
             days_to_expiry=days_to_expiry,
         )
 
-def _get_trading_mode_indicator() -> str:
-    try:
-        from config.settings import TREND_FILTER_MODE, PAPER_RESEARCH_MODE
-        mode_emoji = {
-            "conservative": "🛡️", "balanced": "⚖️", "aggressive": "⚡", "hybrid": "🎯",
-        }.get(TREND_FILTER_MODE, "📊")
-        research_tag = " [RESEARCH]" if PAPER_RESEARCH_MODE else ""
-        return f"_{mode_emoji} Mode: {TREND_FILTER_MODE.title()}{research_tag}_"
-    except Exception:
-        return ""
     msg = [f"🤖 *Bot Intelligence | {symbol}*"]
     
     # Add trading mode indicator

@@ -110,7 +110,8 @@ def _fetch_tv_commodity_news(symbol: str) -> dict:
         res.raise_for_status()
         payload = res.json() if res.content else {}
         items = payload.get("items") if isinstance(payload, dict) else []
-        cutoff = int(time.time()) - 86400
+        # Commodities look back up to 10 days to ensure recent headlines are not filtered out
+        cutoff = int(time.time()) - (10 * 86400)
         rows = []
         for item in (items or []):
             pub = int(item.get("published") or 0)

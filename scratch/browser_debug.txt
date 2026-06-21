@@ -1,0 +1,64 @@
+=== CONSOLE LOGS ===
+
+=== PAGE ERRORS ===
+
+=== HTML OF #OPEN-BODY ===
+
+      <tr class="open-row-fut">
+        <td class="L t-mono">19 Jun, 08:00 pm</td>
+        <td class="L"><strong>NATURALGAS</strong></td>
+        <td><span class="badge b-win">BUY</span></td>
+        <td class="t-mono">FUT</td>
+        <td class="t-mono">302.20</td>
+        <td class="cmp-col t-mono">302.70</td>
+        <td class="bad t-mono">300.50</td>
+        <td class="good t-mono">—</td>
+        <td class="t-mono">1</td>
+        <td class="good t-mono">+₹625</td>
+        <td class="L">
+      <div class="verdict-wrapper">
+        <div class="verdict-display">
+          <span class="verdict-emoji">🟦</span>
+          <span class="verdict-label">TF-LONG</span>
+        </div>
+        <div class="verdict-tooltip">
+          <div class="vt-bias">TF-Bullish</div>
+          <div class="vt-strategy">Timeframe Crossover Long</div>
+          <div class="vt-desc">3H close breakout above previous candle high</div>
+          <div class="vt-action">→ Buy FUT</div>
+        </div>
+      </div>
+    </td>
+        <td>
+          <button class="btn" onclick="closeOpenTrade(135, 'NATURALGAS')" style="padding: 2px 6px; font-size: 10px; border-color: #ef4444 !important; color: #ef4444 !important; background: transparent !important; border-radius: 4px;">Close</button>
+        </td>
+      </tr>
+      <tr class="open-row-fut">
+        <td class="L t-mono">19 Jun, 08:00 pm</td>
+        <td class="L"><strong>NATURALGAS</strong></td>
+        <td><span class="badge b-win">BUY</span></td>
+        <td class="t-mono">FUT</td>
+        <td class="t-mono">302.20</td>
+        <td class="cmp-col t-mono">302.70</td>
+        <td class="bad t-mono">293.35</td>
+        <td class="good t-mono">313.99</td>
+        <td class="t-mono">1</td>
+        <td class="good t-mono">+₹625</td>
+        <td class="L">
+      <div class="verdict-wrapper">
+        <div class="verdict-display">
+          <span class="verdict-emoji">📗</span>
+          <span class="verdict-label">Put Writing</span>
+        </div>
+        <div class="verdict-tooltip">
+          <div class="vt-bias">Bullish</div>
+          <div class="vt-strategy">Selling puts (bullish bet)</div>
+          <div class="vt-desc">Put sellers confident price won't fall</div>
+          <div class="vt-action">→ Sell PE</div>
+        </div>
+      </div>
+    </td>
+        <td>
+          <button class="btn" onclick="closeOpenTrade(134, 'NATURALGAS')" style="padding: 2px 6px; font-size: 10px; border-color: #ef4444 !important; color: #ef4444 !important; background: transparent !important; border-radius: 4px;">Close</button>
+        </td>
+      </tr>
