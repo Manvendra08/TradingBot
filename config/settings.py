@@ -123,6 +123,12 @@ DHAN_SECURITY_IDS = {
     "GOLD":       459277,      # GOLD       JUN 2026 FUT  <-- update on rollover
     "SILVER":     464150,      # SILVER     JUL 2026 FUT  <-- update on rollover
 }
+DHAN_FALLBACK_EXPIRIES = {
+    "NATURALGAS": "2026-06",
+    "CRUDEOIL": "2026-06",
+    "GOLD": "2026-06",
+    "SILVER": "2026-07",
+}
 DHAN_SEGMENTS = {
     "NIFTY": "IDX_I",
     "BANKNIFTY": "IDX_I",
@@ -228,7 +234,7 @@ INDIVIDUAL_ALERT_MIN_SEVERITY  = "LOW"   # min severity to send individual alert
 DEDUP_CLUSTER_STRIKES          = 2       # cluster strikes within N steps of fired key
 
 # Research mode: True = EXPERIMENTAL trades allowed; False = CORE only
-PAPER_RESEARCH_MODE = True
+PAPER_RESEARCH_MODE = os.environ.get("PAPER_RESEARCH_MODE", "true").lower() == "true"
 
 # Trade decision thresholds — CORE (high-quality setups)
 MIN_CONFIDENCE_CORE            = 70

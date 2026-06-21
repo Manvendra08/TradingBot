@@ -7,7 +7,8 @@ import re
 import urllib.request
 import json
 import logging
-from config.settings import DHAN_SECURITY_IDS
+from datetime import datetime
+from config.settings import DHAN_SECURITY_IDS, DHAN_FALLBACK_EXPIRIES
 
 log = logging.getLogger(__name__)
 
@@ -73,7 +74,23 @@ def get_dhan_security_id(symbol: str) -> int | None:
             return sec_id
             
     except Exception as e:
-        log.warning("[resolver] Dynamic Dhan security ID resolution failed for %s: %s. Using fallback.", symbol, e)
+        log.warning("[resolver] Dynamic Dhan security ID resolution failed for %s: %s. Checking fallback.", symbol, e)
         
-    # Return hardcoded fallback
-    return DHAN_SECURITY_IDS.get(symbol)
+    # Check if the fallback is stale to avoid silent data failures
+    fallback_id = DHAN_SECURITY_IDS.get(symbol)
+    fallback_expiry_str = DHAN_FALLBACK_EXPIRIES.get(symbol)
+    if fallback_expiry_str:
+        try:
+            exp_year, exp_month = map(int, fallback_expiry_str.split("-"))
+            now_dt = datetime.now()
+            if (now_dt.year > exp_year) or (now_dt.year == exp_year and now_dt.month > exp_month):
+                log.critical(
+                    "DHAN FALLBACK ID STALE FOR %s! Hardcoded ID is for %s, but current date is %s. "
+                    "Rollover update required in config/settings.py!",
+                    symbol, fallback_expiry_str, now_dt.strftime("%Y-%m-%d")
+                )
+                return None
+        except Exception as ve:
+            log.error("Error checking fallback ID staleness: %s", ve)
+            
+    return fallback_id

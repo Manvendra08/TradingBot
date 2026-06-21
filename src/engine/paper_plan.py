@@ -66,7 +66,7 @@ def _near_level(level: float, underlying: float, step: float, direction: str) ->
     return None
 
 
-def _mcx_option_liquidity_ok(symbol: str, atm_strike: float, ctx: dict) -> bool:
+def mcx_option_liquidity_ok(symbol: str, atm_strike: float, ctx: dict) -> bool:
     """
     L5: Check if ATM option liquidity is sufficient for MCX commodities.
     Returns True if BOTH volume and OI thresholds are met at the ATM strike.
@@ -153,7 +153,7 @@ def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | N
     # otherwise fall back to FUT. Previously forced FUT unconditionally.
     is_mcx_commodity = "NATURALGAS" in symbol or "CRUDEOIL" in symbol
     if is_mcx_commodity:
-        use_options = _mcx_option_liquidity_ok(symbol, atm, ctx)
+        use_options = mcx_option_liquidity_ok(symbol, atm, ctx)
         if not use_options:
             option_type = "FUT"
             side = "BUY" if bullish else "SELL"
@@ -202,21 +202,21 @@ def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | N
         if bullish:
             sl = _near_level(support, underlying, step, "below")
             target = _near_level(resistance, underlying, step, "above")
-            sl = sl if sl is not None else _round_to_step(underlying - step, step)
-            target = target if target is not None else _round_to_step(underlying + step, step)
+            sl = sl if sl is not None else _round_to_step(underlying - 2 * step, step)
+            target = target if target is not None else _round_to_step(underlying + 2 * step, step)
             if sl >= underlying:
-                sl = _round_to_step(underlying - step, step)
+                sl = _round_to_step(underlying - 2 * step, step)
             if target <= underlying:
-                target = _round_to_step(underlying + step, step)
+                target = _round_to_step(underlying + 2 * step, step)
         else:
             sl = _near_level(resistance, underlying, step, "above")
             target = _near_level(support, underlying, step, "below")
-            sl = sl if sl is not None else _round_to_step(underlying + step, step)
-            target = target if target is not None else _round_to_step(underlying - step, step)
+            sl = sl if sl is not None else _round_to_step(underlying + 2 * step, step)
+            target = target if target is not None else _round_to_step(underlying - 2 * step, step)
             if sl <= underlying:
-                sl = _round_to_step(underlying + step, step)
+                sl = _round_to_step(underlying + 2 * step, step)
             if target >= underlying:
-                target = _round_to_step(underlying - step, step)
+                target = _round_to_step(underlying - 2 * step, step)
 
     return {
         "verdict_label": verdict,

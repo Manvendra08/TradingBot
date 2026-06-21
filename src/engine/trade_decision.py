@@ -194,7 +194,10 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None) ->
         )
         if not is_persistent:
             return _blocked(f"Conservative filter: {persist_reason}")
-        if entry_quality >= MIN_ENTRY_QUALITY_CORE and regime_sc >= MIN_REGIME_SCORE_CORE:
+        regime_ok = (regime_sc >= MIN_REGIME_SCORE_CORE) or (PAPER_RESEARCH_MODE and confidence >= MIN_CONFIDENCE_CORE)
+        if entry_quality >= MIN_ENTRY_QUALITY_CORE and regime_ok:
+            if regime_sc < MIN_REGIME_SCORE_CORE:
+                soft_conflicts.append("LOW_REGIME_SCORE")
             return _decision("TRIGGERED_CORE", "TREND_CONTINUATION",
                              f"Conservative: {persist_reason}", soft_conflicts, scores)
         else:
@@ -222,13 +225,27 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None) ->
             return _blocked(f"No reversal detected or poor entry quality: {rev_reason}")
 
     elif TREND_FILTER_MODE == "hybrid":
-        # Fix #7: reversal (Priority 1) requires REVERSAL_MIN_CONFIDENCE.
+        # Pre-calculate reversal indicators to avoid undefined variable reference in fallback reasoning
+        is_rev, rev_reason = detect_reversal_from_scans(symbol, verdict, confidence)
+
+        # Priority 1: Trend persistence
+        is_persistent, persist_reason = check_trend_persistence(
+            symbol, verdict, confidence, ctx, broader_trend=broader_trend
+        )
+        regime_ok = (regime_sc >= MIN_REGIME_SCORE_CORE) or (PAPER_RESEARCH_MODE and confidence >= MIN_CONFIDENCE_CORE)
+        if is_persistent and entry_quality >= MIN_ENTRY_QUALITY_CORE and regime_ok:
+            if regime_sc < MIN_REGIME_SCORE_CORE:
+                soft_conflicts.append("LOW_REGIME_SCORE")
+            return _decision("TRIGGERED_CORE", "TREND_CONTINUATION",
+                             persist_reason, soft_conflicts, scores)
+
+        # Priority 2: Reversal detection
+        # Fix #7: reversal requires REVERSAL_MIN_CONFIDENCE.
         # Without this gate, a 70-confidence reversal call at trend-day open
         # would fire before persistence/momentum, closing profitable positions
         # on noise. REVERSAL_MIN_CONFIDENCE (default 75) is a higher bar than
         # MIN_CONFIDENCE_CORE (default 65) — you need stronger conviction to
         # call a top/bottom than to ride an existing move.
-        is_rev, rev_reason = detect_reversal_from_scans(symbol, verdict, confidence)
         if (is_rev
                 and confidence >= REVERSAL_MIN_CONFIDENCE
                 and entry_quality >= MIN_ENTRY_QUALITY_CORE):
@@ -238,18 +255,9 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None) ->
                 f"REVERSAL_LOW_CONF({confidence}<{REVERSAL_MIN_CONFIDENCE})"
             )
             log.debug(
-                "%s: reversal detected but confidence %d < REVERSAL_MIN_CONFIDENCE %d — "
-                "falling through to persistence path.",
+                "%s: reversal detected but confidence %d < REVERSAL_MIN_CONFIDENCE %d.",
                 symbol, confidence, REVERSAL_MIN_CONFIDENCE,
             )
-
-        # Priority 2: Trend persistence
-        is_persistent, persist_reason = check_trend_persistence(
-            symbol, verdict, confidence, ctx, broader_trend=broader_trend
-        )
-        if is_persistent and entry_quality >= MIN_ENTRY_QUALITY_CORE and regime_sc >= MIN_REGIME_SCORE_CORE:
-            return _decision("TRIGGERED_CORE", "TREND_CONTINUATION",
-                             persist_reason, soft_conflicts, scores)
 
         # Priority 3: Momentum scoring
         momentum_score = calculate_momentum_score(

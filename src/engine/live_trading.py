@@ -18,6 +18,7 @@ from src.engine.paper_plan import (
     build_paper_trade_plan,
     is_bearish_verdict,
     is_bullish_verdict,
+    mcx_option_liquidity_ok,
 )
 from src.engine.trade_decision import make_trade_decision
 from src.engine.entry_quality import calculate_entry_quality
@@ -1165,10 +1166,11 @@ def run_live_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str,
     from config.settings import DEFAULT_LOTS_PER_TRADE
     step = float(get_strike_step(symbol) or 1)
     atm = ctx.get("atm_strike") or round(underlying / step) * step
-    is_natgas = "NATURALGAS" in symbol
+    is_mcx_commodity = "NATURALGAS" in symbol or "CRUDEOIL" in symbol
+    use_mcx_options = is_mcx_commodity and mcx_option_liquidity_ok(symbol, atm, ctx)
 
     if direction == "LONG":
-        if is_natgas:
+        if is_mcx_commodity and not use_mcx_options:
             opt_type = "FUT"
             strike = atm
             entry_premium = underlying
@@ -1178,14 +1180,14 @@ def run_live_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str,
             tgt_underlying = underlying + 2 * (underlying - sl_underlying)
         else:
             opt_type = "CE"
-            strike = atm - 4 * step
+            strike = atm if is_mcx_commodity else (atm - 4 * step)
             entry_premium = _get_option_premium(symbol, expiry, strike, "CE", option_rows)
             if not entry_premium or entry_premium <= 0:
                 return {"action": "BLOCKED_PLAN", "reason": f"Option premium unavailable for CE {strike}"}
             sl_underlying = float(ohlc_3h["low"])
             tgt_underlying = underlying + 2 * (underlying - sl_underlying)
     else:
-        if is_natgas:
+        if is_mcx_commodity and not use_mcx_options:
             opt_type = "FUT"
             strike = atm
             entry_premium = underlying
@@ -1195,7 +1197,7 @@ def run_live_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str,
             tgt_underlying = underlying - 2 * (sl_underlying - underlying)
         else:
             opt_type = "PE"
-            strike = atm + 4 * step
+            strike = atm if is_mcx_commodity else (atm + 4 * step)
             entry_premium = _get_option_premium(symbol, expiry, strike, "PE", option_rows)
             if not entry_premium or entry_premium <= 0:
                 return {"action": "BLOCKED_PLAN", "reason": f"Option premium unavailable for PE {strike}"}
