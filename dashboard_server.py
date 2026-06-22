@@ -1158,32 +1158,43 @@ def _enrich_trade_details(rows: list[dict]) -> None:
 
 @app.get("/api/paper_trades")
 async def get_paper_trades(symbol: str = "", status: str = "", limit: int = 300):
-    clauses = []
-    params: list = []
-    if symbol:
-        clauses.append("symbol=?")
-        params.append(symbol.upper().strip())
-    if status:
-        clauses.append("status=? COLLATE NOCASE")
-        params.append(status.strip())
-    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    clauses_pt = []
+    clauses_lt = []
+    params_pt: list = []
+    params_lt: list = []
     
-    # Query paper_trades UNION with live shadow trades
+    if symbol:
+        clauses_pt.append("symbol=?")
+        clauses_lt.append("symbol=?")
+        params_pt.append(symbol.upper().strip())
+        params_lt.append(symbol.upper().strip())
+    if status:
+        clauses_pt.append("status=? COLLATE NOCASE")
+        clauses_lt.append("status=? COLLATE NOCASE")
+        params_pt.append(status.strip())
+        params_lt.append(status.strip())
+    
+    where_pt = f"WHERE {' AND '.join(clauses_pt)}" if clauses_pt else ""
+    where_lt_base = "WHERE trade_status='SHADOW'"
+    where_lt = where_lt_base + (f" AND {' AND '.join(clauses_lt)}" if clauses_lt else "")
+    
+    # Common columns between both tables
+    cols = (
+        "id, opened_at, closed_at, symbol, verdict_label, option_type, strike, entry_underlying, "
+        "exit_underlying, sl_underlying, target_underlying, pnl_points, status, reason, digest_id, "
+        "entry_premium, exit_premium, sl_premium, target_premium, lots, pnl_rupees, trade_status, "
+        "setup_type, decision_reason, confidence_score, entry_quality_score, trend_alignment_score, "
+        "regime_score, signal_key, pyramid_level, max_favorable_r, side, expiry"
+    )
+    
     sql = f"""
-    SELECT * FROM paper_trades {where}
+    SELECT {cols} FROM paper_trades {where_pt}
     UNION ALL
-    SELECT * FROM live_trades WHERE trade_status='SHADOW' {f"AND {clauses[0]}" if clauses and symbol else ""} {f"AND status=? COLLATE NOCASE" if status else ""}
+    SELECT {cols} FROM live_trades {where_lt}
     ORDER BY opened_at DESC LIMIT ?
     """
     
-    # Build params: paper_trades params + live_trades params + limit
-    all_params = list(params)
-    if symbol:
-        all_params.append(symbol.upper().strip())
-    if status:
-        all_params.append(status.strip())
-    all_params.append(int(limit))
-    
+    all_params = params_pt + params_lt + [int(limit)]
     rows = _q(sql, all_params)
     _enrich_open_trades_with_live_pnl(rows)
     _enrich_trade_details(rows)
