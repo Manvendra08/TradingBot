@@ -39,6 +39,7 @@ def load_runtime_config() -> dict:
             "NATURALGAS": 1,
             "CRUDEOIL": 1
         },
+        "paper_lots": 10,  # Fixed lot size for all paper trades (overrides auto-calc)
         "live_enabled_broker_symbols": ["NIFTY", "BANKNIFTY", "NATURALGAS", "CRUDEOIL"],
         "oi_spike_threshold_pct": 10.0,
         "price_spike_threshold_pct": 2.0,

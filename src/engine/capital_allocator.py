@@ -94,21 +94,24 @@ def _fetch_broker_margin_requirement(
     return None
 
 
-def calculate_trade_lots(symbol: str, entry_premium: float, side: str = "BUY") -> int:
+def calculate_trade_lots(symbol: str, entry_premium: float, side: str = "BUY", is_paper: bool = False) -> int:
     """
     Calculate the number of lots to trade for a symbol based on settings and premium.
 
-    Priority order:
-      1. Symbol-specific override in runtime config (live_symbol_lots).
-      2. Auto-calculate from capital_per_trade / effective_cost_per_lot,
-         capped at max_auto_lots (default 10) to prevent blowup on cheap options.
-
-    M5 fix: For SELL legs, tries to fetch actual SPAN+exposure margin from
-    broker API first. If unavailable, uses _SELL_MARGIN_PREMIUM_MULTIPLIER
-    (12x, increased from 10x) as a safer static estimate.
-    BUY legs are unaffected (margin = premium paid = actual capital consumed).
+    For paper trades (is_paper=True): returns config['paper_lots'] (default 10).
+    For live trades:
+      Priority order:
+        1. Symbol-specific override in runtime config (live_symbol_lots).
+        2. Auto-calculate from capital_per_trade / effective_cost_per_lot,
+           capped at max_auto_lots (default 10) to prevent blowup on cheap options.
     """
     config = load_runtime_config()
+
+    # Paper trades: fixed lots from config (default 10), no capital-based sizing
+    if is_paper:
+        paper_lots = int(config.get("paper_lots") or 10)
+        log.debug("%s: paper trade — using paper_lots=%d", symbol, paper_lots)
+        return max(1, paper_lots)
 
     # 1. Explicit per-symbol override — user chose this deliberately, no cap applied.
     symbol_lots = config.get("live_symbol_lots") or {}
