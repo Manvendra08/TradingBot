@@ -15,6 +15,46 @@ import json
 import logging
 import re
 import sqlite3
+
+# ── Patch sqlite3 to automatically merge paper_trades and shadow live_trades ──
+class PatchedCursor(sqlite3.Cursor):
+    def execute(self, sql, *args, **kwargs):
+        if isinstance(sql, str) and re.match(r'(?i)^\s*(select|with)\b', sql) and re.search(r'(?i)\bfrom\s+paper_trades\b', sql) and not re.search(r'(?i)\bfrom\s+live_trades\b', sql):
+            subquery = """(
+                SELECT id, opened_at, closed_at, symbol, verdict_label, option_type, strike, entry_underlying, exit_underlying, sl_underlying, target_underlying, pnl_points, status, reason, digest_id, entry_premium, exit_premium, sl_premium, target_premium, lots, pnl_rupees, trade_status, setup_type, decision_reason, confidence_score, entry_quality_score, trend_alignment_score, regime_score, signal_key, pyramid_level, max_favorable_r, side, expiry
+                FROM paper_trades
+                UNION ALL
+                SELECT id, opened_at, closed_at, symbol, verdict_label, option_type, strike, entry_underlying, exit_underlying, sl_underlying, target_underlying, pnl_points, status, reason, digest_id, entry_premium, exit_premium, sl_premium, target_premium, lots, pnl_rupees, trade_status, setup_type, decision_reason, confidence_score, entry_quality_score, trend_alignment_score, regime_score, signal_key, pyramid_level, max_favorable_r, side, expiry
+                FROM live_trades
+                WHERE status = 'CLOSED_SHADOW' OR trade_status = 'SHADOW' OR broker_status = 'SHADOW'
+            )"""
+            sql = re.sub(r'(?i)\bfrom\s+paper_trades\b', f'FROM {subquery}', sql)
+        return super().execute(sql, *args, **kwargs)
+
+class PatchedConnection(sqlite3.Connection):
+    def execute(self, sql, *args, **kwargs):
+        if isinstance(sql, str) and re.match(r'(?i)^\s*(select|with)\b', sql) and re.search(r'(?i)\bfrom\s+paper_trades\b', sql) and not re.search(r'(?i)\bfrom\s+live_trades\b', sql):
+            subquery = """(
+                SELECT id, opened_at, closed_at, symbol, verdict_label, option_type, strike, entry_underlying, exit_underlying, sl_underlying, target_underlying, pnl_points, status, reason, digest_id, entry_premium, exit_premium, sl_premium, target_premium, lots, pnl_rupees, trade_status, setup_type, decision_reason, confidence_score, entry_quality_score, trend_alignment_score, regime_score, signal_key, pyramid_level, max_favorable_r, side, expiry
+                FROM paper_trades
+                UNION ALL
+                SELECT id, opened_at, closed_at, symbol, verdict_label, option_type, strike, entry_underlying, exit_underlying, sl_underlying, target_underlying, pnl_points, status, reason, digest_id, entry_premium, exit_premium, sl_premium, target_premium, lots, pnl_rupees, trade_status, setup_type, decision_reason, confidence_score, entry_quality_score, trend_alignment_score, regime_score, signal_key, pyramid_level, max_favorable_r, side, expiry
+                FROM live_trades
+                WHERE status = 'CLOSED_SHADOW' OR trade_status = 'SHADOW' OR broker_status = 'SHADOW'
+            )"""
+            sql = re.sub(r'(?i)\bfrom\s+paper_trades\b', f'FROM {subquery}', sql)
+        return super().execute(sql, *args, **kwargs)
+
+    def cursor(self, *args, **kwargs):
+        return super().cursor(factory=PatchedCursor, *args, **kwargs)
+
+_orig_connect = sqlite3.connect
+def _patched_connect(*args, **kwargs):
+    if "factory" not in kwargs:
+        kwargs["factory"] = PatchedConnection
+    return _orig_connect(*args, **kwargs)
+
+sqlite3.connect = _patched_connect
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -1127,10 +1167,24 @@ async def get_paper_trades(symbol: str = "", status: str = "", limit: int = 300)
         clauses.append("status=? COLLATE NOCASE")
         params.append(status.strip())
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    rows = _q(
-        f"SELECT * FROM paper_trades {where} ORDER BY opened_at DESC LIMIT ?",
-        (*params, int(limit)),
-    )
+    
+    # Query paper_trades UNION with live shadow trades
+    sql = f"""
+    SELECT * FROM paper_trades {where}
+    UNION ALL
+    SELECT * FROM live_trades WHERE trade_status='SHADOW' {f"AND {clauses[0]}" if clauses and symbol else ""} {f"AND status=? COLLATE NOCASE" if status else ""}
+    ORDER BY opened_at DESC LIMIT ?
+    """
+    
+    # Build params: paper_trades params + live_trades params + limit
+    all_params = list(params)
+    if symbol:
+        all_params.append(symbol.upper().strip())
+    if status:
+        all_params.append(status.strip())
+    all_params.append(int(limit))
+    
+    rows = _q(sql, all_params)
     _enrich_open_trades_with_live_pnl(rows)
     _enrich_trade_details(rows)
     return rows
@@ -1457,7 +1511,7 @@ def _calculate_consecutive_wins(where: str, params: tuple) -> int:
 
 @app.post("/api/paper_trades/close")
 async def manual_close_paper_trade(trade_id: int = Query(...)):
-    from src.models.schema import close_paper_trade
+    from src.models.schema import close_paper_trade, close_live_trade
     from datetime import datetime, timezone
     
     rows = _q("SELECT * FROM paper_trades WHERE id=?", (trade_id,))
@@ -1500,14 +1554,32 @@ async def manual_close_paper_trade(trade_id: int = Query(...)):
         exit_prem = exit_und
 
     now_iso = datetime.now(timezone.utc).isoformat()
-    close_paper_trade(
-        trade_id=trade_id,
-        closed_at=now_iso,
-        exit_underlying=exit_und,
-        exit_premium=exit_prem,
-        status="CLOSED_MANUAL",
-        reason="Manual close via dashboard"
-    )
+    
+    # Check if the trade actually belongs to live_trades
+    is_live = False
+    with get_conn() as conn:
+        res = conn.execute("SELECT 1 FROM live_trades WHERE id=?", (trade_id,)).fetchone()
+        if res:
+            is_live = True
+
+    if is_live:
+        close_live_trade(
+            trade_id=trade_id,
+            closed_at=now_iso,
+            exit_underlying=exit_und,
+            exit_premium=exit_prem,
+            status="CLOSED_MANUAL",
+            reason="Manual close via dashboard"
+        )
+    else:
+        close_paper_trade(
+            trade_id=trade_id,
+            closed_at=now_iso,
+            exit_underlying=exit_und,
+            exit_premium=exit_prem,
+            status="CLOSED_MANUAL",
+            reason="Manual close via dashboard"
+        )
     return {"ok": True, "trade_id": trade_id}
 
 
@@ -1531,13 +1603,20 @@ async def delete_paper_trades(date_from: str = "", date_to: str = ""):
         clauses.append("opened_at <= ?")
         params.append(end)
     where = "WHERE " + " AND ".join(clauses)
-    # Count first so we can report how many were deleted
+    
+    # Count from both tables first
     count_rows = _q(f"SELECT COUNT(*) AS n FROM paper_trades {where}", tuple(params))
     n = int((count_rows[0] if count_rows else {}).get("n") or 0)
+    
+    where_live = where + " AND (status = 'CLOSED_SHADOW' OR trade_status = 'SHADOW' OR broker_status = 'SHADOW')"
+    count_rows_live = _q(f"SELECT COUNT(*) AS n FROM live_trades {where_live}", tuple(params))
+    n += int((count_rows_live[0] if count_rows_live else {}).get("n") or 0)
+    
     conn = _db()
     try:
         with conn:
             conn.execute(f"DELETE FROM paper_trades {where}", tuple(params))
+            conn.execute(f"DELETE FROM live_trades {where_live}", tuple(params))
             conn.commit()
     finally:
         conn.close()
