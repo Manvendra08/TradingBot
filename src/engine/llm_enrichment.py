@@ -578,17 +578,52 @@ def _build_exit_prompt(
 
     # Age of position
     try:
-        from datetime import datetime as _dt
+        from datetime import datetime as _dt, timezone as _tz
         opened_at_str = str(open_trade.get("opened_at") or "")
         if opened_at_str:
             opened_dt = _dt.fromisoformat(opened_at_str.replace("Z", "+00:00"))
-            age_min = int((datetime.now(_IST).utctimetuple()[3]*60 + datetime.now(_IST).utctimetuple()[4])
-                          - (opened_dt.hour*60 + opened_dt.minute))
+            now_utc = _dt.now(_tz.utc)
+            if opened_dt.tzinfo is None:
+                opened_dt = opened_dt.replace(tzinfo=_tz.utc)
+            age_min = int((now_utc - opened_dt).total_seconds() / 60)
             age_str = f"({abs(age_min)} min ago)"
         else:
             age_str = ""
     except Exception:
         age_str = ""
+
+    # Expiry and time to settlement calculation
+    expiry = open_trade.get("expiry") or ctx.get("expiry") or ""
+    time_left_str = "N/A"
+    dte = ctx.get("days_to_expiry")
+    if dte is None and expiry:
+        try:
+            exp_date = _dt.strptime(str(expiry).split(" ")[0], "%Y-%m-%d").date()
+            today_ist = _dt.now(_IST).date()
+            dte = (exp_date - today_ist).days
+        except Exception:
+            pass
+
+    if dte is not None:
+        if dte == 0:
+            sym_upper = symbol.upper()
+            is_mcx = any(m in sym_upper for m in ["NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"])
+            expiry_hour = 23 if is_mcx else 15
+            expiry_minute = 30
+            
+            now_ist = _dt.now(_IST)
+            expiry_dt = now_ist.replace(hour=expiry_hour, minute=expiry_minute, second=0, microsecond=0)
+            
+            diff_seconds = (expiry_dt - now_ist).total_seconds()
+            if diff_seconds > 0:
+                mins_left = int(diff_seconds / 60)
+                time_left_str = f"EXPIRY TODAY: {mins_left} minutes remaining until contract expiry/settlement at {expiry_hour:02d}:{expiry_minute:02d} IST"
+            else:
+                time_left_str = f"EXPIRY TODAY: Contract expired/settling now (expired at {expiry_hour:02d}:{expiry_minute:02d} IST)"
+        elif dte > 0:
+            time_left_str = f"{dte} days remaining until expiry"
+        else:
+            time_left_str = f"Expired {abs(dte)} days ago"
 
     entry_premium = open_trade.get("entry_premium", "—")
     sl_premium = open_trade.get("sl_premium", "—")
@@ -612,6 +647,7 @@ OPEN POSITION (authoritative — evaluate THIS side and its mechanics only):
   Entry Underlying: {entry_underlying} | SL (Underlying): {sl_ul_str} | Target (Underlying): {tgt_ul_str}
   Entry Premium: ₹{entry_premium} | SL (Premium): ₹{sl_premium} | Target (Premium): ₹{target_premium}
   Opened: {str(open_trade.get('opened_at', ''))[:16]} {age_str}
+  Contract Expiry: {expiry} | Time to Expiry: {time_left_str}
 
 MARKET NOW:
   Underlying {ctx.get('underlying')} | Chg {ctx.get('price_change_points', 0)}pts ({ctx.get('price_change_pct', 'N/A')}%)
@@ -627,7 +663,11 @@ EVALUATE ONLY these options for the {pos_direction.split(' ')[0]} position:
   Provide exit reasoning with current premium estimate.
 • EXTEND_TARGET: Strong momentum in favour — raise target (provide new_target_premium as number).
 
-URGENCY: HIGH only for immediate adverse threat (sharp move against position, SL imminently breached).
+CRITICAL EXPIRY RULES:
+- If TIME TO EXPIRY shows "EXPIRY TODAY" with less than 60 minutes remaining, you MUST prioritize CLOSE_EARLY or CLOSE to secure profits/minimize losses and prevent physical delivery/cash settlement penalties, unless the target is already hit or the option is completely worthless.
+- You must explicitly state the remaining minutes to contract expiry in your reasoning to show awareness.
+
+URGENCY: HIGH only for immediate adverse threat (sharp move against position, SL imminently breached, or contract expiring in less than 30 minutes).
 """
 
 
