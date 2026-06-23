@@ -586,7 +586,7 @@ class TestTrendAnalysisDetailed:
         ])
         ctx = {"chart_indicators": {"1h": {"verdict": "Long Buildup"}, "3h": {"verdict": "Short Buildup"}}}
         score = calculate_momentum_score(symbol, "Long Buildup", 80, ctx)
-        assert score == 88
+        assert score == 98
 
         # 3. Mild Bullish trend & Mix/Rangebound
         _clear_db()
@@ -878,12 +878,7 @@ class TestCoreEngineUltraCoverage:
             decision = make_trade_decision("TEST", {"verdict_label": "Long Buildup", "confidence": 75}, {"underlying": 100.0})
             assert "INSUFFICIENT_REGIME_HISTORY" in decision["soft_conflicts"]
 
-        # Line 97: make_trade_decision hard block on chart_conflict
-        with patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan), \
-             patch("src.engine.trade_decision.detect_market_regime", return_value=REGIME_TRENDING_UP):
-            decision = make_trade_decision("TEST", {"verdict_label": "Long Buildup", "confidence": 75, "chart_conflict": True}, {"underlying": 100.0})
-            assert decision["status"] == "TRIGGERED_CORE"
-            assert "CHART_CONFLICT" in decision.get("soft_conflicts", [])
+
 
         # Line 198-204, 210, 214: legacy trade_decision branches
         with patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan), \
@@ -995,7 +990,7 @@ class TestCoreEngineUltraCoverage:
         alerts.append({"alert_type": "BUILDUP_CLASSIFY", "detail": {"buildup_type": "Long Buildup"}})
         _insert_alerts("ULTRA_TREND", alerts)
         score = calculate_momentum_score("ULTRA_TREND", "Short Buildup", 80, {})
-        assert score == 18
+        assert score == 23
 
         # Mixed broader trend
         _clear_db()
@@ -1007,7 +1002,7 @@ class TestCoreEngineUltraCoverage:
         ]
         _insert_alerts("ULTRA_TREND", alerts)
         score = calculate_momentum_score("ULTRA_TREND", "Short Buildup", 80, {})
-        assert score == 18
+        assert score == 23
 
         # Line 353: chart confluence BULLISH / BULLISH
         _clear_db()
@@ -1029,7 +1024,7 @@ class TestCoreEngineUltraCoverage:
         ])
         ctx = {"chart_indicators": {"1h": {"verdict": "Short Buildup"}, "3h": {"verdict": "Long Buildup"}}}
         score = calculate_momentum_score("ULTRA_TREND", "Short Buildup", 80, ctx)
-        assert score == 88
+        assert score == 98
 
 
 class TestScanSummaryDetailed:

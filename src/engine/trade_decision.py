@@ -122,7 +122,7 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None, su
     # higher conviction before trading commodity options/futures.
     sym_base = str(symbol).upper().split()[0]
     effective_min_conf = MCX_MIN_CONFIDENCE if sym_base in MCX_SYMBOLS else MIN_CONFIDENCE_CORE
-    if confidence < effective_min_conf:
+    if not PAPER_RESEARCH_MODE and confidence < effective_min_conf:
         return _blocked(
             f"Confidence {confidence}% below {'MCX' if sym_base in MCX_SYMBOLS else 'core'} "
             f"threshold {effective_min_conf}% for {symbol}"

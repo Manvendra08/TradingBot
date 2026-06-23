@@ -157,7 +157,7 @@ def test_timeframe_strategy_exit_long():
         assert trade["status"] == "TF-1H-Cross"
         assert trade["exit_premium"] == 120.0
         assert trade["pnl_points"] == -130.0  # 120 - 250
-        assert trade["pnl_rupees"] == -6553.75  # -130 * 50 (lot size) - 53.75 (tx costs)
+        assert trade["pnl_rupees"] == -8504.88  # -130 * 65 (lot size) - 54.88 (tx costs)
 
 def test_timeframe_strategy_natgas_future():
     scan_context = {

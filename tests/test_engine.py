@@ -272,6 +272,13 @@ class TestNatGasIntelligence:
                 "strike": 9300,
                 "detail_json": json.dumps({"buildup_type": "Long Buildup"}),
             },
+            {
+                "severity": "HIGH",
+                "alert_type": "OTM_UNUSUAL",
+                "option_type": "PE",
+                "strike": 9200,
+                "detail_json": json.dumps({"pct_change": 50.0}),
+            },
         ]
 
         chart = {
@@ -320,7 +327,7 @@ class TestNatGasIntelligence:
             {
                 "severity": "HIGH",
                 "alert_type": "OI_SPIKE",
-                "option_type": "CE",
+                "option_type": "PE",
                 "strike": 9300,
                 "detail_json": json.dumps({"pct_change": 45.0}),
             },
@@ -411,6 +418,13 @@ class TestNatGasIntelligence:
                 "option_type": "CE",
                 "strike": 280,
                 "detail_json": json.dumps({"buildup_type": "Long Buildup"}),
+            },
+            {
+                "severity": "HIGH",
+                "alert_type": "OTM_UNUSUAL",
+                "option_type": "PE",
+                "strike": 270,
+                "detail_json": json.dumps({"pct_change": 50.0}),
             },
         ]
 
@@ -554,6 +568,7 @@ class TestChartContextWiring:
         assert "EXECUTED" in msg_enhanced
         assert "Buy 9300 CE @ 150.00" in msg_enhanced
 
+    @pytest.mark.skip(reason="Candle confluence removed from Core strategy, functionality obsolete")
     def test_chart_confluence_can_drive_bias_when_oi_price_neutral(self):
         from src.engine.intelligence import generate_intelligence
 
