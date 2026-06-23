@@ -1,0 +1,3 @@
+# This file keeps the scratch directory in git
+# All other contents of scratch/ are ignored via .gitignore
+# Use this directory for temporary debug scripts and outputs

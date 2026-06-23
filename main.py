@@ -111,10 +111,10 @@ Examples:
 
     if args.once:
         from src.engine.pipeline import run_pipeline
-        log.info("One-shot pipeline run%s",
+        log.info("One-shot pipeline run (TEST MODE)%s",
                  f" for {args.symbols}" if args.symbols else " for all configured symbols")
-        run_pipeline(symbols=args.symbols or None)
-        log.info("One-shot run complete.")
+        run_pipeline(symbols=args.symbols or None, is_test=True)
+        log.info("One-shot run complete (no database modifications were made).")
         return
 
     # Default: blocking scheduler

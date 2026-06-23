@@ -51,7 +51,8 @@ def load_runtime_config() -> dict:
         "manage_direct_kite_positions": False,
         "direct_kite_initialization_mode": "fixed_pct",
         "direct_kite_default_sl_pct": 30.0,
-        "direct_kite_default_tgt_pct": 50.0
+        "direct_kite_default_tgt_pct": 50.0,
+        "live_broker_disabled": False,  # Completely block all broker order placement
     }
     if not RUNTIME_CONFIG_PATH.exists():
         return defaults

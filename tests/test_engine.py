@@ -498,7 +498,8 @@ class TestChartContextWiring:
             },
         }
 
-        _digest_id, msg = build_digest("CRUDEOIL", alerts, FETCHED_AT, scan_context=scan_context)
+        with patch("src.alerts.digest._LEGACY_DIGEST", True):
+            _digest_id, msg = build_digest("CRUDEOIL", alerts, FETCHED_AT, scan_context=scan_context)
 
         assert "Candles (1H / 3H)" in msg
         assert "1H" in msg and "3H" in msg
@@ -540,13 +541,15 @@ class TestChartContextWiring:
         }
 
         # 1. Test build_digest
-        _, msg = build_digest("CRUDEOIL", alerts, FETCHED_AT, scan_context=scan_context, paper_trade_status=status)
+        with patch("src.alerts.digest._LEGACY_DIGEST", True):
+            _, msg = build_digest("CRUDEOIL", alerts, FETCHED_AT, scan_context=scan_context, paper_trade_status=status)
         assert "PAPER TRADE STATUS" in msg
         assert "EXECUTED" in msg
         assert "Buy 9300 CE @ 150.00" in msg
 
         # 2. Test build_enhanced_digest
-        _, msg_enhanced = build_enhanced_digest("CRUDEOIL", alerts, FETCHED_AT, scan_context=scan_context, paper_trade_status=status)
+        with patch("src.alerts.digest._LEGACY_DIGEST", True):
+            _, msg_enhanced = build_enhanced_digest("CRUDEOIL", alerts, FETCHED_AT, scan_context=scan_context, paper_trade_status=status)
         assert "PAPER TRADE STATUS" in msg_enhanced
         assert "EXECUTED" in msg_enhanced
         assert "Buy 9300 CE @ 150.00" in msg_enhanced

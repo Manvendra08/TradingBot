@@ -134,7 +134,8 @@ def _fetch_side_sync(base_symbol: str, sym_slug: str, requested_expiry: Optional
                 browser = pw.chromium.launch(
                     headless=True,
                     channel=channel,
-                    args=["--disable-blink-features=AutomationControlled"]
+                    args=["--disable-blink-features=AutomationControlled"],
+                    timeout=10000
                 )
                 break
             except Exception as e:

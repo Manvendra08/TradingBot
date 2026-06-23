@@ -116,16 +116,19 @@ def mcx_option_liquidity_ok(symbol: str, atm_strike: float, ctx: dict) -> bool:
 
 
 VERDICT_ACTION_MAP = {
-    # Bullish
+    # Bullish — OI labels
     "Long Buildup":    ("BUY",  "CE"),
     "Put Writing":     ("SELL", "PE"),   # sell PE = bullish (collect premium at support)
     "Short Covering":  ("BUY",  "CE"),
     "OI Bias Bullish": ("SELL", "PE"),   # sell PE = bullish (instead of buy CE)
-    # Bearish
+    # Bearish — OI labels
     "Short Buildup":   ("BUY",  "PE"),
     "Call Writing":    ("SELL", "CE"),   # sell CE = bearish (collect premium at resistance)
     "Long Unwinding":  ("BUY",  "PE"),
     "OI Bias Bearish": ("SELL", "CE"),   # sell CE = bearish (instead of buy PE)
+    # LLM action labels — map to canonical option actions
+    "GO_LONG":         ("BUY",  "CE"),   # LLM bullish directive
+    "GO_SHORT":        ("BUY",  "PE"),   # LLM bearish directive
 }
 
 

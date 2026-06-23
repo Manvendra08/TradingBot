@@ -114,9 +114,10 @@ def test_live_entry_reserves_signal_before_broker_order_and_blocks_duplicate_ord
         patch("src.engine.live_trading.resolve_instrument", return_value={"tradingsymbol": "NIFTY26JUN22000CE", "instrument_token": 1, "lot_size": 25}),
         patch("src.engine.live_trading.place_kite_order", return_value="entry-1"),
         patch("src.engine.live_trading.place_kite_gtt", return_value="gtt-1"),
+        patch("src.engine.live_trading.confirm_order_fill", return_value=("COMPLETE", "Filled")),
     ]
 
-    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7] as mock_order, patches[8]:
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7] as mock_order, patches[8], patches[9]:
         from src.engine.live_trading import run_live_trading
 
         result1 = run_live_trading(
@@ -351,20 +352,24 @@ def test_llm_alternative_fallbacks():
 
     # Enable alternative provider keys
     os.environ["GROQ_API_KEY"] = "fake-groq-key"
-    old_gemini_key = os.environ.get("GEMINI_API_KEY")
-    if "GEMINI_API_KEY" in os.environ:
-        del os.environ["GEMINI_API_KEY"]
+    old_openrouter_key = os.environ.pop("OPENROUTER_API_KEY", None)
+    old_opencode_key = os.environ.pop("OPENCODE_API_KEY", None)
+    old_gemini_key = os.environ.pop("GEMINI_API_KEY", None)
 
     try:
         with patch("requests.Session.post", return_value=mock_resp) as mock_post:
-            # Call it with no Gemini API key -> should go straight to alternative (Groq)
+            # Call it with no Gemini/OpenRouter/OpenCode key -> should go straight to alternative (Groq)
             result = _call_llm_api("NIFTY", "dummy prompt", LLMTradeVerdict)
             assert result is not None
             assert result.action == "GO_SHORT"
             assert result.confidence == 75
             assert mock_post.call_count >= 1
     finally:
-        # Restore key
+        # Restore keys
+        if old_openrouter_key:
+            os.environ["OPENROUTER_API_KEY"] = old_openrouter_key
+        if old_opencode_key:
+            os.environ["OPENCODE_API_KEY"] = old_opencode_key
         if old_gemini_key:
             os.environ["GEMINI_API_KEY"] = old_gemini_key
 

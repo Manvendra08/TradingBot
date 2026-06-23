@@ -251,12 +251,14 @@ def convert_underlying_sl_to_premium(
     entry_premium: float,
     side: str,
     option_type: str,
+    strike: float | None = None,
+    option_rows: list[dict] | None = None,
 ) -> tuple[float, float]:
     """
     Convert underlying-based SL/Target to premium equivalents for GTT/polling.
     
     For FUT: premium = underlying (1:1)
-    For options: proportional conversion based on distance percentages
+    For options: delta-based conversion based on underlying price distances.
     
     Args:
         underlying: Current underlying price
@@ -265,6 +267,8 @@ def convert_underlying_sl_to_premium(
         entry_premium: Entry premium
         side: "BUY" or "SELL"
         option_type: "FUT", "CE", or "PE"
+        strike: Option strike price (optional)
+        option_rows: Option chain rows (optional, to extract delta)
         
     Returns:
         Tuple of (sl_premium, target_premium)
@@ -282,15 +286,42 @@ def convert_underlying_sl_to_premium(
             target_premium = round(entry_premium * 1.50, 2)
         return sl_premium, target_premium
     
-    # Proportional conversion
-    sl_distance_pct = abs(underlying - sl_underlying) / underlying
-    tgt_distance_pct = abs(target_underlying - underlying) / underlying
+    # 1. Resolve delta
+    delta = None
+    if strike is not None and option_rows:
+        for row in option_rows:
+            try:
+                if (
+                    abs(float(row.get("strike") or 0) - strike) < 0.01
+                    and str(row.get("option_type") or "").upper() == option_type.upper()
+                ):
+                    d_val = row.get("delta")
+                    if d_val is not None:
+                        d_val = abs(float(d_val))
+                        if 0.05 <= d_val <= 0.95:
+                            delta = d_val
+                            break
+            except Exception:
+                continue
+                
+    if delta is None:
+        delta = 0.5 if side == "BUY" else 0.3
+        
+    # 2. Delta-based calculation
+    underlying_sl_dist = abs(underlying - sl_underlying)
+    underlying_tgt_dist = abs(target_underlying - underlying)
     
     if side == "BUY":
-        sl_premium = round(entry_premium * (1 - sl_distance_pct), 2)
-        target_premium = round(entry_premium * (1 + tgt_distance_pct), 2)
-    else:
-        sl_premium = round(entry_premium * (1 + sl_distance_pct), 2)
-        target_premium = round(entry_premium * (1 - tgt_distance_pct), 2)
-    
-    return sl_premium, target_premium
+        sl_premium = entry_premium - delta * underlying_sl_dist
+        target_premium = entry_premium + delta * underlying_tgt_dist
+        # Apply safety bounds to prevent negative or zero premiums
+        sl_premium = max(sl_premium, 0.05)
+        target_premium = max(target_premium, entry_premium + 0.05)
+    else: # SELL
+        sl_premium = entry_premium + delta * underlying_sl_dist
+        target_premium = entry_premium - delta * underlying_tgt_dist
+        # Apply safety bounds to prevent negative or zero premiums
+        sl_premium = max(sl_premium, entry_premium + 0.05)
+        target_premium = max(target_premium, 0.05)
+        
+    return round(sl_premium, 2), round(target_premium, 2)

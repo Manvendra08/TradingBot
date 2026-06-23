@@ -647,7 +647,7 @@ html[data-env="live"]::before {
   border-radius: 30px;
   padding: 4px;
   position: relative;
-  width: 280px;
+  width: 360px;
   height: 40px;
   cursor: pointer;
   user-select: none;
@@ -677,7 +677,7 @@ html[data-env="live"]::before {
   top: 4px;
   bottom: 4px;
   left: 4px;
-  width: calc(50% - 4px);
+  width: calc(33.333% - 4px);
   border-radius: 26px;
   transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.3s ease, box-shadow 0.3s ease;
   z-index: 1;
@@ -702,6 +702,20 @@ html[data-env="live"] #segment-glow {
 }
 html[data-env="live"] #btn-env-live {
   color: #ffffff !important;
+}
+
+html[data-env="off"] #segment-glow {
+  transform: translateX(200%);
+  background-color: #6b7280;
+  box-shadow: 0 0 12px rgba(107, 114, 128, 0.5);
+}
+html[data-env="off"] #btn-env-off {
+  color: #ffffff !important;
+}
+html[data-env="off"]::before {
+  background-color: #6b7280;
+  box-shadow: none;
+  animation: none;
 }
 
 /* Subtabs styling */
@@ -789,10 +803,12 @@ html[data-env="live"] #btn-env-live {
     <div class="cockpit-control-bar">
       <div class="cockpit-control-bar-left">
         <input type="checkbox" id="sett-shadow-mode" style="display: none;">
+        <input type="checkbox" id="sett-broker-disabled" style="display: none;">
         <div class="segment-control" style="margin: 0;">
           <div id="segment-glow"></div>
-          <button type="button" class="segment-btn active" id="btn-env-shadow" onclick="setEnvironmentMode(true)">Simulate (Shadow)</button>
-          <button type="button" class="segment-btn" id="btn-env-live" onclick="setEnvironmentMode(false)">Live Execution</button>
+          <button type="button" class="segment-btn active" id="btn-env-shadow" onclick="setEnvironmentMode('shadow')">Shadow</button>
+          <button type="button" class="segment-btn" id="btn-env-live" onclick="setEnvironmentMode('live')">Live</button>
+          <button type="button" class="segment-btn" id="btn-env-off" onclick="setEnvironmentMode('off')" title="Block all broker order placement">Broker Off</button>
         </div>
       </div>
       <div class="cockpit-control-bar-right">
@@ -1133,7 +1149,18 @@ document.addEventListener("DOMContentLoaded", () => {
   const shadowCheckbox = document.getElementById("sett-shadow-mode");
   if (shadowCheckbox) {
     shadowCheckbox.addEventListener("change", () => {
-      updateSafetyZoneUI(shadowCheckbox.checked);
+      const brokerOff = document.getElementById("sett-broker-disabled")?.checked || false;
+      updateSafetyZoneUI(shadowCheckbox.checked, brokerOff);
+      checkDirty();
+    });
+  }
+
+  // Wire broker-disabled checkbox change
+  const brokerDisabledCheckbox = document.getElementById("sett-broker-disabled");
+  if (brokerDisabledCheckbox) {
+    brokerDisabledCheckbox.addEventListener("change", () => {
+      const isShadow = document.getElementById("sett-shadow-mode")?.checked || true;
+      updateSafetyZoneUI(isShadow, brokerDisabledCheckbox.checked);
       checkDirty();
     });
   }
@@ -1184,30 +1211,57 @@ function setupSyncSliders() {
   });
 }
 
-function setEnvironmentMode(isShadow) {
-  const checkbox = document.getElementById("sett-shadow-mode");
-  if (checkbox && checkbox.checked !== isShadow) {
-    checkbox.checked = isShadow;
-    checkbox.dispatchEvent(new Event('change'));
+function setEnvironmentMode(mode) {
+  // mode: 'shadow' | 'live' | 'off'
+  const shadowCheckbox = document.getElementById("sett-shadow-mode");
+  const brokerDisabledCheckbox = document.getElementById("sett-broker-disabled");
+  if (mode === 'shadow') {
+    if (shadowCheckbox && !shadowCheckbox.checked) { shadowCheckbox.checked = true; shadowCheckbox.dispatchEvent(new Event('change')); }
+    if (brokerDisabledCheckbox && brokerDisabledCheckbox.checked) { brokerDisabledCheckbox.checked = false; brokerDisabledCheckbox.dispatchEvent(new Event('change')); }
+  } else if (mode === 'live') {
+    if (shadowCheckbox && shadowCheckbox.checked) { shadowCheckbox.checked = false; shadowCheckbox.dispatchEvent(new Event('change')); }
+    if (brokerDisabledCheckbox && brokerDisabledCheckbox.checked) { brokerDisabledCheckbox.checked = false; brokerDisabledCheckbox.dispatchEvent(new Event('change')); }
+  } else if (mode === 'off') {
+    if (shadowCheckbox && !shadowCheckbox.checked) { shadowCheckbox.checked = true; shadowCheckbox.dispatchEvent(new Event('change')); }
+    if (brokerDisabledCheckbox && !brokerDisabledCheckbox.checked) { brokerDisabledCheckbox.checked = true; brokerDisabledCheckbox.dispatchEvent(new Event('change')); }
   }
 }
 
-function updateSafetyZoneUI(isShadow) {
+function updateSafetyZoneUI(isShadow, isBrokerDisabled) {
   const riskColumn = document.getElementById("right-risk-column");
   const btnShadow = document.getElementById("btn-env-shadow");
   const btnLive = document.getElementById("btn-env-live");
+  const btnOff = document.getElementById("btn-env-off");
 
-  document.body.setAttribute('data-env', isShadow ? 'shadow' : 'live');
-  document.documentElement.setAttribute('data-env', isShadow ? 'shadow' : 'live');
+  // Derive 3-state mode from two checkboxes
+  let envMode;
+  if (isBrokerDisabled) {
+    envMode = 'off';
+  } else if (isShadow) {
+    envMode = 'shadow';
+  } else {
+    envMode = 'live';
+  }
 
-  if (isShadow) {
+  document.body.setAttribute('data-env', envMode);
+  document.documentElement.setAttribute('data-env', envMode);
+
+  if (envMode === 'shadow') {
     if (btnShadow) btnShadow.classList.add("active");
     if (btnLive) btnLive.classList.remove("active");
+    if (btnOff) btnOff.classList.remove("active");
     if (riskColumn) riskColumn.classList.add("dormant");
-  } else {
+  } else if (envMode === 'live') {
     if (btnShadow) btnShadow.classList.remove("active");
     if (btnLive) btnLive.classList.add("active");
+    if (btnOff) btnOff.classList.remove("active");
     if (riskColumn) riskColumn.classList.remove("dormant");
+  } else {
+    // off
+    if (btnShadow) btnShadow.classList.remove("active");
+    if (btnLive) btnLive.classList.remove("active");
+    if (btnOff) btnOff.classList.add("active");
+    if (riskColumn) riskColumn.classList.add("dormant");
   }
 }
 
@@ -1302,6 +1356,7 @@ function checkDirty() {
     parseInt(document.getElementById("sett-scan-nse").value) !== runtimeConfig.scan_frequency_nse ||
     parseInt(document.getElementById("sett-scan-mcx").value) !== runtimeConfig.scan_frequency_mcx ||
     document.getElementById("sett-shadow-mode").checked !== runtimeConfig.live_shadow_mode ||
+    (document.getElementById("sett-broker-disabled")?.checked || false) !== (runtimeConfig.live_broker_disabled || false) ||
     document.getElementById("sett-auth-enabled").checked !== (runtimeConfig.dashboard_auth_enabled || false) ||
     parseInt(document.getElementById("sett-capital").value) !== runtimeConfig.live_capital_per_trade_inr ||
     parseInt(document.getElementById("sett-max-util").value) !== runtimeConfig.live_max_capital_utilisation_pct ||
@@ -1382,9 +1437,12 @@ function fetchSettings() {
       runtimeConfig = data;
       
       const shadowCheckbox = document.getElementById("sett-shadow-mode");
+      const brokerDisabledCheckbox = document.getElementById("sett-broker-disabled");
+      const isBrokerDisabled = data.live_broker_disabled || false;
       if (shadowCheckbox) {
         shadowCheckbox.checked = data.live_shadow_mode;
-        updateSafetyZoneUI(data.live_shadow_mode);
+        if (brokerDisabledCheckbox) brokerDisabledCheckbox.checked = isBrokerDisabled;
+        updateSafetyZoneUI(data.live_shadow_mode, isBrokerDisabled);
       }
       
       const authCheckbox = document.getElementById("sett-auth-enabled");
@@ -1528,6 +1586,7 @@ function saveSettings(e) {
     scan_frequency_nse: parseInt(document.getElementById("sett-scan-nse").value),
     scan_frequency_mcx: parseInt(document.getElementById("sett-scan-mcx").value),
     live_shadow_mode: document.getElementById("sett-shadow-mode").checked,
+    live_broker_disabled: document.getElementById("sett-broker-disabled")?.checked || false,
     dashboard_auth_enabled: document.getElementById("sett-auth-enabled").checked,
     live_capital_per_trade_inr: parseInt(document.getElementById("sett-capital").value),
     live_max_capital_utilisation_pct: parseInt(document.getElementById("sett-max-util").value),

@@ -26,7 +26,8 @@ class PatchedCursor(sqlite3.Cursor):
                 UNION ALL
                 SELECT id, opened_at, closed_at, symbol, verdict_label, option_type, strike, entry_underlying, exit_underlying, sl_underlying, target_underlying, pnl_points, status, reason, digest_id, entry_premium, exit_premium, sl_premium, target_premium, lots, pnl_rupees, trade_status, setup_type, decision_reason, confidence_score, entry_quality_score, trend_alignment_score, regime_score, signal_key, pyramid_level, max_favorable_r, side, expiry
                 FROM live_trades
-                WHERE status = 'CLOSED_SHADOW' OR trade_status = 'SHADOW' OR broker_status = 'SHADOW'
+                WHERE (status = 'CLOSED_SHADOW' OR trade_status = 'SHADOW' OR broker_status = 'SHADOW')
+                  AND (setup_type IS NULL OR setup_type != 'DIRECT_KITE')
             )"""
             sql = re.sub(r'(?i)\bfrom\s+paper_trades\b', f'FROM {subquery}', sql)
         return super().execute(sql, *args, **kwargs)
@@ -40,7 +41,8 @@ class PatchedConnection(sqlite3.Connection):
                 UNION ALL
                 SELECT id, opened_at, closed_at, symbol, verdict_label, option_type, strike, entry_underlying, exit_underlying, sl_underlying, target_underlying, pnl_points, status, reason, digest_id, entry_premium, exit_premium, sl_premium, target_premium, lots, pnl_rupees, trade_status, setup_type, decision_reason, confidence_score, entry_quality_score, trend_alignment_score, regime_score, signal_key, pyramid_level, max_favorable_r, side, expiry
                 FROM live_trades
-                WHERE status = 'CLOSED_SHADOW' OR trade_status = 'SHADOW' OR broker_status = 'SHADOW'
+                WHERE (status = 'CLOSED_SHADOW' OR trade_status = 'SHADOW' OR broker_status = 'SHADOW')
+                  AND (setup_type IS NULL OR setup_type != 'DIRECT_KITE')
             )"""
             sql = re.sub(r'(?i)\bfrom\s+paper_trades\b', f'FROM {subquery}', sql)
         return super().execute(sql, *args, **kwargs)
@@ -1175,7 +1177,7 @@ async def get_paper_trades(symbol: str = "", status: str = "", limit: int = 300)
         params_lt.append(status.strip())
     
     where_pt = f"WHERE {' AND '.join(clauses_pt)}" if clauses_pt else ""
-    where_lt_base = "WHERE trade_status='SHADOW'"
+    where_lt_base = "WHERE trade_status='SHADOW' AND (setup_type IS NULL OR setup_type != 'DIRECT_KITE')"
     where_lt = where_lt_base + (f" AND {' AND '.join(clauses_lt)}" if clauses_lt else "")
     
     # Common columns between both tables
@@ -1522,7 +1524,7 @@ def _calculate_consecutive_wins(where: str, params: tuple) -> int:
 
 @app.post("/api/paper_trades/close")
 async def manual_close_paper_trade(trade_id: int = Query(...)):
-    from src.models.schema import close_paper_trade, close_live_trade
+    from src.models.schema import close_paper_trade, close_live_trade, get_conn
     from datetime import datetime, timezone
     
     rows = _q("SELECT * FROM paper_trades WHERE id=?", (trade_id,))
@@ -1670,6 +1672,16 @@ async def get_settings():
 async def post_settings(data: dict):
     from config.runtime_config import save_runtime_config
     save_runtime_config(data)
+    shadow_mode = data.get("live_shadow_mode", True)
+    conn = _db()
+    try:
+        with conn:
+            if shadow_mode:
+                conn.execute("UPDATE live_trades SET trade_status = 'SHADOW' WHERE status = 'OPEN' AND trade_status = 'LIVE'")
+            else:
+                conn.execute("UPDATE live_trades SET trade_status = 'LIVE' WHERE status = 'OPEN' AND trade_status = 'SHADOW' AND setup_type = 'DIRECT_KITE'")
+    finally:
+        conn.close()
     return {"status": "SUCCESS", "message": "Runtime settings updated successfully"}
 
 
@@ -1684,6 +1696,8 @@ def _fetch_real_kite_positions(kite) -> list[dict]:
         
     try:
         from src.engine.symbol_resolver import resolve_instrument
+        from config.runtime_config import load_runtime_config
+        shadow_mode = load_runtime_config().get("live_shadow_mode", True)
         positions_data = kite.positions()
         net_positions = positions_data.get("net", [])
         
@@ -1894,7 +1908,7 @@ def _fetch_real_kite_positions(kite) -> list[dict]:
                         "target_premium": "—",
                         "pnl_rupees": round(manual_pnl, 2),
                         "exit_mode": "KITE",
-                        "trade_status": "LIVE",
+                        "trade_status": "LIVE" if not shadow_mode else "SHADOW",
                         "status": "OPEN",
                         "tradingsymbol": tradingsymbol
                     })
@@ -1959,7 +1973,7 @@ def _fetch_real_kite_positions(kite) -> list[dict]:
                     "target_premium": tgt_val,
                     "pnl_rupees": pnl,
                     "exit_mode": "KITE",
-                    "trade_status": "LIVE",
+                    "trade_status": "LIVE" if not shadow_mode else "SHADOW",
                     "status": "OPEN",
                     "tradingsymbol": tradingsymbol
                 })
@@ -1978,6 +1992,8 @@ def _get_kite_closed_trades(kite) -> list[dict]:
     from datetime import datetime
     import pytz
     from config.settings import LOT_SIZES
+    from config.runtime_config import load_runtime_config
+    shadow_mode = load_runtime_config().get("live_shadow_mode", True)
     
     try:
         positions_data = kite.positions()
@@ -2108,7 +2124,7 @@ def _get_kite_closed_trades(kite) -> list[dict]:
             "closed_at": closed_at,
             "opened_at": None,
             "reason": "Kite Manual Exit",
-            "trade_status": "LIVE",
+            "trade_status": "LIVE" if not shadow_mode else "SHADOW",
             "exit_mode": "KITE",
             "tradingsymbol": tradingsymbol
         })

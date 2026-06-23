@@ -251,12 +251,10 @@ class DhanHeadlessFetcher:
 
         if base in {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"}:
             log.warning(
-                "[dhan_headless] MCX commodity %s routed to public commodity scrape",
+                "[dhan_headless] MCX commodity %s not supported in headless mode. Returning None to let router fall back.",
                 base,
             )
-            fallback = DhanCommodityFetcher().fetch_option_chain(base)
-            if fallback and fallback.get("strikes"):
-                return fallback
+            return None
 
         result = _fetch_sync(base)
         if result and result.get("strikes"):

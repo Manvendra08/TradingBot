@@ -37,31 +37,30 @@ from config.settings import WATCH_SYMBOLS, get_symbol_thresholds
 log = logging.getLogger(__name__)
 
 
-def run_pipeline(symbols: list[str] | None = None, force: bool = False) -> None:
+def run_pipeline(symbols: list[str] | None = None, force: bool = False, is_test: bool = False) -> None:
     """
     Run the full pipeline for each symbol.
 
     Args:
         symbols: Override watch list. Defaults to WATCH_SYMBOLS.
         force:   Skip market-hours guard (used by --now CLI flag).
+        is_test: Run in dry-run test mode without writing to DB or sending Telegram alerts.
     """
     symbols = symbols or WATCH_SYMBOLS
     fetched_at = datetime.now(timezone.utc).isoformat()
-    log.info("Pipeline run started | %s | symbols: %s | force=%s", fetched_at, symbols, force)
+    log.info("Pipeline run started | %s | symbols: %s | force=%s | is_test=%s", fetched_at, symbols, force, is_test)
     
     # B7/L3: Sync manual Kite direct positions to SQLite for AI Exit Advisor monitoring.
-    # The sync function is fully implemented in live_trading.py. It is also called
-    # by the scheduler every 5 minutes independently (see job_runner.py).
-    # This pipeline call provides additional coverage on every full scan cycle.
-    try:
-        from src.engine.live_trading import sync_direct_kite_positions
-        sync_direct_kite_positions()
-    except Exception:
-        log.exception("Direct Kite position synchronization failed")
+    if not is_test:
+        try:
+            from src.engine.live_trading import sync_direct_kite_positions
+            sync_direct_kite_positions()
+        except Exception:
+            log.exception("Direct Kite position synchronization failed")
 
     for symbol in symbols:
         try:
-            _process_symbol(symbol, fetched_at)
+            _process_symbol(symbol, fetched_at, is_test=is_test)
         except Exception:
             log.exception("Unhandled pipeline error for %s — continuing with next symbol", symbol)
     log.info("Pipeline run complete | %s", fetched_at)
@@ -94,16 +93,17 @@ def _get_current_option_ltp(
     return None
 
 
-def _process_symbol(symbol: str, fetched_at: str) -> None:
+def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None:
     log.info("Processing %s ...", symbol)
 
     oc_data = fetch_option_chain(symbol)
     if not oc_data:
         log.error("No data for %s — skipping", symbol)
-        try:
-            send_text(f"⚠️ **NSEBOT ALERT**: ALL data fetchers failed for symbol `{symbol}` at scan interval. Price tracking and strategy execution skipped.")
-        except Exception:
-            log.exception("Failed to send fetch-failure Telegram alert for %s", symbol)
+        if not is_test:
+            try:
+                send_text(f"⚠️ **NSEBOT ALERT**: ALL data fetchers failed for symbol `{symbol}` at scan interval. Price tracking and strategy execution skipped.")
+            except Exception:
+                log.exception("Failed to send fetch-failure Telegram alert for %s", symbol)
         return
 
     underlying = oc_data["underlying_price"]
@@ -186,27 +186,41 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
     except Exception:
         log.debug("%s: could not fetch open trade for AI context", symbol)
 
-    # 3c. AI Enrichment (Gemini — Deep Context)
+    # 3c. AI Enrichment (LLM — Deep Context)
     from src.engine.llm_enrichment import get_llm_verdict
     from config.settings import DISABLE_LLM_ENRICHMENT
     llm_verdict = None
+    exit_advice = None
     
     if DISABLE_LLM_ENRICHMENT:
         log.info("%s: LLM enrichment disabled (DISABLE_LLM_ENRICHMENT=true)", symbol)
     elif intel:
         try:
-            llm_verdict = get_llm_verdict(
-                symbol, intel, scan_context,
-                alerts=new_alerts,
-                news_data=news_data,
-                open_trade=open_trade,
-            )
+            if open_trade:
+                # C2: When a position is already open, skip the entry advisor entirely.
+                # Running both entry + exit on the same scan produces contradictory directional
+                # models (entry might say GO_LONG while exit manages a SHORT). Exit advisor
+                # runs below in 3d and is the sole AI voice when a position is held.
+                log.debug("%s: open position exists — skipping LLM entry verdict, exit advisor will run", symbol)
+            else:
+                llm_verdict = get_llm_verdict(
+                    symbol, intel, scan_context,
+                    alerts=new_alerts,
+                    news_data=news_data,
+                    open_trade=None,
+                )
             if llm_verdict:
+                # Regenerate intelligence structured with the fetched AI verdict
+                # so the inline decision engine block reflects the AI boost/veto
+                intel = generate_intelligence_structured(
+                    symbol, new_alerts, scan_context=scan_context, ai_verdict=llm_verdict
+                )
+                intel_text = intel.get("telegram_text", "") if intel else intel_text
+
                 log.info("%s: AI verdict — %s (%d%%) risk=%s | Instrument: %s",
                          symbol, llm_verdict.action, llm_verdict.confidence,
                          llm_verdict.risk_rating, llm_verdict.instrument)
                 
-                # Action-oriented formatting for traders
                 action_emoji = {"GO_LONG": "🟢", "GO_SHORT": "🔴", "NO_TRADE": "⚪"}.get(llm_verdict.action, "❓")
                 risk_emoji = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🔴"}.get(llm_verdict.risk_rating, "❓")
                 
@@ -219,12 +233,10 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
                 intel_text += f"📊 *R:R:* {llm_verdict.risk_reward} | {risk_emoji} *Risk:* {llm_verdict.risk_rating}\n"
                 intel_text += f"💡 *Thesis:* {llm_verdict.thesis}\n"
                 intel_text += f"⚠️ *Invalidation:* {llm_verdict.invalidation}\n"
-                if llm_verdict.catalyst and llm_verdict.catalyst != "No scheduled events":
+                if llm_verdict.catalyst and llm_verdict.catalyst != "No major catalyst":
                     intel_text += f"📅 *Catalyst:* {llm_verdict.catalyst}\n"
         except Exception:
             log.exception("%s: AI enrichment failed gracefully", symbol)
-    else:
-        log.debug("%s: Skipping LLM enrichment due to missing intelligence data", symbol)
 
     # 3d. AI Exit Advisor — evaluate open paper trades
     try:
@@ -292,30 +304,33 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
     import uuid
     digest_id = str(uuid.uuid4())[:8]
     paper_trade_report = None
-    try:
-        pt_report = run_paper_trading(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
-        tf_report = run_timeframe_strategy(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
-        if pt_report and pt_report.get("action") in ("EXECUTED", "CLOSED"):
-            paper_trade_report = pt_report
-        elif tf_report and tf_report.get("action") in ("EXECUTED", "CLOSED"):
-            paper_trade_report = tf_report
-        else:
-            paper_trade_report = pt_report or tf_report
-    except Exception:
-        log.exception("%s: paper-trading engine failed", symbol)
-
     live_trade_report = None
-    try:
-        lt_report = run_live_trading(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
-        lt_tf_report = run_live_timeframe_strategy(symbol, scan_context, digest_id, intel)
-        if lt_report and lt_report.get("action") in ("EXECUTED", "CLOSED"):
-            live_trade_report = lt_report
-        elif lt_tf_report and lt_tf_report.get("action") in ("EXECUTED", "CLOSED"):
-            live_trade_report = lt_tf_report
-        else:
-            live_trade_report = lt_report or lt_tf_report
-    except Exception:
-        log.exception("%s: live-trading engine failed", symbol)
+    if is_test:
+        log.info("%s: [dry-run] Skipping paper and live trading executions", symbol)
+    else:
+        try:
+            pt_report = run_paper_trading(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
+            tf_report = run_timeframe_strategy(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
+            if pt_report and pt_report.get("action") in ("EXECUTED", "CLOSED"):
+                paper_trade_report = pt_report
+            elif tf_report and tf_report.get("action") in ("EXECUTED", "CLOSED"):
+                paper_trade_report = tf_report
+            else:
+                paper_trade_report = pt_report or tf_report
+        except Exception:
+            log.exception("%s: paper-trading engine failed", symbol)
+
+        try:
+            lt_report = run_live_trading(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
+            lt_tf_report = run_live_timeframe_strategy(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
+            if lt_report and lt_report.get("action") in ("EXECUTED", "CLOSED"):
+                live_trade_report = lt_report
+            elif lt_tf_report and lt_tf_report.get("action") in ("EXECUTED", "CLOSED"):
+                live_trade_report = lt_tf_report
+            else:
+                live_trade_report = lt_report or lt_tf_report
+        except Exception:
+            log.exception("%s: live-trading engine failed", symbol)
 
     digest_id, digest_msg = build_digest(
         symbol, new_alerts, fetched_at,
@@ -327,19 +342,23 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
         paper_trade_status=paper_trade_report,
         live_trade_status=live_trade_report,
         llm_verdict=llm_verdict,
+        exit_advice=exit_advice,
     )
     for a in new_alerts:
         a["digest_id"] = digest_id
 
-    # 3b. Save scan summary — pass is_fallback so regime_detector can exclude stale rows
-    try:
-        if intel:
-            save_scan_summary(symbol, scan_context, new_alerts, intel, digest_id, fetched_at,
-                              is_fallback=is_fallback)
-        else:
-            log.warning("%s: skipping scan summary save due to missing intelligence data", symbol)
-    except Exception:
-        log.exception("%s: scan summary save failed", symbol)
+    # 3b. Save scan summary
+    if is_test:
+        log.info("%s: [dry-run] Skipping scan summary save", symbol)
+    else:
+        try:
+            if intel:
+                save_scan_summary(symbol, scan_context, new_alerts, intel, digest_id, fetched_at,
+                                  is_fallback=is_fallback)
+            else:
+                log.warning("%s: skipping scan summary save due to missing intelligence data", symbol)
+        except Exception:
+            log.exception("%s: scan summary save failed", symbol)
 
     # 4. Send logic
     should_send = bool(new_alerts)
@@ -358,43 +377,52 @@ def _process_symbol(symbol: str, fetched_at: str) -> None:
         else:
             log.info("%s: suppressed flat zero-signal scan (max_oi=%.2f%%)", symbol, max_oi)
 
-    if should_send:
-        sent_digest = send_text(digest_msg)
-    else:
+    if is_test:
+        digest_msg = f"⚠️ **TEST MODE** ⚠️\n\n{digest_msg}"
+        log.info("%s: [dry-run] Sending test digest to Telegram/Discord:\n%s", symbol, digest_msg)
+        send_text(digest_msg)
         sent_digest = False
+    else:
+        if should_send:
+            sent_digest = send_text(digest_msg)
+        else:
+            sent_digest = False
 
     # 5. Persist + record dedup
-    if new_alerts:
-        for alert in new_alerts:
-            alert_id = insert_alert(alert)
-            record_alert(alert)
-            if sent_digest:
-                mark_telegram_sent(alert_id)
+    if is_test:
+        log.info("%s: [dry-run] Skipping alert and snapshot DB records", symbol)
+    else:
+        if new_alerts:
+            for alert in new_alerts:
+                alert_id = insert_alert(alert)
+                record_alert(alert)
+                if sent_digest:
+                    mark_telegram_sent(alert_id)
 
-    pct_chg = None
-    if underlying is not None and prev_price and prev_price != 0:
-        pct_chg = round((underlying - prev_price) / abs(prev_price) * 100, 4)
+        pct_chg = None
+        if underlying is not None and prev_price and prev_price != 0:
+            pct_chg = round((underlying - prev_price) / abs(prev_price) * 100, 4)
 
-    insert_underlying_price(symbol, underlying, pct_chg, fetched_at)
+        insert_underlying_price(symbol, underlying, pct_chg, fetched_at)
 
-    rows = [{
-        "fetched_at":       fetched_at,
-        "symbol":           symbol,
-        "expiry":           expiry,
-        "strike":           row["strike"],
-        "option_type":      row["option_type"],
-        "ltp":              row.get("ltp"),
-        "ltp_change_pct":   row.get("ltp_change_pct"),
-        "oi":               row.get("oi"),
-        "oi_change_pct":    row.get("oi_change_pct"),
-        "oi_change":        row.get("oi_change"),
-        "volume":           row.get("volume"),
-        "iv":               row.get("iv"),
-        "bid":              row.get("bid"),
-        "ask":              row.get("ask"),
-        "delta":            row.get("delta"),
-        "underlying_price": underlying,
-        "fetcher_source":   source,
-    } for row in oc_data["strikes"]]
-    insert_snapshots(rows)
-    log.info("%s: persisted %d rows (source: %s)", symbol, len(rows), source)
+        rows = [{
+            "fetched_at":       fetched_at,
+            "symbol":           symbol,
+            "expiry":           expiry,
+            "strike":           row["strike"],
+            "option_type":      row["option_type"],
+            "ltp":              row.get("ltp"),
+            "ltp_change_pct":   row.get("ltp_change_pct"),
+            "oi":               row.get("oi"),
+            "oi_change_pct":    row.get("oi_change_pct"),
+            "oi_change":        row.get("oi_change"),
+            "volume":           row.get("volume"),
+            "iv":               row.get("iv"),
+            "bid":              row.get("bid"),
+            "ask":              row.get("ask"),
+            "delta":            row.get("delta"),
+            "underlying_price": underlying,
+            "fetcher_source":   source,
+        } for row in oc_data["strikes"]]
+        insert_snapshots(rows)
+        log.info("%s: persisted %d rows (source: %s)", symbol, len(rows), source)

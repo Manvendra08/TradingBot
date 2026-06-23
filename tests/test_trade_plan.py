@@ -177,25 +177,36 @@ class TestConvertUnderlyingSlToPremium:
         assert sl == 21800.0
         assert tgt == 22200.0
 
-    def test_buy_option_proportional(self):
+    def test_buy_option_delta_based(self):
         sl, tgt = convert_underlying_sl_to_premium(
             22000.0, 21800.0, 22200.0, 200.0, "BUY", "CE"
         )
-        # sl_distance_pct = 200/22000 = 0.00909
-        # sl_premium = 200 * (1 - 0.00909) = 198.18
-        # tgt_distance_pct = 200/22000 = 0.00909
-        # tgt_premium = 200 * (1 + 0.00909) = 201.82
-        assert sl == pytest.approx(198.18, abs=0.01)
-        assert tgt == pytest.approx(201.82, abs=0.01)
+        # default delta = 0.5
+        # sl = 200.0 - 0.5 * 200 = 100.0
+        # tgt = 200.0 + 0.5 * 200 = 300.0
+        assert sl == 100.0
+        assert tgt == 300.0
 
-    def test_sell_option_proportional(self):
+    def test_sell_option_delta_based(self):
         sl, tgt = convert_underlying_sl_to_premium(
             22000.0, 22200.0, 21800.0, 200.0, "SELL", "PE"
         )
-        # For SELL: sl_premium = entry * (1 + sl_distance_pct)
-        # tgt_premium = entry * (1 - tgt_distance_pct)
-        assert sl > 200.0  # SL premium higher for SELL
-        assert tgt < 200.0  # Target premium lower for SELL
+        # default delta = 0.3
+        # sl = 200.0 + 0.3 * 200 = 260.0
+        # tgt = 200.0 - 0.3 * 200 = 140.0
+        assert sl == 260.0
+        assert tgt == 140.0
+
+    def test_buy_option_with_custom_delta(self):
+        rows = [{"strike": 22000.0, "option_type": "CE", "delta": 0.6}]
+        sl, tgt = convert_underlying_sl_to_premium(
+            22000.0, 21800.0, 22200.0, 200.0, "BUY", "CE", strike=22000.0, option_rows=rows
+        )
+        # custom delta = 0.6
+        # sl = 200.0 - 0.6 * 200 = 80.0
+        # tgt = 200.0 + 0.6 * 200 = 320.0
+        assert sl == 80.0
+        assert tgt == 320.0
 
     def test_zero_underlying_fallback_buy(self):
         sl, tgt = convert_underlying_sl_to_premium(

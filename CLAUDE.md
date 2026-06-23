@@ -28,22 +28,41 @@ It:
 
 ## LLM Provider Stack
 
-- **Primary:** OpenRouter (`openrouter/free`) — `https://openrouter.ai/api/v1/chat/completions`
-- **Fallback 1:** Gemini (`gemini-2.5-flash` / `gemini-2.0-flash`) via Google GenAI SDK
-- **Fallback 2:** Groq (`llama-3.3-70b-versatile` / `llama-3.1-8b-instant`) via OpenAI-compatible API
-- Default timeout: 30 seconds per provider
+- **Primary:** OpenCode (Gemini 2.5 Flash / 2.5 Pro) — `https://opencode.ai/zen/v1/chat/completions`
+- **Fallback 1:** OpenRouter (GPT-OSS 120B Free) — `https://openrouter.ai/api/v1/chat/completions`
+- **Fallback 2:** Groq (GPT-OSS 120B, Llama 4 Scout, Llama 3.3 70B, Qwen 3 32B, etc.)
+- **Fallback 3:** OpenRouter free pool models (Qwen, Llama 3.1/3.2, Nemotron)
+- **Last resort:** Gemini SDK (gemini-2.5-flash / gemini-2.0-flash) via Google GenAI SDK
+- Default timeout: 15s per provider attempt, 30s total pipeline budget
+- JSON parsing is tolerant: strips markdown fences, grabs `{...}` from prose, removes control chars
 - Array-wrapped JSON responses are automatically unwrapped
+- Per-symbol verdict cache with DTE-aware TTL (5 min at expiry, 10 min ≤3 DTE, 30 min otherwise)
+- Circuit breaker: pauses all LLM calls for 5 min after 3 consecutive total failures
 
-## LLM Schema (v2.0 — Action-Oriented)
+## LLM Schema (v3.0 — Engine-Aligned)
 
 The LLM returns structured trade plans with these fields:
 - `action`: GO_LONG / GO_SHORT / NO_TRADE
-- `instrument`: Exact contract (e.g., "NIFTY 24500 CE 27Jun")
+- `confidence`: 0-100, derived from OI Δ + price action + news agreement (3-source scale)
+- `instrument`: Exact contract (e.g., "NIFTY 24500 CE 27Jun") — symbol and expiry overridden from scan context
 - `entry_trigger`: Specific entry condition
 - `stop_loss`, `target_1`, `target_2`: Concrete levels
 - `risk_reward`, `thesis`, `invalidation`, `risk_rating`, `catalyst`
 
-AI decision modes: `advisory` (info only), `boost_only` (promote blocked trades), `full` (can veto approved trades).
+**Engine-alignment architecture (v3.0):**
+- The OI engine (`intelligence.py._price_oi_verdict`) decides direction — the LLM enriches execution detail only.
+- Prompt injects `ENGINE DECISION` block (canonical pattern + rationale) and OI semantics table before asking for output.
+- LLM may downgrade to NO_TRADE but may NOT flip direction (GO_LONG on a BEARISH engine call is blocked).
+- `_enforce_engine_alignment()` post-processes every LLM response — direction flips are forced to NO_TRADE/HIGH regardless of model.
+- Entry advisor is skipped entirely when a position is already open for the symbol; exit advisor runs instead.
+
+**Chart role (OI trades vs timeframe strategy):**
+- 3H shows dominant trend; 1H within it. A 1H candle opposing a completed 3H candle = potential entry timing signal, not a conflict.
+- Only BOTH 3H and 1H opposing the OI verdict = genuine conflict (flagged ⚠️ in alert).
+- Chart candles are NOT a confidence source for OI-based trades; they are entry-timing context only.
+
+AI decision modes: `advisory` (info only), `boost_only` (promote blocked → TRIGGERED_EXPERIMENTAL), `full` (can also veto).
+**Current default: `boost_only`** (set in `settings.py` and overridable via `AI_DECISION_MODE` env var).
 
 ## Trade Planning Architecture
 
@@ -55,14 +74,16 @@ AI decision modes: `advisory` (info only), `boost_only` (promote blocked trades)
 
 ## Risk & Decision Engine
 
-- **Chart conflict:** Soft penalty (-20 entry quality) instead of hard block for core OI trades
-- **Historical OI trend:** Last 10 scans with PCR trend, OI trend, price impact analysis fed to LLM
-- **Regime detector:** Time-weighted decay using `√(index_w × time_w)` — old scans have lower weight
-- **Live reversal guard:** 3 guards matching paper (confidence ≥ 75, entry_quality ≥ 60, trend_alignment ≤ 40)
-- **Paper premium monitoring:** `monitor_paper_trades()` checks both underlying AND premium SL/Target
-- **Signal key dedup:** Live and paper use same format `{symbol}:{option_type}:{strike}:{date}`
-- **CLOSE_EARLY safety:** Skipped if current LTP unavailable (no zero-P&L exits)
-- **SELL margin multiplier:** 12× (increased from 10× to match actual SPAN+exposure)
+- **Chart conflict — OI trades:** NO penalty, NO hard block. `chart_conflict` flag preserved for display and exit-timing context only. A 1H candle opposing a completed 3H trend is a potential entry point. Applies to core OI-based trades only.
+- **Chart conflict — Timeframe strategy:** Timeframe strategy handles its own conflict checks independently (unchanged).
+- **MCX confidence floor:** NATURALGAS/CRUDEOIL/GOLD/SILVER require `confidence >= 72` (vs 70 for NSE). Thin OI → higher conviction bar. Configurable via `MCX_MIN_CONFIDENCE` in `settings.py`.
+- **Historical OI trend:** Last 10 scans with PCR trend, OI trend, price impact analysis fed to LLM.
+- **Regime detector:** Time-weighted decay using `√(index_w × time_w)` — old scans have lower weight.
+- **Live reversal guard:** 3 guards matching paper (confidence ≥ 75, entry_quality ≥ 60, trend_alignment ≤ 40).
+- **Paper premium monitoring:** `monitor_paper_trades()` checks both underlying AND premium SL/Target.
+- **Signal key dedup:** Live and paper use same format `{symbol}:{option_type}:{strike}:{date}`.
+- **CLOSE_EARLY safety:** Skipped if current LTP unavailable (no zero-P&L exits).
+- **SELL margin multiplier:** 12× (increased from 10× to match actual SPAN+exposure).
 
 ## Live Trading
 
@@ -103,24 +124,26 @@ AI decision modes: `advisory` (info only), `boost_only` (promote blocked trades)
 
 ## Important modules
 
-- `src/fetchers/router.py` - source routing and ATM strike filtering
-- `src/fetchers/chart_fetcher.py` - candle sourcing and aggregation
-- `src/engine/pipeline.py` - orchestrates the scan (includes fetch-failure alerts, CLOSE_EARLY safety)
-- `src/engine/anomaly_detector.py` - computes alerts and scan context
-- `src/engine/intelligence.py` - verdict, trend, trade guidance (confidence caps consolidated)
-- `src/engine/trade_plan.py` - **unified** SL/Target, premium resolution, verdict parsing
-- `src/engine/trade_decision.py` - trade decision with AI bias mapping, chart conflict soft penalty
-- `src/engine/llm_enrichment.py` - LLM v2.0 action-oriented schema, historical OI, macro context
-- `src/engine/live_trading.py` - live execution with timeframe strategy, reversal guards, position sync
-- `src/engine/paper_trading.py` - paper trade lifecycle with premium monitoring
-- `src/engine/regime_detector.py` - time-weighted regime detection
-- `src/engine/capital_allocator.py` - position sizing with 12× SELL margin
-- `src/alerts/digest.py` - Telegram message builder (new schema aware)
-- `src/alerts/telegram_dispatcher.py` - Telegram delivery and retries
-- `src/models/schema.py` - SQLite tables and helpers (transaction costs applied)
-- `src/scheduler/job_runner.py` - scheduler loop, live exit monitoring, position sync timer
-- `dashboard_server.py` - FastAPI dashboard API and pages
-- `config/holidays.py` - 2026 Indian market holiday calendar (NSE & MCX)
+- `src/fetchers/router.py` — source routing and ATM strike filtering
+- `src/fetchers/chart_fetcher.py` — candle sourcing and aggregation
+- `src/engine/pipeline.py` — orchestrates the scan; skips LLM entry advisor when position open
+- `src/engine/anomaly_detector.py` — computes alerts and scan context
+- `src/engine/intelligence.py` — verdict, trend, trade guidance; chart_conflict flag for display only (no penalty)
+- `src/engine/trade_plan.py` — **unified** SL/Target, premium resolution, verdict parsing
+- `src/engine/trade_decision.py` — trade decision with AI bias mapping; MCX confidence floor; chart conflict noted (no penalty)
+- `src/engine/llm_enrichment.py` — LLM v3.0 engine-aligned schema; `_enforce_engine_alignment()`; `_extract_json()` tolerant parser; direction-explicit exit prompt
+- `src/engine/live_trading.py` — live execution with timeframe strategy, reversal guards, position sync
+- `src/engine/paper_trading.py` — paper trade lifecycle with premium monitoring
+- `src/engine/regime_detector.py` — time-weighted regime detection
+- `src/engine/capital_allocator.py` — position sizing with 12× SELL margin
+- `src/engine/verdict_sets.py` — single source of truth for OI + LLM verdict vocabularies (both sets unified)
+- `src/alerts/digest.py` — Telegram builder; HOLDING line shows position age; 1H/3H diverge = entry timing note
+- `src/alerts/telegram_dispatcher.py` — Telegram delivery and retries
+- `src/models/schema.py` — SQLite tables and helpers (transaction costs applied)
+- `src/scheduler/job_runner.py` — scheduler loop, live exit monitoring, position sync timer
+- `dashboard_server.py` — FastAPI dashboard API and pages
+- `config/settings.py` — `AI_DECISION_MODE=boost_only`, `MCX_MIN_CONFIDENCE=72`, `MCX_SYMBOLS`
+- `config/holidays.py` — 2026 Indian market holiday calendar (NSE & MCX)
 
 ## Testing
 
@@ -136,9 +159,14 @@ Key test files:
 
 ## Next session context
 
+- Watch for `[llm] engine/LLM direction conflict` log lines — indicates model still attempting to flip; B2 guard is catching it correctly.
+- Watch for `[llm] ... _extract_json` parse failures — should be eliminated; if still occurring, check which provider and model.
+- Confirm exit advisor runs when position open, entry advisor does NOT (pipeline log: "open position exists — skipping LLM entry verdict").
+- Verify `AI_DECISION_MODE=boost_only` is active: log line `AI verdict — bias=X conf=Y% … (mode=boost_only)`.
+- Watch `MCX_MIN_CONFIDENCE=72` blocking low-conviction NATURALGAS/CRUDEOIL setups (log: "Confidence X% below MCX threshold 72%").
 - Verify candles are still last-closed after any fetcher changes.
 - Keep `Delta prev scan` using actual prior scan data.
 - Validate dashboard and Telegram text after edits.
-- Preserve symbol segregation in intelligence.
-- Monitor `AI_VETOED` soft_conflict tags in logs for overly conservative LLM behavior.
+- Preserve symbol segregation in intelligence (NATURALGAS=news-only, NIFTY/BANKNIFTY=heatmap-only).
 - All trade plan changes must go through `trade_plan.py`.
+- `AI_INTELLIGENCE_ROADMAP_v3.0.md` is the active ML roadmap — Phase 0 (feature persistence migration) is the current blocker before any ML training.

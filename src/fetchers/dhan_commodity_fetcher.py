@@ -234,8 +234,13 @@ def _pick_option_expj(page_props: dict) -> Optional[int]:
     if not expjs:
         return None
     expjs.sort()
-    nowj = _now_julian_1980_seconds()
-    future = [v for v in expjs if v >= nowj]
+    today_ist = datetime.now(IST).date()
+    future = []
+    for v in expjs:
+        d = _JULIAN_1980_BASE + timedelta(seconds=int(v))
+        d_ist = d.astimezone(IST).date()
+        if d_ist >= today_ist:
+            future.append(v)
     if not future:
         future = expjs
         

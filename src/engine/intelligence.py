@@ -395,16 +395,8 @@ def _compute_confidence(scan_ctx: dict, alerts: list[dict],
         if mp_dist_pct < 0.4:
             score += 10
 
-    # Chart timeframe conflict detection
+    # Chart timeframe conflict detection is disabled for Core strategy.
     chart_conflict = False
-    if parsed_chart:
-        tf_1h = parsed_chart.get("1h", {}).get("sentiment")
-        tf_3h = parsed_chart.get("3h", {}).get("sentiment")
-        if tf_1h and tf_3h and tf_1h != tf_3h and "NEUTRAL" not in (tf_1h, tf_3h):
-            chart_conflict = True
-            score -= 10  # Chart conflict reduces confidence meaningfully
-        elif tf_1h and tf_1h == tf_3h and tf_1h != "NEUTRAL":
-            score += 15  # Confluence bonus
 
     alert_types = [a.get("alert_type") for a in alerts]
     if alerts and alert_types.count("VOLUME_AGGRESSION") / max(len(alerts), 1) >= 0.70:
@@ -412,8 +404,6 @@ def _compute_confidence(scan_ctx: dict, alerts: list[dict],
         directional_count = sum(1 for t in alert_types if t in directional_types)
         if directional_count <= max(2, len(alerts) * 0.15):
             score = min(score, 88)
-    if chart_conflict:
-        score = min(score, 85)
 
     # Cap: Sideways verdict should never print 90%+ confidence — contradictory
     if score > 65:
@@ -601,32 +591,17 @@ def _generate_risk_note(verdict: str, ctx: dict) -> str:
 
 
 def _compute_dynamic_action_plan(v_label: str, tf_1h: str | None, tf_3h: str | None, conflict: bool) -> str:
-    """Compute action plan dynamically based on verdict, chart sentiments, and conflicts."""
-    if conflict:
-        return "Timeframe conflict (1H vs 3H charts disagree) — Stand aside / Reduce size."
-    
-    v_bias = "BULLISH" if is_bullish(v_label) else ("BEARISH" if is_bearish(v_label) else "NEUTRAL")
-    
-    # Check if both timeframes are strongly opposite to verdict bias
-    if v_bias == "BULLISH" and tf_1h == "BEARISH" and tf_3h == "BEARISH":
-        return "Avoid CEs. High risk due to Bearish chart alignment. Wait for chart reversal."
-    if v_bias == "BEARISH" and tf_1h == "BULLISH" and tf_3h == "BULLISH":
-        return "Avoid PEs. High risk due to Bullish chart alignment. Wait for chart reversal."
-        
+    """Compute action plan dynamically based on verdict."""
     if v_label in ("Long Buildup", "Short Covering", "Put Writing"):
-        if tf_1h == "BEARISH" or tf_3h == "BEARISH":
-            return "Trail SL on longs. Avoid aggressive entries due to mixed chart sentiment."
         return "Trail SL on longs. Avoid blind chase."
     elif v_label in ("Short Buildup", "Long Unwinding", "Call Writing"):
-        if tf_1h == "BULLISH" or tf_3h == "BULLISH":
-            return "Trail SL on shorts. Avoid aggressive entries due to mixed chart sentiment."
         return "Trail SL on shorts. Avoid panic entry."
     elif v_label == "OI Bias Bullish":
-        return "Wait for 1H trigger candle above resistance. Buy CE on breakout confirmation."
+        return "Buy CE on breakout confirmation."
     elif v_label == "OI Bias Bearish":
-        return "Wait for 1H trigger candle below support. Buy PE on breakdown confirmation."
+        return "Buy PE on breakdown confirmation."
     
-    return "No aggressive trade. Wait trigger candle."
+    return "No aggressive trade. Wait for clean setup."
 
 
 def _factor_priority(score: int) -> str:
@@ -660,14 +635,6 @@ def _collect_forces(ctx: dict, alerts: list[dict], verdict_label: str, parsed_ch
         bull.append((75, "Put writing visible"))
     if ce_oi_change > 0 and pe_oi_change <= 0:
         bear.append((75, "Call writing visible"))
-
-    for tf in ("1h", "3h"):
-        tf_data = parsed_chart.get(tf) or {}
-        sentiment = tf_data.get("sentiment", "NEUTRAL")
-        if sentiment == "BULLISH":
-            bull.append((70 if tf == "1h" else 78, f"{tf.upper()} chart bullish"))
-        elif sentiment == "BEARISH":
-            bear.append((70 if tf == "1h" else 78, f"{tf.upper()} chart bearish"))
 
     if verdict_label in ("Long Buildup", "Short Covering", "Put Writing", "OI Bias Bullish"):
         bull.append((88, f"Price x OI verdict: {verdict_label}"))
@@ -848,7 +815,7 @@ def _get_trading_mode_indicator() -> str:
 
 
 def generate_intelligence(symbol: str, current_alerts: list[dict],
-                          scan_context: dict | None = None) -> "IntelligenceResult":
+                          scan_context: dict | None = None, ai_verdict=None) -> "IntelligenceResult":
     """
     Analyzes scan context + current alerts to generate trade-actionable intelligence.
 
@@ -916,34 +883,8 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
                 "updated_at": tf_data.get("updated_at"),
             }
 
-    # Chart-only directional fallback:
-    # If OI/price is neutral but both 1H and 3H agree directionally,
-    # promote verdict to cautious bias so bot decision reflects candle confluence.
-    tf_1h = (parsed_chart.get("1h") or {}).get("sentiment")
-    tf_3h = (parsed_chart.get("3h") or {}).get("sentiment")
-    if verdict_label == "Sideways" and tf_1h and tf_1h == tf_3h:
-        if tf_1h == "BULLISH":
-            verdict_label = "OI Bias Bullish"
-            verdict_emoji = "🟡"
-            verdict_desc = "Cautious Bullish — 1H and 3H candle sentiment aligned bullish"
-        elif tf_1h == "BEARISH":
-            verdict_label = "OI Bias Bearish"
-            verdict_emoji = "🟠"
-            verdict_desc = "Cautious Bearish — 1H and 3H candle sentiment aligned bearish"
-    # ── Re-compute confidence with chart context ───────────────────────────────
-    confidence, chart_conflict = _compute_confidence(ctx, current_alerts, parsed_chart, verdict_label=verdict_label)
-
-    # Chart confluence boost for matching directional verdicts
-    for tf, entry in parsed_chart.items():
-        if tf not in ("1h", "3h"):
-            continue
-        effective_sentiment = entry.get("sentiment")
-        if verdict_label in ("Long Buildup", "Put Writing") and effective_sentiment == "BULLISH":
-            confidence = min(confidence + 12, 95)
-            log.debug("[intel] Chart confluence +10%% | %s %s BULLISH aligns Long Buildup", symbol, tf)
-        elif verdict_label in ("Short Buildup", "Call Writing") and effective_sentiment == "BEARISH":
-            confidence = min(confidence + 12, 95)
-            log.debug("[intel] Chart confluence +10%% | %s %s BEARISH aligns Short Buildup", symbol, tf)
+    # ── Re-compute confidence ──────────────────────────────────────────────────
+    confidence, chart_conflict = _compute_confidence(ctx, current_alerts, parsed_chart=None, verdict_label=verdict_label)
 
     # ── Build Message ──────────────────────────────────────────────────────
     # H5 fix: apply ALL confidence ceilings in one pass after the confluence boost.
@@ -957,9 +898,8 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
     if current_alerts and alert_types.count("VOLUME_AGGRESSION") / max(len(current_alerts), 1) >= 0.70:
         ceiling = min(ceiling, 88)
 
-    # Chart conflict cap: 1H vs 3H disagree
-    if chart_conflict:
-        ceiling = min(ceiling, 85)
+    # Chart conflict ceiling removed: see _compute_confidence notes.
+    # Preserved: volume-dominant cap and flat-price/balanced-OI cap.
 
     # Flat price + balanced OI cap: no clear directional edge
     abs_ce = abs(ctx.get("ce_oi_change", 0))
@@ -1036,7 +976,7 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
     msg.append(f"_{verdict_desc}_")
     msg.append(f"Confidence: {confidence}%")
     if chart_conflict:
-        msg.append("⚠️ _Chart conflict: 1H vs 3H signals disagree — reduce size, wait alignment_")
+        msg.append("💡 _1H vs 3H candles diverge — potential entry timing signal (not a conflict for OI trades)_")
 
     # OI Analysis
     if total_ce_oi or total_pe_oi:
@@ -1168,7 +1108,7 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
     msg.append("")
     msg.append("*TRADE STRATEGY*")
     msg.append(f"- Bias: {verdict_desc}")
-    _action_plan = _compute_dynamic_action_plan(verdict_label, tf_1h, tf_3h, chart_conflict)
+    _action_plan = _compute_dynamic_action_plan(verdict_label, None, None, chart_conflict)
     msg.append(f"- Action Plan: {_action_plan}")
     risk_note = _generate_risk_note(verdict_label, ctx)
     if risk_note:
@@ -1189,7 +1129,7 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
             "verdict_label": verdict_label,
             "confidence": confidence,
             "chart_conflict": chart_conflict,
-        }, decision_ctx)
+        }, decision_ctx, ai_verdict=ai_verdict, suppress_logs=True)
         
         risk_ok, risk_reason = check_risk_limits(symbol)
         
@@ -1274,7 +1214,7 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
     msg.append(f"_Based on {len(current_alerts)} signals this scan_")
 
     # ── Action plan (structured) ───────────────────────────────────────────
-    action_plan = _compute_dynamic_action_plan(verdict_label, tf_1h, tf_3h, chart_conflict)
+    action_plan = _compute_dynamic_action_plan(verdict_label, None, None, chart_conflict)
 
     risk_note = _generate_risk_note(verdict_label, ctx)
 
@@ -1301,6 +1241,7 @@ def generate_intelligence_structured(
     symbol: str,
     current_alerts: list[dict],
     scan_context: dict | None = None,
+    ai_verdict=None,
 ) -> "IntelligenceResult":
     """
     Phase 3: Returns IntelligenceResult directly from generate_intelligence().
@@ -1309,4 +1250,4 @@ def generate_intelligence_structured(
     Backward-compat: callers that used intel["verdict_label"] etc. still work
     because IntelligenceResult implements __getitem__ and get().
     """
-    return generate_intelligence(symbol, current_alerts, scan_context)
+    return generate_intelligence(symbol, current_alerts, scan_context, ai_verdict=ai_verdict)

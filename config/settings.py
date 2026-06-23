@@ -82,9 +82,9 @@ SYMBOL_MARKET = {
 
 # ── Lot Sizes ────────────────────────────────────────────────────────────────────────────────────────────
 LOT_SIZES = {
-    "NIFTY":      50,
-    "BANKNIFTY":  15,
-    "FINNIFTY":   40,
+    "NIFTY":      65,
+    "BANKNIFTY":  30,
+    "FINNIFTY":   60,
     "MIDCPNIFTY": 75,
     "NATURALGAS": 1250,
     "CRUDEOIL":   100,
@@ -93,7 +93,7 @@ LOT_SIZES = {
 }
 
 # Default lots per trade (used as fallback when capital allocator is not active)
-DEFAULT_LOTS_PER_TRADE = 1
+DEFAULT_LOTS_PER_TRADE = 10
 
 # ── Strike Step Sizes ────────────────────────────────────────────────────────────────────────────────────────────
 STRIKE_STEPS = {
@@ -317,10 +317,10 @@ TRANSACTION_COSTS = {
 
 # ── AI Brain Settings ─────────────────────────────────────────────────────────────────────────────────────────────────
 # Controls how the AI verdict influences trade decisions.
-#   advisory   — AI verdict logged and displayed, but does NOT change trade outcomes (default, safe)
+#   advisory   — AI verdict logged and displayed, but does NOT change trade outcomes
 #   boost_only — AI can promote BLOCKED → TRIGGERED_EXPERIMENTAL (never veto)
 #   full       — AI can both promote and veto trade decisions
-AI_DECISION_MODE               = os.environ.get("AI_DECISION_MODE", "advisory")
+AI_DECISION_MODE               = os.environ.get("AI_DECISION_MODE", "boost_only")
 
 # Minimum AI confidence to influence trade decisions (boost/veto)
 AI_MIN_CONFIDENCE_BOOST        = int(os.environ.get("AI_MIN_CONFIDENCE_BOOST", "80"))
@@ -332,3 +332,12 @@ AI_EXIT_ADVISOR_ENABLED        = os.environ.get("AI_EXIT_ADVISOR_ENABLED", "fals
 # Disable LLM enrichment entirely when quota is exhausted or to reduce API calls
 # Set to True to skip all Gemini/Groq/OpenRouter calls
 DISABLE_LLM_ENRICHMENT         = os.environ.get("DISABLE_LLM_ENRICHMENT", "false").lower() == "true"
+
+# ── MCX Commodity Confidence Floor ───────────────────────────────────────────────────────────────────────────────────
+# MCX OI data is thinner than NSE index — a 10-contract CE spike can look
+# significant on a percentage basis but carries little actual market conviction.
+# Set a higher minimum confidence for MCX trades to filter out low-signal setups.
+# 72 chosen: above the NSE core floor (70) but below reversal threshold (75),
+# ensuring MCX entries require meaningful OI confluence without being too restrictive.
+MCX_MIN_CONFIDENCE             = int(os.environ.get("MCX_MIN_CONFIDENCE", "72"))
+MCX_SYMBOLS                    = frozenset({"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"})

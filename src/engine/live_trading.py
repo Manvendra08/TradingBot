@@ -252,7 +252,7 @@ def _trade_plan_from_verdict(verdict: str, confidence: int, ctx: dict) -> dict |
 
     # Convert underlying distances to premium equivalents for GTT/polling
     sl_premium, target_premium = convert_underlying_sl_to_premium(
-        underlying, sl_ul, tgt_ul, entry_premium, side, option_type
+        underlying, sl_ul, tgt_ul, entry_premium, side, option_type, strike, option_rows
     )
 
     plan["entry_premium"] = entry_premium
@@ -577,7 +577,7 @@ def _run_live_trading_legacy(symbol: str, scan_context: dict, digest_id: str, in
                     now_iso,
                     underlying,
                     exit_premium,
-                    "CLOSED_REVERSAL" if not shadow_mode else "CLOSED_SHADOW",
+                    "CLOSED_REVERSAL",
                     f"Trend reversed against position (verdict: {verdict})"
                 )
                 
@@ -636,7 +636,7 @@ def _run_live_trading_legacy(symbol: str, scan_context: dict, digest_id: str, in
                         broker_status, broker_message = confirm_order_fill(kite, order_id, shadow_mode)
                         if broker_status in ("REJECTED", "CANCELLED"):
                             raise RuntimeError(f"Exit order {broker_status.lower()}: {broker_message}")
-                        close_live_trade(current_open_trade["id"], now_iso, underlying, exit_premium, close_status if not shadow_mode else "CLOSED_SHADOW", close_reason)
+                        close_live_trade(current_open_trade["id"], now_iso, underlying, exit_premium, close_status, close_reason)
                         
                         closed_trade = None
                         from src.models.schema import get_conn
@@ -835,7 +835,7 @@ def _exit_open_live_trade(
         now_iso,
         underlying,
         exit_premium,
-        status if not shadow_mode else "CLOSED_SHADOW",
+        status,
         reason,
     )
     return _latest_live_trade(trade["id"]) or trade
@@ -847,6 +847,10 @@ def run_live_trading(symbol: str, scan_context: dict, digest_id: str, intel: dic
 
     config = load_runtime_config()
     shadow_mode = config.get("live_shadow_mode", True)
+    broker_disabled = config.get("live_broker_disabled", False)
+    if broker_disabled:
+        log.debug("%s: live broker disabled via cockpit — skipping all order placement", symbol)
+        return {"action": "BLOCKED_BROKER_DISABLED", "reason": "Broker trades turned off in Cockpit"}
     kite = get_kite_client()
     if not kite and not shadow_mode:
         log.warning("Live trading skipped: Zerodha credentials / access token invalid or not logged in.")
@@ -861,6 +865,10 @@ def run_live_trading(symbol: str, scan_context: dict, digest_id: str, intel: dic
 
     current_open_trade = get_open_live_trade(symbol)
     if current_open_trade:
+        if current_open_trade.get("setup_type") == "DIRECT_KITE" and not config.get("manage_direct_kite_positions", False):
+            log.debug("%s: Direct Kite position management is disabled. Skipping tracking.", symbol)
+            return {"action": "HELD_DIRECT_DISABLED", "trade": current_open_trade}
+
         # Check if the broker_status is PENDING. If so, reconcile/verify fill!
         if current_open_trade.get("broker_status") == "PENDING":
             log.info("%s: Open trade is PENDING at broker. Checking for fill...", symbol)
@@ -1154,7 +1162,7 @@ def run_live_trading(symbol: str, scan_context: dict, digest_id: str, intel: dic
     return {"action": "EXECUTED", "trade": trade_data, "setup_type": decision["setup_type"], "lots": lots}
 
 
-def run_live_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, intel: dict) -> dict | None:
+def run_live_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, intel: dict, ai_verdict=None) -> dict | None:
     """
     Live timeframe breakout strategy (3H entry / 1H exit).
     C3 fix: Previously a stub returning None. Now mirrors paper_trading.run_timeframe_strategy
@@ -1165,6 +1173,9 @@ def run_live_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str,
 
     config = load_runtime_config()
     shadow_mode = config.get("live_shadow_mode", True)
+    broker_disabled = config.get("live_broker_disabled", False)
+    if broker_disabled:
+        return {"action": "BLOCKED_BROKER_DISABLED", "reason": "Broker trades turned off in Cockpit"}
     kite = get_kite_client()
     if not kite and not shadow_mode:
         return {"action": "BLOCKED_AUTH", "reason": "Kite client not initialized"}
@@ -1252,12 +1263,60 @@ def run_live_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str,
     open_tf_trades = get_open_live_timeframe_trades(symbol)
     closed_trade = None
 
+    # Parse AI verdict for exit checks
+    ai_bias = "NEUTRAL"
+    ai_conf = 50.0
+    ai_risk = "LOW"
+    if ai_verdict is not None:
+        if isinstance(ai_verdict, dict):
+            action = ai_verdict.get("action")
+            bias_val = ai_verdict.get("bias")
+            ai_conf = float(ai_verdict.get("confidence", 50))
+            ai_risk = str(ai_verdict.get("risk_rating") or "LOW").upper()
+        else:
+            action = getattr(ai_verdict, "action", None)
+            bias_val = getattr(ai_verdict, "bias", None)
+            ai_conf = float(getattr(ai_verdict, "confidence", 50))
+            ai_risk = str(getattr(ai_verdict, "risk_rating", "LOW")).upper()
+            
+        if action == "GO_LONG":
+            ai_bias = "BULLISH"
+        elif action == "GO_SHORT":
+            ai_bias = "BEARISH"
+        elif bias_val:
+            ai_bias = str(bias_val).upper()
+
     for trade in open_tf_trades:
         exit_premium = None
         if trade["option_type"] in ("CE", "PE"):
             exit_premium = _get_option_premium(symbol, expiry, trade["strike"], trade["option_type"], option_rows)
         elif trade["option_type"] == "FUT":
             exit_premium = underlying
+
+        # LLM Reversal Exit
+        if ai_verdict is not None:
+            is_reversal = False
+            if trade["verdict_label"] == "LONG" and ai_bias == "BEARISH":
+                is_reversal = True
+            elif trade["verdict_label"] == "SHORT" and ai_bias == "BULLISH":
+                is_reversal = True
+            
+            if is_reversal and ai_conf >= 70:
+                try:
+                    closed = _exit_open_live_trade(
+                        kite=kite, symbol=symbol, trade=trade,
+                        underlying=underlying, exit_premium=exit_premium,
+                        status="CLOSED_REVERSAL", reason=f"LLM Reversal: bias {ai_bias} (confidence {ai_conf}%)",
+                        shadow_mode=shadow_mode, now_iso=now_iso,
+                    )
+                    prefix = "[SHADOW]" if shadow_mode else "🚨 [LIVE]"
+                    from src.alerts.telegram_dispatcher import send_text
+                    send_text(f"{prefix} **TF Crossover Exit** | Closed `{symbol}` `{trade.get('option_type')}` — `LLM Reversal` at underlying `{underlying}`.")
+                    closed_trade = closed
+                    break
+                except Exception as e:
+                    log.error("Failed timeframe LLM reversal exit: %s", e)
+                    continue
 
         # Premium-poll SL/Target check
         if exit_premium is not None:
@@ -1336,6 +1395,15 @@ def run_live_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str,
     direction = "LONG" if is_long_trigger else "SHORT"
     signal_key = f"{symbol}:TIMEFRAME:3H:{direction}:{bar_end_3h}:live"
 
+    # AI filters on entry
+    if ai_verdict is not None:
+        if direction == "LONG" and ai_bias == "BEARISH":
+            return {"action": "BLOCKED_PLAN", "reason": f"Timeframe entry skipped: LLM bias alignment mismatch ({ai_bias} vs {direction})"}
+        if direction == "SHORT" and ai_bias == "BULLISH":
+            return {"action": "BLOCKED_PLAN", "reason": f"Timeframe entry skipped: LLM bias alignment mismatch ({ai_bias} vs {direction})"}
+        if ai_risk == "HIGH":
+            return {"action": "BLOCKED_PLAN", "reason": f"Timeframe entry skipped: LLM risk rating is HIGH"}
+
     # Dedup check
     from src.models.schema import get_conn
     with get_conn() as conn:
@@ -1392,7 +1460,7 @@ def run_live_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str,
     # Convert underlying SL/Target to premium equivalents (unified via trade_plan.py)
     side = "BUY" if direction == "LONG" else ("SELL" if opt_type == "FUT" else "BUY")
     sl_premium, target_premium = convert_underlying_sl_to_premium(
-        underlying, sl_underlying, tgt_underlying, entry_premium, side, opt_type
+        underlying, sl_underlying, tgt_underlying, entry_premium, side, opt_type, strike, option_rows
     )
 
     lots = max(1, DEFAULT_LOTS_PER_TRADE)
@@ -1472,6 +1540,7 @@ def run_live_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str,
 def sync_direct_kite_positions() -> None:
     from config.runtime_config import load_runtime_config
     config = load_runtime_config()
+    shadow_mode = config.get("live_shadow_mode", True)
     if not config.get("manage_direct_kite_positions", False):
         return
 
@@ -1504,6 +1573,20 @@ def sync_direct_kite_positions() -> None:
             stk = int(dt["strike"] or 0)
             sd = dt["side"]
             open_db_signatures.append(f"{sym}:{ot}:{stk}:{sd}")
+
+        # Also exclude DIRECT_KITE positions that were adopted and closed today.
+        # Without this, a position closed by CMP poll exit immediately re-adopts on
+        # the next sync because it's no longer in status='OPEN'.
+        today_prefix = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        closed_today = conn.execute(
+            "SELECT symbol, option_type, strike, side FROM live_trades "
+            "WHERE setup_type='DIRECT_KITE' AND status!='OPEN' AND opened_at LIKE ?",
+            (f"{today_prefix}%",),
+        ).fetchall()
+        for ct in closed_today:
+            sig = f"{ct['symbol']}:{ct['option_type']}:{int(ct['strike'] or 0)}:{ct['side']}"
+            if sig not in open_db_signatures:
+                open_db_signatures.append(sig)
 
         now_iso = datetime.now(timezone.utc).isoformat()
         for p in net_positions:
@@ -1629,7 +1712,7 @@ def sync_direct_kite_positions() -> None:
                 "status": "OPEN",
                 "reason": "Direct Kite Manual Entry",
                 "digest_id": "manual",
-                "trade_status": "LIVE",
+                "trade_status": "LIVE" if not shadow_mode else "SHADOW",
                 "setup_type": "DIRECT_KITE",
                 "decision_reason": f"Adopted {ts} from Kite",
                 "signal_key": f"kite_direct_{ts}_{now_iso}",

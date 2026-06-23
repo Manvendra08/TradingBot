@@ -134,11 +134,10 @@ def calculate_momentum_score(
     broader_trend: str | None = None,
 ) -> int:
     """
-    Score 0-100 combining recent trend strength, scan agreement, and chart signals.
+    Score 0-100 combining recent trend strength, scan agreement, and confidence.
     Components:
-      - Broader trend strength from alerts  : 0-40
-      - Recent scan agreement (last 5)      : 0-30
-      - Chart indicator alignment           : 0-20
+      - Broader trend strength from alerts  : 0-50
+      - Recent scan agreement (last 5)      : 0-40
       - Current confidence contribution     : 0-10
 
     Pass `broader_trend` when the caller already has the result from
@@ -149,15 +148,15 @@ def calculate_momentum_score(
     # Component 1: broader trend strength (uses cache if provided)
     bt = get_broader_trend_from_alerts(symbol, cached=broader_trend)
     if "Strong Bullish" in bt and is_bullish(verdict):
-        score += 40
+        score += 50
     elif "Strong Bearish" in bt and is_bearish(verdict):
-        score += 40
+        score += 50
     elif "Moderate Bullish" in bt and is_bullish(verdict):
-        score += 25
+        score += 30
     elif "Moderate Bearish" in bt and is_bearish(verdict):
-        score += 25
+        score += 30
     elif "Mixed" in bt:
-        score += 10
+        score += 15
 
     # Component 2: recent scan agreement
     with get_conn() as conn:
@@ -180,26 +179,9 @@ def calculate_momentum_score(
                 agreeing += 1
             elif is_bearish(verdict) and is_bearish(label):
                 agreeing += 1
-        score += round(agreeing / len(recent_rows) * 30)
+        score += round(agreeing / len(recent_rows) * 40)
 
-    # Component 3: chart indicator alignment
-    chart_indicators = ctx.get("chart_indicators") or {}
-    tf_data = chart_indicators
-    if not any(k in chart_indicators for k in ("1h", "3h")):
-        tf_data = next(iter(chart_indicators.values()), {}) if chart_indicators else {}
-
-    if tf_data:
-        aligned_tfs = 0
-        for tf_key in ("1h", "3h"):
-            tf = tf_data.get(tf_key) or {}
-            tf_verdict = tf.get("verdict") or tf.get("signal") or ""
-            if is_bullish(verdict) and is_bullish(tf_verdict):
-                aligned_tfs += 1
-            elif is_bearish(verdict) and is_bearish(tf_verdict):
-                aligned_tfs += 1
-        score += aligned_tfs * 10
-
-    # Component 4: confidence contribution (scaled, capped at 10)
+    # Component 3: confidence contribution (scaled, capped at 10)
     score += min(round(confidence * 0.10), 10)
 
     return min(100, score)

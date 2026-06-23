@@ -49,15 +49,27 @@
   /* App Header & Navigation */
   .app-header {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0 24px;
-    height: 64px;
+    flex-direction: column;
+    padding: 10px 24px;
+    gap: 10px;
     background: var(--surface);
     border-bottom: 1px solid var(--border);
     position: sticky;
     top: 0;
     z-index: 100;
+    height: auto !important;
+  }
+  .header-top-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+  }
+  .header-bottom-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
   }
   .header-left {
     display: flex;
@@ -280,23 +292,52 @@
 <body>
 
 <header class="app-header">
-  <div class="header-left">
-    <div class="logo-stack">
-      <span class="logo-text">NSEBOT</span>
-      <span class="logo-sub">OPTION MONITOR</span>
+  <!-- Top Row: Logo & Market Ticker -->
+  <div class="header-top-row">
+    <div class="header-left">
+      <div class="logo-stack">
+        <span class="logo-text">NSEBOT</span>
+        <span class="logo-sub">OPTION MONITOR</span>
+      </div>
+    </div>
+    
+    <div class="cmp-ticker" style="display:flex; align-items:center; gap:12px; font-family:var(--sans); overflow-x:auto;">
+      <div class="ticker-item" style="display:flex; align-items:center; gap:6px; font-family:var(--mono); font-size:12px; font-weight:700; flex-shrink:0; background:rgba(255,255,255,0.02); border:1px solid var(--border); padding:4px 10px; border-radius:6px;">
+        <span style="font-weight:600; color:var(--text-dim); font-size:11px; text-transform:uppercase; letter-spacing:0.5px; font-family:var(--sans);">NIFTY:</span>
+        <span id="ticker-nifty-ltp" style="color:var(--text);">Loading...</span>
+        <span id="ticker-nifty-chg" style="font-size:11px; font-weight:700;"></span>
+      </div>
+      <div class="ticker-item" style="display:flex; align-items:center; gap:6px; font-family:var(--mono); font-size:12px; font-weight:700; flex-shrink:0; background:rgba(255,255,255,0.02); border:1px solid var(--border); padding:4px 10px; border-radius:6px;">
+        <span style="font-weight:600; color:var(--text-dim); font-size:11px; text-transform:uppercase; letter-spacing:0.5px; font-family:var(--sans);">BANKNIFTY:</span>
+        <span id="ticker-banknifty-ltp" style="color:var(--text);">Loading...</span>
+        <span id="ticker-banknifty-chg" style="font-size:11px; font-weight:700;"></span>
+      </div>
+      <div class="ticker-item" style="display:flex; align-items:center; gap:6px; font-family:var(--mono); font-size:12px; font-weight:700; flex-shrink:0; background:rgba(255,255,255,0.02); border:1px solid var(--border); padding:4px 10px; border-radius:6px;">
+        <span style="font-weight:600; color:var(--text-dim); font-size:11px; text-transform:uppercase; letter-spacing:0.5px; font-family:var(--sans);">NATURALGAS:</span>
+        <span id="ticker-naturalgas-ltp" style="color:var(--text);">Loading...</span>
+        <span id="ticker-naturalgas-chg" style="font-size:11px; font-weight:700;"></span>
+      </div>
+      <div class="ticker-item" style="display:flex; align-items:center; gap:6px; font-family:var(--mono); font-size:12px; font-weight:700; flex-shrink:0; background:rgba(255,255,255,0.02); border:1px solid var(--border); padding:4px 10px; border-radius:6px;">
+        <span style="font-weight:600; color:var(--text-dim); font-size:11px; text-transform:uppercase; letter-spacing:0.5px; font-family:var(--sans);">CRUDEOIL:</span>
+        <span id="ticker-crudeoil-ltp" style="color:var(--text);">Loading...</span>
+        <span id="ticker-crudeoil-chg" style="font-size:11px; font-weight:700;"></span>
+      </div>
     </div>
   </div>
 
-  <div class="header-nav">
-    <a href="/" class="nav-tab active" id="tab-dashboard">Dashboard</a>
-    <a href="/paper" class="nav-tab" id="tab-paper">Paper Trades</a>
-    <a href="/broker" class="nav-tab" id="tab-broker">Broker Console</a>
-    <a href="/settings" class="nav-tab" id="tab-settings">Settings</a>
-  </div>
+  <!-- Bottom Row: Navigation & Refresh -->
+  <div class="header-bottom-row">
+    <div class="header-nav">
+      <a href="/" class="nav-tab active" id="tab-dashboard">Dashboard</a>
+      <a href="/paper" class="nav-tab" id="tab-paper">Paper Trades</a>
+      <a href="/broker" class="nav-tab" id="tab-broker">Broker Console</a>
+      <a href="/settings" class="nav-tab" id="tab-settings">Settings</a>
+    </div>
 
-  <div class="header-right" style="display:flex; align-items:center; gap:12px;">
-    <button id="theme-toggle-btn" class="theme-toggle-btn" title="Toggle Day/Night">🌙</button>
-    <button class="primary" onclick="loadAll()" style="font-family:var(--sans); font-weight:600; padding:6px 12px;">⟳ REFRESH</button>
+    <div class="header-right" style="display:flex; align-items:center; gap:12px;">
+      <button id="theme-toggle-btn" class="theme-toggle-btn" title="Toggle Day/Night">🌙</button>
+      <button class="primary" onclick="loadAll()" style="font-family:var(--sans); font-weight:600; padding:6px 12px;">⟳ REFRESH</button>
+    </div>
   </div>
 </header>
 
@@ -441,7 +482,49 @@ function fmtDateTime(s) {
   catch { return s; }
 }
 
+function fetchTopbarCMPs() {
+  fetch("/api/topbar_cmps")
+    .then(r => r.json())
+    .then(data => {
+      const symbols = ["NIFTY", "BANKNIFTY", "NATURALGAS", "CRUDEOIL"];
+      const formatNum = (val) => val !== null ? val.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2}) : '—';
+      
+      symbols.forEach(sym => {
+        const item = data[sym];
+        const idPrefix = sym.toLowerCase();
+        const ltpEl = document.getElementById(`ticker-${idPrefix}-ltp`);
+        const chgEl = document.getElementById(`ticker-${idPrefix}-chg`);
+        
+        if (ltpEl && chgEl) {
+          if (item && item.price !== undefined && item.price !== null) {
+            ltpEl.textContent = formatNum(item.price);
+            const change = item.change || 0;
+            const pct = item.pct_change || 0;
+            chgEl.textContent = `(${Math.abs(pct).toFixed(2)}%)`;
+            if (change > 0) {
+              ltpEl.style.color = "var(--green)";
+              chgEl.style.color = "var(--green)";
+            } else if (change < 0) {
+              ltpEl.style.color = "var(--red)";
+              chgEl.style.color = "var(--red)";
+            } else {
+              ltpEl.style.color = "var(--text)";
+              chgEl.style.color = "var(--text-dim)";
+            }
+          } else {
+            ltpEl.textContent = "—";
+            chgEl.textContent = "";
+            ltpEl.style.color = "var(--text)";
+            chgEl.style.color = "var(--text-dim)";
+          }
+        }
+      });
+    })
+    .catch(err => console.error("Error fetching topbar CMPs:", err));
+}
+
 async function loadAll() {
+  fetchTopbarCMPs();
   const sym = document.getElementById('symbol-sel').value;
   const hours = document.getElementById('hours').value;
   if (!sym) return;

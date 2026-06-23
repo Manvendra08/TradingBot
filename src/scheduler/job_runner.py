@@ -10,6 +10,10 @@ import sys
 import time
 from pathlib import Path
 import pytz
+import socket
+
+# Set global socket timeout to prevent indefinite hangs in third-party libraries (e.g. tvDatafeed, urllib)
+socket.setdefaulttimeout(15.0)
 
 from config.settings import FETCH_INTERVAL_MINUTES, WATCH_SYMBOLS
 from config.runtime_config import get_scan_frequency_minutes, get_scan_frequency_nse, get_scan_frequency_mcx
@@ -107,6 +111,9 @@ def _check_live_exits(symbol: str, underlying: float, strikes: list[dict]) -> No
 
     for trade_row in open_trades:
         trade = dict(trade_row)
+        if trade.get("setup_type") == "DIRECT_KITE" and not config.get("manage_direct_kite_positions", False):
+            continue
+
         exit_mode = trade.get("exit_mode") or "GTT"
 
         # Only poll-exit if: shadow mode, FUT, or explicit POLL fallback

@@ -116,12 +116,8 @@ class DhanFetcher(BaseFetcher):
         if DHAN_SEGMENTS.get(base_symbol) != "MCX_COMM":
             return None
 
-        log.warning("[dhan] falling back to public commodity scraper for %s: %s", symbol, reason)
-        try:
-            return DhanCommodityFetcher().fetch_option_chain(symbol)
-        except Exception as exc:
-            log.error("[dhan] public commodity fallback failed for %s: %s", symbol, exc)
-            return None
+        log.warning("[dhan] commodity fetch failed for %s: %s. Returning None for router fallback.", symbol, reason)
+        return None
 
     @staticmethod
     @lru_cache(maxsize=16)

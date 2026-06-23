@@ -173,21 +173,9 @@ def _fetch_icici_commentary() -> list[dict]:
     }
     rows = []
     try:
-        from requests.adapters import HTTPAdapter
-        from urllib3.util.retry import Retry
-
-        # Configure retry strategy
-        retry_strategy = Retry(
-            total=2,
-            backoff_factor=0.5,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["GET"],
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
         session = requests.Session()
-        session.mount("https://", adapter)
-
-        res = session.get(url, headers=headers, timeout=10)
+        # No retries to fail fast and avoid warnings for connection resets
+        res = session.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, "html.parser")
             elements = soup.find_all(["p", "div", "span", "li"])
@@ -208,7 +196,7 @@ def _fetch_icici_commentary() -> list[dict]:
                             "score": _news_sentiment_score(t),
                         })
     except Exception as e:
-        log.warning("ICICIDirect fetch failed: %s", e)
+        log.info("ICICIDirect fetch failed (possibly blocked by WAF): %s", e)
     return rows
 
 
@@ -222,23 +210,11 @@ def _fetch_way2wealth_commentary() -> list[dict]:
     rows = []
     try:
         import urllib3
-        from requests.adapters import HTTPAdapter
-        from urllib3.util.retry import Retry
-
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-        # Configure retry strategy
-        retry_strategy = Retry(
-            total=2,
-            backoff_factor=0.5,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["GET"],
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
         session = requests.Session()
-        session.mount("https://", adapter)
-
-        res = session.get(url, headers=headers, verify=False, timeout=10)
+        # No retries to fail fast and avoid warnings
+        res = session.get(url, headers=headers, verify=False, timeout=5)
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, "html.parser")
             for el in soup.find_all(["p", "div", "td", "span"]):
@@ -263,7 +239,7 @@ def _fetch_way2wealth_commentary() -> list[dict]:
                                     "score": _news_sentiment_score(line),
                                 })
     except Exception as e:
-        log.warning("Way2Wealth fetch failed: %s", e)
+        log.info("Way2Wealth fetch failed: %s", e)
     return rows
 
 

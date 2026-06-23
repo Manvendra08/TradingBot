@@ -10,6 +10,7 @@
 ## Current repo shape
 
 - Main app entry: `python main.py`
+- One-shot scan: `python main.py --now`
 - Dashboard server: `python dashboard_server.py`
 - Paper trading page: `http://localhost:8080/paper`
 - Active scan interval options: `5m`, `15m`, `30m`, `1H`, `3H`, `1D`
@@ -27,6 +28,17 @@
   - Color-coded status badges and P&L display
   - Responsive design (desktop/tablet/mobile)
 - Keep docs aligned with the live FastAPI dashboard, not older Streamlit references
+
+## AI / LLM state (v3.0)
+
+- `AI_DECISION_MODE = boost_only` (default in `settings.py`; override via env `AI_DECISION_MODE`)
+- LLM enrichment is **engine-aligned**: OI engine decides direction; LLM provides execution detail only
+- Direction inversion guard: `_enforce_engine_alignment()` in `llm_enrichment.py` — no model can flip the engine's directional call
+- Entry advisor is skipped when a position is already open; only exit advisor runs
+- Chart conflict (1H vs 3H): NO penalty for OI-based trades; a 1H opposing a completed 3H = entry timing signal
+- MCX confidence floor: 72% for NATURALGAS/CRUDEOIL/GOLD/SILVER (vs 70% NSE)
+- JSON parse hardening: `_extract_json()` handles fences, prose wrappers, control chars — eliminates per-cycle OpenRouter parse failures
+- HOLDING alerts now show position age (`entered 47m ago`) to disambiguate from new signals
 
 ## Token Efficiency
 

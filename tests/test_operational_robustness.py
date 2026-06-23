@@ -226,7 +226,7 @@ def test_build_paper_trade_plan_fut_atr():
     
     ctx_regular = {
         "symbol": "NATURALGAS",
-        "underlying": 300.0,
+        "underlying": 301.0,
         "atm_strike": 300.0,
         "chart_indicators": {
             "3h": {
@@ -240,18 +240,18 @@ def test_build_paper_trade_plan_fut_atr():
     plan_reg = build_paper_trade_plan("Long Buildup", 80, ctx_regular)
     assert plan_reg is not None
     assert plan_reg["option_type"] == "FUT"
-    # SL = underlying - 1.5 * ATR = 300 - 1.5 * 5 = 292.5
-    # TP = underlying + 2.0 * ATR = 300 + 2.0 * 5 = 310.0
-    assert plan_reg["sl_underlying"] == 292.5
-    assert plan_reg["target_underlying"] == 310.0
+    # SL = underlying - 1.5 * ATR = 301.0 - 1.5 * 5 = 293.5
+    # TP = underlying + 2.0 * ATR = 301.0 + 2.0 * 5 = 311.0
+    assert plan_reg["sl_underlying"] == 293.5
+    assert plan_reg["target_underlying"] == 311.0
     
     # Timeframe FUT trade should bypass ATR SL/TP logic (default to Support/Resistance step-based fallback)
     ctx_tf = {**ctx_regular, "setup_type": "TIMEFRAME"}
     plan_tf = build_paper_trade_plan("Long Buildup", 80, ctx_tf)
     assert plan_tf is not None
     assert plan_tf["option_type"] == "FUT"
-    # Fallback to strike step based SL/TP: strike step is 5 (for NG), so SL is 295.0, TP is 305.0
-    assert plan_tf["sl_underlying"] != 292.5
-    assert plan_tf["target_underlying"] != 310.0
+    # Fallback to strike step based SL/TP: strike step is 5 (for NG), so SL is 290.0, TP is 310.0
+    assert plan_tf["sl_underlying"] != 293.5
+    assert plan_tf["target_underlying"] != 311.0
 
 

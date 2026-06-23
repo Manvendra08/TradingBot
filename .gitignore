@@ -11,9 +11,11 @@ dist/
 build/
 .eggs/
 
-# Virtual environment
+# Virtual environment (keep only .venv)
 venv/
 .venv/
+.venv-*/
+.venv_new/
 env/
 
 # Environment / secrets
@@ -47,3 +49,32 @@ desktop.ini
 coverage.xml
 htmlcov/
 .pytest_cache/
+
+# Cleanup backups
+cleanup_backup_*/
+backup_safe_delete_*/
+
+# Scratch directory (keep folder, ignore contents)
+scratch/*
+!scratch/.gitkeep
+
+# Cache directories (keep only active yf-cache)
+data/yf-cache[2-9]/
+data/yf-cache[0-9][0-9]/
+
+# Database backups and journals
+data/*.backup
+data/*.db-journal
+
+# Debug outputs and screenshots
+*.png
+paper_out.html
+
+# Archive files
+*.zip
+
+# Local backups & large data
+Backup/
+Proceeding without questions/
+data/dhan_scrip_master.csv
+.kiro/

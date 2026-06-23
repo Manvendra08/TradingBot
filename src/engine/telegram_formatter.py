@@ -1,6 +1,10 @@
 """
 User-Friendly Telegram Message Formatter
 Converts technical intelligence into actionable, easy-to-understand messages
+
+DEPRECATED — production uses digest.build_llm_consolidated_digest.
+These functions are retained only for offline testing/demo.
+Do not add features here.
 """
 import logging
 

@@ -94,7 +94,7 @@ def no_telegram(monkeypatch):
 @pytest.fixture(autouse=True)
 def mock_llm_calls(request):
     """Globally mock LLM enrichment calls to avoid external API token usage in tests, except when testing the API client itself."""
-    if request.cls and request.cls.__name__ == "TestOpenRouterArrayUnwrap":
+    if (request.cls and request.cls.__name__ == "TestOpenRouterArrayUnwrap") or request.node.name == "test_llm_alternative_fallbacks":
         yield
         return
 

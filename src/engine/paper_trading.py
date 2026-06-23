@@ -23,6 +23,8 @@ from typing import Optional
 
 log = logging.getLogger(__name__)
 
+from src.engine.trade_decision import _extract_ai_bias
+
 from config.settings import (
     LOT_SIZES,
     MIN_ENTRY_QUALITY_CORE,
@@ -417,6 +419,11 @@ def run_paper_trading(
     if not plan:
         return {"action": "HOLD", "trade": current_open_trade, "reason": "No valid plan"}
 
+    # Add null target guard:
+    if plan.get("target_underlying") is None and plan.get("option_type") != "FUT":
+        log.warning("%s: plan has null target_underlying — rejecting to prevent phantom exit", symbol)
+        return {"action": "BLOCKED_PLAN", "reason": "Null target — plan incomplete"}
+
     # Add extra fields to plan for execute_paper_trade
     option_type = plan["option_type"]
     strike = plan["strike"]
@@ -561,22 +568,11 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
 
         # LLM Reversal Exit
         if ai_verdict is not None:
-            if isinstance(ai_verdict, dict):
-                action = ai_verdict.get("action")
-                bias_val = ai_verdict.get("bias")
-                ai_conf = float(ai_verdict.get("confidence", 50))
-            else:
-                action = getattr(ai_verdict, "action", None)
-                bias_val = getattr(ai_verdict, "bias", None)
-                ai_conf = float(getattr(ai_verdict, "confidence", 50))
-            
-            ai_bias = "NEUTRAL"
-            if action == "GO_LONG":
-                ai_bias = "BULLISH"
-            elif action == "GO_SHORT":
-                ai_bias = "BEARISH"
-            elif bias_val:
-                ai_bias = str(bias_val).upper()
+            ai_bias = _extract_ai_bias(ai_verdict) or "NEUTRAL"
+            ai_conf = float(
+                ai_verdict.get("confidence", 50) if isinstance(ai_verdict, dict)
+                else getattr(ai_verdict, "confidence", 50)
+            )
             
             is_reversal = False
             if trade["verdict_label"] == "LONG" and ai_bias == "BEARISH":
@@ -630,16 +626,26 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
             is_tgt_hit = False
             
             if exit_premium:
-                if sl_prem:
-                    if side == "SELL":
-                        is_sl_hit = (exit_premium >= float(sl_prem))
-                    else:
-                        is_sl_hit = (exit_premium <= float(sl_prem))
-                if tgt_prem:
-                    if side == "SELL":
-                        is_tgt_hit = (exit_premium <= float(tgt_prem))
-                    else:
-                        is_tgt_hit = (exit_premium >= float(tgt_prem))
+                if sl_prem is not None and str(sl_prem).strip() not in ("", "None", "NULL"):
+                    try:
+                        sl_val = float(sl_prem)
+                        if sl_val > 0:
+                            if side == "SELL":
+                                is_sl_hit = (exit_premium >= sl_val)
+                            else:
+                                is_sl_hit = (exit_premium <= sl_val)
+                    except ValueError:
+                        pass
+                if tgt_prem is not None and str(tgt_prem).strip() not in ("", "None", "NULL"):
+                    try:
+                        tgt_val = float(tgt_prem)
+                        if tgt_val > 0:
+                            if side == "SELL":
+                                is_tgt_hit = (exit_premium <= tgt_val)
+                            else:
+                                is_tgt_hit = (exit_premium >= tgt_val)
+                    except ValueError:
+                        pass
                         
             if is_sl_hit:
                 close_paper_trade(
@@ -813,22 +819,11 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
         return {"action": "BLOCKED_RISK", "reason": f"Timeframe entry skipped: {risk_reason}"}
 
     if ai_verdict is not None:
-        if isinstance(ai_verdict, dict):
-            action = ai_verdict.get("action")
-            bias_val = ai_verdict.get("bias")
-            ai_risk = str(ai_verdict.get("risk_rating") or "LOW").upper()
-        else:
-            action = getattr(ai_verdict, "action", None)
-            bias_val = getattr(ai_verdict, "bias", None)
-            ai_risk = str(getattr(ai_verdict, "risk_rating", "LOW")).upper()
-        
-        ai_bias = "NEUTRAL"
-        if action == "GO_LONG":
-            ai_bias = "BULLISH"
-        elif action == "GO_SHORT":
-            ai_bias = "BEARISH"
-        elif bias_val:
-            ai_bias = str(bias_val).upper()
+        ai_bias = _extract_ai_bias(ai_verdict) or "NEUTRAL"
+        ai_risk = str(
+            ai_verdict.get("risk_rating", "LOW") if isinstance(ai_verdict, dict)
+            else getattr(ai_verdict, "risk_rating", "LOW")
+        ).upper()
         
         if direction == "LONG" and ai_bias == "BEARISH":
             return {"action": "BLOCKED_PLAN", "reason": f"Timeframe entry skipped: LLM bias alignment mismatch ({ai_bias} vs {direction})"}

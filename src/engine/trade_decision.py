@@ -67,6 +67,8 @@ from config.settings import (
     AI_DECISION_MODE,
     AI_MIN_CONFIDENCE_BOOST,
     AI_MIN_CONFIDENCE_VETO,
+    MCX_MIN_CONFIDENCE,
+    MCX_SYMBOLS,
 )
 
 log = logging.getLogger(__name__)
@@ -87,10 +89,19 @@ def _count_valid_scans(symbol: str) -> int:
     return int(row[0]) if row else 0
 
 
-def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None) -> dict:
+def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None, suppress_logs: bool = False) -> dict:
     """
     Combine all layers → TRIGGERED_CORE / TRIGGERED_EXPERIMENTAL / BLOCKED.
     """
+    def _decision(status: str, setup_type: str, reason: str,
+                  soft_conflicts: list[str], scores: dict,
+                  ai_verdict_arg=None) -> dict:
+        effective_ai_verdict = ai_verdict_arg if ai_verdict_arg is not None else ai_verdict
+        return _decision_global(
+            status, setup_type, reason, soft_conflicts, scores,
+            ai_verdict=effective_ai_verdict, suppress_logs=suppress_logs
+        )
+
     from config.runtime_config import load_runtime_config
     rconf = load_runtime_config()
     ai_decision_mode = rconf.get("live_ai_decision_mode", "advisory")
@@ -106,6 +117,16 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None) ->
 
     if not is_bullish(verdict) and not is_bearish(verdict):
         return _blocked(f"Verdict '{verdict}' is not directional")
+
+    # MCX confidence floor: MCX OI data is thinner than NSE index — require
+    # higher conviction before trading commodity options/futures.
+    sym_base = str(symbol).upper().split()[0]
+    effective_min_conf = MCX_MIN_CONFIDENCE if sym_base in MCX_SYMBOLS else MIN_CONFIDENCE_CORE
+    if confidence < effective_min_conf:
+        return _blocked(
+            f"Confidence {confidence}% below {'MCX' if sym_base in MCX_SYMBOLS else 'core'} "
+            f"threshold {effective_min_conf}% for {symbol}"
+        )
 
     # Chart conflict is NO LONGER a hard block. 1H/3H candle sentiments are
     # for timeframe strategy only. Core OI-based trades should not be blocked
@@ -138,15 +159,6 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None) ->
 
     # ── Score all layers ───────────────────────────────────────────────────
     entry_quality, entry_reasons = calculate_entry_quality(symbol, option_type, strike, plan_ctx)
-
-    # Chart conflict soft penalty: 1H/3H disagreement reduces entry quality
-    # but does NOT hard-block core OI trades. Timeframe strategy (which relies
-    # on chart crossovers) handles its own conflict checks independently.
-    if intel.get("chart_conflict"):
-        entry_quality = max(0, entry_quality - 20)
-        entry_reasons.append("Chart conflict: -20 penalty")
-        soft_conflicts.append("CHART_CONFLICT")
-        log.debug("%s: Chart conflict (1H/3H disagree) — entry_quality penalised to %d", symbol, entry_quality)
 
     trend_alignment = get_trend_alignment_score(symbol, verdict)
 
@@ -228,18 +240,7 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None) ->
         # Pre-calculate reversal indicators to avoid undefined variable reference in fallback reasoning
         is_rev, rev_reason = detect_reversal_from_scans(symbol, verdict, confidence)
 
-        # Priority 1: Trend persistence
-        is_persistent, persist_reason = check_trend_persistence(
-            symbol, verdict, confidence, ctx, broader_trend=broader_trend
-        )
-        regime_ok = (regime_sc >= MIN_REGIME_SCORE_CORE) or (PAPER_RESEARCH_MODE and confidence >= MIN_CONFIDENCE_CORE)
-        if is_persistent and entry_quality >= MIN_ENTRY_QUALITY_CORE and regime_ok:
-            if regime_sc < MIN_REGIME_SCORE_CORE:
-                soft_conflicts.append("LOW_REGIME_SCORE")
-            return _decision("TRIGGERED_CORE", "TREND_CONTINUATION",
-                             persist_reason, soft_conflicts, scores)
-
-        # Priority 2: Reversal detection
+        # Priority 1: Reversal detection
         # Fix #7: reversal requires REVERSAL_MIN_CONFIDENCE.
         # Without this gate, a 70-confidence reversal call at trend-day open
         # would fire before persistence/momentum, closing profitable positions
@@ -258,6 +259,17 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None) ->
                 "%s: reversal detected but confidence %d < REVERSAL_MIN_CONFIDENCE %d.",
                 symbol, confidence, REVERSAL_MIN_CONFIDENCE,
             )
+
+        # Priority 2: Trend persistence
+        is_persistent, persist_reason = check_trend_persistence(
+            symbol, verdict, confidence, ctx, broader_trend=broader_trend
+        )
+        regime_ok = (regime_sc >= MIN_REGIME_SCORE_CORE) or (PAPER_RESEARCH_MODE and confidence >= MIN_CONFIDENCE_CORE)
+        if is_persistent and entry_quality >= MIN_ENTRY_QUALITY_CORE and regime_ok:
+            if regime_sc < MIN_REGIME_SCORE_CORE:
+                soft_conflicts.append("LOW_REGIME_SCORE")
+            return _decision("TRIGGERED_CORE", "TREND_CONTINUATION",
+                             persist_reason, soft_conflicts, scores)
 
         # Priority 3: Momentum scoring
         momentum_score = calculate_momentum_score(
@@ -342,16 +354,17 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None) ->
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
-def _decision(status: str, setup_type: str, reason: str,
-              soft_conflicts: list[str], scores: dict,
-              ai_verdict=None) -> dict:
+def _decision_global(status: str, setup_type: str, reason: str,
+                     soft_conflicts: list[str], scores: dict,
+                     ai_verdict=None, suppress_logs: bool = False) -> dict:
     from config.runtime_config import load_runtime_config
     rconf = load_runtime_config()
     ai_decision_mode = rconf.get("live_ai_decision_mode", "advisory")
     ai_min_confidence_veto = int(rconf.get("live_ai_min_confidence_veto", 85))
 
     if ai_decision_mode == "full" and "ai_bias" not in scores and not ai_verdict:
-        log.warning("AI decision mode is 'full' but no AI verdict was provided. Demoting trade.")
+        if not suppress_logs:
+            log.warning("AI decision mode is 'full' but no AI verdict was provided. Demoting trade.")
         if status == "TRIGGERED_CORE":
             status = "TRIGGERED_EXPERIMENTAL"
             soft_conflicts = soft_conflicts + ["AI_NO_VERDICT_DEMOTED"]
@@ -363,10 +376,11 @@ def _decision(status: str, setup_type: str, reason: str,
         ai_agrees = scores.get('ai_agrees', False)  # fix #6: was True — veto never fired when key absent
         ai_risk = scores.get('ai_risk_rating', '')
         if not ai_agrees and ai_conf >= ai_min_confidence_veto:
-            log.warning(
-                "Trade VETOED by AI: %s | AI bias disagrees (conf=%d%%, risk=%s)",
-                status, ai_conf, ai_risk,
-            )
+            if not suppress_logs:
+                log.warning(
+                    "Trade VETOED by AI: %s | AI bias disagrees (conf=%d%%, risk=%s)",
+                    status, ai_conf, ai_risk,
+                )
             return {
                 "status":         "BLOCKED",
                 "setup_type":     None,
@@ -374,7 +388,8 @@ def _decision(status: str, setup_type: str, reason: str,
                 "soft_conflicts": soft_conflicts + ["AI_VETOED"],
                 "scores":         scores,
             }
-    log.info("Trade decision: %s | %s | %s", status, setup_type, reason)
+    if not suppress_logs:
+        log.info("Trade decision: %s | %s | %s", status, setup_type, reason)
     return {
         "status":         status,
         "setup_type":     setup_type,

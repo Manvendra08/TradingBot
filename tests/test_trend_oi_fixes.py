@@ -277,6 +277,7 @@ def test_key_levels_global_max_walls():
 
 def test_trade_decision_chart_conflict_hard_block():
     from src.engine.trade_decision import make_trade_decision
+    from unittest.mock import patch
     intel = {
         "verdict_label": "Long Buildup",
         "confidence": 80,
@@ -289,7 +290,8 @@ def test_trade_decision_chart_conflict_hard_block():
         "resistance": 54500.0,
         "expiry": "2026-06-04"
     }
-    decision = make_trade_decision("NIFTY", intel, ctx)
+    with patch("src.engine.trade_decision.calculate_entry_quality", return_value=(70, [])):
+        decision = make_trade_decision("NIFTY", intel, ctx)
     assert decision["status"] == "TRIGGERED_EXPERIMENTAL"
     assert "CHART_CONFLICT" in decision.get("soft_conflicts", [])
 

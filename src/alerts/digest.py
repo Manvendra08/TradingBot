@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid
+
+log = logging.getLogger(__name__)
 from datetime import datetime, timedelta, timezone
 
 from src.engine.intelligence import generate_intelligence
@@ -11,6 +14,8 @@ from src.engine.intelligence import generate_intelligence
 IST = timezone(timedelta(hours=5, minutes=30))
 MAX_TELEGRAM_LEN = 3900
 USE_ENHANCED_TEMPLATE = True  # Toggle between old and new template
+_LEGACY_DIGEST = False
+
 
 EMOJI_GREEN = "\U0001F7E2"
 EMOJI_RED = "\U0001F534"
@@ -491,7 +496,16 @@ def build_digest(
     paper_trade_status: dict | None = None,
     live_trade_status: dict | None = None,
     llm_verdict: dict | None = None,
+    exit_advice: any = None,
 ) -> tuple[str, str]:
+    if not _LEGACY_DIGEST:
+        log.warning("Legacy build_digest called but disabled. Redirecting to build_llm_consolidated_digest.")
+        return build_llm_consolidated_digest(
+            symbol, alerts, fetched_at, scan_context,
+            detected_count, dedup_suppressed_count, digest_id,
+            paper_trade_status, live_trade_status, llm_verdict,
+            exit_advice=exit_advice
+        )
     if digest_id is None:
         digest_id = str(uuid.uuid4())[:8]
     try:
@@ -1127,6 +1141,7 @@ def build_enhanced_digest(
     paper_trade_status: dict | None = None,
     live_trade_status: dict | None = None,
     llm_verdict: dict | None = None,
+    exit_advice: any = None,
 ) -> tuple[str, str]:
     if digest_id is None:
         digest_id = str(uuid.uuid4())[:8]
@@ -1145,7 +1160,7 @@ def build_enhanced_digest(
     px_label = _price_label(symbol)
  
     if not alerts:
-        return build_digest(symbol, alerts, fetched_at, scan_context, intelligence_text, detected_count, dedup_suppressed_count, digest_id=digest_id, paper_trade_status=paper_trade_status, live_trade_status=live_trade_status, llm_verdict=llm_verdict)
+        return build_digest(symbol, alerts, fetched_at, scan_context, intelligence_text, detected_count, dedup_suppressed_count, digest_id=digest_id, paper_trade_status=paper_trade_status, live_trade_status=live_trade_status, llm_verdict=llm_verdict, exit_advice=exit_advice)
  
     intel_raw = intelligence_text if intelligence_text is not None else generate_intelligence(symbol, alerts, scan_context=scan_context)
     intel = _parse_intelligence(intel_raw)
@@ -1484,6 +1499,134 @@ def _compress_fallback_section(text: str) -> str:
     return "\n".join(lines)
 
 
+# ── Redesigned premium alert helpers ────────────────────────────────────────
+
+def _arrow_candle(s: str) -> str:
+    return "▲" if s == "BULLISH" else ("▼" if s == "BEARISH" else "→")
+
+
+def _risk_badge(risk: str) -> str:
+    r = str(risk).upper()
+    if r in ("HIGH", "EXTREME"):
+        return "🔴"
+    if r == "MEDIUM":
+        return "🟡"
+    return "🟢"
+
+
+def _bot_action_block(
+    paper_trade_status: dict | None,
+    live_trade_status: dict | None,
+    conflict_tag: str | None = None,
+) -> list[str]:
+    """Compact single-line summary of what the BOT actually did this scan."""
+    lines: list[str] = []
+
+    def _render(status: dict | None, label: str) -> str | None:
+        if not status:
+            return None
+        action = (status.get("action") or "").upper()
+        trade = status.get("trade") or {}
+        opt = trade.get("option_type", "")
+        strike = trade.get("strike")
+        side = str(trade.get("side") or status.get("side") or "BUY").upper()
+        entry = trade.get("entry_premium") or trade.get("entry_underlying")
+        sl = trade.get("sl_premium") or trade.get("sl_underlying")
+        tgt = trade.get("target_premium") or trade.get("target_underlying")
+        pnl = trade.get("pnl_rupees") or 0.0
+        reason = status.get("reason", "")
+
+        # Normalize HOLD/HELD/HELD_PENDING depending on trade activity
+        if action in ("HOLD", "HELD"):
+            if trade and ("id" in trade or "option_type" in trade or "strike" in trade):
+                action = "HELD"
+            else:
+                action = "NO_TRADE"
+
+        strike_str = f"{strike:g}" if strike is not None else ""
+        instrument = f"{strike_str}{opt}".strip() or "FUT"
+
+        if action == "EXECUTED":
+            entry_s = f"@{entry:.1f}" if entry is not None else ""
+            sl_s = f"SL {sl:.1f}" if sl is not None else ""
+            tgt_s = f"T {tgt:.1f}" if tgt is not None else ""
+            parts = [p for p in [entry_s, sl_s, tgt_s] if p]
+            warn = " ⚠️ (chart conflict)" if conflict_tag else ""
+            return f"✅ {label} ENTERED{warn}: {side} {instrument} {' | '.join(parts)}"
+        elif action == "CLOSED":
+            pnl_str = f"+₹{pnl:.0f}" if pnl >= 0 else f"-₹{abs(pnl):.0f}"
+            icon = "🟢" if pnl >= 0 else "🔴"
+            close_reason = status.get("close_reason") or reason or ""
+            close_tag = f" ({close_reason})" if close_reason else ""
+            return f"{icon} {label} CLOSED: {side} {instrument}{close_tag} → PnL {pnl_str}"
+        elif action == "HELD":
+            live_pnl = trade.get("live_pnl_rupees")
+            cmp = trade.get("current_price") or trade.get("live_price")
+            pnl_part = f" | Live PnL: {'+'if (live_pnl or 0)>=0 else ''}₹{(live_pnl or 0):.0f}" if live_pnl is not None else ""
+            cmp_part = f" | CMP {cmp:.1f}" if cmp is not None else ""
+            # E2: Show position age so a stale held position isn't read as a new signal
+            age_part = ""
+            try:
+                opened_at = trade.get("opened_at")
+                if opened_at:
+                    from datetime import datetime as _dt, timezone as _tz
+                    opened_dt = _dt.fromisoformat(str(opened_at).replace("Z", "+00:00"))
+                    age_min = int((_dt.now(_tz.utc) - opened_dt).total_seconds() / 60)
+                    if age_min < 60:
+                        age_part = f" | entered {age_min}m ago"
+                    else:
+                        age_part = f" | entered {age_min // 60}h {age_min % 60}m ago"
+            except Exception:
+                pass
+            return f"📊 {label} HOLDING: {side} {instrument}{cmp_part}{pnl_part}{age_part}"
+        elif action == "HELD_PENDING":
+            return f"⏳ {label} PENDING: {side} {instrument} (Waiting for fill)"
+        elif action and action.startswith("BLOCKED"):
+            return f"🚫 {label} BLOCKED: {reason or 'filter'}"
+        elif action == "SKIPPED_MARKET_CLOSED":
+            return f"⏸ {label} SKIPPED: market closed"
+        elif action == "NO_TRADE":
+            return f"⬜ {label} NO TRADE: {reason or 'no valid plan'}"
+        else:
+            return f"⬜ {label}: {reason or action or 'no action'}"
+
+    paper_line = _render(paper_trade_status, "Paper")
+    live_line = _render(live_trade_status, "Live")
+    if paper_line:
+        lines.append(paper_line)
+    if live_line:
+        lines.append(live_line)
+    return lines
+
+
+def _conflict_tag(bias_upper: str, c1: str, c3: str) -> str:
+    """
+    Return a short chart-timing note when candles diverge from the OI verdict.
+    Per design: for OI-based trades, 1H opposing a completed 3H trend is an
+    entry-timing signal (potential pullback entry), not a warning. Only flag when
+    BOTH timeframes oppose the verdict (genuine conflict, not a timing opportunity).
+    """
+    if "BULL" in bias_upper or "LONG" in bias_upper:
+        if c1 == "BEARISH" and c3 == "BEARISH":
+            return " ⚠️ Both TFs bearish vs OI bull"
+        if "BEARISH" in (c1, c3):
+            return " 💡 1H pullback in 3H trend"
+    if "BEAR" in bias_upper or "SHORT" in bias_upper:
+        if c1 == "BULLISH" and c3 == "BULLISH":
+            return " ⚠️ Both TFs bullish vs OI bear"
+        if "BULLISH" in (c1, c3):
+            return " 💡 1H bounce in 3H downtrend"
+    return ""
+
+
+def _oi_summary_line(ce_net: int, pe_net: int) -> str:
+    """One-line OI flow read for the market pulse section."""
+    _, oi_text = _oi_flow_read(ce_net, pe_net)
+    ce_fmt = _fmt_oi(ce_net)
+    pe_fmt = _fmt_oi(pe_net)
+    return f"CE `{ce_fmt}` | PE `{pe_fmt}` — {oi_text}"
+
+
 def build_llm_consolidated_digest(
     symbol: str,
     alerts: list[dict],
@@ -1495,7 +1638,9 @@ def build_llm_consolidated_digest(
     paper_trade_status: dict | None = None,
     live_trade_status: dict | None = None,
     llm_verdict: dict | None = None,
+    exit_advice: any = None,
 ) -> tuple[str, str]:
+    """Premium Bloomberg-style alert: BOT action first, then market context."""
     if digest_id is None:
         digest_id = str(uuid.uuid4())[:8]
     try:
@@ -1507,138 +1652,198 @@ def build_llm_consolidated_digest(
     ctx = scan_context or {}
     expiry_val = ctx.get("expiry")
     exp_fmt, dte_lbl = _format_expiry_and_dte(expiry_val)
-    header_extra = f" ({exp_fmt} | {dte_lbl})" if exp_fmt and dte_lbl else (f" ({exp_fmt})" if exp_fmt else "")
+    header_extra = f" | {exp_fmt} | {dte_lbl}" if exp_fmt and dte_lbl else (f" | {exp_fmt}" if exp_fmt else "")
 
-    spot_val = _fmt_val(ctx.get('underlying'), symbol)
-    atm_val = _fmt_val(ctx.get('atm_strike'), symbol)
-    pcr_val = _fmt_num(ctx.get('pcr'), 2)
-    px_label = _price_label(symbol)
+    spot_val   = _fmt_val(ctx.get("underlying"), symbol)
+    atm_val    = _fmt_val(ctx.get("atm_strike"), symbol)
+    pcr_val    = _fmt_num(ctx.get("pcr"), 2)
+    px_label   = _price_label(symbol)
 
-    pcp = ctx.get("price_change_pct")
+    # Price delta
+    pcp  = ctx.get("price_change_pct")
     pcpt = ctx.get("price_change_points")
-    try:
-        d_spot = float(pcp) if pcp is not None else 0.0
-    except Exception:
-        d_spot = 0.0
-    try:
-        d_points = float(pcpt or 0.0)
-    except Exception:
-        d_points = 0.0
+    try:    d_spot   = float(pcp)  if pcp  is not None else 0.0
+    except: d_spot   = 0.0
+    try:    d_points = float(pcpt or 0.0)
+    except: d_points = 0.0
     pct_digits = 3 if abs(d_spot) < 0.01 and d_spot != 0 else 2
     if pcp is None:
-        spot_delta = "no prev data"
+        spot_delta_str = ""
     elif abs(d_points) < 0.05 and abs(d_spot) < 0.005:
-        spot_delta = "flat"
+        spot_delta_str = ""
     else:
-        spot_delta = f"{_fmt_signed(d_points, 1)} ({_fmt_signed(d_spot, pct_digits)}%)"
+        spot_delta_str = f" ({_fmt_signed(d_points, 1)}, {_fmt_signed(d_spot, pct_digits)}%)"
 
-    spot_delta_clean = spot_delta.replace("`", "")
-    spot_delta_str = f" ({spot_delta_clean})" if spot_delta != "flat" and spot_delta != "no prev data" else ""
+    # LLM fields
+    def gv(key, default=""):
+        if isinstance(llm_verdict, dict):
+            return llm_verdict.get(key, default)
+        return getattr(llm_verdict, key, default) if llm_verdict else default
 
-    lines = [
-        f"\U0001F4CA *{symbol}*{header_extra} | {ts}",
-        f"{px_label} `{spot_val}{spot_delta_str}` | ATM `{atm_val}` | PCR `{pcr_val}`",
-    ]
+    bias       = gv("bias") or gv("action")
+    conf       = gv("confidence", 0)
+    strat      = gv("strategy") or gv("instrument")
+    strike_sel = gv("strike_selection") or gv("entry_premium_range")
+    reason     = gv("reasoning") or gv("thesis")
+    risk       = gv("risk_rating")
+    exit_adv   = gv("exit_advice")
+    news       = gv("news_synthesis")
 
-    ce_net, pe_net = _net_oi_delta(alerts, ctx)
-    oi_unwind_note = ""
-    if ce_net < 0 and pe_net < 0:
-        oi_unwind_note = " (Both Unwind)"
-    elif ce_net > 0 and pe_net > 0:
-        oi_unwind_note = " (Both Build)"
-    lines.append(f"Net OI \u0394: CE `{_fmt_oi(ce_net)}` | PE `{_fmt_oi(pe_net)}`{oi_unwind_note}")
-    lines.append(DIVIDER)
+    entry_trigger = gv("entry_trigger")
+    stop_loss     = gv("stop_loss")
+    target_1      = gv("target_1")
+    target_2      = gv("target_2")
+    risk_reward   = gv("risk_reward")
+    invalidation  = gv("invalidation")
 
-    def get_val(obj, key, default=""):
-        if isinstance(obj, dict):
-            return obj.get(key, default)
-        return getattr(obj, key, default)
+    bias_upper = str(bias).upper().strip() if bias else "NEUTRAL"
+    is_bull  = "BULL" in bias_upper or "LONG"  in bias_upper
+    is_bear  = "BEAR" in bias_upper or "SHORT" in bias_upper
+    is_no_trade = "NO_TRADE" in bias_upper or "NEUTRAL" in bias_upper
 
-    bias = get_val(llm_verdict, "bias") or get_val(llm_verdict, "action")
-    conf = get_val(llm_verdict, "confidence", 0)
-    strat = get_val(llm_verdict, "strategy") or get_val(llm_verdict, "instrument")
-    strike = get_val(llm_verdict, "strike_selection") or get_val(llm_verdict, "entry_premium_range")
-    reason = get_val(llm_verdict, "reasoning") or get_val(llm_verdict, "thesis")
-    risk = get_val(llm_verdict, "risk_rating")
-    exit_adv = get_val(llm_verdict, "exit_advice")
-    news = get_val(llm_verdict, "news_synthesis")
+    verdict_emoji = "🟢" if is_bull else ("🔴" if is_bear else "⚪")
+    risk_icon  = _risk_badge(str(risk)) if risk else ""
 
-    bias_upper = str(bias).upper().strip()
-    emoji = "🟢" if "BULL" in bias_upper or "LONG" in bias_upper else ("🔴" if "BEAR" in bias_upper or "SHORT" in bias_upper else "⚪")
-
-    lines.append(f"{emoji} *AI: {_esc(bias_upper)} ({conf}%)*")
-    if risk:
-        lines.append(f"Risk: {_esc(risk.upper())}")
-
-    action_parts = []
-    if strike:
-        action_parts.append(strike.strip())
-    if strat:
-        action_parts.append(strat.strip())
-    
-    action_str = " → ".join(action_parts)
-    if action_str:
-        lines.append(f"Action: {_esc(action_str)}")
-        
-    if exit_adv:
-        lines.append(f"Exit: {_esc(exit_adv.strip())}")
-        
-    if reason:
-        lines.append(f"Reason: {_esc(reason.strip())}")
-        
-    if news and str(news).lower() != "no news data":
-        lines.append(f"News: {_esc(news.strip())}")
-
-    # key levels and candles
-    levels_parts = []
-    if ctx.get("support"):
-        levels_parts.append(f"S:{_fmt_val(ctx.get('support'), symbol)}")
-    if ctx.get("resistance"):
-        levels_parts.append(f"R:{_fmt_val(ctx.get('resistance'), symbol)}")
-    if levels_parts:
-        lines.append(f"Levels: {' | '.join(levels_parts)}")
-
+    # Candles
     chart_payload = _chart_payload_for_symbol(ctx, symbol)
     c1 = chart_payload.get("1h", {}).get("sentiment", "NEUTRAL").upper()
     c3 = chart_payload.get("3h", {}).get("sentiment", "NEUTRAL").upper()
+    conflict_tag = _conflict_tag(bias_upper, c1, c3)
 
-    def arrow(s):
-        if s == "BULLISH":
-            return "▲"
-        if s == "BEARISH":
-            return "▼"
-        return "→"
-    lines.append(f"Candles: 1H {c1} {arrow(c1)} | 3H {c3} {arrow(c3)}")
+    # OI
+    ce_net, pe_net = _net_oi_delta(alerts, ctx)
 
-    # Signals
-    if alerts:
-        sorted_alerts = sorted(alerts, key=lambda a: _SEV_ORDER.get(a.get("severity", "LOW"), 2))
-        high = sum(a.get("severity") == "HIGH" for a in alerts)
-        med = sum(a.get("severity") == "MEDIUM" for a in alerts)
-        low = sum(a.get("severity") == "LOW" for a in alerts)
-        
-        counts = " ".join(x for x in [
-            f"🔴{high} HIGH" if high else "",
-            f"🟡{med} MED" if med else "",
-            f"🔵{low} LOW" if low else "",
-        ] if x)
-        if counts:
-            lines.append(f"Alerts: {counts}")
-            
-        signal_lines = []
-        for alert in sorted_alerts[:3]:
-            badge = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🔵"}.get(alert.get("severity", "LOW"), "🔵")
-            sig_text = _to_caveman(_signal_line(alert))
-            signal_lines.append(f"{badge} {sig_text}")
-        if signal_lines:
-            lines.append("Signals:")
-            lines.extend(signal_lines)
+    # Key levels
+    sup_val = ctx.get("support")
+    res_val = ctx.get("resistance")
+    levels_str = " | ".join(filter(None, [
+        f"S:{_fmt_val(sup_val, symbol)}" if sup_val else "",
+        f"R:{_fmt_val(res_val, symbol)}" if res_val else "",
+    ])) or "—"
 
-    if paper_trade_status:
-        lines.append(f"Paper: {_esc(_format_trade_status_caveman(paper_trade_status, is_live=False))}")
-    if live_trade_status:
-        lines.append(f"Live: {_esc(_format_trade_status_caveman(live_trade_status, is_live=True))}")
+    # ── Signals summary
+    high_cnt = sum(1 for a in alerts if a.get("severity") == "HIGH")
+    med_cnt  = sum(1 for a in alerts if a.get("severity") == "MEDIUM")
+    low_cnt  = sum(1 for a in alerts if a.get("severity") == "LOW")
+    sev_parts = " ".join(x for x in [
+        f"🔴{high_cnt} HIGH" if high_cnt else "",
+        f"🟡{med_cnt} MED"  if med_cnt  else "",
+        f"🔵{low_cnt} LOW"  if low_cnt  else "",
+    ] if x)
 
+    sorted_alerts = sorted(alerts, key=lambda a: _SEV_ORDER.get(a.get("severity", "LOW"), 2))
+    top_signals: list[str] = []
+    for alert in sorted_alerts[:3]:
+        badge = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🔵"}.get(alert.get("severity", "LOW"), "🔵")
+        top_signals.append(f"{badge} {_to_caveman(_signal_line(alert))}")
+
+    # ═══════════════════════════════════════════
+    # SECTION 1 — HEADER  (always visible)
+    # ═══════════════════════════════════════════
+    lines: list[str] = [
+        f"📊 *{symbol}*{header_extra} | {ts}",
+        f"{px_label} `{spot_val}{spot_delta_str}` | ATM `{atm_val}` | PCR `{pcr_val}`",
+        DIVIDER,
+    ]
+
+    # ═══════════════════════════════════════════
+    # SECTION 2 — AI VERDICT / EXIT ADVICE
+    # ═══════════════════════════════════════════
+    ea_action = None
+    if exit_advice:
+        ea_action = exit_advice.get("action") if isinstance(exit_advice, dict) else getattr(exit_advice, "action", None)
+
+    if ea_action:
+        ea_urgency = exit_advice.get("urgency") if isinstance(exit_advice, dict) else getattr(exit_advice, "urgency", "")
+        ea_reasoning = exit_advice.get("reasoning") if isinstance(exit_advice, dict) else getattr(exit_advice, "reasoning", "")
+        ea_new_sl = exit_advice.get("new_sl_premium") if isinstance(exit_advice, dict) else getattr(exit_advice, "new_sl_premium", None)
+        ea_new_target = exit_advice.get("new_target_premium") if isinstance(exit_advice, dict) else getattr(exit_advice, "new_target_premium", None)
+
+        action_emoji = {"HOLD": "⚪", "TRAIL_SL": "🟡", "CLOSE_EARLY": "🔴", "EXTEND_TARGET": "🔵"}.get(ea_action, "⚪")
+        urgency_badge = {"LOW": "🟢 LOW", "MEDIUM": "🟡 MED", "HIGH": "🔴 HIGH"}.get(ea_urgency.upper(), ea_urgency)
+
+        verdict_line = f"{action_emoji} *AI EXIT ADVISOR: {ea_action}* (Urgency: {urgency_badge})"
+        lines.append(verdict_line)
+        lines.append(f"  *Reasoning:* _{_esc(ea_reasoning)}_")
+        if ea_new_sl is not None:
+            lines.append(f"  *New SL Premium:* `{_fmt_num(ea_new_sl, 2)}`")
+        if ea_new_target is not None:
+            lines.append(f"  *New Target Premium:* `{_fmt_num(ea_new_target, 2)}`")
+    else:
+        conf_bar_filled = round(int(conf) / 10) if conf else 0
+        conf_bar = ("█" * conf_bar_filled) + ("░" * (10 - conf_bar_filled))
+        verdict_line = f"{verdict_emoji} *AI: {_esc(bias_upper)}* `{conf}% | {conf_bar}`"
+        if risk_icon:
+            verdict_line += f" {risk_icon} {_esc(str(risk).upper())}"
+        lines.append(verdict_line)
+
+        if conflict_tag:
+            lines.append(f"  ⚠️ *WARNING:* AI direction conflicts with chart candles (1H {c1} | 3H {c3}) — treat this setup with extra caution")
+
+        if strat and not is_no_trade:
+            if strike_sel:
+                lines.append(f"  *Instrument:* {_esc(strat)} | *Premium:* `{_esc(strike_sel)}`")
+            else:
+                lines.append(f"  *Instrument:* {_esc(strat)}")
+
+            setup_parts = []
+            if risk_reward:
+                setup_parts.append(f"R:R: `{_esc(risk_reward)}`")
+            if stop_loss:
+                setup_parts.append(f"SL: `{_esc(stop_loss)}`")
+            if target_1:
+                setup_parts.append(f"T1: `{_esc(target_1)}`")
+            if target_2:
+                setup_parts.append(f"T2: `{_esc(target_2)}`")
+
+            if setup_parts:
+                lines.append(f"  *Setup:* {' | '.join(setup_parts)}")
+
+            if entry_trigger:
+                lines.append(f"  *Trigger:* _{_esc(entry_trigger)}_")
+
+            if invalidation:
+                lines.append(f"  *Invalidation:* _{_esc(invalidation)}_")
+
+        if reason:
+            lines.append(f"  *Thesis:* _{_esc(str(reason).strip())}_")
+
+        if exit_adv and not is_no_trade:
+            lines.append(f"  *Exit Signal:* {_esc(str(exit_adv).strip())}")
+
+    if news and str(news).lower() not in ("no news data", "", "none"):
+        lines.append(f"  *News:* {_esc(str(news).strip())}")
+
+    lines.append("")
+
+    # ═══════════════════════════════════════════
+    # SECTION 3 — MARKET PULSE
+    # ═══════════════════════════════════════════
+    lines.append("📈 *MARKET PULSE*")
+    lines.append(f"  OI Δ: {_oi_summary_line(ce_net, pe_net)}")
+    lines.append(f"  Candles: 1H {c1} {_arrow_candle(c1)} | 3H {c3} {_arrow_candle(c3)}")
+    lines.append(f"  Levels: {levels_str}")
+
+    if sev_parts:
+        lines.append(f"  Alerts: {sev_parts}")
+    if top_signals:
+        for sig in top_signals:
+            lines.append(f"  {sig}")
+
+    lines.append("")
+
+    # ═══════════════════════════════════════════
+    # SECTION 4 — BOT ACTION  (what happened)
+    # ═══════════════════════════════════════════
+    bot_lines = _bot_action_block(paper_trade_status, live_trade_status, conflict_tag=conflict_tag)
+    if bot_lines:
+        lines.append("🤖 *BOT ACTION*")
+        for bl in bot_lines:
+            lines.append(f"  {bl}")
+    else:
+        lines.append("🤖 *BOT ACTION*  No action this scan")
+
+    lines.append("")
     lines.append(f"_#{digest_id}_")
     lines.append(DIVIDER)
 
@@ -1657,12 +1862,14 @@ def build_digest_wrapper(
     paper_trade_status: dict | None = None,
     live_trade_status: dict | None = None,
     llm_verdict: dict | None = None,
+    exit_advice: any = None,
 ) -> tuple[str, str]:
-    if llm_verdict:
+    if llm_verdict or exit_advice:
         return build_llm_consolidated_digest(
             symbol, alerts, fetched_at, scan_context,
             detected_count, dedup_suppressed_count, digest_id,
-            paper_trade_status, live_trade_status, llm_verdict
+            paper_trade_status, live_trade_status, llm_verdict,
+            exit_advice=exit_advice
         )
     if USE_ENHANCED_TEMPLATE:
         return build_enhanced_digest(
@@ -1671,6 +1878,7 @@ def build_digest_wrapper(
             paper_trade_status=paper_trade_status,
             live_trade_status=live_trade_status,
             llm_verdict=None,
+            exit_advice=exit_advice,
         )
     return build_digest(
         symbol, alerts, fetched_at, scan_context, intelligence_text,
@@ -1678,4 +1886,5 @@ def build_digest_wrapper(
         paper_trade_status=paper_trade_status,
         live_trade_status=live_trade_status,
         llm_verdict=None,
+        exit_advice=exit_advice,
     )

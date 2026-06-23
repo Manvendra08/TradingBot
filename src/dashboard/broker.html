@@ -1207,6 +1207,86 @@ html[data-theme="light"] .symbol-metrics {
   display: inline-block;
   line-height: 1;
 }
+
+/* Segment Switcher Styling */
+.segment-control {
+  display: flex;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 30px;
+  padding: 3px;
+  position: relative;
+  width: 320px;
+  height: 32px;
+  cursor: pointer;
+  user-select: none;
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.15);
+}
+
+.segment-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-dim);
+  z-index: 2;
+  transition: color 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  background: none !important;
+  border: none !important;
+  cursor: pointer;
+  font-family: var(--sans);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+#segment-glow {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  width: calc(33.333% - 3px);
+  border-radius: 26px;
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.3s ease, box-shadow 0.3s ease;
+  z-index: 1;
+}
+
+html[data-env="shadow"] #segment-glow {
+  transform: translateX(0);
+  background-color: var(--profit);
+  box-shadow: 0 0 12px rgba(0, 229, 160, 0.4);
+}
+html[data-env="shadow"] #btn-env-shadow {
+  color: #0a0c0f !important;
+}
+[data-theme="light"] html[data-env="shadow"] #btn-env-shadow {
+  color: #ffffff !important;
+}
+
+html[data-env="live"] #segment-glow {
+  transform: translateX(100%);
+  background-color: var(--red);
+  box-shadow: 0 0 12px rgba(255, 77, 109, 0.5);
+}
+html[data-env="live"] #btn-env-live {
+  color: #ffffff !important;
+}
+
+html[data-env="off"] #segment-glow {
+  transform: translateX(200%);
+  background-color: #6b7280;
+  box-shadow: 0 0 12px rgba(107, 114, 128, 0.5);
+}
+html[data-env="off"] #btn-env-off {
+  color: #ffffff !important;
+}
+
+body.broker-off {
+  background-color: var(--surface-2) !important;
+  background-image: radial-gradient(circle at top, rgba(107, 114, 128, 0.05), transparent 60%) !important;
+  filter: grayscale(0.5);
+}
 </style>
 </head>
 <body>
@@ -1255,14 +1335,12 @@ html[data-theme="light"] .symbol-metrics {
     <div class="header-operations-cluster">
       <span id="last-refresh-time" style="font-size:11px; color:var(--text-dim); font-family:var(--sans); font-weight: 500; opacity: 0.8; margin-right: 4px;"></span>
       
-      <!-- SHADOW/LIVE Toggle -->
-      <div class="operations-toggle-wrapper" style="display: flex; align-items: center; gap: 8px; background: rgba(0, 0, 0, 0.2); border: 1px solid var(--border); padding: 4px 12px; border-radius: 20px; font-size: 11px; font-family: var(--sans); font-weight: 600; height: 32px;">
-        <span class="mode-toggle-label shadow-lbl" style="color: #ff9f1c; cursor: pointer;">SHADOW</span>
-        <label class="switch" style="position: relative; display: inline-block; width: 34px; height: 18px; margin: 0;">
-          <input type="checkbox" id="mode-toggle-checkbox" onchange="toggleShadowMode(this)">
-          <span class="slider" style="position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: var(--border); transition: .3s; border-radius: 18px;"></span>
-        </label>
-        <span class="mode-toggle-label live-lbl" style="color: var(--text-dim); cursor: pointer;">LIVE</span>
+      <!-- SHADOW/LIVE/OFF Segment Switcher -->
+      <div class="segment-control" style="margin: 0;">
+        <div id="segment-glow"></div>
+        <button type="button" class="segment-btn active" id="btn-env-shadow" onclick="setEnvironmentMode('shadow')">Shadow</button>
+        <button type="button" class="segment-btn" id="btn-env-live" onclick="setEnvironmentMode('live')">Live</button>
+        <button type="button" class="segment-btn" id="btn-env-off" onclick="setEnvironmentMode('off')" title="Block all broker order placement">Broker Off</button>
       </div>
 
       <!-- EMERGENCY KILL Button -->
@@ -2549,29 +2627,59 @@ function fetchClosedTrades() {
 }
 
 // Global State Toggle logic
-function updateModeAppearance(isShadow) {
-  const checkbox = document.getElementById("mode-toggle-checkbox");
-  if (checkbox) {
-    checkbox.checked = !isShadow;
+function updateModeAppearance(isShadow, isBrokerDisabled) {
+  const envMode = isBrokerDisabled ? 'off' : (isShadow ? 'shadow' : 'live');
+  document.body.setAttribute('data-env', envMode);
+  document.documentElement.setAttribute('data-env', envMode);
+  
+  document.body.classList.remove("shadow-mode", "live-active", "broker-off");
+  if (envMode === 'shadow') {
+    document.body.classList.add("shadow-mode");
+  } else if (envMode === 'live') {
+    document.body.classList.add("live-active");
+  } else if (envMode === 'off') {
+    document.body.classList.add("broker-off");
   }
   
-  if (isShadow) {
-    document.body.classList.remove("live-active");
-    document.body.classList.add("shadow-mode");
-  } else {
-    document.body.classList.remove("shadow-mode");
-    document.body.classList.add("live-active");
+  const btnShadow = document.getElementById("btn-env-shadow");
+  const btnLive = document.getElementById("btn-env-live");
+  const btnOff = document.getElementById("btn-env-off");
+  [btnShadow, btnLive, btnOff].forEach(b => b && b.classList.remove("active"));
+  
+  if (envMode === 'shadow') {
+    btnShadow && btnShadow.classList.add("active");
+  } else if (envMode === 'live') {
+    btnLive && btnLive.classList.add("active");
+  } else if (envMode === 'off') {
+    btnOff && btnOff.classList.add("active");
   }
 }
 
-function toggleShadowMode(checkbox) {
-  const nextIsShadow = !checkbox.checked;
-  const actionText = nextIsShadow
-    ? "Are you sure you want to enable Shadow Mode? Real order execution on Zerodha will be suppressed."
-    : "Are you sure you want to disable Shadow Mode and start placing REAL orders on Zerodha? Make sure credentials and TOTP are valid!";
-    
+function setEnvironmentMode(mode) {
+  let nextIsShadow = false;
+  let nextIsBrokerDisabled = false;
+  let actionText = "";
+  
+  if (mode === 'shadow') {
+    nextIsShadow = true;
+    nextIsBrokerDisabled = false;
+    actionText = "Are you sure you want to enable Shadow Mode? Real order execution on Zerodha will be suppressed.";
+  } else if (mode === 'live') {
+    nextIsShadow = false;
+    nextIsBrokerDisabled = false;
+    actionText = "Are you sure you want to disable Shadow Mode and start placing REAL orders on Zerodha? Make sure credentials and TOTP are valid!";
+  } else if (mode === 'off') {
+    nextIsShadow = true;
+    nextIsBrokerDisabled = true;
+    actionText = "Are you sure you want to completely block all broker trades (Broker Off)? This will stop any order placement.";
+  }
+  
   if (confirm(actionText)) {
-    const updated = { ...runtimeConfig, live_shadow_mode: nextIsShadow };
+    const updated = { 
+      ...runtimeConfig, 
+      live_shadow_mode: nextIsShadow, 
+      live_broker_disabled: nextIsBrokerDisabled 
+    };
     fetch("/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2580,15 +2688,16 @@ function toggleShadowMode(checkbox) {
     .then(r => r.json())
     .then(() => {
       runtimeConfig = updated;
-      updateModeAppearance(nextIsShadow);
-      alert(nextIsShadow ? "Shadow Mode enabled! Simulated orders only." : "Shadow Mode disabled! Real orders will be routed.");
+      updateModeAppearance(nextIsShadow, nextIsBrokerDisabled);
+      let alertMsg = "";
+      if (mode === 'shadow') alertMsg = "Shadow Mode enabled! Simulated orders only.";
+      else if (mode === 'live') alertMsg = "Shadow Mode disabled! Real orders will be routed.";
+      else if (mode === 'off') alertMsg = "Broker Off enabled! All live execution blocked.";
+      alert(alertMsg);
     })
     .catch(err => {
       alert("Failed to update mode: " + err);
-      checkbox.checked = !checkbox.checked;
     });
-  } else {
-    checkbox.checked = !checkbox.checked;
   }
 }
 
@@ -2597,7 +2706,7 @@ fetch("/api/settings")
   .then(r => r.json())
   .then(data => {
     runtimeConfig = data;
-    updateModeAppearance(data.live_shadow_mode);
+    updateModeAppearance(data.live_shadow_mode, data.live_broker_disabled);
   })
   .catch(err => console.error("Error loading settings:", err));
 
