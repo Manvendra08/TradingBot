@@ -593,7 +593,21 @@ def _build_exit_prompt(
         age_str = ""
 
     # Expiry and time to settlement calculation
-    expiry = open_trade.get("expiry") or ctx.get("expiry") or ""
+    expiry = open_trade.get("expiry") or ""
+    # For FUT positions, use futures_expiry (different schedule from options)
+    if opt == "FUT":
+        futures_expiry = ctx.get("futures_expiry")
+        if not futures_expiry:
+            # Compute on the fly if not in context
+            try:
+                from config.symbol_classes import get_futures_expiry
+                futures_expiry = get_futures_expiry(symbol)
+            except Exception:
+                futures_expiry = None
+        if futures_expiry:
+            expiry = futures_expiry
+    if not expiry:
+        expiry = ctx.get("expiry") or ""
     time_left_str = "N/A"
     dte = ctx.get("days_to_expiry")
     if dte is None and expiry:
@@ -1180,7 +1194,13 @@ def get_llm_verdict(
     is_triggering = trade_decision and "TRIGGERED" in str(trade_decision.get("status", "")).upper()
     
     # Calculate DTE and store in scan_context
-    expiry_val = scan_context.get("expiry")
+    # For MCX commodities, use futures_expiry (futures expire on a different schedule than options)
+    _sym_base = symbol.upper().strip().split()[0]
+    _is_mcx_sym = _sym_base in {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"}
+    if _is_mcx_sym and scan_context.get("futures_expiry"):
+        expiry_val = scan_context.get("futures_expiry")
+    else:
+        expiry_val = scan_context.get("expiry")
     dte = 7
     if expiry_val:
         try:

@@ -175,6 +175,12 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
         override_thresholds=symbol_thresholds,
     )
     scan_context["option_rows"] = list(oc_data.get("strikes") or [])
+    # Inject futures expiry (different from option chain expiry for MCX/NSE)
+    try:
+        from config.symbol_classes import get_futures_expiry
+        scan_context["futures_expiry"] = get_futures_expiry(symbol)
+    except Exception:
+        scan_context["futures_expiry"] = None
     log.info("%s: %d anomalies detected", symbol, len(alerts))
 
     # 2. Dedup filter

@@ -515,7 +515,9 @@ def build_digest(
     ts = dt.strftime("%H:%M IST")
 
     ctx = scan_context or {}
-    expiry_val = ctx.get("expiry")
+    _base_sym0 = symbol.upper().strip().split()[0]
+    _is_mcx0 = _base_sym0 in {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"}
+    expiry_val = ctx.get("futures_expiry") if (_is_mcx0 and ctx.get("futures_expiry")) else ctx.get("expiry")
     exp_fmt, dte_lbl = _format_expiry_and_dte(expiry_val)
     header_extra = f" (Exp: {exp_fmt} | {dte_lbl})" if exp_fmt and dte_lbl else (f" (Exp: {exp_fmt})" if exp_fmt else "")
 
@@ -1152,7 +1154,9 @@ def build_enhanced_digest(
     ts = dt.strftime("%d %b, %H:%M")
 
     ctx = scan_context or {}
-    expiry_val = ctx.get("expiry")
+    _base_sym1 = symbol.upper().strip().split()[0]
+    _is_mcx1 = _base_sym1 in {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"}
+    expiry_val = ctx.get("futures_expiry") if (_is_mcx1 and ctx.get("futures_expiry")) else ctx.get("expiry")
     exp_fmt, dte_lbl = _format_expiry_and_dte(expiry_val)
     header_extra = f" (Exp: {exp_fmt} | {dte_lbl})" if exp_fmt and dte_lbl else (f" (Exp: {exp_fmt})" if exp_fmt else "")
 
@@ -1650,7 +1654,14 @@ def build_llm_consolidated_digest(
     ts = dt.strftime("%d %b, %H:%M")
 
     ctx = scan_context or {}
-    expiry_val = ctx.get("expiry")
+    # For MCX commodity symbols, the underlying IS the futures price — show futures expiry in header.
+    # For NSE index symbols, show the option chain expiry (more relevant for option traders).
+    _base_sym = symbol.upper().strip().split()[0]
+    _is_mcx = _base_sym in {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"}
+    if _is_mcx and ctx.get("futures_expiry"):
+        expiry_val = ctx.get("futures_expiry")
+    else:
+        expiry_val = ctx.get("expiry")
     exp_fmt, dte_lbl = _format_expiry_and_dte(expiry_val)
     header_extra = f" | {exp_fmt} | {dte_lbl}" if exp_fmt and dte_lbl else (f" | {exp_fmt}" if exp_fmt else "")
 
