@@ -50,6 +50,40 @@ def run_pipeline(symbols: list[str] | None = None, force: bool = False, is_test:
     fetched_at = datetime.now(timezone.utc).isoformat()
     log.info("Pipeline run started | %s | symbols: %s | force=%s | is_test=%s", fetched_at, symbols, force, is_test)
     
+    # At start of scan, check if previous day was an expiry day for any symbol
+    if not is_test:
+        try:
+            from src.models.schema import get_conn
+            from datetime import timedelta
+            import pytz
+            IST = pytz.timezone("Asia/Kolkata")
+            today_ist = datetime.now(IST).date()
+            yesterday_str = (today_ist - timedelta(days=1)).strftime("%Y-%m-%d")
+            today_str = today_ist.strftime("%Y-%m-%d")
+            
+            with get_conn() as conn:
+                # Find if yesterday_str exists as an expiry in option_chain_snapshots
+                expired_symbols = [r[0] for r in conn.execute(
+                    "SELECT DISTINCT symbol FROM option_chain_snapshots WHERE expiry = ?",
+                    (yesterday_str,)
+                ).fetchall()]
+                
+                if expired_symbols:
+                    log.info("Previous day (%s) was expiry day for: %s. Cleaning up expired contract data.", yesterday_str, expired_symbols)
+                    for sym in expired_symbols:
+                        c_del = conn.execute(
+                            "DELETE FROM option_chain_snapshots WHERE symbol = ? AND expiry <= ?",
+                            (sym, yesterday_str)
+                        )
+                        log.info("Deleted %d expired snapshots for %s", c_del.rowcount, sym)
+                
+                # General cleanup: delete all snapshots where expiry is in the past
+                c_past = conn.execute("DELETE FROM option_chain_snapshots WHERE expiry < ?", (today_str,))
+                if c_past.rowcount > 0:
+                    log.info("General cleanup: deleted %d older snapshots", c_past.rowcount)
+        except Exception:
+            log.exception("Error checking/deleting expired contract data at start of scan")
+
     # B7/L3: Sync manual Kite direct positions to SQLite for AI Exit Advisor monitoring.
     if not is_test:
         try:
@@ -426,3 +460,52 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
         } for row in oc_data["strikes"]]
         insert_snapshots(rows)
         log.info("%s: persisted %d rows (source: %s)", symbol, len(rows), source)
+
+        # Fetch and save next-expiry data when DTE <= 2
+        if is_test:
+            log.info("%s: [dry-run] Skipping next-expiry fetching/saving", symbol)
+        else:
+            all_expiries = oc_data.get("all_expiries", [])
+            if expiry and all_expiries:
+                try:
+                    exp_date = datetime.strptime(expiry, "%Y-%m-%d").date()
+                    import pytz
+                    IST = pytz.timezone("Asia/Kolkata")
+                    today_ist = datetime.now(IST).date()
+                    dte = (exp_date - today_ist).days
+                    if 0 <= dte <= 2:
+                        idx = all_expiries.index(expiry)
+                        if idx + 1 < len(all_expiries):
+                            next_expiry = all_expiries[idx + 1]
+                            log.info("%s: Active expiry %s has DTE = %d. Fetching next-expiry %s data to DB.",
+                                     symbol, expiry, dte, next_expiry)
+                            
+                            next_oc_data = fetch_option_chain(symbol, expiry=next_expiry)
+                            if next_oc_data and next_oc_data.get("strikes"):
+                                next_underlying = next_oc_data["underlying_price"]
+                                next_source = next_oc_data.get("source", "unknown")
+                                
+                                next_rows = [{
+                                    "fetched_at":       fetched_at,
+                                    "symbol":           symbol,
+                                    "expiry":           next_expiry,
+                                    "strike":           row["strike"],
+                                    "option_type":      row["option_type"],
+                                    "ltp":              row.get("ltp"),
+                                    "ltp_change_pct":   row.get("ltp_change_pct"),
+                                    "oi":               row.get("oi"),
+                                    "oi_change_pct":    row.get("oi_change_pct"),
+                                    "oi_change":        row.get("oi_change"),
+                                    "volume":           row.get("volume"),
+                                    "iv":               row.get("iv"),
+                                    "bid":              row.get("bid"),
+                                    "ask":              row.get("ask"),
+                                    "delta":            row.get("delta"),
+                                    "underlying_price": next_underlying,
+                                    "fetcher_source":   next_source,
+                                } for row in next_oc_data["strikes"]]
+                                
+                                num_inserted = insert_snapshots(next_rows)
+                                log.info("%s: Next-expiry (%s) saved: %d rows inserted", symbol, next_expiry, num_inserted)
+                except Exception as next_exc:
+                    log.warning("%s: Failed to fetch/save next-expiry data: %s", symbol, next_exc)

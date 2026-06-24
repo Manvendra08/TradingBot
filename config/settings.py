@@ -13,8 +13,9 @@ DATA_DIR.mkdir(exist_ok=True)
 LOG_DIR.mkdir(exist_ok=True)
 
 WATCH_NSE = ["NIFTY", "BANKNIFTY"]
+WATCH_BSE = ["SENSEX"]
 WATCH_MCX = ["NATURALGAS", "CRUDEOIL"]
-WATCH_SYMBOLS = WATCH_NSE + WATCH_MCX
+WATCH_SYMBOLS = WATCH_NSE + WATCH_BSE + WATCH_MCX
 
 FETCH_INTERVAL_MINUTES = 5
 
@@ -63,6 +64,7 @@ TV_SESSIONID         = _optional_env("TV_SESSIONID")
 # Format: (open_time, close_time, weekdays)  — weekdays: 0=Mon … 6=Sun
 MARKET_WINDOWS = {
     "NSE_INDEX":     ("09:15", "15:30", [0, 1, 2, 3, 4]),
+    "BSE_INDEX":     ("09:15", "15:30", [0, 1, 2, 3, 4]),
     "NSE_EQUITY":    ("09:15", "15:30", [0, 1, 2, 3, 4]),
     "NFO":           ("09:15", "15:30", [0, 1, 2, 3, 4]),
     "MCX_COMMODITY": ("09:00", "23:30", [0, 1, 2, 3, 4, 5]),  # Saturday MCX session included
@@ -74,6 +76,7 @@ SYMBOL_MARKET = {
     "BANKNIFTY":  "NSE_INDEX",
     "FINNIFTY":   "NSE_INDEX",
     "MIDCPNIFTY": "NSE_INDEX",
+    "SENSEX":     "BSE_INDEX",
     "NATURALGAS": "MCX_COMMODITY",
     "CRUDEOIL":   "MCX_COMMODITY",
     "GOLD":       "MCX_COMMODITY",
@@ -86,6 +89,7 @@ LOT_SIZES = {
     "BANKNIFTY":  30,
     "FINNIFTY":   60,
     "MIDCPNIFTY": 75,
+    "SENSEX":     20,
     "NATURALGAS": 1250,
     "CRUDEOIL":   100,
     "GOLD":       100,
@@ -101,6 +105,7 @@ STRIKE_STEPS = {
     "BANKNIFTY":  100,
     "FINNIFTY":   50,
     "MIDCPNIFTY": 25,
+    "SENSEX":     100,
     "NATURALGAS": 5,
     "CRUDEOIL":   50,
     "GOLD":       100,
@@ -113,6 +118,7 @@ DHAN_SECURITY_IDS = {
     "BANKNIFTY":  25,
     "FINNIFTY":   27,
     "MIDCPNIFTY": 442,
+    "SENSEX":     51,
     # FIX #15: MCX contract IDs expire at month-end.  These IDs MUST be updated
     # manually before each monthly rollover (or automated via Dhan instrument dump).
     # Update procedure: download https://images.dhan.co/api-data/api-scrip-master.csv,
@@ -134,6 +140,7 @@ DHAN_SEGMENTS = {
     "BANKNIFTY": "IDX_I",
     "FINNIFTY": "IDX_I",
     "MIDCPNIFTY": "IDX_I",
+    "SENSEX": "BSE_IND",
     "NATURALGAS": "MCX_COMM",
     "CRUDEOIL": "MCX_COMM",
     "GOLD": "MCX_COMM",

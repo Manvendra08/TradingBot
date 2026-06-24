@@ -11,6 +11,7 @@ from config.settings import FETCHER_PRIORITY, STRIKES_AROUND_ATM
 from src.fetchers.dhan_fetcher import DhanFetcher
 from src.fetchers.nse_fetcher import NSEPublicFetcher
 from src.fetchers.dhan_commodity_fetcher import DhanCommodityFetcher
+from src.fetchers.dhan_sensex_fetcher import DhanSensexFetcher
 
 try:
     from src.fetchers.scrapegraph_fetcher import ScrapeGraphFetcher
@@ -34,6 +35,7 @@ _MCX_COMMODITIES = {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"}
 _FETCHERS = {
     "dhan":        DhanFetcher,
     "dhan_commodity": DhanCommodityFetcher,
+    "dhan_sensex": DhanSensexFetcher,
     "nse_public":  NSEPublicFetcher,
 }
 if ScrapeGraphFetcher is not None:
@@ -58,6 +60,8 @@ def _priority_for(symbol: str) -> list[str]:
     base = symbol.upper().split()[0]
     if base in _MCX_COMMODITIES:
         return ["dhan_commodity", "moneycontrol", "dhan", "dhan_headless"]
+    if base == "SENSEX":
+        return ["dhan_sensex"]
     return FETCHER_PRIORITY
 
 
@@ -119,7 +123,7 @@ def _filter_atm_strikes(result: dict) -> None:
         log.warning("Failed to filter ATM strikes: %s", e)
 
 
-def fetch_option_chain(symbol: str) -> dict | None:
+def fetch_option_chain(symbol: str, expiry: str | None = None) -> dict | None:
     """
     Try fetchers in configured priority order.
     Returns normalised dict or None if all fail.
@@ -136,7 +140,8 @@ def fetch_option_chain(symbol: str) -> dict | None:
                 {"strike": 100.0, "option_type": "PE", "ltp": 2.0, "oi": 500},
                 {"strike": 110.0, "option_type": "CE", "ltp": 0.1, "oi": 10},
                 {"strike": 110.0, "option_type": "PE", "ltp": 10.0, "oi": 100},
-            ]
+            ],
+            "all_expiries": ["2026-06-25", "2026-07-02"]
         }
 
     for source in _priority_for(symbol):
@@ -145,7 +150,7 @@ def fetch_option_chain(symbol: str) -> dict | None:
             continue
         fetcher = _get_fetcher(source)
         try:
-            result = fetcher.fetch_option_chain(symbol)
+            result = fetcher.fetch_option_chain(symbol, expiry=expiry)
             if result and result.get("strikes"):
                 base = str(result.get("symbol") or symbol).upper().split()[0]
                 if base in _MCX_COMMODITIES and not result.get("underlying_price"):

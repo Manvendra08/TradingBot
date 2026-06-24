@@ -53,7 +53,7 @@ class NSEPublicFetcher(BaseFetcher):
                 else:
                     time.sleep(2)
 
-    def fetch_option_chain(self, symbol: str) -> dict | None:
+    def fetch_option_chain(self, symbol: str, expiry: str | None = None) -> dict | None:
         self._warm_session()
         symbol = symbol.upper().split()[0]
 
@@ -63,17 +63,23 @@ class NSEPublicFetcher(BaseFetcher):
 
         raw = None
         try:
+            if expiry:
+                try:
+                    nse_expiry = datetime.strptime(expiry, "%Y-%m-%d").strftime("%d-%b-%Y")
+                except Exception:
+                    nse_expiry = expiry
+            else:
+                nse_expiry = self._nearest_contract_expiry(symbol)
+
             if symbol in INDEX_SYMBOLS:
-                expiry = self._nearest_contract_expiry(symbol)
-                if not expiry:
+                if not nse_expiry:
                     return None
-                url = f"{NSE_BASE_URL}/api/option-chain-v3?type=Indices&symbol={symbol}&expiry={expiry}"
+                url = f"{NSE_BASE_URL}/api/option-chain-v3?type=Indices&symbol={symbol}&expiry={nse_expiry}"
                 raw = self._get(url)
             else:
-                expiry = self._nearest_contract_expiry(symbol)
                 url = f"{NSE_BASE_URL}/api/option-chain-v3?type=Equity&symbol={symbol}"
-                if expiry:
-                    url += f"&expiry={expiry}"
+                if nse_expiry:
+                    url += f"&expiry={nse_expiry}"
                 raw = self._get(url)
         except Exception as exc:
             log.warning("[nse_public] fetch error for %s: %s", symbol, exc)
@@ -82,7 +88,7 @@ class NSEPublicFetcher(BaseFetcher):
         if not raw:
             NSEPublicFetcher._session_warmed = False
             return None
-        return self._normalise(symbol, raw)
+        return self._normalise(symbol, raw, expiry_filter=expiry)
 
     def _commodity_spot(self, symbol: str) -> float:
         raw = self._get(f"{NSE_BASE_URL}/api/refrates?index=commodityspotrates")
@@ -123,7 +129,7 @@ class NSEPublicFetcher(BaseFetcher):
 
         return ""
 
-    def _normalise(self, symbol: str, raw: dict) -> dict | None:
+    def _normalise(self, symbol: str, raw: dict, expiry_filter: str | None = None) -> dict | None:
         try:
             records_root = raw.get("records", {})
             filtered = raw.get("filtered", {})
@@ -132,7 +138,15 @@ class NSEPublicFetcher(BaseFetcher):
                 records_root.get("underlyingValue", 0) or 0
             )
             expiry_dates = records_root.get("expiryDates", [])
-            expiry = self._nearest_expiry(expiry_dates)
+            expiry = expiry_filter or self._nearest_expiry(expiry_dates)
+
+            all_exp_parsed = []
+            for d_str in expiry_dates:
+                try:
+                    all_exp_parsed.append(datetime.strptime(d_str, "%d-%b-%Y").strftime("%Y-%m-%d"))
+                except ValueError:
+                    continue
+            all_expiries = sorted(list(set(all_exp_parsed)))
 
             strikes = []
             for record in records:
@@ -166,6 +180,7 @@ class NSEPublicFetcher(BaseFetcher):
                 "expiry":           expiry,
                 "strikes":          strikes,
                 "source":           self.name,
+                "all_expiries":     all_expiries,
             }
         except Exception as exc:
             log.error("[nse_public] normalise failed for %s: %s", symbol, exc)

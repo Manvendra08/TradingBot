@@ -153,7 +153,7 @@ class DhanFetcher(BaseFetcher):
             log.warning("[dhan] MCX master lookup failed for %s: %s", base_symbol, exc)
         return None
 
-    def fetch_option_chain(self, symbol: str) -> dict | None:
+    def fetch_option_chain(self, symbol: str, expiry: str | None = None) -> dict | None:
         base_symbol = self._base_symbol(symbol)
         segment = DHAN_SEGMENTS.get(base_symbol, "NSE_FNO")
         security_id = get_dhan_security_id(base_symbol)
@@ -164,12 +164,13 @@ class DhanFetcher(BaseFetcher):
             return self._fallback_commodity(symbol, "missing security_id")
 
         base_payload = {"UnderlyingScrip": security_id, "UnderlyingSeg": segment}
-        expiry = self._nearest_expiry(self._get_expiries(base_payload), symbol=symbol)
-        if not expiry:
+        expiries = self._get_expiries(base_payload)
+        target_expiry = expiry or self._nearest_expiry(expiries, symbol=symbol)
+        if not target_expiry:
             log.warning("[dhan] no expiry returned for %s", symbol)
             return self._fallback_commodity(symbol, "no expiry returned")
 
-        payload = {**base_payload, "Expiry": expiry}
+        payload = {**base_payload, "Expiry": target_expiry}
 
         url = f"{DHAN_BASE_URL}/optionchain"
         try:
@@ -180,13 +181,13 @@ class DhanFetcher(BaseFetcher):
             log.error("[dhan] fetch failed for %s: %s", symbol, exc)
             return self._fallback_commodity(symbol, f"api fetch failed: {exc}")
 
-        result = self._normalise(base_symbol, raw, expiry)
+        result = self._normalise(base_symbol, raw, target_expiry, expiries)
         if result:
             return result
 
         return self._fallback_commodity(symbol, "normalise returned empty result")
 
-    def _normalise(self, symbol: str, raw: dict, requested_expiry: str | None = None) -> dict | None:
+    def _normalise(self, symbol: str, raw: dict, requested_expiry: str | None = None, expiries_list: list[str] | None = None) -> dict | None:
         try:
             data = raw.get("data", {}) if isinstance(raw, dict) else {}
             if not isinstance(data, dict):
@@ -194,7 +195,8 @@ class DhanFetcher(BaseFetcher):
                 return None
 
             underlying = _safe_float(data.get("last_price"), 0.0)
-            expiry = requested_expiry or self._nearest_expiry(data.get("expiry_list", []) or [], symbol=symbol)
+            raw_expiry_list = expiries_list or data.get("expiry_list", []) or []
+            expiry = requested_expiry or self._nearest_expiry(raw_expiry_list, symbol=symbol)
             strikes = self._normalise_current_oc(data.get("oc", {}))
             if not strikes:
                 strikes = self._normalise_legacy_oc(data.get("oc_data", {}), expiry)
@@ -203,12 +205,15 @@ class DhanFetcher(BaseFetcher):
                 log.warning("[dhan] empty option chain after normalise for %s expiry=%s", symbol, expiry)
                 return None
 
+            all_expiries = sorted(list(set(raw_expiry_list)))
+
             return {
                 "symbol":           symbol,
                 "underlying_price": underlying,
                 "expiry":           expiry,
                 "strikes":          strikes,
                 "source":           self.name,
+                "all_expiries":     all_expiries,
             }
         except Exception as exc:
             log.exception("[dhan] normalise failed for %s: %s", symbol, exc)

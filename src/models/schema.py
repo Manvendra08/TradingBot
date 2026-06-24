@@ -726,7 +726,7 @@ def close_paper_trade(
 
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT symbol, option_type, verdict_label, entry_underlying, entry_premium, lots, strike, side FROM paper_trades WHERE id=? AND status='OPEN'",
+            "SELECT symbol, expiry, option_type, verdict_label, entry_underlying, entry_premium, lots, strike, side FROM paper_trades WHERE id=? AND status='OPEN'",
             (trade_id,)
         ).fetchone()
         if not row:
@@ -734,6 +734,7 @@ def close_paper_trade(
             return
 
         symbol = row["symbol"]
+        expiry = row["expiry"]
         option_type = row["option_type"]
         verdict_label = row["verdict_label"] or ""
         entry_underlying = float(row["entry_underlying"] or 0.0)
@@ -752,8 +753,8 @@ def close_paper_trade(
             elif entry_premium and entry_premium > 0:
                 strike = float(row["strike"] or 0.0)
                 snap_row = conn.execute(
-                    "SELECT ltp FROM option_chain_snapshots WHERE symbol=? AND strike=? AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
-                    (symbol.upper(), strike, option_type)
+                    "SELECT ltp FROM option_chain_snapshots WHERE symbol=? AND expiry=? AND strike=? AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
+                    (symbol.upper(), expiry, strike, option_type)
                 ).fetchone()
                 if snap_row:
                     estimated_exit = float(snap_row["ltp"])
@@ -946,7 +947,7 @@ def close_live_trade(
 
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT symbol, option_type, verdict_label, entry_underlying, entry_premium, lots, strike, side FROM live_trades WHERE id=? AND status='OPEN'",
+            "SELECT symbol, expiry, option_type, verdict_label, entry_underlying, entry_premium, lots, strike, side FROM live_trades WHERE id=? AND status='OPEN'",
             (trade_id,)
         ).fetchone()
         if not row:
@@ -954,6 +955,7 @@ def close_live_trade(
             return
 
         symbol = row["symbol"]
+        expiry = row["expiry"]
         option_type = row["option_type"]
         verdict_label = row["verdict_label"] or ""
         entry_underlying = float(row["entry_underlying"] or 0.0)
@@ -972,8 +974,8 @@ def close_live_trade(
             elif entry_premium and entry_premium > 0:
                 strike = float(row["strike"] or 0.0)
                 snap_row = conn.execute(
-                    "SELECT ltp FROM option_chain_snapshots WHERE symbol=? AND strike=? AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
-                    (symbol.upper(), strike, option_type)
+                    "SELECT ltp FROM option_chain_snapshots WHERE symbol=? AND expiry=? AND strike=? AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
+                    (symbol.upper(), expiry, strike, option_type)
                 ).fetchone()
                 if snap_row:
                     estimated_exit = float(snap_row["ltp"])

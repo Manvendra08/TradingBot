@@ -633,7 +633,7 @@ class DhanCommodityFetcher(BaseFetcher):
         log.warning("[dhan_commodity] builtup live-price unavailable: %s", last_exc)
         return None
 
-    def fetch_option_chain(self, symbol: str) -> dict | None:
+    def fetch_option_chain(self, symbol: str, expiry: str | None = None) -> dict | None:
         base = symbol.upper().split()[0]
         slug = _SYMBOL_SLUGS.get(base)
         if not slug:
@@ -645,9 +645,10 @@ class DhanCommodityFetcher(BaseFetcher):
         
         sid = None
         expj = None
-        expiry = ""
+        target_expiry = expiry or ""
         underlying = None
         strikes = []
+        all_expiries = []
 
         if html:
             page_text = _clean_text(_strip_tags(html))
@@ -655,10 +656,33 @@ class DhanCommodityFetcher(BaseFetcher):
             page_props = _extract_page_props(next_data)
 
             sid = _pick_scrip_id(page_props)
-            expj = _pick_option_expj(page_props)
-            expiry = _julian_1980_to_expiry_iso(expj) if expj else ""
-            if not expiry:
-                expiry = _extract_expiry_iso(page_text)
+            
+            # Resolve expj list and next expiry dates
+            fno_data = page_props.get("fnoData")
+            if isinstance(fno_data, dict):
+                opsum = fno_data.get("opsum")
+                if isinstance(opsum, dict) and opsum:
+                    all_expiries = sorted(list(set([
+                        _julian_1980_to_expiry_iso(int(k))
+                        for k in opsum.keys() if _parse_int(k)
+                    ])))
+
+            if expiry:
+                # Find matching expj for requested expiry
+                if isinstance(fno_data, dict) and fno_data.get("opsum"):
+                    for k in fno_data["opsum"].keys():
+                        if _julian_1980_to_expiry_iso(int(k)) == expiry:
+                            expj = int(k)
+                            break
+            else:
+                expj = _pick_option_expj(page_props)
+
+            expiry_val = _julian_1980_to_expiry_iso(expj) if expj else ""
+            if not expiry_val:
+                expiry_val = _extract_expiry_iso(page_text)
+            
+            if not target_expiry:
+                target_expiry = expiry_val
 
             underlying = _extract_underlying_from_page_props(page_props, base)
             if underlying is None:
@@ -710,13 +734,20 @@ class DhanCommodityFetcher(BaseFetcher):
                     expjs_list = sorted([int(k) for k in fl.keys()])
                     
                     if expjs_list:
-                        fut_exp = expjs_list[0]
-                        seconds_per_day = 86400
-                        for days_before in range(0, 8):
-                            test_exp = fut_exp - (days_before * seconds_per_day)
-                            payload_oc = {"Data": {"Seg": 5, "Sid": int(secid), "Exp": test_exp}}
-                            try:
-                                log.debug("[dhan_commodity] ScanX scan: trying Exp=%d", test_exp)
+                        all_expiries = sorted(list(set([
+                            _julian_1980_to_expiry_iso(exp)
+                            for exp in expjs_list if exp
+                        ])))
+                        
+                        if expiry:
+                            # match target expiry to expj
+                            for exp in expjs_list:
+                                if _julian_1980_to_expiry_iso(exp) == expiry:
+                                    expj = exp
+                                    break
+                            
+                            if expj:
+                                payload_oc = {"Data": {"Seg": 5, "Sid": int(secid), "Exp": expj}}
                                 resp_oc = self.session.post(
                                     _SCANX_OPTCHAIN_URL,
                                     headers=_JSON_HEADERS,
@@ -728,21 +759,44 @@ class DhanCommodityFetcher(BaseFetcher):
                                     candidate_strikes = _normalise_scanx_oc(raw_oc)
                                     if candidate_strikes:
                                         strikes = candidate_strikes
-                                        expj = test_exp
-                                        expiry = _julian_1980_to_expiry_iso(expj)
+                                        target_expiry = expiry
                                         api_underlying = _parse_float(str((raw_oc.get("data") or {}).get("sltp") or ""))
                                         if api_underlying is not None:
                                             underlying = api_underlying
-                                        log.info(
-                                            "[dhan_commodity] ScanX API scan success: parsed %d strikes for %s at Exp=%d (offset=%d days)",
-                                            len({r["strike"] for r in strikes}),
-                                            base,
-                                            expj,
-                                            days_before,
-                                        )
-                                        break
-                            except Exception as exc:
-                                log.debug("[dhan_commodity] ScanX scan Exp=%d timed out or failed: %s", test_exp, exc)
+                        else:
+                            fut_exp = expjs_list[0]
+                            seconds_per_day = 86400
+                            for days_before in range(0, 8):
+                                test_exp = fut_exp - (days_before * seconds_per_day)
+                                payload_oc = {"Data": {"Seg": 5, "Sid": int(secid), "Exp": test_exp}}
+                                try:
+                                    log.debug("[dhan_commodity] ScanX scan: trying Exp=%d", test_exp)
+                                    resp_oc = self.session.post(
+                                        _SCANX_OPTCHAIN_URL,
+                                        headers=_JSON_HEADERS,
+                                        json=payload_oc,
+                                        timeout=15.0,
+                                    )
+                                    if resp_oc.status_code == 200:
+                                        raw_oc = resp_oc.json()
+                                        candidate_strikes = _normalise_scanx_oc(raw_oc)
+                                        if candidate_strikes:
+                                            strikes = candidate_strikes
+                                            expj = test_exp
+                                            target_expiry = _julian_1980_to_expiry_iso(expj)
+                                            api_underlying = _parse_float(str((raw_oc.get("data") or {}).get("sltp") or ""))
+                                            if api_underlying is not None:
+                                                underlying = api_underlying
+                                            log.info(
+                                                "[dhan_commodity] ScanX API scan success: parsed %d strikes for %s at Exp=%d (offset=%d days)",
+                                                len({r["strike"] for r in strikes}),
+                                                base,
+                                                expj,
+                                                days_before,
+                                            )
+                                            break
+                                except Exception as exc:
+                                    log.debug("[dhan_commodity] ScanX scan Exp=%d timed out or failed: %s", test_exp, exc)
                 except Exception as exc:
                     log.error("[dhan_commodity] API scan fallback failed: %s", exc)
 
@@ -759,7 +813,8 @@ class DhanCommodityFetcher(BaseFetcher):
         return {
             "symbol": base,
             "underlying_price": underlying,
-            "expiry": expiry,
+            "expiry": target_expiry,
             "strikes": strikes,
             "source": self.name,
+            "all_expiries": all_expiries,
         }
