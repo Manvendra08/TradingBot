@@ -51,30 +51,16 @@ class DhanSensexFetcher(BaseFetcher):
 
         try:
             with sync_playwright() as pw:
-                browser = pw.chromium.launch(headless=True, timeout=10000)
+                browser = pw.chromium.launch(headless=True, timeout=15000)
                 context = browser.new_context(
                     user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                     viewport={"width": 1280, "height": 900}
                 )
                 page = context.new_page()
                 page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                page.wait_for_timeout(8000)  # wait for client-side rendering
+                page.wait_for_timeout(5000)  # wait for client-side rendering
 
-                # 1. Spot price resolution (Find 1-cell td row)
-                rows = page.locator("tr").all()
-                for row in rows:
-                    cells = row.locator("td").all()
-                    if len(cells) == 1:
-                        txt = cells[0].inner_text()
-                        val = _parse_number(txt)
-                        if val > 0:
-                            underlying_price = val
-                            break
-
-                # 2. Expiry date resolution (Find LI tags with date pattern)
-                expiry_date = ""
-                li_elements = page.locator("li").all()
-
+                # Expiry date selection via target tab if requested
                 target_expiry_text = None
                 if expiry:
                     try:
@@ -87,89 +73,125 @@ class DhanSensexFetcher(BaseFetcher):
                         log.warning("[dhan_sensex] invalid expiry filter passed: %s, error: %s", expiry, e)
 
                 if target_expiry_text:
-                    clicked = False
-                    for li in li_elements:
-                        txt = li.inner_text().strip()
-                        txt_clean = " ".join(txt.split())
-                        if txt_clean.replace(" 0", " ") == target_expiry_text.replace(" 0", " "):
-                            log.info("[dhan_sensex] Clicking target expiry tab: %s", txt)
-                            li.click()
-                            page.wait_for_timeout(3000)
-                            # Refresh rows after click
-                            rows = page.locator("tr").all()
-                            expiry_date = txt
-                            clicked = True
-                            break
-                    if not clicked:
+                    clicked = page.evaluate(r"""(targetText) => {
+                        const lis = document.querySelectorAll('li');
+                        for (const li of lis) {
+                            const txt = li.innerText.trim().replace(/\s+/g, ' ');
+                            if (txt === targetText) {
+                                li.click();
+                                return true;
+                            }
+                        }
+                        return false;
+                    }""", target_expiry_text)
+                    if clicked:
+                        page.wait_for_timeout(3000)
+                    else:
                         log.warning("[dhan_sensex] Requested expiry %s not found on page, using default near-month", expiry)
 
-                if not expiry_date:
-                    for li in li_elements:
-                        txt = li.inner_text().strip()
-                        if re.match(r'^\d{1,2}\s+[A-Za-z]{3}\s+\d{4}$', txt):
-                            expiry_date = txt
-                            break
+                # Fetch all page data in a single page.evaluate call to avoid costly Playwright sync IPC loops
+                extracted_data = page.evaluate(r"""() => {
+                    let spot = 0.0;
+                    const tds = document.querySelectorAll('tr td');
+                    for (const td of tds) {
+                        if (td.parentElement.children.length === 1) {
+                            const txt = td.innerText.trim();
+                            const val = parseFloat(txt.replace(/[^\d.]/g, ''));
+                            if (val > 0) {
+                                spot = val;
+                                break;
+                            }
+                        }
+                    }
 
-                if expiry_date:
-                    try:
-                        dt = datetime.strptime(expiry_date, "%d %b %Y")
-                        actual_expiry = dt.strftime("%Y-%m-%d")
-                    except Exception as e:
-                        log.warning("[dhan_sensex] failed to parse expiry date string '%s': %s", expiry_date, e)
+                    let expDate = "";
+                    const lis = document.querySelectorAll('li');
+                    for (const li of lis) {
+                        const txt = li.innerText.trim();
+                        if (/^\d{1,2}\s+[A-Za-z]{3}\s+\d{4}$/.test(txt)) {
+                            // If there is an active class/state or if we want the first match
+                            // Note: Dhan active expiry tab has a distinct style/class, but the first match is generally the selected one or near-month
+                            expDate = txt;
+                            break;
+                        }
+                    }
 
-                # 3. Parse strikes
-                for row in rows:
-                    cells = row.locator("td").all()
-                    if len(cells) == 7:
-                        c_oi_raw = cells[0].inner_text()
-                        c_vol_raw = cells[1].inner_text()
-                        c_ltp_raw = cells[2].inner_text()
-                        strike_raw = cells[3].inner_text()
-                        p_ltp_raw = cells[4].inner_text()
-                        p_vol_raw = cells[5].inner_text()
-                        p_oi_raw = cells[6].inner_text()
+                    const trs = document.querySelectorAll('tr');
+                    const rows = [];
+                    for (const tr of trs) {
+                        const cells = tr.querySelectorAll('td');
+                        if (cells.length === 7) {
+                            rows.push({
+                                c_oi: cells[0].innerText.trim(),
+                                c_vol: cells[1].innerText.trim(),
+                                c_ltp: cells[2].innerText.trim(),
+                                strike: cells[3].innerText.trim(),
+                                p_ltp: cells[4].innerText.trim(),
+                                p_vol: cells[5].innerText.trim(),
+                                p_oi: cells[6].innerText.trim(),
+                            });
+                        }
+                    }
 
-                        strike = _parse_number(strike_raw)
-                        if strike <= 0:
-                            continue
-
-                        # Call conversions
-                        c_oi = _parse_int(c_oi_raw.split("(")[0])
-                        c_vol = _parse_int(c_vol_raw.replace("L", "00000").replace("K", "000").replace("Cr", "0000000"))
-                        c_ltp = _parse_number(c_ltp_raw.split("\n")[0])
-
-                        # Put conversions
-                        p_oi = _parse_int(p_oi_raw.split(")")[-1]) if ")" in p_oi_raw else _parse_int(p_oi_raw)
-                        p_vol = _parse_int(p_vol_raw.replace("L", "00000").replace("K", "000").replace("Cr", "0000000"))
-                        p_ltp = _parse_number(p_ltp_raw.split("\n")[0])
-
-                        parsed_strikes.append({
-                            "strike": strike,
-                            "option_type": "CE",
-                            "ltp": c_ltp,
-                            "oi": c_oi,
-                            "oi_change": 0,
-                            "volume": c_vol,
-                            "iv": 0.0,
-                            "bid": 0.0,
-                            "ask": 0.0
-                        })
-                        parsed_strikes.append({
-                            "strike": strike,
-                            "option_type": "PE",
-                            "ltp": p_ltp,
-                            "oi": p_oi,
-                            "oi_change": 0,
-                            "volume": p_vol,
-                            "iv": 0.0,
-                            "bid": 0.0,
-                            "ask": 0.0
-                        })
+                    return { spot, expDate, rows };
+                }""")
 
                 browser.close()
         except Exception as exc:
             log.exception("[dhan_sensex] scraping SENSEX option chain failed: %s", exc)
             return None
+
+        if not extracted_data:
+            log.error("[dhan_sensex] Failed to extract SENSEX page data")
+            return None
+
+        underlying_price = extracted_data["spot"]
+        expiry_date = extracted_data["expiryDate"] if extracted_data.get("expiryDate") else extracted_data.get("expDate")
+
+        if expiry_date:
+            try:
+                dt = datetime.strptime(expiry_date, "%d %b %Y")
+                actual_expiry = dt.strftime("%Y-%m-%d")
+            except Exception as e:
+                log.warning("[dhan_sensex] failed to parse expiry date string '%s': %s", expiry_date, e)
+
+        for row in extracted_data.get("rows", []):
+            strike = _parse_number(row["strike"])
+            if strike <= 0:
+                continue
+
+            # Call conversions
+            c_oi = _parse_int(row["c_oi"].split("(")[0])
+            c_vol = _parse_int(row["c_vol"].replace("L", "00000").replace("K", "000").replace("Cr", "0000000"))
+            c_ltp = _parse_number(row["c_ltp"].split("\n")[0])
+
+            # Put conversions
+            p_oi = _parse_int(row["p_oi"].split(")")[-1]) if ")" in row["p_oi"] else _parse_int(row["p_oi"])
+            p_vol = _parse_int(row["p_vol"].replace("L", "00000").replace("K", "000").replace("Cr", "0000000"))
+            p_ltp = _parse_number(row["p_ltp"].split("\n")[0])
+
+            parsed_strikes.append({
+                "strike": strike,
+                "option_type": "CE",
+                "ltp": c_ltp,
+                "oi": c_oi,
+                "oi_change": 0,
+                "volume": c_vol,
+                "iv": 0.0,
+                "bid": 0.0,
+                "ask": 0.0
+            })
+            parsed_strikes.append({
+                "strike": strike,
+                "option_type": "PE",
+                "ltp": p_ltp,
+                "oi": p_oi,
+                "oi_change": 0,
+                "volume": p_vol,
+                "iv": 0.0,
+                "bid": 0.0,
+                "ask": 0.0
+            })
 
         if not parsed_strikes:
             log.error("[dhan_sensex] No strikes parsed for SENSEX")
