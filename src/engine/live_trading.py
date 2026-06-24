@@ -28,6 +28,9 @@ from config.settings import LOT_SIZES, MIN_ENTRY_QUALITY_CORE, REVERSAL_MIN_CONF
 from config.symbol_classes import get_symbol_class, market_window
 from config.runtime_config import load_runtime_config
 
+# Phase 0: ML feature snapshot builder (shared with paper_trading)
+from src.engine.paper_trading import _build_ml_feature_snapshot
+
 log = logging.getLogger("nsebot.live_trading")
 IST = pytz.timezone("Asia/Kolkata")
 
@@ -772,7 +775,9 @@ def _run_live_trading_legacy(symbol: str, scan_context: dict, digest_id: str, in
         "gtt_order_id":          gtt_order_id,
         "broker_status":         broker_status,
         "broker_message":        broker_message,
-        "exit_mode":             exit_mode
+        "exit_mode":             exit_mode,
+        # Phase 0: ML feature columns (captured at trade open time)
+        **_build_ml_feature_snapshot(ctx, ai_verdict),
     }
 
     inserted_id = insert_live_trade(trade_data)
@@ -1061,6 +1066,8 @@ def run_live_trading(symbol: str, scan_context: dict, digest_id: str, intel: dic
         "broker_status": "SHADOW" if shadow_mode else "PENDING",
         "broker_message": "Shadow trade pending" if shadow_mode else "Pending broker entry",
         "exit_mode": exit_mode,
+        # Phase 0: ML feature columns (captured at trade open time)
+        **_build_ml_feature_snapshot(ctx, ai_verdict),
     }
 
     inserted_id = insert_live_trade(trade_data)
@@ -1525,6 +1532,8 @@ def run_live_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str,
         "broker_status": "COMPLETE" if not shadow_mode else "SHADOW",
         "broker_message": "Shadow TF trade executed" if shadow_mode else "Executed on Kite Connect",
         "exit_mode": exit_mode,
+        # Phase 0: ML feature columns (captured at trade open time)
+        **_build_ml_feature_snapshot(ctx, ai_verdict),
     }
 
     inserted_id = insert_live_trade(trade_data)

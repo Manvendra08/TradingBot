@@ -74,17 +74,51 @@ def _last_weekday_of_month(year: int, month: int, weekday: int) -> "date":
     return d
 
 
+# Hardcoded 2026 MCX Futures Expiry dates to match official Dhan/MCX schedules
+_MCX_2026_EXPIRIES: dict[str, dict[int, tuple[int, int, int]]] = {
+    "NATURALGAS": {
+        1: (2026, 1, 27),
+        2: (2026, 2, 24),
+        3: (2026, 3, 26),
+        4: (2026, 4, 27),
+        5: (2026, 5, 26),
+        6: (2026, 6, 25),
+        7: (2026, 7, 28),
+        8: (2026, 8, 26),
+        9: (2026, 9, 25),
+        10: (2026, 10, 27),
+        11: (2026, 11, 24),
+        12: (2026, 12, 28),
+    },
+    "CRUDEOIL": {
+        1: (2026, 1, 16),
+        2: (2026, 2, 19),
+        3: (2026, 3, 19),
+        4: (2026, 4, 20),
+        5: (2026, 5, 18),
+        6: (2026, 6, 18),
+        7: (2026, 7, 20),
+        8: (2026, 8, 19),
+        9: (2026, 9, 21),
+        10: (2026, 10, 19),
+        11: (2026, 11, 19),
+        12: (2026, 12, 18),
+    }
+}
+
+
 def get_futures_expiry(symbol: str, ref_date: "date | None" = None) -> "str | None":
     """
     Return the active futures contract expiry date (YYYY-MM-DD) for *symbol*.
 
-    MCX expiry rules (approximate — MCX may shift for holidays):
-      NATURALGAS : last Wednesday of the month
-      CRUDEOIL   : 15th of the month (prev working day if weekend/holiday)
-      GOLD       : 5th of the month  (prev working day if weekend/holiday)
-      SILVER     : 5th of the month  (prev working day if weekend/holiday)
+    For MCX commodities:
+      - Uses exact official 2026 schedule from Dhan for NATURALGAS and CRUDEOIL.
+      - Fallback calculation for NATURALGAS: 4 business days before the first calendar day of delivery month.
+      - Fallback calculation for CRUDEOIL: 19th of the month, adjusted backward to previous working day.
+      - Fallback calculation for GOLD/SILVER: 5th of the month, adjusted backward to previous working day.
 
-    NSE index futures: last Thursday of the month.
+    For NSE indices:
+      - Last Thursday of the month.
 
     If `ref_date` is None, today (IST) is used.
     If the computed expiry for the current month has already passed, the next
@@ -114,16 +148,33 @@ def get_futures_expiry(symbol: str, ref_date: "date | None" = None) -> "str | No
         year, month = ref_date.year, ref_date.month
 
         def _compute(y: int, m: int) -> "_date":
+            # 1. Try exact hardcoded 2026 schedule first
+            if y == 2026 and base in _MCX_2026_EXPIRIES and m in _MCX_2026_EXPIRIES[base]:
+                dt_tuple = _MCX_2026_EXPIRIES[base][m]
+                return _date(*dt_tuple)
+
+            # 2. Fallbacks for other years
             if base == "NATURALGAS":
-                # Last Wednesday (weekday 2)
-                raw = _last_weekday_of_month(y, m, 2)
-                return _prev_working_day(raw, mcx_holidays)
+                # 4 business days before the first calendar day of the next month
+                if m == 12:
+                    next_month_first = _date(y + 1, 1, 1)
+                else:
+                    next_month_first = _date(y, m + 1, 1)
+                curr = next_month_first - timedelta(days=1)
+                business_days_found = 0
+                while business_days_found < 4:
+                    if curr.weekday() < 5 and curr not in mcx_holidays:
+                        business_days_found += 1
+                        if business_days_found == 4:
+                            return curr
+                    curr -= timedelta(days=1)
+                return next_month_first - timedelta(days=4)
             elif base == "CRUDEOIL":
-                # 15th, adjusted backward
-                raw = _date(y, m, 15)
+                # 19th, adjusted backward to previous working day
+                raw = _date(y, m, 19)
                 return _prev_working_day(raw, mcx_holidays)
             else:  # GOLD, SILVER
-                # 5th, adjusted backward
+                # 5th, adjusted backward to previous working day
                 raw = _date(y, m, 5)
                 return _prev_working_day(raw, mcx_holidays)
 

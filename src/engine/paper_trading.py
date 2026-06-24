@@ -60,6 +60,96 @@ from src.engine.trade_plan import convert_underlying_sl_to_premium
 IST = pytz.timezone("Asia/Kolkata")
 
 
+# ---------------------------------------------------------------------------
+# Phase 0: ML Feature Snapshot Builder
+# AI_INTELLIGENCE_ROADMAP_v3.0 — captures scan context at trade OPEN time
+# so Phase 2 ML model trains on real features instead of zeros.
+# Features are captured at OPEN time (not close) to prevent feature leakage.
+# ---------------------------------------------------------------------------
+
+def _build_ml_feature_snapshot(ctx: dict, intel=None) -> dict:
+    """
+    Extract ML feature columns from scan_context and intelligence for
+    persistence at trade-open time.
+
+    Returns a dict with keys matching the Phase 0 ML feature columns:
+      price_change_pct, pcr, ce_oi_change, pe_oi_change, underlying,
+      support, resistance, max_pain, days_to_expiry, chart_conflict,
+      rsi_1h, rsi_3h, regime
+
+    All values are nullable — None is acceptable and will be stored as NULL.
+    """
+    ctx = ctx or {}
+
+    # ── Days to expiry ────────────────────────────────────────────────
+    days_to_expiry = None
+    expiry_str = ctx.get("expiry") or ""
+    if expiry_str:
+        try:
+            from datetime import datetime as _dt
+            exp_date = _dt.strptime(expiry_str, "%Y-%m-%d").date()
+            today_ist = _dt.now(IST).date()
+            days_to_expiry = (exp_date - today_ist).days
+        except Exception:
+            days_to_expiry = None
+
+    # ── RSI from chart indicators ─────────────────────────────────────
+    rsi_1h = None
+    rsi_3h = None
+    chart_data = ctx.get("chart_indicators") or {}
+    if chart_data:
+        # chart_indicators may be keyed by symbol or directly by timeframe
+        tf_data = chart_data
+        if not any(k in chart_data for k in ("1h", "3h")):
+            tf_data = next(iter(chart_data.values()), {}) if chart_data else {}
+        try:
+            rsi_1h = float((tf_data.get("1h") or {}).get("rsi") or 0) or None
+        except (TypeError, ValueError):
+            rsi_1h = None
+        try:
+            rsi_3h = float((tf_data.get("3h") or {}).get("rsi") or 0) or None
+        except (TypeError, ValueError):
+            rsi_3h = None
+
+    # ── Chart conflict from intelligence ──────────────────────────────
+    chart_conflict = None
+    if intel is not None:
+        try:
+            chart_conflict = 1 if intel.get("chart_conflict") else 0
+        except Exception:
+            chart_conflict = None
+
+    # ── Price change percentage ───────────────────────────────────────
+    price_change_pct = ctx.get("price_change_pct")
+    if price_change_pct is None:
+        # Compute from underlying and prev_price if available
+        underlying = ctx.get("underlying")
+        prev_price = ctx.get("prev_price")
+        if underlying and prev_price and prev_price != 0:
+            try:
+                price_change_pct = round(
+                    (float(underlying) - float(prev_price)) / abs(float(prev_price)) * 100, 4
+                )
+            except (TypeError, ValueError, ZeroDivisionError):
+                price_change_pct = None
+
+    return {
+        "price_change_pct": price_change_pct,
+        "pcr":              ctx.get("pcr"),
+        "ce_oi_change":     ctx.get("ce_oi_change"),
+        "pe_oi_change":     ctx.get("pe_oi_change"),
+        "underlying":       ctx.get("underlying"),
+        "support":          ctx.get("support"),
+        "resistance":       ctx.get("resistance"),
+        "max_pain":         ctx.get("max_pain"),
+        "days_to_expiry":   days_to_expiry,
+        "chart_conflict":   chart_conflict,
+        "rsi_1h":           rsi_1h,
+        "rsi_3h":           rsi_3h,
+        "regime":           ctx.get("market_regime"),
+    }
+
+
 def _is_market_open(symbol: str) -> bool:
     now = datetime.now(IST)
     open_t, close_t, days = market_window(symbol)
@@ -252,6 +342,9 @@ def execute_paper_trade(
     today_date = datetime.now(IST).strftime("%Y%m%d")
     signal_key = f"{symbol}:{option_type}:{int(strike)}:{today_date}:paper"
 
+    # Phase 0: Capture ML feature snapshot at trade-open time
+    ml_features = _build_ml_feature_snapshot(ctx, ai_verdict)
+
     trade_data = {
         "opened_at":            now_iso,
         "symbol":               symbol,
@@ -280,6 +373,8 @@ def execute_paper_trade(
         "signal_key":           signal_key,
         "pyramid_level":        plan.get("pyramid_level", 1),
         "max_favorable_r":      0.0,
+        # Phase 0: ML feature columns (captured at trade open time)
+        **ml_features,
     }
 
     trade_id = insert_paper_trade(trade_data)
@@ -922,6 +1017,9 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
 
     reason_str = f"timeframe entry | 3H close {c_3h_close:.2f} > p3H_high {p_3h_high:.2f} | level {pyramid_level}" if direction == "LONG" else f"timeframe entry | 3H close {c_3h_close:.2f} < p3H_low {p_3h_low:.2f} | level {pyramid_level}"
     
+    # Phase 0: Capture ML feature snapshot at trade-open time
+    ml_features = _build_ml_feature_snapshot(ctx, ai_verdict)
+
     trade_data = {
         "opened_at": now_iso,
         "symbol": symbol,
@@ -945,6 +1043,8 @@ def run_timeframe_strategy(symbol: str, scan_context: dict, digest_id: str, inte
         "signal_key": signal_key,
         "pyramid_level": pyramid_level,
         "max_favorable_r": 0.0,
+        # Phase 0: ML feature columns (captured at trade open time)
+        **ml_features,
     }
     
     if ai_verdict is not None:

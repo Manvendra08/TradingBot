@@ -230,6 +230,26 @@ CREATE TABLE IF NOT EXISTS daily_equity_peaks (
     peak_equity     REAL NOT NULL,
     PRIMARY KEY (date, mode)
 );
+
+-- AI Intelligence: pattern insights cache (Phase 1)
+CREATE TABLE IF NOT EXISTS ai_pattern_insights (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    pattern_name    TEXT NOT NULL,
+    pattern_type    TEXT NOT NULL,
+    sample_size     INTEGER,
+    win_rate        REAL,
+    avg_pnl         REAL,
+    best_conditions TEXT,
+    recommendation  TEXT,
+    discovered_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+    expires_at      TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_pattern_insights_name
+    ON ai_pattern_insights (pattern_name);
+
+CREATE INDEX IF NOT EXISTS idx_trades_similarity
+    ON paper_trades (symbol, verdict_label, confidence_score);
 """
 
 
@@ -286,6 +306,35 @@ _MIGRATIONS = [
     "ALTER TABLE live_trades ADD COLUMN regime_score INTEGER",
     "ALTER TABLE paper_trades ADD COLUMN expiry TEXT",
     "ALTER TABLE live_trades ADD COLUMN expiry TEXT",
+    # ── Phase 0: ML feature columns (AI_INTELLIGENCE_ROADMAP_v3.0) ──────────
+    # These columns capture scan context at trade open time for ML training.
+    # All nullable — historical rows remain NULL, excluded from training.
+    "ALTER TABLE paper_trades ADD COLUMN price_change_pct REAL",
+    "ALTER TABLE paper_trades ADD COLUMN pcr REAL",
+    "ALTER TABLE paper_trades ADD COLUMN ce_oi_change REAL",
+    "ALTER TABLE paper_trades ADD COLUMN pe_oi_change REAL",
+    "ALTER TABLE paper_trades ADD COLUMN underlying REAL",
+    "ALTER TABLE paper_trades ADD COLUMN support REAL",
+    "ALTER TABLE paper_trades ADD COLUMN resistance REAL",
+    "ALTER TABLE paper_trades ADD COLUMN max_pain REAL",
+    "ALTER TABLE paper_trades ADD COLUMN days_to_expiry INTEGER",
+    "ALTER TABLE paper_trades ADD COLUMN chart_conflict INTEGER",
+    "ALTER TABLE paper_trades ADD COLUMN rsi_1h REAL",
+    "ALTER TABLE paper_trades ADD COLUMN rsi_3h REAL",
+    "ALTER TABLE paper_trades ADD COLUMN regime TEXT",
+    "ALTER TABLE live_trades ADD COLUMN price_change_pct REAL",
+    "ALTER TABLE live_trades ADD COLUMN pcr REAL",
+    "ALTER TABLE live_trades ADD COLUMN ce_oi_change REAL",
+    "ALTER TABLE live_trades ADD COLUMN pe_oi_change REAL",
+    "ALTER TABLE live_trades ADD COLUMN underlying REAL",
+    "ALTER TABLE live_trades ADD COLUMN support REAL",
+    "ALTER TABLE live_trades ADD COLUMN resistance REAL",
+    "ALTER TABLE live_trades ADD COLUMN max_pain REAL",
+    "ALTER TABLE live_trades ADD COLUMN days_to_expiry INTEGER",
+    "ALTER TABLE live_trades ADD COLUMN chart_conflict INTEGER",
+    "ALTER TABLE live_trades ADD COLUMN rsi_1h REAL",
+    "ALTER TABLE live_trades ADD COLUMN rsi_3h REAL",
+    "ALTER TABLE live_trades ADD COLUMN regime TEXT",
 ]
 
 
@@ -619,14 +668,20 @@ def insert_paper_trade(trade: dict) -> int:
              lots, status, reason, digest_id,
              trade_status, setup_type, decision_reason,
              confidence_score, entry_quality_score, trend_alignment_score, regime_score,
-             signal_key, pyramid_level, max_favorable_r)
+             signal_key, pyramid_level, max_favorable_r,
+             price_change_pct, pcr, ce_oi_change, pe_oi_change, underlying,
+             support, resistance, max_pain, days_to_expiry, chart_conflict,
+             rsi_1h, rsi_3h, regime)
         VALUES
             (:opened_at, :symbol, :expiry, :verdict_label, :side, :option_type, :strike, :entry_underlying,
              :entry_premium, :sl_underlying, :sl_premium, :target_underlying, :target_premium,
              :lots, :status, :reason, :digest_id,
              :trade_status, :setup_type, :decision_reason,
              :confidence_score, :entry_quality_score, :trend_alignment_score, :regime_score,
-             :signal_key, :pyramid_level, :max_favorable_r)
+             :signal_key, :pyramid_level, :max_favorable_r,
+             :price_change_pct, :pcr, :ce_oi_change, :pe_oi_change, :underlying,
+             :support, :resistance, :max_pain, :days_to_expiry, :chart_conflict,
+             :rsi_1h, :rsi_3h, :regime)
         RETURNING id
     """
     row_data = {
@@ -641,6 +696,20 @@ def insert_paper_trade(trade: dict) -> int:
         "signal_key":            signal_key,
         "pyramid_level":         trade.get("pyramid_level", 1),
         "max_favorable_r":       trade.get("max_favorable_r", 0.0),
+        # Phase 0: ML feature columns (captured at trade open time)
+        "price_change_pct":      trade.get("price_change_pct"),
+        "pcr":                   trade.get("pcr"),
+        "ce_oi_change":          trade.get("ce_oi_change"),
+        "pe_oi_change":          trade.get("pe_oi_change"),
+        "underlying":            trade.get("underlying"),
+        "support":               trade.get("support"),
+        "resistance":            trade.get("resistance"),
+        "max_pain":              trade.get("max_pain"),
+        "days_to_expiry":        trade.get("days_to_expiry"),
+        "chart_conflict":        trade.get("chart_conflict"),
+        "rsi_1h":                trade.get("rsi_1h"),
+        "rsi_3h":                trade.get("rsi_3h"),
+        "regime":                trade.get("regime"),
         **{k: trade.get(k) for k in (
             "opened_at", "symbol", "expiry", "verdict_label", "option_type", "strike",
             "entry_underlying", "entry_premium", "sl_underlying", "sl_premium",
@@ -860,7 +929,10 @@ def insert_live_trade(trade: dict) -> int:
              trade_status, setup_type, decision_reason,
              confidence_score, entry_quality_score, trend_alignment_score, regime_score,
              signal_key, pyramid_level, max_favorable_r,
-             broker_order_id, gtt_order_id, broker_status, broker_message, exit_mode)
+             broker_order_id, gtt_order_id, broker_status, broker_message, exit_mode,
+             price_change_pct, pcr, ce_oi_change, pe_oi_change, underlying,
+             support, resistance, max_pain, days_to_expiry, chart_conflict,
+             rsi_1h, rsi_3h, regime)
         VALUES
             (:opened_at, :symbol, :expiry, :verdict_label, :side, :option_type, :strike, :entry_underlying,
              :entry_premium, :sl_underlying, :sl_premium, :target_underlying, :target_premium,
@@ -868,7 +940,10 @@ def insert_live_trade(trade: dict) -> int:
              :trade_status, :setup_type, :decision_reason,
              :confidence_score, :entry_quality_score, :trend_alignment_score, :regime_score,
              :signal_key, :pyramid_level, :max_favorable_r,
-             :broker_order_id, :gtt_order_id, :broker_status, :broker_message, :exit_mode)
+             :broker_order_id, :gtt_order_id, :broker_status, :broker_message, :exit_mode,
+             :price_change_pct, :pcr, :ce_oi_change, :pe_oi_change, :underlying,
+             :support, :resistance, :max_pain, :days_to_expiry, :chart_conflict,
+             :rsi_1h, :rsi_3h, :regime)
         RETURNING id
     """
     row_data = {
@@ -888,6 +963,20 @@ def insert_live_trade(trade: dict) -> int:
         "broker_status":         trade.get("broker_status", "OPEN"),
         "broker_message":        trade.get("broker_message"),
         "exit_mode":             trade.get("exit_mode"),
+        # Phase 0: ML feature columns (captured at trade open time)
+        "price_change_pct":      trade.get("price_change_pct"),
+        "pcr":                   trade.get("pcr"),
+        "ce_oi_change":          trade.get("ce_oi_change"),
+        "pe_oi_change":          trade.get("pe_oi_change"),
+        "underlying":            trade.get("underlying"),
+        "support":               trade.get("support"),
+        "resistance":            trade.get("resistance"),
+        "max_pain":              trade.get("max_pain"),
+        "days_to_expiry":        trade.get("days_to_expiry"),
+        "chart_conflict":        trade.get("chart_conflict"),
+        "rsi_1h":                trade.get("rsi_1h"),
+        "rsi_3h":                trade.get("rsi_3h"),
+        "regime":                trade.get("regime"),
         **{k: trade.get(k) for k in (
             "opened_at", "symbol", "expiry", "verdict_label", "option_type", "strike",
             "entry_underlying", "entry_premium", "sl_underlying", "sl_premium",
