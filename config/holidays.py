@@ -62,7 +62,7 @@ def is_market_holiday(symbol: str, dt: datetime) -> bool:
     d = dt.date()
     class_key = get_symbol_class(symbol)
     
-    if class_key == "NSE_INDEX":
+    if class_key in ("NSE_INDEX", "BSE_INDEX"):
         if d in NSE_HOLIDAYS_2026:
             return True
             

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from config.settings import MARKET_WINDOWS
 
+
 # symbol → (class_key, strike_step_points)
 # strike_step_points is used for cluster-dedup width calculation.
 _SYMBOL_META: dict[str, tuple[str, int]] = {
@@ -13,6 +14,7 @@ _SYMBOL_META: dict[str, tuple[str, int]] = {
     "BANKNIFTY":   ("NSE_INDEX", 100),
     "FINNIFTY":    ("NSE_INDEX", 50),
     "MIDCPNIFTY":  ("NSE_INDEX", 25),
+    "SENSEX":      ("BSE_INDEX", 100),
     "NATURALGAS":  ("MCX_COMMODITY", 5),
     "CRUDEOIL":    ("MCX_COMMODITY", 100),
     "GOLD":        ("MCX_COMMODITY", 100),

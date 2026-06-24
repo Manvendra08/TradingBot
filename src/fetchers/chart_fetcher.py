@@ -66,6 +66,7 @@ _TV_SYMBOL_MAP: dict[str, tuple[str, str]] = {
     "BANKNIFTY": ("NSE", "BANKNIFTY"),
     "FINNIFTY": ("NSE", "FINNIFTY"),
     "MIDCPNIFTY": ("NSE", "MIDCPNIFTY"),
+    "SENSEX": ("BSE", "SENSEX"),
     "NATURALGAS": ("MCX", "NATURALGAS"),
     "CRUDEOIL": ("MCX", "CRUDEOIL"),
     "GOLD": ("MCX", "GOLD"),
@@ -80,6 +81,7 @@ _YF_SYMBOL_MAP: dict[str, str] = {
     "BANKNIFTY": "^NSEBANK",
     "FINNIFTY": "NIFTY_FIN_SERVICE.NS",
     "MIDCPNIFTY": "^NSMIDCP",
+    "SENSEX": "^BSESN",
     "NATURALGAS": "NG=F",
     "CRUDEOIL": "CL=F",
     "GOLD": "GC=F",
@@ -253,7 +255,7 @@ def _tv_record_success():
 def _provider_order(base_symbol: str) -> list[str]:
     # For NSE index symbols, prefer Yahoo and explicitly ignore in-progress bars.
     # tvDatafeed often returns the current forming candle with odd timestamps.
-    if base_symbol in {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"}:
+    if base_symbol in {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"}:
         return ["yfinance"]
     # For commodities, TradingView (if logged in) is closest to what traders see,
     # with Yahoo as fallback.

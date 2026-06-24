@@ -84,7 +84,7 @@ try:
     )
 except ImportError:
     DB_PATH = ROOT / "data" / "nsebot.db"
-    WATCH_SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "NATURALGAS"]
+    WATCH_SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX", "NATURALGAS"]
     ALLOWED_SCAN_FREQUENCIES = [5, 15, 30, 60, 180, 1440]
     MIN_SCAN_FREQUENCY = 5
     MAX_SCAN_FREQUENCY = 1440
@@ -93,6 +93,7 @@ except ImportError:
         "BANKNIFTY": 15,
         "FINNIFTY": 25,
         "MIDCPNIFTY": 50,
+        "SENSEX": 20,
         "NATURALGAS": 1250,
         "CRUDEOIL": 100,
         "GOLD": 100,
