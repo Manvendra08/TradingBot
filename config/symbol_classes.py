@@ -189,20 +189,30 @@ def get_futures_expiry(symbol: str, ref_date: "date | None" = None) -> "str | No
         return expiry.strftime("%Y-%m-%d")
 
     elif class_key in ("NSE_INDEX", "BSE_INDEX"):
-        year, month = ref_date.year, ref_date.month
+        if base == "NIFTY":
+            # Weekly Tuesday (weekday 1)
+            days_ahead = (1 - ref_date.weekday() + 7) % 7
+            raw = ref_date + timedelta(days=days_ahead)
+            expiry = _prev_working_day(raw, nse_holidays)
+            if expiry < ref_date:
+                raw = raw + timedelta(days=7)
+                expiry = _prev_working_day(raw, nse_holidays)
+            return expiry.strftime("%Y-%m-%d")
+        else:
+            # Other symbols: Last Tuesday of the month (weekday 1)
+            year, month = ref_date.year, ref_date.month
 
-        def _compute_nse(y: int, m: int) -> "_date":
-            # Last Thursday (weekday 3)
-            raw = _last_weekday_of_month(y, m, 3)
-            return _prev_working_day(raw, nse_holidays)
+            def _compute_nse(y: int, m: int) -> "_date":
+                raw = _last_weekday_of_month(y, m, 1)
+                return _prev_working_day(raw, nse_holidays)
 
-        expiry = _compute_nse(year, month)
-        if expiry < ref_date:
-            if month == 12:
-                year, month = year + 1, 1
-            else:
-                month += 1
             expiry = _compute_nse(year, month)
-        return expiry.strftime("%Y-%m-%d")
+            if expiry < ref_date:
+                if month == 12:
+                    year, month = year + 1, 1
+                else:
+                    month += 1
+                expiry = _compute_nse(year, month)
+            return expiry.strftime("%Y-%m-%d")
 
     return None
