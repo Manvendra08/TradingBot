@@ -2597,7 +2597,14 @@ function fetchClosedTrades() {
         let closeTime = "—";
         if (p.closed_at) {
           const d = new Date(p.closed_at);
-          closeTime = d.toLocaleTimeString('en-IN', {hour: '2-digit', minute:'2-digit', second:'2-digit'});
+          closeTime = d.toLocaleString('en-IN', {
+            day: '2-digit',
+            month: 'short',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: true
+          });
         }
         
         const lotsSign = p.side === 'BUY' ? '+' : '-';
