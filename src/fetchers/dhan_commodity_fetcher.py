@@ -537,6 +537,31 @@ def _extract_strikes(html: str) -> list[dict]:
 
     return parsed
 
+
+def _get_open_futures_expiry(symbol: str) -> Optional[str]:
+    """Check if there is an open paper or live future position for symbol, and return its expiry."""
+    try:
+        from src.models.schema import get_conn
+        # Check paper_trades
+        with get_conn() as conn:
+            row = conn.execute(
+                "SELECT expiry FROM paper_trades WHERE symbol=? AND status='OPEN' AND option_type='FUT' ORDER BY opened_at DESC LIMIT 1",
+                (symbol,),
+            ).fetchone()
+            if row and row["expiry"]:
+                return row["expiry"]
+            # Check live_trades
+            row = conn.execute(
+                "SELECT expiry FROM live_trades WHERE symbol=? AND status='OPEN' AND option_type='FUT' ORDER BY opened_at DESC LIMIT 1",
+                (symbol,),
+            ).fetchone()
+            if row and row["expiry"]:
+                return row["expiry"]
+    except Exception as e:
+        log.warning("Failed to check open future positions for %s: %s", symbol, e)
+    return None
+
+
 class DhanCommodityFetcher(BaseFetcher):
     name = "dhan_commodity"
 
@@ -633,6 +658,7 @@ class DhanCommodityFetcher(BaseFetcher):
         log.warning("[dhan_commodity] builtup live-price unavailable: %s", last_exc)
         return None
 
+
     def fetch_option_chain(self, symbol: str, expiry: str | None = None) -> dict | None:
         base = symbol.upper().split()[0]
         slug = _SYMBOL_SLUGS.get(base)
@@ -688,6 +714,14 @@ class DhanCommodityFetcher(BaseFetcher):
             if underlying is None:
                 underlying = _extract_underlying(page_text, base)
 
+            # Ensure the security ID matches the target futures contract month (e.g. July)
+            # if options rolled over and we have no open near-month futures positions.
+            open_fut_expiry = _get_open_futures_expiry(base)
+            futures_target_expiry = open_fut_expiry or target_expiry
+            resolved_sid = get_dhan_security_id(base, target_expiry=futures_target_expiry)
+            if resolved_sid:
+                sid = resolved_sid
+
             if sid and expj:
                 raw = self._fetch_scanx_option_chain(sid, expj)
                 strikes = _normalise_scanx_oc(raw or {})
@@ -718,7 +752,9 @@ class DhanCommodityFetcher(BaseFetcher):
         # ── API-ONLY FALLBACK ──────────────────────────────────────────────────
         if not strikes:
             log.info("[dhan_commodity] HTML parsing failed or empty. Falling back to ScanX API scan for %s", base)
-            secid = get_dhan_security_id(base)
+            open_fut_expiry = _get_open_futures_expiry(base)
+            futures_target_expiry = open_fut_expiry or expiry
+            secid = get_dhan_security_id(base, target_expiry=futures_target_expiry)
             if secid:
                 fl_payload = {"Data": {"Seg": 5, "Sid": int(secid), "Exp": 0}}
                 try:
@@ -804,7 +840,9 @@ class DhanCommodityFetcher(BaseFetcher):
             log.warning("[dhan_commodity] no strikes parsed for %s", base)
             return None
 
-        secid = get_dhan_security_id(base)
+        open_fut_expiry = _get_open_futures_expiry(base)
+        futures_target_expiry = open_fut_expiry or target_expiry
+        secid = get_dhan_security_id(base, target_expiry=futures_target_expiry)
         if secid:
             live_fut = self._fetch_builtup_live_price(secid)
             if live_fut is not None and live_fut > 0:

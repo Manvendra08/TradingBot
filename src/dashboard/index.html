@@ -329,6 +329,7 @@
   <div class="header-bottom-row">
     <div class="header-nav">
       <a href="/" class="nav-tab active" id="tab-dashboard">Dashboard</a>
+      <a href="#" class="nav-tab" id="tab-ai-insights" data-tab="ai-insights">AI Insights</a>
       <a href="/paper" class="nav-tab" id="tab-paper">Paper Trades</a>
       <a href="/broker" class="nav-tab" id="tab-broker">Broker Console</a>
       <a href="/settings" class="nav-tab" id="tab-settings">Settings</a>
@@ -404,6 +405,67 @@
   </div>
 </main>
 
+<!-- ════════════════════════════════════════════════════════════════════════
+     AI INSIGHTS PANEL — Phase 4
+     AI_INTELLIGENCE_ROADMAP_v3.0
+     Hidden by default; shown when AI Insights tab is active.
+════════════════════════════════════════════════════════════════════════ -->
+<link rel="stylesheet" href="/static/ai_insights.css">
+
+<section class="ai-insights" hidden aria-labelledby="ai-insights-title" id="ai-insights-panel">
+  <header class="ai-head">
+    <h2 id="ai-insights-title">AI Intelligence</h2>
+    <div class="ai-head__meta">
+      <span id="ai-symbol-pill" class="ai-pill">—</span>
+      <button id="ai-refresh-btn" class="ai-btn-ghost ai-btn-refresh" aria-label="Refresh insights">↻</button>
+      <span id="ai-updated" class="ai-micro" aria-live="polite"></span>
+    </div>
+  </header>
+
+  <!-- HERO: ML Success Probability -->
+  <article class="ai-card ai-card--hero" aria-labelledby="ai-ml-title">
+    <h3 id="ai-ml-title" class="ai-card__title">🤖 Success Probability</h3>
+    <div id="ai-ml-content" class="ai-card__body" aria-live="polite" role="region" data-state="loading">
+      <div class="ai-skeleton ai-skeleton--hero" style="width:50%"></div>
+      <div class="ai-skeleton ai-skeleton--bar" style="width:80%"></div>
+      <div class="ai-skeleton ai-skeleton--bar" style="width:60%"></div>
+    </div>
+  </article>
+
+  <!-- Two-column: Trade DNA + Edge Health -->
+  <div class="ai-grid-2">
+    <article class="ai-card" aria-labelledby="ai-dna-title">
+      <h3 id="ai-dna-title" class="ai-card__title">🧬 Trade DNA</h3>
+      <div id="ai-dna-content" class="ai-card__body" aria-live="polite" role="region" data-state="loading">
+        <div class="ai-skeleton ai-skeleton--bar" style="width:70%"></div>
+        <div class="ai-skeleton ai-skeleton--bar" style="width:50%"></div>
+        <div class="ai-skeleton ai-skeleton--bar" style="width:90%"></div>
+      </div>
+    </article>
+
+    <article class="ai-card" aria-labelledby="ai-edge-title">
+      <h3 id="ai-edge-title" class="ai-card__title">📉 Edge Health</h3>
+      <div id="ai-edge-content" class="ai-card__body" aria-live="polite" role="region" data-state="loading">
+        <div class="ai-skeleton ai-skeleton--bar" style="width:80%"></div>
+        <div class="ai-skeleton ai-skeleton--bar" style="width:60%"></div>
+        <div class="ai-skeleton ai-skeleton--bar" style="width:70%"></div>
+      </div>
+    </article>
+  </div>
+
+  <!-- Patterns (full width) -->
+  <article class="ai-card" aria-labelledby="ai-patterns-title">
+    <h3 id="ai-patterns-title" class="ai-card__title">📊 Top Patterns</h3>
+    <div id="ai-patterns-content" class="ai-card__body" aria-live="polite" role="region" data-state="loading">
+      <div class="ai-skeleton ai-skeleton--bar" style="width:90%"></div>
+      <div class="ai-skeleton ai-skeleton--bar" style="width:75%"></div>
+      <div class="ai-skeleton ai-skeleton--bar" style="width:85%"></div>
+      <div class="ai-skeleton ai-skeleton--bar" style="width:65%"></div>
+    </div>
+  </article>
+</section>
+
+<script src="/static/ai_insights.js"></script>
 <script>
 const API = '';
 let charts = {};
@@ -737,6 +799,73 @@ function renderIntelligence(intel) {
   el.innerHTML = `${base}${lines}${symbolSpecific}`;
 }
 
+// ── AI Insights Tab Switching ─────────────────────────────────────────────
+function setupAITabSwitching() {
+  const aiTab = document.getElementById('tab-ai-insights');
+  const dashboardTab = document.getElementById('tab-dashboard');
+  const mainContent = document.querySelector('main');
+  const aiPanel = document.getElementById('ai-insights-panel');
+
+  if (!aiTab || !dashboardTab || !mainContent || !aiPanel) return;
+
+  function showDashboard() {
+    mainContent.hidden = false;
+    aiPanel.hidden = true;
+    dashboardTab.classList.add('active');
+    aiTab.classList.remove('active');
+    if (window.AIInsights) window.AIInsights.hide();
+  }
+
+  function showAIInsights() {
+    mainContent.hidden = true;
+    aiPanel.hidden = false;
+    dashboardTab.classList.remove('active');
+    aiTab.classList.add('active');
+    if (window.AIInsights) window.AIInsights.show();
+  }
+
+  aiTab.addEventListener('click', (e) => {
+    e.preventDefault();
+    showAIInsights();
+  });
+
+  dashboardTab.addEventListener('click', (e) => {
+    // If already on dashboard (active), just reload
+    if (dashboardTab.classList.contains('active')) {
+      loadAll();
+      return;
+    }
+    e.preventDefault();
+    showDashboard();
+  });
+
+  // Wire the sub-header symbol selector to AI Insights context
+  const symbolSel = document.getElementById('symbol-sel');
+  if (symbolSel && window.AIInsights) {
+    symbolSel.addEventListener('change', () => {
+      // When symbol changes, update AI context with current intelligence
+      const sym = symbolSel.value;
+      if (sym) {
+        // Try to get current verdict from intelligence
+        fetch(`/api/intelligence_summary?symbol=${encodeURIComponent(sym)}`)
+          .then(r => r.json())
+          .then(intel => {
+            if (intel && intel.available) {
+              window.AIInsights.setSignal({
+                symbol: sym,
+                verdict: intel.verdict || null,
+                confidence: intel.confidence || 0,
+              });
+            }
+          })
+          .catch(() => {
+            window.AIInsights.setSignal({ symbol: sym, verdict: null, confidence: 0 });
+          });
+      }
+    });
+  }
+}
+
 async function init() {
   const themeBtn = document.getElementById('theme-toggle-btn');
   if (themeBtn) {
@@ -744,6 +873,9 @@ async function init() {
     themeBtn.textContent = current === 'light' ? '🌙' : '☀️';
     themeBtn.onclick = toggleTheme;
   }
+
+  // Setup AI Insights tab switching
+  setupAITabSwitching();
 
   await loadRuntime();
   const symbols = await api('/api/symbols');

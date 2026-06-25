@@ -14,13 +14,17 @@ The AI receives the full scan context including:
   - Open trade status (if any)
   - Historical scan trend
 """
+
 import json
-import os
 import logging
+import os
 import re
-import pytz
 from datetime import datetime
+
+import pytz
 from pydantic import BaseModel, Field
+
+from config.symbol_classes import get_symbol_class
 
 try:
     from google import genai
@@ -33,71 +37,127 @@ log = logging.getLogger(__name__)
 _IST = pytz.timezone("Asia/Kolkata")
 
 
-
 # ── Response Schemas ─────────────────────────────────────────────────────
+
 
 class LLMTradeVerdict(BaseModel):
     """
     Action-oriented trade verdict for traders.
     Structured for quick decision-making with specific levels.
     """
+
     # Decision signal
-    action: str = Field(description="GO_LONG, GO_SHORT, or NO_TRADE — clear executable signal")
+    action: str = Field(
+        description="GO_LONG, GO_SHORT, or NO_TRADE — clear executable signal"
+    )
     confidence: int = Field(
         description=(
             "Confidence 0-100. DERIVE from evidence agreement — do not guess:\n"
-            "  Count how many of these 4 agree with your action:\n"
+            "  Count how many of these 3 agree with your action:\n"
             "    (1) Net OI Δ direction (CE vs PE change)\n"
-            "    (2) Price action (underlying trend)\n"
-            "    (3) Chart candle sentiment (1H/3H)\n"
-            "    (4) News/macro direction\n"
-            "  4/4 agree → 85-95 | 3/4 → 65-80 | 2/4 → 45-60 | ≤1/4 → 20-40.\n"
-            "  If action=NO_TRADE, set confidence to how strongly NO_TRADE is supported (same scale)."
+            "    (2) Price action (underlying trend vs key levels)\n"
+            "    (3) News/macro direction\n"
+            "  3/3 agree → 80-95 | 2/3 → 60-75 | 1/3 → 35-55 | 0/3 → NO_TRADE.\n"
+            "  Chart candles (1H/3H) are entry-timing context, NOT a confidence source.\n"
+            "  If action=NO_TRADE, set confidence to how strongly staying out is supported."
         )
     )
-    
+
+    # Evidence chain — displayed as structured bullets in the alert
+    signal_chain: str = Field(
+        description=(
+            "Structured 3-line evidence chain. Use EXACTLY this format (each line ≤ 15 words):\n"
+            "  Line 1 — OI: [pattern name] — CE Δ [value] vs PE Δ [value] → [BEARISH/BULLISH/NEUTRAL]\n"
+            "  Line 2 — Price: [price change]% vs [MP/ATM/S/R level] → [confirms/contradicts/caps]\n"
+            "  Line 3 — Chart: 1H [sentiment] + 3H [sentiment] → [entry timing read]\n"
+            "Cite only numbers from DATA. No filler words.\n"
+            "Good example (short setup):\n"
+            "  OI: Call Writing — CE Δ +2.3K vs PE Δ +186 → BEARISH\n"
+            "  Price: +0.92% intraday vs MP 6800 → upside capped\n"
+            "  Chart: 1H BEAR + 3H BEAR → entry timing aligned\n"
+            "Good example (no trade):\n"
+            "  OI: Both unwinding — CE Δ −43 vs PE Δ −224 → squaring, no edge\n"
+            "  Price: 306.4 within 300–310 range → no directional breakout\n"
+            "  Chart: 1H BEAR vs 3H BULL → 1H pullback in 3H trend"
+        )
+    )
+
     # Trade specification
-    instrument: str = Field(description="Exact contract: e.g., 'NIFTY 24500 CE 27Jun' or 'CRUDEOIL 7100 PE 20Jun'")
-    entry_trigger: str = Field(description="Specific condition to enter: e.g., 'Underlying crosses above 24520' or 'Premium breaks 185'")
-    entry_premium_range: str = Field(description="Acceptable entry premium range: e.g., '180-195' or 'ATM ± 1 strike'")
-    
+    instrument: str = Field(
+        description="Exact contract: e.g., 'NIFTY 24500 CE 27Jun' or 'CRUDEOIL 7100 PE 20Jun'"
+    )
+    entry_trigger: str = Field(
+        description="Specific condition to enter: e.g., 'Underlying crosses above 24520' or 'Premium breaks 185'"
+    )
+    entry_premium_range: str = Field(
+        description="Acceptable entry premium range: e.g., '180-195' or 'ATM ± 1 strike'"
+    )
+
     # Risk management
-    stop_loss: str = Field(description="Exact SL level: 'Premium 140' or 'Underlying 24450' — must be specific number")
-    target_1: str = Field(description="First profit target: 'Premium 230' or 'Underlying 24600'")
-    target_2: str = Field(description="Extended target if momentum continues: 'Premium 280' or 'Underlying 24700'")
-    risk_reward: str = Field(description="Calculated R:R ratio: e.g., '1:1.8' or '1:2.5'")
-    
-    # Thesis and invalidation
+    stop_loss: str = Field(
+        description="Exact SL level: 'Premium 140' or 'Underlying 24450' — must be specific number"
+    )
+    target_1: str = Field(
+        description="First profit target: 'Premium 230' or 'Underlying 24600'"
+    )
+    target_2: str = Field(
+        description="Extended target if momentum continues: 'Premium 280' or 'Underlying 24700'"
+    )
+    risk_reward: str = Field(
+        description="Calculated R:R ratio: e.g., '1:1.8' or '1:2.5'"
+    )
+
+    # Thesis — ONE sentence bottom-line punchline
     thesis: str = Field(
         description=(
-            "A detailed summary and verdict of at least 3-4 sentences (generating 3-4 lines of explanation) explaining why this trade works NOW. "
-            "MUST reference multiple numbers and data points from the data (PCR, OI Δ, underlying level, or candle direction). "
-            "Example: 'Call Writing detected. CE OI change of +51,000 vs PE change of +27,000 indicates building resistance at the 7,000 strike. PCR has dropped to 0.76, confirming a bearish sentiment, while 1H and 3H chart candles are also showing bearish closes. Therefore, going short via PE is highly supported by the combined data.'"
+            "ONE punchy sentence, max 20 words. The bottom-line case for the trade. "
+            "Start with the OI pattern name, end with the action implication. "
+            "Good: 'CE writing at 7000 with PCR 0.71 and dual bearish candles — short the bounce.' "
+            "Bad: multi-sentence recap of signal_chain data, or prose paragraphs."
         )
     )
-    invalidation: str = Field(description="What kills the trade: 'If underlying drops below 24400' or 'If PCR falls below 0.8'")
-    
+    invalidation: str = Field(
+        description="What kills the trade: 'If underlying breaks above 6875' or 'If PCR rises above 1.0'"
+    )
+
     # Context
-    risk_rating: str = Field(description="LOW, MEDIUM, HIGH — overall risk considering macro events, expiry proximity, volatility")
-    catalyst: str = Field(description="Upcoming event that could accelerate or invalidate: 'EIA report Thursday 8:30PM' or 'No major catalyst'")
+    risk_rating: str = Field(
+        description="LOW, MEDIUM, HIGH — overall risk considering macro events, expiry proximity, volatility"
+    )
+    catalyst: str = Field(
+        description="Upcoming event that could accelerate or invalidate: 'EIA report Thursday 8:30PM IST' or 'No major catalyst'"
+    )
 
 
 class LLMExitAdvice(BaseModel):
     action: str = Field(description="HOLD, TRAIL_SL, CLOSE_EARLY, or EXTEND_TARGET")
-    new_sl_premium: float | None = Field(default=None, description="New stop-loss premium level, or null if unchanged")
-    new_target_premium: float | None = Field(default=None, description="New target premium level, or null if unchanged")
-    reasoning: str = Field(description="1-2 sentence rationale for the exit recommendation")
-    urgency: str = Field(description="LOW, MEDIUM, or HIGH — how urgently this action should be taken")
+    new_sl_premium: float | None = Field(
+        default=None, description="New stop-loss premium level, or null if unchanged"
+    )
+    new_target_premium: float | None = Field(
+        default=None, description="New target premium level, or null if unchanged"
+    )
+    reasoning: str = Field(
+        description="1-2 sentence rationale for the exit recommendation"
+    )
+    urgency: str = Field(
+        description="LOW, MEDIUM, or HIGH — how urgently this action should be taken"
+    )
 
 
 class LLMStrategyOptimization(BaseModel):
-    suggested_config_changes: dict[str, float | str | int] = Field(description="Dictionary of configuration keys and their new recommended values")
-    analysis: str = Field(description="Brief analysis explaining why these changes were suggested based on trade history")
+    suggested_config_changes: dict[str, float | str | int] = Field(
+        description="Dictionary of configuration keys and their new recommended values"
+    )
+    analysis: str = Field(
+        description="Brief analysis explaining why these changes were suggested based on trade history"
+    )
 
 
 # ── Client management ────────────────────────────────────────────────────
 
 _client = None
+
 
 def _get_client(api_key: str):
     global _client
@@ -107,6 +167,7 @@ def _get_client(api_key: str):
 
 
 # ── Deep prompt construction ─────────────────────────────────────────────
+
 
 def _summarize_alerts(alerts: list[dict]) -> str:
     """Summarize alerts by type and severity for the AI prompt."""
@@ -144,9 +205,13 @@ def _format_chart_data(chart_indicators: dict | None) -> str:
         ohlc = data.get("ohlc", {})
         prev = data.get("prev_ohlc") or data.get("last_closed_ohlc") or {}
         sentiment = data.get("sentiment", "UNKNOWN")
-        lines.append(f"  {tf.upper()} Candle: O={ohlc.get('open'):.2f} H={ohlc.get('high'):.2f} L={ohlc.get('low'):.2f} C={ohlc.get('close'):.2f} | Sentiment: {sentiment}")
+        lines.append(
+            f"  {tf.upper()} Candle: O={ohlc.get('open'):.2f} H={ohlc.get('high'):.2f} L={ohlc.get('low'):.2f} C={ohlc.get('close'):.2f} | Sentiment: {sentiment}"
+        )
         if prev:
-            lines.append(f"  {tf.upper()} Prev:   O={prev.get('open'):.2f} H={prev.get('high'):.2f} L={prev.get('low'):.2f} C={prev.get('close'):.2f}")
+            lines.append(
+                f"  {tf.upper()} Prev:   O={prev.get('open'):.2f} H={prev.get('high'):.2f} L={prev.get('low'):.2f} C={prev.get('close'):.2f}"
+            )
     return "\n".join(lines) if lines else "No chart data available."
 
 
@@ -160,7 +225,9 @@ def _format_news(news_data: dict | None) -> str:
     count = news_data.get("count_24h", 0)
     items = news_data.get("items", [])[:5]
 
-    lines = [f"  News Direction: {direction} (score: {score}) | {count} articles in 24h"]
+    lines = [
+        f"  News Direction: {direction} (score: {score}) | {count} articles in 24h"
+    ]
     for item in items:
         title = item.get("title", "")[:100]
         s = item.get("score", 0)
@@ -185,7 +252,9 @@ def _format_macro_context(symbol: str) -> str:
 
     # ── MCX Commodities ──────────────────────────────────────────────────
     if "NATURALGAS" in base:
-        return _MACRO_PREFIX + """  Symbol type: MCX Natural Gas Futures (USD-denominated, INR-settled)
+        return (
+            _MACRO_PREFIX
+            + """  Symbol type: MCX Natural Gas Futures (USD-denominated, INR-settled)
   Primary drivers:
     - EIA Weekly Natural Gas Storage Report (every Thursday ~8:30 PM IST)
       → Surprise builds = bearish pressure; surprise draws = bullish spike
@@ -198,9 +267,12 @@ def _format_macro_context(symbol: str) -> str:
     - US weather model updates (Mon/Wed): can move Henry Hub 3-5% intraday
   Seasonality: Jun-Aug = low demand (shoulder season) → structurally bearish bias
   Correlation: Positive with crude (energy complex); negative with renewable output"""
+        )
 
     if "CRUDEOIL" in base:
-        return _MACRO_PREFIX + """  Symbol type: MCX Crude Oil Futures (Brent/WTI proxy, USD-denominated, INR-settled)
+        return (
+            _MACRO_PREFIX
+            + """  Symbol type: MCX Crude Oil Futures (Brent/WTI proxy, USD-denominated, INR-settled)
   Primary drivers:
     - EIA Weekly Petroleum Status Report (every Wednesday ~8:00 PM IST)
       → Inventory build = bearish; inventory draw = bullish
@@ -214,9 +286,12 @@ def _format_macro_context(symbol: str) -> str:
     - OPEC+ meetings (quarterly): binary risk for trend trades
   Seasonality: Summer driving season (Jun-Aug) supports demand; shoulder in Sep-Oct
   Correlation: Natural Gas (energy complex), DXY (inverse), equities (risk-on)"""
+        )
 
     if "GOLD" in base:
-        return _MACRO_PREFIX + """  Symbol type: MCX Gold Futures (USD-denominated, INR-settled)
+        return (
+            _MACRO_PREFIX
+            + """  Symbol type: MCX Gold Futures (USD-denominated, INR-settled)
   Primary drivers:
     - US Federal Reserve rate decisions and dot-plot guidance
     - US CPI/PCE inflation prints (monthly) — higher inflation = bullish gold
@@ -225,16 +300,22 @@ def _format_macro_context(symbol: str) -> str:
     - Geopolitical safe-haven demand; central bank gold buying (RBI, PBoC)
   Key risk: Fed FOMC statements, US NFP, CPI day volatility is extreme
   Seasonality: Akshaya Tritiya / Dhanteras / wedding season → INR demand spikes"""
+        )
 
     if "SILVER" in base:
-        return _MACRO_PREFIX + """  Symbol type: MCX Silver Futures (USD-denominated, INR-settled)
+        return (
+            _MACRO_PREFIX
+            + """  Symbol type: MCX Silver Futures (USD-denominated, INR-settled)
   Primary drivers: Industrial demand (solar panels, EVs), Gold correlation (~0.85)
   Key risk: More volatile than gold; tracks gold direction but amplifies moves 2-3x
   Watch: US manufacturing PMI (industrial demand signal), Gold/Silver ratio extremes"""
+        )
 
     # ── NSE Index Options ────────────────────────────────────────────────
     if "BANKNIFTY" in base:
-        return _MACRO_PREFIX + """  Symbol type: NSE BANKNIFTY Index Options (INR)
+        return (
+            _MACRO_PREFIX
+            + """  Symbol type: NSE BANKNIFTY Index Options (INR)
   Primary drivers:
     - RBI Monetary Policy Committee (MPC) — rate decisions & stance (every 2 months)
     - Bank credit growth, NPA cycles, PSU bank disinvestment news
@@ -244,9 +325,12 @@ def _format_macro_context(symbol: str) -> str:
   BANKNIFTY-specific: Beta ~1.5x vs Nifty; highly sensitive to RBI rate surprises
   Expiry behaviour: Weekly expiry (Thursday) → gamma squeeze risk near ATM last 2 days
   Key risk: RBI policy day, budget day, election results = binary events"""
+        )
 
     if "NIFTY" in base:
-        return _MACRO_PREFIX + """  Symbol type: NSE NIFTY 50 Index Options (INR)
+        return (
+            _MACRO_PREFIX
+            + """  Symbol type: NSE NIFTY 50 Index Options (INR)
   Primary drivers:
     - RBI Monetary Policy Committee (MPC) — rate decisions & stance (every 2 months)
     - FII/DII net flows (daily): Sustained FII selling → index headwind
@@ -255,11 +339,15 @@ def _format_macro_context(symbol: str) -> str:
     - India VIX: VIX > 20 = elevated uncertainty; VIX < 12 = complacency risk
   Expiry behaviour: Weekly expiry (Thursday) → gamma squeeze risk near ATM last 2 days
   Key risk: Budget day, election results, RBI policy day = binary events"""
+        )
 
     # ── Generic fallback ─────────────────────────────────────────────────
-    return _MACRO_PREFIX + """  No specific macro context available for this symbol.
+    return (
+        _MACRO_PREFIX
+        + """  No specific macro context available for this symbol.
   General reminder: Consider broader market sentiment, FII flows, and any
   scheduled economic events before taking directional positions."""
+    )
 
 
 def _format_open_trade(open_trade: dict | None) -> str:
@@ -361,10 +449,14 @@ def _format_historical_oi(symbol: str) -> str:
     if len(pcr_vals) >= 3:
         pcr_newest = pcr_vals[0]
         pcr_oldest = pcr_vals[-1]
-        pcr_dir = "rising" if pcr_newest > pcr_oldest + 0.05 else (
-            "falling" if pcr_newest < pcr_oldest - 0.05 else "stable"
+        pcr_dir = (
+            "rising"
+            if pcr_newest > pcr_oldest + 0.05
+            else ("falling" if pcr_newest < pcr_oldest - 0.05 else "stable")
         )
-        lines.append(f"  PCR Trend: {pcr_dir} ({pcr_oldest:.2f} \u2192 {pcr_newest:.2f})")
+        lines.append(
+            f"  PCR Trend: {pcr_dir} ({pcr_oldest:.2f} \u2192 {pcr_newest:.2f})"
+        )
 
     if len(oi_net) >= 3:
         recent_net = sum(oi_net[:3])
@@ -379,7 +471,9 @@ def _format_historical_oi(symbol: str) -> str:
             oi_dir = "decelerating unwinding"
         else:
             oi_dir = "flat"
-        lines.append(f"  OI Trend: {oi_dir} (recent 3: {recent_net:+,} vs prior 3: {prior_net:+,})")
+        lines.append(
+            f"  OI Trend: {oi_dir} (recent 3: {recent_net:+,} vs prior 3: {prior_net:+,})"
+        )
 
     # ── Price impact analysis (Fix 3) ────────────────────────────────────
     if len(price_vals) >= 3 and len(oi_net) >= 3:
@@ -411,6 +505,7 @@ def _format_historical_oi(symbol: str) -> str:
     verdicts = [row["verdict_label"] for row in rows if row["verdict_label"]]
     if len(verdicts) >= 3:
         from collections import Counter
+
         vc = Counter(verdicts)
         most_common_label, most_common_count = vc.most_common(1)[0]
         pct = (most_common_count / len(verdicts)) * 100
@@ -441,23 +536,26 @@ def _build_deep_prompt(
     if dte is not None and int(dte) <= 2:
         risk_flags.append(f"EXPIRY IMMINENT ({dte} DTE)")
     if news_data:
-        high_impact = [i for i in (news_data.get("items") or []) if abs(i.get("score", 0)) >= 3]
+        high_impact = [
+            i for i in (news_data.get("items") or []) if abs(i.get("score", 0)) >= 3
+        ]
         if high_impact:
             risk_flags.append(f"HIGH-IMPACT NEWS ACTIVE ({len(high_impact)} articles)")
 
-    prompt = f"""Deliver a TRADE PLAN with specific levels. No analysis prose.
+    prompt = f"""You are a professional options trader. Analyse the data below and generate a structured trade plan.
 
-{symbol} | {datetime.now(_IST).strftime("%a %H:%M IST")} | Underlying: {ctx.get('underlying')} | ATM: {ctx.get('atm_strike')}
+{symbol} | {datetime.now(_IST).strftime("%a %H:%M IST")} | Underlying: {ctx.get("underlying")} | ATM: {ctx.get("atm_strike")} | DTE: {dte}
 
 DATA:
-• Verdict: {intel.get('verdict_label')} @ {intel.get('confidence', 0)}% | Trend: {intel.get('trend', 'N/A')}
-• S/R: {ctx.get('support')}/{ctx.get('resistance')} | MaxPain: {ctx.get('max_pain')} | PCR: {ctx.get('pcr')}
-• OIΔ CE:{ctx.get('ce_oi_change', 0):,} PE:{ctx.get('pe_oi_change', 0):,}
-• Chart: {_format_chart_data(ctx.get('chart_indicators'))}
-• Alerts: {_summarize_alerts(alerts or [])}
-• Risk Flags: {', '.join(risk_flags) or 'None'}
+• Verdict : {intel.get("verdict_label")} @ {intel.get("confidence", 0)}% | Trend: {intel.get("trend", "N/A")}
+• S/R     : {ctx.get("support")} / {ctx.get("resistance")} | MaxPain: {ctx.get("max_pain")} | PCR: {ctx.get("pcr")}
+• OI Δ    : CE {ctx.get("ce_oi_change", 0):+,} | PE {ctx.get("pe_oi_change", 0):+,}
+• Price Δ : {ctx.get("price_change_pct", "N/A")}% ({ctx.get("price_change_points", "N/A")} pts)
+• Chart   : {_format_chart_data(ctx.get("chart_indicators"))}
+• Alerts  : {_summarize_alerts(alerts or [])}
+• Risk    : {", ".join(risk_flags) or "None"}
 
-HISTORICAL:
+HISTORICAL OI CONTEXT:
 {_format_historical_oi(symbol)}
 """
 
@@ -467,16 +565,34 @@ HISTORICAL:
         prompt += f"MACRO: {_format_macro_context(symbol)}\n"
 
     if open_trade:
-        prompt += f"POSITION: {_format_open_trade(open_trade)}\n"
+        prompt += f"OPEN POSITION: {_format_open_trade(open_trade)}\n"
 
     if trade_decision:
-        prompt += f"ENGINE: {trade_decision.get('status')} — {trade_decision.get('reason', '')}\n"
+        prompt += f"ENGINE RESULT: {trade_decision.get('status')} — {trade_decision.get('reason', '')}\n"
 
     # Derive engine direction string for the prompt
-    from src.engine.verdict_sets import is_bullish as _is_bull, is_bearish as _is_bear
-    _vl  = intel.get("verdict_label", "")
-    _bias_str = "BULLISH" if _is_bull(_vl) else ("BEARISH" if _is_bear(_vl) else "NO_TRADE")
+    from src.engine.verdict_sets import is_bearish as _is_bear
+    from src.engine.verdict_sets import is_bullish as _is_bull
+
+    _vl = intel.get("verdict_label", "")
+    _bias_str = (
+        "BULLISH" if _is_bull(_vl) else ("BEARISH" if _is_bear(_vl) else "NO_TRADE")
+    )
     _bias_rationale = intel.get("verdict_desc") or intel.get("trend") or ""
+    _c1 = (
+        str(
+            ctx.get("chart_indicators", {}).get("1h", {}).get("sentiment", "NEUTRAL")
+        ).upper()
+        if isinstance(ctx.get("chart_indicators"), dict)
+        else "NEUTRAL"
+    )
+    _c3 = (
+        str(
+            ctx.get("chart_indicators", {}).get("3h", {}).get("sentiment", "NEUTRAL")
+        ).upper()
+        if isinstance(ctx.get("chart_indicators"), dict)
+        else "NEUTRAL"
+    )
 
     prompt += f"""
 ENGINE DECISION (authoritative — you MUST respect this):
@@ -484,56 +600,64 @@ ENGINE DECISION (authoritative — you MUST respect this):
 • Pattern   : {_vl}
 • Rationale : {_bias_rationale}
 
-OI SEMANTICS — memorise these facts, they are NOT opinions:
-  CE OI rising + price flat/down  = Call Writing   = BEARISH  (resistance building, shorts protecting topside)
-  PE OI rising + price flat/up    = Put Writing    = BULLISH  (support building, shorts protecting downside)
+OI SEMANTICS (facts, not opinions):
+  CE OI rising + price flat/down  = Call Writing   = BEARISH  (resistance — shorts defending topside)
+  PE OI rising + price flat/up    = Put Writing    = BULLISH  (support — shorts defending downside)
   Price ↑ + total OI ↑            = Long Buildup   = BULLISH  (fresh longs entering)
   Price ↓ + total OI ↑            = Short Buildup  = BEARISH  (fresh shorts entering)
   CE OI falling faster            = CE unwinding   = BULLISH  (shorts covering calls)
   PE OI falling faster            = PE unwinding   = BEARISH  (longs exiting puts)
   Both sides unwinding            = Squaring / expiry — NO directional edge
-  PCR rising                      = more puts than calls = BULLISH skew
-  PCR falling                     = fewer puts = BEARISH skew
+  PCR rising                      = more puts → BULLISH skew
+  PCR falling                     = fewer puts → BEARISH skew
 
-CHART ROLE (for OI-based core trades — NOT timeframe strategy):
-  3H candles show the dominant trend; 1H candles show short-term momentum within it.
-  If the 3H candle is complete and directional, AND the 1H candle is in the OPPOSITE direction,
-  treat the 1H pullback as a potential ENTRY POINT in the 3H direction (not a conflict).
-  Only flag a genuine conflict when BOTH 3H and 1H close in the same direction OPPOSITE to the OI signal.
-  Never use chart sentiment to override the engine OI verdict.
+CHART ROLE (OI trades only — not timeframe strategy):
+  3H = dominant trend. 1H = short-term momentum within it.
+  1H opposite to completed 3H = pullback entry in 3H direction (not a conflict).
+  Both 3H + 1H opposing OI = only genuine conflict.
+  Chart candles do NOT override OI engine direction.
 
-YOUR ROLE — execution detail only:
-  • action   : MUST match ENGINE DECISION direction ({_bias_str}).
-               You may ONLY downgrade to NO_TRADE (with thesis explaining why). You may NOT flip direction.
-  • All other fields: instrument, entry_trigger, entry_premium_range, stop_loss,
-    target_1, target_2, risk_reward, thesis, invalidation, risk_rating, catalyst.
+ANALYSIS CHAIN — think through these IN ORDER before generating output:
+  Step 1 — OI Pattern : What do CE Δ {ctx.get("ce_oi_change", 0):+,} and PE Δ {ctx.get("pe_oi_change", 0):+,} mean? Apply OI semantics above.
+  Step 2 — Price Check: Does price Δ {ctx.get("price_change_pct", 0)}% confirm or contradict the OI signal?
+             Is price near support {ctx.get("support")}, resistance {ctx.get("resistance")}, or max pain {ctx.get("max_pain")}?
+  Step 3 — History    : Is this pattern new or persistent? (See HISTORICAL OI CONTEXT above)
+  Step 4 — Chart Timing: What do 1H ({_c1}) and 3H ({_c3}) say about entry timing?
+  Step 5 — Macro/News : Any catalyst (EIA/RBI/OPEC/expiry) that amplifies or reduces the setup?
+  Step 6 — Confidence : Count how many of [OI Δ, price action, news/macro] agree → derive score.
+             3/3 agree → 80-95 | 2/3 → 60-75 | 1/3 → 35-55 | 0/3 → NO_TRADE
+  Step 7 — Action     : MUST match ENGINE DECISION ({_bias_str}). You may downgrade to NO_TRADE. Never flip direction.
 
-OUTPUT FIELDS (all required, specific numbers):
-• action: GO_LONG (buy CE/sell PE) | GO_SHORT (buy PE/sell CE) | NO_TRADE
-• confidence: 0-100. Count sources agreeing with action: OI Δ, price action, news/macro.
-  3/3 agree → 80-95 | 2/3 → 60-75 | 1/3 → 35-55 | 0/3 → NO_TRADE.
-  Chart candles are entry-timing context, not a confidence source for OI trades.
-• instrument: "{symbol} <strike> CE/PE/FUT <expiry>" — use exact symbol and expiry from DATA above
-• entry_trigger: specific condition (e.g., "Underlying holds above 7000 on next scan")
-• entry_premium_range: e.g., "70-80" or "ATM ± 1 strike"
-• stop_loss: exact level — "Premium X" or "Underlying X" with the number
-• target_1: first profit level
-• target_2: extended target
-• risk_reward: "1:1.8" format
-• thesis: A detailed summary/verdict of at least 3-4 sentences (generating 3-4 lines of output). Explain the logic in detail, citing multiple exact numbers from the DATA (such as PCR, OI Δ, levels, etc.). Start with the OI pattern name.
-  Good: "Call Writing: CE OI +51k vs PE +27k builds resistance at 7000. PCR has dropped to 0.76 confirming the bearish skew. Both 1H and 3H chart candles are pointing downwards, indicating solid momentum to enter a short trade. Thus, PE purchase is recommended."
-  Bad : "Call writing bias." or "Go short because it looks bearish."
-• invalidation: what kills the trade (specific level or condition)
-• risk_rating: LOW | MEDIUM | HIGH.
-  Set HIGH if ANY of: {', '.join(risk_flags) if risk_flags else 'none'} in RISK FLAGS, or thesis contradicts OI.
-  Set MEDIUM for mixed signals. Set LOW only when OI + price + news all agree.
-• catalyst: upcoming event or "No major catalyst"
+YOUR ROLE — execution detail and evidence chain only. Engine decided direction. You provide:
+  signal_chain, instrument, entry_trigger, entry_premium_range, stop_loss,
+  target_1, target_2, risk_reward, thesis, invalidation, risk_rating, catalyst.
+
+OUTPUT FIELDS (all required):
+• action         : GO_LONG | GO_SHORT | NO_TRADE — must match ENGINE DECISION ({_bias_str})
+• confidence     : integer 0-100 derived from Step 6 above
+• signal_chain   : 3 lines in EXACT format (≤15 words each):
+                   Line 1: OI: [pattern] — CE Δ [value] vs PE Δ [value] → [bias]
+                   Line 2: Price: [Δ%] vs [MP/ATM/S/R] → [confirms/contradicts/caps]
+                   Line 3: Chart: 1H [sentiment] + 3H [sentiment] → [timing read]
+• instrument     : "{symbol} <strike> CE/PE/FUT <expiry>" — exact symbol and expiry from DATA
+• entry_trigger  : specific condition with a level (e.g., "Underlying holds below 6700 on next scan")
+• entry_premium_range: range in rupees (e.g., "70-80") or "ATM ± 1 strike"
+• stop_loss      : exact level — "Underlying 6875" or "Premium 95"
+• target_1       : first profit level with exact number
+• target_2       : extended target with exact number
+• risk_reward    : "1:X.X" format calculated from the levels above
+• thesis         : ONE sentence max 20 words — OI pattern + bottom-line action implication
+                   Good: "CE writing at 7000 with PCR 0.71 and dual bearish candles — short the bounce."
+• invalidation   : what kills the trade (specific level or OI condition)
+• risk_rating    : LOW | MEDIUM | HIGH
+                   HIGH if any RISK flag present or chart genuine conflict (both TFs vs OI).
+                   MEDIUM for mixed signals. LOW only when all 3 sources agree.
+• catalyst       : nearest upcoming event or "No major catalyst"
 
 RULES:
-1. Use ONLY levels from the DATA section for all numeric fields.
-2. Evidence hierarchy: (a) OI Δ + price action [non-negotiable] (b) news/macro (c) chart for entry timing only.
-3. If you believe NO_TRADE is correct, state the specific OI or price reason in thesis.
-4. If NO_TRADE: fill instrument/entry_trigger with what WOULD change your view."""
+1. Use ONLY levels from DATA for all numeric fields. Do not invent levels.
+2. If NO_TRADE: fill signal_chain with the OI squaring reason, fill instrument/entry_trigger with what WOULD change your view.
+3. thesis is the punchline — do not repeat signal_chain content in it."""
 
     return prompt
 
@@ -548,7 +672,7 @@ def _build_exit_prompt(
     ctx = scan_context or {}
 
     side = str(open_trade.get("side") or "BUY").upper()
-    opt  = str(open_trade.get("option_type") or "").upper()
+    opt = str(open_trade.get("option_type") or "").upper()
     strike = open_trade.get("strike")
     strike_str = f"{strike}" if strike else ""
 
@@ -578,7 +702,9 @@ def _build_exit_prompt(
 
     # Age of position
     try:
-        from datetime import datetime as _dt, timezone as _tz
+        from datetime import datetime as _dt
+        from datetime import timezone as _tz
+
         opened_at_str = str(open_trade.get("opened_at") or "")
         if opened_at_str:
             opened_dt = _dt.fromisoformat(opened_at_str.replace("Z", "+00:00"))
@@ -601,6 +727,7 @@ def _build_exit_prompt(
             # Compute on the fly if not in context
             try:
                 from config.symbol_classes import get_futures_expiry
+
                 futures_expiry = get_futures_expiry(symbol)
             except Exception:
                 futures_expiry = None
@@ -621,13 +748,17 @@ def _build_exit_prompt(
     if dte is not None:
         if dte == 0:
             sym_upper = symbol.upper()
-            is_mcx = any(m in sym_upper for m in ["NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"])
+            is_mcx = any(
+                m in sym_upper for m in ["NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"]
+            )
             expiry_hour = 23 if is_mcx else 15
             expiry_minute = 30
-            
+
             now_ist = _dt.now(_IST)
-            expiry_dt = now_ist.replace(hour=expiry_hour, minute=expiry_minute, second=0, microsecond=0)
-            
+            expiry_dt = now_ist.replace(
+                hour=expiry_hour, minute=expiry_minute, second=0, microsecond=0
+            )
+
             diff_seconds = (expiry_dt - now_ist).total_seconds()
             if diff_seconds > 0:
                 mins_left = int(diff_seconds / 60)
@@ -660,17 +791,17 @@ OPEN POSITION (authoritative — evaluate THIS side and its mechanics only):
   Mechanics: {behavior}
   Entry Underlying: {entry_underlying} | SL (Underlying): {sl_ul_str} | Target (Underlying): {tgt_ul_str}
   Entry Premium: ₹{entry_premium} | SL (Premium): ₹{sl_premium} | Target (Premium): ₹{target_premium}
-  Opened: {str(open_trade.get('opened_at', ''))[:16]} {age_str}
+  Opened: {str(open_trade.get("opened_at", ""))[:16]} {age_str}
   Contract Expiry: {expiry} | Time to Expiry: {time_left_str}
 
 MARKET NOW:
-  Underlying {ctx.get('underlying')} | Chg {ctx.get('price_change_points', 0)}pts ({ctx.get('price_change_pct', 'N/A')}%)
-  PCR {ctx.get('pcr')} | S/R {ctx.get('support')}/{ctx.get('resistance')}
-  OI Δ: CE {ctx.get('ce_oi_change', 0):,} | PE {ctx.get('pe_oi_change', 0):,}
-  Chart: {_format_chart_data(ctx.get('chart_indicators'))}
+  Underlying {ctx.get("underlying")} | Chg {ctx.get("price_change_points", 0)}pts ({ctx.get("price_change_pct", "N/A")}%)
+  PCR {ctx.get("pcr")} | S/R {ctx.get("support")}/{ctx.get("resistance")}
+  OI Δ: CE {ctx.get("ce_oi_change", 0):,} | PE {ctx.get("pe_oi_change", 0):,}
+  Chart: {_format_chart_data(ctx.get("chart_indicators"))}
 NEWS: {_format_news(news_data)}
 
-EVALUATE ONLY these options for the {pos_direction.split(' ')[0]} position:
+EVALUATE ONLY these options for the {pos_direction.split(" ")[0]} position:
 • HOLD: Thesis intact, underlying moving favourably or consolidating — no change.
 • TRAIL_SL: Position profitable — lock in gains by raising SL (provide new_sl_premium as number).
 • CLOSE_EARLY: Thesis broken (underlying moving against position, key level breached) — exit now.
@@ -696,24 +827,93 @@ _CONSECUTIVE_FAILURES = 0
 _CIRCUIT_BREAKER_THRESHOLD = 3
 _CIRCUIT_BREAKER_COOLDOWN = 300.0  # 5 minutes
 _CIRCUIT_OPEN_UNTIL = 0.0
+_PROVIDER_COOLDOWN_UNTIL: dict[str, float] = {}
 
-def _call_llm_api(symbol: str, prompt: str, response_schema=None, deadline: float | None = None, purpose: str | None = None) -> BaseModel | None:
+
+def _provider_cooldown_key(provider: dict) -> str:
+    return f"{provider.get('env_key')}:{provider.get('model')}"
+
+
+def _parse_retry_after_seconds(text: str) -> float | None:
+    if not text:
+        return None
+    m = re.search(r"try again in (\d+)m([\d.]+)s", text, re.I)
+    if m:
+        return int(m.group(1)) * 60.0 + float(m.group(2))
+    m = re.search(r"try again in ([\d.]+)s", text, re.I)
+    if m:
+        return float(m.group(1))
+    return None
+
+
+def _register_provider_failure(
+    provider: dict, status_code: int, body: str, now: float
+) -> None:
+    key = _provider_cooldown_key(provider)
+    body_l = (body or "").lower()
+    if status_code == 402:
+        _PROVIDER_COOLDOWN_UNTIL[key] = now + 86400.0
+        log.info("[llm] %s credit exhausted — 24h cooldown", provider.get("name"))
+        return
+    if status_code == 429:
+        retry = _parse_retry_after_seconds(body) or 300.0
+        if "tokens per day" in body_l or "tpd" in body_l:
+            retry = max(retry, 3600.0)
+        _PROVIDER_COOLDOWN_UNTIL[key] = now + retry
+        log.info("[llm] %s rate-limited — cooldown %.0fs", provider.get("name"), retry)
+
+
+def _max_tokens_for_purpose(purpose: str) -> int:
+    from config.settings import (
+        LLM_MAX_TOKENS_EOD,
+        LLM_MAX_TOKENS_FORMATTING,
+        LLM_MAX_TOKENS_LIVE,
+    )
+
+    if purpose == "eod_review":
+        return LLM_MAX_TOKENS_EOD
+    if purpose == "formatting":
+        return LLM_MAX_TOKENS_FORMATTING
+    return LLM_MAX_TOKENS_LIVE
+
+
+def _call_llm_api(
+    symbol: str,
+    prompt: str,
+    response_schema=None,
+    deadline: float | None = None,
+    purpose: str | None = None,
+) -> BaseModel | None:
     """Call LLM APIs in order of reasoning and output quality using available providers
     (OpenRouter, Groq, OpenCode, Gemini). If a model fails on one provider, we fallback
     to another provider hosting the same model group or a fast alternative.
-    
+
     Args:
         deadline: Unix timestamp by which we must finish. Each model attempt uses
                   remaining_time as its HTTP timeout, so we never overshoot.
         purpose: Routing classification ('live_verdict', 'eod_review', 'formatting')
     """
-    global _API_QUOTA_EXHAUSTED_UNTIL, _CONSECUTIVE_FAILURES, _CIRCUIT_OPEN_UNTIL
+    global \
+        _API_QUOTA_EXHAUSTED_UNTIL, \
+        _CONSECUTIVE_FAILURES, \
+        _CIRCUIT_OPEN_UNTIL, \
+        _PROVIDER_COOLDOWN_UNTIL
     schema = response_schema or LLMTradeVerdict
     now = time.time()
 
+    from config.settings import DISABLE_LLM_ENRICHMENT
+
+    if DISABLE_LLM_ENRICHMENT:
+        log.debug("[llm] DISABLE_LLM_ENRICHMENT=true — skipping %s", symbol)
+        return None
+
     # Circuit breaker: If we've had too many consecutive failures, pause LLM calls
     if _CIRCUIT_OPEN_UNTIL > now:
-        log.warning("[llm] Circuit breaker OPEN for %s (cooldown ends in %.0fs)", symbol, _CIRCUIT_OPEN_UNTIL - now)
+        log.warning(
+            "[llm] Circuit breaker OPEN for %s (cooldown ends in %.0fs)",
+            symbol,
+            _CIRCUIT_OPEN_UNTIL - now,
+        )
         return None
 
     def _remaining() -> float:
@@ -724,8 +924,9 @@ def _call_llm_api(symbol: str, prompt: str, response_schema=None, deadline: floa
 
     import requests
     from urllib3.util.retry import Retry
+
     from src.utils.tls_adapter import ResilientTLSAdapter
-    
+
     schema_json = json.dumps(schema.model_json_schema())
     system_prompt = (
         "Options trading analyst. Respond with valid JSON matching this schema exactly.\n"
@@ -788,8 +989,8 @@ def _call_llm_api(symbol: str, prompt: str, response_schema=None, deadline: floa
                         "env_key": "OPENCODE_API_KEY",
                         "url": "https://opencode.ai/zen/v1/chat/completions",
                         "model": "nemotron-3-super-free",
-                    }
-                ]
+                    },
+                ],
             }
         ]
     elif purpose == "formatting":
@@ -838,14 +1039,19 @@ def _call_llm_api(symbol: str, prompt: str, response_schema=None, deadline: floa
                         "env_key": "OPENROUTER_API_KEY",
                         "url": "https://openrouter.ai/api/v1/chat/completions",
                         "model": "qwen/qwen-2.5-coder-32b-instruct",
-                    }
-                ]
+                    },
+                ],
             }
         ]
-    else:  # live_verdict
-        FREE_MODEL_PIPELINE = [
+    else:  # live_verdict — symbol-aware routing
+        _base = symbol.upper().strip().split()[0]
+        _class = get_symbol_class(_base)
+        _is_mcx = _class == "MCX_COMMODITY"
+
+        # Common tail — shared by both index and commodity routing
+        _tail_pipeline = [
             {
-                "model_group": "gpt-oss-primary",
+                "model_group": "groq-reasoning",
                 "providers": [
                     {
                         "name": "Groq (GPT-OSS 120B)",
@@ -854,28 +1060,22 @@ def _call_llm_api(symbol: str, prompt: str, response_schema=None, deadline: floa
                         "model": "openai/gpt-oss-120b",
                     },
                     {
-                        "name": "OpenRouter (GPT-OSS 120B Free)",
-                        "env_key": "OPENROUTER_API_KEY",
-                        "url": "https://openrouter.ai/api/v1/chat/completions",
-                        "model": "openai/gpt-oss-120b:free",
-                    },
-                    {
-                        "name": "OpenRouter (GPT-OSS 120B)",
-                        "env_key": "OPENROUTER_API_KEY",
-                        "url": "https://openrouter.ai/api/v1/chat/completions",
-                        "model": "openai/gpt-oss-120b",
-                    }
-                ]
-            },
-            {
-                "model_group": "llama-reasoning",
-                "providers": [
-                    {
                         "name": "Groq (Llama 3.3 70B)",
                         "env_key": "GROQ_API_KEY",
                         "url": "https://api.groq.com/openai/v1/chat/completions",
                         "model": "llama-3.3-70b-versatile",
                     },
+                    {
+                        "name": "Groq (Llama 4 Scout)",
+                        "env_key": "GROQ_API_KEY",
+                        "url": "https://api.groq.com/openai/v1/chat/completions",
+                        "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+                    },
+                ],
+            },
+            {
+                "model_group": "openrouter-free-pool",
+                "providers": [
                     {
                         "name": "OpenRouter (Llama 3.3 70B Free)",
                         "env_key": "OPENROUTER_API_KEY",
@@ -883,14 +1083,88 @@ def _call_llm_api(symbol: str, prompt: str, response_schema=None, deadline: floa
                         "model": "meta-llama/llama-3.3-70b-instruct:free",
                     },
                     {
-                        "name": "OpenRouter (Llama 3.3 70B)",
+                        "name": "OpenRouter (Qwen 3 32B Free)",
                         "env_key": "OPENROUTER_API_KEY",
                         "url": "https://openrouter.ai/api/v1/chat/completions",
-                        "model": "meta-llama/llama-3.3-70b-instruct",
-                    }
-                ]
-            }
+                        "model": "qwen/qwen3-32b:free",
+                    },
+                    {
+                        "name": "OpenRouter (Llama 3.2 3B Free)",
+                        "env_key": "OPENROUTER_API_KEY",
+                        "url": "https://openrouter.ai/api/v1/chat/completions",
+                        "model": "meta-llama/llama-3.2-3b-instruct:free",
+                    },
+                    {
+                        "name": "OpenRouter (Nemotron 3 Super 120B Free)",
+                        "env_key": "OPENROUTER_API_KEY",
+                        "url": "https://openrouter.ai/api/v1/chat/completions",
+                        "model": "nvidia/nemotron-3-super-120b-a12b:free",
+                    },
+                ],
+            },
+            {
+                "model_group": "gemini-sdk",
+                "providers": [
+                    {
+                        "name": "Gemini SDK (2.5 Flash)",
+                        "env_key": "GEMINI_API_KEY",
+                        "model": "gemini-2.5-flash",
+                        "use_gemini_sdk": True,
+                    },
+                    {
+                        "name": "Gemini SDK (2.0 Flash)",
+                        "env_key": "GEMINI_API_KEY",
+                        "model": "gemini-2.0-flash",
+                        "use_gemini_sdk": True,
+                    },
+                ],
+            },
         ]
+
+        # GitHub Models — used in both paths at different priority
+        _github_models = {
+            "model_group": "github-models-free",
+            "providers": [
+                {
+                    "name": "GitHub Models (GPT-4o-mini)",
+                    "env_key": "GITHUB_TOKEN",
+                    "url": "https://models.inference.ai.azure.com/chat/completions",
+                    "model": "gpt-4o-mini",
+                },
+                {
+                    "name": "GitHub Models (Llama 3.3 70B)",
+                    "env_key": "GITHUB_TOKEN",
+                    "url": "https://models.inference.ai.azure.com/chat/completions",
+                    "model": "Llama-3.3-70B-Instruct",
+                },
+            ],
+        }
+
+        if _is_mcx:
+            # MCX: OpenRouter GPT-OSS → GitHub → Groq → OpenRouter pool → Gemini SDK
+            FREE_MODEL_PIPELINE = [
+                {
+                    "model_group": "openrouter-gpt-oss-free",
+                    "providers": [
+                        {
+                            "name": "OpenRouter (GPT-OSS 120B Free)",
+                            "env_key": "OPENROUTER_API_KEY",
+                            "url": "https://openrouter.ai/api/v1/chat/completions",
+                            "model": "openai/gpt-oss-120b:free",
+                        },
+                    ],
+                },
+                _github_models,
+                *_tail_pipeline,
+            ]
+        else:
+            # NSE/BSE indices: GitHub → Groq → OpenRouter pool → Gemini SDK
+            FREE_MODEL_PIPELINE = [
+                _github_models,
+                *_tail_pipeline,
+            ]
+
+    max_tokens = _max_tokens_for_purpose(purpose)
 
     # Iterate through the prioritized pipeline
     for group in FREE_MODEL_PIPELINE:
@@ -900,17 +1174,30 @@ def _call_llm_api(symbol: str, prompt: str, response_schema=None, deadline: floa
             if not api_key:
                 continue
 
+            cooldown_key = _provider_cooldown_key(provider)
+            cooldown_until = _PROVIDER_COOLDOWN_UNTIL.get(cooldown_key, 0.0)
+            if cooldown_until > now:
+                log.debug(
+                    "[llm] Skipping %s — cooldown %.0fs remaining",
+                    provider.get("name"),
+                    cooldown_until - now,
+                )
+                continue
+
             remaining = _remaining()
             if deadline and time.time() >= deadline - 3:
                 log.warning("[llm] Deadline reached, skipping remaining models")
                 break
 
-            # Handle direct Gemini SDK calls
             if provider.get("use_gemini_sdk"):
                 if not genai or now < _API_QUOTA_EXHAUSTED_UNTIL:
                     continue
                 try:
-                    log.info("[llm] Trying Gemini SDK model %s (%.0fs remaining)", provider["model"], remaining)
+                    log.info(
+                        "[llm] Trying Gemini SDK model %s (%.0fs remaining)",
+                        provider["model"],
+                        remaining,
+                    )
                     c = _get_client(api_key)
                     response = c.models.generate_content(
                         model=provider["model"],
@@ -922,25 +1209,37 @@ def _call_llm_api(symbol: str, prompt: str, response_schema=None, deadline: floa
                         ),
                     )
                     result = schema.model_validate_json(response.text)
-                    log.info("[llm] %s OK via Gemini SDK (%s)", schema.__name__, provider["model"])
+                    log.info(
+                        "[llm] %s OK via Gemini SDK (%s)",
+                        schema.__name__,
+                        provider["model"],
+                    )
                     _CONSECUTIVE_FAILURES = 0
                     return result
                 except Exception as inner_e:
                     err = str(inner_e)
                     log.info("[llm] Gemini %s failed: %s", provider["model"], err[:200])
                     if "429" in err or "RESOURCE_EXHAUSTED" in err.upper():
-                        log.warning("[llm] Gemini model hit quota. 10-min cooldown activated.")
+                        log.warning(
+                            "[llm] Gemini model hit quota. 10-min cooldown activated."
+                        )
                         _API_QUOTA_EXHAUSTED_UNTIL = now + 600.0
+                        _PROVIDER_COOLDOWN_UNTIL[cooldown_key] = now + 600.0
                 continue
 
             # Handle OpenAI-compatible HTTP POST requests
             try:
-                log.info("[llm] Trying %s via %s (%.0fs remaining)", provider["model"], provider["name"], remaining)
-                
+                log.info(
+                    "[llm] Trying %s via %s (%.0fs remaining)",
+                    provider["model"],
+                    provider["name"],
+                    remaining,
+                )
+
                 headers = {
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
-                    "Connection": "close"
+                    "Connection": "close",
                 }
                 json_payload = {
                     "model": provider["model"],
@@ -950,6 +1249,7 @@ def _call_llm_api(symbol: str, prompt: str, response_schema=None, deadline: floa
                     ],
                     "response_format": {"type": "json_object"},
                     "temperature": 0.2,
+                    "max_tokens": max_tokens,
                 }
                 if provider["name"].startswith("OpenRouter"):
                     headers["HTTP-Referer"] = "https://github.com/nsebot"
@@ -960,58 +1260,125 @@ def _call_llm_api(symbol: str, prompt: str, response_schema=None, deadline: floa
                     provider["url"],
                     headers=headers,
                     json=json_payload,
-                    timeout=min(remaining, 12.0),  # Hard cap: 12s per model so ≥2 models fit in 30s budget
+                    timeout=min(
+                        remaining, 12.0
+                    ),  # Hard cap: 12s per model so ≥2 models fit in 30s budget
                 )
                 if resp.status_code == 200:
                     resp_json = resp.json()
                     if "choices" not in resp_json:
-                        err_msg = resp_json.get("error", {}).get("message") or str(resp_json)
-                        log.info("[llm] %s (%s) returned 200 but error payload: %s", provider["name"], provider["model"], err_msg[:200])
+                        err_msg = resp_json.get("error", {}).get("message") or str(
+                            resp_json
+                        )
+                        log.info(
+                            "[llm] %s (%s) returned 200 but error payload: %s",
+                            provider["name"],
+                            provider["model"],
+                            err_msg[:200],
+                        )
+                        _register_provider_failure(provider, 429, err_msg, now)
                         continue
                     choices = resp_json["choices"]
                     if not choices:
-                        log.info("[llm] %s (%s) returned empty choices", provider["name"], provider["model"])
+                        log.info(
+                            "[llm] %s (%s) returned empty choices",
+                            provider["name"],
+                            provider["model"],
+                        )
                         continue
                     message = choices[0].get("message")
                     if not message:
-                        log.info("[llm] %s (%s) returned choices but no message object", provider["name"], provider["model"])
+                        log.info(
+                            "[llm] %s (%s) returned choices but no message object",
+                            provider["name"],
+                            provider["model"],
+                        )
                         continue
                     raw_content = message.get("content")
                     if raw_content is None:
-                        log.info("[llm] %s (%s) returned null content", provider["name"], provider["model"])
+                        log.info(
+                            "[llm] %s (%s) returned null content",
+                            provider["name"],
+                            provider["model"],
+                        )
                         continue
                     parsed = _extract_json(raw_content)
                     if isinstance(parsed, list):
                         if len(parsed) == 1 and isinstance(parsed[0], dict):
                             parsed = parsed[0]
-                            log.debug("[llm] %s returned array — unwrapped single-element list", provider["name"])
+                            log.debug(
+                                "[llm] %s returned array — unwrapped single-element list",
+                                provider["name"],
+                            )
                         else:
-                            raise ValueError(f"{provider['name']} returned unexpected array with {len(parsed)} items")
+                            raise ValueError(
+                                f"{provider['name']} returned unexpected array with {len(parsed)} items"
+                            )
                     result = schema.model_validate(parsed)
-                    log.info("[llm] %s OK via %s (%s)", schema.__name__, provider["name"], provider["model"])
+                    log.info(
+                        "[llm] %s OK via %s (%s)",
+                        schema.__name__,
+                        provider["name"],
+                        provider["model"],
+                    )
                     _CONSECUTIVE_FAILURES = 0
                     return result
                 if resp.status_code == 429:
-                    log.warning("[llm] %s (%s) returned 429 (Too Many Requests/Quota Exceeded). Payload: %s", provider["name"], provider["model"], resp.text[:250])
+                    log.warning(
+                        "[llm] %s (%s) returned 429 (Too Many Requests/Quota Exceeded). Payload: %s",
+                        provider["name"],
+                        provider["model"],
+                        resp.text[:250],
+                    )
+                    _register_provider_failure(provider, 429, resp.text, now)
+                elif resp.status_code == 402:
+                    log.info(
+                        "[llm] %s (%s) failed: status=402 (insufficient credits). Payload: %s",
+                        provider["name"],
+                        provider["model"],
+                        resp.text[:200],
+                    )
+                    _register_provider_failure(provider, 402, resp.text, now)
                 else:
-                    log.info("[llm] %s (%s) failed: status=%d %s", provider["name"], provider["model"], resp.status_code, resp.text[:200])
+                    log.info(
+                        "[llm] %s (%s) failed: status=%d %s",
+                        provider["name"],
+                        provider["model"],
+                        resp.status_code,
+                        resp.text[:200],
+                    )
             except Exception as ex:
-                log.info("[llm] %s (%s) exception: %s", provider["name"], provider["model"], str(ex)[:200])
+                log.info(
+                    "[llm] %s (%s) exception: %s",
+                    provider["name"],
+                    provider["model"],
+                    str(ex)[:200],
+                )
 
     # Track consecutive failures and activate circuit breaker
     _CONSECUTIVE_FAILURES += 1
     if _CONSECUTIVE_FAILURES >= _CIRCUIT_BREAKER_THRESHOLD:
         _CIRCUIT_OPEN_UNTIL = now + _CIRCUIT_BREAKER_COOLDOWN
-        log.error("[llm] Circuit breaker ACTIVATED after %d failures. Pausing LLM calls for %.0fs.", 
-                  _CONSECUTIVE_FAILURES, _CIRCUIT_BREAKER_COOLDOWN)
+        log.error(
+            "[llm] Circuit breaker ACTIVATED after %d failures. Pausing LLM calls for %.0fs.",
+            _CONSECUTIVE_FAILURES,
+            _CIRCUIT_BREAKER_COOLDOWN,
+        )
 
-    log.warning("[llm] All LLM providers exhausted for %s (failures: %d)", symbol, _CONSECUTIVE_FAILURES)
+    log.warning(
+        "[llm] All LLM providers exhausted for %s (failures: %d)",
+        symbol,
+        _CONSECUTIVE_FAILURES,
+    )
     return None
 
 
 # ── Public API ───────────────────────────────────────────────────────────
 
-def _get_option_premium_for_instrument(symbol: str, expiry: str, instrument: str, option_rows: list[dict]) -> float | None:
+
+def _get_option_premium_for_instrument(
+    symbol: str, expiry: str, instrument: str, option_rows: list[dict]
+) -> float | None:
     if not instrument:
         return None
     # Match strike and option type, e.g. "NIFTY 24500 CE 27Jun" or "NATURALGAS 310 PE 24Jun"
@@ -1023,11 +1390,36 @@ def _get_option_premium_for_instrument(symbol: str, expiry: str, instrument: str
     except ValueError:
         return None
     opt_type = m.group(2).upper()
-    
+
     for row in option_rows or []:
-        if abs(float(row.get("strike") or 0.0) - strike) < 0.01 and str(row.get("option_type")).upper() == opt_type:
+        if (
+            abs(float(row.get("strike") or 0.0) - strike) < 0.01
+            and str(row.get("option_type")).upper() == opt_type
+        ):
             return float(row.get("ltp") or 0.0)
     return None
+
+
+def _round_echoed_numbers(text: str, runaway_word_cap: int = 90) -> str:
+    """
+    Light cleanup for model free-text (thesis, reasoning):
+      • Rounds 3+ decimal floats the model echoes from raw data (PCR 1.1156 → 1.12).
+      • Does NOT collapse to one sentence — multi-sentence thesis is intentional.
+      • Caps only pathological runaway output (> runaway_word_cap words) as a safety net,
+        trimming to the last complete sentence within the cap.
+    """
+    if not text:
+        return text
+    text = re.sub(
+        r"\b(\d+\.\d{3,})\b", lambda m: f"{float(m.group(1)):.2f}", text
+    ).strip()
+    words = text.split()
+    if len(words) > runaway_word_cap:
+        clipped = " ".join(words[:runaway_word_cap])
+        # back off to the last sentence terminator so we don't cut mid-clause
+        cut = max(clipped.rfind("."), clipped.rfind("!"), clipped.rfind("?"))
+        text = clipped[: cut + 1] if cut > 0 else clipped.rstrip(",;:") + "."
+    return text
 
 
 def _extract_json(raw: str) -> dict:
@@ -1060,7 +1452,8 @@ def _enforce_engine_alignment(
     → forced NO_TRADE with HIGH risk.  Downgrading to NO_TRADE is allowed;
     flipping is not, regardless of model or prompt.
     """
-    from src.engine.verdict_sets import is_bullish, is_bearish
+    from src.engine.verdict_sets import is_bearish, is_bullish
+
     vl = (intel or {}).get("verdict_label", "")
     engine_bias = "NEUTRAL"
     if is_bullish(vl):
@@ -1072,13 +1465,18 @@ def _enforce_engine_alignment(
         return result  # engine itself has no direction — nothing to enforce
 
     action = result.action or "NO_TRADE"
-    llm_bias = {"GO_LONG": "BULLISH", "GO_SHORT": "BEARISH", "NO_TRADE": "NEUTRAL"}.get(action, "NEUTRAL")
+    llm_bias = {"GO_LONG": "BULLISH", "GO_SHORT": "BEARISH", "NO_TRADE": "NEUTRAL"}.get(
+        action, "NEUTRAL"
+    )
 
     if llm_bias != "NEUTRAL" and llm_bias != engine_bias:
         log.warning(
             "[llm] %s: engine/LLM direction conflict — engine=%s (%s), LLM=%s. "
             "Forcing NO_TRADE (LLM may not flip engine direction).",
-            symbol, engine_bias, vl, action,
+            symbol,
+            engine_bias,
+            vl,
+            action,
         )
         update = {
             "action": "NO_TRADE",
@@ -1088,7 +1486,11 @@ def _enforce_engine_alignment(
                 f"AI={action}. Standing aside — do not trade against OI engine."
             ),
         }
-        return result.model_copy(update=update) if hasattr(result, "model_copy") else result.copy(update=update)
+        return (
+            result.model_copy(update=update)
+            if hasattr(result, "model_copy")
+            else result.copy(update=update)
+        )
 
     return result
 
@@ -1112,7 +1514,7 @@ def _sanitize_llm_verdict(
     # Strip any leading index name and replace with correct symbol
     for known in ("BANKNIFTY", "NIFTY", "NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"):
         if instr.upper().startswith(known) and known != symbol.upper():
-            instr = symbol.upper() + instr[len(known):]
+            instr = symbol.upper() + instr[len(known) :]
             break
 
     # 2. Replace expiry token — find "DDMon" pattern and replace
@@ -1120,6 +1522,7 @@ def _sanitize_llm_verdict(
     if scan_expiry:
         try:
             from datetime import datetime as _dt
+
             exp_dt = _dt.strptime(scan_expiry, "%Y-%m-%d")
             exp_token = exp_dt.strftime("%d%b")
             # Remove any leading zero if day is single digit, e.g. "03Jul" -> "3Jul"
@@ -1130,34 +1533,10 @@ def _sanitize_llm_verdict(
             pass
 
     # 3. Action / option-type consistency check
-    action = result.action or "NO_TRADE"
-    opt_type = ""
-    if "CE" in instr.upper():
-        opt_type = "CE"
-    elif "PE" in instr.upper():
-        opt_type = "PE"
-    elif "FUT" in instr.upper():
-        opt_type = "FUT"
-
-    invalid_combo = (
-        (action == "GO_LONG"  and opt_type == "PE") or
-        (action == "GO_SHORT" and opt_type == "CE")
-    )
-    if invalid_combo:
-        log.warning(
-            "[llm] %s: instrument/action mismatch — action=%s but instrument=%s. "
-            "Downgrading to NO_TRADE.",
-            symbol, action, instr,
-        )
-        if hasattr(result, "model_copy"):
-            result = result.model_copy(update={"action": "NO_TRADE", "instrument": instr})
-        else:
-            result = result.copy(update={"action": "NO_TRADE", "instrument": instr})
+    if hasattr(result, "model_copy"):
+        result = result.model_copy(update={"instrument": instr})
     else:
-        if hasattr(result, "model_copy"):
-            result = result.model_copy(update={"instrument": instr})
-        else:
-            result = result.copy(update={"instrument": instr})
+        result = result.copy(update={"instrument": instr})
 
     return result
 
@@ -1179,20 +1558,23 @@ def get_llm_verdict(
     Supports in-memory caching to save tokens and prevent 429 quota exhaustion.
     """
     has_keys = (
-        os.environ.get("OPENROUTER_API_KEY") or
-        os.environ.get("GROQ_API_KEY") or
-        os.environ.get("OPENCODE_API_KEY") or
-        os.environ.get("GEMINI_API_KEY")
+        os.environ.get("OPENROUTER_API_KEY")
+        or os.environ.get("GROQ_API_KEY")
+        or os.environ.get("OPENCODE_API_KEY")
+        or os.environ.get("GEMINI_API_KEY")
+        or os.environ.get("GITHUB_TOKEN")
     )
     if not has_keys:
         return None
 
     # Check cache first
     now = time.time()
-    deadline = now + 30.0  # 30-second budget for the entire call
+    deadline = now + 75.0  # 75-second budget for the entire call
     current_underlying = float(scan_context.get("underlying") or 0.0)
-    is_triggering = trade_decision and "TRIGGERED" in str(trade_decision.get("status", "")).upper()
-    
+    is_triggering = (
+        trade_decision and "TRIGGERED" in str(trade_decision.get("status", "")).upper()
+    )
+
     # Calculate DTE and store in scan_context
     # For MCX commodities, use futures_expiry (futures expire on a different schedule than options)
     _sym_base = symbol.upper().strip().split()[0]
@@ -1204,7 +1586,9 @@ def get_llm_verdict(
     dte = 7
     if expiry_val:
         try:
-            from datetime import date, datetime as _dt
+            from datetime import date
+            from datetime import datetime as _dt
+
             today_ist = _dt.now(_IST).date()
             if "-" in expiry_val:
                 exp_dt = _dt.strptime(expiry_val, "%Y-%m-%d").date()
@@ -1214,36 +1598,59 @@ def get_llm_verdict(
     scan_context["days_to_expiry"] = dte
 
     cached = _VERDICT_CACHE.get(symbol)
-    if not is_triggering and cached and current_underlying > 0 and cached["underlying"] > 0:
+    if (
+        not is_triggering
+        and cached
+        and current_underlying > 0
+        and cached["underlying"] > 0
+    ):
         time_elapsed = now - cached["timestamp"]
-        price_moved_pct = abs(current_underlying - cached["underlying"]) / cached["underlying"]
+        price_moved_pct = (
+            abs(current_underlying - cached["underlying"]) / cached["underlying"]
+        )
         verdict_same = cached["verdict_label"] == intel_dict.get("verdict_label")
         confidence_same = cached["confidence"] == intel_dict.get("confidence")
-        
+
         # DTE-aware TTL
-        if dte <= 1:   ttl = 300.0    # 5 min
-        elif dte <= 3: ttl = 600.0    # 10 min
-        else:          ttl = 1800.0   # 30 min
-        
+        if dte <= 1:
+            ttl = 300.0  # 5 min
+        elif dte <= 3:
+            ttl = 600.0  # 10 min
+        else:
+            ttl = 1800.0  # 30 min
+
         # Check premium moved pct
         prem_moved_pct = 0.0
         cached_prem = cached.get("entry_premium", 0.0)
         if cached_prem > 0:
             option_rows = scan_context.get("option_rows") or []
-            current_prem = _get_option_premium_for_instrument(symbol, scan_context.get("expiry", ""), cached["verdict"].instrument, option_rows)
+            current_prem = _get_option_premium_for_instrument(
+                symbol,
+                scan_context.get("expiry", ""),
+                cached["verdict"].instrument,
+                option_rows,
+            )
             if current_prem:
                 prem_moved_pct = abs(current_prem - cached_prem) / cached_prem
 
-        if (time_elapsed < ttl and 
-            price_moved_pct < 0.002 and 
-            prem_moved_pct < 0.10 and 
-            verdict_same and 
-            confidence_same):
-            log.debug("[llm] Reusing cached LLM verdict for %s (age: %.1fs)", symbol, time_elapsed)
+        if (
+            time_elapsed < ttl
+            and price_moved_pct < 0.002
+            and prem_moved_pct < 0.10
+            and verdict_same
+            and confidence_same
+        ):
+            log.debug(
+                "[llm] Reusing cached LLM verdict for %s (age: %.1fs)",
+                symbol,
+                time_elapsed,
+            )
             return cached["verdict"]
 
     prompt = _build_deep_prompt(
-        symbol, intel_dict, scan_context,
+        symbol,
+        intel_dict,
+        scan_context,
         alerts=alerts,
         news_data=news_data,
         open_trade=open_trade,
@@ -1256,12 +1663,27 @@ def get_llm_verdict(
             result = _sanitize_llm_verdict(result, symbol, scan_context)
             # B2: Hard guard — engine direction is non-negotiable
             result = _enforce_engine_alignment(result, symbol, intel_dict)
-            
+            # Round echoed decimals (PCR 1.1156 → 1.12); keep multi-sentence thesis intact
+            _clean_thesis = _round_echoed_numbers(
+                result.thesis or "", runaway_word_cap=90
+            )
+            if _clean_thesis != (result.thesis or ""):
+                result = (
+                    result.model_copy(update={"thesis": _clean_thesis})
+                    if hasattr(result, "model_copy")
+                    else result.copy(update={"thesis": _clean_thesis})
+                )
+
             # Store in cache with current premium
             entry_prem = 0.0
             if result.instrument:
                 option_rows = scan_context.get("option_rows") or []
-                opt_prem = _get_option_premium_for_instrument(symbol, scan_context.get("expiry", ""), result.instrument, option_rows)
+                opt_prem = _get_option_premium_for_instrument(
+                    symbol,
+                    scan_context.get("expiry", ""),
+                    result.instrument,
+                    option_rows,
+                )
                 if opt_prem:
                     entry_prem = opt_prem
 
@@ -1271,7 +1693,7 @@ def get_llm_verdict(
                 "confidence": intel_dict.get("confidence"),
                 "underlying": current_underlying,
                 "entry_premium": entry_prem,
-                "verdict": result
+                "verdict": result,
             }
         return result
     except Exception as e:
@@ -1291,46 +1713,70 @@ def get_exit_advice(
     Supports in-memory caching to save tokens and prevent 429 quota exhaustion.
     """
     has_keys = (
-        os.environ.get("OPENROUTER_API_KEY") or
-        os.environ.get("GROQ_API_KEY") or
-        os.environ.get("OPENCODE_API_KEY") or
-        os.environ.get("GEMINI_API_KEY")
+        os.environ.get("OPENROUTER_API_KEY")
+        or os.environ.get("GROQ_API_KEY")
+        or os.environ.get("OPENCODE_API_KEY")
+        or os.environ.get("GEMINI_API_KEY")
+        or os.environ.get("GITHUB_TOKEN")
     )
     if not has_keys:
         return None
 
     # Check cache first
     now = time.time()
-    deadline = now + 30.0  # 30-second budget for the entire call
+    deadline = now + 75.0  # 75-second budget for the entire call
     current_underlying = float(scan_context.get("underlying") or 0.0)
     trade_id = open_trade.get("id")
-    
+
     cached = _EXIT_CACHE.get(symbol)
-    if cached and trade_id == cached["trade_id"] and current_underlying > 0 and cached["underlying"] > 0:
+    if (
+        cached
+        and trade_id == cached["trade_id"]
+        and current_underlying > 0
+        and cached["underlying"] > 0
+    ):
         time_elapsed = now - cached["timestamp"]
-        price_moved_pct = abs(current_underlying - cached["underlying"]) / cached["underlying"]
-        
+        price_moved_pct = (
+            abs(current_underlying - cached["underlying"]) / cached["underlying"]
+        )
+
         # Cache is valid for 15 minutes if underlying price moved less than 0.2%
         if time_elapsed < 900.0 and price_moved_pct < 0.002:
-            log.debug("[llm] Reusing cached LLM exit advice for %s (age: %.1fs)", symbol, time_elapsed)
+            log.debug(
+                "[llm] Reusing cached LLM exit advice for %s (age: %.1fs)",
+                symbol,
+                time_elapsed,
+            )
             return cached["advice"]
 
     prompt = _build_exit_prompt(symbol, open_trade, scan_context, news_data)
     try:
         result = _call_llm_api(symbol, prompt, LLMExitAdvice, deadline=deadline)
         if result:
+            _clean_reason = _round_echoed_numbers(
+                result.reasoning or "", runaway_word_cap=60
+            )
+            if _clean_reason != (result.reasoning or ""):
+                result = (
+                    result.model_copy(update={"reasoning": _clean_reason})
+                    if hasattr(result, "model_copy")
+                    else result.copy(update={"reasoning": _clean_reason})
+                )
             _EXIT_CACHE[symbol] = {
                 "timestamp": now,
                 "trade_id": trade_id,
                 "underlying": current_underlying,
-                "advice": result
+                "advice": result,
             }
         return result
     except Exception as e:
         log.error("[llm] Unexpected error in get_exit_advice for %s: %s", symbol, e)
         return None
 
-def get_strategy_optimization_advice(trades: list[dict]) -> LLMStrategyOptimization | None:
+
+def get_strategy_optimization_advice(
+    trades: list[dict],
+) -> LLMStrategyOptimization | None:
     """
     Review batch of closed trades to find systematic errors and suggest config tuning.
     'trades' should be a list of dicts from paper_trades or live_trades table.
@@ -1343,12 +1789,17 @@ def get_strategy_optimization_advice(trades: list[dict]) -> LLMStrategyOptimizat
     for t in trades:
         pnl = round(float(t.get("pnl_rupees") or 0))
         # Abbreviate status
-        status_map = {"CLOSED_SL": "SL", "CLOSED_TARGET": "TGT", "CLOSED_MANUAL": "MAN", "AI_CLOSE_EARLY": "AI_EX"}
+        status_map = {
+            "CLOSED_SL": "SL",
+            "CLOSED_TARGET": "TGT",
+            "CLOSED_MANUAL": "MAN",
+            "AI_CLOSE_EARLY": "AI_EX",
+        }
         stat = status_map.get(t.get("status", ""), "??")
-        
+
         line = f"{t.get('symbol')}|{t.get('side')}|{t.get('verdict_label')}|{t.get('confidence_score')}%|{pnl}|{stat}"
         summary_lines.append(line)
-    
+
     trade_data = "\n".join(summary_lines)
 
     prompt = f"""You are a Quantitative Strategy Optimizer. Review the following trade history summary to optimize the bot's risk and entry parameters.
@@ -1373,10 +1824,11 @@ INSTRUCTIONS:
 """
 
     has_keys = (
-        os.environ.get("OPENROUTER_API_KEY") or
-        os.environ.get("GROQ_API_KEY") or
-        os.environ.get("OPENCODE_API_KEY") or
-        os.environ.get("GEMINI_API_KEY")
+        os.environ.get("OPENROUTER_API_KEY")
+        or os.environ.get("GROQ_API_KEY")
+        or os.environ.get("OPENCODE_API_KEY")
+        or os.environ.get("GEMINI_API_KEY")
+        or os.environ.get("GITHUB_TOKEN")
     )
     if not has_keys:
         log.warning("[llm] Strategy optimization skipped: No LLM API key configured.")
@@ -1384,10 +1836,14 @@ INSTRUCTIONS:
 
     deadline = time.time() + 30.0
     try:
-        result = _call_llm_api("portfolio", prompt, LLMStrategyOptimization, deadline=deadline)
+        result = _call_llm_api(
+            "portfolio", prompt, LLMStrategyOptimization, deadline=deadline
+        )
         if result:
-            log.info("[llm] Portfolio optimization generated with %d suggestions",
-                     len(result.suggested_config_changes))
+            log.info(
+                "[llm] Portfolio optimization generated with %d suggestions",
+                len(result.suggested_config_changes),
+            )
         return result
     except Exception as e:
         log.error("[llm] Strategy optimization call failed: %s", e)

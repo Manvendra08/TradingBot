@@ -55,7 +55,7 @@ class BaseFetcher(abc.ABC):
         return None
 
     @abc.abstractmethod
-    def fetch_option_chain(self, symbol: str) -> dict | None:
+    def fetch_option_chain(self, symbol: str, expiry: str | None = None) -> dict | None:
         """
         Returns normalised dict:
         {

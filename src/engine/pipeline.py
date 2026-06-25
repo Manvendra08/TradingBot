@@ -12,32 +12,73 @@ Fixes (v2.9):
         pipeline ensures llm_verdict is passed through so live engine uses
         the structured object directly (see live_trading._parse_verdict_and_confidence).
 """
+
 import logging
 from datetime import datetime, timezone
 
-from src.fetchers.router import fetch_option_chain
-from src.fetchers.chart_fetcher import get_chart_fetcher
-from src.models.schema import (
-    insert_snapshots,
-    insert_underlying_price,
-    insert_alert,
-    mark_telegram_sent,
-    get_previous_underlying,
-)
-from src.engine.anomaly_detector import detect_anomalies
-from src.engine.intelligence import generate_intelligence_structured
-from src.engine.paper_trading import run_paper_trading, run_timeframe_strategy
-from src.engine.live_trading import run_live_trading, run_live_timeframe_strategy
-from src.engine.scan_summary import save_scan_summary
+from config.settings import WATCH_SYMBOLS, get_symbol_thresholds
 from src.alerts.dedup import is_duplicate, record_alert, should_send_zero_signal
 from src.alerts.digest import build_digest_wrapper as build_digest
 from src.alerts.telegram_dispatcher import send_text
-from config.settings import WATCH_SYMBOLS, get_symbol_thresholds
+from src.engine.anomaly_detector import detect_anomalies
+from src.engine.intelligence import generate_intelligence_structured
+from src.engine.live_trading import run_live_timeframe_strategy, run_live_trading
+from src.engine.paper_trading import (
+    _invalidate_pattern_cache,
+    run_paper_trading,
+    run_timeframe_strategy,
+)
+
+# Phase 2: ML Success Predictor integration (AI_INTELLIGENCE_ROADMAP_v3.0)
+from src.engine.scan_cache import update_scan_snapshot
+from src.engine.scan_summary import save_scan_summary
+from src.fetchers.chart_fetcher import get_chart_fetcher
+from src.fetchers.router import fetch_option_chain
+
+# Phase 1: Trade History Analyzer integration (AI_INTELLIGENCE_ROADMAP_v3.0)
+from src.intelligence.history_analyzer import IST_OFFSET, get_analyzer
+from src.models.schema import (
+    get_previous_underlying,
+    insert_alert,
+    insert_snapshots,
+    insert_underlying_price,
+    mark_telegram_sent,
+)
 
 log = logging.getLogger(__name__)
 
 
-def run_pipeline(symbols: list[str] | None = None, force: bool = False, is_test: bool = False) -> None:
+def _check_edge_health_and_trigger_retrain() -> None:
+    """
+    Phase 3: After a trade closes, check edge health and trigger ML retraining
+    if the edge is declining.
+
+    v3.0 FIX #6: Do NOT trigger retrain on the insufficient-data sentinel.
+    The early-data branch returns health_score=50, which is < the retrain
+    threshold (60) — so the old code fired run_training() on EVERY early
+    trade close (wasted calls; train() bails under 30 trades anyway, and
+    thrashes once just past it). Only react to a REAL declining edge.
+    """
+    try:
+        from src.intelligence.edge_monitor import get_monitor
+        from src.scheduler.ml_training_job import on_edge_health_alert
+
+        monitor = get_monitor()
+        overall_health = monitor.check_edge_health()
+        if overall_health:
+            h = overall_health[0]
+            # Only trigger on a REAL trend assessment, not the sentinel
+            if h.win_rate_trend not in ("INSUFFICIENT_HISTORY",):
+                on_edge_health_alert(h.health_score)
+    except ImportError:
+        pass  # edge_monitor not yet available
+    except Exception:
+        log.debug("Edge health check failed gracefully")
+
+
+def run_pipeline(
+    symbols: list[str] | None = None, force: bool = False, is_test: bool = False
+) -> None:
     """
     Run the full pipeline for each symbol.
 
@@ -48,46 +89,71 @@ def run_pipeline(symbols: list[str] | None = None, force: bool = False, is_test:
     """
     symbols = symbols or WATCH_SYMBOLS
     fetched_at = datetime.now(timezone.utc).isoformat()
-    log.info("Pipeline run started | %s | symbols: %s | force=%s | is_test=%s", fetched_at, symbols, force, is_test)
-    
+    log.info(
+        "Pipeline run started | %s | symbols: %s | force=%s | is_test=%s",
+        fetched_at,
+        symbols,
+        force,
+        is_test,
+    )
+
     # At start of scan, check if previous day was an expiry day for any symbol
     if not is_test:
         try:
-            from src.models.schema import get_conn
             from datetime import timedelta
+
             import pytz
+
+            from src.models.schema import get_conn
+
             IST = pytz.timezone("Asia/Kolkata")
             today_ist = datetime.now(IST).date()
             yesterday_str = (today_ist - timedelta(days=1)).strftime("%Y-%m-%d")
             today_str = today_ist.strftime("%Y-%m-%d")
-            
+
             with get_conn() as conn:
                 # Find if yesterday_str exists as an expiry in option_chain_snapshots
-                expired_symbols = [r[0] for r in conn.execute(
-                    "SELECT DISTINCT symbol FROM option_chain_snapshots WHERE expiry = ?",
-                    (yesterday_str,)
-                ).fetchall()]
-                
+                expired_symbols = [
+                    r[0]
+                    for r in conn.execute(
+                        "SELECT DISTINCT symbol FROM option_chain_snapshots WHERE expiry = ?",
+                        (yesterday_str,),
+                    ).fetchall()
+                ]
+
                 if expired_symbols:
-                    log.info("Previous day (%s) was expiry day for: %s. Cleaning up expired contract data.", yesterday_str, expired_symbols)
+                    log.info(
+                        "Previous day (%s) was expiry day for: %s. Cleaning up expired contract data.",
+                        yesterday_str,
+                        expired_symbols,
+                    )
                     for sym in expired_symbols:
                         c_del = conn.execute(
                             "DELETE FROM option_chain_snapshots WHERE symbol = ? AND expiry <= ?",
-                            (sym, yesterday_str)
+                            (sym, yesterday_str),
                         )
-                        log.info("Deleted %d expired snapshots for %s", c_del.rowcount, sym)
-                
+                        log.info(
+                            "Deleted %d expired snapshots for %s", c_del.rowcount, sym
+                        )
+
                 # General cleanup: delete all snapshots where expiry is in the past
-                c_past = conn.execute("DELETE FROM option_chain_snapshots WHERE expiry < ?", (today_str,))
+                c_past = conn.execute(
+                    "DELETE FROM option_chain_snapshots WHERE expiry < ?", (today_str,)
+                )
                 if c_past.rowcount > 0:
-                    log.info("General cleanup: deleted %d older snapshots", c_past.rowcount)
+                    log.info(
+                        "General cleanup: deleted %d older snapshots", c_past.rowcount
+                    )
         except Exception:
-            log.exception("Error checking/deleting expired contract data at start of scan")
+            log.exception(
+                "Error checking/deleting expired contract data at start of scan"
+            )
 
     # B7/L3: Sync manual Kite direct positions to SQLite for AI Exit Advisor monitoring.
     if not is_test:
         try:
             from src.engine.live_trading import sync_direct_kite_positions
+
             sync_direct_kite_positions()
         except Exception:
             log.exception("Direct Kite position synchronization failed")
@@ -96,7 +162,9 @@ def run_pipeline(symbols: list[str] | None = None, force: bool = False, is_test:
         try:
             _process_symbol(symbol, fetched_at, is_test=is_test)
         except Exception:
-            log.exception("Unhandled pipeline error for %s — continuing with next symbol", symbol)
+            log.exception(
+                "Unhandled pipeline error for %s — continuing with next symbol", symbol
+            )
     log.info("Pipeline run complete | %s", fetched_at)
 
 
@@ -118,7 +186,8 @@ def _get_current_option_ltp(
         try:
             if (
                 abs(float(row.get("strike") or 0) - float(strike)) < 0.01
-                and str(row.get("option_type") or "").upper() == str(option_type).upper()
+                and str(row.get("option_type") or "").upper()
+                == str(option_type).upper()
             ):
                 ltp = float(row.get("ltp") or 0.0)
                 return ltp if ltp > 0 else None
@@ -135,15 +204,19 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
         log.error("No data for %s — skipping", symbol)
         if not is_test:
             try:
-                send_text(f"⚠️ **NSEBOT ALERT**: ALL data fetchers failed for symbol `{symbol}` at scan interval. Price tracking and strategy execution skipped.")
+                send_text(
+                    f"⚠️ **NSEBOT ALERT**: ALL data fetchers failed for symbol `{symbol}` at scan interval. Price tracking and strategy execution skipped."
+                )
             except Exception:
-                log.exception("Failed to send fetch-failure Telegram alert for %s", symbol)
+                log.exception(
+                    "Failed to send fetch-failure Telegram alert for %s", symbol
+                )
         return
 
     underlying = oc_data["underlying_price"]
-    expiry     = oc_data["expiry"]
-    source     = oc_data.get("source", "unknown")
-    prev_row   = get_previous_underlying(symbol)
+    expiry = oc_data["expiry"]
+    source = oc_data.get("source", "unknown")
+    prev_row = get_previous_underlying(symbol)
     prev_price = prev_row["price"] if prev_row else None
 
     # B5: flag when we're using a stale fallback price so regime_detector can ignore the row
@@ -152,7 +225,11 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
         underlying = prev_price or 0.0
         oc_data["underlying_price"] = underlying
         is_fallback = True
-        log.warning("%s: underlying price is None, falling back to prev_price: %s", symbol, underlying)
+        log.warning(
+            "%s: underlying price is None, falling back to prev_price: %s",
+            symbol,
+            underlying,
+        )
 
     # 1a. Fetch chart data server-side (Chrome-free)
     try:
@@ -161,10 +238,15 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
         if chart_data:
             log.debug("%s: chart_indicators injected from chart_fetcher", symbol)
         else:
-            log.warning("%s: chart_fetcher returned empty chart dict — continuing without chart", symbol)
+            log.warning(
+                "%s: chart_fetcher returned empty chart dict — continuing without chart",
+                symbol,
+            )
     except Exception:
         oc_data["chart_indicators"] = {}
-        log.exception("%s: chart_fetcher crashed — continuing without chart data", symbol)
+        log.exception(
+            "%s: chart_fetcher crashed — continuing without chart data", symbol
+        )
 
     # 1b. Detect anomalies
     symbol_thresholds = get_symbol_thresholds(symbol)
@@ -175,11 +257,48 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
         override_thresholds=symbol_thresholds,
     )
     scan_context["option_rows"] = list(oc_data.get("strikes") or [])
+
+    # Phase 2: Cache scan snapshot for ML prediction dashboard endpoint
+    # This ensures the dashboard endpoint can hydrate full feature context
+    # before predicting, producing identical results to the pipeline.
+    try:
+        update_scan_snapshot(symbol, scan_context)
+    except Exception:
+        log.debug("%s: scan snapshot caching failed gracefully", symbol)
     # Inject futures expiry (different from option chain expiry for MCX/NSE)
     try:
         from config.symbol_classes import get_futures_expiry
-        scan_context["futures_expiry"] = get_futures_expiry(symbol)
+        from src.fetchers.dhan_commodity_fetcher import _get_open_futures_expiry
+
+        near_fut_expiry = get_futures_expiry(symbol)
+        open_fut_expiry = _get_open_futures_expiry(symbol)
+
+        if open_fut_expiry:
+            scan_context["futures_expiry"] = open_fut_expiry
+        else:
+            opt_expiry_str = oc_data.get("expiry")
+            if opt_expiry_str and near_fut_expiry:
+                try:
+                    opt_dt = datetime.strptime(opt_expiry_str, "%Y-%m-%d").date()
+                    near_fut_dt = datetime.strptime(near_fut_expiry, "%Y-%m-%d").date()
+                    if (opt_dt.year > near_fut_dt.year) or (
+                        opt_dt.year == near_fut_dt.year
+                        and opt_dt.month > near_fut_dt.month
+                    ):
+                        from datetime import timedelta
+
+                        next_fut_expiry = get_futures_expiry(
+                            symbol, ref_date=near_fut_dt + timedelta(days=1)
+                        )
+                        scan_context["futures_expiry"] = next_fut_expiry
+                    else:
+                        scan_context["futures_expiry"] = near_fut_expiry
+                except Exception:
+                    scan_context["futures_expiry"] = near_fut_expiry
+            else:
+                scan_context["futures_expiry"] = near_fut_expiry
     except Exception:
+        log.exception("Error calculating futures expiry in pipeline")
         scan_context["futures_expiry"] = None
     log.info("%s: %d anomalies detected", symbol, len(alerts))
 
@@ -189,30 +308,121 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
     if dedup_suppressed:
         log.info(
             "%s: detected=%d | new=%d | dedup_suppressed=%d",
-            symbol, len(alerts), len(new_alerts), dedup_suppressed,
+            symbol,
+            len(alerts),
+            len(new_alerts),
+            dedup_suppressed,
         )
 
     # 3. Build digest
     try:
-        intel = generate_intelligence_structured(symbol, new_alerts, scan_context=scan_context)
+        intel = generate_intelligence_structured(
+            symbol, new_alerts, scan_context=scan_context
+        )
     except Exception as e:
-        log.exception("%s: intelligence generation failed with exception: %s", symbol, str(e)[:500])
+        log.exception(
+            "%s: intelligence generation failed with exception: %s",
+            symbol,
+            str(e)[:500],
+        )
         intel = None
-    
+
     if not intel:
         log.warning("%s: intel is None, using fallback digest", symbol)
         intel_text = f"⚠️ Intelligence generation failed for {symbol}"
     else:
         intel_text = intel.get("telegram_text", "")
 
+    # 3ai. Phase 1: Trade DNA match — find similar historical trades
+    if intel:
+        try:
+            analyzer = get_analyzer()  # singleton, no per-scan cost
+            ist_hour = (datetime.now(timezone.utc) + IST_OFFSET).hour
+            dna_context = {
+                "symbol": symbol,
+                "verdict_label": intel.get("verdict_label"),
+                "confidence": intel.get("confidence", 0),
+                "ist_hour": ist_hour,
+            }
+            dna_match = analyzer.get_trade_dna_match(dna_context)
+            intel["trade_dna"] = dna_match
+            if dna_match.get("match_found"):
+                log.info(
+                    "%s: Trade DNA — %d similar trades, historical WR=%.1f%%, avg PnL=₹%.0f",
+                    symbol,
+                    dna_match["similar_trades"],
+                    dna_match["historical_win_rate"] * 100,
+                    dna_match["avg_pnl"],
+                )
+        except Exception:
+            log.debug("%s: Trade DNA lookup failed gracefully", symbol)
+
+    # 3aii. Phase 2: ML Success Predictor — get P(trade profitable)
+    # v2.2 FIX: Use singleton instead of re-instantiating per scan cycle.
+    # TradeSuccessPredictor.__init__() calls _load_model() which loads XGBoost
+    # from disk (~50-100ms) and SHAP TreeExplainer init (~50-200ms). At 5 symbols
+    # every 3 minutes, that's 1-2.5 seconds of disk I/O per cycle.
+    if intel:
+        try:
+            from src.intelligence.ml_predictor import get_predictor
+
+            ml_predictor = get_predictor()  # Module-level singleton, loaded once
+            ml_prediction = ml_predictor.predict(
+                {
+                    "symbol": symbol,
+                    "confidence": intel.get("confidence", 0),
+                    "verdict_label": intel.get("verdict_label"),
+                    "price_change_pct": scan_context.get("price_change_pct"),
+                    "pcr": scan_context.get("pcr"),
+                    "ce_oi_change": scan_context.get("ce_oi_change"),
+                    "pe_oi_change": scan_context.get("pe_oi_change"),
+                    "underlying": scan_context.get("underlying"),
+                    "support": scan_context.get("support"),
+                    "resistance": scan_context.get("resistance"),
+                    "max_pain": scan_context.get("max_pain"),
+                    "chart_conflict": intel.get("chart_conflict"),
+                    "days_to_expiry": None,  # Will be computed from expiry in scan_context
+                    "rsi_1h": None,  # From chart indicators
+                    "rsi_3h": None,  # From chart indicators
+                    "regime": scan_context.get("market_regime"),
+                    # v2.0 FIX: Pass opened_at for correct time features
+                    "opened_at": scan_context.get("fetched_at"),
+                }
+            )
+            if ml_prediction:
+                intel["ml_prediction"] = {
+                    "success_probability": ml_prediction.success_probability,
+                    "confidence_level": ml_prediction.confidence_level,
+                    "top_factors": ml_prediction.top_factors,
+                    "model_version": ml_prediction.model_version,
+                    "training_samples": ml_prediction.training_samples,
+                }
+                log.info(
+                    "[ML] %s: P(success) = %.1f%% (confidence: %s)",
+                    symbol,
+                    ml_prediction.success_probability * 100,
+                    ml_prediction.confidence_level,
+                )
+        except ImportError:
+            log.debug(
+                "%s: ML predictor not available (xgboost/sklearn not installed)", symbol
+            )
+        except Exception:
+            log.debug("%s: ML prediction failed gracefully", symbol)
+
     # 3a. Fetch news data for AI context
     news_data = None
     try:
         from src.fetchers.news_fetcher import fetch_news
+
         news_data = fetch_news(symbol)
         if news_data and news_data.get("count_24h", 0) > 0:
-            log.info("%s: news fetched — %d articles, direction: %s",
-                     symbol, news_data["count_24h"], news_data.get("current_news_direction"))
+            log.info(
+                "%s: news fetched — %d articles, direction: %s",
+                symbol,
+                news_data["count_24h"],
+                news_data.get("current_news_direction"),
+            )
     except Exception:
         log.debug("%s: news fetch unavailable", symbol)
 
@@ -220,6 +430,7 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
     open_trade = None
     try:
         from src.models.schema import get_open_paper_trade
+
         open_trade = get_open_paper_trade(symbol)
         if open_trade:
             open_trade = dict(open_trade)
@@ -227,11 +438,12 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
         log.debug("%s: could not fetch open trade for AI context", symbol)
 
     # 3c. AI Enrichment (LLM — Deep Context)
-    from src.engine.llm_enrichment import get_llm_verdict
     from config.settings import DISABLE_LLM_ENRICHMENT
+    from src.engine.llm_enrichment import get_llm_verdict
+
     llm_verdict = None
     exit_advice = None
-    
+
     if DISABLE_LLM_ENRICHMENT:
         log.info("%s: LLM enrichment disabled (DISABLE_LLM_ENRICHMENT=true)", symbol)
     elif intel:
@@ -241,10 +453,15 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
                 # Running both entry + exit on the same scan produces contradictory directional
                 # models (entry might say GO_LONG while exit manages a SHORT). Exit advisor
                 # runs below in 3d and is the sole AI voice when a position is held.
-                log.debug("%s: open position exists — skipping LLM entry verdict, exit advisor will run", symbol)
+                log.debug(
+                    "%s: open position exists — skipping LLM entry verdict, exit advisor will run",
+                    symbol,
+                )
             else:
                 llm_verdict = get_llm_verdict(
-                    symbol, intel, scan_context,
+                    symbol,
+                    intel,
+                    scan_context,
                     alerts=new_alerts,
                     news_data=news_data,
                     open_trade=None,
@@ -253,23 +470,39 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
                 # Regenerate intelligence structured with the fetched AI verdict
                 # so the inline decision engine block reflects the AI boost/veto
                 intel = generate_intelligence_structured(
-                    symbol, new_alerts, scan_context=scan_context, ai_verdict=llm_verdict
+                    symbol,
+                    new_alerts,
+                    scan_context=scan_context,
+                    ai_verdict=llm_verdict,
                 )
                 intel_text = intel.get("telegram_text", "") if intel else intel_text
 
-                log.info("%s: AI verdict — %s (%d%%) risk=%s | Instrument: %s",
-                         symbol, llm_verdict.action, llm_verdict.confidence,
-                         llm_verdict.risk_rating, llm_verdict.instrument)
-                
-                action_emoji = {"GO_LONG": "🟢", "GO_SHORT": "🔴", "NO_TRADE": "⚪"}.get(llm_verdict.action, "❓")
-                risk_emoji = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🔴"}.get(llm_verdict.risk_rating, "❓")
-                
+                log.info(
+                    "%s: AI verdict — %s (%d%%) risk=%s | Instrument: %s",
+                    symbol,
+                    llm_verdict.action,
+                    llm_verdict.confidence,
+                    llm_verdict.risk_rating,
+                    llm_verdict.instrument,
+                )
+
+                action_emoji = {
+                    "GO_LONG": "🟢",
+                    "GO_SHORT": "🔴",
+                    "NO_TRADE": "⚪",
+                }.get(llm_verdict.action, "❓")
+                risk_emoji = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🔴"}.get(
+                    llm_verdict.risk_rating, "❓"
+                )
+
                 intel_text += f"\n\n{action_emoji} *AI Trade Plan* ({llm_verdict.action}, {llm_verdict.confidence}%)\n"
                 intel_text += f"📋 *Contract:* `{llm_verdict.instrument}`\n"
                 intel_text += f"🎯 *Entry:* {llm_verdict.entry_trigger}\n"
                 intel_text += f"💰 *Premium:* {llm_verdict.entry_premium_range}\n"
                 intel_text += f"🛑 *SL:* {llm_verdict.stop_loss}\n"
-                intel_text += f"🎯 *T1:* {llm_verdict.target_1} | *T2:* {llm_verdict.target_2}\n"
+                intel_text += (
+                    f"🎯 *T1:* {llm_verdict.target_1} | *T2:* {llm_verdict.target_2}\n"
+                )
                 intel_text += f"📊 *R:R:* {llm_verdict.risk_reward} | {risk_emoji} *Risk:* {llm_verdict.risk_rating}\n"
                 intel_text += f"💡 *Thesis:* {llm_verdict.thesis}\n"
                 intel_text += f"⚠️ *Invalidation:* {llm_verdict.invalidation}\n"
@@ -281,28 +514,45 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
     # 3d. AI Exit Advisor — evaluate open paper trades
     try:
         from config.runtime_config import load_runtime_config
+
         rconf = load_runtime_config()
         ai_exit_advisor_enabled = rconf.get("live_ai_exit_advisor_enabled", False)
         if ai_exit_advisor_enabled and open_trade:
             from src.engine.llm_enrichment import get_exit_advice
+
             exit_advice = get_exit_advice(symbol, open_trade, scan_context, news_data)
             if exit_advice:
-                log.info("%s: AI exit advice — %s (urgency=%s): %s",
-                         symbol, exit_advice.action, exit_advice.urgency, exit_advice.reasoning)
-                if exit_advice.action == "TRAIL_SL" and exit_advice.new_sl_premium is not None:
+                log.info(
+                    "%s: AI exit advice — %s (urgency=%s): %s",
+                    symbol,
+                    exit_advice.action,
+                    exit_advice.urgency,
+                    exit_advice.reasoning,
+                )
+                if (
+                    exit_advice.action == "TRAIL_SL"
+                    and exit_advice.new_sl_premium is not None
+                ):
                     from src.models.schema import get_conn
+
                     with get_conn() as conn:
                         conn.execute(
                             "UPDATE paper_trades SET sl_premium=? WHERE id=? AND status='OPEN'",
                             (exit_advice.new_sl_premium, open_trade["id"]),
                         )
-                    log.info("%s: AI trailed SL to %.2f", symbol, exit_advice.new_sl_premium)
+                    log.info(
+                        "%s: AI trailed SL to %.2f", symbol, exit_advice.new_sl_premium
+                    )
                     intel_text += f"\n🤖 *AI Trail*: SL moved to ₹{exit_advice.new_sl_premium:.2f} — {exit_advice.reasoning}\n"
-                elif exit_advice.action == "CLOSE_EARLY" and exit_advice.urgency == "HIGH":
+                elif (
+                    exit_advice.action == "CLOSE_EARLY"
+                    and exit_advice.urgency == "HIGH"
+                ):
                     # FIX #9 + M4: use real current LTP only. If LTP is unavailable,
                     # SKIP the close entirely — closing at entry_premium forces P&L=0
                     # regardless of whether the trade was actually profitable.
                     from src.models.schema import close_paper_trade
+
                     option_rows = scan_context.get("option_rows") or []
                     current_ltp = _get_current_option_ltp(
                         symbol,
@@ -321,9 +571,20 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
                             "AI_CLOSE_EARLY",
                             f"AI exit: {exit_advice.reasoning}",
                         )
+                        _invalidate_pattern_cache()  # Phase 1: refresh patterns after close
+                        try:
+                            from src.scheduler.ml_training_job import on_trade_closed
+
+                            on_trade_closed()
+                        except Exception:
+                            pass  # Phase 2: increment ML retraining counter
+                        # Phase 3: Check edge health after trade close
+                        _check_edge_health_and_trigger_retrain()
                         log.info(
                             "%s: AI closed trade early at LTP=%.2f — %s",
-                            symbol, exit_premium, exit_advice.reasoning,
+                            symbol,
+                            exit_premium,
+                            exit_advice.reasoning,
                         )
                         intel_text += f"\n🤖 *AI Close* @ ₹{exit_premium:.2f}: {exit_advice.reasoning}\n"
                     else:
@@ -340,8 +601,8 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
     except Exception:
         log.debug("%s: AI exit advisor failed gracefully", symbol)
 
-
     import uuid
+
     digest_id = str(uuid.uuid4())[:8]
     paper_trade_report = None
     live_trade_report = None
@@ -349,20 +610,42 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
         log.info("%s: [dry-run] Skipping paper and live trading executions", symbol)
     else:
         try:
-            pt_report = run_paper_trading(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
-            tf_report = run_timeframe_strategy(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
+            pt_report = run_paper_trading(
+                symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict
+            )
+            tf_report = run_timeframe_strategy(
+                symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict
+            )
             if pt_report and pt_report.get("action") in ("EXECUTED", "CLOSED"):
                 paper_trade_report = pt_report
             elif tf_report and tf_report.get("action") in ("EXECUTED", "CLOSED"):
                 paper_trade_report = tf_report
             else:
                 paper_trade_report = pt_report or tf_report
+
+            # Phase 2: Trigger ML retraining counter when a trade closes
+            # on_trade_closed() increments the trade counter and triggers
+            # training if 20+ new trades have accumulated since last training.
+            if paper_trade_report and paper_trade_report.get("action") == "CLOSED":
+                try:
+                    from src.scheduler.ml_training_job import on_trade_closed
+
+                    on_trade_closed()
+                except Exception:
+                    log.debug("%s: ML training counter increment failed", symbol)
+                # Phase 3: Check edge health after trade close and trigger
+                # ML retraining if the edge is declining (health < 60).
+                _check_edge_health_and_trigger_retrain()
         except Exception:
             log.exception("%s: paper-trading engine failed", symbol)
 
         try:
-            lt_report = run_live_trading(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
-            lt_tf_report = run_live_timeframe_strategy(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
+            lt_report = run_live_trading(
+                symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict
+            )
+            lt_tf_report = run_live_timeframe_strategy(
+                symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict
+            )
             if lt_report and lt_report.get("action") in ("EXECUTED", "CLOSED"):
                 live_trade_report = lt_report
             elif lt_tf_report and lt_tf_report.get("action") in ("EXECUTED", "CLOSED"):
@@ -373,7 +656,9 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
             log.exception("%s: live-trading engine failed", symbol)
 
     digest_id, digest_msg = build_digest(
-        symbol, new_alerts, fetched_at,
+        symbol,
+        new_alerts,
+        fetched_at,
         scan_context=scan_context,
         intelligence_text=intel_text,
         detected_count=len(alerts),
@@ -393,18 +678,28 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
     else:
         try:
             if intel:
-                save_scan_summary(symbol, scan_context, new_alerts, intel, digest_id, fetched_at,
-                                  is_fallback=is_fallback)
+                save_scan_summary(
+                    symbol,
+                    scan_context,
+                    new_alerts,
+                    intel,
+                    digest_id,
+                    fetched_at,
+                    is_fallback=is_fallback,
+                )
             else:
-                log.warning("%s: skipping scan summary save due to missing intelligence data", symbol)
+                log.warning(
+                    "%s: skipping scan summary save due to missing intelligence data",
+                    symbol,
+                )
         except Exception:
             log.exception("%s: scan summary save failed", symbol)
 
     # 4. Send logic
     should_send = bool(new_alerts)
     if not should_send:
-        diag    = (scan_context or {}).get("diagnostics", {})
-        max_oi  = float(diag.get("max_oi_delta_pct") or 0)
+        diag = (scan_context or {}).get("diagnostics", {})
+        max_oi = float(diag.get("max_oi_delta_pct") or 0)
         if dedup_suppressed > 0:
             if should_send_zero_signal(symbol):
                 should_send = True
@@ -415,11 +710,17 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
         elif should_send_zero_signal(symbol):
             should_send = True
         else:
-            log.info("%s: suppressed flat zero-signal scan (max_oi=%.2f%%)", symbol, max_oi)
+            log.info(
+                "%s: suppressed flat zero-signal scan (max_oi=%.2f%%)", symbol, max_oi
+            )
 
     if is_test:
         digest_msg = f"⚠️ **TEST MODE** ⚠️\n\n{digest_msg}"
-        log.info("%s: [dry-run] Sending test digest to Telegram/Discord:\n%s", symbol, digest_msg)
+        log.info(
+            "%s: [dry-run] Sending test digest to Telegram/Discord:\n%s",
+            symbol,
+            digest_msg,
+        )
         send_text(digest_msg)
         sent_digest = False
     else:
@@ -445,25 +746,28 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
 
         insert_underlying_price(symbol, underlying, pct_chg, fetched_at)
 
-        rows = [{
-            "fetched_at":       fetched_at,
-            "symbol":           symbol,
-            "expiry":           expiry,
-            "strike":           row["strike"],
-            "option_type":      row["option_type"],
-            "ltp":              row.get("ltp"),
-            "ltp_change_pct":   row.get("ltp_change_pct"),
-            "oi":               row.get("oi"),
-            "oi_change_pct":    row.get("oi_change_pct"),
-            "oi_change":        row.get("oi_change"),
-            "volume":           row.get("volume"),
-            "iv":               row.get("iv"),
-            "bid":              row.get("bid"),
-            "ask":              row.get("ask"),
-            "delta":            row.get("delta"),
-            "underlying_price": underlying,
-            "fetcher_source":   source,
-        } for row in oc_data["strikes"]]
+        rows = [
+            {
+                "fetched_at": fetched_at,
+                "symbol": symbol,
+                "expiry": expiry,
+                "strike": row["strike"],
+                "option_type": row["option_type"],
+                "ltp": row.get("ltp"),
+                "ltp_change_pct": row.get("ltp_change_pct"),
+                "oi": row.get("oi"),
+                "oi_change_pct": row.get("oi_change_pct"),
+                "oi_change": row.get("oi_change"),
+                "volume": row.get("volume"),
+                "iv": row.get("iv"),
+                "bid": row.get("bid"),
+                "ask": row.get("ask"),
+                "delta": row.get("delta"),
+                "underlying_price": underlying,
+                "fetcher_source": source,
+            }
+            for row in oc_data["strikes"]
+        ]
         insert_snapshots(rows)
         log.info("%s: persisted %d rows (source: %s)", symbol, len(rows), source)
 
@@ -476,6 +780,7 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
                 try:
                     exp_date = datetime.strptime(expiry, "%Y-%m-%d").date()
                     import pytz
+
                     IST = pytz.timezone("Asia/Kolkata")
                     today_ist = datetime.now(IST).date()
                     dte = (exp_date - today_ist).days
@@ -483,35 +788,54 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
                         idx = all_expiries.index(expiry)
                         if idx + 1 < len(all_expiries):
                             next_expiry = all_expiries[idx + 1]
-                            log.info("%s: Active expiry %s has DTE = %d. Fetching next-expiry %s data to DB.",
-                                     symbol, expiry, dte, next_expiry)
-                            
-                            next_oc_data = fetch_option_chain(symbol, expiry=next_expiry)
+                            log.info(
+                                "%s: Active expiry %s has DTE = %d. Fetching next-expiry %s data to DB.",
+                                symbol,
+                                expiry,
+                                dte,
+                                next_expiry,
+                            )
+
+                            next_oc_data = fetch_option_chain(
+                                symbol, expiry=next_expiry
+                            )
                             if next_oc_data and next_oc_data.get("strikes"):
                                 next_underlying = next_oc_data["underlying_price"]
                                 next_source = next_oc_data.get("source", "unknown")
-                                
-                                next_rows = [{
-                                    "fetched_at":       fetched_at,
-                                    "symbol":           symbol,
-                                    "expiry":           next_expiry,
-                                    "strike":           row["strike"],
-                                    "option_type":      row["option_type"],
-                                    "ltp":              row.get("ltp"),
-                                    "ltp_change_pct":   row.get("ltp_change_pct"),
-                                    "oi":               row.get("oi"),
-                                    "oi_change_pct":    row.get("oi_change_pct"),
-                                    "oi_change":        row.get("oi_change"),
-                                    "volume":           row.get("volume"),
-                                    "iv":               row.get("iv"),
-                                    "bid":              row.get("bid"),
-                                    "ask":              row.get("ask"),
-                                    "delta":            row.get("delta"),
-                                    "underlying_price": next_underlying,
-                                    "fetcher_source":   next_source,
-                                } for row in next_oc_data["strikes"]]
-                                
+
+                                next_rows = [
+                                    {
+                                        "fetched_at": fetched_at,
+                                        "symbol": symbol,
+                                        "expiry": next_expiry,
+                                        "strike": row["strike"],
+                                        "option_type": row["option_type"],
+                                        "ltp": row.get("ltp"),
+                                        "ltp_change_pct": row.get("ltp_change_pct"),
+                                        "oi": row.get("oi"),
+                                        "oi_change_pct": row.get("oi_change_pct"),
+                                        "oi_change": row.get("oi_change"),
+                                        "volume": row.get("volume"),
+                                        "iv": row.get("iv"),
+                                        "bid": row.get("bid"),
+                                        "ask": row.get("ask"),
+                                        "delta": row.get("delta"),
+                                        "underlying_price": next_underlying,
+                                        "fetcher_source": next_source,
+                                    }
+                                    for row in next_oc_data["strikes"]
+                                ]
+
                                 num_inserted = insert_snapshots(next_rows)
-                                log.info("%s: Next-expiry (%s) saved: %d rows inserted", symbol, next_expiry, num_inserted)
+                                log.info(
+                                    "%s: Next-expiry (%s) saved: %d rows inserted",
+                                    symbol,
+                                    next_expiry,
+                                    num_inserted,
+                                )
                 except Exception as next_exc:
-                    log.warning("%s: Failed to fetch/save next-expiry data: %s", symbol, next_exc)
+                    log.warning(
+                        "%s: Failed to fetch/save next-expiry data: %s",
+                        symbol,
+                        next_exc,
+                    )

@@ -408,6 +408,48 @@ MITIGATION:
 RECOVERY: Whitelist IP on Zerodha developer console (free, 1 change/week).
 ```
 
+### Failure Mode 9: ML Model Never Trains
+```
+SYMPTOM: ML predictions always return None; no model file on disk
+CAUSE: Fewer than 30 trades with complete feature data have closed
+IMPACT: Dashboard ML gauge shows empty state; no success probabilities
+MITIGATION:
+  - System degrades gracefully — pipeline continues without ML
+  - Event-driven retraining triggers at 30+ trades
+  - Weekly fallback job (Sunday 2 AM IST) retries automatically
+  - UNION of paper_trades + live_trades maximizes training data
+RECOVERY: Accumulate more paper trades. Verify trades have feature columns
+populated (opened_at, verdict_label, confidence, etc.).
+```
+
+### Failure Mode 10: Scan Cache Stale / Empty
+```
+SYMPTOM: Dashboard ML prediction differs from pipeline prediction
+CAUSE: Scan cache TTL expired (10 min) or pipeline didn't update cache
+IMPACT: Dashboard passes near-empty feature vector → wrong probability
+MITIGATION:
+  - CACHE_TTL_SECONDS = 600 (10 min) exceeds scan frequency (3-5 min)
+  - Pipeline updates cache after every anomaly detection cycle
+  - Thread-safe lock prevents concurrent read/write corruption
+  - get_latest_scan_snapshot() returns copy to prevent mutation
+RECOVERY: Wait for next pipeline cycle. If persistent, check pipeline.py
+for scan_cache.update_scan_snapshot() call after anomaly detection.
+```
+
+### Failure Mode 11: Edge Monitor False Decay Alert
+```
+SYMPTOM: EDGE DECAY DETECTED alert fires for healthy strategy
+CAUSE: Small sample size causing volatile win rate swings
+IMPACT: Unnecessary ML retraining; operator alarm fatigue
+MITIGATION:
+  - MIN_HISTORICAL_TRADES = 5 guard prevents premature alerts
+  - INSUFFICIENT_HISTORY sentinel blocks retrain trigger (v3.0 FIX #6)
+  - PnL baseline floor at ₹100 prevents ratio explosion (v3.0 FIX #12)
+  - Health score requires BOTH absolute AND trend confirmation
+RECOVERY: Review trade count. If < 30 total trades, alerts are expected
+noise. Increase MIN_HISTORICAL_TRADES if false positives persist.
+```
+
 ### Failure Mode 8: Dead Trade Exit Premature
 ```
 SYMPTOM: Trade closed after 3 hours with small profit
@@ -523,6 +565,12 @@ pytest tests/ -m "not slow"
 # 5. Add to CI pipeline
 ```
 
+### AI Intelligence Test Files
+| File | Coverage |
+|------|----------|
+| `tests/test_phase2_regression.py` | Phase 1 core engine (verdicts, regime, entry quality, risk) |
+| `tests/test_ai_intelligence_phases.py` | Phases 1-4 (scan cache, ML integration, edge monitor, dashboard API) |
+
 ---
 
 ## 8. Common Code Patterns
@@ -579,6 +627,82 @@ MY_NEW_LIMIT = int(os.environ.get("MY_NEW_LIMIT", "10"))
 
 ---
 
+## 8b. AI Intelligence Roadmap — Decision Trees (Phases 1-4)
+
+### Tree 4: ML Prediction Not Working
+
+```
+ML prediction returning None or wrong values?
+    │
+    ├── Is xgboost/scikit-learn/shap installed?
+    │   ├── NO → pip install xgboost scikit-learn shap
+    │   │         System degrades gracefully without them
+    │   │
+    │   └── YES → Continue below
+    │
+    ├── Is scan cache populated?
+    │   ├── NO → Pipeline hasn't run yet or scan_cache.update_scan_snapshot()
+    │   │         not being called. Check pipeline.py for cache update step.
+    │   │         Dashboard endpoint returns null without cached context.
+    │   │
+    │   ├── STALE (>10 min) → Cache TTL expired. Wait for next pipeline cycle.
+    │   │                      Check CACHE_TTL_SECONDS in scan_cache.py
+    │   │
+    │   └── YES → Continue below
+    │
+    ├── Does model exist on disk?
+    │   ├── NO → Not enough training data (< 30 trades with features)
+    │   │         Wait for more paper trades to accumulate
+    │   │         Or trigger manual training via scheduler
+    │   │
+    │   └── YES → Continue below
+    │
+    ├── Is feature extraction using opened_at (not closed_at)?
+    │   └── Check TradeSuccessPredictor._extract_features()
+    │        Using closed_at causes data leakage
+    │
+    └── Dashboard shows different probability than pipeline?
+        └── Dashboard must hydrate full context from scan_cache
+             before predicting. Without it, all OI/distance features = 0
+             and prediction diverges from pipeline.
+```
+
+### Tree 5: Edge Health Alerts / False Positives
+
+```
+Edge health alert firing incorrectly?
+    │
+    ├── Alert fires with < 5 trades?
+    │   └── Should NOT happen. Guard returns INSUFFICIENT_HISTORY.
+    │        If it does, check MIN_HISTORICAL_TRADES in edge_monitor.py
+    │
+    ├── Alert fires during early data-building phase?
+    │   ├── win_rate_trend == "INSUFFICIENT_HISTORY" → Expected
+    │   │   Retrain trigger ignores this sentinel (v3.0 FIX #6)
+    │   │
+    │   └── win_rate_trend != "INSUFFICIENT_HISTORY" → Bug
+    │        Check _classify_trend() baseline calculation
+    │
+    ├── PnL trend shows extreme DECLINING with tiny baseline?
+    │   └── v3.0 FIX #12: Baseline floored at ₹100
+    │        If still exploding, check _calculate_health_score()
+    │
+    ├── Health score seems wrong?
+    │   ├── Per-strategy rows use _calculate_health_score_absolute()
+    │   │   (no historical comparison possible in GROUP BY)
+    │   │
+    │   └── Overall uses _calculate_health_score()
+    │       (includes trend components)
+    │       These are INTENTIONALLY different formulas (v3.0 FIX #11)
+    │
+    └── Retraining triggered too often?
+        ├── Check health_score threshold (default < 60)
+        ├── Check if INSUFFICIENT_HISTORY guard is working
+        └── Check trade count threshold for event-driven retrain
+```
+
+---
+
 ## 9. Session Handoff Template
 
 When ending a session, document your work using this template:
@@ -624,6 +748,10 @@ When ending a session, document your work using this template:
 | `src/fetchers/router.py` | Data fetching |
 | `config/settings.py` | All thresholds |
 | `data/runtime_config.json` | Runtime toggles |
+| `src/engine/scan_cache.py` | Scan context cache for ML prediction hydration (Phase 2) |
+| `src/intelligence/edge_monitor.py` | Edge decay detection & health scoring (Phase 3) |
+| `src/dashboard/ai_insights.css` | AI Insights dashboard styles (Phase 4) |
+| `src/dashboard/ai_insights.js` | AI Insights dashboard logic (Phase 4) |
 
 ### Key Thresholds
 | Parameter | Value | Location |
@@ -652,6 +780,6 @@ When ending a session, document your work using this template:
 
 **Remember:** When in doubt, choose the safer option. Paper trading exists for a reason. Always test changes in paper mode before enabling live trading.
 
-**Last Updated:** June 22, 2026
+**Last Updated:** June 25, 2026
 **Framework:** Adaptive Graph of Thoughts (AGoT)
-**Version:** 1.0
+**Version:** 1.1 — Added AI Intelligence Roadmap Phases 1-4

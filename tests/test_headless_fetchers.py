@@ -86,7 +86,7 @@ class TestMoneycontrolFetcher:
         from src.fetchers.moneycontrol_fetcher import _get_live_future_price
         from src.fetchers.dhan_commodity_fetcher import DhanCommodityFetcher
 
-        with patch.object(DhanCommodityFetcher, "_fetch_builtup_live_price", return_value=315.0) as mock_fetch:
+        with patch.object(DhanCommodityFetcher, "_fetch_builtup_live_price", return_value=315.0, create=True) as mock_fetch:
             val = _get_live_future_price("NATURALGAS")
             assert val == pytest.approx(315.0)
             mock_fetch.assert_called_once_with(504265)
@@ -100,7 +100,7 @@ class TestMoneycontrolFetcher:
         from src.fetchers.moneycontrol_fetcher import _get_live_future_price
         from src.fetchers.dhan_commodity_fetcher import DhanCommodityFetcher
 
-        with patch.object(DhanCommodityFetcher, "_fetch_builtup_live_price", side_effect=Exception("Dhan down")):
+        with patch.object(DhanCommodityFetcher, "_fetch_builtup_live_price", side_effect=Exception("Dhan down"), create=True):
             val = _get_live_future_price("NATURALGAS")
             assert val is None
 
@@ -110,7 +110,7 @@ class TestMoneycontrolFetcher:
         with patch.object(mc_mod, "_get_live_future_price", return_value=315.0) as mock_get:
             val = mc_mod._fetch_nse_commodity_spot("NATURALGAS")
             assert val == pytest.approx(315.0)
-            mock_get.assert_called_once_with("NATURALGAS")
+            mock_get.assert_called_once_with("NATURALGAS", target_expiry=None)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

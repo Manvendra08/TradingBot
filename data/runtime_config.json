@@ -12,8 +12,18 @@
     "BANKNIFTY": 10,
     "FINNIFTY": 10,
     "MIDCPNIFTY": 10,
+    "SENSEX": 10,
     "NATURALGAS": 10,
     "CRUDEOIL": 10
+  },
+  "paper_symbol_lots": {
+    "NIFTY": 10,
+    "BANKNIFTY": 10,
+    "FINNIFTY": 10,
+    "MIDCPNIFTY": 10,
+    "SENSEX": 10,
+    "NATURALGAS": 10,
+    "CRUDEOIL": 5
   },
   "paper_lots": 10,
   "live_enabled_broker_symbols": [

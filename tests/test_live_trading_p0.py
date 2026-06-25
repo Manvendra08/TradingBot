@@ -1,9 +1,11 @@
+import json
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 
 def _reset_live_tables():
     from src.models.schema import get_conn
+
     with get_conn() as conn:
         conn.execute("DELETE FROM live_trades")
         conn.execute("DELETE FROM broker_configs")
@@ -57,12 +59,29 @@ def test_kill_switch_still_allows_existing_fut_target_exit():
     trade_id = _insert_open_live_trade()
     fake_kite = MagicMock()
 
-    with patch("src.engine.live_trading._is_market_open", return_value=True), \
-         patch("src.engine.live_trading.load_runtime_config", return_value=_runtime_config(shadow=False)), \
-         patch("src.engine.live_trading.get_kite_client", return_value=fake_kite), \
-         patch("src.engine.live_trading.get_broker_config", return_value={"kill_switch_active": 1}), \
-         patch("src.engine.live_trading.resolve_instrument", return_value={"tradingsymbol": "NIFTY26JUNFUT", "instrument_token": 1, "lot_size": 25}), \
-         patch("src.engine.live_trading.place_kite_order", return_value="exit-1") as mock_order:
+    with (
+        patch("src.engine.live_trading._is_market_open", return_value=True),
+        patch(
+            "src.engine.live_trading.load_runtime_config",
+            return_value=_runtime_config(shadow=False),
+        ),
+        patch("src.engine.live_trading.get_kite_client", return_value=fake_kite),
+        patch(
+            "src.engine.live_trading.get_broker_config",
+            return_value={"kill_switch_active": 1},
+        ),
+        patch(
+            "src.engine.live_trading.resolve_instrument",
+            return_value={
+                "tradingsymbol": "NIFTY26JUNFUT",
+                "instrument_token": 1,
+                "lot_size": 25,
+            },
+        ),
+        patch(
+            "src.engine.live_trading.place_kite_order", return_value="exit-1"
+        ) as mock_order,
+    ):
         from src.engine.live_trading import run_live_trading
 
         result = run_live_trading(
@@ -77,8 +96,11 @@ def test_kill_switch_still_allows_existing_fut_target_exit():
     mock_order.assert_called_once()
 
     from src.models.schema import get_conn
+
     with get_conn() as conn:
-        row = conn.execute("SELECT status, exit_mode FROM live_trades WHERE id=?", (trade_id,)).fetchone()
+        row = conn.execute(
+            "SELECT status, exit_mode FROM live_trades WHERE id=?", (trade_id,)
+        ).fetchone()
     assert row["status"] == "CLOSED_TARGET"
     assert row["exit_mode"] == "GTT"
 
@@ -101,23 +123,53 @@ def test_live_entry_reserves_signal_before_broker_order_and_blocks_duplicate_ord
 
     patches = [
         patch("src.engine.live_trading._is_market_open", return_value=True),
-        patch("src.engine.live_trading.load_runtime_config", return_value=_runtime_config(shadow=False)),
+        patch(
+            "src.engine.live_trading.load_runtime_config",
+            return_value=_runtime_config(shadow=False),
+        ),
         patch("src.engine.live_trading.get_kite_client", return_value=fake_kite),
-        patch("src.engine.live_trading.get_broker_config", return_value={"kill_switch_active": 0}),
-        patch("src.engine.live_trading.make_trade_decision", return_value={
-            "status": "TRIGGERED_CORE",
-            "setup_type": "TREND_CONTINUATION",
-            "reason": "test",
-            "scores": {},
-        }),
+        patch(
+            "src.engine.live_trading.get_broker_config",
+            return_value={"kill_switch_active": 0},
+        ),
+        patch(
+            "src.engine.live_trading.make_trade_decision",
+            return_value={
+                "status": "TRIGGERED_CORE",
+                "setup_type": "TREND_CONTINUATION",
+                "reason": "test",
+                "scores": {},
+            },
+        ),
         patch("src.engine.live_trading._trade_plan_from_verdict", return_value=plan),
-        patch("src.engine.live_trading.resolve_instrument", return_value={"tradingsymbol": "NIFTY26JUN22000CE", "instrument_token": 1, "lot_size": 25}),
+        patch(
+            "src.engine.live_trading.resolve_instrument",
+            return_value={
+                "tradingsymbol": "NIFTY26JUN22000CE",
+                "instrument_token": 1,
+                "lot_size": 25,
+            },
+        ),
         patch("src.engine.live_trading.place_kite_order", return_value="entry-1"),
         patch("src.engine.live_trading.place_kite_gtt", return_value="gtt-1"),
-        patch("src.engine.live_trading.confirm_order_fill", return_value=("COMPLETE", "Filled")),
+        patch(
+            "src.engine.live_trading.confirm_order_fill",
+            return_value=("COMPLETE", "Filled"),
+        ),
     ]
 
-    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7] as mock_order, patches[8], patches[9]:
+    with (
+        patches[0],
+        patches[1],
+        patches[2],
+        patches[3],
+        patches[4],
+        patches[5],
+        patches[6],
+        patches[7] as mock_order,
+        patches[8],
+        patches[9],
+    ):
         from src.engine.live_trading import run_live_trading
 
         result1 = run_live_trading(
@@ -154,19 +206,40 @@ def test_live_entry_order_failure_is_recorded_not_untracked():
         "target_premium": 150.0,
     }
 
-    with patch("src.engine.live_trading._is_market_open", return_value=True), \
-         patch("src.engine.live_trading.load_runtime_config", return_value=_runtime_config(shadow=False)), \
-         patch("src.engine.live_trading.get_kite_client", return_value=fake_kite), \
-         patch("src.engine.live_trading.get_broker_config", return_value={"kill_switch_active": 0}), \
-         patch("src.engine.live_trading.make_trade_decision", return_value={
-             "status": "TRIGGERED_CORE",
-             "setup_type": "TREND_CONTINUATION",
-             "reason": "test",
-             "scores": {},
-         }), \
-         patch("src.engine.live_trading._trade_plan_from_verdict", return_value=plan), \
-         patch("src.engine.live_trading.resolve_instrument", return_value={"tradingsymbol": "NIFTY26JUN22000CE", "instrument_token": 1, "lot_size": 25}), \
-         patch("src.engine.live_trading.place_kite_order", side_effect=Exception("broker down")):
+    with (
+        patch("src.engine.live_trading._is_market_open", return_value=True),
+        patch(
+            "src.engine.live_trading.load_runtime_config",
+            return_value=_runtime_config(shadow=False),
+        ),
+        patch("src.engine.live_trading.get_kite_client", return_value=fake_kite),
+        patch(
+            "src.engine.live_trading.get_broker_config",
+            return_value={"kill_switch_active": 0},
+        ),
+        patch(
+            "src.engine.live_trading.make_trade_decision",
+            return_value={
+                "status": "TRIGGERED_CORE",
+                "setup_type": "TREND_CONTINUATION",
+                "reason": "test",
+                "scores": {},
+            },
+        ),
+        patch("src.engine.live_trading._trade_plan_from_verdict", return_value=plan),
+        patch(
+            "src.engine.live_trading.resolve_instrument",
+            return_value={
+                "tradingsymbol": "NIFTY26JUN22000CE",
+                "instrument_token": 1,
+                "lot_size": 25,
+            },
+        ),
+        patch(
+            "src.engine.live_trading.place_kite_order",
+            side_effect=Exception("broker down"),
+        ),
+    ):
         from src.engine.live_trading import run_live_trading
 
         result = run_live_trading(
@@ -178,8 +251,11 @@ def test_live_entry_order_failure_is_recorded_not_untracked():
 
     assert result["action"] == "BLOCKED_ORDER_FAILED"
     from src.models.schema import get_conn
+
     with get_conn() as conn:
-        rows = conn.execute("SELECT status, broker_status, reason FROM live_trades").fetchall()
+        rows = conn.execute(
+            "SELECT status, broker_status, reason FROM live_trades"
+        ).fetchall()
     assert len(rows) == 1
     assert rows[0]["status"] == "REJECTED"
     assert rows[0]["broker_status"] == "REJECTED"
@@ -202,23 +278,37 @@ def test_live_entry_blocks_fallback_symbol_before_broker_order():
         "target_premium": 150.0,
     }
 
-    with patch("src.engine.live_trading._is_market_open", return_value=True), \
-         patch("src.engine.live_trading.load_runtime_config", return_value=_runtime_config(shadow=False)), \
-         patch("src.engine.live_trading.get_kite_client", return_value=fake_kite), \
-         patch("src.engine.live_trading.get_broker_config", return_value={"kill_switch_active": 0}), \
-         patch("src.engine.live_trading.make_trade_decision", return_value={
-             "status": "TRIGGERED_CORE",
-             "setup_type": "TREND_CONTINUATION",
-             "reason": "test",
-             "scores": {},
-         }), \
-         patch("src.engine.live_trading._trade_plan_from_verdict", return_value=plan), \
-         patch("src.engine.live_trading.resolve_instrument", return_value={
-             "tradingsymbol": "BANKNIFTY26JUN58000CE",
-             "instrument_token": None,
-             "lot_size": None,
-         }), \
-         patch("src.engine.live_trading.place_kite_order") as mock_order:
+    with (
+        patch("src.engine.live_trading._is_market_open", return_value=True),
+        patch(
+            "src.engine.live_trading.load_runtime_config",
+            return_value=_runtime_config(shadow=False),
+        ),
+        patch("src.engine.live_trading.get_kite_client", return_value=fake_kite),
+        patch(
+            "src.engine.live_trading.get_broker_config",
+            return_value={"kill_switch_active": 0},
+        ),
+        patch(
+            "src.engine.live_trading.make_trade_decision",
+            return_value={
+                "status": "TRIGGERED_CORE",
+                "setup_type": "TREND_CONTINUATION",
+                "reason": "test",
+                "scores": {},
+            },
+        ),
+        patch("src.engine.live_trading._trade_plan_from_verdict", return_value=plan),
+        patch(
+            "src.engine.live_trading.resolve_instrument",
+            return_value={
+                "tradingsymbol": "BANKNIFTY26JUN58000CE",
+                "instrument_token": None,
+                "lot_size": None,
+            },
+        ),
+        patch("src.engine.live_trading.place_kite_order") as mock_order,
+    ):
         from src.engine.live_trading import run_live_trading
 
         result = run_live_trading(
@@ -233,8 +323,11 @@ def test_live_entry_blocks_fallback_symbol_before_broker_order():
     mock_order.assert_not_called()
 
     from src.models.schema import get_conn
+
     with get_conn() as conn:
-        row = conn.execute("SELECT status, broker_status, reason FROM live_trades").fetchone()
+        row = conn.execute(
+            "SELECT status, broker_status, reason FROM live_trades"
+        ).fetchone()
     assert row["status"] == "REJECTED"
     assert row["broker_status"] == "REJECTED"
     assert "fallback tradingsymbol" in row["reason"]
@@ -242,12 +335,22 @@ def test_live_entry_blocks_fallback_symbol_before_broker_order():
 
 def test_place_kite_order_pricing_rules():
     from src.engine.live_trading import place_kite_order
+
     fake_kite = MagicMock()
 
     # 1. Futures (transaction_type="BUY", tick_size=0.05, 0.2% buffer)
     # expected limit_price: ltp = 300.0, price = 300.0 * 1.002 = 300.60
     fake_kite.ltp.return_value = {"MCX:NATURALGAS26JUNFUT": {"last_price": 300.0}}
-    place_kite_order(fake_kite, "NATURALGAS", "MCX", "NATURALGAS26JUNFUT", "BUY", 1250, shadow_mode=False, tick_size=0.05)
+    place_kite_order(
+        fake_kite,
+        "NATURALGAS",
+        "MCX",
+        "NATURALGAS26JUNFUT",
+        "BUY",
+        1250,
+        shadow_mode=False,
+        tick_size=0.05,
+    )
     fake_kite.place_order.assert_called_with(
         variety=fake_kite.VARIETY_REGULAR,
         exchange="MCX",
@@ -256,7 +359,7 @@ def test_place_kite_order_pricing_rules():
         quantity=1250,
         product=fake_kite.PRODUCT_MIS,
         order_type=fake_kite.ORDER_TYPE_LIMIT,
-        price=300.60
+        price=300.60,
     )
 
     fake_kite.place_order.reset_mock()
@@ -264,7 +367,16 @@ def test_place_kite_order_pricing_rules():
     # 2. Options (transaction_type="BUY", tick_size=0.05, 5% buffer, check tick rounding)
     # expected limit_price: ltp = 496.91 * 1.05 = 521.7555, rounded to 0.05 multiple = 521.75
     fake_kite.ltp.return_value = {"NFO:BANKNIFTY26JUN58000CE": {"last_price": 496.91}}
-    place_kite_order(fake_kite, "BANKNIFTY", "NFO", "BANKNIFTY26JUN58000CE", "BUY", 30, shadow_mode=False, tick_size=0.05)
+    place_kite_order(
+        fake_kite,
+        "BANKNIFTY",
+        "NFO",
+        "BANKNIFTY26JUN58000CE",
+        "BUY",
+        30,
+        shadow_mode=False,
+        tick_size=0.05,
+    )
     fake_kite.place_order.assert_called_with(
         variety=fake_kite.VARIETY_REGULAR,
         exchange="NFO",
@@ -273,14 +385,15 @@ def test_place_kite_order_pricing_rules():
         quantity=30,
         product=fake_kite.PRODUCT_MIS,
         order_type=fake_kite.ORDER_TYPE_LIMIT,
-        price=521.75
+        price=521.75,
     )
 
 
 def test_llm_caching_and_cooldown():
-    from src.engine import llm_enrichment
-    from src.engine.llm_enrichment import get_llm_verdict, LLMTradeVerdict
     import os
+
+    from src.engine import llm_enrichment
+    from src.engine.llm_enrichment import LLMTradeVerdict, get_llm_verdict
 
     # Enable API client path in tests
     llm_enrichment.genai = MagicMock()
@@ -303,10 +416,13 @@ def test_llm_caching_and_cooldown():
         thesis="Short covering at support",
         invalidation="Below 24400 on 1H",
         risk_rating="LOW",
-        catalyst="EIA report Thursday"
+        catalyst="EIA report Thursday",
+        signal_chain="OI: Put Writing — CE Δ +2.3K vs PE Δ +186 → BULLISH\nPrice: +0.92% vs MP 24500 → upside momentum\nChart: 1H BULL + 3H BULL → entry timing aligned",
     )
 
-    with patch("src.engine.llm_enrichment._call_llm_api", return_value=dummy_verdict) as mock_api:
+    with patch(
+        "src.engine.llm_enrichment._call_llm_api", return_value=dummy_verdict
+    ) as mock_api:
         intel = {"verdict_label": "Long Buildup", "confidence": 80}
         scan_ctx = {"underlying": 24000.0}
 
@@ -329,36 +445,60 @@ def test_llm_caching_and_cooldown():
 
         # 4. Fourth call triggering a trade -> should bypass cache
         trade_decision = {"status": "TRIGGERED_CORE"}
-        v4 = get_llm_verdict("NIFTY", intel, scan_ctx_major, trade_decision=trade_decision)
+        v4 = get_llm_verdict(
+            "NIFTY", intel, scan_ctx_major, trade_decision=trade_decision
+        )
         assert v4 == dummy_verdict
         assert mock_api.call_count == 3
 
 
 def test_llm_alternative_fallbacks():
-    from src.engine import llm_enrichment
-    from src.engine.llm_enrichment import _call_llm_api, LLMTradeVerdict
     import os
+
+    from src.engine import llm_enrichment
+    from src.engine.llm_enrichment import LLMTradeVerdict, _call_llm_api
 
     # Mock requests.post
     mock_resp = MagicMock()
     mock_resp.status_code = 200
+    signal_chain_str = "OI: Call Writing -- CE +2.3K vs PE +186 -> BEARISH\nPrice: +0.92% vs MP 24000 -> downside\nChart: 1H BEAR + 3H BEAR -> timing aligned"
     mock_resp.json.return_value = {
-        "choices": [{
-            "message": {
-                "content": '{"action": "GO_SHORT", "confidence": 75, "instrument": "NIFTY 24000 PE 27Jun", "entry_trigger": "Underlying below 24000", "entry_premium_range": "180-195", "stop_loss": "Premium 140", "target_1": "Premium 230", "target_2": "Premium 280", "risk_reward": "1:1.8", "thesis": "Short", "invalidation": "Invalid", "risk_rating": "LOW", "catalyst": "None"}'
+        "choices": [
+            {
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "action": "GO_SHORT",
+                            "confidence": 75,
+                            "signal_chain": signal_chain_str,
+                            "instrument": "NIFTY 24000 PE 27Jun",
+                            "entry_trigger": "Underlying below 24000",
+                            "entry_premium_range": "180-195",
+                            "stop_loss": "Premium 140",
+                            "target_1": "Premium 230",
+                            "target_2": "Premium 280",
+                            "risk_reward": "1:1.8",
+                            "thesis": "Short",
+                            "invalidation": "Invalid",
+                            "risk_rating": "LOW",
+                            "catalyst": "None",
+                        }
+                    )
+                }
             }
-        }]
+        ]
     }
 
     # Enable alternative provider keys
     os.environ["GROQ_API_KEY"] = "fake-groq-key"
+    old_github_token = os.environ.pop("GITHUB_TOKEN", None)
     old_openrouter_key = os.environ.pop("OPENROUTER_API_KEY", None)
     old_opencode_key = os.environ.pop("OPENCODE_API_KEY", None)
     old_gemini_key = os.environ.pop("GEMINI_API_KEY", None)
 
     try:
         with patch("requests.Session.post", return_value=mock_resp) as mock_post:
-            # Call it with no Gemini/OpenRouter/OpenCode key -> should go straight to alternative (Groq)
+            # Call it with no GitHub/OpenRouter/OpenCode/Gemini key -> should go straight to Groq
             result = _call_llm_api("NIFTY", "dummy prompt", LLMTradeVerdict)
             assert result is not None
             assert result.action == "GO_SHORT"
@@ -366,12 +506,11 @@ def test_llm_alternative_fallbacks():
             assert mock_post.call_count >= 1
     finally:
         # Restore keys
+        if old_github_token:
+            os.environ["GITHUB_TOKEN"] = old_github_token
         if old_openrouter_key:
             os.environ["OPENROUTER_API_KEY"] = old_openrouter_key
         if old_opencode_key:
             os.environ["OPENCODE_API_KEY"] = old_opencode_key
         if old_gemini_key:
             os.environ["GEMINI_API_KEY"] = old_gemini_key
-
-
-

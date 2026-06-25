@@ -27,7 +27,7 @@ SG_CONFIG = {
 class ScrapeGraphFetcher(BaseFetcher):
     name = "scrapegraph"
 
-    def fetch_option_chain(self, symbol: str) -> dict | None:
+    def fetch_option_chain(self, symbol: str, expiry: str | None = None) -> dict | None:
         """
         Extract option chain from NSE option-chain page using ScrapeGraphAI.
         Returns normalised dict or None on failure.

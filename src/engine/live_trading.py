@@ -12,7 +12,7 @@ from src.models.schema import (
     get_broker_config,
     get_latest_snapshots_for_symbol,
 )
-from src.engine.symbol_resolver import resolve_instrument
+from src.engine.symbol_resolver import resolve_instrument, get_expiry_for_tradingsymbol
 from src.engine.capital_allocator import calculate_trade_lots
 from src.engine.paper_plan import (
     build_paper_trade_plan,
@@ -25,7 +25,7 @@ from src.engine.entry_quality import calculate_entry_quality
 from src.engine.trend_analysis import get_trend_alignment_score
 from src.engine.verdict_sets import is_bullish, is_bearish
 from config.settings import LOT_SIZES, MIN_ENTRY_QUALITY_CORE, REVERSAL_MIN_CONFIDENCE
-from config.symbol_classes import get_symbol_class, market_window
+from config.symbol_classes import get_symbol_class, get_kite_exchange, market_window
 from config.runtime_config import load_runtime_config
 
 # Phase 0: ML feature snapshot builder (shared with paper_trading)
@@ -45,10 +45,7 @@ def _is_market_open(symbol: str) -> bool:
     t = now.strftime("%H:%M")
     return open_t <= t <= close_t
 
-def _get_exchange(symbol: str) -> str:
-    if symbol.upper() in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"):
-        return "MCX"
-    return "NFO"
+_get_exchange = get_kite_exchange
 
 import threading
 
@@ -1567,7 +1564,7 @@ def sync_direct_kite_positions() -> None:
         log.warning("Cleared Kite client cache due to position sync failure.")
         return
 
-    monitored_bases = ["NIFTY", "BANKNIFTY", "NATURALGAS", "CRUDEOIL"]
+    monitored_bases = ["NIFTY", "BANKNIFTY", "SENSEX", "NATURALGAS", "CRUDEOIL"]
 
     from src.models.schema import get_conn, insert_live_trade
     from datetime import datetime, timezone
@@ -1706,7 +1703,7 @@ def sync_direct_kite_positions() -> None:
             trade_data = {
                 "opened_at": now_iso,
                 "symbol": base_sym,
-                "expiry": "", 
+                "expiry": get_expiry_for_tradingsymbol(ts) or "", 
                 "verdict_label": "DIRECT KITE",
                 "side": side,
                 "option_type": option_type,

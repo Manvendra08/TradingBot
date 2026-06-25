@@ -51,6 +51,16 @@ def market_window(symbol: str) -> tuple[str, str, list[int]]:
     return MARKET_WINDOWS.get(class_key, MARKET_WINDOWS[_DEFAULT_CLASS])
 
 
+def get_kite_exchange(symbol: str) -> str:
+    """Return Zerodha Kite exchange code for order/instrument resolution."""
+    base = _base_symbol(symbol)
+    if base in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"):
+        return "MCX"
+    if base == "SENSEX":
+        return "BFO"
+    return "NFO"
+
+
 # ---------------------------------------------------------------------------
 # Futures expiry calculation (separate from option chain expiry)
 # ---------------------------------------------------------------------------
@@ -189,9 +199,9 @@ def get_futures_expiry(symbol: str, ref_date: "date | None" = None) -> "str | No
         return expiry.strftime("%Y-%m-%d")
 
     elif class_key in ("NSE_INDEX", "BSE_INDEX"):
-        if base == "NIFTY":
-            # Weekly Tuesday (weekday 1)
-            days_ahead = (1 - ref_date.weekday() + 7) % 7
+        if base in ("NIFTY", "SENSEX"):
+            # Weekly Thursday (weekday 3)
+            days_ahead = (3 - ref_date.weekday() + 7) % 7
             raw = ref_date + timedelta(days=days_ahead)
             expiry = _prev_working_day(raw, nse_holidays)
             if expiry < ref_date:

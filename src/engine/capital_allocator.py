@@ -22,6 +22,15 @@ _SELL_MARGIN_PREMIUM_MULTIPLIER = 12.0
 _BROKER_MARGIN_API_TIMEOUT = 3.0
 
 
+def _base_symbol(symbol: str) -> str:
+    return str(symbol or "").upper().strip().split()[0]
+
+
+def _broker_mode_enabled(config: dict) -> bool:
+    """Broker mode is on when order placement is not fully blocked."""
+    return not bool(config.get("live_broker_disabled", False))
+
+
 def _fetch_broker_margin_requirement(
     symbol: str,
     tradingsymbol: str,
@@ -94,45 +103,25 @@ def _fetch_broker_margin_requirement(
     return None
 
 
-def calculate_trade_lots(symbol: str, entry_premium: float, side: str = "BUY", is_paper: bool = False) -> int:
-    """
-    Calculate the number of lots to trade for a symbol based on settings and premium.
+def _calculate_live_lots(symbol: str, entry_premium: float, side: str, config: dict) -> int:
+    """Live/broker lot sizing: per-symbol override or capital-based auto-calc."""
+    base = _base_symbol(symbol)
 
-    For paper trades (is_paper=True): returns config['paper_lots'] (default 10).
-    For live trades:
-      Priority order:
-        1. Symbol-specific override in runtime config (live_symbol_lots).
-        2. Auto-calculate from capital_per_trade / effective_cost_per_lot,
-           capped at max_auto_lots (default 10) to prevent blowup on cheap options.
-    """
-    config = load_runtime_config()
-
-    # Paper trades: fixed lots from config (default 10), no capital-based sizing
-    if is_paper:
-        paper_lots = int(config.get("paper_lots") or 10)
-        log.debug("%s: paper trade — using paper_lots=%d", symbol, paper_lots)
-        return max(1, paper_lots)
-
-    # 1. Explicit per-symbol override — user chose this deliberately, no cap applied.
     symbol_lots = config.get("live_symbol_lots") or {}
-    if symbol in symbol_lots:
-        lots = int(symbol_lots[symbol])
-        log.debug("%s: using symbol-specific lot override of %d lots", symbol, lots)
+    if base in symbol_lots:
+        lots = int(symbol_lots[base])
+        log.debug("%s: using symbol-specific lot override of %d lots", base, lots)
         return max(1, lots)
 
     capital_per_trade = float(config.get("live_capital_per_trade_inr") or 50000.0)
-    instrument_lot_size = LOT_SIZES.get(symbol.upper(), 1)
+    instrument_lot_size = LOT_SIZES.get(base, 1)
 
     if entry_premium <= 0:
-        log.warning("%s: entry_premium <= 0, defaulting to 1 lot", symbol)
+        log.warning("%s: entry_premium <= 0, defaulting to 1 lot", base)
         return 1
 
-    # 2. Auto-calculate with safety cap.
     max_auto_lots = int(config.get("live_max_auto_lots") or _DEFAULT_MAX_AUTO_LOTS)
 
-    # FIX #4: Margin-aware sizing for SELL legs.
-    # BUY : cost = premium * lot_size          (actual capital consumed)
-    # SELL: cost = premium * lot_size * mult   (estimated SPAN+exposure margin)
     if side.upper() == "SELL":
         effective_cost_per_lot = (
             entry_premium * instrument_lot_size * _SELL_MARGIN_PREMIUM_MULTIPLIER
@@ -140,7 +129,7 @@ def calculate_trade_lots(symbol: str, entry_premium: float, side: str = "BUY", i
         log.debug(
             "%s: SELL leg — margin-adjusted cost/lot: %.2f "
             "(premium=%.2f * lot_size=%d * margin_mult=%.1f)",
-            symbol, effective_cost_per_lot,
+            base, effective_cost_per_lot,
             entry_premium, instrument_lot_size, _SELL_MARGIN_PREMIUM_MULTIPLIER,
         )
     else:
@@ -153,13 +142,46 @@ def calculate_trade_lots(symbol: str, entry_premium: float, side: str = "BUY", i
         log.warning(
             "%s: auto-calc lots=%d exceeds cap=%d — clamped. "
             "Set live_max_auto_lots in runtime config to raise the ceiling intentionally.",
-            symbol, calculated, max_auto_lots,
+            base, calculated, max_auto_lots,
         )
 
     log.info(
         "%s: auto-calculated %d lots (capital: %g, premium: %g, lot_size: %d, "
         "side: %s, effective_cost/lot: %g, cap: %d)",
-        symbol, lots, capital_per_trade, entry_premium, instrument_lot_size,
+        base, lots, capital_per_trade, entry_premium, instrument_lot_size,
         side, effective_cost_per_lot, max_auto_lots,
     )
     return lots
+
+
+def calculate_trade_lots(symbol: str, entry_premium: float, side: str = "BUY", is_paper: bool = False) -> int:
+    """
+    Calculate the number of lots to trade for a symbol based on settings and premium.
+
+    Paper trades (is_paper=True):
+      - Broker mode ON (live_broker_disabled=False): mirror live_symbol_lots / live auto-calc.
+      - Broker mode OFF: paper_symbol_lots per symbol, else global paper_lots (default 10).
+
+    Live trades:
+      - live_symbol_lots override, else capital-based auto-calc.
+    """
+    config = load_runtime_config()
+    base = _base_symbol(symbol)
+
+    if is_paper:
+        if _broker_mode_enabled(config):
+            lots = _calculate_live_lots(base, entry_premium, side, config)
+            log.debug("%s: paper trade — broker mode on, using live lot sizing (%d lots)", base, lots)
+            return lots
+
+        paper_symbol_lots = config.get("paper_symbol_lots") or {}
+        if base in paper_symbol_lots:
+            lots = max(1, int(paper_symbol_lots[base]))
+            log.debug("%s: paper trade — using paper_symbol_lots=%d", base, lots)
+            return lots
+
+        paper_lots = int(config.get("paper_lots") or 10)
+        log.debug("%s: paper trade — using global paper_lots=%d", base, paper_lots)
+        return max(1, paper_lots)
+
+    return _calculate_live_lots(base, entry_premium, side, config)

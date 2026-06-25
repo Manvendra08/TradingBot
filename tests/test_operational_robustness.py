@@ -100,7 +100,7 @@ def test_dhan_resolver():
         res = get_dhan_security_id("NATURALGAS")
         assert res == 99999
         # Check cache
-        assert _CACHE["NATURALGAS"] == 99999
+        assert _CACHE[("NATURALGAS", None, None)] == 99999
 
 
 def test_pnl_fallback_time_value():
@@ -114,10 +114,10 @@ def test_pnl_fallback_time_value():
         # Insert trade
         conn.execute(
             """
-            INSERT INTO paper_trades (opened_at, symbol, verdict_label, side, option_type, strike, entry_underlying, entry_premium, lots, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO paper_trades (opened_at, symbol, expiry, verdict_label, side, option_type, strike, entry_underlying, entry_premium, lots, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            ("2026-06-10T10:00:00", "NATURALGAS", "LONG", "BUY", "CE", 150.0, 150.0, 10.0, 1, "OPEN")
+            ("2026-06-10T10:00:00", "NATURALGAS", "2026-06-25", "LONG", "BUY", "CE", 150.0, 150.0, 10.0, 1, "OPEN")
         )
         trade_id = conn.execute("SELECT id FROM paper_trades WHERE symbol='NATURALGAS'").fetchone()["id"]
         

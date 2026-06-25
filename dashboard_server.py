@@ -3048,6 +3048,181 @@ async def zerodha_postback(request: Request):
     return {"status": "processed"}
 
 
+# ── Phase 1: AI Intelligence API Endpoints ───────────────────────────────
+# AI_INTELLIGENCE_ROADMAP_v3.0 — Trade History Analyzer integration
+
+@app.get("/api/ai/patterns")
+async def get_ai_patterns():
+    """
+    Get discovered trading patterns.
+
+    Uses module-level singleton + 5-min in-memory cache.
+    Cache invalidates on trade close or after 5 minutes.
+    """
+    try:
+        from src.intelligence.history_analyzer import get_analyzer
+        analyzer = get_analyzer()
+        patterns = analyzer.get_cached_patterns()
+        return [{
+            "name": p.pattern_name,
+            "win_rate": p.win_rate,
+            "avg_pnl": p.avg_pnl,
+            "sample_size": p.sample_size,
+            "recommendation": p.recommendation,
+            "best_time": p.best_time,
+        } for p in patterns[:10]]
+    except Exception as e:
+        log.exception("Failed to get AI patterns")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/ai/trade-dna/{symbol}")
+async def get_trade_dna(symbol: str, verdict: str = None, confidence: int = 0):
+    """
+    Get historical match for a potential trade.
+
+    Query params:
+      verdict: verdict label (e.g. 'Long Buildup')
+      confidence: confidence score (0-100)
+    """
+    try:
+        from src.intelligence.history_analyzer import get_analyzer, IST_OFFSET
+        analyzer = get_analyzer()
+        context = {
+            "symbol": symbol.upper(),
+            "verdict_label": verdict,
+            "confidence": confidence,
+            "ist_hour": (datetime.now(timezone.utc) + IST_OFFSET).hour,
+        }
+        return analyzer.get_trade_dna_match(context)
+    except Exception as e:
+        log.exception("Failed to get Trade DNA for %s", symbol)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ── Phase 2: ML Prediction API Endpoint ────────────────────────────────────
+# AI_INTELLIGENCE_ROADMAP_v3.0 — ML Success Predictor integration
+#
+# v3.0 FIX: Hydrates the FULL feature context from the latest scan snapshot.
+# Previously this passed only symbol/verdict/confidence, so the model scored
+# a near-empty vector (every OI/distance/RSI/regime feature = 0) and returned
+# a DIFFERENT probability than the pipeline, which passes full context. Same
+# trade, two answers. Now both call sites feed identical features.
+
+# ── Phase 3: Edge Health API Endpoints ──────────────────────────────────────
+# AI_INTELLIGENCE_ROADMAP_v3.0 — Edge Decay Monitor integration
+
+@app.get("/api/ai/edge-health")
+async def get_edge_health():
+    """
+    Get edge health for all strategies.
+
+    Returns:
+      JSON list of EdgeHealth objects with strategy_name, current_win_rate,
+      historical_win_rate, win_rate_trend, pnl_trend, health_score, recommendation.
+    """
+    try:
+        from src.intelligence.edge_monitor import get_monitor
+        monitor = get_monitor()
+        health_reports = monitor.get_all_strategies_health()
+        return [h.to_dict() for h in health_reports]
+    except Exception as e:
+        log.exception("Failed to get edge health")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/ai/edge-health/{symbol}")
+async def get_edge_health_symbol(symbol: str, verdict: str | None = None):
+    """
+    Get edge health for a specific symbol or symbol+verdict combination.
+
+    Query params:
+      verdict: Optional verdict filter (e.g. 'Long Buildup')
+    """
+    try:
+        from src.intelligence.edge_monitor import get_monitor
+        monitor = get_monitor()
+        strategy_filter = {"symbol": symbol.upper()}
+        if verdict:
+            strategy_filter["verdict_label"] = verdict
+        health_reports = monitor.check_edge_health(strategy_filter)
+        return [h.to_dict() for h in health_reports]
+    except Exception as e:
+        log.exception("Failed to get edge health for %s", symbol)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ── Phase 2: ML prediction API Endpoint ─────────────────────────────────────
+# AI_INTELLIGENCE_ROADMAP_v3.0 — ML Success Predictor integration
+
+@app.get("/api/ai/ml-prediction/{symbol}")
+async def get_ml_prediction(symbol: str, verdict: str = None, confidence: int = 0):
+    """
+    Get ML prediction for a potential trade.
+
+    Query params:
+      verdict: verdict label (e.g. 'Long Buildup', 'Short Buildup')
+      confidence: confidence score (0-100)
+
+    Returns:
+      JSON with success_probability, confidence_level, top_factors,
+      model_version, training_samples.
+    """
+    try:
+        from src.intelligence.ml_predictor import get_predictor
+        from src.engine.scan_cache import get_latest_scan_snapshot
+    except ImportError as e:
+        return JSONResponse(
+            {"available": False, "message": f"ML dependencies not available: {e}"},
+            status_code=503,
+        )
+
+    if not verdict:
+        return JSONResponse(
+            {"available": False, "error": "Missing verdict parameter"},
+            status_code=400,
+        )
+
+    predictor = get_predictor()  # v2.2: Use singleton
+    if predictor.model is None:
+        msg = (
+            "Model discarded — retrain required (feature-set drift)"
+            if getattr(predictor, "_needs_retrain", False)
+            else "Model not trained yet (needs 30+ trades with feature data)"
+        )
+        return {"available": False, "message": msg}
+
+    # v3.0: Pull the most recent scan context for this symbol and merge the
+    # user-supplied verdict/confidence on top. Missing snapshot -> explicit
+    # low-confidence response rather than a silent zero-vector prediction.
+    snap = get_latest_scan_snapshot(symbol) or {}
+    ctx = {
+        **snap,
+        "symbol": symbol.upper(),
+        "verdict_label": verdict,
+        "confidence": int(confidence),
+    }
+
+    try:
+        prediction = predictor.predict(ctx)
+    except Exception as e:
+        log.warning("ML prediction failed for %s: %s", symbol, e)
+        return {"available": False, "message": f"Prediction error: {e}"}
+
+    if prediction is None:
+        return {"available": False, "message": "Prediction returned None"}
+
+    return {
+        "available": True,
+        "context_complete": bool(snap),  # v3.0: tells UI if features were full
+        "success_probability": prediction.success_probability,
+        "confidence_level": prediction.confidence_level,
+        "top_factors": prediction.top_factors,
+        "model_version": prediction.model_version,
+        "training_samples": prediction.training_samples,
+    }
+
+
 # ── Serve Static Assets ────────────────────────────────────────────────────
 
 @app.get("/static/theme.css")
@@ -3075,6 +3250,29 @@ def get_kite_logo():
     if logo_path.exists():
         return FileResponse(logo_path, media_type="image/png")
     from fastapi import Response
+    return Response(status_code=404)
+
+
+# ── Phase 4: AI Insights Static Assets ──────────────────────────────────────
+# AI_INTELLIGENCE_ROADMAP_v3.0 — AI Dashboard UI assets
+
+@app.get("/static/ai_insights.css")
+def get_ai_insights_css():
+    """Serve AI Insights CSS (Phase 4)."""
+    from fastapi import Response
+    css_path = ROOT / "src" / "dashboard" / "ai_insights.css"
+    if css_path.exists():
+        return Response(content=css_path.read_text(encoding="utf-8"), media_type="text/css")
+    return Response(status_code=404)
+
+
+@app.get("/static/ai_insights.js")
+def get_ai_insights_js():
+    """Serve AI Insights JavaScript module (Phase 4)."""
+    from fastapi import Response
+    js_path = ROOT / "src" / "dashboard" / "ai_insights.js"
+    if js_path.exists():
+        return Response(content=js_path.read_text(encoding="utf-8"), media_type="application/javascript")
     return Response(status_code=404)
 
 

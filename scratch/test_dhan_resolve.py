@@ -13,21 +13,15 @@ try:
     with urllib.request.urlopen(req, timeout=10) as res:
         html = res.read().decode("utf-8")
     
-    print("HTML length:", len(html))
     match_next = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
     if match_next:
-        print("__NEXT_DATA__ match found!")
         data = json.loads(match_next.group(1))
         props = data.get("props", {}).get("pageProps", {})
-        scrip_info = props.get("scripData", {}) or props.get("optionChainData", {}).get("scripData", {})
-        print("scripData:", scrip_info)
+        fnoData = props.get("fnoData", {})
+        # Remove flst as it's large
+        fno_clean = {k: v for k, v in fnoData.items() if k != "flst"}
+        print("fnoData details:")
+        print(json.dumps(fno_clean, indent=2))
         
-    match_sid = re.search(r'"scripId"\s*:\s*(\d+)', html)
-    if match_sid:
-        print("Regex match scripId:", match_sid.group(1))
-        
-    sids = re.findall(r'"scripId"\s*:\s*(\d+)', html)
-    print("All scripId matches:", sids)
-
 except Exception as e:
     print("Error:", e)

@@ -42,7 +42,7 @@ def fetch_and_cache_instruments(
     retry_backoff_sec: float = 0.5,
 ) -> None:
     """
-    Fetch and cache all instruments for NFO and MCX.
+    Fetch and cache all instruments for NFO, BFO, and MCX.
     Must be failure-tolerant: on SSL/network issues, do not raise and do not poison the cache.
     """
     global _INSTRUMENT_CACHE, _TSYM_EXPIRY_CACHE, _INSTRUMENT_CACHE_TS
@@ -76,6 +76,7 @@ def fetch_and_cache_instruments(
                     req_sess.headers["Connection"] = "close"
                 try:
                     nfo = kite_client.instruments("NFO")
+                    bfo = kite_client.instruments("BFO")
                     mcx = kite_client.instruments("MCX")
                 finally:
                     if req_sess:
@@ -84,7 +85,7 @@ def fetch_and_cache_instruments(
                         else:
                             req_sess.headers.pop("Connection", None)
 
-                for inst in nfo + mcx:
+                for inst in nfo + bfo + mcx:
                     name = inst.get("name")
                     if not name:
                         continue
@@ -198,6 +199,14 @@ def get_expiry_for_tradingsymbol(tsym: str) -> str | None:
         mm = months.get(mon)
         if mm:
             year = 2000 + int(yy)
+            name = m_fut.group(1).upper()
+            if name in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"):
+                from config.symbol_classes import get_futures_expiry
+                from datetime import date
+                fut_exp = get_futures_expiry(name, ref_date=date(year, int(mm), 1))
+                if fut_exp:
+                    return fut_exp
+            
             month = int(mm)
             month_days = calendar.monthcalendar(year, month)
             thursdays = []
@@ -297,7 +306,7 @@ def resolve_instrument(symbol: str, expiry: str, strike: float, option_type: str
 
 def generate_fallback_tradingsymbol(symbol: str, expiry_str: str, strike: float, option_type: str) -> str:
     """
-    Generate offline fallback tradingsymbol based on standard NFO and MCX naming rules.
+    Generate offline fallback tradingsymbol based on standard NFO/BFO and MCX naming rules.
     expiry_str: YYYY-MM-DD
     """
     symbol = symbol.upper()

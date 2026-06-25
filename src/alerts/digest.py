@@ -1,4 +1,5 @@
 """Telegram scan digest builder."""
+
 from __future__ import annotations
 
 import json
@@ -17,12 +18,12 @@ USE_ENHANCED_TEMPLATE = True  # Toggle between old and new template
 _LEGACY_DIGEST = False
 
 
-EMOJI_GREEN = "\U0001F7E2"
-EMOJI_RED = "\U0001F534"
-EMOJI_YELLOW = "\U0001F7E1"
-EMOJI_BLUE = "\U0001F535"
-EMOJI_WHITE = "\u26AA"
-EMOJI_CANDLES = "\U0001F56F\ufe0f"
+EMOJI_GREEN = "\U0001f7e2"
+EMOJI_RED = "\U0001f534"
+EMOJI_YELLOW = "\U0001f7e1"
+EMOJI_BLUE = "\U0001f535"
+EMOJI_WHITE = "\u26aa"
+EMOJI_CANDLES = "\U0001f56f\ufe0f"
 _FUTURE_SYMBOLS = {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"}
 
 _SEV_ORDER = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
@@ -33,8 +34,8 @@ _VERDICT_STYLE = {
     "OI Bias Bullish": (EMOJI_YELLOW, "BULLISH BIAS"),
     "Short Buildup": (EMOJI_RED, "BEARISH"),
     "Call Writing": (EMOJI_RED, "BEARISH"),
-    "Long Unwinding": ("\U0001F7E0", "BEARISH, but late"),
-    "OI Bias Bearish": ("\U0001F7E0", "BEARISH BIAS"),
+    "Long Unwinding": ("\U0001f7e0", "BEARISH, but late"),
+    "OI Bias Bearish": ("\U0001f7e0", "BEARISH BIAS"),
     "Sideways": (EMOJI_WHITE, "SIDEWAYS"),
 }
 
@@ -44,7 +45,7 @@ def _esc(text: any) -> str:
     if text is None:
         return ""
     s = str(text)
-    for char in ('\\', '_', '*', '`', '['):
+    for char in ("\\", "_", "*", "`", "["):
         s = s.replace(char, f"\\{char}")
     return s
 
@@ -166,13 +167,22 @@ def _price_label(symbol: str) -> str:
     return "Future" if base in _FUTURE_SYMBOLS else "Spot"
 
 
-
 def _is_bullish_verdict(verdict: str) -> bool:
-    return verdict in {"Long Buildup", "Put Writing", "OI Bias Bullish", "Short Covering"}
+    return verdict in {
+        "Long Buildup",
+        "Put Writing",
+        "OI Bias Bullish",
+        "Short Covering",
+    }
 
 
 def _is_bearish_verdict(verdict: str) -> bool:
-    return verdict in {"Short Buildup", "Call Writing", "OI Bias Bearish", "Long Unwinding"}
+    return verdict in {
+        "Short Buildup",
+        "Call Writing",
+        "OI Bias Bearish",
+        "Long Unwinding",
+    }
 
 
 def _chart_payload_for_symbol(scan_context: dict, symbol: str) -> dict:
@@ -191,7 +201,11 @@ def _chart_payload_for_symbol(scan_context: dict, symbol: str) -> dict:
 
 def _candle_line(tf: str, tf_data: dict) -> str:
     sentiment = str((tf_data or {}).get("sentiment") or "NEUTRAL").upper()
-    marker = EMOJI_GREEN if sentiment == "BULLISH" else (EMOJI_RED if sentiment == "BEARISH" else EMOJI_WHITE)
+    marker = (
+        EMOJI_GREEN
+        if sentiment == "BULLISH"
+        else (EMOJI_RED if sentiment == "BEARISH" else EMOJI_WHITE)
+    )
     start_label = ""
     raw_start = (tf_data or {}).get("bar_start_utc")
     raw_end = (tf_data or {}).get("bar_end_utc")
@@ -277,19 +291,28 @@ def _parse_intelligence(raw) -> dict:
     # ── Phase 3: structured fast-path ─────────────────────────────────────
     try:
         from src.engine.intelligence import IntelligenceResult
+
         if isinstance(raw, IntelligenceResult):
             return {
-                "verdict":    raw.verdict_label,
-                "desc":       raw.verdict_desc,
+                "verdict": raw.verdict_label,
+                "desc": raw.verdict_desc,
                 "confidence": raw.confidence,
-                "action":     raw.action_plan,
-                "paper":      "",   # paper trade line not needed in digest header
-                "warning":    raw.risk_note,
-                "oi_note":    "",
-                "bull":       [f"P{1 if s>=90 else 2 if s>=70 else 3} [{s}] {t}" for s, t in (raw.bull_forces or [])],
-                "bear":       [f"P{1 if s>=90 else 2 if s>=70 else 3} [{s}] {t}" for s, t in (raw.bear_forces or [])],
-                "trend":      raw.trend,
-                "conflict":   "Chart conflict: 1H vs 3H signals disagree" if raw.chart_conflict else "",
+                "action": raw.action_plan,
+                "paper": "",  # paper trade line not needed in digest header
+                "warning": raw.risk_note,
+                "oi_note": "",
+                "bull": [
+                    f"P{1 if s >= 90 else 2 if s >= 70 else 3} [{s}] {t}"
+                    for s, t in (raw.bull_forces or [])
+                ],
+                "bear": [
+                    f"P{1 if s >= 90 else 2 if s >= 70 else 3} [{s}] {t}"
+                    for s, t in (raw.bear_forces or [])
+                ],
+                "trend": raw.trend,
+                "conflict": "Chart conflict: 1H vs 3H signals disagree"
+                if raw.chart_conflict
+                else "",
             }
     except ImportError:
         pass
@@ -449,7 +472,9 @@ def _format_trade_status(status: dict | None, is_live: bool = False) -> str:
         if opt == "FUT":
             details = f"{side} FUT trade closed | P&L: {pnl_sign}₹{pnl:,.2f}"
         else:
-            details = f"{side} {strike_str} {opt} trade closed | P&L: {pnl_sign}₹{pnl:,.2f}"
+            details = (
+                f"{side} {strike_str} {opt} trade closed | P&L: {pnl_sign}₹{pnl:,.2f}"
+            )
         return (
             f"• *Status:* CLOSED\n"
             f"• *Details:* {_esc(details)}\n"
@@ -469,16 +494,14 @@ def _format_trade_status(status: dict | None, is_live: bool = False) -> str:
             details = f"{side} FUT position open since {opened_at_str}"
         else:
             details = f"{side} {strike_str} {opt} open since {opened_at_str}"
-        return (
-            f"• *Status:* HELD ({_esc(details)})\n"
-            f"• *Action:* Monitoring exits"
-        )
+        return f"• *Status:* HELD ({_esc(details)})\n• *Action:* Monitoring exits"
     elif action and action.startswith("BLOCKED"):
         return f"• *Status:* BLOCKED | *Reason:* {_esc(status.get('reason', 'Filters not met'))}"
     elif action == "SKIPPED_MARKET_CLOSED":
         return f"• *Status:* SKIPPED | *Reason:* Market is currently closed"
     else:
         return f"• *Status:* NO TRADE | *Reason:* {_esc(status.get('reason', 'No directional setup'))}"
+
 
 def _format_paper_trade_status(status: dict | None) -> str:
     return _format_trade_status(status, is_live=False)
@@ -499,12 +522,21 @@ def build_digest(
     exit_advice: any = None,
 ) -> tuple[str, str]:
     if not _LEGACY_DIGEST:
-        log.warning("Legacy build_digest called but disabled. Redirecting to build_llm_consolidated_digest.")
+        log.warning(
+            "Legacy build_digest called but disabled. Redirecting to build_llm_consolidated_digest."
+        )
         return build_llm_consolidated_digest(
-            symbol, alerts, fetched_at, scan_context,
-            detected_count, dedup_suppressed_count, digest_id,
-            paper_trade_status, live_trade_status, llm_verdict,
-            exit_advice=exit_advice
+            symbol,
+            alerts,
+            fetched_at,
+            scan_context,
+            detected_count,
+            dedup_suppressed_count,
+            digest_id,
+            paper_trade_status,
+            live_trade_status,
+            llm_verdict,
+            exit_advice=exit_advice,
         )
     if digest_id is None:
         digest_id = str(uuid.uuid4())[:8]
@@ -517,14 +549,27 @@ def build_digest(
     ctx = scan_context or {}
     _base_sym0 = symbol.upper().strip().split()[0]
     _is_mcx0 = _base_sym0 in {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"}
-    expiry_val = ctx.get("futures_expiry") if (_is_mcx0 and ctx.get("futures_expiry")) else ctx.get("expiry")
+    expiry_val = (
+        ctx.get("futures_expiry")
+        if (_is_mcx0 and ctx.get("futures_expiry"))
+        else ctx.get("expiry")
+    )
     exp_fmt, dte_lbl = _format_expiry_and_dte(expiry_val)
-    header_extra = f" (Exp: {exp_fmt} | {dte_lbl})" if exp_fmt and dte_lbl else (f" (Exp: {exp_fmt})" if exp_fmt else "")
+    header_extra = (
+        f" (Exp: {exp_fmt} | {dte_lbl})"
+        if exp_fmt and dte_lbl
+        else (f" (Exp: {exp_fmt})" if exp_fmt else "")
+    )
 
     diag = ctx.get("diagnostics", {}) if isinstance(ctx, dict) else {}
     n = len(alerts)
     px_label = _price_label(symbol)
- 
+    mp_val = _fmt_val(ctx.get("max_pain"), symbol)
+    mp_chg = ctx.get("max_pain_change")
+    mp_chg_str = f" ({mp_chg:+.0f})" if mp_chg is not None else ""
+    total_ce = _fmt_oi(ctx.get("total_ce_oi", 0))
+    total_pe = _fmt_oi(ctx.get("total_pe_oi", 0))
+
     if not alerts:
         max_oi = float(diag.get("max_oi_delta_pct") or 0)
         max_ltp = float(diag.get("max_atm_ltp_delta_pct") or 0)
@@ -535,19 +580,53 @@ def build_digest(
         if total_detected > 0 and deduped >= total_detected:
             title = "No NEW signals"
             quiet_note = f"Detected `{total_detected}` but dedup suppressed repeats."
-            
+
         ai_part = ""
         if llm_verdict:
-            action = llm_verdict.get("action") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "action", "")
-            conf = llm_verdict.get("confidence") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "confidence", 0)
-            instrument = llm_verdict.get("instrument") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "instrument", "")
-            entry_trigger = llm_verdict.get("entry_trigger") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "entry_trigger", "")
-            stop_loss = llm_verdict.get("stop_loss") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "stop_loss", "")
-            target_1 = llm_verdict.get("target_1") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "target_1", "")
-            thesis = llm_verdict.get("thesis") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "thesis", "")
-            risk = llm_verdict.get("risk_rating") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "risk_rating", "")
-            
-            action_emoji = {"GO_LONG": "🟢", "GO_SHORT": "🔴", "NO_TRADE": "⚪"}.get(action, "❓")
+            action = (
+                llm_verdict.get("action")
+                if isinstance(llm_verdict, dict)
+                else getattr(llm_verdict, "action", "")
+            )
+            conf = (
+                llm_verdict.get("confidence")
+                if isinstance(llm_verdict, dict)
+                else getattr(llm_verdict, "confidence", 0)
+            )
+            instrument = (
+                llm_verdict.get("instrument")
+                if isinstance(llm_verdict, dict)
+                else getattr(llm_verdict, "instrument", "")
+            )
+            entry_trigger = (
+                llm_verdict.get("entry_trigger")
+                if isinstance(llm_verdict, dict)
+                else getattr(llm_verdict, "entry_trigger", "")
+            )
+            stop_loss = (
+                llm_verdict.get("stop_loss")
+                if isinstance(llm_verdict, dict)
+                else getattr(llm_verdict, "stop_loss", "")
+            )
+            target_1 = (
+                llm_verdict.get("target_1")
+                if isinstance(llm_verdict, dict)
+                else getattr(llm_verdict, "target_1", "")
+            )
+            thesis = (
+                llm_verdict.get("thesis")
+                if isinstance(llm_verdict, dict)
+                else getattr(llm_verdict, "thesis", "")
+            )
+            risk = (
+                llm_verdict.get("risk_rating")
+                if isinstance(llm_verdict, dict)
+                else getattr(llm_verdict, "risk_rating", "")
+            )
+
+            action_emoji = {"GO_LONG": "🟢", "GO_SHORT": "🔴", "NO_TRADE": "⚪"}.get(
+                action, "❓"
+            )
             ai_part = (
                 f"\n{action_emoji} *AI Trade Plan* ({action}, {conf}%)\n"
                 f"📋 Contract: {_esc(instrument)}\n"
@@ -557,48 +636,64 @@ def build_digest(
                 f"⚠️ Risk: {_esc(risk)}\n"
             )
 
-        msg = "\n".join([
-            f"\U0001F4CA *{symbol}*{header_extra} | {ts} | {title}",
-            f"{'━' * 20}",
-            f"{px_label} `{_fmt_num(ctx.get('underlying'))}` | PCR `{_fmt_num(ctx.get('pcr'), 2)}`",
-            f"{EMOJI_WHITE} *Market quiet*",
-            quiet_note,
-            ai_part,
-            f"OI max `{max_oi:.2f}%` | ATM LTP max `{max_ltp:.2f}%`",
-            f"_#{digest_id} · all symbols enabled_",
-            f"{'━' * 20}",
-        ])
+        msg = "\n".join(
+            [
+                f"\U0001f4ca *{symbol}*{header_extra} | {ts} | {title}",
+                f"{'━' * 20}",
+                f"{px_label} `{_fmt_num(ctx.get('underlying'))}` | MP `{mp_val}{mp_chg_str}` | PCR `{_fmt_num(ctx.get('pcr'), 2)}` | OI CE `{total_ce}` PE `{total_pe}`",
+                f"{EMOJI_WHITE} *Market quiet*",
+                quiet_note,
+                ai_part,
+                f"OI max `{max_oi:.2f}%` | ATM LTP max `{max_ltp:.2f}%`",
+                f"_#{digest_id} · all symbols enabled_",
+                f"{'━' * 20}",
+            ]
+        )
         return digest_id, _fit_telegram(msg, digest_id)
- 
-    sorted_alerts = sorted(alerts, key=lambda a: _SEV_ORDER.get(a.get("severity", "LOW"), 2))
+
+    sorted_alerts = sorted(
+        alerts, key=lambda a: _SEV_ORDER.get(a.get("severity", "LOW"), 2)
+    )
     high = sum(a.get("severity") == "HIGH" for a in alerts)
     med = sum(a.get("severity") == "MEDIUM" for a in alerts)
     low = sum(a.get("severity") == "LOW" for a in alerts)
- 
-    intel_raw = intelligence_text if intelligence_text is not None else generate_intelligence(symbol, alerts, scan_context=scan_context)
+
+    intel_raw = (
+        intelligence_text
+        if intelligence_text is not None
+        else generate_intelligence(symbol, alerts, scan_context=scan_context)
+    )
     intel = _parse_intelligence(intel_raw)
     emoji, label = _VERDICT_STYLE.get(intel["verdict"], (EMOJI_WHITE, "NEUTRAL"))
     confidence = int(intel["confidence"] or 0)
     action = intel["action"] or _default_action(label, confidence)
-    warning = intel["warning"] or ("Chart/OI mismatch. Wait." if intel["conflict"] else "Use trigger candle + stop loss.")
- 
-    counts = " ".join(x for x in [
-        f"{EMOJI_RED} {high} high" if high else "",
-        f"{EMOJI_YELLOW} {med} med" if med else "",
-        f"{EMOJI_BLUE} {low} low" if low else "",
-    ] if x)
- 
+    warning = intel["warning"] or (
+        "Chart/OI mismatch. Wait."
+        if intel["conflict"]
+        else "Use trigger candle + stop loss."
+    )
+
+    counts = " ".join(
+        x
+        for x in [
+            f"{EMOJI_RED} {high} high" if high else "",
+            f"{EMOJI_YELLOW} {med} med" if med else "",
+            f"{EMOJI_BLUE} {low} low" if low else "",
+        ]
+        if x
+    )
+
     lines = [
-        f"\U0001F4CA *{symbol}*{header_extra} | {ts} | {n} signals",
+        f"\U0001f4ca *{symbol}*{header_extra} | {ts} | {n} signals",
         f"{'━' * 20}",
         counts or "No severity count",
-        f"{px_label} `{_fmt_num(ctx.get('underlying'))}` | ATM `{_fmt_num(ctx.get('atm_strike'))}` | PCR `{_fmt_num(ctx.get('pcr'), 2)}`",
+        f"{px_label} `{_fmt_num(ctx.get('underlying'))}` | ATM `{_fmt_num(ctx.get('atm_strike'))}` | MP `{mp_val}{mp_chg_str}` | PCR `{_fmt_num(ctx.get('pcr'), 2)}` | OI CE `{total_ce}` PE `{total_pe}`",
         f"{emoji} *{_esc(label)}* - {_esc(_clip(intel['verdict'], 45))}",
     ]
     # Get price change values - preserve None to detect missing data
     price_change_pct = ctx.get("price_change_pct")
     price_change_points = ctx.get("price_change_points")
-    
+
     try:
         d_spot = float(price_change_pct) if price_change_pct is not None else 0.0
     except Exception:
@@ -607,26 +702,28 @@ def build_digest(
         d_points = float(price_change_points or 0.0)
     except Exception:
         d_points = 0.0
-    
+
     pct_digits = 3 if abs(d_spot) < 0.01 and d_spot != 0 else 2
-    
+
     # If price_change_pct is None (no previous data), show "no prev data" instead of "flat"
     if price_change_pct is None:
         spot_delta = "no prev data"
     elif abs(d_points) < 0.05 and abs(d_spot) < 0.005:
         spot_delta = "flat"
     else:
-        spot_delta = f"{_fmt_signed(d_points, 1)} (`{_fmt_signed(d_spot, pct_digits)}%`)"
+        spot_delta = (
+            f"{_fmt_signed(d_points, 1)} (`{_fmt_signed(d_spot, pct_digits)}%`)"
+        )
     lines.append(
         f"Δ prev scan: {px_label} `{spot_delta}` | CE OI `{_fmt_oi(ctx.get('ce_oi_change', 0))}` | PE OI `{_fmt_oi(ctx.get('pe_oi_change', 0))}`"
     )
     if intel["desc"]:
         lines.append(_esc(_clip(intel["desc"], 100)))
     lines.append(f"Confidence: `{_bar(confidence)}`")
- 
+
     lines += [
         "",
-        "\U0001F3AF *What to do*",
+        "\U0001f3af *What to do*",
         f"• {_esc(_clip(action, 150))}",
         f"• {_esc(_clip(warning, 130))}",
     ]
@@ -641,7 +738,7 @@ def build_digest(
     if ctx.get("max_pain") is not None:
         levels.append(f"MP `{_fmt_num(ctx.get('max_pain'))}`")
     if levels:
-        lines += ["", "\U0001F4CD *Key levels*", " | ".join(levels)]
+        lines += ["", "\U0001f4cd *Key levels*", " | ".join(levels)]
 
     chart_payload = _chart_payload_for_symbol(ctx, symbol)
     candle_lines = []
@@ -659,16 +756,18 @@ def build_digest(
     if ce_oi or pe_oi:
         lines += [
             "",
-            "\U0001F9EE *OI pulse*",
+            "\U0001f9ee *OI pulse*",
             f"CE `{_fmt_oi(ce_oi)}` {_delta_color(ce_chg)} | PE `{_fmt_oi(pe_oi)}` {_delta_color(pe_chg)}",
         ]
         if intel["oi_note"]:
             lines.append(_esc(_clip(intel["oi_note"], 120)))
 
     cap = 8 if high >= 5 else 10
-    lines += ["", "\U0001F4E1 *Top signals*"]
+    lines += ["", "\U0001f4e1 *Top signals*"]
     for alert in sorted_alerts[:cap]:
-        badge = {"HIGH": EMOJI_RED, "MEDIUM": EMOJI_YELLOW, "LOW": EMOJI_BLUE}.get(alert.get("severity", "LOW"), EMOJI_BLUE)
+        badge = {"HIGH": EMOJI_RED, "MEDIUM": EMOJI_YELLOW, "LOW": EMOJI_BLUE}.get(
+            alert.get("severity", "LOW"), EMOJI_BLUE
+        )
         lines.append(f"{badge} {_esc(_clip(_signal_line(alert), 130))}")
     hidden = len(sorted_alerts) - cap
     if hidden > 0:
@@ -678,26 +777,75 @@ def build_digest(
     bear = _clip(intel["bear"][0], 110) if intel["bear"] else "No strong bearish factor"
     lines += ["", "\u2696\ufe0f *Balance*"]
     if _is_bullish_verdict(intel["verdict"]):
-        lines += [f"{EMOJI_GREEN} Primary: {_esc(bull)}", f"{EMOJI_YELLOW} Caution: {_esc(bear)}"]
+        lines += [
+            f"{EMOJI_GREEN} Primary: {_esc(bull)}",
+            f"{EMOJI_YELLOW} Caution: {_esc(bear)}",
+        ]
     elif _is_bearish_verdict(intel["verdict"]):
-        lines += [f"{EMOJI_RED} Primary: {_esc(bear)}", f"{EMOJI_YELLOW} Caution: {_esc(bull)}"]
+        lines += [
+            f"{EMOJI_RED} Primary: {_esc(bear)}",
+            f"{EMOJI_YELLOW} Caution: {_esc(bull)}",
+        ]
     else:
         lines += [f"{EMOJI_GREEN} {_esc(bull)}", f"{EMOJI_RED} {_esc(bear)}"]
- 
-    lines += ["", f"\U0001F30A *Trend:* {_esc(_trend_text(intel['trend'], intel['verdict']))}"]
+
+    lines += [
+        "",
+        f"\U0001f30a *Trend:* {_esc(_trend_text(intel['trend'], intel['verdict']))}",
+    ]
     if llm_verdict:
         # Support both new (action-oriented) and old (bias-oriented) schemas
-        action = llm_verdict.get("action") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "action", "")
-        conf = llm_verdict.get("confidence") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "confidence", 0)
-        instrument = llm_verdict.get("instrument") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "instrument", "")
-        entry_trigger = llm_verdict.get("entry_trigger") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "entry_trigger", "")
-        stop_loss = llm_verdict.get("stop_loss") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "stop_loss", "")
-        target_1 = llm_verdict.get("target_1") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "target_1", "")
-        thesis = llm_verdict.get("thesis") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "thesis", "")
-        risk = llm_verdict.get("risk_rating") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "risk_rating", "")
-        invalidation = llm_verdict.get("invalidation") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "invalidation", "")
+        action = (
+            llm_verdict.get("action")
+            if isinstance(llm_verdict, dict)
+            else getattr(llm_verdict, "action", "")
+        )
+        conf = (
+            llm_verdict.get("confidence")
+            if isinstance(llm_verdict, dict)
+            else getattr(llm_verdict, "confidence", 0)
+        )
+        instrument = (
+            llm_verdict.get("instrument")
+            if isinstance(llm_verdict, dict)
+            else getattr(llm_verdict, "instrument", "")
+        )
+        entry_trigger = (
+            llm_verdict.get("entry_trigger")
+            if isinstance(llm_verdict, dict)
+            else getattr(llm_verdict, "entry_trigger", "")
+        )
+        stop_loss = (
+            llm_verdict.get("stop_loss")
+            if isinstance(llm_verdict, dict)
+            else getattr(llm_verdict, "stop_loss", "")
+        )
+        target_1 = (
+            llm_verdict.get("target_1")
+            if isinstance(llm_verdict, dict)
+            else getattr(llm_verdict, "target_1", "")
+        )
+        thesis = (
+            llm_verdict.get("thesis")
+            if isinstance(llm_verdict, dict)
+            else getattr(llm_verdict, "thesis", "")
+        )
+        risk = (
+            llm_verdict.get("risk_rating")
+            if isinstance(llm_verdict, dict)
+            else getattr(llm_verdict, "risk_rating", "")
+        )
+        invalidation = (
+            llm_verdict.get("invalidation")
+            if isinstance(llm_verdict, dict)
+            else getattr(llm_verdict, "invalidation", "")
+        )
 
-        action_emoji = {"GO_LONG": EMOJI_GREEN, "GO_SHORT": EMOJI_RED, "NO_TRADE": EMOJI_WHITE}.get(action, EMOJI_YELLOW)
+        action_emoji = {
+            "GO_LONG": EMOJI_GREEN,
+            "GO_SHORT": EMOJI_RED,
+            "NO_TRADE": EMOJI_WHITE,
+        }.get(action, EMOJI_YELLOW)
         lines += [
             "",
             f"{action_emoji} *AI Trade Plan* ({_esc(action)}, {conf}%)",
@@ -708,13 +856,20 @@ def build_digest(
             f"⚠️ Risk: {_esc(risk)} | Invalidation: {_esc(invalidation)}",
         ]
     if paper_trade_status:
-        lines += ["", "🤖 *PAPER TRADE STATUS*", _format_paper_trade_status(paper_trade_status)]
+        lines += [
+            "",
+            "🤖 *PAPER TRADE STATUS*",
+            _format_paper_trade_status(paper_trade_status),
+        ]
     if live_trade_status:
-        lines += ["", "🟢 *LIVE/SHADOW TRADE STATUS*", _format_trade_status(live_trade_status, is_live=True)]
+        lines += [
+            "",
+            "🟢 *LIVE/SHADOW TRADE STATUS*",
+            _format_trade_status(live_trade_status, is_live=True),
+        ]
     lines += ["", f"_#{digest_id} · {n} signals · all symbols enabled_"]
     lines += [f"{'━' * 20}"]
     return digest_id, _fit_telegram("\n".join(lines), digest_id)
-
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -792,7 +947,9 @@ def _net_oi_delta(alerts: list[dict], scan_context: dict) -> tuple[int, int]:
     return ce_net, pe_net
 
 
-def _classify_regime(alerts: list[dict], scan_context: dict, verdict: str) -> tuple[str, str, bool]:
+def _classify_regime(
+    alerts: list[dict], scan_context: dict, verdict: str
+) -> tuple[str, str, bool]:
     """
     Returns (regime, banner_text, no_trade).
     Backstop for the engine: catches mass two-sided unwinding even if a verdict
@@ -806,20 +963,28 @@ def _classify_regime(alerts: list[dict], scan_context: dict, verdict: str) -> tu
         ratio = unwind / len(oi)
         both_shrink = ce_net < 0 and pe_net < 0
         if ratio >= 0.7 and both_shrink and len(oi) >= 6:
-            return ("SQUARING",
-                    f"POSITION SQUARING - both sides exiting ({unwind}/{len(oi)} unwinds)",
-                    True)
+            return (
+                "SQUARING",
+                f"POSITION SQUARING - both sides exiting ({unwind}/{len(oi)} unwinds)",
+                True,
+            )
 
     if _verdict_bias(verdict) == "NEUTRAL":
         oi_bias, _ = _oi_flow_read(ce_net, pe_net)
         if oi_bias != "NEUTRAL":
-            return ("NO_EDGE", f"NO DIRECTIONAL EDGE - conflicting signals ({oi_bias} flow)", True)
+            return (
+                "NO_EDGE",
+                f"NO DIRECTIONAL EDGE - conflicting signals ({oi_bias} flow)",
+                True,
+            )
         return ("NO_EDGE", "NO DIRECTIONAL EDGE - mixed / rangebound", True)
 
     return ("TRADEABLE", "", False)
 
 
-def _calculate_signal_strength(alerts: list[dict], intel: dict, scan_context: dict, chart_payload: dict) -> int:
+def _calculate_signal_strength(
+    alerts: list[dict], intel: dict, scan_context: dict, chart_payload: dict
+) -> int:
     """
     Heuristic 30-100 score. NOT a probability. Rendered as a 'signal strength'
     label, never as a confidence percentage, because it is uncalibrated.
@@ -871,7 +1036,9 @@ def _calculate_signal_strength(alerts: list[dict], intel: dict, scan_context: di
         score += 5
 
     # OI flow agreeing with verdict adds, disagreeing subtracts
-    oi_bias, _ = _oi_flow_read(scan_context.get("ce_oi_change", 0), scan_context.get("pe_oi_change", 0))
+    oi_bias, _ = _oi_flow_read(
+        scan_context.get("ce_oi_change", 0), scan_context.get("pe_oi_change", 0)
+    )
     vbias = _verdict_bias(verdict)
     if oi_bias != "NEUTRAL" and vbias != "NEUTRAL":
         score += 8 if oi_bias == vbias else -12
@@ -910,9 +1077,13 @@ def _key_signal_supports_verdict(alert: dict, verdict: str) -> bool:
     vbias = _verdict_bias(verdict)
     sig_bias = "NEUTRAL"
     if atype == "OI_UNWIND":
-        sig_bias = "BULLISH" if opt == "CE" else "BEARISH"   # CE unwind=bull, PE unwind=bear
+        sig_bias = (
+            "BULLISH" if opt == "CE" else "BEARISH"
+        )  # CE unwind=bull, PE unwind=bear
     elif atype == "OI_SPIKE":
-        sig_bias = "BEARISH" if opt == "CE" else "BULLISH"   # CE buildup=bear, PE buildup=bull
+        sig_bias = (
+            "BEARISH" if opt == "CE" else "BULLISH"
+        )  # CE buildup=bear, PE buildup=bull
     return sig_bias == vbias and sig_bias != "NEUTRAL"
 
 
@@ -936,13 +1107,13 @@ def _format_key_signal(alert: dict, verdict: str = "") -> str:
         interp = "Bulls exiting" if opt == "PE" else "Bears covering shorts"
         body = f"{leg}: OI UNWINDING {pct:.1f}%\n   -> {interp}"
     elif atype == "BUILDUP_CLASSIFY":
-        body = f"{leg}: {detail.get('buildup_type','').upper()}\n   -> OI {detail.get('oi_pct',0):+.1f}% | LTP {detail.get('ltp_pct',0):+.1f}%"
+        body = f"{leg}: {detail.get('buildup_type', '').upper()}\n   -> OI {detail.get('oi_pct', 0):+.1f}% | LTP {detail.get('ltp_pct', 0):+.1f}%"
     else:
         body = _signal_line(alert)
 
     # Bug 4 fix: flag when headline signal contradicts the verdict
     if verdict and not _key_signal_supports_verdict(alert, verdict):
-        body += "\n   \u26A0\ufe0f Note: headline signal does not confirm the verdict"
+        body += "\n   \u26a0\ufe0f Note: headline signal does not confirm the verdict"
     return body
 
 
@@ -992,7 +1163,9 @@ def _build_market_structure(alerts: list[dict], verdict: str) -> str:
     return "\n".join(lines) if lines else "No significant OI structure changes"
 
 
-def _build_trading_plan(symbol: str, verdict: str, strength: int, scan_context: dict, intel: dict) -> str:
+def _build_trading_plan(
+    symbol: str, verdict: str, strength: int, scan_context: dict, intel: dict
+) -> str:
     """
     Plan with explicit entry/stop/target levels. Consolidated for brevity.
     """
@@ -1009,13 +1182,21 @@ def _build_trading_plan(symbol: str, verdict: str, strength: int, scan_context: 
     # 1. Recommended
     rec = []
     if is_bear and resistance:
-        rec.append(f"\u2022 Sell {fmt(resistance)} CE / {fmt(resistance + offset)} CE (premium at resistance)")
+        rec.append(
+            f"\u2022 Sell {fmt(resistance)} CE / {fmt(resistance + offset)} CE (premium at resistance)"
+        )
         if support:
-            rec.append(f"\u2022 Sell {fmt(support)} PE only if {px} holds above {fmt(support)}")
+            rec.append(
+                f"\u2022 Sell {fmt(support)} PE only if {px} holds above {fmt(support)}"
+            )
     elif is_bull and support:
-        rec.append(f"\u2022 Sell {fmt(support)} PE / {fmt(support - offset)} PE (premium at support)")
+        rec.append(
+            f"\u2022 Sell {fmt(support)} PE / {fmt(support - offset)} PE (premium at support)"
+        )
         if resistance:
-            rec.append(f"\u2022 Buy {fmt(resistance)} CE only if {px} breaks {fmt(resistance)} with volume")
+            rec.append(
+                f"\u2022 Buy {fmt(resistance)} CE only if {px} breaks {fmt(resistance)} with volume"
+            )
     else:
         if atm:
             rec.append(f"\u2022 Sell {fmt(atm + offset)} CE + {fmt(atm - offset)} PE")
@@ -1050,10 +1231,14 @@ def _build_trading_plan(symbol: str, verdict: str, strength: int, scan_context: 
         # Bug 2 fix: stop is support - offset, NOT an arbitrary far level
         lvls.append(f"\u2022 Stop: {px} closes below {fmt(support - offset)}")
         if resistance:
-            lvls.append(f"\u2022 Target: {fmt(resistance)}, then {fmt(resistance + offset)}")
+            lvls.append(
+                f"\u2022 Target: {fmt(resistance)}, then {fmt(resistance + offset)}"
+            )
     else:
         if resistance and support:
-            lvls.append(f"\u2022 Invalidation: break of {fmt(resistance)} or {fmt(support)}")
+            lvls.append(
+                f"\u2022 Invalidation: break of {fmt(resistance)} or {fmt(support)}"
+            )
     if lvls:
         lines.append("\nLevels:")
         lines.extend(lvls)
@@ -1062,7 +1247,7 @@ def _build_trading_plan(symbol: str, verdict: str, strength: int, scan_context: 
     if strength < 60:
         extra_notes.append("\u2022 Low signal strength -> reduce size")
     if intel.get("conflict"):
-        extra_notes.append(f"\u2022 \u26A0\ufe0f {intel['conflict']}")
+        extra_notes.append(f"\u2022 \u26a0\ufe0f {intel['conflict']}")
     if extra_notes:
         lines.append("")
         lines.extend(extra_notes)
@@ -1070,7 +1255,9 @@ def _build_trading_plan(symbol: str, verdict: str, strength: int, scan_context: 
     return "\n".join(lines)
 
 
-def _build_confirmation_section(chart_payload: dict, scan_context: dict, verdict: str) -> str:
+def _build_confirmation_section(
+    chart_payload: dict, scan_context: dict, verdict: str
+) -> str:
     """Candles + OI flow. Uses the SAME _oi_flow_read as the strength calc."""
     lines = []
     c1 = chart_payload.get("1h", {}).get("sentiment", "NEUTRAL").upper()
@@ -1078,33 +1265,39 @@ def _build_confirmation_section(chart_payload: dict, scan_context: dict, verdict
 
     def arrow(s):
         if s == "BULLISH":
-            return f"{EMOJI_GREEN} \u25B2"
+            return f"{EMOJI_GREEN} \u25b2"
         if s == "BEARISH":
-            return f"{EMOJI_RED} \u25BC"
+            return f"{EMOJI_RED} \u25bc"
         return f"{EMOJI_WHITE} \u2192"
 
     vbias = _verdict_bias(verdict)
     conflict = ""
     if vbias == "BULLISH" and "BEARISH" in (c1, c3):
-        conflict = " \u26A0\ufe0f CONFLICT"
+        conflict = " \u26a0\ufe0f CONFLICT"
     elif vbias == "BEARISH" and "BULLISH" in (c1, c3):
-        conflict = " \u26A0\ufe0f CONFLICT"
-    lines.append(f"\u2022 *Candles:* 1H {c1} {arrow(c1)} | 3H {c3} {arrow(c3)}{conflict}")
+        conflict = " \u26a0\ufe0f CONFLICT"
+    lines.append(
+        f"\u2022 *Candles:* 1H {c1} {arrow(c1)} | 3H {c3} {arrow(c3)}{conflict}"
+    )
 
-    oi_bias, oi_text = _oi_flow_read(scan_context.get("ce_oi_change", 0), scan_context.get("pe_oi_change", 0))
+    oi_bias, oi_text = _oi_flow_read(
+        scan_context.get("ce_oi_change", 0), scan_context.get("pe_oi_change", 0)
+    )
     if oi_bias == vbias and vbias != "NEUTRAL":
         agree_lbl = "*[agrees with verdict]*"
     elif oi_bias != "NEUTRAL" and vbias != "NEUTRAL" and oi_bias != vbias:
         agree_lbl = f"*[disagrees with verdict]*"
     else:
         agree_lbl = ""
-    
+
     agree_part = f" {agree_lbl}" if agree_lbl else ""
     lines.append(f"\u2022 *OI Flow:* {oi_text} -> {oi_bias}{agree_part}")
     return "\n".join(lines)
 
 
-def _build_bottom_line(symbol: str, verdict: str, strength: int, key_signal_alert: dict, scan_context: dict) -> str:
+def _build_bottom_line(
+    symbol: str, verdict: str, strength: int, key_signal_alert: dict, scan_context: dict
+) -> str:
     is_bear = _is_bearish_verdict(verdict)
     is_bull = _is_bullish_verdict(verdict)
     offset = _get_symbol_offset(symbol)
@@ -1117,17 +1310,29 @@ def _build_bottom_line(symbol: str, verdict: str, strength: int, key_signal_aler
     if is_bear and resistance:
         key_level = f"{fmt(resistance)} as resistance"
         trade = f"Sell CEs {fmt(resistance)}-{fmt(resistance + offset)}"
-        watch = f"Break of {fmt(support)} = accelerated fall" if support else "Watch for breakdown"
+        watch = (
+            f"Break of {fmt(support)} = accelerated fall"
+            if support
+            else "Watch for breakdown"
+        )
     elif is_bull and support:
         key_level = f"{fmt(support)} as support"
         trade = f"Sell PEs {fmt(support)}-{fmt(support - offset)}"
-        watch = f"Break of {fmt(resistance)} = rally" if resistance else "Watch for breakout"
+        watch = (
+            f"Break of {fmt(resistance)} = rally"
+            if resistance
+            else "Watch for breakout"
+        )
     else:
         key_level = "range-bound"
         trade = "Range trade or wait"
         watch = "Patience"
 
-    note = f"Low strength ({strength}/100) - avoid directional" if strength < 60 else "Multiple confirmations"
+    note = (
+        f"Low strength ({strength}/100) - avoid directional"
+        if strength < 60
+        else "Multiple confirmations"
+    )
     return f"{setup} {direction} setup, {key_level}. {note}. Trade: {trade}. {watch}."
 
 
@@ -1156,30 +1361,55 @@ def build_enhanced_digest(
     ctx = scan_context or {}
     _base_sym1 = symbol.upper().strip().split()[0]
     _is_mcx1 = _base_sym1 in {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"}
-    expiry_val = ctx.get("futures_expiry") if (_is_mcx1 and ctx.get("futures_expiry")) else ctx.get("expiry")
+    expiry_val = (
+        ctx.get("futures_expiry")
+        if (_is_mcx1 and ctx.get("futures_expiry"))
+        else ctx.get("expiry")
+    )
     exp_fmt, dte_lbl = _format_expiry_and_dte(expiry_val)
-    header_extra = f" (Exp: {exp_fmt} | {dte_lbl})" if exp_fmt and dte_lbl else (f" (Exp: {exp_fmt})" if exp_fmt else "")
+    header_extra = (
+        f" (Exp: {exp_fmt} | {dte_lbl})"
+        if exp_fmt and dte_lbl
+        else (f" (Exp: {exp_fmt})" if exp_fmt else "")
+    )
 
     n = len(alerts)
     px_label = _price_label(symbol)
- 
+
     if not alerts:
-        return build_digest(symbol, alerts, fetched_at, scan_context, intelligence_text, detected_count, dedup_suppressed_count, digest_id=digest_id, paper_trade_status=paper_trade_status, live_trade_status=live_trade_status, llm_verdict=llm_verdict, exit_advice=exit_advice)
- 
-    intel_raw = intelligence_text if intelligence_text is not None else generate_intelligence(symbol, alerts, scan_context=scan_context)
+        return build_digest(
+            symbol,
+            alerts,
+            fetched_at,
+            scan_context,
+            intelligence_text,
+            detected_count,
+            dedup_suppressed_count,
+            digest_id=digest_id,
+            paper_trade_status=paper_trade_status,
+            live_trade_status=live_trade_status,
+            llm_verdict=llm_verdict,
+            exit_advice=exit_advice,
+        )
+
+    intel_raw = (
+        intelligence_text
+        if intelligence_text is not None
+        else generate_intelligence(symbol, alerts, scan_context=scan_context)
+    )
     intel = _parse_intelligence(intel_raw)
     verdict = intel.get("verdict", "Sideways")
     emoji, label = _VERDICT_STYLE.get(verdict, (EMOJI_WHITE, "NEUTRAL"))
- 
+
     chart_payload = _chart_payload_for_symbol(ctx, symbol)
     strength = _calculate_signal_strength(alerts, intel, ctx, chart_payload)
     s_label = _strength_label(strength)
     filled = round(strength / 10)
     s_bar = ("\u2588" * filled) + ("\u2591" * (10 - filled))
- 
+
     key_signal_alert = _find_key_signal(alerts)
     key_signal_formatted = _format_key_signal(key_signal_alert, verdict)
- 
+
     # price delta (unchanged logic)
     pcp = ctx.get("price_change_pct")
     pcpt = ctx.get("price_change_points")
@@ -1197,14 +1427,20 @@ def build_enhanced_digest(
     elif abs(d_points) < 0.05 and abs(d_spot) < 0.005:
         spot_delta = "flat"
     else:
-        spot_delta = f"{_fmt_signed(d_points, 1)} (`{_fmt_signed(d_spot, pct_digits)}%`)"
- 
+        spot_delta = (
+            f"{_fmt_signed(d_points, 1)} (`{_fmt_signed(d_spot, pct_digits)}%`)"
+        )
+
     # ── Decision
     def sec(title, body):
         return ["", title, body]
 
     spot_delta_clean = spot_delta.replace("`", "")
-    spot_delta_str = f" ({spot_delta_clean})" if spot_delta != "flat" and spot_delta != "no prev data" else ""
+    spot_delta_str = (
+        f" ({spot_delta_clean})"
+        if spot_delta != "flat" and spot_delta != "no prev data"
+        else ""
+    )
     oi_unwind_note = ""
     ce_net, pe_net = _net_oi_delta(alerts, ctx)
     if ce_net < 0 and pe_net < 0:
@@ -1213,51 +1449,77 @@ def build_enhanced_digest(
         oi_unwind_note = " (Both Building)"
 
     # ── Header (always) ────────────────────────────────────────────────────
-    spot_val = _fmt_val(ctx.get('underlying'), symbol)
-    atm_val = _fmt_val(ctx.get('atm_strike'), symbol)
-    pcr_val = _fmt_num(ctx.get('pcr'), 2)
+    spot_val = _fmt_val(ctx.get("underlying"), symbol)
+    atm_val = _fmt_val(ctx.get("atm_strike"), symbol)
+    pcr_val = _fmt_num(ctx.get("pcr"), 2)
+    mp_val = _fmt_val(ctx.get("max_pain"), symbol)
+    mp_chg = ctx.get("max_pain_change")
+    mp_chg_str = f" ({mp_chg:+.0f})" if mp_chg is not None else ""
+    total_ce = _fmt_oi(ctx.get("total_ce_oi", 0))
+    total_pe = _fmt_oi(ctx.get("total_pe_oi", 0))
     lines = [
-        f"\U0001F4CA *{symbol}*{header_extra} | {ts}",
-        f"{px_label} `{spot_val}{spot_delta_str}` | ATM `{atm_val}` | PCR `{pcr_val}`",
+        f"\U0001f4ca *{symbol}*{header_extra} | {ts}",
+        f"{px_label} `{spot_val}{spot_delta_str}` | ATM `{atm_val}` | MP `{mp_val}{mp_chg_str}` | PCR `{pcr_val}` | OI CE `{total_ce}` PE `{total_pe}`",
         f"Net OI \u0394: CE `{_fmt_oi(ce_net)}` | PE `{_fmt_oi(pe_net)}`{oi_unwind_note}",
         DIVIDER,
     ]
- 
+
     # ── Decision gate: regime backstop + verdict ──────────────────────────
     regime, banner_text, no_trade = _classify_regime(alerts, ctx, verdict)
     vbias = _verdict_bias(verdict)
- 
+
     c1 = chart_payload.get("1h", {}).get("sentiment", "NEUTRAL").upper()
     c3 = chart_payload.get("3h", {}).get("sentiment", "NEUTRAL").upper()
-    has_conflict = (vbias == "BULLISH" and "BEARISH" in (c1, c3)) or (vbias == "BEARISH" and "BULLISH" in (c1, c3))
- 
-    confirmation = _compress_fallback_section(_build_confirmation_section(chart_payload, ctx, verdict))
- 
+    has_conflict = (vbias == "BULLISH" and "BEARISH" in (c1, c3)) or (
+        vbias == "BEARISH" and "BULLISH" in (c1, c3)
+    )
+
+    confirmation = _compress_fallback_section(
+        _build_confirmation_section(chart_payload, ctx, verdict)
+    )
+
     if no_trade:
         # NO-TRADE banner. Plan suppressed — no fake entries on squaring.
         lines += [
-            f"\U0001F6D1 *NO TRADE* - {banner_text}",
+            f"\U0001f6d1 *NO TRADE* - {banner_text}",
             "Stand aside. No directional edge this scan.",
             "",
-            f"{px_label} `{spot_val}` | ATM `{atm_val}` | PCR `{pcr_val}`",
+            f"{px_label} `{spot_val}` | ATM `{atm_val}` | MP `{mp_val}{mp_chg_str}` | PCR `{pcr_val}` | OI CE `{total_ce}` PE `{total_pe}`",
             f"Net OI flow: CE `{_fmt_oi(ce_net)}` | PE `{_fmt_oi(pe_net)}`",
         ]
         if vbias != "NEUTRAL":
-            lines.append(f"\u26A0\ufe0f Engine verdict was {label} ({strength}/100) - not confirmed by flow")
-        lines += sec("\u26A1 *WHY NO TRADE*", _build_no_trade_reason(regime, ce_net, pe_net, verdict, strength))
-        lines += sec("\U0001F4CA *BIGGEST MOVES*", _build_biggest_moves(alerts))
-        lines += sec("\U0001F4C8 *CONFIRMATION*", confirmation)
+            lines.append(
+                f"\u26a0\ufe0f Engine verdict was {label} ({strength}/100) - not confirmed by flow"
+            )
+        lines += sec(
+            "\u26a1 *WHY NO TRADE*",
+            _build_no_trade_reason(regime, ce_net, pe_net, verdict, strength),
+        )
+        lines += sec("\U0001f4ca *BIGGEST MOVES*", _build_biggest_moves(alerts))
+        lines += sec("\U0001f4c8 *CONFIRMATION*", confirmation)
         if paper_trade_status:
-            lines += sec("🤖 *PAPER TRADE STATUS*", _format_paper_trade_status(paper_trade_status))
+            lines += sec(
+                "🤖 *PAPER TRADE STATUS*",
+                _format_paper_trade_status(paper_trade_status),
+            )
         if live_trade_status:
-            lines += sec("🟢 *LIVE/SHADOW TRADE STATUS*", _format_trade_status(live_trade_status, is_live=True))
+            lines += sec(
+                "🟢 *LIVE/SHADOW TRADE STATUS*",
+                _format_trade_status(live_trade_status, is_live=True),
+            )
         lines += ["", f"_#{digest_id}_", DIVIDER]
         return digest_id, _fit_telegram("\n".join(lines), digest_id)
 
     # ── TRADEABLE path ─────────────────────────────────────────────────────
-    market_structure = _compress_fallback_section(_build_market_structure(alerts, verdict))
-    trading_plan = _compress_fallback_section(_build_trading_plan(symbol, verdict, strength, ctx, intel))
-    bottom_line = _to_caveman(_build_bottom_line(symbol, verdict, strength, key_signal_alert, ctx))
+    market_structure = _compress_fallback_section(
+        _build_market_structure(alerts, verdict)
+    )
+    trading_plan = _compress_fallback_section(
+        _build_trading_plan(symbol, verdict, strength, ctx, intel)
+    )
+    bottom_line = _to_caveman(
+        _build_bottom_line(symbol, verdict, strength, key_signal_alert, ctx)
+    )
 
     levels_parts = []
     if ctx.get("support"):
@@ -1283,62 +1545,97 @@ def build_enhanced_digest(
         f"`Signal strength: {s_bar} {strength}/100 ({s_label.upper()})`",
     ]
     if has_conflict:
-        lines.append(f"`\u26A0\ufe0f Chart timeframe conflict (1H vs 3H) - size down`")
+        lines.append(
+            f"`\U0001f4a1 1H vs 3H diverge \u2014 entry timing signal (not a blocker)`"
+        )
 
     # Combine key levels and key signal into one section
     key_signal_clean = key_signal_formatted.replace("\n", " ").strip()
     key_signal_clean = key_signal_clean.replace(
-        "   \u26A0\ufe0f Note: headline signal does not confirm the verdict",
-        " *[⚠️ Disagrees with verdict]*"
+        "   \u26a0\ufe0f Note: headline signal does not confirm the verdict",
+        " *[⚠️ Disagrees with verdict]*",
     )
 
     signals_levels_body = [
         f"\u2022 *Key Levels:* {levels_section}",
-        f"\u2022 *Headline:* {_esc(key_signal_clean)}"
+        f"\u2022 *Headline:* {_esc(key_signal_clean)}",
     ]
-    lines += sec("\u26A1 *KEY SIGNALS & LEVELS*", "\n".join(signals_levels_body))
-    lines += sec("\U0001F3AF *TRADING PLAN*", trading_plan)
-    
+    lines += sec("\u26a1 *KEY SIGNALS & LEVELS*", "\n".join(signals_levels_body))
+    lines += sec("\U0001f3af *TRADING PLAN*", trading_plan)
+
     if market_structure and market_structure != "No significant OI structure changes":
-        lines += sec("\U0001F4CA *MARKET STRUCTURE*", market_structure)
-        
-    lines += sec("\U0001F4C8 *CONFIRMATION*", confirmation)
-    lines += sec("\U0001F4A1 *BOTTOM LINE*", bottom_line)
+        lines += sec("\U0001f4ca *MARKET STRUCTURE*", market_structure)
+
+    lines += sec("\U0001f4c8 *CONFIRMATION*", confirmation)
+    lines += sec("\U0001f4a1 *BOTTOM LINE*", bottom_line)
     if llm_verdict:
-        bias = llm_verdict.get("bias") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "bias", "")
-        conf = llm_verdict.get("confidence") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "confidence", 0)
-        strat = llm_verdict.get("strategy") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "strategy", "")
-        strike = llm_verdict.get("strike_selection") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "strike_selection", "")
-        reason = llm_verdict.get("reasoning") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "reasoning", "")
+        bias = (
+            llm_verdict.get("bias")
+            if isinstance(llm_verdict, dict)
+            else getattr(llm_verdict, "bias", "")
+        )
+        conf = (
+            llm_verdict.get("confidence")
+            if isinstance(llm_verdict, dict)
+            else getattr(llm_verdict, "confidence", 0)
+        )
+        strat = (
+            llm_verdict.get("strategy")
+            if isinstance(llm_verdict, dict)
+            else getattr(llm_verdict, "strategy", "")
+        )
+        strike = (
+            llm_verdict.get("strike_selection")
+            if isinstance(llm_verdict, dict)
+            else getattr(llm_verdict, "strike_selection", "")
+        )
+        reason = (
+            llm_verdict.get("reasoning")
+            if isinstance(llm_verdict, dict)
+            else getattr(llm_verdict, "reasoning", "")
+        )
         ai_body = [
             f"\u2022 *Bias:* {_esc(bias)} ({conf}%)",
             f"\u2022 *Strategy:* {_esc(strat)}",
             f"\u2022 *Target:* {_esc(strike)}",
-            f"\u2022 *Reasoning:* _{_esc(reason)}_"
+            f"\u2022 *Reasoning:* _{_esc(reason)}_",
         ]
         lines += sec("🧠 *AI VERDICT*", "\n".join(ai_body))
     if paper_trade_status:
-        lines += sec("🤖 *PAPER TRADE STATUS*", _format_paper_trade_status(paper_trade_status))
+        lines += sec(
+            "🤖 *PAPER TRADE STATUS*", _format_paper_trade_status(paper_trade_status)
+        )
     if live_trade_status:
-        lines += sec("🟢 *LIVE/SHADOW TRADE STATUS*", _format_trade_status(live_trade_status, is_live=True))
+        lines += sec(
+            "🟢 *LIVE/SHADOW TRADE STATUS*",
+            _format_trade_status(live_trade_status, is_live=True),
+        )
     lines += ["", f"_#{digest_id}_", DIVIDER]
 
     return digest_id, _fit_telegram("\n".join(lines), digest_id)
 
 
-def _build_no_trade_reason(regime: str, ce_net: int, pe_net: int, verdict: str, strength: int) -> str:
+def _build_no_trade_reason(
+    regime: str, ce_net: int, pe_net: int, verdict: str, strength: int
+) -> str:
     out = []
     if regime == "SQUARING":
-        out.append("\u2022 Both CE & PE OI shrinking = position squaring / expiry behaviour")
+        out.append(
+            "\u2022 Both CE & PE OI shrinking = position squaring / expiry behaviour"
+        )
         if ce_net and pe_net:
             faster = "PE" if abs(pe_net) > abs(ce_net) else "CE"
-            out.append(f"\u2022 {faster} unwound faster - no fresh directional conviction")
+            out.append(
+                f"\u2022 {faster} unwound faster - no fresh directional conviction"
+            )
         out.append("\u2022 Unwinding is exit flow, not a new setup")
     else:
         oi_bias, _ = _oi_flow_read(ce_net, pe_net)
         vbias = _verdict_bias(verdict)
         if vbias == "NEUTRAL" and oi_bias != "NEUTRAL":
-            out.append(f"\u2022 Conflicting signals - OI Flow is {oi_bias} but engine verdict is neutral")
+            out.append(
+                f"\u2022 Conflicting signals - OI Flow is {oi_bias} but engine verdict is neutral"
+            )
             out.append("\u2022 Wait for chart direction and OI flow to align")
         else:
             out.append("\u2022 Mixed / rangebound OI - no dominant side")
@@ -1355,7 +1652,7 @@ def _build_biggest_moves(alerts: list[dict], cap: int = 4) -> str:
     for a in oi[:cap]:
         d = _detail(a)
         pct = float(d.get("pct_change", 0))
-        leg = f"{_fmt_num(a.get('strike'))} {a.get('option_type','')}".strip()
+        leg = f"{_fmt_num(a.get('strike'))} {a.get('option_type', '')}".strip()
         mark = EMOJI_RED if pct < 0 else EMOJI_GREEN
         kind = "unwind" if a.get("alert_type") == "OI_UNWIND" else "spike"
         lines.append(f"{mark} {leg} {kind} {pct:+.1f}%")
@@ -1452,15 +1749,17 @@ def _format_trade_status_caveman(status: dict | None, is_live: bool = False) -> 
         sl = trade.get("sl_premium") or trade.get("sl_underlying")
         tgt = trade.get("target_premium") or trade.get("target_underlying")
         side = str(trade.get("side") or status.get("side") or "BUY").upper()
-        
+
         entry_str = f"{entry:.1f}" if entry is not None else "—"
         sl_str = f"{sl:.1f}" if sl is not None else "—"
         tgt_str = f"{tgt:.1f}" if tgt is not None else "—"
         strike_str = f"{strike:g}" if strike is not None else "—"
-        
+
         if opt == "FUT":
             return f"Exec {side} FUT @ {entry_str} | SL {sl_str} | Tgt {tgt_str}"
-        return f"Exec {side} {strike_str}{opt} @ {entry_str} | SL {sl_str} | Tgt {tgt_str}"
+        return (
+            f"Exec {side} {strike_str}{opt} @ {entry_str} | SL {sl_str} | Tgt {tgt_str}"
+        )
     elif action == "CLOSED":
         trade = status.get("trade", {})
         opt = trade.get("option_type", "CE")
@@ -1504,6 +1803,7 @@ def _compress_fallback_section(text: str) -> str:
 
 
 # ── Redesigned premium alert helpers ────────────────────────────────────────
+
 
 def _arrow_candle(s: str) -> str:
     return "▲" if s == "BULLISH" else ("▼" if s == "BEARISH" else "→")
@@ -1562,18 +1862,26 @@ def _bot_action_block(
             icon = "🟢" if pnl >= 0 else "🔴"
             close_reason = status.get("close_reason") or reason or ""
             close_tag = f" ({close_reason})" if close_reason else ""
-            return f"{icon} {label} CLOSED: {side} {instrument}{close_tag} → PnL {pnl_str}"
+            return (
+                f"{icon} {label} CLOSED: {side} {instrument}{close_tag} → PnL {pnl_str}"
+            )
         elif action == "HELD":
             live_pnl = trade.get("live_pnl_rupees")
             cmp = trade.get("current_price") or trade.get("live_price")
-            pnl_part = f" | Live PnL: {'+'if (live_pnl or 0)>=0 else ''}₹{(live_pnl or 0):.0f}" if live_pnl is not None else ""
+            pnl_part = (
+                f" | Live PnL: {'+' if (live_pnl or 0) >= 0 else ''}₹{(live_pnl or 0):.0f}"
+                if live_pnl is not None
+                else ""
+            )
             cmp_part = f" | CMP {cmp:.1f}" if cmp is not None else ""
             # E2: Show position age so a stale held position isn't read as a new signal
             age_part = ""
             try:
                 opened_at = trade.get("opened_at")
                 if opened_at:
-                    from datetime import datetime as _dt, timezone as _tz
+                    from datetime import datetime as _dt
+                    from datetime import timezone as _tz
+
                     opened_dt = _dt.fromisoformat(str(opened_at).replace("Z", "+00:00"))
                     age_min = int((_dt.now(_tz.utc) - opened_dt).total_seconds() / 60)
                     if age_min < 60:
@@ -1582,7 +1890,9 @@ def _bot_action_block(
                         age_part = f" | entered {age_min // 60}h {age_min % 60}m ago"
             except Exception:
                 pass
-            return f"📊 {label} HOLDING: {side} {instrument}{cmp_part}{pnl_part}{age_part}"
+            return (
+                f"📊 {label} HOLDING: {side} {instrument}{cmp_part}{pnl_part}{age_part}"
+            )
         elif action == "HELD_PENDING":
             return f"⏳ {label} PENDING: {side} {instrument} (Waiting for fill)"
         elif action and action.startswith("BLOCKED"):
@@ -1663,27 +1973,43 @@ def build_llm_consolidated_digest(
     else:
         expiry_val = ctx.get("expiry")
     exp_fmt, dte_lbl = _format_expiry_and_dte(expiry_val)
-    header_extra = f" | {exp_fmt} | {dte_lbl}" if exp_fmt and dte_lbl else (f" | {exp_fmt}" if exp_fmt else "")
+    header_extra = (
+        f" | {exp_fmt} | {dte_lbl}"
+        if exp_fmt and dte_lbl
+        else (f" | {exp_fmt}" if exp_fmt else "")
+    )
 
-    spot_val   = _fmt_val(ctx.get("underlying"), symbol)
-    atm_val    = _fmt_val(ctx.get("atm_strike"), symbol)
-    pcr_val    = _fmt_num(ctx.get("pcr"), 2)
-    px_label   = _price_label(symbol)
+    spot_val = _fmt_val(ctx.get("underlying"), symbol)
+    atm_val = _fmt_val(ctx.get("atm_strike"), symbol)
+    pcr_val = _fmt_num(ctx.get("pcr"), 2)
+    px_label = _price_label(symbol)
+
+    mp_val = _fmt_val(ctx.get("max_pain"), symbol)
+    mp_chg = ctx.get("max_pain_change")
+    mp_chg_str = f" ({mp_chg:+.0f})" if mp_chg is not None else ""
+    total_ce = _fmt_oi(ctx.get("total_ce_oi", 0))
+    total_pe = _fmt_oi(ctx.get("total_pe_oi", 0))
 
     # Price delta
-    pcp  = ctx.get("price_change_pct")
+    pcp = ctx.get("price_change_pct")
     pcpt = ctx.get("price_change_points")
-    try:    d_spot   = float(pcp)  if pcp  is not None else 0.0
-    except: d_spot   = 0.0
-    try:    d_points = float(pcpt or 0.0)
-    except: d_points = 0.0
+    try:
+        d_spot = float(pcp) if pcp is not None else 0.0
+    except:
+        d_spot = 0.0
+    try:
+        d_points = float(pcpt or 0.0)
+    except:
+        d_points = 0.0
     pct_digits = 3 if abs(d_spot) < 0.01 and d_spot != 0 else 2
     if pcp is None:
         spot_delta_str = ""
     elif abs(d_points) < 0.05 and abs(d_spot) < 0.005:
         spot_delta_str = ""
     else:
-        spot_delta_str = f" ({_fmt_signed(d_points, 1)}, {_fmt_signed(d_spot, pct_digits)}%)"
+        spot_delta_str = (
+            f" ({_fmt_signed(d_points, 1)}, {_fmt_signed(d_spot, pct_digits)}%)"
+        )
 
     # LLM fields
     def gv(key, default=""):
@@ -1691,29 +2017,30 @@ def build_llm_consolidated_digest(
             return llm_verdict.get(key, default)
         return getattr(llm_verdict, key, default) if llm_verdict else default
 
-    bias       = gv("bias") or gv("action")
-    conf       = gv("confidence", 0)
-    strat      = gv("strategy") or gv("instrument")
+    bias = gv("bias") or gv("action")
+    conf = gv("confidence", 0)
+    strat = gv("strategy") or gv("instrument")
     strike_sel = gv("strike_selection") or gv("entry_premium_range")
-    reason     = gv("reasoning") or gv("thesis")
-    risk       = gv("risk_rating")
-    exit_adv   = gv("exit_advice")
-    news       = gv("news_synthesis")
+    reason = gv("reasoning") or gv("thesis")
+    risk = gv("risk_rating")
+    exit_adv = gv("exit_advice")
+    news = gv("news_synthesis")
 
     entry_trigger = gv("entry_trigger")
-    stop_loss     = gv("stop_loss")
-    target_1      = gv("target_1")
-    target_2      = gv("target_2")
-    risk_reward   = gv("risk_reward")
-    invalidation  = gv("invalidation")
+    stop_loss = gv("stop_loss")
+    target_1 = gv("target_1")
+    target_2 = gv("target_2")
+    risk_reward = gv("risk_reward")
+    invalidation = gv("invalidation")
+    signal_chain = gv("signal_chain")
 
     bias_upper = str(bias).upper().strip() if bias else "NEUTRAL"
-    is_bull  = "BULL" in bias_upper or "LONG"  in bias_upper
-    is_bear  = "BEAR" in bias_upper or "SHORT" in bias_upper
+    is_bull = "BULL" in bias_upper or "LONG" in bias_upper
+    is_bear = "BEAR" in bias_upper or "SHORT" in bias_upper
     is_no_trade = "NO_TRADE" in bias_upper or "NEUTRAL" in bias_upper
 
     verdict_emoji = "🟢" if is_bull else ("🔴" if is_bear else "⚪")
-    risk_icon  = _risk_badge(str(risk)) if risk else ""
+    risk_icon = _risk_badge(str(risk)) if risk else ""
 
     # Candles
     chart_payload = _chart_payload_for_symbol(ctx, symbol)
@@ -1727,25 +2054,41 @@ def build_llm_consolidated_digest(
     # Key levels
     sup_val = ctx.get("support")
     res_val = ctx.get("resistance")
-    levels_str = " | ".join(filter(None, [
-        f"S:{_fmt_val(sup_val, symbol)}" if sup_val else "",
-        f"R:{_fmt_val(res_val, symbol)}" if res_val else "",
-    ])) or "—"
+    levels_str = (
+        " | ".join(
+            filter(
+                None,
+                [
+                    f"S:{_fmt_val(sup_val, symbol)}" if sup_val else "",
+                    f"R:{_fmt_val(res_val, symbol)}" if res_val else "",
+                ],
+            )
+        )
+        or "—"
+    )
 
     # ── Signals summary
     high_cnt = sum(1 for a in alerts if a.get("severity") == "HIGH")
-    med_cnt  = sum(1 for a in alerts if a.get("severity") == "MEDIUM")
-    low_cnt  = sum(1 for a in alerts if a.get("severity") == "LOW")
-    sev_parts = " ".join(x for x in [
-        f"🔴{high_cnt} HIGH" if high_cnt else "",
-        f"🟡{med_cnt} MED"  if med_cnt  else "",
-        f"🔵{low_cnt} LOW"  if low_cnt  else "",
-    ] if x)
+    med_cnt = sum(1 for a in alerts if a.get("severity") == "MEDIUM")
+    low_cnt = sum(1 for a in alerts if a.get("severity") == "LOW")
+    sev_parts = " ".join(
+        x
+        for x in [
+            f"🔴{high_cnt} HIGH" if high_cnt else "",
+            f"🟡{med_cnt} MED" if med_cnt else "",
+            f"🔵{low_cnt} LOW" if low_cnt else "",
+        ]
+        if x
+    )
 
-    sorted_alerts = sorted(alerts, key=lambda a: _SEV_ORDER.get(a.get("severity", "LOW"), 2))
+    sorted_alerts = sorted(
+        alerts, key=lambda a: _SEV_ORDER.get(a.get("severity", "LOW"), 2)
+    )
     top_signals: list[str] = []
     for alert in sorted_alerts[:3]:
-        badge = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🔵"}.get(alert.get("severity", "LOW"), "🔵")
+        badge = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🔵"}.get(
+            alert.get("severity", "LOW"), "🔵"
+        )
         top_signals.append(f"{badge} {_to_caveman(_signal_line(alert))}")
 
     # ═══════════════════════════════════════════
@@ -1753,7 +2096,7 @@ def build_llm_consolidated_digest(
     # ═══════════════════════════════════════════
     lines: list[str] = [
         f"📊 *{symbol}*{header_extra} | {ts}",
-        f"{px_label} `{spot_val}{spot_delta_str}` | ATM `{atm_val}` | PCR `{pcr_val}`",
+        f"{px_label} `{spot_val}{spot_delta_str}` | ATM `{atm_val}` | MP `{mp_val}{mp_chg_str}` | PCR `{pcr_val}` | OI CE `{total_ce}` PE `{total_pe}`",
         DIVIDER,
     ]
 
@@ -1762,68 +2105,128 @@ def build_llm_consolidated_digest(
     # ═══════════════════════════════════════════
     ea_action = None
     if exit_advice:
-        ea_action = exit_advice.get("action") if isinstance(exit_advice, dict) else getattr(exit_advice, "action", None)
+        ea_action = (
+            exit_advice.get("action")
+            if isinstance(exit_advice, dict)
+            else getattr(exit_advice, "action", None)
+        )
 
     if ea_action:
-        ea_urgency = exit_advice.get("urgency") if isinstance(exit_advice, dict) else getattr(exit_advice, "urgency", "")
-        ea_reasoning = exit_advice.get("reasoning") if isinstance(exit_advice, dict) else getattr(exit_advice, "reasoning", "")
-        ea_new_sl = exit_advice.get("new_sl_premium") if isinstance(exit_advice, dict) else getattr(exit_advice, "new_sl_premium", None)
-        ea_new_target = exit_advice.get("new_target_premium") if isinstance(exit_advice, dict) else getattr(exit_advice, "new_target_premium", None)
+        # ── Exit advisor path ──────────────────────────────────────────────
+        ea_urgency = (
+            exit_advice.get("urgency")
+            if isinstance(exit_advice, dict)
+            else getattr(exit_advice, "urgency", "")
+        )
+        ea_reasoning = (
+            exit_advice.get("reasoning")
+            if isinstance(exit_advice, dict)
+            else getattr(exit_advice, "reasoning", "")
+        )
+        ea_new_sl = (
+            exit_advice.get("new_sl_premium")
+            if isinstance(exit_advice, dict)
+            else getattr(exit_advice, "new_sl_premium", None)
+        )
+        ea_new_tgt = (
+            exit_advice.get("new_target_premium")
+            if isinstance(exit_advice, dict)
+            else getattr(exit_advice, "new_target_premium", None)
+        )
 
-        action_emoji = {"HOLD": "⚪", "TRAIL_SL": "🟡", "CLOSE_EARLY": "🔴", "EXTEND_TARGET": "🔵"}.get(ea_action, "⚪")
-        urgency_badge = {"LOW": "🟢 LOW", "MEDIUM": "🟡 MED", "HIGH": "🔴 HIGH"}.get(ea_urgency.upper(), ea_urgency)
+        action_emoji = {
+            "HOLD": "⚪",
+            "TRAIL_SL": "🟡",
+            "CLOSE_EARLY": "🔴",
+            "EXTEND_TARGET": "🔵",
+        }.get(ea_action, "⚪")
+        urgency_badge = {"LOW": "🟢 LOW", "MEDIUM": "🟡 MED", "HIGH": "🔴 HIGH"}.get(
+            str(ea_urgency).upper(), str(ea_urgency)
+        )
 
-        verdict_line = f"{action_emoji} *AI EXIT ADVISOR: {ea_action}* (Urgency: {urgency_badge})"
-        lines.append(verdict_line)
-        lines.append(f"  *Reasoning:* _{_esc(ea_reasoning)}_")
+        lines.append(
+            f"{action_emoji} *AI EXIT: {ea_action}* | Urgency: {urgency_badge}"
+        )
+        lines.append(f"  _{_esc(ea_reasoning)}_")
         if ea_new_sl is not None:
-            lines.append(f"  *New SL Premium:* `{_fmt_num(ea_new_sl, 2)}`")
-        if ea_new_target is not None:
-            lines.append(f"  *New Target Premium:* `{_fmt_num(ea_new_target, 2)}`")
+            lines.append(f"  New SL: `{_fmt_num(ea_new_sl, 2)}`")
+        if ea_new_tgt is not None:
+            lines.append(f"  New Target: `{_fmt_num(ea_new_tgt, 2)}`")
+
     else:
-        conf_bar_filled = round(int(conf) / 10) if conf else 0
-        conf_bar = ("█" * conf_bar_filled) + ("░" * (10 - conf_bar_filled))
-        verdict_line = f"{verdict_emoji} *AI: {_esc(bias_upper)}* `{conf}% | {conf_bar}`"
-        if risk_icon:
-            verdict_line += f" {risk_icon} {_esc(str(risk).upper())}"
+        # ── Entry verdict path ─────────────────────────────────────────────
+
+        # Verdict pill — suppress confidence bar for NO_TRADE (not a trade signal)
+        if is_no_trade:
+            verdict_line = (
+                f"⚪ *AI: NO_TRADE* | {_esc(str(risk).upper()) if risk else 'LOW'}"
+            )
+        else:
+            conf_filled = round(int(conf) / 10) if conf else 0
+            conf_bar = ("█" * conf_filled) + ("░" * (10 - conf_filled))
+            verdict_line = (
+                f"{verdict_emoji} *AI: {_esc(bias_upper)}* | `{conf}% {conf_bar}`"
+            )
+            if risk_icon:
+                verdict_line += f" {risk_icon} {_esc(str(risk).upper())}"
         lines.append(verdict_line)
 
-        if conflict_tag:
-            lines.append(f"  ⚠️ *WARNING:* AI direction conflicts with chart candles (1H {c1} | 3H {c3}) — treat this setup with extra caution")
+        # Signal chain — structured evidence bullets from new field
+        sig_chain = gv("signal_chain") or ""
+        if sig_chain:
+            for sc_line in str(sig_chain).strip().splitlines():
+                sc_line = sc_line.strip()
+                if sc_line:
+                    lines.append(f"  `{_esc(sc_line)}`")
+        elif conflict_tag:
+            # Fallback: show conflict note if no signal chain
+            lines.append(f"  {conflict_tag.strip()}")
 
-        if strat and not is_no_trade:
+        # Trade plan grid — only for tradeable signals
+        if not is_no_trade and strat:
+            lines.append("")
+            # Contract row
             if strike_sel:
-                lines.append(f"  *Instrument:* {_esc(strat)} | *Premium:* `{_esc(strike_sel)}`")
+                lines.append(f"  📋 `{_esc(strat)}` | Entry: `{_esc(strike_sel)}`")
             else:
-                lines.append(f"  *Instrument:* {_esc(strat)}")
-
-            setup_parts = []
-            if risk_reward:
-                setup_parts.append(f"R:R: `{_esc(risk_reward)}`")
+                lines.append(f"  📋 `{_esc(strat)}`")
+            # SL / Targets / R:R on one line for scannability
+            plan_parts = []
             if stop_loss:
-                setup_parts.append(f"SL: `{_esc(stop_loss)}`")
+                plan_parts.append(f"SL `{_esc(stop_loss)}`")
             if target_1:
-                setup_parts.append(f"T1: `{_esc(target_1)}`")
+                plan_parts.append(f"T1 `{_esc(target_1)}`")
             if target_2:
-                setup_parts.append(f"T2: `{_esc(target_2)}`")
-
-            if setup_parts:
-                lines.append(f"  *Setup:* {' | '.join(setup_parts)}")
-
+                plan_parts.append(f"T2 `{_esc(target_2)}`")
+            if risk_reward:
+                plan_parts.append(f"R:R `{_esc(risk_reward)}`")
+            if plan_parts:
+                lines.append(f"  {' | '.join(plan_parts)}")
+            # Entry trigger and invalidation on their own lines
             if entry_trigger:
-                lines.append(f"  *Trigger:* _{_esc(entry_trigger)}_")
-
+                lines.append(f"  ▶ _{_esc(entry_trigger)}_")
             if invalidation:
-                lines.append(f"  *Invalidation:* _{_esc(invalidation)}_")
+                lines.append(f"  ✖ _{_esc(invalidation)}_")
 
+        # Thesis — one-sentence punchline at the bottom of the AI section
         if reason:
-            lines.append(f"  *Thesis:* _{_esc(str(reason).strip())}_")
+            lines.append(f"  💬 _{_esc(str(reason).strip())}_")
 
-        if exit_adv and not is_no_trade:
-            lines.append(f"  *Exit Signal:* {_esc(str(exit_adv).strip())}")
+        # Catalyst only if meaningful
+        _catalyst = gv("catalyst") or ""
+        if _catalyst and str(_catalyst).lower() not in (
+            "no major catalyst",
+            "none",
+            "",
+        ):
+            lines.append(f"  📅 {_esc(str(_catalyst).strip())}")
+
+        # Exit advice
+        if exit_adv and str(exit_adv).strip():
+            lines.append(f"  🛡️ Exit: _{_esc(str(exit_adv).strip())}_")
 
     if news and str(news).lower() not in ("no news data", "", "none"):
-        lines.append(f"  *News:* {_esc(str(news).strip())}")
+        lines.append(f"  📰 {_esc(str(news).strip())}")
 
     lines.append("")
 
@@ -1832,7 +2235,9 @@ def build_llm_consolidated_digest(
     # ═══════════════════════════════════════════
     lines.append("📈 *MARKET PULSE*")
     lines.append(f"  OI Δ: {_oi_summary_line(ce_net, pe_net)}")
-    lines.append(f"  Candles: 1H {c1} {_arrow_candle(c1)} | 3H {c3} {_arrow_candle(c3)}")
+    lines.append(
+        f"  Candles: 1H {c1} {_arrow_candle(c1)} | 3H {c3} {_arrow_candle(c3)}"
+    )
     lines.append(f"  Levels: {levels_str}")
 
     if sev_parts:
@@ -1846,7 +2251,9 @@ def build_llm_consolidated_digest(
     # ═══════════════════════════════════════════
     # SECTION 4 — BOT ACTION  (what happened)
     # ═══════════════════════════════════════════
-    bot_lines = _bot_action_block(paper_trade_status, live_trade_status, conflict_tag=conflict_tag)
+    bot_lines = _bot_action_block(
+        paper_trade_status, live_trade_status, conflict_tag=conflict_tag
+    )
     if bot_lines:
         lines.append("🤖 *BOT ACTION*")
         for bl in bot_lines:
@@ -1877,23 +2284,42 @@ def build_digest_wrapper(
 ) -> tuple[str, str]:
     if llm_verdict or exit_advice:
         return build_llm_consolidated_digest(
-            symbol, alerts, fetched_at, scan_context,
-            detected_count, dedup_suppressed_count, digest_id,
-            paper_trade_status, live_trade_status, llm_verdict,
-            exit_advice=exit_advice
+            symbol,
+            alerts,
+            fetched_at,
+            scan_context,
+            detected_count,
+            dedup_suppressed_count,
+            digest_id,
+            paper_trade_status,
+            live_trade_status,
+            llm_verdict,
+            exit_advice=exit_advice,
         )
     if USE_ENHANCED_TEMPLATE:
         return build_enhanced_digest(
-            symbol, alerts, fetched_at, scan_context, intelligence_text,
-            detected_count, dedup_suppressed_count, digest_id=digest_id,
+            symbol,
+            alerts,
+            fetched_at,
+            scan_context,
+            intelligence_text,
+            detected_count,
+            dedup_suppressed_count,
+            digest_id=digest_id,
             paper_trade_status=paper_trade_status,
             live_trade_status=live_trade_status,
             llm_verdict=None,
             exit_advice=exit_advice,
         )
     return build_digest(
-        symbol, alerts, fetched_at, scan_context, intelligence_text,
-        detected_count, dedup_suppressed_count, digest_id=digest_id,
+        symbol,
+        alerts,
+        fetched_at,
+        scan_context,
+        intelligence_text,
+        detected_count,
+        dedup_suppressed_count,
+        digest_id=digest_id,
         paper_trade_status=paper_trade_status,
         live_trade_status=live_trade_status,
         llm_verdict=None,

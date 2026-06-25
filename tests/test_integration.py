@@ -28,7 +28,7 @@ class TestPipelineIntegration:
     def test_pipeline_persists_snapshots(self, sample_oc_nifty):
         from src.models.schema import get_latest_snapshots_for_symbol
         self._run_with_oc(sample_oc_nifty, "NIFTY")
-        rows = get_latest_snapshots_for_symbol("NIFTY", "2025-06-26")
+        rows = get_latest_snapshots_for_symbol("NIFTY", "2030-06-26")
         assert len(rows) > 0
         assert all(r["symbol"] == "NIFTY" for r in rows)
 
@@ -98,13 +98,13 @@ class TestPipelineIntegration:
             from src.engine.pipeline import run_pipeline
             run_pipeline(symbols=["NIFTY"])
 
-        rows = get_latest_snapshots_for_symbol("NIFTY", "2025-06-26")
+        rows = get_latest_snapshots_for_symbol("NIFTY", "2030-06-26")
         assert len(rows) > 0
 
     def test_pipeline_banknifty_independent(self, sample_oc_banknifty):
         from src.models.schema import get_latest_snapshots_for_symbol
         self._run_with_oc(sample_oc_banknifty, "BANKNIFTY")
-        rows = get_latest_snapshots_for_symbol("BANKNIFTY", "2025-06-26")
+        rows = get_latest_snapshots_for_symbol("BANKNIFTY", "2030-06-26")
         assert len(rows) > 0
 
     def test_alert_json_is_valid(self, sample_oc_nifty):
@@ -131,7 +131,7 @@ class TestPipelineIntegration:
             mock_chart.return_value.fetch.side_effect = Exception("Chart fetch crash")
             from src.engine.pipeline import run_pipeline
             run_pipeline(symbols=["NIFTY"])
-        rows = get_latest_snapshots_for_symbol("NIFTY", "2025-06-26")
+        rows = get_latest_snapshots_for_symbol("NIFTY", "2030-06-26")
         assert len(rows) > 0
 
     def test_pipeline_continues_when_process_symbol_crashes(self):
@@ -211,7 +211,7 @@ class TestFetcherRouter:
         from src.fetchers.router import fetch_option_chain
         mock_data = {
             "symbol": "NIFTY", "underlying_price": 22000.0,
-            "expiry": "2025-06-26", "strikes": [
+            "expiry": "2030-06-26", "strikes": [
                 {"strike": 22000, "option_type": "CE", "oi": 100000,
                  "ltp": 120, "iv": 15, "oi_change": 0, "volume": 0, "bid": 119, "ask": 121}
             ], "source": "dhan"
@@ -230,7 +230,7 @@ class TestFetcherRouter:
         call_order = []
         mock_data = {
             "symbol": "NIFTY", "underlying_price": 22000.0,
-            "expiry": "2025-06-26", "strikes": [
+            "expiry": "2030-06-26", "strikes": [
                 {"strike": 22000, "option_type": "CE", "oi": 1, "ltp": 1,
                  "iv": 0, "oi_change": 0, "volume": 0, "bid": 0, "ask": 0}
             ], "source": "nse_public"
@@ -275,7 +275,7 @@ class TestTelegramFormatter:
             "alert_type":  alert_type,
             "strike":      22000.0,
             "option_type": "CE",
-            "expiry":      "2025-06-26",
+            "expiry":      "2030-06-26",
             "detail_json": json.dumps(detail),
             "telegram_sent": 0,
         }

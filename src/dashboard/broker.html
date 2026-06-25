@@ -1680,7 +1680,7 @@ function fetchTopbarCMPs() {
   fetch("/api/topbar_cmps")
     .then(r => r.json())
     .then(data => {
-      const symbols = ["NIFTY", "BANKNIFTY", "NATURALGAS", "CRUDEOIL"];
+      const symbols = ["NIFTY", "BANKNIFTY", "SENSEX", "NATURALGAS", "CRUDEOIL"];
       const formatNum = (val) => val !== null ? val.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2}) : '—';
       
       symbols.forEach(sym => {
@@ -2130,6 +2130,7 @@ function fetchPositions() {
 function getBaseSymbol(sym) {
   if (!sym) return "";
   sym = sym.toUpperCase();
+  if (sym.startsWith("SENSEX")) return "SENSEX";
   if (sym.startsWith("NATURALGAS")) return "NATURALGAS";
   if (sym.startsWith("NIFTY")) return "NIFTY";
   if (sym.startsWith("BANKNIFTY")) return "BANKNIFTY";

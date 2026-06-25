@@ -1065,13 +1065,37 @@ html[data-env="off"]::before {
         <!-- Card 2: Symbol Lot & Trade Controls -->
         <div class="card" id="broker-lots-card">
           <div class="card-title">
-            <span>📊 Broker (Live) Symbol & Trade Controls</span>
-            <span class="info-icon" data-tooltip="Enable/disable broker trades and set default lots for each symbol. Inactive during paper testing.">i</span>
+            <span>📊 Broker/Shadow Symbol Lot Controls</span>
+            <span class="info-icon" data-tooltip="Enable/disable broker routing and set default lots per symbol for Shadow and Live execution.">i</span>
           </div>
           <p style="font-size: 12px; color: var(--text-dim); margin-bottom: 20px; line-height: 1.4;">
-            Enable or disable broker order routing and set default lots for each watch symbol.
+            Enable or disable broker order routing and set default lots for each watch symbol (Shadow and Live).
           </p>
           <div class="symbol-lots-list" id="lots-container">
+            <!-- Dynamically populated by JS -->
+          </div>
+        </div>
+
+        <!-- Card 3: Paper Symbol Lot Controls -->
+        <div class="card" id="paper-lots-card">
+          <div class="card-title">
+            <span>📝 Paper Symbol Lot Controls</span>
+            <span class="info-icon" data-tooltip="Per-symbol lot sizes for paper trades. Editable only when Paper mode (Broker Off) is active.">i</span>
+          </div>
+          <p id="paper-lots-note" style="font-size: 12px; color: var(--text-dim); margin-bottom: 20px; line-height: 1.4;">
+            Set default paper lots per symbol. Active when Paper mode (Broker Off) is selected.
+          </p>
+          <div class="form-group" style="margin-bottom: 16px;">
+            <label style="display:inline-flex; align-items:center;">
+              Global Paper Fallback
+              <span class="info-icon" data-tooltip="Used when a symbol has no per-symbol paper lot override.">i</span>
+            </label>
+            <div class="input-with-suffix">
+              <input type="number" id="sett-paper-lots-global" min="1" max="100" required>
+              <span class="suffix">Lots</span>
+            </div>
+          </div>
+          <div class="symbol-lots-list" id="paper-lots-container">
             <!-- Dynamically populated by JS -->
           </div>
         </div>
@@ -1126,6 +1150,7 @@ html[data-env="off"]::before {
 
 <script>
 let runtimeConfig = {};
+const TRADE_CONTROL_SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "NATURALGAS", "CRUDEOIL"];
 
 document.addEventListener("DOMContentLoaded", () => {
   // Wire theme toggle
@@ -1228,7 +1253,9 @@ function setEnvironmentMode(mode) {
 }
 
 function updateSafetyZoneUI(isShadow, isBrokerDisabled) {
-  const riskColumn = document.getElementById("right-risk-column");
+  const riskCard = document.getElementById("broker-risk-card");
+  const brokerLotsCard = document.getElementById("broker-lots-card");
+  const paperLotsCard = document.getElementById("paper-lots-card");
   const btnShadow = document.getElementById("btn-env-shadow");
   const btnLive = document.getElementById("btn-env-live");
   const btnOff = document.getElementById("btn-env-off");
@@ -1243,6 +1270,9 @@ function updateSafetyZoneUI(isShadow, isBrokerDisabled) {
     envMode = 'live';
   }
 
+  const isPaperModeOn = envMode === 'off';
+  const isLiveMode = envMode === 'live';
+
   document.body.setAttribute('data-env', envMode);
   document.documentElement.setAttribute('data-env', envMode);
 
@@ -1250,19 +1280,96 @@ function updateSafetyZoneUI(isShadow, isBrokerDisabled) {
     if (btnShadow) btnShadow.classList.add("active");
     if (btnLive) btnLive.classList.remove("active");
     if (btnOff) btnOff.classList.remove("active");
-    if (riskColumn) riskColumn.classList.add("dormant");
   } else if (envMode === 'live') {
     if (btnShadow) btnShadow.classList.remove("active");
     if (btnLive) btnLive.classList.add("active");
     if (btnOff) btnOff.classList.remove("active");
-    if (riskColumn) riskColumn.classList.remove("dormant");
   } else {
-    // off
     if (btnShadow) btnShadow.classList.remove("active");
     if (btnLive) btnLive.classList.remove("active");
     if (btnOff) btnOff.classList.add("active");
-    if (riskColumn) riskColumn.classList.add("dormant");
   }
+
+  // Per-card dormant state (avoid column-wide pointer-events blocking Paper controls)
+  if (riskCard) riskCard.classList.toggle("dormant", !isLiveMode);
+  if (brokerLotsCard) brokerLotsCard.classList.toggle("dormant", isPaperModeOn);
+  if (paperLotsCard) paperLotsCard.classList.toggle("dormant", !isPaperModeOn);
+
+  updatePaperLotsModeUI(isPaperModeOn);
+}
+
+function updatePaperLotsModeUI(isPaperModeOn) {
+  const note = document.getElementById("paper-lots-note");
+  const paperCard = document.getElementById("paper-lots-card");
+  const globalInput = document.getElementById("sett-paper-lots-global");
+  const paperContainer = document.getElementById("paper-lots-container");
+
+  if (note) {
+    if (isPaperModeOn) {
+      note.textContent = "Paper mode is active — configure per-symbol paper lots below.";
+    } else {
+      note.textContent = "Paper mode is off (Shadow or Live selected) — paper trades use Broker/Shadow symbol lots above.";
+    }
+  }
+
+  const disablePaperInputs = !isPaperModeOn;
+  if (globalInput) globalInput.disabled = disablePaperInputs;
+  if (paperContainer) {
+    paperContainer.querySelectorAll("input").forEach(input => {
+      input.disabled = disablePaperInputs;
+    });
+  }
+  if (paperCard) {
+    paperCard.setAttribute("aria-disabled", disablePaperInputs ? "true" : "false");
+  }
+}
+
+function renderSymbolLotsContainer(containerId, lotsObj, namePrefix, includeEnableCheckbox, enabledSymbols) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  let html = "";
+  TRADE_CONTROL_SYMBOLS.forEach(sym => {
+    const currentLot = lotsObj[sym] || 1;
+    if (includeEnableCheckbox) {
+      const isChecked = (enabledSymbols || []).includes(sym) ? "checked" : "";
+      html += `
+        <div class="symbol-lot-item" style="display:flex; justify-content:space-between; align-items:center; gap: 8px;">
+          <div style="display:flex; align-items:center; gap:10px;">
+            <input type="checkbox" name="enable-${sym}" ${isChecked} style="width:16px; height:16px; cursor:pointer; accent-color:var(--accent);">
+            <label>${sym}</label>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-size:11px; color:var(--text-dim);">Lots:</span>
+            <input type="number" name="${namePrefix}-${sym}" min="1" max="100" value="${currentLot}" required style="width:60px; padding:4px 8px; border-radius:6px; text-align:right;">
+          </div>
+        </div>
+      `;
+    } else {
+      html += `
+        <div class="symbol-lot-item" style="display:flex; justify-content:space-between; align-items:center; gap: 8px;">
+          <label>${sym}</label>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-size:11px; color:var(--text-dim);">Lots:</span>
+            <input type="number" name="${namePrefix}-${sym}" min="1" max="100" value="${currentLot}" required style="width:60px; padding:4px 8px; border-radius:6px; text-align:right;">
+          </div>
+        </div>
+      `;
+    }
+  });
+  container.innerHTML = html;
+}
+
+function collectLotsFromContainer(containerId, namePrefix) {
+  const lots = {};
+  const container = document.getElementById(containerId);
+  if (!container) return lots;
+  const inputs = container.querySelectorAll(`input[name^='${namePrefix}-']`);
+  inputs.forEach(input => {
+    const sym = input.name.replace(`${namePrefix}-`, "");
+    lots[sym] = parseInt(input.value, 10);
+  });
+  return lots;
 }
 
 function switchSubTab(tabName) {
@@ -1373,7 +1480,9 @@ function checkDirty() {
     parseFloat(document.getElementById("sett-direct-kite-sl").value) !== (runtimeConfig.direct_kite_default_sl_pct || 30.0) ||
     parseFloat(document.getElementById("sett-direct-kite-tgt").value) !== (runtimeConfig.direct_kite_default_tgt_pct || 50.0) ||
     isLotsDirty() ||
-    isSymbolsDirty()
+    isPaperLotsDirty() ||
+    isSymbolsDirty() ||
+    parseInt(document.getElementById("sett-paper-lots-global")?.value || "0", 10) !== (runtimeConfig.paper_lots || 10)
   );
 
   const banner = document.getElementById("unsaved-banner");
@@ -1395,11 +1504,26 @@ function isLotsDirty() {
   const lotsObj = runtimeConfig.live_symbol_lots || {};
   const container = document.getElementById("lots-container");
   if (!container) return false;
-  const inputs = container.querySelectorAll("input[type='number']");
+  const inputs = container.querySelectorAll("input[name^='lot-']");
   let dirty = false;
   inputs.forEach(input => {
     const sym = input.name.replace("lot-", "");
-    if (parseInt(input.value) !== (lotsObj[sym] || 1)) {
+    if (parseInt(input.value, 10) !== (lotsObj[sym] || 1)) {
+      dirty = true;
+    }
+  });
+  return dirty;
+}
+
+function isPaperLotsDirty() {
+  const lotsObj = runtimeConfig.paper_symbol_lots || {};
+  const container = document.getElementById("paper-lots-container");
+  if (!container) return false;
+  const inputs = container.querySelectorAll("input[name^='paper-lot-']");
+  let dirty = false;
+  inputs.forEach(input => {
+    const sym = input.name.replace("paper-lot-", "");
+    if (parseInt(input.value, 10) !== (lotsObj[sym] || runtimeConfig.paper_lots || 10)) {
       dirty = true;
     }
   });
@@ -1408,8 +1532,7 @@ function isLotsDirty() {
 
 function getEnabledSymbolsFromUI() {
   const enabled = [];
-  const symbolsList = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NATURALGAS", "CRUDEOIL"];
-  symbolsList.forEach(sym => {
+  TRADE_CONTROL_SYMBOLS.forEach(sym => {
     const cb = document.querySelector(`input[name="enable-${sym}"]`);
     if (cb && cb.checked) {
       enabled.push(sym);
@@ -1518,31 +1641,25 @@ function fetchSettings() {
       updateAIDecisionFields();
 
       // Render lot overrides and checkboxes
-      const lotsContainer = document.getElementById("lots-container");
-      if (lotsContainer) {
-        let lotsHtml = "";
-        const symbolsList = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NATURALGAS", "CRUDEOIL"];
-        const lotsObj = data.live_symbol_lots || {};
-        const enabledSymbols = data.live_enabled_broker_symbols || ["NIFTY", "BANKNIFTY", "NATURALGAS", "CRUDEOIL"];
-        
-        symbolsList.forEach(sym => {
-          const currentLot = lotsObj[sym] || 1;
-          const isChecked = enabledSymbols.includes(sym) ? "checked" : "";
-          lotsHtml += `
-            <div class="symbol-lot-item" style="display:flex; justify-content:space-between; align-items:center; gap: 8px;">
-              <div style="display:flex; align-items:center; gap:10px;">
-                <input type="checkbox" name="enable-${sym}" ${isChecked} style="width:16px; height:16px; cursor:pointer; accent-color:var(--accent);">
-                <label>${sym}</label>
-              </div>
-              <div style="display:flex; align-items:center; gap:8px;">
-                <span style="font-size:11px; color:var(--text-dim);">Lots:</span>
-                <input type="number" name="lot-${sym}" min="1" max="100" value="${currentLot}" required style="width:60px; padding:4px 8px; border-radius:6px; text-align:right;">
-              </div>
-            </div>
-          `;
-        });
-        lotsContainer.innerHTML = lotsHtml;
-      }
+      renderSymbolLotsContainer(
+        "lots-container",
+        data.live_symbol_lots || {},
+        "lot",
+        true,
+        data.live_enabled_broker_symbols || ["NIFTY", "BANKNIFTY", "NATURALGAS", "CRUDEOIL"]
+      );
+
+      const paperGlobalInput = document.getElementById("sett-paper-lots-global");
+      if (paperGlobalInput) paperGlobalInput.value = data.paper_lots || 10;
+
+      renderSymbolLotsContainer(
+        "paper-lots-container",
+        data.paper_symbol_lots || {},
+        "paper-lot",
+        false,
+        []
+      );
+      updateSafetyZoneUI(data.live_shadow_mode, data.live_broker_disabled || false);
       
       // Reset dirty state indicators
       const unsavedBanner = document.getElementById("unsaved-banner");
@@ -1569,15 +1686,8 @@ function fetchSettings() {
 function saveSettings(e) {
   if (e) e.preventDefault();
   
-  const lots = {};
-  const container = document.getElementById("lots-container");
-  if (container) {
-    const inputs = container.querySelectorAll("input[type='number']");
-    inputs.forEach(input => {
-      const sym = input.name.replace("lot-", "");
-      lots[sym] = parseInt(input.value);
-    });
-  }
+  const lots = collectLotsFromContainer("lots-container", "lot");
+  const paperLots = collectLotsFromContainer("paper-lots-container", "paper-lot");
   
   const enabledSymbols = getEnabledSymbolsFromUI();
   
@@ -1595,6 +1705,8 @@ function saveSettings(e) {
     oi_spike_threshold_pct: parseFloat(document.getElementById("sett-oi-spike").value),
     price_spike_threshold_pct: parseFloat(document.getElementById("sett-price-spike").value),
     live_symbol_lots: lots,
+    paper_symbol_lots: paperLots,
+    paper_lots: parseInt(document.getElementById("sett-paper-lots-global").value, 10),
     live_enabled_broker_symbols: enabledSymbols,
     live_ai_decision_mode: document.getElementById("sett-ai-decision-mode").value,
     live_ai_exit_advisor_enabled: document.getElementById("sett-ai-exit-enabled").checked,

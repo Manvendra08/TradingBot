@@ -685,10 +685,17 @@ def detect_anomalies(oc_data: dict, fetched_at: str, chart_indicators: dict | No
             top_oi_delta = {"strike": row["strike"], "option_type": row["option_type"], "pct": pct}
 
     prev_pcr = _compute_pcr(prev_snaps) if prev_snaps else None
-    prev_und = get_previous_underlying_before(symbol, fetched_at)
-    prev_price = prev_und["price"] if prev_und else None
+    prev_price = None
+    if prev_snaps:
+        prev_price = prev_snaps[0].get("underlying_price")
+    if prev_price is None:
+        prev_und = get_previous_underlying_before(symbol, fetched_at)
+        prev_price = prev_und["price"] if prev_und else None
     price_change_points = round(float(underlying or 0) - float(prev_price or 0), 4) if prev_price is not None else 0.0
     levels = _key_levels(strikes, underlying)
+    curr_mp = levels.get("max_pain")
+    prev_mp = _compute_max_pain(prev_snaps) if prev_snaps else None
+    mp_change = (curr_mp - prev_mp) if (curr_mp is not None and prev_mp is not None) else 0.0
 
     scan_context = {
         "symbol": symbol,
@@ -702,7 +709,8 @@ def detect_anomalies(oc_data: dict, fetched_at: str, chart_indicators: dict | No
         "ce_oi_change": total_ce_oi - prev_ce_oi,
         "pe_oi_change": total_pe_oi - prev_pe_oi,
         "pcr": pcr,
-        "max_pain": levels.get("max_pain"),
+        "max_pain": curr_mp,
+        "max_pain_change": mp_change,
         "support": levels.get("support"),
         "resistance": levels.get("resistance"),
         "atm_strike": atm,

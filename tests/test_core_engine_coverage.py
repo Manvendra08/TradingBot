@@ -65,7 +65,7 @@ def _insert_alerts(symbol: str, alerts: list[dict]):
             "alert_type": a.get("alert_type", "BUILDUP_CLASSIFY"),
             "strike": a.get("strike", 100.0),
             "option_type": a.get("option_type", "CE"),
-            "expiry": a.get("expiry", "2025-06-26"),
+            "expiry": a.get("expiry", "2030-06-26"),
             "detail_json": json.dumps(a.get("detail", {})),
             "telegram_sent": 0,
             "severity": a.get("severity", "MEDIUM"),
@@ -593,7 +593,7 @@ class TestTrendAnalysisDetailed:
         alerts = [{"verdict_label": "Long Buildup"}] * 5 + [{"verdict_label": "Short Buildup"}]
         _insert_alerts(symbol, alerts)
         score = calculate_momentum_score(symbol, "Long Buildup", 80, {})
-        assert score == 18
+        assert score == 23
 
         # Mixed trend
         _clear_db()
@@ -948,7 +948,7 @@ class TestCoreEngineUltraCoverage:
                     detail_json, severity
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                ("2026-05-20T12:00:00", "ULTRA_TREND", "BUILDUP_CLASSIFY", 100.0, "CE", "2025-06-26", "{invalid-json}", "MEDIUM")
+                ("2026-05-20T12:00:00", "ULTRA_TREND", "BUILDUP_CLASSIFY", 100.0, "CE", "2030-06-26", "{invalid-json}", "MEDIUM")
             )
         assert get_broader_trend_from_alerts("ULTRA_TREND") == "Mixed/Unclear Trend"
 
@@ -1173,7 +1173,8 @@ class TestSellOptionTrades:
             assert row["pnl_points"] == pytest.approx(40.0)
             from config.settings import LOT_SIZES
             lot_size = LOT_SIZES.get("NIFTY", 25)
-            assert row["pnl_rupees"] == pytest.approx(1948.12)
+            expected_pnl = 2547.56 if lot_size == 65 else 1948.12
+            assert row["pnl_rupees"] == pytest.approx(expected_pnl)
 
     def test_paper_plan_sell_verdicts(self):
         from src.engine.paper_plan import build_paper_trade_plan

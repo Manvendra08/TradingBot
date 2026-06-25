@@ -55,8 +55,8 @@ def _download_dhan_master_if_needed() -> str:
     return dest_path
 
 
-def _resolve_from_master_csv(symbol: str) -> int | None:
-    """Query local Dhan master CSV to find the near-month FUTCOM contract ID for MCX."""
+def _resolve_from_master_csv(symbol: str, target_year: int | None = None, target_month: int | None = None) -> int | None:
+    """Query local Dhan master CSV to find the FUTCOM contract ID for MCX."""
     try:
         csv_path = _download_dhan_master_if_needed()
         if not os.path.exists(csv_path):
@@ -86,6 +86,28 @@ def _resolve_from_master_csv(symbol: str) -> int | None:
             log.warning("No MCX FUTCOM instruments found in Dhan master for %s", symbol)
             return None
             
+        # If target month is specified, filter for it
+        if target_year is not None and target_month is not None:
+            filtered_matches = []
+            for m in matches:
+                try:
+                    parts = m["expiry"].split()[0].split("-")
+                    y = int(parts[0])
+                    mon = int(parts[1])
+                    if y == target_year and mon == target_month:
+                        filtered_matches.append(m)
+                except Exception:
+                    continue
+            if filtered_matches:
+                best_match = filtered_matches[0]
+                log.info(
+                    "[resolver] Resolved target-month Dhan ID for MCX %s via master CSV: %d (%s, Expiry: %s)",
+                    symbol, best_match["sec_id"], best_match["trading_symbol"], best_match["expiry"]
+                )
+                return best_match["sec_id"]
+            else:
+                log.warning("No FUTCOM instruments found in Dhan master for %s matching %d-%02d", symbol, target_year, target_month)
+                
         # Filter for future/today expiries
         valid_matches = [m for m in matches if m["expiry"] >= now_str]
         if not valid_matches:
@@ -105,7 +127,7 @@ def _resolve_from_master_csv(symbol: str) -> int | None:
         return None
 
 
-def get_dhan_security_id(symbol: str) -> int | None:
+def get_dhan_security_id(symbol: str, target_expiry: str | None = None) -> int | None:
     """
     Dynamically resolve the current front-month Dhan security ID for commodities,
     falling back to config.settings.DHAN_SECURITY_IDS if resolution fails.
@@ -116,9 +138,27 @@ def get_dhan_security_id(symbol: str) -> int | None:
     if symbol in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"):
         return DHAN_SECURITY_IDS.get(symbol)
         
-    if symbol in _CACHE:
-        return _CACHE[symbol]
+    target_year = None
+    target_month = None
+    if target_expiry:
+        try:
+            parts = target_expiry.split("-")
+            target_year = int(parts[0])
+            target_month = int(parts[1])
+        except Exception:
+            pass
+
+    cache_key = (symbol, target_year, target_month)
+    if cache_key in _CACHE:
+        return _CACHE[cache_key]
         
+    # If target expiry is requested, go straight to master CSV first to ensure we get the correct month
+    if target_year is not None and target_month is not None:
+        sec_id = _resolve_from_master_csv(symbol, target_year, target_month)
+        if sec_id:
+            _CACHE[cache_key] = sec_id
+            return sec_id
+
     slug = _SYMBOL_SLUGS.get(symbol)
     if slug:
         url = f"https://dhan.co/commodity/{slug}-option-chain/"
@@ -142,7 +182,7 @@ def get_dhan_security_id(symbol: str) -> int | None:
                     sec_id_val = scrip_info.get("sid") or scrip_info.get("scripId") or scrip_info.get("nr_f_sid")
                     if sec_id_val:
                         sec_id = int(sec_id_val)
-                        _CACHE[symbol] = sec_id
+                        _CACHE[cache_key] = sec_id
                         log.info("[resolver] Dynamically resolved Dhan security ID for %s: %d", symbol, sec_id)
                         return sec_id
                     
@@ -150,7 +190,7 @@ def get_dhan_security_id(symbol: str) -> int | None:
             match_sid = re.search(r'"(?:scripId|sid)"\s*:\s*(\d+)', html)
             if match_sid:
                 sec_id = int(match_sid.group(1))
-                _CACHE[symbol] = sec_id
+                _CACHE[cache_key] = sec_id
                 log.info("[resolver] Dynamically resolved Dhan security ID (regex fallback) for %s: %d", symbol, sec_id)
                 return sec_id
                 
@@ -158,9 +198,9 @@ def get_dhan_security_id(symbol: str) -> int | None:
             log.warning("[resolver] Dynamic Dhan web scraping failed for %s: %s", symbol, e)
             
     # 2. Try dynamic scrip master CSV resolution (robust secondary backup)
-    sec_id = _resolve_from_master_csv(symbol)
+    sec_id = _resolve_from_master_csv(symbol, target_year, target_month)
     if sec_id:
-        _CACHE[symbol] = sec_id
+        _CACHE[cache_key] = sec_id
         return sec_id
         
     # Check if the fallback is stale to avoid silent data failures

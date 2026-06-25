@@ -243,7 +243,7 @@ class DhanHeadlessFetcher:
 
     name = "dhan_headless"
 
-    def fetch_option_chain(self, symbol: str) -> dict | None:
+    def fetch_option_chain(self, symbol: str, expiry: str | None = None) -> dict | None:
         base = symbol.upper().split()[0]
         if base not in _DHAN_SYMBOL_MAP:
             log.warning("[dhan_headless] unsupported symbol: %s", symbol)

@@ -55,11 +55,15 @@ def _parse_int(text: str) -> Optional[int]:
     return int(val) if val is not None else None
 
 
-def _get_live_future_price(base_symbol: str) -> Optional[float]:
+def _get_live_future_price(base_symbol: str, target_expiry: Optional[str] = None) -> Optional[float]:
     try:
-        from src.fetchers.dhan_commodity_fetcher import DhanCommodityFetcher
+        from src.fetchers.dhan_commodity_fetcher import DhanCommodityFetcher, _get_open_futures_expiry
         from src.utils.dhan_resolver import get_dhan_security_id
-        secid = get_dhan_security_id(base_symbol)
+        
+        open_fut_expiry = _get_open_futures_expiry(base_symbol)
+        futures_target_expiry = open_fut_expiry or target_expiry
+        
+        secid = get_dhan_security_id(base_symbol, target_expiry=futures_target_expiry)
         if secid:
             fetcher = DhanCommodityFetcher()
             val = fetcher._fetch_builtup_live_price(secid)
@@ -71,10 +75,10 @@ def _get_live_future_price(base_symbol: str) -> Optional[float]:
     return None
 
 
-def _fetch_nse_commodity_spot(symbol: str) -> Optional[float]:
+def _fetch_nse_commodity_spot(symbol: str, requested_expiry: Optional[str] = None) -> Optional[float]:
     # For MCX commodities, we focus on the active Future contract price.
     # Spot rates from NSE are not relevant to options pricing.
-    val = _get_live_future_price(symbol)
+    val = _get_live_future_price(symbol, target_expiry=requested_expiry)
     if val:
         return val
     return None
@@ -123,7 +127,9 @@ def _fetch_side_sync(base_symbol: str, sym_slug: str, requested_expiry: Optional
     url = f"https://www.moneycontrol.com/commodity/option-chain/{sym_slug}?exchange=mcx"
     parsed_strikes = []
     actual_expiry = None
-    underlying_price = _fetch_nse_commodity_spot(base_symbol)
+    underlying_price = None
+    if requested_expiry:
+        underlying_price = _fetch_nse_commodity_spot(base_symbol, requested_expiry)
     keep_strikes: set[float] = set()
 
     with sync_playwright() as pw:
@@ -179,9 +185,16 @@ def _fetch_side_sync(base_symbol: str, sym_slug: str, requested_expiry: Optional
                 return None, None, []
                 
             if not underlying_price:
-                underlying_price = _scrape_moneycontrol_spot(page)
-                if underlying_price:
-                    log.info("[mc] Moneycontrol spot for %s: %.2f", base_symbol, underlying_price)
+                # If no requested expiry was provided, default to the front-month active option contract
+                # from the dropdown to ensure correct future resolution.
+                active_opt_expiry = requested_expiry or (available_expiries[0] if available_expiries else None)
+                if active_opt_expiry:
+                    underlying_price = _fetch_nse_commodity_spot(base_symbol, active_opt_expiry)
+
+                if not underlying_price:
+                    underlying_price = _scrape_moneycontrol_spot(page)
+                    if underlying_price:
+                        log.info("[mc] Moneycontrol spot for %s: %.2f", base_symbol, underlying_price)
             if not underlying_price:
                 log.error("[mc] no spot/underlying found for %s; cannot identify ATM", base_symbol)
                 browser.close()
@@ -357,14 +370,14 @@ class MoneycontrolFetcher:
 
     name = "moneycontrol"
 
-    def fetch_option_chain(self, symbol: str) -> dict | None:
+    def fetch_option_chain(self, symbol: str, expiry: str | None = None) -> dict | None:
         base = symbol.upper().split()[0]
         slug = _MC_SYMBOL_MAP.get(base)
         if not slug:
             log.warning("[mc] unsupported symbol: %s", symbol)
             return None
 
-        actual_expiry, underlying_price, strikes = _fetch_side_sync(base, slug)
+        actual_expiry, underlying_price, strikes = _fetch_side_sync(base, slug, requested_expiry=expiry)
 
         if not strikes:
             log.error("[mc] no data returned for %s", symbol)

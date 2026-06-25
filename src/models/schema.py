@@ -23,10 +23,11 @@ Autopsy fix 4: close_paper_trade() and close_live_trade() now deduct
   The schema does NOT add a gross_pnl_rupees column to avoid a migration — the
   column can be added later when historical comparison is required.
 """
-import sqlite3
+
 import contextlib
 import logging
-from datetime import datetime, timezone, timedelta
+import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from config.settings import DB_PATH
@@ -128,7 +129,14 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     digest_id           TEXT,
     signal_key          TEXT UNIQUE,
     pyramid_level       INTEGER DEFAULT 1,
-    max_favorable_r     REAL DEFAULT 0
+    max_favorable_r     REAL DEFAULT 0,
+    trade_status        TEXT DEFAULT 'TRIGGERED_CORE',
+    setup_type          TEXT,
+    decision_reason     TEXT,
+    confidence_score    INTEGER,
+    entry_quality_score INTEGER,
+    trend_alignment_score INTEGER,
+    regime_score        INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_paper_symbol_status
@@ -248,10 +256,7 @@ CREATE TABLE IF NOT EXISTS ai_pattern_insights (
 CREATE INDEX IF NOT EXISTS idx_pattern_insights_name
     ON ai_pattern_insights (pattern_name);
 
-CREATE INDEX IF NOT EXISTS idx_trades_similarity
-    ON paper_trades (symbol, verdict_label, confidence_score);
 """
-
 
 
 @contextlib.contextmanager
@@ -349,7 +354,9 @@ def init_db() -> None:
                 if "duplicate column" not in str(e).lower():
                     raise
         try:
-            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_trades_signal_key ON paper_trades (signal_key) WHERE signal_key IS NOT NULL")
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_trades_signal_key ON paper_trades (signal_key) WHERE signal_key IS NOT NULL"
+            )
         except sqlite3.OperationalError:
             pass
     log.info("DB initialised at %s", DB_PATH)
@@ -371,7 +378,9 @@ def insert_snapshots(rows: list[dict]) -> int:
     return len(rows)
 
 
-def insert_underlying_price(symbol: str, price: float, pct_change: float | None, fetched_at: str) -> None:
+def insert_underlying_price(
+    symbol: str, price: float, pct_change: float | None, fetched_at: str
+) -> None:
     sql = """
         INSERT INTO underlying_price (fetched_at, symbol, price, pct_change)
         VALUES (?, ?, ?, ?)
@@ -393,7 +402,7 @@ def insert_alert(alert: dict) -> int:
     """
     row_data = {
         **alert,
-        "severity":  alert.get("severity", "LOW"),
+        "severity": alert.get("severity", "LOW"),
         "digest_id": alert.get("digest_id"),
     }
     with get_conn() as conn:
@@ -403,10 +412,14 @@ def insert_alert(alert: dict) -> int:
 
 def mark_telegram_sent(alert_id: int) -> None:
     with get_conn() as conn:
-        conn.execute("UPDATE anomaly_alerts SET telegram_sent=1 WHERE id=?", (alert_id,))
+        conn.execute(
+            "UPDATE anomaly_alerts SET telegram_sent=1 WHERE id=?", (alert_id,)
+        )
 
 
-def get_previous_snapshot(symbol: str, expiry: str, strike: float, option_type: str) -> dict | None:
+def get_previous_snapshot(
+    symbol: str, expiry: str, strike: float, option_type: str
+) -> dict | None:
     sql = """
         SELECT * FROM option_chain_snapshots
         WHERE symbol=? AND expiry=? AND strike=? AND option_type=?
@@ -431,15 +444,59 @@ def get_previous_underlying(symbol: str) -> dict | None:
 
 
 def get_previous_underlying_before(symbol: str, fetched_at: str) -> dict | None:
+    from datetime import datetime, timedelta, timezone
+
+    from config.runtime_config import get_scan_frequency_mcx, get_scan_frequency_nse
+    from config.symbol_classes import get_symbol_class
+
+    class_key = get_symbol_class(symbol)
+    if class_key == "MCX_COMMODITY":
+        freq_min = get_scan_frequency_mcx()
+    else:
+        freq_min = get_scan_frequency_nse()
+
+    try:
+        ts = fetched_at.replace("Z", "+00:00")
+        curr_dt = datetime.fromisoformat(ts)
+        if curr_dt.tzinfo is None:
+            curr_dt = curr_dt.replace(tzinfo=timezone.utc)
+        else:
+            curr_dt = curr_dt.astimezone(timezone.utc)
+    except Exception:
+        curr_dt = datetime.now(timezone.utc)
+
+    target_time = curr_dt - timedelta(minutes=freq_min)
+
     sql = """
         SELECT * FROM underlying_price
         WHERE symbol=? AND fetched_at < ?
         ORDER BY fetched_at DESC
-        LIMIT 1
+        LIMIT 50
     """
     with get_conn() as conn:
-        row = conn.execute(sql, (symbol, fetched_at)).fetchone()
-        return dict(row) if row else None
+        rows = conn.execute(sql, (symbol, fetched_at)).fetchall()
+        if not rows:
+            return None
+
+        best_row = None
+        min_diff = None
+        for r in rows:
+            try:
+                row_str = r["fetched_at"].replace("Z", "+00:00")
+                row_dt = datetime.fromisoformat(row_str)
+                if row_dt.tzinfo is None:
+                    row_dt = row_dt.replace(tzinfo=timezone.utc)
+                else:
+                    row_dt = row_dt.astimezone(timezone.utc)
+
+                diff = abs((row_dt - target_time).total_seconds())
+                if min_diff is None or diff < min_diff:
+                    min_diff = diff
+                    best_row = r
+            except Exception:
+                continue
+
+        return dict(best_row) if best_row else dict(rows[0])
 
 
 def get_latest_snapshots_for_symbol(symbol: str, expiry: str) -> list[dict]:
@@ -456,16 +513,82 @@ def get_latest_snapshots_for_symbol(symbol: str, expiry: str) -> list[dict]:
 
 
 def get_prev_snapshots_bulk(symbol: str, expiry: str) -> dict[tuple, dict]:
-    sql = """
-        SELECT * FROM option_chain_snapshots
-        WHERE symbol=? AND expiry=? AND fetched_at=(
-            SELECT MAX(fetched_at) FROM option_chain_snapshots
-            WHERE symbol=? AND expiry=?
-        )
+    from datetime import datetime, timedelta, timezone
+
+    from config.runtime_config import get_scan_frequency_mcx, get_scan_frequency_nse
+    from config.symbol_classes import get_symbol_class
+
+    class_key = get_symbol_class(symbol)
+    if class_key == "MCX_COMMODITY":
+        freq_min = get_scan_frequency_mcx()
+    else:
+        freq_min = get_scan_frequency_nse()
+
+    now_utc = datetime.now(timezone.utc)
+    target_time = now_utc - timedelta(minutes=freq_min)
+
+    # Fetch distinct fetched_at values to find the one closest to target_time
+    sql_fetched_ats = """
+        SELECT DISTINCT fetched_at FROM option_chain_snapshots
+        WHERE symbol=? AND expiry=?
+        ORDER BY fetched_at DESC
+        LIMIT 50
     """
     with get_conn() as conn:
-        rows = conn.execute(sql, (symbol, expiry, symbol, expiry)).fetchall()
-    return {(r["strike"], r["option_type"]): dict(r) for r in rows}
+        rows = conn.execute(sql_fetched_ats, (symbol, expiry)).fetchall()
+        if not rows:
+            return {}
+
+        fetched_ats = []
+        for r in rows:
+            fetched_at_str = r["fetched_at"]
+            try:
+                fs = fetched_at_str.replace("Z", "+00:00")
+                dt = datetime.fromisoformat(fs)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                else:
+                    dt = dt.astimezone(timezone.utc)
+
+                # Ignore snapshots that are too close to 'now' (e.g. less than 5 seconds ago)
+                # to prevent picking the current scan if it was already inserted.
+                if (now_utc - dt).total_seconds() > 5:
+                    fetched_ats.append((fetched_at_str, dt))
+            except Exception:
+                continue
+
+        if not fetched_ats:
+            # Fallback: if all snapshots were excluded, just pick the absolute latest one
+            sql_fallback = """
+                SELECT * FROM option_chain_snapshots
+                WHERE symbol=? AND expiry=? AND fetched_at=(
+                    SELECT MAX(fetched_at) FROM option_chain_snapshots
+                    WHERE symbol=? AND expiry=?
+                )
+            """
+            fallback_rows = conn.execute(
+                sql_fallback, (symbol, expiry, symbol, expiry)
+            ).fetchall()
+            return {(r["strike"], r["option_type"]): dict(r) for r in fallback_rows}
+
+        # Find the fetched_at closest to target_time
+        best_fetched_at_str = None
+        min_diff = None
+        for fs, dt in fetched_ats:
+            diff = abs((dt - target_time).total_seconds())
+            if min_diff is None or diff < min_diff:
+                min_diff = diff
+                best_fetched_at_str = fs
+
+        # Fetch all snapshots matching this best_fetched_at_str
+        sql_select = """
+            SELECT * FROM option_chain_snapshots
+            WHERE symbol=? AND expiry=? AND fetched_at=?
+        """
+        result_rows = conn.execute(
+            sql_select, (symbol, expiry, best_fetched_at_str)
+        ).fetchall()
+        return {(r["strike"], r["option_type"]): dict(r) for r in result_rows}
 
 
 def get_latest_n_underlying(symbol: str, n: int = 4) -> list[dict]:
@@ -551,8 +674,11 @@ def get_open_timeframe_trades(symbol: str) -> list[dict]:
         return [dict(r) for r in rows]
 
 
-def get_scan_summary_at_least_1h_old(symbol: str, current_fetched_at: str) -> dict | None:
+def get_scan_summary_at_least_1h_old(
+    symbol: str, current_fetched_at: str
+) -> dict | None:
     from datetime import datetime, timedelta
+
     try:
         curr_dt = datetime.fromisoformat(current_fetched_at.replace("Z", "+00:00"))
     except Exception:
@@ -568,7 +694,9 @@ def get_scan_summary_at_least_1h_old(symbol: str, current_fetched_at: str) -> di
         rows = conn.execute(sql, (symbol,)).fetchall()
         for row in rows:
             try:
-                row_dt = datetime.fromisoformat(row["fetched_at"].replace("Z", "+00:00"))
+                row_dt = datetime.fromisoformat(
+                    row["fetched_at"].replace("Z", "+00:00")
+                )
                 if curr_dt - row_dt >= timedelta(hours=1):
                     return dict(row)
             except Exception:
@@ -601,12 +729,18 @@ def get_today_scan_count(symbol: str, current_fetched_at: str) -> int:
     # and query with a BETWEEN so the index on fetched_at is used.
     try:
         ist_midnight = datetime(
-            int(ist_date_str[:4]), int(ist_date_str[5:7]), int(ist_date_str[8:10]),
+            int(ist_date_str[:4]),
+            int(ist_date_str[5:7]),
+            int(ist_date_str[8:10]),
             tzinfo=_IST,
         )
-        window_start_utc = ist_midnight.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
-        window_end_ist   = ist_midnight + timedelta(days=1)
-        window_end_utc   = window_end_ist.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+        window_start_utc = ist_midnight.astimezone(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%S"
+        )
+        window_end_ist = ist_midnight + timedelta(days=1)
+        window_end_utc = window_end_ist.astimezone(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%S"
+        )
     except Exception:
         # Fallback to UTC date LIKE (pre-fix behaviour)
         date_str = current_fetched_at.split("T")[0]
@@ -651,7 +785,6 @@ def get_recent_alerts_for_symbol(symbol: str, limit: int = 50) -> list[dict]:
         return [dict(r) for r in rows]
 
 
-
 def insert_paper_trade(trade: dict) -> int:
     """
     Insert a new paper trade row.
@@ -685,36 +818,52 @@ def insert_paper_trade(trade: dict) -> int:
         RETURNING id
     """
     row_data = {
-        "side":                  trade.get("side", "BUY"),
-        "trade_status":          trade.get("trade_status", "TRIGGERED_CORE"),
-        "setup_type":            trade.get("setup_type"),
-        "decision_reason":       trade.get("decision_reason"),
-        "confidence_score":      trade.get("confidence_score"),
-        "entry_quality_score":   trade.get("entry_quality_score"),
+        "side": trade.get("side", "BUY"),
+        "trade_status": trade.get("trade_status", "TRIGGERED_CORE"),
+        "setup_type": trade.get("setup_type"),
+        "decision_reason": trade.get("decision_reason"),
+        "confidence_score": trade.get("confidence_score"),
+        "entry_quality_score": trade.get("entry_quality_score"),
         "trend_alignment_score": trade.get("trend_alignment_score"),
-        "regime_score":          trade.get("regime_score"),
-        "signal_key":            signal_key,
-        "pyramid_level":         trade.get("pyramid_level", 1),
-        "max_favorable_r":       trade.get("max_favorable_r", 0.0),
+        "regime_score": trade.get("regime_score"),
+        "signal_key": signal_key,
+        "pyramid_level": trade.get("pyramid_level", 1),
+        "max_favorable_r": trade.get("max_favorable_r", 0.0),
         # Phase 0: ML feature columns (captured at trade open time)
-        "price_change_pct":      trade.get("price_change_pct"),
-        "pcr":                   trade.get("pcr"),
-        "ce_oi_change":          trade.get("ce_oi_change"),
-        "pe_oi_change":          trade.get("pe_oi_change"),
-        "underlying":            trade.get("underlying"),
-        "support":               trade.get("support"),
-        "resistance":            trade.get("resistance"),
-        "max_pain":              trade.get("max_pain"),
-        "days_to_expiry":        trade.get("days_to_expiry"),
-        "chart_conflict":        trade.get("chart_conflict"),
-        "rsi_1h":                trade.get("rsi_1h"),
-        "rsi_3h":                trade.get("rsi_3h"),
-        "regime":                trade.get("regime"),
-        **{k: trade.get(k) for k in (
-            "opened_at", "symbol", "expiry", "verdict_label", "option_type", "strike",
-            "entry_underlying", "entry_premium", "sl_underlying", "sl_premium",
-            "target_underlying", "target_premium", "lots", "status", "reason", "digest_id",
-        )},
+        "price_change_pct": trade.get("price_change_pct"),
+        "pcr": trade.get("pcr"),
+        "ce_oi_change": trade.get("ce_oi_change"),
+        "pe_oi_change": trade.get("pe_oi_change"),
+        "underlying": trade.get("underlying"),
+        "support": trade.get("support"),
+        "resistance": trade.get("resistance"),
+        "max_pain": trade.get("max_pain"),
+        "days_to_expiry": trade.get("days_to_expiry"),
+        "chart_conflict": trade.get("chart_conflict"),
+        "rsi_1h": trade.get("rsi_1h"),
+        "rsi_3h": trade.get("rsi_3h"),
+        "regime": trade.get("regime"),
+        **{
+            k: trade.get(k)
+            for k in (
+                "opened_at",
+                "symbol",
+                "expiry",
+                "verdict_label",
+                "option_type",
+                "strike",
+                "entry_underlying",
+                "entry_premium",
+                "sl_underlying",
+                "sl_premium",
+                "target_underlying",
+                "target_premium",
+                "lots",
+                "status",
+                "reason",
+                "digest_id",
+            )
+        },
     }
     with get_conn() as conn:
         row = conn.execute(sql, row_data).fetchone()
@@ -749,6 +898,7 @@ def insert_scan_summary(summary: dict, is_fallback: bool = False) -> None:
 #   Futures: STT 0.01%   on sell-side notional turnover + ₹20 brokerage + ₹5 exchange
 # These are per-leg figures. Round-trip (entry + exit) costs are 2× this amount.
 # Override this function to plug in broker-specific actuals (e.g. Zerodha / Dhan).
+
 
 def _calc_transaction_costs(
     option_type: str,
@@ -796,10 +946,13 @@ def close_paper_trade(
     with get_conn() as conn:
         row = conn.execute(
             "SELECT symbol, expiry, option_type, verdict_label, entry_underlying, entry_premium, lots, strike, side FROM paper_trades WHERE id=? AND status='OPEN'",
-            (trade_id,)
+            (trade_id,),
         ).fetchone()
         if not row:
-            log.debug("close_paper_trade: trade %s not found or already closed, skipping", trade_id)
+            log.debug(
+                "close_paper_trade: trade %s not found or already closed, skipping",
+                trade_id,
+            )
             return
 
         symbol = row["symbol"]
@@ -814,7 +967,12 @@ def close_paper_trade(
         lot_size = LOT_SIZES.get(symbol.upper(), LOT_SIZES.get(symbol, 1))
 
         if option_type in ("CE", "PE"):
-            if entry_premium and entry_premium > 0 and exit_premium and exit_premium > 0:
+            if (
+                entry_premium
+                and entry_premium > 0
+                and exit_premium
+                and exit_premium > 0
+            ):
                 if side == "SELL":
                     pnl_points = entry_premium - exit_premium
                 else:
@@ -823,7 +981,7 @@ def close_paper_trade(
                 strike = float(row["strike"] or 0.0)
                 snap_row = conn.execute(
                     "SELECT ltp FROM option_chain_snapshots WHERE symbol=? AND expiry=? AND strike=? AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
-                    (symbol.upper(), expiry, strike, option_type)
+                    (symbol.upper(), expiry, strike, option_type),
                 ).fetchone()
                 if snap_row:
                     estimated_exit = float(snap_row["ltp"])
@@ -841,6 +999,7 @@ def close_paper_trade(
                 pnl_points = 0.0
         else:
             from src.engine.verdict_sets import is_bearish
+
             if side == "SELL" or verdict_label == "SHORT" or is_bearish(verdict_label):
                 pnl_points = entry_underlying - float(exit_underlying)
             else:
@@ -850,14 +1009,20 @@ def close_paper_trade(
 
         # Autopsy fix 4: deduct transaction costs so pnl_rupees is net.
         tx_cost = _calc_transaction_costs(
-            option_type, side,
+            option_type,
+            side,
             exit_premium if exit_premium is not None else 0.0,
-            exit_underlying, lot_size, lots,
+            exit_underlying,
+            lot_size,
+            lots,
         )
         pnl_rupees = gross_pnl_rupees - tx_cost
         log.debug(
             "close_paper_trade id=%s: gross=%.2f tx_cost=%.2f net=%.2f",
-            trade_id, gross_pnl_rupees, tx_cost, pnl_rupees,
+            trade_id,
+            gross_pnl_rupees,
+            tx_cost,
+            pnl_rupees,
         )
 
         conn.execute(
@@ -866,8 +1031,25 @@ def close_paper_trade(
             SET closed_at=?, exit_underlying=?, exit_premium=?, pnl_points=?, pnl_rupees=?, status=?, reason=?
             WHERE id=? AND status='OPEN'
             """,
-            (closed_at, exit_underlying, exit_premium, round(pnl_points, 4), round(pnl_rupees, 2), status, reason, trade_id),
+            (
+                closed_at,
+                exit_underlying,
+                exit_premium,
+                round(pnl_points, 4),
+                round(pnl_rupees, 2),
+                status,
+                reason,
+                trade_id,
+            ),
         )
+
+    # Phase 1: Invalidate pattern cache after trade close
+    try:
+        from src.engine.paper_trading import _invalidate_pattern_cache
+
+        _invalidate_pattern_cache()
+    except Exception:
+        pass
 
 
 def list_paper_trades(symbol: str | None = None, limit: int = 300) -> list[dict]:
@@ -886,11 +1068,27 @@ def list_paper_trades(symbol: str | None = None, limit: int = 300) -> list[dict]
 def delete_expired_contracts() -> int:
     """Delete expired contract OI data from DB."""
     from datetime import datetime, timezone
+
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     with get_conn() as conn:
-        cur1 = conn.execute("DELETE FROM option_chain_snapshots WHERE expiry < ?", (today,))
+        # Log per-symbol/per-expiry breakdown before deleting
+        before = conn.execute(
+            "SELECT symbol, expiry, COUNT(*) FROM option_chain_snapshots "
+            "WHERE expiry < ? GROUP BY symbol, expiry ORDER BY symbol, expiry",
+            (today,),
+        ).fetchall()
+        for sym, exp, cnt in before:
+            log.info("[db]  Expired: %-15s expiry %s  (%d rows)", sym, exp, cnt)
+
+        cur1 = conn.execute(
+            "DELETE FROM option_chain_snapshots WHERE expiry < ?", (today,)
+        )
         cur2 = conn.execute("DELETE FROM scan_summaries WHERE expiry < ?", (today,))
-        log.info("[db] Deleted %d expired snapshots and %d expired scan summaries.", cur1.rowcount, cur2.rowcount)
+        log.info(
+            "[db] Deleted %d expired snapshots and %d expired scan summaries.",
+            cur1.rowcount,
+            cur2.rowcount,
+        )
         return cur1.rowcount + cur2.rowcount
 
 
@@ -947,41 +1145,57 @@ def insert_live_trade(trade: dict) -> int:
         RETURNING id
     """
     row_data = {
-        "side":                  trade.get("side", "BUY"),
-        "trade_status":          trade.get("trade_status", "TRIGGERED_CORE"),
-        "setup_type":            trade.get("setup_type"),
-        "decision_reason":       trade.get("decision_reason"),
-        "confidence_score":      trade.get("confidence_score"),
-        "entry_quality_score":   trade.get("entry_quality_score"),
+        "side": trade.get("side", "BUY"),
+        "trade_status": trade.get("trade_status", "TRIGGERED_CORE"),
+        "setup_type": trade.get("setup_type"),
+        "decision_reason": trade.get("decision_reason"),
+        "confidence_score": trade.get("confidence_score"),
+        "entry_quality_score": trade.get("entry_quality_score"),
         "trend_alignment_score": trade.get("trend_alignment_score"),
-        "regime_score":          trade.get("regime_score"),
-        "signal_key":            signal_key,
-        "pyramid_level":         trade.get("pyramid_level", 1),
-        "max_favorable_r":       trade.get("max_favorable_r", 0.0),
-        "broker_order_id":       trade.get("broker_order_id"),
-        "gtt_order_id":          trade.get("gtt_order_id"),
-        "broker_status":         trade.get("broker_status", "OPEN"),
-        "broker_message":        trade.get("broker_message"),
-        "exit_mode":             trade.get("exit_mode"),
+        "regime_score": trade.get("regime_score"),
+        "signal_key": signal_key,
+        "pyramid_level": trade.get("pyramid_level", 1),
+        "max_favorable_r": trade.get("max_favorable_r", 0.0),
+        "broker_order_id": trade.get("broker_order_id"),
+        "gtt_order_id": trade.get("gtt_order_id"),
+        "broker_status": trade.get("broker_status", "OPEN"),
+        "broker_message": trade.get("broker_message"),
+        "exit_mode": trade.get("exit_mode"),
         # Phase 0: ML feature columns (captured at trade open time)
-        "price_change_pct":      trade.get("price_change_pct"),
-        "pcr":                   trade.get("pcr"),
-        "ce_oi_change":          trade.get("ce_oi_change"),
-        "pe_oi_change":          trade.get("pe_oi_change"),
-        "underlying":            trade.get("underlying"),
-        "support":               trade.get("support"),
-        "resistance":            trade.get("resistance"),
-        "max_pain":              trade.get("max_pain"),
-        "days_to_expiry":        trade.get("days_to_expiry"),
-        "chart_conflict":        trade.get("chart_conflict"),
-        "rsi_1h":                trade.get("rsi_1h"),
-        "rsi_3h":                trade.get("rsi_3h"),
-        "regime":                trade.get("regime"),
-        **{k: trade.get(k) for k in (
-            "opened_at", "symbol", "expiry", "verdict_label", "option_type", "strike",
-            "entry_underlying", "entry_premium", "sl_underlying", "sl_premium",
-            "target_underlying", "target_premium", "lots", "status", "reason", "digest_id",
-        )},
+        "price_change_pct": trade.get("price_change_pct"),
+        "pcr": trade.get("pcr"),
+        "ce_oi_change": trade.get("ce_oi_change"),
+        "pe_oi_change": trade.get("pe_oi_change"),
+        "underlying": trade.get("underlying"),
+        "support": trade.get("support"),
+        "resistance": trade.get("resistance"),
+        "max_pain": trade.get("max_pain"),
+        "days_to_expiry": trade.get("days_to_expiry"),
+        "chart_conflict": trade.get("chart_conflict"),
+        "rsi_1h": trade.get("rsi_1h"),
+        "rsi_3h": trade.get("rsi_3h"),
+        "regime": trade.get("regime"),
+        **{
+            k: trade.get(k)
+            for k in (
+                "opened_at",
+                "symbol",
+                "expiry",
+                "verdict_label",
+                "option_type",
+                "strike",
+                "entry_underlying",
+                "entry_premium",
+                "sl_underlying",
+                "sl_premium",
+                "target_underlying",
+                "target_premium",
+                "lots",
+                "status",
+                "reason",
+                "digest_id",
+            )
+        },
     }
     with get_conn() as conn:
         row = conn.execute(sql, row_data).fetchone()
@@ -1037,10 +1251,13 @@ def close_live_trade(
     with get_conn() as conn:
         row = conn.execute(
             "SELECT symbol, expiry, option_type, verdict_label, entry_underlying, entry_premium, lots, strike, side FROM live_trades WHERE id=? AND status='OPEN'",
-            (trade_id,)
+            (trade_id,),
         ).fetchone()
         if not row:
-            log.debug("close_live_trade: trade %s not found or already closed, skipping", trade_id)
+            log.debug(
+                "close_live_trade: trade %s not found or already closed, skipping",
+                trade_id,
+            )
             return
 
         symbol = row["symbol"]
@@ -1055,7 +1272,12 @@ def close_live_trade(
         lot_size = LOT_SIZES.get(symbol.upper(), LOT_SIZES.get(symbol, 1))
 
         if option_type in ("CE", "PE"):
-            if entry_premium and entry_premium > 0 and exit_premium and exit_premium > 0:
+            if (
+                entry_premium
+                and entry_premium > 0
+                and exit_premium
+                and exit_premium > 0
+            ):
                 if side == "SELL":
                     pnl_points = entry_premium - exit_premium
                 else:
@@ -1064,7 +1286,7 @@ def close_live_trade(
                 strike = float(row["strike"] or 0.0)
                 snap_row = conn.execute(
                     "SELECT ltp FROM option_chain_snapshots WHERE symbol=? AND expiry=? AND strike=? AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
-                    (symbol.upper(), expiry, strike, option_type)
+                    (symbol.upper(), expiry, strike, option_type),
                 ).fetchone()
                 if snap_row:
                     estimated_exit = float(snap_row["ltp"])
@@ -1082,6 +1304,7 @@ def close_live_trade(
                 pnl_points = 0.0
         else:
             from src.engine.verdict_sets import is_bearish
+
             if side == "SELL" or verdict_label == "SHORT" or is_bearish(verdict_label):
                 pnl_points = entry_underlying - float(exit_underlying)
             else:
@@ -1091,14 +1314,20 @@ def close_live_trade(
 
         # Autopsy fix 4: deduct transaction costs so pnl_rupees is net.
         tx_cost = _calc_transaction_costs(
-            option_type, side,
+            option_type,
+            side,
             exit_premium if exit_premium is not None else 0.0,
-            exit_underlying, lot_size, lots,
+            exit_underlying,
+            lot_size,
+            lots,
         )
         pnl_rupees = gross_pnl_rupees - tx_cost
         log.debug(
             "close_live_trade id=%s: gross=%.2f tx_cost=%.2f net=%.2f",
-            trade_id, gross_pnl_rupees, tx_cost, pnl_rupees,
+            trade_id,
+            gross_pnl_rupees,
+            tx_cost,
+            pnl_rupees,
         )
 
         conn.execute(
@@ -1107,7 +1336,16 @@ def close_live_trade(
             SET closed_at=?, exit_underlying=?, exit_premium=?, pnl_points=?, pnl_rupees=?, status=?, reason=?
             WHERE id=? AND status='OPEN'
             """,
-            (closed_at, exit_underlying, exit_premium, round(pnl_points, 4), round(pnl_rupees, 2), status, reason, trade_id),
+            (
+                closed_at,
+                exit_underlying,
+                exit_premium,
+                round(pnl_points, 4),
+                round(pnl_rupees, 2),
+                status,
+                reason,
+                trade_id,
+            ),
         )
 
 
@@ -1126,23 +1364,30 @@ def list_live_trades(symbol: str | None = None, limit: int = 300) -> list[dict]:
 
 def get_broker_config() -> dict | None:
     with get_conn() as conn:
-        row = conn.execute("SELECT * FROM broker_configs ORDER BY id DESC LIMIT 1").fetchone()
+        row = conn.execute(
+            "SELECT * FROM broker_configs ORDER BY id DESC LIMIT 1"
+        ).fetchone()
         if not row:
             return None
         config = dict(row)
-        
+
         # Decrypt api_secret and access_token with plaintext fallback
         try:
             from src.services.zerodha_auth import _get_fernet
+
             f = _get_fernet()
             if config.get("api_secret"):
                 try:
-                    config["api_secret"] = f.decrypt(config["api_secret"].encode("utf-8")).decode("utf-8")
+                    config["api_secret"] = f.decrypt(
+                        config["api_secret"].encode("utf-8")
+                    ).decode("utf-8")
                 except Exception:
                     pass
             if config.get("access_token"):
                 try:
-                    config["access_token"] = f.decrypt(config["access_token"].encode("utf-8")).decode("utf-8")
+                    config["access_token"] = f.decrypt(
+                        config["access_token"].encode("utf-8")
+                    ).decode("utf-8")
                 except Exception:
                     pass
         except Exception:
@@ -1152,15 +1397,17 @@ def get_broker_config() -> dict | None:
 
 def update_broker_config(**kwargs) -> None:
     from src.services.zerodha_auth import encrypt_secret
-    
+
     kwargs_copy = kwargs.copy()
     if "api_secret" in kwargs_copy and kwargs_copy["api_secret"]:
         kwargs_copy["api_secret"] = encrypt_secret(kwargs_copy["api_secret"])
     if "access_token" in kwargs_copy and kwargs_copy["access_token"]:
         kwargs_copy["access_token"] = encrypt_secret(kwargs_copy["access_token"])
-        
+
     with get_conn() as conn:
-        row = conn.execute("SELECT id FROM broker_configs ORDER BY id DESC LIMIT 1").fetchone()
+        row = conn.execute(
+            "SELECT id FROM broker_configs ORDER BY id DESC LIMIT 1"
+        ).fetchone()
         if row:
             broker_id = row["id"]
             sets = []
@@ -1182,8 +1429,15 @@ def update_broker_config(**kwargs) -> None:
 def set_kill_switch(active: bool) -> None:
     val = 1 if active else 0
     with get_conn() as conn:
-        row = conn.execute("SELECT id FROM broker_configs ORDER BY id DESC LIMIT 1").fetchone()
+        row = conn.execute(
+            "SELECT id FROM broker_configs ORDER BY id DESC LIMIT 1"
+        ).fetchone()
         if row:
-            conn.execute("UPDATE broker_configs SET kill_switch_active=? WHERE id=?", (val, row["id"]))
+            conn.execute(
+                "UPDATE broker_configs SET kill_switch_active=? WHERE id=?",
+                (val, row["id"]),
+            )
         else:
-            conn.execute("INSERT INTO broker_configs (kill_switch_active) VALUES (?)", (val,))
+            conn.execute(
+                "INSERT INTO broker_configs (kill_switch_active) VALUES (?)", (val,)
+            )

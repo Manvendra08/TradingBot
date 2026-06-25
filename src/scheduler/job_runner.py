@@ -2,6 +2,9 @@
 Scheduler loop — runs pipeline on runtime-configured interval.
 Per-symbol market-hours guard: NSE 09:15–15:30, MCX 09:00–23:30.
 Force-scan (--now flag) always bypasses the guard.
+
+Phase 2: Weekly ML training job added (Sunday 2 AM IST fallback).
+Event-driven triggers (20+ trades, edge health < 60) are wired in pipeline.py.
 """
 import logging
 from datetime import datetime
@@ -272,6 +275,12 @@ def start_scheduler(immediate: bool = False):
     )
     # Run a cleanup of expired data on startup
     delete_expired_contracts()
+
+    # ── Phase 2: Weekly ML Training Job ──────────────────────────────────────
+    # AI_INTELLIGENCE_ROADMAP_v3.0 — Weekly fallback retraining (Sunday 2 AM IST)
+    # Event-driven triggers (20+ trades, edge health < 60) are wired separately
+    # in pipeline.py via on_trade_closed() and on_edge_health_alert().
+    _last_ml_training_week: int | None = None  # ISO week number
     
     # ── Instrument cache warm-up at scheduler start ────────────────────────
     cache_warmed_event = threading.Event()
@@ -475,6 +484,24 @@ def start_scheduler(immediate: bool = False):
                     except Exception as exc:
                         log.warning("[scheduler] Periodic instrument cache refresh failed: %s", exc)
                 threading.Thread(target=_refresh_cache, daemon=True, name="instrument-cache-periodic").start()
+
+            # 4. Phase 2: Weekly ML Training Job (Sunday 2 AM IST)
+            # AI_INTELLIGENCE_ROADMAP_v3.0 — Event-driven triggers are handled
+            # separately in pipeline.py via on_trade_closed(). This is the weekly
+            # fallback as a safety net.
+            current_week = now_ist.isocalendar()[1]  # ISO week number
+            is_sunday = now_ist.weekday() == 6  # 0=Monday, 6=Sunday
+            is_2am = 2 <= now_ist.hour < 3  # 2:00-2:59 AM IST
+            if is_sunday and is_2am and _last_ml_training_week != current_week:
+                _last_ml_training_week = current_week
+                log.info("[scheduler] Phase 2: Weekly ML training job triggered (Sunday 2 AM IST)")
+                def _run_weekly_ml_training():
+                    try:
+                        from src.scheduler.ml_training_job import run_weekly_training
+                        run_weekly_training()
+                    except Exception as exc:
+                        log.warning("[scheduler] Weekly ML training failed: %s", exc)
+                threading.Thread(target=_run_weekly_ml_training, daemon=True, name="ml-training-weekly").start()
 
             # Sleep in short increments to remain responsive to intervals and changes
             time.sleep(10)

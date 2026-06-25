@@ -1,13 +1,12 @@
 """
-Paytm Money Option Chain Fetcher
-Auth: POST /accounts/v2/gettoken → x-jwt-token
-Chain: GET /primary-market/v1/optionchain
-Config: GET /primary-market/v1/optionchain/config  (expiry discovery)
+Paytm Money Option Chain Fetcher (Open API)
+Config: GET /fno/v1/option-chain/config?symbol={symbol}
+Chain:  GET /fno/v1/option-chain?symbol={symbol}&expiry={expiry}&type={type} (type=CALL/PUT)
 """
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone, timedelta
 
 from config.settings import _optional_env
 from src.fetchers.base_fetcher import BaseFetcher
@@ -16,18 +15,6 @@ log = logging.getLogger(__name__)
 
 BASE_URL = "https://developer.paytmmoney.com"
 IST = timezone(timedelta(hours=5, minutes=30))
-
-# underlying_id map — GET /primary-market/v1/optionchain/config for full list
-_UNDERLYING_IDS: dict[str, tuple[str, str]] = {
-    "NIFTY":       ("13",  "INDEX"),
-    "BANKNIFTY":   ("25",  "INDEX"),
-    "FINNIFTY":    ("27",  "INDEX"),
-    "MIDCPNIFTY":  ("442", "INDEX"),
-    "SENSEX":      ("51",  "INDEX"),
-    "NATURALGAS":  ("488505", "INDEX"),
-    "CRUDEOIL":    ("499095", "INDEX"),
-}
-
 
 class PaytmFetcher(BaseFetcher):
     name = "paytm"
@@ -39,8 +26,6 @@ class PaytmFetcher(BaseFetcher):
         self._api_secret: str = _optional_env("PAYTM_API_SECRET")
         # Config cache: symbol -> list of expiry strings "dd-mm-yyyy"
         self._expiry_cache: dict[str, list[str]] = {}
-
-    # ── Auth ────────────────────────────────────────────────────────────────
 
     def _auth_headers(self) -> dict:
         return {
@@ -73,31 +58,36 @@ class PaytmFetcher(BaseFetcher):
             log.error("[paytm] token refresh failed: %s", exc)
             return False
 
-    # ── Config / Expiry discovery ────────────────────────────────────────────
-
-    def _get_expiries(self, symbol: str, underlying_id: str) -> list[str]:
+    def _get_expiries(self, symbol: str) -> list[str]:
         if symbol in self._expiry_cache:
             return self._expiry_cache[symbol]
         try:
             r = self.session.get(
-                f"{BASE_URL}/primary-market/v1/optionchain/config",
+                f"{BASE_URL}/fno/v1/option-chain/config",
                 headers=self._auth_headers(),
+                params={"symbol": symbol},
                 timeout=15,
             )
             r.raise_for_status()
             data = r.json()
-            # Response shape: {"data": {"expiry": [...], ...}} or {"expiry": [...]}
-            expiries = (
-                data.get("data", {}).get("expiry")
-                or data.get("expiry")
-                or []
-            )
-            # Filter to string list; API returns "dd-mm-yyyy"
-            expiries = [str(e) for e in expiries if e]
+            
+            # Response: {"data": {"exch_symbol": "...", "expires": [timestamp1, ...]}}
+            expires_list = data.get("data", {}).get("expires") or []
+            expiries = []
+            for expiry_val in expires_list:
+                if isinstance(expiry_val, int):
+                    # Epoch timestamp in milliseconds
+                    dt = datetime.fromtimestamp(expiry_val / 1000, tz=timezone.utc)
+                    # Convert to local timezone date and format as dd-mm-yyyy
+                    dt_local = dt.astimezone(IST)
+                    expiries.append(dt_local.strftime("%d-%m-%Y"))
+                elif expiry_val:
+                    expiries.append(str(expiry_val))
+            
             self._expiry_cache[symbol] = expiries
             return expiries
         except Exception as exc:
-            log.warning("[paytm] expiry config fetch failed: %s", exc)
+            log.warning("[paytm] expiry config fetch failed for %s: %s", symbol, exc)
             return []
 
     def _nearest_expiry(self, expiries: list[str]) -> str:
@@ -112,65 +102,86 @@ class PaytmFetcher(BaseFetcher):
         future = sorted((p for p in parsed if p[0] >= today), key=lambda x: x[0])
         return future[0][1] if future else (expiries[0] if expiries else "")
 
-    # ── Fetch ────────────────────────────────────────────────────────────────
-
-    def fetch_option_chain(self, symbol: str) -> dict | None:
+    def fetch_option_chain(self, symbol: str, expiry: str | None = None) -> dict | None:
         if not self._jwt_token:
             log.warning("[paytm] PAYTM_JWT_TOKEN not set — skipping")
             return None
 
         base = symbol.upper().split()[0]
-        meta = _UNDERLYING_IDS.get(base)
-        if not meta:
-            log.warning("[paytm] unknown symbol %s", base)
-            return None
-
-        underlying_id, underlying_type = meta
-
-        expiries = self._get_expiries(base, underlying_id)
-        expiry_str = self._nearest_expiry(expiries)  # "dd-mm-yyyy"
-        if not expiry_str:
+        
+        # Get expiries
+        expiries = self._get_expiries(base)
+        if not expiries:
             log.warning("[paytm] no expiry found for %s", base)
             return None
 
+        # Expiry format expected: "dd-mm-yyyy"
+        if expiry:
+            # If standard yyyy-mm-dd is passed, convert to dd-mm-yyyy
+            try:
+                dt = datetime.strptime(expiry, "%Y-%m-%d")
+                expiry_str = dt.strftime("%d-%m-%Y")
+            except ValueError:
+                expiry_str = expiry
+        else:
+            expiry_str = self._nearest_expiry(expiries)
+
+        if not expiry_str:
+            log.warning("[paytm] no nearest expiry found for %s", base)
+            return None
+
+        log.info("[paytm] fetching %s option chain for expiry %s", base, expiry_str)
+
+        # We must call both CALL and PUT option types and merge them
         try:
-            r = self.session.get(
-                f"{BASE_URL}/primary-market/v1/optionchain",
+            # Fetch CALL options
+            call_res = self.session.get(
+                f"{BASE_URL}/fno/v1/option-chain",
                 headers=self._auth_headers(),
                 params={
-                    "underlying_id":   underlying_id,
-                    "underlying_type": underlying_type,
-                    "expiry":          expiry_str,
+                    "symbol": base,
+                    "expiry": expiry_str,
+                    "type":   "CALL",
                 },
                 timeout=15,
             )
-            r.raise_for_status()
-            raw = r.json()
+            call_res.raise_for_status()
+            call_data = call_res.json()
+
+            # Fetch PUT options
+            put_res = self.session.get(
+                f"{BASE_URL}/fno/v1/option-chain",
+                headers=self._auth_headers(),
+                params={
+                    "symbol": base,
+                    "expiry": expiry_str,
+                    "type":   "PUT",
+                },
+                timeout=15,
+            )
+            put_res.raise_for_status()
+            put_data = put_res.json()
+
         except Exception as exc:
-            log.error("[paytm] option chain request failed for %s: %s", base, exc)
+            log.error("[paytm] request failed for %s expiry %s: %s", base, expiry_str, exc)
             return None
 
-        return self._normalise(base, expiry_str, raw)
+        return self._normalise(base, expiry_str, call_data, put_data)
 
-    # ── Normalise ────────────────────────────────────────────────────────────
-
-    def _normalise(self, symbol: str, expiry_str: str, raw: dict) -> dict | None:
+    def _normalise(self, symbol: str, expiry_str: str, call_raw: dict, put_raw: dict) -> dict | None:
         try:
-            data = raw.get("data") or raw
-            # Underlying price — try common keys
-            underlying = float(
-                data.get("underlyingValue")
-                or data.get("underlying_value")
-                or data.get("ltp")
-                or 0
-            )
+            call_records = call_raw.get("data", {}).get("results") or []
+            put_records = put_raw.get("data", {}).get("results") or []
 
-            records = (
-                data.get("optionChainData")
-                or data.get("option_chain_data")
-                or data.get("records")
-                or []
-            )
+            # Extract underlying price from the first available record
+            underlying = 0.0
+            all_records = call_records + put_records
+            if all_records:
+                first_rec = all_records[0]
+                try:
+                    underlying = float(first_rec.get("spot_price") or 0)
+                except ValueError:
+                    pass
 
             # Convert expiry "dd-mm-yyyy" -> "yyyy-mm-dd"
             try:
@@ -178,24 +189,56 @@ class PaytmFetcher(BaseFetcher):
             except ValueError:
                 expiry_iso = expiry_str
 
+            # Parse strikes
             strikes = []
-            for rec in records:
-                strike = float(rec.get("strikePrice") or rec.get("strike_price") or 0)
-                for ot, key in (("CE", "callOption"), ("PE", "putOption")):
-                    opt = rec.get(key) or rec.get(ot) or {}
-                    if not opt:
-                        continue
-                    strikes.append({
-                        "strike":      strike,
-                        "option_type": ot,
-                        "ltp":         float(opt.get("lastPrice") or opt.get("ltp") or 0),
-                        "oi":          int(opt.get("openInterest") or opt.get("oi") or 0),
-                        "oi_change":   int(opt.get("changeinOpenInterest") or opt.get("oi_change") or 0),
-                        "volume":      int(opt.get("totalTradedVolume") or opt.get("volume") or 0),
-                        "iv":          float(opt.get("impliedVolatility") or opt.get("iv") or 0),
-                        "bid":         float(opt.get("bidPrice") or opt.get("bid") or 0),
-                        "ask":         float(opt.get("askPrice") or opt.get("ask") or 0),
-                    })
+            
+            # Map strikes to Ce/Pe details
+            for rec in all_records:
+                try:
+                    strike = float(rec.get("stk_price") or 0)
+                except (ValueError, TypeError):
+                    continue
+                    
+                ot = rec.get("option_type")
+                if ot not in ("CE", "PE"):
+                    continue
+
+                try:
+                    ltp = float(rec.get("price") or 0)
+                except ValueError:
+                    ltp = 0.0
+
+                try:
+                    oi = int(rec.get("oi") or 0)
+                except ValueError:
+                    oi = 0
+
+                try:
+                    oi_change = int(rec.get("oi_net_chg") or 0)
+                except ValueError:
+                    oi_change = 0
+
+                try:
+                    volume = int(rec.get("traded_vol") or 0)
+                except ValueError:
+                    volume = 0
+
+                try:
+                    iv = float(rec.get("iv") or 0)
+                except ValueError:
+                    iv = 0.0
+
+                strikes.append({
+                    "strike":      strike,
+                    "option_type": ot,
+                    "ltp":         ltp,
+                    "oi":          oi,
+                    "oi_change":   oi_change,
+                    "volume":      volume,
+                    "iv":          iv,
+                    "bid":         0.0,
+                    "ask":         0.0,
+                })
 
             if not strikes:
                 log.warning("[paytm] no strikes parsed for %s", symbol)

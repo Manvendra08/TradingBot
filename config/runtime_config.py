@@ -11,6 +11,21 @@ ALLOWED_SCAN_FREQUENCIES = [5, 15, 30, 60, 180, 1440]
 MIN_SCAN_FREQUENCY = ALLOWED_SCAN_FREQUENCIES[0]
 MAX_SCAN_FREQUENCY = ALLOWED_SCAN_FREQUENCIES[-1]
 
+# Symbols shown in broker/paper lot controls (Settings → Cockpit)
+TRADE_CONTROL_SYMBOLS = [
+    "NIFTY",
+    "BANKNIFTY",
+    "FINNIFTY",
+    "MIDCPNIFTY",
+    "SENSEX",
+    "NATURALGAS",
+    "CRUDEOIL",
+]
+
+
+def default_symbol_lots(default_lot: int = 1) -> dict[str, int]:
+    return {sym: default_lot for sym in TRADE_CONTROL_SYMBOLS}
+
 
 def _clamp_minutes(value: int) -> int:
     v = int(value)
@@ -31,15 +46,9 @@ def load_runtime_config() -> dict:
         "live_max_capital_utilisation_pct": 80,
         "live_max_concurrent_positions": 2,
         "live_max_daily_loss_rupees": 200000,
-        "live_symbol_lots": {
-            "NIFTY": 1,
-            "BANKNIFTY": 1,
-            "FINNIFTY": 1,
-            "MIDCPNIFTY": 1,
-            "NATURALGAS": 1,
-            "CRUDEOIL": 1
-        },
-        "paper_lots": 10,  # Fixed lot size for all paper trades (overrides auto-calc)
+        "live_symbol_lots": default_symbol_lots(1),
+        "paper_symbol_lots": default_symbol_lots(10),
+        "paper_lots": 10,  # Global fallback when paper_symbol_lots has no entry
         "live_enabled_broker_symbols": ["NIFTY", "BANKNIFTY", "NATURALGAS", "CRUDEOIL"],
         "oi_spike_threshold_pct": 10.0,
         "price_spike_threshold_pct": 2.0,
@@ -60,6 +69,13 @@ def load_runtime_config() -> dict:
         data = json.loads(RUNTIME_CONFIG_PATH.read_text(encoding="utf-8"))
         for k, v in data.items():
             defaults[k] = v
+        # Merge nested symbol-lot maps so new symbols (e.g. SENSEX) get defaults.
+        for lots_key in ("live_symbol_lots", "paper_symbol_lots"):
+            saved_lots = data.get(lots_key)
+            if isinstance(saved_lots, dict):
+                merged = default_symbol_lots(1 if lots_key == "live_symbol_lots" else 10)
+                merged.update(saved_lots)
+                defaults[lots_key] = merged
         defaults["scan_frequency_minutes"] = _clamp_minutes(defaults.get("scan_frequency_minutes", default_freq))
         defaults["scan_frequency_nse"] = _clamp_minutes(defaults.get("scan_frequency_nse", defaults["scan_frequency_minutes"]))
         defaults["scan_frequency_mcx"] = _clamp_minutes(defaults.get("scan_frequency_mcx", defaults["scan_frequency_minutes"]))

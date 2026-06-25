@@ -5,13 +5,21 @@ Returns first successful result; logs fallback events.
 Thread-safety: _instances dict is guarded by _lock so APScheduler concurrent
 jobs cannot create duplicate fetcher instances.
 """
+
 import logging
 import threading
+
 from config.settings import FETCHER_PRIORITY, STRIKES_AROUND_ATM
-from src.fetchers.dhan_fetcher import DhanFetcher
-from src.fetchers.nse_fetcher import NSEPublicFetcher
 from src.fetchers.dhan_commodity_fetcher import DhanCommodityFetcher
+from src.fetchers.dhan_fetcher import DhanFetcher
 from src.fetchers.dhan_sensex_fetcher import DhanSensexFetcher
+from src.fetchers.nse_fetcher import NSEPublicFetcher
+from src.fetchers.paytm_fetcher import PaytmFetcher
+
+try:
+    from src.fetchers.shoonya_fetcher import ShoonyaFetcher
+except ImportError:
+    ShoonyaFetcher = None
 
 try:
     from src.fetchers.scrapegraph_fetcher import ScrapeGraphFetcher
@@ -33,11 +41,14 @@ log = logging.getLogger(__name__)
 _MCX_COMMODITIES = {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"}
 
 _FETCHERS = {
-    "dhan":        DhanFetcher,
+    "dhan": DhanFetcher,
     "dhan_commodity": DhanCommodityFetcher,
     "dhan_sensex": DhanSensexFetcher,
-    "nse_public":  NSEPublicFetcher,
+    "nse_public": NSEPublicFetcher,
+    "paytm": PaytmFetcher,
 }
+if ShoonyaFetcher is not None:
+    _FETCHERS["shoonya"] = ShoonyaFetcher
 if ScrapeGraphFetcher is not None:
     _FETCHERS["scrapegraph"] = ScrapeGraphFetcher
 if DhanHeadlessFetcher is not None:
@@ -59,9 +70,9 @@ def _get_fetcher(name: str):
 def _priority_for(symbol: str) -> list[str]:
     base = symbol.upper().split()[0]
     if base in _MCX_COMMODITIES:
-        return ["dhan_commodity", "moneycontrol", "dhan", "dhan_headless"]
+        return ["shoonya", "dhan_commodity", "moneycontrol", "dhan", "dhan_headless"]
     if base == "SENSEX":
-        return ["dhan_sensex"]
+        return ["shoonya", "paytm", "dhan_sensex", "dhan", "nse_public"]
     return FETCHER_PRIORITY
 
 
@@ -97,9 +108,16 @@ def _filter_atm_strikes(result: dict) -> None:
                 strike_diffs[stk] = {"CE": None, "PE": None}
             strike_diffs[stk][s["option_type"]] = s.get("ltp")
 
-        valid_strikes = [stk for stk, v in strike_diffs.items() if v["CE"] is not None and v["PE"] is not None]
+        valid_strikes = [
+            stk
+            for stk, v in strike_diffs.items()
+            if v["CE"] is not None and v["PE"] is not None
+        ]
         if valid_strikes:
-            atm_strike = min(valid_strikes, key=lambda x: abs(strike_diffs[x]["CE"] - strike_diffs[x]["PE"]))
+            atm_strike = min(
+                valid_strikes,
+                key=lambda x: abs(strike_diffs[x]["CE"] - strike_diffs[x]["PE"]),
+            )
         else:
             # Fallback to middle strike
             atm_strike = strikes_list[len(strikes_list) // 2]
@@ -110,7 +128,7 @@ def _filter_atm_strikes(result: dict) -> None:
         start_idx = max(0, idx - STRIKES_AROUND_ATM)
         end_idx = min(len(strikes_list), idx + STRIKES_AROUND_ATM + 1)
         kept_strikes = set(strikes_list[start_idx:end_idx])
-        
+
         result["strikes"] = [s for s in strikes_data if s["strike"] in kept_strikes]
         log.debug(
             "Filtered strikes for %s from %d to %d around ATM strike %s",
@@ -141,7 +159,7 @@ def fetch_option_chain(symbol: str, expiry: str | None = None) -> dict | None:
                 {"strike": 110.0, "option_type": "CE", "ltp": 0.1, "oi": 10},
                 {"strike": 110.0, "option_type": "PE", "ltp": 10.0, "oi": 100},
             ],
-            "all_expiries": ["2026-06-25", "2026-07-02"]
+            "all_expiries": ["2026-06-25", "2026-07-02"],
         }
 
     for source in _priority_for(symbol):
@@ -154,18 +172,26 @@ def fetch_option_chain(symbol: str, expiry: str | None = None) -> dict | None:
             if result and result.get("strikes"):
                 base = str(result.get("symbol") or symbol).upper().split()[0]
                 if base in _MCX_COMMODITIES and not result.get("underlying_price"):
-                    log.warning("Fetcher '%s' returned MCX data without ATM/underlying for %s; continuing to fallback", source, symbol)
+                    log.warning(
+                        "Fetcher '%s' returned MCX data without ATM/underlying for %s; continuing to fallback",
+                        source,
+                        symbol,
+                    )
                     continue
 
                 total_oi = sum(s.get("oi") or 0 for s in result["strikes"])
                 total_ltp = sum(s.get("ltp") or 0 for s in result["strikes"])
                 if total_oi == 0 and total_ltp == 0:
-                    log.warning("Fetcher '%s' returned zero-filled strikes for %s; continuing to fallback", source, symbol)
+                    log.warning(
+                        "Fetcher '%s' returned zero-filled strikes for %s; continuing to fallback",
+                        source,
+                        symbol,
+                    )
                     continue
 
                 if source != FETCHER_PRIORITY[0]:
                     log.debug("Fallback active: using '%s' for %s", source, symbol)
-                
+
                 # Filter to ATM +- configured strike window
                 _filter_atm_strikes(result)
                 return result

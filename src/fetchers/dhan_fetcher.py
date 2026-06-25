@@ -156,7 +156,7 @@ class DhanFetcher(BaseFetcher):
     def fetch_option_chain(self, symbol: str, expiry: str | None = None) -> dict | None:
         base_symbol = self._base_symbol(symbol)
         segment = DHAN_SEGMENTS.get(base_symbol, "NSE_FNO")
-        security_id = get_dhan_security_id(base_symbol)
+        security_id = get_dhan_security_id(base_symbol, target_expiry=expiry)
         if not security_id and segment == "MCX_COMM":
             security_id = self._resolve_mcx_future_security_id(base_symbol)
         if not security_id:
