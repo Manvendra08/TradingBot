@@ -3,10 +3,11 @@ Paytm Money Option Chain Fetcher (Open API)
 Config: GET /fno/v1/option-chain/config?symbol={symbol}
 Chain:  GET /fno/v1/option-chain?symbol={symbol}&expiry={expiry}&type={type} (type=CALL/PUT)
 """
+
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
 from config.settings import _optional_env
 from src.fetchers.base_fetcher import BaseFetcher
@@ -15,6 +16,18 @@ log = logging.getLogger(__name__)
 
 BASE_URL = "https://developer.paytmmoney.com"
 IST = timezone(timedelta(hours=5, minutes=30))
+
+# Paytm API segment paths for option chains.
+# NSE F&O is served under /fno/v1/ , BSE F&O under /bse-fo/v1/
+_SEGMENT_PATH: dict[str, str] = {
+    "NIFTY": "/fno/v1",
+    "BANKNIFTY": "/fno/v1",
+    "FINNIFTY": "/fno/v1",
+    "MIDCPNIFTY": "/fno/v1",
+    "SENSEX": "/bse-fo/v1",
+}
+_DEFAULT_SEGMENT = "/fno/v1"
+
 
 class PaytmFetcher(BaseFetcher):
     name = "paytm"
@@ -29,8 +42,8 @@ class PaytmFetcher(BaseFetcher):
 
     def _auth_headers(self) -> dict:
         return {
-            "Content-Type":  "application/json",
-            "x-jwt-token":   self._jwt_token,
+            "Content-Type": "application/json",
+            "x-jwt-token": self._jwt_token,
         }
 
     def _refresh_token(self, request_token: str) -> bool:
@@ -39,9 +52,9 @@ class PaytmFetcher(BaseFetcher):
             r = self.session.post(
                 f"{BASE_URL}/accounts/v2/gettoken",
                 json={
-                    "api_key":        self._api_key,
+                    "api_key": self._api_key,
                     "api_secret_key": self._api_secret,
-                    "request_token":  request_token,
+                    "request_token": request_token,
                 },
                 timeout=15,
             )
@@ -61,16 +74,18 @@ class PaytmFetcher(BaseFetcher):
     def _get_expiries(self, symbol: str) -> list[str]:
         if symbol in self._expiry_cache:
             return self._expiry_cache[symbol]
+        base = symbol.upper().split()[0]
+        segment = _SEGMENT_PATH.get(base, _DEFAULT_SEGMENT)
         try:
             r = self.session.get(
-                f"{BASE_URL}/fno/v1/option-chain/config",
+                f"{BASE_URL}{segment}/option-chain/config",
                 headers=self._auth_headers(),
-                params={"symbol": symbol},
+                params={"symbol": base},
                 timeout=15,
             )
             r.raise_for_status()
             data = r.json()
-            
+
             # Response: {"data": {"exch_symbol": "...", "expires": [timestamp1, ...]}}
             expires_list = data.get("data", {}).get("expires") or []
             expiries = []
@@ -83,7 +98,7 @@ class PaytmFetcher(BaseFetcher):
                     expiries.append(dt_local.strftime("%d-%m-%Y"))
                 elif expiry_val:
                     expiries.append(str(expiry_val))
-            
+
             self._expiry_cache[symbol] = expiries
             return expiries
         except Exception as exc:
@@ -108,7 +123,7 @@ class PaytmFetcher(BaseFetcher):
             return None
 
         base = symbol.upper().split()[0]
-        
+
         # Get expiries
         expiries = self._get_expiries(base)
         if not expiries:
@@ -132,16 +147,18 @@ class PaytmFetcher(BaseFetcher):
 
         log.info("[paytm] fetching %s option chain for expiry %s", base, expiry_str)
 
+        segment = _SEGMENT_PATH.get(base, _DEFAULT_SEGMENT)
+
         # We must call both CALL and PUT option types and merge them
         try:
             # Fetch CALL options
             call_res = self.session.get(
-                f"{BASE_URL}/fno/v1/option-chain",
+                f"{BASE_URL}{segment}/option-chain",
                 headers=self._auth_headers(),
                 params={
                     "symbol": base,
                     "expiry": expiry_str,
-                    "type":   "CALL",
+                    "type": "CALL",
                 },
                 timeout=15,
             )
@@ -150,12 +167,12 @@ class PaytmFetcher(BaseFetcher):
 
             # Fetch PUT options
             put_res = self.session.get(
-                f"{BASE_URL}/fno/v1/option-chain",
+                f"{BASE_URL}{segment}/option-chain",
                 headers=self._auth_headers(),
                 params={
                     "symbol": base,
                     "expiry": expiry_str,
-                    "type":   "PUT",
+                    "type": "PUT",
                 },
                 timeout=15,
             )
@@ -163,12 +180,16 @@ class PaytmFetcher(BaseFetcher):
             put_data = put_res.json()
 
         except Exception as exc:
-            log.error("[paytm] request failed for %s expiry %s: %s", base, expiry_str, exc)
+            log.error(
+                "[paytm] request failed for %s expiry %s: %s", base, expiry_str, exc
+            )
             return None
 
         return self._normalise(base, expiry_str, call_data, put_data)
 
-    def _normalise(self, symbol: str, expiry_str: str, call_raw: dict, put_raw: dict) -> dict | None:
+    def _normalise(
+        self, symbol: str, expiry_str: str, call_raw: dict, put_raw: dict
+    ) -> dict | None:
         try:
             call_records = call_raw.get("data", {}).get("results") or []
             put_records = put_raw.get("data", {}).get("results") or []
@@ -185,20 +206,22 @@ class PaytmFetcher(BaseFetcher):
 
             # Convert expiry "dd-mm-yyyy" -> "yyyy-mm-dd"
             try:
-                expiry_iso = datetime.strptime(expiry_str, "%d-%m-%Y").strftime("%Y-%m-%d")
+                expiry_iso = datetime.strptime(expiry_str, "%d-%m-%Y").strftime(
+                    "%Y-%m-%d"
+                )
             except ValueError:
                 expiry_iso = expiry_str
 
             # Parse strikes
             strikes = []
-            
+
             # Map strikes to Ce/Pe details
             for rec in all_records:
                 try:
                     strike = float(rec.get("stk_price") or 0)
                 except (ValueError, TypeError):
                     continue
-                    
+
                 ot = rec.get("option_type")
                 if ot not in ("CE", "PE"):
                     continue
@@ -228,28 +251,30 @@ class PaytmFetcher(BaseFetcher):
                 except ValueError:
                     iv = 0.0
 
-                strikes.append({
-                    "strike":      strike,
-                    "option_type": ot,
-                    "ltp":         ltp,
-                    "oi":          oi,
-                    "oi_change":   oi_change,
-                    "volume":      volume,
-                    "iv":          iv,
-                    "bid":         0.0,
-                    "ask":         0.0,
-                })
+                strikes.append(
+                    {
+                        "strike": strike,
+                        "option_type": ot,
+                        "ltp": ltp,
+                        "oi": oi,
+                        "oi_change": oi_change,
+                        "volume": volume,
+                        "iv": iv,
+                        "bid": 0.0,
+                        "ask": 0.0,
+                    }
+                )
 
             if not strikes:
                 log.warning("[paytm] no strikes parsed for %s", symbol)
                 return None
 
             return {
-                "symbol":           symbol,
+                "symbol": symbol,
                 "underlying_price": underlying,
-                "expiry":           expiry_iso,
-                "strikes":          strikes,
-                "source":           self.name,
+                "expiry": expiry_iso,
+                "strikes": strikes,
+                "source": self.name,
             }
         except Exception as exc:
             log.error("[paytm] normalise failed for %s: %s", symbol, exc)

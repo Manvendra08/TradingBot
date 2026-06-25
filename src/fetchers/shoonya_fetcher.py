@@ -8,6 +8,7 @@ OAuth 2.0 Authentication (from 1st April 2026) using Playwright for browser auto
   Step 4: POST /NorenWClientAPI/GenAcsTok  (auth_code + SHA256(uid+secret+code))  -> access_token
   Step 5: Bearer access_token for all subsequent API calls
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -15,10 +16,11 @@ import json
 import logging
 import os
 import re
-import pyotp
-import urllib.request
 import urllib.error
-from datetime import datetime, timezone, timedelta
+import urllib.request
+from datetime import datetime, timedelta, timezone
+
+import pyotp
 
 from config.settings import _optional_env
 from src.fetchers.base_fetcher import BaseFetcher
@@ -27,14 +29,27 @@ log = logging.getLogger(__name__)
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
-_API_BASE  = "https://api.shoonya.com/NorenWClientAPI"
+_API_BASE = "https://api.shoonya.com/NorenWClientAPI"
 _TOKEN_URL = "https://api.shoonya.com/NorenWClientAPI/GenAcsTok"
 
 _INDEX_SPOT_NAMES = {
-    "NIFTY":      "Nifty 50",
-    "BANKNIFTY":  "Nifty Bank",
-    "FINNIFTY":   "Nifty Fin Services",
+    "NIFTY": "Nifty 50",
+    "BANKNIFTY": "Nifty Bank",
+    "FINNIFTY": "Nifty Fin Services",
     "MIDCPNIFTY": "Nifty Midcap 100",
+    "SENSEX": "S&P BSE SENSEX",
+}
+
+# Shoonya exchange codes for index derivatives.
+# NFO = NSE F&O (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY)
+# BFO = BSE F&O (SENSEX)
+# MCX = MCX Commodities
+_EXCHANGE_MAP: dict[str, str] = {
+    "NIFTY": "NFO",
+    "BANKNIFTY": "NFO",
+    "FINNIFTY": "NFO",
+    "MIDCPNIFTY": "NFO",
+    "SENSEX": "BFO",
 }
 
 
@@ -42,7 +57,9 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def _post_jdata(url: str, payload: dict, access_token: str | None = None) -> dict | None:
+def _post_jdata(
+    url: str, payload: dict, access_token: str | None = None
+) -> dict | None:
     """POST jData= encoded payload, return parsed JSON or None."""
     body_str = "jData=" + json.dumps(payload, separators=(",", ":"))
     if access_token:
@@ -72,13 +89,12 @@ class ShoonyaFetcher(BaseFetcher):
         super().__init__()
         self.access_token: str | None = None
 
-        self.user_id     = _optional_env("SHOONYA_USER_ID")
-        self.password    = _optional_env("SHOONYA_PASSWORD")
-        self.totp_key    = _optional_env("SHOONYA_TOTP_KEY")
+        self.user_id = _optional_env("SHOONYA_USER_ID")
+        self.password = _optional_env("SHOONYA_PASSWORD")
+        self.totp_key = _optional_env("SHOONYA_TOTP_KEY")
         self.secret_code = _optional_env("SHOONYA_API_SECRET")
         self.vendor_code = _optional_env(
-            "SHOONYA_VENDOR_CODE",
-            f"{self.user_id}_U" if self.user_id else ""
+            "SHOONYA_VENDOR_CODE", f"{self.user_id}_U" if self.user_id else ""
         )
 
     # ------------------------------------------------------------------
@@ -95,7 +111,9 @@ class ShoonyaFetcher(BaseFetcher):
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
-            log.error("[shoonya] playwright not installed. Run: .venv\\Scripts\\pip install playwright && .venv\\Scripts\\playwright install chromium")
+            log.error(
+                "[shoonya] playwright not installed. Run: .venv\\Scripts\\pip install playwright && .venv\\Scripts\\playwright install chromium"
+            )
             return None
 
         authorize_url = f"https://api.shoonya.com/OAuthlogin/authorize/oauth?client_id={self.vendor_code}"
@@ -119,8 +137,14 @@ class ShoonyaFetcher(BaseFetcher):
                 page.route("**/*", handle_route)
 
                 # Listen to requests and responses to capture code= even on failed page navigations (e.g. net::ERR_NAME_NOT_RESOLVED)
-                page.on("request", lambda r: captured_urls.append(r.url) if "code=" in r.url else None)
-                page.on("response", lambda r: captured_urls.append(r.url) if "code=" in r.url else None)
+                page.on(
+                    "request",
+                    lambda r: captured_urls.append(r.url) if "code=" in r.url else None,
+                )
+                page.on(
+                    "response",
+                    lambda r: captured_urls.append(r.url) if "code=" in r.url else None,
+                )
 
                 # Step 1: Navigate — will redirect to /investor-entry-level/login
                 page.goto(authorize_url, wait_until="commit")
@@ -143,7 +167,10 @@ class ShoonyaFetcher(BaseFetcher):
                     # Step 4: Wait for redirect containing auth_code
                     page.wait_for_url("*code=*", timeout=45000)
                 except Exception as click_err:
-                    log.debug("[shoonya] Browser encountered navigation or redirect error: %s", click_err)
+                    log.debug(
+                        "[shoonya] Browser encountered navigation or redirect error: %s",
+                        click_err,
+                    )
 
                 final_url = page.url
                 log.debug("[shoonya] Post-login URL: %s", final_url)
@@ -158,7 +185,11 @@ class ShoonyaFetcher(BaseFetcher):
                         break
 
                 if not auth_code:
-                    log.error("[shoonya] auth_code not found. Final URL: %s, Captured URLs: %s", final_url, captured_urls)
+                    log.error(
+                        "[shoonya] auth_code not found. Final URL: %s, Captured URLs: %s",
+                        final_url,
+                        captured_urls,
+                    )
 
         except Exception as exc:
             log.exception("[shoonya] Playwright OAuth login failed: %s", exc)
@@ -169,8 +200,8 @@ class ShoonyaFetcher(BaseFetcher):
         """Exchange auth_code for access_token via GenAcsTok."""
         checksum = _sha256(self.vendor_code + self.secret_code + auth_code)
         payload = {
-            "uid":      self.user_id,
-            "code":     auth_code,
+            "uid": self.user_id,
+            "code": auth_code,
             "checksum": checksum,
         }
         res = _post_jdata(_TOKEN_URL, payload)
@@ -188,12 +219,16 @@ class ShoonyaFetcher(BaseFetcher):
         if self.access_token:
             return True
 
-        missing = [k for k, v in [
-            ("SHOONYA_USER_ID",    self.user_id),
-            ("SHOONYA_PASSWORD",   self.password),
-            ("SHOONYA_TOTP_KEY",   self.totp_key),
-            ("SHOONYA_API_SECRET", self.secret_code),
-        ] if not v]
+        missing = [
+            k
+            for k, v in [
+                ("SHOONYA_USER_ID", self.user_id),
+                ("SHOONYA_PASSWORD", self.password),
+                ("SHOONYA_TOTP_KEY", self.totp_key),
+                ("SHOONYA_API_SECRET", self.secret_code),
+            ]
+            if not v
+        ]
         if missing:
             log.warning("[shoonya] missing credentials: %s — skipping", missing)
             return False
@@ -224,19 +259,25 @@ class ShoonyaFetcher(BaseFetcher):
 
     def _search_scrip(self, exchange: str, searchtext: str) -> dict | None:
         import urllib.parse
+
         quoted = urllib.parse.quote_plus(searchtext)
         return self._api_call("SearchScrip", {"exch": exchange, "stext": quoted})
 
     def _get_quotes(self, exchange: str, token: str) -> dict | None:
         return self._api_call("GetQuotes", {"exch": exchange, "token": token})
 
-    def _get_option_chain(self, exchange: str, tsym: str, strikeprice: float, count: int = 15) -> dict | None:
-        return self._api_call("GetOptionChain", {
-            "exch":   exchange,
-            "tsym":   tsym,
-            "strprc": str(strikeprice),
-            "cnt":    str(count),
-        })
+    def _get_option_chain(
+        self, exchange: str, tsym: str, strikeprice: float, count: int = 15
+    ) -> dict | None:
+        return self._api_call(
+            "GetOptionChain",
+            {
+                "exch": exchange,
+                "tsym": tsym,
+                "strprc": str(strikeprice),
+                "cnt": str(count),
+            },
+        )
 
     # ------------------------------------------------------------------
     # Public interface
@@ -244,33 +285,38 @@ class ShoonyaFetcher(BaseFetcher):
 
     def _ensure_mcx_symbols(self) -> str | None:
         """Ensure MCX symbols file is present and up to date."""
-        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        project_root = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        )
         dest_dir = os.path.join(project_root, "scratch", "MCX_symbols")
         dest_file = os.path.join(dest_dir, "MCX_symbols.txt")
-        
+
         import time
+
         if os.path.exists(dest_file):
             mtime = os.path.getmtime(dest_file)
             if (time.time() - mtime) < 86400:  # 24 hours
                 return dest_file
-                
+
         try:
             os.makedirs(dest_dir, exist_ok=True)
             url = "https://api.shoonya.com/MCX_symbols.txt.zip"
             zip_path = os.path.join(dest_dir, "MCX_symbols.txt.zip")
             log.info("[shoonya] Downloading MCX symbols master from %s...", url)
-            
+
             import urllib.request
+
             urllib.request.urlretrieve(url, zip_path)
-            
+
             import zipfile
+
             log.info("[shoonya] Extracting MCX symbols...")
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            with zipfile.ZipFile(zip_path, "r") as zip_ref:
                 zip_ref.extractall(dest_dir)
-                
+
             if os.path.exists(zip_path):
                 os.remove(zip_path)
-                
+
             log.info("[shoonya] MCX symbols updated successfully at %s", dest_file)
             return dest_file
         except Exception as e:
@@ -289,19 +335,31 @@ class ShoonyaFetcher(BaseFetcher):
         try:
             is_index = base in _INDEX_SPOT_NAMES
             if is_index:
-                exch        = "NFO"
+                exch = _EXCHANGE_MAP.get(base, "NFO")
                 search_text = base
-                instname    = "FUTIDX"
-                option_exch = "NFO"
+                instname = "FUTIDX"
+                option_exch = exch
+                # SENSEX derivatives trade on BFO (BSE F&O).
+                # SearchScrip on BFO needs "SENSEX FUT" as search text to
+                # find regular SENSEX futures (avoids SENSEX50 mini contracts).
+                # Futures tsym format: SENSEX26JUNFUT (NFO uses NIFTY25JUN26F).
+                if base == "SENSEX":
+                    option_exch = "BFO"
+                    exch = "BFO"
+                    search_text = "SENSEX FUT"
             else:
-                exch        = "MCX"
+                exch = "MCX"
                 search_text = base
-                instname    = "FUTCOM"
+                instname = "FUTCOM"
                 option_exch = "MCX"
 
             # 1. Resolve underlying futures contract
             search_res = self._search_scrip(exch, search_text)
-            if not search_res or search_res.get("stat") != "Ok" or not search_res.get("values"):
+            if (
+                not search_res
+                or search_res.get("stat") != "Ok"
+                or not search_res.get("values")
+            ):
                 log.warning("[shoonya] could not search scrip for %s", search_text)
                 return None
 
@@ -309,18 +367,27 @@ class ShoonyaFetcher(BaseFetcher):
             underlying_token = underlying_tsym = None
 
             # Filter futures contracts
+            def _is_not_option(val: dict) -> bool:
+                tsym = val.get("tsym", "")
+                return "CE" not in tsym.upper() and "PE" not in tsym.upper()
+
             futures = []
             for val in values:
-                tsym = val.get("tsym", "")
-                if val.get("instname") == instname and "CE" not in tsym.upper() and "PE" not in tsym.upper():
-                    pattern = rf"^{base}\d{{2}}[A-Z]{{3}}\d{{2}}(?:F)?$"
-                    if re.match(pattern, tsym):
-                        futures.append(val)
-            
+                if not _is_not_option(val):
+                    continue
+                if val.get("instname") != instname:
+                    continue
+                # NFO format: NIFTY25JUN26F  (base + ddMMMyy + optional F)
+                # BFO format: SENSEX26JUNFUT  (base + ddMMM + FUT)
+                pattern = rf"^{base}\d{{2}}[A-Z]{{3}}(?:\d{{2}}F?|FUT)?$"
+                if re.match(pattern, val.get("tsym", "")):
+                    futures.append(val)
+
             if not futures:
                 for val in values:
-                    tsym = val.get("tsym", "")
-                    if val.get("instname") == instname and "CE" not in tsym.upper() and "PE" not in tsym.upper():
+                    if not _is_not_option(val):
+                        continue
+                    if val.get("instname") == instname:
                         futures.append(val)
 
             if futures:
@@ -329,7 +396,7 @@ class ShoonyaFetcher(BaseFetcher):
                 if len(futures) > 1 and "25JUN26" in target_item.get("tsym", ""):
                     target_item = futures[1]
                 underlying_token = target_item.get("token")
-                underlying_tsym  = target_item.get("tsym")
+                underlying_tsym = target_item.get("tsym")
 
             if not underlying_token:
                 log.warning("[shoonya] underlying not resolved for %s", base)
@@ -337,7 +404,9 @@ class ShoonyaFetcher(BaseFetcher):
 
             quote = self._get_quotes(exch, underlying_token)
             if not quote or quote.get("stat") != "Ok":
-                log.warning("[shoonya] failed quotes for underlying %s", underlying_tsym)
+                log.warning(
+                    "[shoonya] failed quotes for underlying %s", underlying_tsym
+                )
                 return None
 
             try:
@@ -357,22 +426,28 @@ class ShoonyaFetcher(BaseFetcher):
                     return None
 
                 import csv
+
                 all_options = []
                 with open(symbol_file, "r") as f:
                     reader = csv.DictReader(f)
                     for row in reader:
-                        if row.get("Instrument") == "OPTFUT" and row.get("Symbol") == base:
+                        if (
+                            row.get("Instrument") == "OPTFUT"
+                            and row.get("Symbol") == base
+                        ):
                             all_options.append(row)
 
                 if not all_options:
-                    log.warning("[shoonya] No option contracts found in master for %s", base)
+                    log.warning(
+                        "[shoonya] No option contracts found in master for %s", base
+                    )
                     return None
 
                 # Unique expiries sorted chronologically
                 try:
                     expiries = sorted(
                         list(set(row["Expiry"] for row in all_options)),
-                        key=lambda x: datetime.strptime(x, "%d-%b-%Y")
+                        key=lambda x: datetime.strptime(x, "%d-%b-%Y"),
                     )
                 except Exception as e:
                     log.warning("[shoonya] Failed to parse expiries: %s", e)
@@ -393,15 +468,26 @@ class ShoonyaFetcher(BaseFetcher):
                             target_expiry_iso = expiry
                             break
                     if not target_expiry_shoonya:
-                        log.warning("[shoonya] Target expiry %s not found in MCX master for %s", expiry, base)
+                        log.warning(
+                            "[shoonya] Target expiry %s not found in MCX master for %s",
+                            expiry,
+                            base,
+                        )
                         return None
                 else:
                     target_expiry_shoonya = expiries[0]
-                    target_expiry_iso = datetime.strptime(target_expiry_shoonya, "%d-%b-%Y").strftime("%Y-%m-%d")
+                    target_expiry_iso = datetime.strptime(
+                        target_expiry_shoonya, "%d-%b-%Y"
+                    ).strftime("%Y-%m-%d")
 
-                expiry_options = [row for row in all_options if row["Expiry"] == target_expiry_shoonya]
+                expiry_options = [
+                    row for row in all_options if row["Expiry"] == target_expiry_shoonya
+                ]
                 if not expiry_options:
-                    log.warning("[shoonya] No contracts found for expiry %s", target_expiry_shoonya)
+                    log.warning(
+                        "[shoonya] No contracts found for expiry %s",
+                        target_expiry_shoonya,
+                    )
                     return None
 
                 for row in expiry_options:
@@ -410,25 +496,38 @@ class ShoonyaFetcher(BaseFetcher):
                     except (ValueError, TypeError):
                         row["strike_val"] = 0.0
 
-                expiry_options = [row for row in expiry_options if row["strike_val"] > 0]
+                expiry_options = [
+                    row for row in expiry_options if row["strike_val"] > 0
+                ]
                 if not expiry_options:
-                    log.warning("[shoonya] No valid strikes parsed for %s options", base)
+                    log.warning(
+                        "[shoonya] No valid strikes parsed for %s options", base
+                    )
                     return None
 
-                unique_strikes = sorted(list(set(row["strike_val"] for row in expiry_options)))
-                atm_strike = min(unique_strikes, key=lambda s: abs(s - underlying_price))
+                unique_strikes = sorted(
+                    list(set(row["strike_val"] for row in expiry_options))
+                )
+                atm_strike = min(
+                    unique_strikes, key=lambda s: abs(s - underlying_price)
+                )
                 atm_idx = unique_strikes.index(atm_strike)
-                
+
                 start_idx = max(0, atm_idx - 15)
                 end_idx = min(len(unique_strikes), atm_idx + 16)
                 selected_strikes = set(unique_strikes[start_idx:end_idx])
 
-                contracts_to_fetch = [row for row in expiry_options if row["strike_val"] in selected_strikes]
+                contracts_to_fetch = [
+                    row
+                    for row in expiry_options
+                    if row["strike_val"] in selected_strikes
+                ]
 
-                from concurrent.futures import ThreadPoolExecutor
                 import time
+                from concurrent.futures import ThreadPoolExecutor
 
                 quotes = {}
+
                 def fetch_quote(row):
                     token = row["Token"]
                     q = self._get_quotes(exch, token)
@@ -440,7 +539,9 @@ class ShoonyaFetcher(BaseFetcher):
                     futures = []
                     for row in contracts_to_fetch:
                         futures.append(executor.submit(fetch_quote, row))
-                        time.sleep(0.12)  # Pace to stay strictly under the 10/sec rate limit
+                        time.sleep(
+                            0.12
+                        )  # Pace to stay strictly under the 10/sec rate limit
 
                     for fut in futures:
                         try:
@@ -473,33 +574,37 @@ class ShoonyaFetcher(BaseFetcher):
                         except (ValueError, TypeError):
                             return 0
 
-                    strikes.append({
-                        "strike":      row["strike_val"],
-                        "option_type": ot,
-                        "ltp":         _f("lp"),
-                        "oi":          _i("oi"),
-                        "oi_change":   _i("oichg"),
-                        "volume":      _i("v"),
-                        "iv":          _f("iv"),
-                        "bid":         _f("bp1"),
-                        "ask":         _f("sp1"),
-                    })
+                    strikes.append(
+                        {
+                            "strike": row["strike_val"],
+                            "option_type": ot,
+                            "ltp": _f("lp"),
+                            "oi": _i("oi"),
+                            "oi_change": _i("oichg"),
+                            "volume": _i("v"),
+                            "iv": _f("iv"),
+                            "bid": _f("bp1"),
+                            "ask": _f("sp1"),
+                        }
+                    )
 
                 if not strikes:
                     log.warning("[shoonya] No quotes fetched for %s options", base)
                     return None
 
                 return {
-                    "symbol":           base,
+                    "symbol": base,
                     "underlying_price": underlying_price,
-                    "expiry":           target_expiry_iso,
-                    "strikes":          strikes,
-                    "source":           self.name,
+                    "expiry": target_expiry_iso,
+                    "strikes": strikes,
+                    "source": self.name,
                 }
 
-            # Handle standard NSE indices using GetOptionChain
+            # Handle standard NSE/BSE indices using GetOptionChain
             chain_tsym = underlying_tsym
-            chain = self._get_option_chain(option_exch, chain_tsym, underlying_price, count=15)
+            chain = self._get_option_chain(
+                option_exch, chain_tsym, underlying_price, count=15
+            )
             if not chain or chain.get("stat") != "Ok" or not chain.get("values"):
                 log.warning("[shoonya] empty option chain for %s", chain_tsym)
                 return None
@@ -507,19 +612,42 @@ class ShoonyaFetcher(BaseFetcher):
             scrip_list = chain["values"]
 
             expiry_dates: dict[str, str] = {}
+            now = datetime.now()
             for item in scrip_list:
                 exp_str = item.get("expiry")
                 if not exp_str:
                     tsym = item.get("tsym", "")
+                    # Try NFO format: NIFTY25JUN2677100CE → captures "25JUN26"
                     m = re.search(r"(\d{2}[A-Z]{3}\d{2})[CP]", tsym)
                     if m:
-                        exp_str = m.group(1)
-                        item["expiry_parsed"] = exp_str
+                        candidate = m.group(1)
                         try:
-                            dt = datetime.strptime(exp_str, "%d%b%y")
-                            expiry_dates[exp_str] = dt.strftime("%Y-%m-%d")
+                            dt = datetime.strptime(candidate, "%d%b%y")
+                            # Sanity check: year should be within ~5 years of current
+                            if now.year - 5 <= dt.year <= now.year + 2:
+                                exp_str = candidate
+                                item["expiry_parsed"] = exp_str
+                                expiry_dates[exp_str] = dt.strftime("%Y-%m-%d")
                         except ValueError:
                             pass
+                    # If NFO format failed, try BFO format:
+                    # SENSEX26JUN77100CE → captures "26JUN" (no year digits)
+                    if not item.get("expiry_parsed"):
+                        m = re.search(r"(\d{2}[A-Z]{3})\d+[CP]", tsym)
+                        if m:
+                            exp_str = m.group(1)
+                            item["expiry_parsed"] = exp_str
+                            try:
+                                exp_month = datetime.strptime(exp_str[2:], "%b").month
+                                year = now.year
+                                # Infer year: if month is Dec and current is Jan, use prev year
+                                # If month is Jan and current is Dec, use next year
+                                if exp_month < now.month - 2:
+                                    year += 1
+                                dt = datetime(year, exp_month, int(exp_str[:2]))
+                                expiry_dates[exp_str] = dt.strftime("%Y-%m-%d")
+                            except ValueError:
+                                pass
                 else:
                     item["expiry_parsed"] = exp_str
                     if exp_str not in expiry_dates:
@@ -537,17 +665,24 @@ class ShoonyaFetcher(BaseFetcher):
             target_expiry_iso = expiry
             if not target_expiry_iso:
                 today = datetime.now(IST).date()
-                future = [e for e in all_expiries if datetime.strptime(e, "%Y-%m-%d").date() >= today]
+                future = [
+                    e
+                    for e in all_expiries
+                    if datetime.strptime(e, "%Y-%m-%d").date() >= today
+                ]
                 target_expiry_iso = future[0] if future else all_expiries[0]
 
             target_expiry_shoonya = next(
-                (sh for sh, iso in expiry_dates.items() if iso == target_expiry_iso), None
+                (sh for sh, iso in expiry_dates.items() if iso == target_expiry_iso),
+                None,
             )
             if not target_expiry_shoonya:
                 log.warning("[shoonya] target expiry %s not found", target_expiry_iso)
                 return None
 
-            target_scrips = [s for s in scrip_list if s.get("expiry_parsed") == target_expiry_shoonya]
+            target_scrips = [
+                s for s in scrip_list if s.get("expiry_parsed") == target_expiry_shoonya
+            ]
             if not target_scrips:
                 log.warning("[shoonya] no contracts for expiry %s", target_expiry_iso)
                 return None
@@ -582,28 +717,30 @@ class ShoonyaFetcher(BaseFetcher):
                 except (ValueError, TypeError):
                     continue
 
-                strikes.append({
-                    "strike":      strike,
-                    "option_type": ot,
-                    "ltp":         _f("lp"),
-                    "oi":          _i("oi"),
-                    "oi_change":   _i("oichg"),
-                    "volume":      _i("v"),
-                    "iv":          _f("iv"),
-                    "bid":         _f("bp1"),
-                    "ask":         _f("sp1"),
-                })
+                strikes.append(
+                    {
+                        "strike": strike,
+                        "option_type": ot,
+                        "ltp": _f("lp"),
+                        "oi": _i("oi"),
+                        "oi_change": _i("oichg"),
+                        "volume": _i("v"),
+                        "iv": _f("iv"),
+                        "bid": _f("bp1"),
+                        "ask": _f("sp1"),
+                    }
+                )
 
             if not strikes:
                 log.warning("[shoonya] no strikes parsed for %s", base)
                 return None
 
             return {
-                "symbol":           base,
+                "symbol": base,
                 "underlying_price": underlying_price,
-                "expiry":           target_expiry_iso,
-                "strikes":          strikes,
-                "source":           self.name,
+                "expiry": target_expiry_iso,
+                "strikes": strikes,
+                "source": self.name,
             }
 
         except Exception as exc:
