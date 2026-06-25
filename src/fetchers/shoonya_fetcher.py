@@ -84,6 +84,13 @@ def _post_jdata(
 
 class ShoonyaFetcher(BaseFetcher):
     name = "shoonya"
+    # Cache path: project_root/scratch/shoonya_token.txt
+    # __file__ = src/fetchers/shoonya_fetcher.py → 3 dirname up = project root
+    _TOKEN_CACHE = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "scratch",
+        "shoonya_token.txt",
+    )
 
     def __init__(self):
         super().__init__()
@@ -96,6 +103,66 @@ class ShoonyaFetcher(BaseFetcher):
         self.vendor_code = _optional_env(
             "SHOONYA_VENDOR_CODE", f"{self.user_id}_U" if self.user_id else ""
         )
+
+        # Try to load cached token to avoid repeated OAuth browser launches.
+        self._load_cached_token()
+
+    def _token_cache_path(self) -> str:
+        return self._TOKEN_CACHE
+
+    def _save_token(self) -> None:
+        """Persist the current access_token to disk."""
+        if not self.access_token:
+            return
+        try:
+            os.makedirs(os.path.dirname(self._TOKEN_CACHE), exist_ok=True)
+            with open(self._TOKEN_CACHE, "w") as f:
+                f.write(self.access_token.strip())
+            log.debug("[shoonya] token cached to %s", self._TOKEN_CACHE)
+        except Exception as exc:
+            log.warning("[shoonya] failed to cache token: %s", exc)
+
+    def _load_cached_token(self) -> None:
+        """Load a previously cached access_token from disk."""
+        try:
+            if os.path.exists(self._TOKEN_CACHE):
+                with open(self._TOKEN_CACHE, "r") as f:
+                    token = f.read().strip()
+                if token:
+                    self.access_token = token
+                    log.debug(
+                        "[shoonya] loaded cached token from %s", self._TOKEN_CACHE
+                    )
+        except Exception as exc:
+            log.debug("[shoonya] no cached token: %s", exc)
+            self.access_token = None
+
+    def _clear_cached_token(self) -> None:
+        """Remove the cached token file (e.g. after expiry)."""
+        self.access_token = None
+        try:
+            if os.path.exists(self._TOKEN_CACHE):
+                os.remove(self._TOKEN_CACHE)
+                log.debug("[shoonya] cleared cached token")
+        except Exception as exc:
+            log.warning("[shoonya] failed to clear cached token: %s", exc)
+
+    def _verify_token(self) -> bool:
+        """Quick lightweight check: does the cached token still work?
+        Uses SearchScrip on a known symbol (minimal overhead) instead of
+        launching a full OAuth browser."""
+        import urllib.parse
+
+        res = self._api_call(
+            "SearchScrip",
+            {"exch": "NFO", "stext": urllib.parse.quote_plus("NIFTY")},
+        )
+        if res and res.get("stat") == "Ok":
+            log.debug("[shoonya] cached token is still valid")
+            return True
+        log.info("[shoonya] cached token expired or invalid — will re-authenticate")
+        self._clear_cached_token()
+        return False
 
     # ------------------------------------------------------------------
     # Authentication — Playwright OAuth flow
@@ -216,8 +283,12 @@ class ShoonyaFetcher(BaseFetcher):
         return token
 
     def login(self) -> bool:
+        # If we have a cached token, verify it's still valid with a quick API call.
         if self.access_token:
-            return True
+            if self._verify_token():
+                log.info("[shoonya] reused cached token — skipping OAuth")
+                return True
+            # Token expired; _verify_token already cleared the cache.
 
         missing = [
             k
@@ -243,6 +314,7 @@ class ShoonyaFetcher(BaseFetcher):
             if not token:
                 return False
             self.access_token = token
+            self._save_token()
             log.info("[shoonya] OAuth login successful")
             return True
         except Exception as exc:
