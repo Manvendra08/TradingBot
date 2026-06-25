@@ -19,12 +19,19 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 # Paytm API segment paths for option chains.
 # NSE F&O is served under /fno/v1/ , BSE F&O under /bse-fo/v1/
+# MCX is NOT available via the free developer API (all paths return 404).
+# MCX data should come from Shoonya instead.
 _SEGMENT_PATH: dict[str, str] = {
     "NIFTY": "/fno/v1",
     "BANKNIFTY": "/fno/v1",
     "FINNIFTY": "/fno/v1",
     "MIDCPNIFTY": "/fno/v1",
     "SENSEX": "/bse-fo/v1",
+    # MCX symbols — confirmed NOT available on Paytm developer API as of 2026-06.
+    # "CRUDEOIL": "/mcx-fo/v1",
+    # "NATURALGAS": "/mcx-fo/v1",
+    # "GOLD": "/mcx-fo/v1",
+    # "SILVER": "/mcx-fo/v1",
 }
 _DEFAULT_SEGMENT = "/fno/v1"
 
