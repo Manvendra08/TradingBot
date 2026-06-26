@@ -1141,8 +1141,10 @@ def _call_llm_api(
         }
 
         if _is_mcx:
-            # MCX: OpenRouter GPT-OSS → GitHub → Groq → OpenRouter pool → Gemini SDK
+            # MCX: Groq → GitHub → OpenRouter GPT-OSS → OpenRouter pool → Gemini SDK
             FREE_MODEL_PIPELINE = [
+                _tail_pipeline[0],  # groq-reasoning
+                _github_models,
                 {
                     "model_group": "openrouter-gpt-oss-free",
                     "providers": [
@@ -1154,8 +1156,8 @@ def _call_llm_api(
                         },
                     ],
                 },
-                _github_models,
-                *_tail_pipeline,
+                _tail_pipeline[1],  # openrouter-free-pool
+                _tail_pipeline[2],  # gemini-sdk
             ]
         else:
             # NSE/BSE indices: GitHub → Groq → OpenRouter pool → Gemini SDK
@@ -1339,6 +1341,48 @@ def _call_llm_api(
                         resp.text[:200],
                     )
                     _register_provider_failure(provider, 402, resp.text, now)
+                elif resp.status_code == 400 and "json_validate_failed" in resp.text:
+                    log.info(
+                        "[llm] %s (%s) returned 400 json_validate_failed — model does not support response_format=json_object. Retrying without it.",
+                        provider["name"],
+                        provider["model"],
+                    )
+                    retry_payload = json_payload.copy()
+                    retry_payload.pop("response_format", None)
+                    retry_resp = session.post(
+                        provider["url"],
+                        headers=headers,
+                        json=retry_payload,
+                        timeout=min(remaining, 12.0),
+                    )
+                    if retry_resp.status_code == 200:
+                        retry_json = retry_resp.json()
+                        if "choices" in retry_json and retry_json["choices"]:
+                            retry_msg = retry_json["choices"][0].get("message")
+                            if retry_msg and retry_msg.get("content"):
+                                parsed = _extract_json(retry_msg["content"])
+                                if isinstance(parsed, list):
+                                    if len(parsed) == 1 and isinstance(parsed[0], dict):
+                                        parsed = parsed[0]
+                                    else:
+                                        raise ValueError(
+                                            f"{provider['name']} retry returned unexpected array with {len(parsed)} items"
+                                        )
+                                result = schema.model_validate(parsed)
+                                log.info(
+                                    "[llm] %s OK via %s (%s) [no json_mode]",
+                                    schema.__name__,
+                                    provider["name"],
+                                    provider["model"],
+                                )
+                                _CONSECUTIVE_FAILURES = 0
+                                return result
+                    log.info(
+                        "[llm] %s (%s) retry also failed (status=%d) — skipping",
+                        provider["name"],
+                        provider["model"],
+                        retry_resp.status_code if retry_resp.status_code else -1,
+                    )
                 else:
                     log.info(
                         "[llm] %s (%s) failed: status=%d %s",
