@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NSEBOT — AI Intelligence</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500&display=swap');
+
+  :root {
+    --bg:        #0a0c0f;
+    --surface:   #111418;
+    --surface-2: #1a1f26;
+    --border:    #1e2530;
+    --accent:    #00e5a0</title>;
+    --red:       #ff4d6d;
+    --green:     #00e5a0;
+    --yellow:    #ffd166;
+    --muted:     #4a5568;
+    --text:      #e2e8f0;
+    --text-dim:  #718096;
+    --mono:      'Space Mono', monospace;
+    --sans:      'DM Sans', sans-serif;
+  }
+
+  [data-theme="light"] {
+    --bg:        #f8fafc;
+    --surface:   #ffffff;
+    --surface-2: #f1f5f9;
+    --border:    #e2e8f0;
+    --accent:    #059669;
+    --red:       #e11d48;
+    --green:     #059669;
+    --yellow:    #d97706;
+    --muted:     #cbd5e1;
+    --text:      #0f172a;
+    --text-dim:  #64748b;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    min-height: 100vh;
+  }
+
+  /* Navigation bar */
+  .nav-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 24px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+
+  .nav-left {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .nav-links {
+    display: flex;
+    background: rgba(0, 0, 0, 0.15);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 3px;
+    gap: 2px;
+  }
+
+  .nav-links a {
+    color: var(--text-dim);
+    text-decoration: none;
+    padding: 6px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    border-radius: 6px;
+    transition: all 0.2s ease;
+    border: 1px solid transparent;
+    font-family: var(--sans);
+  }
+
+  .nav-links a:hover {
+    color: var(--text);
+    background: rgba(255, 255, 255, 0.03);
+  }
+
+  .nav-links a.active {
+    color: var(--accent);
+    background: var(--surface-2);
+    border-color: var(--border);
+  }
+
+  .theme-toggle-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text);
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+  }
+
+  .theme-toggle-btn:hover {
+    border-color: var(--accent);
+  }
+
+  .logo-text {
+    font-family: var(--sans);
+    font-weight: 800;
+    font-size: 16px;
+    letter-spacing: 1.5px;
+    color: var(--text);
+  }
+
+  .logo-sub {
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--accent);
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+
+  .symbol-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 24px;
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+
+  .symbol-bar select {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 6px 12px;
+    border-radius: 4px;
+    font-family: var(--mono);
+    font-size: 12px;
+    cursor: pointer;
+    outline: none;
+  }
+
+  .symbol-bar select:hover { border-color: var(--accent); }
+
+  [data-theme="light"] .nav-links { background: rgba(0, 0, 0, 0.03); }
+  [data-theme="light"] .nav-links a:hover { background: rgba(0, 0, 0, 0.02); }
+  [data-theme="light"] .nav-links a.active { background: #ffffff; border-color: #cbd5e1; }
+</style>
+<link rel="stylesheet" href="/static/ai_insights.css">
+</head>
+<body>
+  <nav class="nav-bar">
+    <div class="nav-left">
+      <div>
+        <div class="logo-text">NSEBOT</div>
+        <div class="logo-sub">AI Intelligence</div>
+      </div>
+      <div class="nav-links">
+        <a href="/">Dashboard</a>
+        <a href="/paper">Paper Trades</a>
+        <a href="/broker">Broker Console</a>
+        <a href="/ai" class="active">AI Insights</a>
+        <a href="/settings">Settings</a>
+      </div>
+    </div>
+    <button id="theme-toggle-btn" class="theme-toggle-btn" title="Toggle Day/Night">🌙</button>
+  </nav>
+
+  <div class="symbol-bar">
+    <label for="ai-symbol-sel">Symbol</label>
+    <select id="ai-symbol-sel">
+      <option value="NIFTY">NIFTY</option>
+      <option value="BANKNIFTY">BANKNIFTY</option>
+      <option value="SENSEX">SENSEX</option>
+      <option value="FINNIFTY">FINNIFTY</option>
+      <option value="MIDCPNIFTY">MIDCPNIFTY</option>
+      <option value="NATURALGAS">NATURALGAS</option>
+      <option value="CRUDEOIL">CRUDEOIL</option>
+    </select>
+    <span id="ai-verdict-pill" class="ai-pill">—</span>
+    <span style="flex:1"></span>
+    <span id="ai-updated-nav" class="ai-micro" aria-live="polite"></span>
+  </div>
+
+  <!-- AI Insights Panel -->
+  <section class="ai-insights" aria-labelledby="ai-insights-title">
+    <header class="ai-head">
+      <h2 id="ai-insights-title">AI Intelligence</h2>
+      <div class="ai-head__meta">
+        <span id="ai-symbol-pill" class="ai-pill">—</span>
+        <button id="ai-refresh-btn" class="ai-btn-ghost ai-btn-refresh" aria-label="Refresh insights">↻</button>
+        <span id="ai-updated" class="ai-micro" aria-live="polite"></span>
+      </div>
+    </header>
+
+    <!-- HERO: ML Success Probability -->
+    <article class="ai-card ai-card--hero" aria-labelledby="ai-ml-title">
+      <h3 id="ai-ml-title" class="ai-card__title">🤖 Success Probability</h3>
+      <div id="ai-ml-content" class="ai-card__body" aria-live="polite" role="region" data-state="loading">
+        <div class="ai-skeleton ai-skeleton--hero" style="width:50%"></div>
+        <div class="ai-skeleton ai-skeleton--bar" style="width:80%"></div>
+        <div class="ai-skeleton ai-skeleton--bar" style="width:60%"></div>
+      </div>
+    </article>
+
+    <!-- Two-column: Trade DNA + Edge Health -->
+    <div class="ai-grid-2">
+      <article class="ai-card" aria-labelledby="ai-dna-title">
+        <h3 id="ai-dna-title" class="ai-card__title">🧬 Trade DNA</h3>
+        <div id="ai-dna-content" class="ai-card__body" aria-live="polite" role="region" data-state="loading">
+          <div class="ai-skeleton ai-skeleton--bar" style="width:70%"></div>
+          <div class="ai-skeleton ai-skeleton--bar" style="width:50%"></div>
+          <div class="ai-skeleton ai-skeleton--bar" style="width:90%"></div>
+        </div>
+      </article>
+
+      <article class="ai-card" aria-labelledby="ai-edge-title">
+        <h3 id="ai-edge-title" class="ai-card__title">📉 Edge Health</h3>
+        <div id="ai-edge-content" class="ai-card__body" aria-live="polite" role="region" data-state="loading">
+          <div class="ai-skeleton ai-skeleton--bar" style="width:80%"></div>
+          <div class="ai-skeleton ai-skeleton--bar" style="width:60%"></div>
+          <div class="ai-skeleton ai-skeleton--bar" style="width:70%"></div>
+        </div>
+      </article>
+    </div>
+
+    <!-- Patterns (full width) -->
+    <article class="ai-card" aria-labelledby="ai-patterns-title">
+      <h3 id="ai-patterns-title" class="ai-card__title">📊 Top Patterns</h3>
+      <div id="ai-patterns-content" class="ai-card__body" aria-live="polite" role="region" data-state="loading">
+        <div class="ai-skeleton ai-skeleton--bar" style="width:90%"></div>
+        <div class="ai-skeleton ai-skeleton--bar" style="width:75%"></div>
+        <div class="ai-skeleton ai-skeleton--bar" style="width:85%"></div>
+        <div class="ai-skeleton ai-skeleton--bar" style="width:65%"></div>
+      </div>
+    </article>
+  </section>
+
+  <script src="/static/ai_insights.js"></script>
+  <script>
+    // Theme toggle
+    const themeBtn = document.getElementById('theme-toggle-btn');
+    themeBtn.addEventListener('click', () => {
+      const html = document.documentElement;
+      const isLight = html.getAttribute('data-theme') === 'light';
+      html.setAttribute('data-theme', isLight ? 'dark' : 'light');
+      themeBtn.textContent = isLight ? '🌙' : '☀️';
+    });
+
+    // Symbol selector → update AIInsights context
+    const symSel = document.getElementById('ai-symbol-sel');
+    const verdictPill = document.getElementById('ai-verdict-pill');
+    const updatedNav = document.getElementById('ai-updated-nav');
+    const updatedPanel = document.getElementById('ai-updated');
+
+    function loadIntelligence(sym) {
+      fetch(`/api/intelligence_summary?symbol=${encodeURIComponent(sym)}`)
+        .then(r => r.json())
+        .then(intel => {
+          if (intel && intel.available) {
+            const v = intel.verdict || '—';
+            const c = intel.confidence || 0;
+            verdictPill.textContent = `${v} ${c}%`;
+            window.AIInsights.setSignal({ symbol: sym, verdict: v, confidence: c });
+          } else {
+            verdictPill.textContent = '—';
+            window.AIInsights.setSignal({ symbol: sym, verdict: null, confidence: 0 });
+          }
+        })
+        .catch(() => {
+          verdictPill.textContent = '⚠';
+          window.AIInsights.setSignal({ symbol: sym, verdict: null, confidence: 0 });
+        });
+    }
+
+    symSel.addEventListener('change', () => {
+      const sym = symSel.value;
+      loadIntelligence(sym);
+    });
+
+    // Initial load with first symbol
+    const initialSym = symSel.value;
+    loadIntelligence(initialSym);
+    window.AIInsights.init();
+  </script>
+</body>
+</html>

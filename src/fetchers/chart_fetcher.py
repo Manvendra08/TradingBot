@@ -103,14 +103,17 @@ def _base_symbol(symbol: str) -> str:
     s = str(symbol or "").upper().strip()
     if not s:
         return ""
-    s = re.sub(r"\s+(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\d{0,4}(\s+FUT)?$", "", s)
+    s = re.sub(
+        r"\s+(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\d{0,4}(\s+FUT)?$", "", s
+    )
     return s.split()[0]
 
 
 @lru_cache(maxsize=1)
 def _tvdatafeed_available() -> bool:
     try:
-        from tvDatafeed import TvDatafeed, Interval  # noqa: F401
+        from tvDatafeed import Interval, TvDatafeed  # noqa: F401
+
         return True
     except ImportError:
         return False
@@ -120,6 +123,7 @@ def _tvdatafeed_available() -> bool:
 def _yfinance_available() -> bool:
     try:
         import yfinance  # noqa: F401
+
         return True
     except ImportError:
         return False
@@ -201,6 +205,7 @@ def _get_tv_client():
     backoff_until = getattr(_tv_local, "backoff_until", None)
     if backoff_until is not None:
         import time as _time
+
         if _time.monotonic() < backoff_until:
             return None  # still in backoff window, skip silently
         else:
@@ -211,19 +216,28 @@ def _get_tv_client():
 
     if not hasattr(_tv_local, "client") or _tv_local.client is None:
         try:
+            from config.settings import TV_PASSWORD, TV_SESSIONID, TV_USERNAME
             from tvDatafeed import TvDatafeed
-            from config.settings import TV_USERNAME, TV_PASSWORD, TV_SESSIONID
+
             if TV_SESSIONID:
-                log.info("[chart] tvdatafeed: authenticating using sessionid cookie")
-                _tv_local.client = TvDatafeed(sessionid=TV_SESSIONID)
-            elif TV_USERNAME and TV_PASSWORD:
-                log.info("[chart] tvdatafeed: authenticating as %s (warning: credentials may trigger CAPTCHA)", TV_USERNAME)
-                _tv_local.client = TvDatafeed(username=TV_USERNAME, password=TV_PASSWORD)
+                log.warning(
+                    "[chart] tvdatafeed: TV_SESSIONID is no longer supported by this version of "
+                    "tvdatafeed — falling back. Remove TV_SESSIONID from .env and use "
+                    "TV_USERNAME + TV_PASSWORD instead."
+                )
+            if TV_USERNAME and TV_PASSWORD:
+                log.info(
+                    "[chart] tvdatafeed: authenticating as %s (warning: credentials may trigger CAPTCHA)",
+                    TV_USERNAME,
+                )
+                _tv_local.client = TvDatafeed(
+                    username=TV_USERNAME, password=TV_PASSWORD
+                )
             else:
                 log.warning(
-                    "[chart] tvdatafeed: TV_SESSIONID or credentials not set — "
+                    "[chart] tvdatafeed: TV_USERNAME + TV_PASSWORD not set — "
                     "MCX commodity data (NATURALGAS, CRUDEOIL, GOLD, SILVER) will fail. "
-                    "Set TV_SESSIONID in .env to enable MCX charts."
+                    "Set TV_USERNAME and TV_PASSWORD in .env to enable MCX charts."
                 )
                 _tv_local.client = TvDatafeed()  # unauthenticated; NSE only
         except Exception as exc:
@@ -235,6 +249,7 @@ def _get_tv_client():
 def _tv_record_failure():
     """Increment failure counter; open circuit-breaker if threshold reached."""
     import time as _time
+
     _tv_local.fail_count = getattr(_tv_local, "fail_count", 0) + 1
     _tv_local.client = None
     if _tv_local.fail_count >= _TV_MAX_FAILURES:
@@ -314,8 +329,11 @@ def _flatten_yf_frame(df, ticker: str):
     return df if not getattr(df, "empty", True) else None
 
 
-def _bar_to_payload(bar, *, bar_start_ts=None, bar_end_ts=None, naive_tz=timezone.utc) -> dict | None:
+def _bar_to_payload(
+    bar, *, bar_start_ts=None, bar_end_ts=None, naive_tz=timezone.utc
+) -> dict | None:
     try:
+
         def _pick(*keys):
             for key in keys:
                 try:
@@ -406,7 +424,9 @@ def _payload_from_closed_bars(
     }
 
 
-def _aggregate_bars_list(bars: list[dict], bar_minutes: int, aggregate_count: int) -> list[dict]:
+def _aggregate_bars_list(
+    bars: list[dict], bar_minutes: int, aggregate_count: int
+) -> list[dict]:
     now_utc = datetime.now(timezone.utc)
     closed = []
     for bar in bars:
@@ -420,13 +440,13 @@ def _aggregate_bars_list(bars: list[dict], bar_minutes: int, aggregate_count: in
         end_dt = start_dt + timedelta(minutes=bar_minutes)
         if end_dt <= now_utc:
             closed.append((start_dt, bar))
-    
+
     closed.sort(key=lambda item: item[0])
-    
+
     agg_bars = []
     n = len(closed)
     for i in range(n, 0, -aggregate_count):
-        chunk = closed[i-aggregate_count:i]
+        chunk = closed[i - aggregate_count : i]
         if len(chunk) < aggregate_count:
             continue
         try:
@@ -434,25 +454,24 @@ def _aggregate_bars_list(bars: list[dict], bar_minutes: int, aggregate_count: in
             h = max(float(item[1]["High"]) for item in chunk)
             l = min(float(item[1]["Low"]) for item in chunk)
             c = float(chunk[-1][1]["Close"])
-            agg_bars.append({
-                "Open": o,
-                "High": h,
-                "Low": l,
-                "Close": c,
-                "_ts": chunk[0][1]["_ts"]
-            })
+            agg_bars.append(
+                {"Open": o, "High": h, "Low": l, "Close": c, "_ts": chunk[0][1]["_ts"]}
+            )
         except Exception:
             continue
     agg_bars.reverse()
     return agg_bars
 
 
-def _aggregate_bars_grid(bars: list[dict], tf_mins: int, base_symbol: str) -> list[dict]:
+def _aggregate_bars_grid(
+    bars: list[dict], tf_mins: int, base_symbol: str
+) -> list[dict]:
     """
     Groups bars by daily market grids and aggregates them.
     Only completed slots that fit entirely within market hours are returned.
     """
     import pytz
+
     from config.symbol_classes import market_window
 
     tz_local = pytz.timezone("Asia/Kolkata")
@@ -504,15 +523,17 @@ def _aggregate_bars_grid(bars: list[dict], tf_mins: int, base_symbol: str) -> li
                     l = min(float(b["Low"]) for b in slot_bars)
                     c = float(slot_bars[-1]["Close"])
                     ts_utc = slot_start.astimezone(timezone.utc).timestamp()
-                    aggregated_bars.append({
-                        "Open": o,
-                        "High": h,
-                        "Low": l,
-                        "Close": c,
-                        "_ts": ts_utc,
-                        "_slot_start": slot_start,
-                        "_slot_end": slot_end
-                    })
+                    aggregated_bars.append(
+                        {
+                            "Open": o,
+                            "High": h,
+                            "Low": l,
+                            "Close": c,
+                            "_ts": ts_utc,
+                            "_slot_start": slot_start,
+                            "_slot_end": slot_end,
+                        }
+                    )
                 except Exception:
                     pass
             slot_start = slot_end
@@ -537,7 +558,7 @@ def _payload_from_grid_bars(agg_bars: list[dict]) -> dict | None:
             "open": prev_bar["Open"],
             "high": prev_bar["High"],
             "low": prev_bar["Low"],
-            "close": prev_bar["Close"]
+            "close": prev_bar["Close"],
         }
 
     start_dt = last_bar["_slot_start"].astimezone(timezone.utc)
@@ -552,7 +573,6 @@ def _payload_from_grid_bars(agg_bars: list[dict]) -> dict | None:
     }
 
 
-
 def _calculate_atr_from_bars(bars: list[dict], period: int = 14) -> float | None:
     if len(bars) < period + 1:
         return None
@@ -561,7 +581,7 @@ def _calculate_atr_from_bars(bars: list[dict], period: int = 14) -> float | None
         try:
             h = float(bars[i]["High"])
             l = float(bars[i]["Low"])
-            c_prev = float(bars[i-1]["Close"])
+            c_prev = float(bars[i - 1]["Close"])
             tr.append(max(h - l, abs(h - c_prev), abs(l - c_prev)))
         except Exception:
             continue
@@ -572,7 +592,6 @@ def _calculate_atr_from_bars(bars: list[dict], period: int = 14) -> float | None
     for i in range(period, len(tr)):
         atr = (atr * (period - 1) + tr[i]) / period
     return atr
-
 
 
 def _parse_dt_utc(value: str | None) -> datetime | None:
@@ -603,25 +622,26 @@ def _is_payload_stale(payload: dict, tf: str) -> bool:
 def _last_closed_window(tf: str, base_symbol: str) -> tuple[datetime, datetime] | None:
     now_ist = datetime.now(IST)
     from config.symbol_classes import market_window
-    
+
     open_t, close_t, _ = market_window(base_symbol)
     open_h, open_m = map(int, open_t.split(":"))
-    
+
     market_open = now_ist.replace(hour=open_h, minute=open_m, second=0, microsecond=0)
     delta_mins = (now_ist - market_open).total_seconds() / 60.0
-    
+
     if tf.endswith("m"):
         tf_mins = int(tf[:-1])
     elif tf.endswith("h"):
         tf_mins = int(tf[:-1]) * 60
     else:
         tf_mins = 60
-        
+
     if delta_mins < tf_mins:
         start_ist = market_open
         end_ist = now_ist
     else:
         import math
+
         completed_intervals = math.floor(delta_mins / tf_mins)
         start_ist = market_open + timedelta(minutes=(completed_intervals - 1) * tf_mins)
         end_ist = market_open + timedelta(minutes=completed_intervals * tf_mins)
@@ -629,7 +649,9 @@ def _last_closed_window(tf: str, base_symbol: str) -> tuple[datetime, datetime] 
     return start_ist.astimezone(timezone.utc), end_ist.astimezone(timezone.utc)
 
 
-def _aggregate_rows_to_payload(rows: list[dict], start_utc: datetime, end_utc: datetime) -> Optional[dict]:
+def _aggregate_rows_to_payload(
+    rows: list[dict], start_utc: datetime, end_utc: datetime
+) -> Optional[dict]:
     selected: list[dict] = []
     duration = end_utc - start_utc
     prev_start_utc = start_utc - duration
@@ -680,7 +702,9 @@ def _aggregate_rows_to_payload(rows: list[dict], start_utc: datetime, end_utc: d
     }
 
 
-def _fetch_dhan_builtup_ohlc(base_symbol: str, tf: str, reference_price: float | None = None) -> Optional[dict]:
+def _fetch_dhan_builtup_ohlc(
+    base_symbol: str, tf: str, reference_price: float | None = None
+) -> Optional[dict]:
     if base_symbol not in _DHAN_BUILTUP_SYMBOLS:
         return None
     window = _last_closed_window(tf, base_symbol)
@@ -719,7 +743,11 @@ def _fetch_dhan_builtup_ohlc(base_symbol: str, tf: str, reference_price: float |
             return None
         out = _aggregate_rows_to_payload(rows, *window)
         if out:
-            log.info("[chart] %s %s -> using dhan_builtup last-closed candle", base_symbol, tf)
+            log.info(
+                "[chart] %s %s -> using dhan_builtup last-closed candle",
+                base_symbol,
+                tf,
+            )
             # Fetch historical ATR and prev_ohlc from yfinance as a fallback
             try:
                 yf_payload = _fetch_yf(base_symbol, tf, reference_price=reference_price)
@@ -729,7 +757,12 @@ def _fetch_dhan_builtup_ohlc(base_symbol: str, tf: str, reference_price: float |
                     if "prev_ohlc" in yf_payload:
                         out["prev_ohlc"] = yf_payload["prev_ohlc"]
             except Exception as e:
-                log.warning("[chart] failed to fetch yfinance fallback indicators for %s %s: %s", base_symbol, tf, e)
+                log.warning(
+                    "[chart] failed to fetch yfinance fallback indicators for %s %s: %s",
+                    base_symbol,
+                    tf,
+                    e,
+                )
         return out
     except Exception as exc:
         log.warning("[chart] dhan_builtup fetch failed %s %s: %s", base_symbol, tf, exc)
@@ -789,7 +822,9 @@ def _fetch_local_ohlc_from_db(base_symbol: str, tf: str) -> Optional[dict]:
         finally:
             conn.close()
     except Exception as exc:
-        log.debug("[chart] local DB OHLC build failed for %s %s: %s", base_symbol, tf, exc)
+        log.debug(
+            "[chart] local DB OHLC build failed for %s %s: %s", base_symbol, tf, exc
+        )
         return None
 
 
@@ -811,7 +846,9 @@ def _fetch_tv(base_symbol: str, tf: str) -> Optional[dict]:
 
     exchange, tv_sym = tv_info
     try:
-        df = client.get_hist(symbol=tv_sym, exchange=exchange, interval=interval, n_bars=30)
+        df = client.get_hist(
+            symbol=tv_sym, exchange=exchange, interval=interval, n_bars=30
+        )
         if df is None or getattr(df, "empty", True):
             _tv_record_failure()
             return None
@@ -820,12 +857,14 @@ def _fetch_tv(base_symbol: str, tf: str) -> Optional[dict]:
         tv_bars = []
         for idx, row in df.iterrows():
             try:
-                tv_bars.append({
-                    "Open": float(row["open"]),
-                    "High": float(row["high"]),
-                    "Low": float(row["low"]),
-                    "Close": float(row["close"]),
-                })
+                tv_bars.append(
+                    {
+                        "Open": float(row["open"]),
+                        "High": float(row["high"]),
+                        "Low": float(row["low"]),
+                        "Close": float(row["close"]),
+                    }
+                )
             except Exception:
                 continue
 
@@ -835,7 +874,9 @@ def _fetch_tv(base_symbol: str, tf: str) -> Optional[dict]:
             bar_ts = df.index[-1]
         except Exception:
             pass
-        payload = _bar_to_payload(bar, bar_start_ts=bar_ts, bar_end_ts=bar_ts, naive_tz=IST)
+        payload = _bar_to_payload(
+            bar, bar_start_ts=bar_ts, bar_end_ts=bar_ts, naive_tz=IST
+        )
         if payload is None:
             _tv_record_failure()
             return None
@@ -853,7 +894,9 @@ def _fetch_tv(base_symbol: str, tf: str) -> Optional[dict]:
                 prev_ts = df.index[-2]
             except Exception:
                 pass
-            prev_payload = _bar_to_payload(prev_bar, bar_start_ts=prev_ts, bar_end_ts=prev_ts, naive_tz=IST)
+            prev_payload = _bar_to_payload(
+                prev_bar, bar_start_ts=prev_ts, bar_end_ts=prev_ts, naive_tz=IST
+            )
             if prev_payload:
                 payload["prev_ohlc"] = prev_payload["ohlc"]
 
@@ -890,7 +933,9 @@ def _apply_price_scale(payload: dict, scale: float) -> dict:
         return payload
 
 
-def _fetch_yf(base_symbol: str, tf: str, reference_price: float | None = None) -> Optional[dict]:
+def _fetch_yf(
+    base_symbol: str, tf: str, reference_price: float | None = None
+) -> Optional[dict]:
     yf_sym = _YF_SYMBOL_MAP.get(base_symbol)
     if not yf_sym:
         return None
@@ -901,16 +946,19 @@ def _fetch_yf(base_symbol: str, tf: str, reference_price: float | None = None) -
 
     # 1. Pure HTTP query API (zero-dependency, extremely fast & robust)
     try:
-        import urllib.request
         import json
+        import urllib.request
+
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{yf_sym}?interval={yf_interval}&range={yf_period}"
         req = urllib.request.Request(
             url,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            },
         )
         with urllib.request.urlopen(req, timeout=10) as res:
             data = json.loads(res.read().decode("utf-8"))
-            
+
         result = data["chart"]["result"][0]
         indicators = result["indicators"]["quote"][0]
         timestamps = result.get("timestamp", []) or []
@@ -918,7 +966,7 @@ def _fetch_yf(base_symbol: str, tf: str, reference_price: float | None = None) -
         highs = indicators.get("high", [])
         lows = indicators.get("low", [])
         closes = indicators.get("close", [])
-        
+
         valid_bars = []
         for i in range(len(opens)):
             o = opens[i]
@@ -927,14 +975,16 @@ def _fetch_yf(base_symbol: str, tf: str, reference_price: float | None = None) -
             c = closes[i]
             if o is not None and h is not None and l is not None and c is not None:
                 ts = timestamps[i] if i < len(timestamps) else None
-                valid_bars.append({
-                    "Open": float(o),
-                    "High": float(h),
-                    "Low": float(l),
-                    "Close": float(c),
-                    "_ts": ts,
-                })
-                
+                valid_bars.append(
+                    {
+                        "Open": float(o),
+                        "High": float(h),
+                        "Low": float(l),
+                        "Close": float(c),
+                        "_ts": ts,
+                    }
+                )
+
         if valid_bars:
             if tf.endswith("m"):
                 tf_mins = int(tf[:-1])
@@ -954,9 +1004,15 @@ def _fetch_yf(base_symbol: str, tf: str, reference_price: float | None = None) -
             if payload:
                 # MCX symbols from Yahoo (NG=F/CL=F/GC=F/SI=F) are in global units.
                 # Scale to local underlying so OHLC shown in Telegram/UI remains meaningful.
-                if base_symbol in _MCX_SYMBOLS and reference_price and reference_price > 0:
+                if (
+                    base_symbol in _MCX_SYMBOLS
+                    and reference_price
+                    and reference_price > 0
+                ):
                     try:
-                        close_px = float((payload.get("ohlc") or {}).get("close") or 0.0)
+                        close_px = float(
+                            (payload.get("ohlc") or {}).get("close") or 0.0
+                        )
                         if close_px > 0:
                             scale = reference_price / close_px
                             payload = _apply_price_scale(payload, scale)
@@ -964,10 +1020,19 @@ def _fetch_yf(base_symbol: str, tf: str, reference_price: float | None = None) -
                                 payload["atr_14"] = payload["atr_14"] * scale
                     except Exception:
                         pass
-                log.info("[chart] successfully fetched %s %s using pure-HTTP API", base_symbol, tf)
+                log.info(
+                    "[chart] successfully fetched %s %s using pure-HTTP API",
+                    base_symbol,
+                    tf,
+                )
                 return payload
     except Exception as exc:
-        log.warning("[chart] pure-HTTP Yahoo Finance query failed for %s %s: %s", base_symbol, tf, exc)
+        log.warning(
+            "[chart] pure-HTTP Yahoo Finance query failed for %s %s: %s",
+            base_symbol,
+            tf,
+            exc,
+        )
 
     # 2. Fallback to standard yfinance package
     if not _yfinance_available():
@@ -1028,7 +1093,12 @@ def _fetch_yf(base_symbol: str, tf: str, reference_price: float | None = None) -
             atr = _calculate_atr_from_bars(agg_bars, period=14)
             if payload and atr is not None:
                 payload["atr_14"] = atr
-        if payload and base_symbol in _MCX_SYMBOLS and reference_price and reference_price > 0:
+        if (
+            payload
+            and base_symbol in _MCX_SYMBOLS
+            and reference_price
+            and reference_price > 0
+        ):
             try:
                 close_px = float((payload.get("ohlc") or {}).get("close") or 0.0)
                 if close_px > 0:
@@ -1065,11 +1135,17 @@ class ChartFetcher:
                 "ohlc": current_ohlc,
                 "bar_start_utc": payload.get("bar_start_utc"),
                 "bar_end_utc": payload.get("bar_end_utc"),
-                "prev_ohlc": payload.get("prev_ohlc") or prev_ohlc or prev.get("prev_ohlc"),
-                "last_closed_ohlc": prev_ohlc if changed else prev.get("last_closed_ohlc"),
+                "prev_ohlc": payload.get("prev_ohlc")
+                or prev_ohlc
+                or prev.get("prev_ohlc"),
+                "last_closed_ohlc": prev_ohlc
+                if changed
+                else prev.get("last_closed_ohlc"),
                 "updated_at": now,
                 "seen_at": now,
-                "changed_at": now if changed or not prev else prev.get("changed_at", now),
+                "changed_at": now
+                if changed or not prev
+                else prev.get("changed_at", now),
             }
             # Preserve additional indicators like atr_14, support, resistance, etc. from raw payload
             for k, v in payload.items():
@@ -1078,7 +1154,12 @@ class ChartFetcher:
             symbol_state[tf] = entry
             return entry
 
-    def fetch(self, symbol: str, timeframes: list[str] | None = None, reference_price: float | None = None) -> dict:
+    def fetch(
+        self,
+        symbol: str,
+        timeframes: list[str] | None = None,
+        reference_price: float | None = None,
+    ) -> dict:
         tfs = list(timeframes or self.DEFAULT_TIMEFRAMES)
         base = _base_symbol(symbol)
 
@@ -1092,7 +1173,9 @@ class ChartFetcher:
             source = None
 
             if base in _DHAN_BUILTUP_SYMBOLS:
-                payload = _fetch_dhan_builtup_ohlc(base, tf, reference_price=reference_price)
+                payload = _fetch_dhan_builtup_ohlc(
+                    base, tf, reference_price=reference_price
+                )
                 source = "dhan_builtup" if payload else None
 
             if not payload:
@@ -1107,12 +1190,18 @@ class ChartFetcher:
                     if payload:
                         break
 
-            if base in _MCX_SYMBOLS and (payload is None or _is_payload_stale(payload, tf)):
+            if base in _MCX_SYMBOLS and (
+                payload is None or _is_payload_stale(payload, tf)
+            ):
                 local_payload = _fetch_local_ohlc_from_db(base, tf)
                 if local_payload:
                     payload = local_payload
                     source = "local_underlying_db"
-                    log.info("[chart] %s %s -> using local_underlying_db (fresh MCX fallback)", base, tf)
+                    log.info(
+                        "[chart] %s %s -> using local_underlying_db (fresh MCX fallback)",
+                        base,
+                        tf,
+                    )
 
             if not payload:
                 log.warning("[chart] %s %s -> no chart data", base, tf)

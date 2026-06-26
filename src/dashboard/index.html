@@ -1,916 +1,1607 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>NSEBOT — Option Chain Monitor</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<style>
-  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500&display=swap');
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>NSEBOT — Option Chain Monitor</title>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+        <style>
+            @import url("https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500&display=swap");
 
-  :root {
-    --bg:        #0a0c0f;
-    --surface:   #111418;
-    --border:    #1e2530;
-    --accent:    #00e5a0;
-    --red:       #ff4d6d;
-    --green:     #00e5a0;
-    --yellow:    #ffd166;
-    --muted:     #4a5568;
-    --text:      #e2e8f0;
-    --text-dim:  #718096;
-    --mono:      'Space Mono', monospace;
-    --sans:      'DM Sans', sans-serif;
-  }
+            :root {
+                --bg: #0a0c0f;
+                --surface: #111418;
+                --border: #1e2530;
+                --accent: #00e5a0;
+                --red: #ff4d6d;
+                --green: #00e5a0;
+                --yellow: #ffd166;
+                --muted: #4a5568;
+                --text: #e2e8f0;
+                --text-dim: #718096;
+                --mono: "Space Mono", monospace;
+                --sans: "DM Sans", sans-serif;
+            }
 
-  [data-theme="light"] {
-    --bg:        #f8fafc;
-    --surface:   #ffffff;
-    --border:    #e2e8f0;
-    --accent:    #059669;
-    --red:       #e11d48;
-    --green:     #059669;
-    --yellow:    #d97706;
-    --muted:     #cbd5e1;
-    --text:      #0f172a;
-    --text-dim:  #64748b;
-  }
+            [data-theme="light"] {
+                --bg: #f8fafc;
+                --surface: #ffffff;
+                --border: #e2e8f0;
+                --accent: #059669;
+                --red: #e11d48;
+                --green: #059669;
+                --yellow: #d97706;
+                --muted: #cbd5e1;
+                --text: #0f172a;
+                --text-dim: #64748b;
+            }
 
-  * { box-sizing: border-box; margin: 0; padding: 0; }
+            * {
+                box-sizing: border-box;
+                margin: 0;
+                padding: 0;
+            }
 
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: var(--sans);
-    font-size: 14px;
-    min-height: 100vh;
-  }
+            body {
+                background: var(--bg);
+                color: var(--text);
+                font-family: var(--sans);
+                font-size: 14px;
+                min-height: 100vh;
+            }
 
-  /* App Header & Navigation */
-  .app-header {
-    display: flex;
-    flex-direction: column;
-    padding: 10px 24px;
-    gap: 10px;
-    background: var(--surface);
-    border-bottom: 1px solid var(--border);
-    position: sticky;
-    top: 0;
-    z-index: 100;
-    height: auto !important;
-  }
-  .header-top-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    width: 100%;
-  }
-  .header-bottom-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    width: 100%;
-  }
-  .header-left {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-  }
-  .logo-stack {
-    display: flex;
-    flex-direction: column;
-  }
-  .logo-text {
-    font-family: var(--sans);
-    font-weight: 800;
-    font-size: 16px;
-    letter-spacing: 1.5px;
-    color: var(--text);
-  }
-  .logo-sub {
-    font-family: var(--mono);
-    font-size: 9px;
-    color: var(--accent);
-    letter-spacing: 2px;
-    text-transform: uppercase;
-  }
-  .header-nav {
-    display: flex;
-    background: rgba(0, 0, 0, 0.15);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 3px;
-    gap: 2px;
-  }
-  .nav-tab {
-    color: var(--text-dim);
-    text-decoration: none;
-    padding: 6px 16px;
-    font-size: 13px;
-    font-weight: 600;
-    border-radius: 6px;
-    transition: all 0.2s ease;
-    border: 1px solid transparent;
-    font-family: var(--sans);
-  }
-  .nav-tab:hover {
-    color: var(--text);
-    background: rgba(255, 255, 255, 0.03);
-  }
-  .nav-tab.active {
-    color: var(--accent);
-    background: var(--surface-2);
-    border-color: var(--border);
-  }
-  .theme-toggle-btn {
-    background: transparent;
-    border: 1px solid var(--border);
-    color: var(--text);
-    width: 36px;
-    height: 36px;
-    border-radius: 8px;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 16px;
-    transition: all 0.2s ease;
-  }
-  .theme-toggle-btn:hover {
-    border-color: var(--accent);
-    background: var(--surface-2);
-  }
-  [data-theme="light"] .header-nav {
-    background: rgba(0, 0, 0, 0.03);
-  }
-  [data-theme="light"] .nav-tab:hover {
-    background: rgba(0, 0, 0, 0.02);
-  }
-  [data-theme="light"] .nav-tab.active {
-    background: #ffffff;
-    border-color: #cbd5e1;
-  }
-  [data-theme="light"] .logo-sub {
-    color: var(--accent);
-  }
+            /* App Header & Navigation */
+            .app-header {
+                display: flex;
+                flex-direction: column;
+                padding: 10px 24px;
+                gap: 10px;
+                background: var(--surface);
+                border-bottom: 1px solid var(--border);
+                position: sticky;
+                top: 0;
+                z-index: 100;
+                height: auto !important;
+            }
+            .header-top-row {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                width: 100%;
+            }
+            .header-bottom-row {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                width: 100%;
+            }
+            .header-left {
+                display: flex;
+                align-items: center;
+                gap: 12px;
+            }
+            .logo-stack {
+                display: flex;
+                flex-direction: column;
+            }
+            .logo-text {
+                font-family: var(--sans);
+                font-weight: 800;
+                font-size: 16px;
+                letter-spacing: 1.5px;
+                color: var(--text);
+            }
+            .logo-sub {
+                font-family: var(--mono);
+                font-size: 9px;
+                color: var(--accent);
+                letter-spacing: 2px;
+                text-transform: uppercase;
+            }
+            .header-nav {
+                display: flex;
+                background: rgba(0, 0, 0, 0.15);
+                border: 1px solid var(--border);
+                border-radius: 8px;
+                padding: 3px;
+                gap: 2px;
+            }
+            .nav-tab {
+                color: var(--text-dim);
+                text-decoration: none;
+                padding: 6px 16px;
+                font-size: 13px;
+                font-weight: 600;
+                border-radius: 6px;
+                transition: all 0.2s ease;
+                border: 1px solid transparent;
+                font-family: var(--sans);
+            }
+            .nav-tab:hover {
+                color: var(--text);
+                background: rgba(255, 255, 255, 0.03);
+            }
+            .nav-tab.active {
+                color: var(--accent);
+                background: var(--surface-2);
+                border-color: var(--border);
+            }
+            .theme-toggle-btn {
+                background: transparent;
+                border: 1px solid var(--border);
+                color: var(--text);
+                width: 36px;
+                height: 36px;
+                border-radius: 8px;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 16px;
+                transition: all 0.2s ease;
+            }
+            .theme-toggle-btn:hover {
+                border-color: var(--accent);
+                background: var(--surface-2);
+            }
+            [data-theme="light"] .header-nav {
+                background: rgba(0, 0, 0, 0.03);
+            }
+            [data-theme="light"] .nav-tab:hover {
+                background: rgba(0, 0, 0, 0.02);
+            }
+            [data-theme="light"] .nav-tab.active {
+                background: #ffffff;
+                border-color: #cbd5e1;
+            }
+            [data-theme="light"] .logo-sub {
+                color: var(--accent);
+            }
 
-  /* Sub Header / Controls */
-  .sub-header {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    padding: 8px 24px;
-    background: var(--surface-2);
-    border-bottom: 1px solid var(--border);
-    font-family: var(--mono);
-    font-size: 12px;
-  }
-  .sub-header .controls-group {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .sub-header label {
-    font-size: 10px;
-    color: var(--text-dim);
-    font-weight: 600;
-    letter-spacing: 0.5px;
-  }
-  .sub-header .spacer {
-    flex: 1;
-  }
-  
-  select, button {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    color: var(--text);
-    padding: 6px 12px;
-    border-radius: 4px;
-    font-family: var(--mono);
-    font-size: 12px;
-    cursor: pointer;
-    outline: none;
-  }
-  select:hover, button:hover { border-color: var(--accent); }
-  button.primary { border-color: var(--accent); color: var(--accent); }
-  button.primary:hover { background: rgba(0,229,160,0.08); }
-  #status-dot {
-    width: 8px; height: 8px;
-    border-radius: 50%;
-    background: var(--muted);
-    transition: background .3s;
-  }
-  #status-dot.live { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
-  #last-update { font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
+            /* Sub Header / Controls */
+            .sub-header {
+                display: flex;
+                align-items: center;
+                gap: 16px;
+                padding: 8px 24px;
+                background: var(--surface-2);
+                border-bottom: 1px solid var(--border);
+                font-family: var(--mono);
+                font-size: 12px;
+            }
+            .sub-header .controls-group {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            .sub-header label {
+                font-size: 10px;
+                color: var(--text-dim);
+                font-weight: 600;
+                letter-spacing: 0.5px;
+            }
+            .sub-header .spacer {
+                flex: 1;
+            }
 
-  main { padding: 20px 24px; display: grid; gap: 16px; }
+            select,
+            button {
+                background: var(--bg);
+                border: 1px solid var(--border);
+                color: var(--text);
+                padding: 6px 12px;
+                border-radius: 4px;
+                font-family: var(--mono);
+                font-size: 12px;
+                cursor: pointer;
+                outline: none;
+            }
+            select:hover,
+            button:hover {
+                border-color: var(--accent);
+            }
+            button.primary {
+                border-color: var(--accent);
+                color: var(--accent);
+            }
+            button.primary:hover {
+                background: rgba(0, 229, 160, 0.08);
+            }
+            #status-dot {
+                width: 8px;
+                height: 8px;
+                border-radius: 50%;
+                background: var(--muted);
+                transition: background 0.3s;
+            }
+            #status-dot.live {
+                background: var(--accent);
+                box-shadow: 0 0 6px var(--accent);
+            }
+            #last-update {
+                font-family: var(--mono);
+                font-size: 11px;
+                color: var(--text-dim);
+            }
 
-  .kpi-row {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-    gap: 12px;
-  }
-  .kpi {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 14px 16px;
-  }
-  .kpi-label { font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--text-dim); margin-bottom: 6px; }
-  .kpi-value { font-family: var(--mono); font-size: 20px; font-weight: 700; color: var(--text); }
-  .kpi-value.green { color: var(--green); }
-  .kpi-value.red   { color: var(--red); }
-  .kpi-value.yellow{ color: var(--yellow); }
+            main {
+                padding: 20px 24px;
+                display: grid;
+                gap: 16px;
+            }
 
-  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 16px 20px; }
-  .card-title {
-    font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase;
-    color: var(--text-dim); margin-bottom: 14px;
-    display: flex; align-items: center; gap: 8px;
-  }
-  .card-title::before {
-    content: ''; display: inline-block;
-    width: 3px; height: 14px;
-    background: var(--accent); border-radius: 2px;
-  }
+            .kpi-row {
+                display: grid;
+                grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+                gap: 12px;
+            }
+            .kpi {
+                background: var(--surface);
+                border: 1px solid var(--border);
+                border-radius: 6px;
+                padding: 14px 16px;
+            }
+            .kpi-label {
+                font-size: 10px;
+                letter-spacing: 1.5px;
+                text-transform: uppercase;
+                color: var(--text-dim);
+                margin-bottom: 6px;
+            }
+            .kpi-value {
+                font-family: var(--mono);
+                font-size: 20px;
+                font-weight: 700;
+                color: var(--text);
+            }
+            .kpi-value.green {
+                color: var(--green);
+            }
+            .kpi-value.red {
+                color: var(--red);
+            }
+            .kpi-value.yellow {
+                color: var(--yellow);
+            }
 
-  .charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-  @media (max-width: 900px) { .charts-grid { grid-template-columns: 1fr; } }
-  .chart-wrap { position: relative; height: 260px; }
+            .card {
+                background: var(--surface);
+                border: 1px solid var(--border);
+                border-radius: 6px;
+                padding: 16px 20px;
+            }
+            .card-title {
+                font-size: 11px;
+                letter-spacing: 1.5px;
+                text-transform: uppercase;
+                color: var(--text-dim);
+                margin-bottom: 14px;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            .card-title::before {
+                content: "";
+                display: inline-block;
+                width: 3px;
+                height: 14px;
+                background: var(--accent);
+                border-radius: 2px;
+            }
 
-  .oi-table-wrap { overflow-x: auto; max-height: 340px; overflow-y: auto; }
-  table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; }
-  thead tr { position: sticky; top: 0; background: var(--bg); z-index: 2; }
-  th {
-    padding: 8px 10px; text-align: right; color: var(--text-dim);
-    font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
-    border-bottom: 1px solid var(--border); white-space: nowrap;
-  }
-  th.center, td.center { text-align: center; }
-  td { padding: 7px 10px; text-align: right; border-bottom: 1px solid rgba(30,37,48,.6); white-space: nowrap; }
-  tr.atm { background: color-mix(in srgb, var(--accent) 10%, transparent); }
-  tr.atm td.strike { color: var(--accent); font-weight: 700; }
-  td.pos { color: var(--green); }
-  td.neg { color: var(--red); }
-  td.strike { text-align: center; color: var(--text-dim); }
+            .charts-grid {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 16px;
+            }
+            @media (max-width: 900px) {
+                .charts-grid {
+                    grid-template-columns: 1fr;
+                }
+            }
+            .chart-wrap {
+                position: relative;
+                height: 260px;
+            }
 
-  .intel-wrap { display: grid; gap: 10px; }
-  .intel-line {
-    padding: 8px 10px; border: 1px solid var(--border); border-radius: 4px;
-    font-family: var(--mono); font-size: 12px; color: var(--text);
-    background: rgba(0,229,160,0.03);
-  }
-  .intel-section {
-    border: 1px solid var(--border); border-radius: 4px; padding: 10px;
-    background: rgba(255,255,255,0.01);
-  }
-  .intel-head { color: var(--text-dim); font-size: 11px; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 8px; }
-  .intel-row { display: flex; justify-content: space-between; gap: 10px; font-family: var(--mono); font-size: 12px; padding: 3px 0; }
-  .intel-row span:first-child { color: var(--text-dim); }
-  .intel-news-list { display: grid; gap: 6px; max-height: 220px; overflow-y: auto; }
-  .intel-news-item { border: 1px solid var(--border); border-radius: 4px; padding: 7px 8px; }
-  .intel-news-title { font-size: 12px; color: var(--text); margin-bottom: 4px; }
-  .intel-news-meta { font-size: 11px; color: var(--text-dim); font-family: var(--mono); }
-  .intel-link { color: var(--accent); text-decoration: none; }
-  .intel-link:hover { text-decoration: underline; }
+            .oi-table-wrap {
+                overflow-x: auto;
+                max-height: 340px;
+                overflow-y: auto;
+            }
+            table {
+                width: 100%;
+                border-collapse: collapse;
+                font-family: var(--mono);
+                font-size: 12px;
+            }
+            thead tr {
+                position: sticky;
+                top: 0;
+                background: var(--bg);
+                z-index: 2;
+            }
+            th {
+                padding: 8px 10px;
+                text-align: right;
+                color: var(--text-dim);
+                font-size: 10px;
+                letter-spacing: 1px;
+                text-transform: uppercase;
+                border-bottom: 1px solid var(--border);
+                white-space: nowrap;
+            }
+            th.center,
+            td.center {
+                text-align: center;
+            }
+            td {
+                padding: 7px 10px;
+                text-align: right;
+                border-bottom: 1px solid rgba(30, 37, 48, 0.6);
+                white-space: nowrap;
+            }
+            tr.atm {
+                background: color-mix(in srgb, var(--accent) 10%, transparent);
+            }
+            tr.atm td.strike {
+                color: var(--accent);
+                font-weight: 700;
+            }
+            td.pos {
+                color: var(--green);
+            }
+            td.neg {
+                color: var(--red);
+            }
+            td.strike {
+                text-align: center;
+                color: var(--text-dim);
+            }
 
-  .empty { color: var(--text-dim); font-size: 12px; padding: 20px 0; text-align: center; }
-  .controls { display: flex; align-items: center; gap: 12px; }
-  label { font-size: 11px; color: var(--text-dim); }
-  input[type=range] { accent-color: var(--accent); width: 120px; }
-  #hours-val { font-family: var(--mono); font-size: 12px; color: var(--accent); }
-  #scan-freq-status { font-family: var(--mono); font-size: 11px; color: var(--accent); }
-</style>
-<script>
-  (function() {
-    const KEY = 'nsebot-theme';
-    const saved = localStorage.getItem(KEY) || 'dark';
-    document.documentElement.setAttribute('data-theme', saved);
-  })();
-</script>
-</head>
-<body>
+            .intel-wrap {
+                display: grid;
+                gap: 10px;
+            }
+            .intel-line {
+                padding: 8px 10px;
+                border: 1px solid var(--border);
+                border-radius: 4px;
+                font-family: var(--mono);
+                font-size: 12px;
+                color: var(--text);
+                background: rgba(0, 229, 160, 0.03);
+            }
+            .intel-section {
+                border: 1px solid var(--border);
+                border-radius: 4px;
+                padding: 10px;
+                background: rgba(255, 255, 255, 0.01);
+            }
+            .intel-head {
+                color: var(--text-dim);
+                font-size: 11px;
+                letter-spacing: 1px;
+                text-transform: uppercase;
+                margin-bottom: 8px;
+            }
+            .intel-row {
+                display: flex;
+                justify-content: space-between;
+                gap: 10px;
+                font-family: var(--mono);
+                font-size: 12px;
+                padding: 3px 0;
+            }
+            .intel-row span:first-child {
+                color: var(--text-dim);
+            }
+            .intel-news-list {
+                display: grid;
+                gap: 6px;
+                max-height: 220px;
+                overflow-y: auto;
+            }
+            .intel-news-item {
+                border: 1px solid var(--border);
+                border-radius: 4px;
+                padding: 7px 8px;
+            }
+            .intel-news-title {
+                font-size: 12px;
+                color: var(--text);
+                margin-bottom: 4px;
+            }
+            .intel-news-meta {
+                font-size: 11px;
+                color: var(--text-dim);
+                font-family: var(--mono);
+            }
+            .intel-link {
+                color: var(--accent);
+                text-decoration: none;
+            }
+            .intel-link:hover {
+                text-decoration: underline;
+            }
 
-<header class="app-header">
-  <!-- Top Row: Logo & Market Ticker -->
-  <div class="header-top-row">
-    <div class="header-left">
-      <div class="logo-stack">
-        <span class="logo-text">NSEBOT</span>
-        <span class="logo-sub">OPTION MONITOR</span>
-      </div>
-    </div>
-    
-    <div class="cmp-ticker" style="display:flex; align-items:center; gap:12px; font-family:var(--sans); overflow-x:auto;">
-      <div class="ticker-item" style="display:flex; align-items:center; gap:6px; font-family:var(--mono); font-size:12px; font-weight:700; flex-shrink:0; background:rgba(255,255,255,0.02); border:1px solid var(--border); padding:4px 10px; border-radius:6px;">
-        <span style="font-weight:600; color:var(--text-dim); font-size:11px; text-transform:uppercase; letter-spacing:0.5px; font-family:var(--sans);">NIFTY:</span>
-        <span id="ticker-nifty-ltp" style="color:var(--text);">Loading...</span>
-        <span id="ticker-nifty-chg" style="font-size:11px; font-weight:700;"></span>
-      </div>
-      <div class="ticker-item" style="display:flex; align-items:center; gap:6px; font-family:var(--mono); font-size:12px; font-weight:700; flex-shrink:0; background:rgba(255,255,255,0.02); border:1px solid var(--border); padding:4px 10px; border-radius:6px;">
-        <span style="font-weight:600; color:var(--text-dim); font-size:11px; text-transform:uppercase; letter-spacing:0.5px; font-family:var(--sans);">BANKNIFTY:</span>
-        <span id="ticker-banknifty-ltp" style="color:var(--text);">Loading...</span>
-        <span id="ticker-banknifty-chg" style="font-size:11px; font-weight:700;"></span>
-      </div>
-      <div class="ticker-item" style="display:flex; align-items:center; gap:6px; font-family:var(--mono); font-size:12px; font-weight:700; flex-shrink:0; background:rgba(255,255,255,0.02); border:1px solid var(--border); padding:4px 10px; border-radius:6px;">
-        <span style="font-weight:600; color:var(--text-dim); font-size:11px; text-transform:uppercase; letter-spacing:0.5px; font-family:var(--sans);">NATURALGAS:</span>
-        <span id="ticker-naturalgas-ltp" style="color:var(--text);">Loading...</span>
-        <span id="ticker-naturalgas-chg" style="font-size:11px; font-weight:700;"></span>
-      </div>
-      <div class="ticker-item" style="display:flex; align-items:center; gap:6px; font-family:var(--mono); font-size:12px; font-weight:700; flex-shrink:0; background:rgba(255,255,255,0.02); border:1px solid var(--border); padding:4px 10px; border-radius:6px;">
-        <span style="font-weight:600; color:var(--text-dim); font-size:11px; text-transform:uppercase; letter-spacing:0.5px; font-family:var(--sans);">CRUDEOIL:</span>
-        <span id="ticker-crudeoil-ltp" style="color:var(--text);">Loading...</span>
-        <span id="ticker-crudeoil-chg" style="font-size:11px; font-weight:700;"></span>
-      </div>
-    </div>
-  </div>
+            .empty {
+                color: var(--text-dim);
+                font-size: 12px;
+                padding: 20px 0;
+                text-align: center;
+            }
+            .controls {
+                display: flex;
+                align-items: center;
+                gap: 12px;
+            }
+            label {
+                font-size: 11px;
+                color: var(--text-dim);
+            }
+            input[type="range"] {
+                accent-color: var(--accent);
+                width: 120px;
+            }
+            #hours-val {
+                font-family: var(--mono);
+                font-size: 12px;
+                color: var(--accent);
+            }
+            #scan-freq-status {
+                font-family: var(--mono);
+                font-size: 11px;
+                color: var(--accent);
+            }
+        </style>
+        <script>
+            (function () {
+                const KEY = "nsebot-theme";
+                const saved = localStorage.getItem(KEY) || "dark";
+                document.documentElement.setAttribute("data-theme", saved);
+            })();
+        </script>
+    </head>
+    <body>
+        <header class="app-header">
+            <!-- Top Row: Logo & Market Ticker -->
+            <div class="header-top-row">
+                <div class="header-left">
+                    <div class="logo-stack">
+                        <span class="logo-text">NSEBOT</span>
+                        <span class="logo-sub">OPTION MONITOR</span>
+                    </div>
+                </div>
 
-  <!-- Bottom Row: Navigation & Refresh -->
-  <div class="header-bottom-row">
-    <div class="header-nav">
-      <a href="/" class="nav-tab active" id="tab-dashboard">Dashboard</a>
-      <a href="#" class="nav-tab" id="tab-ai-insights" data-tab="ai-insights">AI Insights</a>
-      <a href="/paper" class="nav-tab" id="tab-paper">Paper Trades</a>
-      <a href="/broker" class="nav-tab" id="tab-broker">Broker Console</a>
-      <a href="/settings" class="nav-tab" id="tab-settings">Settings</a>
-    </div>
+                <div
+                    class="cmp-ticker"
+                    style="
+                        display: flex;
+                        align-items: center;
+                        gap: 12px;
+                        font-family: var(--sans);
+                        overflow-x: auto;
+                    "
+                >
+                    <div
+                        class="ticker-item"
+                        style="
+                            display: flex;
+                            align-items: center;
+                            gap: 6px;
+                            font-family: var(--mono);
+                            font-size: 12px;
+                            font-weight: 700;
+                            flex-shrink: 0;
+                            background: rgba(255, 255, 255, 0.02);
+                            border: 1px solid var(--border);
+                            padding: 4px 10px;
+                            border-radius: 6px;
+                        "
+                    >
+                        <span
+                            style="
+                                font-weight: 600;
+                                color: var(--text-dim);
+                                font-size: 11px;
+                                text-transform: uppercase;
+                                letter-spacing: 0.5px;
+                                font-family: var(--sans);
+                            "
+                            >NIFTY:</span
+                        >
+                        <span id="ticker-nifty-ltp" style="color: var(--text)"
+                            >Loading...</span
+                        >
+                        <span
+                            id="ticker-nifty-chg"
+                            style="font-size: 11px; font-weight: 700"
+                        ></span>
+                    </div>
+                    <div
+                        class="ticker-item"
+                        style="
+                            display: flex;
+                            align-items: center;
+                            gap: 6px;
+                            font-family: var(--mono);
+                            font-size: 12px;
+                            font-weight: 700;
+                            flex-shrink: 0;
+                            background: rgba(255, 255, 255, 0.02);
+                            border: 1px solid var(--border);
+                            padding: 4px 10px;
+                            border-radius: 6px;
+                        "
+                    >
+                        <span
+                            style="
+                                font-weight: 600;
+                                color: var(--text-dim);
+                                font-size: 11px;
+                                text-transform: uppercase;
+                                letter-spacing: 0.5px;
+                                font-family: var(--sans);
+                            "
+                            >BANKNIFTY:</span
+                        >
+                        <span
+                            id="ticker-banknifty-ltp"
+                            style="color: var(--text)"
+                            >Loading...</span
+                        >
+                        <span
+                            id="ticker-banknifty-chg"
+                            style="font-size: 11px; font-weight: 700"
+                        ></span>
+                    </div>
+                    <div
+                        class="ticker-item"
+                        style="
+                            display: flex;
+                            align-items: center;
+                            gap: 6px;
+                            font-family: var(--mono);
+                            font-size: 12px;
+                            font-weight: 700;
+                            flex-shrink: 0;
+                            background: rgba(255, 255, 255, 0.02);
+                            border: 1px solid var(--border);
+                            padding: 4px 10px;
+                            border-radius: 6px;
+                        "
+                    >
+                        <span
+                            style="
+                                font-weight: 600;
+                                color: var(--text-dim);
+                                font-size: 11px;
+                                text-transform: uppercase;
+                                letter-spacing: 0.5px;
+                                font-family: var(--sans);
+                            "
+                            >NATURALGAS:</span
+                        >
+                        <span
+                            id="ticker-naturalgas-ltp"
+                            style="color: var(--text)"
+                            >Loading...</span
+                        >
+                        <span
+                            id="ticker-naturalgas-chg"
+                            style="font-size: 11px; font-weight: 700"
+                        ></span>
+                    </div>
+                    <div
+                        class="ticker-item"
+                        style="
+                            display: flex;
+                            align-items: center;
+                            gap: 6px;
+                            font-family: var(--mono);
+                            font-size: 12px;
+                            font-weight: 700;
+                            flex-shrink: 0;
+                            background: rgba(255, 255, 255, 0.02);
+                            border: 1px solid var(--border);
+                            padding: 4px 10px;
+                            border-radius: 6px;
+                        "
+                    >
+                        <span
+                            style="
+                                font-weight: 600;
+                                color: var(--text-dim);
+                                font-size: 11px;
+                                text-transform: uppercase;
+                                letter-spacing: 0.5px;
+                                font-family: var(--sans);
+                            "
+                            >CRUDEOIL:</span
+                        >
+                        <span
+                            id="ticker-crudeoil-ltp"
+                            style="color: var(--text)"
+                            >Loading...</span
+                        >
+                        <span
+                            id="ticker-crudeoil-chg"
+                            style="font-size: 11px; font-weight: 700"
+                        ></span>
+                    </div>
+                </div>
+            </div>
 
-    <div class="header-right" style="display:flex; align-items:center; gap:12px;">
-      <button id="theme-toggle-btn" class="theme-toggle-btn" title="Toggle Day/Night">🌙</button>
-      <button class="primary" onclick="loadAll()" style="font-family:var(--sans); font-weight:600; padding:6px 12px;">⟳ REFRESH</button>
-    </div>
-  </div>
-</header>
+            <!-- Bottom Row: Navigation & Refresh -->
+            <div class="header-bottom-row">
+                <div class="header-nav">
+                    <a href="/" class="nav-tab active" id="tab-dashboard"
+                        >Dashboard</a
+                    >
+                    <a href="/paper" class="nav-tab" id="tab-paper"
+                        >Paper Trades</a
+                    >
+                    <a href="/broker" class="nav-tab" id="tab-broker"
+                        >Broker Console</a
+                    >
+                    <a
+                        href="#"
+                        class="nav-tab"
+                        id="tab-ai-insights"
+                        data-tab="ai-insights"
+                        >AI Insights</a
+                    >
+                    <a href="/settings" class="nav-tab" id="tab-settings"
+                        >Settings</a
+                    >
+                </div>
 
-<div class="sub-header">
-  <div class="controls-group">
-    <label>SYMBOL</label>
-    <select id="symbol-sel"></select>
-  </div>
-  <div class="controls-group">
-    <label>HISTORY (CHARTS)</label>
-    <input type="range" id="hours" min="1" max="48" value="6">
-    <span id="hours-val">6h</span>
-  </div>
-  <div class="controls-group">
-    <label>NSE SCAN</label>
-    <select id="scan-freq-nse"></select>
-    <button onclick="saveScanFrequency('nse')">SET</button>
-  </div>
-  <div class="controls-group">
-    <label>MCX SCAN</label>
-    <select id="scan-freq-mcx"></select>
-    <button onclick="saveScanFrequency('mcx')">SET</button>
-    <span id="scan-freq-status">—</span>
-  </div>
-  <div class="spacer"></div>
-  <span id="last-update">—</span>
-  <div id="status-dot"></div>
-</div>
+                <div
+                    class="header-right"
+                    style="display: flex; align-items: center; gap: 12px"
+                >
+                    <button
+                        id="theme-toggle-btn"
+                        class="theme-toggle-btn"
+                        title="Toggle Day/Night"
+                    >
+                        🌙
+                    </button>
+                    <button
+                        class="primary"
+                        onclick="loadAll()"
+                        style="
+                            font-family: var(--sans);
+                            font-weight: 600;
+                            padding: 6px 12px;
+                        "
+                    >
+                        ⟳ REFRESH
+                    </button>
+                </div>
+            </div>
+        </header>
 
-<main>
-  <div class="kpi-row">
-    <div class="kpi"><div class="kpi-label">Spot Price</div><div class="kpi-value" id="kpi-spot">—</div></div>
-    <div class="kpi"><div class="kpi-label">PCR (latest)</div><div class="kpi-value" id="kpi-pcr">—</div></div>
-    <div class="kpi"><div class="kpi-label">Total CE OI</div><div class="kpi-value" id="kpi-ce-oi">—</div></div>
-    <div class="kpi"><div class="kpi-label">Total PE OI</div><div class="kpi-value" id="kpi-pe-oi">—</div></div>
-    <div class="kpi"><div class="kpi-label">Snapshots</div><div class="kpi-value" id="kpi-snaps">—</div></div>
-    <div class="kpi"><div class="kpi-label">Last Fetch</div><div class="kpi-value" style="font-size:13px" id="kpi-fetch">—</div></div>
-  </div>
+        <div class="sub-header">
+            <div class="controls-group">
+                <label>SYMBOL</label>
+                <select id="symbol-sel"></select>
+            </div>
+            <div class="controls-group">
+                <label>HISTORY (CHARTS)</label>
+                <input type="range" id="hours" min="1" max="48" value="6" />
+                <span id="hours-val">6h</span>
+            </div>
+            <div class="controls-group">
+                <label>NSE SCAN</label>
+                <select id="scan-freq-nse"></select>
+                <button onclick="saveScanFrequency('nse')">SET</button>
+            </div>
+            <div class="controls-group">
+                <label>MCX SCAN</label>
+                <select id="scan-freq-mcx"></select>
+                <button onclick="saveScanFrequency('mcx')">SET</button>
+                <span id="scan-freq-status">—</span>
+            </div>
+            <div class="spacer"></div>
+            <span id="last-update">—</span>
+            <div id="status-dot"></div>
+        </div>
 
-  <div class="charts-grid">
-    <div class="card"><div class="card-title">CE vs PE Open Interest</div><div class="chart-wrap"><canvas id="chart-oi"></canvas></div></div>
-    <div class="card"><div class="card-title">OI Change (vs prev snapshot)</div><div class="chart-wrap"><canvas id="chart-delta"></canvas></div></div>
-    <div class="card"><div class="card-title">Spot Price Trend</div><div class="chart-wrap"><canvas id="chart-price"></canvas></div></div>
-    <div class="card"><div class="card-title">PCR Trend</div><div class="chart-wrap"><canvas id="chart-pcr"></canvas></div></div>
-  </div>
+        <main>
+            <div class="kpi-row">
+                <div class="kpi">
+                    <div class="kpi-label">Spot Price</div>
+                    <div class="kpi-value" id="kpi-spot">—</div>
+                </div>
+                <div class="kpi">
+                    <div class="kpi-label">PCR (latest)</div>
+                    <div class="kpi-value" id="kpi-pcr">—</div>
+                </div>
+                <div class="kpi">
+                    <div class="kpi-label">Total CE OI</div>
+                    <div class="kpi-value" id="kpi-ce-oi">—</div>
+                </div>
+                <div class="kpi">
+                    <div class="kpi-label">Total PE OI</div>
+                    <div class="kpi-value" id="kpi-pe-oi">—</div>
+                </div>
+                <div class="kpi">
+                    <div class="kpi-label">Snapshots</div>
+                    <div class="kpi-value" id="kpi-snaps">—</div>
+                </div>
+                <div class="kpi">
+                    <div class="kpi-label">Last Fetch</div>
+                    <div
+                        class="kpi-value"
+                        style="font-size: 13px"
+                        id="kpi-fetch"
+                    >
+                        —
+                    </div>
+                </div>
+            </div>
 
-  <div class="card">
-    <div class="card-title">Option Chain — Latest Snapshot</div>
-    <div class="oi-table-wrap">
-      <table>
-        <thead><tr>
-          <th>CE OI</th><th>CE OI Δ</th><th>CE LTP</th><th>CE IV</th>
-          <th class="center">STRIKE</th>
-          <th>PE IV</th><th>PE LTP</th><th>PE OI Δ</th><th>PE OI</th>
-        </tr></thead>
-        <tbody id="oi-tbody"><tr><td colspan="9" class="empty">Loading…</td></tr></tbody>
-      </table>
-    </div>
-  </div>
+            <div class="charts-grid">
+                <div class="card">
+                    <div class="card-title">CE vs PE Open Interest</div>
+                    <div class="chart-wrap">
+                        <canvas id="chart-oi"></canvas>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-title">OI Change (vs prev snapshot)</div>
+                    <div class="chart-wrap">
+                        <canvas id="chart-delta"></canvas>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-title">Spot Price Trend</div>
+                    <div class="chart-wrap">
+                        <canvas id="chart-price"></canvas>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-title">PCR Trend</div>
+                    <div class="chart-wrap">
+                        <canvas id="chart-pcr"></canvas>
+                    </div>
+                </div>
+            </div>
 
-  <div class="card">
-    <div class="card-title">Recent Intelligence</div>
-    <div class="intel-wrap" id="intel-wrap"><div class="empty">Loading…</div></div>
-  </div>
-</main>
+            <div class="card">
+                <div class="card-title">Option Chain — Latest Snapshot</div>
+                <div class="oi-table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>CE OI</th>
+                                <th>CE OI Δ</th>
+                                <th>CE LTP</th>
+                                <th>CE IV</th>
+                                <th class="center">STRIKE</th>
+                                <th>PE IV</th>
+                                <th>PE LTP</th>
+                                <th>PE OI Δ</th>
+                                <th>PE OI</th>
+                            </tr>
+                        </thead>
+                        <tbody id="oi-tbody">
+                            <tr>
+                                <td colspan="9" class="empty">Loading…</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
 
-<!-- ════════════════════════════════════════════════════════════════════════
+            <div class="card">
+                <div class="card-title">Recent Intelligence</div>
+                <div class="intel-wrap" id="intel-wrap">
+                    <div class="empty">Loading…</div>
+                </div>
+            </div>
+        </main>
+
+        <!-- ════════════════════════════════════════════════════════════════════════
      AI INSIGHTS PANEL — Phase 4
      AI_INTELLIGENCE_ROADMAP_v3.0
      Hidden by default; shown when AI Insights tab is active.
 ════════════════════════════════════════════════════════════════════════ -->
-<link rel="stylesheet" href="/static/ai_insights.css">
+        <link rel="stylesheet" href="/static/ai_insights.css" />
 
-<section class="ai-insights" hidden aria-labelledby="ai-insights-title" id="ai-insights-panel">
-  <header class="ai-head">
-    <h2 id="ai-insights-title">AI Intelligence</h2>
-    <div class="ai-head__meta">
-      <span id="ai-symbol-pill" class="ai-pill">—</span>
-      <button id="ai-refresh-btn" class="ai-btn-ghost ai-btn-refresh" aria-label="Refresh insights">↻</button>
-      <span id="ai-updated" class="ai-micro" aria-live="polite"></span>
-    </div>
-  </header>
+        <section
+            class="ai-insights"
+            hidden
+            aria-labelledby="ai-insights-title"
+            id="ai-insights-panel"
+        >
+            <header class="ai-head">
+                <h2 id="ai-insights-title">AI Intelligence</h2>
+                <div class="ai-head__meta">
+                    <span id="ai-symbol-pill" class="ai-pill">—</span>
+                    <button
+                        id="ai-refresh-btn"
+                        class="ai-btn-ghost ai-btn-refresh"
+                        aria-label="Refresh insights"
+                    >
+                        ↻
+                    </button>
+                    <span
+                        id="ai-updated"
+                        class="ai-micro"
+                        aria-live="polite"
+                    ></span>
+                </div>
+            </header>
 
-  <!-- HERO: ML Success Probability -->
-  <article class="ai-card ai-card--hero" aria-labelledby="ai-ml-title">
-    <h3 id="ai-ml-title" class="ai-card__title">🤖 Success Probability</h3>
-    <div id="ai-ml-content" class="ai-card__body" aria-live="polite" role="region" data-state="loading">
-      <div class="ai-skeleton ai-skeleton--hero" style="width:50%"></div>
-      <div class="ai-skeleton ai-skeleton--bar" style="width:80%"></div>
-      <div class="ai-skeleton ai-skeleton--bar" style="width:60%"></div>
-    </div>
-  </article>
+            <!-- HERO: ML Success Probability -->
+            <article
+                class="ai-card ai-card--hero"
+                aria-labelledby="ai-ml-title"
+            >
+                <h3 id="ai-ml-title" class="ai-card__title">
+                    🤖 Success Probability
+                </h3>
+                <div
+                    id="ai-ml-content"
+                    class="ai-card__body"
+                    aria-live="polite"
+                    role="region"
+                    data-state="loading"
+                >
+                    <div
+                        class="ai-skeleton ai-skeleton--hero"
+                        style="width: 50%"
+                    ></div>
+                    <div
+                        class="ai-skeleton ai-skeleton--bar"
+                        style="width: 80%"
+                    ></div>
+                    <div
+                        class="ai-skeleton ai-skeleton--bar"
+                        style="width: 60%"
+                    ></div>
+                </div>
+            </article>
 
-  <!-- Two-column: Trade DNA + Edge Health -->
-  <div class="ai-grid-2">
-    <article class="ai-card" aria-labelledby="ai-dna-title">
-      <h3 id="ai-dna-title" class="ai-card__title">🧬 Trade DNA</h3>
-      <div id="ai-dna-content" class="ai-card__body" aria-live="polite" role="region" data-state="loading">
-        <div class="ai-skeleton ai-skeleton--bar" style="width:70%"></div>
-        <div class="ai-skeleton ai-skeleton--bar" style="width:50%"></div>
-        <div class="ai-skeleton ai-skeleton--bar" style="width:90%"></div>
-      </div>
-    </article>
+            <!-- Two-column: Trade DNA + Edge Health -->
+            <div class="ai-grid-2">
+                <article class="ai-card" aria-labelledby="ai-dna-title">
+                    <h3 id="ai-dna-title" class="ai-card__title">
+                        🧬 Trade DNA
+                    </h3>
+                    <div
+                        id="ai-dna-content"
+                        class="ai-card__body"
+                        aria-live="polite"
+                        role="region"
+                        data-state="loading"
+                    >
+                        <div
+                            class="ai-skeleton ai-skeleton--bar"
+                            style="width: 70%"
+                        ></div>
+                        <div
+                            class="ai-skeleton ai-skeleton--bar"
+                            style="width: 50%"
+                        ></div>
+                        <div
+                            class="ai-skeleton ai-skeleton--bar"
+                            style="width: 90%"
+                        ></div>
+                    </div>
+                </article>
 
-    <article class="ai-card" aria-labelledby="ai-edge-title">
-      <h3 id="ai-edge-title" class="ai-card__title">📉 Edge Health</h3>
-      <div id="ai-edge-content" class="ai-card__body" aria-live="polite" role="region" data-state="loading">
-        <div class="ai-skeleton ai-skeleton--bar" style="width:80%"></div>
-        <div class="ai-skeleton ai-skeleton--bar" style="width:60%"></div>
-        <div class="ai-skeleton ai-skeleton--bar" style="width:70%"></div>
-      </div>
-    </article>
-  </div>
+                <article class="ai-card" aria-labelledby="ai-edge-title">
+                    <h3 id="ai-edge-title" class="ai-card__title">
+                        📉 Edge Health
+                    </h3>
+                    <div
+                        id="ai-edge-content"
+                        class="ai-card__body"
+                        aria-live="polite"
+                        role="region"
+                        data-state="loading"
+                    >
+                        <div
+                            class="ai-skeleton ai-skeleton--bar"
+                            style="width: 80%"
+                        ></div>
+                        <div
+                            class="ai-skeleton ai-skeleton--bar"
+                            style="width: 60%"
+                        ></div>
+                        <div
+                            class="ai-skeleton ai-skeleton--bar"
+                            style="width: 70%"
+                        ></div>
+                    </div>
+                </article>
+            </div>
 
-  <!-- Patterns (full width) -->
-  <article class="ai-card" aria-labelledby="ai-patterns-title">
-    <h3 id="ai-patterns-title" class="ai-card__title">📊 Top Patterns</h3>
-    <div id="ai-patterns-content" class="ai-card__body" aria-live="polite" role="region" data-state="loading">
-      <div class="ai-skeleton ai-skeleton--bar" style="width:90%"></div>
-      <div class="ai-skeleton ai-skeleton--bar" style="width:75%"></div>
-      <div class="ai-skeleton ai-skeleton--bar" style="width:85%"></div>
-      <div class="ai-skeleton ai-skeleton--bar" style="width:65%"></div>
-    </div>
-  </article>
-</section>
+            <!-- Patterns (full width) -->
+            <article class="ai-card" aria-labelledby="ai-patterns-title">
+                <h3 id="ai-patterns-title" class="ai-card__title">
+                    📊 Top Patterns
+                </h3>
+                <div
+                    id="ai-patterns-content"
+                    class="ai-card__body"
+                    aria-live="polite"
+                    role="region"
+                    data-state="loading"
+                >
+                    <div
+                        class="ai-skeleton ai-skeleton--bar"
+                        style="width: 90%"
+                    ></div>
+                    <div
+                        class="ai-skeleton ai-skeleton--bar"
+                        style="width: 75%"
+                    ></div>
+                    <div
+                        class="ai-skeleton ai-skeleton--bar"
+                        style="width: 85%"
+                    ></div>
+                    <div
+                        class="ai-skeleton ai-skeleton--bar"
+                        style="width: 65%"
+                    ></div>
+                </div>
+            </article>
+        </section>
 
-<script src="/static/ai_insights.js"></script>
-<script>
-const API = '';
-let charts = {};
+        <script src="/static/ai_insights.js"></script>
+        <script>
+            const API = "";
+            let charts = {};
 
-Chart.defaults.color = 'var(--text-dim)';
-Chart.defaults.borderColor = 'var(--border)';
-Chart.defaults.font.family = "'Space Mono', monospace";
-Chart.defaults.font.size = 11;
+            Chart.defaults.color = "var(--text-dim)";
+            Chart.defaults.borderColor = "var(--border)";
+            Chart.defaults.font.family = "'Space Mono', monospace";
+            Chart.defaults.font.size = 11;
 
-// Helper to get computed CSS variable color
-function getThemeColor(varName) {
-  return getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
-}
-
-function mkChart(id, type, data, opts = {}) {
-  if (charts[id]) charts[id].destroy();
-  const ctx = document.getElementById(id).getContext('2d');
-  
-  // Get current theme colors
-  const textDim = getThemeColor('--text-dim');
-  const borderColor = getThemeColor('--border');
-  
-  charts[id] = new Chart(ctx, {
-    type, data,
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { position: 'top', labels: { boxWidth: 10, padding: 12, color: textDim } } },
-      scales: {
-        x: { grid: { color: borderColor }, ticks: { maxRotation: 45, color: textDim } },
-        y: { grid: { color: borderColor }, ticks: { color: textDim } }
-      },
-      ...opts
-    }
-  });
-}
-
-async function api(path) {
-  const r = await fetch(API + path);
-  if (!r.ok) throw new Error(r.statusText);
-  return r.json();
-}
-
-async function apiPost(path) {
-  const r = await fetch(API + path, { method: 'POST' });
-  if (!r.ok) throw new Error(r.statusText);
-  return r.json();
-}
-
-function toggleTheme() {
-  const root = document.documentElement;
-  const newTheme = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
-  root.setAttribute('data-theme', newTheme);
-  localStorage.setItem('nsebot-theme', newTheme);
-  const btn = document.getElementById('theme-toggle-btn');
-  if (btn) btn.textContent = newTheme === 'light' ? '🌙' : '☀️';
-  // Dispatch theme change event to trigger chart reload
-  document.dispatchEvent(new CustomEvent('themechange', { detail: { theme: newTheme } }));
-}
-
-function fmt(n) {
-  if (n == null) return '—';
-  if (Math.abs(n) >= 1e6) return (n/1e6).toFixed(2) + 'M';
-  if (Math.abs(n) >= 1e3) return (n/1e3).toFixed(1) + 'K';
-  return n.toString();
-}
-
-function fmtTime(s) {
-  if (!s) return '—';
-  try { return new Date(s).toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit'}); }
-  catch { return s.slice(11,16); }
-}
-
-function fmtDateTime(s) {
-  if (!s) return '—';
-  try { return new Date(s).toLocaleString('en-IN', {day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit'}); }
-  catch { return s; }
-}
-
-function fetchTopbarCMPs() {
-  fetch("/api/topbar_cmps")
-    .then(r => r.json())
-    .then(data => {
-      const symbols = ["NIFTY", "BANKNIFTY", "NATURALGAS", "CRUDEOIL"];
-      const formatNum = (val) => val !== null ? val.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2}) : '—';
-      
-      symbols.forEach(sym => {
-        const item = data[sym];
-        const idPrefix = sym.toLowerCase();
-        const ltpEl = document.getElementById(`ticker-${idPrefix}-ltp`);
-        const chgEl = document.getElementById(`ticker-${idPrefix}-chg`);
-        
-        if (ltpEl && chgEl) {
-          if (item && item.price !== undefined && item.price !== null) {
-            ltpEl.textContent = formatNum(item.price);
-            const change = item.change || 0;
-            const pct = item.pct_change || 0;
-            chgEl.textContent = `(${Math.abs(pct).toFixed(2)}%)`;
-            if (change > 0) {
-              ltpEl.style.color = "var(--green)";
-              chgEl.style.color = "var(--green)";
-            } else if (change < 0) {
-              ltpEl.style.color = "var(--red)";
-              chgEl.style.color = "var(--red)";
-            } else {
-              ltpEl.style.color = "var(--text)";
-              chgEl.style.color = "var(--text-dim)";
+            // Helper to get computed CSS variable color
+            function getThemeColor(varName) {
+                return getComputedStyle(document.documentElement)
+                    .getPropertyValue(varName)
+                    .trim();
             }
-          } else {
-            ltpEl.textContent = "—";
-            chgEl.textContent = "";
-            ltpEl.style.color = "var(--text)";
-            chgEl.style.color = "var(--text-dim)";
-          }
-        }
-      });
-    })
-    .catch(err => console.error("Error fetching topbar CMPs:", err));
-}
 
-async function loadAll() {
-  fetchTopbarCMPs();
-  const sym = document.getElementById('symbol-sel').value;
-  const hours = document.getElementById('hours').value;
-  if (!sym) return;
+            function mkChart(id, type, data, opts = {}) {
+                if (charts[id]) charts[id].destroy();
+                const ctx = document.getElementById(id).getContext("2d");
 
-  document.getElementById('status-dot').className = '';
-  try {
-    const [meta, price, oi, pcr, intel] = await Promise.all([
-      api(`/api/meta?symbol=${encodeURIComponent(sym)}`),
-      api(`/api/price?symbol=${encodeURIComponent(sym)}&hours=${hours}`),
-      api(`/api/oi?symbol=${encodeURIComponent(sym)}`),
-      api(`/api/pcr?symbol=${encodeURIComponent(sym)}&hours=${hours}`),
-      api(`/api/intelligence_summary?symbol=${encodeURIComponent(sym)}`)
-    ]);
-    renderMeta(meta);
-    renderOICharts(oi);
-    renderPriceChart(price);
-    renderPCRChart(pcr);
-    renderTable(oi, price);
-    renderIntelligence(intel);
-    document.getElementById('status-dot').className = 'live';
-    document.getElementById('last-update').textContent = 'Updated ' + new Date().toLocaleTimeString('en-IN');
-  } catch(e) {
-    document.getElementById('status-dot').className = '';
-    console.error(e);
-  }
-}
+                // Get current theme colors
+                const textDim = getThemeColor("--text-dim");
+                const borderColor = getThemeColor("--border");
 
-function formatFreqLabel(mins) {
-  return mins === 60 ? '1H' : mins === 180 ? '3H' : mins === 1440 ? '1D' : `${mins}m`;
-}
+                charts[id] = new Chart(ctx, {
+                    type,
+                    data,
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                position: "top",
+                                labels: {
+                                    boxWidth: 10,
+                                    padding: 12,
+                                    color: textDim,
+                                },
+                            },
+                        },
+                        scales: {
+                            x: {
+                                grid: { color: borderColor },
+                                ticks: { maxRotation: 45, color: textDim },
+                            },
+                            y: {
+                                grid: { color: borderColor },
+                                ticks: { color: textDim },
+                            },
+                        },
+                        ...opts,
+                    },
+                });
+            }
 
-function populateSelector(sel, currentVal, options) {
-  if (!sel.options.length) {
-    for (const i of options) {
-      const opt = document.createElement('option');
-      opt.value = String(i);
-      opt.textContent = i === 60 ? '1H' : i === 180 ? '3H' : i === 1440 ? '1D' : `${i} min`;
-      sel.appendChild(opt);
-    }
-  }
-  sel.value = String(currentVal);
-}
+            async function api(path) {
+                const r = await fetch(API + path);
+                if (!r.ok) throw new Error(r.statusText);
+                return r.json();
+            }
 
-async function loadRuntime() {
-  const rt = await api('/api/runtime');
-  const options = rt.scan_frequency_options || [5, 15, 30, 60, 180, 1440];
-  
-  const selNse = document.getElementById('scan-freq-nse');
-  const selMcx = document.getElementById('scan-freq-mcx');
-  
-  populateSelector(selNse, rt.scan_frequency_nse, options);
-  populateSelector(selMcx, rt.scan_frequency_mcx, options);
-  
-  const lblNse = formatFreqLabel(rt.scan_frequency_nse);
-  const lblMcx = formatFreqLabel(rt.scan_frequency_mcx);
-  
-  document.getElementById('scan-freq-status').textContent = `NSE: ${lblNse} | MCX: ${lblMcx}`;
-}
+            async function apiPost(path) {
+                const r = await fetch(API + path, { method: "POST" });
+                if (!r.ok) throw new Error(r.statusText);
+                return r.json();
+            }
 
-async function saveScanFrequency(type) {
-  const sel = document.getElementById(`scan-freq-${type}`);
-  const minutes = Number(sel.value || 5);
-  const rt = await apiPost(`/api/runtime?scan_frequency_${type}=${minutes}`);
-  
-  const lblNse = formatFreqLabel(rt.scan_frequency_nse);
-  const lblMcx = formatFreqLabel(rt.scan_frequency_mcx);
-  
-  document.getElementById('scan-freq-status').textContent = `Saved! NSE: ${lblNse} | MCX: ${lblMcx}`;
-}
+            function toggleTheme() {
+                const root = document.documentElement;
+                const newTheme =
+                    root.getAttribute("data-theme") === "light"
+                        ? "dark"
+                        : "light";
+                root.setAttribute("data-theme", newTheme);
+                localStorage.setItem("nsebot-theme", newTheme);
+                const btn = document.getElementById("theme-toggle-btn");
+                if (btn) btn.textContent = newTheme === "light" ? "🌙" : "☀️";
+                // Dispatch theme change event to trigger chart reload
+                document.dispatchEvent(
+                    new CustomEvent("themechange", {
+                        detail: { theme: newTheme },
+                    }),
+                );
+            }
 
-function renderMeta(m) {
-  document.getElementById('kpi-snaps').textContent = m.snapshots ?? '—';
-  document.getElementById('kpi-fetch').textContent = fmtDateTime(m.last_fetch);
-}
+            function fmt(n) {
+                if (n == null) return "—";
+                if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(2) + "M";
+                if (Math.abs(n) >= 1e3) return (n / 1e3).toFixed(1) + "K";
+                return n.toString();
+            }
 
-function renderOICharts(oi) {
-  const ce = {}, pe = {};
-  oi.forEach(r => { if (r.option_type === 'CE') ce[r.strike] = r; else pe[r.strike] = r; });
-  const strikes = [...new Set(oi.map(r => r.strike))].sort((a,b)=>a-b);
-  const ceOI    = strikes.map(s => ce[s]?.oi ?? 0);
-  const peOI    = strikes.map(s => pe[s]?.oi ?? 0);
-  const ceDelta = strikes.map(s => ce[s]?.oi_change ?? 0);
-  const peDelta = strikes.map(s => pe[s]?.oi_change ?? 0);
+            function fmtTime(s) {
+                if (!s) return "—";
+                try {
+                    return new Date(s).toLocaleTimeString("en-IN", {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                    });
+                } catch {
+                    return s.slice(11, 16);
+                }
+            }
 
-  const totalCE = ceOI.reduce((a,b)=>a+b,0);
-  const totalPE = peOI.reduce((a,b)=>a+b,0);
-  document.getElementById('kpi-ce-oi').textContent = fmt(totalCE);
-  document.getElementById('kpi-pe-oi').textContent = fmt(totalPE);
-  const pcr = totalCE ? (totalPE/totalCE).toFixed(2) : '—';
-  const pcrEl = document.getElementById('kpi-pcr');
-  pcrEl.textContent = pcr;
-  pcrEl.className = 'kpi-value ' + (pcr > 1.2 ? 'red' : pcr < 0.7 ? 'green' : 'yellow');
+            function fmtDateTime(s) {
+                if (!s) return "—";
+                try {
+                    return new Date(s).toLocaleString("en-IN", {
+                        day: "2-digit",
+                        month: "short",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                    });
+                } catch {
+                    return s;
+                }
+            }
 
-  mkChart('chart-oi', 'bar', {
-    labels: strikes,
-    datasets: [
-      { label: 'CE OI', data: ceOI, backgroundColor: 'rgba(255,77,109,0.65)', borderWidth: 0 },
-      { label: 'PE OI', data: peOI, backgroundColor: 'rgba(0,229,160,0.65)',  borderWidth: 0 }
-    ]
-  });
-  mkChart('chart-delta', 'bar', {
-    labels: strikes,
-    datasets: [
-      { label: 'CE OI Δ', data: ceDelta, backgroundColor: 'rgba(255,77,109,0.5)', borderWidth: 0 },
-      { label: 'PE OI Δ', data: peDelta, backgroundColor: 'rgba(0,229,160,0.5)',  borderWidth: 0 }
-    ]
-  });
-}
+            function fetchTopbarCMPs() {
+                fetch("/api/topbar_cmps")
+                    .then((r) => r.json())
+                    .then((data) => {
+                        const symbols = [
+                            "NIFTY",
+                            "BANKNIFTY",
+                            "NATURALGAS",
+                            "CRUDEOIL",
+                        ];
+                        const formatNum = (val) =>
+                            val !== null
+                                ? val.toLocaleString("en-IN", {
+                                      minimumFractionDigits: 2,
+                                      maximumFractionDigits: 2,
+                                  })
+                                : "—";
 
-function renderPriceChart(rows) {
-  if (!rows.length) return;
-  document.getElementById('kpi-spot').textContent = rows[rows.length-1]?.price?.toFixed(2) ?? '—';
-  mkChart('chart-price', 'line', {
-    labels: rows.map(r => fmtTime(r.fetched_at)),
-    datasets: [{ label: 'Spot', data: rows.map(r => r.price),
-      borderColor: '#ffd166', backgroundColor: 'rgba(255,209,102,0.08)',
-      borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.3 }]
-  });
-}
+                        symbols.forEach((sym) => {
+                            const item = data[sym];
+                            const idPrefix = sym.toLowerCase();
+                            const ltpEl = document.getElementById(
+                                `ticker-${idPrefix}-ltp`,
+                            );
+                            const chgEl = document.getElementById(
+                                `ticker-${idPrefix}-chg`,
+                            );
 
-function renderPCRChart(rows) {
-  if (!rows.length) return;
-  mkChart('chart-pcr', 'line', {
-    labels: rows.map(r => fmtTime(r.fetched_at)),
-    datasets: [{ label: 'PCR', data: rows.map(r => r.pcr),
-      borderColor: '#00e5a0', backgroundColor: 'rgba(0,229,160,0.07)',
-      borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.3 }]
-  }, { scales: { x: { grid: { color: 'var(--border)' } }, y: { grid: { color: 'var(--border)' }, suggestedMin: 0, suggestedMax: 2 } } });
-}
+                            if (ltpEl && chgEl) {
+                                if (
+                                    item &&
+                                    item.price !== undefined &&
+                                    item.price !== null
+                                ) {
+                                    ltpEl.textContent = formatNum(item.price);
+                                    const change = item.change || 0;
+                                    const pct = item.pct_change || 0;
+                                    chgEl.textContent = `(${Math.abs(pct).toFixed(2)}%)`;
+                                    if (change > 0) {
+                                        ltpEl.style.color = "var(--green)";
+                                        chgEl.style.color = "var(--green)";
+                                    } else if (change < 0) {
+                                        ltpEl.style.color = "var(--red)";
+                                        chgEl.style.color = "var(--red)";
+                                    } else {
+                                        ltpEl.style.color = "var(--text)";
+                                        chgEl.style.color = "var(--text-dim)";
+                                    }
+                                } else {
+                                    ltpEl.textContent = "—";
+                                    chgEl.textContent = "";
+                                    ltpEl.style.color = "var(--text)";
+                                    chgEl.style.color = "var(--text-dim)";
+                                }
+                            }
+                        });
+                    })
+                    .catch((err) =>
+                        console.error("Error fetching topbar CMPs:", err),
+                    );
+            }
 
-function renderTable(oi, price) {
-  const ce = {}, pe = {};
-  oi.forEach(r => { if (r.option_type === 'CE') ce[r.strike] = r; else pe[r.strike] = r; });
-  const spot = price.length ? price[price.length-1].price : null;
-  const strikes = [...new Set(oi.map(r => r.strike))].sort((a,b)=>a-b);
-  const atm = spot ? strikes.reduce((prev, cur) =>
-    Math.abs(cur - spot) < Math.abs(prev - spot) ? cur : prev, strikes[0]) : null;
+            async function loadAll() {
+                fetchTopbarCMPs();
+                const sym = document.getElementById("symbol-sel").value;
+                const hours = document.getElementById("hours").value;
+                if (!sym) return;
 
-  document.getElementById('oi-tbody').innerHTML = strikes.map(s => {
-    const c = ce[s] || {}, p = pe[s] || {};
-    const cd = c.oi_change ?? 0, pd = p.oi_change ?? 0;
-    return `<tr class="${s === atm ? 'atm' : ''}">
+                document.getElementById("status-dot").className = "";
+                try {
+                    const [meta, price, oi, pcr, intel] = await Promise.all([
+                        api(`/api/meta?symbol=${encodeURIComponent(sym)}`),
+                        api(
+                            `/api/price?symbol=${encodeURIComponent(sym)}&hours=${hours}`,
+                        ),
+                        api(`/api/oi?symbol=${encodeURIComponent(sym)}`),
+                        api(
+                            `/api/pcr?symbol=${encodeURIComponent(sym)}&hours=${hours}`,
+                        ),
+                        api(
+                            `/api/intelligence_summary?symbol=${encodeURIComponent(sym)}`,
+                        ),
+                    ]);
+                    renderMeta(meta);
+                    renderOICharts(oi);
+                    renderPriceChart(price);
+                    renderPCRChart(pcr);
+                    renderTable(oi, price);
+                    renderIntelligence(intel);
+                    document.getElementById("status-dot").className = "live";
+                    document.getElementById("last-update").textContent =
+                        "Updated " + new Date().toLocaleTimeString("en-IN");
+                } catch (e) {
+                    document.getElementById("status-dot").className = "";
+                    console.error(e);
+                }
+            }
+
+            function formatFreqLabel(mins) {
+                return mins === 60
+                    ? "1H"
+                    : mins === 180
+                      ? "3H"
+                      : mins === 1440
+                        ? "1D"
+                        : `${mins}m`;
+            }
+
+            function populateSelector(sel, currentVal, options) {
+                if (!sel.options.length) {
+                    for (const i of options) {
+                        const opt = document.createElement("option");
+                        opt.value = String(i);
+                        opt.textContent =
+                            i === 60
+                                ? "1H"
+                                : i === 180
+                                  ? "3H"
+                                  : i === 1440
+                                    ? "1D"
+                                    : `${i} min`;
+                        sel.appendChild(opt);
+                    }
+                }
+                sel.value = String(currentVal);
+            }
+
+            async function loadRuntime() {
+                const rt = await api("/api/runtime");
+                const options = rt.scan_frequency_options || [
+                    5, 15, 30, 60, 180, 1440,
+                ];
+
+                const selNse = document.getElementById("scan-freq-nse");
+                const selMcx = document.getElementById("scan-freq-mcx");
+
+                populateSelector(selNse, rt.scan_frequency_nse, options);
+                populateSelector(selMcx, rt.scan_frequency_mcx, options);
+
+                const lblNse = formatFreqLabel(rt.scan_frequency_nse);
+                const lblMcx = formatFreqLabel(rt.scan_frequency_mcx);
+
+                document.getElementById("scan-freq-status").textContent =
+                    `NSE: ${lblNse} | MCX: ${lblMcx}`;
+            }
+
+            async function saveScanFrequency(type) {
+                const sel = document.getElementById(`scan-freq-${type}`);
+                const minutes = Number(sel.value || 5);
+                const rt = await apiPost(
+                    `/api/runtime?scan_frequency_${type}=${minutes}`,
+                );
+
+                const lblNse = formatFreqLabel(rt.scan_frequency_nse);
+                const lblMcx = formatFreqLabel(rt.scan_frequency_mcx);
+
+                document.getElementById("scan-freq-status").textContent =
+                    `Saved! NSE: ${lblNse} | MCX: ${lblMcx}`;
+            }
+
+            function renderMeta(m) {
+                document.getElementById("kpi-snaps").textContent =
+                    m.snapshots ?? "—";
+                document.getElementById("kpi-fetch").textContent = fmtDateTime(
+                    m.last_fetch,
+                );
+            }
+
+            function renderOICharts(oi) {
+                const ce = {},
+                    pe = {};
+                oi.forEach((r) => {
+                    if (r.option_type === "CE") ce[r.strike] = r;
+                    else pe[r.strike] = r;
+                });
+                const strikes = [...new Set(oi.map((r) => r.strike))].sort(
+                    (a, b) => a - b,
+                );
+                const ceOI = strikes.map((s) => ce[s]?.oi ?? 0);
+                const peOI = strikes.map((s) => pe[s]?.oi ?? 0);
+                const ceDelta = strikes.map((s) => ce[s]?.oi_change ?? 0);
+                const peDelta = strikes.map((s) => pe[s]?.oi_change ?? 0);
+
+                const totalCE = ceOI.reduce((a, b) => a + b, 0);
+                const totalPE = peOI.reduce((a, b) => a + b, 0);
+                document.getElementById("kpi-ce-oi").textContent = fmt(totalCE);
+                document.getElementById("kpi-pe-oi").textContent = fmt(totalPE);
+                const pcr = totalCE ? (totalPE / totalCE).toFixed(2) : "—";
+                const pcrEl = document.getElementById("kpi-pcr");
+                pcrEl.textContent = pcr;
+                pcrEl.className =
+                    "kpi-value " +
+                    (pcr > 1.2 ? "red" : pcr < 0.7 ? "green" : "yellow");
+
+                mkChart("chart-oi", "bar", {
+                    labels: strikes,
+                    datasets: [
+                        {
+                            label: "CE OI",
+                            data: ceOI,
+                            backgroundColor: "rgba(255,77,109,0.65)",
+                            borderWidth: 0,
+                        },
+                        {
+                            label: "PE OI",
+                            data: peOI,
+                            backgroundColor: "rgba(0,229,160,0.65)",
+                            borderWidth: 0,
+                        },
+                    ],
+                });
+                mkChart("chart-delta", "bar", {
+                    labels: strikes,
+                    datasets: [
+                        {
+                            label: "CE OI Δ",
+                            data: ceDelta,
+                            backgroundColor: "rgba(255,77,109,0.5)",
+                            borderWidth: 0,
+                        },
+                        {
+                            label: "PE OI Δ",
+                            data: peDelta,
+                            backgroundColor: "rgba(0,229,160,0.5)",
+                            borderWidth: 0,
+                        },
+                    ],
+                });
+            }
+
+            function renderPriceChart(rows) {
+                if (!rows.length) return;
+                document.getElementById("kpi-spot").textContent =
+                    rows[rows.length - 1]?.price?.toFixed(2) ?? "—";
+                mkChart("chart-price", "line", {
+                    labels: rows.map((r) => fmtTime(r.fetched_at)),
+                    datasets: [
+                        {
+                            label: "Spot",
+                            data: rows.map((r) => r.price),
+                            borderColor: "#ffd166",
+                            backgroundColor: "rgba(255,209,102,0.08)",
+                            borderWidth: 1.5,
+                            pointRadius: 0,
+                            fill: true,
+                            tension: 0.3,
+                        },
+                    ],
+                });
+            }
+
+            function renderPCRChart(rows) {
+                if (!rows.length) return;
+                mkChart(
+                    "chart-pcr",
+                    "line",
+                    {
+                        labels: rows.map((r) => fmtTime(r.fetched_at)),
+                        datasets: [
+                            {
+                                label: "PCR",
+                                data: rows.map((r) => r.pcr),
+                                borderColor: "#00e5a0",
+                                backgroundColor: "rgba(0,229,160,0.07)",
+                                borderWidth: 1.5,
+                                pointRadius: 0,
+                                fill: true,
+                                tension: 0.3,
+                            },
+                        ],
+                    },
+                    {
+                        scales: {
+                            x: { grid: { color: "var(--border)" } },
+                            y: {
+                                grid: { color: "var(--border)" },
+                                suggestedMin: 0,
+                                suggestedMax: 2,
+                            },
+                        },
+                    },
+                );
+            }
+
+            function renderTable(oi, price) {
+                const ce = {},
+                    pe = {};
+                oi.forEach((r) => {
+                    if (r.option_type === "CE") ce[r.strike] = r;
+                    else pe[r.strike] = r;
+                });
+                const spot = price.length
+                    ? price[price.length - 1].price
+                    : null;
+                const strikes = [...new Set(oi.map((r) => r.strike))].sort(
+                    (a, b) => a - b,
+                );
+                const atm = spot
+                    ? strikes.reduce(
+                          (prev, cur) =>
+                              Math.abs(cur - spot) < Math.abs(prev - spot)
+                                  ? cur
+                                  : prev,
+                          strikes[0],
+                      )
+                    : null;
+
+                document.getElementById("oi-tbody").innerHTML = strikes
+                    .map((s) => {
+                        const c = ce[s] || {},
+                            p = pe[s] || {};
+                        const cd = c.oi_change ?? 0,
+                            pd = p.oi_change ?? 0;
+                        return `<tr class="${s === atm ? "atm" : ""}">
       <td>${fmt(c.oi)}</td>
-      <td class="${cd>0?'pos':cd<0?'neg':''}">${cd>0?'+':''}${fmt(cd)}</td>
-      <td>${c.ltp?.toFixed(2) ?? '—'}</td>
-      <td>${c.iv?.toFixed(1) ?? '—'}</td>
+      <td class="${cd > 0 ? "pos" : cd < 0 ? "neg" : ""}">${cd > 0 ? "+" : ""}${fmt(cd)}</td>
+      <td>${c.ltp?.toFixed(2) ?? "—"}</td>
+      <td>${c.iv?.toFixed(1) ?? "—"}</td>
       <td class="strike">${s}</td>
-      <td>${p.iv?.toFixed(1) ?? '—'}</td>
-      <td>${p.ltp?.toFixed(2) ?? '—'}</td>
-      <td class="${pd>0?'pos':pd<0?'neg':''}">${pd>0?'+':''}${fmt(pd)}</td>
+      <td>${p.iv?.toFixed(1) ?? "—"}</td>
+      <td>${p.ltp?.toFixed(2) ?? "—"}</td>
+      <td class="${pd > 0 ? "pos" : pd < 0 ? "neg" : ""}">${pd > 0 ? "+" : ""}${fmt(pd)}</td>
       <td>${fmt(p.oi)}</td>
     </tr>`;
-  }).join('');
-}
+                    })
+                    .join("");
+            }
 
-function esc(s) {
-  return String(s ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
-}
+            function esc(s) {
+                return String(s ?? "")
+                    .replaceAll("&", "&amp;")
+                    .replaceAll("<", "&lt;")
+                    .replaceAll(">", "&gt;");
+            }
 
-function renderIntelligence(intel) {
-  const el = document.getElementById('intel-wrap');
-  if (!intel || !intel.available) {
-    el.innerHTML = '<div class="empty">No intelligence available</div>';
-    return;
-  }
+            function renderIntelligence(intel) {
+                const el = document.getElementById("intel-wrap");
+                if (!intel || !intel.available) {
+                    el.innerHTML =
+                        '<div class="empty">No intelligence available</div>';
+                    return;
+                }
 
-  const lines = (intel.summary_lines || []).slice(0, 8).map(x => `<div class="intel-line">${esc(x)}</div>`).join('');
-  const base = `
+                const lines = (intel.summary_lines || [])
+                    .slice(0, 8)
+                    .map((x) => `<div class="intel-line">${esc(x)}</div>`)
+                    .join("");
+                const base = `
     <div class="intel-section">
       <div class="intel-head">Direction</div>
-      <div class="intel-row"><span>Current</span><strong>${esc(intel.market_direction_current || 'MIXED')}</strong></div>
-      <div class="intel-row"><span>Potential</span><strong>${esc(intel.market_direction_potential || 'MIXED')}</strong></div>
+      <div class="intel-row"><span>Current</span><strong>${esc(intel.market_direction_current || "MIXED")}</strong></div>
+      <div class="intel-row"><span>Potential</span><strong>${esc(intel.market_direction_potential || "MIXED")}</strong></div>
       <div class="intel-row"><span>Latest Scan</span><strong>${esc(fmtDateTime(intel.latest_fetch))}</strong></div>
     </div>
   `;
 
-  let symbolSpecific = '';
-  if (intel.symbol === 'NATURALGAS' && intel.news) {
-    const newsRows = (intel.news.items || []).slice(0, 8).map(n => `
+                let symbolSpecific = "";
+                if (intel.symbol === "NATURALGAS" && intel.news) {
+                    const newsRows = (intel.news.items || [])
+                        .slice(0, 8)
+                        .map(
+                            (n) => `
       <div class="intel-news-item">
-        <div class="intel-news-title">${esc(n.title || '')}</div>
-        <div class="intel-news-meta">${esc(n.provider || 'Source')} | ${esc(fmtDateTime(n.published_at))}</div>
-        ${n.url ? `<a class="intel-link" href="${esc(n.url)}" target="_blank" rel="noopener noreferrer">Open</a>` : ''}
+        <div class="intel-news-title">${esc(n.title || "")}</div>
+        <div class="intel-news-meta">${esc(n.provider || "Source")} | ${esc(fmtDateTime(n.published_at))}</div>
+        ${n.url ? `<a class="intel-link" href="${esc(n.url)}" target="_blank" rel="noopener noreferrer">Open</a>` : ""}
       </div>
-    `).join('');
-    symbolSpecific = `
+    `,
+                        )
+                        .join("");
+                    symbolSpecific = `
       <div class="intel-section">
         <div class="intel-head">Natural Gas News (24h)</div>
         <div class="intel-row"><span>Items</span><strong>${esc(intel.news.count_24h ?? 0)}</strong></div>
-        <div class="intel-row"><span>News Current</span><strong>${esc(intel.news.current_news_direction || 'MIXED')}</strong></div>
-        <div class="intel-row"><span>News Potential</span><strong>${esc(intel.news.potential_news_direction || 'MIXED')}</strong></div>
+        <div class="intel-row"><span>News Current</span><strong>${esc(intel.news.current_news_direction || "MIXED")}</strong></div>
+        <div class="intel-row"><span>News Potential</span><strong>${esc(intel.news.potential_news_direction || "MIXED")}</strong></div>
         <div class="intel-news-list">${newsRows || '<div class="empty">No recent news in last 24h</div>'}</div>
       </div>
     `;
-  } else if ((intel.symbol === 'NIFTY' || intel.symbol === 'BANKNIFTY') && intel.heatmap) {
-    const movers = (intel.heatmap.top_moves || []).slice(0, 8).map(m =>
-      `<div class="intel-row"><span>${esc(m.symbol || m.name || '-')}</span><strong>${Number(m.pchange || 0).toFixed(2)}%</strong></div>`
-    ).join('');
-    symbolSpecific = `
+                } else if (
+                    (intel.symbol === "NIFTY" ||
+                        intel.symbol === "BANKNIFTY") &&
+                    intel.heatmap
+                ) {
+                    const movers = (intel.heatmap.top_moves || [])
+                        .slice(0, 8)
+                        .map(
+                            (m) =>
+                                `<div class="intel-row"><span>${esc(m.symbol || m.name || "-")}</span><strong>${Number(m.pchange || 0).toFixed(2)}%</strong></div>`,
+                        )
+                        .join("");
+                    symbolSpecific = `
       <div class="intel-section">
         <div class="intel-head">Heatmap (ScanX)</div>
         <div class="intel-row"><span>Adv/Dec</span><strong>${esc(intel.heatmap.adv || 0)}/${esc(intel.heatmap.dec || 0)}</strong></div>
         <div class="intel-row"><span>Weighted Change</span><strong>${Number(intel.heatmap.weighted_change || 0).toFixed(2)}%</strong></div>
-        <div class="intel-row"><span>Heatmap Direction</span><strong>${esc(intel.heatmap.heatmap_direction || 'MIXED')}</strong></div>
+        <div class="intel-row"><span>Heatmap Direction</span><strong>${esc(intel.heatmap.heatmap_direction || "MIXED")}</strong></div>
         ${movers || '<div class="empty">No heatmap movers</div>'}
       </div>
     `;
-  }
+                }
 
-  el.innerHTML = `${base}${lines}${symbolSpecific}`;
-}
-
-// ── AI Insights Tab Switching ─────────────────────────────────────────────
-function setupAITabSwitching() {
-  const aiTab = document.getElementById('tab-ai-insights');
-  const dashboardTab = document.getElementById('tab-dashboard');
-  const mainContent = document.querySelector('main');
-  const aiPanel = document.getElementById('ai-insights-panel');
-
-  if (!aiTab || !dashboardTab || !mainContent || !aiPanel) return;
-
-  function showDashboard() {
-    mainContent.hidden = false;
-    aiPanel.hidden = true;
-    dashboardTab.classList.add('active');
-    aiTab.classList.remove('active');
-    if (window.AIInsights) window.AIInsights.hide();
-  }
-
-  function showAIInsights() {
-    mainContent.hidden = true;
-    aiPanel.hidden = false;
-    dashboardTab.classList.remove('active');
-    aiTab.classList.add('active');
-    if (window.AIInsights) window.AIInsights.show();
-  }
-
-  aiTab.addEventListener('click', (e) => {
-    e.preventDefault();
-    showAIInsights();
-  });
-
-  dashboardTab.addEventListener('click', (e) => {
-    // If already on dashboard (active), just reload
-    if (dashboardTab.classList.contains('active')) {
-      loadAll();
-      return;
-    }
-    e.preventDefault();
-    showDashboard();
-  });
-
-  // Wire the sub-header symbol selector to AI Insights context
-  const symbolSel = document.getElementById('symbol-sel');
-  if (symbolSel && window.AIInsights) {
-    symbolSel.addEventListener('change', () => {
-      // When symbol changes, update AI context with current intelligence
-      const sym = symbolSel.value;
-      if (sym) {
-        // Try to get current verdict from intelligence
-        fetch(`/api/intelligence_summary?symbol=${encodeURIComponent(sym)}`)
-          .then(r => r.json())
-          .then(intel => {
-            if (intel && intel.available) {
-              window.AIInsights.setSignal({
-                symbol: sym,
-                verdict: intel.verdict || null,
-                confidence: intel.confidence || 0,
-              });
+                el.innerHTML = `${base}${lines}${symbolSpecific}`;
             }
-          })
-          .catch(() => {
-            window.AIInsights.setSignal({ symbol: sym, verdict: null, confidence: 0 });
-          });
-      }
-    });
-  }
-}
 
-async function init() {
-  const themeBtn = document.getElementById('theme-toggle-btn');
-  if (themeBtn) {
-    const current = document.documentElement.getAttribute('data-theme') || 'dark';
-    themeBtn.textContent = current === 'light' ? '🌙' : '☀️';
-    themeBtn.onclick = toggleTheme;
-  }
+            // ── AI Insights Tab Switching ─────────────────────────────────────────────
+            function setupAITabSwitching() {
+                const aiTab = document.getElementById("tab-ai-insights");
+                const dashboardTab = document.getElementById("tab-dashboard");
+                const mainContent = document.querySelector("main");
+                const aiPanel = document.getElementById("ai-insights-panel");
 
-  // Setup AI Insights tab switching
-  setupAITabSwitching();
+                if (!aiTab || !dashboardTab || !mainContent || !aiPanel) return;
 
-  await loadRuntime();
-  const symbols = await api('/api/symbols');
-  const sel = document.getElementById('symbol-sel');
-  sel.innerHTML = symbols.map(s => {
-    const isSelected = s === 'NATURALGAS' ? ' selected' : '';
-    return `<option value="${s}"${isSelected}>${s}</option>`;
-  }).join('');
-  sel.onchange = loadAll;
-  
-  const slider = document.getElementById('hours');
-  // Restore slider value from localStorage
-  const savedHours = localStorage.getItem('nsebot-history-hours');
-  if (savedHours) {
-    slider.value = savedHours;
-    document.getElementById('hours-val').textContent = savedHours + 'h';
-  }
-  
-  slider.oninput = () => { 
-    document.getElementById('hours-val').textContent = slider.value + 'h';
-    // Save to localStorage on input
-    localStorage.setItem('nsebot-history-hours', slider.value);
-  };
-  slider.onchange = loadAll;
-  
-  // Listen for theme changes and reload charts with new colors
-  document.addEventListener('themechange', () => {
-    loadAll();
-  });
-  
-  await loadAll();
-  setInterval(loadAll, 60000);
-}
+                function showDashboard() {
+                    mainContent.hidden = false;
+                    aiPanel.hidden = true;
+                    dashboardTab.classList.add("active");
+                    aiTab.classList.remove("active");
+                    if (window.AIInsights) window.AIInsights.hide();
+                }
 
-init().catch(console.error);
-</script>
-</body>
+                function showAIInsights() {
+                    mainContent.hidden = true;
+                    aiPanel.hidden = false;
+                    dashboardTab.classList.remove("active");
+                    aiTab.classList.add("active");
+                    if (window.AIInsights) window.AIInsights.show();
+                }
+
+                aiTab.addEventListener("click", (e) => {
+                    e.preventDefault();
+                    showAIInsights();
+                });
+
+                dashboardTab.addEventListener("click", (e) => {
+                    // If already on dashboard (active), just reload
+                    if (dashboardTab.classList.contains("active")) {
+                        loadAll();
+                        return;
+                    }
+                    e.preventDefault();
+                    showDashboard();
+                });
+
+                // Wire the sub-header symbol selector to AI Insights context
+                const symbolSel = document.getElementById("symbol-sel");
+                if (symbolSel && window.AIInsights) {
+                    symbolSel.addEventListener("change", () => {
+                        // When symbol changes, update AI context with current intelligence
+                        const sym = symbolSel.value;
+                        if (sym) {
+                            // Try to get current verdict from intelligence
+                            fetch(
+                                `/api/intelligence_summary?symbol=${encodeURIComponent(sym)}`,
+                            )
+                                .then((r) => r.json())
+                                .then((intel) => {
+                                    if (intel && intel.available) {
+                                        window.AIInsights.setSignal({
+                                            symbol: sym,
+                                            verdict: intel.verdict || null,
+                                            confidence: intel.confidence || 0,
+                                        });
+                                    }
+                                })
+                                .catch(() => {
+                                    window.AIInsights.setSignal({
+                                        symbol: sym,
+                                        verdict: null,
+                                        confidence: 0,
+                                    });
+                                });
+                        }
+                    });
+                }
+            }
+
+            async function init() {
+                const themeBtn = document.getElementById("theme-toggle-btn");
+                if (themeBtn) {
+                    const current =
+                        document.documentElement.getAttribute("data-theme") ||
+                        "dark";
+                    themeBtn.textContent = current === "light" ? "🌙" : "☀️";
+                    themeBtn.onclick = toggleTheme;
+                }
+
+                // Setup AI Insights tab switching
+                setupAITabSwitching();
+
+                await loadRuntime();
+                const symbols = await api("/api/symbols");
+                const sel = document.getElementById("symbol-sel");
+                sel.innerHTML = symbols
+                    .map((s) => {
+                        const isSelected =
+                            s === "NATURALGAS" ? " selected" : "";
+                        return `<option value="${s}"${isSelected}>${s}</option>`;
+                    })
+                    .join("");
+                sel.onchange = loadAll;
+
+                const slider = document.getElementById("hours");
+                // Restore slider value from localStorage
+                const savedHours = localStorage.getItem("nsebot-history-hours");
+                if (savedHours) {
+                    slider.value = savedHours;
+                    document.getElementById("hours-val").textContent =
+                        savedHours + "h";
+                }
+
+                slider.oninput = () => {
+                    document.getElementById("hours-val").textContent =
+                        slider.value + "h";
+                    // Save to localStorage on input
+                    localStorage.setItem("nsebot-history-hours", slider.value);
+                };
+                slider.onchange = loadAll;
+
+                // Listen for theme changes and reload charts with new colors
+                document.addEventListener("themechange", () => {
+                    loadAll();
+                });
+
+                await loadAll();
+                setInterval(loadAll, 60000);
+            }
+
+            init().catch(console.error);
+        </script>
+    </body>
 </html>
