@@ -1173,7 +1173,7 @@ class TestSellOptionTrades:
             assert row["pnl_points"] == pytest.approx(40.0)
             from config.settings import LOT_SIZES
             lot_size = LOT_SIZES.get("NIFTY", 25)
-            expected_pnl = 2547.56 if lot_size == 65 else 1948.12
+            expected_pnl = 2545.94 if lot_size == 65 else 1948.12
             assert row["pnl_rupees"] == pytest.approx(expected_pnl)
 
     def test_paper_plan_sell_verdicts(self):

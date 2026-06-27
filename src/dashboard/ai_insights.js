@@ -1,10 +1,10 @@
 /**
  * AI Insights Dashboard Module
  * AI_INTELLIGENCE_ROADMAP_v3.0 — Phase 4
- * 
+ *
  * Self-contained module for the AI Intelligence dashboard panel.
  * Manages 4 panels with 4 states each: loading, ready, empty, error.
- * 
+ *
  * Features:
  * - ML success probability gauge (HERO)
  * - Trade DNA historical match
@@ -14,7 +14,7 @@
  * - aria-live regions for screen readers
  * - Polling pauses when tab/panel not visible
  * - Humanized SHAP factor labels
- * 
+ *
  * @module AIInsights
  */
 
@@ -23,6 +23,7 @@ const AIInsights = {
   symbol: null,
   verdict: null,
   confidence: 0,
+  _filterSymbol: 'ALL',
   _pollTimer: null,
   _initialized: false,
 
@@ -219,8 +220,8 @@ const AIInsights = {
 
     el.innerHTML = `
       <div class="ai-gauge">
-        <div class="ai-gauge__value ai-is-${s.cls}" 
-             role="status" 
+        <div class="ai-gauge__value ai-is-${s.cls}"
+             role="status"
              aria-label="Success probability ${pct.toFixed(0)} percent, ${s.label}">
           ${pct.toFixed(0)}%
         </div>
@@ -278,8 +279,8 @@ const AIInsights = {
 
     el.innerHTML = `
       <div class="ai-dna-hero">
-        <span class="ai-dna-value ai-is-${s.cls}" 
-              role="status" 
+        <span class="ai-dna-value ai-is-${s.cls}"
+              role="status"
               aria-label="Historical win rate ${(wr * 100).toFixed(0)} percent">
           ${(wr * 100).toFixed(0)}%
         </span>
@@ -315,7 +316,10 @@ const AIInsights = {
     this._skeleton(el, 4);
 
     try {
-      const list = await this._get('/api/ai/patterns');
+      const url = this._filterSymbol === 'ALL'
+        ? '/api/ai/patterns'
+        : `/api/ai/patterns?symbol=${encodeURIComponent(this._filterSymbol)}`;
+      const list = await this._get(url);
 
       if (!list || !list.length) {
         return this._empty(el, 'No patterns yet — need 10+ trades per pattern', '📊');
@@ -329,7 +333,7 @@ const AIInsights = {
           <div class="ai-row">
             <div class="ai-row__head">
               <span class="ai-row__name">${this._esc(p.name)}</span>
-              <span class="ai-pill ai-pill--${s.cls}" 
+              <span class="ai-pill ai-pill--${s.cls}"
                     aria-label="${(p.win_rate * 100).toFixed(0)} percent win rate">
                 ${(p.win_rate * 100).toFixed(0)}%
               </span>
@@ -359,7 +363,10 @@ const AIInsights = {
     this._skeleton(el, 3);
 
     try {
-      const list = await this._get('/api/ai/edge-health');
+      const url = this._filterSymbol === 'ALL'
+        ? '/api/ai/edge-health'
+        : `/api/ai/edge-health/${encodeURIComponent(this._filterSymbol)}`;
+      const list = await this._get(url);
 
       if (!list || !list.length) {
         return this._empty(el, 'No strategy data yet — need closed trades', '📉');
@@ -375,7 +382,7 @@ const AIInsights = {
           <div class="ai-row">
             <div class="ai-row__head">
               <span class="ai-row__name">${this._esc(h.strategy_name)}</span>
-              <span class="ai-pill ai-pill--${scoreClass}" 
+              <span class="ai-pill ai-pill--${scoreClass}"
                     aria-label="Health score ${Math.round(score)} of 100">
                 ${Math.round(score)}/100
               </span>
@@ -416,6 +423,16 @@ const AIInsights = {
     // Reload ML and DNA panels with new context
     this.loadML();
     this.loadDNA();
+  },
+
+  /**
+   * Set the symbol filter for Patterns and Edge Health panels.
+   * 'ALL' means no filter.
+   */
+  setFilterSymbol(symbol) {
+    this._filterSymbol = symbol;
+    this.loadPatterns();
+    this.loadEdge();
   },
 
   /**

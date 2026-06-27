@@ -285,6 +285,7 @@ _MIGRATIONS = [
     "ALTER TABLE paper_trades ADD COLUMN sl_premium REAL",
     "ALTER TABLE paper_trades ADD COLUMN target_premium REAL",
     "ALTER TABLE paper_trades ADD COLUMN lots INTEGER DEFAULT 1",
+    "ALTER TABLE paper_trades ADD COLUMN lot_size INTEGER DEFAULT 1",
     "ALTER TABLE paper_trades ADD COLUMN pnl_rupees REAL DEFAULT 0",
     # V2.2: trade decision metadata
     "ALTER TABLE paper_trades ADD COLUMN trade_status TEXT DEFAULT 'TRIGGERED_CORE'",
@@ -496,7 +497,7 @@ def get_previous_underlying_before(symbol: str, fetched_at: str) -> dict | None:
             except Exception:
                 continue
 
-        return dict(best_row) if best_row else dict(rows[0])
+        return dict(best_row) if best_row else None
 
 
 def get_latest_snapshots_for_symbol(symbol: str, expiry: str) -> list[dict]:
@@ -791,6 +792,7 @@ def insert_paper_trade(trade: dict) -> int:
     B10: Uses INSERT OR IGNORE when signal_key is present — safe against
     duplicate rows on pipeline retry after crash. Returns 0 if deduped.
     """
+    from config.settings import LOT_SIZES
     signal_key = trade.get("signal_key")
     verb = "INSERT OR IGNORE" if signal_key else "INSERT"
 
@@ -798,7 +800,7 @@ def insert_paper_trade(trade: dict) -> int:
         {verb} INTO paper_trades
             (opened_at, symbol, expiry, verdict_label, side, option_type, strike, entry_underlying,
              entry_premium, sl_underlying, sl_premium, target_underlying, target_premium,
-             lots, status, reason, digest_id,
+             lots, lot_size, status, reason, digest_id,
              trade_status, setup_type, decision_reason,
              confidence_score, entry_quality_score, trend_alignment_score, regime_score,
              signal_key, pyramid_level, max_favorable_r,
@@ -808,7 +810,7 @@ def insert_paper_trade(trade: dict) -> int:
         VALUES
             (:opened_at, :symbol, :expiry, :verdict_label, :side, :option_type, :strike, :entry_underlying,
              :entry_premium, :sl_underlying, :sl_premium, :target_underlying, :target_premium,
-             :lots, :status, :reason, :digest_id,
+             :lots, :lot_size, :status, :reason, :digest_id,
              :trade_status, :setup_type, :decision_reason,
              :confidence_score, :entry_quality_score, :trend_alignment_score, :regime_score,
              :signal_key, :pyramid_level, :max_favorable_r,
@@ -829,6 +831,7 @@ def insert_paper_trade(trade: dict) -> int:
         "signal_key": signal_key,
         "pyramid_level": trade.get("pyramid_level", 1),
         "max_favorable_r": trade.get("max_favorable_r", 0.0),
+        "lot_size": trade["lot_size"] if "lot_size" in trade else LOT_SIZES.get(trade.get("symbol", "").upper(), 1),
         # Phase 0: ML feature columns (captured at trade open time)
         "price_change_pct": trade.get("price_change_pct"),
         "pcr": trade.get("pcr"),
@@ -903,6 +906,8 @@ def insert_scan_summary(summary: dict, is_fallback: bool = False) -> None:
 def _calc_transaction_costs(
     option_type: str,
     side: str,
+    entry_premium: float,
+    entry_underlying: float,
     exit_premium: float,
     exit_underlying: float,
     lot_size: int,
@@ -914,20 +919,23 @@ def _calc_transaction_costs(
     Modelled as entry leg + exit leg where:
       - Options turnover = premium × lot_size × lots
       - Futures turnover = underlying × lot_size × lots
-    STT is only on the sell-side leg for each round-trip direction.
+    STT is only on the sell-side leg.  For SELL-to-open trades the sell
+    leg is the *entry* price; for BUY-to-open it is the *exit* price.
     Brokerage (₹20) and exchange charges (₹5) apply to each leg.
     """
-    flat_per_leg = 20.0 + 5.0  # brokerage + exchange
-    round_trip_flat = flat_per_leg * 2  # entry + exit
+    flat_per_leg = 20.0 + 5.0
+    round_trip_flat = flat_per_leg * 2
+
+    is_sell_side = side == "SELL"
 
     if option_type in ("CE", "PE"):
-        # For options: STT charged only on the sell leg premium turnover
-        sell_turnover = float(exit_premium or 0.0) * lot_size * lots
-        stt = sell_turnover * 0.000625  # 0.0625%
+        sell_premium = (entry_premium if is_sell_side else exit_premium)
+        sell_turnover = float(sell_premium or 0.0) * lot_size * lots
+        stt = sell_turnover * 0.000625
     else:
-        # Futures: STT on sell-side notional
-        sell_turnover = float(exit_underlying or 0.0) * lot_size * lots
-        stt = sell_turnover * 0.0001  # 0.01%
+        sell_price = (entry_underlying if is_sell_side else exit_underlying)
+        sell_turnover = float(sell_price or 0.0) * lot_size * lots
+        stt = sell_turnover * 0.0001
 
     return round(stt + round_trip_flat, 2)
 
@@ -945,7 +953,7 @@ def close_paper_trade(
 
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT symbol, expiry, option_type, verdict_label, entry_underlying, entry_premium, lots, strike, side FROM paper_trades WHERE id=? AND status='OPEN'",
+            "SELECT symbol, expiry, option_type, verdict_label, entry_underlying, entry_premium, lots, lot_size, strike, side FROM paper_trades WHERE id=? AND status='OPEN'",
             (trade_id,),
         ).fetchone()
         if not row:
@@ -964,7 +972,8 @@ def close_paper_trade(
         lots = int(row["lots"] or 1)
         side = row["side"] or "BUY"
 
-        lot_size = LOT_SIZES.get(symbol.upper(), LOT_SIZES.get(symbol, 1))
+        stored_lot_size = row["lot_size"]
+        lot_size = int(stored_lot_size) if stored_lot_size is not None else LOT_SIZES.get(symbol.upper(), LOT_SIZES.get(symbol, 1))
 
         if option_type in ("CE", "PE"):
             if (
@@ -1011,6 +1020,8 @@ def close_paper_trade(
         tx_cost = _calc_transaction_costs(
             option_type,
             side,
+            entry_premium,
+            entry_underlying,
             exit_premium if exit_premium is not None else 0.0,
             exit_underlying,
             lot_size,
@@ -1316,6 +1327,8 @@ def close_live_trade(
         tx_cost = _calc_transaction_costs(
             option_type,
             side,
+            entry_premium,
+            entry_underlying,
             exit_premium if exit_premium is not None else 0.0,
             exit_underlying,
             lot_size,

@@ -148,7 +148,8 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None, su
 
     # Build plan to get option_type + strike for entry quality
     from src.engine.paper_plan import build_paper_trade_plan
-    plan_ctx = {**ctx, "symbol": symbol}
+    plan_ctx = {k: v for k, v in ctx.items() if isinstance(k, str)}
+    plan_ctx["symbol"] = symbol
     plan = build_paper_trade_plan(verdict, confidence, plan_ctx)
     if not plan:
         return _blocked("No valid trade plan from verdict")

@@ -185,6 +185,7 @@
   <div class="symbol-bar">
     <label for="ai-symbol-sel">Symbol</label>
     <select id="ai-symbol-sel">
+      <option value="ALL">ALL</option>
       <option value="NIFTY">NIFTY</option>
       <option value="BANKNIFTY">BANKNIFTY</option>
       <option value="SENSEX">SENSEX</option>
@@ -292,6 +293,7 @@
     symSel.addEventListener('change', () => {
       const sym = symSel.value;
       loadIntelligence(sym);
+      window.AIInsights.setFilterSymbol(sym);
     });
 
     // Initial load with first symbol

@@ -20,7 +20,7 @@ socket.setdefaulttimeout(15.0)
 
 from config.settings import FETCH_INTERVAL_MINUTES, WATCH_SYMBOLS
 from config.runtime_config import get_scan_frequency_minutes, get_scan_frequency_nse, get_scan_frequency_mcx
-from config.symbol_classes import market_window, get_symbol_class
+from config.symbol_classes import market_window, get_symbol_class, is_market_open
 from src.engine.pipeline import run_pipeline
 
 log = logging.getLogger(__name__)
@@ -32,6 +32,7 @@ IST = pytz.timezone("Asia/Kolkata")
 
 
 def _is_open_for(symbol: str) -> bool:
+    """Check if the market is currently open for the given symbol (used for scheduling guards)."""
     now = datetime.now(IST)
     open_t, close_t, days = market_window(symbol)
     if now.weekday() not in days:
@@ -47,7 +48,7 @@ def _guarded_run(class_key: str | None = None):
     symbols_to_check = [s for s in WATCH_SYMBOLS if (class_key is None or get_symbol_class(s) == class_key)]
     open_symbols = [s for s in symbols_to_check if _is_open_for(s)]
     if not open_symbols:
-        log.debug("All symbols outside market hours%s — skipping", f" for {class_key}" if class_key else "")
+        log.info("[%s] Market is closed. Skipping scan.", class_key or "ALL")
         return
     closed = set(symbols_to_check) - set(open_symbols)
     if closed:
@@ -281,6 +282,7 @@ def start_scheduler(immediate: bool = False):
     # Event-driven triggers (20+ trades, edge health < 60) are wired separately
     # in pipeline.py via on_trade_closed() and on_edge_health_alert().
     _last_ml_training_week: int | None = None  # ISO week number
+    _last_eia_run_date = None
     
     # ── Instrument cache warm-up at scheduler start ────────────────────────
     cache_warmed_event = threading.Event()
@@ -305,6 +307,7 @@ def start_scheduler(immediate: bool = False):
     current_date = datetime.now(IST).date()
     last_scanned_interval: dict[str, int] = {}
     has_done_startup_scan: dict[str, bool] = {}
+    has_logged_closed_pre_open: dict[str, bool] = {}
     
     # If immediate scan is requested, run it once now (bypassing time/day guards)
     if immediate:
@@ -385,6 +388,7 @@ def start_scheduler(immediate: bool = False):
                 current_date = now_ist.date()
                 last_scanned_interval.clear()
                 has_done_startup_scan.clear()
+                has_logged_closed_pre_open.clear()
             
             # 1. Full Scan Loop per market class
             import math
@@ -401,15 +405,24 @@ def start_scheduler(immediate: bool = False):
                 
                 delta_minutes = (now_ist - market_open_time).total_seconds() / 60.0
                 if delta_minutes < 0:
+                    if not has_logged_closed_pre_open.get(class_key, False):
+                        log.info("[%s] Market is closed (opens at %s). Scheduler will sleep until open.", class_key, open_t)
+                        has_logged_closed_pre_open[class_key] = True
                     continue
                 
                 import datetime as dt_mod
                 now_time = now_ist.time()
                 if class_key in ("MCX_COMMODITY", "MCX_AGRI"):
                     if now_time < dt_mod.time(9, 15):
+                        if not has_logged_closed_pre_open.get(class_key, False):
+                            log.info("[%s] Market is closed (NSEBOT waits until 09:15 for MCX). Scheduler will sleep until open.", class_key)
+                            has_logged_closed_pre_open[class_key] = True
                         continue
                 else:
                     if now_time < dt_mod.time(9, 30):
+                        if not has_logged_closed_pre_open.get(class_key, False):
+                            log.info("[%s] Market is closed (NSEBOT waits until 09:30 for NSE). Scheduler will sleep until open.", class_key)
+                            has_logged_closed_pre_open[class_key] = True
                         continue
                 
                 if class_key == "MCX_COMMODITY":
@@ -502,6 +515,20 @@ def start_scheduler(immediate: bool = False):
                     except Exception as exc:
                         log.warning("[scheduler] Weekly ML training failed: %s", exc)
                 threading.Thread(target=_run_weekly_ml_training, daemon=True, name="ml-training-weekly").start()
+
+            # 5. EIA Report Job (Thursday 8:00 PM IST)
+            is_thursday = now_ist.weekday() == 3  # 0=Monday, 3=Thursday
+            is_8pm = now_ist.hour == 20 and now_ist.minute == 0
+            if is_thursday and is_8pm and _last_eia_run_date != current_date:
+                _last_eia_run_date = current_date
+                log.info("[scheduler] EIA Report Job triggered (Thursday 8:00 PM IST)")
+                def _run_eia_analyzer():
+                    try:
+                        from src.engine.eia_analyzer import analyze_eia_report
+                        analyze_eia_report()
+                    except Exception as exc:
+                        log.warning("[scheduler] EIA Report analyzer failed: %s", exc)
+                threading.Thread(target=_run_eia_analyzer, daemon=True, name="eia-analyzer").start()
 
             # Sleep in short increments to remain responsive to intervals and changes
             time.sleep(10)

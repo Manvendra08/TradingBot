@@ -70,10 +70,21 @@ def _get_fetcher(name: str):
 def _priority_for(symbol: str) -> list[str]:
     base = symbol.upper().split()[0]
     if base in _MCX_COMMODITIES:
+        # MCX: Shoonya primary (supports), Dhan fallback
         return ["shoonya", "dhan_commodity", "moneycontrol", "dhan", "dhan_headless"]
     if base == "SENSEX":
-        return ["shoonya", "paytm", "dhan_sensex", "dhan", "nse_public"]
-    return FETCHER_PRIORITY
+        # SENSEX: Shoonya primary (only reliable source - Paytm returns empty)
+        return ["shoonya", "dhan_sensex", "dhan", "nse_public"]
+    # NSE F&O indices (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY)
+    return [
+        "shoonya",
+        "paytm",
+        "dhan",
+        "nse_public",
+        "dhan_headless",
+        "moneycontrol",
+        "scrapegraph",
+    ]
 
 
 def _filter_atm_strikes(result: dict) -> None:

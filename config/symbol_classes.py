@@ -51,6 +51,22 @@ def market_window(symbol: str) -> tuple[str, str, list[int]]:
     return MARKET_WINDOWS.get(class_key, MARKET_WINDOWS[_DEFAULT_CLASS])
 
 
+def is_market_open(symbol: str, dt=None) -> bool:
+    """Check if the market is currently open for the given symbol."""
+    from datetime import datetime
+    import pytz
+    if dt is None:
+        dt = datetime.now(pytz.timezone("Asia/Kolkata"))
+    open_t, close_t, days = market_window(symbol)
+    if dt.weekday() not in days:
+        return False
+    from config.holidays import is_market_holiday
+    if is_market_holiday(symbol, dt):
+        return False
+    t = dt.strftime("%H:%M")
+    return open_t <= t <= close_t
+
+
 def get_kite_exchange(symbol: str) -> str:
     """Return Zerodha Kite exchange code for order/instrument resolution."""
     base = _base_symbol(symbol)

@@ -10,13 +10,34 @@ Supports:
 
 Returns: {items, count_24h, current_news_direction, news_score_current}
 """
+
 import logging
 import time
-import requests
 from datetime import datetime, timezone
+
+import requests
 from bs4 import BeautifulSoup
 
 log = logging.getLogger(__name__)
+# Suppress noisy urllib3 retry warnings for transient connection resets
+logging.getLogger("urllib3.connectionpool").setLevel(logging.ERROR)
+
+# ── NewsAPI.org ────────────────────────────────────────────────────────────
+_NEWSAPI_BASE = "https://newsapi.org/v2/everything"
+from config.settings import NEWSAPI_KEY as _NEWSAPI_KEY
+
+# Map symbols to NewsAPI search queries (Indian-market focused)
+_SYMBOL_NEWSAPI_QUERIES: dict[str, str] = {
+    "NIFTY": "Nifty OR Sensex India stock market NSE",
+    "BANKNIFTY": "Bank Nifty OR Nifty Bank banking stocks India",
+    "FINNIFTY": "Fin Nifty OR Nifty Financial Services India",
+    "MIDCPNIFTY": "Midcap Nifty OR Nifty Midcap India stock market",
+    "SENSEX": "Sensex OR BSE India stock market NSE",
+    "NATURALGAS": "Natural Gas India MCX commodity price",
+    "CRUDEOIL": "Crude Oil India MCX commodity price",
+    "GOLD": "Gold price India MCX commodity",
+    "SILVER": "Silver price India MCX commodity",
+}
 
 # ── TradingView News API ──────────────────────────────────────────────────
 _TV_NEWS_API = "https://news-headlines.tradingview.com/v2/view/headlines/symbol?client=web&lang=en&category=base&symbol=MCX:NATURALGAS1!"
@@ -41,10 +62,38 @@ def _cache_set(key: str, data: dict) -> dict:
 
 # ── Sentiment scoring ────────────────────────────────────────────────────
 
-_POS_WORDS = ["rally", "rises", "rise", "gain", "surge", "jump", "bullish",
-              "tight", "demand", "up", "climb", "soar", "recover", "rebound"]
-_NEG_WORDS = ["fall", "falls", "drop", "retreat", "decline", "slump", "bearish",
-              "oversupply", "cools", "down", "crash", "plunge", "weak", "tumble"]
+_POS_WORDS = [
+    "rally",
+    "rises",
+    "rise",
+    "gain",
+    "surge",
+    "jump",
+    "bullish",
+    "tight",
+    "demand",
+    "up",
+    "climb",
+    "soar",
+    "recover",
+    "rebound",
+]
+_NEG_WORDS = [
+    "fall",
+    "falls",
+    "drop",
+    "retreat",
+    "decline",
+    "slump",
+    "bearish",
+    "oversupply",
+    "cools",
+    "down",
+    "crash",
+    "plunge",
+    "weak",
+    "tumble",
+]
 
 
 def _news_sentiment_score(title: str) -> int:
@@ -68,6 +117,7 @@ def _dir_label(score: float) -> str:
 
 
 # ── Fetchers ─────────────────────────────────────────────────────────────
+
 
 def _fetch_tv_commodity_news(symbol: str) -> dict:
     """Fetch TradingView commodity news headlines (last 24h)."""
@@ -102,18 +152,22 @@ def _fetch_tv_commodity_news(symbol: str) -> dict:
             url,
             timeout=20,
             headers={
-                "User-Agent": "Mozilla/5.0",
-                "Connection": "close"  # Prevent keep-alive issues
-            }
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "application/json",
+            },
         )
-        log.debug("[news] Received response status %s from TradingView for %s", res.status_code, symbol)
+        log.debug(
+            "[news] Received response status %s from TradingView for %s",
+            res.status_code,
+            symbol,
+        )
         res.raise_for_status()
         payload = res.json() if res.content else {}
         items = payload.get("items") if isinstance(payload, dict) else []
         # Commodities look back up to 10 days to ensure recent headlines are not filtered out
         cutoff = int(time.time()) - (10 * 86400)
         rows = []
-        for item in (items or []):
+        for item in items or []:
             pub = int(item.get("published") or 0)
             if pub < cutoff:
                 continue
@@ -126,18 +180,30 @@ def _fetch_tv_commodity_news(symbol: str) -> dict:
             else:
                 provider = ""
             story_path = str(item.get("storyPath") or "").strip()
-            story_url = f"https://in.tradingview.com{story_path}" if story_path.startswith("/") else ""
-            rows.append({
-                "title": title,
-                "provider": provider,
-                "published": pub,
-                "published_at": datetime.fromtimestamp(pub, timezone.utc).isoformat(),
-                "url": story_url,
-                "score": _news_sentiment_score(title),
-            })
+            story_url = (
+                f"https://in.tradingview.com{story_path}"
+                if story_path.startswith("/")
+                else ""
+            )
+            rows.append(
+                {
+                    "title": title,
+                    "provider": provider,
+                    "published": pub,
+                    "published_at": datetime.fromtimestamp(
+                        pub, timezone.utc
+                    ).isoformat(),
+                    "url": story_url,
+                    "score": _news_sentiment_score(title),
+                }
+            )
         rows.sort(key=lambda x: x["published"], reverse=True)
         current_items = rows[:5]
-        current_score = (sum(r["score"] for r in current_items) / len(current_items)) if current_items else 0.0
+        current_score = (
+            (sum(r["score"] for r in current_items) / len(current_items))
+            if current_items
+            else 0.0
+        )
         day_score = (sum(r["score"] for r in rows) / len(rows)) if rows else 0.0
         return {
             "items": rows[:10],
@@ -161,7 +227,117 @@ def _empty_news() -> dict:
     }
 
 
+# ── NewsAPI.org Fetcher ──────────────────────────────────────────────────────
+
+
+def _fetch_newsapi_news(symbol: str) -> list[dict]:
+    """
+    Fetch Indian-market news from NewsAPI.org as a supplemental source.
+    Free tier: 100 req/day, only articles from last 24h.
+    Returns list of items in the same format as other fetchers.
+    """
+    api_key = _NEWSAPI_KEY
+    if not api_key:
+        log.debug("[newsapi] NEWSAPI_KEY not configured, skipping")
+        return []
+
+    query = _SYMBOL_NEWSAPI_QUERIES.get(symbol.upper())
+    if not query:
+        return []
+
+    try:
+        params = {
+            "q": query,
+            "language": "en",
+            "sortBy": "publishedAt",
+            "pageSize": 20,
+            "apiKey": api_key,
+        }
+        log.debug("[newsapi] Fetching news for %s with query: %s", symbol, query)
+        res = requests.get(_NEWSAPI_BASE, params=params, timeout=15)
+        res.raise_for_status()
+        payload = res.json()
+
+        if payload.get("status") != "ok":
+            log.warning(
+                "[newsapi] API returned status=%s for %s",
+                payload.get("status"),
+                symbol,
+            )
+            return []
+
+        articles = payload.get("articles") or []
+        rows = []
+        now_ts = int(time.time())
+        # Free tier articles may be up to ~48h old; use a loose cutoff
+        # to ensure we capture them despite staggered API caching
+        cutoff = now_ts - (48 * 86400)
+
+        for art in articles:
+            title = (art.get("title") or "").strip()
+            if not title:
+                continue
+            # Parse publishedAt to timestamp
+            pub_str = art.get("publishedAt") or ""
+            pub_ts = now_ts
+            if pub_str:
+                try:
+                    dt = datetime.fromisoformat(pub_str.replace("Z", "+00:00"))
+                    pub_ts = int(dt.timestamp())
+                except (ValueError, TypeError):
+                    pass
+
+            if pub_ts < cutoff:
+                continue
+
+            source_info = art.get("source") or {}
+            provider = source_info.get("name") or "NewsAPI"
+            url = art.get("url") or ""
+            description = (art.get("description") or "").strip()
+
+            rows.append(
+                {
+                    "title": title,
+                    "provider": provider,
+                    "published": pub_ts,
+                    "published_at": datetime.fromtimestamp(
+                        pub_ts, timezone.utc
+                    ).isoformat(),
+                    "url": url,
+                    "score": _news_sentiment_score(title + " " + description),
+                }
+            )
+
+        rows.sort(key=lambda x: x["published"], reverse=True)
+        log.debug("[newsapi] Fetched %d articles for %s", len(rows), symbol)
+        return rows
+
+    except requests.exceptions.Timeout:
+        log.debug("[newsapi] Timeout fetching news for %s", symbol)
+        return []
+    except requests.exceptions.HTTPError as e:
+        status = e.response.status_code if e.response is not None else "?"
+        if status == 426:
+            log.debug(
+                "[newsapi] HTTP 426 (upgrade required) for %s — free tier may"
+                " be exhausted today",
+                symbol,
+            )
+        else:
+            log.debug(
+                "[newsapi] HTTP %s fetching news for %s: %s",
+                status,
+                symbol,
+                e,
+            )
+        return []
+    except Exception as exc:
+        log.debug("[newsapi] Failed to fetch news for %s: %s", symbol, exc)
+        return []
+
+
 # ── Commentary Scrapers ───────────────────────────────────────────────────
+
 
 def _fetch_icici_commentary() -> list[dict]:
     url = "https://www.icicidirect.com/share-market-today/market-news-commentary"
@@ -169,7 +345,7 @@ def _fetch_icici_commentary() -> list[dict]:
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
-        "Connection": "close"
+        "Connection": "close",
     }
     rows = []
     try:
@@ -181,20 +357,43 @@ def _fetch_icici_commentary() -> list[dict]:
             elements = soup.find_all(["p", "div", "span", "li"])
             for el in elements:
                 t = el.text.strip().replace("\xa0", " ").replace("\u200b", "")
-                if len(t) > 60 and any(w in t for w in ["Nifty", "Sensex", "market", "GIFT", "benchmark", "index", "indices"]):
-                    if any(skip in t.lower() for skip in ["relationship manager", "kra", "kyc", "cheque", "disclaimer", "open an account"]):
+                if len(t) > 60 and any(
+                    w in t
+                    for w in [
+                        "Nifty",
+                        "Sensex",
+                        "market",
+                        "GIFT",
+                        "benchmark",
+                        "index",
+                        "indices",
+                    ]
+                ):
+                    if any(
+                        skip in t.lower()
+                        for skip in [
+                            "relationship manager",
+                            "kra",
+                            "kyc",
+                            "cheque",
+                            "disclaimer",
+                            "open an account",
+                        ]
+                    ):
                         continue
                     t = " ".join(t.split())
                     title = t[:200] + "..." if len(t) > 200 else t
                     if not any(r["title"] == title for r in rows):
-                        rows.append({
-                            "title": title,
-                            "provider": "ICICIDirect",
-                            "published": int(time.time()),
-                            "published_at": datetime.now(timezone.utc).isoformat(),
-                            "url": url,
-                            "score": _news_sentiment_score(t),
-                        })
+                        rows.append(
+                            {
+                                "title": title,
+                                "provider": "ICICIDirect",
+                                "published": int(time.time()),
+                                "published_at": datetime.now(timezone.utc).isoformat(),
+                                "url": url,
+                                "score": _news_sentiment_score(t),
+                            }
+                        )
     except Exception as e:
         log.info("ICICIDirect fetch failed (possibly blocked by WAF): %s", e)
     return rows
@@ -210,6 +409,7 @@ def _fetch_way2wealth_commentary() -> list[dict]:
     rows = []
     try:
         import urllib3
+
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
         session = requests.Session()
@@ -219,31 +419,82 @@ def _fetch_way2wealth_commentary() -> list[dict]:
             soup = BeautifulSoup(res.text, "html.parser")
             for el in soup.find_all(["p", "div", "td", "span"]):
                 t = el.text.strip().replace("\xa0", " ").replace("\u200b", "")
-                if len(t) > 60 and any(w in t.lower() for w in ["nifty", "sensex", "benchmark", "expected to open", "outlook", "support", "resistance"]):
-                    if any(skip in t.lower() for skip in ["kra", "kyc", "relationship manager", "complaint", "cheque", "scores", "backoffice", "antara"]):
+                if len(t) > 60 and any(
+                    w in t.lower()
+                    for w in [
+                        "nifty",
+                        "sensex",
+                        "benchmark",
+                        "expected to open",
+                        "outlook",
+                        "support",
+                        "resistance",
+                    ]
+                ):
+                    if any(
+                        skip in t.lower()
+                        for skip in [
+                            "kra",
+                            "kyc",
+                            "relationship manager",
+                            "complaint",
+                            "cheque",
+                            "scores",
+                            "backoffice",
+                            "antara",
+                        ]
+                    ):
                         continue
-                    lines = [line.strip() for line in t.split("\n") if len(line.strip()) > 50]
+                    lines = [
+                        line.strip() for line in t.split("\n") if len(line.strip()) > 50
+                    ]
                     for line in lines:
-                        if any(w in line.lower() for w in ["nifty", "sensex", "benchmark", "global", "open", "cautious", "expected", "outlook"]):
-                            if any(skip in line.lower() for skip in ["kra", "kyc", "complaint", "cheque", "scores"]):
+                        if any(
+                            w in line.lower()
+                            for w in [
+                                "nifty",
+                                "sensex",
+                                "benchmark",
+                                "global",
+                                "open",
+                                "cautious",
+                                "expected",
+                                "outlook",
+                            ]
+                        ):
+                            if any(
+                                skip in line.lower()
+                                for skip in [
+                                    "kra",
+                                    "kyc",
+                                    "complaint",
+                                    "cheque",
+                                    "scores",
+                                ]
+                            ):
                                 continue
                             line = " ".join(line.split())
                             title = line[:200] + "..." if len(line) > 200 else line
                             if not any(r["title"] == title for r in rows):
-                                rows.append({
-                                    "title": title,
-                                    "provider": "Way2Wealth",
-                                    "published": int(time.time()),
-                                    "published_at": datetime.now(timezone.utc).isoformat(),
-                                    "url": url,
-                                    "score": _news_sentiment_score(line),
-                                })
+                                rows.append(
+                                    {
+                                        "title": title,
+                                        "provider": "Way2Wealth",
+                                        "published": int(time.time()),
+                                        "published_at": datetime.now(
+                                            timezone.utc
+                                        ).isoformat(),
+                                        "url": url,
+                                        "score": _news_sentiment_score(line),
+                                    }
+                                )
     except Exception as e:
         log.info("Way2Wealth fetch failed: %s", e)
     return rows
 
 
 # ── Public API ───────────────────────────────────────────────────────────
+
 
 def fetch_news(symbol: str) -> dict:
     """
@@ -266,49 +517,53 @@ def fetch_news(symbol: str) -> dict:
 
     sym = symbol.upper().strip()
 
-    # Commodities: TradingView API
+    # Step 1: Fetch symbol-specific primary source
+    primary_items: list[dict] = []
     if sym in ("NATURALGAS", "CRUDEOIL"):
-        result = _fetch_tv_commodity_news(sym)
-        return _cache_set(cache_key, result)
-
-    # Indices: Scrape ICICIDirect and Way2Wealth
-    if sym in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"):
+        tv_result = _fetch_tv_commodity_news(sym)
+        primary_items = tv_result.get("items", [])
+    elif sym in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"):
         icici_items = _fetch_icici_commentary()
         w2w_items = _fetch_way2wealth_commentary()
         all_items = icici_items + w2w_items
-        
-        filtered_items = []
+
         for item in all_items:
             t = item["title"].lower()
             if sym == "BANKNIFTY":
-                # For BANKNIFTY, prioritize banking, banks, banknifty, and broad index commentary
-                if any(w in t for w in ["bank", "nifty", "index", "benchmark", "indices"]):
-                    filtered_items.append(item)
+                if any(
+                    w in t for w in ["bank", "nifty", "index", "benchmark", "indices"]
+                ):
+                    primary_items.append(item)
             else:
-                filtered_items.append(item)
-                
-        # Deduplicate
-        seen_titles = set()
-        final_items = []
-        for item in filtered_items:
-            if item["title"] not in seen_titles:
-                seen_titles.add(item["title"])
-                final_items.append(item)
-                
-        final_items.sort(key=lambda x: x["published"], reverse=True)
-        
-        current_items = final_items[:5]
-        current_score = (sum(r["score"] for r in current_items) / len(current_items)) if current_items else 0.0
-        day_score = (sum(r["score"] for r in final_items) / len(final_items)) if final_items else 0.0
-        
-        result = {
-            "items": final_items[:10],
-            "count_24h": len(final_items),
-            "current_news_direction": _dir_label(current_score),
-            "news_score_current": round(current_score, 3),
-            "news_score_day": round(day_score, 3),
-        }
-        return _cache_set(cache_key, result)
+                primary_items.append(item)
 
-    # Fallback to empty news
-    return _cache_set(cache_key, _empty_news())
+    # Step 2: Supplement with NewsAPI.org for ALL symbols
+    newsapi_items = _fetch_newsapi_news(sym)
+
+    # Step 3: Merge — deduplicate by title, prefer primary source order
+    seen_titles: set[str] = set()
+    merged: list[dict] = []
+    for item in primary_items + newsapi_items:
+        t = item["title"]
+        if t not in seen_titles:
+            seen_titles.add(t)
+            merged.append(item)
+
+    merged.sort(key=lambda x: x["published"], reverse=True)
+
+    current_items = merged[:5]
+    current_score = (
+        (sum(r["score"] for r in current_items) / len(current_items))
+        if current_items
+        else 0.0
+    )
+    day_score = (sum(r["score"] for r in merged) / len(merged)) if merged else 0.0
+
+    result = {
+        "items": merged[:10],
+        "count_24h": len(merged),
+        "current_news_direction": _dir_label(current_score),
+        "news_score_current": round(current_score, 3),
+        "news_score_day": round(day_score, 3),
+    }
+    return _cache_set(cache_key, result)

@@ -22,6 +22,11 @@ from src.utils.formatting import safe_num, fmt_oi
 log = logging.getLogger(__name__)
 
 
+def _ctx_copy(ctx: dict) -> dict:
+    """Copy a context dict, safely discarding any non-string keys that would crash ** unpacking."""
+    return {k: v for k, v in ctx.items() if isinstance(k, str)}
+
+
 # ── Structured result ──────────────────────────────────────────────────────
 
 @dataclass
@@ -395,8 +400,25 @@ def _compute_confidence(scan_ctx: dict, alerts: list[dict],
         if mp_dist_pct < 0.4:
             score += 10
 
-    # Chart timeframe conflict detection is disabled for Core strategy.
+    # Chart timeframe conflict detection
     chart_conflict = False
+    if isinstance(parsed_chart, dict):
+        chart_1h = parsed_chart.get("1h", {})
+        chart_3h = parsed_chart.get("3h", {})
+        if chart_1h and chart_3h:
+            s1 = chart_1h.get("sentiment", "NEUTRAL")
+            s3 = chart_3h.get("sentiment", "NEUTRAL")
+            if s1 != s3 and s1 != "NEUTRAL" and s3 != "NEUTRAL":
+                chart_conflict = True
+
+        # Chart alignment boost: +10 if chart sentiment matches verdict direction
+        if verdict_bias != "NEUTRAL":
+            for tf_key in sorted(parsed_chart.keys()):
+                tf_sent = parsed_chart[tf_key].get("sentiment", "NEUTRAL")
+                if (verdict_bias == "BULLISH" and tf_sent == "BULLISH") or \
+                   (verdict_bias == "BEARISH" and tf_sent == "BEARISH"):
+                    score += 10
+                    break
 
     alert_types = [a.get("alert_type") for a in alerts]
     if alerts and alert_types.count("VOLUME_AGGRESSION") / max(len(alerts), 1) >= 0.70:
@@ -860,9 +882,6 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
         pcr=pcr, alerts=current_alerts,
     )
 
-    # ── Confidence (base) ──────────────────────────────────────────────────
-    confidence, _ = _compute_confidence(ctx, current_alerts, verdict_label=verdict_label)
-
     # ── Chart Confluence Confidence Boost ──────────────────────────────────
     # Must run BEFORE building msg so the printed Confidence% is accurate.
     chart_data = _select_chart_payload(ctx.get("chart_indicators"), symbol)
@@ -883,8 +902,8 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
                 "updated_at": tf_data.get("updated_at"),
             }
 
-    # ── Re-compute confidence ──────────────────────────────────────────────────
-    confidence, chart_conflict = _compute_confidence(ctx, current_alerts, parsed_chart=None, verdict_label=verdict_label)
+    # ── Compute confidence (with chart confluence boost) ──────────────────────
+    confidence, chart_conflict = _compute_confidence(ctx, current_alerts, parsed_chart=parsed_chart, verdict_label=verdict_label)
 
     # ── Build Message ──────────────────────────────────────────────────────
     # H5 fix: apply ALL confidence ceilings in one pass after the confluence boost.
@@ -1108,15 +1127,17 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
     msg.append("")
     msg.append("*TRADE STRATEGY*")
     msg.append(f"- Bias: {verdict_desc}")
-    _action_plan = _compute_dynamic_action_plan(verdict_label, None, None, chart_conflict)
-    msg.append(f"- Action Plan: {_action_plan}")
+    action_plan = _compute_dynamic_action_plan(verdict_label, None, None, chart_conflict)
+    msg.append(f"- Action Plan: {action_plan}")
     risk_note = _generate_risk_note(verdict_label, ctx)
     if risk_note:
         msg.append(f"- Critical Warning: {risk_note}")
 
     msg.append("")
     msg.append("*PAPER TRADE (Specific)*")
-    msg.append(f"- {_paper_trade_idea(verdict_label, {**ctx, 'symbol': symbol, 'confidence': confidence, 'days_to_expiry': days_to_expiry})}")
+    paper_ctx = _ctx_copy(ctx)
+    paper_ctx.update(symbol=symbol, confidence=confidence, days_to_expiry=days_to_expiry)
+    msg.append(f"- {_paper_trade_idea(verdict_label, paper_ctx)}")
 
     # ── Phase 2-4: Decision Engine Status ──────────────────────────────────
     # Show trade decision analysis inline
@@ -1124,7 +1145,8 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
         from src.engine.trade_decision import make_trade_decision
         from src.engine.risk_engine import check_risk_limits
         
-        decision_ctx = {**ctx, "symbol": symbol, "expiry": ctx.get("expiry", "")}
+        decision_ctx = _ctx_copy(ctx)
+        decision_ctx.update(symbol=symbol, expiry=ctx.get("expiry", ""))
         decision = make_trade_decision(symbol, {
             "verdict_label": verdict_label,
             "confidence": confidence,
@@ -1212,11 +1234,6 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
 
     msg.append(f"")
     msg.append(f"_Based on {len(current_alerts)} signals this scan_")
-
-    # ── Action plan (structured) ───────────────────────────────────────────
-    action_plan = _compute_dynamic_action_plan(verdict_label, None, None, chart_conflict)
-
-    risk_note = _generate_risk_note(verdict_label, ctx)
 
     return IntelligenceResult(
         symbol=symbol,

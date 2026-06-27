@@ -1,13 +1,16 @@
-import pytest
 import time
-from unittest.mock import patch, MagicMock
-from src.fetchers.news_fetcher import fetch_news, _fetch_tv_commodity_news
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from src.fetchers.news_fetcher import _fetch_tv_commodity_news, fetch_news
 
 
 @pytest.fixture(autouse=True)
 def clear_news_cache():
     """Clear news cache before each test."""
     from src.fetchers import news_fetcher
+
     news_fetcher._cache.clear()
 
 
@@ -23,13 +26,16 @@ def test_fetch_news_tv_dict_provider():
             }
         ]
     }
-    
+
     mock_response = MagicMock()
     mock_response.content = b"mock content"
     mock_response.json.return_value = mock_payload
     mock_response.status_code = 200
 
-    with patch("requests.Session.get", return_value=mock_response) as mock_get:
+    with (
+        patch("requests.Session.get", return_value=mock_response) as mock_get,
+        patch("src.fetchers.news_fetcher._fetch_newsapi_news", return_value=[]),
+    ):
         data = fetch_news("NATURALGAS")
         mock_get.assert_called_once()
         assert data["count_24h"] == 1
@@ -50,13 +56,16 @@ def test_fetch_news_tv_str_provider():
             }
         ]
     }
-    
+
     mock_response = MagicMock()
     mock_response.content = b"mock content"
     mock_response.json.return_value = mock_payload
     mock_response.status_code = 200
 
-    with patch("requests.Session.get", return_value=mock_response) as mock_get:
+    with (
+        patch("requests.Session.get", return_value=mock_response) as mock_get,
+        patch("src.fetchers.news_fetcher._fetch_newsapi_news", return_value=[]),
+    ):
         data = fetch_news("CRUDEOIL")
         mock_get.assert_called_once()
         assert data["count_24h"] == 1
@@ -76,13 +85,16 @@ def test_fetch_news_tv_empty_or_missing_provider():
             }
         ]
     }
-    
+
     mock_response = MagicMock()
     mock_response.content = b"mock content"
     mock_response.json.return_value = mock_payload
     mock_response.status_code = 200
 
-    with patch("requests.Session.get", return_value=mock_response) as mock_get:
+    with (
+        patch("requests.Session.get", return_value=mock_response) as mock_get,
+        patch("src.fetchers.news_fetcher._fetch_newsapi_news", return_value=[]),
+    ):
         data = fetch_news("CRUDEOIL")
         mock_get.assert_called_once()
         assert data["count_24h"] == 1

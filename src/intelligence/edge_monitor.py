@@ -227,7 +227,7 @@ class EdgeDecayMonitor:
 
     # ── Per-strategy health (single query) ─────────────────────────────────
 
-    def get_all_strategies_health(self) -> list[EdgeHealth]:
+    def get_all_strategies_health(self, symbol: str = None) -> list[EdgeHealth]:
         """
         Check health of all strategy combinations.
 
@@ -254,23 +254,43 @@ class EdgeDecayMonitor:
 
         # Single GROUP BY query — fetches all strategy metrics at once
         with get_conn() as conn:
-            rows = conn.execute(
-                """
-                SELECT
-                    symbol,
-                    verdict_label,
-                    COUNT(*) as count,
-                    SUM(CASE WHEN pnl_rupees > 0 THEN 1 ELSE 0 END) as wins,
-                    AVG(pnl_rupees) as avg_pnl
-                FROM paper_trades
-                WHERE status != 'OPEN'
-                  AND closed_at IS NOT NULL
-                  AND closed_at >= ?
-                GROUP BY symbol, verdict_label
-                HAVING COUNT(*) >= ?
-            """,
-                (recent_cutoff, self.MIN_HISTORICAL_TRADES),
-            ).fetchall()
+            if symbol:
+                rows = conn.execute(
+                    """
+                    SELECT
+                        symbol,
+                        verdict_label,
+                        COUNT(*) as count,
+                        SUM(CASE WHEN pnl_rupees > 0 THEN 1 ELSE 0 END) as wins,
+                        AVG(pnl_rupees) as avg_pnl
+                    FROM paper_trades
+                    WHERE status != 'OPEN'
+                      AND closed_at IS NOT NULL
+                      AND closed_at >= ?
+                      AND symbol = ?
+                    GROUP BY symbol, verdict_label
+                    HAVING COUNT(*) >= ?
+                """,
+                    (recent_cutoff, symbol, self.MIN_HISTORICAL_TRADES),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT
+                        symbol,
+                        verdict_label,
+                        COUNT(*) as count,
+                        SUM(CASE WHEN pnl_rupees > 0 THEN 1 ELSE 0 END) as wins,
+                        AVG(pnl_rupees) as avg_pnl
+                    FROM paper_trades
+                    WHERE status != 'OPEN'
+                      AND closed_at IS NOT NULL
+                      AND closed_at >= ?
+                    GROUP BY symbol, verdict_label
+                    HAVING COUNT(*) >= ?
+                """,
+                    (recent_cutoff, self.MIN_HISTORICAL_TRADES),
+                ).fetchall()
 
         # ── Group A: overall health (trend-based, real comparison) ─────────
         overall = self.check_edge_health()

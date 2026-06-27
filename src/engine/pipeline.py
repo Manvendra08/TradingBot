@@ -47,6 +47,10 @@ from src.models.schema import (
 
 log = logging.getLogger(__name__)
 
+# Track which calendar dates have already been cleaned to avoid
+# repeating the expiry cleanup on every 3-minute scan cycle.
+_CLEANUP_DATES: set[str] = set()
+
 
 def _check_edge_health_and_trigger_retrain() -> None:
     """
@@ -108,42 +112,48 @@ def run_pipeline(
 
             IST = pytz.timezone("Asia/Kolkata")
             today_ist = datetime.now(IST).date()
-            yesterday_str = (today_ist - timedelta(days=1)).strftime("%Y-%m-%d")
             today_str = today_ist.strftime("%Y-%m-%d")
 
-            with get_conn() as conn:
-                # Find if yesterday_str exists as an expiry in option_chain_snapshots
-                expired_symbols = [
-                    r[0]
-                    for r in conn.execute(
-                        "SELECT DISTINCT symbol FROM option_chain_snapshots WHERE expiry = ?",
-                        (yesterday_str,),
-                    ).fetchall()
-                ]
+            # Run expiry-data cleanup at most once per calendar day.
+            if today_str in _CLEANUP_DATES:
+                log.debug("Expiry cleanup already done for %s, skipping", today_str)
+            else:
+                _CLEANUP_DATES.add(today_str)
+                yesterday_str = (today_ist - timedelta(days=1)).strftime("%Y-%m-%d")
 
-                if expired_symbols:
-                    log.info(
-                        "Previous day (%s) was expiry day for: %s. Cleaning up expired contract data.",
-                        yesterday_str,
-                        expired_symbols,
-                    )
-                    for sym in expired_symbols:
-                        c_del = conn.execute(
-                            "DELETE FROM option_chain_snapshots WHERE symbol = ? AND expiry <= ?",
-                            (sym, yesterday_str),
-                        )
+                with get_conn() as conn:
+                    # Find if yesterday_str exists as an expiry in option_chain_snapshots
+                    expired_symbols = [
+                        r[0]
+                        for r in conn.execute(
+                            "SELECT DISTINCT symbol FROM option_chain_snapshots WHERE expiry = ?",
+                            (yesterday_str,),
+                        ).fetchall()
+                    ]
+
+                    if expired_symbols:
                         log.info(
-                            "Deleted %d expired snapshots for %s", c_del.rowcount, sym
+                            "Previous day (%s) was expiry day for: %s. Cleaning up expired contract data.",
+                            yesterday_str,
+                            expired_symbols,
                         )
+                        for sym in expired_symbols:
+                            c_del = conn.execute(
+                                "DELETE FROM option_chain_snapshots WHERE symbol = ? AND expiry <= ?",
+                                (sym, yesterday_str),
+                            )
+                            log.info(
+                                "Deleted %d expired snapshots for %s", c_del.rowcount, sym
+                            )
 
-                # General cleanup: delete all snapshots where expiry is in the past
-                c_past = conn.execute(
-                    "DELETE FROM option_chain_snapshots WHERE expiry < ?", (today_str,)
-                )
-                if c_past.rowcount > 0:
-                    log.info(
-                        "General cleanup: deleted %d older snapshots", c_past.rowcount
+                    # General cleanup: delete all snapshots where expiry is in the past
+                    c_past = conn.execute(
+                        "DELETE FROM option_chain_snapshots WHERE expiry < ?", (today_str,)
                     )
+                    if c_past.rowcount > 0:
+                        log.info(
+                            "General cleanup: deleted %d older snapshots", c_past.rowcount
+                        )
         except Exception:
             log.exception(
                 "Error checking/deleting expired contract data at start of scan"
@@ -198,6 +208,13 @@ def _get_current_option_ltp(
 
 def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None:
     log.info("Processing %s ...", symbol)
+
+    import sys
+    from config.symbol_classes import is_market_open
+    if not is_market_open(symbol):
+        if not is_test and "pytest" not in sys.modules:
+            log.info("%s: Market is closed. Forcing dry-run (skip database save) for this symbol.", symbol)
+            is_test = True
 
     oc_data = fetch_option_chain(symbol)
     if not oc_data:

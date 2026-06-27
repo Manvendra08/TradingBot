@@ -115,6 +115,8 @@ def test_timeframe_strategy_exit_long():
             """,
             ("2026-06-01T11:30:00Z", "NIFTY", "LONG", "CE", 22800.0, 23000.0, 250.0, "OPEN", "TIMEFRAME", 1)
         )
+        from config.settings import LOT_SIZES
+        conn.execute("UPDATE paper_trades SET lot_size=? WHERE symbol='NIFTY' AND status='OPEN'", (LOT_SIZES.get("NIFTY", 1),))
         # Establish bearish bias (CE OI increased by 500k, PE flat)
         conn.execute(
             "INSERT INTO scan_summaries (symbol, expiry, fetched_at, total_ce_oi, total_pe_oi) VALUES (?, ?, ?, ?, ?)",

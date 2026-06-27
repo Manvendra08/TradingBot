@@ -19,19 +19,15 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 # Paytm API segment paths for option chains.
 # NSE F&O is served under /fno/v1/ , BSE F&O under /bse-fo/v1/
-# MCX is NOT available via the free developer API (all paths return 404).
-# MCX data should come from Shoonya instead.
+# ⚠️ SENSEX: Endpoint exists at /fno/v1 but returns empty data (no option chain available)
+#     Use Shoonya as primary for SENSEX
+# ❌ MCX: NOT available via free Paytm developer API. Use Shoonya for CRUDEOIL/NATURALGAS/GOLD/SILVER
 _SEGMENT_PATH: dict[str, str] = {
     "NIFTY": "/fno/v1",
     "BANKNIFTY": "/fno/v1",
     "FINNIFTY": "/fno/v1",
     "MIDCPNIFTY": "/fno/v1",
-    "SENSEX": "/bse-fo/v1",
-    # MCX symbols — confirmed NOT available on Paytm developer API as of 2026-06.
-    # "CRUDEOIL": "/mcx-fo/v1",
-    # "NATURALGAS": "/mcx-fo/v1",
-    # "GOLD": "/mcx-fo/v1",
-    # "SILVER": "/mcx-fo/v1",
+    # "SENSEX": "/fno/v1",  # ⚠️ Returns empty data — no option chain available
 }
 _DEFAULT_SEGMENT = "/fno/v1"
 
@@ -46,12 +42,24 @@ class PaytmFetcher(BaseFetcher):
         self._api_secret: str = _optional_env("PAYTM_API_SECRET")
         # Config cache: symbol -> list of expiry strings "dd-mm-yyyy"
         self._expiry_cache: dict[str, list[str]] = {}
+        self._token_checked: bool = False
 
     def _auth_headers(self) -> dict:
         return {
             "Content-Type": "application/json",
             "x-jwt-token": self._jwt_token,
         }
+
+    def _ensure_valid_token(self) -> bool:
+        """Check/refresh JWT token if needed. Returns True if token available."""
+        if self._token_checked:
+            return bool(self._jwt_token)
+        self._token_checked = True
+
+        if not self._jwt_token:
+            log.warning("[paytm] JWT token not available — cannot auto-refresh (headless auth disabled for now)")
+
+        return bool(self._jwt_token)
 
     def _refresh_token(self, request_token: str) -> bool:
         """Exchange request_token for JWT. Call once manually, store in .env."""
@@ -99,6 +107,7 @@ class PaytmFetcher(BaseFetcher):
             for expiry_val in expires_list:
                 if isinstance(expiry_val, int):
                     # Epoch timestamp in milliseconds
+                    from datetime import datetime, timezone
                     dt = datetime.fromtimestamp(expiry_val / 1000, tz=timezone.utc)
                     # Convert to local timezone date and format as dd-mm-yyyy
                     dt_local = dt.astimezone(IST)
@@ -125,8 +134,8 @@ class PaytmFetcher(BaseFetcher):
         return future[0][1] if future else (expiries[0] if expiries else "")
 
     def fetch_option_chain(self, symbol: str, expiry: str | None = None) -> dict | None:
-        if not self._jwt_token:
-            log.warning("[paytm] PAYTM_JWT_TOKEN not set — skipping")
+        if not self._ensure_valid_token():
+            log.warning("[paytm] PAYTM_JWT_TOKEN not available — skipping")
             return None
 
         base = symbol.upper().split()[0]

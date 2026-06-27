@@ -9,12 +9,18 @@ Returns the same outer shape as chrome.storage.local:
         }
     }
 
-Behavior:
-  - NIFTY / BANKNIFTY / FINNIFTY: yfinance first
-  - NATURALGAS: tvDatafeed first for MCX accuracy, then yfinance fallback
-  - If all providers fail, returns {}
+Provider priority (per timeframe):
+  1. Shoonya GetTimePriceSeries  — exchange-native INR prices, no auth CAPTCHA risk
+     - NSE/BSE indices: static hardcoded tokens (industry-standard; never change)
+     - MCX commodities: dynamic token resolved via SearchScrip (near-month futures)
+     - 3H aggregated from 1H bars using market-grid logic
+  2. Yahoo Finance pure-HTTP    — universal fallback (global units; INR-scaled for MCX)
+  3. local_underlying_db        — last resort for MCX when both above are stale
 
-Each timeframe payload mirrors the extension shape:
+MCX symbols additionally try Dhan builtup OHLC before the provider loop.
+Set TV_DISABLE=true in .env to suppress all tvDatafeed auth attempts.
+
+Each timeframe payload shape:
     {
         "sentiment": "BULLISH" | "BEARISH" | "NEUTRAL",
         "ohlc": {"open": float, "high": float, "low": float, "close": float},
@@ -39,8 +45,13 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
-from config.settings import DB_PATH
+from config.settings import DB_PATH, TV_DISABLE
 from src.utils.dhan_resolver import get_dhan_security_id
+
+# Suppress tvDatafeed library's own error/warning logs unconditionally.
+# The library emits noisy tracebacks whenever TradingView auth fails or times out,
+# which is expected when credentials are stale or TV_DISABLE=true.
+logging.getLogger("tvDatafeed.main").setLevel(logging.CRITICAL)
 
 log = logging.getLogger(__name__)
 
@@ -75,6 +86,17 @@ _TV_SYMBOL_MAP: dict[str, tuple[str, str]] = {
 _MCX_SYMBOLS = {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"}
 _DHAN_BUILTUP_SYMBOLS = {"NATURALGAS", "CRUDEOIL"}
 _DHAN_BUILTUP_URL = "https://openweb-ticks.dhan.co/builtup"
+
+# Hardcoded Shoonya/Finvasia instrument tokens for major NSE/BSE indices.
+# Industry-standard practice: these tokens are permanent and never change with
+# contract expiry (unlike futures tokens which roll monthly).
+_SHOONYA_INDEX_TOKENS: dict[str, tuple[str, str]] = {
+    "NIFTY": ("NSE", "26000"),
+    "BANKNIFTY": ("NSE", "26009"),
+    "FINNIFTY": ("NSE", "26037"),
+    "MIDCPNIFTY": ("NSE", "26074"),
+    "SENSEX": ("BSE", "1"),
+}
 
 _YF_SYMBOL_MAP: dict[str, str] = {
     "NIFTY": "^NSEI",
@@ -196,10 +218,15 @@ _TV_BACKOFF_SECONDS = 120  # 2 minutes
 def _get_tv_client():
     """
     Return a thread-local TvDatafeed client, or None if:
+    - TV_DISABLE=true (env flag — skips all auth attempts)
     - credentials are missing
     - init failed
     - circuit-breaker is open (too many recent failures)
     """
+    # Short-circuit immediately when TradingView is explicitly disabled.
+    if TV_DISABLE:
+        return None
+
     # Check circuit-breaker before attempting to (re)create client
     fail_count = getattr(_tv_local, "fail_count", 0)
     backoff_until = getattr(_tv_local, "backoff_until", None)
@@ -220,12 +247,8 @@ def _get_tv_client():
             from tvDatafeed import TvDatafeed
 
             if TV_SESSIONID:
-                log.warning(
-                    "[chart] tvdatafeed: TV_SESSIONID is no longer supported by this version of "
-                    "tvdatafeed — falling back. Remove TV_SESSIONID from .env and use "
-                    "TV_USERNAME + TV_PASSWORD instead."
-                )
-            if TV_USERNAME and TV_PASSWORD:
+                _tv_local.client = TvDatafeed(sessionid=TV_SESSIONID)
+            elif TV_USERNAME and TV_PASSWORD:
                 log.info(
                     "[chart] tvdatafeed: authenticating as %s (warning: credentials may trigger CAPTCHA)",
                     TV_USERNAME,
@@ -268,13 +291,12 @@ def _tv_record_success():
 
 
 def _provider_order(base_symbol: str) -> list[str]:
-    # For NSE index symbols, prefer Yahoo and explicitly ignore in-progress bars.
-    # tvDatafeed often returns the current forming candle with odd timestamps.
-    if base_symbol in {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"}:
-        return ["yfinance"]
-    # For commodities, TradingView (if logged in) is closest to what traders see,
-    # with Yahoo as fallback.
-    return ["tvdatafeed", "yfinance"]
+    # Shoonya GetTimePriceSeries is primary for all symbols:
+    #   - NSE/BSE indices: static hardcoded tokens (26000, 26009, etc.)
+    #   - MCX commodities: dynamic near-month futures token via SearchScrip
+    # Shoonya returns exchange-native INR prices with no CAPTCHA risk.
+    # Yahoo Finance pure-HTTP is the universal fallback.
+    return ["shoonya", "yfinance"]
 
 
 @contextlib.contextmanager
@@ -828,6 +850,82 @@ def _fetch_local_ohlc_from_db(base_symbol: str, tf: str) -> Optional[dict]:
         return None
 
 
+def _fetch_shoonya_candles(
+    base_symbol: str, tf: str, reference_price: float | None = None
+) -> Optional[dict]:
+    """
+    Fetch OHLC candle data from Shoonya GetTimePriceSeries.
+
+    - NSE/BSE indices: resolved via static hardcoded tokens.
+    - MCX commodities: resolved dynamically via SearchScrip (near-month futures).
+    - Interval: always requests 1H bars; 3H is aggregated via market-grid logic.
+    - Returns exchange-native INR prices — no reference_price scaling needed.
+    """
+    import time as _time
+
+    from src.fetchers.shoonya_fetcher import get_shoonya_fetcher
+
+    fetcher = get_shoonya_fetcher()
+
+    # Resolve (exchange, token) for this symbol
+    if base_symbol in _SHOONYA_INDEX_TOKENS:
+        exchange, token = _SHOONYA_INDEX_TOKENS[base_symbol]
+    elif base_symbol in _MCX_SYMBOLS:
+        result = fetcher.resolve_futures_token(base_symbol)
+        if not result:
+            log.debug(
+                "[chart] shoonya: could not resolve futures token for %s — skipping",
+                base_symbol,
+            )
+            return None
+        exchange, token = result
+    else:
+        return None
+
+    # Always request 1H bars; aggregate up to the target timeframe using market-grid logic.
+    # Shoonya does not support a native 3H interval.
+    interval_minutes = 60
+    end_epoch = int(_time.time())
+    start_epoch = end_epoch - (5 * 24 * 3600)  # 5 days of history
+
+    bars = fetcher.fetch_candles(exchange, token, interval_minutes, start_epoch, end_epoch)
+    if not bars:
+        log.debug(
+            "[chart] shoonya: no bars returned for %s %s (exchange=%s token=%s)",
+            base_symbol, tf, exchange, token,
+        )
+        return None
+
+    # Determine tf_mins for grid aggregation
+    if tf.endswith("m"):
+        tf_mins = int(tf[:-1])
+    elif tf.endswith("h"):
+        tf_mins = int(tf[:-1]) * 60
+    elif tf.endswith("d"):
+        tf_mins = int(tf[:-1]) * 1440
+    else:
+        tf_mins = 60
+
+    agg_bars = _aggregate_bars_grid(bars, tf_mins, base_symbol)
+    payload = _payload_from_grid_bars(agg_bars)
+    if not payload:
+        log.debug(
+            "[chart] shoonya: grid aggregation produced no completed bar for %s %s",
+            base_symbol, tf,
+        )
+        return None
+
+    atr = _calculate_atr_from_bars(agg_bars, period=14)
+    if atr is not None:
+        payload["atr_14"] = atr
+
+    log.info(
+        "[chart] successfully fetched %s %s using shoonya (exchange=%s token=%s)",
+        base_symbol, tf, exchange, token,
+    )
+    return payload
+
+
 def _fetch_tv(base_symbol: str, tf: str) -> Optional[dict]:
     if not _tvdatafeed_available():
         return None
@@ -1180,10 +1278,15 @@ class ChartFetcher:
 
             if not payload:
                 for provider in _provider_order(base):
-                    if provider == "tvdatafeed":
+                    if provider == "shoonya":
+                        payload = _fetch_shoonya_candles(
+                            base, tf, reference_price=reference_price
+                        )
+                        source = "shoonya"
+                    elif provider == "tvdatafeed":
                         payload = _fetch_tv(base, tf)
                         source = "tvdatafeed"
-                    else:
+                    else:  # yfinance
                         payload = _fetch_yf(base, tf, reference_price=reference_price)
                         source = "yfinance"
 
@@ -1218,10 +1321,16 @@ class ChartFetcher:
         return result
 
     def is_operational(self) -> dict:
+        from src.fetchers.shoonya_fetcher import get_shoonya_fetcher
+
+        shoonya = get_shoonya_fetcher()
         return {
-            "tvdatafeed": _tvdatafeed_available(),
+            "shoonya": bool(shoonya.access_token),
+            "tv_disable": TV_DISABLE,
+            "tvdatafeed": _tvdatafeed_available() and not TV_DISABLE,
             "yfinance": _yfinance_available(),
-            "symbols_tv": list(_TV_SYMBOL_MAP.keys()),
+            "symbols_shoonya_index": list(_SHOONYA_INDEX_TOKENS.keys()),
+            "symbols_shoonya_mcx": list(_MCX_SYMBOLS),
             "symbols_yf": list(_YF_SYMBOL_MAP.keys()),
             "yf_cache_dir": str(_YF_CACHE_DIR),
         }

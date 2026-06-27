@@ -968,20 +968,22 @@ def run_timeframe_strategy(
         opened_dt = datetime.fromisoformat(trade["opened_at"].replace("Z", "+00:00"))
         if bar_end_1h:
             bar_end_dt = datetime.fromisoformat(bar_end_1h.replace("Z", "+00:00"))
-            time_diff = (bar_end_dt - opened_dt).total_seconds()
-            if time_diff >= 3.0 * 3600 - 60:
-                if max_fav < 0.5:
-                    close_paper_trade(
-                        trade["id"],
-                        now_iso,
-                        underlying,
-                        exit_premium
-                        if trade["option_type"] in ("CE", "PE")
-                        else underlying,
-                        "Dead Trade",
-                        f"Dead trade exit: 3 hours passed, max favorable R {max_fav:.2f} < 0.5",
-                    )
-                    continue
+        else:
+            bar_end_dt = datetime.now(timezone.utc)
+        time_diff = (bar_end_dt - opened_dt).total_seconds()
+        if time_diff >= 3.0 * 3600 - 60:
+            if max_fav < 0.5:
+                close_paper_trade(
+                    trade["id"],
+                    now_iso,
+                    underlying,
+                    exit_premium
+                    if trade["option_type"] in ("CE", "PE")
+                    else underlying,
+                    "Dead Trade",
+                    f"Dead trade exit: 3 hours passed, max favorable R {max_fav:.2f} < 0.5",
+                )
+                continue
 
         # Exit Long trade (Crossover)
         if trade["option_type"] in ("CE", "FUT") and trade["verdict_label"] == "LONG":

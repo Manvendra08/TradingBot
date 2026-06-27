@@ -38,13 +38,13 @@ class TestPhase1PatternCacheInvalidation:
 
     def test_close_paper_trade_calls_invalidation(self):
         """close_paper_trade must call _invalidate_pattern_cache."""
-        from src.engine import paper_trading
+        from src.models import schema
 
-        assert hasattr(paper_trading, "_invalidate_pattern_cache")
+        assert hasattr(schema, "close_paper_trade")
         # Verify the function is referenced in the module
         import inspect
 
-        source = inspect.getsource(paper_trading.close_paper_trade)
+        source = inspect.getsource(schema.close_paper_trade)
         assert "_invalidate_pattern_cache" in source, (
             "close_paper_trade must call _invalidate_pattern_cache"
         )

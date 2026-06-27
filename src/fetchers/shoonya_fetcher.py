@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+import threading
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -103,6 +104,9 @@ class ShoonyaFetcher(BaseFetcher):
         self.vendor_code = _optional_env(
             "SHOONYA_VENDOR_CODE", f"{self.user_id}_U" if self.user_id else ""
         )
+
+        # Cache for resolved MCX futures tokens: symbol -> (token, exchange, expires_at)
+        self._futures_token_cache: dict[str, tuple[str, str, float]] = {}
 
         # Try to load cached token to avoid repeated OAuth browser launches.
         self._load_cached_token()
@@ -280,13 +284,15 @@ class ShoonyaFetcher(BaseFetcher):
         token = res.get("access_token") or res.get("susertoken")
         if not token:
             log.error("[shoonya] GenAcsTok: no token in response: %s", res)
+        else:
+            log.debug("[shoonya] GenAcsTok response keys: %s, token length: %d", list(res.keys()), len(token))
         return token
 
     def login(self) -> bool:
         # If we have a cached token, verify it's still valid with a quick API call.
         if self.access_token:
             if self._verify_token():
-                log.info("[shoonya] reused cached token — skipping OAuth")
+                log.debug("[shoonya] reused cached token — skipping OAuth")
                 return True
             # Token expired; _verify_token already cleared the cache.
 
@@ -327,6 +333,7 @@ class ShoonyaFetcher(BaseFetcher):
 
     def _api_call(self, endpoint: str, payload: dict) -> dict | None:
         payload.setdefault("uid", self.user_id)
+        log.debug("[shoonya] API call to %s with uid=%s, token_len=%d", endpoint, self.user_id, len(self.access_token or ""))
         return _post_jdata(f"{_API_BASE}/{endpoint}", payload, self.access_token)
 
     def _search_scrip(self, exchange: str, searchtext: str) -> dict | None:
@@ -350,6 +357,172 @@ class ShoonyaFetcher(BaseFetcher):
                 "cnt": str(count),
             },
         )
+
+    # ------------------------------------------------------------------
+    # OHLC candle data — GetTimePriceSeries
+    # ------------------------------------------------------------------
+
+    def resolve_futures_token(self, base_symbol: str) -> tuple[str, str] | None:
+        """
+        Resolve the near-month futures token for an MCX commodity.
+        Returns (exchange, token) or None on failure.
+        Results are cached for 6 hours to minimise SearchScrip calls.
+        """
+        import time as _time
+
+        entry = self._futures_token_cache.get(base_symbol)
+        if entry:
+            token, exchange, expires_at = entry
+            if _time.time() < expires_at:
+                return (exchange, token)
+
+        if not self.login():
+            return None
+
+        try:
+            search_res = self._search_scrip("MCX", base_symbol)
+            if (
+                not search_res
+                or search_res.get("stat") != "Ok"
+                or not search_res.get("values")
+            ):
+                log.warning(
+                    "[shoonya] resolve_futures_token: SearchScrip failed for %s", base_symbol
+                )
+                return None
+
+            futures = []
+            for val in search_res["values"]:
+                tsym = val.get("tsym", "")
+                if "CE" in tsym.upper() or "PE" in tsym.upper():
+                    continue
+                if val.get("instname") != "FUTCOM":
+                    continue
+                pattern = rf"^{re.escape(base_symbol)}\d{{2}}[A-Z]{{3}}(?:\d{{2}}F?|FUT)?$"
+                if re.match(pattern, tsym):
+                    futures.append(val)
+
+            if not futures and search_res.get("values"):
+                # Fallback: any FUTCOM for this symbol
+                futures = [
+                    v for v in search_res["values"]
+                    if v.get("instname") == "FUTCOM"
+                    and "CE" not in v.get("tsym", "").upper()
+                    and "PE" not in v.get("tsym", "").upper()
+                ]
+
+            if not futures:
+                log.warning(
+                    "[shoonya] resolve_futures_token: no FUTCOM contracts found for %s", base_symbol
+                )
+                return None
+
+            target = futures[0]
+            token = target.get("token")
+            if not token:
+                return None
+
+            self._futures_token_cache[base_symbol] = (token, "MCX", _time.time() + 21600)
+            log.info(
+                "[shoonya] resolved futures token for %s: %s (tsym=%s)",
+                base_symbol,
+                token,
+                target.get("tsym"),
+            )
+            return ("MCX", token)
+
+        except Exception as exc:
+            log.warning("[shoonya] resolve_futures_token failed for %s: %s", base_symbol, exc)
+            return None
+
+    def fetch_candles(
+        self,
+        exchange: str,
+        token: str,
+        interval_minutes: int,
+        start_epoch: int,
+        end_epoch: int,
+    ) -> list[dict] | None:
+        """
+        Fetch OHLC candle data via GetTimePriceSeries.
+        Returns a list of bar dicts with keys: Open, High, Low, Close, _ts (epoch seconds).
+        Returns None if the API call fails or returns no data.
+        """
+        if not self.login():
+            return None
+
+        payload = {
+            "uid": self.user_id,
+            "exch": exchange,
+            "token": str(token),
+            "st": str(start_epoch),
+            "et": str(end_epoch),
+            "intrv": str(interval_minutes),
+        }
+        url = "https://api.shoonya.com/NorenWClientTP/TPSeries"
+        try:
+            body_str = "jData=" + json.dumps(payload, separators=(",", ":"))
+            body_str += f"&jKey={self.access_token}"
+            body = body_str.encode()
+            req = urllib.request.Request(
+                url,
+                data=body,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                raw = json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            raw_body = e.read().decode()
+            log.warning(
+                "[shoonya] TPSeries HTTP %s for %s %s: %s",
+                e.code, exchange, token, raw_body[:200],
+            )
+            return None
+        except Exception as exc:
+            log.warning(
+                "[shoonya] TPSeries failed %s %s: %s", exchange, token, exc
+            )
+            return None
+
+        # Handle auth-failure response (single dict with stat != Ok)
+        if isinstance(raw, dict):
+            emsg = raw.get("emsg", str(raw))
+            if "session" in emsg.lower() or "token" in emsg.lower() or "invalid" in emsg.lower():
+                log.info("[shoonya] session expired during candle fetch — clearing token cache")
+                self._clear_cached_token()
+            else:
+                log.warning("[shoonya] TPSeries unexpected response: %s", emsg)
+            return None
+
+        if not isinstance(raw, list):
+            log.warning("[shoonya] TPSeries: unexpected response type %s", type(raw))
+            return None
+
+        bars: list[dict] = []
+        for item in raw:
+            try:
+                # Shoonya returns: ssboe (bar start epoch), into/inth/intl/intc (OHLC)
+                # Some API versions use 'o'/'h'/'l'/'c' — handle both.
+                ts = float(item.get("ssboe") or item.get("ts") or 0)
+                o = float(item.get("into") or item.get("o") or 0)
+                h = float(item.get("inth") or item.get("h") or 0)
+                l = float(item.get("intl") or item.get("l") or 0)
+                c = float(item.get("intc") or item.get("c") or 0)
+                if ts > 0 and all(x > 0 for x in (o, h, l, c)):
+                    bars.append({"Open": o, "High": h, "Low": l, "Close": c, "_ts": ts})
+            except Exception:
+                continue
+
+        if not bars:
+            log.debug(
+                "[shoonya] GetTimePriceSeries: zero valid bars for %s token=%s", exchange, token
+            )
+            return None
+
+        log.debug(
+            "[shoonya] GetTimePriceSeries: %d bars for %s token=%s", len(bars), exchange, token
+        )
+        return bars
 
     # ------------------------------------------------------------------
     # Public interface
@@ -818,3 +991,22 @@ class ShoonyaFetcher(BaseFetcher):
         except Exception as exc:
             log.exception("[shoonya] option chain fetch failed for %s: %s", symbol, exc)
             return None
+
+
+# ------------------------------------------------------------------
+# Module-level singleton — shared by chart_fetcher and option chain router.
+# Using a single instance reuses the cached OAuth token across both callers.
+# ------------------------------------------------------------------
+
+_shoonya_instance: ShoonyaFetcher | None = None
+_shoonya_lock = threading.Lock()
+
+
+def get_shoonya_fetcher() -> ShoonyaFetcher:
+    """Return (or lazily create) the process-wide ShoonyaFetcher singleton."""
+    global _shoonya_instance
+    if _shoonya_instance is None:
+        with _shoonya_lock:
+            if _shoonya_instance is None:
+                _shoonya_instance = ShoonyaFetcher()
+    return _shoonya_instance

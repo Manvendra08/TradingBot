@@ -86,7 +86,8 @@ class TestMoneycontrolFetcher:
         from src.fetchers.moneycontrol_fetcher import _get_live_future_price
         from src.fetchers.dhan_commodity_fetcher import DhanCommodityFetcher
 
-        with patch.object(DhanCommodityFetcher, "_fetch_builtup_live_price", return_value=315.0, create=True) as mock_fetch:
+        with patch("src.utils.dhan_resolver.get_dhan_security_id", return_value=504265), \
+             patch.object(DhanCommodityFetcher, "_fetch_builtup_live_price", return_value=315.0, create=True) as mock_fetch:
             val = _get_live_future_price("NATURALGAS")
             assert val == pytest.approx(315.0)
             mock_fetch.assert_called_once_with(504265)

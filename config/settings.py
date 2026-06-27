@@ -59,6 +59,13 @@ ICICI_SESSION_TOKEN = _optional_env("ICICI_SESSION_TOKEN")
 TV_USERNAME = _optional_env("TV_USERNAME")
 TV_PASSWORD = _optional_env("TV_PASSWORD")
 TV_SESSIONID = _optional_env("TV_SESSIONID")
+# Set TV_DISABLE=true to skip all tvDatafeed auth attempts.
+# Use this when TradingView credentials are stale or unavailable — chart data
+# will come from Shoonya GetTimePriceSeries (primary) or Yahoo Finance (fallback).
+TV_DISABLE: bool = os.environ.get("TV_DISABLE", "false").lower() == "true"
+
+# ── NewsAPI.org ─────────────────────────────────────────────────────────────────────────────────────
+NEWSAPI_KEY = _optional_env("NEWSAPI_KEY")
 
 # ── Market Windows ─────────────────────────────────────────────────────────────────────────────────────────
 # Format: (open_time, close_time, weekdays)  — weekdays: 0=Mon … 6=Sun

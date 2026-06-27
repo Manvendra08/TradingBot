@@ -37,11 +37,10 @@ def save_scan_summary(
     confidence = int(intel.get("confidence") or 0)
 
     chart_data = ctx.get("chart_indicators") or {}
-    tf_data = chart_data
-    if verdict_label and not any(k in chart_data for k in ("1h", "3h")):
-        tf_data = next(iter(chart_data.values()), {}) if chart_data else {}
-    candle_1h = (tf_data.get("1h") or {}).get("sentiment", "NEUTRAL")
-    candle_3h = (tf_data.get("3h") or {}).get("sentiment", "NEUTRAL")
+    if isinstance(chart_data, dict) and not any(k in chart_data for k in ("1h", "3h")):
+        chart_data = next(iter(chart_data.values()), {}) if chart_data else {}
+    candle_1h = (chart_data.get("1h") or {}).get("sentiment", "NEUTRAL")
+    candle_3h = (chart_data.get("3h") or {}).get("sentiment", "NEUTRAL")
 
     top = _find_top_signal(alerts)
 

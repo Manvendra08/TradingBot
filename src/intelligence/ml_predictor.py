@@ -64,7 +64,7 @@ MIN_TRADES_FOR_TRAINING = 30
 MIN_TRADES_FOR_PREDICTION = 10
 AUC_IMPROVEMENT_THRESHOLD = 0.02  # Only deploy if AUC improves >= 2%
 
-# ── Explicit feature order — NEVER use sorted() ────────────────────────────
+# ── Explicit feature order — NEVER use sorted() at runtime ────────────────────
 # v2.0 FIX: This MUST match between training and prediction.
 # v2.2 FIX: Added 4 missing verdict one-hots (all 8 verdicts from VERDICT_ACTION_MAP).
 # v3.0 FIX: Feature count is 25 (roadmap says ~28 approx; this is exact).

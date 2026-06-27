@@ -33,11 +33,11 @@ class PatchedCursor(sqlite3.Cursor):
             and not re.search(r"(?i)\bfrom\s+live_trades\b", sql)
         ):
             subquery = """(
-                SELECT id, opened_at, closed_at, symbol, verdict_label, option_type, strike, entry_underlying, exit_underlying, sl_underlying, target_underlying, pnl_points, status, reason, digest_id, entry_premium, exit_premium, sl_premium, target_premium, lots, pnl_rupees, trade_status, setup_type, decision_reason, confidence_score, entry_quality_score, trend_alignment_score, regime_score, signal_key, pyramid_level, max_favorable_r, side, expiry,
+                SELECT id, opened_at, closed_at, symbol, verdict_label, option_type, strike, entry_underlying, exit_underlying, sl_underlying, target_underlying, pnl_points, status, reason, digest_id, entry_premium, exit_premium, sl_premium, target_premium, lots, lot_size, pnl_rupees, trade_status, setup_type, decision_reason, confidence_score, entry_quality_score, trend_alignment_score, regime_score, signal_key, pyramid_level, max_favorable_r, side, expiry,
                     price_change_pct, pcr, ce_oi_change, pe_oi_change, underlying, support, resistance, max_pain, days_to_expiry, chart_conflict, rsi_1h, rsi_3h, regime
                 FROM paper_trades
                 UNION ALL
-                SELECT id, opened_at, closed_at, symbol, verdict_label, option_type, strike, entry_underlying, exit_underlying, sl_underlying, target_underlying, pnl_points, status, reason, digest_id, entry_premium, exit_premium, sl_premium, target_premium, lots, pnl_rupees, trade_status, setup_type, decision_reason, confidence_score, entry_quality_score, trend_alignment_score, regime_score, signal_key, pyramid_level, max_favorable_r, side, expiry,
+                SELECT id, opened_at, closed_at, symbol, verdict_label, option_type, strike, entry_underlying, exit_underlying, sl_underlying, target_underlying, pnl_points, status, reason, digest_id, entry_premium, exit_premium, sl_premium, target_premium, lots, NULL AS lot_size, pnl_rupees, trade_status, setup_type, decision_reason, confidence_score, entry_quality_score, trend_alignment_score, regime_score, signal_key, pyramid_level, max_favorable_r, side, expiry,
                     price_change_pct, pcr, ce_oi_change, pe_oi_change, underlying, support, resistance, max_pain, days_to_expiry, chart_conflict, rsi_1h, rsi_3h, regime
                 FROM live_trades
                 WHERE (status = 'CLOSED_SHADOW' OR trade_status = 'SHADOW' OR broker_status = 'SHADOW')
@@ -45,6 +45,8 @@ class PatchedCursor(sqlite3.Cursor):
             )"""
             sql = re.sub(r"(?i)\bfrom\s+paper_trades\b", f"FROM {subquery}", sql)
         return super().execute(sql, *args, **kwargs)
+
+
 
 
 class PatchedConnection(sqlite3.Connection):
@@ -56,11 +58,11 @@ class PatchedConnection(sqlite3.Connection):
             and not re.search(r"(?i)\bfrom\s+live_trades\b", sql)
         ):
             subquery = """(
-                SELECT id, opened_at, closed_at, symbol, verdict_label, option_type, strike, entry_underlying, exit_underlying, sl_underlying, target_underlying, pnl_points, status, reason, digest_id, entry_premium, exit_premium, sl_premium, target_premium, lots, pnl_rupees, trade_status, setup_type, decision_reason, confidence_score, entry_quality_score, trend_alignment_score, regime_score, signal_key, pyramid_level, max_favorable_r, side, expiry,
+                SELECT id, opened_at, closed_at, symbol, verdict_label, option_type, strike, entry_underlying, exit_underlying, sl_underlying, target_underlying, pnl_points, status, reason, digest_id, entry_premium, exit_premium, sl_premium, target_premium, lots, lot_size, pnl_rupees, trade_status, setup_type, decision_reason, confidence_score, entry_quality_score, trend_alignment_score, regime_score, signal_key, pyramid_level, max_favorable_r, side, expiry,
                     price_change_pct, pcr, ce_oi_change, pe_oi_change, underlying, support, resistance, max_pain, days_to_expiry, chart_conflict, rsi_1h, rsi_3h, regime
                 FROM paper_trades
                 UNION ALL
-                SELECT id, opened_at, closed_at, symbol, verdict_label, option_type, strike, entry_underlying, exit_underlying, sl_underlying, target_underlying, pnl_points, status, reason, digest_id, entry_premium, exit_premium, sl_premium, target_premium, lots, pnl_rupees, trade_status, setup_type, decision_reason, confidence_score, entry_quality_score, trend_alignment_score, regime_score, signal_key, pyramid_level, max_favorable_r, side, expiry,
+                SELECT id, opened_at, closed_at, symbol, verdict_label, option_type, strike, entry_underlying, exit_underlying, sl_underlying, target_underlying, pnl_points, status, reason, digest_id, entry_premium, exit_premium, sl_premium, target_premium, lots, NULL AS lot_size, pnl_rupees, trade_status, setup_type, decision_reason, confidence_score, entry_quality_score, trend_alignment_score, regime_score, signal_key, pyramid_level, max_favorable_r, side, expiry,
                     price_change_pct, pcr, ce_oi_change, pe_oi_change, underlying, support, resistance, max_pain, days_to_expiry, chart_conflict, rsi_1h, rsi_3h, regime
                 FROM live_trades
                 WHERE (status = 'CLOSED_SHADOW' OR trade_status = 'SHADOW' OR broker_status = 'SHADOW')
@@ -3602,18 +3604,19 @@ async def zerodha_postback(request: Request):
 
 
 @app.get("/api/ai/patterns")
-async def get_ai_patterns():
+async def get_ai_patterns(symbol: str = None):
     """
     Get discovered trading patterns.
 
     Uses module-level singleton + 5-min in-memory cache.
     Cache invalidates on trade close or after 5 minutes.
+    Optional query param: symbol (e.g. NIFTY, BANKNIFTY)
     """
     try:
         from src.intelligence.history_analyzer import get_analyzer
 
         analyzer = get_analyzer()
-        patterns = analyzer.get_cached_patterns()
+        patterns = analyzer.get_cached_patterns(symbol=symbol)
         return [
             {
                 "name": p.pattern_name,
@@ -3669,19 +3672,20 @@ async def get_trade_dna(symbol: str, verdict: str = None, confidence: int = 0):
 
 
 @app.get("/api/ai/edge-health")
-async def get_edge_health():
+async def get_edge_health(symbol: str = None):
     """
     Get edge health for all strategies.
 
     Returns:
       JSON list of EdgeHealth objects with strategy_name, current_win_rate,
       historical_win_rate, win_rate_trend, pnl_trend, health_score, recommendation.
+    Optional query param: symbol (e.g. NIFTY, BANKNIFTY)
     """
     try:
         from src.intelligence.edge_monitor import get_monitor
 
         monitor = get_monitor()
-        health_reports = monitor.get_all_strategies_health()
+        health_reports = monitor.get_all_strategies_health(symbol=symbol)
         return [h.to_dict() for h in health_reports]
     except Exception as e:
         log.exception("Failed to get edge health")
