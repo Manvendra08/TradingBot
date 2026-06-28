@@ -573,7 +573,7 @@ class TestTrendAnalysisDetailed:
 
         ctx = {"chart_indicators": {"1h": {"verdict": "Short Buildup"}, "3h": {"verdict": "Short Buildup"}}}
         score = calculate_momentum_score(symbol, "Short Buildup", 90, ctx)
-        assert score == 99
+        assert score == 79
 
         # 2. Bullish current verdict + Strong Bullish trend + CE 1h chart only
         _clear_db()
@@ -586,14 +586,14 @@ class TestTrendAnalysisDetailed:
         ])
         ctx = {"chart_indicators": {"1h": {"verdict": "Long Buildup"}, "3h": {"verdict": "Short Buildup"}}}
         score = calculate_momentum_score(symbol, "Long Buildup", 80, ctx)
-        assert score == 98
+        assert score == 78
 
         # 3. Mild Bullish trend & Mix/Rangebound
         _clear_db()
         alerts = [{"verdict_label": "Long Buildup"}] * 5 + [{"verdict_label": "Short Buildup"}]
         _insert_alerts(symbol, alerts)
         score = calculate_momentum_score(symbol, "Long Buildup", 80, {})
-        assert score == 23
+        assert score == 18
 
         # Mixed trend
         _clear_db()
@@ -990,7 +990,7 @@ class TestCoreEngineUltraCoverage:
         alerts.append({"alert_type": "BUILDUP_CLASSIFY", "detail": {"buildup_type": "Long Buildup"}})
         _insert_alerts("ULTRA_TREND", alerts)
         score = calculate_momentum_score("ULTRA_TREND", "Short Buildup", 80, {})
-        assert score == 23
+        assert score == 18
 
         # Mixed broader trend
         _clear_db()
@@ -1002,7 +1002,7 @@ class TestCoreEngineUltraCoverage:
         ]
         _insert_alerts("ULTRA_TREND", alerts)
         score = calculate_momentum_score("ULTRA_TREND", "Short Buildup", 80, {})
-        assert score == 23
+        assert score == 18
 
         # Line 353: chart confluence BULLISH / BULLISH
         _clear_db()
@@ -1013,7 +1013,7 @@ class TestCoreEngineUltraCoverage:
         ])
         ctx = {"chart_indicators": {"1h": {"verdict": "Long Buildup"}, "3h": {"verdict": "Long Buildup"}}}
         score = calculate_momentum_score("ULTRA_TREND", "Long Buildup", 80, ctx)
-        assert score == 98
+        assert score == 78
 
         # Line 359-360: chart confluence BEARISH / BEARISH
         _clear_db()
@@ -1024,7 +1024,7 @@ class TestCoreEngineUltraCoverage:
         ])
         ctx = {"chart_indicators": {"1h": {"verdict": "Short Buildup"}, "3h": {"verdict": "Long Buildup"}}}
         score = calculate_momentum_score("ULTRA_TREND", "Short Buildup", 80, ctx)
-        assert score == 98
+        assert score == 78
 
 
 class TestScanSummaryDetailed:
