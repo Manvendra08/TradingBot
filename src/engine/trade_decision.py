@@ -31,6 +31,7 @@ from src.engine.trend_analysis import (
     calculate_momentum_score,
     get_broader_trend_from_alerts,
 )
+from src.engine.time_guards import is_trading_allowed_now
 from src.engine.verdict_sets import is_bullish, is_bearish
 
 # Map LLM action-oriented schema → legacy bias for trade decision engine
@@ -112,6 +113,11 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None, su
     soft_conflicts: list[str] = []
 
     # ── Hard blocks ────────────────────────────────────────────────────────
+    # Time guard: block entries during high-noise / high-gamma windows.
+    time_ok, time_reason = is_trading_allowed_now(symbol)
+    if not time_ok:
+        return _blocked(f"Time guard: {time_reason}")
+
     if float(ctx.get("underlying") or 0) <= 0:
         return _blocked("Missing underlying price")
 
