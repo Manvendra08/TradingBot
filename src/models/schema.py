@@ -253,8 +253,32 @@ CREATE TABLE IF NOT EXISTS ai_pattern_insights (
     expires_at      TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_pattern_insights_name
-    ON ai_pattern_insights (pattern_name);
+CREATE TABLE IF NOT EXISTS decision_audit (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp       TEXT NOT NULL,
+    engine          TEXT NOT NULL,       -- CORE_OI | TIMEFRAME
+    symbol          TEXT NOT NULL,
+    direction       TEXT,                -- LONG | SHORT | NULL
+    action          TEXT NOT NULL,       -- TRADE | SKIP
+    signal_score    REAL,
+    rule_passed     INTEGER,
+    ai_score        REAL,
+    ai_agrees       INTEGER,
+    entry_quality   REAL,
+    trend_score     REAL,
+    regime_score    REAL,
+    risk_passed     INTEGER,
+    risk_sub_check  TEXT,
+    block_step      TEXT,                -- First failing step name (NULL if TRADE)
+    block_reason    TEXT,
+    trail_json      TEXT,                -- Full list[StepResult] as JSON
+    trade_id        INTEGER,             -- FK to paper_trades.id (NULL if SKIP)
+    bar_end_utc     TEXT,
+    scan_fetched_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_da_symbol_ts ON decision_audit(symbol, timestamp);
+CREATE INDEX IF NOT EXISTS idx_da_action ON decision_audit(action, engine);
 
 """
 

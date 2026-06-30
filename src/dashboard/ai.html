@@ -1,305 +1,801 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>NSEBOT — AI Intelligence</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<style>
-  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500&display=swap');
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>NSEBOT — AI Intelligence</title>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+        <style>
+            @import url("https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500&display=swap");
 
-  :root {
-    --bg:        #0a0c0f;
-    --surface:   #111418;
-    --surface-2: #1a1f26;
-    --border:    #1e2530;
-    --accent:    #00e5a0</title>;
-    --red:       #ff4d6d;
-    --green:     #00e5a0;
-    --yellow:    #ffd166;
-    --muted:     #4a5568;
-    --text:      #e2e8f0;
-    --text-dim:  #718096;
-    --mono:      'Space Mono', monospace;
-    --sans:      'DM Sans', sans-serif;
-  }
+            :root {
+                --bg: #0a0c0f;
+                --surface: #111418;
+                --surface-2: #1a1f26;
+                --border: #1e2530;
+                --accent: #00e5a0</title>;
+                --red: #ff4d6d;
+                --green: #00e5a0;
+                --yellow: #ffd166;
+                --muted: #4a5568;
+                --text: #e2e8f0;
+                --text-dim: #718096;
+                --mono: "Space Mono", monospace;
+                --sans: "DM Sans", sans-serif;
+            }
 
-  [data-theme="light"] {
-    --bg:        #f8fafc;
-    --surface:   #ffffff;
-    --surface-2: #f1f5f9;
-    --border:    #e2e8f0;
-    --accent:    #059669;
-    --red:       #e11d48;
-    --green:     #059669;
-    --yellow:    #d97706;
-    --muted:     #cbd5e1;
-    --text:      #0f172a;
-    --text-dim:  #64748b;
-  }
+            [data-theme="light"] {
+                --bg: #f8fafc;
+                --surface: #ffffff;
+                --surface-2: #f1f5f9;
+                --border: #e2e8f0;
+                --accent: #059669;
+                --red: #e11d48;
+                --green: #059669;
+                --yellow: #d97706;
+                --muted: #cbd5e1;
+                --text: #0f172a;
+                --text-dim: #64748b;
+            }
 
-  * { box-sizing: border-box; margin: 0; padding: 0; }
+            * {
+                box-sizing: border-box;
+                margin: 0;
+                padding: 0;
+            }
 
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: var(--sans);
-    font-size: 14px;
-    min-height: 100vh;
-  }
+            body {
+                background: var(--bg);
+                color: var(--text);
+                font-family: var(--sans);
+                font-size: 14px;
+                min-height: 100vh;
+            }
 
-  /* Navigation bar */
-  .nav-bar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 10px 24px;
-    background: var(--surface);
-    border-bottom: 1px solid var(--border);
-    position: sticky;
-    top: 0;
-    z-index: 100;
-  }
+            /* Navigation bar */
+            .nav-bar {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 10px 24px;
+                background: var(--surface);
+                border-bottom: 1px solid var(--border);
+                position: sticky;
+                top: 0;
+                z-index: 100;
+            }
 
-  .nav-left {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-  }
+            .nav-left {
+                display: flex;
+                align-items: center;
+                gap: 16px;
+            }
 
-  .nav-links {
-    display: flex;
-    background: rgba(0, 0, 0, 0.15);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 3px;
-    gap: 2px;
-  }
+            .nav-links {
+                display: flex;
+                background: rgba(0, 0, 0, 0.15);
+                border: 1px solid var(--border);
+                border-radius: 8px;
+                padding: 3px;
+                gap: 2px;
+            }
 
-  .nav-links a {
-    color: var(--text-dim);
-    text-decoration: none;
-    padding: 6px 16px;
-    font-size: 13px;
-    font-weight: 600;
-    border-radius: 6px;
-    transition: all 0.2s ease;
-    border: 1px solid transparent;
-    font-family: var(--sans);
-  }
+            .nav-links a {
+                color: var(--text-dim);
+                text-decoration: none;
+                padding: 6px 16px;
+                font-size: 13px;
+                font-weight: 600;
+                border-radius: 6px;
+                transition: all 0.2s ease;
+                border: 1px solid transparent;
+                font-family: var(--sans);
+            }
 
-  .nav-links a:hover {
-    color: var(--text);
-    background: rgba(255, 255, 255, 0.03);
-  }
+            .nav-links a:hover {
+                color: var(--text);
+                background: rgba(255, 255, 255, 0.03);
+            }
 
-  .nav-links a.active {
-    color: var(--accent);
-    background: var(--surface-2);
-    border-color: var(--border);
-  }
+            .nav-links a.active {
+                color: var(--accent);
+                background: var(--surface-2);
+                border-color: var(--border);
+            }
 
-  .theme-toggle-btn {
-    background: transparent;
-    border: 1px solid var(--border);
-    color: var(--text);
-    width: 36px;
-    height: 36px;
-    border-radius: 8px;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 16px;
-  }
+            .theme-toggle-btn {
+                background: transparent;
+                border: 1px solid var(--border);
+                color: var(--text);
+                width: 36px;
+                height: 36px;
+                border-radius: 8px;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 16px;
+            }
 
-  .theme-toggle-btn:hover {
-    border-color: var(--accent);
-  }
+            .theme-toggle-btn:hover {
+                border-color: var(--accent);
+            }
 
-  .logo-text {
-    font-family: var(--sans);
-    font-weight: 800;
-    font-size: 16px;
-    letter-spacing: 1.5px;
-    color: var(--text);
-  }
+            .logo-text {
+                font-family: var(--sans);
+                font-weight: 800;
+                font-size: 16px;
+                letter-spacing: 1.5px;
+                color: var(--text);
+            }
 
-  .logo-sub {
-    font-family: var(--mono);
-    font-size: 9px;
-    color: var(--accent);
-    letter-spacing: 2px;
-    text-transform: uppercase;
-  }
+            .logo-sub {
+                font-family: var(--mono);
+                font-size: 9px;
+                color: var(--accent);
+                letter-spacing: 2px;
+                text-transform: uppercase;
+            }
 
-  .symbol-bar {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 8px 24px;
-    background: var(--surface-2);
-    border-bottom: 1px solid var(--border);
-    font-family: var(--mono);
-    font-size: 12px;
-  }
+            .symbol-bar {
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                padding: 8px 24px;
+                background: var(--surface-2);
+                border-bottom: 1px solid var(--border);
+                font-family: var(--mono);
+                font-size: 12px;
+            }
 
-  .symbol-bar select {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    color: var(--text);
-    padding: 6px 12px;
-    border-radius: 4px;
-    font-family: var(--mono);
-    font-size: 12px;
-    cursor: pointer;
-    outline: none;
-  }
+            .symbol-bar select {
+                background: var(--bg);
+                border: 1px solid var(--border);
+                color: var(--text);
+                padding: 6px 12px;
+                border-radius: 4px;
+                font-family: var(--mono);
+                font-size: 12px;
+                cursor: pointer;
+                outline: none;
+            }
 
-  .symbol-bar select:hover { border-color: var(--accent); }
+            .symbol-bar select:hover {
+                border-color: var(--accent);
+            }
 
-  [data-theme="light"] .nav-links { background: rgba(0, 0, 0, 0.03); }
-  [data-theme="light"] .nav-links a:hover { background: rgba(0, 0, 0, 0.02); }
-  [data-theme="light"] .nav-links a.active { background: #ffffff; border-color: #cbd5e1; }
-</style>
-<link rel="stylesheet" href="/static/ai_insights.css">
-</head>
-<body>
-  <nav class="nav-bar">
-    <div class="nav-left">
-      <div>
-        <div class="logo-text">NSEBOT</div>
-        <div class="logo-sub">AI Intelligence</div>
-      </div>
-      <div class="nav-links">
-        <a href="/">Dashboard</a>
-        <a href="/paper">Paper Trades</a>
-        <a href="/broker">Broker Console</a>
-        <a href="/ai" class="active">AI Insights</a>
-        <a href="/settings">Settings</a>
-      </div>
-    </div>
-    <button id="theme-toggle-btn" class="theme-toggle-btn" title="Toggle Day/Night">🌙</button>
-  </nav>
+            [data-theme="light"] .nav-links {
+                background: rgba(0, 0, 0, 0.03);
+            }
+            [data-theme="light"] .nav-links a:hover {
+                background: rgba(0, 0, 0, 0.02);
+            }
+            [data-theme="light"] .nav-links a.active {
+                background: #ffffff;
+                border-color: #cbd5e1;
+            }
+        </style>
+        <link rel="stylesheet" href="/static/theme.css" />
+        <link rel="stylesheet" href="/static/ai_insights.css" />
+    </head>
+    <body>
+        <nav class="nav-bar">
+            <div class="nav-left">
+                <div>
+                    <div class="logo-text">NSEBOT</div>
+                    <div class="logo-sub">AI Intelligence</div>
+                </div>
+                <div class="nav-links">
+                    <a href="/">Dashboard</a>
+                    <a href="/paper">Paper Trades</a>
+                    <a href="/broker">Broker Console</a>
+                    <a href="/ai" class="active">AI Insights</a>
+                    <a href="/settings">Settings</a>
+                </div>
+            </div>
+            <button
+                id="theme-toggle-btn"
+                class="theme-toggle-btn"
+                title="Toggle Day/Night"
+            >
+                🌙
+            </button>
+        </nav>
 
-  <div class="symbol-bar">
-    <label for="ai-symbol-sel">Symbol</label>
-    <select id="ai-symbol-sel">
-      <option value="ALL">ALL</option>
-      <option value="NIFTY">NIFTY</option>
-      <option value="BANKNIFTY">BANKNIFTY</option>
-      <option value="SENSEX">SENSEX</option>
-      <option value="FINNIFTY">FINNIFTY</option>
-      <option value="MIDCPNIFTY">MIDCPNIFTY</option>
-      <option value="NATURALGAS">NATURALGAS</option>
-      <option value="CRUDEOIL">CRUDEOIL</option>
-    </select>
-    <span id="ai-verdict-pill" class="ai-pill">—</span>
-    <span style="flex:1"></span>
-    <span id="ai-updated-nav" class="ai-micro" aria-live="polite"></span>
-  </div>
-
-  <!-- AI Insights Panel -->
-  <section class="ai-insights" aria-labelledby="ai-insights-title">
-    <header class="ai-head">
-      <h2 id="ai-insights-title">AI Intelligence</h2>
-      <div class="ai-head__meta">
-        <span id="ai-symbol-pill" class="ai-pill">—</span>
-        <button id="ai-refresh-btn" class="ai-btn-ghost ai-btn-refresh" aria-label="Refresh insights">↻</button>
-        <span id="ai-updated" class="ai-micro" aria-live="polite"></span>
-      </div>
-    </header>
-
-    <!-- HERO: ML Success Probability -->
-    <article class="ai-card ai-card--hero" aria-labelledby="ai-ml-title">
-      <h3 id="ai-ml-title" class="ai-card__title">🤖 Success Probability</h3>
-      <div id="ai-ml-content" class="ai-card__body" aria-live="polite" role="region" data-state="loading">
-        <div class="ai-skeleton ai-skeleton--hero" style="width:50%"></div>
-        <div class="ai-skeleton ai-skeleton--bar" style="width:80%"></div>
-        <div class="ai-skeleton ai-skeleton--bar" style="width:60%"></div>
-      </div>
-    </article>
-
-    <!-- Two-column: Trade DNA + Edge Health -->
-    <div class="ai-grid-2">
-      <article class="ai-card" aria-labelledby="ai-dna-title">
-        <h3 id="ai-dna-title" class="ai-card__title">🧬 Trade DNA</h3>
-        <div id="ai-dna-content" class="ai-card__body" aria-live="polite" role="region" data-state="loading">
-          <div class="ai-skeleton ai-skeleton--bar" style="width:70%"></div>
-          <div class="ai-skeleton ai-skeleton--bar" style="width:50%"></div>
-          <div class="ai-skeleton ai-skeleton--bar" style="width:90%"></div>
+        <div class="symbol-bar">
+            <label for="ai-symbol-sel">Symbol</label>
+            <select id="ai-symbol-sel">
+                <option value="NATURALGAS">NATURALGAS</option>
+                <option value="NIFTY">NIFTY</option>
+                <option value="BANKNIFTY">BANKNIFTY</option>
+                <option value="SENSEX">SENSEX</option>
+                <option value="CRUDEOIL">CRUDEOIL</option>
+                <option value="ALL">ALL</option>
+            </select>
+            <span id="ai-verdict-pill" class="ai-pill">—</span>
+            <span style="flex: 1"></span>
+            <span
+                id="ai-updated-nav"
+                class="ai-micro"
+                aria-live="polite"
+            ></span>
         </div>
-      </article>
 
-      <article class="ai-card" aria-labelledby="ai-edge-title">
-        <h3 id="ai-edge-title" class="ai-card__title">📉 Edge Health</h3>
-        <div id="ai-edge-content" class="ai-card__body" aria-live="polite" role="region" data-state="loading">
-          <div class="ai-skeleton ai-skeleton--bar" style="width:80%"></div>
-          <div class="ai-skeleton ai-skeleton--bar" style="width:60%"></div>
-          <div class="ai-skeleton ai-skeleton--bar" style="width:70%"></div>
-        </div>
-      </article>
-    </div>
+        <!-- AI Insights Panel -->
+        <section class="ai-insights" aria-labelledby="ai-insights-title">
+            <header class="ai-head">
+                <h2 id="ai-insights-title">AI Intelligence</h2>
+                <div class="ai-head__meta">
+                    <span id="ai-symbol-pill" class="ai-pill">—</span>
+                    <button
+                        id="ai-refresh-btn"
+                        class="ai-btn-ghost ai-btn-refresh"
+                        aria-label="Refresh insights"
+                    >
+                        ↻
+                    </button>
+                    <span
+                        id="ai-updated"
+                        class="ai-micro"
+                        aria-live="polite"
+                    ></span>
+                </div>
+            </header>
 
-    <!-- Patterns (full width) -->
-    <article class="ai-card" aria-labelledby="ai-patterns-title">
-      <h3 id="ai-patterns-title" class="ai-card__title">📊 Top Patterns</h3>
-      <div id="ai-patterns-content" class="ai-card__body" aria-live="polite" role="region" data-state="loading">
-        <div class="ai-skeleton ai-skeleton--bar" style="width:90%"></div>
-        <div class="ai-skeleton ai-skeleton--bar" style="width:75%"></div>
-        <div class="ai-skeleton ai-skeleton--bar" style="width:85%"></div>
-        <div class="ai-skeleton ai-skeleton--bar" style="width:65%"></div>
-      </div>
-    </article>
-  </section>
+            <!-- HERO: ML Success Probability -->
+            <article
+                class="ai-card ai-card--hero"
+                aria-labelledby="ai-ml-title"
+            >
+                <h3 id="ai-ml-title" class="ai-card__title">
+                    🤖 Success Probability
+                </h3>
+                <div
+                    id="ai-ml-content"
+                    class="ai-card__body"
+                    aria-live="polite"
+                    role="region"
+                    data-state="loading"
+                >
+                    <div
+                        class="ai-skeleton ai-skeleton--hero"
+                        style="width: 50%"
+                    ></div>
+                    <div
+                        class="ai-skeleton ai-skeleton--bar"
+                        style="width: 80%"
+                    ></div>
+                    <div
+                        class="ai-skeleton ai-skeleton--bar"
+                        style="width: 60%"
+                    ></div>
+                </div>
+            </article>
 
-  <script src="/static/ai_insights.js"></script>
-  <script>
-    // Theme toggle
-    const themeBtn = document.getElementById('theme-toggle-btn');
-    themeBtn.addEventListener('click', () => {
-      const html = document.documentElement;
-      const isLight = html.getAttribute('data-theme') === 'light';
-      html.setAttribute('data-theme', isLight ? 'dark' : 'light');
-      themeBtn.textContent = isLight ? '🌙' : '☀️';
-    });
+            <!-- Two-column: Trade DNA + Edge Health -->
+            <div class="ai-grid-2">
+                <article class="ai-card" aria-labelledby="ai-dna-title">
+                    <h3 id="ai-dna-title" class="ai-card__title">
+                        🧬 Trade DNA
+                    </h3>
+                    <div
+                        id="ai-dna-content"
+                        class="ai-card__body"
+                        aria-live="polite"
+                        role="region"
+                        data-state="loading"
+                    >
+                        <div
+                            class="ai-skeleton ai-skeleton--bar"
+                            style="width: 70%"
+                        ></div>
+                        <div
+                            class="ai-skeleton ai-skeleton--bar"
+                            style="width: 50%"
+                        ></div>
+                        <div
+                            class="ai-skeleton ai-skeleton--bar"
+                            style="width: 90%"
+                        ></div>
+                    </div>
+                </article>
 
-    // Symbol selector → update AIInsights context
-    const symSel = document.getElementById('ai-symbol-sel');
-    const verdictPill = document.getElementById('ai-verdict-pill');
-    const updatedNav = document.getElementById('ai-updated-nav');
-    const updatedPanel = document.getElementById('ai-updated');
+                <article class="ai-card" aria-labelledby="ai-edge-title">
+                    <h3 id="ai-edge-title" class="ai-card__title">
+                        📉 Edge Health
+                    </h3>
+                    <div
+                        id="ai-edge-content"
+                        class="ai-card__body"
+                        aria-live="polite"
+                        role="region"
+                        data-state="loading"
+                    >
+                        <div
+                            class="ai-skeleton ai-skeleton--bar"
+                            style="width: 80%"
+                        ></div>
+                        <div
+                            class="ai-skeleton ai-skeleton--bar"
+                            style="width: 60%"
+                        ></div>
+                        <div
+                            class="ai-skeleton ai-skeleton--bar"
+                            style="width: 70%"
+                        ></div>
+                    </div>
+                </article>
+            </div>
 
-    function loadIntelligence(sym) {
-      fetch(`/api/intelligence_summary?symbol=${encodeURIComponent(sym)}`)
-        .then(r => r.json())
-        .then(intel => {
-          if (intel && intel.available) {
-            const v = intel.verdict || '—';
-            const c = intel.confidence || 0;
-            verdictPill.textContent = `${v} ${c}%`;
-            window.AIInsights.setSignal({ symbol: sym, verdict: v, confidence: c });
-          } else {
-            verdictPill.textContent = '—';
-            window.AIInsights.setSignal({ symbol: sym, verdict: null, confidence: 0 });
-          }
-        })
-        .catch(() => {
-          verdictPill.textContent = '⚠';
-          window.AIInsights.setSignal({ symbol: sym, verdict: null, confidence: 0 });
-        });
-    }
+            <!-- Patterns (full width) -->
+            <article class="ai-card" aria-labelledby="ai-patterns-title">
+                <h3 id="ai-patterns-title" class="ai-card__title">
+                    📊 Top Patterns
+                </h3>
+                <div
+                    id="ai-patterns-content"
+                    class="ai-card__body"
+                    aria-live="polite"
+                    role="region"
+                    data-state="loading"
+                >
+                    <div
+                        class="ai-skeleton ai-skeleton--bar"
+                        style="width: 90%"
+                    ></div>
+                    <div
+                        class="ai-skeleton ai-skeleton--bar"
+                        style="width: 75%"
+                    ></div>
+                    <div
+                        class="ai-skeleton ai-skeleton--bar"
+                        style="width: 85%"
+                    ></div>
+                    <div
+                        class="ai-skeleton ai-skeleton--bar"
+                        style="width: 65%"
+                    ></div>
+                </div>
+            </article>
 
-    symSel.addEventListener('change', () => {
-      const sym = symSel.value;
-      loadIntelligence(sym);
-      window.AIInsights.setFilterSymbol(sym);
-    });
+            <!-- Decision Audit Panel -->
+            <div
+                class="card"
+                style="
+                    margin-top: 20px;
+                    background: var(--surface);
+                    border: 1px solid var(--border);
+                    border-radius: 8px;
+                    padding: 20px;
+                    box-shadow: var(--ai-shadow);
+                "
+            >
+                <div
+                    class="card-title"
+                    style="
+                        display: flex;
+                        justify-content: space-between;
+                        align-items: center;
+                        margin-bottom: 18px;
+                    "
+                >
+                    <div style="display: flex; align-items: center; gap: 8px">
+                        <div
+                            class="card-title-bar orange"
+                            style="
+                                width: 3px;
+                                height: 14px;
+                                border-radius: 2px;
+                                background: #f59e0b;
+                                flex-shrink: 0;
+                            "
+                        ></div>
+                        <span
+                            style="
+                                font-size: 11px;
+                                font-weight: 700;
+                                text-transform: uppercase;
+                                letter-spacing: 1.6px;
+                                color: var(--text-dim);
+                            "
+                            >Decision Audit Logs</span
+                        >
+                    </div>
+                    <div style="display: flex; gap: 12px; align-items: center">
+                        <div
+                            style="display: flex; align-items: center; gap: 6px"
+                        >
+                            <label
+                                for="audit-engine-filter"
+                                style="
+                                    font-size: 11px;
+                                    text-transform: uppercase;
+                                    color: var(--text-dim);
+                                    font-weight: 600;
+                                "
+                                >Engine:</label
+                            >
+                            <select
+                                id="audit-engine-filter"
+                                onchange="loadDecisionAudit()"
+                                class="btn"
+                                style="
+                                    background: var(--bg);
+                                    color: var(--text);
+                                    border: 1px solid var(--border);
+                                    font-size: 11px;
+                                    padding: 2px 6px;
+                                    border-radius: 4px;
+                                    height: auto;
+                                "
+                            >
+                                <option value="">ALL</option>
+                                <option value="CORE_OI">CORE OI</option>
+                                <option value="TIMEFRAME">TIMEFRAME</option>
+                            </select>
+                        </div>
+                        <button
+                            class="btn"
+                            onclick="loadDecisionAudit()"
+                            title="Refresh Decisions"
+                            style="
+                                padding: 2px 8px;
+                                font-size: 11px;
+                                cursor: pointer;
+                                background: var(--surface-2);
+                                border: 1px solid var(--border);
+                                color: var(--text);
+                                border-radius: 4px;
+                            "
+                        >
+                            Refresh
+                        </button>
+                    </div>
+                </div>
+                <div
+                    style="
+                        overflow-x: auto;
+                        border-radius: 6px;
+                        border: 1px solid var(--border);
+                    "
+                >
+                    <table
+                        style="
+                            width: 100%;
+                            border-collapse: collapse;
+                            font-size: 12.5px;
+                        "
+                    >
+                        <thead>
+                            <tr
+                                style="
+                                    background: var(--surface-2);
+                                    border-bottom: 1px solid var(--border);
+                                "
+                            >
+                                <th
+                                    style="
+                                        text-align: left;
+                                        padding: 12px 14px;
+                                        font-size: 10px;
+                                        text-transform: uppercase;
+                                        letter-spacing: 1.2px;
+                                        font-weight: 700;
+                                        color: var(--text-dim);
+                                    "
+                                >
+                                    Timestamp
+                                </th>
+                                <th
+                                    style="
+                                        text-align: left;
+                                        padding: 12px 14px;
+                                        font-size: 10px;
+                                        text-transform: uppercase;
+                                        letter-spacing: 1.2px;
+                                        font-weight: 700;
+                                        color: var(--text-dim);
+                                    "
+                                >
+                                    Engine & Symbol
+                                </th>
+                                <th
+                                    style="
+                                        text-align: left;
+                                        padding: 12px 14px;
+                                        font-size: 10px;
+                                        text-transform: uppercase;
+                                        letter-spacing: 1.2px;
+                                        font-weight: 700;
+                                        color: var(--text-dim);
+                                    "
+                                >
+                                    Decision
+                                </th>
+                                <th
+                                    style="
+                                        text-align: left;
+                                        padding: 12px 14px;
+                                        font-size: 10px;
+                                        text-transform: uppercase;
+                                        letter-spacing: 1.2px;
+                                        font-weight: 700;
+                                        color: var(--text-dim);
+                                    "
+                                >
+                                    Scores
+                                    <span
+                                        style="
+                                            font-weight: 400;
+                                            text-transform: none;
+                                            color: var(--text-dim);
+                                        "
+                                        >(Sig/Qual/Trnd/Reg)</span
+                                    >
+                                </th>
+                                <th
+                                    style="
+                                        text-align: left;
+                                        padding: 12px 14px;
+                                        font-size: 10px;
+                                        text-transform: uppercase;
+                                        letter-spacing: 1.2px;
+                                        font-weight: 700;
+                                        color: var(--text-dim);
+                                    "
+                                >
+                                    Block Step & Explanation
+                                </th>
+                                <th
+                                    style="
+                                        text-align: center;
+                                        padding: 12px 14px;
+                                        font-size: 10px;
+                                        text-transform: uppercase;
+                                        letter-spacing: 1.2px;
+                                        font-weight: 700;
+                                        color: var(--text-dim);
+                                    "
+                                >
+                                    Trail
+                                </th>
+                            </tr>
+                        </thead>
+                        <tbody id="decision-audit-body">
+                            <tr>
+                                <td colspan="6">
+                                    <div
+                                        class="empty-state"
+                                        style="
+                                            text-align: center;
+                                            padding: 40px;
+                                            color: var(--text-dim);
+                                        "
+                                    >
+                                        Loading decision audits...
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
 
-    // Initial load with first symbol
-    const initialSym = symSel.value;
-    loadIntelligence(initialSym);
-    window.AIInsights.init();
-  </script>
-</body>
+        <script src="/static/ai_insights.js"></script>
+        <script>
+            // Theme toggle
+            const themeBtn = document.getElementById("theme-toggle-btn");
+            themeBtn.addEventListener("click", () => {
+                const html = document.documentElement;
+                const isLight = html.getAttribute("data-theme") === "light";
+                html.setAttribute("data-theme", isLight ? "dark" : "light");
+                themeBtn.textContent = isLight ? "🌙" : "☀️";
+            });
+
+            // Symbol selector → update AIInsights context
+            const symSel = document.getElementById("ai-symbol-sel");
+            const verdictPill = document.getElementById("ai-verdict-pill");
+            const updatedNav = document.getElementById("ai-updated-nav");
+            const updatedPanel = document.getElementById("ai-updated");
+
+            function loadIntelligence(sym) {
+                fetch(
+                    `/api/intelligence_summary?symbol=${encodeURIComponent(sym)}`,
+                )
+                    .then((r) => r.json())
+                    .then((intel) => {
+                        if (intel && intel.available) {
+                            const v = intel.verdict || "—";
+                            const c = intel.confidence || 0;
+                            verdictPill.textContent = `${v} ${c}%`;
+                            window.AIInsights.setSignal({
+                                symbol: sym,
+                                verdict: v,
+                                confidence: c,
+                            });
+                        } else {
+                            verdictPill.textContent = "—";
+                            window.AIInsights.setSignal({
+                                symbol: sym,
+                                verdict: null,
+                                confidence: 0,
+                            });
+                        }
+                    })
+                    .catch(() => {
+                        verdictPill.textContent = "⚠";
+                        window.AIInsights.setSignal({
+                            symbol: sym,
+                            verdict: null,
+                            confidence: 0,
+                        });
+                    });
+            }
+
+            symSel.addEventListener("change", () => {
+                const sym = symSel.value;
+                loadIntelligence(sym);
+                window.AIInsights.setFilterSymbol(sym);
+                loadDecisionAudit();
+            });
+
+            async function loadDecisionAudit() {
+                const sym = document.getElementById("ai-symbol-sel").value;
+                const engine =
+                    document.getElementById("audit-engine-filter").value || "";
+                const symbolParam = sym === "ALL" ? "" : sym;
+                try {
+                    const res = await fetch(
+                        `/api/decisions?symbol=${encodeURIComponent(symbolParam)}&engine=${encodeURIComponent(engine)}&limit=20`,
+                    );
+                    if (!res.ok) throw new Error("Failed to fetch decisions");
+                    const data = await res.json();
+                    renderDecisionAudit(data);
+                } catch (e) {
+                    console.error("Decision audit error:", e);
+                }
+            }
+
+            function renderDecisionAudit(data) {
+                const body = document.getElementById("decision-audit-body");
+                if (!body) return;
+                if (!data || data.length === 0) {
+                    body.innerHTML = `
+          <tr>
+            <td colspan="6">
+              <div class="empty-state" style="text-align: center; padding: 40px; color: var(--text-dim);">
+                No decision audits found
+              </div>
+            </td>
+          </tr>
+        `;
+                    return;
+                }
+
+                const fmtScore = (val) =>
+                    val !== null && val >= 0 ? val : "-";
+
+                body.innerHTML = data
+                    .map((d, idx) => {
+                        const isTrade = d.action === "TRADE";
+                        const actionColor = isTrade
+                            ? "var(--green)"
+                            : "var(--red)";
+                        const actionBg = isTrade
+                            ? "rgba(34, 197, 94, 0.12)"
+                            : "rgba(239, 68, 68, 0.12)";
+                        const dirText = d.direction || "—";
+
+                        const dt = new Date(d.timestamp);
+                        const timeStr = dt.toLocaleTimeString("en-IN", {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                            second: "2-digit",
+                            hour12: false,
+                        });
+                        const dateStr = dt.toLocaleDateString("en-IN", {
+                            day: "2-digit",
+                            month: "short",
+                        });
+
+                        const engineBadgeColor =
+                            d.engine === "CORE_OI" ? "#3b82f6" : "#8b5cf6";
+                        const engineName =
+                            d.engine === "CORE_OI" ? "CORE OI" : "TIMEFRAME";
+
+                        const blockStepStr = d.block_step
+                            ? `<span style="background: rgba(239, 68, 68, 0.15); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3); padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 700; text-transform: uppercase; margin-right: 6px; display: inline-block;">${d.block_step}</span>`
+                            : "";
+                        const blockReasonStr =
+                            d.block_reason ||
+                            "All pipeline checks passed successfully.";
+
+                        return `
+          <tr class="audit-row" style="cursor: pointer; border-bottom: 1px solid var(--border); transition: background 0.15s ease;" onclick="toggleAuditDetails(${d.id})" onmouseover="this.style.background='var(--surface-2)'" onmouseout="this.style.background='transparent'">
+            <td style="padding: 12px 14px; white-space: nowrap;">
+              <div style="font-family: var(--mono); font-weight: 600; color: var(--text); font-size: 12px;">${timeStr}</div>
+              <div style="font-size: 10px; color: var(--text-dim);">${dateStr}</div>
+            </td>
+            <td style="padding: 12px 14px; white-space: nowrap;">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="background: ${engineBadgeColor}20; color: ${engineBadgeColor}; border: 1px solid ${engineBadgeColor}40; padding: 2px 6px; border-radius: 4px; font-size: 9.5px; font-weight: 700; letter-spacing: 0.5px;">${engineName}</span>
+                <span style="font-weight: 700; color: var(--text); font-size: 13px;">${d.symbol}</span>
+              </div>
+            </td>
+            <td style="padding: 12px 14px; white-space: nowrap;">
+              <div style="display: inline-flex; align-items: center; gap: 6px; background: ${actionBg}; border: 1px solid ${actionColor}40; padding: 3px 8px; border-radius: 6px;">
+                <span style="color: ${actionColor}; font-weight: 700; font-size: 11px;">${d.action}</span>
+                <span style="color: var(--text-dim); font-size: 10px;">•</span>
+                <span style="color: var(--text); font-weight: 600; font-size: 11px;">${dirText}</span>
+              </div>
+            </td>
+            <td style="padding: 12px 14px; white-space: nowrap;">
+              <div style="display: flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 11px;">
+                <span title="Signal Score" style="background: var(--surface-2); border: 1px solid var(--border); padding: 2px 6px; border-radius: 4px; color: var(--text);"><span style="color: var(--text-dim); font-size: 9px; margin-right: 2px;">S:</span>${fmtScore(d.signal_score)}</span>
+                <span title="Entry Quality" style="background: var(--surface-2); border: 1px solid var(--border); padding: 2px 6px; border-radius: 4px; color: var(--text);"><span style="color: var(--text-dim); font-size: 9px; margin-right: 2px;">Q:</span>${fmtScore(d.entry_quality)}</span>
+                <span title="Trend Score" style="background: var(--surface-2); border: 1px solid var(--border); padding: 2px 6px; border-radius: 4px; color: var(--text);"><span style="color: var(--text-dim); font-size: 9px; margin-right: 2px;">T:</span>${fmtScore(d.trend_score)}</span>
+                <span title="Regime Score" style="background: var(--surface-2); border: 1px solid var(--border); padding: 2px 6px; border-radius: 4px; color: var(--text);"><span style="color: var(--text-dim); font-size: 9px; margin-right: 2px;">R:</span>${fmtScore(d.regime_score)}</span>
+              </div>
+            </td>
+            <td style="padding: 12px 14px; min-width: 240px; max-width: 420px;">
+              <div style="line-height: 1.4; font-size: 12px; color: var(--text);">
+                ${blockStepStr}<span style="color: ${d.block_step ? "var(--text-dim)" : "var(--green)"};">${blockReasonStr}</span>
+              </div>
+            </td>
+            <td style="text-align: center; padding: 12px 14px;">
+              <button id="trail-btn-${d.id}" class="btn" style="padding: 3px 10px; font-size: 11px; cursor: pointer; background: var(--surface-2); border: 1px solid var(--border); color: var(--text); border-radius: 4px;">Details ▾</button>
+            </td>
+          </tr>
+          <tr id="audit-details-${d.id}" style="display: none; background: var(--surface-2);">
+            <td colspan="6" style="padding: 16px; border-bottom: 1px solid var(--border);">
+              <div style="display: flex; flex-direction: column; gap: 12px; text-align: left;">
+                <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); font-weight: 700;">Decision Audit Trail Details</div>
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px;">
+                  ${(d.trail || [])
+                      .map((step) => {
+                          const stepPassClass = step.passed
+                              ? "color: var(--green);"
+                              : "color: var(--red);";
+                          const stepPassBadge = step.passed ? "🟢" : "🔴";
+                          return `
+                      <div style="background: var(--bg); padding: 10px; border-radius: 6px; border-left: 3px solid ${step.passed ? "var(--green)" : "var(--red)"};">
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 4px; font-weight: 600; font-size: 12px;">
+                          <span>${stepPassBadge} Step: ${step.name.toUpperCase()}</span>
+                          <span style="font-family: var(--mono); ${stepPassClass}">Score: ${step.score !== -1 ? step.score : "—"}</span>
+                        </div>
+                        <div style="font-size: 11px; color: var(--text-dim); line-height: 1.4; word-break: break-word;">
+                          ${step.reason}
+                        </div>
+                      </div>
+                    `;
+                      })
+                      .join("")}
+                </div>
+              </div>
+            </td>
+          </tr>
+        `;
+                    })
+                    .join("");
+            }
+
+            function toggleAuditDetails(id) {
+                const row = document.getElementById(`audit-details-${id}`);
+                const btn = document.getElementById(`trail-btn-${id}`);
+                if (row) {
+                    const isHidden = row.style.display === "none";
+                    row.style.display = isHidden ? "table-row" : "none";
+                    if (btn)
+                        btn.textContent = isHidden ? "Details ▴" : "Details ▾";
+                }
+            }
+
+            // Initial load with first symbol
+            const initialSym = symSel.value;
+            loadIntelligence(initialSym);
+            window.AIInsights.init();
+            loadDecisionAudit();
+        </script>
+    </body>
 </html>

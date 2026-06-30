@@ -45,7 +45,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
-from config.settings import DB_PATH, TV_DISABLE
+from config.settings import DB_PATH, TV_DISABLE, DHAN_SEGMENTS
 from src.utils.dhan_resolver import get_dhan_security_id
 
 # Suppress tvDatafeed library's own error/warning logs unconditionally.
@@ -291,12 +291,11 @@ def _tv_record_success():
 
 
 def _provider_order(base_symbol: str) -> list[str]:
-    # Shoonya GetTimePriceSeries is primary for all symbols:
-    #   - NSE/BSE indices: static hardcoded tokens (26000, 26009, etc.)
-    #   - MCX commodities: dynamic near-month futures token via SearchScrip
-    # Shoonya returns exchange-native INR prices with no CAPTCHA risk.
-    # Yahoo Finance pure-HTTP is the universal fallback.
-    return ["shoonya", "yfinance"]
+    # For all symbols chart fetcher:
+    # 1. Dhan Builtup (openweb-ticks.dhan.co) as primary
+    # 2. Yahoo Finance (yfinance pure-HTTP API) as fallback 1
+    # 3. Shoonya REST API (TPSeries candles) as fallback 2
+    return ["dhan_builtup", "yfinance", "shoonya"]
 
 
 @contextlib.contextmanager
@@ -727,20 +726,38 @@ def _aggregate_rows_to_payload(
 def _fetch_dhan_builtup_ohlc(
     base_symbol: str, tf: str, reference_price: float | None = None
 ) -> Optional[dict]:
-    if base_symbol not in _DHAN_BUILTUP_SYMBOLS:
-        return None
-    window = _last_closed_window(tf, base_symbol)
-    if not window:
-        return None
     sid = get_dhan_security_id(base_symbol)
     if not sid:
         return None
 
+    segment = DHAN_SEGMENTS.get(base_symbol)
+    if not segment:
+        return None
+
+    if segment == "MCX_COMM":
+        exch = "MCX"
+        seg = "M"
+        inst = "FUTCOM"
+    elif segment == "IDX_I":
+        exch = "NSE"
+        seg = "I"
+        inst = "INDEX"
+    elif segment == "BSE_IND":
+        exch = "BSE"
+        seg = "I"
+        inst = "INDEX"
+    else:
+        return None
+
+    window = _last_closed_window(tf, base_symbol)
+    if not window:
+        return None
+
     payload = {
         "Data": {
-            "Exch": "MCX",
-            "Seg": "M",
-            "Inst": "FUTCOM",
+            "Exch": exch,
+            "Seg": seg,
+            "Inst": inst,
             "Timeinterval": "15",
             "Secid": int(sid),
         }
@@ -1270,28 +1287,26 @@ class ChartFetcher:
             payload = None
             source = None
 
-            if base in _DHAN_BUILTUP_SYMBOLS:
-                payload = _fetch_dhan_builtup_ohlc(
-                    base, tf, reference_price=reference_price
-                )
-                source = "dhan_builtup" if payload else None
+            for provider in _provider_order(base):
+                if provider == "shoonya":
+                    payload = _fetch_shoonya_candles(
+                        base, tf, reference_price=reference_price
+                    )
+                    source = "shoonya"
+                elif provider == "tvdatafeed":
+                    payload = _fetch_tv(base, tf)
+                    source = "tvdatafeed"
+                elif provider == "yfinance":
+                    payload = _fetch_yf(base, tf, reference_price=reference_price)
+                    source = "yfinance"
+                elif provider == "dhan_builtup":
+                    payload = _fetch_dhan_builtup_ohlc(
+                        base, tf, reference_price=reference_price
+                    )
+                    source = "dhan_builtup"
 
-            if not payload:
-                for provider in _provider_order(base):
-                    if provider == "shoonya":
-                        payload = _fetch_shoonya_candles(
-                            base, tf, reference_price=reference_price
-                        )
-                        source = "shoonya"
-                    elif provider == "tvdatafeed":
-                        payload = _fetch_tv(base, tf)
-                        source = "tvdatafeed"
-                    else:  # yfinance
-                        payload = _fetch_yf(base, tf, reference_price=reference_price)
-                        source = "yfinance"
-
-                    if payload:
-                        break
+                if payload:
+                    break
 
             if base in _MCX_SYMBOLS and (
                 payload is None or _is_payload_stale(payload, tf)
@@ -1312,7 +1327,9 @@ class ChartFetcher:
 
             merged = self._merge_state(base, tf, payload)
             result.setdefault(base, {})[tf] = merged
-            log.debug("[chart] %s %s -> %s", base, tf, source)
+            is_fallback = source not in ("shoonya", "dhan_builtup")
+            prefix = "FALLBACK " if is_fallback else ""
+            log.info("[chart] %s %s | ✅ %s%s", base, tf, prefix, source)
 
         if not result:
             log.error("[chart] %s -> no chart data from any provider", base)

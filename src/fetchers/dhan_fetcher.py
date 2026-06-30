@@ -1,6 +1,7 @@
 """
 Dhan API v2 Option Chain Fetcher (primary source).
 Docs: https://dhanhq.co/docs/v2/option-chain/
+Now migrated to ScanX public URL to avoid auth token expiration.
 """
 import csv
 import io
@@ -8,11 +9,9 @@ import logging
 from datetime import datetime, timezone
 from functools import lru_cache
 from config.settings import (
-    DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN, DHAN_BASE_URL,
     DHAN_SECURITY_IDS, DHAN_SEGMENTS
 )
 from src.utils.dhan_resolver import get_dhan_security_id
-from src.fetchers.dhan_commodity_fetcher import DhanCommodityFetcher
 from src.fetchers.base_fetcher import BaseFetcher
 
 log = logging.getLogger(__name__)
@@ -46,10 +45,13 @@ class DhanFetcher(BaseFetcher):
 
     def __init__(self):
         super().__init__()
+        # Removed auth headers since we now use public ScanX API
         self.session.headers.update({
-            "access-token": DHAN_ACCESS_TOKEN,
-            "client-id":    DHAN_CLIENT_ID,
-            "Content-Type": "application/json",
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json; charset=UTF-8",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Origin": "https://dhan.co",
+            "Referer": "https://dhan.co/",
         })
 
     def _base_symbol(self, symbol: str) -> str:
@@ -96,20 +98,6 @@ class DhanFetcher(BaseFetcher):
 
         # Fallback to first raw value only if nothing parsed but list is non-empty.
         return str(expiries[0]) if expiries else None
-
-    def _get_expiries(self, payload: dict) -> list[str]:
-        url = f"{DHAN_BASE_URL}/optionchain/expirylist"
-        try:
-            r = self.session.post(url, json=payload, timeout=15)
-            r.raise_for_status()
-            raw = r.json()
-        except Exception as exc:
-            log.error("[dhan] expirylist failed for %s/%s: %s",
-                      payload.get("UnderlyingSeg"), payload.get("UnderlyingScrip"), exc)
-            return []
-
-        data = raw.get("data", []) if isinstance(raw, dict) else []
-        return data if isinstance(data, list) else []
 
     def _fallback_commodity(self, symbol: str, reason: str) -> dict | None:
         base_symbol = self._base_symbol(symbol)
@@ -163,121 +151,73 @@ class DhanFetcher(BaseFetcher):
             log.warning("[dhan] No security_id configured for %s", symbol)
             return self._fallback_commodity(symbol, "missing security_id")
 
-        base_payload = {"UnderlyingScrip": security_id, "UnderlyingSeg": segment}
-        expiries = self._get_expiries(base_payload)
-        target_expiry = expiry or self._nearest_expiry(expiries, symbol=symbol)
+        # Map to ScanX segment. 0 = NSE Indices, 5 = MCX, 1 = NSE Equity
+        scanx_seg = 0
+        if segment == "MCX_COMM":
+            scanx_seg = 5
+        elif segment == "BSE_IND":
+            scanx_seg = 3
+
+        scanx_url = "https://open-web-scanx.dhan.co/scanx/optchainactive"
+        
+        # 1. Fetch expirylist
+        fl_payload = {"Data": {"Seg": scanx_seg, "Sid": int(security_id), "Exp": 0}}
+        try:
+            r = self.session.post(scanx_url, json=fl_payload, timeout=15)
+            r.raise_for_status()
+            fl_data = r.json()
+        except Exception as exc:
+            log.warning("[dhan] ScanX expirylist fetch failed for %s: %s", symbol, exc)
+            return self._fallback_commodity(symbol, f"ScanX api fetch failed: {exc}")
+
+        from src.fetchers.dhan_commodity_fetcher import _julian_1980_to_expiry_iso, _normalise_scanx_oc
+        
+        fl_dict = (fl_data.get("data") or {}).get("fl", {})
+        expjs_list = sorted([int(k) for k in fl_dict.keys() if str(k).isdigit()])
+        
+        all_expiries = sorted(list(set([
+            _julian_1980_to_expiry_iso(exp)
+            for exp in expjs_list if exp
+        ])))
+
+        target_expiry = expiry or self._nearest_expiry(all_expiries, symbol=symbol)
         if not target_expiry:
             log.warning("[dhan] no expiry returned for %s", symbol)
             return self._fallback_commodity(symbol, "no expiry returned")
 
-        payload = {**base_payload, "Expiry": target_expiry}
+        target_expj = None
+        for expj in expjs_list:
+            if _julian_1980_to_expiry_iso(expj) == target_expiry:
+                target_expj = expj
+                break
+                
+        if not target_expj:
+            log.warning("[dhan] Could not find expj for %s expiry %s", symbol, target_expiry)
+            return self._fallback_commodity(symbol, "missing expj")
 
-        url = f"{DHAN_BASE_URL}/optionchain"
+        # 2. Fetch the actual option chain
+        oc_payload = {"Data": {"Seg": scanx_seg, "Sid": int(security_id), "Exp": target_expj}}
         try:
-            r = self.session.post(url, json=payload, timeout=15)
+            r = self.session.post(scanx_url, json=oc_payload, timeout=15)
             r.raise_for_status()
-            raw = r.json()
+            oc_data = r.json()
         except Exception as exc:
-            log.error("[dhan] fetch failed for %s: %s", symbol, exc)
-            return self._fallback_commodity(symbol, f"api fetch failed: {exc}")
+            log.warning("[dhan] ScanX optchainactive fetch failed for %s: %s", symbol, exc)
+            return self._fallback_commodity(symbol, f"ScanX api fetch failed: {exc}")
+            
+        strikes = _normalise_scanx_oc(oc_data)
+        if not strikes:
+            log.warning("[dhan] empty option chain after normalise for %s expiry=%s", symbol, target_expiry)
+            return self._fallback_commodity(symbol, "normalise returned empty result")
 
-        result = self._normalise(base_symbol, raw, target_expiry, expiries)
-        if result:
-            return result
+        underlying = _safe_float((oc_data.get("data") or {}).get("sltp"), 0.0)
 
-        return self._fallback_commodity(symbol, "normalise returned empty result")
+        return {
+            "symbol":           symbol,
+            "underlying_price": underlying,
+            "expiry":           target_expiry,
+            "strikes":          strikes,
+            "source":           self.name,
+            "all_expiries":     all_expiries,
+        }
 
-    def _normalise(self, symbol: str, raw: dict, requested_expiry: str | None = None, expiries_list: list[str] | None = None) -> dict | None:
-        try:
-            data = raw.get("data", {}) if isinstance(raw, dict) else {}
-            if not isinstance(data, dict):
-                log.warning("[dhan] malformed response for %s: data is not dict", symbol)
-                return None
-
-            underlying = _safe_float(data.get("last_price"), 0.0)
-            raw_expiry_list = expiries_list or data.get("expiry_list", []) or []
-            expiry = requested_expiry or self._nearest_expiry(raw_expiry_list, symbol=symbol)
-            strikes = self._normalise_current_oc(data.get("oc", {}))
-            if not strikes:
-                strikes = self._normalise_legacy_oc(data.get("oc_data", {}), expiry)
-
-            if not strikes:
-                log.warning("[dhan] empty option chain after normalise for %s expiry=%s", symbol, expiry)
-                return None
-
-            all_expiries = sorted(list(set(raw_expiry_list)))
-
-            return {
-                "symbol":           symbol,
-                "underlying_price": underlying,
-                "expiry":           expiry,
-                "strikes":          strikes,
-                "source":           self.name,
-                "all_expiries":     all_expiries,
-            }
-        except Exception as exc:
-            log.exception("[dhan] normalise failed for %s: %s", symbol, exc)
-            return None
-
-    def _normalise_current_oc(self, oc_data: dict) -> list[dict]:
-        """Normalise Dhan's documented data.oc strike dictionary."""
-        if not isinstance(oc_data, dict):
-            return []
-
-        strikes: list[dict] = []
-        for strike_key, entry in oc_data.items():
-            if not isinstance(entry, dict):
-                continue
-            strike = _safe_float(strike_key, 0.0)
-            if strike <= 0:
-                continue
-            for raw_side, side in (("ce", "CE"), ("pe", "PE")):
-                opt = entry.get(raw_side, {}) or {}
-                if not isinstance(opt, dict) or not opt:
-                    continue
-                oi = _safe_int(opt.get("oi"), 0)
-                prev_oi = _safe_int(opt.get("previous_oi"), oi)
-                strikes.append({
-                    "strike":      strike,
-                    "option_type": side,
-                    "ltp":         _safe_float(opt.get("last_price"), 0.0),
-                    "oi":          oi,
-                    "oi_change":   oi - prev_oi,
-                    "volume":      _safe_int(opt.get("volume"), 0),
-                    "iv":          _safe_float(opt.get("implied_volatility"), 0.0),
-                    "bid":         _safe_float(opt.get("top_bid_price"), 0.0),
-                    "ask":         _safe_float(opt.get("top_ask_price"), 0.0),
-                    "delta":       _safe_float((opt.get("greeks") or {}).get("delta"), 0.0),
-                })
-        return strikes
-
-    def _normalise_legacy_oc(self, oc_root: dict, expiry: str | None) -> list[dict]:
-        """Keep support for the older expiry-keyed shape used by earlier code."""
-        oc_data = oc_root.get(expiry, []) if isinstance(oc_root, dict) and expiry else []
-        if not isinstance(oc_data, list):
-            return []
-
-        strikes: list[dict] = []
-        for entry in oc_data:
-            if not isinstance(entry, dict):
-                continue
-            strike = _safe_float(entry.get("strike_price"), 0.0)
-            if strike <= 0:
-                continue
-            for ot in ("CE", "PE"):
-                opt = entry.get(ot, {}) or {}
-                if not isinstance(opt, dict) or not opt:
-                    continue
-                strikes.append({
-                    "strike":      strike,
-                    "option_type": ot,
-                    "ltp":         _safe_float(opt.get("last_price"), 0.0),
-                    "oi":          _safe_int(opt.get("oi"), 0),
-                    "oi_change":   _safe_int(opt.get("oi_change"), 0),
-                    "volume":      _safe_int(opt.get("volume"), 0),
-                    "iv":          _safe_float(opt.get("implied_volatility"), 0.0),
-                    "bid":         _safe_float(opt.get("bid_price"), 0.0),
-                    "ask":         _safe_float(opt.get("ask_price"), 0.0),
-                    "delta":       _safe_float(opt.get("delta"), 0.0),
-                })
-        return strikes

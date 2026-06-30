@@ -207,11 +207,11 @@ def _update_live_cmps() -> None:
     log.debug("Running live CMP refresh for active symbols: %s", open_symbols)
     from src.fetchers.router import fetch_option_chain
     from datetime import datetime, timezone
+    import concurrent.futures
     
-    for symbol in open_symbols:
-        # Check if market is open for this symbol
+    def _update_single_symbol(symbol: str) -> None:
         if not _is_open_for(symbol):
-            continue
+            return
         try:
             oc_data = fetch_option_chain(symbol)
             if oc_data and oc_data.get("strikes"):
@@ -243,11 +243,20 @@ def _update_live_cmps() -> None:
                     })
                 insert_snapshots(rows_to_insert)
                 log.debug("Live CMP refresh completed for %s (%d strikes)", symbol, len(rows_to_insert))
-
+ 
                 # H4 fix: check live trade SL/Target exits between full scans
                 _check_live_exits(symbol, underlying, oc_data.get("strikes") or [])
         except Exception as e:
             log.warning("Live CMP refresh failed for %s: %s", symbol, e)
+
+    # Run all symbol refreshes in parallel. Timeout after 60 seconds to prevent
+    # blockages or watchdog timeouts.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(open_symbols)) as executor:
+        futures = {executor.submit(_update_single_symbol, sym): sym for sym in open_symbols}
+        done, not_done = concurrent.futures.wait(futures.keys(), timeout=60)
+        for f in not_done:
+            sym = futures[f]
+            log.warning("[scheduler] Live CMP refresh for %s timed out inside thread pool", sym)
 
 
 import threading
@@ -474,8 +483,8 @@ def start_scheduler(immediate: bool = False):
                         log.warning("[scheduler] Kite position sync failed: %s", exc)
                 threading.Thread(target=_sync_kite_positions, daemon=True, name="kite-position-sync").start()
 
-            # 2b. Live CMP Refresh Loop (every 2 minutes)
-            if time.time() - last_cmp_refresh >= 120:
+            # 2b. Live CMP Refresh Loop (every 5 minutes)
+            if time.time() - last_cmp_refresh >= 300:
                 cycle_start = time.time()
                 success = run_with_timeout(_update_live_cmps, timeout=90)
                 elapsed = time.time() - cycle_start

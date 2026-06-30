@@ -87,10 +87,11 @@ def _check_risk_limits_for_table(
     symbol: str,
     trades_table: str,
     label: str,
-) -> tuple[bool, str]:
+) -> tuple[bool, str, str]:
     """
     Core risk-check logic, parameterised over the trades table name.
     Used by both check_risk_limits (paper) and check_live_risk_limits (live).
+    Returns (allowed, reason, sub_check_code).
     """
     today_start = _ist_day_start_utc()
 
@@ -104,7 +105,7 @@ def _check_risk_limits_for_table(
             return False, (
                 f"[{label}] Max open trades for {symbol} reached "
                 f"({open_symbol}/{MAX_OPEN_TRADES_PER_SYMBOL})"
-            )
+            ), "MAX_OPEN_TRADES_PER_SYMBOL"
 
         # 2. Max total open trades
         open_total = conn.execute(
@@ -113,7 +114,7 @@ def _check_risk_limits_for_table(
         if open_total >= MAX_OPEN_TRADES_TOTAL:
             return False, (
                 f"[{label}] Max total open trades reached ({open_total}/{MAX_OPEN_TRADES_TOTAL})"
-            )
+            ), "MAX_OPEN_TRADES_TOTAL"
 
         # 3. Max trades per symbol per day
         day_count = conn.execute(
@@ -127,12 +128,9 @@ def _check_risk_limits_for_table(
             return False, (
                 f"[{label}] Daily trade limit for {symbol} reached "
                 f"({day_count}/{MAX_TRADES_PER_SYMBOL_PER_DAY})"
-            )
+            ), "MAX_TRADES_PER_SYMBOL_PER_DAY"
 
         # 4. Daily loss cap
-        # FIX #3: Only sum negative P&L rows.  Previously SUM(pnl_rupees) included
-        # profitable trades, so a day with +50k profit and -45k losses showed net
-        # +5k — the cap never fired even though real losses were 45k.
         today_loss_row = conn.execute(
             f"""
             SELECT COALESCE(SUM(pnl_rupees), 0) AS total
@@ -147,7 +145,7 @@ def _check_risk_limits_for_table(
                 f"[{label}] Daily loss limit hit "
                 f"(realized losses \u20b9{today_realized_loss:,.0f} / "
                 f"limit -\u20b9{MAX_DAILY_LOSS_RUPEES:,.0f})"
-            )
+            ), "DAILY_LOSS_CAP"
 
         # 5. Cooldown after SL/loss (per-symbol)
         cooldown_start = (
@@ -176,7 +174,7 @@ def _check_risk_limits_for_table(
                     return False, (
                         f"[{label}] Loss cooldown active for {symbol} — "
                         f"{remaining} min remaining"
-                    )
+                    ), "LOSS_COOLDOWN"
             except Exception as exc:
                 log.warning(
                     "[%s] Could not parse last_loss closed_at for %s: %s",
@@ -186,9 +184,9 @@ def _check_risk_limits_for_table(
         # 6. Account-level consecutive-loss circuit breaker (FIX #11)
         ok, reason = _check_consecutive_loss_breaker(conn, trades_table, label)
         if not ok:
-            return False, reason
+            return False, reason, "CIRCUIT_BREAKER"
 
-    return True, "OK"
+    return True, "OK", "OK"
 
 
 def check_risk_limits(symbol: str, setup_type: str | None = None) -> tuple[bool, str]:
@@ -198,7 +196,8 @@ def check_risk_limits(symbol: str, setup_type: str | None = None) -> tuple[bool,
 
     setup_type is accepted for call-site compatibility but not used in checks.
     """
-    return _check_risk_limits_for_table(symbol, "paper_trades", "paper")
+    allowed, reason, _ = _check_risk_limits_for_table(symbol, "paper_trades", "paper")
+    return allowed, reason
 
 
 def check_live_risk_limits(symbol: str) -> tuple[bool, str]:
@@ -215,4 +214,5 @@ def check_live_risk_limits(symbol: str) -> tuple[bool, str]:
 
     Return (allowed: bool, reason: str).
     """
-    return _check_risk_limits_for_table(symbol, "live_trades", "live")
+    allowed, reason, _ = _check_risk_limits_for_table(symbol, "live_trades", "live")
+    return allowed, reason

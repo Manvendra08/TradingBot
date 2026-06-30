@@ -1,122 +1,54 @@
-# NSEBOT Documentation
+# NSEBOT Documentation Index
 
-> **Last Updated:** June 22, 2026 | **Method:** Adaptive Graph of Thoughts (AGoT)
-
----
-
-## 🚀 Quick Start for AI Sessions
-
-**Read in this order:**
-
-1. **[AGoT Playbook](AGoT-playbook.md)** ⭐ — Read FIRST. Reasoning framework, decision trees, debugging guide.
-2. **[Architecture](architecture.md)** — System structure, module responsibilities, data flow, configuration.
-3. **[Order Flow](order-flow.md)** — Signal generation → execution path, state machine, error handling.
-4. **[Options Engine](strategies/options-engine.md)** — Options-specific logic, strike selection, timeframe strategy.
+Welcome to the official documentation for the **NSEBOT** algorithmic trading system. This directory contains all necessary context for AI agents and developers to understand, maintain, and optimize the bot.
 
 ---
 
-## 📚 Documentation Index
+## 🚀 Quick Start Guide
 
-| Document | Lines | Purpose | When to Read |
-|----------|-------|---------|--------------|
-| [AGoT Playbook](AGoT-playbook.md) | 658 | Reasoning framework, decision trees, debugging | **Every session start** |
-| [Architecture](architecture.md) | 389 | System design, modules, data flow, config | Understanding structure |
-| [Order Flow](order-flow.md) | 587 | Signal → execution path, state machine | Understanding runtime |
-| [Options Engine](strategies/options-engine.md) | 562 | Options logic, strike selection, timeframe | Options-specific work |
-
----
-
-## 🗂️ File Structure
-
-```
-docs/
-├── README.md                          ← You are here
-├── AGoT-playbook.md                   ← ⭐ Read FIRST
-├── architecture.md                    ← System architecture
-├── order-flow.md                      ← Signal to execution
-└── strategies/
-    └── options-engine.md              ← Options-specific logic
-```
+1.  **For New AI Sessions:** Start by reading `AGoT-playbook.md` to understand the reasoning framework and session startup checklist.
+2.  **For System Architecture:** Read `ARCHITECTURE.md` to understand module responsibilities and data flow.
+3.  **For Trading Logic:** Read `TRADING_STRATEGY.md` to understand entry/exit criteria and risk management.
+4.  **For Order Execution:** Read `order-flow.md` to understand the state machine and error handling.
+5.  **For Options Specifics:** Read `strategies/options-engine.md` for strike selection and premium management.
 
 ---
 
-## 🔑 Key Concepts
+## 📂 Document Map
 
-### Pipeline Flow
-```
-Fetch → Detect Anomalies → Dedup → Intelligence → LLM Enrich
-→ Trade Decision → Risk Check → Plan → Execute → Monitor → Alert
-```
-
-### Trade Decision Modes
-| Mode | Description |
-|------|-------------|
-| `conservative` | Trend persistence only |
-| `balanced` | Momentum scoring |
-| `aggressive` | Reversal detection |
-| `hybrid` (default) | All strategies in priority order |
-
-### AI Integration Modes
-| Mode | Description |
-|------|-------------|
-| `advisory` (default) | Log + display only |
-| `boost_only` | Promotes BLOCKED → EXPERIMENTAL |
-| `full` | Can boost AND veto trades |
-
-### Execution Modes
-| Mode | Description |
-|------|-------------|
-| Paper Trading | Simulated orders, safe testing |
-| Live Trading | Real broker orders, requires setup |
+| File | Description |
+| :--- | :--- |
+| **[AGoT-playbook.md](./AGoT-playbook.md)** | The "Brain" of the project. Contains decision trees, debugging guides, and key thresholds. |
+| **[ARCHITECTURE.md](./ARCHITECTURE.md)** | High-level system design, broker integrations, and technical debt status. |
+| **[TRADING_STRATEGY.md](./TRADING_STRATEGY.md)** | Detailed explanation of the Price × OI matrix and risk engine logic. |
+| **[order-flow.md](./order-flow.md)** | Step-by-step lifecycle of a trade from signal to execution. |
+| **[strategies/options-engine.md](./strategies/options-engine.md)** | Specialized logic for options strike selection and timeframe strategies. |
+| **[CLEANUP_REPORT.md](./CLEANUP_REPORT.md)** | History of recent high-priority maintenance and file consolidation. |
 
 ---
 
-## ⚙️ Configuration Quick Reference
+## ⚙️ Key Configuration Files
 
-### Environment Variables (`.env`)
-```bash
-ACTIVE_BROKER=zerodha
-AI_DECISION_MODE=advisory
-PAPER_RESEARCH_MODE=true
-DISABLE_LLM_ENRICHMENT=false
-```
-
-### Runtime Config (`data/runtime_config.json`)
-```json
-{
-    "live_trading_enabled": false,
-    "live_ai_decision_mode": "advisory",
-    "scan_frequency_nse": 5,
-    "scan_frequency_mcx": 5
-}
-```
+*   `config/settings.py`: Global thresholds (Confidence floors, Risk limits, Market hours).
+*   `config/runtime_config.json`: User-adjustable settings via the Dashboard UI.
+*   `.env`: Sensitive credentials (Broker API keys, Telegram tokens, LLM API keys).
 
 ---
 
-## 🧪 Testing
+## 🛠️ Operational Commands
 
-```bash
-# All tests
-pytest tests/
-
-# Critical tests (must pass before live trading)
-pytest tests/test_live_trading_p0.py -v
-
-# Risk engine validation
-pytest tests/test_risk_metrics.py -v
-```
+*   **Start Bot:** `python src/engine/main.py`
+*   **Start Dashboard:** `streamlit run src/dashboard/app.py`
+*   **Run Tests:** `pytest tests/ -v`
+*   **Cleanup Tools:** `python tools/cleanup_high_priority.py`
 
 ---
 
-## 📞 Support
+## 🤝 Contributing & Maintenance
 
-For issues not covered in documentation:
-1. Check `logs/main.log` for recent errors
-2. Use decision trees in [AGoT Playbook](AGoT-playbook.md)
-3. Review known failure modes in [AGoT Playbook](AGoT-playbook.md#5-known-failure-modes--mitigations)
+When making changes to the codebase:
+1.  Always update the relevant documentation in this `docs/` folder.
+2.  Ensure new features pass the existing test suite in `tests/`.
+3.  Use the AGoT framework to evaluate trade-offs before implementing complex logic.
 
----
-
-**Total Documentation:** 2,196 lines across 4 files
-**Analysis Method:** Adaptive Graph of Thoughts (AGoT)
-**Generated:** June 22, 2026
+*Last Updated: June 29, 2026*

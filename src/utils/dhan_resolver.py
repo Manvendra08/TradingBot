@@ -135,7 +135,7 @@ def get_dhan_security_id(symbol: str, target_expiry: str | None = None) -> int |
     symbol = symbol.upper().split()[0]
     
     # Non-commodities (indices) are static and never change
-    if symbol in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"):
+    if symbol in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"):
         return DHAN_SECURITY_IDS.get(symbol)
         
     target_year = None

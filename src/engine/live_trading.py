@@ -994,16 +994,21 @@ def _run_live_trading_legacy(
         "option_rows": option_rows,
     }
     decision = make_trade_decision(symbol, intel, ctx, ai_verdict=ai_verdict)
+    audit_row_id = decision.get("audit_row_id")
     if decision["status"] == "BLOCKED":
         return {"action": "BLOCKED_DECISION", "reason": decision["reason"]}
 
     risk_ok, risk_reason = check_live_risk_limits(symbol, decision.get("setup_type"))
     if not risk_ok:
+        from src.engine.decision_audit import update_decision_audit
+        update_decision_audit(audit_row_id, action="SKIP", block_step="risk", block_reason=risk_reason)
         log.info("%s: live trade blocked by risk engine — %s", symbol, risk_reason)
         return {"action": "BLOCKED_RISK", "reason": risk_reason}
 
     plan = _trade_plan_from_verdict(verdict, confidence, ctx)
     if not plan:
+        from src.engine.decision_audit import update_decision_audit
+        update_decision_audit(audit_row_id, action="SKIP", block_step="signal", block_reason="No valid trade plan")
         return {"action": "BLOCKED_PLAN", "reason": "No valid trade plan"}
 
     entry_premium = plan["entry_premium"]
@@ -1019,6 +1024,8 @@ def _run_live_trading_legacy(
     exchange = _get_exchange(symbol)
     resolved = resolve_instrument(symbol, expiry, plan["strike"], plan["option_type"])
     if not resolved or not resolved.get("tradingsymbol"):
+        from src.engine.decision_audit import update_decision_audit
+        update_decision_audit(audit_row_id, action="SKIP", block_step="signal", block_reason="Failed to resolve Kite tradingsymbol")
         log.error(
             "%s: failed to resolve Kite tradingsymbol, skipping live entry", symbol
         )
@@ -1045,12 +1052,16 @@ def _run_live_trading_legacy(
             tick_size=resolved.get("tick_size", 0.05) if resolved else 0.05,
         )
     except Exception as e:
+        from src.engine.decision_audit import update_decision_audit
+        update_decision_audit(audit_row_id, action="SKIP", block_step="risk", block_reason=f"Order placement failed: {e}")
         log.error("%s: failed to place live order, skipping DB entry", symbol)
         return {"action": "BLOCKED_ORDER_FAILED", "reason": str(e)}
 
     # Verify order fill
     broker_status, broker_message = confirm_order_fill(kite, order_id, shadow_mode)
     if broker_status in ("REJECTED", "CANCELLED"):
+        from src.engine.decision_audit import update_decision_audit
+        update_decision_audit(audit_row_id, action="SKIP", block_step="risk", block_reason=f"Order {broker_status.lower()}: {broker_message}")
         log.error(
             "%s: live order placed but got %s: %s",
             symbol,
@@ -1145,13 +1156,16 @@ def _run_live_trading_legacy(
     }
 
     inserted_id = insert_live_trade(trade_data)
+    from src.engine.decision_audit import update_decision_audit
     if not inserted_id:
         log.warning(
             "%s: live trade INSERT skipped — duplicate signal_key=%s",
             symbol,
             signal_key,
         )
+        update_decision_audit(audit_row_id, action="SKIP", block_step="signal", block_reason="duplicate signal key")
         return {"action": "DEDUP_SKIPPED", "reason": "duplicate signal key"}
+    update_decision_audit(audit_row_id, action="TRADE", trade_id=inserted_id)
 
     # Notify Telegram
     from src.alerts.telegram_dispatcher import send_text

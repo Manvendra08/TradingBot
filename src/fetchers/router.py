@@ -1,5 +1,6 @@
 """
-Fetcher Router — tries sources in FETCHER_PRIORITY order.
+Fetcher Router — tries sources in per-symbol priority order
+(defined by _priority_for()).
 Returns first successful result; logs fallback events.
 
 Thread-safety: _instances dict is guarded by _lock so APScheduler concurrent
@@ -9,7 +10,7 @@ jobs cannot create duplicate fetcher instances.
 import logging
 import threading
 
-from config.settings import FETCHER_PRIORITY, STRIKES_AROUND_ATM
+from config.settings import STRIKES_AROUND_ATM
 from src.fetchers.dhan_commodity_fetcher import DhanCommodityFetcher
 from src.fetchers.dhan_fetcher import DhanFetcher
 from src.fetchers.dhan_sensex_fetcher import DhanSensexFetcher
@@ -61,6 +62,14 @@ _lock = threading.Lock()
 
 
 def _get_fetcher(name: str):
+    # Shoonya must use the process-wide singleton so that the token obtained
+    # by the router, chart_fetcher, or any other caller is shared. Otherwise
+    # each caller creates its own ShoonyaFetcher instance with its own cached
+    # token, causing duplicate OAuth logins and premature session expiry.
+    if name == "shoonya":
+        from src.fetchers.shoonya_fetcher import get_shoonya_fetcher
+
+        return get_shoonya_fetcher()
     with _lock:
         if name not in _instances:
             _instances[name] = _FETCHERS[name]()
@@ -157,6 +166,9 @@ def fetch_option_chain(symbol: str, expiry: str | None = None) -> dict | None:
     Try fetchers in configured priority order.
     Returns normalised dict or None if all fail.
     """
+    priority = _priority_for(symbol)
+    log.info("[router] %s option-chain | trying: %s", symbol, " → ".join(priority))
+
     if symbol == "TEST_SYM":
         return {
             "symbol": "TEST_SYM",
@@ -173,7 +185,7 @@ def fetch_option_chain(symbol: str, expiry: str | None = None) -> dict | None:
             "all_expiries": ["2026-06-25", "2026-07-02"],
         }
 
-    for source in _priority_for(symbol):
+    for source in priority:
         if source not in _FETCHERS:
             log.warning("Fetcher '%s' unavailable; skipping", source)
             continue
@@ -184,9 +196,9 @@ def fetch_option_chain(symbol: str, expiry: str | None = None) -> dict | None:
                 base = str(result.get("symbol") or symbol).upper().split()[0]
                 if base in _MCX_COMMODITIES and not result.get("underlying_price"):
                     log.warning(
-                        "Fetcher '%s' returned MCX data without ATM/underlying for %s; continuing to fallback",
-                        source,
+                        "[router] %s | %-12s returned MCX data without underlying price — skipping",
                         symbol,
+                        source,
                     )
                     continue
 
@@ -194,19 +206,33 @@ def fetch_option_chain(symbol: str, expiry: str | None = None) -> dict | None:
                 total_ltp = sum(s.get("ltp") or 0 for s in result["strikes"])
                 if total_oi == 0 and total_ltp == 0:
                     log.warning(
-                        "Fetcher '%s' returned zero-filled strikes for %s; continuing to fallback",
-                        source,
+                        "[router] %s | %-12s returned zero-filled strikes — skipping",
                         symbol,
+                        source,
                     )
                     continue
 
-                if source != FETCHER_PRIORITY[0]:
-                    log.debug("Fallback active: using '%s' for %s", source, symbol)
-
                 # Filter to ATM +- configured strike window
                 _filter_atm_strikes(result)
+
+                strikes_count = len(result.get("strikes", []))
+                underlying = result.get("underlying_price", 0)
+                expiry_used = result.get("expiry", "?")
+                is_fallback = source != priority[0]
+                prefix = "FALLBACK " if is_fallback else ""
+                log.info(
+                    "[router] %s | ✅ %s%-12s | price=%-10.2f expiry=%s strikes=%d",
+                    symbol,
+                    prefix,
+                    source,
+                    underlying,
+                    expiry_used,
+                    strikes_count,
+                )
                 return result
+            else:
+                log.debug("[router] %s | %-12s returned no data", symbol, source)
         except Exception as exc:
-            log.error("Fetcher '%s' raised exception for %s: %s", source, symbol, exc)
-    log.error("ALL fetchers failed for symbol: %s", symbol)
+            log.error("[router] %s | %-12s raised exception: %s", symbol, source, exc)
+    log.error("[router] %s | ❌ ALL fetchers failed", symbol)
     return None

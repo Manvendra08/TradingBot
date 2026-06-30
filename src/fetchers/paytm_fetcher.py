@@ -50,16 +50,37 @@ class PaytmFetcher(BaseFetcher):
             "x-jwt-token": self._jwt_token,
         }
 
-    def _ensure_valid_token(self) -> bool:
+    def _ensure_valid_token(self, force_refresh: bool = False) -> bool:
         """Check/refresh JWT token if needed. Returns True if token available."""
-        if self._token_checked:
+        if self._token_checked and not force_refresh:
             return bool(self._jwt_token)
         self._token_checked = True
 
-        if not self._jwt_token:
-            log.warning("[paytm] JWT token not available — cannot auto-refresh (headless auth disabled for now)")
+        if not self._jwt_token or force_refresh:
+            try:
+                from src.fetchers.paytm_headless_auth import get_paytm_jwt_auto
+                jwt = get_paytm_jwt_auto(force_fresh=force_refresh)
+                if jwt:
+                    self._jwt_token = jwt
+                    return True
+                log.warning("[paytm] JWT token not available — auto-refresh failed")
+            except ImportError:
+                log.warning("[paytm] JWT token not available — cannot auto-refresh (headless auth not imported)")
 
         return bool(self._jwt_token)
+
+    def _api_get(self, url: str, params: dict) -> dict | None:
+        try:
+            r = self.session.get(url, headers=self._auth_headers(), params=params, timeout=15)
+            if r.status_code == 401:
+                log.info("[paytm] 401 Unauthorized, refreshing token...")
+                if self._ensure_valid_token(force_refresh=True):
+                    r = self.session.get(url, headers=self._auth_headers(), params=params, timeout=15)
+            r.raise_for_status()
+            return r.json()
+        except Exception as exc:
+            log.warning("[paytm] API get failed for %s: %s", url, exc)
+            return None
 
     def _refresh_token(self, request_token: str) -> bool:
         """Exchange request_token for JWT. Call once manually, store in .env."""
@@ -92,14 +113,12 @@ class PaytmFetcher(BaseFetcher):
         base = symbol.upper().split()[0]
         segment = _SEGMENT_PATH.get(base, _DEFAULT_SEGMENT)
         try:
-            r = self.session.get(
+            data = self._api_get(
                 f"{BASE_URL}{segment}/option-chain/config",
-                headers=self._auth_headers(),
                 params={"symbol": base},
-                timeout=15,
             )
-            r.raise_for_status()
-            data = r.json()
+            if not data:
+                return []
 
             # Response: {"data": {"exch_symbol": "...", "expires": [timestamp1, ...]}}
             expires_list = data.get("data", {}).get("expires") or []
@@ -168,32 +187,28 @@ class PaytmFetcher(BaseFetcher):
         # We must call both CALL and PUT option types and merge them
         try:
             # Fetch CALL options
-            call_res = self.session.get(
+            call_data = self._api_get(
                 f"{BASE_URL}{segment}/option-chain",
-                headers=self._auth_headers(),
                 params={
                     "symbol": base,
                     "expiry": expiry_str,
                     "type": "CALL",
                 },
-                timeout=15,
             )
-            call_res.raise_for_status()
-            call_data = call_res.json()
+            if not call_data:
+                return None
 
             # Fetch PUT options
-            put_res = self.session.get(
+            put_data = self._api_get(
                 f"{BASE_URL}{segment}/option-chain",
-                headers=self._auth_headers(),
                 params={
                     "symbol": base,
                     "expiry": expiry_str,
                     "type": "PUT",
                 },
-                timeout=15,
             )
-            put_res.raise_for_status()
-            put_data = put_res.json()
+            if not put_data:
+                return None
 
         except Exception as exc:
             log.error(

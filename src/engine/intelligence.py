@@ -14,6 +14,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Any
 from src.engine.paper_plan import build_paper_trade_plan, format_paper_plan
 from src.engine.verdict_sets import is_bullish, is_bearish
 from src.models.schema import get_alert_history
@@ -51,6 +52,7 @@ class IntelligenceResult:
     telegram_text: str = ""               # full Telegram-formatted message
     expiry: str = ""
     days_to_expiry: int = -1
+    trade_decision: Any = None
 
 
     # Convenience: dict-like access for backward-compat with callers that do intel["key"]
@@ -1145,13 +1147,14 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
         from src.engine.trade_decision import make_trade_decision
         from src.engine.risk_engine import check_risk_limits
         
+        decision = None
         decision_ctx = _ctx_copy(ctx)
         decision_ctx.update(symbol=symbol, expiry=ctx.get("expiry", ""))
         decision = make_trade_decision(symbol, {
             "verdict_label": verdict_label,
             "confidence": confidence,
             "chart_conflict": chart_conflict,
-        }, decision_ctx, ai_verdict=ai_verdict, suppress_logs=True)
+        }, decision_ctx, ai_verdict=ai_verdict, suppress_logs=False)
         
         risk_ok, risk_reason = check_risk_limits(symbol)
         
@@ -1251,6 +1254,7 @@ def generate_intelligence(symbol: str, current_alerts: list[dict],
         telegram_text="\n".join(msg),
         expiry=expiry,
         days_to_expiry=days_to_expiry,
+        trade_decision=decision,
     )
 
 

@@ -17,13 +17,14 @@ import logging
 import os
 import re
 import threading
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
 import pyotp
 
-from config.settings import _optional_env
+from config.settings import STRIKES_AROUND_ATM, _optional_env
 from src.fetchers.base_fetcher import BaseFetcher
 
 log = logging.getLogger(__name__)
@@ -61,19 +62,29 @@ def _sha256(text: str) -> str:
 def _post_jdata(
     url: str, payload: dict, access_token: str | None = None
 ) -> dict | None:
-    """POST jData= encoded payload, return parsed JSON or None."""
+    """POST jData= encoded payload, return parsed JSON or None.
+
+    Cleans payload structures to pass authorization details via standard form
+    bodies instead of conflicting Bearer headers, resolving the duplicate-auth bug.
+    """
     body_str = "jData=" + json.dumps(payload, separators=(",", ":"))
     if access_token:
         body_str += f"&jKey={access_token}"
-    body = body_str.encode()
-    headers: dict[str, str] = {"Content-Type": "application/x-www-form-urlencoded"}
+    body = body_str.encode("utf-8")
+    headers: dict[str, str] = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "Mozilla/5.0"
+    }
     req = urllib.request.Request(url, data=body, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
         raw = e.read().decode()
-        log.error("[shoonya] POST %s -> HTTP %s: %s", url, e.code, raw[:200])
+        if "Session Expired" in raw:
+            log.info("[shoonya] POST %s -> Session Expired (HTTP %s)", url, e.code)
+        else:
+            log.error("[shoonya] POST %s -> HTTP %s: %s", url, e.code, raw[:200])
         try:
             return json.loads(raw)
         except Exception:
@@ -83,19 +94,60 @@ def _post_jdata(
         return None
 
 
+def _read_shared_token_file(filepath: str) -> dict | None:
+    import json
+    import time
+
+    for _ in range(10):
+        try:
+            if not os.path.exists(filepath):
+                return None
+            with open(filepath, "r") as f:
+                return json.load(f)
+        except (PermissionError, OSError, json.JSONDecodeError):
+            time.sleep(0.05)
+    return None
+
+
+def _write_shared_token_file(filepath: str, data: dict) -> bool:
+    import json
+    import time
+
+    temp_filepath = filepath + ".tmp"
+    for _ in range(10):
+        try:
+            os.makedirs(os.path.dirname(filepath), exist_ok=True)
+            with open(temp_filepath, "w") as f:
+                json.dump(data, f)
+            if os.path.exists(filepath):
+                os.remove(filepath)
+            os.rename(temp_filepath, filepath)
+            return True
+        except (PermissionError, OSError):
+            time.sleep(0.05)
+            try:
+                if os.path.exists(temp_filepath):
+                    os.remove(temp_filepath)
+            except Exception:
+                pass
+    return False
+
+
 class ShoonyaFetcher(BaseFetcher):
     name = "shoonya"
-    # Cache path: project_root/scratch/shoonya_token.txt
-    # __file__ = src/fetchers/shoonya_fetcher.py → 3 dirname up = project root
-    _TOKEN_CACHE = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-        "scratch",
-        "shoonya_token.txt",
+    # Shared Shoonya token JSON file in NSEBOT root folder
+    _TOKEN_CACHE = "C:/Users/manve/Downloads/NSEBOT/shoonya_shared_token.json"
+    _TOKEN_REFRESH_INTERVAL = (
+        50400  # seconds (14 hours — session token is valid all day)
     )
+
+    # Token lifetimes are long (24h+ for Shoonya OAuth).  Genuine expiry is
+    # handled by the Session Expired retry mechanism in _api_call().
 
     def __init__(self):
         super().__init__()
         self.access_token: str | None = None
+        self._token_created_at: float = 0.0  # monotonic time when token was obtained
 
         self.user_id = _optional_env("SHOONYA_USER_ID")
         self.password = _optional_env("SHOONYA_PASSWORD")
@@ -108,6 +160,12 @@ class ShoonyaFetcher(BaseFetcher):
         # Cache for resolved MCX futures tokens: symbol -> (token, exchange, expires_at)
         self._futures_token_cache: dict[str, tuple[str, str, float]] = {}
 
+        self._login_lock = threading.RLock()
+        # Serialises Shoonya API calls so token rotation from one call's response
+        # is saved before the next call reads `access_token`.  Eliminates the race
+        # that caused "Session Expired" after ~1-2 calls under concurrent MCX fetches.
+        self._api_lock = threading.Lock()
+
         # Try to load cached token to avoid repeated OAuth browser launches.
         self._load_cached_token()
 
@@ -118,55 +176,75 @@ class ShoonyaFetcher(BaseFetcher):
         """Persist the current access_token to disk."""
         if not self.access_token:
             return
-        try:
-            os.makedirs(os.path.dirname(self._TOKEN_CACHE), exist_ok=True)
-            with open(self._TOKEN_CACHE, "w") as f:
-                f.write(self.access_token.strip())
+        data = {
+            "susertoken": self.access_token,
+            "access_token": self.access_token,
+            "userid": self.user_id,
+            "last_updated": self._token_created_at,
+        }
+        if _write_shared_token_file(self._TOKEN_CACHE, data):
             log.debug("[shoonya] token cached to %s", self._TOKEN_CACHE)
-        except Exception as exc:
-            log.warning("[shoonya] failed to cache token: %s", exc)
+        else:
+            log.warning("[shoonya] failed to cache token: %s", self._TOKEN_CACHE)
 
     def _load_cached_token(self) -> None:
         """Load a previously cached access_token from disk."""
-        try:
-            if os.path.exists(self._TOKEN_CACHE):
-                with open(self._TOKEN_CACHE, "r") as f:
-                    token = f.read().strip()
-                if token:
-                    self.access_token = token
-                    log.debug(
-                        "[shoonya] loaded cached token from %s", self._TOKEN_CACHE
-                    )
-        except Exception as exc:
-            log.debug("[shoonya] no cached token: %s", exc)
-            self.access_token = None
+        data = _read_shared_token_file(self._TOKEN_CACHE)
+        if data and isinstance(data, dict):
+            token = data.get("susertoken") or data.get("access_token")
+            if token:
+                self.access_token = token
+                self._token_created_at = data.get("last_updated", time.time())
+                log.debug("[shoonya] loaded cached token from %s", self._TOKEN_CACHE)
 
     def _clear_cached_token(self) -> None:
         """Remove the cached token file (e.g. after expiry)."""
         self.access_token = None
-        try:
-            if os.path.exists(self._TOKEN_CACHE):
-                os.remove(self._TOKEN_CACHE)
-                log.debug("[shoonya] cleared cached token")
-        except Exception as exc:
-            log.warning("[shoonya] failed to clear cached token: %s", exc)
+        for _ in range(10):
+            try:
+                if os.path.exists(self._TOKEN_CACHE):
+                    os.remove(self._TOKEN_CACHE)
+                    log.debug("[shoonya] cleared cached token")
+                break
+            except (PermissionError, OSError):
+                import time
+
+                time.sleep(0.05)
 
     def _verify_token(self) -> bool:
         """Quick lightweight check: does the cached token still work?
         Uses SearchScrip on a known symbol (minimal overhead) instead of
-        launching a full OAuth browser."""
+        launching a full OAuth browser.
+
+        Only clears the cached token if the API explicitly returned
+        "Session Expired", not on generic network errors."""
         import urllib.parse
 
-        res = self._api_call(
-            "SearchScrip",
-            {"exch": "NFO", "stext": urllib.parse.quote_plus("NIFTY")},
-        )
-        if res and res.get("stat") == "Ok":
-            log.debug("[shoonya] cached token is still valid")
-            return True
-        log.info("[shoonya] cached token expired or invalid — will re-authenticate")
-        self._clear_cached_token()
-        return False
+        try:
+            res = self._api_call(
+                "SearchScrip",
+                {"exch": "NFO", "stext": urllib.parse.quote_plus("NIFTY")},
+                retry_on_expiry=False,
+            )
+            if res and res.get("stat") == "Ok":
+                log.debug("[shoonya] cached token is still valid")
+                return True
+            # Only clear if we got a definitive Session Expired response
+            if res and isinstance(res, dict):
+                emsg = res.get("emsg", "")
+                if "Session Expired" in emsg:
+                    log.info("[shoonya] cached token expired — clearing")
+                    self._clear_cached_token()
+                else:
+                    log.debug("[shoonya] _verify_token non-expiry response: %s", emsg)
+            else:
+                log.debug(
+                    "[shoonya] _verify_token got no response (network error?) — not clearing token"
+                )
+            return False
+        except Exception as exc:
+            log.warning("[shoonya] _verify_token error: %s", exc)
+            return False
 
     # ------------------------------------------------------------------
     # Authentication — Playwright OAuth flow
@@ -218,11 +296,11 @@ class ShoonyaFetcher(BaseFetcher):
                 )
 
                 # Step 1: Navigate — will redirect to /investor-entry-level/login
-                page.goto(authorize_url, wait_until="commit")
+                page.goto(authorize_url, wait_until="commit", timeout=15000)
                 log.debug("[shoonya] Landed on: %s", page.url)
 
-                # Wait for React to render the login form (allow up to 60s for 9.5MB JS load)
-                page.wait_for_selector("#lgnusrid", state="visible", timeout=60000)
+                # Wait for React to render the login form (allow up to 15s for 9.5MB JS load)
+                page.wait_for_selector("#lgnusrid", state="visible", timeout=15000)
 
                 # Generate fresh TOTP right before filling (avoids expiry during navigation)
                 totp = pyotp.TOTP(self.totp_key).now()
@@ -236,7 +314,7 @@ class ShoonyaFetcher(BaseFetcher):
                 try:
                     page.locator("button:has-text('LOGIN')").click()
                     # Step 4: Wait for redirect containing auth_code
-                    page.wait_for_url("*code=*", timeout=45000)
+                    page.wait_for_url("*code=*", timeout=10000)
                 except Exception as click_err:
                     log.debug(
                         "[shoonya] Browser encountered navigation or redirect error: %s",
@@ -274,6 +352,8 @@ class ShoonyaFetcher(BaseFetcher):
             "uid": self.user_id,
             "code": auth_code,
             "checksum": checksum,
+            "source": "API",
+            "imei": "127.0.0.1",
         }
         res = _post_jdata(_TOKEN_URL, payload)
         if not res:
@@ -281,66 +361,193 @@ class ShoonyaFetcher(BaseFetcher):
         if res.get("stat") != "Ok":
             log.error("[shoonya] GenAcsTok failed: %s", res)
             return None
-        token = res.get("access_token") or res.get("susertoken")
+        # Prefer susertoken (legacy session token for jKey auth) over access_token
+        # (OAuth Bearer token). The Noren REST API endpoints (SearchScrip, GetQuotes,
+        # GetOptionChain) authenticate via jKey=susertoken in the POST body.
+        token = res.get("susertoken") or res.get("access_token")
         if not token:
             log.error("[shoonya] GenAcsTok: no token in response: %s", res)
         else:
-            log.debug("[shoonya] GenAcsTok response keys: %s, token length: %d", list(res.keys()), len(token))
+            log.debug(
+                "[shoonya] GenAcsTok response keys: %s, token length: %d",
+                list(res.keys()),
+                len(token),
+            )
         return token
 
     def login(self) -> bool:
-        # If we have a cached token, verify it's still valid with a quick API call.
-        if self.access_token:
-            if self._verify_token():
-                log.debug("[shoonya] reused cached token — skipping OAuth")
+        with self._login_lock:
+            # Load from shared cache first to see if another process updated it
+            self._load_cached_token()
+            # If we have a cached token, trust it and let _api_call() handle expiry.
+            if self.access_token:
+                log.debug("[shoonya] using cached token — skipping OAuth")
                 return True
-            # Token expired; _verify_token already cleared the cache.
 
-        missing = [
-            k
-            for k, v in [
-                ("SHOONYA_USER_ID", self.user_id),
-                ("SHOONYA_PASSWORD", self.password),
-                ("SHOONYA_TOTP_KEY", self.totp_key),
-                ("SHOONYA_API_SECRET", self.secret_code),
+            missing = [
+                k
+                for k, v in [
+                    ("SHOONYA_USER_ID", self.user_id),
+                    ("SHOONYA_PASSWORD", self.password),
+                    ("SHOONYA_TOTP_KEY", self.totp_key),
+                    ("SHOONYA_API_SECRET", self.secret_code),
+                ]
+                if not v
             ]
-            if not v
-        ]
-        if missing:
-            log.warning("[shoonya] missing credentials: %s — skipping", missing)
-            return False
+            if missing:
+                log.warning("[shoonya] missing credentials: %s — skipping", missing)
+                return False
 
-        try:
-            auth_code = self._get_auth_code_playwright()
-            if not auth_code:
-                log.error("[shoonya] Failed to obtain auth_code")
+            try:
+                auth_code = self._get_auth_code_playwright()
+                if not auth_code:
+                    log.error("[shoonya] Failed to obtain auth_code")
+                    return False
+                log.info("[shoonya] Exchanging auth_code for access_token...")
+                token = self._exchange_for_token(auth_code)
+                if not token:
+                    return False
+                self.access_token = token
+                self._token_created_at = time.time()
+                self._save_token()
+                log.info("[shoonya] OAuth login successful")
+                return True
+            except Exception as exc:
+                log.exception("[shoonya] login exception: %s", exc)
                 return False
-            log.info("[shoonya] Exchanging auth_code for access_token...")
-            token = self._exchange_for_token(auth_code)
-            if not token:
-                return False
-            self.access_token = token
-            self._save_token()
-            log.info("[shoonya] OAuth login successful")
-            return True
-        except Exception as exc:
-            log.exception("[shoonya] login exception: %s", exc)
-            return False
 
     # ------------------------------------------------------------------
     # API helpers (Bearer auth)
     # ------------------------------------------------------------------
 
-    def _api_call(self, endpoint: str, payload: dict) -> dict | None:
+    def _api_call(
+        self, endpoint: str, payload: dict, retry_on_expiry: bool = True
+    ) -> dict | None:
+        # Acquire the serialisation lock so concurrent callers (e.g. MCX
+        # ThreadPoolExecutor) never race on token rotation.  Each call
+        # completes — including token save — before the next starts.
+        with self._api_lock:
+            return self._api_call_impl(endpoint, payload, retry_on_expiry)
+
+    def _api_call_impl(
+        self, endpoint: str, payload: dict, retry_on_expiry: bool = True
+    ) -> dict | None:
         payload.setdefault("uid", self.user_id)
-        log.debug("[shoonya] API call to %s with uid=%s, token_len=%d", endpoint, self.user_id, len(self.access_token or ""))
-        return _post_jdata(f"{_API_BASE}/{endpoint}", payload, self.access_token)
+
+        # Reload the token from the shared JSON file to ensure we use the latest rotated token
+        self._load_cached_token()
+
+        # If token is cleared/None, login first to avoid guaranteed 401 response
+        if not self.access_token:
+            if not self.login():
+                return None
+
+        log.debug(
+            "[shoonya] API call to %s with uid=%s, token_len=%d",
+            endpoint,
+            self.user_id,
+            len(self.access_token or ""),
+        )
+        res = _post_jdata(f"{_API_BASE}/{endpoint}", payload, self.access_token)
+
+        if res and isinstance(res, dict):
+            log.debug("[shoonya] %s response keys: %s", endpoint, list(res.keys()))
+
+        # ── Extract fresh token from response ──────────────────────────────────
+        # Shoonya rotates the session token on every successful API response.
+        # If we don't extract the new token, the next call will use a stale
+        # token and get "Session Expired (HTTP 401)".
+        if res and isinstance(res, dict) and res.get("stat") == "Ok":
+            fresh_token = (
+                res.get("susertoken")
+                or res.get("access_token")
+                or res.get("uname")  # Some Shoonya endpoints return token as uname
+            )
+            if fresh_token and fresh_token != self.access_token:
+                log.debug(
+                    "[shoonya] Token rotated on %s (len: %d → %d)",
+                    endpoint,
+                    len(self.access_token or ""),
+                    len(fresh_token),
+                )
+                self.access_token = fresh_token
+                self._token_created_at = time.time()
+                self._save_token()
+
+        is_expired = False
+        if res and isinstance(res, dict):
+            if res.get("stat") == "Not_Ok" and "Session Expired" in res.get("emsg", ""):
+                is_expired = True
+
+        if is_expired:
+            log.warning(
+                "[shoonya] Session expired on endpoint %s. Reloading shared token...",
+                endpoint,
+            )
+            old_token = self.access_token
+            self._load_cached_token()
+
+            # If the shared token was updated by another process, retry once with the new token
+            if self.access_token and self.access_token != old_token:
+                log.info(
+                    "[shoonya] Retrying API call to %s with newly loaded shared token...",
+                    endpoint,
+                )
+                res = _post_jdata(f"{_API_BASE}/{endpoint}", payload, self.access_token)
+                if res and isinstance(res, dict):
+                    # Handle successful retry token rotation
+                    if res.get("stat") == "Ok":
+                        fresh_token = res.get("susertoken") or res.get("access_token")
+                        if fresh_token and fresh_token != self.access_token:
+                            self.access_token = fresh_token
+                            self._token_created_at = time.time()
+                            self._save_token()
+                        return res
+                    is_expired = res.get(
+                        "stat"
+                    ) == "Not_Ok" and "Session Expired" in res.get("emsg", "")
+
+            if is_expired:
+                log.warning(
+                    "[shoonya] Token still expired. Clearing and performing login..."
+                )
+                self._clear_cached_token()
+                if retry_on_expiry:
+                    log.info(
+                        "[shoonya] Retrying API call to %s after re-authentication...",
+                        endpoint,
+                    )
+                    if self.login():
+                        # ═══════════════════════════════════════════════════════
+                        # FIX: Extract rotated token from retry response too.
+                        # Without this, the new token from the retry call would be
+                        # consumed but not saved, making the very next call fail
+                        # with "Session Expired".
+                        # ═══════════════════════════════════════════════════════
+                        res = _post_jdata(
+                            f"{_API_BASE}/{endpoint}", payload, self.access_token
+                        )
+                        self._increment_and_save_call_count()
+                        if res and isinstance(res, dict) and res.get("stat") == "Ok":
+                            fresh_token = res.get("susertoken") or res.get(
+                                "access_token"
+                            )
+                            if fresh_token and fresh_token != self.access_token:
+                                self.access_token = fresh_token
+                                self._token_created_at = time.time()
+                                self._save_token()
+                        return res
+        return res
 
     def _search_scrip(self, exchange: str, searchtext: str) -> dict | None:
         import urllib.parse
 
         quoted = urllib.parse.quote_plus(searchtext)
-        return self._api_call("SearchScrip", {"exch": exchange, "stext": quoted})
+        return self._api_call(
+            "SearchScrip",
+            {"exch": exchange, "stext": quoted},
+            retry_on_expiry=True,
+        )
 
     def _get_quotes(self, exchange: str, token: str) -> dict | None:
         return self._api_call("GetQuotes", {"exch": exchange, "token": token})
@@ -387,7 +594,8 @@ class ShoonyaFetcher(BaseFetcher):
                 or not search_res.get("values")
             ):
                 log.warning(
-                    "[shoonya] resolve_futures_token: SearchScrip failed for %s", base_symbol
+                    "[shoonya] resolve_futures_token: SearchScrip failed for %s",
+                    base_symbol,
                 )
                 return None
 
@@ -398,14 +606,17 @@ class ShoonyaFetcher(BaseFetcher):
                     continue
                 if val.get("instname") != "FUTCOM":
                     continue
-                pattern = rf"^{re.escape(base_symbol)}\d{{2}}[A-Z]{{3}}(?:\d{{2}}F?|FUT)?$"
+                pattern = (
+                    rf"^{re.escape(base_symbol)}\d{{2}}[A-Z]{{3}}(?:\d{{2}}F?|FUT)?$"
+                )
                 if re.match(pattern, tsym):
                     futures.append(val)
 
             if not futures and search_res.get("values"):
                 # Fallback: any FUTCOM for this symbol
                 futures = [
-                    v for v in search_res["values"]
+                    v
+                    for v in search_res["values"]
                     if v.get("instname") == "FUTCOM"
                     and "CE" not in v.get("tsym", "").upper()
                     and "PE" not in v.get("tsym", "").upper()
@@ -413,7 +624,8 @@ class ShoonyaFetcher(BaseFetcher):
 
             if not futures:
                 log.warning(
-                    "[shoonya] resolve_futures_token: no FUTCOM contracts found for %s", base_symbol
+                    "[shoonya] resolve_futures_token: no FUTCOM contracts found for %s",
+                    base_symbol,
                 )
                 return None
 
@@ -422,7 +634,11 @@ class ShoonyaFetcher(BaseFetcher):
             if not token:
                 return None
 
-            self._futures_token_cache[base_symbol] = (token, "MCX", _time.time() + 21600)
+            self._futures_token_cache[base_symbol] = (
+                token,
+                "MCX",
+                _time.time() + 21600,
+            )
             log.info(
                 "[shoonya] resolved futures token for %s: %s (tsym=%s)",
                 base_symbol,
@@ -432,7 +648,9 @@ class ShoonyaFetcher(BaseFetcher):
             return ("MCX", token)
 
         except Exception as exc:
-            log.warning("[shoonya] resolve_futures_token failed for %s: %s", base_symbol, exc)
+            log.warning(
+                "[shoonya] resolve_futures_token failed for %s: %s", base_symbol, exc
+            )
             return None
 
     def fetch_candles(
@@ -447,9 +665,14 @@ class ShoonyaFetcher(BaseFetcher):
         Fetch OHLC candle data via GetTimePriceSeries.
         Returns a list of bar dicts with keys: Open, High, Low, Close, _ts (epoch seconds).
         Returns None if the API call fails or returns no data.
+
+        Includes retry logic for temporary network/gateway errors (HTTP 502, 503, 504, timeouts)
+        and session expiry.
         """
-        if not self.login():
-            return None
+        import time
+
+        max_attempts = 3
+        delay = 1.5
 
         payload = {
             "uid": self.user_id,
@@ -460,69 +683,181 @@ class ShoonyaFetcher(BaseFetcher):
             "intrv": str(interval_minutes),
         }
         url = "https://api.shoonya.com/NorenWClientTP/TPSeries"
-        try:
-            body_str = "jData=" + json.dumps(payload, separators=(",", ":"))
-            body_str += f"&jKey={self.access_token}"
-            body = body_str.encode()
-            req = urllib.request.Request(
-                url,
-                data=body,
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-            )
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                raw = json.loads(resp.read().decode())
-        except urllib.error.HTTPError as e:
-            raw_body = e.read().decode()
-            log.warning(
-                "[shoonya] TPSeries HTTP %s for %s %s: %s",
-                e.code, exchange, token, raw_body[:200],
-            )
-            return None
-        except Exception as exc:
-            log.warning(
-                "[shoonya] TPSeries failed %s %s: %s", exchange, token, exc
-            )
-            return None
 
-        # Handle auth-failure response (single dict with stat != Ok)
-        if isinstance(raw, dict):
-            emsg = raw.get("emsg", str(raw))
-            if "session" in emsg.lower() or "token" in emsg.lower() or "invalid" in emsg.lower():
-                log.info("[shoonya] session expired during candle fetch — clearing token cache")
-                self._clear_cached_token()
-            else:
-                log.warning("[shoonya] TPSeries unexpected response: %s", emsg)
-            return None
+        for attempt in range(1, max_attempts + 1):
+            # Acquire the same serialisation lock as _api_call() so token
+            # state is never mutated by _api_call while fetch_candles runs,
+            # and vice versa.
+            with self._api_lock:
+                if not self.login():
+                    log.warning("[shoonya] Candle fetch aborted: Login failed")
+                    return None
 
-        if not isinstance(raw, list):
-            log.warning("[shoonya] TPSeries: unexpected response type %s", type(raw))
-            return None
+                # ── Proactively refresh if token nearing expiry ──────────────────
+                if (
+                    self._token_created_at > 0
+                    and time.time() - self._token_created_at
+                    > self._TOKEN_REFRESH_INTERVAL
+                ):
+                    log.info(
+                        "[shoonya] Token age %.0fs exceeds refresh interval — re-authenticating before candle fetch",
+                        time.time() - self._token_created_at,
+                    )
+                    self._clear_cached_token()
+                    self.login()
 
-        bars: list[dict] = []
-        for item in raw:
-            try:
-                # Shoonya returns: ssboe (bar start epoch), into/inth/intl/intc (OHLC)
-                # Some API versions use 'o'/'h'/'l'/'c' — handle both.
-                ts = float(item.get("ssboe") or item.get("ts") or 0)
-                o = float(item.get("into") or item.get("o") or 0)
-                h = float(item.get("inth") or item.get("h") or 0)
-                l = float(item.get("intl") or item.get("l") or 0)
-                c = float(item.get("intc") or item.get("c") or 0)
-                if ts > 0 and all(x > 0 for x in (o, h, l, c)):
-                    bars.append({"Open": o, "High": h, "Low": l, "Close": c, "_ts": ts})
-            except Exception:
-                continue
+                # Proactively re-auth if approaching the session call quota
+                self._check_session_quota()
 
-        if not bars:
-            log.debug(
-                "[shoonya] GetTimePriceSeries: zero valid bars for %s token=%s", exchange, token
-            )
-            return None
+                # ── Use jKey-only auth (no Bearer header) ──────────────────
+                # Dual auth (jKey + Bearer) was found to double the session
+                # quota burn rate, causing premature Session Expired errors
+                # after ~45-50 effective API calls.  See _post_jdata() docstring.
+                body_str = "jData=" + json.dumps(payload, separators=(",", ":"))
+                body_str += f"&jKey={self.access_token}"
+                body = body_str.encode()
+                headers: dict[str, str] = {
+                    "Content-Type": "application/x-www-form-urlencoded"
+                }
+                req = urllib.request.Request(
+                    url,
+                    data=body,
+                    headers=headers,
+                )
+                try:
+                    with urllib.request.urlopen(req, timeout=15) as resp:
+                        raw = json.loads(resp.read().decode())
+                except urllib.error.HTTPError as e:
+                    raw_body = ""
+                    try:
+                        raw_body = e.read().decode()
+                    except Exception:
+                        pass
 
-        log.debug(
-            "[shoonya] GetTimePriceSeries: %d bars for %s token=%s", len(bars), exchange, token
-        )
-        return bars
+                    log.warning(
+                        "[shoonya] chart-candles HTTP %s for %s token=%s (attempt %d/%d): %s",
+                        e.code,
+                        exchange,
+                        token,
+                        attempt,
+                        max_attempts,
+                        raw_body[:100].strip(),
+                    )
+
+                    # Retry on typical gateway or rate-limiting/server errors
+                    if e.code in (502, 503, 504, 429) and attempt < max_attempts:
+                        # Exit lock so the sleep + retry don't block other callers
+                        pass  # will sleep and continue below
+                    else:
+                        return None
+                except Exception as exc:
+                    log.warning(
+                        "[shoonya] chart-candles failed %s token=%s (attempt %d/%d): %s",
+                        exchange,
+                        token,
+                        attempt,
+                        max_attempts,
+                        exc,
+                    )
+                    if attempt < max_attempts:
+                        pass  # will sleep and continue below
+                    else:
+                        return None
+                else:
+                    # ── Successful HTTP response — process result ────────────
+
+                    # Handle auth-failure response (single dict with stat != Ok)
+                    if isinstance(raw, dict):
+                        emsg = raw.get("emsg", str(raw))
+                        if (
+                            "session" in emsg.lower()
+                            or "token" in emsg.lower()
+                            or "invalid" in emsg.lower()
+                        ):
+                            log.info(
+                                "[shoonya] chart-candles: session expired (attempt %d/%d) — clearing token cache",
+                                attempt,
+                                max_attempts,
+                            )
+                            self._clear_cached_token()
+                            if attempt < max_attempts:
+                                # Re-authenticate on next loop iteration
+                                time.sleep(0.5)
+                                continue
+                        else:
+                            log.warning(
+                                "[shoonya] chart-candles unexpected response: %s", emsg
+                            )
+                        return None
+
+                    if not isinstance(raw, list):
+                        log.warning(
+                            "[shoonya] chart-candles: unexpected response type %s",
+                            type(raw),
+                        )
+                        return None
+
+                    bars: list[dict] = []
+                    for item in raw:
+                        try:
+                            # Shoonya returns: ssboe (bar start epoch), into/inth/intl/intc (OHLC)
+                            # Some API versions use 'o'/'h'/'l'/'c' — handle both.
+                            ts = float(item.get("ssboe") or item.get("ts") or 0)
+                            o = float(item.get("into") or item.get("o") or 0)
+                            h = float(item.get("inth") or item.get("h") or 0)
+                            l = float(item.get("intl") or item.get("l") or 0)
+                            c = float(item.get("intc") or item.get("c") or 0)
+                            if ts > 0 and all(x > 0 for x in (o, h, l, c)):
+                                bars.append(
+                                    {
+                                        "Open": o,
+                                        "High": h,
+                                        "Low": l,
+                                        "Close": c,
+                                        "_ts": ts,
+                                    }
+                                )
+                        except (ValueError, KeyError, TypeError):
+                            continue
+
+                    if not bars:
+                        log.debug(
+                            "[shoonya] GetTimePriceSeries: zero valid bars for %s token=%s",
+                            exchange,
+                            token,
+                        )
+                        return None
+
+                    # ═══════════════════════════════════════════════════════════
+                    # Token rotation: TPSeries returns a list (not a dict with
+                    # susertoken), but the call still counts toward the session
+                    # quota.  Saving the current token at least ensures the
+                    # in-memory / on-disk state matches, preventing drift.
+                    # ═══════════════════════════════════════════════════════════
+                    self._token_created_at = time.time()
+                    self._save_token()
+                    self._increment_and_save_call_count()
+
+                    log.debug(
+                        "[shoonya] GetTimePriceSeries: %d bars for %s token=%s",
+                        len(bars),
+                        exchange,
+                        token,
+                    )
+                    log.info(
+                        "[shoonya] chart-candles | %s token=%s | %d bars fetched",
+                        exchange,
+                        token,
+                        len(bars),
+                    )
+                    return bars
+
+            # If we reach here, an HTTP/gateway error occurred and we should
+            # retry — sleep outside the lock so concurrent callers are not blocked.
+            time.sleep(delay)
+            delay *= 2
+
+        return None
 
     # ------------------------------------------------------------------
     # Public interface
@@ -654,10 +989,23 @@ class ShoonyaFetcher(BaseFetcher):
                 )
                 return None
 
-            try:
-                underlying_price = float(quote.get("lp", 0))
-            except (ValueError, TypeError):
-                underlying_price = 0.0
+            underlying_price = 0.0
+            # Try last traded price ('lp') first, then fall back to close price ('c')
+            for key in ("lp", "c"):
+                try:
+                    val = quote.get(key)
+                    if val is not None:
+                        underlying_price = float(val)
+                        if underlying_price > 0.0:
+                            if key == "c":
+                                log.warning(
+                                    "[shoonya] LTP (lp) is 0/unavailable for %s, falling back to close price (c): %s",
+                                    underlying_tsym,
+                                    underlying_price,
+                                )
+                            break
+                except (ValueError, TypeError):
+                    pass
 
             if underlying_price == 0.0:
                 log.warning("[shoonya] underlying price is 0 for %s", underlying_tsym)
@@ -758,8 +1106,8 @@ class ShoonyaFetcher(BaseFetcher):
                 )
                 atm_idx = unique_strikes.index(atm_strike)
 
-                start_idx = max(0, atm_idx - 15)
-                end_idx = min(len(unique_strikes), atm_idx + 16)
+                start_idx = max(0, atm_idx - STRIKES_AROUND_ATM)
+                end_idx = min(len(unique_strikes), atm_idx + STRIKES_AROUND_ATM + 1)
                 selected_strikes = set(unique_strikes[start_idx:end_idx])
 
                 contracts_to_fetch = [
@@ -932,47 +1280,63 @@ class ShoonyaFetcher(BaseFetcher):
                 log.warning("[shoonya] no contracts for expiry %s", target_expiry_iso)
                 return None
 
+            # ── NSE index: read LTP/OI/IV directly from GetOptionChain items ──────
+            # Shoonya's GetOptionChain response already contains lp, oi, oichg, v, iv,
+            # bp1, sp1 per item.  Previously this code made one _get_quotes() call per
+            # strike (42 calls per symbol), which exhausted the ~45-call session quota
+            # on a single NSE index fetch.  Now we extract these fields directly from the
+            # chain response, eliminating 42 redundant API calls per NSE symbol.
+            #
+            # If any item is missing critical fields, we fall back to _get_quotes()
+            # for that specific strike only (not all 42).
             strikes = []
             for item in target_scrips:
-                token = item.get("token")
-                if not token:
-                    continue
-                q = self._get_quotes(option_exch, token)
-                if not q or q.get("stat") != "Ok":
-                    continue
-
                 ot = item.get("optt")
                 if ot not in ("CE", "PE"):
                     continue
-
-                def _f(key: str, _q: dict = q) -> float:
-                    try:
-                        return float(_q.get(key) or 0.0)
-                    except (ValueError, TypeError):
-                        return 0.0
-
-                def _i(key: str, _q: dict = q) -> int:
-                    try:
-                        return int(_q.get(key) or 0)
-                    except (ValueError, TypeError):
-                        return 0
 
                 try:
                     strike = float(item.get("strprc") or 0)
                 except (ValueError, TypeError):
                     continue
 
+                # Determine data source: GetOptionChain item first, fall back to GetQuotes
+                # if LTP or OI is missing.
+                data = item
+                ltp_raw = item.get("lp")
+                oi_raw = item.get("oi")
+                if ltp_raw is None or oi_raw is None:
+                    token = item.get("token")
+                    if token:
+                        q = self._get_quotes(option_exch, token)
+                        if q and q.get("stat") == "Ok":
+                            data = q
+
+                def _fq(key, _src=data):
+                    try:
+                        v = _src.get(key)
+                        return float(v) if v is not None else None
+                    except (ValueError, TypeError):
+                        return None
+
+                def _iq(key, _src=data):
+                    try:
+                        v = _src.get(key)
+                        return int(v) if v is not None else None
+                    except (ValueError, TypeError):
+                        return None
+
                 strikes.append(
                     {
                         "strike": strike,
                         "option_type": ot,
-                        "ltp": _f("lp"),
-                        "oi": _i("oi"),
-                        "oi_change": _i("oichg"),
-                        "volume": _i("v"),
-                        "iv": _f("iv"),
-                        "bid": _f("bp1"),
-                        "ask": _f("sp1"),
+                        "ltp": _fq("lp") or 0.0,
+                        "oi": _iq("oi") or 0,
+                        "oi_change": _iq("oichg") or 0,
+                        "volume": _iq("v") or 0,
+                        "iv": _fq("iv") or 0.0,
+                        "bid": _fq("bp1") or 0.0,
+                        "ask": _fq("sp1") or 0.0,
                     }
                 )
 

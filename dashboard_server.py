@@ -47,8 +47,6 @@ class PatchedCursor(sqlite3.Cursor):
         return super().execute(sql, *args, **kwargs)
 
 
-
-
 class PatchedConnection(sqlite3.Connection):
     def execute(self, sql, *args, **kwargs):
         if (
@@ -112,7 +110,7 @@ try:
     from config.settings import DB_PATH, LOT_SIZES, WATCH_SYMBOLS
 except ImportError:
     DB_PATH = ROOT / "data" / "nsebot.db"
-    WATCH_SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX", "NATURALGAS"]
+    WATCH_SYMBOLS = ["NIFTY", "BANKNIFTY", "SENSEX", "NATURALGAS", "CRUDEOIL"]
     ALLOWED_SCAN_FREQUENCIES = [5, 15, 30, 60, 180, 1440]
     MIN_SCAN_FREQUENCY = 5
     MAX_SCAN_FREQUENCY = 1440
@@ -871,7 +869,7 @@ def _chart_dir_score(chart_payload: dict) -> float:
 # ── API routes ────────────────────────────────────────────────────────────
 
 # Known valid symbols — filter junk from chrome extension
-CANONICAL_SYMBOLS = ["NIFTY", "BANKNIFTY", "NATURALGAS", "CRUDEOIL"]
+CANONICAL_SYMBOLS = ["NIFTY", "BANKNIFTY", "SENSEX", "NATURALGAS", "CRUDEOIL"]
 
 _CANONICAL_SET = set(CANONICAL_SYMBOLS)
 _ALIASES = {
@@ -3784,6 +3782,76 @@ async def get_ml_prediction(symbol: str, verdict: str = None, confidence: int = 
         "model_version": prediction.model_version,
         "training_samples": prediction.training_samples,
     }
+
+
+# ── Decision Audit Pipeline API Endpoints ─────────────────────────────────
+
+
+@app.get("/api/decisions")
+async def get_decisions(symbol: str = None, engine: str = None, limit: int = 50):
+    """
+    Get recent decision audits from decision_audit table.
+    """
+    try:
+        from src.models.schema import get_conn
+
+        query = "SELECT * FROM decision_audit"
+        params = []
+        where_clauses = []
+
+        if symbol:
+            where_clauses.append("symbol = ?")
+            params.append(symbol.upper())
+        if engine:
+            where_clauses.append("engine = ?")
+            params.append(engine.upper())
+
+        if where_clauses:
+            query += " WHERE " + " AND ".join(where_clauses)
+
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+
+        with get_conn() as conn:
+            rows = conn.execute(query, params).fetchall()
+            results = []
+            for r in rows:
+                item = dict(r)
+                if item.get("trail_json"):
+                    try:
+                        item["trail"] = json.loads(item["trail_json"])
+                    except Exception:
+                        item["trail"] = []
+                results.append(item)
+            return results
+    except Exception as e:
+        log.exception("Failed to fetch decisions")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/decisions/stats")
+async def get_decision_stats(symbol: str = None):
+    """
+    Get block step frequency distribution (how often each step blocks/fails).
+    """
+    try:
+        from src.models.schema import get_conn
+
+        query = "SELECT block_step, COUNT(*) as count FROM decision_audit WHERE action = 'SKIP'"
+        params = []
+        if symbol:
+            query += " AND symbol = ?"
+            params.append(symbol.upper())
+        query += " GROUP BY block_step ORDER BY count DESC"
+
+        with get_conn() as conn:
+            rows = conn.execute(query, params).fetchall()
+            return [
+                {"step": r["block_step"] or "None", "count": r["count"]} for r in rows
+            ]
+    except Exception as e:
+        log.exception("Failed to fetch decision stats")
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 # ── Serve Static Assets ────────────────────────────────────────────────────

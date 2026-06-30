@@ -125,7 +125,7 @@ class LLMTradeVerdict(BaseModel):
         description="LOW, MEDIUM, HIGH — overall risk considering macro events, expiry proximity, volatility"
     )
     catalyst: str = Field(
-        description="Upcoming event that could accelerate or invalidate: 'EIA report Thursday 8:30PM IST' or 'No major catalyst'"
+        description="Upcoming event that could accelerate or invalidate: 'EIA report Thursday 8:00PM IST' or 'No major catalyst'"
     )
 
 
@@ -197,9 +197,16 @@ def _format_chart_data(chart_indicators: dict | None) -> str:
     if not chart_indicators:
         return "No chart data available."
 
+    # Unwrap symbol-keyed wrapper if needed: {"NATURALGAS": {"1h": ..., "3h": ...}} → {"1h": ..., "3h": ...}
+    ci = chart_indicators
+    if isinstance(ci, dict):
+        _tf_keys = {"1h", "3h", "4h", "1d", "15m", "30m", "5m"}
+        if not any(k in ci for k in _tf_keys):
+            ci = next(iter(ci.values()), {}) if ci else {}
+
     lines = []
     for tf in ("1h", "3h"):
-        data = chart_indicators.get(tf)
+        data = ci.get(tf)
         if not data:
             continue
         ohlc = data.get("ohlc", {})
@@ -256,14 +263,15 @@ def _format_macro_context(symbol: str) -> str:
             _MACRO_PREFIX
             + """  Symbol type: MCX Natural Gas Futures (USD-denominated, INR-settled)
   Primary drivers:
-    - EIA Weekly Natural Gas Storage Report (every Thursday ~8:30 PM IST)
+    - EIA Weekly Natural Gas Storage Report (every Thursday ~8:00 PM IST / 10:30 AM ET)
       → Surprise builds = bearish pressure; surprise draws = bullish spike
+      → IMPORTANT: Only flag EIA as a catalyst on Thursdays. On other days, do NOT mention it.
     - Henry Hub spot price (US benchmark): MCX closely tracks it with INR/USD multiplier
     - Weather demand: Summer cooling (US/EU) and winter heating drive consumption
     - LNG export demand from US Gulf Coast terminals
     - INR/USD rate: Every 1 rupee depreciation in INR adds ~1.5-2% to MCX price
   Key risk events to flag:
-    - EIA report day (Thursday): avoid fresh entries 2h before/after report
+    - EIA report day (Thursday ONLY): avoid fresh entries 2h before/after report
     - US weather model updates (Mon/Wed): can move Henry Hub 3-5% intraday
   Seasonality: Jun-Aug = low demand (shoulder season) → structurally bearish bias
   Correlation: Positive with crude (energy complex); negative with renewable output"""
@@ -413,8 +421,8 @@ def _format_historical_oi(symbol: str) -> str:
         log.debug("[llm] Historical OI query failed for %s: %s", symbol, e)
         return "  Historical data unavailable."
 
-    if not rows or len(rows) < 3:
-        return "  Insufficient historical data (<3 scans)."
+    if not rows or len(rows) < 5:
+        raise ValueError(f"Insufficient historical data ({len(rows) if rows else 0} scans < 5). Skipping LLM enrichment.")
 
     lines = []
     lines.append(f"  Last {len(rows)} scans (newest first):")
@@ -561,8 +569,7 @@ HISTORICAL OI CONTEXT:
 
     if news_data and news_data.get("items"):
         prompt += f"NEWS: {_format_news(news_data)}\n"
-    else:
-        prompt += f"MACRO: {_format_macro_context(symbol)}\n"
+    prompt += f"MACRO: {_format_macro_context(symbol)}\n"
 
     if open_trade:
         prompt += f"OPEN POSITION: {_format_open_trade(open_trade)}\n"
@@ -579,20 +586,15 @@ HISTORICAL OI CONTEXT:
         "BULLISH" if _is_bull(_vl) else ("BEARISH" if _is_bear(_vl) else "NO_TRADE")
     )
     _bias_rationale = intel.get("verdict_desc") or intel.get("trend") or ""
-    _c1 = (
-        str(
-            ctx.get("chart_indicators", {}).get("1h", {}).get("sentiment", "NEUTRAL")
-        ).upper()
-        if isinstance(ctx.get("chart_indicators"), dict)
-        else "NEUTRAL"
-    )
-    _c3 = (
-        str(
-            ctx.get("chart_indicators", {}).get("3h", {}).get("sentiment", "NEUTRAL")
-        ).upper()
-        if isinstance(ctx.get("chart_indicators"), dict)
-        else "NEUTRAL"
-    )
+    # Unwrap chart_indicators: may be {"NATURALGAS": {"1h": ..., "3h": ...}} or {"1h": ..., "3h": ...}
+    _chart_raw = ctx.get("chart_indicators") or {}
+    if isinstance(_chart_raw, dict):
+        _tf_keys = {"1h", "3h", "4h", "1d", "15m", "30m", "5m"}
+        if not any(k in _chart_raw for k in _tf_keys):
+            # Symbol-keyed wrapper — unwrap to timeframe dict
+            _chart_raw = next(iter(_chart_raw.values()), {}) if _chart_raw else {}
+    _c1 = str((_chart_raw.get("1h") or {}).get("sentiment", "NEUTRAL")).upper()
+    _c3 = str((_chart_raw.get("3h") or {}).get("sentiment", "NEUTRAL")).upper()
 
     prompt += f"""
 ENGINE DECISION (authoritative — you MUST respect this):
@@ -1691,22 +1693,37 @@ def get_llm_verdict(
             )
             return cached["verdict"]
 
-    prompt = _build_deep_prompt(
-        symbol,
-        intel_dict,
-        scan_context,
-        alerts=alerts,
-        news_data=news_data,
-        open_trade=open_trade,
-        trade_decision=trade_decision,
-    )
     try:
+        prompt = _build_deep_prompt(
+            symbol,
+            intel_dict,
+            scan_context,
+            alerts=alerts,
+            news_data=news_data,
+            open_trade=open_trade,
+            trade_decision=trade_decision,
+        )
         result = _call_llm_api(symbol, prompt, LLMTradeVerdict, deadline=deadline)
         if result:
             # Override symbol/expiry, validate action/option-type consistency
             result = _sanitize_llm_verdict(result, symbol, scan_context)
             # B2: Hard guard — engine direction is non-negotiable
             result = _enforce_engine_alignment(result, symbol, intel_dict)
+            
+            if result.action == "NO_TRADE":
+                update_dict = {
+                    "entry_premium_range": "N/A",
+                    "stop_loss": "N/A",
+                    "target_1": "N/A",
+                    "target_2": "N/A",
+                    "risk_reward": "N/A",
+                }
+                result = (
+                    result.model_copy(update=update_dict)
+                    if hasattr(result, "model_copy")
+                    else result.copy(update=update_dict)
+                )
+
             # Round echoed decimals (PCR 1.1156 → 1.12); keep multi-sentence thesis intact
             _clean_thesis = _round_echoed_numbers(
                 result.thesis or "", runaway_word_cap=90
@@ -1740,6 +1757,9 @@ def get_llm_verdict(
                 "verdict": result,
             }
         return result
+    except ValueError as ve:
+        log.info("[llm] %s", ve)
+        return None
     except Exception as e:
         log.error("[llm] Unexpected error in get_llm_verdict for %s: %s", symbol, e)
         return None

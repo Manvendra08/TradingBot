@@ -92,33 +92,38 @@ class TradeHistoryAnalyzer:
         self._patterns_cache = None
         self._patterns_cache_ts = 0.0
 
-    def get_cached_patterns(self) -> list[PatternInsight]:
+    def get_cached_patterns(self, symbol: str = None) -> list[PatternInsight]:
         """
         v2.2: Return cached patterns if fresh (< TTL), else recompute.
         Persists to ai_pattern_insights table for cross-process sharing.
         Reads from DB table if in-memory cache is empty before computing.
         """
         now = _time()
-        if (
-            self._patterns_cache is not None
-            and (now - self._patterns_cache_ts) < self.CACHE_TTL_SECONDS
-        ):
-            return self._patterns_cache
+        need_refresh = (
+            self._patterns_cache is None
+            or (now - self._patterns_cache_ts) >= self.CACHE_TTL_SECONDS
+        )
 
-        # Load from DB first if in-memory cache is empty (e.g. on restart)
-        if self._patterns_cache is None:
-            db_patterns = self._load_patterns_from_db()
-            if db_patterns:
-                self._patterns_cache = db_patterns
+        if need_refresh:
+            # Load from DB first if in-memory cache is empty (e.g. on restart)
+            if self._patterns_cache is None:
+                db_patterns = self._load_patterns_from_db()
+                if db_patterns:
+                    self._patterns_cache = db_patterns
+                    self._patterns_cache_ts = now
+
+            # If still empty or expired, recompute
+            if self._patterns_cache is None or (now - self._patterns_cache_ts) >= self.CACHE_TTL_SECONDS:
+                patterns = self.analyze_all_patterns()
+                self._patterns_cache = patterns
                 self._patterns_cache_ts = now
-                return db_patterns
+                # Persist to DB cache table (best-effort -- non-blocking)
+                self._persist_patterns_to_db(patterns)
 
-        patterns = self.analyze_all_patterns()
-        self._patterns_cache = patterns
-        self._patterns_cache_ts = now
-
-        # Persist to DB cache table (best-effort -- non-blocking)
-        self._persist_patterns_to_db(patterns)
+        patterns = self._patterns_cache or []
+        if symbol:
+            symbol_upper = symbol.upper().strip()
+            patterns = [p for p in patterns if p.pattern_name.upper().startswith(symbol_upper)]
         return patterns
 
     def _load_patterns_from_db(self, symbol: str = None) -> list[PatternInsight]:

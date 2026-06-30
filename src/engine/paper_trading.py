@@ -379,6 +379,14 @@ def execute_paper_trade(
     # Risk limits
     risk_ok, risk_reason = check_risk_limits(symbol)
     if not risk_ok:
+        from src.engine.decision_audit import update_decision_audit
+
+        update_decision_audit(
+            plan.get("audit_row_id"),
+            action="SKIP",
+            block_step="risk",
+            block_reason=risk_reason,
+        )
         return {"action": "BLOCKED_RISK", "trade_id": None, "reason": risk_reason}
 
     # Lot sizing
@@ -386,6 +394,14 @@ def execute_paper_trade(
         symbol, plan.get("entry_premium", 0), side, is_paper=True
     )
     if lots <= 0:
+        from src.engine.decision_audit import update_decision_audit
+
+        update_decision_audit(
+            plan.get("audit_row_id"),
+            action="SKIP",
+            block_step="risk",
+            block_reason="Zero lots calculated",
+        )
         return {
             "action": "BLOCKED_LOTS",
             "trade_id": None,
@@ -457,17 +473,26 @@ def execute_paper_trade(
     }
 
     trade_id = insert_paper_trade(trade_data)
+    from src.engine.decision_audit import update_decision_audit
+
     if not trade_id:
         log.warning(
             "%s: paper trade INSERT skipped - duplicate signal_key=%s",
             symbol,
             signal_key,
         )
+        update_decision_audit(
+            plan.get("audit_row_id"),
+            action="SKIP",
+            block_step="signal",
+            block_reason="duplicate signal key",
+        )
         return {
             "action": "BLOCKED_PLAN",
             "trade_id": None,
             "reason": "duplicate signal key",
         }
+    update_decision_audit(plan.get("audit_row_id"), action="TRADE", trade_id=trade_id)
 
     log.info(
         "%s: paper trade #%s opened — %s %s %g | SL %g | Tgt %g",
@@ -488,7 +513,7 @@ def execute_paper_trade(
 
 def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
     """
-    Check all open paper trades for SL/Target hit.
+    Check all open paper trades for SL/Target hit and Dead Trade conditions.
     Returns list of action dicts.
     """
     actions = []
@@ -503,6 +528,8 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
     sl_ul = float(open_trade.get("sl_underlying") or 0)
     tgt_ul = float(open_trade.get("target_underlying") or 0)
     side = str(open_trade.get("side", "")).upper()
+    entry_und = float(open_trade.get("entry_underlying") or 0)
+    option_type = str(open_trade.get("option_type", "")).upper()
 
     hit_sl = side == "BUY" and sl_ul > 0 and underlying <= sl_ul
     hit_sl = hit_sl or (side == "SELL" and sl_ul > 0 and underlying >= sl_ul)
@@ -510,12 +537,12 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
     hit_target = hit_target or (side == "SELL" and tgt_ul > 0 and underlying <= tgt_ul)
 
     # C5: Also check premium-based SL/Target for options
-    if not hit_sl and not hit_target and open_trade.get("option_type") in ("CE", "PE"):
+    if not hit_sl and not hit_target and option_type in ("CE", "PE"):
         exit_premium_check = _get_option_premium(
             symbol,
             open_trade.get("expiry"),
             open_trade.get("strike"),
-            open_trade.get("option_type"),
+            option_type,
             current_ctx.get("option_rows"),
         )
         if exit_premium_check and exit_premium_check > 0:
@@ -532,15 +559,63 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
                 if tgt_prem > 0 and exit_premium_check <= tgt_prem:
                     hit_target = True
 
+    # ── Dead Trade check for CORE trades ─────────────────────────────────────
+    # CORE trades never got Dead Trade assessment because the logic only lived
+    # in run_timeframe_strategy() (TIMEFRAME-only). This adds the same check
+    # for CORE trades: if open > threshold hours with no meaningful favorable
+    # movement, close as Dead Trade to free up capital.
+    dead_trade_close = False
+    hours_open = 0.0
+    max_fav = 0.0
+    if not hit_sl and not hit_target:
+        try:
+            opened_dt = datetime.fromisoformat(
+                open_trade["opened_at"].replace("Z", "+00:00")
+            )
+            hours_open = (
+                datetime.now(timezone.utc) - opened_dt
+            ).total_seconds() / 3600.0
+
+            # Compute current R multiple and update max_favorable_r
+            r_current = 0.0
+            if entry_und > 0 and sl_ul > 0 and sl_ul != entry_und:
+                if side == "SELL":
+                    r_current = (entry_und - underlying) / (sl_ul - entry_und)
+                elif side == "BUY":
+                    r_current = (underlying - entry_und) / (entry_und - sl_ul)
+
+            stored_mfr = float(open_trade.get("max_favorable_r") or 0.0)
+            max_fav = max(stored_mfr, r_current)
+            if max_fav > stored_mfr:
+                with get_conn() as conn:
+                    conn.execute(
+                        "UPDATE paper_trades SET max_favorable_r=? WHERE id=?",
+                        (max_fav, open_trade["id"]),
+                    )
+
+            # Dead Trade threshold: 24h for FUT, 6h for options
+            dead_trade_hours = 24.0 if option_type == "FUT" else 6.0
+            if hours_open >= dead_trade_hours and max_fav < 0.5:
+                dead_trade_close = True
+                log.info(
+                    "%s: paper trade #%s DEAD TRADE — open %.1fh, max favorable R %.2f < 0.5",
+                    symbol,
+                    open_trade["id"],
+                    hours_open,
+                    max_fav,
+                )
+        except Exception:
+            log.debug("%s: Dead Trade check failed gracefully", symbol)
+
     if hit_sl or hit_target:
         reason = "SL_HIT" if hit_sl else "TARGET_HIT"
         exit_premium = None
-        if open_trade["option_type"] != "FUT":
+        if option_type != "FUT":
             exit_premium = _get_option_premium(
                 symbol,
                 open_trade.get("expiry"),
                 open_trade.get("strike"),
-                open_trade.get("option_type"),
+                option_type,
                 current_ctx.get("option_rows"),
             )
         close_paper_trade(
@@ -558,10 +633,37 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
             reason,
             underlying,
         )
-        _invalidate_pattern_cache()  # Phase 1: refresh patterns after close
-        _trigger_ml_retraining()  # Phase 2: increment ML retraining counter
+        _invalidate_pattern_cache()
+        _trigger_ml_retraining()
         actions.append(
             {"action": reason, "trade_id": open_trade["id"], "underlying": underlying}
+        )
+    elif dead_trade_close:
+        exit_premium = None
+        if option_type != "FUT":
+            exit_premium = _get_option_premium(
+                symbol,
+                open_trade.get("expiry"),
+                open_trade.get("strike"),
+                option_type,
+                current_ctx.get("option_rows"),
+            )
+        close_paper_trade(
+            open_trade["id"],
+            datetime.now(timezone.utc).isoformat(),
+            underlying,
+            exit_premium if option_type in ("CE", "PE") else underlying,
+            "Dead Trade",
+            f"Dead trade exit: {hours_open:.1f}h passed, max favorable R {max_fav:.2f} < 0.5",
+        )
+        _invalidate_pattern_cache()
+        _trigger_ml_retraining()
+        actions.append(
+            {
+                "action": "DEAD_TRADE",
+                "trade_id": open_trade["id"],
+                "underlying": underlying,
+            }
         )
 
     return actions
@@ -626,6 +728,15 @@ def run_paper_trading(
             "trade": current_open_trade,
             "reason": "No valid plan",
         }
+
+    if plan and intel:
+        td = None
+        if hasattr(intel, "trade_decision"):
+            td = intel.trade_decision
+        elif isinstance(intel, dict):
+            td = intel.get("trade_decision")
+        if td and isinstance(td, dict) and td.get("audit_row_id"):
+            plan["audit_row_id"] = td["audit_row_id"]
 
     # Add null target guard:
     if plan.get("target_underlying") is None and plan.get("option_type") != "FUT":
@@ -1064,111 +1175,52 @@ def run_timeframe_strategy(
                 }
 
     # ── 2. ENTRY LOGIC ──
-    bar_end_3h = pay_3h.get("bar_end_utc")
-    if not bar_end_3h:
-        return None
+    from src.engine.decision_audit import log_decision
+    from src.engine.decision_pipeline import PipelineContext, run_entry_pipeline
 
-    is_long_trigger = c_3h_close > p_3h_high + breakout_buffer and long_oi_support
-    is_short_trigger = c_3h_close < p_3h_low - breakout_buffer and short_oi_support
+    # Initialise pipeline context
+    pipeline_ctx = PipelineContext(
+        engine="TIMEFRAME",
+        symbol=symbol,
+        direction=None,
+        underlying=underlying,
+        scan_context=ctx,
+        ai_verdict=ai_verdict,
+        steps=[],
+    )
 
-    if not is_long_trigger and not is_short_trigger:
-        return None
+    # Run entry pipeline
+    run_entry_pipeline(pipeline_ctx)
 
-    direction = "LONG" if is_long_trigger else "SHORT"
-    signal_key = f"{symbol}:TIMEFRAME:3H:{direction}:{bar_end_3h}"
+    # Log to decision_audit SQLite table
+    audit_row_id = log_decision(
+        pipeline_ctx, action="TRADE" if pipeline_ctx.passed else "SKIP"
+    )
 
-    with get_conn() as conn:
-        cnt = conn.execute(
-            "SELECT COUNT(*) AS c FROM paper_trades WHERE signal_key=?", (signal_key,)
-        ).fetchone()["c"]
-        if cnt > 0:
-            return {
-                "action": "BLOCKED_PLAN",
-                "reason": f"Timeframe entry skipped: duplicate signal key {signal_key}",
-            }
+    if not pipeline_ctx.passed:
+        # Check if the signal itself was missing/failed to return None
+        signal_step = next((s for s in pipeline_ctx.steps if s.name == "signal"), None)
+        if (
+            signal_step
+            and not signal_step.passed
+            and "No 3H breakout detected" in signal_step.reason
+        ):
+            return None
+        if (
+            signal_step
+            and not signal_step.passed
+            and "Missing or incomplete 3H candle data" in signal_step.reason
+        ):
+            return None
 
-    risk_ok, risk_reason = check_risk_limits(symbol, "TIMEFRAME")
-    if not risk_ok:
-        return {
-            "action": "BLOCKED_RISK",
-            "reason": f"Timeframe entry skipped: {risk_reason}",
-        }
-
-    if ai_verdict is not None:
-        ai_bias = _extract_ai_bias(ai_verdict) or "NEUTRAL"
-        ai_risk = str(
-            ai_verdict.get("risk_rating", "LOW")
-            if isinstance(ai_verdict, dict)
-            else getattr(ai_verdict, "risk_rating", "LOW")
-        ).upper()
-
-        if direction == "LONG" and ai_bias == "BEARISH":
-            return {
-                "action": "BLOCKED_PLAN",
-                "reason": f"Timeframe entry skipped: LLM bias alignment mismatch ({ai_bias} vs {direction})",
-            }
-        if direction == "SHORT" and ai_bias == "BULLISH":
-            return {
-                "action": "BLOCKED_PLAN",
-                "reason": f"Timeframe entry skipped: LLM bias alignment mismatch ({ai_bias} vs {direction})",
-            }
-        if ai_risk == "HIGH":
-            return {
-                "action": "BLOCKED_PLAN",
-                "reason": f"Timeframe entry skipped: LLM risk rating is HIGH",
-            }
-
-    open_trades = get_open_timeframe_trades(symbol)
-    if len(open_trades) >= 3:
         return {
             "action": "BLOCKED_PLAN",
-            "reason": "Timeframe entry skipped: maximum pyramid level (3) reached",
+            "reason": f"Timeframe entry skipped: {pipeline_ctx.block_reason}",
         }
 
-    if len(open_trades) > 0:
-        if any(t["verdict_label"] != direction for t in open_trades):
-            return {
-                "action": "BLOCKED_PLAN",
-                "reason": "Timeframe entry skipped: cannot pyramid in opposite direction",
-            }
-
-        any_profitable = False
-        for t in open_trades:
-            if t["option_type"] in ("CE", "PE"):
-                t_exit = _get_option_premium(
-                    symbol,
-                    ctx.get("expiry", ""),
-                    t["strike"],
-                    t["option_type"],
-                    ctx.get("option_rows"),
-                )
-                t_side = t.get("side") or "BUY"
-                if t_exit:
-                    if t_side == "SELL":
-                        is_profitable = t_exit < float(t.get("entry_premium") or 0.0)
-                    else:
-                        is_profitable = t_exit > float(t.get("entry_premium") or 0.0)
-                    if is_profitable:
-                        any_profitable = True
-                        break
-            else:
-                if t["verdict_label"] == "LONG" and underlying > float(
-                    t["entry_underlying"]
-                ):
-                    any_profitable = True
-                    break
-                elif t["verdict_label"] == "SHORT" and underlying < float(
-                    t["entry_underlying"]
-                ):
-                    any_profitable = True
-                    break
-        if not any_profitable:
-            return {
-                "action": "BLOCKED_PLAN",
-                "reason": "Timeframe entry skipped: no profitable open trades to pyramid",
-            }
-
-    pyramid_level = len(open_trades) + 1
+    direction = pipeline_ctx.direction
+    signal_key = pipeline_ctx.scan_context.get("_signal_key")
+    pyramid_level = pipeline_ctx.scan_context.get("_pyramid_level")
     lot_multiplier = 1.0
     if pyramid_level == 2:
         lot_multiplier = 0.75
@@ -1219,6 +1271,14 @@ def run_timeframe_strategy(
                 symbol, expiry, strike, "CE", ctx.get("option_rows")
             )
             if not entry_premium or entry_premium <= 0:
+                from src.engine.decision_audit import update_decision_audit
+
+                update_decision_audit(
+                    audit_row_id,
+                    action="SKIP",
+                    block_step="signal",
+                    block_reason="Option premium unavailable",
+                )
                 return {
                     "action": "BLOCKED_PLAN",
                     "reason": f"Timeframe entry skipped: option premium unavailable for CE strike {strike}",
@@ -1241,6 +1301,14 @@ def run_timeframe_strategy(
                 symbol, expiry, strike, "PE", ctx.get("option_rows")
             )
             if not entry_premium or entry_premium <= 0:
+                from src.engine.decision_audit import update_decision_audit
+
+                update_decision_audit(
+                    audit_row_id,
+                    action="SKIP",
+                    block_step="signal",
+                    block_reason="Option premium unavailable",
+                )
                 return {
                     "action": "BLOCKED_PLAN",
                     "reason": f"Timeframe entry skipped: option premium unavailable for PE strike {strike}",
@@ -1325,7 +1393,27 @@ def run_timeframe_strategy(
             except Exception:
                 pass
 
-    insert_paper_trade(trade_data)
+    trade_id = insert_paper_trade(trade_data)
+    from src.engine.decision_audit import update_decision_audit
+
+    if not trade_id:
+        log.warning(
+            "%s: paper trade INSERT skipped - duplicate signal_key=%s",
+            symbol,
+            signal_key,
+        )
+        update_decision_audit(
+            audit_row_id,
+            action="SKIP",
+            block_step="signal",
+            block_reason="duplicate signal key",
+        )
+        return {
+            "action": "BLOCKED_PLAN",
+            "trade_id": None,
+            "reason": "duplicate signal key",
+        }
+    update_decision_audit(audit_row_id, action="TRADE", trade_id=trade_id)
     log.info(
         "%s: Timeframe Strategy %s entry triggered! Strike %g Premium %g Lots %d (Level %d)",
         symbol,

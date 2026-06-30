@@ -402,15 +402,35 @@ class TradeSuccessPredictor:
 
         from src.models.schema import get_conn
 
-        # v2.0 FIX: Fetch from BOTH paper_trades and live_trades
+        # v2.0 FIX: Fetch from BOTH paper_trades and live_trades (v3.0: explicit columns to guard UNION ALL)
         with get_conn() as conn:
             trades = conn.execute("""
-                SELECT *, 'paper' as source FROM paper_trades
+                SELECT opened_at, closed_at, symbol, verdict_label, option_type, strike,
+                       entry_underlying, exit_underlying, sl_underlying, target_underlying,
+                       pnl_points, pnl_rupees, status, reason, digest_id, entry_premium,
+                       exit_premium, sl_premium, target_premium, lots, trade_status,
+                       setup_type, decision_reason, confidence_score, entry_quality_score,
+                       trend_alignment_score, regime_score, signal_key, pyramid_level,
+                       max_favorable_r, side, expiry, price_change_pct, pcr, ce_oi_change,
+                       pe_oi_change, underlying, support, resistance, max_pain,
+                       days_to_expiry, chart_conflict, rsi_1h, rsi_3h, regime,
+                       'paper' as source
+                FROM paper_trades
                 WHERE status != 'OPEN'
                   AND closed_at IS NOT NULL
                   AND pnl_rupees IS NOT NULL
                 UNION ALL
-                SELECT *, 'live' as source FROM live_trades
+                SELECT opened_at, closed_at, symbol, verdict_label, option_type, strike,
+                       entry_underlying, exit_underlying, sl_underlying, target_underlying,
+                       pnl_points, pnl_rupees, status, reason, digest_id, entry_premium,
+                       exit_premium, sl_premium, target_premium, lots, trade_status,
+                       setup_type, decision_reason, confidence_score, entry_quality_score,
+                       trend_alignment_score, regime_score, signal_key, pyramid_level,
+                       max_favorable_r, side, expiry, price_change_pct, pcr, ce_oi_change,
+                       pe_oi_change, underlying, support, resistance, max_pain,
+                       days_to_expiry, chart_conflict, rsi_1h, rsi_3h, regime,
+                       'live' as source
+                FROM live_trades
                 WHERE status != 'OPEN'
                   AND closed_at IS NOT NULL
                   AND pnl_rupees IS NOT NULL
@@ -533,11 +553,11 @@ class TradeSuccessPredictor:
             new_auc,
         )
 
-        # v2.1 FIX: AUC floor to prevent startup blind spot.
+        # v2.1 FIX: AUC floor to prevent startup blind spot. (v3.0: allow initial deploy if current model is None)
         AUC_FLOOR = 0.55
         effective_baseline = max(self.current_auc, AUC_FLOOR)
 
-        if new_auc < effective_baseline + AUC_IMPROVEMENT_THRESHOLD:
+        if self.model is not None and new_auc < effective_baseline + AUC_IMPROVEMENT_THRESHOLD:
             log.warning(
                 "New model AUC (%.3f) not >=%.2f better than baseline "
                 "(%.3f, current=%.3f). Keeping old model.",

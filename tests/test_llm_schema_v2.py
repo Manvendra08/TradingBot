@@ -106,8 +106,9 @@ class TestFormatHistoricalOi:
             mock_conn_ctx.__exit__ = MagicMock(return_value=False)
             mock_get_conn.return_value = mock_conn_ctx
 
-            result = _format_historical_oi("NIFTY")
-        assert "Insufficient" in result or "unavailable" in result
+            import pytest
+            with pytest.raises(ValueError, match="Insufficient historical data"):
+                _format_historical_oi("NIFTY")
 
     def test_formats_trend_correctly(self):
         """Verify historical OI includes PCR trend, OI trend, and price impact."""

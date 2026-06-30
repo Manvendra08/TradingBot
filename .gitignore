@@ -78,3 +78,19 @@ Backup/
 Proceeding without questions/
 data/dhan_scrip_master.csv
 .kiro/
+
+# Backup codebase snapshot (full project copy)
+Codebase/
+
+# Runtime state files
+data/ip_state.json
+data/runtime_config.json
+
+# ML model artifacts
+data/models/
+
+# Broker token caches
+shoonya_shared_token.json
+
+# Coverage data
+.coverage

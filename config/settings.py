@@ -370,3 +370,11 @@ LLM_MAX_TOKENS_EOD = int(os.environ.get("LLM_MAX_TOKENS_EOD", "4096"))
 # ensuring MCX entries require meaningful OI confluence without being too restrictive.
 MCX_MIN_CONFIDENCE = int(os.environ.get("MCX_MIN_CONFIDENCE", "72"))
 MCX_SYMBOLS = frozenset({"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"})
+
+# ── Decision Pipeline Settings ────────────────────────────────────────────────────────────────────────────────────────
+PIPELINE_SHORT_CIRCUIT = os.environ.get("PIPELINE_SHORT_CIRCUIT", "false").lower() == "true"
+ENTRY_QUALITY_MIN_SCORE_TF = int(os.environ.get("ENTRY_QUALITY_MIN_SCORE_TF", "40"))
+TREND_ALIGNMENT_MIN_SCORE_TF = int(os.environ.get("TREND_ALIGNMENT_MIN_SCORE_TF", "35"))
+DECISION_AUDIT_ENABLED = os.environ.get("DECISION_AUDIT_ENABLED", "true").lower() == "true"
+DECISION_AUDIT_RETENTION_DAYS = int(os.environ.get("DECISION_AUDIT_RETENTION_DAYS", "90"))
+

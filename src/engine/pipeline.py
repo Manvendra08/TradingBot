@@ -44,6 +44,7 @@ from src.models.schema import (
     insert_underlying_price,
     mark_telegram_sent,
 )
+from src.utils.ip_monitor import check_ip_changed
 
 log = logging.getLogger(__name__)
 
@@ -101,6 +102,24 @@ def run_pipeline(
         is_test,
     )
 
+    # Check for ISP IP address change and alert user if it changed.
+    if not is_test:
+        try:
+            ip_change = check_ip_changed()
+            if ip_change:
+                old_ip, new_ip = ip_change
+                msg = (
+                    f"🌐 **ISP IP Address Changed**\n"
+                    f"Old: `{old_ip}`\n"
+                    f"New: `{new_ip}`\n\n"
+                    f"Your internet connection IP has changed. If using a broker API "
+                    f"with IP whitelisting, you may need to update the whitelist."
+                )
+                send_text(msg)
+                log.warning("ISP IP changed: %s → %s", old_ip, new_ip)
+        except Exception:
+            log.exception("IP change check failed during pipeline startup")
+
     # At start of scan, check if previous day was an expiry day for any symbol
     if not is_test:
         try:
@@ -143,16 +162,20 @@ def run_pipeline(
                                 (sym, yesterday_str),
                             )
                             log.info(
-                                "Deleted %d expired snapshots for %s", c_del.rowcount, sym
+                                "Deleted %d expired snapshots for %s",
+                                c_del.rowcount,
+                                sym,
                             )
 
                     # General cleanup: delete all snapshots where expiry is in the past
                     c_past = conn.execute(
-                        "DELETE FROM option_chain_snapshots WHERE expiry < ?", (today_str,)
+                        "DELETE FROM option_chain_snapshots WHERE expiry < ?",
+                        (today_str,),
                     )
                     if c_past.rowcount > 0:
                         log.info(
-                            "General cleanup: deleted %d older snapshots", c_past.rowcount
+                            "General cleanup: deleted %d older snapshots",
+                            c_past.rowcount,
                         )
         except Exception:
             log.exception(
@@ -210,10 +233,15 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
     log.info("Processing %s ...", symbol)
 
     import sys
+
     from config.symbol_classes import is_market_open
+
     if not is_market_open(symbol):
         if not is_test and "pytest" not in sys.modules:
-            log.info("%s: Market is closed. Forcing dry-run (skip database save) for this symbol.", symbol)
+            log.info(
+                "%s: Market is closed. Forcing dry-run (skip database save) for this symbol.",
+                symbol,
+            )
             is_test = True
 
     oc_data = fetch_option_chain(symbol)
@@ -534,7 +562,12 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
 
         rconf = load_runtime_config()
         ai_exit_advisor_enabled = rconf.get("live_ai_exit_advisor_enabled", False)
-        if ai_exit_advisor_enabled and open_trade:
+        if (
+            ai_exit_advisor_enabled
+            and open_trade
+            and not is_test
+            and is_market_open(symbol)
+        ):
             from src.engine.llm_enrichment import get_exit_advice
 
             exit_advice = get_exit_advice(symbol, open_trade, scan_context, news_data)
