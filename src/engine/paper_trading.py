@@ -391,7 +391,7 @@ def execute_paper_trade(
 
     # Lot sizing
     lots = calculate_trade_lots(
-        symbol, plan.get("entry_premium", 0), side, is_paper=True
+        symbol, plan.get("entry_premium", 0), side, is_paper=True, pyramid_level=plan.get("pyramid_level", 1)
     )
     if lots <= 0:
         from src.engine.decision_audit import update_decision_audit
@@ -411,7 +411,14 @@ def execute_paper_trade(
     # SL / Target — M2 fix: prefer plan values (already computed by build_paper_trade_plan)
     # so the Telegram digest matches what is actually stored. Only recalculate
     # if plan values are missing or invalid.
+    # Slippage Model (Flaw #9): Apply 0.5% slippage to options
     entry_premium = float(plan.get("entry_premium") or 0)
+    if entry_premium > 0 and option_type != "FUT":
+        if side == "BUY":
+            entry_premium = entry_premium * 1.005  # buy higher
+        else:
+            entry_premium = entry_premium * 0.995  # sell lower
+
     plan_sl = plan.get("sl_underlying")
     plan_tgt = plan.get("target_underlying")
     if (
@@ -432,6 +439,20 @@ def execute_paper_trade(
             sl_ul, tgt_ul = _calculate_sell_sl_target(
                 entry_premium, underlying, ctx, step
             )
+            
+    if sl_ul is None or tgt_ul is None:
+        from src.engine.decision_audit import update_decision_audit
+        update_decision_audit(
+            plan.get("audit_row_id"),
+            action="SKIP",
+            block_step="risk",
+            block_reason="Missing ATR data for SL/Target",
+        )
+        return {
+            "action": "BLOCKED_PLAN",
+            "trade_id": None,
+            "reason": "Missing ATR data for SL/Target",
+        }
 
     now_iso = datetime.now(timezone.utc).isoformat()
     today_date = datetime.now(IST).strftime("%Y%m%d")
@@ -536,6 +557,34 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
     hit_target = side == "BUY" and tgt_ul > 0 and underlying >= tgt_ul
     hit_target = hit_target or (side == "SELL" and tgt_ul > 0 and underlying <= tgt_ul)
 
+    # Compute current R multiple and update max_favorable_r
+    r_current = 0.0
+    if entry_und > 0 and sl_ul > 0 and sl_ul != entry_und:
+        if side == "SELL":
+            r_current = (entry_und - underlying) / (sl_ul - entry_und)
+        elif side == "BUY":
+            r_current = (underlying - entry_und) / (entry_und - sl_ul)
+
+    stored_mfr = float(open_trade.get("max_favorable_r") or 0.0)
+    max_fav = max(stored_mfr, r_current)
+    
+    # ── Trailing Stop Check (Flaw #1) ────────────────────────────────────────
+    trailing_sl_hit = False
+    if max_fav >= 1.0 and entry_und > 0 and sl_ul > 0 and sl_ul != entry_und:
+        orig_r_dist = abs(entry_und - sl_ul)
+        trailed_r = int(max_fav) - 1  # 1R max_fav -> 0R (breakeven), 2R -> 1R, etc.
+        if side == "BUY":
+            trailing_sl = entry_und + trailed_r * orig_r_dist
+            if underlying <= trailing_sl:
+                trailing_sl_hit = True
+        else:
+            trailing_sl = entry_und - trailed_r * orig_r_dist
+            if underlying >= trailing_sl:
+                trailing_sl_hit = True
+
+    if trailing_sl_hit:
+        hit_sl = True
+
     # C5: Also check premium-based SL/Target for options
     if not hit_sl and not hit_target and option_type in ("CE", "PE"):
         exit_premium_check = _get_option_premium(
@@ -566,7 +615,6 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
     # movement, close as Dead Trade to free up capital.
     dead_trade_close = False
     hours_open = 0.0
-    max_fav = 0.0
     if not hit_sl and not hit_target:
         try:
             opened_dt = datetime.fromisoformat(
@@ -576,16 +624,6 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
                 datetime.now(timezone.utc) - opened_dt
             ).total_seconds() / 3600.0
 
-            # Compute current R multiple and update max_favorable_r
-            r_current = 0.0
-            if entry_und > 0 and sl_ul > 0 and sl_ul != entry_und:
-                if side == "SELL":
-                    r_current = (entry_und - underlying) / (sl_ul - entry_und)
-                elif side == "BUY":
-                    r_current = (underlying - entry_und) / (entry_und - sl_ul)
-
-            stored_mfr = float(open_trade.get("max_favorable_r") or 0.0)
-            max_fav = max(stored_mfr, r_current)
             if max_fav > stored_mfr:
                 with get_conn() as conn:
                     conn.execute(
@@ -593,8 +631,8 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
                         (max_fav, open_trade["id"]),
                     )
 
-            # Dead Trade threshold: 24h for FUT, 6h for options
-            dead_trade_hours = 24.0 if option_type == "FUT" else 6.0
+            # Dead Trade threshold (Flaw #7): 24h for FUT, 3h for options
+            dead_trade_hours = 24.0 if option_type == "FUT" else 3.0
             if hours_open >= dead_trade_hours and max_fav < 0.5:
                 dead_trade_close = True
                 log.info(
@@ -608,7 +646,14 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
             log.debug("%s: Dead Trade check failed gracefully", symbol)
 
     if hit_sl or hit_target:
-        reason = "SL_HIT" if hit_sl else "TARGET_HIT"
+        if hit_sl:
+            if trailing_sl_hit:
+                reason = "CLOSED_TRAILING_SL"
+            else:
+                reason = "SL_HIT"
+        else:
+            reason = "TARGET_HIT"
+            
         exit_premium = None
         if option_type != "FUT":
             exit_premium = _get_option_premium(
@@ -618,6 +663,15 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
                 option_type,
                 current_ctx.get("option_rows"),
             )
+            # Apply 0.5% slippage on exit for options (Flaw #9)
+            if exit_premium and exit_premium > 0:
+                if side == "BUY":
+                    # closing a BUY means SELL -> lower price
+                    exit_premium *= 0.995
+                else:
+                    # closing a SELL means BUY -> higher price
+                    exit_premium *= 1.005
+
         close_paper_trade(
             open_trade["id"],
             datetime.now(timezone.utc).isoformat(),

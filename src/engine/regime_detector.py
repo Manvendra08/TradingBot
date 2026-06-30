@@ -136,6 +136,34 @@ def detect_market_regime(symbol: str) -> str:
         return REGIME_TRENDING_UP
     if bearish_score >= threshold and price_change_pct < -0.5:
         return REGIME_TRENDING_DOWN
+
+    # --- Price-Momentum Fallback for Ambiguous OI ---
+    # Triggered when OI is predominantly inconclusive (neither bullish nor bearish)
+    neutral_count = sum(1 for r in rows if not is_bullish(r["verdict_label"]) and not is_bearish(r["verdict_label"]))
+    neutral_ratio = neutral_count / n
+    if neutral_ratio >= 0.5:
+        up_moves = sum(1 for i in range(1, len(prices)) if prices[i] > prices[i-1])
+        down_moves = sum(1 for i in range(1, len(prices)) if prices[i] < prices[i-1])
+        total_moves = up_moves + down_moves
+        if total_moves > 0:
+            up_ratio = up_moves / total_moves
+            if up_ratio >= 0.65 and price_change_pct > 0.5:
+                log.info(
+                    "[regime] %s Fallback triggered: OI ambiguous (neutral ratio %.1f%%), "
+                    "but price shows clear uptrend (up moves ratio %.1f%%, price change %.2f%%). "
+                    "Classifying as TRENDING_UP",
+                    symbol, neutral_ratio * 100, up_ratio * 100, price_change_pct
+                )
+                return REGIME_TRENDING_UP
+            if (1 - up_ratio) >= 0.65 and price_change_pct < -0.5:
+                log.info(
+                    "[regime] %s Fallback triggered: OI ambiguous (neutral ratio %.1f%%), "
+                    "but price shows clear downtrend (down moves ratio %.1f%%, price change %.2f%%). "
+                    "Classifying as TRENDING_DOWN",
+                    symbol, neutral_ratio * 100, (1 - up_ratio) * 100, price_change_pct
+                )
+                return REGIME_TRENDING_DOWN
+
     if price_range_pct > 3.0:
         return REGIME_VOLATILE
     # Explicit RANGE branch (#10): low-vol mid-sessions that previously fell

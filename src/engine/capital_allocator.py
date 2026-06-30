@@ -154,7 +154,7 @@ def _calculate_live_lots(symbol: str, entry_premium: float, side: str, config: d
     return lots
 
 
-def calculate_trade_lots(symbol: str, entry_premium: float, side: str = "BUY", is_paper: bool = False) -> int:
+def calculate_trade_lots(symbol: str, entry_premium: float, side: str = "BUY", is_paper: bool = False, pyramid_level: int = 1) -> int:
     """
     Calculate the number of lots to trade for a symbol based on settings and premium.
 
@@ -164,6 +164,9 @@ def calculate_trade_lots(symbol: str, entry_premium: float, side: str = "BUY", i
 
     Live trades:
       - live_symbol_lots override, else capital-based auto-calc.
+      
+    Pyramiding (pyramid_level > 1):
+      - Scale down lots for subsequent entries (50% for level 2, 25% for level 3+).
     """
     config = load_runtime_config()
     base = _base_symbol(symbol)
@@ -172,16 +175,23 @@ def calculate_trade_lots(symbol: str, entry_premium: float, side: str = "BUY", i
         if _broker_mode_enabled(config):
             lots = _calculate_live_lots(base, entry_premium, side, config)
             log.debug("%s: paper trade — broker mode on, using live lot sizing (%d lots)", base, lots)
-            return lots
+        else:
+            paper_symbol_lots = config.get("paper_symbol_lots") or {}
+            if base in paper_symbol_lots:
+                lots = max(1, int(paper_symbol_lots[base]))
+                log.debug("%s: paper trade — using paper_symbol_lots=%d", base, lots)
+            else:
+                lots = max(1, int(config.get("paper_lots") or 10))
+                log.debug("%s: paper trade — using global paper_lots=%d", base, lots)
+    else:
+        lots = _calculate_live_lots(base, entry_premium, side, config)
 
-        paper_symbol_lots = config.get("paper_symbol_lots") or {}
-        if base in paper_symbol_lots:
-            lots = max(1, int(paper_symbol_lots[base]))
-            log.debug("%s: paper trade — using paper_symbol_lots=%d", base, lots)
-            return lots
+    # Pyramiding Sizing (Flaw #10): Reduce size on scaling in
+    if pyramid_level == 2:
+        lots = max(1, int(lots * 0.5))
+        log.info("%s: Pyramiding level 2 — scaling lot size to %d (50%%)", base, lots)
+    elif pyramid_level >= 3:
+        lots = max(1, int(lots * 0.25))
+        log.info("%s: Pyramiding level %d — scaling lot size to %d (25%%)", base, pyramid_level, lots)
 
-        paper_lots = int(config.get("paper_lots") or 10)
-        log.debug("%s: paper trade — using global paper_lots=%d", base, paper_lots)
-        return max(1, paper_lots)
-
-    return _calculate_live_lots(base, entry_premium, side, config)
+    return lots

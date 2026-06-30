@@ -798,10 +798,12 @@ def get_scan_summary_n_scans_ago(symbol: str, n: int) -> dict | None:
 
 
 def get_recent_alerts_for_symbol(symbol: str, limit: int = 50) -> list[dict]:
+    # Flaw #8: Stale Alert Persistence Vulnerability
     sql = """
         SELECT verdict_label FROM scan_summaries
         WHERE symbol = ?
           AND verdict_label IS NOT NULL
+          AND fetched_at >= datetime('now', '-24 hours')
         ORDER BY fetched_at DESC
         LIMIT ?
     """

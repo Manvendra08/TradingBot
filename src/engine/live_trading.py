@@ -324,10 +324,13 @@ def _trade_plan_from_verdict(verdict: str, confidence: int, ctx: dict) -> dict |
     from config.symbol_classes import get_strike_step
 
     step = float(get_strike_step(symbol) or 50)
-    if side == "BUY":
-        sl_ul, tgt_ul = calculate_buy_sl_target(entry_premium, underlying, ctx, step)
-    else:
+    if side == "SELL":
         sl_ul, tgt_ul = calculate_sell_sl_target(entry_premium, underlying, ctx, step)
+    else:
+        sl_ul, tgt_ul = calculate_buy_sl_target(entry_premium, underlying, ctx, step)
+        
+    if sl_ul is None or tgt_ul is None:
+        return None
 
     plan["sl_underlying"] = sl_ul
     plan["target_underlying"] = tgt_ul
@@ -1012,7 +1015,7 @@ def _run_live_trading_legacy(
         return {"action": "BLOCKED_PLAN", "reason": "No valid trade plan"}
 
     entry_premium = plan["entry_premium"]
-    lots = calculate_trade_lots(symbol, entry_premium)
+    lots = calculate_trade_lots(symbol, entry_premium, side=plan.get("side", "BUY"), is_paper=False, pyramid_level=plan.get("pyramid_level", 1))
     scores = decision.get("scores") or {}
 
     # Signal deduplication key
@@ -1517,7 +1520,7 @@ def run_live_trading(
         return {"action": "BLOCKED_PLAN", "reason": "No valid trade plan"}
 
     entry_premium = plan["entry_premium"]
-    lots = calculate_trade_lots(symbol, entry_premium)
+    lots = calculate_trade_lots(symbol, entry_premium, side=plan.get("side", "BUY"), is_paper=False, pyramid_level=plan.get("pyramid_level", 1))
     today_date = datetime.now(IST).strftime("%Y%m%d")
     signal_key = f"{symbol}:{plan.get('option_type', '')}:{int(plan.get('strike') or 0)}:{today_date}:live"
     exit_mode = "POLL" if plan["option_type"] == "FUT" else "GTT"

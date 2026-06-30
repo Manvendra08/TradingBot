@@ -91,8 +91,8 @@ def calculate_buy_sl_target(
         sl_underlying = underlying - 1.5 * atr
         target_underlying = underlying + 2.0 * atr
     else:
-        sl_underlying = underlying - 2 * step
-        target_underlying = underlying + 2 * step
+        log.warning("calculate_buy_sl_target: Missing ATR data, skipping trade plan creation (strict ATR requirement)")
+        return None, None
     
     return round(sl_underlying, 2), round(target_underlying, 2)
 
@@ -123,8 +123,8 @@ def calculate_sell_sl_target(
         sl_underlying = underlying + 1.5 * atr
         target_underlying = underlying - 2.0 * atr
     else:
-        sl_underlying = underlying + 2 * step
-        target_underlying = underlying - 2 * step
+        log.warning("calculate_sell_sl_target: Missing ATR data, skipping trade plan creation (strict ATR requirement)")
+        return None, None
     
     return round(sl_underlying, 2), round(target_underlying, 2)
 

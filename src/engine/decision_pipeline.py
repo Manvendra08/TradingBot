@@ -103,13 +103,31 @@ def step_signal_core_oi(ctx: PipelineContext) -> StepResult:
     ctx.direction = "LONG" if is_bullish(verdict) else "SHORT"
 
     if not PAPER_RESEARCH_MODE and confidence < effective_min_conf:
-        return StepResult(
-            name="signal",
-            passed=False,
-            score=confidence,
-            reason=f"Confidence {confidence}% below threshold {effective_min_conf}%",
-            data={"verdict": verdict, "confidence": confidence, "min_confidence": effective_min_conf}
+        # Flaw #3: Low Conviction Starvation Gating
+        from src.engine.trend_analysis import calculate_momentum_score
+        momentum = calculate_momentum_score(
+            symbol=ctx.symbol,
+            verdict=verdict,
+            confidence=confidence,
+            ctx=ctx.scan_context,
         )
+        if "Low Conviction" in verdict and momentum >= 75:
+            log.info(
+                "%s: Boosting 'Low Conviction' confidence from %d to %d due to high momentum (%d)",
+                ctx.symbol, confidence, effective_min_conf, momentum
+            )
+            confidence = effective_min_conf
+            # Update the underlying dict so downstream steps see the boosted confidence
+            if "intel" in ctx.scan_context:
+                ctx.scan_context["intel"]["confidence"] = confidence
+        else:
+            return StepResult(
+                name="signal",
+                passed=False,
+                score=confidence,
+                reason=f"Confidence {confidence}% below threshold {effective_min_conf}%",
+                data={"verdict": verdict, "confidence": confidence, "min_confidence": effective_min_conf}
+            )
 
     return StepResult(
         name="signal",
@@ -269,8 +287,8 @@ def step_entry_quality_core(ctx: PipelineContext) -> StepResult:
     ctx.scan_context["_entry_quality"] = entry_quality
     ctx.scan_context["_entry_reasons"] = entry_reasons
 
-    # Check baseline filter pass
-    passed = entry_quality >= MIN_ENTRY_QUALITY_EXPERIMENTAL
+    # Flaw #5: Check against Core threshold instead of Experimental
+    passed = entry_quality >= MIN_ENTRY_QUALITY_CORE
 
     return StepResult(
         name="entry_quality",
@@ -302,8 +320,16 @@ def step_regime(ctx: PipelineContext) -> StepResult:
         plan = ctx.scan_context.get("_pipeline_plan") or {}
         option_type = plan.get("option_type", "CE")
         regime_sc = regime_score_for_trade(regime, option_type)
-        passed = True
-        reason = f"Market regime: {regime} (score={regime_sc})"
+        # Flaw #4: Enforce Regime Score Gating
+        if PAPER_RESEARCH_MODE and confidence >= MIN_CONFIDENCE_CORE:
+            passed = True
+            reason = f"Market regime: {regime} (score={regime_sc}) - Bypassed in research mode"
+        else:
+            passed = regime_sc >= MIN_REGIME_SCORE_CORE
+            if passed:
+                reason = f"Market regime: {regime} (score={regime_sc})"
+            else:
+                reason = f"Market regime: {regime} (score={regime_sc}) below required {MIN_REGIME_SCORE_CORE}"
 
     return StepResult(
         name="regime",
@@ -391,11 +417,14 @@ def step_trend_alignment_core(ctx: PipelineContext) -> StepResult:
 
         # Priority 2: Trend persistence
         elif is_persistent and entry_quality >= MIN_ENTRY_QUALITY_CORE and regime_ok:
-            passed = True
-            setup_type = "TREND_CONTINUATION"
-            reason = persist_reason
-            if regime_sc < MIN_REGIME_SCORE_CORE:
-                soft_conflicts.append("LOW_REGIME_SCORE")
+            if trend_alignment >= MIN_TREND_ALIGNMENT_CORE:
+                passed = True
+                setup_type = "TREND_CONTINUATION"
+                reason = persist_reason
+                if regime_sc < MIN_REGIME_SCORE_CORE:
+                    soft_conflicts.append("LOW_REGIME_SCORE")
+            else:
+                reason = f"Trend continuation blocked: alignment ({trend_alignment}) < required ({MIN_TREND_ALIGNMENT_CORE})"
 
         # Priority 3: Momentum scoring
         elif momentum_score >= MOMENTUM_SCORE_THRESHOLD and entry_quality >= MIN_ENTRY_QUALITY_CORE:

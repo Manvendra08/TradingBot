@@ -80,6 +80,7 @@ def get_trend_alignment_score(symbol: str, verdict: str) -> int:
             SELECT verdict_label FROM scan_summaries
             WHERE symbol = ?
               AND (is_fallback IS NULL OR is_fallback = 0)
+              AND fetched_at >= datetime('now', '-24 hours')
             ORDER BY fetched_at DESC
             LIMIT 10
             """,
