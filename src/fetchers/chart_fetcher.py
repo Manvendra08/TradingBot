@@ -45,7 +45,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
-from config.settings import DB_PATH, TV_DISABLE, DHAN_SEGMENTS
+from config.settings import DB_PATH, DHAN_SEGMENTS, TV_DISABLE
 from src.utils.dhan_resolver import get_dhan_security_id
 
 # Suppress tvDatafeed library's own error/warning logs unconditionally.
@@ -780,6 +780,28 @@ def _fetch_dhan_builtup_ohlc(
         rows = raw.get("data") if isinstance(raw, dict) else None
         if not isinstance(rows, list):
             return None
+
+        # Compute ATR from the raw 15-min dhan rows before aggregation
+        # (the rows contain enough bars for ATR-14 calculation)
+        dhan_atr = None
+        try:
+            dhan_bars = []
+            for r in rows:
+                try:
+                    dhan_bars.append(
+                        {
+                            "High": float(r.get("h", 0)),
+                            "Low": float(r.get("l", 0)),
+                            "Close": float(r.get("c", 0)),
+                        }
+                    )
+                except Exception:
+                    continue
+            if len(dhan_bars) >= 15:
+                dhan_atr = _calculate_atr_from_bars(dhan_bars, period=14)
+        except Exception:
+            pass
+
         out = _aggregate_rows_to_payload(rows, *window)
         if out:
             log.info(
@@ -787,21 +809,28 @@ def _fetch_dhan_builtup_ohlc(
                 base_symbol,
                 tf,
             )
-            # Fetch historical ATR and prev_ohlc from yfinance as a fallback
-            try:
-                yf_payload = _fetch_yf(base_symbol, tf, reference_price=reference_price)
-                if yf_payload:
-                    if "atr_14" in yf_payload:
-                        out["atr_14"] = yf_payload["atr_14"]
-                    if "prev_ohlc" in yf_payload:
-                        out["prev_ohlc"] = yf_payload["prev_ohlc"]
-            except Exception as e:
-                log.warning(
-                    "[chart] failed to fetch yfinance fallback indicators for %s %s: %s",
-                    base_symbol,
-                    tf,
-                    e,
-                )
+            # Use ATR from dhan rows if available (covers MCX commodities
+            # where yfinance may fail or return USD-denominated data)
+            if dhan_atr is not None:
+                out["atr_14"] = dhan_atr
+            else:
+                # Fallback: try yfinance for ATR
+                try:
+                    yf_payload = _fetch_yf(
+                        base_symbol, tf, reference_price=reference_price
+                    )
+                    if yf_payload:
+                        if "atr_14" in yf_payload:
+                            out["atr_14"] = yf_payload["atr_14"]
+                        if "prev_ohlc" in yf_payload:
+                            out["prev_ohlc"] = yf_payload["prev_ohlc"]
+                except Exception as e:
+                    log.warning(
+                        "[chart] failed to fetch yfinance fallback indicators for %s %s: %s",
+                        base_symbol,
+                        tf,
+                        e,
+                    )
         return out
     except Exception as exc:
         log.warning("[chart] dhan_builtup fetch failed %s %s: %s", base_symbol, tf, exc)
@@ -905,11 +934,16 @@ def _fetch_shoonya_candles(
     end_epoch = int(_time.time())
     start_epoch = end_epoch - (5 * 24 * 3600)  # 5 days of history
 
-    bars = fetcher.fetch_candles(exchange, token, interval_minutes, start_epoch, end_epoch)
+    bars = fetcher.fetch_candles(
+        exchange, token, interval_minutes, start_epoch, end_epoch
+    )
     if not bars:
         log.debug(
             "[chart] shoonya: no bars returned for %s %s (exchange=%s token=%s)",
-            base_symbol, tf, exchange, token,
+            base_symbol,
+            tf,
+            exchange,
+            token,
         )
         return None
 
@@ -928,7 +962,8 @@ def _fetch_shoonya_candles(
     if not payload:
         log.debug(
             "[chart] shoonya: grid aggregation produced no completed bar for %s %s",
-            base_symbol, tf,
+            base_symbol,
+            tf,
         )
         return None
 
@@ -938,7 +973,10 @@ def _fetch_shoonya_candles(
 
     log.info(
         "[chart] successfully fetched %s %s using shoonya (exchange=%s token=%s)",
-        base_symbol, tf, exchange, token,
+        base_symbol,
+        tf,
+        exchange,
+        token,
     )
     return payload
 
