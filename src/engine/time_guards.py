@@ -44,7 +44,7 @@ _EIA_MINUTE  = 0
 _EIA_WINDOW  = 15   # minutes either side of the announcement
 
 
-def is_trading_allowed_now(symbol: str) -> tuple[bool, str]:
+def is_trading_allowed_now(symbol: str, expiry_str: str | None = None) -> tuple[bool, str]:
     """Return ``(allowed, reason)``.
 
     ``allowed=True``  — no guard is active; entry may proceed.
@@ -55,6 +55,7 @@ def is_trading_allowed_now(symbol: str) -> tuple[bool, str]:
     (allow) to avoid silently blocking the engine.
     """
     try:
+        from config.settings import MCX_SYMBOLS
         now = datetime.now(IST)
         h, m = now.hour, now.minute
         sym  = str(symbol).upper().split()[0]  # "NIFTY 50" → "NIFTY"
@@ -99,6 +100,23 @@ def is_trading_allowed_now(symbol: str) -> tuple[bool, str]:
                         )
             except Exception:
                 pass  # runtime-config failure → do not block
+
+        # ── Window 5: Expiry day trading cutoff ──────────────────────────────
+        if expiry_str:
+            try:
+                expiry_date = datetime.strptime(expiry_str, "%Y-%m-%d").date()
+                if expiry_date == now.date():
+                    is_mcx = sym in MCX_SYMBOLS or sym in ("NATURALGAS", "NATGAS", "CRUDEOIL", "GOLD", "SILVER")
+                    if is_mcx:
+                        # MCX cutoff: 8:00 pm IST (20:00)
+                        if (h, m) >= (20, 0):
+                            return False, f"Expiry day trading cutoff (after 20:00 IST for MCX on expiry day)"
+                    else:
+                        # NSE/BSE cutoff: 2:30 pm IST (14:30)
+                        if (h, m) >= (14, 30):
+                            return False, f"Expiry day trading cutoff (after 14:30 IST for NSE/BSE on expiry day)"
+            except Exception as parse_exc:
+                log.warning("time_guards: failed to parse expiry date %s (%s)", expiry_str, parse_exc)
 
         return True, ""
 

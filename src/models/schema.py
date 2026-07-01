@@ -1104,9 +1104,10 @@ def list_paper_trades(symbol: str | None = None, limit: int = 300) -> list[dict]
 
 def delete_expired_contracts() -> int:
     """Delete expired contract OI data from DB."""
-    from datetime import datetime, timezone
+    from datetime import datetime, timezone, timedelta
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    thirty_days_ago = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
     with get_conn() as conn:
         # Log per-symbol/per-expiry breakdown before deleting
         before = conn.execute(
@@ -1120,7 +1121,7 @@ def delete_expired_contracts() -> int:
         cur1 = conn.execute(
             "DELETE FROM option_chain_snapshots WHERE expiry < ?", (today,)
         )
-        cur2 = conn.execute("DELETE FROM scan_summaries WHERE expiry < ?", (today,))
+        cur2 = conn.execute("DELETE FROM scan_summaries WHERE fetched_at < ?", (thirty_days_ago,))
         log.info(
             "[db] Deleted %d expired snapshots and %d expired scan summaries.",
             cur1.rowcount,

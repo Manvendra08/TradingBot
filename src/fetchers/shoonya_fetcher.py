@@ -1191,6 +1191,10 @@ class ShoonyaFetcher(BaseFetcher):
                     "expiry": target_expiry_iso,
                     "strikes": strikes,
                     "source": self.name,
+                    "all_expiries": [
+                        datetime.strptime(e, "%d-%b-%Y").strftime("%Y-%m-%d")
+                        for e in expiries
+                    ],
                 }
 
             # Handle standard NSE/BSE indices using GetOptionChain
@@ -1350,6 +1354,7 @@ class ShoonyaFetcher(BaseFetcher):
                 "expiry": target_expiry_iso,
                 "strikes": strikes,
                 "source": self.name,
+                "all_expiries": all_expiries,
             }
 
         except Exception as exc:

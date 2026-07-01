@@ -140,7 +140,8 @@ def step_signal_core_oi(ctx: PipelineContext) -> StepResult:
 
 def step_rule_core_oi(ctx: PipelineContext) -> StepResult:
     # 1. Time guard check
-    time_ok, time_reason = is_trading_allowed_now(ctx.symbol)
+    expiry_str = ctx.scan_context.get("expiry")
+    time_ok, time_reason = is_trading_allowed_now(ctx.symbol, expiry_str)
     if not time_ok:
         return StepResult(
             name="rule",
@@ -482,6 +483,45 @@ def step_trend_alignment_core(ctx: PipelineContext) -> StepResult:
 
 
 def step_risk(ctx: PipelineContext) -> StepResult:
+    # 0. Check option buying on expiry day
+    expiry_str = ctx.scan_context.get("expiry")
+    if expiry_str:
+        try:
+            expiry_date = datetime.strptime(expiry_str, "%Y-%m-%d").date()
+            import pytz
+            IST = pytz.timezone("Asia/Kolkata")
+            today_ist = datetime.now(IST).date()
+            if expiry_date == today_ist:
+                side = None
+                option_type = None
+                if ctx.engine == "CORE_OI":
+                    plan = ctx.scan_context.get("_pipeline_plan")
+                    if plan:
+                        side = plan.get("side")
+                        option_type = plan.get("option_type")
+                else:  # TIMEFRAME
+                    side = "BUY"
+                    option_type = "CE" if ctx.direction == "LONG" else "PE"
+                    is_mcx = ctx.symbol.upper().split()[0] in MCX_SYMBOLS
+                    if is_mcx:
+                        from src.engine.paper_plan import mcx_option_liquidity_ok
+                        from config.symbol_classes import get_strike_step
+                        step = float(get_strike_step(ctx.symbol) or 1)
+                        atm = ctx.scan_context.get("atm_strike") or round(ctx.underlying / step) * step
+                        if not mcx_option_liquidity_ok(ctx.symbol, atm, ctx.scan_context):
+                            option_type = "FUT"
+
+                if side == "BUY" and option_type in ("CE", "PE"):
+                    return StepResult(
+                        name="risk",
+                        passed=False,
+                        score=-1,
+                        reason=f"Option buying (BUY {option_type}) is blocked on expiry day ({expiry_str})",
+                        data={"expiry": expiry_str, "option_type": option_type, "side": side}
+                    )
+        except Exception as e:
+            log.warning("Error checking expiry day option buying in step_risk: %s", e)
+
     allowed, reason, sub_check_code = _check_risk_limits_for_table(ctx.symbol, "paper_trades", "paper")
     return StepResult(
         name="risk",
@@ -562,6 +602,18 @@ def step_rule_timeframe(ctx: PipelineContext) -> StepResult:
             score=-1,
             reason="Outside market hours",
             data={}
+        )
+
+    # 1b. Time guard check (including expiry cutoff)
+    expiry_str = ctx.scan_context.get("expiry")
+    time_ok, time_reason = is_trading_allowed_now(symbol, expiry_str)
+    if not time_ok:
+        return StepResult(
+            name="rule",
+            passed=False,
+            score=-1,
+            reason=f"Time guard: {time_reason}",
+            data={"reason": time_reason}
         )
 
     # 2. Duplicate signal key check
