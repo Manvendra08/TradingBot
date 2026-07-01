@@ -1,17 +1,28 @@
+import calendar
+import json
 import logging
 import re
+import threading
 import time
 from datetime import datetime
 
+from config.settings import DATA_DIR
+
 log = logging.getLogger("nsebot.symbol_resolver")
 
-import calendar
-
 # Local instrument cache for the day (TTL-based to avoid repeated SSL failures spamming)
-_INSTRUMENT_CACHE = {}
-_TSYM_EXPIRY_CACHE = {}
+_INSTRUMENT_CACHE: dict = {}
+_TSYM_EXPIRY_CACHE: dict = {}
 _INSTRUMENT_CACHE_TS = 0.0
-_INSTRUMENT_CACHE_TTL_SEC = 4 * 60 * 60  # 4 hours (refresh well within trading day)
+
+# Cache persists to disk so restarts don't re-fetch 57k instruments unnecessarily.
+# Instruments rarely change intraday; 24h TTL is safe.
+_INSTRUMENT_CACHE_TTL_SEC = 24 * 60 * 60  # 24 hours
+
+_INSTRUMENT_CACHE_PATH = DATA_DIR / "instrument_cache.json"
+_TSYM_CACHE_PATH = DATA_DIR / "tsym_cache.json"
+
+_LOAD_FROM_DISK_LOCK = threading.Lock()
 
 _REFRESH_IN_PROGRESS = False
 _REFRESH_IN_PROGRESS_TS = 0.0
@@ -25,9 +36,80 @@ _LAST_MISS_REFRESH_TS = 0.0
 _MISS_REFRESH_INTERVAL_SEC = 5 * 60  # 5 minutes
 
 
+def _save_cache_to_disk() -> None:
+    """Persist in-memory cache to disk so restarts don't re-fetch."""
+    try:
+        # Convert tuple keys to string keys for JSON serialization
+        serializable = {}
+        for key, val in _INSTRUMENT_CACHE.items():
+            k_str = json.dumps(key)  # tuple -> JSON array string
+            serializable[k_str] = val
+
+        payload = {
+            "cache": serializable,
+            "tsym_cache": _TSYM_EXPIRY_CACHE,
+            "timestamp": _INSTRUMENT_CACHE_TS,
+        }
+        _INSTRUMENT_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _INSTRUMENT_CACHE_PATH.write_text(
+            json.dumps(payload, indent=2), encoding="utf-8"
+        )
+    except Exception as exc:
+        log.debug("Failed to persist instrument cache to disk: %s", exc)
+
+
+def _load_cache_from_disk() -> bool:
+    """Load instrument cache from disk. Returns True if cache is valid and fresh."""
+    global _INSTRUMENT_CACHE, _TSYM_EXPIRY_CACHE, _INSTRUMENT_CACHE_TS
+
+    with _LOAD_FROM_DISK_LOCK:
+        if _INSTRUMENT_CACHE:
+            return True  # already loaded by another thread
+
+        try:
+            if not _INSTRUMENT_CACHE_PATH.exists():
+                return False
+
+            data = json.loads(_INSTRUMENT_CACHE_PATH.read_text(encoding="utf-8"))
+            ts = float(data.get("timestamp", 0))
+
+            # Respect TTL — if disk cache is stale, caller should re-fetch
+            if (time.time() - ts) > _INSTRUMENT_CACHE_TTL_SEC:
+                log.info(
+                    "Disk instrument cache expired (age %.1fh > %dh TTL)",
+                    (time.time() - ts) / 3600,
+                    _INSTRUMENT_CACHE_TTL_SEC / 3600,
+                )
+                return False
+
+            # Restore with tuple keys
+            raw_cache = data.get("cache", {})
+            restored = {}
+            for k_str, val in raw_cache.items():
+                key = tuple(json.loads(k_str))
+                restored[key] = val
+
+            _INSTRUMENT_CACHE = restored
+            _TSYM_EXPIRY_CACHE = data.get("tsym_cache", {})
+            _INSTRUMENT_CACHE_TS = ts
+
+            log.info(
+                "Loaded %d instruments from disk cache (%.1fh old)",
+                len(_INSTRUMENT_CACHE),
+                (time.time() - ts) / 3600,
+            )
+            return True
+        except Exception as exc:
+            log.debug("Failed to load instrument cache from disk: %s", exc)
+            return False
+
+
 def _instrument_cache_is_ready() -> bool:
     global _INSTRUMENT_CACHE_TS
     if not _INSTRUMENT_CACHE:
+        # Try loading from disk before giving up
+        if _load_cache_from_disk():
+            return True
         return False
     if _INSTRUMENT_CACHE_TTL_SEC <= 0:
         return True
@@ -47,6 +129,10 @@ def fetch_and_cache_instruments(
     """
     global _INSTRUMENT_CACHE, _TSYM_EXPIRY_CACHE, _INSTRUMENT_CACHE_TS
     global _REFRESH_IN_PROGRESS, _REFRESH_IN_PROGRESS_TS
+
+    # If disk cache is already fresh, skip the API fetch entirely
+    if _instrument_cache_is_ready():
+        return
 
     # Guard against concurrent refresh storms
     if _REFRESH_IN_PROGRESS and (time.time() - float(_REFRESH_IN_PROGRESS_TS)) < 60.0:
@@ -71,7 +157,9 @@ def fetch_and_cache_instruments(
 
                 # Temporarily disable keep-alive for the large instruments download to prevent transient SSL EOF errors
                 req_sess = getattr(kite_client, "reqsession", None)
-                old_conn_header = req_sess.headers.get("Connection") if req_sess else None
+                old_conn_header = (
+                    req_sess.headers.get("Connection") if req_sess else None
+                )
                 if req_sess:
                     req_sess.headers["Connection"] = "close"
                 try:
@@ -101,7 +189,9 @@ def fetch_and_cache_instruments(
                         exp_str = ""
 
                     strike = float(inst.get("strike") or 0.0)
-                    otype = str(inst.get("instrument_type") or "").upper()  # CE, PE, FUT
+                    otype = str(
+                        inst.get("instrument_type") or ""
+                    ).upper()  # CE, PE, FUT
                     tsym = inst.get("tradingsymbol")
                     token = inst.get("instrument_token")
                     lot_size = inst.get("lot_size")
@@ -119,6 +209,8 @@ def fetch_and_cache_instruments(
                 _INSTRUMENT_CACHE = cache
                 _TSYM_EXPIRY_CACHE = tsym_expiry_cache
                 _INSTRUMENT_CACHE_TS = time.time()
+                # Persist to disk so restarts don't re-fetch
+                _save_cache_to_disk()
                 log.info(
                     "Successfully cached %d instruments and %d trading symbols.",
                     len(_INSTRUMENT_CACHE),
@@ -132,18 +224,28 @@ def fetch_and_cache_instruments(
         # All attempts failed: keep existing cache as-is (do not clear)
         if not _instrument_cache_is_ready() or not _INSTRUMENT_CACHE:
             # Log only once per TTL window to avoid spamming.
-            log.warning("Failed to fetch/cache instruments from Kite API (SSL/network). Keeping existing cache. err=%s", last_exc)
+            log.warning(
+                "Failed to fetch/cache instruments from Kite API (SSL/network). Keeping existing cache. err=%s",
+                last_exc,
+            )
         else:
-            log.info("Instrument refresh failed but existing cache is available. err=%s", last_exc)
+            log.info(
+                "Instrument refresh failed but existing cache is available. err=%s",
+                last_exc,
+            )
 
         # IMPORTANT: If fetching failed, the Kite client might be in a bad state.
         # Invalidate it to force a re-initialization on the next attempt.
         try:
             from src.engine.live_trading import clear_kite_client_cache
+
             clear_kite_client_cache()
             log.warning("Cleared Kite client cache due to instrument fetch failure.")
         except Exception as e:
-            log.error("Failed to clear Kite client cache after instrument fetch failure: %s", e)
+            log.error(
+                "Failed to clear Kite client cache after instrument fetch failure: %s",
+                e,
+            )
     finally:
         _REFRESH_IN_PROGRESS = False
 
@@ -161,12 +263,36 @@ def get_expiry_for_tradingsymbol(tsym: str) -> str | None:
     m_opt_w = re.match(r"^([A-Z\-]+)(\d{2})([0-9OND])(\d{2})(\d+)(CE|PE)$", tsym)
     m_fut = re.match(r"^([A-Z\-]+)(\d{2})([A-Z]{3})(FUT)?$", tsym)
     m_fut_w = re.match(r"^([A-Z\-]+)(\d{2})([0-9OND])(\d{2})(FUT)?$", tsym)
-    
-    months = {"JAN": "01", "FEB": "02", "MAR": "03", "APR": "04", "MAY": "05", "JUN": "06",
-              "JUL": "07", "AUG": "08", "SEP": "09", "OCT": "10", "NOV": "11", "DEC": "12"}
-              
-    m_chars = {"1": "01", "2": "02", "3": "03", "4": "04", "5": "05", "6": "06", "7": "07",
-               "8": "08", "9": "09", "O": "10", "N": "11", "D": "12"}
+
+    months = {
+        "JAN": "01",
+        "FEB": "02",
+        "MAR": "03",
+        "APR": "04",
+        "MAY": "05",
+        "JUN": "06",
+        "JUL": "07",
+        "AUG": "08",
+        "SEP": "09",
+        "OCT": "10",
+        "NOV": "11",
+        "DEC": "12",
+    }
+
+    m_chars = {
+        "1": "01",
+        "2": "02",
+        "3": "03",
+        "4": "04",
+        "5": "05",
+        "6": "06",
+        "7": "07",
+        "8": "08",
+        "9": "09",
+        "O": "10",
+        "N": "11",
+        "D": "12",
+    }
 
     if m_opt_w:
         yy = m_opt_w.group(2)
@@ -201,12 +327,14 @@ def get_expiry_for_tradingsymbol(tsym: str) -> str | None:
             year = 2000 + int(yy)
             name = m_fut.group(1).upper()
             if name in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"):
-                from config.symbol_classes import get_futures_expiry
                 from datetime import date
+
+                from config.symbol_classes import get_futures_expiry
+
                 fut_exp = get_futures_expiry(name, ref_date=date(year, int(mm), 1))
                 if fut_exp:
                     return fut_exp
-            
+
             month = int(mm)
             month_days = calendar.monthcalendar(year, month)
             thursdays = []
@@ -216,11 +344,13 @@ def get_expiry_for_tradingsymbol(tsym: str) -> str | None:
                     thursdays.append(day)
             last_thurs = thursdays[-1]
             return f"{year}-{mm}-{last_thurs:02d}"
-            
+
     return None
 
 
-def resolve_instrument(symbol: str, expiry: str, strike: float, option_type: str) -> dict | None:
+def resolve_instrument(
+    symbol: str, expiry: str, strike: float, option_type: str
+) -> dict | None:
     """
     Lookup instrument details from cache.
     expiry: YYYY-MM-DD
@@ -232,9 +362,12 @@ def resolve_instrument(symbol: str, expiry: str, strike: float, option_type: str
     if not _instrument_cache_is_ready():
         try:
             from src.engine.live_trading import get_kite_client
+
             kite = get_kite_client()
             if kite:
-                log.info("[resolver] Cache not ready during resolve. Fetching instruments synchronously...")
+                log.info(
+                    "[resolver] Cache not ready during resolve. Fetching instruments synchronously..."
+                )
                 fetch_and_cache_instruments(kite)
         except Exception as e:
             log.warning("[resolver] Failed to auto-initialize cache: %s", e)
@@ -266,14 +399,23 @@ def resolve_instrument(symbol: str, expiry: str, strike: float, option_type: str
         # Sort by expiry string ascending
         future_matches.sort(key=lambda m: m[0][1])
         best_k, best_val = future_matches[0]
-        log.debug("[resolver] Resolved %s (%s, %g, %s) via cache search fallback (found expiry: %s)",
-                  symbol, expiry, strike, option_type, best_k[1])
+        log.debug(
+            "[resolver] Resolved %s (%s, %g, %s) via cache search fallback (found expiry: %s)",
+            symbol,
+            expiry,
+            strike,
+            option_type,
+            best_k[1],
+        )
         return best_val
 
     now = time.time()
     last = _CACHE_MISS_WARNED.get(key) or 0.0
     if (now - float(last)) > _CACHE_MISS_WARN_TTL_SEC:
-        log.warning("Instrument not found in cache for %s. Generating fallback tradingsymbol. Consider manual cache refresh or check Kite API status.", key)
+        log.warning(
+            "Instrument not found in cache for %s. Generating fallback tradingsymbol. Consider manual cache refresh or check Kite API status.",
+            key,
+        )
         _CACHE_MISS_WARNED[key] = now
 
     # Trigger a background cache refresh if Kite available and haven't recently refreshed
@@ -282,10 +424,14 @@ def resolve_instrument(symbol: str, expiry: str, strike: float, option_type: str
         _LAST_MISS_REFRESH_TS = now
         try:
             import threading
+
             from src.engine.live_trading import get_kite_client
+
             kite = get_kite_client()
             if kite and not _REFRESH_IN_PROGRESS:
-                log.info("[resolver] Cache miss triggered background instrument refresh...")
+                log.info(
+                    "[resolver] Cache miss triggered background instrument refresh..."
+                )
                 threading.Thread(
                     target=fetch_and_cache_instruments,
                     args=(kite,),
@@ -293,7 +439,9 @@ def resolve_instrument(symbol: str, expiry: str, strike: float, option_type: str
                     name="instrument-cache-miss-refresh",
                 ).start()
         except Exception as _re:
-            log.debug("[resolver] Could not trigger background refresh on cache miss: %s", _re)
+            log.debug(
+                "[resolver] Could not trigger background refresh on cache miss: %s", _re
+            )
 
     fallback_tsym = generate_fallback_tradingsymbol(symbol, expiry, strike, option_type)
     return {
@@ -304,7 +452,9 @@ def resolve_instrument(symbol: str, expiry: str, strike: float, option_type: str
     }
 
 
-def generate_fallback_tradingsymbol(symbol: str, expiry_str: str, strike: float, option_type: str) -> str:
+def generate_fallback_tradingsymbol(
+    symbol: str, expiry_str: str, strike: float, option_type: str
+) -> str:
     """
     Generate offline fallback tradingsymbol based on standard NFO/BFO and MCX naming rules.
     expiry_str: YYYY-MM-DD
@@ -315,18 +465,19 @@ def generate_fallback_tradingsymbol(symbol: str, expiry_str: str, strike: float,
         exp_date = datetime.strptime(expiry_str, "%Y-%m-%d")
     except ValueError:
         return f"{symbol}_{expiry_str}_{strike}_{option_type}"
-    
-    yy = exp_date.strftime("%y") # 2 digits
-    
+
+    yy = exp_date.strftime("%y")  # 2 digits
+
     if symbol in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"):
-        mon_letters = exp_date.strftime("%b").upper() # e.g. JUN
+        mon_letters = exp_date.strftime("%b").upper()  # e.g. JUN
         if option_type == "FUT":
             return f"{symbol}{yy}{mon_letters}FUT"
         else:
             strike_str = str(int(strike))
             return f"{symbol}{yy}{mon_letters}{strike_str}{option_type}"
-    
+
     import calendar
+
     month_days = calendar.monthcalendar(exp_date.year, exp_date.month)
     thursdays = []
     for week in month_days:
@@ -334,19 +485,32 @@ def generate_fallback_tradingsymbol(symbol: str, expiry_str: str, strike: float,
         if day > 0:
             thursdays.append(day)
     last_thurs = thursdays[-1]
-    
-    is_monthly = (exp_date.day == last_thurs)
-    
+
+    is_monthly = exp_date.day == last_thurs
+
     if option_type == "FUT":
         mon_letters = exp_date.strftime("%b").upper()
         return f"{symbol}{yy}{mon_letters}FUT"
-    
+
     if is_monthly:
         mon_letters = exp_date.strftime("%b").upper()
         strike_str = str(int(strike))
         return f"{symbol}{yy}{mon_letters}{strike_str}{option_type}"
     else:
-        m_chars = {1: "1", 2: "2", 3: "3", 4: "4", 5: "5", 6: "6", 7: "7", 8: "8", 9: "9", 10: "O", 11: "N", 12: "D"}
+        m_chars = {
+            1: "1",
+            2: "2",
+            3: "3",
+            4: "4",
+            5: "5",
+            6: "6",
+            7: "7",
+            8: "8",
+            9: "9",
+            10: "O",
+            11: "N",
+            12: "D",
+        }
         m_char = m_chars[exp_date.month]
         dd = exp_date.strftime("%d")
         strike_str = str(int(strike))

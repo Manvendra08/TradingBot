@@ -37,6 +37,136 @@ SCRAPE_RUNNER = ROOT / "tools" / "scrape_dhan_naturalgas.py"
 IST = pytz.timezone("Asia/Kolkata")
 
 
+def exit_all_positions_friday(market_class: str) -> None:
+    """Exit all open paper and live trades for symbols matching the given market class."""
+    from src.models.schema import get_conn, close_paper_trade
+    from src.fetchers.router import fetch_option_chain
+    from src.engine.live_trading import get_kite_client, _exit_open_live_trade
+    from src.engine.trade_plan import get_option_premium
+    from config.runtime_config import load_runtime_config
+    from config.settings import WATCH_SYMBOLS
+    from config.symbol_classes import get_symbol_class
+    from datetime import datetime, timezone
+
+    log.info("[Friday Exit] Weekend Risk auto-exit triggered for class: %s", market_class)
+    config = load_runtime_config()
+    shadow_mode = config.get("live_shadow_mode", True)
+    kite = get_kite_client()
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # Determine symbols matching class
+    symbols = [s for s in WATCH_SYMBOLS if get_symbol_class(s) == market_class]
+
+    for symbol in symbols:
+        try:
+            # 1. Fetch open paper trades
+            with get_conn() as conn:
+                open_paper = conn.execute(
+                    "SELECT * FROM paper_trades WHERE symbol=? AND status='OPEN'",
+                    (symbol,),
+                ).fetchall()
+
+            # 2. Fetch open live trades
+            with get_conn() as conn:
+                open_live = conn.execute(
+                    "SELECT * FROM live_trades WHERE symbol=? AND status='OPEN'",
+                    (symbol,),
+                ).fetchall()
+
+            if not open_paper and not open_live:
+                continue
+
+            log.info("[Friday Exit] Found open trades for %s. Fetching latest CMP data to square off...", symbol)
+            # Fetch options chain to get latest premiums
+            oc_data = fetch_option_chain(symbol)
+            if not oc_data or not oc_data.get("underlying_price"):
+                log.warning("[Friday Exit] Could not fetch latest prices for %s. Skipping Friday exit.", symbol)
+                continue
+
+            underlying = oc_data["underlying_price"]
+            option_rows = oc_data.get("strikes") or []
+
+            # Exit Paper Trades
+            for row in open_paper:
+                trade = dict(row)
+                exit_premium = None
+                if trade.get("option_type") == "FUT":
+                    exit_premium = underlying
+                else:
+                    exit_premium = get_option_premium(
+                        symbol,
+                        trade.get("expiry"),
+                        trade.get("strike"),
+                        trade.get("option_type"),
+                        option_rows,
+                    )
+
+                # Fallback to intrinsic value if premium is missing / zero
+                if exit_premium is None or exit_premium <= 0:
+                    strike = float(trade.get("strike") or 0.0)
+                    if trade.get("option_type") == "CE":
+                        exit_premium = max(0.0, underlying - strike)
+                    else:
+                        exit_premium = max(0.0, strike - underlying)
+
+                close_paper_trade(
+                    trade["id"],
+                    now_iso,
+                    underlying,
+                    exit_premium,
+                    "CLOSED_WEEKEND",
+                    "Friday auto-exit to avoid weekend risk",
+                )
+                log.info("[Friday Exit] Successfully closed paper trade #%d for %s at premium %.2f", trade["id"], symbol, exit_premium)
+
+            # Exit Live Trades
+            for row in open_live:
+                trade = dict(row)
+                exit_premium = None
+                if trade.get("option_type") == "FUT":
+                    exit_premium = underlying
+                else:
+                    exit_premium = get_option_premium(
+                        symbol,
+                        trade.get("expiry"),
+                        trade.get("strike"),
+                        trade.get("option_type"),
+                        option_rows,
+                    )
+
+                # Fallback to intrinsic value
+                if exit_premium is None or exit_premium <= 0:
+                    strike = float(trade.get("strike") or 0.0)
+                    if trade.get("option_type") == "CE":
+                        exit_premium = max(0.0, underlying - strike)
+                    else:
+                        exit_premium = max(0.0, strike - underlying)
+
+                try:
+                    _exit_open_live_trade(
+                        kite=kite,
+                        symbol=symbol,
+                        trade=trade,
+                        underlying=underlying,
+                        exit_premium=exit_premium,
+                        status="CLOSED_WEEKEND",
+                        reason="Friday auto-exit to avoid weekend risk",
+                        shadow_mode=shadow_mode,
+                        now_iso=now_iso,
+                    )
+                    log.info("[Friday Exit] Successfully closed live trade #%d for %s", trade["id"], symbol)
+                    from src.alerts.telegram_dispatcher import send_text
+                    prefix = "[SHADOW]" if shadow_mode else "🚨 [LIVE]"
+                    send_text(
+                        f"{prefix} **Friday Auto-Exit** | Closed `{symbol}` `{trade.get('option_type')}` position at underlying `{underlying}` to avoid weekend risk."
+                    )
+                except Exception as live_exc:
+                    log.error("[Friday Exit] Failed to close live trade #%d for %s: %s", trade["id"], symbol, live_exc)
+
+        except Exception as sym_exc:
+            log.error("[Friday Exit] Error executing Friday exit for %s: %s", symbol, sym_exc)
+
+
 def _is_open_for(symbol: str) -> bool:
     """Check if the market is currently open for the given symbol (used for scheduling guards)."""
     now = datetime.now(IST)
@@ -468,6 +598,9 @@ def start_scheduler(immediate: bool = False):
     last_kite_sync_refresh = 0.0
     _KITE_POSITION_SYNC_INTERVAL = 5 * 60  # L3: sync Kite positions every 5 minutes
 
+    _last_friday_nse_exit_date = None
+    _last_friday_mcx_exit_date = None
+
     try:
         while True:
             now_ts = time.time()
@@ -478,6 +611,23 @@ def start_scheduler(immediate: bool = False):
                 last_scanned_interval.clear()
                 has_done_startup_scan.clear()
                 has_logged_closed_pre_open.clear()
+
+            # Friday Weekend Risk Auto-Exits
+            if now_ist.weekday() == 4:  # Friday
+                current_time_str = now_ist.strftime("%H:%M")
+                if current_time_str == "15:28" and _last_friday_nse_exit_date != current_date:
+                    _last_friday_nse_exit_date = current_date
+                    try:
+                        exit_all_positions_friday("NSE_INDEX")
+                        exit_all_positions_friday("BSE_INDEX")
+                    except Exception as e:
+                        log.error("Friday auto-exit failed for NSE/BSE: %s", e)
+                elif current_time_str == "23:28" and _last_friday_mcx_exit_date != current_date:
+                    _last_friday_mcx_exit_date = current_date
+                    try:
+                        exit_all_positions_friday("MCX_COMMODITY")
+                    except Exception as e:
+                        log.error("Friday auto-exit failed for MCX: %s", e)
 
             # 1. Full Scan Loop per market class
             import math
