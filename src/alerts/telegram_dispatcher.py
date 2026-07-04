@@ -183,7 +183,11 @@ def _format_message(alert: dict) -> str:
             label          = detail.get("label", ""),
             bias           = detail.get("bias", ""),
         )
-    except Exception:
+    except Exception as exc:
+        log.warning(
+            "%s: interpretation format failed for alert_type=%s: %s",
+            alert.get("symbol", "?"), atype, exc,
+        )
         interp = ""
 
     sev = alert.get("severity", "LOW")

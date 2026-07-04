@@ -48,9 +48,24 @@ from src.utils.ip_monitor import check_ip_changed
 
 log = logging.getLogger(__name__)
 
+import json
+from pathlib import Path
+
 # Track which calendar dates have already been cleaned to avoid
 # repeating the expiry cleanup on every 3-minute scan cycle.
-_CLEANUP_DATES: set[str] = set()
+CLEANUP_DATA_FILE = Path("data") / "cleanup_dates.json"
+
+def _load_cleanup_dates() -> set[str]:
+    if not CLEANUP_DATA_FILE.exists():
+        return set()
+    try:
+        return set(json.loads(CLEANUP_DATA_FILE.read_text()))
+    except Exception:
+        return set()
+
+def _save_cleanup_dates(dates: set[str]) -> None:
+    CLEANUP_DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
+    CLEANUP_DATA_FILE.write_text(json.dumps(list(dates)))
 
 
 def _check_edge_health_and_trigger_retrain() -> None:
@@ -133,11 +148,13 @@ def run_pipeline(
             today_ist = datetime.now(IST).date()
             today_str = today_ist.strftime("%Y-%m-%d")
 
-            # Run expiry-data cleanup at most once per calendar day.
-            if today_str in _CLEANUP_DATES:
+            # Run expiry-data cleanup at most once per calendar day (persistent across restarts).
+            cleanup_dates = _load_cleanup_dates()
+            if today_str in cleanup_dates:
                 log.debug("Expiry cleanup already done for %s, skipping", today_str)
             else:
-                _CLEANUP_DATES.add(today_str)
+                cleanup_dates.add(today_str)
+                _save_cleanup_dates(cleanup_dates)
                 yesterday_str = (today_ist - timedelta(days=1)).strftime("%Y-%m-%d")
 
                 with get_conn() as conn:

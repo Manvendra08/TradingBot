@@ -475,6 +475,7 @@ def start_scheduler(immediate: bool = False):
     # in pipeline.py via on_trade_closed() and on_edge_health_alert().
     _last_ml_training_week: int | None = None  # ISO week number
     _last_eia_run_date = None
+    _last_backup_date = None
 
     # ── Instrument cache warm-up at scheduler start ────────────────────────
     cache_warmed_event = threading.Event()
@@ -833,6 +834,23 @@ def start_scheduler(immediate: bool = False):
 
                 threading.Thread(
                     target=_run_eia_analyzer, daemon=True, name="eia-analyzer"
+                ).start()
+
+            # 6. Daily Telegram Backup (Runs at 23:56 PM IST, after last MCX scan)
+            is_1156pm = now_ist.hour == 23 and now_ist.minute == 56
+            if is_1156pm and _last_backup_date != current_date:
+                _last_backup_date = current_date
+                log.info("[scheduler] Daily Telegram database backup triggered (23:56 PM IST)")
+
+                def _run_telegram_backup():
+                    try:
+                        from src.utils.gdrive_backup import backup_db_to_telegram
+                        backup_db_to_telegram()
+                    except Exception as exc:
+                        log.warning("[scheduler] Daily Telegram database backup failed: %s", exc)
+
+                threading.Thread(
+                    target=_run_telegram_backup, daemon=True, name="telegram-backup"
                 ).start()
 
             # Sleep in short increments to remain responsive to intervals and changes

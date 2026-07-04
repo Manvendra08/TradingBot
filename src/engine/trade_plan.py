@@ -10,6 +10,7 @@ This module provides a single source of truth for:
 Both paper_trading.py and live_trading.py import from here to ensure
 identical behavior and prevent divergence.
 """
+
 from __future__ import annotations
 
 import logging
@@ -30,40 +31,49 @@ _DB_PREMIUM_MAX_AGE_SECONDS = 15 * 60  # 15 minutes
 # ATR Extraction
 # ---------------------------------------------------------------------------
 
+
 def get_atr(ctx: dict) -> Optional[float]:
     """
     Extract ATR-14 from chart_indicators, trying 3h then 1h then any TF.
-    
+
     Args:
         ctx: Scan context dict with 'chart_indicators' key
-        
+
     Returns:
         ATR value as float, or None if unavailable
     """
     chart_indicators = ctx.get("chart_indicators") or {}
-    
+
+    # Unwrap symbol-keyed wrapper if present: {"NATURALGAS": {"1h": ..., "3h": ...}}
+    if not any(k in chart_indicators for k in ("1h", "3h", "atr_14")):
+        for key, val in chart_indicators.items():
+            if isinstance(val, dict) and any(k in val for k in ("1h", "3h", "atr_14")):
+                chart_indicators = val
+                break
+
     # 1. Try structured keys 3h then 1h
     pay_3h = chart_indicators.get("3h") or {}
     pay_1h = chart_indicators.get("1h") or {}
     atr = pay_3h.get("atr_14") or pay_1h.get("atr_14")
     if atr is not None:
         return float(atr)
-        
+
     # 2. Try any other timeframe under chart_indicators
     for tf, payload in chart_indicators.items():
         if isinstance(payload, dict) and payload.get("atr_14") is not None:
             return float(payload["atr_14"])
-            
+
     # 3. Fallback: flat structure directly under chart_indicators
     if "atr_14" in chart_indicators:
         return float(chart_indicators["atr_14"])
-        
+
     return None
 
 
 # ---------------------------------------------------------------------------
 # SL / Target Calculation — ATR-based (Unified)
 # ---------------------------------------------------------------------------
+
 
 def calculate_buy_sl_target(
     entry_premium: float,
@@ -73,16 +83,16 @@ def calculate_buy_sl_target(
 ) -> tuple[float, float]:
     """
     ATR-based SL/Target for BUY legs.
-    
+
     Uses ATR(14) on the underlying for stop-loss and target distances.
     Falls back to 2-step underlying distance when ATR unavailable.
-    
+
     Args:
         entry_premium: Entry premium (used for context, not calculation)
         underlying: Current underlying price
         ctx: Scan context with chart_indicators
         step: Strike step size for fallback calculation
-        
+
     Returns:
         Tuple of (sl_underlying, target_underlying)
     """
@@ -91,9 +101,13 @@ def calculate_buy_sl_target(
         sl_underlying = underlying - 1.5 * atr
         target_underlying = underlying + 2.0 * atr
     else:
-        log.warning("calculate_buy_sl_target: Missing ATR data, skipping trade plan creation (strict ATR requirement)")
-        return None, None
-    
+        log.warning(
+            "calculate_buy_sl_target: Missing ATR data, using step-based fallback (step=%.1f)",
+            step,
+        )
+        sl_underlying = underlying - 2.0 * step
+        target_underlying = underlying + 2.0 * step
+
     return round(sl_underlying, 2), round(target_underlying, 2)
 
 
@@ -105,16 +119,16 @@ def calculate_sell_sl_target(
 ) -> tuple[float, float]:
     """
     ATR-based SL/Target for SELL legs.
-    
+
     Uses ATR(14) on the underlying for stop-loss and target distances.
     Falls back to 2-step underlying distance when ATR unavailable.
-    
+
     Args:
         entry_premium: Entry premium (used for context, not calculation)
         underlying: Current underlying price
         ctx: Scan context with chart_indicators
         step: Strike step size for fallback calculation
-        
+
     Returns:
         Tuple of (sl_underlying, target_underlying)
     """
@@ -123,15 +137,20 @@ def calculate_sell_sl_target(
         sl_underlying = underlying + 1.5 * atr
         target_underlying = underlying - 2.0 * atr
     else:
-        log.warning("calculate_sell_sl_target: Missing ATR data, skipping trade plan creation (strict ATR requirement)")
-        return None, None
-    
+        log.warning(
+            "calculate_sell_sl_target: Missing ATR data, using step-based fallback (step=%.1f)",
+            step,
+        )
+        sl_underlying = underlying + 2.0 * step
+        target_underlying = underlying - 2.0 * step
+
     return round(sl_underlying, 2), round(target_underlying, 2)
 
 
 # ---------------------------------------------------------------------------
 # Option Premium Resolution
 # ---------------------------------------------------------------------------
+
 
 def get_option_premium(
     symbol: str,
@@ -142,19 +161,19 @@ def get_option_premium(
 ) -> float | None:
     """
     Fetch current option premium (LTP) from option chain rows or database snapshots.
-    
+
     Tries option_rows first (live data), then falls back to database snapshots.
-    
+
     L2 fix: DB fallback rejects snapshots older than _DB_PREMIUM_MAX_AGE_SECONDS
     (15 minutes) to prevent stale premium usage in trade planning.
-    
+
     Args:
         symbol: Trading symbol (e.g., "NIFTY")
         expiry: Expiry date string
         strike: Strike price
         option_type: "CE" or "PE"
         option_rows: List of option chain row dicts with 'strike', 'option_type', 'ltp'
-        
+
     Returns:
         Premium as float, or None if unavailable or stale
     """
@@ -165,17 +184,41 @@ def get_option_premium(
                 abs(float(row.get("strike") or 0) - strike) < 0.01
                 and str(row.get("option_type") or "").upper() == option_type.upper()
             ):
+                # Reject completely dead options to prevent placeholder/stale premiums
+                # Only reject if volume AND oi are explicitly present and both 0
+                vol = row.get("volume")
+                oi = row.get("oi")
+                if vol is not None and oi is not None:
+                    if int(vol) == 0 and int(oi) == 0:
+                        log.warning(
+                            "%s: get_option_premium — strike=%.2f %s has 0 volume and 0 OI. Rejecting premium.",
+                            symbol, strike, option_type
+                        )
+                        return None
                 premium = float(row.get("ltp") or 0.0)
                 return premium if premium > 0 else None
         except Exception:
             continue
-    
+
     # Fallback: database snapshots with staleness check (L2)
     try:
         snapshots = get_latest_snapshots_for_symbol(symbol, expiry)
         for snap in snapshots:
-            if (abs(snap.get("strike", 0) - strike) < 0.01 and 
-                str(snap.get("option_type") or "").upper() == option_type.upper()):
+            if (
+                abs(snap.get("strike", 0) - strike) < 0.01
+                and str(snap.get("option_type") or "").upper() == option_type.upper()
+            ):
+                # Reject completely dead options to prevent placeholder/stale premiums
+                # Only reject if volume AND oi are explicitly present and both 0
+                vol = snap.get("volume")
+                oi = snap.get("oi")
+                if vol is not None and oi is not None:
+                    if int(vol) == 0 and int(oi) == 0:
+                        log.warning(
+                            "%s: get_option_premium (DB fallback) — strike=%.2f %s has 0 volume and 0 OI. Rejecting premium.",
+                            symbol, strike, option_type
+                        )
+                        return None
                 # L2: Check snapshot freshness before using
                 fetched_at_str = snap.get("fetched_at")
                 if fetched_at_str:
@@ -183,28 +226,34 @@ def get_option_premium(
                         fetched_at = datetime.fromisoformat(
                             fetched_at_str.replace("Z", "+00:00")
                         )
-                        age_seconds = (datetime.now(timezone.utc) - fetched_at).total_seconds()
+                        age_seconds = (
+                            datetime.now(timezone.utc) - fetched_at
+                        ).total_seconds()
                         if age_seconds > _DB_PREMIUM_MAX_AGE_SECONDS:
                             log.warning(
                                 "%s: DB premium fallback REJECTED — snapshot is %.0f min old "
                                 "(max %d min). Strike=%.2f %s. Returning None.",
-                                symbol, age_seconds / 60, _DB_PREMIUM_MAX_AGE_SECONDS // 60,
-                                strike, option_type,
+                                symbol,
+                                age_seconds / 60,
+                                _DB_PREMIUM_MAX_AGE_SECONDS // 60,
+                                strike,
+                                option_type,
                             )
                             return None
                     except (ValueError, TypeError):
                         # If we can't parse the timestamp, err on the side of caution
                         log.warning(
                             "%s: Could not parse fetched_at='%s' for DB premium staleness check",
-                            symbol, fetched_at_str,
+                            symbol,
+                            fetched_at_str,
                         )
                         return None
-                
+
                 premium = float(snap.get("ltp") or 0.0)
                 return premium if premium > 0 else None
     except Exception:
         pass
-    
+
     return None
 
 
@@ -212,37 +261,39 @@ def get_option_premium(
 # Verdict Parsing
 # ---------------------------------------------------------------------------
 
+
 def parse_verdict_and_confidence(intel_text: str) -> tuple[str, int]:
     """
     Extract verdict and confidence from intelligence text.
-    
+
     Parses Telegram message format:
     - *Verdict: LONG BUILDUP*
     - Confidence: 85%
-    
+
     Args:
         intel_text: Intelligence text from Telegram
-        
+
     Returns:
         Tuple of (verdict_string, confidence_int)
     """
     verdict = ""
     confidence = 0
-    
+
     m_v = re.search(r"\*Verdict:\s*([^\*]+)\*", intel_text or "")
     if m_v:
         verdict = m_v.group(1).strip()
-    
+
     m_c = re.search(r"Confidence:\s*(\d+)%", intel_text or "")
     if m_c:
         confidence = int(m_c.group(1))
-    
+
     return verdict, confidence
 
 
 # ---------------------------------------------------------------------------
 # Premium Conversion Helpers
 # ---------------------------------------------------------------------------
+
 
 def convert_underlying_sl_to_premium(
     underlying: float,
@@ -256,10 +307,10 @@ def convert_underlying_sl_to_premium(
 ) -> tuple[float, float]:
     """
     Convert underlying-based SL/Target to premium equivalents for GTT/polling.
-    
+
     For FUT: premium = underlying (1:1)
     For options: delta-based conversion based on underlying price distances.
-    
+
     Args:
         underlying: Current underlying price
         sl_underlying: Stop-loss in underlying terms
@@ -269,13 +320,13 @@ def convert_underlying_sl_to_premium(
         option_type: "FUT", "CE", or "PE"
         strike: Option strike price (optional)
         option_rows: Option chain rows (optional, to extract delta)
-        
+
     Returns:
         Tuple of (sl_premium, target_premium)
     """
     if option_type == "FUT":
         return sl_underlying, target_underlying
-    
+
     if underlying <= 0:
         # Fallback: fixed multipliers
         if side == "SELL":
@@ -285,7 +336,7 @@ def convert_underlying_sl_to_premium(
             sl_premium = round(entry_premium * 0.70, 2)
             target_premium = round(entry_premium * 1.50, 2)
         return sl_premium, target_premium
-    
+
     # 1. Resolve delta
     delta = None
     if strike is not None and option_rows:
@@ -303,25 +354,25 @@ def convert_underlying_sl_to_premium(
                             break
             except Exception:
                 continue
-                
+
     if delta is None:
         delta = 0.5 if side == "BUY" else 0.3
-        
+
     # 2. Delta-based calculation
     underlying_sl_dist = abs(underlying - sl_underlying)
     underlying_tgt_dist = abs(target_underlying - underlying)
-    
+
     if side == "BUY":
         sl_premium = entry_premium - delta * underlying_sl_dist
         target_premium = entry_premium + delta * underlying_tgt_dist
         # Apply safety bounds to prevent negative or zero premiums
         sl_premium = max(sl_premium, 0.05)
         target_premium = max(target_premium, entry_premium + 0.05)
-    else: # SELL
+    else:  # SELL
         sl_premium = entry_premium + delta * underlying_sl_dist
         target_premium = entry_premium - delta * underlying_tgt_dist
         # Apply safety bounds to prevent negative or zero premiums
         sl_premium = max(sl_premium, entry_premium + 0.05)
         target_premium = max(target_premium, 0.05)
-        
+
     return round(sl_premium, 2), round(target_premium, 2)

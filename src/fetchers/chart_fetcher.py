@@ -809,21 +809,25 @@ def _fetch_dhan_builtup_ohlc(
                 base_symbol,
                 tf,
             )
-            # Use ATR from dhan rows if available (covers MCX commodities
-            # where yfinance may fail or return USD-denominated data)
             if dhan_atr is not None:
                 out["atr_14"] = dhan_atr
-            else:
-                # Fallback: try yfinance for ATR
+            
+            # Fallback to yfinance if ATR or prev_ohlc is missing (e.g. early session boundary)
+            if out.get("atr_14") is None or out.get("prev_ohlc") is None:
                 try:
                     yf_payload = _fetch_yf(
                         base_symbol, tf, reference_price=reference_price
                     )
                     if yf_payload:
-                        if "atr_14" in yf_payload:
+                        if out.get("atr_14") is None and "atr_14" in yf_payload:
                             out["atr_14"] = yf_payload["atr_14"]
-                        if "prev_ohlc" in yf_payload:
+                        if out.get("prev_ohlc") is None and "prev_ohlc" in yf_payload:
                             out["prev_ohlc"] = yf_payload["prev_ohlc"]
+                            log.info(
+                                "[chart] %s %s -> recovered missing prev_ohlc from yfinance fallback",
+                                base_symbol,
+                                tf,
+                            )
                 except Exception as e:
                     log.warning(
                         "[chart] failed to fetch yfinance fallback indicators for %s %s: %s",
@@ -849,6 +853,7 @@ def _fetch_local_ohlc_from_db(base_symbol: str, tf: str) -> Optional[dict]:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         try:
+            # Fetch data for current window
             rows = conn.execute(
                 """
                 SELECT fetched_at, price
@@ -881,12 +886,83 @@ def _fetch_local_ohlc_from_db(base_symbol: str, tf: str) -> Optional[dict]:
             h = max(prices)
             l = min(prices)
             c = prices[-1]
-            return {
+
+            result = {
                 "sentiment": _sentiment(o, c, h, l),
                 "ohlc": {"open": o, "high": h, "low": l, "close": c},
                 "bar_start_utc": start_utc.isoformat(),
                 "bar_end_utc": end_utc.isoformat(),
             }
+
+            # Compute ATR from historical bars (need 15+ bars for ATR-14)
+            # For 1h tf, fetch last 20 hours; for 3h tf, fetch last 60 hours
+            hours_back = 20 if tf == "1h" else 60
+            try:
+                from datetime import timedelta
+
+                historical_start = end_utc - timedelta(hours=hours_back)
+                hist_rows = conn.execute(
+                    """
+                    SELECT fetched_at, price
+                    FROM underlying_price
+                    WHERE symbol=? AND fetched_at >= ? AND fetched_at < ?
+                    ORDER BY fetched_at ASC
+                    """,
+                    (base_symbol, historical_start.isoformat(), end_utc.isoformat()),
+                ).fetchall()
+
+                if hist_rows:
+                    # Build bars for ATR calculation - aggregate by timeframe
+                    bar_size_minutes = 60 if tf == "1h" else 180
+                    bars_for_atr: list[dict] = []
+                    current_bar: dict | None = None
+
+                    for r in hist_rows:
+                        try:
+                            price = float(r["price"])
+                            dt_utc = _parse_dt_utc(r["fetched_at"])
+                            if dt_utc is None:
+                                continue
+
+                            # Determine which bar this belongs to
+                            minutes_since_midnight = dt_utc.hour * 60 + dt_utc.minute
+                            bar_index = minutes_since_midnight // bar_size_minutes
+                            bar_key = (dt_utc.date(), bar_index)
+
+                            if current_bar is None or current_bar.get("key") != bar_key:
+                                # Start new bar
+                                if current_bar is not None:
+                                    bars_for_atr.append(current_bar)
+                                current_bar = {
+                                    "key": bar_key,
+                                    "High": price,
+                                    "Low": price,
+                                    "Close": price,
+                                }
+                            else:
+                                # Update current bar
+                                current_bar["High"] = max(current_bar["High"], price)
+                                current_bar["Low"] = min(current_bar["Low"], price)
+                                current_bar["Close"] = price
+
+                        except Exception:
+                            continue
+
+                    if current_bar is not None:
+                        bars_for_atr.append(current_bar)
+
+                    if len(bars_for_atr) >= 15:
+                        atr = _calculate_atr_from_bars(bars_for_atr, period=14)
+                        if atr is not None:
+                            result["atr_14"] = atr
+                            log.debug(
+                                "[chart] %s %s -> computed ATR %.4f from %d historical bars",
+                                base_symbol, tf, atr, len(bars_for_atr),
+                            )
+            except Exception as e:
+                log.debug("[chart] %s %s -> ATR computation failed: %s", base_symbol, tf, e)
+
+            return result
         finally:
             conn.close()
     except Exception as exc:

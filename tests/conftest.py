@@ -8,6 +8,9 @@ import sys
 import tempfile
 from unittest.mock import MagicMock, patch
 
+# Configure pytest-asyncio for async test support
+pytest_plugins = ("pytest_asyncio",)
+
 # httpx 0.28 removed sync ASGITransport.handle_request — patch it back.
 import httpx
 import pytest
@@ -169,9 +172,18 @@ _orig_post = requests.Session.post
 
 
 def _patched_post(self, url, *args, **kwargs):
-    if "openrouter.ai" in str(url):
+    url_str = str(url)
+    if "openrouter.ai" in url_str:
         raise RuntimeError(
             "Real OpenRouter call blocked in tests to prevent token usage"
+        )
+    if "api.telegram.org" in url_str:
+        raise RuntimeError(
+            "Real Telegram call blocked in tests to prevent alert leakage"
+        )
+    if "discord.com" in url_str:
+        raise RuntimeError(
+            "Real Discord call blocked in tests to prevent alert leakage"
         )
     return _orig_post(self, url, *args, **kwargs)
 

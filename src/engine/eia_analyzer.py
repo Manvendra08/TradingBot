@@ -79,7 +79,10 @@ RULES:
             response = client.models.generate_content(
                 model='gemini-2.5-pro',
                 contents=prompt,
-                config={'temperature': 0.2}
+                config={
+                    'temperature': 0.2,
+                    'http_options': {'timeout': 15.0}
+                }
             )
             
             analysis = response.text.strip()

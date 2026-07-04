@@ -8,7 +8,16 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
-DB_PATH = DATA_DIR / "nsebot.db"
+
+# Global safeguard: Automatically redirect DB_PATH to test database when executing tests
+import sys
+_is_testing = (
+    "pytest" in sys.modules or 
+    any("pytest" in arg or arg.startswith("test_") for arg in sys.argv) or
+    (len(sys.argv) > 0 and (sys.argv[0].endswith("test_manual.py") or "test_" in os.path.basename(sys.argv[0])))
+)
+DB_PATH = DATA_DIR / "nsebot_test.db" if _is_testing else DATA_DIR / "nsebot.db"
+
 LOG_DIR = BASE_DIR / "logs"
 DATA_DIR.mkdir(exist_ok=True)
 LOG_DIR.mkdir(exist_ok=True)
@@ -66,6 +75,10 @@ TV_DISABLE: bool = os.environ.get("TV_DISABLE", "false").lower() == "true"
 
 # ── NewsAPI.org ─────────────────────────────────────────────────────────────────────────────────────
 NEWSAPI_KEY = _optional_env("NEWSAPI_KEY")
+
+# ── Google Drive Backup ─────────────────────────────────────────────────────────────────────────────
+GOOGLE_DRIVE_FOLDER_ID = _optional_env("GOOGLE_DRIVE_FOLDER_ID")
+
 
 # ── Market Windows ─────────────────────────────────────────────────────────────────────────────────────────
 # Format: (open_time, close_time, weekdays)  — weekdays: 0=Mon … 6=Sun
@@ -173,6 +186,8 @@ NSE_HEADERS = {
 TELEGRAM_BOT_TOKEN = _optional_env("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = _optional_env("TELEGRAM_CHAT_ID")
 DISCORD_WEBHOOK_URL = _optional_env("DISCORD_WEBHOOK_URL")
+GEMINI_API_KEY = _optional_env("GEMINI_API_KEY")
+SAMBANOVA_API_KEY = _optional_env("SAMBANOVA_API_KEY")
 
 # ── Dashboard Authentication ────────────────────────────────────────────────────────────────────────────
 # FIX #13: Removed insecure admin/admin defaults.

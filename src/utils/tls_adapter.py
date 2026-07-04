@@ -17,26 +17,55 @@ creates a fresh ssl.create_default_context() internally, which LACKS the
 OP_IGNORE_UNEXPECTED_EOF flag. Kite's CDN sends TLS close_notify on idle
 connections, and without that flag Python's ssl module raises SSLZeroReturnError.
 """
+
 import logging
 import ssl
-import time
 import threading
+import time
 
 from requests.adapters import HTTPAdapter
-from requests.exceptions import ConnectionError as ReqConnectionError, SSLError
+from requests.exceptions import ConnectionError as ReqConnectionError
+from requests.exceptions import SSLError
 from urllib3.util import Retry
 
 log = logging.getLogger(__name__)
 
-_SSL_EOF_MARKERS = frozenset((
-    "closed (eof)",
-    "unexpected eof",
-    "sslzeroreturnerror",
-    "eof occurred",
-    "ssl: eof",
-    "connection reset",
-    "connection aborted",
-))
+_SSL_EOF_MARKERS = frozenset(
+    (
+        "closed (eof)",
+        "unexpected eof",
+        "sslzeroreturnerror",
+        "eof occurred",
+        "ssl: eof",
+        "connection reset",
+        "connection aborted",
+    )
+)
+
+# Timeout markers for retry on connection/read timeouts
+_TIMEOUT_MARKERS = frozenset(
+    (
+        "read timed out",
+        "read timeout",
+        "connect timed out",
+        "connect timeout",
+        "timed out",
+        "winerror 10060",
+        "connection timed out",
+    )
+)
+
+# DNS resolution failure markers
+_DNS_MARKERS = frozenset(
+    (
+        "getaddrinfo failed",
+        "name or service not known",
+        "nodename nor servname provided",
+        "name resolution",
+        "dns resolution",
+    )
+)
+
 
 # ── Process-wide SSL EOF fix ────────────────────────────────────────────
 # Patch ssl.create_default_context to inject OP_IGNORE_UNEXPECTED_EOF.
@@ -115,32 +144,55 @@ class ResilientTLSAdapter(HTTPAdapter):
         kwargs["ssl_context"] = self.ssl_context
         return super().proxy_manager_for(*args, **kwargs)
 
-    # ── core retry-on-SSL-EOF logic ──────────────────────────────────────
+    # ── core retry-on-SSL-EOF/timeout logic ─────────────────────────────────
     def send(self, request, *args, **kwargs):
         last_err = None
         for attempt in range(self.SSL_RETRY_ATTEMPTS):
             try:
                 with self._send_lock:
-                    log.debug("[tls] Attempting request to %s (attempt %d/%d)", request.url, attempt + 1, self.SSL_RETRY_ATTEMPTS)
+                    log.debug(
+                        "[tls] Attempting request to %s (attempt %d/%d)",
+                        request.url,
+                        attempt + 1,
+                        self.SSL_RETRY_ATTEMPTS,
+                    )
                     return super().send(request, *args, **kwargs)
             except (SSLError, ReqConnectionError, OSError) as exc:
                 last_err = exc
                 log.debug("[tls] Exception on %s: %s", request.url, exc)
-                if not self._is_ssl_eof(exc):
-                    log.debug("[tls] Non-SSL EOF exception, re-raising")
+                is_ssl_eof = self._is_ssl_eof(exc)
+                is_timeout = self._is_timeout(exc)
+                is_dns = self._is_dns_failure(exc)
+                if not is_ssl_eof and not is_timeout and not is_dns:
+                    log.debug("[tls] Non-SSL EOF/timeout/DNS exception, re-raising")
                     raise
 
                 if attempt < self.SSL_RETRY_ATTEMPTS - 1:
-                    delay = self.SSL_BASE_DELAY * (3 ** attempt)
+                    delay = self.SSL_BASE_DELAY * (3**attempt)
+                    if is_ssl_eof:
+                        reason = "SSL EOF"
+                    elif is_timeout:
+                        reason = "timeout"
+                    else:
+                        reason = "DNS failure"
                     log.warning(
-                        "SSL EOF on %s (attempt %d/%d), evicting pool & retrying in %.1fs…",
-                        request.url, attempt + 1, self.SSL_RETRY_ATTEMPTS, delay,
+                        "%s on %s (attempt %d/%d), evicting pool & retrying in %.1fs…",
+                        reason,
+                        request.url,
+                        attempt + 1,
+                        self.SSL_RETRY_ATTEMPTS,
+                        delay,
                     )
                     self._evict_connections()
                     time.sleep(delay)
                     continue
                 else:
-                    log.warning("[tls] SSL EOF exhausted for %s after %d attempts", request.url, self.SSL_RETRY_ATTEMPTS)
+                    log.warning(
+                        "[tls] %s exhausted for %s after %d attempts",
+                        reason,
+                        request.url,
+                        self.SSL_RETRY_ATTEMPTS,
+                    )
         raise last_err
 
     def _evict_connections(self):
@@ -169,6 +221,30 @@ class ResilientTLSAdapter(HTTPAdapter):
                 msgs_to_check.append(str(inner).lower())
         return any(m in s for m in _SSL_EOF_MARKERS for s in msgs_to_check)
 
+    @staticmethod
+    def _is_timeout(exc) -> bool:
+        """Check exc or its inner cause for timeout markers."""
+        msgs_to_check = [str(exc).lower()]
+        cause = getattr(exc, "__cause__", None) or getattr(exc, "reason", None)
+        if cause:
+            msgs_to_check.append(str(cause).lower())
+            inner = getattr(cause, "reason", None)
+            if inner:
+                msgs_to_check.append(str(inner).lower())
+        return any(m in s for m in _TIMEOUT_MARKERS for s in msgs_to_check)
+
+    @staticmethod
+    def _is_dns_failure(exc) -> bool:
+        """Check exc or its inner cause for DNS resolution failure markers."""
+        msgs_to_check = [str(exc).lower()]
+        cause = getattr(exc, "__cause__", None) or getattr(exc, "reason", None)
+        if cause:
+            msgs_to_check.append(str(cause).lower())
+            inner = getattr(cause, "reason", None)
+            if inner:
+                msgs_to_check.append(str(inner).lower())
+        return any(m in s for m in _DNS_MARKERS for s in msgs_to_check)
+
 
 def mount_resilient_tls(session, max_retries=None, ssl_verify: bool = True):
     """Mount the ResilientTLSAdapter on a requests.Session for https://.
@@ -179,5 +255,7 @@ def mount_resilient_tls(session, max_retries=None, ssl_verify: bool = True):
         ssl_verify: Set False for public non-Kite fetchers that use verify=False.
     """
     session.headers["Connection"] = "close"
-    adapter = ResilientTLSAdapter(max_retries=max_retries or DEFAULT_RETRY, ssl_verify=ssl_verify)
+    adapter = ResilientTLSAdapter(
+        max_retries=max_retries or DEFAULT_RETRY, ssl_verify=ssl_verify
+    )
     session.mount("https://", adapter)

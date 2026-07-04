@@ -391,7 +391,11 @@ def execute_paper_trade(
 
     # Lot sizing
     lots = calculate_trade_lots(
-        symbol, plan.get("entry_premium", 0), side, is_paper=True, pyramid_level=plan.get("pyramid_level", 1)
+        symbol,
+        plan.get("entry_premium", 0),
+        side,
+        is_paper=True,
+        pyramid_level=plan.get("pyramid_level", 1),
     )
     if lots <= 0:
         from src.engine.decision_audit import update_decision_audit
@@ -439,9 +443,10 @@ def execute_paper_trade(
             sl_ul, tgt_ul = _calculate_sell_sl_target(
                 entry_premium, underlying, ctx, step
             )
-            
+
     if sl_ul is None or tgt_ul is None:
         from src.engine.decision_audit import update_decision_audit
+
         update_decision_audit(
             plan.get("audit_row_id"),
             action="SKIP",
@@ -567,7 +572,7 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
 
     stored_mfr = float(open_trade.get("max_favorable_r") or 0.0)
     max_fav = max(stored_mfr, r_current)
-    
+
     # ── Trailing Stop Check (Flaw #1) ────────────────────────────────────────
     trailing_sl_hit = False
     if max_fav >= 1.0 and entry_und > 0 and sl_ul > 0 and sl_ul != entry_und:
@@ -653,7 +658,7 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
                 reason = "SL_HIT"
         else:
             reason = "TARGET_HIT"
-            
+
         exit_premium = None
         if option_type != "FUT":
             exit_premium = _get_option_premium(
@@ -789,8 +794,19 @@ def run_paper_trading(
             td = intel.trade_decision
         elif isinstance(intel, dict):
             td = intel.get("trade_decision")
-        if td and isinstance(td, dict) and td.get("audit_row_id"):
-            plan["audit_row_id"] = td["audit_row_id"]
+        if td and isinstance(td, dict):
+            if td.get("audit_row_id"):
+                plan["audit_row_id"] = td["audit_row_id"]
+            if td.get("status") == "BLOCKED":
+                log.info(
+                    "%s: paper trade blocked by decision engine — %s",
+                    symbol,
+                    td.get("reason"),
+                )
+                return {
+                    "action": "BLOCKED_DECISION",
+                    "reason": td.get("reason", "Blocked by trade decision engine"),
+                }
 
     # Add null target guard:
     if plan.get("target_underlying") is None and plan.get("option_type") != "FUT":
@@ -926,7 +942,7 @@ def run_timeframe_strategy(
 
     if scan_freq in (15, 30):
         scans_needed = 60 // scan_freq
-        older = get_scan_summary_n_scans_ago(symbol, scans_needed)
+        older = get_scan_summary_n_scans_ago(symbol, scans_needed - 1)
         if not older:
             log.warning(
                 "%s: Timeframe strategy skipped — insufficient scan history", symbol
@@ -1231,6 +1247,11 @@ def run_timeframe_strategy(
     # ── 2. ENTRY LOGIC ──
     from src.engine.decision_audit import log_decision
     from src.engine.decision_pipeline import PipelineContext, run_entry_pipeline
+
+    # Merge intel into scan_context so the pipeline can access verdict/confidence
+    ctx = dict(ctx)
+    if intel:
+        ctx.setdefault("intel", {}).update(intel)
 
     # Initialise pipeline context
     pipeline_ctx = PipelineContext(

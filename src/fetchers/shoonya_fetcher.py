@@ -73,7 +73,7 @@ def _post_jdata(
     body = body_str.encode("utf-8")
     headers: dict[str, str] = {
         "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": "Mozilla/5.0"
+        "User-Agent": "Mozilla/5.0",
     }
     req = urllib.request.Request(url, data=body, headers=headers)
     try:
@@ -210,6 +210,31 @@ class ShoonyaFetcher(BaseFetcher):
                 import time
 
                 time.sleep(0.05)
+
+    def _check_session_quota(self) -> None:
+        """Check if the session is approaching its call quota and re-auth if needed.
+
+        Shoonya API sessions have a finite call quota (~2000 calls/session).
+        This method checks the approximate usage and triggers a re-auth at 80%.
+        """
+        # Track approximate call count within the session
+        if not hasattr(self, "_session_call_count"):
+            self._session_call_count = 0
+        if not hasattr(self, "_max_session_calls"):
+            self._max_session_calls = 2000
+
+        self._session_call_count += 1
+
+        # Re-auth when approaching the quota limit
+        if self._session_call_count >= int(self._max_session_calls * 0.8):
+            log.info(
+                "[shoonya] Session call count %d approaching quota (%d) — re-authenticating",
+                self._session_call_count,
+                self._max_session_calls,
+            )
+            self._clear_cached_token()
+            self.login()
+            self._session_call_count = 0
 
     def _verify_token(self) -> bool:
         """Quick lightweight check: does the cached token still work?
@@ -1199,6 +1224,50 @@ class ShoonyaFetcher(BaseFetcher):
 
             # Handle standard NSE/BSE indices using GetOptionChain
             chain_tsym = underlying_tsym
+
+            if option_exch == "BFO":
+                # SENSEX/BANKEX weekly options chain in Shoonya is not grouped under the monthly futures contract.
+                # We need to find an active weekly option contract symbol (e.g. SENSEX2670966500CE) and use it as chain_tsym.
+                try:
+                    now_ist = datetime.now(IST)
+                    today_ist = now_ist.date()
+                    # Find first Thursday >= today
+                    cand_dt = today_ist
+                    while cand_dt.weekday() != 3:  # 3 is Thursday
+                        cand_dt += timedelta(days=1)
+                    
+                    # If today is Thursday and past 15:30 IST, roll to next Thursday
+                    from datetime import time as dt_time
+                    if cand_dt == today_ist and now_ist.time() > dt_time(15, 30):
+                        cand_dt += timedelta(days=7)
+                    
+                    # Check next 3 Thursdays
+                    candidates = [cand_dt, cand_dt + timedelta(days=7), cand_dt + timedelta(days=14)]
+                    resolved_weekly_tsym = None
+                    for c_date in candidates:
+                        yy = c_date.strftime("%y")
+                        m_val = c_date.month
+                        m_str = "O" if m_val == 10 else ("N" if m_val == 11 else ("D" if m_val == 12 else str(m_val)))
+                        dd = c_date.strftime("%d")
+                        prefix = f"{base}{yy}{m_str}{dd}"
+                        
+                        log.info("[shoonya] Searching BFO for weekly prefix %s to resolve option chain...", prefix)
+                        res = self._search_scrip("BFO", prefix)
+                        if res and res.get("stat") == "Ok" and res.get("values"):
+                            for val in res["values"]:
+                                tsym_opt = val.get("tsym", "")
+                                if "CE" in tsym_opt or "PE" in tsym_opt:
+                                    resolved_weekly_tsym = tsym_opt
+                                    log.info("[shoonya] Resolved BFO weekly option symbol: %s", resolved_weekly_tsym)
+                                    break
+                        if resolved_weekly_tsym:
+                            break
+                    
+                    if resolved_weekly_tsym:
+                        chain_tsym = resolved_weekly_tsym
+                except Exception as ex_bfo:
+                    log.warning("[shoonya] failed to resolve BFO weekly option symbol: %s. Using default: %s", ex_bfo, chain_tsym)
+
             chain = self._get_option_chain(
                 option_exch, chain_tsym, underlying_price, count=15
             )
@@ -1227,7 +1296,7 @@ class ShoonyaFetcher(BaseFetcher):
                                 expiry_dates[exp_str] = dt.strftime("%Y-%m-%d")
                         except ValueError:
                             pass
-                    # If NFO format failed, try BFO format:
+                    # If NFO format failed, try BFO monthly format:
                     # SENSEX26JUN77100CE → captures "26JUN" (no year digits)
                     if not item.get("expiry_parsed"):
                         m = re.search(r"(\d{2}[A-Z]{3})\d+[CP]", tsym)
@@ -1243,6 +1312,28 @@ class ShoonyaFetcher(BaseFetcher):
                                     year += 1
                                 dt = datetime(year, exp_month, int(exp_str[:2]))
                                 expiry_dates[exp_str] = dt.strftime("%Y-%m-%d")
+                            except ValueError:
+                                pass
+
+                    # If NFO and BFO monthly failed, try BFO weekly format:
+                    # SENSEX2670266500CE → captures "26702" (YY + M + DD)
+                    if not item.get("expiry_parsed"):
+                        m = re.search(rf"^{base}(\d{{2}})([1-9OND])(\d{{2}})\d+(?:CE|PE)$", tsym)
+                        if m:
+                            yy_str = m.group(1)
+                            m_str = m.group(2)
+                            dd_str = m.group(3)
+                            month_map = {"O": 10, "N": 11, "D": 12}
+                            try:
+                                year = 2000 + int(yy_str)
+                                month = month_map.get(m_str) or int(m_str)
+                                day = int(dd_str)
+                                dt = datetime(year, month, day)
+                                iso_date = dt.strftime("%Y-%m-%d")
+                                
+                                exp_str = f"{dd_str}{dt.strftime('%b').upper()}{yy_str}"  # e.g., "02JUL26"
+                                item["expiry_parsed"] = exp_str
+                                expiry_dates[exp_str] = iso_date
                             except ValueError:
                                 pass
                 else:

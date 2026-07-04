@@ -1720,7 +1720,7 @@ def run_live_timeframe_strategy(
     ctx = scan_context or {}
     underlying = float(ctx.get("underlying") or 0.0)
     if underlying <= 0:
-        return None
+        return {"action": "SKIPPED", "reason": "Underlying price is zero or negative"}
 
     # Gating checks for scan frequency
     from config.runtime_config import get_scan_frequency_mcx, get_scan_frequency_nse
@@ -1754,7 +1754,10 @@ def run_live_timeframe_strategy(
     pay_3h = tf_data.get("3h")
     pay_1h = tf_data.get("1h")
     if not pay_3h or not pay_1h:
-        return None
+        return {
+            "action": "SKIPPED",
+            "reason": "Missing 3h/1h chart data",
+        }
 
     ohlc_3h = pay_3h.get("ohlc")
     prev_3h = pay_3h.get("prev_ohlc") or pay_3h.get("last_closed_ohlc")
@@ -1762,7 +1765,10 @@ def run_live_timeframe_strategy(
     prev_1h = pay_1h.get("prev_ohlc") or pay_1h.get("last_closed_ohlc")
 
     if not ohlc_3h or not prev_3h or not ohlc_1h or not prev_1h:
-        return None
+        return {
+            "action": "SKIPPED",
+            "reason": "Incomplete 3h/1h candle data",
+        }
 
     c_3h_close = float(ohlc_3h["close"])
     p_3h_high = float(prev_3h["high"])
@@ -1774,7 +1780,7 @@ def run_live_timeframe_strategy(
     current_ce = ctx.get("total_ce_oi")
     current_pe = ctx.get("total_pe_oi")
     if current_ce is None or current_pe is None:
-        return None
+        return {"action": "SKIPPED", "reason": "Missing total OI data"}
 
     from config.settings import TIMEFRAME_OI_MIN_DIFF_PCT
 
@@ -1782,11 +1788,11 @@ def run_live_timeframe_strategy(
 
     if scan_freq in (15, 30):
         scans_needed = 60 // scan_freq
-        older = get_scan_summary_n_scans_ago(symbol, scans_needed)
+        older = get_scan_summary_n_scans_ago(symbol, scans_needed - 1)
     else:
         older = get_scan_summary_at_least_1h_old(symbol, fetched_at)
     if not older:
-        return None
+        return {"action": "SKIPPED", "reason": "Insufficient scan history for OI comparison"}
 
     prev_ce = older["total_ce_oi"]
     prev_pe = older["total_pe_oi"]
@@ -1951,13 +1957,16 @@ def run_live_timeframe_strategy(
     # ── 2. ENTRY LOGIC ──
     bar_end_3h = pay_3h.get("bar_end_utc")
     if not bar_end_3h:
-        return None
+        return {"action": "SKIPPED", "reason": "Missing 3H bar end timestamp"}
 
     is_long_trigger = c_3h_close > p_3h_high + breakout_buffer and long_oi_support
     is_short_trigger = c_3h_close < p_3h_low - breakout_buffer and short_oi_support
 
     if not is_long_trigger and not is_short_trigger:
-        return None
+        return {
+            "action": "SKIPPED",
+            "reason": "No 3H breakout trigger detected",
+        }
 
     direction = "LONG" if is_long_trigger else "SHORT"
     signal_key = f"{symbol}:TIMEFRAME:3H:{direction}:{bar_end_3h}:live"

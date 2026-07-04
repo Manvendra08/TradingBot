@@ -836,7 +836,7 @@ def step_trend_alignment_tf(ctx: PipelineContext) -> StepResult:
 
     if scan_freq in (15, 30):
         scans_needed = 60 // scan_freq
-        older = get_scan_summary_n_scans_ago(symbol, scans_needed)
+        older = get_scan_summary_n_scans_ago(symbol, scans_needed - 1)
     else:
         older = get_scan_summary_at_least_1h_old(symbol, fetched_at)
 

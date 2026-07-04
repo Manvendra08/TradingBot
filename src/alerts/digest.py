@@ -11,6 +11,7 @@ log = logging.getLogger(__name__)
 from datetime import datetime, timedelta, timezone
 
 from src.engine.intelligence import generate_intelligence
+from src.utils.formatting import fmt_oi as _shared_fmt_oi
 
 IST = timezone(timedelta(hours=5, minutes=30))
 MAX_TELEGRAM_LEN = 3900
@@ -113,17 +114,13 @@ def _fmt_signed(value, digits: int = 2) -> str:
 
 
 def _fmt_oi(value) -> str:
-    try:
-        value = int(value or 0)
-    except Exception:
-        return "0"
-    sign = "-" if value < 0 else ""
-    value = abs(value)
-    if value >= 100_000:
-        return f"{sign}{value / 100_000:.2f}L"
-    if value >= 1_000:
-        return f"{sign}{value / 1_000:.1f}K"
-    return f"{sign}{value}"
+    """Delegates to src.utils.formatting.fmt_oi (single source of truth).
+    Previously this was a separate implementation that only went up to 'L'
+    (missing the Cr tier for OI >= 1e7) and could silently drift from the
+    raw-alert formatter in telegram_dispatcher.py. Same input contract
+    (None/str/int/float -> str), verified against existing behavior:
+    None/invalid -> '0', sign preserved, <1K -> plain int string."""
+    return _shared_fmt_oi(value)
 
 
 def _clip(value: str, limit: int = 120) -> str:
@@ -424,6 +421,11 @@ def _fit_telegram(message: str, digest_id: str) -> str:
     msg = _clean_text(message)
     if len(msg) <= MAX_TELEGRAM_LEN:
         return msg
+    log.warning(
+        "digest #%s truncated: %d chars > %d limit — trailing sections "
+        "(catalyst/news/bot-action) may be cut",
+        digest_id, len(msg), MAX_TELEGRAM_LEN,
+    )
     clipped = msg[: MAX_TELEGRAM_LEN - 80].rsplit("\n", 1)[0]
     return f"{clipped}\n...trimmed\n_#{digest_id}_"
 

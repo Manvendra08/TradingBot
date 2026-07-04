@@ -69,48 +69,59 @@ def _near_level(level: float, underlying: float, step: float, direction: str) ->
 def mcx_option_liquidity_ok(symbol: str, atm_strike: float, ctx: dict) -> bool:
     """
     L5: Check if ATM option liquidity is sufficient for MCX commodities.
-    Returns True if BOTH volume and OI thresholds are met at the ATM strike.
+    Returns True if BOTH CE and PE options at the ATM strike meet the required thresholds.
     Falls back to FUT if either threshold fails or data is unavailable.
     """
     if atm_strike <= 0:
         return False
 
     option_rows = ctx.get("option_rows") or []
-    total_volume = 0
-    total_oi = 0
-    found_any = False
+    ce_vol = 0
+    ce_oi = 0
+    pe_vol = 0
+    pe_oi = 0
+    found_ce = False
+    found_pe = False
 
     for row in option_rows:
         try:
             row_strike = float(row.get("strike") or 0)
             if abs(row_strike - atm_strike) < 0.01:
+                opt_type = str(row.get("option_type") or "").upper()
                 vol = int(row.get("volume") or 0)
                 oi = int(row.get("oi") or 0)
-                total_volume += vol
-                total_oi += oi
-                found_any = True
+                if opt_type == "CE":
+                    ce_vol = vol
+                    ce_oi = oi
+                    found_ce = True
+                elif opt_type == "PE":
+                    pe_vol = vol
+                    pe_oi = oi
+                    found_pe = True
         except (ValueError, TypeError):
             continue
 
-    if not found_any:
-        log.debug("%s: MCX liquidity check — no ATM option rows found, falling back to FUT", symbol)
+    if not found_ce or not found_pe:
+        log.debug("%s: MCX liquidity check — ATM CE or PE row missing, falling back to FUT", symbol)
         return False
 
-    volume_ok = total_volume >= _MCX_OPTION_MIN_VOLUME
-    oi_ok = total_oi >= _MCX_OPTION_MIN_OI
+    min_vol = _MCX_OPTION_MIN_VOLUME // 2
+    min_oi = _MCX_OPTION_MIN_OI // 2
 
-    if volume_ok and oi_ok:
+    ce_ok = ce_vol >= min_vol and ce_oi >= min_oi
+    pe_ok = pe_vol >= min_vol and pe_oi >= min_oi
+
+    if ce_ok and pe_ok:
         log.debug(
-            "%s: MCX liquidity OK — ATM vol=%d (min=%d), OI=%d (min=%d). Using options.",
-            symbol, total_volume, _MCX_OPTION_MIN_VOLUME, total_oi, _MCX_OPTION_MIN_OI,
+            "%s: MCX liquidity OK — CE vol=%d, PE vol=%d (min=%d); CE OI=%d, PE OI=%d (min=%d). Using options.",
+            symbol, ce_vol, pe_vol, min_vol, ce_oi, pe_oi, min_oi,
         )
         return True
 
     log.debug(
-        "%s: MCX liquidity INSUFFICIENT — ATM vol=%d (min=%d, ok=%s), OI=%d (min=%d, ok=%s). "
+        "%s: MCX liquidity INSUFFICIENT — CE ok=%s (vol=%d, oi=%d), PE ok=%s (vol=%d, oi=%d). "
         "Falling back to FUT.",
-        symbol, total_volume, _MCX_OPTION_MIN_VOLUME, volume_ok,
-        total_oi, _MCX_OPTION_MIN_OI, oi_ok,
+        symbol, ce_ok, ce_vol, ce_oi, pe_ok, pe_vol, pe_oi,
     )
     return False
 

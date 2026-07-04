@@ -31,6 +31,8 @@ class PatchedCursor(sqlite3.Cursor):
             and re.match(r"(?i)^\s*(select|with)\b", sql)
             and re.search(r"(?i)\bfrom\s+paper_trades\b", sql)
             and not re.search(r"(?i)\bfrom\s+live_trades\b", sql)
+            # P0-02 FIX: Prevent double-rewriting by checking for our marker
+            and "__PAPER_UNION_INJECTED__" not in sql
         ):
             subquery = """(
                 SELECT id, opened_at, closed_at, symbol, verdict_label, option_type, strike, entry_underlying, exit_underlying, sl_underlying, target_underlying, pnl_points, status, reason, digest_id, entry_premium, exit_premium, sl_premium, target_premium, lots, lot_size, pnl_rupees, trade_status, setup_type, decision_reason, confidence_score, entry_quality_score, trend_alignment_score, regime_score, signal_key, pyramid_level, max_favorable_r, side, expiry,
@@ -43,7 +45,8 @@ class PatchedCursor(sqlite3.Cursor):
                 WHERE (status = 'CLOSED_SHADOW' OR trade_status = 'SHADOW' OR broker_status = 'SHADOW')
                   AND (setup_type IS NULL OR setup_type != 'DIRECT_KITE')
             )"""
-            sql = re.sub(r"(?i)\bfrom\s+paper_trades\b", f"FROM {subquery}", sql)
+            # P0-02 FIX: Only replace the first occurrence to prevent corruption
+            sql = re.sub(r"(?i)\bfrom\s+paper_trades\b", f"FROM {subquery} /* __PAPER_UNION_INJECTED__ */", sql, count=1)
         return super().execute(sql, *args, **kwargs)
 
 
@@ -54,6 +57,8 @@ class PatchedConnection(sqlite3.Connection):
             and re.match(r"(?i)^\s*(select|with)\b", sql)
             and re.search(r"(?i)\bfrom\s+paper_trades\b", sql)
             and not re.search(r"(?i)\bfrom\s+live_trades\b", sql)
+            # P0-02 FIX: Prevent double-rewriting by checking for our marker
+            and "__PAPER_UNION_INJECTED__" not in sql
         ):
             subquery = """(
                 SELECT id, opened_at, closed_at, symbol, verdict_label, option_type, strike, entry_underlying, exit_underlying, sl_underlying, target_underlying, pnl_points, status, reason, digest_id, entry_premium, exit_premium, sl_premium, target_premium, lots, lot_size, pnl_rupees, trade_status, setup_type, decision_reason, confidence_score, entry_quality_score, trend_alignment_score, regime_score, signal_key, pyramid_level, max_favorable_r, side, expiry,
@@ -66,7 +71,8 @@ class PatchedConnection(sqlite3.Connection):
                 WHERE (status = 'CLOSED_SHADOW' OR trade_status = 'SHADOW' OR broker_status = 'SHADOW')
                   AND (setup_type IS NULL OR setup_type != 'DIRECT_KITE')
             )"""
-            sql = re.sub(r"(?i)\bfrom\s+paper_trades\b", f"FROM {subquery}", sql)
+            # P0-02 FIX: Only replace the first occurrence to prevent corruption
+            sql = re.sub(r"(?i)\bfrom\s+paper_trades\b", f"FROM {subquery} /* __PAPER_UNION_INJECTED__ */", sql, count=1)
         return super().execute(sql, *args, **kwargs)
 
     def cursor(self, *args, **kwargs):
@@ -313,12 +319,16 @@ def _db():
 
 
 def _q(sql: str, params: tuple = ()):
-    conn = _db()
+    conn = None
     try:
+        conn = _db()
         with conn:
             return [dict(r) for r in conn.execute(sql, params).fetchall()]
+    except Exception:
+        raise
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def _cache_get(key: str, ttl_sec: int):
@@ -411,7 +421,10 @@ def _chain_context(
     total_pe_oi = sum(int(r.get("oi") or 0) for r in pe_rows)
     ce_oi_change = sum(int(r.get("oi_change") or 0) for r in ce_rows)
     pe_oi_change = sum(int(r.get("oi_change") or 0) for r in pe_rows)
-    pcr = (total_pe_oi / total_ce_oi) if total_ce_oi else None
+    try:
+        pcr = (total_pe_oi / total_ce_oi) if total_ce_oi else None
+    except (ZeroDivisionError, TypeError, ValueError):
+        pcr = None
 
     support = None
     resistance = None
@@ -2336,9 +2349,10 @@ def _fetch_real_kite_positions(kite) -> list[dict]:
         return parsed_positions
     except Exception as e:
         log.error("Failed to fetch positions from Kite: %s", e)
-        if _positions_cache is not None:
-            return _positions_cache
-        return []
+        stale = _positions_cache
+        _positions_cache = None
+        _positions_cache_ts = 0.0
+        return stale if stale is not None else []
 
 
 def _get_kite_closed_trades(kite) -> list[dict]:
@@ -2506,11 +2520,20 @@ def _get_kite_closed_trades(kite) -> list[dict]:
     return closed_positions
 
 
+def _safe_strike(v) -> float | None:
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (ValueError, TypeError):
+        return None
+
+
 def _is_duplicate_closed_trade(kite_pos, db_trades, today_str) -> bool:
     from src.engine.symbol_resolver import resolve_instrument
 
     ktsym = kite_pos.get("tradingsymbol", "").upper()
-    k_strike = float(kite_pos["strike"]) if kite_pos.get("strike") is not None else None
+    k_strike = _safe_strike(kite_pos.get("strike"))
     k_opt = kite_pos.get("option_type", "").upper()
     k_sym = kite_pos.get("symbol", "").upper()
 
@@ -2519,7 +2542,7 @@ def _is_duplicate_closed_trade(kite_pos, db_trades, today_str) -> bool:
         if not db_close.startswith(today_str):
             continue
 
-        db_strike = float(t["strike"]) if t.get("strike") is not None else None
+        db_strike = _safe_strike(t.get("strike"))
         db_opt = t.get("option_type", "").upper()
         db_sym = t.get("symbol", "").upper()
 

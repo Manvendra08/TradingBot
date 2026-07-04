@@ -175,6 +175,53 @@
                 border-color: #cbd5e1;
             }
         </style>
+
+        <!-- ── Inlined theme toggle logic (same as paper.html) ── -->
+        <script>
+            (function () {
+                var KEY = "nsebot-theme",
+                    LIGHT = "light";
+                var saved = localStorage.getItem(KEY) || "dark";
+                if (saved === LIGHT)
+                    document.documentElement.setAttribute("data-theme", LIGHT);
+                else document.documentElement.removeAttribute("data-theme");
+
+                window.toggleTheme = function () {
+                    var isLight =
+                        document.documentElement.getAttribute("data-theme") ===
+                        LIGHT;
+                    var next = isLight ? "dark" : LIGHT;
+                    if (next === LIGHT)
+                        document.documentElement.setAttribute(
+                            "data-theme",
+                            LIGHT,
+                        );
+                    else document.documentElement.removeAttribute("data-theme");
+                    localStorage.setItem(KEY, next);
+                    var btn = document.getElementById("theme-toggle-btn");
+                    if (btn) btn.textContent = next === LIGHT ? "🌙" : "☀️";
+                    document.dispatchEvent(
+                        new CustomEvent("themechange", {
+                            detail: { theme: next },
+                        }),
+                    );
+                };
+
+                function wireBtn() {
+                    var btn = document.getElementById("theme-toggle-btn");
+                    if (!btn) return;
+                    var isLight =
+                        document.documentElement.getAttribute("data-theme") ===
+                        LIGHT;
+                    btn.textContent = isLight ? "🌙" : "☀️";
+                    btn.onclick = window.toggleTheme;
+                }
+                if (document.readyState === "loading")
+                    document.addEventListener("DOMContentLoaded", wireBtn);
+                else wireBtn();
+                window.themeManager = { toggleTheme: window.toggleTheme };
+            })();
+        </script>
         <link rel="stylesheet" href="/static/theme.css" />
         <link rel="stylesheet" href="/static/ai_insights.css" />
     </head>
@@ -584,15 +631,6 @@
 
         <script src="/static/ai_insights.js"></script>
         <script>
-            // Theme toggle
-            const themeBtn = document.getElementById("theme-toggle-btn");
-            themeBtn.addEventListener("click", () => {
-                const html = document.documentElement;
-                const isLight = html.getAttribute("data-theme") === "light";
-                html.setAttribute("data-theme", isLight ? "dark" : "light");
-                themeBtn.textContent = isLight ? "🌙" : "☀️";
-            });
-
             // Symbol selector → update AIInsights context
             const symSel = document.getElementById("ai-symbol-sel");
             const verdictPill = document.getElementById("ai-verdict-pill");

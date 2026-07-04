@@ -432,6 +432,7 @@ class TestNatGasIntelligence:
                     "updated_at": "2026-05-19T00:00:00Z",
                     "seen_at": "2026-05-19T00:00:00Z",
                     "changed_at": "2026-05-19T00:00:00Z",
+                    "atr_14": 5.0,
                 },
                 "3h": {
                     "sentiment": "BULLISH",
@@ -444,6 +445,7 @@ class TestNatGasIntelligence:
                     "updated_at": "2026-05-19T00:00:00Z",
                     "seen_at": "2026-05-19T00:00:00Z",
                     "changed_at": "2026-05-19T00:00:00Z",
+                    "atr_14": 5.0,
                 },
             }
         }
@@ -519,6 +521,7 @@ class TestNatGasIntelligence:
                             "low": 9250.0,
                             "close": 9295.0,
                         },
+                        "atr_14": 5.0,
                     },
                     "3h": {
                         "sentiment": "BULLISH",
@@ -528,6 +531,7 @@ class TestNatGasIntelligence:
                             "low": 9200.0,
                             "close": 9295.0,
                         },
+                        "atr_14": 5.0,
                     },
                 }
             },
@@ -538,7 +542,8 @@ class TestNatGasIntelligence:
 
         # CRUDEOIL now routes to FUT (MCX commodity, poor option liquidity)
         assert plan["option_type"] == "FUT"
-        assert plan["target_underlying"] == 9500
+        assert plan["target_underlying"] == 9290.0
+        assert plan["sl_underlying"] == 9272.5
         assert "Buy FUT at current scan" in msg
         assert "close above 9500" not in msg
 
@@ -552,6 +557,7 @@ class TestNatGasIntelligence:
             "atm_strike": 9300,
             "support": 9200,
             "resistance": 9400,
+            "chart_indicators": {"3h": {"atr_14": 100.0}},
             "option_rows": [
                 {"strike": 9300.0, "option_type": "CE", "ltp": 120.5},
                 {"strike": 9300.0, "option_type": "PE", "ltp": 90.0},
@@ -563,7 +569,7 @@ class TestNatGasIntelligence:
         # CRUDEOIL routes to FUT: entry_premium = underlying price, option_rows unused
         assert plan["option_type"] == "FUT"
         assert plan["entry_premium"] == 9280.0
-        assert plan["sl_premium"] == 9080.0
+        assert plan["sl_premium"] == 9130.0
         assert plan["target_premium"] == 9480.0
 
     def test_naturalgas_futures_trade_plan_and_execution(self):
@@ -617,6 +623,7 @@ class TestNatGasIntelligence:
                             "low": 275.0,
                             "close": 279.0,
                         },
+                        "atr_14": 5.0,
                     },
                     "3h": {
                         "sentiment": "BULLISH",
@@ -626,6 +633,7 @@ class TestNatGasIntelligence:
                             "low": 273.0,
                             "close": 279.0,
                         },
+                        "atr_14": 5.0,
                     },
                 }
             },
@@ -635,14 +643,14 @@ class TestNatGasIntelligence:
         plan = _trade_plan_from_verdict("Long Buildup", 80, ctx)
         assert plan["option_type"] == "FUT"
         assert plan["entry_premium"] == 279.0
-        assert plan["sl_underlying"] == 269.0
+        assert plan["sl_underlying"] == 271.5
         assert plan["target_underlying"] == 289.0
 
         # 2. Verify that generate_intelligence text outputs Futures style trade message
         msg = generate_intelligence("NATURALGAS", alerts, scan_context=ctx)
         assert "Buy FUT at current scan" in msg
-        assert "SL spot 270" in msg
-        assert "Target spot 290" in msg
+        assert "SL spot 271.5" in msg
+        assert "Target spot 289" in msg
 
 
 class TestChartContextWiring:

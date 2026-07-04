@@ -65,8 +65,10 @@ def is_trading_allowed_now(symbol: str, expiry_str: str | None = None) -> tuple[
             return False, "Opening auction noise window (09:15–09:30 IST)"
 
         # ── Window 2: Expiry end-of-session 15:00–15:30 IST ─────────────────
-        if (h, m) >= (15, 0) and (h, m) <= (15, 30):
-            return False, "Expiry end-of-session window (15:00–15:30 IST)"
+        is_mcx = sym in MCX_SYMBOLS or sym in ("NATURALGAS", "NATGAS", "CRUDEOIL", "GOLD", "SILVER")
+        if not is_mcx:
+            if (h, m) >= (15, 0) and (h, m) <= (15, 30):
+                return False, "Expiry end-of-session window (15:00–15:30 IST)"
 
         # ── Window 3: EIA report ±15 min (NATURALGAS, every Thursday) ────────
         if sym in ("NATURALGAS", "NATGAS", "CRUDEOIL"):

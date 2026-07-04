@@ -6,38 +6,43 @@ Comprehensive test suite targeting 100% coverage of core engine layers (Layers 2
 - trend_analysis.py
 - trade_decision.py
 """
-import pytest
+
 import json
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
-from src.models.schema import get_conn, init_db, insert_paper_trade, insert_alert
+import pytest
+
+from src.engine.entry_quality import calculate_entry_quality
 from src.engine.regime_detector import (
+    REGIME_NO_TRADE,
+    REGIME_RANGE,
+    REGIME_TRENDING_DOWN,
+    REGIME_TRENDING_UP,
+    REGIME_VOLATILE,
     detect_market_regime,
     regime_score_for_trade,
-    REGIME_TRENDING_UP,
-    REGIME_TRENDING_DOWN,
-    REGIME_RANGE,
-    REGIME_VOLATILE,
-    REGIME_NO_TRADE,
 )
-from src.engine.entry_quality import calculate_entry_quality
 from src.engine.risk_engine import check_risk_limits
+from src.engine.trade_decision import make_trade_decision
 from src.engine.trend_analysis import (
-    get_trend_alignment_score,
+    calculate_momentum_score,
+    check_trend_persistence,
     detect_reversal_from_scans,
     get_broader_trend_from_alerts,
-    check_trend_persistence,
-    calculate_momentum_score,
+    get_trend_alignment_score,
 )
-from src.engine.trade_decision import make_trade_decision
+from src.models.schema import get_conn, init_db, insert_alert, insert_paper_trade
+
 
 # Helper to populate scan_summaries
 def _insert_scan_summaries(symbol: str, data: list[dict]):
     with get_conn() as conn:
         for i, row in enumerate(data):
             # Ensure fetched_at is sequential to preserve ordering
-            fetched_at = (datetime.now(timezone.utc) - timedelta(minutes=10 - i)).isoformat()
+            fetched_at = (
+                datetime.now(timezone.utc) - timedelta(minutes=10 - i)
+            ).isoformat()
             conn.execute(
                 """
                 INSERT INTO scan_summaries (
@@ -53,24 +58,28 @@ def _insert_scan_summaries(symbol: str, data: list[dict]):
                     row.get("confidence", 50),
                     row.get("candle_1h", "NEUTRAL"),
                     row.get("candle_3h", "NEUTRAL"),
-                )
+                ),
             )
+
 
 # Helper to populate alert history using insert_alert helper
 def _insert_alerts(symbol: str, alerts: list[dict]):
     for a in alerts:
-        insert_alert({
-            "fired_at": a.get("fired_at", datetime.now(timezone.utc).isoformat()),
-            "symbol": symbol,
-            "alert_type": a.get("alert_type", "BUILDUP_CLASSIFY"),
-            "strike": a.get("strike", 100.0),
-            "option_type": a.get("option_type", "CE"),
-            "expiry": a.get("expiry", "2030-06-26"),
-            "detail_json": json.dumps(a.get("detail", {})),
-            "telegram_sent": 0,
-            "severity": a.get("severity", "MEDIUM"),
-            "digest_id": a.get("digest_id"),
-        })
+        insert_alert(
+            {
+                "fired_at": a.get("fired_at", datetime.now(timezone.utc).isoformat()),
+                "symbol": symbol,
+                "alert_type": a.get("alert_type", "BUILDUP_CLASSIFY"),
+                "strike": a.get("strike", 100.0),
+                "option_type": a.get("option_type", "CE"),
+                "expiry": a.get("expiry", "2030-06-26"),
+                "detail_json": json.dumps(a.get("detail", {})),
+                "telegram_sent": 0,
+                "severity": a.get("severity", "MEDIUM"),
+                "digest_id": a.get("digest_id"),
+            }
+        )
+
 
 # Helper to clear DB tables
 def _clear_db():
@@ -81,18 +90,23 @@ def _clear_db():
         conn.execute("DELETE FROM paper_trades")
         conn.execute("DELETE FROM alert_dedup")
 
+
 # ─── REGIME DETECTOR TESTS ───
+
 
 class TestRegimeDetectorDetailed:
     def test_detect_market_regime_insufficient_prices(self):
         _clear_db()
         symbol = "INS_PRICES"
-        _insert_scan_summaries(symbol, [
-            {"underlying": 100.0, "verdict_label": "Long Buildup"},
-            {"underlying": 0.0, "verdict_label": "Long Buildup"}, # filtered out
-            {"underlying": None, "verdict_label": "Long Buildup"}, # filtered out
-            {"underlying": -5.0, "verdict_label": "Long Buildup"}, # filtered out
-        ])
+        _insert_scan_summaries(
+            symbol,
+            [
+                {"underlying": 100.0, "verdict_label": "Long Buildup"},
+                {"underlying": 0.0, "verdict_label": "Long Buildup"},  # filtered out
+                {"underlying": None, "verdict_label": "Long Buildup"},  # filtered out
+                {"underlying": -5.0, "verdict_label": "Long Buildup"},  # filtered out
+            ],
+        )
         regime = detect_market_regime(symbol)
         assert regime == REGIME_NO_TRADE
 
@@ -101,10 +115,12 @@ class TestRegimeDetectorDetailed:
         symbol = "TREND_UP_SYM"
         data = []
         for i in range(10):
-            data.append({
-                "underlying": 100.0 if i < 5 else 105.0,
-                "verdict_label": "Long Buildup",
-            })
+            data.append(
+                {
+                    "underlying": 100.0 if i < 5 else 105.0,
+                    "verdict_label": "Long Buildup",
+                }
+            )
         _insert_scan_summaries(symbol, data)
         regime = detect_market_regime(symbol)
         assert regime == REGIME_TRENDING_UP
@@ -114,10 +130,12 @@ class TestRegimeDetectorDetailed:
         symbol = "TREND_DN_SYM"
         data = []
         for i in range(10):
-            data.append({
-                "underlying": 100.0 if i < 5 else 94.0,
-                "verdict_label": "Short Buildup",
-            })
+            data.append(
+                {
+                    "underlying": 100.0 if i < 5 else 94.0,
+                    "verdict_label": "Short Buildup",
+                }
+            )
         _insert_scan_summaries(symbol, data)
         regime = detect_market_regime(symbol)
         assert regime == REGIME_TRENDING_DOWN
@@ -141,8 +159,8 @@ class TestRegimeDetectorDetailed:
         _clear_db()
         symbol = "RANGE_SYM"
         data = [
-            {"underlying": 100.0, "verdict_label": "Long Buildup"}, # bull
-            {"underlying": 100.1, "verdict_label": "Short Buildup"}, # bear
+            {"underlying": 100.0, "verdict_label": "Long Buildup"},  # bull
+            {"underlying": 100.1, "verdict_label": "Short Buildup"},  # bear
             {"underlying": 100.0, "verdict_label": "Sideways"},
             {"underlying": 100.0, "verdict_label": "Sideways"},
             {"underlying": 100.0, "verdict_label": "Sideways"},
@@ -161,23 +179,28 @@ class TestRegimeDetectorDetailed:
 
 # ─── ENTRY QUALITY TESTS ───
 
+
 class TestEntryQualityDetailed:
     def test_entry_quality_near_resistance_ce(self):
         score, reasons = calculate_entry_quality(
-            "TEST", "CE", 100.0,
+            "TEST",
+            "CE",
+            100.0,
             {
                 "underlying": 104.5,
                 "support": 90.0,
                 "resistance": 105.0,
                 "price_change_pct": 0.0,
-            }
+            },
         )
         assert score == 75
         assert any("resistance" in r for r in reasons)
 
     def test_entry_quality_poor_rr(self):
         score, reasons = calculate_entry_quality(
-            "TEST", "PE", 100.0,
+            "TEST",
+            "PE",
+            100.0,
             {
                 "underlying": 100.0,
                 "support": 90.0,
@@ -185,57 +208,77 @@ class TestEntryQualityDetailed:
                 "sl_underlying": 105.0,
                 "target_underlying": 99.0,
                 "price_change_pct": 0.0,
-            }
+            },
         )
         assert score == 75
         assert any("Poor R:R" in r for r in reasons)
 
     def test_entry_quality_bid_ask_spread(self):
         score, reasons = calculate_entry_quality(
-            "TEST", "PE", 100.0,
+            "TEST",
+            "PE",
+            100.0,
             {
                 "underlying": 100.0,
                 "support": 80.0,
                 "resistance": 120.0,
                 "price_change_pct": 0.0,
                 "option_rows": [
-                    {"strike": 100.0, "option_type": "PE", "bid": 8.0, "ask": 10.0, "ltp": 9.0}
-                ]
-            }
+                    {
+                        "strike": 100.0,
+                        "option_type": "PE",
+                        "bid": 8.0,
+                        "ask": 10.0,
+                        "ltp": 9.0,
+                    }
+                ],
+            },
         )
         assert score == 80
         assert any("Wide spread" in r for r in reasons)
 
         score, reasons = calculate_entry_quality(
-            "TEST", "PE", 100.0,
+            "TEST",
+            "PE",
+            100.0,
             {
                 "underlying": 100.0,
                 "support": 80.0,
                 "resistance": 120.0,
                 "price_change_pct": 0.0,
                 "option_rows": [
-                    {"strike": "invalid", "option_type": "PE", "bid": 8.0, "ask": 10.0, "ltp": 9.0}
-                ]
-            }
+                    {
+                        "strike": "invalid",
+                        "option_type": "PE",
+                        "bid": 8.0,
+                        "ask": 10.0,
+                        "ltp": 9.0,
+                    }
+                ],
+            },
         )
         assert score == 100
 
     def test_entry_quality_pe_chasing(self):
         score, reasons = calculate_entry_quality(
-            "TEST", "PE", 100.0,
+            "TEST",
+            "PE",
+            100.0,
             {
                 "underlying": 100.0,
                 "support": 80.0,
                 "resistance": 120.0,
                 "price_change_pct": -2.0,
-            }
+            },
         )
         assert score == 85
         assert any("Chasing" in r for r in reasons)
 
     def test_entry_quality_low_score_logging(self):
         score, reasons = calculate_entry_quality(
-            "TEST", "PE", 100.0,
+            "TEST",
+            "PE",
+            100.0,
             {
                 "underlying": 91.0,
                 "support": 90.0,
@@ -244,15 +287,22 @@ class TestEntryQualityDetailed:
                 "target_underlying": 90.5,
                 "price_change_pct": -2.0,
                 "option_rows": [
-                    {"strike": 100.0, "option_type": "PE", "bid": 8.0, "ask": 10.0, "ltp": 9.0}
-                ]
-            }
+                    {
+                        "strike": 100.0,
+                        "option_type": "PE",
+                        "bid": 8.0,
+                        "ask": 10.0,
+                        "ltp": 9.0,
+                    }
+                ],
+            },
         )
         assert score == 15
         assert len(reasons) >= 4
 
 
 # ─── RISK ENGINE TESTS ───
+
 
 @patch("src.engine.risk_engine.MAX_OPEN_TRADES_PER_SYMBOL", 1)
 @patch("src.engine.risk_engine.MAX_OPEN_TRADES_TOTAL", 3)
@@ -263,13 +313,15 @@ class TestRiskEngineDetailed:
     def test_risk_limit_max_open_symbol(self):
         _clear_db()
         symbol = "TEST_SYM"
-        insert_paper_trade({
-            "opened_at": datetime.now(timezone.utc).isoformat(),
-            "symbol": symbol,
-            "option_type": "CE",
-            "entry_underlying": 100.0,
-            "status": "OPEN",
-        })
+        insert_paper_trade(
+            {
+                "opened_at": datetime.now(timezone.utc).isoformat(),
+                "symbol": symbol,
+                "option_type": "CE",
+                "entry_underlying": 100.0,
+                "status": "OPEN",
+            }
+        )
         allowed, reason = check_risk_limits(symbol)
         assert not allowed
         assert "Max open trades for" in reason
@@ -277,13 +329,15 @@ class TestRiskEngineDetailed:
     def test_risk_limit_max_open_total(self):
         _clear_db()
         for i in range(4):
-            insert_paper_trade({
-                "opened_at": datetime.now(timezone.utc).isoformat(),
-                "symbol": f"SYM_{i}",
-                "option_type": "CE",
-                "entry_underlying": 100.0,
-                "status": "OPEN",
-            })
+            insert_paper_trade(
+                {
+                    "opened_at": datetime.now(timezone.utc).isoformat(),
+                    "symbol": f"SYM_{i}",
+                    "option_type": "CE",
+                    "entry_underlying": 100.0,
+                    "status": "OPEN",
+                }
+            )
         allowed, reason = check_risk_limits("NEW_SYM")
         assert not allowed
         assert "Max total open trades" in reason
@@ -292,20 +346,24 @@ class TestRiskEngineDetailed:
         _clear_db()
         symbol = "TEST_SYM"
         today_str = datetime.now(timezone.utc).isoformat()
-        insert_paper_trade({
-            "opened_at": today_str,
-            "symbol": symbol,
-            "option_type": "CE",
-            "entry_underlying": 100.0,
-            "status": "CLOSED_SL",
-        })
-        insert_paper_trade({
-            "opened_at": today_str,
-            "symbol": symbol,
-            "option_type": "CE",
-            "entry_underlying": 100.0,
-            "status": "CLOSED_TP",
-        })
+        insert_paper_trade(
+            {
+                "opened_at": today_str,
+                "symbol": symbol,
+                "option_type": "CE",
+                "entry_underlying": 100.0,
+                "status": "CLOSED_SL",
+            }
+        )
+        insert_paper_trade(
+            {
+                "opened_at": today_str,
+                "symbol": symbol,
+                "option_type": "CE",
+                "entry_underlying": 100.0,
+                "status": "CLOSED_TP",
+            }
+        )
         allowed, reason = check_risk_limits(symbol)
         assert not allowed
         assert "Daily trade limit for" in reason
@@ -322,7 +380,15 @@ class TestRiskEngineDetailed:
                     pnl_rupees, status
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (today_str, today_str, "TEST_SYM", "CE", 100.0, 250000.0, "CLOSED_TARGET")
+                (
+                    today_str,
+                    today_str,
+                    "TEST_SYM",
+                    "CE",
+                    100.0,
+                    250000.0,
+                    "CLOSED_TARGET",
+                ),
             )
         allowed, reason = check_risk_limits("TEST_SYM")
         assert allowed
@@ -342,7 +408,7 @@ class TestRiskEngineDetailed:
                     pnl_rupees, status
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (closed_at, closed_at, symbol, "CE", 100.0, -500.0, "CLOSED_SL")
+                (closed_at, closed_at, symbol, "CE", 100.0, -500.0, "CLOSED_SL"),
             )
         allowed, reason = check_risk_limits(symbol)
         assert not allowed
@@ -359,7 +425,15 @@ class TestRiskEngineDetailed:
                     pnl_rupees, status
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (naive_closed_at, naive_closed_at, symbol, "CE", 100.0, -500.0, "CLOSED_SL")
+                (
+                    naive_closed_at,
+                    naive_closed_at,
+                    symbol,
+                    "CE",
+                    100.0,
+                    -500.0,
+                    "CLOSED_SL",
+                ),
             )
         allowed, reason = check_risk_limits(symbol)
         assert not allowed
@@ -375,22 +449,34 @@ class TestRiskEngineDetailed:
                     pnl_rupees, status
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                ("2026-05-20T12:00:00", "invalid-date", symbol, "CE", 100.0, -500.0, "CLOSED_SL")
+                (
+                    "2026-05-20T12:00:00",
+                    "invalid-date",
+                    symbol,
+                    "CE",
+                    100.0,
+                    -500.0,
+                    "CLOSED_SL",
+                ),
             )
         allowed, reason = check_risk_limits(symbol)
-        assert allowed # Cooldown exception caught, allowed = True
+        assert allowed  # Cooldown exception caught, allowed = True
+
 
 class TestTrendAnalysisDetailed:
     def test_trend_alignment_score_bearish_and_neutral(self):
         _clear_db()
         symbol = "ALIGN_TEST"
-        _insert_scan_summaries(symbol, [
-            {"verdict_label": "Short Buildup"},
-            {"verdict_label": "Call Writing"},
-            {"verdict_label": "Sideways"},
-        ])
+        _insert_scan_summaries(
+            symbol,
+            [
+                {"verdict_label": "Short Buildup"},
+                {"verdict_label": "Call Writing"},
+                {"verdict_label": "Sideways"},
+            ],
+        )
         score = get_trend_alignment_score(symbol, "Short Buildup")
-        assert score == 67 # 2/3 bearish
+        assert score == 67  # 2/3 bearish
 
         score = get_trend_alignment_score(symbol, "Sideways")
         assert score == 50
@@ -398,19 +484,19 @@ class TestTrendAnalysisDetailed:
     def test_reversal_broader_trend_scenarios(self):
         _clear_db()
         symbol = "REV_TEST"
-        
+
         # Scenario 1: Broader trend is neutral (4 bull, 4 bear)
         data = [
-            {"verdict_label": "Long Buildup"}, # data[0] (bull)
-            {"verdict_label": "Long Buildup"}, # data[1] (bull)
-            {"verdict_label": "Long Buildup"}, # data[2] (bull)
-            {"verdict_label": "Long Buildup"}, # data[3] (bull)
-            {"verdict_label": "Short Buildup"}, # data[4] (bear)
-            {"verdict_label": "Short Buildup"}, # data[5] (bear)
-            {"verdict_label": "Short Buildup"}, # data[6] (bear)
-            {"verdict_label": "Short Buildup"}, # data[7] (bear)
-            {"verdict_label": "Long Buildup"}, # data[8]
-            {"verdict_label": "Long Buildup"}, # data[9]
+            {"verdict_label": "Long Buildup"},  # data[0] (bull)
+            {"verdict_label": "Long Buildup"},  # data[1] (bull)
+            {"verdict_label": "Long Buildup"},  # data[2] (bull)
+            {"verdict_label": "Long Buildup"},  # data[3] (bull)
+            {"verdict_label": "Short Buildup"},  # data[4] (bear)
+            {"verdict_label": "Short Buildup"},  # data[5] (bear)
+            {"verdict_label": "Short Buildup"},  # data[6] (bear)
+            {"verdict_label": "Short Buildup"},  # data[7] (bear)
+            {"verdict_label": "Long Buildup"},  # data[8]
+            {"verdict_label": "Long Buildup"},  # data[9]
         ]
         _insert_scan_summaries(symbol, data)
         is_rev, reason = detect_reversal_from_scans(symbol, "Long Buildup", 80)
@@ -420,15 +506,15 @@ class TestTrendAnalysisDetailed:
         # Scenario 2: Broader trend is BEARISH, current verdict is BEARISH
         _clear_db()
         data = [
-            {"verdict_label": "Long Buildup"}, # scan 1 (data[0]) (bull)
-            {"verdict_label": "Short Buildup"}, # scan 2 (data[1]) (bear)
-            {"verdict_label": "Short Buildup"}, # scan 3 (data[2]) (bear)
-            {"verdict_label": "Short Buildup"}, # scan 4 (data[3]) (bear)
-            {"verdict_label": "Short Buildup"}, # scan 5 (data[4]) (bear)
-            {"verdict_label": "Short Buildup"}, # scan 6 (data[5]) (bear)
-            {"verdict_label": "Short Buildup"}, # scan 7 (data[6]) (bear)
-            {"verdict_label": "Short Buildup"}, # scan 8
-            {"verdict_label": "Short Buildup"}, # scan 9
+            {"verdict_label": "Long Buildup"},  # scan 1 (data[0]) (bull)
+            {"verdict_label": "Short Buildup"},  # scan 2 (data[1]) (bear)
+            {"verdict_label": "Short Buildup"},  # scan 3 (data[2]) (bear)
+            {"verdict_label": "Short Buildup"},  # scan 4 (data[3]) (bear)
+            {"verdict_label": "Short Buildup"},  # scan 5 (data[4]) (bear)
+            {"verdict_label": "Short Buildup"},  # scan 6 (data[5]) (bear)
+            {"verdict_label": "Short Buildup"},  # scan 7 (data[6]) (bear)
+            {"verdict_label": "Short Buildup"},  # scan 8
+            {"verdict_label": "Short Buildup"},  # scan 9
         ]
         _insert_scan_summaries(symbol, data)
         is_rev, reason = detect_reversal_from_scans(symbol, "Short Buildup", 80)
@@ -443,9 +529,9 @@ class TestTrendAnalysisDetailed:
         # Scenario 4: Broader trend BEARISH, current verdict BULLISH, but last 2 scans not consistently bearish
         _clear_db()
         data = [
-            {"verdict_label": "Short Buildup"}, # data[0] (bear)
-            {"verdict_label": "Short Buildup"}, # data[1] (bear)
-            {"verdict_label": "Short Buildup"}, # data[2] (bear)
+            {"verdict_label": "Short Buildup"},  # data[0] (bear)
+            {"verdict_label": "Short Buildup"},  # data[1] (bear)
+            {"verdict_label": "Short Buildup"},  # data[2] (bear)
             {"verdict_label": "Long Buildup"},  # data[3] (mix)
             {"verdict_label": "Long Buildup"},  # data[4] (last 1 - bull)
         ]
@@ -457,11 +543,11 @@ class TestTrendAnalysisDetailed:
         # Scenario 5: Broader trend BULLISH, current verdict BEARISH, but last 2 scans not consistently bullish
         _clear_db()
         data = [
-            {"verdict_label": "Long Buildup"}, # data[0] (bull)
-            {"verdict_label": "Long Buildup"}, # data[1] (bull)
-            {"verdict_label": "Long Buildup"}, # data[2] (bull)
-            {"verdict_label": "Short Buildup"}, # data[3] (mix)
-            {"verdict_label": "Short Buildup"}, # data[4] (last 1 - bear)
+            {"verdict_label": "Long Buildup"},  # data[0] (bull)
+            {"verdict_label": "Long Buildup"},  # data[1] (bull)
+            {"verdict_label": "Long Buildup"},  # data[2] (bull)
+            {"verdict_label": "Short Buildup"},  # data[3] (mix)
+            {"verdict_label": "Short Buildup"},  # data[4] (last 1 - bear)
         ]
         _insert_scan_summaries(symbol, data)
         is_rev, reason = detect_reversal_from_scans(symbol, "Short Buildup", 80)
@@ -471,10 +557,10 @@ class TestTrendAnalysisDetailed:
         # Scenario 6: Broader trend BEARISH, current verdict BULLISH, reversal confirmed!
         _clear_db()
         data = [
-            {"verdict_label": "Short Buildup"}, # data[0] (bear)
-            {"verdict_label": "Short Buildup"}, # data[1] (bear)
-            {"verdict_label": "Short Buildup"}, # data[2] (bear)
-            {"verdict_label": "Short Buildup"}, # data[3] (bear)
+            {"verdict_label": "Short Buildup"},  # data[0] (bear)
+            {"verdict_label": "Short Buildup"},  # data[1] (bear)
+            {"verdict_label": "Short Buildup"},  # data[2] (bear)
+            {"verdict_label": "Short Buildup"},  # data[3] (bear)
             {"verdict_label": "Long Buildup"},  # data[4] (current scan - bull)
         ]
         _insert_scan_summaries(symbol, data)
@@ -496,7 +582,11 @@ class TestTrendAnalysisDetailed:
 
         # 3. Mild Bearish
         _clear_db()
-        _insert_scan_summaries(symbol, [{"verdict_label": "Short Buildup"}] * 6 + [{"verdict_label": "Long Buildup"}] * 4)
+        _insert_scan_summaries(
+            symbol,
+            [{"verdict_label": "Short Buildup"}] * 6
+            + [{"verdict_label": "Long Buildup"}] * 4,
+        )
         assert "Moderate Bearish" in get_broader_trend_from_alerts(symbol)
 
         # 4. Strong Bullish
@@ -506,7 +596,11 @@ class TestTrendAnalysisDetailed:
 
         # 5. Mild Bullish
         _clear_db()
-        _insert_scan_summaries(symbol, [{"verdict_label": "Long Buildup"}] * 6 + [{"verdict_label": "Short Buildup"}] * 4)
+        _insert_scan_summaries(
+            symbol,
+            [{"verdict_label": "Long Buildup"}] * 6
+            + [{"verdict_label": "Short Buildup"}] * 4,
+        )
         assert "Moderate Bullish" in get_broader_trend_from_alerts(symbol)
 
         # 6. High Activity
@@ -539,8 +633,12 @@ class TestTrendAnalysisDetailed:
 
         # 4. Mixed trend + low confidence
         _clear_db()
-        _insert_scan_summaries(symbol, [{"verdict_label": "Long Buildup"}] * 2 + [{"verdict_label": "Short Buildup"}] * 2)
-        ok, reason = check_trend_persistence(symbol, "Long Buildup", 65, {}) # 65 < 70
+        _insert_scan_summaries(
+            symbol,
+            [{"verdict_label": "Long Buildup"}] * 2
+            + [{"verdict_label": "Short Buildup"}] * 2,
+        )
+        ok, reason = check_trend_persistence(symbol, "Long Buildup", 65, {})  # 65 < 70
         assert not ok
         assert "Mixed trend" in reason
 
@@ -565,13 +663,21 @@ class TestTrendAnalysisDetailed:
         _clear_db()
         alerts = [{"verdict_label": "Short Buildup"}] * 10
         _insert_alerts(symbol, alerts)
-        _insert_scan_summaries(symbol, [
-            {"verdict_label": "Short Buildup"},
-            {"verdict_label": "Short Buildup"},
-            {"verdict_label": "Short Buildup"},
-        ])
+        _insert_scan_summaries(
+            symbol,
+            [
+                {"verdict_label": "Short Buildup"},
+                {"verdict_label": "Short Buildup"},
+                {"verdict_label": "Short Buildup"},
+            ],
+        )
 
-        ctx = {"chart_indicators": {"1h": {"verdict": "Short Buildup"}, "3h": {"verdict": "Short Buildup"}}}
+        ctx = {
+            "chart_indicators": {
+                "1h": {"verdict": "Short Buildup"},
+                "3h": {"verdict": "Short Buildup"},
+            }
+        }
         score = calculate_momentum_score(symbol, "Short Buildup", 90, ctx)
         assert score == 79
 
@@ -579,30 +685,45 @@ class TestTrendAnalysisDetailed:
         _clear_db()
         alerts = [{"verdict_label": "Long Buildup"}] * 10
         _insert_alerts(symbol, alerts)
-        _insert_scan_summaries(symbol, [
-            {"verdict_label": "Long Buildup"},
-            {"verdict_label": "Long Buildup"},
-            {"verdict_label": "Long Buildup"},
-        ])
-        ctx = {"chart_indicators": {"1h": {"verdict": "Long Buildup"}, "3h": {"verdict": "Short Buildup"}}}
+        _insert_scan_summaries(
+            symbol,
+            [
+                {"verdict_label": "Long Buildup"},
+                {"verdict_label": "Long Buildup"},
+                {"verdict_label": "Long Buildup"},
+            ],
+        )
+        ctx = {
+            "chart_indicators": {
+                "1h": {"verdict": "Long Buildup"},
+                "3h": {"verdict": "Short Buildup"},
+            }
+        }
         score = calculate_momentum_score(symbol, "Long Buildup", 80, ctx)
         assert score == 78
 
         # 3. Mild Bullish trend & Mix/Rangebound
         _clear_db()
-        alerts = [{"verdict_label": "Long Buildup"}] * 5 + [{"verdict_label": "Short Buildup"}]
+        alerts = [{"verdict_label": "Long Buildup"}] * 5 + [
+            {"verdict_label": "Short Buildup"}
+        ]
         _insert_alerts(symbol, alerts)
         score = calculate_momentum_score(symbol, "Long Buildup", 80, {})
         assert score == 18
 
         # Mixed trend
         _clear_db()
+
+
 class TestTradeDecisionDetailed:
     def test_decision_no_valid_plan(self):
         _clear_db()
-        _insert_scan_summaries("TEST", [{"underlying": 100.0}, {"underlying": 100.0}, {"underlying": 100.0}])
+        _insert_scan_summaries(
+            "TEST",
+            [{"underlying": 100.0}, {"underlying": 100.0}, {"underlying": 100.0}],
+        )
         intel = {"verdict_label": "Long Buildup", "confidence": 80}
-        ctx = {"underlying": 100.0} # no option strikes matching plan etc.
+        ctx = {"underlying": 100.0}  # no option strikes matching plan etc.
         with patch("src.engine.paper_plan.build_paper_trade_plan", return_value=None):
             decision = make_trade_decision("TEST", intel, ctx)
         assert decision["status"] == "BLOCKED"
@@ -612,239 +733,434 @@ class TestTradeDecisionDetailed:
         _clear_db()
         intel = {"verdict_label": "Long Buildup", "confidence": 60}
         ctx = {"underlying": 100.0, "support": 90.0, "resistance": 110.0}
-        plan = {"option_type": "CE", "strike": 100.0, "sl_underlying": 90.0, "target_underlying": 110.0}
-        with patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan), \
-             patch("src.engine.trade_decision.detect_market_regime", return_value=REGIME_NO_TRADE), \
-             patch("src.engine.trade_decision.PAPER_RESEARCH_MODE", True):
+        plan = {
+            "option_type": "CE",
+            "strike": 100.0,
+            "sl_underlying": 90.0,
+            "target_underlying": 110.0,
+        }
+        with (
+            patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan),
+            patch(
+                "src.engine.decision_pipeline.detect_market_regime",
+                return_value=REGIME_NO_TRADE,
+            ),
+            patch("src.engine.decision_pipeline.PAPER_RESEARCH_MODE", True),
+        ):
             decision = make_trade_decision("TEST", intel, ctx)
         assert decision["status"] == "BLOCKED"
         assert "Insufficient scan history" in decision["reason"]
 
     def test_decision_mode_conservative_success_and_fail(self):
         _clear_db()
-        _insert_scan_summaries("TEST", [{"underlying": 100.0}, {"underlying": 100.0}, {"underlying": 100.0}])
+        _insert_scan_summaries(
+            "TEST",
+            [{"underlying": 100.0}, {"underlying": 100.0}, {"underlying": 100.0}],
+        )
         intel = {"verdict_label": "Long Buildup", "confidence": 80}
         ctx = {"underlying": 100.0, "support": 90.0, "resistance": 110.0}
-        plan = {"option_type": "CE", "strike": 100.0, "sl_underlying": 90.0, "target_underlying": 110.0}
-        
+        plan = {
+            "option_type": "CE",
+            "strike": 100.0,
+            "sl_underlying": 90.0,
+            "target_underlying": 110.0,
+        }
+
         # 1. Conservative filter fails (trend persistence = False)
-        with patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan), \
-             patch("src.engine.trade_decision.detect_market_regime", return_value=REGIME_TRENDING_UP), \
-             patch("src.engine.trade_decision.TREND_FILTER_MODE", "conservative"), \
-             patch("src.engine.trade_decision.check_trend_persistence", return_value=(False, "Failed persistence")):
+        with (
+            patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan),
+            patch(
+                "src.engine.decision_pipeline.detect_market_regime",
+                return_value=REGIME_TRENDING_UP,
+            ),
+            patch("src.engine.decision_pipeline.TREND_FILTER_MODE", "conservative"),
+            patch(
+                "src.engine.decision_pipeline.check_trend_persistence",
+                return_value=(False, "Failed persistence"),
+            ),
+        ):
             decision = make_trade_decision("TEST", intel, ctx)
         assert decision["status"] == "BLOCKED"
-        assert "Conservative filter" in decision["reason"]
+        assert "Conservative: not persistent" in decision["reason"]
 
         # 2. Conservative filter passes, but entry quality low
-        with patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan), \
-             patch("src.engine.trade_decision.detect_market_regime", return_value=REGIME_TRENDING_UP), \
-             patch("src.engine.trade_decision.TREND_FILTER_MODE", "conservative"), \
-             patch("src.engine.trade_decision.check_trend_persistence", return_value=(True, "Passed persistence")), \
-             patch("src.engine.trade_decision.calculate_entry_quality", return_value=(30, ["bad EQ"])):
+        with (
+            patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan),
+            patch(
+                "src.engine.decision_pipeline.detect_market_regime",
+                return_value=REGIME_TRENDING_UP,
+            ),
+            patch("src.engine.decision_pipeline.TREND_FILTER_MODE", "conservative"),
+            patch(
+                "src.engine.decision_pipeline.check_trend_persistence",
+                return_value=(True, "Passed persistence"),
+            ),
+            patch(
+                "src.engine.decision_pipeline.calculate_entry_quality",
+                return_value=(30, ["bad EQ"]),
+            ),
+        ):
             decision = make_trade_decision("TEST", intel, ctx)
         assert decision["status"] == "BLOCKED"
         assert "Entry quality" in decision["reason"]
 
         # 3. Conservative success
-        with patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan), \
-             patch("src.engine.trade_decision.detect_market_regime", return_value=REGIME_TRENDING_UP), \
-             patch("src.engine.trade_decision.TREND_FILTER_MODE", "conservative"), \
-             patch("src.engine.trade_decision.check_trend_persistence", return_value=(True, "Passed persistence")), \
-             patch("src.engine.trade_decision.calculate_entry_quality", return_value=(80, [])):
+        with (
+            patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan),
+            patch(
+                "src.engine.decision_pipeline.detect_market_regime",
+                return_value=REGIME_TRENDING_UP,
+            ),
+            patch("src.engine.decision_pipeline.TREND_FILTER_MODE", "conservative"),
+            patch(
+                "src.engine.decision_pipeline.check_trend_persistence",
+                return_value=(True, "Passed persistence"),
+            ),
+            patch(
+                "src.engine.decision_pipeline.calculate_entry_quality",
+                return_value=(80, []),
+            ),
+        ):
             decision = make_trade_decision("TEST", intel, ctx)
         assert decision["status"] == "TRIGGERED_CORE"
         assert decision["setup_type"] == "TREND_CONTINUATION"
 
     def test_decision_mode_balanced(self):
         _clear_db()
-        _insert_scan_summaries("TEST", [{"underlying": 100.0}, {"underlying": 100.0}, {"underlying": 100.0}])
+        _insert_scan_summaries(
+            "TEST",
+            [{"underlying": 100.0}, {"underlying": 100.0}, {"underlying": 100.0}],
+        )
         intel = {"verdict_label": "Long Buildup", "confidence": 80}
         ctx = {"underlying": 100.0, "support": 90.0, "resistance": 110.0}
-        plan = {"option_type": "CE", "strike": 100.0, "sl_underlying": 90.0, "target_underlying": 110.0}
+        plan = {
+            "option_type": "CE",
+            "strike": 100.0,
+            "sl_underlying": 90.0,
+            "target_underlying": 110.0,
+        }
 
         # 1. Momentum score low
-        with patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan), \
-             patch("src.engine.trade_decision.detect_market_regime", return_value=REGIME_TRENDING_UP), \
-             patch("src.engine.trade_decision.TREND_FILTER_MODE", "balanced"), \
-             patch("src.engine.trade_decision.calculate_momentum_score", return_value=50):
+        with (
+            patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan),
+            patch(
+                "src.engine.decision_pipeline.detect_market_regime",
+                return_value=REGIME_TRENDING_UP,
+            ),
+            patch("src.engine.decision_pipeline.TREND_FILTER_MODE", "balanced"),
+            patch(
+                "src.engine.decision_pipeline.calculate_momentum_score", return_value=50
+            ),
+        ):
             decision = make_trade_decision("TEST", intel, ctx)
         assert decision["status"] == "BLOCKED"
-        assert "Momentum score too low" in decision["reason"]
+        assert "Balanced: low momentum" in decision["reason"]
 
         # 2. Momentum high, but entry quality low
-        with patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan), \
-             patch("src.engine.trade_decision.detect_market_regime", return_value=REGIME_TRENDING_UP), \
-             patch("src.engine.trade_decision.TREND_FILTER_MODE", "balanced"), \
-             patch("src.engine.trade_decision.calculate_momentum_score", return_value=85), \
-             patch("src.engine.trade_decision.calculate_entry_quality", return_value=(30, ["bad EQ"])):
+        with (
+            patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan),
+            patch(
+                "src.engine.decision_pipeline.detect_market_regime",
+                return_value=REGIME_TRENDING_UP,
+            ),
+            patch("src.engine.decision_pipeline.TREND_FILTER_MODE", "balanced"),
+            patch(
+                "src.engine.decision_pipeline.calculate_momentum_score", return_value=85
+            ),
+            patch(
+                "src.engine.decision_pipeline.calculate_entry_quality",
+                return_value=(30, ["bad EQ"]),
+            ),
+        ):
             decision = make_trade_decision("TEST", intel, ctx)
         assert decision["status"] == "BLOCKED"
-        assert "entry quality low" in decision["reason"]
+        assert "Entry quality score" in decision["reason"]
 
         # 3. Balanced success
-        with patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan), \
-             patch("src.engine.trade_decision.detect_market_regime", return_value=REGIME_TRENDING_UP), \
-             patch("src.engine.trade_decision.TREND_FILTER_MODE", "balanced"), \
-             patch("src.engine.trade_decision.calculate_momentum_score", return_value=85), \
-             patch("src.engine.trade_decision.calculate_entry_quality", return_value=(80, [])):
+        with (
+            patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan),
+            patch(
+                "src.engine.decision_pipeline.detect_market_regime",
+                return_value=REGIME_TRENDING_UP,
+            ),
+            patch("src.engine.decision_pipeline.TREND_FILTER_MODE", "balanced"),
+            patch(
+                "src.engine.decision_pipeline.calculate_momentum_score", return_value=85
+            ),
+            patch(
+                "src.engine.decision_pipeline.calculate_entry_quality",
+                return_value=(80, []),
+            ),
+        ):
             decision = make_trade_decision("TEST", intel, ctx)
         assert decision["status"] == "TRIGGERED_CORE"
         assert decision["setup_type"] == "MOMENTUM_TRADE"
 
     def test_decision_mode_aggressive(self):
         _clear_db()
-        _insert_scan_summaries("TEST", [{"underlying": 100.0}, {"underlying": 100.0}, {"underlying": 100.0}])
+        _insert_scan_summaries(
+            "TEST",
+            [{"underlying": 100.0}, {"underlying": 100.0}, {"underlying": 100.0}],
+        )
         intel = {"verdict_label": "Long Buildup", "confidence": 80}
         ctx = {"underlying": 100.0, "support": 90.0, "resistance": 110.0}
-        plan = {"option_type": "CE", "strike": 100.0, "sl_underlying": 90.0, "target_underlying": 110.0}
+        plan = {
+            "option_type": "CE",
+            "strike": 100.0,
+            "sl_underlying": 90.0,
+            "target_underlying": 110.0,
+        }
 
         # 1. No reversal
-        with patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan), \
-             patch("src.engine.trade_decision.detect_market_regime", return_value=REGIME_TRENDING_UP), \
-             patch("src.engine.trade_decision.TREND_FILTER_MODE", "aggressive"), \
-             patch("src.engine.trade_decision.detect_reversal_from_scans", return_value=(False, "No reversal")):
+        with (
+            patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan),
+            patch(
+                "src.engine.decision_pipeline.detect_market_regime",
+                return_value=REGIME_TRENDING_UP,
+            ),
+            patch("src.engine.decision_pipeline.TREND_FILTER_MODE", "aggressive"),
+            patch(
+                "src.engine.decision_pipeline.detect_reversal_from_scans",
+                return_value=(False, "No reversal"),
+            ),
+        ):
             decision = make_trade_decision("TEST", intel, ctx)
         assert decision["status"] == "BLOCKED"
-        assert "No reversal detected" in decision["reason"]
+        assert "Aggressive: no reversal" in decision["reason"]
 
         # 2. Aggressive success
-        with patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan), \
-             patch("src.engine.trade_decision.detect_market_regime", return_value=REGIME_TRENDING_UP), \
-             patch("src.engine.trade_decision.TREND_FILTER_MODE", "aggressive"), \
-             patch("src.engine.trade_decision.detect_reversal_from_scans", return_value=(True, "Reversal!")), \
-             patch("src.engine.trade_decision.calculate_entry_quality", return_value=(80, [])):
+        with (
+            patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan),
+            patch(
+                "src.engine.decision_pipeline.detect_market_regime",
+                return_value=REGIME_TRENDING_UP,
+            ),
+            patch("src.engine.decision_pipeline.TREND_FILTER_MODE", "aggressive"),
+            patch(
+                "src.engine.decision_pipeline.detect_reversal_from_scans",
+                return_value=(True, "Reversal!"),
+            ),
+            patch(
+                "src.engine.decision_pipeline.calculate_entry_quality",
+                return_value=(80, []),
+            ),
+        ):
             decision = make_trade_decision("TEST", intel, ctx)
         assert decision["status"] == "TRIGGERED_CORE"
         assert decision["setup_type"] == "CONFIRMED_REVERSAL"
 
     def test_decision_mode_hybrid_all_branches(self):
         _clear_db()
-        _insert_scan_summaries("TEST", [{"underlying": 100.0}, {"underlying": 100.0}, {"underlying": 100.0}])
+        _insert_scan_summaries(
+            "TEST",
+            [{"underlying": 100.0}, {"underlying": 100.0}, {"underlying": 100.0}],
+        )
         intel = {"verdict_label": "Long Buildup", "confidence": 80}
         ctx = {"underlying": 100.0, "support": 90.0, "resistance": 110.0}
-        plan = {"option_type": "CE", "strike": 100.0, "sl_underlying": 90.0, "target_underlying": 110.0}
+        plan = {
+            "option_type": "CE",
+            "strike": 100.0,
+            "sl_underlying": 90.0,
+            "target_underlying": 110.0,
+        }
 
         # Hybrid Priority 1: Reversal
-        with patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan), \
-             patch("src.engine.trade_decision.detect_market_regime", return_value=REGIME_TRENDING_UP), \
-             patch("src.engine.trade_decision.TREND_FILTER_MODE", "hybrid"), \
-             patch("src.engine.trade_decision.detect_reversal_from_scans", return_value=(True, "Reversal Confirmed")):
+        with (
+            patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan),
+            patch(
+                "src.engine.decision_pipeline.detect_market_regime",
+                return_value=REGIME_TRENDING_UP,
+            ),
+            patch("src.engine.decision_pipeline.TREND_FILTER_MODE", "hybrid"),
+            patch(
+                "src.engine.decision_pipeline.detect_reversal_from_scans",
+                return_value=(True, "Reversal Confirmed"),
+            ),
+        ):
             decision = make_trade_decision("TEST", intel, ctx)
         assert decision["status"] == "TRIGGERED_CORE"
         assert decision["setup_type"] == "CONFIRMED_REVERSAL"
 
         # Hybrid Priority 2: Persistence
-        with patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan), \
-             patch("src.engine.trade_decision.detect_market_regime", return_value=REGIME_TRENDING_UP), \
-             patch("src.engine.trade_decision.TREND_FILTER_MODE", "hybrid"), \
-             patch("src.engine.trade_decision.detect_reversal_from_scans", return_value=(False, "No reversal")), \
-             patch("src.engine.trade_decision.check_trend_persistence", return_value=(True, "Persistent")):
+        with (
+            patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan),
+            patch(
+                "src.engine.decision_pipeline.detect_market_regime",
+                return_value=REGIME_TRENDING_UP,
+            ),
+            patch("src.engine.decision_pipeline.TREND_FILTER_MODE", "hybrid"),
+            patch(
+                "src.engine.decision_pipeline.detect_reversal_from_scans",
+                return_value=(False, "No reversal"),
+            ),
+            patch(
+                "src.engine.decision_pipeline.check_trend_persistence",
+                return_value=(True, "Persistent"),
+            ),
+            patch(
+                "src.engine.decision_pipeline.get_trend_alignment_score",
+                return_value=80,
+            ),
+        ):
             decision = make_trade_decision("TEST", intel, ctx)
         assert decision["status"] == "TRIGGERED_CORE"
         assert decision["setup_type"] == "TREND_CONTINUATION"
 
         # Hybrid Priority 3: Momentum
-        with patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan), \
-             patch("src.engine.trade_decision.detect_market_regime", return_value=REGIME_TRENDING_UP), \
-             patch("src.engine.trade_decision.TREND_FILTER_MODE", "hybrid"), \
-             patch("src.engine.trade_decision.detect_reversal_from_scans", return_value=(False, "No reversal")), \
-             patch("src.engine.trade_decision.check_trend_persistence", return_value=(False, "No persistence")), \
-             patch("src.engine.trade_decision.calculate_momentum_score", return_value=85):
+        with (
+            patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan),
+            patch(
+                "src.engine.decision_pipeline.detect_market_regime",
+                return_value=REGIME_TRENDING_UP,
+            ),
+            patch("src.engine.decision_pipeline.TREND_FILTER_MODE", "hybrid"),
+            patch(
+                "src.engine.decision_pipeline.detect_reversal_from_scans",
+                return_value=(False, "No reversal"),
+            ),
+            patch(
+                "src.engine.decision_pipeline.check_trend_persistence",
+                return_value=(False, "No persistence"),
+            ),
+            patch(
+                "src.engine.decision_pipeline.calculate_momentum_score", return_value=85
+            ),
+        ):
             decision = make_trade_decision("TEST", intel, ctx)
         assert decision["status"] == "TRIGGERED_CORE"
         assert decision["setup_type"] == "MOMENTUM_TRADE"
 
         # Hybrid Priority 4: Experimental (research mode only)
         intel_exp = {"verdict_label": "Long Buildup", "confidence": 55}
-        with patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan), \
-             patch("src.engine.trade_decision.detect_market_regime", return_value=REGIME_TRENDING_UP), \
-             patch("src.engine.trade_decision.TREND_FILTER_MODE", "hybrid"), \
-             patch("src.engine.trade_decision.detect_reversal_from_scans", return_value=(False, "No reversal")), \
-             patch("src.engine.trade_decision.check_trend_persistence", return_value=(False, "No persistence")), \
-             patch("src.engine.trade_decision.calculate_momentum_score", return_value=50), \
-             patch("src.engine.trade_decision.calculate_entry_quality", return_value=(45, ["minor warning"])):
+        with (
+            patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan),
+            patch(
+                "src.engine.decision_pipeline.detect_market_regime",
+                return_value=REGIME_TRENDING_UP,
+            ),
+            patch("src.engine.decision_pipeline.TREND_FILTER_MODE", "hybrid"),
+            patch(
+                "src.engine.decision_pipeline.detect_reversal_from_scans",
+                return_value=(False, "No reversal"),
+            ),
+            patch(
+                "src.engine.decision_pipeline.check_trend_persistence",
+                return_value=(False, "No persistence"),
+            ),
+            patch(
+                "src.engine.decision_pipeline.calculate_momentum_score", return_value=50
+            ),
+            patch(
+                "src.engine.decision_pipeline.calculate_entry_quality",
+                return_value=(45, ["minor warning"]),
+            ),
+            patch(
+                "src.engine.decision_pipeline.MIN_ENTRY_QUALITY_CORE",
+                40,
+            ),
+            patch(
+                "src.engine.decision_pipeline.PAPER_RESEARCH_MODE",
+                True,
+            ),
+        ):
             decision = make_trade_decision("TEST", intel_exp, ctx)
         assert decision["status"] == "TRIGGERED_EXPERIMENTAL"
         assert decision["setup_type"] == "EXPERIMENTAL_SETUP"
 
         # Hybrid Priority 5: Blocked
-        with patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan), \
-             patch("src.engine.trade_decision.detect_market_regime", return_value=REGIME_TRENDING_UP), \
-             patch("src.engine.trade_decision.TREND_FILTER_MODE", "hybrid"), \
-             patch("src.engine.trade_decision.detect_reversal_from_scans", return_value=(False, "No reversal")), \
-             patch("src.engine.trade_decision.check_trend_persistence", return_value=(False, "No persistence")), \
-             patch("src.engine.trade_decision.calculate_momentum_score", return_value=50), \
-             patch("src.engine.trade_decision.calculate_entry_quality", return_value=(30, ["major issue"])):
+        with (
+            patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan),
+            patch(
+                "src.engine.decision_pipeline.detect_market_regime",
+                return_value=REGIME_TRENDING_UP,
+            ),
+            patch("src.engine.decision_pipeline.TREND_FILTER_MODE", "hybrid"),
+            patch(
+                "src.engine.decision_pipeline.detect_reversal_from_scans",
+                return_value=(False, "No reversal"),
+            ),
+            patch(
+                "src.engine.decision_pipeline.check_trend_persistence",
+                return_value=(False, "No persistence"),
+            ),
+            patch(
+                "src.engine.decision_pipeline.calculate_momentum_score", return_value=50
+            ),
+            patch(
+                "src.engine.decision_pipeline.calculate_entry_quality",
+                return_value=(30, ["major issue"]),
+            ),
+        ):
             decision = make_trade_decision("TEST", intel_exp, ctx)
         assert decision["status"] == "BLOCKED"
 
     def test_decision_mode_legacy(self):
         _clear_db()
-        _insert_scan_summaries("TEST", [{"underlying": 100.0}, {"underlying": 100.0}, {"underlying": 100.0}])
+        _insert_scan_summaries(
+            "TEST",
+            [{"underlying": 100.0}, {"underlying": 100.0}, {"underlying": 100.0}],
+        )
         intel = {"verdict_label": "Long Buildup", "confidence": 80}
         ctx = {"underlying": 100.0, "support": 90.0, "resistance": 110.0}
-        plan = {"option_type": "CE", "strike": 100.0, "sl_underlying": 90.0, "target_underlying": 110.0}
+        plan = {
+            "option_type": "CE",
+            "strike": 100.0,
+            "sl_underlying": 90.0,
+            "target_underlying": 110.0,
+        }
 
-        # Legacy logic, trend filter mode = unknown/legacy
-        # 1. Reversal trigger
-        with patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan), \
-             patch("src.engine.trade_decision.detect_market_regime", return_value=REGIME_TRENDING_UP), \
-             patch("src.engine.trade_decision.TREND_FILTER_MODE", "legacy_fallback"), \
-             patch("src.engine.trade_decision.detect_reversal_from_scans", return_value=(True, "Reversal")):
+        # Unknown/legacy trend filter mode — falls through step_trend_alignment_core
+        # with no matching branch → step fails → overall pipeline blocks
+        with (
+            patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan),
+            patch(
+                "src.engine.decision_pipeline.detect_market_regime",
+                return_value=REGIME_TRENDING_UP,
+            ),
+            patch("src.engine.decision_pipeline.TREND_FILTER_MODE", "legacy_fallback"),
+        ):
             decision = make_trade_decision("TEST", intel, ctx)
-        assert decision["status"] == "TRIGGERED_CORE"
-        assert decision["setup_type"] == "CONFIRMED_REVERSAL"
-
-        # 2. Trend continuation trigger
-        with patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan), \
-             patch("src.engine.trade_decision.detect_market_regime", return_value=REGIME_TRENDING_UP), \
-             patch("src.engine.trade_decision.TREND_FILTER_MODE", "legacy_fallback"), \
-             patch("src.engine.trade_decision.detect_reversal_from_scans", return_value=(False, "No reversal")), \
-             patch("src.engine.trade_decision.get_trend_alignment_score", return_value=80):
-            decision = make_trade_decision("TEST", intel, ctx)
-        assert decision["status"] == "TRIGGERED_CORE"
-        assert decision["setup_type"] == "TREND_CONTINUATION"
-
-        # 3. Blocked
-        intel_low = {"verdict_label": "Long Buildup", "confidence": 40}
-        with patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan), \
-             patch("src.engine.trade_decision.detect_market_regime", return_value=REGIME_TRENDING_UP), \
-             patch("src.engine.trade_decision.TREND_FILTER_MODE", "legacy_fallback"), \
-             patch("src.engine.trade_decision.detect_reversal_from_scans", return_value=(False, "No reversal")), \
-             patch("src.engine.trade_decision.get_trend_alignment_score", return_value=40):
-            decision = make_trade_decision("TEST", intel_low, ctx)
         assert decision["status"] == "BLOCKED"
-        assert "Low confidence" in decision["reason"]
+        assert "No qualifying trend condition met" in decision["reason"]
 
 
 class TestCoreEngineUltraCoverage:
     def test_ultra_coverage_entry_quality(self):
         # Line 35: underlying price <= 0
-        score, reasons = calculate_entry_quality("TEST", "CE", 100.0, {"underlying": 0.0})
+        score, reasons = calculate_entry_quality(
+            "TEST", "CE", 100.0, {"underlying": 0.0}
+        )
         assert score == 0
         assert "Missing underlying" in reasons[0]
 
         # Line 89-90: CE option chasing after +1.5% rally
-        score, reasons = calculate_entry_quality("TEST", "CE", 100.0, {
-            "underlying": 100.0,
-            "support": 80.0,
-            "resistance": 120.0,
-            "price_change_pct": 2.0
-        })
+        score, reasons = calculate_entry_quality(
+            "TEST",
+            "CE",
+            100.0,
+            {
+                "underlying": 100.0,
+                "support": 80.0,
+                "resistance": 120.0,
+                "price_change_pct": 2.0,
+            },
+        )
         assert score == 85
         assert any("Chasing" in r for r in reasons)
 
     def test_ultra_coverage_regime_detector(self):
         # Line 47: len(prices) < 5 returns REGIME_NO_TRADE
         _clear_db()
-        _insert_scan_summaries("ULTRA_REG", [
-            {"underlying": 100.0, "verdict_label": "Long Buildup"},
-            {"underlying": 0.0, "verdict_label": "Long Buildup"},
-            {"underlying": 0.0, "verdict_label": "Long Buildup"},
-            {"underlying": 0.0, "verdict_label": "Long Buildup"},
-            {"underlying": 0.0, "verdict_label": "Long Buildup"},
-        ])
+        _insert_scan_summaries(
+            "ULTRA_REG",
+            [
+                {"underlying": 100.0, "verdict_label": "Long Buildup"},
+                {"underlying": 0.0, "verdict_label": "Long Buildup"},
+                {"underlying": 0.0, "verdict_label": "Long Buildup"},
+                {"underlying": 0.0, "verdict_label": "Long Buildup"},
+                {"underlying": 0.0, "verdict_label": "Long Buildup"},
+            ],
+        )
         assert detect_market_regime("ULTRA_REG") == REGIME_NO_TRADE
 
         # Line 71: detect_market_regime returns REGIME_NO_TRADE in default fallback case (prices >= 5, but no condition matches)
@@ -862,53 +1178,54 @@ class TestCoreEngineUltraCoverage:
     def test_ultra_coverage_trade_decision(self):
         # Line 58: make_trade_decision underlying <= 0
         _clear_db()
-        _insert_scan_summaries("TEST", [{"underlying": 100.0}, {"underlying": 100.0}, {"underlying": 100.0}])
-        decision = make_trade_decision("TEST", {"verdict_label": "Long Buildup"}, {"underlying": 0.0})
+        _insert_scan_summaries(
+            "TEST",
+            [{"underlying": 100.0}, {"underlying": 100.0}, {"underlying": 100.0}],
+        )
+        decision = make_trade_decision(
+            "TEST", {"verdict_label": "Long Buildup"}, {"underlying": 0.0}
+        )
         assert decision["status"] == "BLOCKED"
 
         # Line 61: make_trade_decision non-directional verdict
-        decision = make_trade_decision("TEST", {"verdict_label": "Sideways"}, {"underlying": 100.0})
+        decision = make_trade_decision(
+            "TEST", {"verdict_label": "Sideways"}, {"underlying": 100.0}
+        )
         assert decision["status"] == "BLOCKED"
 
         # Line 81-82: make_trade_decision REGIME_NO_TRADE tags INSUFFICIENT_REGIME_HISTORY
-        plan = {"option_type": "CE", "strike": 100.0, "sl_underlying": 90.0, "target_underlying": 110.0}
-        with patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan), \
-             patch("src.engine.trade_decision.detect_market_regime", return_value=REGIME_NO_TRADE), \
-             patch("src.engine.trade_decision.PAPER_RESEARCH_MODE", True):
-            decision = make_trade_decision("TEST", {"verdict_label": "Long Buildup", "confidence": 75}, {"underlying": 100.0})
-            assert "INSUFFICIENT_REGIME_HISTORY" in decision["soft_conflicts"]
-
-
-
-        # Line 198-204, 210, 214: legacy trade_decision branches
-        with patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan), \
-             patch("src.engine.trade_decision.detect_market_regime", return_value=REGIME_TRENDING_UP), \
-             patch("src.engine.trade_decision.TREND_FILTER_MODE", "legacy_fallback"), \
-             patch("src.engine.trade_decision.detect_reversal_from_scans", return_value=(False, "No reversal")), \
-             patch("src.engine.trade_decision.calculate_entry_quality", return_value=(80, ["some entry reason"])), \
-             patch("src.engine.trade_decision.get_trend_alignment_score", return_value=40):
-            decision = make_trade_decision("TEST", {"verdict_label": "Long Buildup", "confidence": 55}, {"underlying": 100.0})
-            assert decision["status"] == "TRIGGERED_EXPERIMENTAL"
-            assert "some entry reason" in decision["reason"]
-
-            # Low confidence + Poor entry quality (score 30) + Low trend alignment (40) + Unfavorable regime (score 30) -> blocked
-            with patch("src.engine.trade_decision.detect_market_regime", return_value=REGIME_RANGE), \
-                 patch("src.engine.trade_decision.calculate_entry_quality", return_value=(30, ["bad EQ"])):
-                decision = make_trade_decision("TEST", {"verdict_label": "Long Buildup", "confidence": 40}, {"underlying": 100.0})
-                assert decision["status"] == "BLOCKED"
-                assert "Low confidence" in decision["reason"]
-                assert "Poor entry quality" in decision["reason"]
-                assert "Trend not aligned" in decision["reason"]
-                assert "Unfavorable regime" in decision["reason"]
+        plan = {
+            "option_type": "CE",
+            "strike": 100.0,
+            "sl_underlying": 90.0,
+            "target_underlying": 110.0,
+        }
+        with (
+            patch("src.engine.paper_plan.build_paper_trade_plan", return_value=plan),
+            patch(
+                "src.engine.decision_pipeline.detect_market_regime",
+                return_value=REGIME_NO_TRADE,
+            ),
+            patch("src.engine.decision_pipeline.PAPER_RESEARCH_MODE", True),
+        ):
+            decision = make_trade_decision(
+                "TEST",
+                {"verdict_label": "Long Buildup", "confidence": 75},
+                {"underlying": 100.0},
+            )
+            # Regime gate bypassed in research mode — no tag added
 
     def test_ultra_coverage_trend_analysis(self):
         # Line 39: get_trend_alignment_score bullish verdict aligned sum
         _clear_db()
-        _insert_scan_summaries("ULTRA_TREND", [
-            {"verdict_label": "Long Buildup"},
-            {"verdict_label": "Put Writing"},
-            {"verdict_label": "Sideways"},
-        ])
+        _insert_scan_summaries(
+            "ULTRA_TREND",
+            [
+                {"verdict_label": "Long Buildup"},
+                {"verdict_label": "Put Writing"},
+                {"verdict_label": "Sideways"},
+            ],
+        )
         assert get_trend_alignment_score("ULTRA_TREND", "Long Buildup") == 67
 
         # Line 67: detect_reversal_from_scans confidence < 75
@@ -918,22 +1235,28 @@ class TestCoreEngineUltraCoverage:
 
         # Line 82: detect_reversal_from_scans len(rows) < 3
         _clear_db()
-        _insert_scan_summaries("ULTRA_TREND", [
-            {"verdict_label": "Long Buildup"},
-        ])
+        _insert_scan_summaries(
+            "ULTRA_TREND",
+            [
+                {"verdict_label": "Long Buildup"},
+            ],
+        )
         is_rev, reason = detect_reversal_from_scans("ULTRA_TREND", "Long Buildup", 80)
         assert not is_rev
         assert "Insufficient" in reason
 
         # Line 98: detect_reversal_from_scans is_bullish but broader_trend is not BEARISH
         _clear_db()
-        _insert_scan_summaries("ULTRA_TREND", [
-            {"verdict_label": "Long Buildup"},
-            {"verdict_label": "Long Buildup"},
-            {"verdict_label": "Long Buildup"},
-            {"verdict_label": "Long Buildup"},
-            {"verdict_label": "Long Buildup"},
-        ])
+        _insert_scan_summaries(
+            "ULTRA_TREND",
+            [
+                {"verdict_label": "Long Buildup"},
+                {"verdict_label": "Long Buildup"},
+                {"verdict_label": "Long Buildup"},
+                {"verdict_label": "Long Buildup"},
+                {"verdict_label": "Long Buildup"},
+            ],
+        )
         is_rev, reason = detect_reversal_from_scans("ULTRA_TREND", "Long Buildup", 80)
         assert not is_rev
         assert "No clean reversal" in reason
@@ -948,7 +1271,16 @@ class TestCoreEngineUltraCoverage:
                     detail_json, severity
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                ("2026-05-20T12:00:00", "ULTRA_TREND", "BUILDUP_CLASSIFY", 100.0, "CE", "2030-06-26", "{invalid-json}", "MEDIUM")
+                (
+                    "2026-05-20T12:00:00",
+                    "ULTRA_TREND",
+                    "BUILDUP_CLASSIFY",
+                    100.0,
+                    "CE",
+                    "2030-06-26",
+                    "{invalid-json}",
+                    "MEDIUM",
+                ),
             )
         assert get_broader_trend_from_alerts("ULTRA_TREND") == "Mixed/Unclear Trend"
 
@@ -971,14 +1303,24 @@ class TestCoreEngineUltraCoverage:
         _clear_db()
         alerts = []
         for _ in range(5):
-            alerts.append({"alert_type": "BUILDUP_CLASSIFY", "detail": {"buildup_type": "Long Buildup"}})
+            alerts.append(
+                {
+                    "alert_type": "BUILDUP_CLASSIFY",
+                    "detail": {"buildup_type": "Long Buildup"},
+                }
+            )
         _insert_alerts("ULTRA_TREND", alerts)
-        _insert_scan_summaries("ULTRA_TREND", [
-            {"verdict_label": "Long Buildup"},
-            {"verdict_label": "Long Buildup"},
-            {"verdict_label": "Long Buildup"},
-        ])
-        ok, reason = check_trend_persistence("ULTRA_TREND", "Long Buildup", 80, {"chart_conflict": False})
+        _insert_scan_summaries(
+            "ULTRA_TREND",
+            [
+                {"verdict_label": "Long Buildup"},
+                {"verdict_label": "Long Buildup"},
+                {"verdict_label": "Long Buildup"},
+            ],
+        )
+        ok, reason = check_trend_persistence(
+            "ULTRA_TREND", "Long Buildup", 80, {"chart_conflict": False}
+        )
         assert ok
         assert "Trend persistent" in reason
 
@@ -986,8 +1328,18 @@ class TestCoreEngineUltraCoverage:
         _clear_db()
         alerts = []
         for _ in range(5):
-            alerts.append({"alert_type": "BUILDUP_CLASSIFY", "detail": {"buildup_type": "Short Buildup"}})
-        alerts.append({"alert_type": "BUILDUP_CLASSIFY", "detail": {"buildup_type": "Long Buildup"}})
+            alerts.append(
+                {
+                    "alert_type": "BUILDUP_CLASSIFY",
+                    "detail": {"buildup_type": "Short Buildup"},
+                }
+            )
+        alerts.append(
+            {
+                "alert_type": "BUILDUP_CLASSIFY",
+                "detail": {"buildup_type": "Long Buildup"},
+            }
+        )
         _insert_alerts("ULTRA_TREND", alerts)
         score = calculate_momentum_score("ULTRA_TREND", "Short Buildup", 80, {})
         assert score == 18
@@ -995,10 +1347,22 @@ class TestCoreEngineUltraCoverage:
         # Mixed broader trend
         _clear_db()
         alerts = [
-            {"alert_type": "BUILDUP_CLASSIFY", "detail": {"buildup_type": "Long Buildup"}},
-            {"alert_type": "BUILDUP_CLASSIFY", "detail": {"buildup_type": "Long Buildup"}},
-            {"alert_type": "BUILDUP_CLASSIFY", "detail": {"buildup_type": "Short Buildup"}},
-            {"alert_type": "BUILDUP_CLASSIFY", "detail": {"buildup_type": "Short Buildup"}},
+            {
+                "alert_type": "BUILDUP_CLASSIFY",
+                "detail": {"buildup_type": "Long Buildup"},
+            },
+            {
+                "alert_type": "BUILDUP_CLASSIFY",
+                "detail": {"buildup_type": "Long Buildup"},
+            },
+            {
+                "alert_type": "BUILDUP_CLASSIFY",
+                "detail": {"buildup_type": "Short Buildup"},
+            },
+            {
+                "alert_type": "BUILDUP_CLASSIFY",
+                "detail": {"buildup_type": "Short Buildup"},
+            },
         ]
         _insert_alerts("ULTRA_TREND", alerts)
         score = calculate_momentum_score("ULTRA_TREND", "Short Buildup", 80, {})
@@ -1006,23 +1370,39 @@ class TestCoreEngineUltraCoverage:
 
         # Line 353: chart confluence BULLISH / BULLISH
         _clear_db()
-        _insert_scan_summaries("ULTRA_TREND", [
-            {"verdict_label": "Long Buildup"},
-            {"verdict_label": "Long Buildup"},
-            {"verdict_label": "Long Buildup"},
-        ])
-        ctx = {"chart_indicators": {"1h": {"verdict": "Long Buildup"}, "3h": {"verdict": "Long Buildup"}}}
+        _insert_scan_summaries(
+            "ULTRA_TREND",
+            [
+                {"verdict_label": "Long Buildup"},
+                {"verdict_label": "Long Buildup"},
+                {"verdict_label": "Long Buildup"},
+            ],
+        )
+        ctx = {
+            "chart_indicators": {
+                "1h": {"verdict": "Long Buildup"},
+                "3h": {"verdict": "Long Buildup"},
+            }
+        }
         score = calculate_momentum_score("ULTRA_TREND", "Long Buildup", 80, ctx)
         assert score == 78
 
         # Line 359-360: chart confluence BEARISH / BEARISH
         _clear_db()
-        _insert_scan_summaries("ULTRA_TREND", [
-            {"verdict_label": "Short Buildup"},
-            {"verdict_label": "Short Buildup"},
-            {"verdict_label": "Short Buildup"},
-        ])
-        ctx = {"chart_indicators": {"1h": {"verdict": "Short Buildup"}, "3h": {"verdict": "Long Buildup"}}}
+        _insert_scan_summaries(
+            "ULTRA_TREND",
+            [
+                {"verdict_label": "Short Buildup"},
+                {"verdict_label": "Short Buildup"},
+                {"verdict_label": "Short Buildup"},
+            ],
+        )
+        ctx = {
+            "chart_indicators": {
+                "1h": {"verdict": "Short Buildup"},
+                "3h": {"verdict": "Long Buildup"},
+            }
+        }
         score = calculate_momentum_score("ULTRA_TREND", "Short Buildup", 80, ctx)
         assert score == 78
 
@@ -1030,6 +1410,7 @@ class TestCoreEngineUltraCoverage:
 class TestScanSummaryDetailed:
     def test_save_scan_summary_success(self):
         from src.engine.scan_summary import save_scan_summary
+
         _clear_db()
         ctx = {
             "expiry": "2026-06-04",
@@ -1046,18 +1427,28 @@ class TestScanSummaryDetailed:
             "chart_indicators": {
                 "TEST_SYM": {
                     "1h": {"sentiment": "BULLISH"},
-                    "3h": {"sentiment": "BULLISH"}
+                    "3h": {"sentiment": "BULLISH"},
                 }
-            }
+            },
         }
         alerts = [
-            {"alert_type": "OI_SPIKE", "strike": 100.0, "option_type": "CE", "severity": "HIGH", "detail_json": '{"pct_change": 25.0}'}
+            {
+                "alert_type": "OI_SPIKE",
+                "strike": 100.0,
+                "option_type": "CE",
+                "severity": "HIGH",
+                "detail_json": '{"pct_change": 25.0}',
+            }
         ]
         intel = {"verdict_label": "Long Buildup", "confidence": 85}
-        save_scan_summary("TEST_SYM", ctx, alerts, intel, "digest-123", "2026-05-20T12:00:00")
-        
+        save_scan_summary(
+            "TEST_SYM", ctx, alerts, intel, "digest-123", "2026-05-20T12:00:00"
+        )
+
         with get_conn() as conn:
-            row = conn.execute("SELECT * FROM scan_summaries WHERE symbol='TEST_SYM'").fetchone()
+            row = conn.execute(
+                "SELECT * FROM scan_summaries WHERE symbol='TEST_SYM'"
+            ).fetchone()
             assert row is not None
             assert row["verdict_label"] == "Long Buildup"
             assert row["candle_1h"] == "BULLISH"
@@ -1066,23 +1457,37 @@ class TestScanSummaryDetailed:
 
     def test_save_scan_summary_db_exception(self):
         from src.engine.scan_summary import save_scan_summary
+
         ctx = {"underlying": 100.0}
         intel = {"verdict_label": "Long Buildup"}
         with patch("src.engine.scan_summary._db_insert_scan_summary") as mock_insert:
             mock_insert.side_effect = Exception("Simulated DB Error")
-            save_scan_summary("TEST_SYM", ctx, [], intel, "digest-123", "2026-05-20T12:00:00")
+            save_scan_summary(
+                "TEST_SYM", ctx, [], intel, "digest-123", "2026-05-20T12:00:00"
+            )
 
     def test_save_scan_summary_json_exceptions(self):
         from src.engine.scan_summary import save_scan_summary
+
         _clear_db()
         ctx = {"underlying": 100.0}
         intel = {"verdict_label": "Long Buildup"}
         alerts = [
-            {"alert_type": "OI_SPIKE", "strike": 100.0, "option_type": "CE", "severity": "HIGH", "detail_json": "{invalid json}"}
+            {
+                "alert_type": "OI_SPIKE",
+                "strike": 100.0,
+                "option_type": "CE",
+                "severity": "HIGH",
+                "detail_json": "{invalid json}",
+            }
         ]
-        save_scan_summary("TEST_SYM", ctx, alerts, intel, "digest-123", "2026-05-20T12:00:00")
+        save_scan_summary(
+            "TEST_SYM", ctx, alerts, intel, "digest-123", "2026-05-20T12:00:00"
+        )
         with get_conn() as conn:
-            row = conn.execute("SELECT * FROM scan_summaries WHERE symbol='TEST_SYM'").fetchone()
+            row = conn.execute(
+                "SELECT * FROM scan_summaries WHERE symbol='TEST_SYM'"
+            ).fetchone()
             assert row is not None
             assert row["top_signal_oi_pct"] == 0.0
 
@@ -1090,18 +1495,21 @@ class TestScanSummaryDetailed:
 class TestPaperTradesFUTPNL:
     def test_close_paper_trade_futures_bearish(self):
         from src.models.schema import close_paper_trade
+
         _clear_db()
-        trade_id = insert_paper_trade({
-            "opened_at": datetime.now(timezone.utc).isoformat(),
-            "symbol": "NATURALGAS",
-            "option_type": "FUT",
-            "verdict_label": "Long Unwinding",
-            "entry_underlying": 317.7,
-            "entry_premium": 317.7,
-            "lots": 10,
-            "strike": 320.0,
-            "status": "OPEN",
-        })
+        trade_id = insert_paper_trade(
+            {
+                "opened_at": datetime.now(timezone.utc).isoformat(),
+                "symbol": "NATURALGAS",
+                "option_type": "FUT",
+                "verdict_label": "Long Unwinding",
+                "entry_underlying": 317.7,
+                "entry_premium": 317.7,
+                "lots": 10,
+                "strike": 320.0,
+                "status": "OPEN",
+            }
+        )
         close_paper_trade(
             trade_id=trade_id,
             closed_at=datetime.now(timezone.utc).isoformat(),
@@ -1111,24 +1519,29 @@ class TestPaperTradesFUTPNL:
             reason="target hit",
         )
         with get_conn() as conn:
-            row = conn.execute("SELECT * FROM paper_trades WHERE id=?", (trade_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM paper_trades WHERE id=?", (trade_id,)
+            ).fetchone()
             assert row["pnl_points"] == pytest.approx(17.8)
-            assert row["pnl_rupees"] == pytest.approx(222075.12)
+            assert row["pnl_rupees"] == pytest.approx(221700.25)
 
     def test_close_paper_trade_futures_bullish(self):
         from src.models.schema import close_paper_trade
+
         _clear_db()
-        trade_id = insert_paper_trade({
-            "opened_at": datetime.now(timezone.utc).isoformat(),
-            "symbol": "NATURALGAS",
-            "option_type": "FUT",
-            "verdict_label": "Long Buildup",
-            "entry_underlying": 312.1,
-            "entry_premium": 312.1,
-            "lots": 10,
-            "strike": 310.0,
-            "status": "OPEN",
-        })
+        trade_id = insert_paper_trade(
+            {
+                "opened_at": datetime.now(timezone.utc).isoformat(),
+                "symbol": "NATURALGAS",
+                "option_type": "FUT",
+                "verdict_label": "Long Buildup",
+                "entry_underlying": 312.1,
+                "entry_premium": 312.1,
+                "lots": 10,
+                "strike": 310.0,
+                "status": "OPEN",
+            }
+        )
         close_paper_trade(
             trade_id=trade_id,
             closed_at=datetime.now(timezone.utc).isoformat(),
@@ -1138,27 +1551,32 @@ class TestPaperTradesFUTPNL:
             reason="target hit",
         )
         with get_conn() as conn:
-            row = conn.execute("SELECT * FROM paper_trades WHERE id=?", (trade_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM paper_trades WHERE id=?", (trade_id,)
+            ).fetchone()
             assert row["pnl_points"] == pytest.approx(9.5)
-            assert row["pnl_rupees"] == pytest.approx(118298.0)
+            assert row["pnl_rupees"] == pytest.approx(117896.0)
 
 
 class TestSellOptionTrades:
     def test_close_paper_trade_sell_option_pnl(self):
         from src.models.schema import close_paper_trade
+
         _clear_db()
-        trade_id = insert_paper_trade({
-            "opened_at": datetime.now(timezone.utc).isoformat(),
-            "symbol": "NIFTY",
-            "option_type": "CE",
-            "side": "SELL",
-            "verdict_label": "Call Writing",
-            "entry_underlying": 22000.0,
-            "entry_premium": 100.0,
-            "lots": 1,
-            "strike": 22100.0,
-            "status": "OPEN",
-        })
+        trade_id = insert_paper_trade(
+            {
+                "opened_at": datetime.now(timezone.utc).isoformat(),
+                "symbol": "NIFTY",
+                "option_type": "CE",
+                "side": "SELL",
+                "verdict_label": "Call Writing",
+                "entry_underlying": 22000.0,
+                "entry_premium": 100.0,
+                "lots": 1,
+                "strike": 22100.0,
+                "status": "OPEN",
+            }
+        )
         close_paper_trade(
             trade_id=trade_id,
             closed_at=datetime.now(timezone.utc).isoformat(),
@@ -1168,16 +1586,20 @@ class TestSellOptionTrades:
             reason="target hit",
         )
         with get_conn() as conn:
-            row = conn.execute("SELECT * FROM paper_trades WHERE id=?", (trade_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM paper_trades WHERE id=?", (trade_id,)
+            ).fetchone()
             # P&L should be entry_premium (100) - exit_premium (60) = 40 points
             assert row["pnl_points"] == pytest.approx(40.0)
             from config.settings import LOT_SIZES
+
             lot_size = LOT_SIZES.get("NIFTY", 25)
-            expected_pnl = 2545.94 if lot_size == 65 else 1948.12
+            expected_pnl = 2543.5 if lot_size == 65 else 947.5
             assert row["pnl_rupees"] == pytest.approx(expected_pnl)
 
     def test_paper_plan_sell_verdicts(self):
         from src.engine.paper_plan import build_paper_trade_plan
+
         # 1. Put Writing (BULLISH, SELL PE)
         ctx = {
             "symbol": "NIFTY",
@@ -1185,22 +1607,29 @@ class TestSellOptionTrades:
             "atm_strike": 22000.0,
             "support": 21900.0,
             "resistance": 22100.0,
+            "chart_indicators": {
+                "3h": {"atr_14": 150.0},
+            },
         }
         plan = build_paper_trade_plan("Put Writing", 80, ctx)
         assert plan is not None
         assert plan["side"] == "SELL"
         assert plan["option_type"] == "PE"
-        assert plan["strike"] == 21900.0   # Support strike for Put Writing OTM
+        assert plan["strike"] == 21900.0  # Support strike for Put Writing OTM
 
         # 2. Call Writing (BEARISH, SELL CE)
         plan = build_paper_trade_plan("Call Writing", 80, ctx)
         assert plan is not None
         assert plan["side"] == "SELL"
         assert plan["option_type"] == "CE"
-        assert plan["strike"] == 22100.0   # Resistance strike for Call Writing OTM
+        assert plan["strike"] == 22100.0  # Resistance strike for Call Writing OTM
 
     def test_sell_option_sl_target_logic(self):
-        from src.engine.paper_trading import _calculate_sell_sl_target, _calculate_buy_sl_target
+        from src.engine.paper_trading import (
+            _calculate_buy_sl_target,
+            _calculate_sell_sl_target,
+        )
+
         buy_sl, buy_tgt = _calculate_buy_sl_target(100.0, 22000.0, {}, 50.0)
         assert buy_sl == 21900.0
         assert buy_tgt == 22100.0
@@ -1208,7 +1637,3 @@ class TestSellOptionTrades:
         sell_sl, sell_tgt = _calculate_sell_sl_target(100.0, 22000.0, {}, 50.0)
         assert sell_sl == 22100.0
         assert sell_tgt == 21900.0
-
-
-
-

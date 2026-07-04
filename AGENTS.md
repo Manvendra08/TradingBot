@@ -29,6 +29,12 @@
   - Responsive design (desktop/tablet/mobile)
 - Keep docs aligned with the live FastAPI dashboard, not older Streamlit references
 
+## Timeframe Role Separation (strict — do not cross-use)
+
+- **3H candles**: entry timing ONLY — breakout/breakdown confirmation combined with OI buildup classification. Never used for trend/signal generation.
+- **1H candles**: exit timing ONLY — strategy-level exit trigger. Never used for entries, trend, or signal generation.
+- 3H and 1H are **NOT** cross-checked against each other. They serve independent, non-overlapping functions.
+
 ## AI / LLM state (v3.0)
 
 - `AI_DECISION_MODE = boost_only` (default in `settings.py`; override via env `AI_DECISION_MODE`)

@@ -69,16 +69,16 @@ class LLMTradeVerdict(BaseModel):
             "Structured 3-line evidence chain. Use EXACTLY this format (each line ≤ 15 words):\n"
             "  Line 1 — OI: [pattern name] — CE Δ [value] vs PE Δ [value] → [BEARISH/BULLISH/NEUTRAL]\n"
             "  Line 2 — Price: [price change]% vs [MP/ATM/S/R level] → [confirms/contradicts/caps]\n"
-            "  Line 3 — Chart: 1H [sentiment] + 3H [sentiment] → [entry timing read]\n"
+            "  Line 3 — Chart: 3H [sentiment/breakout] → entry timing [aligned/confirmed/pending] (1H exits independent)\n"
             "Cite only numbers from DATA. No filler words.\n"
             "Good example (short setup):\n"
             "  OI: Call Writing — CE Δ +2.3K vs PE Δ +186 → BEARISH\n"
             "  Price: +0.92% intraday vs MP 6800 → upside capped\n"
-            "  Chart: 1H BEAR + 3H BEAR → entry timing aligned\n"
+            "  Chart: 3H BEAR → entry timing aligned (1H exits independent)\n"
             "Good example (no trade):\n"
             "  OI: Both unwinding — CE Δ −43 vs PE Δ −224 → squaring, no edge\n"
             "  Price: 306.4 within 300–310 range → no directional breakout\n"
-            "  Chart: 1H BEAR vs 3H BULL → 1H pullback in 3H trend"
+            "  Chart: 3H BULL → entry timing pending (1H exits independent)"
         )
     )
 
@@ -90,7 +90,7 @@ class LLMTradeVerdict(BaseModel):
         description="Specific condition to enter: e.g., 'Underlying crosses above 24520' or 'Premium breaks 185'"
     )
     entry_premium_range: str = Field(
-        description="Acceptable entry premium range: e.g., '180-195' or 'ATM ± 1 strike'"
+        description="Acceptable entry premium range from ACTUAL option LTP in data: e.g., '4.5-5.5'. Use the Premiums section — never guess."
     )
 
     # Risk management
@@ -222,6 +222,60 @@ def _format_chart_data(chart_indicators: dict | None) -> str:
     return "\n".join(lines) if lines else "No chart data available."
 
 
+def _format_option_premiums(
+    option_rows: list[dict] | None,
+    atm_strike: float | None,
+) -> str:
+    """Format ATM ± 3 strike premiums (CE & PE LTP) for the AI prompt.
+
+    Gives the LLM actual traded premium levels so entry_premium_range
+    is grounded in real data instead of hallucinated.
+    """
+    if not option_rows or not atm_strike:
+        return "No option premium data available."
+
+    atm = float(atm_strike)
+
+    # Collect unique strikes and build a lookup: strike -> {CE: ltp, PE: ltp}
+    strike_premiums: dict[float, dict[str, float]] = {}
+    for row in option_rows:
+        try:
+            strike = float(row.get("strike") or 0)
+            opt_type = str(row.get("option_type") or "").upper()
+            ltp = float(row.get("ltp") or 0)
+        except (TypeError, ValueError):
+            continue
+        if strike <= 0 or opt_type not in ("CE", "PE"):
+            continue
+        strike_premiums.setdefault(strike, {})[opt_type] = ltp
+
+    if not strike_premiums:
+        return "No option premium data available."
+
+    # Find the strike closest to ATM
+    sorted_strikes = sorted(strike_premiums.keys())
+    closest_idx = min(
+        range(len(sorted_strikes)),
+        key=lambda i: abs(sorted_strikes[i] - atm),
+    )
+
+    # Take ATM ± 3
+    lo = max(0, closest_idx - 3)
+    hi = min(len(sorted_strikes), closest_idx + 4)
+    selected = sorted_strikes[lo:hi]
+
+    lines = []
+    for s in selected:
+        ce_ltp = strike_premiums[s].get("CE")
+        pe_ltp = strike_premiums[s].get("PE")
+        marker = " << ATM" if abs(s - atm) < 0.01 else ""
+        ce_str = f"{ce_ltp:.2f}" if ce_ltp is not None else "-"
+        pe_str = f"{pe_ltp:.2f}" if pe_ltp is not None else "-"
+        lines.append(f"  Strike {s:.2f}: CE {ce_str} | PE {pe_str}{marker}")
+
+    return "\n".join(lines) if lines else "No option premium data available."
+
+
 def _format_news(news_data: dict | None) -> str:
     """Format news data for the AI prompt."""
     if not news_data or not news_data.get("items"):
@@ -259,39 +313,47 @@ def _format_macro_context(symbol: str) -> str:
 
     # ── MCX Commodities ──────────────────────────────────────────────────
     if "NATURALGAS" in base:
+        _is_eia_day = datetime.now(_IST).weekday() == 3  # Thursday
+        _eia_block = (
+            "    - EIA Weekly Natural Gas Storage Report: TODAY ~8:00 PM IST / 10:30 AM ET\n"
+            "      → Surprise builds = bearish pressure; surprise draws = bullish spike\n"
+            "      → Flag as catalyst; avoid fresh entries 2h before/after report"
+            if _is_eia_day
+            else "    - EIA Weekly Natural Gas Storage Report: Thursdays ~8:00 PM IST — not today, do not flag as catalyst"
+        )
         return (
             _MACRO_PREFIX
-            + """  Symbol type: MCX Natural Gas Futures (USD-denominated, INR-settled)
+            + f"""  Symbol type: MCX Natural Gas Futures (USD-denominated, INR-settled)
   Primary drivers:
-    - EIA Weekly Natural Gas Storage Report (every Thursday ~8:00 PM IST / 10:30 AM ET)
-      → Surprise builds = bearish pressure; surprise draws = bullish spike
-      → IMPORTANT: Only flag EIA as a catalyst on Thursdays. On other days, do NOT mention it.
+{_eia_block}
     - Henry Hub spot price (US benchmark): MCX closely tracks it with INR/USD multiplier
     - Weather demand: Summer cooling (US/EU) and winter heating drive consumption
     - LNG export demand from US Gulf Coast terminals
     - INR/USD rate: Every 1 rupee depreciation in INR adds ~1.5-2% to MCX price
-  Key risk events to flag:
-    - EIA report day (Thursday ONLY): avoid fresh entries 2h before/after report
-    - US weather model updates (Mon/Wed): can move Henry Hub 3-5% intraday
+  Key risk: US weather model updates (Mon/Wed) can move Henry Hub 3-5% intraday
   Seasonality: Jun-Aug = low demand (shoulder season) → structurally bearish bias
   Correlation: Positive with crude (energy complex); negative with renewable output"""
         )
 
     if "CRUDEOIL" in base:
+        _is_eia_day = datetime.now(_IST).weekday() == 2  # Wednesday
+        _eia_line = (
+            "    - EIA Weekly Petroleum Status Report: TODAY ~8:00 PM IST — flag HIGH risk if trade near report\n"
+            "      → Inventory build = bearish; inventory draw = bullish"
+            if _is_eia_day
+            else "    - EIA Weekly Petroleum Status Report: Wednesdays ~8:00 PM IST — not today, do not flag as catalyst"
+        )
         return (
             _MACRO_PREFIX
-            + """  Symbol type: MCX Crude Oil Futures (Brent/WTI proxy, USD-denominated, INR-settled)
+            + f"""  Symbol type: MCX Crude Oil Futures (Brent/WTI proxy, USD-denominated, INR-settled)
   Primary drivers:
-    - EIA Weekly Petroleum Status Report (every Wednesday ~8:00 PM IST)
-      → Inventory build = bearish; inventory draw = bullish
+{_eia_line}
     - API Crude Inventory (Tuesday ~4:30 AM IST, unofficial early signal)
     - OPEC+ production quota decisions and compliance rates
     - USD Index (DXY): Strong USD → lower crude; weak USD → higher crude
     - INR/USD rate: Direct multiplier on MCX price (1% INR move = ~1% MCX move)
     - Geopolitical risk premium: Middle East tensions, Russia-Ukraine supply routes
-  Key risk events to flag:
-    - EIA report Wednesday: major volatility event — flag HIGH risk if trade near report
-    - OPEC+ meetings (quarterly): binary risk for trend trades
+  Key risk: OPEC+ meetings (quarterly) = binary risk for trend trades
   Seasonality: Summer driving season (Jun-Aug) supports demand; shoulder in Sep-Oct
   Correlation: Natural Gas (energy complex), DXY (inverse), equities (risk-on)"""
         )
@@ -560,6 +622,8 @@ DATA:
 • OI Δ    : CE {ctx.get("ce_oi_change", 0):+,} | PE {ctx.get("pe_oi_change", 0):+,}
 • Price Δ : {ctx.get("price_change_pct", "N/A")}% ({ctx.get("price_change_points", "N/A")} pts)
 • Chart   : {_format_chart_data(ctx.get("chart_indicators"))}
+• Premiums: ATM ± 3 strikes (use these for entry_premium_range — do NOT guess premiums):
+{_format_option_premiums(ctx.get("option_rows"), ctx.get("atm_strike"))}
 • Alerts  : {_summarize_alerts(alerts or [])}
 • Risk    : {", ".join(risk_flags) or "None"}
 
@@ -613,18 +677,18 @@ OI SEMANTICS (facts, not opinions):
   PCR rising                      = more puts → BULLISH skew
   PCR falling                     = fewer puts → BEARISH skew
 
-CHART ROLE (OI trades only — not timeframe strategy):
-  3H = dominant trend. 1H = short-term momentum within it.
-  1H opposite to completed 3H = pullback entry in 3H direction (not a conflict).
-  Both 3H + 1H opposing OI = only genuine conflict.
-  Chart candles do NOT override OI engine direction.
+CHART ROLE (Strict separation — do not cross-use):
+  - 3H candles are used ONLY for entry timing via breakout/breakdown confirmation. Never for trend/signals.
+  - 1H candles are used ONLY for exit timing (strategy exit trigger). Never for trend/signals or entries.
+  - 3H and 1H are NOT to be cross-checked against each other. They serve independent, non-overlapping functions.
+  - Chart candles do NOT override OI engine direction.
 
 ANALYSIS CHAIN — think through these IN ORDER before generating output:
-  Step 1 — OI Pattern : What do CE Δ {ctx.get("ce_oi_change", 0):+,} and PE Δ {ctx.get("pe_oi_change", 0):+,} mean? Apply OI semantics above.
-  Step 2 — Price Check: Does price Δ {ctx.get("price_change_pct", 0)}% confirm or contradict the OI signal?
-             Is price near support {ctx.get("support")}, resistance {ctx.get("resistance")}, or max pain {ctx.get("max_pain")}?
+  Step 1 — OI Pattern : What does the OI Δ shown in DATA above mean? Apply OI semantics above.
+  Step 2 — Price Check: Does the Price Δ shown in DATA confirm or contradict the OI signal?
+             Is price near the S/R or MaxPain levels shown in DATA?
   Step 3 — History    : Is this pattern new or persistent? (See HISTORICAL OI CONTEXT above)
-  Step 4 — Chart Timing: What do 1H ({_c1}) and 3H ({_c3}) say about entry timing?
+  Step 4 — Chart Timing: Use 3H ({_c3}) breakout status ONLY to time entries. Do NOT use or cross-check with 1H ({_c1}) for entries.
   Step 5 — Macro/News : Any catalyst (EIA/RBI/OPEC/expiry) that amplifies or reduces the setup?
   Step 6 — Confidence : Count how many of [OI Δ, price action, news/macro] agree → derive score.
              3/3 agree → 80-95 | 2/3 → 60-75 | 1/3 → 35-55 | 0/3 → NO_TRADE
@@ -634,22 +698,18 @@ YOUR ROLE — execution detail and evidence chain only. Engine decided direction
   signal_chain, instrument, entry_trigger, entry_premium_range, stop_loss,
   target_1, target_2, risk_reward, thesis, invalidation, risk_rating, catalyst.
 
-OUTPUT FIELDS (all required):
+OUTPUT FIELDS (all required — signal_chain/thesis format is specified in the schema; follow it exactly, do not repeat it here):
 • action         : GO_LONG | GO_SHORT | NO_TRADE — must match ENGINE DECISION ({_bias_str})
 • confidence     : integer 0-100 derived from Step 6 above
-• signal_chain   : 3 lines in EXACT format (≤15 words each):
-                   Line 1: OI: [pattern] — CE Δ [value] vs PE Δ [value] → [bias]
-                   Line 2: Price: [Δ%] vs [MP/ATM/S/R] → [confirms/contradicts/caps]
-                   Line 3: Chart: 1H [sentiment] + 3H [sentiment] → [timing read]
+• signal_chain   : per schema format (3 lines, ≤15 words each)
 • instrument     : "{symbol} <strike> CE/PE/FUT <expiry>" — exact symbol and expiry from DATA
 • entry_trigger  : specific condition with a level (e.g., "Underlying holds below 6700 on next scan")
-• entry_premium_range: range in rupees (e.g., "70-80") or "ATM ± 1 strike"
+• entry_premium_range: use the ACTUAL CE/PE LTP from the "Premiums" section in DATA for the selected strike. Format as "X-Y" where X and Y are the real premiums (e.g., "4.5-5.5"). NEVER guess or copy examples.
 • stop_loss      : exact level — "Underlying 6875" or "Premium 95"
 • target_1       : first profit level with exact number
 • target_2       : extended target with exact number
 • risk_reward    : "1:X.X" format calculated from the levels above
-• thesis         : ONE sentence max 20 words — OI pattern + bottom-line action implication
-                   Good: "CE writing at 7000 with PCR 0.71 and dual bearish candles — short the bounce."
+• thesis         : per schema format (one sentence, ≤20 words)
 • invalidation   : what kills the trade (specific level or OI condition)
 • risk_rating    : LOW | MEDIUM | HIGH
                    HIGH if any RISK flag present or chart genuine conflict (both TFs vs OI).
@@ -683,24 +743,24 @@ def _build_exit_prompt(
         position_desc = f"LONG option position (purchased {opt} {strike_str} contract, paid premium)"
         if opt == "CE":
             pos_direction = "LONG UNDERLYING (Bullish) — profits when underlying RISES"
-            behavior = "You benefit when underlying price goes UP. CE premium increases as underlying rises, and decreases as underlying falls."
+            behavior = "CE premium increases as underlying rises, decreases as underlying falls."
         elif opt == "PE":
             pos_direction = "SHORT UNDERLYING (Bearish) — profits when underlying FALLS"
-            behavior = "You benefit when underlying price goes DOWN. PE premium increases as underlying falls, and decreases as underlying rises."
+            behavior = "PE premium increases as underlying falls, decreases as underlying rises."
         else:  # FUT
             pos_direction = "LONG UNDERLYING — profits when underlying RISES"
-            behavior = "You benefit when underlying price goes UP."
+            behavior = "Futures price moves 1:1 with underlying."
     else:  # SELL
         position_desc = f"SHORT option position (sold/wrote {opt} {strike_str} contract, collected premium)"
         if opt == "CE":
             pos_direction = "SHORT UNDERLYING (Bearish) — profits when underlying FALLS"
-            behavior = "You benefit when underlying price goes DOWN. CE premium decreases as underlying falls (profitable for seller), and increases as underlying rises (unprofitable)."
+            behavior = "CE premium decreases as underlying falls (profit), increases as underlying rises (loss)."
         elif opt == "PE":
             pos_direction = "LONG UNDERLYING (Bullish) — profits when underlying RISES"
-            behavior = "You benefit when underlying price goes UP. PE premium decreases as underlying rises (profitable for seller), and increases as underlying falls (unprofitable)."
+            behavior = "PE premium decreases as underlying rises (profit), increases as underlying falls (loss)."
         else:  # FUT
             pos_direction = "SHORT UNDERLYING — profits when underlying FALLS"
-            behavior = "You benefit when underlying price goes DOWN."
+            behavior = "Futures price moves 1:1 with underlying (inverse P&L as seller)."
 
     # Age of position
     try:
@@ -932,8 +992,9 @@ def _call_llm_api(
     schema_json = json.dumps(schema.model_json_schema())
     system_prompt = (
         "Options trading analyst. Respond with valid JSON matching this schema exactly.\n"
+        "Output ONLY the JSON object — no markdown fences, no prose before or after.\n"
         "Rules: Complete English only. No abbreviations (use 'underlying' not 'und', 'target' not 'tgt'). "
-        "Specific numbers required. No vague language.\n"
+        "Specific numbers required. No vague language. Use only values present in the prompt data — never invent a level, date, or figure.\n"
         f"Schema:\n{schema_json}"
     )
 
@@ -1143,8 +1204,32 @@ def _call_llm_api(
         }
 
         if _is_mcx:
-            # MCX: Groq → GitHub → OpenRouter GPT-OSS → OpenRouter pool → Gemini SDK
+            # MCX: SambaNova → Groq → GitHub → OpenRouter GPT-OSS → OpenRouter pool → Gemini SDK
             FREE_MODEL_PIPELINE = [
+                {
+                    "model_group": "sambanova-mcx",
+                    "providers": [
+                        {
+                            "name": "SambaNova (DeepSeek-V3.1)",
+                            "env_key": "SAMBANOVA_API_KEY",
+                            "url": "https://api.sambanova.ai/v1/chat/completions",
+                            "model": "DeepSeek-V3.1",
+                        },
+                        {
+                            "name": "SambaNova (GPT-OSS-120B)",
+                            "env_key": "SAMBANOVA_API_KEY",
+                            "url": "https://api.sambanova.ai/v1/chat/completions",
+                            "model": "gpt-oss-120b",
+                            "max_tokens_override": 4096,  # gpt-oss-120b truncates at 2048
+                        },
+                        {
+                            "name": "SambaNova (Llama 3.3 70B)",
+                            "env_key": "SAMBANOVA_API_KEY",
+                            "url": "https://api.sambanova.ai/v1/chat/completions",
+                            "model": "Meta-Llama-3.3-70B-Instruct",
+                        },
+                    ],
+                },
                 _tail_pipeline[0],  # groq-reasoning
                 _github_models,
                 {
@@ -1210,6 +1295,7 @@ def _call_llm_api(
                             response_mime_type="application/json",
                             response_schema=schema,
                             temperature=0.2,
+                            http_options={"timeout": min(remaining, 12.0)},
                         ),
                     )
                     result = schema.model_validate_json(response.text)
@@ -1253,7 +1339,7 @@ def _call_llm_api(
                     ],
                     "response_format": {"type": "json_object"},
                     "temperature": 0.2,
-                    "max_tokens": max_tokens,
+                    "max_tokens": provider.get("max_tokens_override", max_tokens),
                 }
                 if provider["name"].startswith("OpenRouter"):
                     headers["HTTP-Referer"] = "https://github.com/nsebot"
@@ -1584,6 +1670,57 @@ def _sanitize_llm_verdict(
     else:
         result = result.copy(update={"instrument": instr})
 
+    # 4. Validate entry_premium_range against actual option premiums
+    # If the LLM hallucinated a wildly wrong range, replace with actual data
+    entry_range = result.entry_premium_range or ""
+    if entry_range and entry_range not in ("N/A", "N/A", ""):
+        # Extract strike and option_type from instrument
+        m = re.search(r"(\d+(?:\.\d+)?)\s*(CE|PE)", instr, re.IGNORECASE)
+        if m:
+            try:
+                target_strike = float(m.group(1))
+                target_opt = m.group(2).upper()
+                option_rows = scan_context.get("option_rows") or []
+
+                # Find actual premium for this strike
+                actual_premium = None
+                for row in option_rows:
+                    try:
+                        row_strike = float(row.get("strike") or 0)
+                        row_opt = str(row.get("option_type") or "").upper()
+                        row_ltp = float(row.get("ltp") or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if abs(row_strike - target_strike) < 0.01 and row_opt == target_opt and row_ltp > 0:
+                        actual_premium = row_ltp
+                        break
+
+                # If we have actual premium, check if LLM's range is reasonable
+                if actual_premium and actual_premium > 0:
+                    # Parse the LLM's range (e.g., "70-80" or "4.5-5.5")
+                    range_match = re.search(r"(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)", entry_range)
+                    if range_match:
+                        llm_low = float(range_match.group(1))
+                        llm_high = float(range_match.group(2))
+                        llm_mid = (llm_low + llm_high) / 2
+
+                        # If LLM's mid is more than 3x or less than 1/3 of actual, it's wrong
+                        if llm_mid > actual_premium * 3 or llm_mid < actual_premium / 3:
+                            # Replace with actual premium ± 10%
+                            low = round(actual_premium * 0.9, 2)
+                            high = round(actual_premium * 1.1, 2)
+                            corrected_range = f"{low}-{high}"
+                            log.warning(
+                                "[llm] %s: entry_premium_range '%s' wildly off actual %.2f — corrected to '%s'",
+                                symbol, entry_range, actual_premium, corrected_range,
+                            )
+                            if hasattr(result, "model_copy"):
+                                result = result.model_copy(update={"entry_premium_range": corrected_range})
+                            else:
+                                result = result.copy(update={"entry_premium_range": corrected_range})
+            except Exception as e:
+                log.debug("[llm] entry_premium_range validation failed: %s", e)
+
     return result
 
 
@@ -1868,7 +2005,7 @@ def get_strategy_optimization_advice(
 
     prompt = f"""You are a Quantitative Strategy Optimizer. Review the following trade history summary to optimize the bot's risk and entry parameters.
 
-TRADE HISTORY (Symbol|Side|Verdict|Conf|PnL|Status):
+TRADE HISTORY (Symbol|Side|Verdict|Conf|PnL|Status) — {len(trades)} trades:
 {trade_data}
 
 TARGET PARAMETERS TO TUNE:
@@ -1879,12 +2016,13 @@ TARGET PARAMETERS TO TUNE:
 - live_ai_min_confidence_veto (0-100): Bar for AI veto.
 
 INSTRUCTIONS:
-1. Identify if specific symbols or verdicts (e.g. 'Short Covering') are consistently losing money.
+1. Identify if specific symbols or verdicts (e.g. 'Short Covering') are consistently losing money — only if backed by ≥5 trades of that symbol/verdict in the data above. Fewer than 5 = insufficient sample, do not conclude a pattern.
 2. If win rate is high (>80%) but PnL is low, suggest increasing max concurrent positions.
 3. If confidence scores for losses are high (>90), suggest increasing the min_confidence threshold.
 4. If AI decision mode is 'advisory' and performance is good, suggest 'boost_only'. If performance is poor, suggest 'full' or 'advisory' with higher veto.
-5. Provide a JSON response with 'suggested_config_changes' mapping keys to new values.
-6. Ensure suggested values are within reasonable bounds (e.g., confidence 0-100, positions 1-5).
+5. Only propose a change for a parameter if the data above directly supports it. Leave unsupported parameters out of suggested_config_changes entirely — do not guess a value to fill every key.
+6. Provide a JSON response with 'suggested_config_changes' mapping keys to new values.
+7. Ensure suggested values are within reasonable bounds (e.g., confidence 0-100, positions 1-5).
 """
 
     has_keys = (

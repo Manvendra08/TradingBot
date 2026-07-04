@@ -786,6 +786,10 @@ def get_today_scan_count(symbol: str, current_fetched_at: str) -> int:
 
 
 def get_scan_summary_n_scans_ago(symbol: str, n: int) -> dict | None:
+    """
+    Return the scan_summary row at OFFSET n (0-indexed).
+    n=0 returns the most recent summary, n=1 returns the 2nd most recent, etc.
+    """
     sql = """
         SELECT total_ce_oi, total_pe_oi, fetched_at FROM scan_summaries
         WHERE symbol=?
@@ -793,7 +797,7 @@ def get_scan_summary_n_scans_ago(symbol: str, n: int) -> dict | None:
         LIMIT 1 OFFSET ?
     """
     with get_conn() as conn:
-        row = conn.execute(sql, (symbol, n - 1)).fetchone()
+        row = conn.execute(sql, (symbol, n)).fetchone()
         return dict(row) if row else None
 
 
@@ -938,6 +942,7 @@ def _calc_transaction_costs(
     exit_underlying: float,
     lot_size: int,
     lots: int,
+    symbol: str = "",
 ) -> float:
     """
     Return total round-trip transaction costs in ₹ for one closed trade.
@@ -945,23 +950,43 @@ def _calc_transaction_costs(
     Modelled as entry leg + exit leg where:
       - Options turnover = premium × lot_size × lots
       - Futures turnover = underlying × lot_size × lots
-    STT is only on the sell-side leg.  For SELL-to-open trades the sell
-    leg is the *entry* price; for BUY-to-open it is the *exit* price.
-    Brokerage (₹20) and exchange charges (₹5) apply to each leg.
+
+    STT rules (India):
+      - Index options (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY): STT on BOTH legs (0.0625% each)
+      - Stock options: STT on sell leg only (0.0625%)
+      - Futures: STT on sell leg only (0.02%)
+
+    P0-04 FIX: Index options now charge STT on both legs.
     """
+    from config.settings import LOT_SIZES
+
     flat_per_leg = 20.0 + 5.0
     round_trip_flat = flat_per_leg * 2
 
-    is_sell_side = side == "SELL"
+    # Extract base symbol for index detection
+    base_symbol = symbol.upper().split()[0] if symbol else ""
+    index_symbols = {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"}
+    is_index_option = base_symbol in index_symbols and option_type in ("CE", "PE")
 
     if option_type in ("CE", "PE"):
-        sell_premium = (entry_premium if is_sell_side else exit_premium)
-        sell_turnover = float(sell_premium or 0.0) * lot_size * lots
-        stt = sell_turnover * 0.000625
+        entry_turnover = float(entry_premium or 0.0) * lot_size * lots
+        exit_turnover = float(exit_premium or 0.0) * lot_size * lots
+
+        if is_index_option:
+            # P0-04 FIX: Index options — STT on BOTH legs
+            stt = (entry_turnover + exit_turnover) * 0.000625
+        else:
+            # Stock options — STT on sell leg only
+            is_sell_side = side == "SELL"
+            sell_premium = entry_premium if is_sell_side else exit_premium
+            sell_turnover = float(sell_premium or 0.0) * lot_size * lots
+            stt = sell_turnover * 0.000625
     else:
-        sell_price = (entry_underlying if is_sell_side else exit_underlying)
+        # Futures — STT on sell leg only (0.02%)
+        is_sell_side = side == "SELL"
+        sell_price = entry_underlying if is_sell_side else exit_underlying
         sell_turnover = float(sell_price or 0.0) * lot_size * lots
-        stt = sell_turnover * 0.0001
+        stt = sell_turnover * 0.0002  # P0-04: Corrected futures STT rate
 
     return round(stt + round_trip_flat, 2)
 
@@ -999,7 +1024,9 @@ def close_paper_trade(
         side = row["side"] or "BUY"
 
         stored_lot_size = row["lot_size"]
-        lot_size = int(stored_lot_size) if stored_lot_size is not None else LOT_SIZES.get(symbol.upper(), LOT_SIZES.get(symbol, 1))
+        # P0-05 FIX: Extract base symbol for LOT_SIZES lookup (handles "NIFTY 22000 CE 25Jun" format)
+        base_symbol = symbol.upper().split()[0] if symbol else symbol.upper()
+        lot_size = int(stored_lot_size) if stored_lot_size is not None else LOT_SIZES.get(base_symbol, 1)
 
         if option_type in ("CE", "PE"):
             if (
@@ -1052,6 +1079,7 @@ def close_paper_trade(
             exit_underlying,
             lot_size,
             lots,
+            symbol=symbol,  # P0-04: Pass symbol for index option STT detection
         )
         pnl_rupees = gross_pnl_rupees - tx_cost
         log.debug(
@@ -1307,7 +1335,9 @@ def close_live_trade(
         lots = int(row["lots"] or 1)
         side = row["side"] or "BUY"
 
-        lot_size = LOT_SIZES.get(symbol.upper(), LOT_SIZES.get(symbol, 1))
+        # P0-05 FIX: Extract base symbol for LOT_SIZES lookup
+        base_symbol = symbol.upper().split()[0] if symbol else symbol.upper()
+        lot_size = LOT_SIZES.get(base_symbol, 1)
 
         if option_type in ("CE", "PE"):
             if (
@@ -1360,6 +1390,7 @@ def close_live_trade(
             exit_underlying,
             lot_size,
             lots,
+            symbol=symbol,  # P0-04: Pass symbol for index option STT detection
         )
         pnl_rupees = gross_pnl_rupees - tx_cost
         log.debug(
@@ -1411,7 +1442,8 @@ def get_broker_config() -> dict | None:
             return None
         config = dict(row)
 
-        # Decrypt api_secret and access_token with plaintext fallback
+        # Decrypt api_secret and access_token
+        # P0-03 FIX: Raise error if decryption fails — never return encrypted ciphertext as plaintext
         try:
             from src.services.zerodha_auth import _get_fernet
 
@@ -1421,17 +1453,23 @@ def get_broker_config() -> dict | None:
                     config["api_secret"] = f.decrypt(
                         config["api_secret"].encode("utf-8")
                     ).decode("utf-8")
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.error("get_broker_config: api_secret decryption failed — %s", e)
+                    return None  # P0-03: Return None instead of encrypted ciphertext
             if config.get("access_token"):
                 try:
                     config["access_token"] = f.decrypt(
                         config["access_token"].encode("utf-8")
                     ).decode("utf-8")
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                except Exception as e:
+                    log.error("get_broker_config: access_token decryption failed — %s", e)
+                    return None  # P0-03: Return None instead of encrypted ciphertext
+        except ImportError:
+            log.error("get_broker_config: zerodha_auth module not available")
+            return None
+        except Exception as e:
+            log.error("get_broker_config: Fernet initialization failed — %s", e)
+            return None
         return config
 
 

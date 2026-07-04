@@ -45,9 +45,12 @@ log = logging.getLogger(__name__)
 try:
     import shap
     import xgboost as xgb
-    from sklearn.base import clone
+    from sklearn.base import clone, ClassifierMixin
     from sklearn.metrics import accuracy_score, roc_auc_score
     from sklearn.model_selection import StratifiedKFold, train_test_split
+
+    class PatchedXGBClassifier(xgb.XGBClassifier, ClassifierMixin):
+        _estimator_type = "classifier"
 
     ML_AVAILABLE = True
 except ImportError:
@@ -161,7 +164,7 @@ class TradeSuccessPredictor:
             return
 
         try:
-            self.model = xgb.XGBClassifier()
+            self.model = PatchedXGBClassifier()
             self.model.load_model(str(MODEL_PATH))
 
             with open(FEATURES_PATH) as f:
@@ -190,7 +193,13 @@ class TradeSuccessPredictor:
             self.feature_names = saved_features
 
             # v2.1 FIX: Cache SHAP explainer — init costs ~50-200ms per call.
-            self._shap_explainer = shap.TreeExplainer(self.model)
+            # Wrap in try/except: some xgboost model artifacts fail TreeExplainer
+            # even after _estimator_type correction (e.g. native Booster format).
+            try:
+                self._shap_explainer = shap.TreeExplainer(self.model)
+            except Exception as e:
+                log.warning("SHAP TreeExplainer init failed (deferred): %s", e)
+                self._shap_explainer = None
 
             log.info(
                 "Loaded ML model v%s (%d samples, AUC=%.3f)",
@@ -207,10 +216,14 @@ class TradeSuccessPredictor:
         """v2.1: Call after retraining to force explainer rebuild."""
         self._shap_explainer = None
 
-    def _get_shap_explainer(self) -> "shap.TreeExplainer":
+    def _get_shap_explainer(self) -> "shap.TreeExplainer | None":
         """v2.1: Lazy-init cached SHAP explainer."""
         if self._shap_explainer is None and self.model is not None:
-            self._shap_explainer = shap.TreeExplainer(self.model)
+            try:
+                self._shap_explainer = shap.TreeExplainer(self.model)
+            except Exception as e:
+                log.warning("SHAP TreeExplainer lazy init failed: %s", e)
+                self._shap_explainer = None
         return self._shap_explainer
 
     def predict(self, trade_context: dict) -> "MLPrediction | None":
@@ -505,7 +518,7 @@ class TradeSuccessPredictor:
         )
 
         # Train XGBoost with class imbalance handling
-        new_model = xgb.XGBClassifier(
+        new_model = PatchedXGBClassifier(
             n_estimators=100,
             max_depth=4,
             learning_rate=0.1,
