@@ -25,19 +25,22 @@ It:
 - `python main.py` runs the bot, `python main.py --now` runs a one-shot scan.
 - `python dashboard_server.py` serves the dashboard.
 - Paper trading page: `http://localhost:8080/paper`.
+- `python main.py --dashboard` prints the FastAPI dashboard command (Streamlit legacy removed).
 
 ## LLM Provider Stack
 
-- **Primary:** OpenCode (Gemini 2.5 Flash / 2.5 Pro) — `https://opencode.ai/zen/v1/chat/completions`
-- **Fallback 1:** OpenRouter (GPT-OSS 120B Free) — `https://openrouter.ai/api/v1/chat/completions`
-- **Fallback 2:** Groq (GPT-OSS 120B, Llama 4 Scout, Llama 3.3 70B, Qwen 3 32B, etc.)
-- **Fallback 3:** OpenRouter free pool models (Qwen, Llama 3.1/3.2, Nemotron)
-- **Last resort:** Gemini SDK (gemini-2.5-flash / gemini-2.0-flash) via Google GenAI SDK
-- Default timeout: 15s per provider attempt, 30s total pipeline budget
+Purpose-based routing — three separate pipelines, not one shared stack:
+
+- **`live_verdict`** (per-scan trade verdict/exit advice) — symbol-aware: MCX (NATURALGAS/CRUDEOIL/GOLD/SILVER) routes OpenCode Zen → SambaNova → Groq → GitHub Models → OpenRouter GPT-OSS free → OpenRouter free pool → Gemini SDK. NSE indices route OpenCode Zen → GitHub Models → Groq → OpenRouter free pool → Gemini SDK.
+- **`eod_review`** (strategy optimization, end of day) — OpenRouter/OpenCode Nemotron 3 Ultra/Super only.
+- **`formatting`** — OpenRouter/Groq Qwen 3 Coder / Qwen 2.5 Coder variants only.
+- Per-purpose `max_tokens` via `LLM_MAX_TOKENS_LIVE` / `_EOD` / `_FORMATTING` in `config/settings.py`.
+- Default timeout: 12s per provider attempt (hard cap so ≥2 models fit in the 75s per-call budget)
 - JSON parsing is tolerant: strips markdown fences, grabs `{...}` from prose, removes control chars
 - Array-wrapped JSON responses are automatically unwrapped
-- Per-symbol verdict cache with DTE-aware TTL (5 min at expiry, 10 min ≤3 DTE, 30 min otherwise)
+- Per-symbol verdict cache with DTE-aware TTL (5 min at expiry, 10 min ≤3 DTE, 30 min otherwise) + price/premium-move invalidation
 - Circuit breaker: pauses all LLM calls for 5 min after 3 consecutive total failures
+- System prompt explicitly forbids inventing values ("never invent a level, date, or figure") and requires JSON-only output with no markdown fences
 
 ## LLM Schema (v3.0 — Engine-Aligned)
 
@@ -56,10 +59,11 @@ The LLM returns structured trade plans with these fields:
 - `_enforce_engine_alignment()` post-processes every LLM response — direction flips are forced to NO_TRADE/HIGH regardless of model.
 - Entry advisor is skipped entirely when a position is already open for the symbol; exit advisor runs instead.
 
-**Chart role (OI trades vs timeframe strategy):**
-- 3H shows dominant trend; 1H within it. A 1H candle opposing a completed 3H candle = potential entry timing signal, not a conflict.
-- Only BOTH 3H and 1H opposing the OI verdict = genuine conflict (flagged ⚠️ in alert).
-- Chart candles are NOT a confidence source for OI-based trades; they are entry-timing context only.
+**Chart role (strict separation — corrected, was previously documented as dual-timeframe cross-check):**
+- 3H candles are used ONLY for entry timing via breakout/breakdown confirmation. Never for trend/signal generation.
+- 1H candles are used ONLY for exit timing (strategy exit trigger). Never for trend/signals or entries.
+- 3H and 1H are NOT cross-checked against each other — independent, non-overlapping functions.
+- Chart candles never override OI engine direction; they carry zero weight in the confidence derivation.
 
 AI decision modes: `advisory` (info only), `boost_only` (promote blocked → TRIGGERED_EXPERIMENTAL), `full` (can also veto).
 **Current default: `boost_only`** (set in `settings.py` and overridable via `AI_DECISION_MODE` env var).
@@ -84,6 +88,21 @@ AI decision modes: `advisory` (info only), `boost_only` (promote blocked → TRI
 - **Signal key dedup:** Live and paper use same format `{symbol}:{option_type}:{strike}:{date}`.
 - **CLOSE_EARLY safety:** Skipped if current LTP unavailable (no zero-P&L exits).
 - **SELL margin multiplier:** 12× (increased from 10× to match actual SPAN+exposure).
+
+## Strategy Registry (Strategy × Symbol granularity)
+
+Three strategies, each independently enable/disable-able globally and per-symbol via the dashboard Settings → Strategies tab. DB (`runtime_config.json`, via `config/runtime_config.py`) is source of truth; `strategy_registry.py`'s `DEFAULT_STRATEGIES` are startup defaults only.
+
+| Strategy | Entry signal | Exit signal | Side | Default symbols |
+|---|---|---|---|---|
+| **CORE** | OI verdict + confidence gate | SL/Target/Reversal/Dead Trade | BUY CE/PE (long premium) | All, enabled |
+| **TIMEFRAME** | 3H candle breakout + OI diff | 1H candle crossover | BUY CE/PE (long premium) | All, enabled |
+| **TFSS** (Trend-Following Short Strangle) | Persisted OI trend + delta gate | Delta stop / ATR / DTE | SELL CE/PE (short premium) | Index only (NIFTY/BANKNIFTY/FINNIFTY/SENSEX); disabled by default, MCX excluded |
+
+- `src/engine/strategy_registry.py` — `active_strategies_for(symbol)` resolves which strategies run this scan cycle (strategy enabled → symbol not explicitly disabled → runner registered). `get_runner()`, `get_params()`, `get_ai_mode()`.
+- `pipeline.py` dispatches through the registry (`active_strategies_for` + `get_runner`), not hardcoded `run_paper_trading`/`run_timeframe_strategy` calls. Precedence preserved: CORE report wins ties over TIMEFRAME (first EXECUTED/CLOSED report in registry order).
+- **TFSS has no runner yet.** `_get_runners()` in `strategy_registry.py` only maps CORE/TIMEFRAME — TFSS will never dispatch regardless of its `enabled` flag until a runner is built and registered. Spec: `Trend_Following_Short_Strangle_FRS_v1.1.md` (repo root) — delta-first strike selection, ATR as one-way tightening-only regime filter, 50/30/20 tranche scaling, mandatory reduce-then-evaluate reversal sequencing, ranked exit-trigger priority.
+- Disabling a strategy mid-trade blocks new entries only; open positions run to their own SL/target (no forced close).
 
 ## Live Trading
 
@@ -117,6 +136,10 @@ AI decision modes: `advisory` (info only), `boost_only` (promote blocked → TRI
 - Keep Telegram text clean, short, and trader-readable.
 - Keep docs aligned with the FastAPI dashboard, not old Streamlit references.
 - All SL/Target changes must go through `trade_plan.py` — never duplicate logic.
+- Streamlit dashboard (`src/dashboard/app.py`) deleted — use `dashboard_server.py` only.
+- Way2Wealth news source (`_fetch_way2wealth_commentary`) removed — ICICIDirect + NewsAPI only for NIFTY/BANKNIFTY news.
+- Vendored `src/tvdatafeed/` deleted — use pip-installed `tvdatafeed` package only.
+- `APScheduler` and `dhanhq` removed from `requirements.txt` — unused.
 
 ## Main flow
 
@@ -126,7 +149,9 @@ AI decision modes: `advisory` (info only), `boost_only` (promote blocked → TRI
 
 - `src/fetchers/router.py` — source routing and ATM strike filtering
 - `src/fetchers/chart_fetcher.py` — candle sourcing and aggregation
-- `src/engine/pipeline.py` — orchestrates the scan; skips LLM entry advisor when position open
+- `src/fetchers/news_fetcher.py` — news sentiment (ICICIDirect + NewsAPI for indices; TradingView for MCX commodities; Way2Wealth removed)
+- `src/engine/pipeline.py` — orchestrates the scan; dispatches strategies via `strategy_registry.active_strategies_for()`; skips LLM entry advisor when position open
+- `src/engine/strategy_registry.py` — Strategy × Symbol enable/disable resolution (CORE/TIMEFRAME/TFSS); DB-backed via `runtime_config.json`, defaults in `DEFAULT_STRATEGIES`
 - `src/engine/anomaly_detector.py` — computes alerts and scan context
 - `src/engine/intelligence.py` — verdict, trend, trade guidance; chart_conflict flag for display only (no penalty)
 - `src/engine/trade_plan.py` — **unified** SL/Target, premium resolution, verdict parsing
@@ -170,3 +195,15 @@ Key test files:
 - Preserve symbol segregation in intelligence (NATURALGAS=news-only, NIFTY/BANKNIFTY=heatmap-only).
 - All trade plan changes must go through `trade_plan.py`.
 - `AI_INTELLIGENCE_ROADMAP_v3.0.md` is the active ML roadmap — Phase 0 (feature persistence migration) is the current blocker before any ML training.
+- **Strategy Registry:** toggling a strategy/symbol in Settings → Strategies is hot-reload (no restart) — confirm by checking `pipeline.py` log line showing which strategy_ids dispatched for a symbol after a settings save.
+- **TFSS runner not built yet.** Do not register a `run_tfss` callable in `strategy_registry._get_runners()` until it exists and has been reviewed against `Trend_Following_Short_Strangle_FRS_v1.1.md` — registering an unbuilt/unreviewed callable will crash dispatch or execute an unvalidated short-strangle strategy with real risk parameters.
+
+### Changes in this session
+
+- **Streamlit removed:** `src/dashboard/app.py` deleted; unused transitive deps (pydeck, altair, blinker, toml, rich, watchdog, GitPython) uninstalled.
+- **Way2Wealth removed:** `_fetch_way2wealth_commentary()` deleted from `news_fetcher.py` — ICICIDirect + NewsAPI only for NIFTY/BANKNIFTY.
+- **Vendored tvdatafeed removed:** `src/tvdatafeed/` deleted — project uses pip-installed `tvdatafeed` only.
+- **Package audit:** ~877 MB of unused packages uninstalled (scipy, llvmlite, pyarrow, pandas, Twisted, numba, autobahn, Pygments, setuptools, narwhals, curl_cffi, APScheduler, dhanhq + Twisted orphans).
+- **requirements.txt:** Stripped `APScheduler` and `dhanhq` (unused).
+- **Help text:** `main.py --dashboard` now shows FastAPI command, not Streamlit.
+- **Legend cleanup:** `docs/README.md` dashboard command updated.

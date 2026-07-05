@@ -9,12 +9,6 @@ pytz>=2024.1
 python-dotenv>=1.0.1
 pyotp>=2.9.0
 
-# Scheduling
-APScheduler>=3.10.4
-
-# Dhan SDK (official)
-dhanhq>=2.0.1
-
 # Telegram
 python-telegram-bot==21.5
 
@@ -47,4 +41,3 @@ pydantic>=2.7.0
 google-api-python-client>=2.120.0
 google-auth-httplib2>=0.2.0
 google-auth-oauthlib>=1.2.0
-

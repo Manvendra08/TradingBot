@@ -1272,7 +1272,9 @@
 
             .symbol-metrics {
                 display: flex;
+                flex-wrap: wrap;
                 justify-content: space-between;
+                gap: 4px 2px;
                 margin-top: 10px;
                 padding-top: 8px;
                 border-top: 1px solid rgba(255, 255, 255, 0.05); /* Subdued divider */
@@ -1748,7 +1750,7 @@
                             id="auth-dropdown-panel"
                         >
                             <div
-                                style="font-size: 11px; color: var(--text-dim)"
+                                style="font-size: 15px; font-weight: bold; color: var(--text)"
                                 id="dropdown-api-key-info"
                             >
                                 API Key: —
@@ -2706,10 +2708,18 @@
                         document.getElementById("api-key").value =
                             brokerStatus.api_key;
                     }
+                    if (brokerStatus.user_id) {
+                        document.getElementById("user-id").value =
+                            brokerStatus.user_id;
+                    }
                     if (brokerStatus.status !== "NOT_CONFIGURED") {
                         document.getElementById("api-secret").placeholder =
                             "•••••••• (Saved)";
                         document.getElementById("totp-secret").placeholder =
+                            "•••••••• (Saved)";
+                        document.getElementById("user-id").placeholder =
+                            "(Saved)";
+                        document.getElementById("password").placeholder =
                             "•••••••• (Saved)";
                         document.getElementById("api-secret").required = false;
                         document.getElementById("totp-secret").required = false;
@@ -2717,6 +2727,10 @@
                         document.getElementById("api-secret").placeholder =
                             "••••••••••••••••";
                         document.getElementById("totp-secret").placeholder =
+                            "••••••••••••••••";
+                        document.getElementById("user-id").placeholder =
+                            "Enter Kite Client ID (e.g. AB1234)";
+                        document.getElementById("password").placeholder =
                             "••••••••••••••••";
                         document.getElementById("api-secret").required = true;
                         document.getElementById("totp-secret").required = true;
@@ -2732,6 +2746,7 @@
                 // Clear sensitive fields
                 document.getElementById("api-secret").value = "";
                 document.getElementById("totp-secret").value = "";
+                document.getElementById("password").value = "";
             }
 
             function toggleAuthDropdown() {
@@ -2827,14 +2842,20 @@
 
                 dot.className = "dot";
 
-                // Set dropdown API key info
-                if (brokerStatus.api_key) {
+                // Set dropdown user name or API key info
+                if (brokerStatus.user_name) {
+                    if (apiKeyInfo)
+                        apiKeyInfo.textContent = "User: " + brokerStatus.user_name;
+                } else if (brokerStatus.user_id) {
+                    if (apiKeyInfo)
+                        apiKeyInfo.textContent = "User ID: " + brokerStatus.user_id;
+                } else if (brokerStatus.api_key) {
                     const maskKey =
                         brokerStatus.api_key.substring(0, 5) + "...";
                     if (apiKeyInfo)
                         apiKeyInfo.textContent = "API Key: " + maskKey;
                 } else {
-                    if (apiKeyInfo) apiKeyInfo.textContent = "API Key: Not set";
+                    if (apiKeyInfo) apiKeyInfo.textContent = "Broker: Not set";
                 }
 
                 if (brokerStatus.kill_switch_active) {
@@ -3413,9 +3434,12 @@
           </div>
         </div>
         <div id="metrics-${base}" class="symbol-metrics" style="display: none;">
-          <div class="metric-item"><span class="metric-label">Net Delta</span><span class="metric-val">...</span></div>
-          <div class="metric-item"><span class="metric-label">Max Profit</span><span class="metric-val">...</span></div>
-          <div class="metric-item"><span class="metric-label">Max Loss</span><span class="metric-val">...</span></div>
+          <div class="metric-item"><span class="metric-label">Delta</span><span class="metric-val">...</span></div>
+          <div class="metric-item"><span class="metric-label">Theta</span><span class="metric-val">...</span></div>
+          <div class="metric-item"><span class="metric-label">Gamma</span><span class="metric-val">...</span></div>
+          <div class="metric-item"><span class="metric-label">Vega</span><span class="metric-val">...</span></div>
+          <div class="metric-item"><span class="metric-label">Max P</span><span class="metric-val">...</span></div>
+          <div class="metric-item"><span class="metric-label">Max L</span><span class="metric-val">...</span></div>
         </div>
       </div>
     `;
@@ -3613,8 +3637,18 @@
                             );
                         };
 
-                        el.innerHTML = `
+                        const thetaVal = m.net_theta;
+                    const gammaVal = m.net_gamma;
+                    const vegaVal = m.net_vega;
+                    const formattedTheta = thetaVal != null ? (thetaVal > 0 ? "+" : "") + thetaVal.toFixed(2) : "—";
+                    const formattedGamma = gammaVal != null ? gammaVal.toFixed(4) : "—";
+                    const formattedVega = vegaVal != null ? (vegaVal > 0 ? "+" : "") + vegaVal.toFixed(2) : "—";
+
+                    el.innerHTML = `
         <div class="metric-item"><span class="metric-label">Net Delta</span><span class="metric-val" style="color:var(--text-dim);">${formattedDelta}</span></div>
+        <div class="metric-item"><span class="metric-label">Theta</span><span class="metric-val" style="color:var(--text-dim);">${formattedTheta}</span></div>
+        <div class="metric-item"><span class="metric-label">Gamma</span><span class="metric-val" style="color:var(--text-dim);">${formattedGamma}</span></div>
+        <div class="metric-item"><span class="metric-label">Vega</span><span class="metric-val" style="color:var(--text-dim);">${formattedVega}</span></div>
         <div class="metric-item"><span class="metric-label">Max Profit</span><span class="metric-val ${mpClass}">${formatVal(mpVal)}</span></div>
         <div class="metric-item"><span class="metric-label">Max Loss</span><span class="metric-val ${mlClass}">${formatVal(mlVal)}</span></div>
       `;
@@ -3886,6 +3920,8 @@
                 const payload = {
                     api_key: document.getElementById("api-key").value,
                     api_secret: document.getElementById("api-secret").value,
+                    user_id: document.getElementById("user-id").value,
+                    password: document.getElementById("password").value,
                     totp_secret: document.getElementById("totp-secret").value,
                 };
 
@@ -4050,6 +4086,72 @@
                             id="api-secret"
                             placeholder="••••••••••••••••"
                             required
+                            style="
+                                width: 100%;
+                                padding: 8px 12px;
+                                border-radius: 6px;
+                                border: 1px solid var(--border);
+                                background: var(--surface);
+                                color: var(--text);
+                            "
+                        />
+                    </div>
+                    <div
+                        class="form-group"
+                        style="
+                            margin: 0;
+                            display: flex;
+                            flex-direction: column;
+                            gap: 4px;
+                        "
+                    >
+                        <label
+                            for="user-id"
+                            style="
+                                font-size: 12px;
+                                font-weight: 600;
+                                color: var(--text-dim);
+                                text-align: left;
+                            "
+                            >User ID</label
+                        >
+                        <input
+                            type="text"
+                            id="user-id"
+                            placeholder="Enter Kite Client ID (e.g. AB1234)"
+                            style="
+                                width: 100%;
+                                padding: 8px 12px;
+                                border-radius: 6px;
+                                border: 1px solid var(--border);
+                                background: var(--surface);
+                                color: var(--text);
+                            "
+                        />
+                    </div>
+                    <div
+                        class="form-group"
+                        style="
+                            margin: 0;
+                            display: flex;
+                            flex-direction: column;
+                            gap: 4px;
+                        "
+                    >
+                        <label
+                            for="password"
+                            style="
+                                font-size: 12px;
+                                font-weight: 600;
+                                color: var(--text-dim);
+                                text-align: left;
+                            "
+                            >Password</label
+                        >
+                        <input
+                            type="password"
+                            id="password"
+                            placeholder="••••••••••••••••"
                             style="
                                 width: 100%;
                                 padding: 8px 12px;

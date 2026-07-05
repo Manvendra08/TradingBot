@@ -122,10 +122,18 @@ def _build_ml_feature_snapshot(ctx: dict, intel=None) -> dict:
     rsi_3h = None
     chart_data = ctx.get("chart_indicators") or {}
     if chart_data:
-        # chart_indicators may be keyed by symbol or directly by timeframe
-        tf_data = chart_data
-        if not any(k in chart_data for k in ("1h", "3h")):
-            tf_data = next(iter(chart_data.values()), {}) if chart_data else {}
+        # chart_indicators may be keyed by symbol ({"NIFTY": {"1h":..., "3h":...}})
+        # or directly by timeframe ({"1h":..., "3h":...})
+        if any(k in chart_data for k in ("1h", "3h")):
+            tf_data = chart_data
+        else:
+            # Symbol-keyed: look up the current symbol to get correct tf data
+            sym = ctx.get("symbol", "")
+            if sym and sym in chart_data:
+                tf_data = chart_data[sym]
+            else:
+                # Fallback: grab first entry (may be wrong for multi-symbol ctx)
+                tf_data = next(iter(chart_data.values()), {}) if chart_data else {}
         try:
             rsi_1h = float((tf_data.get("1h") or {}).get("rsi") or 0) or None
         except (TypeError, ValueError):

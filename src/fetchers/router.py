@@ -16,6 +16,12 @@ from src.fetchers.dhan_fetcher import DhanFetcher
 from src.fetchers.dhan_sensex_fetcher import DhanSensexFetcher
 from src.fetchers.nse_fetcher import NSEPublicFetcher
 from src.fetchers.paytm_fetcher import PaytmFetcher
+from src.utils.greeks_calculator import enrich_missing_greeks
+
+try:
+    from src.fetchers.sensibull_fetcher import SensibullFetcher
+except ImportError:
+    SensibullFetcher = None
 
 try:
     from src.fetchers.shoonya_fetcher import ShoonyaFetcher
@@ -56,6 +62,8 @@ if DhanHeadlessFetcher is not None:
     _FETCHERS["dhan_headless"] = DhanHeadlessFetcher
 if MoneycontrolFetcher is not None:
     _FETCHERS["moneycontrol"] = MoneycontrolFetcher
+if SensibullFetcher is not None:
+    _FETCHERS["sensibull"] = SensibullFetcher
 
 _instances: dict = {}
 _lock = threading.Lock()
@@ -82,10 +90,12 @@ def _priority_for(symbol: str) -> list[str]:
         # MCX: Shoonya primary (supports), Dhan fallback
         return ["shoonya", "dhan_commodity", "moneycontrol", "dhan", "dhan_headless"]
     if base == "SENSEX":
-        # SENSEX: Shoonya primary (only reliable source - Paytm returns empty)
-        return ["shoonya", "dhan_sensex", "dhan", "nse_public"]
+        # SENSEX: Sensibull primary (greeks), Shoonya fallback
+        return ["sensibull", "shoonya", "dhan_sensex", "dhan", "nse_public"]
     # NSE F&O indices (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY)
+    # Sensibull primary: fast, no auth, full greeks
     return [
+        "sensibull",
         "shoonya",
         "paytm",
         "dhan",
@@ -214,6 +224,14 @@ def fetch_option_chain(symbol: str, expiry: str | None = None) -> dict | None:
 
                 # Filter to ATM +- configured strike window
                 _filter_atm_strikes(result)
+
+                # Compute missing greeks (e.g. MCX from Shoonya has no delta/IV)
+                underlying = result.get("underlying_price")
+                expiry = result.get("expiry", "")
+                if underlying and expiry:
+                    n = enrich_missing_greeks(result["strikes"], underlying, expiry)
+                    if n:
+                        log.info("[router] enriched %d/%d strikes with computed greeks for %s", n, len(result["strikes"]), symbol)
 
                 strikes_count = len(result.get("strikes", []))
                 underlying = result.get("underlying_price", 0)

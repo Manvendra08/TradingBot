@@ -893,7 +893,10 @@ _PROVIDER_COOLDOWN_UNTIL: dict[str, float] = {}
 
 
 def _provider_cooldown_key(provider: dict) -> str:
-    return f"{provider.get('env_key')}:{provider.get('model')}"
+    model_name = provider.get("model", "")
+    if "opencode" in model_name:
+        return f"opencode_zen:{model_name}"
+    return f"{provider.get('env_key')}:{model_name}"
 
 
 def _parse_retry_after_seconds(text: str) -> float | None:
@@ -912,16 +915,30 @@ def _register_provider_failure(
     provider: dict, status_code: int, body: str, now: float
 ) -> None:
     key = _provider_cooldown_key(provider)
+    env_key = provider.get("env_key")
     body_l = (body or "").lower()
+    is_opencode = "opencode" in provider.get("model", "")
+
     if status_code == 402:
         _PROVIDER_COOLDOWN_UNTIL[key] = now + 86400.0
+        if env_key and not is_opencode:
+            _PROVIDER_COOLDOWN_UNTIL[env_key] = now + 86400.0
         log.info("[llm] %s credit exhausted — 24h cooldown", provider.get("name"))
         return
+
+    if is_opencode:
+        # OpenCode Zen: cooldown ONLY this specific model variant for 600s
+        _PROVIDER_COOLDOWN_UNTIL[key] = now + 600.0
+        log.info("[llm] OpenCode Zen model %s failed (status=%d) — 600s cooldown", provider.get("model"), status_code)
+        return
+
     if status_code == 429:
         retry = _parse_retry_after_seconds(body) or 300.0
         if "tokens per day" in body_l or "tpd" in body_l:
             retry = max(retry, 3600.0)
         _PROVIDER_COOLDOWN_UNTIL[key] = now + retry
+        if env_key:
+            _PROVIDER_COOLDOWN_UNTIL[env_key] = now + retry
         log.info("[llm] %s rate-limited — cooldown %.0fs", provider.get("name"), retry)
 
 
@@ -1044,14 +1061,14 @@ def _call_llm_api(
                     {
                         "name": "OpenCode (Nemotron 3 Ultra Free)",
                         "env_key": "OPENCODE_API_KEY",
-                        "url": "https://opencode.ai/zen/v1/chat/completions",
-                        "model": "nemotron-3-ultra-free",
+                        "url": "http://127.0.0.1:8081/chat/completions",
+                        "model": "opencode/nemotron-3-ultra-free",
                     },
                     {
                         "name": "OpenCode (Nemotron 3 Super Free)",
                         "env_key": "OPENCODE_API_KEY",
-                        "url": "https://opencode.ai/zen/v1/chat/completions",
-                        "model": "nemotron-3-super-free",
+                        "url": "http://127.0.0.1:8081/chat/completions",
+                        "model": "opencode/nemotron-3-super-free",
                     },
                 ],
             }
@@ -1203,9 +1220,22 @@ def _call_llm_api(
             ],
         }
 
+        _opencode_zen = {
+            "model_group": "opencode-zen-free",
+            "providers": [
+                {
+                    "name": "OpenCode Zen (Big Pickle)",
+                    "env_key": "OPENCODE_API_KEY",
+                    "url": "https://opencode.ai/zen/v1/chat/completions",
+                    "model": "big-pickle",
+                },
+            ],
+        }
+
         if _is_mcx:
-            # MCX: SambaNova → Groq → GitHub → OpenRouter GPT-OSS → OpenRouter pool → Gemini SDK
+            # MCX: OpenCode Zen → SambaNova → Groq → GitHub → OpenRouter GPT-OSS → OpenRouter pool → Gemini SDK
             FREE_MODEL_PIPELINE = [
+                _opencode_zen,
                 {
                     "model_group": "sambanova-mcx",
                     "providers": [
@@ -1247,8 +1277,9 @@ def _call_llm_api(
                 _tail_pipeline[2],  # gemini-sdk
             ]
         else:
-            # NSE/BSE indices: GitHub → Groq → OpenRouter pool → Gemini SDK
+            # NSE/BSE indices: OpenCode Zen → GitHub → Groq → OpenRouter pool → Gemini SDK
             FREE_MODEL_PIPELINE = [
+                _opencode_zen,
                 _github_models,
                 *_tail_pipeline,
             ]
@@ -1264,7 +1295,10 @@ def _call_llm_api(
                 continue
 
             cooldown_key = _provider_cooldown_key(provider)
-            cooldown_until = _PROVIDER_COOLDOWN_UNTIL.get(cooldown_key, 0.0)
+            cooldown_until = max(
+                _PROVIDER_COOLDOWN_UNTIL.get(cooldown_key, 0.0),
+                _PROVIDER_COOLDOWN_UNTIL.get(key_name, 0.0)
+            )
             if cooldown_until > now:
                 log.debug(
                     "[llm] Skipping %s — cooldown %.0fs remaining",
@@ -1331,6 +1365,10 @@ def _call_llm_api(
                     "Content-Type": "application/json",
                     "Connection": "close",
                 }
+                is_opencode = "opencode" in provider.get("model", "")
+                if is_opencode or provider["name"].startswith("OpenCode"):
+                    headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
                 json_payload = {
                     "model": provider["model"],
                     "messages": [
@@ -1354,8 +1392,23 @@ def _call_llm_api(
                         remaining, 12.0
                     ),  # Hard cap: 12s per model so ≥2 models fit in 30s budget
                 )
+                if is_opencode and resp.status_code == 401:
+                    log.warning("[llm] OpenCode Zen returned 401 Unauthorized. Skipping OpenCode group completely.")
+                    break
+
                 if resp.status_code == 200:
-                    resp_json = resp.json()
+                    try:
+                        resp_json = resp.json()
+                    except json.JSONDecodeError as jde:
+                        log.info(
+                            "[llm] %s (%s) returned 200 but body is not JSON: %s. Raw text: %.500s",
+                            provider["name"],
+                            provider["model"],
+                            jde,
+                            resp.text,
+                        )
+                        _register_provider_failure(provider, 500, resp.text, now)
+                        continue
                     if "choices" not in resp_json:
                         err_msg = resp_json.get("error", {}).get("message") or str(
                             resp_json
@@ -1413,6 +1466,11 @@ def _call_llm_api(
                     )
                     _CONSECUTIVE_FAILURES = 0
                     return result
+                if resp.status_code != 200:
+                    if is_opencode:
+                        _register_provider_failure(provider, resp.status_code, resp.text, now)
+                        continue
+
                 if resp.status_code == 429:
                     log.warning(
                         "[llm] %s (%s) returned 429 (Too Many Requests/Quota Exceeded). Payload: %s",
@@ -1480,12 +1538,16 @@ def _call_llm_api(
                         resp.text[:200],
                     )
             except Exception as ex:
+                import traceback
                 log.info(
-                    "[llm] %s (%s) exception: %s",
+                    "[llm] %s (%s) exception: %s\n%s",
                     provider["name"],
                     provider["model"],
                     str(ex)[:200],
+                    traceback.format_exc()[:500],
                 )
+                if "opencode" in provider.get("model", ""):
+                    _register_provider_failure(provider, 500, str(ex), now)
 
     # Track consecutive failures and activate circuit breaker
     _CONSECUTIVE_FAILURES += 1

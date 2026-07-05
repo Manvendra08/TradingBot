@@ -365,6 +365,9 @@ _MIGRATIONS = [
     "ALTER TABLE live_trades ADD COLUMN rsi_1h REAL",
     "ALTER TABLE live_trades ADD COLUMN rsi_3h REAL",
     "ALTER TABLE live_trades ADD COLUMN regime TEXT",
+    # ── Auto-login: user_id and encrypted password for headless Kite login ────
+    "ALTER TABLE broker_configs ADD COLUMN user_id TEXT",
+    "ALTER TABLE broker_configs ADD COLUMN password TEXT",
 ]
 
 
@@ -480,6 +483,7 @@ def get_previous_underlying_before(symbol: str, fetched_at: str) -> dict | None:
     else:
         freq_min = get_scan_frequency_nse()
 
+    # Parse fetched_at to UTC — always use this as reference, NOT datetime.now()
     try:
         ts = fetched_at.replace("Z", "+00:00")
         curr_dt = datetime.fromisoformat(ts)
@@ -488,18 +492,26 @@ def get_previous_underlying_before(symbol: str, fetched_at: str) -> dict | None:
         else:
             curr_dt = curr_dt.astimezone(timezone.utc)
     except Exception:
+        log = logging.getLogger(__name__)
+        log.warning(
+            "Cannot parse fetched_at=%s — falling back to current time", fetched_at
+        )
         curr_dt = datetime.now(timezone.utc)
 
     target_time = curr_dt - timedelta(minutes=freq_min)
+    # Allow ±2x frequency window to find the previous scan's underlying
+    window_sec = freq_min * 2 * 60
+    window_start = (target_time - timedelta(seconds=window_sec)).isoformat()
+    window_end = curr_dt.isoformat()
 
     sql = """
         SELECT * FROM underlying_price
-        WHERE symbol=? AND fetched_at < ?
+        WHERE symbol=? AND fetched_at >= ? AND fetched_at < ?
         ORDER BY fetched_at DESC
-        LIMIT 50
+        LIMIT 20
     """
     with get_conn() as conn:
-        rows = conn.execute(sql, (symbol, fetched_at)).fetchall()
+        rows = conn.execute(sql, (symbol, window_start, window_end)).fetchall()
         if not rows:
             return None
 
@@ -520,6 +532,10 @@ def get_previous_underlying_before(symbol: str, fetched_at: str) -> dict | None:
                     best_row = r
             except Exception:
                 continue
+
+        # Staleness guard: if the closest row is > 3x frequency away, reject
+        if best_row and min_diff is not None and min_diff > freq_min * 3 * 60:
+            return None
 
         return dict(best_row) if best_row else None
 
@@ -823,6 +839,7 @@ def insert_paper_trade(trade: dict) -> int:
     duplicate rows on pipeline retry after crash. Returns 0 if deduped.
     """
     from config.settings import LOT_SIZES
+
     signal_key = trade.get("signal_key")
     verb = "INSERT OR IGNORE" if signal_key else "INSERT"
 
@@ -861,7 +878,9 @@ def insert_paper_trade(trade: dict) -> int:
         "signal_key": signal_key,
         "pyramid_level": trade.get("pyramid_level", 1),
         "max_favorable_r": trade.get("max_favorable_r", 0.0),
-        "lot_size": trade["lot_size"] if "lot_size" in trade else LOT_SIZES.get(trade.get("symbol", "").upper(), 1),
+        "lot_size": trade["lot_size"]
+        if "lot_size" in trade
+        else LOT_SIZES.get(trade.get("symbol", "").upper(), 1),
         # Phase 0: ML feature columns (captured at trade open time)
         "price_change_pct": trade.get("price_change_pct"),
         "pcr": trade.get("pcr"),
@@ -1026,7 +1045,11 @@ def close_paper_trade(
         stored_lot_size = row["lot_size"]
         # P0-05 FIX: Extract base symbol for LOT_SIZES lookup (handles "NIFTY 22000 CE 25Jun" format)
         base_symbol = symbol.upper().split()[0] if symbol else symbol.upper()
-        lot_size = int(stored_lot_size) if stored_lot_size is not None else LOT_SIZES.get(base_symbol, 1)
+        lot_size = (
+            int(stored_lot_size)
+            if stored_lot_size is not None
+            else LOT_SIZES.get(base_symbol, 1)
+        )
 
         if option_type in ("CE", "PE"):
             if (
@@ -1132,10 +1155,12 @@ def list_paper_trades(symbol: str | None = None, limit: int = 300) -> list[dict]
 
 def delete_expired_contracts() -> int:
     """Delete expired contract OI data from DB."""
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime, timedelta, timezone
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    thirty_days_ago = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
+    thirty_days_ago = (datetime.now(timezone.utc) - timedelta(days=30)).strftime(
+        "%Y-%m-%d"
+    )
     with get_conn() as conn:
         # Log per-symbol/per-expiry breakdown before deleting
         before = conn.execute(
@@ -1149,7 +1174,9 @@ def delete_expired_contracts() -> int:
         cur1 = conn.execute(
             "DELETE FROM option_chain_snapshots WHERE expiry < ?", (today,)
         )
-        cur2 = conn.execute("DELETE FROM scan_summaries WHERE fetched_at < ?", (thirty_days_ago,))
+        cur2 = conn.execute(
+            "DELETE FROM scan_summaries WHERE fetched_at < ?", (thirty_days_ago,)
+        )
         log.info(
             "[db] Deleted %d expired snapshots and %d expired scan summaries.",
             cur1.rowcount,
@@ -1462,7 +1489,9 @@ def get_broker_config() -> dict | None:
                         config["access_token"].encode("utf-8")
                     ).decode("utf-8")
                 except Exception as e:
-                    log.error("get_broker_config: access_token decryption failed — %s", e)
+                    log.error(
+                        "get_broker_config: access_token decryption failed — %s", e
+                    )
                     return None  # P0-03: Return None instead of encrypted ciphertext
         except ImportError:
             log.error("get_broker_config: zerodha_auth module not available")
@@ -1477,10 +1506,9 @@ def update_broker_config(**kwargs) -> None:
     from src.services.zerodha_auth import encrypt_secret
 
     kwargs_copy = kwargs.copy()
-    if "api_secret" in kwargs_copy and kwargs_copy["api_secret"]:
-        kwargs_copy["api_secret"] = encrypt_secret(kwargs_copy["api_secret"])
-    if "access_token" in kwargs_copy and kwargs_copy["access_token"]:
-        kwargs_copy["access_token"] = encrypt_secret(kwargs_copy["access_token"])
+    for encrypt_key in ("api_secret", "access_token", "password", "totp_secret"):
+        if encrypt_key in kwargs_copy and kwargs_copy[encrypt_key]:
+            kwargs_copy[encrypt_key] = encrypt_secret(kwargs_copy[encrypt_key])
 
     with get_conn() as conn:
         row = conn.execute(

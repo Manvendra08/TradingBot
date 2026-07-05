@@ -39,16 +39,19 @@ IST = pytz.timezone("Asia/Kolkata")
 
 def exit_all_positions_friday(market_class: str) -> None:
     """Exit all open paper and live trades for symbols matching the given market class."""
-    from src.models.schema import get_conn, close_paper_trade
-    from src.fetchers.router import fetch_option_chain
-    from src.engine.live_trading import get_kite_client, _exit_open_live_trade
-    from src.engine.trade_plan import get_option_premium
+    from datetime import datetime, timezone
+
     from config.runtime_config import load_runtime_config
     from config.settings import WATCH_SYMBOLS
     from config.symbol_classes import get_symbol_class
-    from datetime import datetime, timezone
+    from src.engine.live_trading import _exit_open_live_trade, get_kite_client
+    from src.engine.trade_plan import get_option_premium
+    from src.fetchers.router import fetch_option_chain
+    from src.models.schema import close_paper_trade, get_conn
 
-    log.info("[Friday Exit] Weekend Risk auto-exit triggered for class: %s", market_class)
+    log.info(
+        "[Friday Exit] Weekend Risk auto-exit triggered for class: %s", market_class
+    )
     config = load_runtime_config()
     shadow_mode = config.get("live_shadow_mode", True)
     kite = get_kite_client()
@@ -76,11 +79,17 @@ def exit_all_positions_friday(market_class: str) -> None:
             if not open_paper and not open_live:
                 continue
 
-            log.info("[Friday Exit] Found open trades for %s. Fetching latest CMP data to square off...", symbol)
+            log.info(
+                "[Friday Exit] Found open trades for %s. Fetching latest CMP data to square off...",
+                symbol,
+            )
             # Fetch options chain to get latest premiums
             oc_data = fetch_option_chain(symbol)
             if not oc_data or not oc_data.get("underlying_price"):
-                log.warning("[Friday Exit] Could not fetch latest prices for %s. Skipping Friday exit.", symbol)
+                log.warning(
+                    "[Friday Exit] Could not fetch latest prices for %s. Skipping Friday exit.",
+                    symbol,
+                )
                 continue
 
             underlying = oc_data["underlying_price"]
@@ -117,7 +126,12 @@ def exit_all_positions_friday(market_class: str) -> None:
                     "CLOSED_WEEKEND",
                     "Friday auto-exit to avoid weekend risk",
                 )
-                log.info("[Friday Exit] Successfully closed paper trade #%d for %s at premium %.2f", trade["id"], symbol, exit_premium)
+                log.info(
+                    "[Friday Exit] Successfully closed paper trade #%d for %s at premium %.2f",
+                    trade["id"],
+                    symbol,
+                    exit_premium,
+                )
 
             # Exit Live Trades
             for row in open_live:
@@ -154,17 +168,29 @@ def exit_all_positions_friday(market_class: str) -> None:
                         shadow_mode=shadow_mode,
                         now_iso=now_iso,
                     )
-                    log.info("[Friday Exit] Successfully closed live trade #%d for %s", trade["id"], symbol)
+                    log.info(
+                        "[Friday Exit] Successfully closed live trade #%d for %s",
+                        trade["id"],
+                        symbol,
+                    )
                     from src.alerts.telegram_dispatcher import send_text
+
                     prefix = "[SHADOW]" if shadow_mode else "🚨 [LIVE]"
                     send_text(
                         f"{prefix} **Friday Auto-Exit** | Closed `{symbol}` `{trade.get('option_type')}` position at underlying `{underlying}` to avoid weekend risk."
                     )
                 except Exception as live_exc:
-                    log.error("[Friday Exit] Failed to close live trade #%d for %s: %s", trade["id"], symbol, live_exc)
+                    log.error(
+                        "[Friday Exit] Failed to close live trade #%d for %s: %s",
+                        trade["id"],
+                        symbol,
+                        live_exc,
+                    )
 
         except Exception as sym_exc:
-            log.error("[Friday Exit] Error executing Friday exit for %s: %s", symbol, sym_exc)
+            log.error(
+                "[Friday Exit] Error executing Friday exit for %s: %s", symbol, sym_exc
+            )
 
 
 def _is_open_for(symbol: str) -> bool:
@@ -601,6 +627,7 @@ def start_scheduler(immediate: bool = False):
 
     _last_friday_nse_exit_date = None
     _last_friday_mcx_exit_date = None
+    _last_auto_login_date = None
 
     try:
         while True:
@@ -613,17 +640,50 @@ def start_scheduler(immediate: bool = False):
                 has_done_startup_scan.clear()
                 has_logged_closed_pre_open.clear()
 
+            # ── Pre-market: headless Kite auto-login at ~08:45 IST Mon-Fri ──
+            # Runs once per day for NSE indices (NSE opens at 09:15).
+            # Skips weekends and market holidays automatically.
+            if now_ist.weekday() < 5:  # Monday=0 … Friday=4
+                now_time_str = now_ist.strftime("%H:%M")
+                if now_time_str == "08:45" and _last_auto_login_date != current_date:
+                    _last_auto_login_date = current_date
+                    log.info(
+                        "[scheduler] Pre-market: triggering headless Kite auto-login (08:45 IST)"
+                    )
+                    try:
+                        from src.services.zerodha_auto_login import auto_login_kite
+
+                        result = auto_login_kite(force=False)
+                        if result.get("success"):
+                            log.info(
+                                "[scheduler] Kite auto-login: %s",
+                                result.get("message", "OK"),
+                            )
+                        else:
+                            log.warning(
+                                "[scheduler] Kite auto-login failed: %s",
+                                result.get("message", "unknown error"),
+                            )
+                    except Exception as exc:
+                        log.error("[scheduler] Kite auto-login exception: %s", exc)
+
             # Friday Weekend Risk Auto-Exits
             if now_ist.weekday() == 4:  # Friday
                 current_time_str = now_ist.strftime("%H:%M")
-                if current_time_str == "15:28" and _last_friday_nse_exit_date != current_date:
+                if (
+                    current_time_str == "15:28"
+                    and _last_friday_nse_exit_date != current_date
+                ):
                     _last_friday_nse_exit_date = current_date
                     try:
                         exit_all_positions_friday("NSE_INDEX")
                         exit_all_positions_friday("BSE_INDEX")
                     except Exception as e:
                         log.error("Friday auto-exit failed for NSE/BSE: %s", e)
-                elif current_time_str == "23:28" and _last_friday_mcx_exit_date != current_date:
+                elif (
+                    current_time_str == "23:28"
+                    and _last_friday_mcx_exit_date != current_date
+                ):
                     _last_friday_mcx_exit_date = current_date
                     try:
                         exit_all_positions_friday("MCX_COMMODITY")
@@ -840,14 +900,19 @@ def start_scheduler(immediate: bool = False):
             is_1156pm = now_ist.hour == 23 and now_ist.minute == 56
             if is_1156pm and _last_backup_date != current_date:
                 _last_backup_date = current_date
-                log.info("[scheduler] Daily Telegram database backup triggered (23:56 PM IST)")
+                log.info(
+                    "[scheduler] Daily Telegram database backup triggered (23:56 PM IST)"
+                )
 
                 def _run_telegram_backup():
                     try:
                         from src.utils.gdrive_backup import backup_db_to_telegram
+
                         backup_db_to_telegram()
                     except Exception as exc:
-                        log.warning("[scheduler] Daily Telegram database backup failed: %s", exc)
+                        log.warning(
+                            "[scheduler] Daily Telegram database backup failed: %s", exc
+                        )
 
                 threading.Thread(
                     target=_run_telegram_backup, daemon=True, name="telegram-backup"

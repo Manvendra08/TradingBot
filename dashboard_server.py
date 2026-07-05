@@ -5,7 +5,16 @@ Deps: pip install fastapi uvicorn
 No pandas required.
 """
 
+import json
+import logging
+import re
+
 # ── Force IPv4 globally (Kite whitelists IPv4 only) ───────────────────────
+# Applied AFTER standard imports to avoid ordering side effects with
+# sqlite3 (which is a C extension and does not use socket.getaddrinfo
+# during import on CPython). Keeping the patch here ensures all
+# Python-level socket resolution after this point uses IPv4 only.
+import sqlite3
 import socket as _socket
 
 _orig_getaddrinfo = _socket.getaddrinfo
@@ -16,11 +25,6 @@ def _ipv4_only_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
 
 
 _socket.getaddrinfo = _ipv4_only_getaddrinfo
-
-import json
-import logging
-import re
-import sqlite3
 
 
 # ── Patch sqlite3 to automatically merge paper_trades and shadow live_trades ──
@@ -46,7 +50,12 @@ class PatchedCursor(sqlite3.Cursor):
                   AND (setup_type IS NULL OR setup_type != 'DIRECT_KITE')
             )"""
             # P0-02 FIX: Only replace the first occurrence to prevent corruption
-            sql = re.sub(r"(?i)\bfrom\s+paper_trades\b", f"FROM {subquery} /* __PAPER_UNION_INJECTED__ */", sql, count=1)
+            sql = re.sub(
+                r"(?i)\bfrom\s+paper_trades\b",
+                f"FROM {subquery} /* __PAPER_UNION_INJECTED__ */",
+                sql,
+                count=1,
+            )
         return super().execute(sql, *args, **kwargs)
 
 
@@ -72,7 +81,12 @@ class PatchedConnection(sqlite3.Connection):
                   AND (setup_type IS NULL OR setup_type != 'DIRECT_KITE')
             )"""
             # P0-02 FIX: Only replace the first occurrence to prevent corruption
-            sql = re.sub(r"(?i)\bfrom\s+paper_trades\b", f"FROM {subquery} /* __PAPER_UNION_INJECTED__ */", sql, count=1)
+            sql = re.sub(
+                r"(?i)\bfrom\s+paper_trades\b",
+                f"FROM {subquery} /* __PAPER_UNION_INJECTED__ */",
+                sql,
+                count=1,
+            )
         return super().execute(sql, *args, **kwargs)
 
     def cursor(self, *args, **kwargs):
@@ -2807,6 +2821,9 @@ def get_portfolio_metrics():
             rows = [r for r in rows if r["fetched_at"] == latest_time]
 
         net_delta = 0.0
+        net_theta = 0.0
+        net_gamma = 0.0
+        net_vega = 0.0
         min_strike = float("inf")
         max_strike = 0.0
         underlying = None
@@ -2823,7 +2840,7 @@ def get_portfolio_metrics():
             opt_type = (p.get("option_type") or "").upper()
 
             if opt_type == "FUT":
-                delta = lots_val * side * 1.0
+                delta = qty * side * 1.0
                 if not (delta != delta):  # NaN guard
                     net_delta += delta
             elif opt_type in ("CE", "PE"):
@@ -2849,8 +2866,14 @@ def get_portfolio_metrics():
                         )
 
                     d = None
+                    th = None
+                    ga = None
+                    ve = None
                     if match:
-                        d = float(match["delta"] or 0)
+                        d = float(match.get("delta") or 0) if match.get("delta") is not None else None
+                        th = float(match.get("theta") or 0) if match.get("theta") is not None else None
+                        ga = float(match.get("gamma") or 0) if match.get("gamma") is not None else None
+                        ve = float(match.get("vega") or 0) if match.get("vega") is not None else None
                         if underlying is None:
                             u = match.get("underlying_price")
                             if u:
@@ -2859,7 +2882,13 @@ def get_portfolio_metrics():
                         d = 0.5 if opt_type == "CE" else -0.5
 
                     if d is not None and not (d != d):  # NaN guard
-                        net_delta += lots_val * side * d
+                        net_delta += qty * side * d
+                    if th is not None:
+                        net_theta += qty * side * th
+                    if ga is not None:
+                        net_gamma += qty * side * ga
+                    if ve is not None:
+                        net_vega += qty * side * ve
 
         if underlying is None and rows:
             u = rows[0].get("underlying_price")
@@ -2895,7 +2924,7 @@ def get_portfolio_metrics():
 
         sim_min = min_strike * 0.7
         sim_max = max_strike * 1.3
-        prices = [sim_min + i * (sim_max - sim_min) / 100 for i in range(101)]
+        prices = [0.0] + [sim_min + i * (sim_max - sim_min) / 100 for i in range(101)]
 
         payoffs = []
         for S in prices:
@@ -2931,6 +2960,9 @@ def get_portfolio_metrics():
         if not payoffs:
             metrics[base] = {
                 "net_delta": round(net_delta, 2),
+                "net_theta": round(net_theta, 2),
+                "net_gamma": round(net_gamma, 6),
+                "net_vega": round(net_vega, 2),
                 "max_profit": 0,
                 "max_loss": 0,
             }
@@ -2939,12 +2971,8 @@ def get_portfolio_metrics():
         max_p = max(payoffs)
         min_p = min(payoffs)
 
-        is_max_inf = (max_p == payoffs[-1] and payoffs[-1] > payoffs[-2]) or (
-            max_p == payoffs[0] and payoffs[0] > payoffs[1]
-        )
-        is_min_inf = (min_p == payoffs[-1] and payoffs[-1] < payoffs[-2]) or (
-            min_p == payoffs[0] and payoffs[0] < payoffs[1]
-        )
+        is_max_inf = max_p == payoffs[-1] and payoffs[-1] > payoffs[-2]
+        is_min_inf = min_p == payoffs[-1] and payoffs[-1] < payoffs[-2]
 
         has_fut = any((p.get("option_type") or "").upper() == "FUT" for p in positions)
         has_options = any(
@@ -2957,6 +2985,9 @@ def get_portfolio_metrics():
 
         metrics[base] = {
             "net_delta": round(net_delta, 2),
+            "net_theta": round(net_theta, 2),
+            "net_gamma": round(net_gamma, 6),
+            "net_vega": round(net_vega, 2),
             "max_profit": "∞" if is_max_inf else round(max_p, 2),
             "max_loss": "∞" if is_min_inf else round(min_p, 2),
         }
@@ -3229,7 +3260,10 @@ def get_broker_status():
             "api_key": None,
             "last_login_date": None,
             "kill_switch_active": 0,
+            "has_user_id": False,
             "has_totp": False,
+            "has_password": False,
+            "user_name": None,
         }
 
     from datetime import datetime, timedelta, timezone
@@ -3239,39 +3273,39 @@ def get_broker_status():
         bool(config.get("access_token")) and config.get("last_login_date") == today
     )
 
+    user_name = None
+    if is_connected:
+        from src.engine.live_trading import get_cached_user_name
+        try:
+            user_name = get_cached_user_name()
+        except Exception:
+            pass
+
     return {
         "status": "CONNECTED" if is_connected else "DISCONNECTED",
         "api_key": config.get("api_key"),
         "last_login_date": config.get("last_login_date"),
         "kill_switch_active": config.get("kill_switch_active", 0),
+        "user_id": config.get("user_id"),
+        "has_user_id": bool(config.get("user_id")),
+        "has_password": bool(config.get("password")),
         "has_totp": bool(config.get("totp_secret")),
+        "user_name": user_name,
     }
 
 
 @app.post("/api/broker_config", dependencies=[Depends(authenticate)])
 async def post_broker_config(data: dict):
-    api_key = data.get("api_key")
-    api_secret = data.get("api_secret")
-    totp_secret = data.get("totp_secret")
-
-    if api_key == "":
-        api_key = None
-    if api_secret == "":
-        api_secret = None
-    if totp_secret == "":
-        totp_secret = None
-
-    encrypted_totp = None
-    if totp_secret:
-        from src.services.zerodha_auth import encrypt_secret
-
-        encrypted_totp = encrypt_secret(totp_secret)
+    # Build kwargs with ONLY non-empty values so existing secrets aren't wiped
+    kwargs = {}
+    for key in ("api_key", "api_secret", "user_id", "password", "totp_secret"):
+        val = data.get(key)
+        if val and val.strip():
+            kwargs[key] = val  # Pass raw — encryption handled by update_broker_config
 
     from src.models.schema import update_broker_config
 
-    update_broker_config(
-        api_key=api_key, api_secret=api_secret, totp_secret=encrypted_totp
-    )
+    update_broker_config(**kwargs)
     return {
         "status": "SUCCESS",
         "message": "Broker configurations updated successfully",
@@ -3371,6 +3405,7 @@ def get_broker_margin():
 
 @app.post("/api/broker/logout", dependencies=[Depends(authenticate)])
 async def broker_logout():
+    """Clear stored access token and cached Kite client."""
     global _positions_cache, _positions_cache_ts, _margins_cache, _margins_cache_ts
     from src.models.schema import update_broker_config
 
@@ -3386,6 +3421,16 @@ async def broker_logout():
     _margins_cache = None
     _margins_cache_ts = 0.0
     return {"status": "SUCCESS", "message": "Logged out successfully"}
+
+
+@app.post("/api/broker/auto_login", dependencies=[Depends(authenticate)])
+async def trigger_auto_login(data: dict = {}):
+    """Trigger headless Kite auto-login. Optionally pass force=true to re-login even if token is valid."""
+    force = bool(data.get("force", False))
+    from src.services.zerodha_auto_login import auto_login_kite
+
+    result = auto_login_kite(force=force)
+    return result
 
 
 @app.get("/api/zerodha/callback")

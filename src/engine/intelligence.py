@@ -26,8 +26,9 @@ log = logging.getLogger(__name__)
 
 
 def _ctx_copy(ctx: dict) -> dict:
-    """Copy a context dict, safely discarding any non-string keys that would crash ** unpacking."""
-    return {k: v for k, v in ctx.items() if isinstance(k, str)}
+    """Copy a context dict. Retains string and tuple keys (like tuple keyed
+    prev-snapshot lookups), but discards other non-string keys like ints to avoid issues."""
+    return {k: v for k, v in ctx.items() if isinstance(k, (str, tuple))}
 
 
 # ── Structured result ──────────────────────────────────────────────────────
@@ -94,14 +95,24 @@ def _safe(val, default=0):
 
 
 def _norm_symbol(s: str | None) -> str:
-    """Normalize chart/option-chain symbols for loose matching."""
+    """Normalize chart/option-chain symbols for loose matching.
+
+    Handles:
+      NSE:NIFTY25JUN27500CE  -> NIFTY
+      NATURALGAS25JUNFUT      -> NATURALGAS
+      NIFTY24500CE            -> NIFTY (via final alnum strip)
+    """
     if not s:
         return ""
     x = str(s).upper().strip()
     x = re.sub(r"^(NSE|NFO|BSE|MCX|CDS):", "", x)
     x = x.replace("!", "")
+    # Strip year-month-digits-option_type/fut suffix
+    # e.g. "25JUN27500CE", "25JUNFUT", "JUNFUT"
     x = re.sub(
-        r"(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\d{0,4}(FUT)?$", "", x
+        r"\d{0,2}(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\d*(CE|PE|FUT)?$",
+        "",
+        x,
     )
     return re.sub(r"[^A-Z0-9]", "", x)
 
@@ -399,6 +410,48 @@ def _get_alert_direction(a: dict) -> str:
         if pcr_delta < 0:
             return "BEARISH"
 
+    # P3-05: Missing directional classifications for common alert types
+    if atype == "MAX_PAIN_SHIFT":
+        shift_dir = str(detail.get("direction") or "").lower()
+        if shift_dir == "up":
+            return "BULLISH"
+        if shift_dir == "down":
+            return "BEARISH"
+        # Fallback: infer from max_pain delta
+        mp_delta = float(detail.get("max_pain_delta") or 0)
+        if mp_delta > 0:
+            return "BULLISH"
+        if mp_delta < 0:
+            return "BEARISH"
+
+    if atype == "OI_WALL_SHIFT":
+        wall_dir = str(detail.get("direction") or "").lower()
+        if wall_dir == "up":
+            return "BULLISH"
+        if wall_dir == "down":
+            return "BEARISH"
+        # Fallback: use option_type of the shifting wall
+        if ot == "PE":
+            return "BULLISH"
+        if ot == "CE":
+            return "BEARISH"
+
+    if atype == "STRADDLE_PREMIUM":
+        prem_trend = str(detail.get("trend") or "").lower()
+        if prem_trend == "rising":
+            # Rising straddle premium = increased uncertainty = NEUTRAL-ish
+            # but leaning mildly in the PCR direction if available
+            return "NEUTRAL"
+        if prem_trend == "falling":
+            return "NEUTRAL"
+
+    if atype == "PCR_EXTREME":
+        pcr_val = float(detail.get("pcr") or a.get("value") or 0)
+        if pcr_val >= 1.5:
+            return "BULLISH"
+        if pcr_val <= 0.60:
+            return "BEARISH"
+
     return "NEUTRAL"
 
 
@@ -551,6 +604,11 @@ def _compute_confidence(
         if unwind_ratio >= 0.7 and both_shrinking:
             score = min(score, 45)
 
+    # P2-01: Sideways verdict must never print high confidence — contradiction
+    # that confuses traders and may trigger incorrect paper trades.
+    if verdict_label and verdict_label in ("Sideways",):
+        score = min(score, 50)
+
     return min(max(score, 0), 98), chart_conflict
 
 
@@ -580,8 +638,6 @@ def _generate_trade_idea(
     has_iv_crush = any(a.get("alert_type") == "IV_CRUSH" for a in alerts)
 
     idea_parts = []
-
-
 
     if verdict_label == "OI Bias Bullish":
         idea_parts.append("📗 *Bias: Cautious Bullish (OI-driven)*")

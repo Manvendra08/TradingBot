@@ -399,100 +399,6 @@ def _fetch_icici_commentary() -> list[dict]:
     return rows
 
 
-def _fetch_way2wealth_commentary() -> list[dict]:
-    url = "https://www.way2wealth.com/market/marketcommentry/"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "Connection": "close",
-    }
-    rows = []
-    try:
-        import urllib3
-
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-        session = requests.Session()
-        # No retries to fail fast and avoid warnings
-        res = session.get(url, headers=headers, verify=False, timeout=5)
-        if res.status_code == 200:
-            soup = BeautifulSoup(res.text, "html.parser")
-            for el in soup.find_all(["p", "div", "td", "span"]):
-                t = el.text.strip().replace("\xa0", " ").replace("\u200b", "")
-                if len(t) > 60 and any(
-                    w in t.lower()
-                    for w in [
-                        "nifty",
-                        "sensex",
-                        "benchmark",
-                        "expected to open",
-                        "outlook",
-                        "support",
-                        "resistance",
-                    ]
-                ):
-                    if any(
-                        skip in t.lower()
-                        for skip in [
-                            "kra",
-                            "kyc",
-                            "relationship manager",
-                            "complaint",
-                            "cheque",
-                            "scores",
-                            "backoffice",
-                            "antara",
-                        ]
-                    ):
-                        continue
-                    lines = [
-                        line.strip() for line in t.split("\n") if len(line.strip()) > 50
-                    ]
-                    for line in lines:
-                        if any(
-                            w in line.lower()
-                            for w in [
-                                "nifty",
-                                "sensex",
-                                "benchmark",
-                                "global",
-                                "open",
-                                "cautious",
-                                "expected",
-                                "outlook",
-                            ]
-                        ):
-                            if any(
-                                skip in line.lower()
-                                for skip in [
-                                    "kra",
-                                    "kyc",
-                                    "complaint",
-                                    "cheque",
-                                    "scores",
-                                ]
-                            ):
-                                continue
-                            line = " ".join(line.split())
-                            title = line[:200] + "..." if len(line) > 200 else line
-                            if not any(r["title"] == title for r in rows):
-                                rows.append(
-                                    {
-                                        "title": title,
-                                        "provider": "Way2Wealth",
-                                        "published": int(time.time()),
-                                        "published_at": datetime.now(
-                                            timezone.utc
-                                        ).isoformat(),
-                                        "url": url,
-                                        "score": _news_sentiment_score(line),
-                                    }
-                                )
-    except Exception as e:
-        log.info("Way2Wealth fetch failed: %s", e)
-    return rows
-
-
 # ── Public API ───────────────────────────────────────────────────────────
 
 
@@ -524,8 +430,7 @@ def fetch_news(symbol: str) -> dict:
         primary_items = tv_result.get("items", [])
     elif sym in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"):
         icici_items = _fetch_icici_commentary()
-        w2w_items = _fetch_way2wealth_commentary()
-        all_items = icici_items + w2w_items
+        all_items = icici_items
 
         for item in all_items:
             t = item["title"].lower()

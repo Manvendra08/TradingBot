@@ -739,8 +739,8 @@ class TestPhase2MLPredictorCore:
         predictor = get_predictor()
         # With fresh/untrained predictor, predict should not crash
         result = predictor.predict({"feature_1": 0.5})
-        # Either None or a valid dict — must not raise
-        assert result is None or isinstance(result, dict)
+        # Either None, a valid dict, or MLPrediction object — must not raise
+        assert result is None or isinstance(result, dict) or hasattr(result, "success_probability")
 
 
 # ═══════════════════════════════════════════════════════════════════════════

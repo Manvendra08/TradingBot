@@ -11,7 +11,7 @@
 
 - Main app entry: `python main.py`
 - One-shot scan: `python main.py --now`
-- Dashboard server: `python dashboard_server.py`
+- Dashboard server: `python dashboard_server.py` (FastAPI — Streamlit legacy removed)
 - Paper trading page: `http://localhost:8080/paper`
 - Active scan interval options: `5m`, `15m`, `30m`, `1H`, `3H`, `1D`
 - Live option-chain output is limited to ATM +/- 15 strikes
@@ -28,6 +28,10 @@
   - Color-coded status badges and P&L display
   - Responsive design (desktop/tablet/mobile)
 - Keep docs aligned with the live FastAPI dashboard, not older Streamlit references
+- News sources: ICICIDirect + NewsAPI for NIFTY/BANKNIFTY; TradingView for MCX (Way2Wealth removed)
+- Vendored `src/tvdatafeed/` deleted — use pip-installed package
+- Dependencies trimmed: ~877 MB of unused packages removed (scipy, pandas, Twisted, numba, etc.)
+- `APScheduler` and `dhanhq` removed from requirements.txt (unused)
 
 ## Timeframe Role Separation (strict — do not cross-use)
 

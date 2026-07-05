@@ -56,14 +56,31 @@ import threading
 
 _cached_kite_client = None
 _cached_access_token = None
+_cached_user_name = None
 _kite_client_lock = threading.RLock()
 
 
 def clear_kite_client_cache() -> None:
-    global _cached_kite_client, _cached_access_token
+    global _cached_kite_client, _cached_access_token, _cached_user_name
     with _kite_client_lock:
         _cached_kite_client = None
         _cached_access_token = None
+        _cached_user_name = None
+
+
+def get_cached_user_name() -> str | None:
+    global _cached_user_name, _cached_kite_client
+    if _cached_user_name:
+        return _cached_user_name
+    client = _cached_kite_client or get_kite_client()
+    if client:
+        try:
+            profile = client.profile()
+            _cached_user_name = profile.get("user_name")
+            return _cached_user_name
+        except Exception as e:
+            log.warning("Failed to fetch Zerodha profile for user name: %s", e)
+    return None
 
 
 def _get_public_ip() -> str:
@@ -328,7 +345,7 @@ def _trade_plan_from_verdict(verdict: str, confidence: int, ctx: dict) -> dict |
         sl_ul, tgt_ul = calculate_sell_sl_target(entry_premium, underlying, ctx, step)
     else:
         sl_ul, tgt_ul = calculate_buy_sl_target(entry_premium, underlying, ctx, step)
-        
+
     if sl_ul is None or tgt_ul is None:
         return None
 
@@ -447,10 +464,14 @@ def place_kite_order(
             is_future = "FUT" in tradingsymbol.upper()
             # Dynamic slippage buffer: 0.2% for futures to avoid circuit limits, 5% for options
             buffer_pct = 0.002 if is_future else 0.05
+            # P2-05: Slippage buffer direction for SELL.
+            # For BUY, paying above LTP ensures fill (hit the ask).
+            # For SELL (writing), offering above LTP ensures the order
+            # is competitive near the ask side, guaranteeing execution.
             if transaction_type == "BUY":
                 limit_price = ltp * (1 + buffer_pct)
             else:
-                limit_price = ltp * (1 - buffer_pct)
+                limit_price = ltp * (1 + buffer_pct)
 
             # Align to tick size
             t_size = tick_size or 0.05
@@ -1004,18 +1025,33 @@ def _run_live_trading_legacy(
     risk_ok, risk_reason = check_live_risk_limits(symbol, decision.get("setup_type"))
     if not risk_ok:
         from src.engine.decision_audit import update_decision_audit
-        update_decision_audit(audit_row_id, action="SKIP", block_step="risk", block_reason=risk_reason)
+
+        update_decision_audit(
+            audit_row_id, action="SKIP", block_step="risk", block_reason=risk_reason
+        )
         log.info("%s: live trade blocked by risk engine — %s", symbol, risk_reason)
         return {"action": "BLOCKED_RISK", "reason": risk_reason}
 
     plan = _trade_plan_from_verdict(verdict, confidence, ctx)
     if not plan:
         from src.engine.decision_audit import update_decision_audit
-        update_decision_audit(audit_row_id, action="SKIP", block_step="signal", block_reason="No valid trade plan")
+
+        update_decision_audit(
+            audit_row_id,
+            action="SKIP",
+            block_step="signal",
+            block_reason="No valid trade plan",
+        )
         return {"action": "BLOCKED_PLAN", "reason": "No valid trade plan"}
 
     entry_premium = plan["entry_premium"]
-    lots = calculate_trade_lots(symbol, entry_premium, side=plan.get("side", "BUY"), is_paper=False, pyramid_level=plan.get("pyramid_level", 1))
+    lots = calculate_trade_lots(
+        symbol,
+        entry_premium,
+        side=plan.get("side", "BUY"),
+        is_paper=False,
+        pyramid_level=plan.get("pyramid_level", 1),
+    )
     scores = decision.get("scores") or {}
 
     # Signal deduplication key
@@ -1028,7 +1064,13 @@ def _run_live_trading_legacy(
     resolved = resolve_instrument(symbol, expiry, plan["strike"], plan["option_type"])
     if not resolved or not resolved.get("tradingsymbol"):
         from src.engine.decision_audit import update_decision_audit
-        update_decision_audit(audit_row_id, action="SKIP", block_step="signal", block_reason="Failed to resolve Kite tradingsymbol")
+
+        update_decision_audit(
+            audit_row_id,
+            action="SKIP",
+            block_step="signal",
+            block_reason="Failed to resolve Kite tradingsymbol",
+        )
         log.error(
             "%s: failed to resolve Kite tradingsymbol, skipping live entry", symbol
         )
@@ -1056,7 +1098,13 @@ def _run_live_trading_legacy(
         )
     except Exception as e:
         from src.engine.decision_audit import update_decision_audit
-        update_decision_audit(audit_row_id, action="SKIP", block_step="risk", block_reason=f"Order placement failed: {e}")
+
+        update_decision_audit(
+            audit_row_id,
+            action="SKIP",
+            block_step="risk",
+            block_reason=f"Order placement failed: {e}",
+        )
         log.error("%s: failed to place live order, skipping DB entry", symbol)
         return {"action": "BLOCKED_ORDER_FAILED", "reason": str(e)}
 
@@ -1064,7 +1112,13 @@ def _run_live_trading_legacy(
     broker_status, broker_message = confirm_order_fill(kite, order_id, shadow_mode)
     if broker_status in ("REJECTED", "CANCELLED"):
         from src.engine.decision_audit import update_decision_audit
-        update_decision_audit(audit_row_id, action="SKIP", block_step="risk", block_reason=f"Order {broker_status.lower()}: {broker_message}")
+
+        update_decision_audit(
+            audit_row_id,
+            action="SKIP",
+            block_step="risk",
+            block_reason=f"Order {broker_status.lower()}: {broker_message}",
+        )
         log.error(
             "%s: live order placed but got %s: %s",
             symbol,
@@ -1160,13 +1214,19 @@ def _run_live_trading_legacy(
 
     inserted_id = insert_live_trade(trade_data)
     from src.engine.decision_audit import update_decision_audit
+
     if not inserted_id:
         log.warning(
             "%s: live trade INSERT skipped — duplicate signal_key=%s",
             symbol,
             signal_key,
         )
-        update_decision_audit(audit_row_id, action="SKIP", block_step="signal", block_reason="duplicate signal key")
+        update_decision_audit(
+            audit_row_id,
+            action="SKIP",
+            block_step="signal",
+            block_reason="duplicate signal key",
+        )
         return {"action": "DEDUP_SKIPPED", "reason": "duplicate signal key"}
     update_decision_audit(audit_row_id, action="TRADE", trade_id=inserted_id)
 
@@ -1520,7 +1580,13 @@ def run_live_trading(
         return {"action": "BLOCKED_PLAN", "reason": "No valid trade plan"}
 
     entry_premium = plan["entry_premium"]
-    lots = calculate_trade_lots(symbol, entry_premium, side=plan.get("side", "BUY"), is_paper=False, pyramid_level=plan.get("pyramid_level", 1))
+    lots = calculate_trade_lots(
+        symbol,
+        entry_premium,
+        side=plan.get("side", "BUY"),
+        is_paper=False,
+        pyramid_level=plan.get("pyramid_level", 1),
+    )
     today_date = datetime.now(IST).strftime("%Y%m%d")
     signal_key = f"{symbol}:{plan.get('option_type', '')}:{int(plan.get('strike') or 0)}:{today_date}:live"
     exit_mode = "POLL" if plan["option_type"] == "FUT" else "GTT"
@@ -1792,7 +1858,10 @@ def run_live_timeframe_strategy(
     else:
         older = get_scan_summary_at_least_1h_old(symbol, fetched_at)
     if not older:
-        return {"action": "SKIPPED", "reason": "Insufficient scan history for OI comparison"}
+        return {
+            "action": "SKIPPED",
+            "reason": "Insufficient scan history for OI comparison",
+        }
 
     prev_ce = older["total_ce_oi"]
     prev_pe = older["total_pe_oi"]
@@ -2375,10 +2444,23 @@ def sync_direct_kite_positions() -> None:
             if base_sym in LOT_SIZES:
                 lots = max(1, abs(net_qty) // LOT_SIZES[base_sym])
 
+            expiry_val = get_expiry_for_tradingsymbol(ts)
+            if not expiry_val:
+                # P2-06: If expiry cannot be resolved (unknown symbol, new contract,
+                # non-standard naming), skip adoption. Empty expiry causes zero PnL
+                # in close_live_trade() because the expiry= lookup returns no rows.
+                log.warning(
+                    "Skipping direct Kite position adoption for %s — "
+                    "could not resolve expiry from tradingsymbol '%s'",
+                    base_sym,
+                    ts,
+                )
+                continue
+
             trade_data = {
                 "opened_at": now_iso,
                 "symbol": base_sym,
-                "expiry": get_expiry_for_tradingsymbol(ts) or "",
+                "expiry": expiry_val,
                 "verdict_label": "DIRECT KITE",
                 "side": side,
                 "option_type": option_type,

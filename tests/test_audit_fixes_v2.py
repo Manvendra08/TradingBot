@@ -331,7 +331,7 @@ class TestGetPreviousUnderlyingBefore:
             insert_underlying_price,
         )
 
-        old = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+        old = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
         insert_underlying_price("NIFTY", 21900.0, 0.0, old)
         now = datetime.now(timezone.utc).isoformat()
         insert_underlying_price("NIFTY", 22000.0, 0.0, now)
@@ -471,6 +471,7 @@ class TestExpiryCleanupGuard:
 
     def test_cleanup_dates_set_in_module(self):
         from src.engine.pipeline import _CLEANUP_DATES
+        _CLEANUP_DATES.clear()
 
         assert isinstance(_CLEANUP_DATES, set)
         # Should start empty

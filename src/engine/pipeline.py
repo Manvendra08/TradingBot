@@ -23,11 +23,7 @@ from src.alerts.telegram_dispatcher import send_text
 from src.engine.anomaly_detector import detect_anomalies
 from src.engine.intelligence import generate_intelligence_structured
 from src.engine.live_trading import run_live_timeframe_strategy, run_live_trading
-from src.engine.paper_trading import (
-    _invalidate_pattern_cache,
-    run_paper_trading,
-    run_timeframe_strategy,
-)
+from src.engine.paper_trading import _invalidate_pattern_cache
 
 # Phase 2: ML Success Predictor integration (AI_INTELLIGENCE_ROADMAP_v3.0)
 from src.engine.scan_cache import update_scan_snapshot
@@ -66,6 +62,8 @@ def _load_cleanup_dates() -> set[str]:
 def _save_cleanup_dates(dates: set[str]) -> None:
     CLEANUP_DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
     CLEANUP_DATA_FILE.write_text(json.dumps(list(dates)))
+
+_CLEANUP_DATES = _load_cleanup_dates()
 
 
 def _check_edge_health_and_trigger_retrain() -> None:
@@ -149,12 +147,11 @@ def run_pipeline(
             today_str = today_ist.strftime("%Y-%m-%d")
 
             # Run expiry-data cleanup at most once per calendar day (persistent across restarts).
-            cleanup_dates = _load_cleanup_dates()
-            if today_str in cleanup_dates:
+            if today_str in _CLEANUP_DATES:
                 log.debug("Expiry cleanup already done for %s, skipping", today_str)
             else:
-                cleanup_dates.add(today_str)
-                _save_cleanup_dates(cleanup_dates)
+                _CLEANUP_DATES.add(today_str)
+                _save_cleanup_dates(_CLEANUP_DATES)
                 yesterday_str = (today_ist - timedelta(days=1)).strftime("%Y-%m-%d")
 
                 with get_conn() as conn:
@@ -677,18 +674,31 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
         log.info("%s: [dry-run] Skipping paper and live trading executions", symbol)
     else:
         try:
-            pt_report = run_paper_trading(
-                symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict
-            )
-            tf_report = run_timeframe_strategy(
-                symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict
-            )
-            if pt_report and pt_report.get("action") in ("EXECUTED", "CLOSED"):
-                paper_trade_report = pt_report
-            elif tf_report and tf_report.get("action") in ("EXECUTED", "CLOSED"):
-                paper_trade_report = tf_report
-            else:
-                paper_trade_report = pt_report or tf_report
+            from src.engine.strategy_registry import active_strategies_for, get_runner
+
+            # Registry-driven dispatch (replaces hardcoded run_paper_trading +
+            # run_timeframe_strategy calls). Order follows KNOWN_STRATEGY_IDS
+            # (CORE, TIMEFRAME, TFSS) so CORE continues to take precedence over
+            # TIMEFRAME on a tie — identical to the previous `pt_report or tf_report`
+            # fallback behaviour below.
+            strategy_reports: dict = {}
+            for sid in active_strategies_for(symbol):
+                runner = get_runner(sid)
+                if runner is None:
+                    continue
+                strategy_reports[sid] = runner(
+                    symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict
+                )
+
+            paper_trade_report = None
+            for report in strategy_reports.values():
+                if report and report.get("action") in ("EXECUTED", "CLOSED"):
+                    paper_trade_report = report
+                    break
+            if paper_trade_report is None:
+                paper_trade_report = next(
+                    (r for r in strategy_reports.values() if r), None
+                )
 
             # Phase 2: Trigger ML retraining counter when a trade closes
             # on_trade_closed() increments the trade counter and triggers

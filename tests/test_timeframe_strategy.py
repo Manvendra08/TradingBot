@@ -235,8 +235,8 @@ def test_timeframe_strategy_exit_long():
         assert trade["exit_premium"] == 120.0
         assert trade["pnl_points"] == -130.0  # 120 - 250
         assert (
-            trade["pnl_rupees"] == -8504.88
-        )  # -130 * 65 (lot size) - 54.88 (tx costs)
+            trade["pnl_rupees"] == -8515.03
+        )  # -130 * 65 (lot size) - 65.03 (tx costs)
 
 
 def test_timeframe_strategy_natgas_future():

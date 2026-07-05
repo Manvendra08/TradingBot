@@ -38,7 +38,7 @@ Welcome to the official documentation for the **NSEBOT** algorithmic trading sys
 ## 🛠️ Operational Commands
 
 *   **Start Bot:** `python src/engine/main.py`
-*   **Start Dashboard:** `streamlit run src/dashboard/app.py`
+*   **Start Dashboard:** `python dashboard_server.py`  (open http://localhost:8080)
 *   **Run Tests:** `pytest tests/ -v`
 *   **Cleanup Tools:** `python tools/cleanup_high_priority.py`
 
