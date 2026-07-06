@@ -280,12 +280,71 @@ CREATE TABLE IF NOT EXISTS decision_audit (
 CREATE INDEX IF NOT EXISTS idx_da_symbol_ts ON decision_audit(symbol, timestamp);
 CREATE INDEX IF NOT EXISTS idx_da_action ON decision_audit(action, engine);
 
+CREATE TABLE IF NOT EXISTS ng_parity_log (
+    id INTEGER PRIMARY KEY,
+    ts TEXT NOT NULL,             -- IST ISO
+    nymex_last REAL, usdinr REAL, fair_value REAL,
+    mcx_last REAL, dev_pct REAL,
+    nymex_age_sec INTEGER, fx_age_sec INTEGER, mcx_age_sec INTEGER,
+    mcx_src TEXT, fx_src TEXT, nymex_src TEXT,
+    regime TEXT,                  -- PARITY/MOMENTUM/EVENT/BLOCKED
+    valid INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS eia_consensus (
+    report_date TEXT PRIMARY KEY, -- Thursday date
+    consensus_bcf REAL,           -- expected build(+)/draw(-)
+    actual_bcf REAL,              -- filled post-release
+    surprise_bcf REAL,
+    fetched_at TEXT, source TEXT
+);
+
+CREATE TABLE IF NOT EXISTS fii_positioning (
+    report_date TEXT PRIMARY KEY, -- YYYY-MM-DD
+    fii_index_long INTEGER,
+    fii_index_short INTEGER,
+    client_index_long INTEGER,
+    client_index_short INTEGER,
+    dii_cash_net REAL,
+    fii_cash_net REAL,
+    fetched_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS multi_leg_trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_ref INTEGER,
+    symbol TEXT NOT NULL,
+    structure TEXT NOT NULL,
+    net_premium REAL,
+    margin_req REAL,
+    total_pnl REAL,
+    opened_at TEXT,
+    closed_at TEXT,
+    status TEXT DEFAULT 'OPEN',
+    reason TEXT,
+    profit_factor REAL
+);
+
+CREATE TABLE IF NOT EXISTS multi_leg_legs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_id INTEGER NOT NULL,
+    side TEXT NOT NULL,
+    lots INTEGER NOT NULL,
+    strike REAL NOT NULL,
+    option_type TEXT NOT NULL,
+    entry_premium REAL,
+    exit_premium REAL,
+    FOREIGN KEY (trade_id) REFERENCES multi_leg_trades(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_mll_trade_id ON multi_leg_legs (trade_id);
+
 """
 
 
 @contextlib.contextmanager
 def get_conn():
-    conn = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES)
+    conn = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES, timeout=30.0)
     conn.row_factory = sqlite3.Row
     try:
         yield conn
@@ -553,7 +612,27 @@ def get_latest_snapshots_for_symbol(symbol: str, expiry: str) -> list[dict]:
         return [dict(r) for r in rows]
 
 
-def get_prev_snapshots_bulk(symbol: str, expiry: str) -> dict[tuple, dict]:
+def get_prev_snapshots_bulk(
+    symbol: str, expiry: str, fetched_at: str | None = None
+) -> dict[tuple, dict]:
+    """
+    Fetch the previous bulk snapshot (option chain) for a symbol/expiry pair.
+
+    BUG-007 FIX: Now accepts an optional `fetched_at` parameter to use as the
+    reference time instead of `datetime.now()`. This aligns with the pattern
+    in `get_previous_underlying_before()` and prevents noise-suppression
+    failures on delayed scan cycles where `now()` drifts from the actual
+    scan timestamp.
+
+    Args:
+        symbol: Trading symbol (e.g., "NIFTY")
+        expiry: Expiry date string
+        fetched_at: Optional ISO timestamp to use as reference time.
+                   If None, uses datetime.now(timezone.utc).
+
+    Returns:
+        Dict mapping (strike, option_type) tuples to snapshot row dicts.
+    """
     from datetime import datetime, timedelta, timezone
 
     from config.runtime_config import get_scan_frequency_mcx, get_scan_frequency_nse
@@ -565,7 +644,24 @@ def get_prev_snapshots_bulk(symbol: str, expiry: str) -> dict[tuple, dict]:
     else:
         freq_min = get_scan_frequency_nse()
 
-    now_utc = datetime.now(timezone.utc)
+    # BUG-007 FIX: Use fetched_at parameter if provided, else fall back to now()
+    if fetched_at:
+        try:
+            ts = fetched_at.replace("Z", "+00:00")
+            now_utc = datetime.fromisoformat(ts)
+            if now_utc.tzinfo is None:
+                now_utc = now_utc.replace(tzinfo=timezone.utc)
+            else:
+                now_utc = now_utc.astimezone(timezone.utc)
+        except Exception:
+            log.warning(
+                "get_prev_snapshots_bulk: cannot parse fetched_at=%s, falling back to now()",
+                fetched_at,
+            )
+            now_utc = datetime.now(timezone.utc)
+    else:
+        now_utc = datetime.now(timezone.utc)
+
     target_time = now_utc - timedelta(minutes=freq_min)
 
     # Fetch distinct fetched_at values to find the one closest to target_time
@@ -599,27 +695,44 @@ def get_prev_snapshots_bulk(symbol: str, expiry: str) -> dict[tuple, dict]:
                 continue
 
         if not fetched_ats:
-            # Fallback: if all snapshots were excluded, just pick the absolute latest one
-            sql_fallback = """
-                SELECT * FROM option_chain_snapshots
-                WHERE symbol=? AND expiry=? AND fetched_at=(
-                    SELECT MAX(fetched_at) FROM option_chain_snapshots
-                    WHERE symbol=? AND expiry=?
-                )
-            """
-            fallback_rows = conn.execute(
-                sql_fallback, (symbol, expiry, symbol, expiry)
-            ).fetchall()
-            return {(r["strike"], r["option_type"]): dict(r) for r in fallback_rows}
+            # All stored snapshots were inserted in the last 5 seconds — no valid baseline.
+            return {}
 
         # Find the fetched_at closest to target_time
         best_fetched_at_str = None
+        best_dt = None
         min_diff = None
         for fs, dt in fetched_ats:
             diff = abs((dt - target_time).total_seconds())
             if min_diff is None or diff < min_diff:
                 min_diff = diff
                 best_fetched_at_str = fs
+                best_dt = dt
+
+        # ── Staleness guard ────────────────────────────────────────────────────
+        # If the best candidate is older than max_age_minutes, it belongs to a
+        # different trading session (e.g. Thursday close vs Monday open).
+        # Returning stale baselines causes every OI value to look like a massive
+        # spike (+91000%) which floods anomaly detection with false positives.
+        # NSE: 4h cap   MCX: 6h cap
+        if class_key == "MCX_COMMODITY":
+            max_age_minutes = 360  # 6 hours
+        else:
+            max_age_minutes = 240  # 4 hours
+
+        if best_dt is not None:
+            age_minutes = (now_utc - best_dt).total_seconds() / 60
+            if age_minutes > max_age_minutes:
+                import logging as _log
+
+                _log.getLogger(__name__).debug(
+                    "[schema] get_prev_snapshots_bulk: %s prev snapshot is %.0f min old "
+                    "(> %d min cap) — returning empty baseline to suppress cross-session noise",
+                    symbol,
+                    age_minutes,
+                    max_age_minutes,
+                )
+                return {}
 
         # Fetch all snapshots matching this best_fetched_at_str
         sql_select = """
@@ -1001,11 +1114,40 @@ def _calc_transaction_costs(
             sell_turnover = float(sell_premium or 0.0) * lot_size * lots
             stt = sell_turnover * 0.000625
     else:
-        # Futures — STT on sell leg only (0.02%)
+        # BUG-029 FIX: MCX commodity futures use CTT (Commodity Transaction Tax)
+        # at 0.01% (0.0001), not STT at 0.02% (0.0002). NSE index futures use STT.
+        # Previously all futures used 0.0002, overestimating MCX costs by 2x.
+        mcx_commodity_symbols = {
+            "NATURALGAS",
+            "CRUDEOIL",
+            "GOLD",
+            "SILVER",
+            "COPPER",
+            "ZINC",
+            "ALUMINIUM",
+            "LEAD",
+            "NICKEL",
+            "MENTHA",
+            "COTTON",
+            "CPO",
+        }
+        is_mcx_commodity_future = base_symbol in mcx_commodity_symbols
+
+        # Futures — STT on sell leg only
+        # NSE Index Futures (NIFTY, BANKNIFTY): 0.01% (0.0001) - actually STT was reduced
+        # MCX Commodity Futures: 0.01% (0.0001) - CTT
+        # Stock Futures: 0.02% (0.0002) - STT
+        if is_mcx_commodity_future:
+            stt_rate = 0.0001  # CTT rate for MCX commodities
+        elif base_symbol in index_symbols:
+            stt_rate = 0.0001  # STT rate for NSE index futures (reduced from 0.02%)
+        else:
+            stt_rate = 0.0002  # STT rate for stock futures
+
         is_sell_side = side == "SELL"
         sell_price = entry_underlying if is_sell_side else exit_underlying
         sell_turnover = float(sell_price or 0.0) * lot_size * lots
-        stt = sell_turnover * 0.0002  # P0-04: Corrected futures STT rate
+        stt = sell_turnover * stt_rate
 
     return round(stt + round_trip_flat, 2)
 
@@ -1083,9 +1225,12 @@ def close_paper_trade(
             else:
                 pnl_points = 0.0
         else:
-            from src.engine.verdict_sets import is_bearish
-
-            if side == "SELL" or verdict_label == "SHORT" or is_bearish(verdict_label):
+            # BUG-006 FIX: Use only `side` to determine futures P&L direction.
+            # Previously, the OR chain `side == "SELL" or verdict_label == "SHORT"
+            # or is_bearish(verdict_label)` could cause P&L inversion if side
+            # disagreed with verdict_label. The `side` field is the authoritative
+            # source of position direction (BUY = long, SELL = short).
+            if side == "SELL":
                 pnl_points = entry_underlying - float(exit_underlying)
             else:
                 pnl_points = float(exit_underlying) - entry_underlying
@@ -1398,9 +1543,12 @@ def close_live_trade(
             else:
                 pnl_points = 0.0
         else:
-            from src.engine.verdict_sets import is_bearish
-
-            if side == "SELL" or verdict_label == "SHORT" or is_bearish(verdict_label):
+            # BUG-006 FIX: Use only `side` to determine futures P&L direction.
+            # Previously, the OR chain `side == "SELL" or verdict_label == "SHORT"
+            # or is_bearish(verdict_label)` could cause P&L inversion if side
+            # disagreed with verdict_label. The `side` field is the authoritative
+            # source of position direction (BUY = long, SELL = short).
+            if side == "SELL":
                 pnl_points = entry_underlying - float(exit_underlying)
             else:
                 pnl_points = float(exit_underlying) - entry_underlying
@@ -1547,3 +1695,116 @@ def set_kill_switch(active: bool) -> None:
             conn.execute(
                 "INSERT INTO broker_configs (kill_switch_active) VALUES (?)", (val,)
             )
+
+
+def insert_ng_parity_log(log_data: dict) -> None:
+    """Insert a row into ng_parity_log."""
+    db_data = {
+        "ts": log_data.get("timestamp") or log_data.get("ts"),
+        "nymex_last": log_data.get("nymex_last"),
+        "usdinr": log_data.get("usdinr"),
+        "fair_value": log_data.get("fair_value"),
+        "mcx_last": log_data.get("mcx_last"),
+        "dev_pct": log_data.get("dev_pct"),
+        "nymex_age_sec": log_data.get("nymex_age_sec"),
+        "fx_age_sec": log_data.get("fx_age_sec"),
+        "mcx_age_sec": log_data.get("mcx_age_sec"),
+        "mcx_src": log_data.get("mcx_src"),
+        "fx_src": log_data.get("fx_src"),
+        "nymex_src": log_data.get("nymex_src"),
+        "valid": 1 if log_data.get("valid") else 0,
+        "regime": log_data.get("ng_regime") or log_data.get("regime"),
+    }
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO ng_parity_log (
+                ts, nymex_last, usdinr, fair_value, mcx_last, dev_pct,
+                nymex_age_sec, fx_age_sec, mcx_age_sec, mcx_src, fx_src, nymex_src, valid, regime
+            ) VALUES (
+                :ts, :nymex_last, :usdinr, :fair_value, :mcx_last, :dev_pct,
+                :nymex_age_sec, :fx_age_sec, :mcx_age_sec, :mcx_src, :fx_src, :nymex_src, :valid, :regime
+            )
+            """,
+            db_data,
+        )
+
+
+def has_recent_scan_summary(symbol: str, max_age_minutes: int) -> bool:
+    """
+    Returns True if the most recent scan_summary for ``symbol`` is at most
+    ``max_age_minutes`` old (compared to now in UTC).
+
+    Used by ``main.py --now`` to decide whether to run a dry run (fresh data)
+    or a full scan (stale / missing data).
+    """
+    from datetime import datetime, timedelta, timezone
+
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_age_minutes)
+    cutoff_str = cutoff.isoformat()
+
+    sql = """
+        SELECT 1 FROM scan_summaries
+        WHERE symbol = ? AND fetched_at >= ?
+        LIMIT 1
+    """
+    with get_conn() as conn:
+        row = conn.execute(sql, (symbol, cutoff_str)).fetchone()
+        return row is not None
+
+
+# ── Multi-leg Trades (Iron Condors, etc.) ────────────────────────────────
+
+
+def insert_multi_leg_trade(trade: dict) -> int:
+    """Insert a multi-leg trade and return its id."""
+    sql = """
+        INSERT INTO multi_leg_trades
+            (trade_ref, symbol, structure, net_premium, margin_req, total_pnl,
+             opened_at, closed_at, status, reason, profit_factor)
+        VALUES
+            (:trade_ref, :symbol, :structure, :net_premium, :margin_req, :total_pnl,
+             :opened_at, :closed_at, :status, :reason, :profit_factor)
+        RETURNING id
+    """
+    with get_conn() as conn:
+        row = conn.execute(sql, trade).fetchone()
+        return int(row["id"]) if row else 0
+
+
+def close_multi_leg_trade(
+    trade_id: int, closed_at: str, status: str, reason: str, total_pnl: float
+) -> None:
+    """Close a multi-leg trade."""
+    sql = "UPDATE multi_leg_trades SET closed_at=?, status=?, reason=?, total_pnl=? WHERE id=?"
+    with get_conn() as conn:
+        conn.execute(sql, (closed_at, status, reason, total_pnl, trade_id))
+
+
+def list_multi_leg_trades() -> list[dict]:
+    """List all multi-leg trades with their legs."""
+    sql = "SELECT * FROM multi_leg_trades ORDER BY id DESC"
+    with get_conn() as conn:
+        rows = conn.execute(sql).fetchall()
+        trades = [dict(r) for r in rows]
+    for t in trades:
+        with get_conn() as conn:
+            legs = conn.execute(
+                "SELECT * FROM multi_leg_legs WHERE trade_id=? ORDER BY id", (t["id"],)
+            ).fetchall()
+        t["legs"] = [dict(r) for r in legs]
+    return trades
+
+
+def delete_multi_leg_trade(trade_ref: int) -> None:
+    """Delete a multi-leg trade by trade_ref (cascade deletes legs)."""
+    sql = "DELETE FROM multi_leg_trades WHERE trade_ref=?"
+    with get_conn() as conn:
+        conn.execute(sql, (trade_ref,))
+
+
+def update_multi_leg_leg_exit_premium(leg_id: int, exit_premium: float) -> None:
+    """Update exit premium for a specific multi-leg leg."""
+    sql = "UPDATE multi_leg_legs SET exit_premium=? WHERE id=?"
+    with get_conn() as conn:
+        conn.execute(sql, (exit_premium, leg_id))

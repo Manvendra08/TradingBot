@@ -8,6 +8,7 @@ No pandas required.
 import json
 import logging
 import re
+import socket as _socket
 
 # ── Force IPv4 globally (Kite whitelists IPv4 only) ───────────────────────
 # Applied AFTER standard imports to avoid ordering side effects with
@@ -15,7 +16,6 @@ import re
 # during import on CPython). Keeping the patch here ensures all
 # Python-level socket resolution after this point uses IPv4 only.
 import sqlite3
-import socket as _socket
 
 _orig_getaddrinfo = _socket.getaddrinfo
 
@@ -1203,6 +1203,18 @@ def get_intelligence_summary(symbol: str):
         "market_direction_potential": "MIXED",
     }
 
+    # Fetch Index Weights Sentiment
+    out["index_weights_sentiment"] = None
+    if sym in ("NIFTY", "BANKNIFTY", "SENSEX"):
+        try:
+            from src.engine.index_weights import calculate_index_momentum
+
+            out["index_weights_sentiment"] = calculate_index_momentum(sym)
+        except Exception as exc:
+            log.warning(
+                "failed to calculate index weights momentum for %s: %s", sym, exc
+            )
+
     if sym == "NATURALGAS":
         news = _fetch_natgas_news()
         news_cur = _safe_float(news.get("news_score_current"), 0.0)
@@ -1219,17 +1231,52 @@ def get_intelligence_summary(symbol: str):
         heat_norm = max(
             -1.0, min(1.0, _safe_float(heat.get("weighted_change"), 0.0) / 1.5)
         )
-        combined = (heat_norm * 0.50) + (oi_score * 0.30) + (chart_score * 0.20)
+
+        # Unified index score (0.5 * ScanX Heatmap + 0.5 * Weighted Heavyweight Momentum)
+        gauge_score = 0.0
+        if out["index_weights_sentiment"]:
+            gauge_score = max(
+                -1.0,
+                min(
+                    1.0,
+                    _safe_float(
+                        out["index_weights_sentiment"].get("weighted_momentum"), 0.0
+                    )
+                    / 1.5,
+                ),
+            )
+
+        combined_index = (heat_norm * 0.5) + (gauge_score * 0.5)
+        combined = (combined_index * 0.50) + (oi_score * 0.30) + (chart_score * 0.20)
+
         out["heatmap"] = heat
         out["components"]["heatmap_score"] = round(heat_norm, 3)
+        out["components"]["heavyweight_score"] = round(gauge_score, 3)
         out["market_direction_current"] = _dir_label(combined)
         out["market_direction_potential"] = _dir_label(
             (combined * 0.7) + (chart_score * 0.3)
         )
     else:
-        combo = (oi_score * 0.6) + (chart_score * 0.4)
+        # SENSEX or others
+        gauge_score = 0.0
+        if out["index_weights_sentiment"]:
+            gauge_score = max(
+                -1.0,
+                min(
+                    1.0,
+                    _safe_float(
+                        out["index_weights_sentiment"].get("weighted_momentum"), 0.0
+                    )
+                    / 1.5,
+                ),
+            )
+
+        combo = (gauge_score * 0.50) + (oi_score * 0.30) + (chart_score * 0.20)
+        out["components"]["heavyweight_score"] = round(gauge_score, 3)
         out["market_direction_current"] = _dir_label(combo)
-        out["market_direction_potential"] = _dir_label(combo)
+        out["market_direction_potential"] = _dir_label(
+            (combo * 0.7) + (chart_score * 0.3)
+        )
 
     return out
 
@@ -1549,6 +1596,21 @@ def _explain_verdict(verdict: str | None, option_type: str | None) -> dict:
             "emoji": "📘",
         },
     )
+
+
+@app.get("/api/multi_leg_trades")
+def get_multi_leg_trades():
+    from src.models.schema import list_multi_leg_trades
+
+    return list_multi_leg_trades()
+
+
+@app.delete("/api/multi_leg_trades/{trade_ref}")
+def delete_multi_leg_trade_endpoint(trade_ref: int):
+    from src.models.schema import delete_multi_leg_trade
+
+    delete_multi_leg_trade(trade_ref)
+    return {"ok": True, "message": f"Multi-leg trade {trade_ref} deleted"}
 
 
 @app.get("/api/paper_summary")
@@ -2870,10 +2932,26 @@ def get_portfolio_metrics():
                     ga = None
                     ve = None
                     if match:
-                        d = float(match.get("delta") or 0) if match.get("delta") is not None else None
-                        th = float(match.get("theta") or 0) if match.get("theta") is not None else None
-                        ga = float(match.get("gamma") or 0) if match.get("gamma") is not None else None
-                        ve = float(match.get("vega") or 0) if match.get("vega") is not None else None
+                        d = (
+                            float(match.get("delta") or 0)
+                            if match.get("delta") is not None
+                            else None
+                        )
+                        th = (
+                            float(match.get("theta") or 0)
+                            if match.get("theta") is not None
+                            else None
+                        )
+                        ga = (
+                            float(match.get("gamma") or 0)
+                            if match.get("gamma") is not None
+                            else None
+                        )
+                        ve = (
+                            float(match.get("vega") or 0)
+                            if match.get("vega") is not None
+                            else None
+                        )
                         if underlying is None:
                             u = match.get("underlying_price")
                             if u:
@@ -3276,6 +3354,7 @@ def get_broker_status():
     user_name = None
     if is_connected:
         from src.engine.live_trading import get_cached_user_name
+
         try:
             user_name = get_cached_user_name()
         except Exception:

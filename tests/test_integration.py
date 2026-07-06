@@ -189,7 +189,7 @@ class TestPipelineIntegration:
                 "src.engine.pipeline.fetch_option_chain", return_value=sample_oc_nifty
             ),
             patch(
-                "src.engine.pipeline.run_paper_trading",
+                "src.engine.paper_trading.run_paper_trading",
                 side_effect=Exception("Paper trading failed"),
             ),
         ):

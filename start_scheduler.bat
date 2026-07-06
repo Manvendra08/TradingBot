@@ -1,8 +1,7 @@
 @echo off
 cd /d "%~dp0"
 
-set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
-if not exist "%PYTHON_EXE%" set "PYTHON_EXE=python"
+set "PYTHON_EXE=C:\Users\manve\AppData\Local\Programs\Python\Python312\python.exe"
 
 IF NOT EXIST ".env" (
     echo [WARN] .env not found. Make sure credentials are in system environment.

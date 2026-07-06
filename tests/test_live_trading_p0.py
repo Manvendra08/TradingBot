@@ -493,12 +493,11 @@ def test_llm_alternative_fallbacks():
     os.environ["GROQ_API_KEY"] = "fake-groq-key"
     old_github_token = os.environ.pop("GITHUB_TOKEN", None)
     old_openrouter_key = os.environ.pop("OPENROUTER_API_KEY", None)
-    old_opencode_key = os.environ.pop("OPENCODE_API_KEY", None)
     old_gemini_key = os.environ.pop("GEMINI_API_KEY", None)
 
     try:
         with patch("requests.Session.post", return_value=mock_resp) as mock_post:
-            # Call it with no GitHub/OpenRouter/OpenCode/Gemini key -> should go straight to Groq
+            # Call it with no GitHub/OpenRouter/Gemini key -> should go straight to Groq
             result = _call_llm_api("NIFTY", "dummy prompt", LLMTradeVerdict)
             assert result is not None
             assert result.action == "GO_SHORT"
@@ -510,7 +509,5 @@ def test_llm_alternative_fallbacks():
             os.environ["GITHUB_TOKEN"] = old_github_token
         if old_openrouter_key:
             os.environ["OPENROUTER_API_KEY"] = old_openrouter_key
-        if old_opencode_key:
-            os.environ["OPENCODE_API_KEY"] = old_opencode_key
         if old_gemini_key:
             os.environ["GEMINI_API_KEY"] = old_gemini_key

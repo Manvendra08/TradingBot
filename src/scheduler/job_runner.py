@@ -26,8 +26,9 @@ from config.runtime_config import (
     get_scan_frequency_nse,
 )
 from config.settings import FETCH_INTERVAL_MINUTES, WATCH_SYMBOLS
-from config.symbol_classes import get_symbol_class, is_market_open, market_window
+from config.symbol_classes import get_symbol_class, is_market_open, market_window, MARKET_WINDOWS
 from src.engine.pipeline import run_pipeline
+from src.models.schema import has_recent_scan_summary
 
 log = logging.getLogger(__name__)
 
@@ -43,7 +44,6 @@ def exit_all_positions_friday(market_class: str) -> None:
 
     from config.runtime_config import load_runtime_config
     from config.settings import WATCH_SYMBOLS
-    from config.symbol_classes import get_symbol_class
     from src.engine.live_trading import _exit_open_live_trade, get_kite_client
     from src.engine.trade_plan import get_option_premium
     from src.fetchers.router import fetch_option_chain
@@ -495,6 +495,13 @@ def start_scheduler(immediate: bool = False):
     # Run a cleanup of expired data on startup
     delete_expired_contracts()
 
+    # Trigger Index Weights refresh check on startup
+    try:
+        from src.engine.index_weights import refresh_index_weights_async
+        refresh_index_weights_async(force=False)
+    except Exception as e:
+        log.error("[scheduler] Failed to trigger startup index weights refresh: %s", e)
+
     # ── Phase 2: Weekly ML Training Job ──────────────────────────────────────
     # AI_INTELLIGENCE_ROADMAP_v3.0 — Weekly fallback retraining (Sunday 2 AM IST)
     # Event-driven triggers (20+ trades, edge health < 60) are wired separately
@@ -502,6 +509,7 @@ def start_scheduler(immediate: bool = False):
     _last_ml_training_week: int | None = None  # ISO week number
     _last_eia_run_date = None
     _last_backup_date = None
+    _last_fii_fetch_date = None
 
     # ── Instrument cache warm-up at scheduler start ────────────────────────
     cache_warmed_event = threading.Event()
@@ -543,20 +551,47 @@ def start_scheduler(immediate: bool = False):
             "[scheduler] --now flag detected: waiting for instrument cache to warm up..."
         )
         cache_warmed_event.wait(timeout=60)
-        log.info(
-            "[scheduler] Triggering initial scan immediately, bypassing market hours guards..."
-        )
-        try:
-            run_pipeline(symbols=WATCH_SYMBOLS)
-            log.info("[scheduler] Initial scan completed successfully.")
-        except Exception as e:
-            log.error("[scheduler] Initial scan failed: %s", e)
+
+        # ── Check data freshness per symbol ────────────────────────────────
+        # If recent snapshots exist within the scan frequency interval, run a
+        # lightweight dry run (is_test=True). Otherwise fall through to a full
+        # scan with decision engine and DB writes.
+        all_fresh = True
+        for sym in WATCH_SYMBOLS:
+            sym_class = get_symbol_class(sym)
+            max_age = (
+                get_scan_frequency_mcx()
+                if sym_class == "MCX_COMMODITY"
+                else get_scan_frequency_nse()
+            )
+            if not has_recent_scan_summary(sym, max_age):
+                log.info(
+                    "[scheduler] No recent snapshot for %s (max_age=%d min) — full scan needed",
+                    sym,
+                    max_age,
+                )
+                all_fresh = False
+
+        if all_fresh:
+            log.info(
+                "[scheduler] Recent data snapshots available for all symbols — running dry run"
+            )
+            try:
+                run_pipeline(symbols=WATCH_SYMBOLS, is_test=True)
+                log.info("[scheduler] Dry run completed successfully.")
+            except Exception as e:
+                log.error("[scheduler] Dry run failed: %s", e)
+        else:
+            log.info("[scheduler] Stale/missing data snapshots — running full scan")
+            try:
+                run_pipeline(symbols=WATCH_SYMBOLS)
+                log.info("[scheduler] Full scan completed successfully.")
+            except Exception as e:
+                log.error("[scheduler] Full scan failed: %s", e)
 
         # Initialize scheduling state so it doesn't double-scan inside market hours
         import datetime as dt_mod
         import math
-
-        from config.symbol_classes import MARKET_WINDOWS, get_symbol_class
 
         now_ist = datetime.now(IST)
         now_time = now_ist.time()
@@ -582,8 +617,6 @@ def start_scheduler(immediate: bool = False):
         # If immediate scan is NOT requested, skip the first scan for the current interval
         import datetime as dt_mod
         import math
-
-        from config.symbol_classes import MARKET_WINDOWS, get_symbol_class
 
         now_ist = datetime.now(IST)
         now_time = now_ist.time()
@@ -628,10 +661,16 @@ def start_scheduler(immediate: bool = False):
     _last_friday_nse_exit_date = None
     _last_friday_mcx_exit_date = None
     _last_auto_login_date = None
+    _last_fii_fetch_date = None
+    _last_weights_refresh_date = None
+    last_ng_eia_pre_print_close_date = None
+    last_ng_eia_consensus_fetch_date = None
+    last_ng_exit_check = 0.0
 
     try:
         while True:
             now_ts = time.time()
+
             now_ist = datetime.fromtimestamp(now_ts, IST)
 
             if now_ist.date() > current_date:
@@ -639,6 +678,16 @@ def start_scheduler(immediate: bool = False):
                 last_scanned_interval.clear()
                 has_done_startup_scan.clear()
                 has_logged_closed_pre_open.clear()
+
+            # ── Monday Weightage Refresh ──
+            if now_ist.weekday() == 0 and _last_weights_refresh_date != current_date:
+                _last_weights_refresh_date = current_date
+                log.info("[scheduler] Triggering weekly index weights refresh (Monday)")
+                try:
+                    from src.engine.index_weights import refresh_index_weights_async
+                    refresh_index_weights_async(force=False)
+                except Exception as exc:
+                    log.error("[scheduler] Index weights refresh trigger exception: %s", exc)
 
             # ── Pre-market: headless Kite auto-login at ~08:45 IST Mon-Fri ──
             # Runs once per day for NSE indices (NSE opens at 09:15).
@@ -667,6 +716,27 @@ def start_scheduler(immediate: bool = False):
                     except Exception as exc:
                         log.error("[scheduler] Kite auto-login exception: %s", exc)
 
+            # ── Post-market: FII/DII Data Fetch at 19:15 IST (Mon-Fri) ──
+            if now_ist.weekday() < 5:
+                now_time_str = now_ist.strftime("%H:%M")
+                if now_time_str == "19:15" and _last_fii_fetch_date != current_date:
+                    _last_fii_fetch_date = current_date
+                    log.info(
+                        "[scheduler] Triggering FII/DII positioning fetch (19:15 IST)"
+                    )
+                    try:
+                        from src.fetchers.nse_archive_fetcher import (
+                            fetch_and_store_fii_positioning,
+                        )
+
+                        threading.Thread(
+                            target=fetch_and_store_fii_positioning,
+                            daemon=True,
+                            name="fii-fetcher",
+                        ).start()
+                    except Exception as exc:
+                        log.error("[scheduler] FII/DII fetcher exception: %s", exc)
+
             # Friday Weekend Risk Auto-Exits
             if now_ist.weekday() == 4:  # Friday
                 current_time_str = now_ist.strftime("%H:%M")
@@ -692,8 +762,6 @@ def start_scheduler(immediate: bool = False):
 
             # 1. Full Scan Loop per market class
             import math
-
-            from config.symbol_classes import MARKET_WINDOWS, get_symbol_class
 
             for class_key in MARKET_WINDOWS:
                 class_symbols = [
@@ -918,7 +986,91 @@ def start_scheduler(immediate: bool = False):
                     target=_run_telegram_backup, daemon=True, name="telegram-backup"
                 ).start()
 
+            # 7. Natural Gas Exit Check Loop (Runs every 120 seconds)
+            if time.time() - last_ng_exit_check >= 120:
+                last_ng_exit_check = time.time()
+
+                def _run_ng_exits():
+                    try:
+                        from src.engine.ng_parity_strategy import (
+                            check_ng_parity_exits_every_2_min,
+                        )
+
+                        check_ng_parity_exits_every_2_min()
+
+                        from src.engine.ng_eia_strategy import (
+                            check_ng_eia_exits_every_2_min,
+                        )
+
+                        check_ng_eia_exits_every_2_min()
+
+                        from src.engine.ng_momentum_strategy import (
+                            check_ng_weekend_flat,
+                        )
+
+                        check_ng_weekend_flat()
+                    except Exception as exc:
+                        log.warning("[scheduler] NG exits check failed: %s", exc)
+
+                threading.Thread(
+                    target=_run_ng_exits, daemon=True, name="ng-exits-check"
+                ).start()
+
+            # 8. EIA Pre-Print Force Close (Thursday 19:40 IST)
+            if now_ist.weekday() == 3:  # Thursday
+                now_time_str = now_ist.strftime("%H:%M")
+                if (
+                    now_time_str == "19:40"
+                    and last_ng_eia_pre_print_close_date != current_date
+                ):
+                    last_ng_eia_pre_print_close_date = current_date
+                    try:
+                        from src.engine.ng_eia_strategy import force_close_eia_pre_print
+
+                        force_close_eia_pre_print()
+                    except Exception as e:
+                        log.error("[scheduler] EIA pre-print force close failed: %s", e)
+
+            # 9. EIA Consensus Scraper (Wednesday 20:00 IST)
+            if now_ist.weekday() == 2:  # Wednesday
+                now_time_str = now_ist.strftime("%H:%M")
+                if (
+                    now_time_str == "20:00"
+                    and last_ng_eia_consensus_fetch_date != current_date
+                ):
+                    last_ng_eia_consensus_fetch_date = current_date
+                    log.info(
+                        "[scheduler] EIA Consensus Scraper Job triggered (Wednesday 8:00 PM IST)"
+                    )
+
+                    def _run_eia_fetch():
+                        try:
+                            from src.fetchers.eia_consensus_fetcher import (
+                                fetch_and_store_eia_consensus,
+                            )
+
+                            fetch_and_store_eia_consensus()
+                        except Exception as exc:
+                            log.warning(
+                                "[scheduler] EIA consensus fetch failed: %s", exc
+                            )
+
+                    threading.Thread(
+                        target=_run_eia_fetch, daemon=True, name="eia-consensus-fetch"
+                    ).start()
+                    log.info("[scheduler] EIA Consensus Scraper Job triggered (Wednesday 8:00 PM IST)")
+                    def _run_eia_fetch():
+                        try:
+                            from src.fetchers.eia_consensus_fetcher import (
+                                fetch_and_store_eia_consensus,
+                            )
+                            fetch_and_store_eia_consensus()
+                        except Exception as exc:
+                            log.warning("[scheduler] EIA consensus fetch failed: %s", exc)
+                    threading.Thread(target=_run_eia_fetch, daemon=True, name="eia-consensus-fetch").start()
+
             # Sleep in short increments to remain responsive to intervals and changes
+
             time.sleep(10)
     except (KeyboardInterrupt, SystemExit):
         log.info("Scheduler stopped")

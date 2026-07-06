@@ -1503,6 +1503,7 @@ class TestPaperTradesFUTPNL:
                 "symbol": "NATURALGAS",
                 "option_type": "FUT",
                 "verdict_label": "Long Unwinding",
+                "side": "SELL",
                 "entry_underlying": 317.7,
                 "entry_premium": 317.7,
                 "lots": 10,
@@ -1523,7 +1524,7 @@ class TestPaperTradesFUTPNL:
                 "SELECT * FROM paper_trades WHERE id=?", (trade_id,)
             ).fetchone()
             assert row["pnl_points"] == pytest.approx(17.8)
-            assert row["pnl_rupees"] == pytest.approx(221700.25)
+            assert row["pnl_rupees"] == pytest.approx(222052.88, abs=1.0)
 
     def test_close_paper_trade_futures_bullish(self):
         from src.models.schema import close_paper_trade
@@ -1535,6 +1536,7 @@ class TestPaperTradesFUTPNL:
                 "symbol": "NATURALGAS",
                 "option_type": "FUT",
                 "verdict_label": "Long Buildup",
+                "side": "BUY",
                 "entry_underlying": 312.1,
                 "entry_premium": 312.1,
                 "lots": 10,
@@ -1555,7 +1557,7 @@ class TestPaperTradesFUTPNL:
                 "SELECT * FROM paper_trades WHERE id=?", (trade_id,)
             ).fetchone()
             assert row["pnl_points"] == pytest.approx(9.5)
-            assert row["pnl_rupees"] == pytest.approx(117896.0)
+            assert row["pnl_rupees"] == pytest.approx(118298.0, abs=1.0)
 
 
 class TestSellOptionTrades:

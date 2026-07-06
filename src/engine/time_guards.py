@@ -60,6 +60,14 @@ def is_trading_allowed_now(symbol: str, expiry_str: str | None = None) -> tuple[
         h, m = now.hour, now.minute
         sym  = str(symbol).upper().split()[0]  # "NIFTY 50" → "NIFTY"
 
+        # ── Window 0: CME (NYMEX) holidays (NATURALGAS, CRUDEOIL) ────────────
+        if sym in ("NATURALGAS", "NATGAS", "CRUDEOIL"):
+            from config.cme_holidays import is_cme_closed, is_cme_early_close
+            if is_cme_closed(now.date()):
+                return False, "CME holiday — no NYMEX price discovery, MCX zombie session"
+            if is_cme_early_close(now.date()) and (h, m) >= (17, 30):
+                return False, "CME early close — no NYMEX price discovery after 17:30 IST"
+
         # ── Window 1: Opening auction noise 09:15–09:30 IST ─────────────────
         if (h, m) >= (9, 15) and (h, m) <= (9, 30):
             return False, "Opening auction noise window (09:15–09:30 IST)"

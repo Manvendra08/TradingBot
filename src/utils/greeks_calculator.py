@@ -38,19 +38,28 @@ class GreeksCalculator:
     def _lazy_import(self):
         if self._vollib is not None:
             return
-        from vollib.black_scholes.greeks.analytical import delta, gamma, theta, vega
-        from vollib.black_scholes.implied_volatility import implied_volatility
+        try:
+            from vollib.black_scholes.greeks.analytical import delta, gamma, theta, vega
+            from vollib.black_scholes.implied_volatility import implied_volatility
 
-        class V:
-            pass
+            class V:
+                pass
 
-        v = V()
-        v.delta = delta
-        v.gamma = gamma
-        v.theta = theta
-        v.vega = vega
-        v.implied_volatility = implied_volatility
-        self._vollib = v
+            v = V()
+            v.delta = delta
+            v.gamma = gamma
+            v.theta = theta
+            v.vega = vega
+            v.implied_volatility = implied_volatility
+            self._vollib = v
+        except ImportError:
+            log.warning(
+                "[greeks] vollib not installed — Greeks calculation disabled. Install: pip install vollib>=0.2.3"
+            )
+            self._vollib = None
+        except Exception as exc:
+            log.warning("[greeks] Failed to import vollib: %s", exc)
+            self._vollib = None
 
     def calculate_greeks(
         self,
@@ -84,6 +93,10 @@ class GreeksCalculator:
         """
         self._lazy_import()
         v = self._vollib
+        
+        if v is None:
+            log.debug("[greeks] vollib not available — returning zero greeks")
+            return {"iv": 0, "delta": 0, "gamma": 0, "theta": 0, "vega": 0}
 
         t = self.get_time_to_expiry(expiry_date)
         if t <= 0:

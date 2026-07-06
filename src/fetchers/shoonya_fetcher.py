@@ -320,35 +320,47 @@ class ShoonyaFetcher(BaseFetcher):
                     lambda r: captured_urls.append(r.url) if "code=" in r.url else None,
                 )
 
-                # Step 1: Navigate — will redirect to /investor-entry-level/login
-                page.goto(authorize_url, wait_until="commit", timeout=15000)
-                log.debug("[shoonya] Landed on: %s", page.url)
-
-                # Wait for React to render the login form (allow up to 15s for 9.5MB JS load)
-                page.wait_for_selector("#lgnusrid", state="visible", timeout=15000)
-
-                # Generate fresh TOTP right before filling (avoids expiry during navigation)
-                totp = pyotp.TOTP(self.totp_key).now()
-
-                # Step 2: Fill credentials using confirmed field selectors
-                page.locator("#lgnusrid").fill(self.user_id)
-                page.locator("#lgnpwd").fill(self.password)
-                page.locator("#lgnotp").fill(totp)
-
-                # Step 3: Click Login (wrap in try-except in case the redirect target domain does not resolve)
                 try:
-                    page.locator("button:has-text('LOGIN')").click()
-                    # Step 4: Wait for redirect containing auth_code
-                    page.wait_for_url("*code=*", timeout=10000)
-                except Exception as click_err:
-                    log.debug(
-                        "[shoonya] Browser encountered navigation or redirect error: %s",
-                        click_err,
-                    )
+                    # Step 1: Navigate — will redirect to /investor-entry-level/login
+                    page.goto(authorize_url, wait_until="commit", timeout=30000)
+                    log.debug("[shoonya] Landed on: %s", page.url)
 
-                final_url = page.url
-                log.debug("[shoonya] Post-login URL: %s", final_url)
-                browser.close()
+                    # Wait for React to render the login form (allow up to 30s for slow networks/9.5MB JS load)
+                    page.wait_for_selector("#lgnusrid", state="visible", timeout=30000)
+
+                    # Generate fresh TOTP right before filling (avoids expiry during navigation)
+                    totp = pyotp.TOTP(self.totp_key).now()
+
+                    # Step 2: Fill credentials using confirmed field selectors
+                    page.locator("#lgnusrid").fill(self.user_id)
+                    page.locator("#lgnpwd").fill(self.password)
+                    page.locator("#lgnotp").fill(totp)
+
+                    # Step 3: Click Login (wrap in try-except in case the redirect target domain does not resolve)
+                    try:
+                        page.locator("button:has-text('LOGIN')").click()
+                        # Step 4: Wait for redirect containing auth_code
+                        page.wait_for_url("*code=*", timeout=15000)
+                    except Exception as click_err:
+                        log.debug(
+                            "[shoonya] Browser encountered navigation or redirect error: %s",
+                            click_err,
+                        )
+                except Exception as page_exc:
+                    log.error("[shoonya] Playwright page interaction failed: %s", page_exc)
+                    try:
+                        import os
+                        os.makedirs("data", exist_ok=True)
+                        screenshot_path = "data/shoonya_login_error.png"
+                        page.screenshot(path=screenshot_path)
+                        log.error("[shoonya] Saved login failure screenshot to %s", screenshot_path)
+                    except Exception as ss_err:
+                        log.warning("[shoonya] Could not save login failure screenshot: %s", ss_err)
+                    raise page_exc
+                finally:
+                    final_url = page.url
+                    log.debug("[shoonya] Post-login URL: %s", final_url)
+                    browser.close()
 
                 # Extract auth_code from URL candidates (both final URL and any intermediate requests)
                 for candidate in [final_url] + captured_urls:
@@ -600,12 +612,11 @@ class ShoonyaFetcher(BaseFetcher):
         Returns (exchange, token) or None on failure.
         Results are cached for 6 hours to minimise SearchScrip calls.
         """
-        import time as _time
 
         entry = self._futures_token_cache.get(base_symbol)
         if entry:
             token, exchange, expires_at = entry
-            if _time.time() < expires_at:
+            if time.time() < expires_at:
                 return (exchange, token)
 
         if not self.login():
@@ -662,7 +673,7 @@ class ShoonyaFetcher(BaseFetcher):
             self._futures_token_cache[base_symbol] = (
                 token,
                 "MCX",
-                _time.time() + 21600,
+                time.time() + 21600,
             )
             log.info(
                 "[shoonya] resolved futures token for %s: %s (tsym=%s)",

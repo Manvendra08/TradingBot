@@ -107,6 +107,7 @@ class TestFormatHistoricalOi:
             mock_get_conn.return_value = mock_conn_ctx
 
             import pytest
+
             with pytest.raises(ValueError, match="Insufficient historical data"):
                 _format_historical_oi("NIFTY")
 
@@ -240,7 +241,6 @@ class TestOpenRouterArrayUnwrap:
         from src.engine import llm_enrichment as llm_mod
 
         os.environ["OPENROUTER_API_KEY"] = "fake-key"
-        old_opencode = os.environ.pop("OPENCODE_API_KEY", None)
         old_gemini = os.environ.pop("GEMINI_API_KEY", None)
         old_groq = os.environ.pop("GROQ_API_KEY", None)
         llm_mod._CONSECUTIVE_FAILURES = 0
@@ -254,8 +254,6 @@ class TestOpenRouterArrayUnwrap:
             assert result.action == "GO_LONG"
             assert result.confidence == 75
         finally:
-            if old_opencode:
-                os.environ["OPENCODE_API_KEY"] = old_opencode
             if old_gemini:
                 os.environ["GEMINI_API_KEY"] = old_gemini
             if old_groq:

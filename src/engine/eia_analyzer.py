@@ -33,8 +33,9 @@ def _get_latest_naturalgas_oi():
 def analyze_eia_report():
     """Run the EIA scraper and analyze the results using the LLM."""
     try:
+        import sys
         result = subprocess.run(
-            ["python", str(SCRAPE_SCRIPT)], 
+            [sys.executable, str(SCRAPE_SCRIPT)], 
             capture_output=True, 
             text=True, 
             timeout=120

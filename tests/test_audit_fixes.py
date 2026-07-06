@@ -42,7 +42,7 @@ class TestLiveReversalGuard:
         C1 fix: Live reversal must check confidence >= REVERSAL_MIN_CONFIDENCE,
         entry_quality >= MIN_ENTRY_QUALITY_CORE, and trend_alignment <= 40.
         """
-        from src.engine.live_trading import _run_live_trading_legacy
+        from src.engine.live_trading import run_live_trading
 
         # Insert an open live trade
         with get_conn() as conn:
@@ -115,7 +115,7 @@ class TestLiveReversalGuard:
                 return_value={"kill_switch_active": 0},
             ),
         ):
-            result = _run_live_trading_legacy("NIFTY", ctx, "digest-test", intel)
+            result = run_live_trading("NIFTY", ctx, "digest-test", intel)
 
         # The function should run without error (reversal guard logic exercised)
         assert result is not None
@@ -320,7 +320,7 @@ class TestSignalKeyDedup:
         """H1 fix: Signal key should be {symbol}:{option_type}:{strike}:{date}:live"""
         # This tests the format by checking that two calls with different verdicts
         # but same symbol/strike/date produce the same signal key
-        from src.engine.live_trading import _run_live_trading_legacy
+        from src.engine.live_trading import run_live_trading
 
         # We can't easily test the internal signal_key generation without
         # running the full function, so we verify the behavior: second call

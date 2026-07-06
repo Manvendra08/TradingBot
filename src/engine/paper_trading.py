@@ -134,12 +134,20 @@ def _build_ml_feature_snapshot(ctx: dict, intel=None) -> dict:
             else:
                 # Fallback: grab first entry (may be wrong for multi-symbol ctx)
                 tf_data = next(iter(chart_data.values()), {}) if chart_data else {}
+        # BUG-011 FIX: RSI exactly 0.0 was collapsing to None due to the
+        # truthy-check pattern `float(...) or None`. Use explicit None check
+        # instead. RSI=0.0 is mathematically rare but valid and should not
+        # be treated as missing data.
         try:
-            rsi_1h = float((tf_data.get("1h") or {}).get("rsi") or 0) or None
+            raw_rsi_1h = (tf_data.get("1h") or {}).get("rsi")
+            if raw_rsi_1h is not None:
+                rsi_1h = float(raw_rsi_1h)
         except (TypeError, ValueError):
             rsi_1h = None
         try:
-            rsi_3h = float((tf_data.get("3h") or {}).get("rsi") or 0) or None
+            raw_rsi_3h = (tf_data.get("3h") or {}).get("rsi")
+            if raw_rsi_3h is not None:
+                rsi_3h = float(raw_rsi_3h)
         except (TypeError, ValueError):
             rsi_3h = None
 
@@ -261,18 +269,19 @@ def _is_reversal_against_open_trade(
         return False
 
     # Guard 2: entry quality — requires a genuine setup, not noise
-    entry_quality, entry_reasons = calculate_entry_quality(
-        symbol, option_type, strike, ctx
-    )
-    if entry_quality < MIN_ENTRY_QUALITY_CORE:
-        log.debug(
-            "%s: reversal guard — entry_quality %d < MIN_ENTRY_QUALITY_CORE %d (%s), ignoring.",
-            symbol,
-            entry_quality,
-            MIN_ENTRY_QUALITY_CORE,
-            entry_reasons,
+    if ctx and option_type and strike:
+        entry_quality, entry_reasons = calculate_entry_quality(
+            symbol, option_type, strike, ctx
         )
-        return False
+        if entry_quality < MIN_ENTRY_QUALITY_CORE:
+            log.debug(
+                "%s: reversal guard — entry_quality %d < MIN_ENTRY_QUALITY_CORE %d (%s), ignoring.",
+                symbol,
+                entry_quality,
+                MIN_ENTRY_QUALITY_CORE,
+                entry_reasons,
+            )
+            return False
 
     # Guard 3: trend alignment — ensure trend has actually shifted
     trend_alignment = get_trend_alignment_score(symbol, verdict)
@@ -443,13 +452,14 @@ def execute_paper_trade(
         tgt_ul = float(plan_tgt)
     else:
         # Fallback: recalculate if plan values are missing/invalid
+        option_type = str(plan.get("option_type", "CE")).upper()
         if side == "BUY":
             sl_ul, tgt_ul = _calculate_buy_sl_target(
-                entry_premium, underlying, ctx, step
+                entry_premium, underlying, ctx, step, option_type=option_type
             )
         else:
             sl_ul, tgt_ul = _calculate_sell_sl_target(
-                entry_premium, underlying, ctx, step
+                entry_premium, underlying, ctx, step, option_type=option_type
             )
 
     if sl_ul is None or tgt_ul is None:
@@ -565,35 +575,86 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
     entry_und = float(open_trade.get("entry_underlying") or 0)
     option_type = str(open_trade.get("option_type", "")).upper()
 
-    hit_sl = side == "BUY" and sl_ul > 0 and underlying <= sl_ul
-    hit_sl = hit_sl or (side == "SELL" and sl_ul > 0 and underlying >= sl_ul)
-    hit_target = side == "BUY" and tgt_ul > 0 and underlying >= tgt_ul
-    hit_target = hit_target or (side == "SELL" and tgt_ul > 0 and underlying <= tgt_ul)
+    # ── Underlying-based SL/Target hit logic ────────────────────────────
+    # Direction depends on option_type, not just side:
+    #   BUY  CE / SELL PE → profit when underlying RISES
+    #   BUY  PE / SELL CE → profit when underlying FALLS
+    #   FUT follows CE logic (profit when underlying moves in trade direction)
+    is_long = option_type in ("CE", "FUT")
+    if side == "BUY":
+        if option_type == "PE":
+            # Long put: profit when underlying FALLS
+            hit_sl = sl_ul > 0 and underlying >= sl_ul
+            hit_target = tgt_ul > 0 and underlying <= tgt_ul
+        else:
+            # Long call / FUT: profit when underlying RISES
+            hit_sl = sl_ul > 0 and underlying <= sl_ul
+            hit_target = tgt_ul > 0 and underlying >= tgt_ul
+    else:  # SELL
+        if option_type == "PE":
+            # Short put: profit when underlying RISES
+            hit_sl = sl_ul > 0 and underlying <= sl_ul
+            hit_target = tgt_ul > 0 and underlying >= tgt_ul
+        else:
+            # Short call / FUT: profit when underlying FALLS
+            hit_sl = sl_ul > 0 and underlying >= sl_ul
+            hit_target = tgt_ul > 0 and underlying <= tgt_ul
 
     # Compute current R multiple and update max_favorable_r
     r_current = 0.0
     if entry_und > 0 and sl_ul > 0 and sl_ul != entry_und:
-        if side == "SELL":
-            r_current = (entry_und - underlying) / (sl_ul - entry_und)
-        elif side == "BUY":
-            r_current = (underlying - entry_und) / (entry_und - sl_ul)
+        if option_type == "PE":
+            # For puts: profit direction is inverted relative to underlying
+            if side == "BUY":
+                # Long put: R = (entry - underlying) / (sl - entry)
+                r_current = (entry_und - underlying) / (sl_ul - entry_und)
+            else:
+                # Short put: R = (underlying - entry) / (entry - sl)
+                r_current = (underlying - entry_und) / (entry_und - sl_ul)
+        else:
+            # CE / FUT: profit direction follows underlying
+            if side == "SELL":
+                r_current = (entry_und - underlying) / (sl_ul - entry_und)
+            else:
+                r_current = (underlying - entry_und) / (entry_und - sl_ul)
 
     stored_mfr = float(open_trade.get("max_favorable_r") or 0.0)
     max_fav = max(stored_mfr, r_current)
 
     # ── Trailing Stop Check (Flaw #1) ────────────────────────────────────────
     trailing_sl_hit = False
-    if max_fav >= 1.0 and entry_und > 0 and sl_ul > 0 and sl_ul != entry_und:
-        orig_r_dist = abs(entry_und - sl_ul)
+    # BUG-014 FIX: The original guard `sl_ul != entry_und` only checked for
+    # exact equality, not distance. A near-zero SL gap (possible with degenerate
+    # ATR output) produces an extreme R-multiple and fires the trailing stop
+    # instantly. Added minimum distance check: R-distance must be at least
+    # 0.1% of entry to prevent division-by-near-zero artifacts.
+    min_r_distance = entry_und * 0.001  # 0.1% minimum R-distance
+    r_distance = abs(entry_und - sl_ul) if sl_ul != entry_und else 0.0
+    if max_fav >= 1.0 and entry_und > 0 and sl_ul > 0 and r_distance >= min_r_distance:
+        orig_r_dist = r_distance
         trailed_r = int(max_fav) - 1  # 1R max_fav -> 0R (breakeven), 2R -> 1R, etc.
-        if side == "BUY":
-            trailing_sl = entry_und + trailed_r * orig_r_dist
-            if underlying <= trailing_sl:
-                trailing_sl_hit = True
+        if option_type == "PE":
+            # For puts: trailing stop trails opposite to calls
+            if side == "BUY":
+                # Long put: profit when underlying FALLS, trail DOWN
+                trailing_sl = entry_und - trailed_r * orig_r_dist
+                if underlying >= trailing_sl:
+                    trailing_sl_hit = True
+            else:
+                # Short put: profit when underlying RISES, trail UP
+                trailing_sl = entry_und + trailed_r * orig_r_dist
+                if underlying <= trailing_sl:
+                    trailing_sl_hit = True
         else:
-            trailing_sl = entry_und - trailed_r * orig_r_dist
-            if underlying >= trailing_sl:
-                trailing_sl_hit = True
+            # CE / FUT trailing stop (standard direction)
+            if side == "BUY":
+                trailing_sl = entry_und + trailed_r * orig_r_dist
+                if underlying <= trailing_sl:
+                    trailing_sl_hit = True
+            else:
+                trailing_sl = entry_und - trailed_r * orig_r_dist
+                if underlying >= trailing_sl:
+                    trailing_sl_hit = True
 
     if trailing_sl_hit:
         hit_sl = True
@@ -773,6 +834,11 @@ def run_paper_trading(
                     "trade": closed_trade,
                     "reason": f"Closed via exit logic: {closed_trade.get('exit_reason') or 'SL/Target hit'}",
                 }
+            return {
+                "action": "CLOSED",
+                "trade": None,
+                "reason": "Closed via exit logic (details unavailable)",
+            }
 
     # 2. Check if we already have an open trade
     current_open_trade = get_open_paper_trade(symbol)
@@ -920,7 +986,7 @@ def run_timeframe_strategy(
     pay_1h = tf_data.get("1h")
     if not pay_3h or not pay_1h:
         log.warning("%s: Timeframe strategy skipped — missing 3h/1h chart data", symbol)
-        return
+        return None
 
     ohlc_3h = pay_3h.get("ohlc")
     prev_3h = pay_3h.get("prev_ohlc") or pay_3h.get("last_closed_ohlc")
@@ -931,7 +997,7 @@ def run_timeframe_strategy(
         log.warning(
             "%s: Timeframe strategy skipped — incomplete 3h/1h candle data", symbol
         )
-        return
+        return None
 
     c_3h_close = float(ohlc_3h["close"])
     p_3h_high = float(prev_3h["high"])
@@ -946,7 +1012,7 @@ def run_timeframe_strategy(
 
     if current_ce is None or current_pe is None:
         log.warning("%s: Timeframe strategy skipped — missing total OI data", symbol)
-        return
+        return None
 
     if scan_freq in (15, 30):
         scans_needed = 60 // scan_freq
@@ -955,14 +1021,14 @@ def run_timeframe_strategy(
             log.warning(
                 "%s: Timeframe strategy skipped — insufficient scan history", symbol
             )
-            return
+            return None
     else:
         older = get_scan_summary_at_least_1h_old(symbol, fetched_at)
         if not older:
             log.warning(
                 "%s: Timeframe strategy skipped — insufficient scan history", symbol
             )
-            return
+            return None
 
     prev_ce = older["total_ce_oi"]
     prev_pe = older["total_pe_oi"]

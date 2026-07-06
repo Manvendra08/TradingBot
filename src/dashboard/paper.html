@@ -3918,6 +3918,67 @@
             }
 
             init().catch(console.error);
+
+            // ── Multi-Leg Trades (Iron Condors, etc.) ──
+            async function loadMultiLegTrades() {
+                const container = document.getElementById("multi-leg-section");
+                if (!container) return;
+                try {
+                    const res = await fetch("/api/multi_leg_trades");
+                    const trades = await res.json();
+                    let html = `<h3>Multi-Leg Trades (${trades.length})</h3>`;
+                    if (!trades.length) {
+                        html += "<p class='dim'>No multi-leg trades yet.</p>";
+                    } else {
+                        html += `<table class="data-table"><thead><tr>
+                            <th>ID</th><th>Symbol</th><th>Structure</th><th>Net Premium</th><th>P&amp;L</th><th>Status</th><th>Reason</th>
+                        </tr></thead><tbody>`;
+                        for (const t of trades) {
+                            const pnlClass =
+                                (t.total_pnl || 0) >= 0 ? "green" : "red";
+                            html += `<tr>
+                                <td>${t.trade_ref || t.id}</td>
+                                <td>${t.symbol}</td>
+                                <td>${t.structure}</td>
+                                <td>${(t.net_premium || 0).toLocaleString()}</td>
+                                <td class="${pnlClass}">${(t.total_pnl || 0).toLocaleString()}</td>
+                                <td><span class="badge">${t.status}</span></td>
+                                <td>${t.reason || ""}</td>
+                            </tr>`;
+                            if (t.legs && t.legs.length) {
+                                html += `<tr><td colspan="7" style="padding:0"><table class="legs-table"><thead><tr>
+                                    <th>Side</th><th>Lots</th><th>Strike</th><th>Type</th><th>Entry</th><th>Exit</th>
+                                </tr></thead><tbody>`;
+                                for (const leg of t.legs) {
+                                    html += `<tr>
+                                        <td>${leg.side}</td>
+                                        <td>${leg.lots}</td>
+                                        <td>${leg.strike}</td>
+                                        <td>${leg.option_type}</td>
+                                        <td>${leg.entry_premium || "-"}</td>
+                                        <td>${leg.exit_premium || "-"}</td>
+                                    </tr>`;
+                                }
+                                html += `</tbody></table></td></tr>`;
+                            }
+                        }
+                        html += "</tbody></table>";
+                    }
+                    container.innerHTML = html;
+                } catch (e) {
+                    container.innerHTML = `<div class="error">Failed to load multi-leg trades: ${e.message}</div>`;
+                }
+            }
+
+            // Append multi-leg section to page
+            const mainContent = document.querySelector("main") || document.body;
+            const section = document.createElement("div");
+            section.id = "multi-leg-section";
+            section.className = "section-card";
+            section.style.margin = "20px";
+            section.style.padding = "16px";
+            mainContent.appendChild(section);
+            loadMultiLegTrades();
         </script>
     </body>
 </html>

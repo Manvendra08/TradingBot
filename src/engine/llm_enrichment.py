@@ -484,7 +484,9 @@ def _format_historical_oi(symbol: str) -> str:
         return "  Historical data unavailable."
 
     if not rows or len(rows) < 5:
-        raise ValueError(f"Insufficient historical data ({len(rows) if rows else 0} scans < 5). Skipping LLM enrichment.")
+        raise ValueError(
+            f"Insufficient historical data ({len(rows) if rows else 0} scans < 5). Skipping LLM enrichment."
+        )
 
     lines = []
     lines.append(f"  Last {len(rows)} scans (newest first):")
@@ -631,6 +633,16 @@ HISTORICAL OI CONTEXT:
 {_format_historical_oi(symbol)}
 """
 
+    if "index_weights_sentiment" in ctx and ctx["index_weights_sentiment"]:
+        ws = ctx["index_weights_sentiment"]
+        prompt += f"\nINDEX HEAVYWEIGHTS WEIGHTAGE SENTIMENT:\n" \
+                  f"• Weighted Momentum Score: {ws.get('weighted_momentum'):.3f}%\n" \
+                  f"• Momentum Direction: {ws.get('direction')}\n" \
+                  f"• Last weights refresh: {ws.get('last_refresh')}\n" \
+                  f"• Top Constituents Weight & Performance:\n"
+        for c in ws.get("constituents", [])[:5]:
+            prompt += f"  - {c['symbol']}: Weight {c['weight_pct']:.2f}% | Change: {c['change_pct']:.2f}%\n"
+
     if news_data and news_data.get("items"):
         prompt += f"NEWS: {_format_news(news_data)}\n"
     prompt += f"MACRO: {_format_macro_context(symbol)}\n"
@@ -760,7 +772,9 @@ def _build_exit_prompt(
             behavior = "PE premium decreases as underlying rises (profit), increases as underlying falls (loss)."
         else:  # FUT
             pos_direction = "SHORT UNDERLYING — profits when underlying FALLS"
-            behavior = "Futures price moves 1:1 with underlying (inverse P&L as seller)."
+            behavior = (
+                "Futures price moves 1:1 with underlying (inverse P&L as seller)."
+            )
 
     # Age of position
     try:
@@ -893,10 +907,7 @@ _PROVIDER_COOLDOWN_UNTIL: dict[str, float] = {}
 
 
 def _provider_cooldown_key(provider: dict) -> str:
-    model_name = provider.get("model", "")
-    if "opencode" in model_name:
-        return f"opencode_zen:{model_name}"
-    return f"{provider.get('env_key')}:{model_name}"
+    return f"{provider.get('env_key')}:{provider.get('model', '')}"
 
 
 def _parse_retry_after_seconds(text: str) -> float | None:
@@ -917,19 +928,11 @@ def _register_provider_failure(
     key = _provider_cooldown_key(provider)
     env_key = provider.get("env_key")
     body_l = (body or "").lower()
-    is_opencode = "opencode" in provider.get("model", "")
-
     if status_code == 402:
         _PROVIDER_COOLDOWN_UNTIL[key] = now + 86400.0
-        if env_key and not is_opencode:
+        if env_key:
             _PROVIDER_COOLDOWN_UNTIL[env_key] = now + 86400.0
         log.info("[llm] %s credit exhausted — 24h cooldown", provider.get("name"))
-        return
-
-    if is_opencode:
-        # OpenCode Zen: cooldown ONLY this specific model variant for 600s
-        _PROVIDER_COOLDOWN_UNTIL[key] = now + 600.0
-        log.info("[llm] OpenCode Zen model %s failed (status=%d) — 600s cooldown", provider.get("model"), status_code)
         return
 
     if status_code == 429:
@@ -964,7 +967,7 @@ def _call_llm_api(
     purpose: str | None = None,
 ) -> BaseModel | None:
     """Call LLM APIs in order of reasoning and output quality using available providers
-    (OpenRouter, Groq, OpenCode, Gemini). If a model fails on one provider, we fallback
+    (OpenRouter, Groq, Gemini). If a model fails on one provider, we fallback
     to another provider hosting the same model group or a fast alternative.
 
     Args:
@@ -1027,7 +1030,7 @@ def _call_llm_api(
         raise_on_status=False,
     )
     adapter = ResilientTLSAdapter(max_retries=retry_strategy)
-    adapter.SSL_RETRY_ATTEMPTS = 1
+    adapter.SSL_RETRY_ATTEMPTS = 2
     session = requests.Session()
     session.mount("https://", adapter)
 
@@ -1057,18 +1060,6 @@ def _call_llm_api(
                         "env_key": "OPENROUTER_API_KEY",
                         "url": "https://openrouter.ai/api/v1/chat/completions",
                         "model": "nvidia/nemotron-3-super-120b-a12b:free",
-                    },
-                    {
-                        "name": "OpenCode (Nemotron 3 Ultra Free)",
-                        "env_key": "OPENCODE_API_KEY",
-                        "url": "http://127.0.0.1:8081/chat/completions",
-                        "model": "opencode/nemotron-3-ultra-free",
-                    },
-                    {
-                        "name": "OpenCode (Nemotron 3 Super Free)",
-                        "env_key": "OPENCODE_API_KEY",
-                        "url": "http://127.0.0.1:8081/chat/completions",
-                        "model": "opencode/nemotron-3-super-free",
                     },
                 ],
             }
@@ -1220,22 +1211,9 @@ def _call_llm_api(
             ],
         }
 
-        _opencode_zen = {
-            "model_group": "opencode-zen-free",
-            "providers": [
-                {
-                    "name": "OpenCode Zen (Big Pickle)",
-                    "env_key": "OPENCODE_API_KEY",
-                    "url": "https://opencode.ai/zen/v1/chat/completions",
-                    "model": "big-pickle",
-                },
-            ],
-        }
-
         if _is_mcx:
-            # MCX: OpenCode Zen → SambaNova → Groq → GitHub → OpenRouter GPT-OSS → OpenRouter pool → Gemini SDK
+            # MCX: SambaNova → Groq → GitHub → OpenRouter GPT-OSS → OpenRouter pool → Gemini SDK
             FREE_MODEL_PIPELINE = [
-                _opencode_zen,
                 {
                     "model_group": "sambanova-mcx",
                     "providers": [
@@ -1277,9 +1255,8 @@ def _call_llm_api(
                 _tail_pipeline[2],  # gemini-sdk
             ]
         else:
-            # NSE/BSE indices: OpenCode Zen → GitHub → Groq → OpenRouter pool → Gemini SDK
+            # NSE/BSE indices: GitHub → Groq → OpenRouter pool → Gemini SDK
             FREE_MODEL_PIPELINE = [
-                _opencode_zen,
                 _github_models,
                 *_tail_pipeline,
             ]
@@ -1297,7 +1274,7 @@ def _call_llm_api(
             cooldown_key = _provider_cooldown_key(provider)
             cooldown_until = max(
                 _PROVIDER_COOLDOWN_UNTIL.get(cooldown_key, 0.0),
-                _PROVIDER_COOLDOWN_UNTIL.get(key_name, 0.0)
+                _PROVIDER_COOLDOWN_UNTIL.get(key_name, 0.0),
             )
             if cooldown_until > now:
                 log.debug(
@@ -1365,9 +1342,6 @@ def _call_llm_api(
                     "Content-Type": "application/json",
                     "Connection": "close",
                 }
-                is_opencode = "opencode" in provider.get("model", "")
-                if is_opencode or provider["name"].startswith("OpenCode"):
-                    headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
                 json_payload = {
                     "model": provider["model"],
@@ -1388,18 +1362,21 @@ def _call_llm_api(
                     provider["url"],
                     headers=headers,
                     json=json_payload,
-                    timeout=min(
-                        remaining, 12.0
-                    ),  # Hard cap: 12s per model so ≥2 models fit in 30s budget
+                    timeout=min(remaining, provider.get("timeout", 12.0)),
                 )
-                if is_opencode and resp.status_code == 401:
-                    log.warning("[llm] OpenCode Zen returned 401 Unauthorized. Skipping OpenCode group completely.")
-                    break
-
                 if resp.status_code == 200:
+                    content_type = resp.headers.get("Content-Type", "")
+                    if "text/html" in content_type:
+                        log.warning(
+                            "[llm] %s (%s) returned 200 but Content-Type is HTML. The endpoint might be serving a dashboard instead of the API. Skipping.",
+                            provider["name"],
+                            provider["model"],
+                        )
+                        _register_provider_failure(provider, 500, "HTML Response", now)
+                        continue
                     try:
                         resp_json = resp.json()
-                    except json.JSONDecodeError as jde:
+                    except (json.JSONDecodeError, ValueError) as jde:
                         log.info(
                             "[llm] %s (%s) returned 200 but body is not JSON: %s. Raw text: %.500s",
                             provider["name"],
@@ -1438,12 +1415,13 @@ def _call_llm_api(
                         )
                         continue
                     raw_content = message.get("content")
-                    if raw_content is None:
+                    if not raw_content or not raw_content.strip():
                         log.info(
-                            "[llm] %s (%s) returned null content",
+                            "[llm] %s (%s) returned null/whitespace content",
                             provider["name"],
                             provider["model"],
                         )
+                        _register_provider_failure(provider, 500, "empty_content", now)
                         continue
                     parsed = _extract_json(raw_content)
                     if isinstance(parsed, list):
@@ -1466,11 +1444,6 @@ def _call_llm_api(
                     )
                     _CONSECUTIVE_FAILURES = 0
                     return result
-                if resp.status_code != 200:
-                    if is_opencode:
-                        _register_provider_failure(provider, resp.status_code, resp.text, now)
-                        continue
-
                 if resp.status_code == 429:
                     log.warning(
                         "[llm] %s (%s) returned 429 (Too Many Requests/Quota Exceeded). Payload: %s",
@@ -1499,10 +1472,34 @@ def _call_llm_api(
                         provider["url"],
                         headers=headers,
                         json=retry_payload,
-                        timeout=min(remaining, 12.0),
+                        timeout=min(remaining, provider.get("timeout", 12.0)),
                     )
                     if retry_resp.status_code == 200:
-                        retry_json = retry_resp.json()
+                        retry_content_type = retry_resp.headers.get("Content-Type", "")
+                        if "text/html" in retry_content_type:
+                            log.warning(
+                                "[llm] %s (%s) retry returned 200 but Content-Type is HTML. Skipping.",
+                                provider["name"],
+                                provider["model"],
+                            )
+                            _register_provider_failure(
+                                provider, 500, "HTML Response", now
+                            )
+                            continue
+                        try:
+                            retry_json = retry_resp.json()
+                        except (json.JSONDecodeError, ValueError) as jde:
+                            log.info(
+                                "[llm] %s (%s) retry returned 200 but body is not JSON: %s. Raw text: %.500s",
+                                provider["name"],
+                                provider["model"],
+                                jde,
+                                retry_resp.text,
+                            )
+                            _register_provider_failure(
+                                provider, 500, retry_resp.text, now
+                            )
+                            continue
                         if "choices" in retry_json and retry_json["choices"]:
                             retry_msg = retry_json["choices"][0].get("message")
                             if retry_msg and retry_msg.get("content"):
@@ -1538,16 +1535,12 @@ def _call_llm_api(
                         resp.text[:200],
                     )
             except Exception as ex:
-                import traceback
                 log.info(
-                    "[llm] %s (%s) exception: %s\n%s",
+                    "[llm] %s (%s) exception: %s",
                     provider["name"],
                     provider["model"],
                     str(ex)[:200],
-                    traceback.format_exc()[:500],
                 )
-                if "opencode" in provider.get("model", ""):
-                    _register_provider_failure(provider, 500, str(ex), now)
 
     # Track consecutive failures and activate circuit breaker
     _CONSECUTIVE_FAILURES += 1
@@ -1621,6 +1614,7 @@ def _extract_json(raw: str) -> dict:
     D1: Tolerant JSON extraction — handles markdown fences, leading prose,
     and invalid control characters that cause free-tier model parse failures.
     """
+    original_raw = raw
     raw = raw.strip()
     # Strip markdown code fences (```json ... ``` or ``` ... ```)
     if raw.startswith("```"):
@@ -1632,7 +1626,10 @@ def _extract_json(raw: str) -> dict:
             raw = m.group(0)
     # Remove invalid control characters (causes "Invalid control character" parse failures)
     raw = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", raw)
-    return json.loads(raw)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"JSON extract failed: {e} | Raw: {original_raw[:200]}")
 
 
 def _enforce_engine_alignment(
@@ -1753,14 +1750,20 @@ def _sanitize_llm_verdict(
                         row_ltp = float(row.get("ltp") or 0)
                     except (TypeError, ValueError):
                         continue
-                    if abs(row_strike - target_strike) < 0.01 and row_opt == target_opt and row_ltp > 0:
+                    if (
+                        abs(row_strike - target_strike) < 0.01
+                        and row_opt == target_opt
+                        and row_ltp > 0
+                    ):
                         actual_premium = row_ltp
                         break
 
                 # If we have actual premium, check if LLM's range is reasonable
                 if actual_premium and actual_premium > 0:
                     # Parse the LLM's range (e.g., "70-80" or "4.5-5.5")
-                    range_match = re.search(r"(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)", entry_range)
+                    range_match = re.search(
+                        r"(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)", entry_range
+                    )
                     if range_match:
                         llm_low = float(range_match.group(1))
                         llm_high = float(range_match.group(2))
@@ -1774,12 +1777,19 @@ def _sanitize_llm_verdict(
                             corrected_range = f"{low}-{high}"
                             log.warning(
                                 "[llm] %s: entry_premium_range '%s' wildly off actual %.2f — corrected to '%s'",
-                                symbol, entry_range, actual_premium, corrected_range,
+                                symbol,
+                                entry_range,
+                                actual_premium,
+                                corrected_range,
                             )
                             if hasattr(result, "model_copy"):
-                                result = result.model_copy(update={"entry_premium_range": corrected_range})
+                                result = result.model_copy(
+                                    update={"entry_premium_range": corrected_range}
+                                )
                             else:
-                                result = result.copy(update={"entry_premium_range": corrected_range})
+                                result = result.copy(
+                                    update={"entry_premium_range": corrected_range}
+                                )
             except Exception as e:
                 log.debug("[llm] entry_premium_range validation failed: %s", e)
 
@@ -1805,7 +1815,6 @@ def get_llm_verdict(
     has_keys = (
         os.environ.get("OPENROUTER_API_KEY")
         or os.environ.get("GROQ_API_KEY")
-        or os.environ.get("OPENCODE_API_KEY")
         or os.environ.get("GEMINI_API_KEY")
         or os.environ.get("GITHUB_TOKEN")
     )
@@ -1908,7 +1917,7 @@ def get_llm_verdict(
             result = _sanitize_llm_verdict(result, symbol, scan_context)
             # B2: Hard guard — engine direction is non-negotiable
             result = _enforce_engine_alignment(result, symbol, intel_dict)
-            
+
             if result.action == "NO_TRADE":
                 update_dict = {
                     "entry_premium_range": "N/A",
@@ -1978,7 +1987,6 @@ def get_exit_advice(
     has_keys = (
         os.environ.get("OPENROUTER_API_KEY")
         or os.environ.get("GROQ_API_KEY")
-        or os.environ.get("OPENCODE_API_KEY")
         or os.environ.get("GEMINI_API_KEY")
         or os.environ.get("GITHUB_TOKEN")
     )
@@ -2090,7 +2098,6 @@ INSTRUCTIONS:
     has_keys = (
         os.environ.get("OPENROUTER_API_KEY")
         or os.environ.get("GROQ_API_KEY")
-        or os.environ.get("OPENCODE_API_KEY")
         or os.environ.get("GEMINI_API_KEY")
         or os.environ.get("GITHUB_TOKEN")
     )

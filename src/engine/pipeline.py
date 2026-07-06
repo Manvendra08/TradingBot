@@ -51,17 +51,36 @@ from pathlib import Path
 # repeating the expiry cleanup on every 3-minute scan cycle.
 CLEANUP_DATA_FILE = Path("data") / "cleanup_dates.json"
 
+# BUG-005 FIX: Maximum number of dates to retain in the cleanup tracking set.
+# Older entries are pruned to prevent unbounded growth of the JSON file.
+# 30 days is sufficient — cleanup is idempotent and re-running is harmless.
+_CLEANUP_DATES_MAX_ENTRIES = 30
+
 def _load_cleanup_dates() -> set[str]:
     if not CLEANUP_DATA_FILE.exists():
         return set()
     try:
-        return set(json.loads(CLEANUP_DATA_FILE.read_text()))
+        dates = set(json.loads(CLEANUP_DATA_FILE.read_text()))
+        # BUG-005 FIX: Prune old entries on load to prevent unbounded growth
+        if len(dates) > _CLEANUP_DATES_MAX_ENTRIES:
+            sorted_dates = sorted(dates, reverse=True)
+            dates = set(sorted_dates[:_CLEANUP_DATES_MAX_ENTRIES])
+            log.debug(
+                "Pruned cleanup dates from %d to %d entries",
+                len(sorted_dates),
+                len(dates),
+            )
+        return dates
     except Exception:
         return set()
 
 def _save_cleanup_dates(dates: set[str]) -> None:
+    # BUG-005 FIX: Enforce max entries before saving to prevent unbounded growth
+    if len(dates) > _CLEANUP_DATES_MAX_ENTRIES:
+        sorted_dates = sorted(dates, reverse=True)
+        dates = set(sorted_dates[:_CLEANUP_DATES_MAX_ENTRIES])
     CLEANUP_DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
-    CLEANUP_DATA_FILE.write_text(json.dumps(list(dates)))
+    CLEANUP_DATA_FILE.write_text(json.dumps(sorted(dates)))
 
 _CLEANUP_DATES = _load_cleanup_dates()
 
@@ -290,6 +309,29 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
             underlying,
         )
 
+    # Phase 1: Natural Gas Parity Logging (No trading impact)
+    if str(symbol).upper().startswith("NATURALGAS") and not is_test:
+        try:
+            from src.engine.parity_engine import get_parity_state
+            from src.engine.ng_session_router import get_ng_regime
+            import pytz
+            from datetime import datetime
+            from dataclasses import asdict
+            from src.models.schema import insert_ng_parity_log
+
+            parity_state = get_parity_state(underlying, mcx_age_sec=0)
+            now_ist = datetime.now(pytz.timezone("Asia/Kolkata"))
+            regime, ng_reason = get_ng_regime(now_ist)
+
+            log_data = asdict(parity_state)
+            log_data["timestamp"] = fetched_at
+            log_data["ng_regime"] = regime
+
+            insert_ng_parity_log(log_data)
+            log.info("NATURALGAS parity logged: regime=%s, dev_pct=%.2f%%", regime, parity_state.dev_pct)
+        except Exception as e:
+            log.exception("NATURALGAS parity calculation failed")
+
     # 1a. Fetch chart data server-side (Chrome-free)
     try:
         chart_data = get_chart_fetcher().fetch(symbol, reference_price=underlying) or {}
@@ -359,6 +401,17 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
     except Exception:
         log.exception("Error calculating futures expiry in pipeline")
         scan_context["futures_expiry"] = None
+
+    # Inject Index Heavyweight Sentiment if applicable
+    scan_context["index_weights_sentiment"] = None
+    if symbol in ("NIFTY", "BANKNIFTY", "SENSEX"):
+        try:
+            from src.engine.index_weights import calculate_index_momentum
+            scan_context["index_weights_sentiment"] = calculate_index_momentum(symbol)
+            log.info("%s: index weights momentum calculated: %.3f%%", symbol, scan_context["index_weights_sentiment"].get("weighted_momentum"))
+        except Exception:
+            log.exception("%s: Failed to calculate index weights momentum in pipeline", symbol)
+
     log.info("%s: %d anomalies detected", symbol, len(alerts))
 
     # 2. Dedup filter
@@ -470,20 +523,28 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
             log.debug("%s: ML prediction failed gracefully", symbol)
 
     # 3a. Fetch news data for AI context
+    # NSE index symbols (NIFTY/BANKNIFTY) use FII/DII positioning from
+    # fii_positioning table as the directional sentiment signal — not news articles.
+    # News is still fetched for MCX commodities (NATURALGAS, CRUDEOIL, etc.).
     news_data = None
-    try:
-        from src.fetchers.news_fetcher import fetch_news
+    _norm = symbol.upper().strip().split()[0]
+    _skip_news_for_fii = _norm in ("NIFTY", "BANKNIFTY")
+    if _skip_news_for_fii:
+        log.debug("%s: skipping news fetch — FII/DII positioning used instead", symbol)
+    else:
+        try:
+            from src.fetchers.news_fetcher import fetch_news
 
-        news_data = fetch_news(symbol)
-        if news_data and news_data.get("count_24h", 0) > 0:
-            log.info(
-                "%s: news fetched — %d articles, direction: %s",
-                symbol,
-                news_data["count_24h"],
-                news_data.get("current_news_direction"),
-            )
-    except Exception:
-        log.debug("%s: news fetch unavailable", symbol)
+            news_data = fetch_news(symbol)
+            if news_data and news_data.get("count_24h", 0) > 0:
+                log.info(
+                    "%s: news fetched — %d articles, direction: %s",
+                    symbol,
+                    news_data["count_24h"],
+                    news_data.get("current_news_direction"),
+                )
+        except Exception:
+            log.debug("%s: news fetch unavailable", symbol)
 
     # 3b. Check for open paper trade (context for AI)
     open_trade = None
@@ -855,61 +916,73 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
             all_expiries = oc_data.get("all_expiries", [])
             if expiry and all_expiries:
                 try:
-                    exp_date = datetime.strptime(expiry, "%Y-%m-%d").date()
+                    # Explicit import to avoid scoping issues in Python 3.11+
+                    from datetime import datetime as dt_class
                     import pytz
 
+                    exp_date = dt_class.strptime(expiry, "%Y-%m-%d").date()
                     IST = pytz.timezone("Asia/Kolkata")
-                    today_ist = datetime.now(IST).date()
+                    today_ist = dt_class.now(IST).date()
                     dte = (exp_date - today_ist).days
+                    
                     if 0 <= dte <= 2:
-                        idx = all_expiries.index(expiry)
-                        if idx + 1 < len(all_expiries):
-                            next_expiry = all_expiries[idx + 1]
-                            log.info(
-                                "%s: Active expiry %s has DTE = %d. Fetching next-expiry %s data to DB.",
+                        try:
+                            idx = all_expiries.index(expiry)
+                        except ValueError:
+                            # Expiry not in list, skip next-expiry fetch
+                            log.debug(
+                                "%s: Expiry %s not found in all_expiries; skipping next-expiry fetch",
                                 symbol,
                                 expiry,
-                                dte,
-                                next_expiry,
                             )
-
-                            next_oc_data = fetch_option_chain(
-                                symbol, expiry=next_expiry
-                            )
-                            if next_oc_data and next_oc_data.get("strikes"):
-                                next_underlying = next_oc_data["underlying_price"]
-                                next_source = next_oc_data.get("source", "unknown")
-
-                                next_rows = [
-                                    {
-                                        "fetched_at": fetched_at,
-                                        "symbol": symbol,
-                                        "expiry": next_expiry,
-                                        "strike": row["strike"],
-                                        "option_type": row["option_type"],
-                                        "ltp": row.get("ltp"),
-                                        "ltp_change_pct": row.get("ltp_change_pct"),
-                                        "oi": row.get("oi"),
-                                        "oi_change_pct": row.get("oi_change_pct"),
-                                        "oi_change": row.get("oi_change"),
-                                        "volume": row.get("volume"),
-                                        "iv": row.get("iv"),
-                                        "bid": row.get("bid"),
-                                        "ask": row.get("ask"),
-                                        "delta": row.get("delta"),
-                                        "underlying_price": next_underlying,
-                                        "fetcher_source": next_source,
-                                    }
-                                    for row in next_oc_data["strikes"]
-                                ]
-
-                                num_inserted = insert_snapshots(next_rows)
+                        else:
+                            if idx + 1 < len(all_expiries):
+                                next_expiry = all_expiries[idx + 1]
                                 log.info(
-                                    "%s: Next-expiry (%s) saved: %d rows inserted",
+                                    "%s: Active expiry %s has DTE = %d. Fetching next-expiry %s data to DB.",
                                     symbol,
+                                    expiry,
+                                    dte,
                                     next_expiry,
-                                    num_inserted,
                                 )
+
+                                next_oc_data = fetch_option_chain(
+                                    symbol, expiry=next_expiry
+                                )
+                                if next_oc_data and next_oc_data.get("strikes"):
+                                    next_underlying = next_oc_data["underlying_price"]
+                                    next_source = next_oc_data.get("source", "unknown")
+
+                                    next_rows = [
+                                        {
+                                            "fetched_at": fetched_at,
+                                            "symbol": symbol,
+                                            "expiry": next_expiry,
+                                            "strike": row["strike"],
+                                            "option_type": row["option_type"],
+                                            "ltp": row.get("ltp"),
+                                            "ltp_change_pct": row.get("ltp_change_pct"),
+                                            "oi": row.get("oi"),
+                                            "oi_change_pct": row.get("oi_change_pct"),
+                                            "oi_change": row.get("oi_change"),
+                                            "volume": row.get("volume"),
+                                            "iv": row.get("iv"),
+                                            "bid": row.get("bid"),
+                                            "ask": row.get("ask"),
+                                            "delta": row.get("delta"),
+                                            "underlying_price": next_underlying,
+                                            "fetcher_source": next_source,
+                                        }
+                                        for row in next_oc_data["strikes"]
+                                    ]
+
+                                    num_inserted = insert_snapshots(next_rows)
+                                    log.info(
+                                        "%s: Next-expiry (%s) saved: %d rows inserted",
+                                        symbol,
+                                        next_expiry,
+                                        num_inserted,
+                                    )
                 except Exception as next_exc:
                     log.warning(
                         "%s: Failed to fetch/save next-expiry data: %s",

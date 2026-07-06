@@ -38,5 +38,58 @@
   "direct_kite_initialization_mode": "dynamic",
   "direct_kite_default_sl_pct": 40,
   "direct_kite_default_tgt_pct": 60,
-  "live_broker_disabled": true
+  "live_broker_disabled": true,
+  "strategies": {
+    "CORE": {
+      "enabled": true,
+      "ai_mode": "boost_only",
+      "symbols": {
+        "NIFTY": true,
+        "BANKNIFTY": true,
+        "SENSEX": true,
+        "FINNIFTY": true,
+        "NATURALGAS": true,
+        "CRUDEOIL": true
+      }
+    },
+    "TIMEFRAME": {
+      "enabled": true,
+      "ai_mode": "full",
+      "symbols": {
+        "NIFTY": false,
+        "BANKNIFTY": false,
+        "SENSEX": false,
+        "FINNIFTY": false,
+        "NATURALGAS": true,
+        "CRUDEOIL": false
+      }
+    },
+    "TFSS": {
+      "enabled": false,
+      "ai_mode": "advisory",
+      "symbols": {
+        "NIFTY": true,
+        "BANKNIFTY": true,
+        "SENSEX": true,
+        "FINNIFTY": true,
+        "NATURALGAS": false,
+        "CRUDEOIL": false
+      },
+      "params": {
+        "delta_entry_band": [
+          0.16,
+          0.2
+        ],
+        "delta_hard_stop": 0.38,
+        "atr_trailing_window": 10,
+        "persistence_scans_required": 3,
+        "persistence_window": 5,
+        "scale_sequence": [
+          0.5,
+          0.3,
+          0.2
+        ]
+      }
+    }
+  }
 }

@@ -393,3 +393,18 @@ TREND_ALIGNMENT_MIN_SCORE_TF = int(os.environ.get("TREND_ALIGNMENT_MIN_SCORE_TF"
 DECISION_AUDIT_ENABLED = os.environ.get("DECISION_AUDIT_ENABLED", "true").lower() == "true"
 DECISION_AUDIT_RETENTION_DAYS = int(os.environ.get("DECISION_AUDIT_RETENTION_DAYS", "90"))
 
+# ── NATURALGAS strategy ──
+NG_STRATEGY_ENABLED = _optional_env("NG_STRATEGY_ENABLED", "false").lower() == "true"
+NG_FUT_ONLY = True                                             # hard, not configurable
+PARITY_MAX_STALENESS_SEC = 300
+PARITY_DEV_ENTRY_PCT = 0.45        # placeholder; overwritten by §5 calibration
+PARITY_DEV_STOP_MULT = 2.0         # stop = entry deviation × this
+PARITY_FORCE_FLAT_IST = "17:30"
+MOMENTUM_ENTRY_START_IST = "18:00"
+MOMENTUM_NO_ENTRY_AFTER_IST = "23:00"
+NG_WEEKEND_FLAT = True             # no NG position past Fri 23:00
+EIA_MIN_SURPRISE_BCF = 15
+EIA_NO_TRADE_BAND_BCF = 8
+EIA_TIME_STOP_IST = "21:30"
+NG_MAX_POSITIONS = 1               # one NG position at a time, all regimes
+NG_RISK_PCT_PER_TRADE = 0.5        # % of capital

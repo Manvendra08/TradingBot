@@ -90,8 +90,8 @@ def _priority_for(symbol: str) -> list[str]:
         # MCX: Shoonya primary (supports), Dhan fallback
         return ["shoonya", "dhan_commodity", "moneycontrol", "dhan", "dhan_headless"]
     if base == "SENSEX":
-        # SENSEX: Sensibull primary (greeks), Shoonya fallback
-        return ["sensibull", "shoonya", "dhan_sensex", "dhan", "nse_public"]
+        # SENSEX: Shoonya primary for live exchange data, Sensibull fallback
+        return ["shoonya", "dhan_sensex", "sensibull", "dhan", "nse_public"]
     # NSE F&O indices (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY)
     # Sensibull primary: fast, no auth, full greeks
     return [

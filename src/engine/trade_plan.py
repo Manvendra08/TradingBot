@@ -80,6 +80,7 @@ def calculate_buy_sl_target(
     underlying: float,
     ctx: dict,
     step: float = 50.0,
+    option_type: str = "CE",
 ) -> tuple[float, float]:
     """
     ATR-based SL/Target for BUY legs.
@@ -92,21 +93,36 @@ def calculate_buy_sl_target(
         underlying: Current underlying price
         ctx: Scan context with chart_indicators
         step: Strike step size for fallback calculation
+        option_type: CE/PE — PE inverts direction (profit when underlying falls)
 
     Returns:
         Tuple of (sl_underlying, target_underlying)
     """
     atr = get_atr(ctx)
-    if atr and atr > 0:
-        sl_underlying = underlying - 1.5 * atr
-        target_underlying = underlying + 2.0 * atr
+    if option_type == "PE":
+        # PE: profit when underlying falls
+        if atr and atr > 0:
+            sl_underlying = underlying + 1.5 * atr
+            target_underlying = underlying - 2.0 * atr
+        else:
+            log.warning(
+                "calculate_buy_sl_target: Missing ATR data, using step-based fallback (step=%.1f)",
+                step,
+            )
+            sl_underlying = underlying + 2.0 * step
+            target_underlying = underlying - 2.0 * step
     else:
-        log.warning(
-            "calculate_buy_sl_target: Missing ATR data, using step-based fallback (step=%.1f)",
-            step,
-        )
-        sl_underlying = underlying - 2.0 * step
-        target_underlying = underlying + 2.0 * step
+        # CE/FUT: profit when underlying rises
+        if atr and atr > 0:
+            sl_underlying = underlying - 1.5 * atr
+            target_underlying = underlying + 2.0 * atr
+        else:
+            log.warning(
+                "calculate_buy_sl_target: Missing ATR data, using step-based fallback (step=%.1f)",
+                step,
+            )
+            sl_underlying = underlying - 2.0 * step
+            target_underlying = underlying + 2.0 * step
 
     return round(sl_underlying, 2), round(target_underlying, 2)
 
@@ -116,6 +132,7 @@ def calculate_sell_sl_target(
     underlying: float,
     ctx: dict,
     step: float = 50.0,
+    option_type: str = "CE",
 ) -> tuple[float, float]:
     """
     ATR-based SL/Target for SELL legs.
@@ -128,21 +145,36 @@ def calculate_sell_sl_target(
         underlying: Current underlying price
         ctx: Scan context with chart_indicators
         step: Strike step size for fallback calculation
+        option_type: CE/PE — PE inverts direction (profit when underlying rises)
 
     Returns:
         Tuple of (sl_underlying, target_underlying)
     """
     atr = get_atr(ctx)
-    if atr and atr > 0:
-        sl_underlying = underlying + 1.5 * atr
-        target_underlying = underlying - 2.0 * atr
+    if option_type == "PE":
+        # PE: profit when underlying rises
+        if atr and atr > 0:
+            sl_underlying = underlying - 1.5 * atr
+            target_underlying = underlying + 2.0 * atr
+        else:
+            log.warning(
+                "calculate_sell_sl_target: Missing ATR data, using step-based fallback (step=%.1f)",
+                step,
+            )
+            sl_underlying = underlying - 2.0 * step
+            target_underlying = underlying + 2.0 * step
     else:
-        log.warning(
-            "calculate_sell_sl_target: Missing ATR data, using step-based fallback (step=%.1f)",
-            step,
-        )
-        sl_underlying = underlying + 2.0 * step
-        target_underlying = underlying - 2.0 * step
+        # CE/FUT: profit when underlying falls
+        if atr and atr > 0:
+            sl_underlying = underlying + 1.5 * atr
+            target_underlying = underlying - 2.0 * atr
+        else:
+            log.warning(
+                "calculate_sell_sl_target: Missing ATR data, using step-based fallback (step=%.1f)",
+                step,
+            )
+            sl_underlying = underlying + 2.0 * step
+            target_underlying = underlying - 2.0 * step
 
     return round(sl_underlying, 2), round(target_underlying, 2)
 
@@ -192,7 +224,9 @@ def get_option_premium(
                     if int(vol) == 0 and int(oi) == 0:
                         log.warning(
                             "%s: get_option_premium — strike=%.2f %s has 0 volume and 0 OI. Rejecting premium.",
-                            symbol, strike, option_type
+                            symbol,
+                            strike,
+                            option_type,
                         )
                         return None
                 premium = float(row.get("ltp") or 0.0)
@@ -216,7 +250,9 @@ def get_option_premium(
                     if int(vol) == 0 and int(oi) == 0:
                         log.warning(
                             "%s: get_option_premium (DB fallback) — strike=%.2f %s has 0 volume and 0 OI. Rejecting premium.",
-                            symbol, strike, option_type
+                            symbol,
+                            strike,
+                            option_type,
                         )
                         return None
                 # L2: Check snapshot freshness before using
@@ -270,6 +306,11 @@ def parse_verdict_and_confidence(intel_text: str) -> tuple[str, int]:
     - *Verdict: LONG BUILDUP*
     - Confidence: 85%
 
+    BUG-023 FIX: Made regex more flexible:
+    - Case-insensitive matching for "Verdict" and "Confidence"
+    - Optional asterisk wrapping (single or double)
+    - Tolerates extra whitespace
+
     Args:
         intel_text: Intelligence text from Telegram
 
@@ -279,11 +320,23 @@ def parse_verdict_and_confidence(intel_text: str) -> tuple[str, int]:
     verdict = ""
     confidence = 0
 
-    m_v = re.search(r"\*Verdict:\s*([^\*]+)\*", intel_text or "")
+    if not intel_text:
+        return verdict, confidence
+
+    # BUG-023 FIX: Case-insensitive, tolerant of single/double asterisks
+    m_v = re.search(
+        r"\*{1,2}\s*Verdict:\s*([^\*\n]+)\*{1,2}", intel_text, re.IGNORECASE
+    )
     if m_v:
         verdict = m_v.group(1).strip()
+    else:
+        # Fallback: try without asterisks
+        m_v2 = re.search(r"Verdict:\s*([A-Z\s_]+)", intel_text, re.IGNORECASE)
+        if m_v2:
+            verdict = m_v2.group(1).strip()
 
-    m_c = re.search(r"Confidence:\s*(\d+)%", intel_text or "")
+    # BUG-023 FIX: Case-insensitive confidence matching
+    m_c = re.search(r"Confidence:\s*(\d+)\s*%?", intel_text, re.IGNORECASE)
     if m_c:
         confidence = int(m_c.group(1))
 

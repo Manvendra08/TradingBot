@@ -1474,7 +1474,30 @@
     `;
                 }
 
-                el.innerHTML = `${base}${lines}${symbolSpecific}`;
+                let weightsHtml = "";
+                if (intel.index_weights_sentiment) {
+                    const ws = intel.index_weights_sentiment;
+                    const top5 = (ws.constituents || [])
+                        .slice(0, 5)
+                        .map(
+                            (c) =>
+                                `<div class="intel-row"><span>${esc(c.symbol)} (${Number(c.weight_pct).toFixed(1)}%)</span><strong>${Number(c.change_pct).toFixed(2)}%</strong></div>`,
+                        )
+                        .join("");
+                    const colorClass = ws.direction === "BULLISH" ? "green" : (ws.direction === "BEARISH" ? "red" : "gray");
+                    weightsHtml = `
+      <div class="intel-section" style="margin-top: 15px; border-top: 1px solid var(--border-color); padding-top: 15px;">
+        <div class="intel-head">Index Weights Sentiment</div>
+        <div class="intel-row"><span>Weighted Momentum</span><strong class="${colorClass}">${Number(ws.weighted_momentum).toFixed(3)}%</strong></div>
+        <div class="intel-row"><span>Momentum Direction</span><strong class="${colorClass}">${esc(ws.direction)}</strong></div>
+        <div class="intel-row"><span>Weights Last Sync</span><strong>${esc(ws.last_refresh ? ws.last_refresh.slice(0, 16).replace("T", " ") : "N/A")}</strong></div>
+        <div class="intel-sub-head" style="font-size: 0.8rem; font-weight: 600; margin: 10px 0 5px 0; color: var(--text-muted);">Top Heavyweight Moves:</div>
+        ${top5 || '<div class="empty">No constituent moves</div>'}
+      </div>
+    `;
+                }
+ 
+                el.innerHTML = `${base}${lines}${symbolSpecific}${weightsHtml}`;
             }
 
             // ── AI Insights Tab Switching ─────────────────────────────────────────────

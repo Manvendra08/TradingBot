@@ -96,10 +96,19 @@ class TestOISpike:
         from src.engine.anomaly_detector import detect_anomalies
 
         oc = _make_oc()
-        prev = {"oi": 100_000, "ltp": 50.0, "iv": 20.0}
+        prev_bulk = {
+            (21500.0, "CE"): {
+                "strike": 21500.0,
+                "option_type": "CE",
+                "oi": 100_000,
+                "ltp": 50.0,
+                "iv": 20.0,
+            }
+        }
         with (
             patch(
-                "src.engine.anomaly_detector.get_previous_snapshot", return_value=prev
+                "src.engine.anomaly_detector.get_prev_snapshots_bulk",
+                return_value=prev_bulk,
             ),
             patch(
                 "src.engine.anomaly_detector.get_previous_underlying", return_value=None
@@ -118,10 +127,19 @@ class TestOISpike:
         from src.engine.anomaly_detector import detect_anomalies
 
         oc = _make_oc()
-        prev = {"oi": 200_000, "ltp": 80.0, "iv": 22.0}
+        prev_bulk = {
+            (21500.0, "CE"): {
+                "strike": 21500.0,
+                "option_type": "CE",
+                "oi": 200_000,
+                "ltp": 80.0,
+                "iv": 22.0,
+            }
+        }
         with (
             patch(
-                "src.engine.anomaly_detector.get_previous_snapshot", return_value=prev
+                "src.engine.anomaly_detector.get_prev_snapshots_bulk",
+                return_value=prev_bulk,
             ),
             patch(
                 "src.engine.anomaly_detector.get_previous_underlying", return_value=None

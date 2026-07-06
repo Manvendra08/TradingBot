@@ -522,7 +522,10 @@ def step_risk(ctx: PipelineContext) -> StepResult:
         except Exception as e:
             log.warning("Error checking expiry day option buying in step_risk: %s", e)
 
-    allowed, reason, sub_check_code = _check_risk_limits_for_table(ctx.symbol, "paper_trades", "paper")
+    is_live = ctx.scan_context.get("is_live", False)
+    table = "live_trades" if is_live else "paper_trades"
+    mode = "live" if is_live else "paper"
+    allowed, reason, sub_check_code = _check_risk_limits_for_table(ctx.symbol, table, mode)
     return StepResult(
         name="risk",
         passed=allowed,
@@ -910,6 +913,73 @@ def step_trend_alignment_tf(ctx: PipelineContext) -> StepResult:
     )
 
 
+def step_heavyweight_alignment(ctx: PipelineContext) -> StepResult:
+    """
+    Checks if index heavyweight momentum is aligned with the trade direction.
+    - LONG trades are blocked if index weighted momentum is deeply negative (< -0.50%).
+    - SHORT trades are blocked if index weighted momentum is deeply positive (> +0.50%).
+    This guard applies only to NIFTY and BANKNIFTY.
+    """
+    symbol = ctx.symbol
+    if symbol not in ("NIFTY", "BANKNIFTY"):
+        return StepResult(
+            name="heavyweight_alignment",
+            passed=True,
+            score=100,
+            reason="Heavyweight alignment guard not active for this symbol",
+            data={}
+        )
+
+    # Determine trade direction
+    direction = ctx.direction
+    if not direction:
+        # Resolve direction from verdict if not set
+        intel = ctx.scan_context.get("intel") or {}
+        verdict = intel.get("verdict_label", "")
+        if is_bullish(verdict):
+            direction = "LONG"
+        elif is_bearish(verdict):
+            direction = "SHORT"
+
+    if not direction:
+        return StepResult(
+            name="heavyweight_alignment",
+            passed=True,
+            score=100,
+            reason="No trade direction detected; bypassing guard",
+            data={}
+        )
+
+    ws = ctx.scan_context.get("index_weights_sentiment")
+    if not ws:
+        return StepResult(
+            name="heavyweight_alignment",
+            passed=True,
+            score=100,
+            reason="Index weights sentiment data unavailable; bypassing guard",
+            data={}
+        )
+
+    weighted_momentum = float(ws.get("weighted_momentum", 0.0))
+    passed = True
+    reason = f"Heavyweight momentum {weighted_momentum:.3f}% is aligned with trade direction {direction}"
+
+    if direction == "LONG" and weighted_momentum <= -0.50:
+        passed = False
+        reason = f"LONG trade blocked: Index heavyweight momentum is deeply negative ({weighted_momentum:.3f}%)"
+    elif direction == "SHORT" and weighted_momentum >= 0.50:
+        passed = False
+        reason = f"SHORT trade blocked: Index heavyweight momentum is deeply positive ({weighted_momentum:.3f}%)"
+
+    return StepResult(
+        name="heavyweight_alignment",
+        passed=passed,
+        score=100 if passed else 0,
+        reason=reason,
+        data={"weighted_momentum": weighted_momentum, "direction": direction}
+    )
+
+
 # ── Pipeline Mapping and Execution ───────────────────────────────────────────────────
 
 CORE_OI_STEPS = [
@@ -919,6 +989,7 @@ CORE_OI_STEPS = [
     step_entry_quality_core,
     step_regime,
     step_trend_alignment_core,
+    step_heavyweight_alignment,
     step_risk,
 ]
 
@@ -929,6 +1000,7 @@ TIMEFRAME_STEPS = [
     step_entry_quality_tf,
     step_trend_alignment_tf,
     step_regime,
+    step_heavyweight_alignment,
     step_risk,
 ]
 

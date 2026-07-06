@@ -1057,6 +1057,37 @@ def generate_intelligence(
         except Exception:
             pass
 
+    # ── FII / DII Context ──────────────────────────────────────────────────
+    fii_bull_forces: list[tuple[int, str]] = []
+    fii_bear_forces: list[tuple[int, str]] = []
+    fii_confidence_boost = 0
+    if _norm_symbol(symbol) in ("NIFTY", "BANKNIFTY"):
+        try:
+            from src.models.schema import get_conn
+            with get_conn() as conn:
+                fii_row = conn.execute("SELECT * FROM fii_positioning ORDER BY report_date DESC LIMIT 1").fetchone()
+                if fii_row:
+                    fii_long = fii_row["fii_index_long"] or 0
+                    fii_short = fii_row["fii_index_short"] or 0
+                    fii_cash = fii_row["fii_cash_net"] or 0.0
+                    fii_ls_ratio = fii_long / max(1, fii_short)
+                    
+                    if fii_ls_ratio > 3.0:
+                        fii_bull_forces.append((10, f"FII L/S Ratio ({fii_ls_ratio:.1f}x)"))
+                        fii_confidence_boost += 10
+                    elif fii_ls_ratio < 0.5:
+                        fii_bear_forces.append((10, f"FII L/S Ratio ({fii_ls_ratio:.1f}x)"))
+                        fii_confidence_boost += 10
+                        
+                    if fii_cash > 1500:
+                        fii_bull_forces.append((5, f"FII Cash flow (+{fii_cash:.0f} Cr)"))
+                        fii_confidence_boost += 5
+                    elif fii_cash < -1500:
+                        fii_bear_forces.append((5, f"FII Cash flow ({fii_cash:.0f} Cr)"))
+                        fii_confidence_boost += 5
+        except Exception as e:
+            log.warning("Failed to fetch FII positioning: %s", e)
+
     # ── Price × OI Verdict ─────────────────────────────────────────────────
     verdict_label, verdict_emoji, verdict_desc = _price_oi_verdict(
         price_pct,
@@ -1091,6 +1122,13 @@ def generate_intelligence(
     confidence, chart_conflict = _compute_confidence(
         ctx, current_alerts, parsed_chart=parsed_chart, verdict_label=verdict_label
     )
+    
+    # Add FII bias boost if it aligns with the verdict
+    verdict_bias = "BULLISH" if is_bullish(verdict_label) else ("BEARISH" if is_bearish(verdict_label) else "NEUTRAL")
+    if verdict_bias == "BULLISH" and fii_bull_forces:
+        confidence += fii_confidence_boost
+    elif verdict_bias == "BEARISH" and fii_bear_forces:
+        confidence += fii_confidence_boost
 
     # ── Build Message ──────────────────────────────────────────────────────
     # H5 fix: apply ALL confidence ceilings in one pass after the confluence boost.
@@ -1169,6 +1207,8 @@ def generate_intelligence(
             confidence=confidence,
             chart_conflict=chart_conflict,
             trend="",
+            bull_forces=fii_bull_forces,
+            bear_forces=fii_bear_forces,
             telegram_text=telegram_text,
             expiry=expiry,
             days_to_expiry=days_to_expiry,
@@ -1273,6 +1313,16 @@ def generate_intelligence(
     if straddle > 0:
         msg.append(f"ATM Straddle: `{straddle:.0f}` pts")
 
+    # Index Weights Sentiment (NIFTY/BANKNIFTY/SENSEX only)
+    if "index_weights_sentiment" in ctx and ctx["index_weights_sentiment"]:
+        ws = ctx["index_weights_sentiment"]
+        msg.append("")
+        msg.append("⚖️ *Index Weights Sentiment*")
+        color_emoji = "🟢" if ws["direction"] == "BULLISH" else ("🔴" if ws["direction"] == "BEARISH" else "⚪")
+        msg.append(f"Weighted Momentum: `{ws['weighted_momentum']:.3f}%` {color_emoji} ({ws['direction']})")
+        top_3 = ", ".join([f"{c['symbol']}: `{c['change_pct']:+.2f}%`" for c in ws.get("constituents", [])[:3]])
+        msg.append(f"Top Movers: {top_3}")
+
     # ── Chart Status ───────────────────────────────────────────────────────
     # parsed_chart was built earlier (before confidence print) to allow boost.
     if parsed_chart:
@@ -1334,6 +1384,11 @@ def generate_intelligence(
     bull_forces, bear_forces = _collect_forces(
         ctx, current_alerts, verdict_label, parsed_chart
     )
+    
+    bull_forces.extend(fii_bull_forces)
+    bear_forces.extend(fii_bear_forces)
+    bull_forces.sort(key=lambda x: x[0], reverse=True)
+    bear_forces.sort(key=lambda x: x[0], reverse=True)
 
     msg.append("")
     msg.append("*BULL FORCES (Criticality Order)*")

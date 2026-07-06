@@ -157,14 +157,15 @@ class ResilientTLSAdapter(HTTPAdapter):
                         self.SSL_RETRY_ATTEMPTS,
                     )
                     return super().send(request, *args, **kwargs)
-            except (SSLError, ReqConnectionError, OSError) as exc:
+            except (SSLError, ReqConnectionError, OSError, NameError) as exc:
                 last_err = exc
                 log.debug("[tls] Exception on %s: %s", request.url, exc)
                 is_ssl_eof = self._is_ssl_eof(exc)
                 is_timeout = self._is_timeout(exc)
                 is_dns = self._is_dns_failure(exc)
-                if not is_ssl_eof and not is_timeout and not is_dns:
-                    log.debug("[tls] Non-SSL EOF/timeout/DNS exception, re-raising")
+                is_name_err = isinstance(exc, NameError)
+                if not is_ssl_eof and not is_timeout and not is_dns and not is_name_err:
+                    log.debug("[tls] Non-retryable exception, re-raising")
                     raise
 
                 if attempt < self.SSL_RETRY_ATTEMPTS - 1:
@@ -173,8 +174,10 @@ class ResilientTLSAdapter(HTTPAdapter):
                         reason = "SSL EOF"
                     elif is_timeout:
                         reason = "timeout"
-                    else:
+                    elif is_dns:
                         reason = "DNS failure"
+                    else:
+                        reason = "response parse error"
                     log.warning(
                         "%s on %s (attempt %d/%d), evicting pool & retrying in %.1fs…",
                         reason,
@@ -188,8 +191,7 @@ class ResilientTLSAdapter(HTTPAdapter):
                     continue
                 else:
                     log.warning(
-                        "[tls] %s exhausted for %s after %d attempts",
-                        reason,
+                        "[tls] retries exhausted for %s after %d attempts",
                         request.url,
                         self.SSL_RETRY_ATTEMPTS,
                     )

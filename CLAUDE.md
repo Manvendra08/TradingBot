@@ -31,8 +31,8 @@ It:
 
 Purpose-based routing — three separate pipelines, not one shared stack:
 
-- **`live_verdict`** (per-scan trade verdict/exit advice) — symbol-aware: MCX (NATURALGAS/CRUDEOIL/GOLD/SILVER) routes OpenCode Zen → SambaNova → Groq → GitHub Models → OpenRouter GPT-OSS free → OpenRouter free pool → Gemini SDK. NSE indices route OpenCode Zen → GitHub Models → Groq → OpenRouter free pool → Gemini SDK.
-- **`eod_review`** (strategy optimization, end of day) — OpenRouter/OpenCode Nemotron 3 Ultra/Super only.
+- **`live_verdict`** (per-scan trade verdict/exit advice) — symbol-aware: MCX (NATURALGAS/CRUDEOIL/GOLD/SILVER) routes SambaNova → Groq → GitHub Models → OpenRouter GPT-OSS free → OpenRouter free pool → Gemini SDK. NSE indices route GitHub Models → Groq → OpenRouter free pool → Gemini SDK.
+- **`eod_review`** (strategy optimization, end of day) — OpenRouter Nemotron 3 Ultra/Super only.
 - **`formatting`** — OpenRouter/Groq Qwen 3 Coder / Qwen 2.5 Coder variants only.
 - Per-purpose `max_tokens` via `LLM_MAX_TOKENS_LIVE` / `_EOD` / `_FORMATTING` in `config/settings.py`.
 - Default timeout: 12s per provider attempt (hard cap so ≥2 models fit in the 75s per-call budget)

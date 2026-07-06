@@ -53,15 +53,26 @@ PrevByKey = dict[tuple, dict]
 
 
 class _PrevSnapshotLookup(dict):
-    def __init__(self, data: PrevByKey, symbol: str, expiry: str):
+    """Dict wrapper that falls back to per-strike DB queries on cache miss.
+
+    When ``no_fallback=True`` (set when the bulk query returned {} because all
+    stored snapshots are older than the staleness cap), per-strike fallbacks are
+    suppressed.  This prevents Thursday's stale data from leaking in after a
+    weekend restart via individual get_previous_snapshot() calls.
+    """
+
+    def __init__(self, data: PrevByKey, symbol: str, expiry: str, no_fallback: bool = False):
         super().__init__(data)
         self._symbol = symbol
         self._expiry = expiry
+        self._no_fallback = no_fallback
 
     def get(self, key, default=None):
         value = super().get(key)
         if value is not None:
             return value
+        if self._no_fallback:
+            return default
         strike, option_type = key
         value = get_previous_snapshot(self._symbol, self._expiry, strike, option_type)
         return default if value is None else value
@@ -841,8 +852,13 @@ def detect_anomalies(
             symbol, expiry, underlying, chart_indicators, "empty_filtered_strikes"
         )
 
+    bulk_result = get_prev_snapshots_bulk(symbol, expiry, fetched_at=fetched_at)
+    # If bulk returned empty, it may be because all stored snapshots are older
+    # than the staleness cap (cross-session guard).  Pass no_fallback=True so
+    # per-strike fallbacks in _PrevSnapshotLookup are also suppressed.
+    stale_baseline = len(bulk_result) == 0
     prev_by_key: PrevByKey = _PrevSnapshotLookup(
-        get_prev_snapshots_bulk(symbol, expiry), symbol, expiry
+        bulk_result, symbol, expiry, no_fallback=stale_baseline
     )
     prev_snaps: list[dict] = list(prev_by_key.values())
 

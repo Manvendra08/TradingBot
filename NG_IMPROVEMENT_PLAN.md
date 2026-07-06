@@ -418,3 +418,14 @@ Run ≥ 30 days with `WEATHER_SIGNAL_ENABLED=False` (log-only). Then measure: NG
 | 14 | Weather calibration + enable decision | 0.5 d |
 
 ~10.5 dev-days + calibration waits. Items 1–4 are pure risk reduction and ship with `NG_STRATEGY_ENABLED=False`; items 11–12 ship log-only with `WEATHER_SIGNAL_ENABLED=False`.
+
+---
+
+## 13. Review & Refinements (v1.2 adjustments)
+
+Following the architectural review, the following adjustments must be incorporated during implementation:
+
+1. **US Daylight Saving Time (DST):** The EIA report time (10:30 AM Eastern) and NYMEX hours must be calculated dynamically. Hardcoded IST times (e.g., 20:00 for EIA, 09:00-17:30 for Parity) will drift by 1 hour twice a year. Use `America/New_York` timezone conversions to compute IST windows dynamically.
+2. **Shoonya CDS 17:00 Close:** USDINR futures stop trading at 17:00 IST, but the PARITY regime runs until 17:30 IST. The parity engine must tolerate the static USDINR quote between 17:00 and 17:30 without invalidating it due to the `PARITY_MAX_STALENESS_SEC` rule, or gracefully switch to the `yfinance` fallback for that 30-minute window.
+3. **Weather Feed Timing:** Adjust the weather fetch schedule to align more tightly with model release completions (e.g., ECMWF 00z completes around 06:45 UTC / 12:15 IST) to minimize information decay before the MOMENTUM regime starts.
+4. **Lot Sizing Edge Case:** When `NG_RISK_PCT_PER_TRADE = 0.5`, the lot sizing formula `floor(...)` may evaluate to `0` for standard MCX lot sizes on smaller accounts. Ensure the sizing logic logs a clear "Insufficient capital for 1 lot" message rather than silently dropping the trade.
