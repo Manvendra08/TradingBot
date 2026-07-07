@@ -207,6 +207,32 @@ def _is_open_for(symbol: str) -> bool:
     return open_t <= t <= close_t
 
 
+def _latest_interval_data_available(class_key: str, current_interval_idx: int, interval_min: int, market_open_time_ist: datetime) -> bool:
+    """Check if scan summaries are present in the DB for the current interval's timestamp."""
+    from datetime import timedelta, timezone
+    from src.models.schema import get_conn
+
+    interval_start_ist = market_open_time_ist + timedelta(minutes=current_interval_idx * interval_min)
+    interval_start_utc = interval_start_ist.astimezone(timezone.utc)
+    interval_start_utc_str = interval_start_utc.isoformat()
+
+    symbols = [s for s in WATCH_SYMBOLS if get_symbol_class(s) == class_key]
+    if not symbols:
+        return True
+
+    with get_conn() as conn:
+        for symbol in symbols:
+            if not _is_open_for(symbol):
+                continue
+            row = conn.execute(
+                "SELECT 1 FROM scan_summaries WHERE symbol=? AND fetched_at >= ? LIMIT 1",
+                (symbol, interval_start_utc_str)
+            ).fetchone()
+            if not row:
+                return False
+    return True
+
+
 def _guarded_run(class_key: str | None = None):
     symbols_to_check = [
         s
@@ -657,6 +683,8 @@ def start_scheduler(immediate: bool = False):
     _INSTRUMENT_CACHE_REFRESH_INTERVAL = 4 * 60 * 60  # 4 hours
     last_kite_sync_refresh = 0.0
     _KITE_POSITION_SYNC_INTERVAL = 5 * 60  # L3: sync Kite positions every 5 minutes
+    _scan_attempts: dict[tuple[str, int], int] = {}
+    _last_scan_attempt_time: dict[str, float] = {}
 
     _last_friday_nse_exit_date = None
     _last_friday_mcx_exit_date = None
@@ -817,17 +845,20 @@ def start_scheduler(immediate: bool = False):
                 current_interval_idx = math.floor(delta_minutes / interval_min)
                 should_scan = False
 
-                if current_interval_idx == 0:
-                    if not has_done_startup_scan.get(class_key, False):
+                data_available = _latest_interval_data_available(class_key, current_interval_idx, interval_min, market_open_time)
+
+                if not data_available:
+                    attempts = _scan_attempts.get((class_key, current_interval_idx), 0)
+                    last_attempt = _last_scan_attempt_time.get(class_key, 0.0)
+                    if attempts < 3 and (time.time() - last_attempt >= 60.0):
                         should_scan = True
-                        has_done_startup_scan[class_key] = True
-                        last_scanned_interval[class_key] = 0
+                        _scan_attempts[(class_key, current_interval_idx)] = attempts + 1
+                        _last_scan_attempt_time[class_key] = time.time()
                 else:
-                    last_scanned = last_scanned_interval.get(class_key, -1)
-                    if current_interval_idx > last_scanned:
-                        should_scan = True
-                        has_done_startup_scan[class_key] = True
-                        last_scanned_interval[class_key] = current_interval_idx
+                    last_scanned_interval[class_key] = max(
+                        last_scanned_interval.get(class_key, -1),
+                        current_interval_idx
+                    )
 
                 if should_scan:
                     cycle_start = time.time()

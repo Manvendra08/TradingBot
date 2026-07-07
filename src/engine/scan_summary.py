@@ -23,6 +23,7 @@ def save_scan_summary(
     fetched_at: str,
     *,
     is_fallback: bool = False,
+    llm_verdict: dict | None = None,
 ) -> None:
     """
     Save one row per scan. intel must be the structured dict from
@@ -35,6 +36,13 @@ def save_scan_summary(
     ctx = scan_context or {}
     verdict_label = intel.get("verdict_label", "")
     confidence = int(intel.get("confidence") or 0)
+
+    if llm_verdict:
+        action = llm_verdict.get("action") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "action", "")
+        if action and action not in ("NO_TRADE", "NEUTRAL"):
+            llm_conf = llm_verdict.get("confidence") if isinstance(llm_verdict, dict) else getattr(llm_verdict, "confidence", 0)
+            if llm_conf:
+                confidence = int(llm_conf)
 
     chart_data = ctx.get("chart_indicators") or {}
     if isinstance(chart_data, dict) and not any(k in chart_data for k in ("1h", "3h")):

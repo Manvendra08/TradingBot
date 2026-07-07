@@ -17,6 +17,7 @@ The AI receives the full scan context including:
 
 import json
 import logging
+log = logging.getLogger("nsebot.llm_enrichment")
 import os
 import re
 from datetime import datetime
@@ -32,7 +33,10 @@ try:
 except ImportError:
     genai = None
 
-log = logging.getLogger(__name__)
+try:
+    import boto3
+except ImportError:
+    boto3 = None
 
 _IST = pytz.timezone("Asia/Kolkata")
 
@@ -635,11 +639,13 @@ HISTORICAL OI CONTEXT:
 
     if "index_weights_sentiment" in ctx and ctx["index_weights_sentiment"]:
         ws = ctx["index_weights_sentiment"]
-        prompt += f"\nINDEX HEAVYWEIGHTS WEIGHTAGE SENTIMENT:\n" \
-                  f"• Weighted Momentum Score: {ws.get('weighted_momentum'):.3f}%\n" \
-                  f"• Momentum Direction: {ws.get('direction')}\n" \
-                  f"• Last weights refresh: {ws.get('last_refresh')}\n" \
-                  f"• Top Constituents Weight & Performance:\n"
+        prompt += (
+            f"\nINDEX HEAVYWEIGHTS WEIGHTAGE SENTIMENT:\n"
+            f"• Weighted Momentum Score: {ws.get('weighted_momentum'):.3f}%\n"
+            f"• Momentum Direction: {ws.get('direction')}\n"
+            f"• Last weights refresh: {ws.get('last_refresh')}\n"
+            f"• Top Constituents Weight & Performance:\n"
+        )
         for c in ws.get("constituents", [])[:5]:
             prompt += f"  - {c['symbol']}: Weight {c['weight_pct']:.2f}% | Change: {c['change_pct']:.2f}%\n"
 
@@ -1119,78 +1125,138 @@ def _call_llm_api(
         _class = get_symbol_class(_base)
         _is_mcx = _class == "MCX_COMMODITY"
 
-        # Common tail — shared by both index and commodity routing
-        _tail_pipeline = [
-            {
-                "model_group": "groq-reasoning",
-                "providers": [
-                    {
-                        "name": "Groq (GPT-OSS 120B)",
-                        "env_key": "GROQ_API_KEY",
-                        "url": "https://api.groq.com/openai/v1/chat/completions",
-                        "model": "openai/gpt-oss-120b",
-                    },
-                    {
-                        "name": "Groq (Llama 3.3 70B)",
-                        "env_key": "GROQ_API_KEY",
-                        "url": "https://api.groq.com/openai/v1/chat/completions",
-                        "model": "llama-3.3-70b-versatile",
-                    },
-                    {
-                        "name": "Groq (Llama 4 Scout)",
-                        "env_key": "GROQ_API_KEY",
-                        "url": "https://api.groq.com/openai/v1/chat/completions",
-                        "model": "meta-llama/llama-4-scout-17b-16e-instruct",
-                    },
-                ],
-            },
-            {
-                "model_group": "openrouter-free-pool",
-                "providers": [
-                    {
-                        "name": "OpenRouter (Llama 3.3 70B Free)",
-                        "env_key": "OPENROUTER_API_KEY",
-                        "url": "https://openrouter.ai/api/v1/chat/completions",
-                        "model": "meta-llama/llama-3.3-70b-instruct:free",
-                    },
-                    {
-                        "name": "OpenRouter (Qwen 3 32B Free)",
-                        "env_key": "OPENROUTER_API_KEY",
-                        "url": "https://openrouter.ai/api/v1/chat/completions",
-                        "model": "qwen/qwen3-32b:free",
-                    },
-                    {
-                        "name": "OpenRouter (Llama 3.2 3B Free)",
-                        "env_key": "OPENROUTER_API_KEY",
-                        "url": "https://openrouter.ai/api/v1/chat/completions",
-                        "model": "meta-llama/llama-3.2-3b-instruct:free",
-                    },
-                    {
-                        "name": "OpenRouter (Nemotron 3 Super 120B Free)",
-                        "env_key": "OPENROUTER_API_KEY",
-                        "url": "https://openrouter.ai/api/v1/chat/completions",
-                        "model": "nvidia/nemotron-3-super-120b-a12b:free",
-                    },
-                ],
-            },
-            {
-                "model_group": "gemini-sdk",
-                "providers": [
-                    {
-                        "name": "Gemini SDK (2.5 Flash)",
-                        "env_key": "GEMINI_API_KEY",
-                        "model": "gemini-2.5-flash",
-                        "use_gemini_sdk": True,
-                    },
-                    {
-                        "name": "Gemini SDK (2.0 Flash)",
-                        "env_key": "GEMINI_API_KEY",
-                        "model": "gemini-2.0-flash",
-                        "use_gemini_sdk": True,
-                    },
-                ],
-            },
-        ]
+        # Define individual model groups
+        _groq_group = {
+            "model_group": "groq-reasoning",
+            "providers": [
+                {
+                    "name": "Groq (GPT-OSS 120B)",
+                    "env_key": "GROQ_API_KEY",
+                    "url": "https://api.groq.com/openai/v1/chat/completions",
+                    "model": "openai/gpt-oss-120b",
+                },
+                {
+                    "name": "Groq (Llama 3.3 70B)",
+                    "env_key": "GROQ_API_KEY",
+                    "url": "https://api.groq.com/openai/v1/chat/completions",
+                    "model": "llama-3.3-70b-versatile",
+                },
+                {
+                    "name": "Groq (Llama 4 Scout)",
+                    "env_key": "GROQ_API_KEY",
+                    "url": "https://api.groq.com/openai/v1/chat/completions",
+                    "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+                },
+            ],
+        }
+
+        _openrouter_group = {
+            "model_group": "openrouter-free-pool",
+            "providers": [
+                {
+                    "name": "OpenRouter (Llama 3.3 70B Free)",
+                    "env_key": "OPENROUTER_API_KEY",
+                    "url": "https://openrouter.ai/api/v1/chat/completions",
+                    "model": "meta-llama/llama-3.3-70b-instruct:free",
+                },
+                {
+                    "name": "OpenRouter (Qwen 3 32B Free)",
+                    "env_key": "OPENROUTER_API_KEY",
+                    "url": "https://openrouter.ai/api/v1/chat/completions",
+                    "model": "qwen/qwen3-32b:free",
+                },
+                {
+                    "name": "OpenRouter (Llama 3.2 3B Free)",
+                    "env_key": "OPENROUTER_API_KEY",
+                    "url": "https://openrouter.ai/api/v1/chat/completions",
+                    "model": "meta-llama/llama-3.2-3b-instruct:free",
+                },
+                {
+                    "name": "OpenRouter (Nemotron 3 Super 120B Free)",
+                    "env_key": "OPENROUTER_API_KEY",
+                    "url": "https://openrouter.ai/api/v1/chat/completions",
+                    "model": "nvidia/nemotron-3-super-120b-a12b:free",
+                },
+            ],
+        }
+
+        _gemini_group = {
+            "model_group": "gemini-sdk",
+            "providers": [
+                {
+                    "name": "Gemini SDK (2.5 Flash)",
+                    "env_key": "GEMINI_API_KEY",
+                    "model": "gemini-2.5-flash",
+                    "use_gemini_sdk": True,
+                },
+                {
+                    "name": "Gemini SDK (2.0 Flash)",
+                    "env_key": "GEMINI_API_KEY",
+                    "model": "gemini-2.0-flash",
+                    "use_gemini_sdk": True,
+                },
+            ],
+        }
+
+        _bedrock_group = {
+            "model_group": "bedrock-sdk",
+            "providers": [
+                {
+                    "name": "Bedrock (GLM 5)",
+                    "env_key": "AWS_ACCESS_KEY_ID",
+                    "model": "zai.glm-5",
+                    "use_bedrock_sdk": True,
+                },
+                {
+                    "name": "Bedrock (GLM 4.7 Flash)",
+                    "env_key": "AWS_ACCESS_KEY_ID",
+                    "model": "zai.glm-4.7-flash",
+                    "use_bedrock_sdk": True,
+                },
+                {
+                    "name": "Bedrock (MiniMax M2.5)",
+                    "env_key": "AWS_ACCESS_KEY_ID",
+                    "model": "minimax.minimax-m2.5",
+                    "use_bedrock_sdk": True,
+                },
+                {
+                    "name": "Bedrock (MiniMax M2)",
+                    "env_key": "AWS_ACCESS_KEY_ID",
+                    "model": "minimax.minimax-m2",
+                    "use_bedrock_sdk": True,
+                },
+                {
+                    "name": "Bedrock (Nemotron 3 Super 120B)",
+                    "env_key": "AWS_ACCESS_KEY_ID",
+                    "model": "nvidia.nemotron-super-3-120b",
+                    "use_bedrock_sdk": True,
+                },
+                {
+                    "name": "Bedrock (Nemotron Nano 12B)",
+                    "env_key": "AWS_ACCESS_KEY_ID",
+                    "model": "nvidia.nemotron-nano-12b-v2",
+                    "use_bedrock_sdk": True,
+                },
+                {
+                    "name": "Bedrock (Qwen3 32B)",
+                    "env_key": "AWS_ACCESS_KEY_ID",
+                    "model": "qwen.qwen3-32b-v1:0",
+                    "use_bedrock_sdk": True,
+                },
+                {
+                    "name": "Bedrock (Llama 3.3 70B)",
+                    "env_key": "AWS_ACCESS_KEY_ID",
+                    "model": "meta.llama3-3-70b-instruct-v1:0",
+                    "use_bedrock_sdk": True,
+                },
+                {
+                    "name": "Bedrock (Mistral 7B)",
+                    "env_key": "AWS_ACCESS_KEY_ID",
+                    "model": "mistral.mistral-7b-instruct-v0:2",
+                    "use_bedrock_sdk": True,
+                },
+            ],
+        }
 
         # GitHub Models — used in both paths at different priority
         _github_models = {
@@ -1212,8 +1278,24 @@ def _call_llm_api(
         }
 
         if _is_mcx:
-            # MCX: SambaNova → Groq → GitHub → OpenRouter GPT-OSS → OpenRouter pool → Gemini SDK
+            # MCX: Bedrock SDK (primary) → Groq → GitHub → OpenRouter GPT-OSS → OpenRouter pool → Gemini SDK → SambaNova (last fallback)
             FREE_MODEL_PIPELINE = [
+                _bedrock_group,
+                _groq_group,
+                _github_models,
+                {
+                    "model_group": "openrouter-gpt-oss-free",
+                    "providers": [
+                        {
+                            "name": "OpenRouter (GPT-OSS 120B Free)",
+                            "env_key": "OPENROUTER_API_KEY",
+                            "url": "https://openrouter.ai/api/v1/chat/completions",
+                            "model": "openai/gpt-oss-120b:free",
+                        },
+                    ],
+                },
+                _openrouter_group,
+                _gemini_group,
                 {
                     "model_group": "sambanova-mcx",
                     "providers": [
@@ -1228,7 +1310,7 @@ def _call_llm_api(
                             "env_key": "SAMBANOVA_API_KEY",
                             "url": "https://api.sambanova.ai/v1/chat/completions",
                             "model": "gpt-oss-120b",
-                            "max_tokens_override": 4096,  # gpt-oss-120b truncates at 2048
+                            "max_tokens_override": 4096,
                         },
                         {
                             "name": "SambaNova (Llama 3.3 70B)",
@@ -1238,27 +1320,15 @@ def _call_llm_api(
                         },
                     ],
                 },
-                _tail_pipeline[0],  # groq-reasoning
-                _github_models,
-                {
-                    "model_group": "openrouter-gpt-oss-free",
-                    "providers": [
-                        {
-                            "name": "OpenRouter (GPT-OSS 120B Free)",
-                            "env_key": "OPENROUTER_API_KEY",
-                            "url": "https://openrouter.ai/api/v1/chat/completions",
-                            "model": "openai/gpt-oss-120b:free",
-                        },
-                    ],
-                },
-                _tail_pipeline[1],  # openrouter-free-pool
-                _tail_pipeline[2],  # gemini-sdk
             ]
         else:
-            # NSE/BSE indices: GitHub → Groq → OpenRouter pool → Gemini SDK
+            # NSE/BSE indices: Bedrock SDK (primary) → GitHub → Groq → OpenRouter pool → Gemini SDK
             FREE_MODEL_PIPELINE = [
+                _bedrock_group,
                 _github_models,
-                *_tail_pipeline,
+                _groq_group,
+                _openrouter_group,
+                _gemini_group,
             ]
 
     max_tokens = _max_tokens_for_purpose(purpose)
@@ -1325,6 +1395,58 @@ def _call_llm_api(
                             "[llm] Gemini model hit quota. 10-min cooldown activated."
                         )
                         _API_QUOTA_EXHAUSTED_UNTIL = now + 600.0
+                        _PROVIDER_COOLDOWN_UNTIL[cooldown_key] = now + 600.0
+                continue
+
+            if provider.get("use_bedrock_sdk"):
+                if not boto3:
+                    continue
+                try:
+                    log.info(
+                        "[llm] Trying Bedrock model %s (%.0fs remaining)",
+                        provider["model"],
+                        remaining,
+                    )
+                    bedrock_client = boto3.client(
+                        "bedrock-runtime",
+                        region_name=provider.get("region", "us-east-1"),
+                    )
+                    # Bedrock converse API format
+                    messages = [
+                        {
+                            "role": "user",
+                            "content": [{"text": system_prompt + "\n\n" + prompt}],
+                        }
+                    ]
+                    response = bedrock_client.converse(
+                        modelId=provider["model"],
+                        messages=messages,
+                        inferenceConfig={
+                            "temperature": 0.2,
+                            "maxTokens": provider.get(
+                                "max_tokens_override", max_tokens
+                            ),
+                        },
+                    )
+                    raw_content = response["output"]["message"]["content"][0]["text"]
+                    parsed = _extract_json(raw_content)
+                    result = schema(**parsed)
+                    log.info(
+                        "[llm] %s OK via Bedrock (%s)",
+                        schema.__name__,
+                        provider["model"],
+                    )
+                    _CONSECUTIVE_FAILURES = 0
+                    return result
+                except Exception as inner_e:
+                    err = str(inner_e)
+                    log.info(
+                        "[llm] Bedrock %s failed: %s", provider["model"], err[:200]
+                    )
+                    if "ThrottlingException" in err or "rate limit" in err.lower():
+                        log.warning(
+                            "[llm] Bedrock model hit rate limit. 10-min cooldown activated."
+                        )
                         _PROVIDER_COOLDOWN_UNTIL[cooldown_key] = now + 600.0
                 continue
 
@@ -1729,20 +1851,21 @@ def _sanitize_llm_verdict(
     else:
         result = result.copy(update={"instrument": instr})
 
-    # 4. Validate entry_premium_range against actual option premiums
-    # If the LLM hallucinated a wildly wrong range, replace with actual data
+    # 4. Validate and correct entry_premium_range, stop_loss, target_1, target_2, risk_reward
     entry_range = result.entry_premium_range or ""
-    if entry_range and entry_range not in ("N/A", "N/A", ""):
-        # Extract strike and option_type from instrument
-        m = re.search(r"(\d+(?:\.\d+)?)\s*(CE|PE)", instr, re.IGNORECASE)
-        if m:
-            try:
-                target_strike = float(m.group(1))
-                target_opt = m.group(2).upper()
-                option_rows = scan_context.get("option_rows") or []
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(CE|PE|FUT)", instr, re.IGNORECASE)
+    if m:
+        try:
+            target_strike = float(m.group(1))
+            target_opt = m.group(2).upper()
+            option_rows = scan_context.get("option_rows") or []
+            underlying = float(scan_context.get("underlying") or 0.0)
 
-                # Find actual premium for this strike
-                actual_premium = None
+            # Find actual premium for this strike
+            actual_premium = None
+            if target_opt == "FUT":
+                actual_premium = underlying
+            else:
                 for row in option_rows:
                     try:
                         row_strike = float(row.get("strike") or 0)
@@ -1758,40 +1881,114 @@ def _sanitize_llm_verdict(
                         actual_premium = row_ltp
                         break
 
-                # If we have actual premium, check if LLM's range is reasonable
-                if actual_premium and actual_premium > 0:
-                    # Parse the LLM's range (e.g., "70-80" or "4.5-5.5")
-                    range_match = re.search(
-                        r"(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)", entry_range
-                    )
-                    if range_match:
-                        llm_low = float(range_match.group(1))
-                        llm_high = float(range_match.group(2))
-                        llm_mid = (llm_low + llm_high) / 2
+            # If we don't have option rows / ltp, try database snapshot fallback
+            if not actual_premium and target_opt != "FUT":
+                from src.engine.trade_plan import get_option_premium
+                scan_expiry = scan_context.get("expiry") or ""
+                actual_premium = get_option_premium(symbol, scan_expiry, target_strike, target_opt, option_rows)
 
-                        # If LLM's mid is more than 3x or less than 1/3 of actual, it's wrong
-                        if llm_mid > actual_premium * 3 or llm_mid < actual_premium / 3:
-                            # Replace with actual premium ± 10%
-                            low = round(actual_premium * 0.9, 2)
-                            high = round(actual_premium * 1.1, 2)
-                            corrected_range = f"{low}-{high}"
-                            log.warning(
-                                "[llm] %s: entry_premium_range '%s' wildly off actual %.2f — corrected to '%s'",
-                                symbol,
-                                entry_range,
-                                actual_premium,
-                                corrected_range,
-                            )
-                            if hasattr(result, "model_copy"):
-                                result = result.model_copy(
-                                    update={"entry_premium_range": corrected_range}
-                                )
-                            else:
-                                result = result.copy(
-                                    update={"entry_premium_range": corrected_range}
-                                )
-            except Exception as e:
-                log.debug("[llm] entry_premium_range validation failed: %s", e)
+            if actual_premium and actual_premium > 0 and underlying > 0:
+                # 1. Correct entry_premium_range if wildly off
+                range_match = re.search(
+                    r"(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)", entry_range
+                )
+                corrected_range = entry_range
+                if range_match:
+                    llm_mid = (float(range_match.group(1)) + float(range_match.group(2))) / 2
+                    if llm_mid > actual_premium * 3 or llm_mid < actual_premium / 3:
+                        low = round(actual_premium * 0.9, 2)
+                        high = round(actual_premium * 1.1, 2)
+                        corrected_range = f"{low}-{high}"
+                else:
+                    low = round(actual_premium * 0.9, 2)
+                    high = round(actual_premium * 1.1, 2)
+                    corrected_range = f"{low}-{high}"
+
+                # 2. Recalculate Stop Loss, Target 1, Target 2 using code formula
+                from src.engine.trade_plan import get_atr, convert_underlying_sl_to_premium
+                from config.symbol_classes import get_strike_step
+                atr = get_atr(scan_context)
+                step = float(get_strike_step(symbol) or 1)
+
+                # Determine direction
+                action_upper = str(result.action or "").upper()
+                bullish = "LONG" in action_upper or "BULL" in action_upper
+                is_no_trade = "NO_TRADE" in action_upper or "NEUTRAL" in action_upper
+
+                if not is_no_trade:
+                    if atr and atr > 0:
+                        if bullish:
+                            sl_underlying = underlying - 1.5 * atr
+                            target_underlying_1 = underlying + 2.0 * atr
+                            target_underlying_2 = underlying + 3.0 * atr
+                        else:
+                            sl_underlying = underlying + 1.5 * atr
+                            target_underlying_1 = underlying - 2.0 * atr
+                            target_underlying_2 = underlying - 3.0 * atr
+                    else:
+                        # Fallback to step-based if ATR is missing
+                        if bullish:
+                            sl_underlying = underlying - 2.0 * step
+                            target_underlying_1 = underlying + 2.0 * step
+                            target_underlying_2 = underlying + 4.0 * step
+                        else:
+                            sl_underlying = underlying + 2.0 * step
+                            target_underlying_1 = underlying - 2.0 * step
+                            target_underlying_2 = underlying - 4.0 * step
+
+                    # Determine side/option_type for GTT conversion
+                    side = "BUY"
+                    if target_opt == "FUT":
+                        side = "BUY" if bullish else "SELL"
+
+                    sl_premium, target_premium_1 = convert_underlying_sl_to_premium(
+                        underlying, sl_underlying, target_underlying_1, actual_premium,
+                        side, target_opt, target_strike, option_rows
+                    )
+                    _, target_premium_2 = convert_underlying_sl_to_premium(
+                        underlying, sl_underlying, target_underlying_2, actual_premium,
+                        side, target_opt, target_strike, option_rows
+                    )
+
+                    # Render formatted strings
+                    if target_opt == "FUT":
+                        stop_loss_str = f"Spot {sl_underlying:.2f}"
+                        target_1_str = f"Spot {target_underlying_1:.2f}"
+                        target_2_str = f"Spot {target_underlying_2:.2f}"
+                    else:
+                        stop_loss_str = f"Underlying {sl_underlying:.2f}"
+                        target_1_str = f"Premium {target_premium_1:.2f}"
+                        target_2_str = f"Premium {target_premium_2:.2f}"
+
+                    rr_ratio = abs(target_underlying_1 - underlying) / max(0.01, abs(underlying - sl_underlying))
+                    risk_reward_str = f"1:{rr_ratio:.1f}"
+
+                    # Update the result fields
+                    update_fields = {
+                        "entry_premium_range": corrected_range,
+                        "stop_loss": stop_loss_str,
+                        "target_1": target_1_str,
+                        "target_2": target_2_str,
+                        "risk_reward": risk_reward_str,
+                    }
+
+                    if hasattr(result, "model_copy"):
+                        result = result.model_copy(update=update_fields)
+                    else:
+                        result = result.copy(update=update_fields)
+
+                    log.info(
+                        "[llm] %s: Sanitized trade plan fields: SL=%s, T1=%s, T2=%s, RR=%s",
+                        symbol, stop_loss_str, target_1_str, target_2_str, risk_reward_str
+                    )
+                else:
+                    # For NO_TRADE, just update the entry_premium_range
+                    if hasattr(result, "model_copy"):
+                        result = result.model_copy(update={"entry_premium_range": corrected_range})
+                    else:
+                        result = result.copy(update={"entry_premium_range": corrected_range})
+        except Exception as e:
+            log.warning("[llm] Failed to sanitize and correct trade plan: %s", e)
 
     return result
 

@@ -13,6 +13,19 @@ import pytest
 FETCHED_AT = datetime.now(timezone.utc).isoformat()
 
 
+@pytest.fixture(autouse=True)
+def db_cleanup():
+    from src.models.schema import get_conn
+    import sqlite3
+    with get_conn() as conn:
+        for table in ["scan_summaries", "alerts", "underlying_price", "paper_trades", "live_trades"]:
+            try:
+                conn.execute(f"DELETE FROM {table}")
+            except sqlite3.OperationalError:
+                pass
+    yield
+
+
 class TestPipelineIntegration:
     """
     Exercises pipeline.run_pipeline() end-to-end with:
@@ -400,7 +413,7 @@ class TestTelegramFormatter:
             },
         )
         msg = _format_message(alert)
-        assert "OI_SPIKE" in msg
+        assert "OI\\_SPIKE" in msg
         assert "NIFTY" in msg
         assert "22000" in msg
         assert any(
@@ -420,7 +433,7 @@ class TestTelegramFormatter:
             },
         )
         msg = _format_message(alert)
-        assert "PRICE_SPIKE" in msg
+        assert "PRICE\\_SPIKE" in msg
         assert "UP" in msg
 
     def test_max_pain_message(self):
@@ -436,7 +449,7 @@ class TestTelegramFormatter:
             },
         )
         msg = _format_message(alert)
-        assert "MAX_PAIN_SHIFT" in msg
+        assert "MAX\\_PAIN\\_SHIFT" in msg
         assert "22100" in msg
 
 
@@ -563,6 +576,7 @@ class TestSchedulerMarketHours:
         with (
             patch("src.scheduler.job_runner.datetime", FakeDatetime),
             patch("time.time", return_value=t2),
+            patch("src.scheduler.job_runner._latest_interval_data_available", return_value=False),
             patch("src.scheduler.job_runner._guarded_run") as mock_run,
             patch(
                 "src.scheduler.job_runner._run_dhan_naturalgas_scrape"
@@ -608,6 +622,7 @@ class TestSchedulerMarketHours:
         with (
             patch("src.scheduler.job_runner.datetime", FakeDatetime),
             patch("time.time", return_value=t2),
+            patch("src.scheduler.job_runner._latest_interval_data_available", return_value=False),
             patch("src.scheduler.job_runner._guarded_run") as mock_run,
             patch("time.sleep", side_effect=KeyboardInterrupt) as mock_sleep,
         ):

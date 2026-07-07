@@ -124,14 +124,14 @@ def test_build_digest_wrapper_with_llm_verdict():
     )
     
     # Assert consolidated template components are present
-    assert "AI: BULLISH" in msg
+    assert "AI override: BULLISH" in msg
     assert "85%" in msg
     assert "LOW" in msg
     assert "Bull Call Spread" in msg
     assert "Buy 22000 CE, Sell 22100 CE" in msg
     assert "SL below 21850" in msg
-    assert "Levels: S:21900 | R:22100" in msg
-    assert "Candles: 1H BULLISH ▲ | 3H BULLISH ▲" in msg
+    assert "Price 22010" in msg
+    assert "Chart 3H ▲ / 1H ▲" in msg
 
 
 def test_build_digest_wrapper_fallback_no_llm():

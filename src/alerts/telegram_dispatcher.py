@@ -3,18 +3,22 @@ Telegram Alert Dispatcher
 Uses python-telegram-bot v21 (asyncio-based) via run_coroutine_threadsafe.
 One message per alert with full context + signal interpretation.
 """
+
 import asyncio
 import json
 import logging
+import re
 import threading
 import urllib.parse
 import urllib.request
 from concurrent.futures import TimeoutError as FuturesTimeoutError
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
+
 from telegram import Bot
 from telegram.error import TelegramError
+
 from config.settings import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-from src.utils.formatting import safe_num, fmt_oi, fmt_pct
+from src.utils.formatting import fmt_oi, fmt_pct, safe_num
 
 log = logging.getLogger(__name__)
 
@@ -25,10 +29,31 @@ _loop: asyncio.AbstractEventLoop | None = None
 _loop_thread: threading.Thread | None = None
 
 
+# ── Markdown escaping ────────────────────────────────────────────────────────
+
+_MD_SPECIAL_CHARS = r"[_*[\]()~`>#+\-=|{}.!]"
+
+
+def _escape_md(text: str) -> str:
+    """Escape Telegram MarkdownV2 special characters."""
+    if not text:
+        return ""
+    return re.sub(_MD_SPECIAL_CHARS, r"\\\1", text)
+
+
+def _escape_md_v1(text: str) -> str:
+    """Escape Telegram Markdown (legacy) special characters: _, *, [, ], (, ), ~, `, >, #, +, -, =, |, {, }, ., !"""
+    if not text:
+        return ""
+    # Markdown (legacy) special chars: _ * [ ] ( ) ~ ` > # + - = | { } . !
+    return re.sub(r"([_*\[\]()~`>#\+\-=|{}.!])", r"\\\1", text)
+
+
 def _start_loop():
     global _loop
     import sys
-    if sys.platform == 'win32':
+
+    if sys.platform == "win32":
         _loop = asyncio.SelectorEventLoop()
     else:
         _loop = asyncio.new_event_loop()
@@ -41,7 +66,9 @@ def _ensure_loop():
     if _loop is None or not _loop.is_running():
         _loop_thread = threading.Thread(target=_start_loop, daemon=True)
         _loop_thread.start()
-        import time; time.sleep(0.2)   # let loop start
+        import time
+
+        time.sleep(0.2)  # let loop start
 
 
 async def _cleanup_loop() -> None:
@@ -69,15 +96,17 @@ def _reset_loop():
             future = asyncio.run_coroutine_threadsafe(_cleanup_loop(), _loop)
             future.result(timeout=3.0)
         except Exception as e:
-            log.warning("Loop cleanup failed or timed out: %s. Stopping loop directly.", e)
+            log.warning(
+                "Loop cleanup failed or timed out: %s. Stopping loop directly.", e
+            )
             try:
                 _loop.call_soon_threadsafe(_loop.stop)
             except Exception:
                 pass
-        
+
         if _loop_thread and _loop_thread.is_alive():
             _loop_thread.join(timeout=3.0)
-            
+
         try:
             _loop.close()
         except Exception:
@@ -91,22 +120,22 @@ def _reset_loop():
 # ── Message formatters ────────────────────────────────────────────────────
 
 _EMOJI = {
-    "OI_SPIKE":          "📈",
-    "OI_UNWIND":         "📉",
-    "BUILDUP_CLASSIFY":  "🏗️",
-    "LTP_SPIKE":         "⚡",
-    "PRICE_SPIKE":       "⚡",
-    "PCR_EXTREME":       "🔴",
-    "PCR_SHIFT":         "🔄",
-    "PCR_VELOCITY":      "📐",
-    "IV_SPIKE":          "🌋",
-    "IV_CRUSH":          "🫸",
-    "ATM_LEG_MOVE":      "🎭",
-    "STRADDLE_PREMIUM":  "📦",
-    "MAX_PAIN_SHIFT":    "🎯",
-    "OI_WALL_SHIFT":     "🧱",
+    "OI_SPIKE": "📈",
+    "OI_UNWIND": "📉",
+    "BUILDUP_CLASSIFY": "🏗️",
+    "LTP_SPIKE": "⚡",
+    "PRICE_SPIKE": "⚡",
+    "PCR_EXTREME": "🔴",
+    "PCR_SHIFT": "🔄",
+    "PCR_VELOCITY": "📐",
+    "IV_SPIKE": "🌋",
+    "IV_CRUSH": "🫸",
+    "ATM_LEG_MOVE": "🎭",
+    "STRADDLE_PREMIUM": "📦",
+    "MAX_PAIN_SHIFT": "🎯",
+    "OI_WALL_SHIFT": "🧱",
     "VOLUME_AGGRESSION": "💥",
-    "OTM_UNUSUAL":       "🎪",
+    "OTM_UNUSUAL": "🎪",
 }
 
 _INTERPRETATIONS = {
@@ -125,10 +154,10 @@ _INTERPRETATIONS = {
         "watch for momentum continuation or reversal."
     ),
     "PCR_EXTREME": "{interpretation}",
-    "PCR_SHIFT":   "PCR shifted {pcr_delta:+.3f} in one bar — sentiment flip possible.",
+    "PCR_SHIFT": "PCR shifted {pcr_delta:+.3f} in one bar — sentiment flip possible.",
     "PCR_VELOCITY": "PCR trending {direction} — {label}.",
-    "IV_SPIKE":    "ATM {option_type} IV jumped {iv_delta:.1f}pts — event pricing / panic hedging.",
-    "IV_CRUSH":    "ATM {option_type} IV dropped {iv_delta:.1f}pts — vol crush / event over.",
+    "IV_SPIKE": "ATM {option_type} IV jumped {iv_delta:.1f}pts — event pricing / panic hedging.",
+    "IV_CRUSH": "ATM {option_type} IV dropped {iv_delta:.1f}pts — vol crush / event over.",
     "ATM_LEG_MOVE": "{bias}.",
     "STRADDLE_PREMIUM": "Straddle premium {direction} — {label}.",
     "MAX_PAIN_SHIFT": (
@@ -141,13 +170,11 @@ _INTERPRETATIONS = {
 }
 
 
-
-
 def _format_message(alert: dict) -> str:
-    atype   = alert["alert_type"]
-    detail  = json.loads(alert.get("detail_json") or "{}")
-    emoji   = _EMOJI.get(atype, "🔔")
-    
+    atype = alert["alert_type"]
+    detail = json.loads(alert.get("detail_json") or "{}")
+    emoji = _EMOJI.get(atype, "🔔")
+
     # Force IST Timezone
     try:
         fired = alert.get("fired_at", "")
@@ -170,98 +197,116 @@ def _format_message(alert: dict) -> str:
     try:
         interp_template = _INTERPRETATIONS.get(atype, "")
         interp = interp_template.format(
-            option_type    = detail.get("option_type", alert.get("option_type", "")),
-            strike         = detail.get("strike", alert.get("strike", "")),
-            direction      = detail.get("direction", ""),
-            pct            = safe_num(detail.get("pct_change")),
-            interpretation = detail.get("interpretation", ""),
-            pcr_delta      = safe_num(detail.get("pcr_delta")),
-            iv_delta       = safe_num(detail.get("iv_delta")),
-            shift          = safe_num(detail.get("shift")),
-            curr_max_pain  = safe_num(detail.get("curr_max_pain")),
-            buildup_type   = detail.get("buildup_type", ""),
-            label          = detail.get("label", ""),
-            bias           = detail.get("bias", ""),
+            option_type=_escape_md_v1(
+                str(detail.get("option_type", alert.get("option_type", "")))
+            ),
+            strike=_escape_md_v1(str(detail.get("strike", alert.get("strike", "")))),
+            direction=_escape_md_v1(str(detail.get("direction", ""))),
+            pct=safe_num(detail.get("pct_change")),
+            interpretation=_escape_md_v1(str(detail.get("interpretation", ""))),
+            pcr_delta=safe_num(detail.get("pcr_delta")),
+            iv_delta=safe_num(detail.get("iv_delta")),
+            shift=safe_num(detail.get("shift")),
+            curr_max_pain=safe_num(detail.get("curr_max_pain")),
+            buildup_type=_escape_md_v1(str(detail.get("buildup_type", ""))),
+            label=_escape_md_v1(str(detail.get("label", ""))),
+            bias=_escape_md_v1(str(detail.get("bias", ""))),
         )
     except Exception as exc:
         log.warning(
             "%s: interpretation format failed for alert_type=%s: %s",
-            alert.get("symbol", "?"), atype, exc,
+            alert.get("symbol", "?"),
+            atype,
+            exc,
         )
         interp = ""
 
     sev = alert.get("severity", "LOW")
     sev_badge = {"HIGH": "🔥", "MEDIUM": "⚠️", "LOW": "ℹ️"}.get(sev, "")
 
+    safe_symbol = _escape_md_v1(str(alert["symbol"]))
+    safe_strike = _escape_md_v1(str(alert.get("strike", "")))
+    safe_opt_type = _escape_md_v1(str(alert.get("option_type", "")))
+
     lines = [
-        f"{emoji} *{atype}* {sev_badge} | {ts}",
-        f"Sym: `{alert['symbol']}`",
+        f"{emoji} *{_escape_md_v1(atype)}* {sev_badge} | {ts}",
+        f"Sym: `{safe_symbol}`",
     ]
 
     if alert.get("strike"):
-        lines[-1] += f" | Strike: `{alert['strike']}` {alert.get('option_type', '')}"
+        lines[-1] += f" | Strike: `{safe_strike}` {safe_opt_type}"
 
     # Compact body per type
     if atype in ("OI_SPIKE", "OI_UNWIND"):
-        prev_oi  = safe_num(detail.get("prev_oi"))
-        curr_oi  = safe_num(detail.get("curr_oi"))
-        pct_chg  = safe_num(detail.get("pct_change"))
+        prev_oi = safe_num(detail.get("prev_oi"))
+        curr_oi = safe_num(detail.get("curr_oi"))
+        pct_chg = safe_num(detail.get("pct_change"))
         curr_ltp = safe_num(detail.get("curr_ltp"))
-        lines.append(f"OI: `{fmt_oi(prev_oi)}`→`{fmt_oi(curr_oi)}` ({fmt_pct(pct_chg)})")
+        lines.append(
+            f"OI: `{fmt_oi(prev_oi)}`→`{fmt_oi(curr_oi)}` ({fmt_pct(pct_chg)})"
+        )
         lines.append(f"LTP: `{curr_ltp:.2f}`")
     elif atype == "BUILDUP_CLASSIFY":
-        btype  = detail.get("buildup_type", "")
-        oi_p   = safe_num(detail.get("oi_pct"))
-        ltp_p  = safe_num(detail.get("ltp_pct"))
+        btype = _escape_md_v1(str(detail.get("buildup_type", "")))
+        oi_p = safe_num(detail.get("oi_pct"))
+        ltp_p = safe_num(detail.get("ltp_pct"))
         lines.append(f"Type: *{btype}*")
         lines.append(f"OI: {fmt_pct(oi_p)} | LTP: {fmt_pct(ltp_p)}")
     elif atype == "LTP_SPIKE":
         curr_ltp = safe_num(detail.get("curr_ltp"))
-        pct_chg  = safe_num(detail.get("pct_change"))
+        pct_chg = safe_num(detail.get("pct_change"))
         lines.append(f"LTP: `{curr_ltp:.2f}` ({fmt_pct(pct_chg)})")
     elif atype == "PRICE_SPIKE":
         curr_pr = safe_num(detail.get("curr_price"))
         pct_chg = safe_num(detail.get("pct_change"))
-        is_commodity = str(alert.get("symbol", "")).upper().split()[0] in {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"}
+        is_commodity = str(alert.get("symbol", "")).upper().split()[0] in {
+            "NATURALGAS",
+            "CRUDEOIL",
+            "GOLD",
+            "SILVER",
+        }
         label = "Future" if is_commodity else "Spot"
-        lines.append(f"{label}: `{curr_pr:.2f}` ({fmt_pct(pct_chg)}) {detail.get('direction', '')}")
+        dire = _escape_md_v1(str(detail.get("direction", "")))
+        lines.append(f"{label}: `{curr_pr:.2f}` ({fmt_pct(pct_chg)}) {dire}")
     elif atype in ("PCR_EXTREME", "PCR_SHIFT"):
-        pcr   = detail.get("pcr", "N/A")
+        pcr = _escape_md_v1(str(detail.get("pcr", "N/A")))
         delta = safe_num(detail.get("pcr_delta"))
         lines.append(f"PCR: `{pcr}` (Δ {delta:+.3f})")
     elif atype == "PCR_VELOCITY":
         slope = safe_num(detail.get("slope"))
-        dire  = detail.get("direction", "")
+        dire = _escape_md_v1(str(detail.get("direction", "")))
         lines.append(f"Slope: {slope:+.4f}/scan ({dire})")
     elif atype == "IV_SPIKE":
-        curr_iv  = safe_num(detail.get("curr_iv"))
+        curr_iv = safe_num(detail.get("curr_iv"))
         iv_delta = safe_num(detail.get("iv_delta"))
         lines.append(f"IV: `{curr_iv:.1f}%` (+{iv_delta:.1f}pts)")
     elif atype == "IV_CRUSH":
-        curr_iv  = safe_num(detail.get("curr_iv"))
+        curr_iv = safe_num(detail.get("curr_iv"))
         iv_delta = safe_num(detail.get("iv_delta"))
         lines.append(f"IV: `{curr_iv:.1f}%` ({iv_delta:.1f}pts)")
     elif atype == "ATM_LEG_MOVE":
         ce_p = safe_num(detail.get("ce_pct"))
         pe_p = safe_num(detail.get("pe_pct"))
-        bias = detail.get("bias", "")
+        bias = _escape_md_v1(str(detail.get("bias", "")))
         lines.append(f"CE: {fmt_pct(ce_p)} | PE: {fmt_pct(pe_p)}")
         lines.append(f"_{bias}_")
     elif atype == "STRADDLE_PREMIUM":
         curr_p = safe_num(detail.get("curr_premium"))
-        pct_p  = safe_num(detail.get("pct_change"))
+        pct_p = safe_num(detail.get("pct_change"))
         lines.append(f"Premium: `{curr_p:.1f}` ({fmt_pct(pct_p)})")
     elif atype == "MAX_PAIN_SHIFT":
         curr_mp = safe_num(detail.get("curr_max_pain"))
-        shift   = safe_num(detail.get("shift"))
+        shift = safe_num(detail.get("shift"))
         lines.append(f"MaxPain: `{curr_mp:.0f}` (Δ {shift:+.0f})")
     elif atype == "OI_WALL_SHIFT":
         chg = detail.get("changes", {})
         for side, v in chg.items():
-            lines.append(f"{side.capitalize()} wall: `{v['prev']}`→`{v['curr']}`")
+            prev_v = _escape_md_v1(str(v.get("prev", "")))
+            curr_v = _escape_md_v1(str(v.get("curr", "")))
+            lines.append(f"{side.capitalize()} wall: `{prev_v}`→`{curr_v}`")
     elif atype == "VOLUME_AGGRESSION":
         ratio = safe_num(detail.get("ratio"))
-        vol   = safe_num(detail.get("volume"))
+        vol = safe_num(detail.get("volume"))
         lines.append(f"Vol: `{fmt_oi(vol)}` | Ratio: `{ratio:.1f}`")
     elif atype == "OTM_UNUSUAL":
         pct_chg = safe_num(detail.get("pct_change"))
@@ -269,11 +314,13 @@ def _format_message(alert: dict) -> str:
         lines.append(f"OI: `{fmt_oi(curr_oi)}` ({fmt_pct(pct_chg)})")
 
     if interp:
-        lines.append(f"_{interp}_")
+        lines.append(f"_{_escape_md_v1(interp)}_")
 
     return "\n".join(lines)
 
+
 # ── Dispatcher ────────────────────────────────────────────────────────────
+
 
 async def _send_async(message: str) -> None:
     async with Bot(token=TELEGRAM_BOT_TOKEN) as bot:
@@ -290,12 +337,14 @@ def _send_text_http_fallback(text: str, timeout_seconds: int = 15) -> bool:
         return False
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        payload = urllib.parse.urlencode({
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": text,
-            "parse_mode": "Markdown",
-            "disable_web_page_preview": "true",
-        }).encode("utf-8")
+        payload = urllib.parse.urlencode(
+            {
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": text,
+                "parse_mode": "Markdown",
+                "disable_web_page_preview": "true",
+            }
+        ).encode("utf-8")
         req = urllib.request.Request(
             url,
             data=payload,
@@ -304,7 +353,7 @@ def _send_text_http_fallback(text: str, timeout_seconds: int = 15) -> bool:
         )
         with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
             body = resp.read().decode("utf-8", errors="ignore")
-        return "\"ok\":true" in body.replace(" ", "")
+        return '"ok":true' in body.replace(" ", "")
     except Exception:
         return False
 
@@ -318,7 +367,7 @@ async def _send_async_safe(message: str, symbol: str = None, atype: str = None) 
                     text=message,
                     parse_mode="Markdown",
                 ),
-                timeout=5.0
+                timeout=5.0,
             )
         if symbol and atype:
             log.info("Telegram sent (bg): %s | %s", symbol, atype)
@@ -326,21 +375,27 @@ async def _send_async_safe(message: str, symbol: str = None, atype: str = None) 
             first_line = (message or "").splitlines()[0][:90] if message else ""
             log.info("Telegram sent text (bg): %s", first_line)
     except Exception as exc:
-        log.warning("Telegram async send failed: %s; trying HTTP fallback in background", exc)
+        log.warning(
+            "Telegram async send failed: %s; trying HTTP fallback in background", exc
+        )
         try:
             loop = asyncio.get_running_loop()
             success = await loop.run_in_executor(
                 None,
                 _send_text_http_fallback,
                 message,
-                5 # timeout_seconds
+                5,  # timeout_seconds
             )
             if success:
                 if symbol and atype:
-                    log.info("Telegram sent via HTTP fallback (bg): %s | %s", symbol, atype)
+                    log.info(
+                        "Telegram sent via HTTP fallback (bg): %s | %s", symbol, atype
+                    )
                 else:
                     first_line = (message or "").splitlines()[0][:90] if message else ""
-                    log.info("Telegram sent text via HTTP fallback (bg): %s", first_line)
+                    log.info(
+                        "Telegram sent text via HTTP fallback (bg): %s", first_line
+                    )
             else:
                 log.error("Telegram HTTP fallback failed in bg")
         except Exception as e:
@@ -359,15 +414,16 @@ def send_alert(alert: dict) -> bool:
         try:
             asyncio.run_coroutine_threadsafe(
                 _send_async_safe(message, alert.get("symbol"), alert.get("alert_type")),
-                _loop
+                _loop,
             )
             tg_queued = True
         except Exception as exc:
             log.error("Telegram unexpected error queueing alert: %s", exc)
 
     # 2. Discord
-    from src.alerts.discord_dispatcher import send_to_discord
     from config.settings import DISCORD_WEBHOOK_URL
+    from src.alerts.discord_dispatcher import send_to_discord
+
     if DISCORD_WEBHOOK_URL and DISCORD_WEBHOOK_URL != "your_discord_webhook_url":
         _ensure_loop()
         try:
@@ -378,7 +434,10 @@ def send_alert(alert: dict) -> bool:
             log.error("Discord unexpected error queueing alert: %s", exc)
 
     if not tg_queued and not discord_queued:
-        log.warning("Neither Telegram nor Discord configured — alert suppressed: %s", alert.get("alert_type"))
+        log.warning(
+            "Neither Telegram nor Discord configured — alert suppressed: %s",
+            alert.get("alert_type"),
+        )
         return False
 
     return True
@@ -393,17 +452,15 @@ def send_text(text: str) -> bool:
     if TELEGRAM_BOT_TOKEN and TELEGRAM_BOT_TOKEN != "YOUR_BOT_TOKEN":
         _ensure_loop()
         try:
-            asyncio.run_coroutine_threadsafe(
-                _send_async_safe(text),
-                _loop
-            )
+            asyncio.run_coroutine_threadsafe(_send_async_safe(text), _loop)
             tg_queued = True
         except Exception as exc:
             log.error("Telegram unexpected error queueing text: %s", exc)
 
     # 2. Discord
-    from src.alerts.discord_dispatcher import send_to_discord
     from config.settings import DISCORD_WEBHOOK_URL
+    from src.alerts.discord_dispatcher import send_to_discord
+
     if DISCORD_WEBHOOK_URL and DISCORD_WEBHOOK_URL != "your_discord_webhook_url":
         _ensure_loop()
         try:

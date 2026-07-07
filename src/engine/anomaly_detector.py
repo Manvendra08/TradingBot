@@ -546,7 +546,7 @@ def _detect_iv_spike_crush(
                 sev,
             )
             alerts.append(_make_alert("IV_SPIKE", symbol, expiry, atm, ot, detail, sev))
-        elif delta <= IV_CRUSH_THRESHOLD:
+        elif delta <= -IV_CRUSH_THRESHOLD:
             detail = {
                 "strike": atm,
                 "option_type": ot,

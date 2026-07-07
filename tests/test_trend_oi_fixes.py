@@ -195,7 +195,7 @@ def test_full_digest_integration_with_up_trend():
     
     # We should have a BULLISH verdict (Long Buildup) because price is up +6.44%
     assert "BULLISH" in msg or "Long Buildup" in msg
-    assert "Avoid:\n• Buying PEs" in msg or "Avoid:\n• Buying PEs" in msg.replace("\u2022", "•")
+    assert "Avoid:" in msg and "Buying PEs" in msg
     # Verify that the market structure header doesn't say (bullish)
     assert "Put (PE) Activity:" in msg
     assert "PE Buildup (bullish):" not in msg

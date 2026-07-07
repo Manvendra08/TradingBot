@@ -30,7 +30,7 @@ IST = timezone(timedelta(hours=5, minutes=30))
 # Max attempts per stage before giving up
 _MAX_RETRIES = 2
 _TOTP_RETRIES = 2
-_PAGE_TIMEOUT_MS = 20_000
+_PAGE_TIMEOUT_MS = 45_000
 _NAV_TIMEOUT_MS = 30_000
 
 # Combined Playwright selector for TOTP input on Kite's 2FA page

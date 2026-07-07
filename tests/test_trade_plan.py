@@ -99,9 +99,9 @@ class TestGetOptionPremium:
         assert get_option_premium("NIFTY", "2026-06-25", 22000.0, "CE", rows) == 150.0
         assert get_option_premium("NIFTY", "2026-06-25", 22000.0, "PE", rows) == 80.0
 
-    def test_live_rows_zero_ltp_returns_none(self):
+    def test_live_rows_zero_ltp_returns_zero(self):
         rows = [{"strike": 22000.0, "option_type": "CE", "ltp": 0.0}]
-        assert get_option_premium("NIFTY", "2026-06-25", 22000.0, "CE", rows) is None
+        assert get_option_premium("NIFTY", "2026-06-25", 22000.0, "CE", rows) == 0.0
 
     def test_live_rows_no_match(self):
         rows = [{"strike": 22100.0, "option_type": "CE", "ltp": 150.0}]
@@ -181,21 +181,21 @@ class TestConvertUnderlyingSlToPremium:
         sl, tgt = convert_underlying_sl_to_premium(
             22000.0, 21800.0, 22200.0, 200.0, "BUY", "CE"
         )
-        # default delta = 0.5
-        # sl = 200.0 - 0.5 * 200 = 100.0
-        # tgt = 200.0 + 0.5 * 200 = 300.0
-        assert sl == 100.0
-        assert tgt == 300.0
+        # default delta = 0.25 (BUG-022)
+        # sl = 200.0 - 0.25 * 200 = 150.0
+        # tgt = 200.0 + 0.25 * 200 = 250.0
+        assert sl == 150.0
+        assert tgt == 250.0
 
     def test_sell_option_delta_based(self):
         sl, tgt = convert_underlying_sl_to_premium(
             22000.0, 22200.0, 21800.0, 200.0, "SELL", "PE"
         )
-        # default delta = 0.3
-        # sl = 200.0 + 0.3 * 200 = 260.0
-        # tgt = 200.0 - 0.3 * 200 = 140.0
-        assert sl == 260.0
-        assert tgt == 140.0
+        # default delta = 0.20 (BUG-022)
+        # sl = 200.0 + 0.20 * 200 = 240.0
+        # tgt = 200.0 - 0.20 * 200 = 160.0
+        assert sl == 240.0
+        assert tgt == 160.0
 
     def test_buy_option_with_custom_delta(self):
         rows = [{"strike": 22000.0, "option_type": "CE", "delta": 0.6}]

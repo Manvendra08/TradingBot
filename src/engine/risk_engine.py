@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+import pytz
 
 from src.models.schema import get_conn
 from config.settings import (
@@ -32,6 +33,7 @@ from config.settings import (
 log = logging.getLogger(__name__)
 
 IST_OFFSET = timedelta(hours=5, minutes=30)
+IST = pytz.timezone("Asia/Kolkata")
 
 # FIX #11: Account-level consecutive-loss circuit breaker.
 # If this many losing trades close within CONSECUTIVE_LOSS_WINDOW_MINUTES across
@@ -46,10 +48,9 @@ def _ist_day_start_utc() -> str:
     SQLite stores timestamps in UTC; we compare against this floor so that
     daily counters reset at IST midnight rather than UTC midnight.
     """
-    now_utc = datetime.now(timezone.utc)
-    now_ist = now_utc + IST_OFFSET
+    now_ist = datetime.now(IST)
     midnight_ist = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
-    midnight_utc = midnight_ist - IST_OFFSET
+    midnight_utc = midnight_ist.astimezone(timezone.utc)
     return midnight_utc.isoformat()
 
 
@@ -69,7 +70,7 @@ def _check_consecutive_loss_breaker(conn, trades_table: str, label: str) -> tupl
         SELECT COUNT(*) AS cnt FROM {trades_table}
         WHERE pnl_rupees < 0
           AND closed_at >= ?
-          AND status IN ('CLOSED_SL', 'CLOSED_MANUAL', 'CLOSED', 'SL_HIT')
+          AND status IN ('CLOSED_SL', 'CLOSED_MANUAL', 'CLOSED', 'SL_HIT', 'CLOSED_REVERSAL', 'CLOSED_TF_EXIT')
         """,
         (window_start,),
     ).fetchone()["cnt"]
@@ -96,6 +97,14 @@ def _check_risk_limits_for_table(
     today_start = _ist_day_start_utc()
 
     with get_conn() as conn:
+        # Hook for NATURALGAS specific risk limits (position limit and daily loss cap) (XBUG-002)
+        if symbol == "NATURALGAS":
+            from src.engine.ng_risk_manager import check_ng_position_limit, check_ng_daily_loss_cap
+            if not check_ng_position_limit(trades_table):
+                return False, f"[{label}] NATURALGAS position limit reached.", "NG_POSITION_LIMIT"
+            if check_ng_daily_loss_cap(trades_table):
+                return False, f"[{label}] NATURALGAS daily loss cap (2 consecutive SL) hit today.", "NG_DAILY_LOSS_CAP"
+
         # 1. Max open trades per symbol
         open_symbol = conn.execute(
             f"SELECT COUNT(*) AS cnt FROM {trades_table} WHERE symbol = ? AND status = 'OPEN'",
@@ -135,7 +144,7 @@ def _check_risk_limits_for_table(
             f"""
             SELECT COALESCE(SUM(pnl_rupees), 0) AS total
             FROM {trades_table}
-            WHERE closed_at >= ? AND pnl_rupees < 0
+            WHERE closed_at >= ? AND closed_at <= CURRENT_TIMESTAMP AND pnl_rupees < 0
             """,
             (today_start,),
         ).fetchone()
@@ -154,7 +163,7 @@ def _check_risk_limits_for_table(
         last_loss = conn.execute(
             f"""
             SELECT closed_at FROM {trades_table}
-            WHERE symbol = ? AND status IN ('CLOSED_SL', 'CLOSED_MANUAL', 'CLOSED', 'SL_HIT') AND pnl_rupees < 0
+            WHERE symbol = ? AND status IN ('CLOSED_SL', 'CLOSED_MANUAL', 'CLOSED', 'SL_HIT', 'CLOSED_REVERSAL', 'CLOSED_TF_EXIT') AND pnl_rupees < 0
               AND closed_at >= ?
             ORDER BY closed_at DESC
             LIMIT 1

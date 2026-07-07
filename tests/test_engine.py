@@ -956,10 +956,10 @@ class TestTelegramDigestImprovements:
         # Verify warnings and labels
         assert "diverge" in msg or "CONFLICT" in msg
         assert "Future `296.50`" in msg
-        assert "Sell 290.00 PE / 285.00 PE (premium supp)" in msg
-        assert "only if future breaks 320.00 volume" in msg
+        assert "Sell 290.00 PE / 285.00 PE (premium at support)" in msg
+        assert "Buy 320.00 CE only if future breaks 320.00 with volume" in msg
         assert "Stop: future closes below 285.00" in msg
-        assert "tgt: 320.00" in msg
+        assert "Target: 320.00, then 325.00" in msg
         assert "[High]" in msg  # Check titlecase severity tag
 
     def test_min_oi_threshold_filtering(self):

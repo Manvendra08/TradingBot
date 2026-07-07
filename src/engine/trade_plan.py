@@ -32,12 +32,13 @@ _DB_PREMIUM_MAX_AGE_SECONDS = 15 * 60  # 15 minutes
 # ---------------------------------------------------------------------------
 
 
-def get_atr(ctx: dict) -> Optional[float]:
+def get_atr(ctx: dict, preferred_tf: str = "3h") -> Optional[float]:
     """
-    Extract ATR-14 from chart_indicators, trying 3h then 1h then any TF.
+    Extract ATR-14 from chart_indicators, trying preferred_tf first.
 
     Args:
         ctx: Scan context dict with 'chart_indicators' key
+        preferred_tf: Timeframe preference ('3h' or '1h')
 
     Returns:
         ATR value as float, or None if unavailable
@@ -51,10 +52,11 @@ def get_atr(ctx: dict) -> Optional[float]:
                 chart_indicators = val
                 break
 
-    # 1. Try structured keys 3h then 1h
-    pay_3h = chart_indicators.get("3h") or {}
-    pay_1h = chart_indicators.get("1h") or {}
-    atr = pay_3h.get("atr_14") or pay_1h.get("atr_14")
+    # 1. Try structured keys based on preference
+    other_tf = "1h" if preferred_tf == "3h" else "3h"
+    pay_pref = chart_indicators.get(preferred_tf) or {}
+    pay_other = chart_indicators.get(other_tf) or {}
+    atr = pay_pref.get("atr_14") or pay_other.get("atr_14")
     if atr is not None:
         return float(atr)
 
@@ -81,6 +83,7 @@ def calculate_buy_sl_target(
     ctx: dict,
     step: float = 50.0,
     option_type: str = "CE",
+    preferred_tf: str = "3h",
 ) -> tuple[float, float]:
     """
     ATR-based SL/Target for BUY legs.
@@ -98,7 +101,7 @@ def calculate_buy_sl_target(
     Returns:
         Tuple of (sl_underlying, target_underlying)
     """
-    atr = get_atr(ctx)
+    atr = get_atr(ctx, preferred_tf)
     if option_type == "PE":
         # PE: profit when underlying falls
         if atr and atr > 0:
@@ -133,6 +136,7 @@ def calculate_sell_sl_target(
     ctx: dict,
     step: float = 50.0,
     option_type: str = "CE",
+    preferred_tf: str = "3h",
 ) -> tuple[float, float]:
     """
     ATR-based SL/Target for SELL legs.
@@ -150,7 +154,7 @@ def calculate_sell_sl_target(
     Returns:
         Tuple of (sl_underlying, target_underlying)
     """
-    atr = get_atr(ctx)
+    atr = get_atr(ctx, preferred_tf)
     if option_type == "PE":
         # PE: profit when underlying rises
         if atr and atr > 0:
@@ -229,8 +233,13 @@ def get_option_premium(
                             option_type,
                         )
                         return None
-                premium = float(row.get("ltp") or 0.0)
-                return premium if premium > 0 else None
+                ltp_raw = row.get("ltp")
+                if ltp_raw is not None:
+                    try:
+                        return float(ltp_raw)
+                    except ValueError:
+                        return None
+                return None
         except Exception:
             continue
 
@@ -285,8 +294,13 @@ def get_option_premium(
                         )
                         return None
 
-                premium = float(snap.get("ltp") or 0.0)
-                return premium if premium > 0 else None
+                ltp_raw = snap.get("ltp")
+                if ltp_raw is not None:
+                    try:
+                        return float(ltp_raw)
+                    except ValueError:
+                        return None
+                return None
     except Exception:
         pass
 
@@ -330,8 +344,8 @@ def parse_verdict_and_confidence(intel_text: str) -> tuple[str, int]:
     if m_v:
         verdict = m_v.group(1).strip()
     else:
-        # Fallback: try without asterisks
-        m_v2 = re.search(r"Verdict:\s*([A-Z\s_]+)", intel_text, re.IGNORECASE)
+        # Fallback: try without asterisks, non-greedy on line boundary
+        m_v2 = re.search(r"Verdict:\s*([A-Z][A-Z _]{1,30})(?=\s*\n|\s*$|\s*\*)", intel_text, re.IGNORECASE)
         if m_v2:
             verdict = m_v2.group(1).strip()
 
@@ -409,7 +423,7 @@ def convert_underlying_sl_to_premium(
                 continue
 
     if delta is None:
-        delta = 0.5 if side == "BUY" else 0.3
+        delta = 0.25 if side == "BUY" else 0.20
 
     # 2. Delta-based calculation
     underlying_sl_dist = abs(underlying - sl_underlying)

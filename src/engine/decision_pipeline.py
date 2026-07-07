@@ -119,7 +119,13 @@ def step_signal_core_oi(ctx: PipelineContext) -> StepResult:
             confidence = effective_min_conf
             # Update the underlying dict so downstream steps see the boosted confidence
             if "intel" in ctx.scan_context:
-                ctx.scan_context["intel"]["confidence"] = confidence
+                ctx.scan_context = {
+                    **ctx.scan_context,
+                    "intel": {
+                        **ctx.scan_context["intel"],
+                        "confidence": confidence
+                    }
+                }
         else:
             return StepResult(
                 name="signal",
@@ -196,6 +202,13 @@ def step_ai_alignment(ctx: PipelineContext) -> StepResult:
     ai_min_confidence_boost = int(rconf.get("live_ai_min_confidence_boost", 80))
     ai_min_confidence_veto = int(rconf.get("live_ai_min_confidence_veto", 85))
 
+    if ai_verdict:
+        if not isinstance(ai_verdict, dict):
+            try:
+                ai_verdict = asdict(ai_verdict)
+            except TypeError:
+                ai_verdict = getattr(ai_verdict, "__dict__", {})
+
     if not ai_verdict:
         if ai_decision_mode == "full" and ctx.engine == "CORE_OI":
             return StepResult(
@@ -214,9 +227,8 @@ def step_ai_alignment(ctx: PipelineContext) -> StepResult:
         )
 
     ai_bias = _extract_ai_bias(ai_verdict) or "NEUTRAL"
-    ai_conf = getattr(ai_verdict, 'confidence', 0) or (ai_verdict.get('confidence', 0) if isinstance(ai_verdict, dict) else 0)
-    ai_risk = getattr(ai_verdict, 'risk_rating', '') or (ai_verdict.get('risk_rating', '') if isinstance(ai_verdict, dict) else '')
-    ai_risk = str(ai_risk).upper()
+    ai_conf = int(ai_verdict.get("confidence") or 0)
+    ai_risk = str(ai_verdict.get("risk_rating") or "").upper()
 
     verdict_bias = "BULLISH" if ctx.direction == "LONG" else "BEARISH"
     ai_agrees = (ai_bias == verdict_bias)
@@ -346,8 +358,8 @@ def step_trend_alignment_core(ctx: PipelineContext) -> StepResult:
     verdict = ctx.scan_context.get("intel", {}).get("verdict_label", "")
     confidence = int(ctx.scan_context.get("intel", {}).get("confidence") or 0)
 
-    entry_quality = next(s.score for s in ctx.steps if s.name == "entry_quality")
-    regime_sc = next(s.score for s in ctx.steps if s.name == "regime")
+    entry_quality = next((s.score for s in ctx.steps if s.name == "entry_quality"), 0)
+    regime_sc = next((s.score for s in ctx.steps if s.name == "regime"), 0)
 
     trend_alignment = get_trend_alignment_score(symbol, verdict)
     broader_trend = get_broader_trend_from_alerts(symbol)
@@ -638,10 +650,13 @@ def step_rule_timeframe(ctx: PipelineContext) -> StepResult:
     signal_key = f"{symbol}:TIMEFRAME:3H:{direction}:{bar_end_3h}"
     ctx.scan_context["_signal_key"] = signal_key
 
+    is_live = ctx.scan_context.get("is_live", False)
+    table = "live_trades" if is_live else "paper_trades"
+
     from src.models.schema import get_conn, get_open_timeframe_trades
     with get_conn() as conn:
         cnt = conn.execute(
-            "SELECT COUNT(*) AS c FROM paper_trades WHERE signal_key=?", (signal_key,)
+            f"SELECT COUNT(*) AS c FROM {table} WHERE signal_key=?", (signal_key,)
         ).fetchone()["c"]
         if cnt > 0:
             return StepResult(
@@ -653,7 +668,7 @@ def step_rule_timeframe(ctx: PipelineContext) -> StepResult:
             )
 
     # 3. Pyramiding checks
-    open_trades = get_open_timeframe_trades(symbol)
+    open_trades = get_open_timeframe_trades(symbol, table=table)
     if len(open_trades) >= 3:
         return StepResult(
             name="rule",
@@ -673,11 +688,11 @@ def step_rule_timeframe(ctx: PipelineContext) -> StepResult:
                 data={"open_trades": [t["verdict_label"] for t in open_trades]}
             )
 
-        from src.engine.paper_trading import _get_option_premium
+        from src.engine.trade_plan import get_option_premium
         any_profitable = False
         for t in open_trades:
             if t["option_type"] in ("CE", "PE"):
-                t_exit = _get_option_premium(
+                t_exit = get_option_premium(
                     symbol,
                     ctx.scan_context.get("expiry", ""),
                     t["strike"],
@@ -964,12 +979,15 @@ def step_heavyweight_alignment(ctx: PipelineContext) -> StepResult:
     passed = True
     reason = f"Heavyweight momentum {weighted_momentum:.3f}% is aligned with trade direction {direction}"
 
-    if direction == "LONG" and weighted_momentum <= -0.50:
+    from config.settings import HEAVYWEIGHT_THRESHOLDS
+    threshold = HEAVYWEIGHT_THRESHOLDS.get(symbol, 0.50)
+
+    if direction == "LONG" and weighted_momentum <= -threshold:
         passed = False
-        reason = f"LONG trade blocked: Index heavyweight momentum is deeply negative ({weighted_momentum:.3f}%)"
-    elif direction == "SHORT" and weighted_momentum >= 0.50:
+        reason = f"LONG trade blocked: Index heavyweight momentum is deeply negative ({weighted_momentum:.3f}%, threshold={-threshold:.2f}%)"
+    elif direction == "SHORT" and weighted_momentum >= threshold:
         passed = False
-        reason = f"SHORT trade blocked: Index heavyweight momentum is deeply positive ({weighted_momentum:.3f}%)"
+        reason = f"SHORT trade blocked: Index heavyweight momentum is deeply positive ({weighted_momentum:.3f}%, threshold={threshold:.2f}%)"
 
     return StepResult(
         name="heavyweight_alignment",
@@ -1006,6 +1024,27 @@ TIMEFRAME_STEPS = [
 
 
 def run_entry_pipeline(ctx: PipelineContext) -> PipelineContext:
+    # P2-XBUG-001: Validate is_live is explicitly a boolean at pipeline entry
+    is_live = ctx.scan_context.get("is_live", False)
+    if not isinstance(is_live, bool):
+        raise AssertionError("is_live flag in scan_context must be a boolean.")
+
+    # P2-BUG-027: Initialize safe defaults to prevent None errors if short-circuited
+    ctx.scan_context["_pipeline_plan"] = {}
+    ctx.scan_context["_entry_quality"] = 0
+    ctx.scan_context["_entry_reasons"] = []
+    ctx.scan_context["_setup_type"] = "UNKNOWN"
+    ctx.scan_context["_decision_reason"] = "Pipeline short-circuited or incomplete"
+    ctx.scan_context["_soft_conflicts"] = []
+    ctx.scan_context["_scores"] = {
+        "confidence": 0,
+        "entry_quality": 0,
+        "trend_alignment": 0,
+        "regime_score": 0,
+    }
+    ctx.scan_context["_pyramid_level"] = 1
+    ctx.scan_context["_signal_key"] = ""
+
     steps = CORE_OI_STEPS if ctx.engine == "CORE_OI" else TIMEFRAME_STEPS
     for step_fn in steps:
         result = step_fn(ctx)

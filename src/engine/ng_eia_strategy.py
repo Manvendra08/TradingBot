@@ -173,53 +173,53 @@ def run_ng_eia_strategy(
         
     if actual is None:
         log.info("EIA actual release not yet available. Retrying on next scan.")
-        return None
-        
+        return {"action": "HOLD", "reason": "EIA actual release not yet available"}
+
     surprise = actual - consensus
     abs_surprise = abs(surprise)
-    
+
     # Store surprise in DB
     with get_conn() as conn:
         conn.execute(
             "UPDATE eia_consensus SET actual_bcf=?, surprise_bcf=? WHERE report_date=?",
             (actual, surprise, thursday_str)
         )
-        
+
     if abs_surprise < EIA_NO_TRADE_BAND_BCF:
         log.info("EIA surprise (%+d Bcf) is within no-trade band (%d Bcf).", surprise, EIA_NO_TRADE_BAND_BCF)
         return {"action": "HOLD", "reason": f"EIA_NO_TRADE_BAND: surprise={surprise}"}
-        
+
     if abs_surprise < EIA_MIN_SURPRISE_BCF:
         log.info("EIA surprise (%+d Bcf) is below minimum threshold (%d Bcf).", surprise, EIA_MIN_SURPRISE_BCF)
         return {"action": "HOLD", "reason": f"EIA_BELOW_MIN_SURPRISE: surprise={surprise}"}
-        
+
     # Position check
     if not check_ng_position_limit():
-        return None
+        return {"action": "BLOCKED_RISK", "reason": "NG position limit hit"}
     if check_ng_daily_loss_cap():
-        return None
-        
+        return {"action": "BLOCKED_RISK", "reason": "NG daily loss cap hit"}
+
     # Determine side
     # build > consensus (positive surprise, bearish) -> SELL
     # draw > consensus (negative surprise, bullish) -> BUY
     side = "SELL" if surprise > 0 else "BUY"
     verdict = "SHORT" if side == "SELL" else "LONG"
-    
+
     # Check confirmation: price must have moved in surprise direction vs pre-release
     pre_price = get_pre_release_price()
     if not pre_price:
         pre_price = underlying  # default
-        
+
     price_confirmed = False
     if side == "BUY" and underlying > pre_price:
         price_confirmed = True
     elif side == "SELL" and underlying < pre_price:
         price_confirmed = True
-        
+
     if not price_confirmed:
         log.info("EVENT entry blocked: No price confirmation. Price has not moved in surprise direction yet "
                  "(current=%g, pre-release=%g, side=%s)", underlying, pre_price, side)
-        return None
+        return {"action": "HOLD", "reason": f"No surprise direction confirmation (pre={pre_price:.2f}, current={underlying:.2f})"}
         
     # Sizing / Risk Stop
     # Stop distance = 0.6 * ATR(5m, 14) * USDINR

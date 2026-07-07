@@ -109,7 +109,10 @@ def _instrument_cache_is_ready() -> bool:
     if not _INSTRUMENT_CACHE:
         # Try loading from disk before giving up
         if _load_cache_from_disk():
-            return True
+            if _INSTRUMENT_CACHE and len(_INSTRUMENT_CACHE) > 0:
+                return True
+        return False
+    if len(_INSTRUMENT_CACHE) == 0:
         return False
     if _INSTRUMENT_CACHE_TTL_SEC <= 0:
         return True
@@ -163,9 +166,9 @@ def fetch_and_cache_instruments(
                 if req_sess:
                     req_sess.headers["Connection"] = "close"
                 try:
-                    nfo = kite_client.instruments("NFO")
-                    bfo = kite_client.instruments("BFO")
-                    mcx = kite_client.instruments("MCX")
+                    nfo = kite_client.instruments("NFO") or []
+                    bfo = kite_client.instruments("BFO") or []
+                    mcx = kite_client.instruments("MCX") or []
                 finally:
                     if req_sess:
                         if old_conn_header:
@@ -173,7 +176,16 @@ def fetch_and_cache_instruments(
                         else:
                             req_sess.headers.pop("Connection", None)
 
-                for inst in nfo + bfo + mcx:
+                from config.settings import _is_testing
+                instruments = nfo + bfo + mcx
+                if len(instruments) < 1000 and not _is_testing:
+                    log.warning(
+                        "[resolver] Fetched too few instruments (%d) from Kite. Aborting cache refresh to prevent poisoning.",
+                        len(instruments)
+                    )
+                    return
+
+                for inst in instruments:
                     name = inst.get("name")
                     if not name:
                         continue

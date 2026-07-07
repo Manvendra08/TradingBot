@@ -20,6 +20,41 @@ from src.engine.llm_enrichment import (
     _format_historical_oi,
 )
 
+@pytest.fixture(autouse=True)
+def reset_llm_runtime_state():
+    import os
+    from src.engine import llm_enrichment as llm_mod
+    llm_mod._CONSECUTIVE_FAILURES = 0
+    llm_mod._CIRCUIT_OPEN_UNTIL = 0.0
+    llm_mod._API_QUOTA_EXHAUSTED_UNTIL = 0.0
+    llm_mod._PROVIDER_COOLDOWN_UNTIL.clear()
+
+    # Save and pop keys to prevent real API calls in tests
+    saved = {}
+    for k in (
+        "GEMINI_API_KEY",
+        "GROQ_API_KEY",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "GITHUB_TOKEN",
+    ):
+        if k in os.environ:
+            saved[k] = os.environ[k]
+            del os.environ[k]
+
+    yield
+
+    llm_mod._CONSECUTIVE_FAILURES = 0
+    llm_mod._CIRCUIT_OPEN_UNTIL = 0.0
+    llm_mod._API_QUOTA_EXHAUSTED_UNTIL = 0.0
+    llm_mod._PROVIDER_COOLDOWN_UNTIL.clear()
+
+    # Restore keys
+    for k, v in saved.items():
+        os.environ[k] = v
+
+
 # ── Schema Validation ─────────────────────────────────────────────────────
 
 
@@ -237,16 +272,7 @@ class TestOpenRouterArrayUnwrap:
         }
 
         import os
-
-        from src.engine import llm_enrichment as llm_mod
-
         os.environ["OPENROUTER_API_KEY"] = "fake-key"
-        old_gemini = os.environ.pop("GEMINI_API_KEY", None)
-        old_groq = os.environ.pop("GROQ_API_KEY", None)
-        llm_mod._CONSECUTIVE_FAILURES = 0
-        llm_mod._CIRCUIT_OPEN_UNTIL = 0.0
-        llm_mod._PROVIDER_COOLDOWN_UNTIL.clear()
-
         try:
             with patch("requests.Session.post", return_value=mock_resp):
                 result = _call_llm_api("NIFTY", "test prompt", LLMTradeVerdict)
@@ -254,10 +280,6 @@ class TestOpenRouterArrayUnwrap:
             assert result.action == "GO_LONG"
             assert result.confidence == 75
         finally:
-            if old_gemini:
-                os.environ["GEMINI_API_KEY"] = old_gemini
-            if old_groq:
-                os.environ["GROQ_API_KEY"] = old_groq
             os.environ.pop("OPENROUTER_API_KEY", None)
 
 

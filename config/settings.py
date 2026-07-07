@@ -276,6 +276,11 @@ MIN_CONFIDENCE_CORE = 70
 MIN_ENTRY_QUALITY_CORE = 60
 MIN_TREND_ALIGNMENT_CORE = 70
 MIN_REGIME_SCORE_CORE = 60
+HEAVYWEIGHT_THRESHOLDS = {
+    "NIFTY": 0.30,
+    "BANKNIFTY": 0.60,
+}
+
 
 # Trade decision thresholds — EXPERIMENTAL (research / marginal setups)
 MIN_CONFIDENCE_EXPERIMENTAL = 50
@@ -290,6 +295,11 @@ MAX_OPEN_TRADES_TOTAL = 5
 MAX_TRADES_PER_SYMBOL_PER_DAY = 4
 MAX_DAILY_LOSS_RUPEES = 200000
 LOSS_COOLDOWN_MINUTES = 30
+
+# Natural Gas Risk Settings
+NG_MAX_POSITIONS = 1
+NG_RISK_PCT_PER_TRADE = 2.0  # 2% capital risk per trade
+
 
 # ── Trend-Based Trading Logic ──────────────────────────────────────────────────────────────────────────────────────
 # Mode: "conservative" | "balanced" | "aggressive" | "hybrid"

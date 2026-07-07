@@ -16,6 +16,8 @@ from src.fetchers.dhan_fetcher import DhanFetcher
 from src.fetchers.dhan_sensex_fetcher import DhanSensexFetcher
 from src.fetchers.nse_fetcher import NSEPublicFetcher
 from src.fetchers.paytm_fetcher import PaytmFetcher
+from src.fetchers.dhan_headless_fetcher import DhanHeadlessFetcher
+from src.fetchers.moneycontrol_fetcher import MoneycontrolFetcher
 from src.utils.greeks_calculator import enrich_missing_greeks
 
 try:
@@ -28,21 +30,6 @@ try:
 except ImportError:
     ShoonyaFetcher = None
 
-try:
-    from src.fetchers.scrapegraph_fetcher import ScrapeGraphFetcher
-except ImportError:
-    ScrapeGraphFetcher = None
-
-try:
-    from src.fetchers.dhan_headless_fetcher import DhanHeadlessFetcher
-except ImportError:
-    DhanHeadlessFetcher = None
-
-try:
-    from src.fetchers.moneycontrol_fetcher import MoneycontrolFetcher
-except ImportError:
-    MoneycontrolFetcher = None
-
 log = logging.getLogger(__name__)
 
 _MCX_COMMODITIES = {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"}
@@ -53,17 +40,11 @@ _FETCHERS = {
     "dhan_sensex": DhanSensexFetcher,
     "nse_public": NSEPublicFetcher,
     "paytm": PaytmFetcher,
+    "dhan_headless": DhanHeadlessFetcher,
+    "moneycontrol": MoneycontrolFetcher,
 }
 if ShoonyaFetcher is not None:
     _FETCHERS["shoonya"] = ShoonyaFetcher
-if ScrapeGraphFetcher is not None:
-    _FETCHERS["scrapegraph"] = ScrapeGraphFetcher
-if DhanHeadlessFetcher is not None:
-    _FETCHERS["dhan_headless"] = DhanHeadlessFetcher
-if MoneycontrolFetcher is not None:
-    _FETCHERS["moneycontrol"] = MoneycontrolFetcher
-if SensibullFetcher is not None:
-    _FETCHERS["sensibull"] = SensibullFetcher
 
 _instances: dict = {}
 _lock = threading.Lock()
@@ -76,11 +57,17 @@ def _get_fetcher(name: str):
     # token, causing duplicate OAuth logins and premature session expiry.
     if name == "shoonya":
         from src.fetchers.shoonya_fetcher import get_shoonya_fetcher
-
         return get_shoonya_fetcher()
     with _lock:
         if name not in _instances:
-            _instances[name] = _FETCHERS[name]()
+            if name == "scrapegraph":
+                from src.fetchers.scrapegraph_fetcher import ScrapeGraphFetcher
+                _instances[name] = ScrapeGraphFetcher()
+            elif name == "sensibull":
+                from src.fetchers.sensibull_fetcher import SensibullFetcher
+                _instances[name] = SensibullFetcher()
+            else:
+                _instances[name] = _FETCHERS[name]()
     return _instances[name]
 
 
@@ -102,7 +89,6 @@ def _priority_for(symbol: str) -> list[str]:
         "nse_public",
         "dhan_headless",
         "moneycontrol",
-        "scrapegraph",
     ]
 
 

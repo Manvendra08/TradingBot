@@ -51,8 +51,9 @@ def _fetch_broker_margin_requirement(
         Margin requirement in INR, or None on failure.
     """
     if transaction_type.upper() != "SELL":
+        log.debug("%s: BUY leg — skipping broker margin API", symbol)
         return None
-
+ 
     try:
         from src.engine.live_trading import get_kite_client
         kite = get_kite_client()
@@ -74,7 +75,7 @@ def _fetch_broker_margin_requirement(
 
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            future = executor.submit(kite.margins, "orders", orders)
+            future = executor.submit(kite.order_margins, orders)
             result = future.result(timeout=_BROKER_MARGIN_API_TIMEOUT)
 
         if result and isinstance(result, list) and len(result) > 0:
@@ -113,6 +114,8 @@ def _calculate_live_lots(symbol: str, entry_premium: float, side: str, config: d
         log.debug("%s: using symbol-specific lot override of %d lots", base, lots)
         return max(1, lots)
 
+    if not config.get("live_capital_per_trade_inr"):
+        log.warning("%s: live_capital_per_trade_inr not set in runtime config, defaulting to ₹50,000", base)
     capital_per_trade = float(config.get("live_capital_per_trade_inr") or 50000.0)
     instrument_lot_size = LOT_SIZES.get(base, 1)
 
@@ -187,11 +190,18 @@ def calculate_trade_lots(symbol: str, entry_premium: float, side: str = "BUY", i
         lots = _calculate_live_lots(base, entry_premium, side, config)
 
     # Pyramiding Sizing (Flaw #10): Reduce size on scaling in
+    original_lots = lots
     if pyramid_level == 2:
         lots = max(1, int(lots * 0.5))
-        log.info("%s: Pyramiding level 2 — scaling lot size to %d (50%%)", base, lots)
+        if lots == original_lots:
+            log.warning("%s: Pyramiding level 2 scale-down to 50%% had no effect because lot count is %d", base, lots)
+        else:
+            log.info("%s: Pyramiding level 2 — scaling lot size to %d (50%%)", base, lots)
     elif pyramid_level >= 3:
         lots = max(1, int(lots * 0.25))
-        log.info("%s: Pyramiding level %d — scaling lot size to %d (25%%)", base, pyramid_level, lots)
-
+        if lots == original_lots:
+            log.warning("%s: Pyramiding level %d scale-down to 25%% had no effect because lot count is %d", base, pyramid_level, lots)
+        else:
+            log.info("%s: Pyramiding level %d — scaling lot size to %d (25%%)", base, pyramid_level, lots)
+ 
     return lots

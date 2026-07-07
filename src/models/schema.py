@@ -817,9 +817,11 @@ def get_open_paper_trade(symbol: str) -> dict | None:
         return dict(row) if row else None
 
 
-def get_open_timeframe_trades(symbol: str) -> list[dict]:
-    sql = """
-        SELECT * FROM paper_trades
+def get_open_timeframe_trades(symbol: str, table: str = "paper_trades") -> list[dict]:
+    if table not in ("paper_trades", "live_trades"):
+        table = "paper_trades"
+    sql = f"""
+        SELECT * FROM {table}
         WHERE symbol=? AND status='OPEN' AND setup_type='TIMEFRAME'
         ORDER BY opened_at DESC
     """

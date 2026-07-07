@@ -1,6 +1,42 @@
 import json
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
+import pytest
+from src.engine import llm_enrichment as llm_mod
+
+
+@pytest.fixture(autouse=True)
+def reset_llm_runtime_state():
+    import os
+    llm_mod._CONSECUTIVE_FAILURES = 0
+    llm_mod._CIRCUIT_OPEN_UNTIL = 0.0
+    llm_mod._API_QUOTA_EXHAUSTED_UNTIL = 0.0
+    llm_mod._PROVIDER_COOLDOWN_UNTIL.clear()
+
+    # Save and pop keys to prevent real API calls in tests
+    saved = {}
+    for k in (
+        "GEMINI_API_KEY",
+        "GROQ_API_KEY",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "GITHUB_TOKEN",
+    ):
+        if k in os.environ:
+            saved[k] = os.environ[k]
+            del os.environ[k]
+
+    yield
+
+    llm_mod._CONSECUTIVE_FAILURES = 0
+    llm_mod._CIRCUIT_OPEN_UNTIL = 0.0
+    llm_mod._API_QUOTA_EXHAUSTED_UNTIL = 0.0
+    llm_mod._PROVIDER_COOLDOWN_UNTIL.clear()
+
+    # Restore keys
+    for k, v in saved.items():
+        os.environ[k] = v
 
 
 def _reset_live_tables():
@@ -422,7 +458,9 @@ def test_llm_caching_and_cooldown():
 
     with patch(
         "src.engine.llm_enrichment._call_llm_api", return_value=dummy_verdict
-    ) as mock_api:
+    ) as mock_api, patch(
+        "src.engine.llm_enrichment._format_historical_oi", return_value="dummy historical data"
+    ):
         intel = {"verdict_label": "Long Buildup", "confidence": 80}
         scan_ctx = {"underlying": 24000.0}
 

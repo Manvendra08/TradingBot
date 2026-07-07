@@ -55,7 +55,7 @@ def run_ng_parity_strategy(
     now_ist = datetime.now(IST)
     from src.engine.ng_session_router import get_ng_regime
     regime, reason = get_ng_regime(now_ist)
-    
+
     if regime != "PARITY":
         return None
 
@@ -67,28 +67,28 @@ def run_ng_parity_strategy(
     parity_state = get_parity_state(underlying)
     if not parity_state.valid:
         log.warning("NG Parity Strategy: Parity calculations are invalid/stale. Blocking entry.")
-        return None
+        return {"action": "BLOCKED_PLAN", "reason": "Parity calculations invalid/stale"}
 
     dev_pct = parity_state.dev_pct
     abs_dev = abs(dev_pct)
 
     # Entry Check 1: Deviation threshold
     if abs_dev < PARITY_DEV_ENTRY_PCT:
-        return None
+        return {"action": "HOLD", "reason": f"Deviation {dev_pct:+.2f}% < threshold {PARITY_DEV_ENTRY_PCT}%"}
 
     # Entry Check 2: Position limit
     if not check_ng_position_limit():
-        return None
+        return {"action": "BLOCKED_RISK", "reason": "NG position limit hit"}
 
     # Entry Check 3: Daily loss cap
     if check_ng_daily_loss_cap():
         log.warning("NG Parity Entry blocked: Daily loss cap hit.")
-        return None
+        return {"action": "BLOCKED_RISK", "reason": "NG daily loss cap hit"}
 
     # Entry Check 4: Shrinking deviation
     if not check_deviation_stable_or_shrinking(dev_pct):
         log.info("NG Parity Entry blocked: Deviation is expanding (catching the tail).")
-        return None
+        return {"action": "HOLD", "reason": f"Deviation expanding ({dev_pct:+.2f}%)"}
 
     # Determine Side: dev > 0 (MCX rich) -> SELL FUT; dev < 0 (MCX cheap) -> BUY FUT
     side = "SELL" if dev_pct > 0 else "BUY"

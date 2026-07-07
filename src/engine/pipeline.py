@@ -56,6 +56,7 @@ CLEANUP_DATA_FILE = Path("data") / "cleanup_dates.json"
 # 30 days is sufficient — cleanup is idempotent and re-running is harmless.
 _CLEANUP_DATES_MAX_ENTRIES = 30
 
+
 def _load_cleanup_dates() -> set[str]:
     if not CLEANUP_DATA_FILE.exists():
         return set()
@@ -74,6 +75,7 @@ def _load_cleanup_dates() -> set[str]:
     except Exception:
         return set()
 
+
 def _save_cleanup_dates(dates: set[str]) -> None:
     # BUG-005 FIX: Enforce max entries before saving to prevent unbounded growth
     if len(dates) > _CLEANUP_DATES_MAX_ENTRIES:
@@ -81,6 +83,7 @@ def _save_cleanup_dates(dates: set[str]) -> None:
         dates = set(sorted_dates[:_CLEANUP_DATES_MAX_ENTRIES])
     CLEANUP_DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
     CLEANUP_DATA_FILE.write_text(json.dumps(sorted(dates)))
+
 
 _CLEANUP_DATES = _load_cleanup_dates()
 
@@ -224,6 +227,36 @@ def run_pipeline(
         except Exception:
             log.exception("Direct Kite position synchronization failed")
 
+    # ── Kite connectivity check — auto-login if no valid session ──────────
+    if not is_test:
+        try:
+            from src.engine.live_trading import get_kite_client
+
+            kite = get_kite_client()
+            if kite is None:
+                log.warning("Kite client not available — attempting auto-login")
+                try:
+                    from src.services.zerodha_auto_login import auto_login_kite
+
+                    result = auto_login_kite(force=False)
+                    action = result.get("action", "UNKNOWN")
+                    if result.get("success"):
+                        log.info("Kite auto-login succeeded: %s", action)
+                    else:
+                        log.warning(
+                            "Kite auto-login failed: %s — %s",
+                            action,
+                            result.get("message", ""),
+                        )
+                except Exception as login_err:
+                    log.exception(
+                        "Kite auto-login attempt raised exception: %s", login_err
+                    )
+            else:
+                log.debug("Kite client is available — session active")
+        except Exception:
+            log.exception("Kite connectivity check failed")
+
     for symbol in symbols:
         try:
             _process_symbol(symbol, fetched_at, is_test=is_test)
@@ -309,28 +342,7 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
             underlying,
         )
 
-    # Phase 1: Natural Gas Parity Logging (No trading impact)
-    if str(symbol).upper().startswith("NATURALGAS") and not is_test:
-        try:
-            from src.engine.parity_engine import get_parity_state
-            from src.engine.ng_session_router import get_ng_regime
-            import pytz
-            from datetime import datetime
-            from dataclasses import asdict
-            from src.models.schema import insert_ng_parity_log
 
-            parity_state = get_parity_state(underlying, mcx_age_sec=0)
-            now_ist = datetime.now(pytz.timezone("Asia/Kolkata"))
-            regime, ng_reason = get_ng_regime(now_ist)
-
-            log_data = asdict(parity_state)
-            log_data["timestamp"] = fetched_at
-            log_data["ng_regime"] = regime
-
-            insert_ng_parity_log(log_data)
-            log.info("NATURALGAS parity logged: regime=%s, dev_pct=%.2f%%", regime, parity_state.dev_pct)
-        except Exception as e:
-            log.exception("NATURALGAS parity calculation failed")
 
     # 1a. Fetch chart data server-side (Chrome-free)
     try:
@@ -358,6 +370,39 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
         override_thresholds=symbol_thresholds,
     )
     scan_context["option_rows"] = list(oc_data.get("strikes") or [])
+
+    # Phase 1: Natural Gas Parity Logging & context injection
+    if str(symbol).upper().startswith("NATURALGAS"):
+        try:
+            from src.engine.parity_engine import get_parity_state
+            from src.engine.ng_session_router import get_ng_regime
+            import pytz
+            from datetime import datetime
+
+            parity_state = get_parity_state(underlying, mcx_age_sec=0)
+            now_ist = datetime.now(pytz.timezone("Asia/Kolkata"))
+            regime, ng_reason = get_ng_regime(now_ist)
+
+            # Inject into scan_context so LLM and digest can access it
+            scan_context["ng_regime"] = regime
+            scan_context["ng_dev_pct"] = parity_state.dev_pct
+            scan_context["ng_fair_value"] = parity_state.fair_value
+
+            if not is_test:
+                from dataclasses import asdict
+                from src.models.schema import insert_ng_parity_log
+                log_data = asdict(parity_state)
+                log_data["timestamp"] = fetched_at
+                log_data["ng_regime"] = regime
+
+                insert_ng_parity_log(log_data)
+                log.info(
+                    "NATURALGAS parity logged: regime=%s, dev_pct=%.2f%%",
+                    regime,
+                    parity_state.dev_pct,
+                )
+        except Exception as e:
+            log.exception("NATURALGAS parity calculation failed")
 
     # Phase 2: Cache scan snapshot for ML prediction dashboard endpoint
     # This ensures the dashboard endpoint can hydrate full feature context
@@ -407,8 +452,17 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
     if symbol in ("NIFTY", "BANKNIFTY", "SENSEX"):
         try:
             from src.engine.index_weights import calculate_index_momentum
+
             scan_context["index_weights_sentiment"] = calculate_index_momentum(symbol)
-            log.info("%s: index weights momentum calculated: %.3f%%", symbol, scan_context["index_weights_sentiment"].get("weighted_momentum"))
+            log.info(
+                "%s: index weights momentum calculated: %.3f%%",
+                symbol,
+                scan_context["index_weights_sentiment"].get("weighted_momentum"),
+            )
+        except Exception:
+            log.exception(
+                "%s: Failed to calculate index weights momentum in pipeline", symbol
+            )
         except Exception:
             log.exception("%s: Failed to calculate index weights momentum in pipeline", symbol)
 
@@ -778,12 +832,17 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
             log.exception("%s: paper-trading engine failed", symbol)
 
         try:
-            lt_report = run_live_trading(
-                symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict
-            )
-            lt_tf_report = run_live_timeframe_strategy(
-                symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict
-            )
+            lt_report = None
+            lt_tf_report = None
+            active_strats = active_strategies_for(symbol)
+            if "CORE" in active_strats:
+                lt_report = run_live_trading(
+                    symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict
+                )
+            if "TIMEFRAME" in active_strats:
+                lt_tf_report = run_live_timeframe_strategy(
+                    symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict
+                )
             if lt_report and lt_report.get("action") in ("EXECUTED", "CLOSED"):
                 live_trade_report = lt_report
             elif lt_tf_report and lt_tf_report.get("action") in ("EXECUTED", "CLOSED"):
@@ -792,6 +851,97 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
                 live_trade_report = lt_report or lt_tf_report
         except Exception:
             log.exception("%s: live-trading engine failed", symbol)
+
+    # Simulate paper trade status in test mode or when strategy is disabled but decision is triggered
+    if paper_trade_report is None and llm_verdict:
+        td = (intel or {}).get("trade_decision") or {}
+        td_status = td.get("status")
+        if td_status in ("TRIGGERED", "TRIGGERED_EXPERIMENTAL"):
+            def gv(key, default=""):
+                if isinstance(llm_verdict, dict):
+                    return llm_verdict.get(key, default)
+                return getattr(llm_verdict, key, default) if llm_verdict else default
+
+            instr = gv("instrument") or symbol
+            opt = ""
+            if "PE" in instr.upper():
+                opt = "PE"
+            elif "CE" in instr.upper():
+                opt = "CE"
+            elif "FUT" in instr.upper():
+                opt = "FUT"
+
+            strike_val = None
+            import re
+            clean_instr = re.sub(r"\b\d+\s*(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\b", "", instr, flags=re.IGNORECASE)
+            strike_m = re.search(r"\b(\d+(?:\.\d+)?)\b", clean_instr)
+            if strike_m:
+                try:
+                    strike_val = float(strike_m.group(1))
+                except:
+                    pass
+
+            entry_premium = None
+            range_str = gv("entry_premium_range") or ""
+            if "-" in range_str:
+                try:
+                    entry_premium = float(range_str.split("-")[0].strip())
+                except:
+                    pass
+            elif range_str:
+                try:
+                    entry_premium = float(range_str.strip())
+                except:
+                    pass
+
+            sl_val = None
+            sl_str = gv("stop_loss") or ""
+            is_premium_sl = "PREMIUM" in sl_str.upper()
+            m = re.search(r"(\d+(?:\.\d+)?)", sl_str)
+            if m:
+                try:
+                    sl_val = float(m.group(1))
+                except:
+                    pass
+
+            t1_val = None
+            t1_str = gv("target_1") or ""
+            is_premium_t1 = "PREMIUM" in t1_str.upper()
+            m = re.search(r"(\d+(?:\.\d+)?)", t1_str)
+            if m:
+                try:
+                    t1_val = float(m.group(1))
+                except:
+                    pass
+
+            from src.engine.strategy_registry import active_strategies_for
+            active_strats = active_strategies_for(symbol)
+
+            if is_test:
+                action_type = "DRY_RUN_EXECUTED"
+            elif not active_strats:
+                action_type = "WOULD_EXECUTE"
+            else:
+                action_type = None
+
+            if action_type:
+                paper_trade_report = {
+                    "action": action_type,
+                    "trade": {
+                        "option_type": opt,
+                        "strike": strike_val,
+                        "side": "BUY",
+                        "entry_premium": entry_premium,
+                        "sl_premium": sl_val if is_premium_sl else None,
+                        "sl_underlying": sl_val if not is_premium_sl else None,
+                        "target_premium": t1_val if is_premium_t1 else None,
+                        "target_underlying": t1_val if not is_premium_t1 else None,
+                    },
+                    "reason": td.get("reason") or "AI Override triggered"
+                }
+
+    if intel:
+        scan_context["trade_decision"] = intel.get("trade_decision")
 
     digest_id, digest_msg = build_digest(
         symbol,
@@ -824,6 +974,7 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
                     digest_id,
                     fetched_at,
                     is_fallback=is_fallback,
+                    llm_verdict=llm_verdict,
                 )
             else:
                 log.warning(
@@ -918,13 +1069,14 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
                 try:
                     # Explicit import to avoid scoping issues in Python 3.11+
                     from datetime import datetime as dt_class
+
                     import pytz
 
                     exp_date = dt_class.strptime(expiry, "%Y-%m-%d").date()
                     IST = pytz.timezone("Asia/Kolkata")
                     today_ist = dt_class.now(IST).date()
                     dte = (exp_date - today_ist).days
-                    
+
                     if 0 <= dte <= 2:
                         try:
                             idx = all_expiries.index(expiry)

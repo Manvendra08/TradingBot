@@ -1,0 +1,46 @@
+=== MSG 1 ===
+🟢 *NIFTY* — BULLISH SIGNAL
+25 Jun | -12 DTE | 19 Jun, 11:30
+────────────────────
+⚠️ Rule engine: BLOCKED
+🤖 AI override: BULLISH @ 85%
+
+*VERDICT*  Strong support holds at 21900 and option chain indicates ... (OI conf 85)
+  CE OI Δ 45.5K vs PE Δ 0 → No decisive OI flow
+  Price 22010 (+0.45%) drifting to Max Pain N/A
+  Chart 3H ▲ / 1H ▲ | PCR 1.25
+
+  🔴 OI spike 22000 CE | +46%
+
+📋 *PLAN* — BUY Bull Call Spread
+  Entry   Buy 22000 CE, Sell 22100 CE
+  Risk    LOW
+
+  🛡️ Exit: _SL below 21850_
+
+_#cc3cd625_
+────────────────────
+
+=== MSG 2 ===
+📊 *NIFTY* (Exp: 25 Jun | -12 DTE) | 19 Jun, 11:30
+Spot `22010 (+98.2 (+0.45%))` | ATM `22000` | MP `N/A` | PCR `1.25` | OI CE `0` PE `0`
+Net OI Δ: CE `45.5K` | PE `0`
+────────────────────
+🟢 *TRADE: SELL PE* - BULLISH
+`Signal strength: ████████░░ 80/100 (STRONG)`
+
+⚡ *KEY SIGNALS & LEVELS*
+• *Key Levels:* Support `21900` | Resistance `22100`
+• *Headline:* 22000 CE: OI SPIKE +45.5% (1.00L->1.46L)    -> Resistance wall forming  \*\[⚠️ Disagrees with verdict]\*
+
+🎯 *TRADING PLAN*
+Recommended: | • Sell 21900 PE / 21850 PE (premium at support) | • Buy 22100 CE only if spot breaks 22100 with volume | Avoid: | • Buying PEs (trend is upward) | • Selling CEs above 22100 | Levels: | • Stop: spot closes below 21850 | • Target: 22100, then 22150
+
+📈 *CONFIRMATION*
+• *Candles:* 1H BULLISH 🟢 ▲ | 3H BULLISH 🟢 ▲ | • *OI Flow:* No decisive OI flow -> NEUTRAL
+
+💡 *BOTTOM LINE*
+Strong bullish stp, 21900 as supp. Multiple confirmations. Trade: Sell PEs 21900-21850. Break 22100 = rally.
+
+_#085e4351_
+────────────────────
