@@ -9,6 +9,13 @@ import time
 import logging
 import yfinance as yf
 
+try:
+    from src.models.schema import stamp_health
+except ImportError:
+    # For standalone testing
+    def stamp_health(key: str, status: str, detail: str = "") -> None:
+        pass
+
 log = logging.getLogger(__name__)
 
 @dataclass
@@ -134,6 +141,10 @@ def get_parity_state(mcx_last: float, mcx_age_sec: int = 0) -> ParityState:
         fx_age <= PARITY_MAX_STALENESS_SEC and 
         mcx_age_sec <= PARITY_MAX_STALENESS_SEC
     )
+    
+    # Health stamp for ops_agent
+    stamp_health("parity_feed", "OK" if valid else "DOWN", 
+                 f"nymex_age={nymex_age}s fx_age={fx_age}s mcx_age={mcx_age_sec}s valid={valid}")
     
     return ParityState(
         nymex_last=nymex_last,

@@ -33,12 +33,14 @@ def tmp_db(tmp_path):
         CREATE TABLE paper_trades (
             id INTEGER PRIMARY KEY,
             opened_at TEXT,
+            closed_at TEXT,
             status TEXT,
             symbol TEXT
         );
         CREATE TABLE live_trades (
             id INTEGER PRIMARY KEY,
             opened_at TEXT,
+            closed_at TEXT,
             status TEXT,
             symbol TEXT
         );
@@ -77,6 +79,15 @@ def _stamp_health(db_path, key, status, detail="", minutes_ago=0):
     )
     conn.commit()
     conn.close()
+
+
+@pytest.fixture(autouse=True)
+def suppress_ops_escalation(request, monkeypatch):
+    """Prevent tests from sending real Telegram messages via Ops Agent."""
+    if request.cls and request.cls.__name__ == "TestEscalation":
+        return
+    monkeypatch.setattr("ops_agent._send_telegram", lambda text, fallback=False: True)
+    monkeypatch.setattr("ops_agent._escalate", lambda p, m, critical=False: None)
 
 
 # ── State Machine Tests ──────────────────────────────────────────────────────
@@ -165,6 +176,9 @@ class TestHealthReading:
             assert age < 1.0
         # Stale heartbeat
         hb_file.write_text(str(int(time.time()) - 300))
+        import os
+        stale_time = time.time() - 300
+        os.utime(str(hb_file), (stale_time, stale_time))
         with patch("ops_agent.HEARTBEAT_PATH", hb_file):
             age = _read_heartbeat_age()
             assert age is not None

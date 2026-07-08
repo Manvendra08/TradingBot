@@ -36,7 +36,31 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 OBSERVE_ONLY = "--observe-only" in sys.argv
 
+# Fallback notification channel (ntfy.sh)
+NTFY_URL = os.environ.get("NTFY_URL", "")  # e.g., "https://ntfy.sh/mytopic"
+NTFY_TOKEN = os.environ.get("NTFY_TOKEN", "")
+
+# CRITICAL repeat tracking
+_critical_last_sent: dict[str, float] = {}  # playbook_id → timestamp
+_critical_repeat_interval = 600  # 10 minutes
+
 IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _is_market_hours() -> bool:
+    """Check if current time is within NSE or MCX market hours (IST)."""
+    now = datetime.now(IST)
+    weekday = now.weekday()
+    if weekday >= 5:  # Saturday or Sunday
+        return False
+    hour = now.hour
+    minute = now.minute
+    time_val = hour * 100 + minute
+    # NSE: 09:15-15:30, MCX: 09:00-23:30
+    nse_open = 915 <= time_val <= 1530
+    mcx_open = 900 <= time_val <= 2330
+    return nse_open or mcx_open
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -116,8 +140,9 @@ def _read_health_via_dashboard() -> dict | None:
 def _read_health_via_sqlite() -> list[dict]:
     """Read-only SQLite fallback (file:...?mode=ro)."""
     try:
+        db_uri = Path(BOT_DB_PATH).as_uri() + "?mode=ro"
         conn = sqlite3.connect(
-            f"file:{BOT_DB_PATH}?mode=ro",
+            db_uri,
             uri=True,
             timeout=5.0,
         )
@@ -132,8 +157,9 @@ def _read_health_via_sqlite() -> list[dict]:
 
 def _read_open_positions_count() -> int:
     try:
+        db_uri = Path(BOT_DB_PATH).as_uri() + "?mode=ro"
         conn = sqlite3.connect(
-            f"file:{BOT_DB_PATH}?mode=ro",
+            db_uri,
             uri=True,
             timeout=5.0,
         )
@@ -152,8 +178,9 @@ def _read_open_positions_count() -> int:
 
 def _read_oldest_position_age() -> float | None:
     try:
+        db_uri = Path(BOT_DB_PATH).as_uri() + "?mode=ro"
         conn = sqlite3.connect(
-            f"file:{BOT_DB_PATH}?mode=ro",
+            db_uri,
             uri=True,
             timeout=5.0,
         )
@@ -330,17 +357,75 @@ def _send_telegram(text: str, fallback: bool = False) -> bool:
         return False
 
 
+def _send_fallback(text: str) -> bool:
+    """Send notification via fallback channel (ntfy.sh)."""
+    if not NTFY_URL:
+        return False
+    try:
+        headers = {"Content-Type": "text/plain"}
+        if NTFY_TOKEN:
+            headers["Authorization"] = f"Bearer {NTFY_TOKEN}"
+        req = urllib.request.Request(
+            NTFY_URL,
+            data=text.encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status == 200
+    except Exception as e:
+        log.error("Fallback notification failed: %s", e)
+        return False
+
+
 def _escalate(playbook_id: str, message: str, critical: bool = False) -> None:
-    """Send escalation via Telegram."""
+    """Send escalation via Telegram + fallback for CRITICAL."""
+    global _critical_last_sent
     prefix = "🚨 CRITICAL" if critical else "⚙️ OPS"
     ts = datetime.now(IST).strftime("%H:%M IST")
     text = f"{prefix} | {playbook_id} | {message} | {ts}"
-    _send_telegram(text)
+    
+    # Always try Telegram first
+    tg_ok = _send_telegram(text)
+    
+    # For CRITICAL: send fallback simultaneously + track for repeat
+    if critical:
+        _send_fallback(text)
+        _critical_last_sent[playbook_id] = time.time()
+    
     log.warning("ESCALATE [%s] %s: %s", playbook_id, "CRITICAL" if critical else "INFO", message)
+
+
+def _repeat_critical_alerts() -> None:
+    """Repeat CRITICAL alerts every 10 minutes until acked."""
+    global _critical_last_sent
+    now = time.time()
+    for playbook_id, last_sent in list(_critical_last_sent.items()):
+        if now - last_sent >= _critical_repeat_interval:
+            # Check if acked in incidents DB
+            try:
+                conn = _get_incidents_conn()
+                row = conn.execute(
+                    "SELECT acked FROM incidents WHERE playbook_id=? AND acked=0 ORDER BY ts DESC LIMIT 1",
+                    (playbook_id,)
+                ).fetchone()
+                conn.close()
+                if row and not row["acked"]:
+                    # Not acked yet, repeat
+                    _send_fallback(f"🚨 CRITICAL REPEAT | {playbook_id} | Still active — not yet acked | {datetime.now(IST).strftime('%H:%M IST')}")
+                    _critical_last_sent[playbook_id] = now
+                else:
+                    # Acked or no unacked incidents, stop repeating
+                    del _critical_last_sent[playbook_id]
+            except Exception:
+                pass
 
 
 def _restart_nsebot() -> bool:
     """Restart nsebot service via systemctl."""
+    if os.name == "nt":
+        log.warning("Auto-restart via systemctl not supported on Windows. Manual restart required.")
+        return False
     try:
         result = subprocess.run(
             ["systemctl", "restart", "nsebot"],
@@ -363,6 +448,30 @@ def _reauth_shoonya() -> bool:
     except Exception:
         # Fallback: restart with reauth
         return _restart_nsebot()
+
+
+def _verify_shoonya_session() -> bool:
+    """Verify Shoonya session by fetching one quote."""
+    try:
+        from src.fetchers.shoonya_fetcher import get_shoonya_fetcher
+        f = get_shoonya_fetcher()
+        if not f.login():
+            return False
+        # Try to fetch a quote for NIFTY (always available)
+        search_res = f._search_scrip("NSE", "NIFTY")
+        if not search_res or search_res.get("stat") != "Ok":
+            return False
+        values = search_res.get("values", [])
+        if not values:
+            return False
+        token = values[0].get("token")
+        if not token:
+            return False
+        quote = f._get_quotes("NSE", token)
+        return quote is not None and quote.get("stat") == "Ok"
+    except Exception as e:
+        log.warning("Shoonya session verification failed: %s", e)
+        return False
 
 
 def _set_trading_paused() -> bool:
@@ -401,6 +510,99 @@ def _run_emergency_flat() -> bool:
         return False
 
 
+def _check_disk_usage() -> float:
+    """Return disk usage percentage for the data partition."""
+    try:
+        import shutil
+        usage = shutil.disk_usage(str(DATA_DIR))
+        return (usage.used / usage.total) * 100.0
+    except Exception:
+        return 0.0
+
+
+def _rotate_logs() -> bool:
+    """Rotate log files to free disk space."""
+    try:
+        log_dir = ROOT / "logs"
+        if not log_dir.exists():
+            return True
+        import glob
+        log_files = sorted(glob.glob(str(log_dir / "*.log")), key=lambda f: os.path.getmtime(f))
+        # Keep only the 5 most recent log files
+        for old_log in log_files[:-5]:
+            try:
+                os.remove(old_log)
+                log.info("Rotated old log: %s", old_log)
+            except Exception:
+                pass
+        return True
+    except Exception:
+        return False
+
+
+def _vacuum_database() -> bool:
+    """Vacuum the bot database to reclaim space."""
+    try:
+        conn = sqlite3.connect(BOT_DB_PATH, timeout=10.0)
+        conn.execute("VACUUM")
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+
+def _prune_temp() -> bool:
+    """Prune /tmp files older than 1 day."""
+    try:
+        import glob
+        temp_dir = Path("/tmp")
+        cutoff = time.time() - 86400  # 1 day
+        for f in temp_dir.glob("*"):
+            try:
+                if f.is_file() and f.stat().st_mtime < cutoff:
+                    f.unlink()
+            except Exception:
+                pass
+        return True
+    except Exception:
+        return False
+
+
+def _validate_time_via_healthchecks() -> bool:
+    """
+    Validate system time via healthchecks.io HTTP Date header.
+    Returns True if time is within 60 seconds of external reference.
+    Prevents clock-drift induced force-flats (P09/P10).
+    """
+    if not HEALTHCHECKS_URL:
+        return True  # No external reference available, trust local clock
+    try:
+        req = urllib.request.Request(HEALTHCHECKS_URL, method="HEAD")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            date_header = resp.headers.get("Date")
+            if not date_header:
+                return True
+            # Parse HTTP Date: "Mon, 08 Jul 2026 06:45:00 GMT"
+            from email.utils import parsedate_to_datetime
+            external_dt = parsedate_to_datetime(date_header)
+            external_ts = external_dt.timestamp()
+            local_ts = time.time()
+            drift = abs(local_ts - external_ts)
+            if drift > 60:
+                log.warning("Time drift detected: %.1f seconds from external reference", drift)
+                return False
+            return True
+    except Exception:
+        return True  # On error, trust local clock
+
+
+def _get_validated_now_ist() -> datetime:
+    """Get current IST time, validated against external reference if available."""
+    if not _validate_time_via_healthchecks():
+        log.error("Time validation failed — clock may be drifting!")
+    return datetime.now(IST)
+
+
 # ── Playbook Engine ──────────────────────────────────────────────────────────
 
 # Rollout level: 0=observe-only, 1=T1 enabled, 2=T2 enabled
@@ -419,16 +621,41 @@ def run_playbooks(snap: HealthSnapshot, sm: StateMachine) -> list[PlaybookResult
     now_ts = time.time()
     open_pos = snap.open_positions
 
+    # ── Reset Counters if Healthy ──
+    if snap.heartbeat_ok:
+        sm._get("_restart_count").consecutive_down = 0
+        sm._get("_restart_first_ts").consecutive_down = 0  # Reset window tracker
+
+    shoonya_state = sm.components.get("shoonya_session")
+    if shoonya_state and shoonya_state.status == "OK":
+        sm._get("_reauth_count").consecutive_down = 0
+
     # ── P01: Bot dead (heartbeat stale) + no open positions → restart ──
     hb_stale = not snap.heartbeat_ok and (snap.heartbeat_age_s is None or snap.heartbeat_age_s > 180)
     if hb_stale and open_pos == 0 and ROLLOUT_LEVEL >= 1:
         restart_count = sm._get("_restart_count").consecutive_down
+        # Track first restart timestamp for 30-min window
+        first_ts_state = sm._get("_restart_first_ts")
+        if restart_count == 0:
+            first_ts_state.last_ok_time = now_ts  # Reuse field for first restart ts
+        # Check 30-min window: if first restart was >30 min ago, reset counter
+        if first_ts_state.last_ok_time > 0 and (now_ts - first_ts_state.last_ok_time) > 1800:
+            restart_count = 0
+            sm._get("_restart_count").consecutive_down = 0
         if restart_count < 2:
             sm._get("_restart_count").consecutive_down += 1
             ok = _restart_nsebot()
             result = PlaybookResult(action_taken="restart_nsebot")
             if ok:
-                _escalate("P01", f"Restarted nsebot (attempt {restart_count+1})")
+                # Verify heartbeat within 90 seconds
+                log.info("P01: Waiting 90s to verify heartbeat after restart...")
+                time.sleep(90)
+                hb_age = _read_heartbeat_age()
+                if hb_age is not None and hb_age < 120:
+                    _escalate("P01", f"Restarted nsebot (attempt {restart_count+1}). Heartbeat verified OK ({hb_age:.0f}s)")
+                else:
+                    _escalate("P01", f"Restarted nsebot (attempt {restart_count+1}) but heartbeat NOT verified ({hb_age}s). May need manual check.", critical=True)
+                    result.critical = True
             else:
                 _escalate("P01", f"Restart failed (attempt {restart_count+1})", critical=True)
                 result.critical = True
@@ -461,7 +688,13 @@ def run_playbooks(snap: HealthSnapshot, sm: StateMachine) -> list[PlaybookResult
                 ok = _reauth_shoonya()
                 result = PlaybookResult(action_taken="reauth_shoonya")
                 if ok:
-                    _escalate("P03", f"Shoonya re-auth succeeded (attempt {reauth_count+1})")
+                    # Verify session by fetching one quote
+                    quote_ok = _verify_shoonya_session()
+                    if quote_ok:
+                        _escalate("P03", f"Shoonya re-auth succeeded (attempt {reauth_count+1}). Quote verified OK.")
+                    else:
+                        _escalate("P03", f"Shoonya re-auth succeeded but quote verification FAILED (attempt {reauth_count+1})", critical=True)
+                        result.critical = True
                 else:
                     _escalate("P03", f"Shoonya re-auth failed (attempt {reauth_count+1})")
                 results.append(result)
@@ -487,6 +720,49 @@ def run_playbooks(snap: HealthSnapshot, sm: StateMachine) -> list[PlaybookResult
         if is_ng_hours:
             results.append(PlaybookResult(action_taken="P05_parity_down"))
             _escalate("P05", f"Parity feed DOWN during NG hours. Detail: {parity_state.detail}")
+            
+            # Check if PARITY position is open with feed dead > 15 min → P10
+            if parity_state.consecutive_down >= 2:  # 2 consecutive downs = ~2 min with feed dead
+                # Check for open PARITY position
+                try:
+                    conn = sqlite3.connect(f"file:{BOT_DB_PATH}?mode=ro", uri=True, timeout=5.0)
+                    conn.row_factory = sqlite3.Row
+                    parity_open = conn.execute(
+                        "SELECT COUNT(*) as c FROM paper_trades WHERE symbol='NATURALGAS' AND setup_type='NG_PARITY' AND status='OPEN'"
+                    ).fetchone()["c"]
+                    conn.close()
+                    if parity_open > 0 and ROLLOUT_LEVEL >= 2:
+                        # Feed dead with open PARITY position → emergency flat
+                        ok = _run_emergency_flat()
+                        result = PlaybookResult(action_taken="P05_parity_flat", escalated=True, critical=True)
+                        if ok:
+                            _escalate("P05", f"Emergency flat: PARITY position open with feed dead >15min. Closed.", critical=True)
+                        else:
+                            _escalate("P05", "Emergency flat FAILED for PARITY position", critical=True)
+                        results.append(result)
+                except Exception:
+                    pass
+
+    # ── P06: Disk/DB health → rotate logs, vacuum, prune ──
+    db_write_state = sm.components.get("db_write")
+    if db_write_state and db_write_state.status == "DOWN" and ROLLOUT_LEVEL >= 1:
+        disk_pct = _check_disk_usage()
+        # T1: Try remediation first
+        log.info("P06: db_write DOWN, disk=%.1f%%. Attempting remediation...", disk_pct)
+        _rotate_logs()
+        _vacuum_database()
+        _prune_timeout = 300  # 5 minutes
+        time.sleep(2)
+        # Re-check after remediation
+        new_disk_pct = _check_disk_usage()
+        if new_disk_pct > 90:
+            # T2: Still failing → pause + escalate
+            _set_trading_paused()
+            results.append(PlaybookResult(action_taken="P06_db_disk_critical", escalated=True, critical=True))
+            _escalate("P06", f"Disk critical ({new_disk_pct:.1f}%) after remediation. Trading PAUSED.", critical=True)
+        else:
+            results.append(PlaybookResult(action_taken="P06_db_disk_remediated"))
+            _escalate("P06", f"Disk/DB issue remediated. Disk: {disk_pct:.1f}% → {new_disk_pct:.1f}%")
 
     # ── P07: Telegram failing > 10 min → switch to fallback ──
     tg_state = sm.components.get("telegram_send")
@@ -503,7 +779,7 @@ def run_playbooks(snap: HealthSnapshot, sm: StateMachine) -> list[PlaybookResult
             _escalate("P08", "VM reboot detected — services restarting")
 
     # ── P09: Force-flat sentinel (Thursday 19:40 IST for NG) ──
-    now_ist = datetime.now(IST)
+    now_ist = _get_validated_now_ist()
     if now_ist.weekday() == 3 and now_ist.hour == 19 and now_ist.minute >= 40:
         # Check if NG position still open
         try:
@@ -523,6 +799,14 @@ def run_playbooks(snap: HealthSnapshot, sm: StateMachine) -> list[PlaybookResult
                 results.append(result)
         except Exception:
             pass
+
+    # ── P11: last_scan_<SYM> stale → notify (fetcher-source degradation pattern) ──
+    for key, comp_state in sm.components.items():
+        if key.startswith("last_scan_") and not key.startswith("_"):
+            if comp_state.status == "DOWN":
+                symbol = key[len("last_scan_"):]
+                results.append(PlaybookResult(action_taken=f"P11_scan_stale_{symbol}"))
+                _escalate("P11", f"last_scan_{symbol} stale >2× interval. Detail: {comp_state.detail}")
 
     # ── P12: Catch-all — unknown states → notify only ──
     has_unknown = any(
@@ -620,9 +904,25 @@ def main():
             health_by_key = {h["key"]: h for h in snap.health_rows}
 
             # Staleness-based checks
+            in_market = _is_market_hours()
             for key, cfg in _COMPONENT_THRESHOLDS.items():
                 row = health_by_key.get(key)
+                # Only check shoonya_session staleness during market hours
+                if key == "shoonya_session" and not in_market:
+                    continue
                 sm.evaluate_stale(key, row, cfg["stale_min"])
+
+            # Check last_scan_<SYM> staleness (2× scan interval = 10 min for NSE, 30 min for MCX)
+            for key, row in health_by_key.items():
+                if key.startswith("last_scan_"):
+                    symbol = key[len("last_scan_"):]
+                    # Default stale threshold: 10 min (2× 5-min NSE interval)
+                    stale_min = 10
+                    # MCX symbols get 30 min (2× 15-min interval)
+                    mcx_symbols = {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER", "COPPER"}
+                    if symbol.upper() in mcx_symbols:
+                        stale_min = 30
+                    sm.evaluate_stale(key, row, stale_min)
 
             # Heartbeat-based scheduler check
             if not snap.heartbeat_ok:
@@ -635,6 +935,9 @@ def main():
 
             # Run playbooks
             results = run_playbooks(snap, sm)
+
+            # Repeat CRITICAL alerts every 10 min until acked
+            _repeat_critical_alerts()
 
             # Log if actions were taken
             if results:

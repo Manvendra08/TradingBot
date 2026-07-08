@@ -19,6 +19,7 @@ connections, and without that flag Python's ssl module raises SSLZeroReturnError
 """
 
 import logging
+import socket
 import ssl
 import threading
 import time
@@ -29,6 +30,11 @@ from requests.exceptions import SSLError
 from urllib3.util import Retry
 
 log = logging.getLogger(__name__)
+
+_KITE_HOST = "api.kite.trade"
+_ORIGINAL_GETADDRINFO = socket.getaddrinfo
+_getaddrinfo_patched = False
+_GLOBAL_SEND_LOCK = threading.RLock()
 
 _SSL_EOF_MARKERS = frozenset(
     (
@@ -92,8 +98,25 @@ def _ensure_ssl_patched():
     log.debug("Patched ssl.create_default_context to inject OP_IGNORE_UNEXPECTED_EOF")
 
 
-# Apply the patch at import time
+def _kite_ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    if str(host).lower() == _KITE_HOST:
+        family = socket.AF_INET
+    return _ORIGINAL_GETADDRINFO(host, port, family, type, proto, flags)
+
+
+def _ensure_kite_ipv4_patched() -> None:
+    """Force Kite REST traffic to IPv4 without affecting other hosts."""
+    global _getaddrinfo_patched
+    if _getaddrinfo_patched:
+        return
+    socket.getaddrinfo = _kite_ipv4_getaddrinfo
+    _getaddrinfo_patched = True
+    log.debug("Patched socket.getaddrinfo to force IPv4 for %s", _KITE_HOST)
+
+
+# Apply patches at import time.
 _ensure_ssl_patched()
+_ensure_kite_ipv4_patched()
 
 
 # urllib3-level retry: ONLY handles 5xx HTTP status codes.
@@ -131,9 +154,10 @@ class ResilientTLSAdapter(HTTPAdapter):
         if not ssl_verify:
             self.ssl_context.check_hostname = False
             self.ssl_context.verify_mode = ssl.CERT_NONE
-        # Lock to serialize send() calls — prevents concurrent threads
-        # from corrupting the urllib3 connection pool
-        self._send_lock = threading.Lock()
+        # Kite's REST edge is sensitive to concurrent reuse from multiple
+        # dashboard/scheduler threads. Use one process-wide lock, not one lock
+        # per adapter/client, so all Kite HTTPS requests are serialized.
+        self._send_lock = _GLOBAL_SEND_LOCK
         super().__init__(*args, **kwargs)
 
     def init_poolmanager(self, *args, **kwargs):
@@ -147,6 +171,7 @@ class ResilientTLSAdapter(HTTPAdapter):
     # ── core retry-on-SSL-EOF/timeout logic ─────────────────────────────────
     def send(self, request, *args, **kwargs):
         last_err = None
+        request.headers["Connection"] = "close"
         for attempt in range(self.SSL_RETRY_ATTEMPTS):
             try:
                 with self._send_lock:
@@ -190,11 +215,14 @@ class ResilientTLSAdapter(HTTPAdapter):
                     time.sleep(delay)
                     continue
                 else:
+                    self._evict_connections()
                     log.warning(
                         "[tls] retries exhausted for %s after %d attempts",
                         request.url,
                         self.SSL_RETRY_ATTEMPTS,
                     )
+        if last_err is None:
+            raise RuntimeError(f"TLS retries exhausted for {request.url}")
         raise last_err
 
     def _evict_connections(self):
@@ -203,6 +231,10 @@ class ResilientTLSAdapter(HTTPAdapter):
             pm = getattr(self, "poolmanager", None)
             if pm is not None:
                 pm.clear()
+        except Exception:
+            pass
+        try:
+            self.close()
         except Exception:
             pass
         try:
@@ -248,6 +280,15 @@ class ResilientTLSAdapter(HTTPAdapter):
         return any(m in s for m in _DNS_MARKERS for s in msgs_to_check)
 
 
+def is_retryable_transport_error(exc: Exception) -> bool:
+    """Return True for transient Kite transport failures handled by this module."""
+    return (
+        ResilientTLSAdapter._is_ssl_eof(exc)
+        or ResilientTLSAdapter._is_timeout(exc)
+        or ResilientTLSAdapter._is_dns_failure(exc)
+    )
+
+
 def mount_resilient_tls(session, max_retries=None, ssl_verify: bool = True):
     """Mount the ResilientTLSAdapter on a requests.Session for https://.
 
@@ -256,6 +297,8 @@ def mount_resilient_tls(session, max_retries=None, ssl_verify: bool = True):
         max_retries: Optional urllib3 Retry object. Defaults to DEFAULT_RETRY.
         ssl_verify: Set False for public non-Kite fetchers that use verify=False.
     """
+    _ensure_ssl_patched()
+    _ensure_kite_ipv4_patched()
     session.headers["Connection"] = "close"
     adapter = ResilientTLSAdapter(
         max_retries=max_retries or DEFAULT_RETRY, ssl_verify=ssl_verify

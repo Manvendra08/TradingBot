@@ -1,10 +1,12 @@
 from __future__ import annotations
+
 import logging
 import re
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 import pytz
-from typing import TYPE_CHECKING
+
 if TYPE_CHECKING:
     from kiteconnect import KiteConnect
 
@@ -13,7 +15,6 @@ from config.settings import LOT_SIZES, MIN_ENTRY_QUALITY_CORE, REVERSAL_MIN_CONF
 from config.symbol_classes import get_kite_exchange, get_symbol_class, market_window
 from src.engine.capital_allocator import calculate_trade_lots
 from src.engine.entry_quality import calculate_entry_quality
-from src.engine.risk_engine import check_live_risk_limits
 from src.engine.paper_plan import (
     build_paper_trade_plan,
     is_bearish_verdict,
@@ -23,6 +24,7 @@ from src.engine.paper_plan import (
 
 # Phase 0: ML feature snapshot builder (shared with paper_trading)
 from src.engine.paper_trading import _build_ml_feature_snapshot
+from src.engine.risk_engine import check_live_risk_limits
 from src.engine.symbol_resolver import get_expiry_for_tradingsymbol, resolve_instrument
 from src.engine.trade_decision import make_trade_decision
 from src.engine.trend_analysis import get_trend_alignment_score
@@ -61,29 +63,55 @@ import threading
 _cached_kite_client = None
 _cached_access_token = None
 _cached_user_name = None
+_profile_failure_ts = 0.0
+_PROFILE_FAILURE_COOLDOWN_SECONDS = 30.0
 _kite_client_lock = threading.RLock()
 
 
 def clear_kite_client_cache() -> None:
-    global _cached_kite_client, _cached_access_token, _cached_user_name
+    global \
+        _cached_kite_client, \
+        _cached_access_token, \
+        _cached_user_name, \
+        _profile_failure_ts
     with _kite_client_lock:
         _cached_kite_client = None
         _cached_access_token = None
         _cached_user_name = None
+        _profile_failure_ts = 0.0
 
 
 def get_cached_user_name() -> str | None:
-    global _cached_user_name, _cached_kite_client
+    global _cached_user_name, _cached_kite_client, _profile_failure_ts
     if _cached_user_name:
         return _cached_user_name
+    now = datetime.now(timezone.utc).timestamp()
+    if (
+        _profile_failure_ts
+        and (now - _profile_failure_ts) < _PROFILE_FAILURE_COOLDOWN_SECONDS
+    ):
+        return None
     client = _cached_kite_client or get_kite_client()
     if client:
         try:
             profile = client.profile()
             _cached_user_name = profile.get("user_name")
+            _profile_failure_ts = 0.0
             return _cached_user_name
         except Exception as e:
-            log.warning("Failed to fetch Zerodha profile for user name: %s", e)
+            try:
+                from src.utils.tls_adapter import is_retryable_transport_error
+
+                if is_retryable_transport_error(e):
+                    clear_kite_client_cache()
+            except Exception:
+                pass
+            _profile_failure_ts = now
+            log.warning(
+                "Failed to fetch Zerodha profile for user name; retry paused for %.0fs: %s",
+                _PROFILE_FAILURE_COOLDOWN_SECONDS,
+                e,
+            )
     return None
 
 
@@ -166,6 +194,7 @@ def get_kite_client() -> KiteConnect | None:
             return None
 
         from src.services.zerodha_auth import is_token_valid
+
         if not is_token_valid():
             _cached_kite_client = None
             _cached_access_token = None
@@ -177,6 +206,7 @@ def get_kite_client() -> KiteConnect | None:
 
         try:
             from kiteconnect import KiteConnect
+
             kite = KiteConnect(api_key=config["api_key"])
             kite.set_access_token(config["access_token"])
 
@@ -395,18 +425,31 @@ def _bg_pending_gtt_placer(
     shadow_mode: bool,
 ) -> None:
     import time
-    log.info("%s: Spawned background GTT placer for pending order of trade id %d", symbol, inserted_id)
+
+    log.info(
+        "%s: Spawned background GTT placer for pending order of trade id %d",
+        symbol,
+        inserted_id,
+    )
     start_time = time.time()
     while time.time() - start_time < 300:
         time.sleep(5)
         try:
             trade = _latest_live_trade(inserted_id)
             if not trade or trade.get("status") != "OPEN":
-                log.info("%s: Trade %d is no longer OPEN. Exiting background GTT thread.", symbol, inserted_id)
+                log.info(
+                    "%s: Trade %d is no longer OPEN. Exiting background GTT thread.",
+                    symbol,
+                    inserted_id,
+                )
                 return
 
             if trade.get("broker_status") == "COMPLETE" and trade.get("gtt_order_id"):
-                log.info("%s: Trade %d already has GTT. Exiting background GTT thread.", symbol, inserted_id)
+                log.info(
+                    "%s: Trade %d already has GTT. Exiting background GTT thread.",
+                    symbol,
+                    inserted_id,
+                )
                 return
 
             broker_order_id = trade.get("broker_order_id")
@@ -415,7 +458,9 @@ def _bg_pending_gtt_placer(
 
             b_status, b_msg = confirm_order_fill(kite, broker_order_id, shadow_mode)
             if b_status == "COMPLETE":
-                log.info("%s: Pending trade filled in background! Placing GTT...", symbol)
+                log.info(
+                    "%s: Pending trade filled in background! Placing GTT...", symbol
+                )
                 gtt_order_id = place_kite_gtt(
                     kite,
                     symbol,
@@ -436,10 +481,17 @@ def _bg_pending_gtt_placer(
                     exit_mode="GTT",
                 )
                 from src.alerts.telegram_dispatcher import send_text
-                send_text(f"🤖 **[LIVE]** Background GTT Placed for `{symbol}` after pending fill. GTT ID: `{gtt_order_id}`")
+
+                send_text(
+                    f"🤖 **[LIVE]** Background GTT Placed for `{symbol}` after pending fill. GTT ID: `{gtt_order_id}`"
+                )
                 return
             elif b_status in ("REJECTED", "CANCELLED"):
-                log.info("%s: Pending trade %s in background. Cleaning up...", symbol, b_status)
+                log.info(
+                    "%s: Pending trade %s in background. Cleaning up...",
+                    symbol,
+                    b_status,
+                )
                 update_live_trade_entry(
                     inserted_id,
                     status="REJECTED",
@@ -450,7 +502,11 @@ def _bg_pending_gtt_placer(
                 return
         except Exception as ex:
             log.warning("%s: Error in background GTT placer: %s", symbol, ex)
-    log.warning("%s: Background GTT placer for trade %d timed out after 5 minutes.", symbol, inserted_id)
+    log.warning(
+        "%s: Background GTT placer for trade %d timed out after 5 minutes.",
+        symbol,
+        inserted_id,
+    )
 
 
 def _resolve_trade_quantity(symbol: str, lots: int, resolved: dict | None) -> int:
@@ -1232,7 +1288,7 @@ def run_live_trading(
                 entry_premium,
                 shadow_mode,
             ),
-            daemon=True
+            daemon=True,
         )
         t.start()
 
@@ -1818,7 +1874,7 @@ def run_live_timeframe_strategy(
                 entry_premium,
                 shadow_mode,
             ),
-            daemon=True
+            daemon=True,
         )
         t.start()
 
@@ -1944,18 +2000,23 @@ def sync_direct_kite_positions() -> None:
                 "SENSEX": "BSE:SENSEX",
             }
             symbol_key = mapping.get(base_sym)
-            
+
             if not symbol_key and base_sym in ("NATURALGAS", "CRUDEOIL"):
                 try:
                     from config.symbol_classes import get_futures_expiry
                     from src.engine.symbol_resolver import resolve_instrument
+
                     fut_expiry = get_futures_expiry(base_sym)
                     if fut_expiry:
-                        resolved_fut = resolve_instrument(base_sym, fut_expiry, 0.0, "FUT")
+                        resolved_fut = resolve_instrument(
+                            base_sym, fut_expiry, 0.0, "FUT"
+                        )
                         if resolved_fut and resolved_fut.get("tradingsymbol"):
                             symbol_key = f"MCX:{resolved_fut['tradingsymbol']}"
                 except Exception as e:
-                    log.warning("Failed to resolve futures symbol for %s: %s", base_sym, e)
+                    log.warning(
+                        "Failed to resolve futures symbol for %s: %s", base_sym, e
+                    )
 
             if symbol_key:
                 try:

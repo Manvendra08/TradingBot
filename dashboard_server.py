@@ -2042,13 +2042,20 @@ async def post_settings(data: dict):
 
 _positions_cache = None
 _positions_cache_ts = 0.0
+_positions_failure_ts = 0.0
+_KITE_FAILURE_COOLDOWN_SECONDS = 30.0
 
 
 def _fetch_real_kite_positions(kite) -> list[dict]:
-    global _positions_cache, _positions_cache_ts
+    global _positions_cache, _positions_cache_ts, _positions_failure_ts
     now = time.time()
     if _positions_cache is not None and (now - _positions_cache_ts) < 3.0:
         return _positions_cache
+    if (
+        _positions_failure_ts
+        and (now - _positions_failure_ts) < _KITE_FAILURE_COOLDOWN_SECONDS
+    ):
+        return _positions_cache if _positions_cache is not None else []
 
     try:
         from config.runtime_config import load_runtime_config
@@ -2422,13 +2429,16 @@ def _fetch_real_kite_positions(kite) -> list[dict]:
                 )
         _positions_cache = parsed_positions
         _positions_cache_ts = now
+        _positions_failure_ts = 0.0
         return parsed_positions
     except Exception as e:
-        log.error("Failed to fetch positions from Kite: %s", e)
-        stale = _positions_cache
-        _positions_cache = None
-        _positions_cache_ts = 0.0
-        return stale if stale is not None else []
+        _positions_failure_ts = now
+        log.error(
+            "Failed to fetch positions from Kite; using cached data for %.0fs: %s",
+            _KITE_FAILURE_COOLDOWN_SECONDS,
+            e,
+        )
+        return _positions_cache if _positions_cache is not None else []
 
 
 def _get_kite_closed_trades(kite) -> list[dict]:
@@ -3091,21 +3101,13 @@ def get_risk_metrics(mode: str = "live"):
     # 1. Fetch available cash
     available_cash = 0.0
     if mode == "live":
-        from src.engine.live_trading import get_kite_client
-
-        kite = get_kite_client()
-        if kite:
-            try:
-                margins = kite.margins()
-                section = margins.get("equity", {})
-                if isinstance(section, dict):
-                    net = float(section.get("net") or 0.0)
-                    debits = float(section.get("utilised", {}).get("debits") or 0.0)
-                    available_cash = net + debits
-            except Exception as e:
-                log.error("Failed to fetch margins from Kite in risk_metrics: %s", e)
-                available_cash = 1000000.0  # fallback
-        else:
+        margin_info = get_broker_margin()
+        equity_margin = margin_info.get("equity", {})
+        if isinstance(equity_margin, dict):
+            available_cash = float(equity_margin.get("available") or 0.0) + float(
+                equity_margin.get("utilized") or 0.0
+            )
+        if available_cash <= 0.0:
             available_cash = 1000000.0  # fallback mock cash
     else:
         # For paper: available_cash = 1,000,000 + closed_pnl
@@ -3402,11 +3404,12 @@ async def toggle_kill_switch(data: dict):
 
 _margins_cache = None
 _margins_cache_ts = 0.0
+_margins_failure_ts = 0.0
 
 
 @app.get("/api/broker_margin", dependencies=[Depends(authenticate)])
 def get_broker_margin():
-    global _margins_cache, _margins_cache_ts
+    global _margins_cache, _margins_cache_ts, _margins_failure_ts
     now = time.time()
     from config.runtime_config import load_runtime_config
 
@@ -3416,6 +3419,18 @@ def get_broker_margin():
         # Update shadow_mode to reflect latest config dynamically
         _margins_cache["shadow_mode"] = config.get("live_shadow_mode", True)
         return _margins_cache
+    if (
+        _margins_failure_ts
+        and (now - _margins_failure_ts) < _KITE_FAILURE_COOLDOWN_SECONDS
+    ):
+        if _margins_cache is not None:
+            _margins_cache["shadow_mode"] = config.get("live_shadow_mode", True)
+            return _margins_cache
+        return {
+            "shadow_mode": True,
+            "equity": {"available": 1000000.0, "utilized": 0.0},
+            "commodity": {"available": 500000.0, "utilized": 0.0},
+        }
 
     from src.engine.live_trading import get_kite_client
 
@@ -3467,9 +3482,15 @@ def get_broker_margin():
             }
             _margins_cache = result
             _margins_cache_ts = now
+            _margins_failure_ts = 0.0
             return result
         except Exception as e:
-            log.error("Failed to fetch margins from Kite: %s", e)
+            _margins_failure_ts = now
+            log.error(
+                "Failed to fetch margins from Kite; using cached data for %.0fs: %s",
+                _KITE_FAILURE_COOLDOWN_SECONDS,
+                e,
+            )
             if _margins_cache is not None:
                 _margins_cache["shadow_mode"] = config.get("live_shadow_mode", True)
                 return _margins_cache
@@ -3485,7 +3506,7 @@ def get_broker_margin():
 @app.post("/api/broker/logout", dependencies=[Depends(authenticate)])
 async def broker_logout():
     """Clear stored access token and cached Kite client."""
-    global _positions_cache, _positions_cache_ts, _margins_cache, _margins_cache_ts
+    global _positions_cache, _positions_cache_ts, _positions_failure_ts, _margins_cache, _margins_cache_ts, _margins_failure_ts
     from src.models.schema import update_broker_config
 
     update_broker_config(access_token="", request_token="", last_login_date="")
@@ -3497,8 +3518,10 @@ async def broker_logout():
         log.exception("Failed to clear Kite client cache during logout")
     _positions_cache = None
     _positions_cache_ts = 0.0
+    _positions_failure_ts = 0.0
     _margins_cache = None
     _margins_cache_ts = 0.0
+    _margins_failure_ts = 0.0
     return {"status": "SUCCESS", "message": "Logged out successfully"}
 
 
@@ -3510,6 +3533,37 @@ async def trigger_auto_login(data: dict = {}):
 
     result = auto_login_kite(force=force)
     return result
+
+
+@app.post("/internal/reauth")
+async def internal_reauth():
+    """
+    Internal endpoint for ops_agent.py to trigger Shoonya re-authentication.
+    No authentication required (internal network only).
+    """
+    try:
+        from src.fetchers.shoonya_fetcher import get_shoonya_fetcher
+        f = get_shoonya_fetcher()
+        # Clear cached token to force fresh OAuth
+        f.access_token = None
+        f._token_created_at = 0
+        # Attempt fresh login
+        success = f.login()
+        if success:
+            log.info("Internal reauth: Shoonya re-auth successful")
+            return {"status": "ok", "message": "Shoonya re-auth successful"}
+        else:
+            log.warning("Internal reauth: Shoonya re-auth failed")
+            return JSONResponse(
+                {"status": "error", "message": "Shoonya re-auth failed"},
+                status_code=500
+            )
+    except Exception as e:
+        log.error("Internal reauth exception: %s", e)
+        return JSONResponse(
+            {"status": "error", "message": str(e)},
+            status_code=500
+        )
 
 
 @app.get("/api/zerodha/callback")

@@ -136,7 +136,8 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     confidence_score    INTEGER,
     entry_quality_score INTEGER,
     trend_alignment_score INTEGER,
-    regime_score        INTEGER
+    regime_score        INTEGER,
+    entry_dev_pct       REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_paper_symbol_status
@@ -226,7 +227,8 @@ CREATE TABLE IF NOT EXISTS live_trades (
     confidence_score    INTEGER,
     entry_quality_score INTEGER,
     trend_alignment_score INTEGER,
-    regime_score        INTEGER
+    regime_score        INTEGER,
+    entry_dev_pct       REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_live_symbol_status
@@ -435,6 +437,8 @@ _MIGRATIONS = [
     # ── Auto-login: user_id and encrypted password for headless Kite login ────
     "ALTER TABLE broker_configs ADD COLUMN user_id TEXT",
     "ALTER TABLE broker_configs ADD COLUMN password TEXT",
+    "ALTER TABLE paper_trades ADD COLUMN entry_dev_pct REAL",
+    "ALTER TABLE live_trades ADD COLUMN entry_dev_pct REAL",
 ]
 
 
@@ -976,7 +980,7 @@ def insert_paper_trade(trade: dict) -> int:
              signal_key, pyramid_level, max_favorable_r,
              price_change_pct, pcr, ce_oi_change, pe_oi_change, underlying,
              support, resistance, max_pain, days_to_expiry, chart_conflict,
-             rsi_1h, rsi_3h, regime)
+             rsi_1h, rsi_3h, regime, entry_dev_pct)
         VALUES
             (:opened_at, :symbol, :expiry, :verdict_label, :side, :option_type, :strike, :entry_underlying,
              :entry_premium, :sl_underlying, :sl_premium, :target_underlying, :target_premium,
@@ -986,7 +990,7 @@ def insert_paper_trade(trade: dict) -> int:
              :signal_key, :pyramid_level, :max_favorable_r,
              :price_change_pct, :pcr, :ce_oi_change, :pe_oi_change, :underlying,
              :support, :resistance, :max_pain, :days_to_expiry, :chart_conflict,
-             :rsi_1h, :rsi_3h, :regime)
+             :rsi_1h, :rsi_3h, :regime, :entry_dev_pct)
         RETURNING id
     """
     row_data = {
@@ -1018,6 +1022,7 @@ def insert_paper_trade(trade: dict) -> int:
         "rsi_1h": trade.get("rsi_1h"),
         "rsi_3h": trade.get("rsi_3h"),
         "regime": trade.get("regime"),
+        "entry_dev_pct": trade.get("entry_dev_pct"),
         **{
             k: trade.get(k)
             for k in (
@@ -1378,7 +1383,7 @@ def insert_live_trade(trade: dict) -> int:
              broker_order_id, gtt_order_id, broker_status, broker_message, exit_mode,
              price_change_pct, pcr, ce_oi_change, pe_oi_change, underlying,
              support, resistance, max_pain, days_to_expiry, chart_conflict,
-             rsi_1h, rsi_3h, regime)
+             rsi_1h, rsi_3h, regime, entry_dev_pct)
         VALUES
             (:opened_at, :symbol, :expiry, :verdict_label, :side, :option_type, :strike, :entry_underlying,
              :entry_premium, :sl_underlying, :sl_premium, :target_underlying, :target_premium,
@@ -1389,7 +1394,7 @@ def insert_live_trade(trade: dict) -> int:
              :broker_order_id, :gtt_order_id, :broker_status, :broker_message, :exit_mode,
              :price_change_pct, :pcr, :ce_oi_change, :pe_oi_change, :underlying,
              :support, :resistance, :max_pain, :days_to_expiry, :chart_conflict,
-             :rsi_1h, :rsi_3h, :regime)
+             :rsi_1h, :rsi_3h, :regime, :entry_dev_pct)
         RETURNING id
     """
     row_data = {
@@ -1423,6 +1428,7 @@ def insert_live_trade(trade: dict) -> int:
         "rsi_1h": trade.get("rsi_1h"),
         "rsi_3h": trade.get("rsi_3h"),
         "regime": trade.get("regime"),
+        "entry_dev_pct": trade.get("entry_dev_pct"),
         **{
             k: trade.get(k)
             for k in (
@@ -1847,8 +1853,9 @@ def read_health_state() -> list[dict]:
 def read_health_state_ro() -> list[dict]:
     """Read-only health state for ops_agent (separate connection, no WAL lock)."""
     try:
+        db_uri = Path(DB_PATH).as_uri() + "?mode=ro"
         conn = sqlite3.connect(
-            f"file:{DB_PATH}?mode=ro",
+            db_uri,
             uri=True,
             detect_types=sqlite3.PARSE_DECLTYPES,
             timeout=5.0,

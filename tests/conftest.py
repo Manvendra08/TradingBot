@@ -165,10 +165,11 @@ def mock_llm_calls(request):
         yield
 
 
-# Block real external LLM HTTP calls in tests as a fallback safety net
 import requests
+import urllib.request
 
 _orig_post = requests.Session.post
+_orig_urlopen = urllib.request.urlopen
 
 
 def _patched_post(self, url, *args, **kwargs):
@@ -188,7 +189,17 @@ def _patched_post(self, url, *args, **kwargs):
     return _orig_post(self, url, *args, **kwargs)
 
 
+def _patched_urlopen(url, *args, **kwargs):
+    url_str = url if isinstance(url, str) else url.full_url
+    if "api.telegram.org" in url_str:
+        raise RuntimeError(
+            "Real Telegram call blocked in tests (urllib.request)"
+        )
+    return _orig_urlopen(url, *args, **kwargs)
+
+
 requests.Session.post = _patched_post
+urllib.request.urlopen = _patched_urlopen
 
 try:
     from google import genai

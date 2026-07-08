@@ -134,7 +134,8 @@ def run_ng_parity_strategy(
         "regime_score": 100,
         "signal_key": signal_key,
         "regime": "PARITY",
-        "underlying": underlying
+        "underlying": underlying,
+        "entry_dev_pct": dev_pct
     }
 
     trade_id = insert_paper_trade(trade_data)
@@ -182,15 +183,7 @@ def check_ng_parity_exits_every_2_min() -> None:
     
     dev_pct = parity_state.dev_pct
     entry_dev = float(open_trade.get("entry_underlying") or underlying)  # deviation is proportional to fair value
-    # Let's read the initial deviation log or calculate it
-    entry_dev_pct = 0.0
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT dev_pct FROM ng_parity_log WHERE ts <= ? ORDER BY id DESC LIMIT 1",
-            (open_trade["opened_at"],)
-        ).fetchone()
-        if row:
-            entry_dev_pct = float(row["dev_pct"])
+    entry_dev_pct = float(open_trade.get("entry_dev_pct") or 0.0)
 
     side = open_trade["side"]
     sl_pct = abs(entry_dev_pct) * PARITY_DEV_STOP_MULT

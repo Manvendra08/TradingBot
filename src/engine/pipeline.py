@@ -264,6 +264,12 @@ def run_pipeline(
             log.exception(
                 "Unhandled pipeline error for %s — continuing with next symbol", symbol
             )
+            # OPS Agent: stamp failure
+            try:
+                from src.models.schema import stamp_health
+                stamp_health(f"last_scan_{symbol}", "DOWN", f"pipeline_error at {fetched_at}")
+            except Exception:
+                pass
     log.info("Pipeline run complete | %s", fetched_at)
 
 
@@ -313,6 +319,12 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
     oc_data = fetch_option_chain(symbol)
     if not oc_data:
         log.error("No data for %s — skipping", symbol)
+        # OPS Agent: stamp failure
+        try:
+            from src.models.schema import stamp_health
+            stamp_health(f"last_scan_{symbol}", "DOWN", f"fetch_failed at {fetched_at}")
+        except Exception:
+            pass
         if not is_test:
             try:
                 send_text(
