@@ -481,7 +481,7 @@ def _update_live_cmps() -> None:
         futures = {
             executor.submit(_update_single_symbol, sym): sym for sym in open_symbols
         }
-        done, not_done = concurrent.futures.wait(futures.keys(), timeout=60)
+        done, not_done = concurrent.futures.wait(futures.keys(), timeout=90)
         for f in not_done:
             sym = futures[f]
             log.warning(
@@ -874,7 +874,7 @@ def start_scheduler(immediate: bool = False):
                         if class_key == "MCX_COMMODITY":
                             _run_dhan_naturalgas_scrape()
 
-                    success = run_with_timeout(run_all, timeout=300)
+                    success = run_with_timeout(run_all, timeout=600)
                     if not success:
                         try:
                             from src.alerts.telegram_dispatcher import send_text
@@ -911,7 +911,7 @@ def start_scheduler(immediate: bool = False):
             # 2b. Live CMP Refresh Loop (every 15 minutes)
             if time.time() - last_cmp_refresh >= 900:
                 cycle_start = time.time()
-                success = run_with_timeout(_update_live_cmps, timeout=90)
+                success = run_with_timeout(_update_live_cmps, timeout=120)
                 elapsed = time.time() - cycle_start
                 last_cmp_refresh = time.time()
                 if elapsed > 0.5:
@@ -1089,16 +1089,6 @@ def start_scheduler(immediate: bool = False):
                     threading.Thread(
                         target=_run_eia_fetch, daemon=True, name="eia-consensus-fetch"
                     ).start()
-                    log.info("[scheduler] EIA Consensus Scraper Job triggered (Wednesday 8:00 PM IST)")
-                    def _run_eia_fetch():
-                        try:
-                            from src.fetchers.eia_consensus_fetcher import (
-                                fetch_and_store_eia_consensus,
-                            )
-                            fetch_and_store_eia_consensus()
-                        except Exception as exc:
-                            log.warning("[scheduler] EIA consensus fetch failed: %s", exc)
-                    threading.Thread(target=_run_eia_fetch, daemon=True, name="eia-consensus-fetch").start()
 
             # Sleep in short increments to remain responsive to intervals and changes
 

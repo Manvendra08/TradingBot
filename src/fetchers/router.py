@@ -45,6 +45,8 @@ _FETCHERS = {
 }
 if ShoonyaFetcher is not None:
     _FETCHERS["shoonya"] = ShoonyaFetcher
+if SensibullFetcher is not None:
+    _FETCHERS["sensibull"] = SensibullFetcher
 
 _instances: dict = {}
 _lock = threading.Lock()

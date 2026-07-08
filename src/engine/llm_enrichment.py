@@ -2020,7 +2020,7 @@ def get_llm_verdict(
 
     # Check cache first
     now = time.time()
-    deadline = now + 75.0  # 75-second budget for the entire call
+    deadline = now + 90.0  # 90-second budget for the entire call
     current_underlying = float(scan_context.get("underlying") or 0.0)
     is_triggering = (
         trade_decision and "TRIGGERED" in str(trade_decision.get("status", "")).upper()
@@ -2192,7 +2192,7 @@ def get_exit_advice(
 
     # Check cache first
     now = time.time()
-    deadline = now + 75.0  # 75-second budget for the entire call
+    deadline = now + 90.0  # 90-second budget for the entire call
     current_underlying = float(scan_context.get("underlying") or 0.0)
     trade_id = open_trade.get("id")
 

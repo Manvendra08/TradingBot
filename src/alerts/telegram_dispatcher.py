@@ -358,17 +358,28 @@ def _send_text_http_fallback(text: str, timeout_seconds: int = 15) -> bool:
         return False
 
 
+_tg_bot: Bot | None = None
+
+
+def _get_tg_bot() -> Bot:
+    """Return a reused Bot instance to avoid repeated getMe calls on every send."""
+    global _tg_bot
+    if _tg_bot is None:
+        _tg_bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    return _tg_bot
+
+
 async def _send_async_safe(message: str, symbol: str = None, atype: str = None) -> None:
     try:
-        async with Bot(token=TELEGRAM_BOT_TOKEN) as bot:
-            await asyncio.wait_for(
-                bot.send_message(
-                    chat_id=TELEGRAM_CHAT_ID,
-                    text=message,
-                    parse_mode="Markdown",
-                ),
-                timeout=5.0,
-            )
+        bot = _get_tg_bot()
+        await asyncio.wait_for(
+            bot.send_message(
+                chat_id=TELEGRAM_CHAT_ID,
+                text=message,
+                parse_mode="Markdown",
+            ),
+            timeout=10.0,
+        )
         if symbol and atype:
             log.info("Telegram sent (bg): %s | %s", symbol, atype)
         else:
@@ -384,7 +395,7 @@ async def _send_async_safe(message: str, symbol: str = None, atype: str = None) 
                 None,
                 _send_text_http_fallback,
                 message,
-                5,  # timeout_seconds
+                10,  # timeout_seconds
             )
             if success:
                 if symbol and atype:
