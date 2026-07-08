@@ -26,9 +26,11 @@ def check_ng_position_limit(table: str = "paper_trades") -> bool:
         
     return open_count < NG_MAX_POSITIONS
 
+NG_DAILY_LOSS_CAP = 5
+
 def check_ng_daily_loss_cap(table: str = "paper_trades") -> bool:
     """
-    Returns True if the daily loss cap of 2 consecutive stops has been hit today.
+    Returns True if the daily loss cap of NG_DAILY_LOSS_CAP consecutive stops has been hit today.
     Returns False if clear.
     """
     if table not in ("paper_trades", "live_trades"):
@@ -41,7 +43,6 @@ def check_ng_daily_loss_cap(table: str = "paper_trades") -> bool:
     today_utc_iso = today_ist_start.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     
     with get_conn() as conn:
-        # Get last 2 closed trades for NATURALGAS today
         rows = conn.execute(
             f"""
             SELECT status FROM {table} 
@@ -50,15 +51,14 @@ def check_ng_daily_loss_cap(table: str = "paper_trades") -> bool:
               AND closed_at >= ?
               AND closed_at IS NOT NULL
             ORDER BY closed_at DESC 
-            LIMIT 2
+            LIMIT ?
             """,
-            (today_utc_iso,)
+            (today_utc_iso, NG_DAILY_LOSS_CAP)
         ).fetchall()
         
     statuses = [r["status"] for r in rows]
-    # Check if we have 2 closed trades today, and both are SL
-    if len(statuses) >= 2 and all(s in ("CLOSED_SL", "SL_HIT") for s in statuses):
-        log.warning("NG Daily Loss Cap hit! 2 consecutive stops hit today in %s.", table)
+    if len(statuses) >= NG_DAILY_LOSS_CAP and all(s in ("CLOSED_SL", "SL_HIT") for s in statuses):
+        log.warning("NG Daily Loss Cap hit! %d consecutive stops hit today in %s.", NG_DAILY_LOSS_CAP, table)
         return True
         
     return False

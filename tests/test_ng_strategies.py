@@ -28,6 +28,7 @@ class TestNGRiskManager(unittest.TestCase):
 
     @patch('src.engine.ng_risk_manager.get_conn')
     def test_daily_loss_cap(self, mock_get_conn):
+        from src.engine.ng_risk_manager import NG_DAILY_LOSS_CAP
         mock_conn = MagicMock()
         mock_get_conn.return_value.__enter__.return_value = mock_conn
         
@@ -39,12 +40,12 @@ class TestNGRiskManager(unittest.TestCase):
         mock_conn.execute.return_value.fetchall.return_value = [{"status": "CLOSED_SL"}]
         self.assertFalse(check_ng_daily_loss_cap())
         
-        # 2 closed trades (SL, Target) -> False
-        mock_conn.execute.return_value.fetchall.return_value = [{"status": "CLOSED_SL"}, {"status": "CLOSED_TARGET"}]
+        # NG_DAILY_LOSS_CAP-1 trades (SL repeated, last one Target) -> False
+        mock_conn.execute.return_value.fetchall.return_value = [{"status": "CLOSED_TARGET"}] + [{"status": "CLOSED_SL"}] * (NG_DAILY_LOSS_CAP - 1)
         self.assertFalse(check_ng_daily_loss_cap())
         
-        # 2 closed trades (SL, SL) -> True (cap hit)
-        mock_conn.execute.return_value.fetchall.return_value = [{"status": "CLOSED_SL"}, {"status": "CLOSED_SL"}]
+        # NG_DAILY_LOSS_CAP consecutive SLs -> True (cap hit)
+        mock_conn.execute.return_value.fetchall.return_value = [{"status": "CLOSED_SL"}] * NG_DAILY_LOSS_CAP
         self.assertTrue(check_ng_daily_loss_cap())
 
     def test_lot_sizing(self):
