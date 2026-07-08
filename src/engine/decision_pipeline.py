@@ -17,14 +17,14 @@ from config.settings import (
     MOMENTUM_SCORE_THRESHOLD,
     TREND_MIN_SCANS,
     AI_DECISION_MODE,
-    AI_MIN_CONFIDENCE_BOOST,
-    AI_MIN_CONFIDENCE_VETO,
     MCX_MIN_CONFIDENCE,
     MCX_SYMBOLS,
     PIPELINE_SHORT_CIRCUIT,
     ENTRY_QUALITY_MIN_SCORE_TF,
     TREND_ALIGNMENT_MIN_SCORE_TF,
-    TIMEFRAME_OI_MIN_DIFF_PCT
+    TIMEFRAME_OI_MIN_DIFF_PCT,
+    EMP_BOOST_MIN_TRADES,
+    EMP_BOOST_MIN_WINRATE,
 )
 from src.engine.time_guards import is_trading_allowed_now
 from src.engine.entry_quality import calculate_entry_quality
@@ -38,15 +38,21 @@ from src.engine.trend_analysis import (
 from src.engine.regime_detector import detect_market_regime, regime_score_for_trade, REGIME_NO_TRADE
 from src.engine.risk_engine import _check_risk_limits_for_table
 from src.engine.verdict_sets import is_bullish, is_bearish
-from src.engine.trade_decision import _extract_ai_bias, _count_valid_scans
+from src.engine.trade_decision import (
+    _extract_ai_bias,
+    _extract_ai_veto_flag,
+    _extract_ai_veto_reason,
+    _count_valid_scans,
+)
+from src.engine.pattern_history import get_pattern_stats
 
 log = logging.getLogger(__name__)
 
 
 @dataclass
 class StepResult:
-    name: str           # vocabulary: signal | rule | ai | entry_quality | trend | regime | risk
-    passed: bool        # True if allowed to proceed
+    name: str           # signal | rule | ai | entry_quality | regime | trend_alignment
+    passed: bool        # Whether the check passed
     score: float        # Numeric score (0-100) or -1 for binary steps
     reason: str         # Human-readable summary
     data: dict          # Step input/output context
@@ -79,6 +85,25 @@ class PipelineContext:
     def block_reason(self) -> str:
         failed = [s for s in self.steps if not s.passed]
         return failed[0].reason if failed else ""
+
+    @property
+    def verdict_label(self) -> str:
+        return str(
+            self.scan_context.get("intel", {}).get("verdict_label")
+            or self.scan_context.get("verdict_label")
+            or ""
+        )
+
+    @property
+    def pcr_regime(self) -> str:
+        regime_step = next((s for s in self.steps if s.name == "regime"), None)
+        if regime_step and regime_step.data.get("regime"):
+            return str(regime_step.data.get("regime"))
+        return str(
+            self.scan_context.get("intel", {}).get("pcr_regime")
+            or self.scan_context.get("pcr_regime")
+            or ""
+        )
 
 
 # ── Step Implementations ──────────────────────────────────────────────────────────
@@ -199,8 +224,6 @@ def step_ai_alignment(ctx: PipelineContext) -> StepResult:
     from config.runtime_config import load_runtime_config
     rconf = load_runtime_config()
     ai_decision_mode = rconf.get("live_ai_decision_mode", "advisory")
-    ai_min_confidence_boost = int(rconf.get("live_ai_min_confidence_boost", 80))
-    ai_min_confidence_veto = int(rconf.get("live_ai_min_confidence_veto", 85))
 
     if ai_verdict:
         if not isinstance(ai_verdict, dict):
@@ -252,15 +275,18 @@ def step_ai_alignment(ctx: PipelineContext) -> StepResult:
                 data={"ai_bias": ai_bias, "ai_conf": ai_conf, "ai_risk": ai_risk}
             )
 
-    # Core Engine specific AI Veto in full mode
+    # Core Engine specific AI Veto in full mode (ADR-007: veto_flag binary only, no confidence threshold)
     if ctx.engine == "CORE_OI" and ai_decision_mode == "full":
-        if not ai_agrees and ai_conf >= ai_min_confidence_veto:
+        veto_flag = _extract_ai_veto_flag(ai_verdict)
+        veto_reason = _extract_ai_veto_reason(ai_verdict)
+        if not ai_agrees and veto_flag:
+            reason_str = veto_reason or "LLM flagged disqualifier"
             return StepResult(
                 name="ai",
                 passed=False,
-                score=ai_conf,
-                reason=f"AI VETO: conf={ai_conf}% disagrees, risk={ai_risk}",
-                data={"ai_bias": ai_bias, "ai_conf": ai_conf, "ai_agrees": ai_agrees, "ai_risk": ai_risk, "vetoed": True}
+                score=-1,
+                reason=f"AI VETO: {reason_str}",
+                data={"ai_bias": ai_bias, "ai_agrees": ai_agrees, "ai_risk": ai_risk, "vetoed": True, "veto_reason": veto_reason}
             )
 
     return StepResult(
@@ -371,7 +397,6 @@ def step_trend_alignment_core(ctx: PipelineContext) -> StepResult:
     from config.runtime_config import load_runtime_config
     rconf = load_runtime_config()
     ai_decision_mode = rconf.get("live_ai_decision_mode", "advisory")
-    ai_min_confidence_boost = int(rconf.get("live_ai_min_confidence_boost", 80))
 
     regime_ok = (regime_sc >= MIN_REGIME_SCORE_CORE) or (PAPER_RESEARCH_MODE and confidence >= MIN_CONFIDENCE_CORE)
 
@@ -454,20 +479,30 @@ def step_trend_alignment_core(ctx: PipelineContext) -> StepResult:
                 f"ta={trend_alignment} momentum={momentum_score}"
             )
 
-        # Priority 5: AI boost
-        if not passed and ctx.ai_verdict and ai_decision_mode in ("boost_only", "full"):
-            if ai_agrees and ai_conf >= ai_min_confidence_boost:
+        # Priority 5: Empirical promotion (ADR-007 v2)
+        if not passed and ai_decision_mode in ("full", "empirical"):
+            block_parts = []
+            if not is_rev:
+                block_parts.append(f"No reversal: {rev_reason}")
+            if not is_persistent:
+                block_parts.append(f"No persistence: {persist_reason}")
+            if momentum_score < MOMENTUM_SCORE_THRESHOLD:
+                block_parts.append(f"Low momentum ({momentum_score})")
+
+            precedent = get_pattern_stats(
+                symbol=ctx.symbol, verdict=ctx.verdict_label, pcr_regime=ctx.pcr_regime,
+            )
+            veto_flag = _extract_ai_veto_flag(ctx.ai_verdict)
+            if (precedent.n_trades >= rconf.get("emp_boost_min_trades", EMP_BOOST_MIN_TRADES)
+                and precedent.win_rate >= rconf.get("emp_boost_min_winrate", EMP_BOOST_MIN_WINRATE)
+                and precedent.avg_pnl > 0
+                and not veto_flag):
                 passed = True
-                setup_type = "AI_PROMOTED"
-                soft_conflicts.append("AI_PROMOTED")
-                block_parts = []
-                if not is_rev:
-                    block_parts.append(f"No reversal: {rev_reason}")
-                if not is_persistent:
-                    block_parts.append(f"No persistence: {persist_reason}")
-                if momentum_score < MOMENTUM_SCORE_THRESHOLD:
-                    block_parts.append(f"Low momentum ({momentum_score})")
-                reason = f"AI boost: conf={ai_conf}% agrees | Rule blocked: {'; '.join(block_parts)}"
+                setup_type = "EMPIRICAL_PROMOTED"
+                soft_conflicts.append("EMPIRICAL_PROMOTED")
+                reason = (f"Empirical boost: {precedent.win_rate:.0%} over "
+                          f"{precedent.n_trades} trades | LLM veto: none | "
+                          f"Rule blocked: {'; '.join(block_parts)}")
 
     # Cache outputs for final trade execution
     ctx.scan_context["_setup_type"] = setup_type

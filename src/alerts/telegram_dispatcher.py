@@ -335,27 +335,38 @@ def _send_text_http_fallback(text: str, timeout_seconds: int = 15) -> bool:
     """Direct Telegram HTTP fallback if asyncio loop path times out."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return False
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        payload = urllib.parse.urlencode(
-            {
+
+    def _try_request(parse_mode: str = "Markdown") -> tuple[bool, str]:
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+            data_dict = {
                 "chat_id": TELEGRAM_CHAT_ID,
                 "text": text,
-                "parse_mode": "Markdown",
                 "disable_web_page_preview": "true",
             }
-        ).encode("utf-8")
-        req = urllib.request.Request(
-            url,
-            data=payload,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
-            body = resp.read().decode("utf-8", errors="ignore")
-        return '"ok":true' in body.replace(" ", "")
-    except Exception:
-        return False
+            if parse_mode:
+                data_dict["parse_mode"] = parse_mode
+            payload = urllib.parse.urlencode(data_dict).encode("utf-8")
+            req = urllib.request.Request(
+                url,
+                data=payload,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+                body = resp.read().decode("utf-8", errors="ignore")
+            is_ok = '"ok":true' in body.replace(" ", "")
+            return is_ok, body
+        except Exception as e:
+            return False, str(e)
+
+    success, body = _try_request("Markdown")
+    if not success:
+        # If it failed due to markdown entity parsing, retry without parsing
+        if "parse" in body.lower() or "entity" in body.lower() or "bad request" in body.lower():
+            log.warning("HTTP fallback Markdown failed: %s. Retrying in plain text...", body)
+            success, body = _try_request(None)
+    return success
 
 
 _tg_bot: Bot | None = None
@@ -372,14 +383,36 @@ def _get_tg_bot() -> Bot:
 async def _send_async_safe(message: str, symbol: str = None, atype: str = None) -> None:
     try:
         bot = _get_tg_bot()
-        await asyncio.wait_for(
-            bot.send_message(
-                chat_id=TELEGRAM_CHAT_ID,
-                text=message,
-                parse_mode="Markdown",
-            ),
-            timeout=10.0,
-        )
+        try:
+            await asyncio.wait_for(
+                bot.send_message(
+                    chat_id=TELEGRAM_CHAT_ID,
+                    text=message,
+                    parse_mode="Markdown",
+                ),
+                timeout=10.0,
+            )
+        except TelegramError as tg_err:
+            err_msg = str(tg_err).lower()
+            if "can't parse" in err_msg or "entity" in err_msg or "markdown" in err_msg:
+                log.warning("Telegram Markdown parse failed: %s. Retrying in plain text...", tg_err)
+                await asyncio.wait_for(
+                    bot.send_message(
+                        chat_id=TELEGRAM_CHAT_ID,
+                        text=message,
+                    ),
+                    timeout=10.0,
+                )
+            else:
+                raise
+
+        # Successful send (direct path) -> stamp OK
+        try:
+            from src.models.schema import stamp_health
+            stamp_health("telegram_send", "OK", "sent successfully")
+        except Exception:
+            pass
+
         if symbol and atype:
             log.info("Telegram sent (bg): %s | %s", symbol, atype)
         else:
@@ -398,6 +431,13 @@ async def _send_async_safe(message: str, symbol: str = None, atype: str = None) 
                 10,  # timeout_seconds
             )
             if success:
+                # Fallback succeeded -> stamp OK
+                try:
+                    from src.models.schema import stamp_health
+                    stamp_health("telegram_send", "OK", "sent via HTTP fallback")
+                except Exception:
+                    pass
+
                 if symbol and atype:
                     log.info(
                         "Telegram sent via HTTP fallback (bg): %s | %s", symbol, atype
@@ -409,7 +449,7 @@ async def _send_async_safe(message: str, symbol: str = None, atype: str = None) 
                     )
             else:
                 log.error("Telegram HTTP fallback failed in bg")
-                # OPS Agent: stamp telegram failure
+                # Both direct and fallback failed -> stamp DOWN
                 try:
                     from src.models.schema import stamp_health
                     stamp_health("telegram_send", "DOWN", f"async+http failed: {str(exc)[:80]}")
@@ -493,3 +533,81 @@ def send_text(text: str) -> bool:
             log.error("Discord unexpected error queueing text: %s", exc)
 
     return tg_queued or discord_queued
+
+
+# ── ADR-007 §3 A3: Async LLM enrichment — message editing ──────────────────
+
+async def _edit_message_text_async(message_id: int, text: str) -> bool:
+    """Edit an existing Telegram message by message_id."""
+    try:
+        bot = _get_tg_bot()
+        await asyncio.wait_for(
+            bot.edit_message_text(
+                chat_id=TELEGRAM_CHAT_ID,
+                message_id=message_id,
+                text=text,
+                parse_mode="Markdown",
+            ),
+            timeout=10.0,
+        )
+        return True
+    except TelegramError as tg_err:
+        err_msg = str(tg_err).lower()
+        if "can't parse" in err_msg or "entity" in err_msg or "markdown" in err_msg:
+            try:
+                await asyncio.wait_for(
+                    bot.edit_message_text(
+                        chat_id=TELEGRAM_CHAT_ID,
+                        message_id=message_id,
+                        text=text,
+                    ),
+                    timeout=10.0,
+                )
+                return True
+            except Exception:
+                pass
+        log.debug("Telegram edit_message failed: %s", tg_err)
+        return False
+    except Exception as exc:
+        log.debug("Telegram edit_message unexpected error: %s", exc)
+        return False
+
+
+def send_text_and_return_id(text: str) -> int | None:
+    """Send a message and return its message_id for later editing. Returns None on failure."""
+    if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "YOUR_BOT_TOKEN":
+        return None
+    _ensure_loop()
+    try:
+        async def _send_and_get_id():
+            bot = _get_tg_bot()
+            msg = await asyncio.wait_for(
+                bot.send_message(
+                    chat_id=TELEGRAM_CHAT_ID,
+                    text=text,
+                    parse_mode="Markdown",
+                ),
+                timeout=10.0,
+            )
+            return msg.message_id
+
+        future = asyncio.run_coroutine_threadsafe(_send_and_get_id(), _loop)
+        return future.result(timeout=15.0)
+    except Exception as exc:
+        log.warning("Telegram send_and_return_id failed: %s", exc)
+        return None
+
+
+def edit_message_text(message_id: int, text: str) -> bool:
+    """Edit an existing Telegram message. Returns True on success."""
+    if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "YOUR_BOT_TOKEN":
+        return False
+    _ensure_loop()
+    try:
+        future = asyncio.run_coroutine_threadsafe(
+            _edit_message_text_async(message_id, text), _loop
+        )
+        return future.result(timeout=15.0)
+    except Exception as exc:
+        log.warning("Telegram edit_message_text failed: %s", exc)
+        return False

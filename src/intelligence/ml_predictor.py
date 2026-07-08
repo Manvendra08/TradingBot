@@ -156,6 +156,7 @@ class TradeSuccessPredictor:
         self.current_auc = 0.0
         self._shap_explainer = None  # v2.1: Cached SHAP explainer
         self._needs_retrain = False  # v3.0: Set when stale model discarded
+        self._force_shadow = False   # ADR-007: True if AUC/samples below threshold
         self._load_model()
 
     def _load_model(self):
@@ -207,6 +208,18 @@ class TradeSuccessPredictor:
                 self.training_samples,
                 self.current_auc,
             )
+
+            # ADR-007 §3 A2: AUC guard — force shadow if model quality insufficient
+            if self.current_auc < 0.55 or self.training_samples < 300:
+                log.warning(
+                    "ML model below quality threshold (AUC=%.3f, samples=%d). "
+                    "Forcing shadow mode regardless of ML_PREDICTOR_MODE setting.",
+                    self.current_auc,
+                    self.training_samples,
+                )
+                self._force_shadow = True
+            else:
+                self._force_shadow = False
         except Exception as e:
             log.error("Failed to load ML model: %s", e)
             self.model = None
@@ -276,13 +289,62 @@ class TradeSuccessPredictor:
         else:
             confidence = "HIGH"
 
-        return MLPrediction(
+        prediction = MLPrediction(
             success_probability=float(success_prob),
             confidence_level=confidence,
             top_factors=top_factors,
             model_version=self.model_version,
             training_samples=self.training_samples,
         )
+
+        # ADR-007 §3 A2: Write to shadow_predictions if in shadow mode
+        self._write_shadow_prediction(prediction, trade_context, features)
+
+        return prediction
+
+    def _is_shadow_mode(self) -> bool:
+        """ADR-007 §3 A2: Check if ML predictor is in shadow mode."""
+        if self._force_shadow:
+            return True
+        try:
+            from config.runtime_config import load_runtime_config
+            rconf = load_runtime_config()
+            mode = rconf.get("ml_predictor_mode", "shadow")
+            return mode == "shadow"
+        except Exception:
+            return True  # Default to shadow on error
+
+    def _write_shadow_prediction(
+        self, prediction: "MLPrediction", trade_context: dict, features: dict
+    ) -> None:
+        """ADR-007 §3 A2: Write prediction to shadow_predictions table in shadow mode."""
+        if not self._is_shadow_mode():
+            return
+        try:
+            from datetime import datetime, timezone
+            from src.models.schema import get_conn
+
+            now_iso = datetime.now(timezone.utc).isoformat()
+            symbol = trade_context.get("symbol", "")
+            features_json = json.dumps(features, default=str)
+
+            with get_conn() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO shadow_predictions
+                    (ts, symbol, model_version, p_success, features_json, decision_id, outcome)
+                    VALUES (?, ?, ?, ?, ?, NULL, NULL)
+                    """,
+                    (
+                        now_iso,
+                        symbol,
+                        prediction.model_version,
+                        prediction.success_probability,
+                        features_json,
+                    ),
+                )
+        except Exception as e:
+            log.debug("Failed to write shadow prediction: %s", e)
 
     def _extract_features(self, ctx: dict) -> "dict | None":
         """

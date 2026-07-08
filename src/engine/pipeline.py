@@ -1,6 +1,10 @@
 """
-Data Pipeline Orchestrator v2.9
+Data Pipeline Orchestrator v2.10
 fetch → detect → dedup → digest → alert
+
+Fixes (v2.10):
+  - ADR-007 §3 A3: Async LLM enrichment — entry verdict deferred to background thread.
+    Digest v1 sent with rule-derived levels + "thesis pending"; v2 edit adds thesis/invalidation.
 
 Fixes (v2.9):
   - B5: Track when underlying fell back to prev_price (is_fallback=True).
@@ -14,12 +18,14 @@ Fixes (v2.9):
 """
 
 import logging
+import threading
 from datetime import datetime, timezone
 
-from config.settings import WATCH_SYMBOLS, get_symbol_thresholds
+from config.settings import WATCH_SYMBOLS, get_symbol_thresholds, LLM_ENRICHMENT_ASYNC, LLM_ENRICH_TIMEOUT_S
+from config.settings import DISABLE_LLM_ENRICHMENT as _DISABLE_LLM_ENV
 from src.alerts.dedup import is_duplicate, record_alert, should_send_zero_signal
 from src.alerts.digest import build_digest_wrapper as build_digest
-from src.alerts.telegram_dispatcher import send_text
+from src.alerts.telegram_dispatcher import send_text, send_text_and_return_id, edit_message_text
 from src.engine.anomaly_detector import detect_anomalies
 from src.engine.intelligence import generate_intelligence_structured
 from src.engine.live_trading import run_live_timeframe_strategy, run_live_trading
@@ -114,6 +120,103 @@ def _check_edge_health_and_trigger_retrain() -> None:
         pass  # edge_monitor not yet available
     except Exception:
         log.debug("Edge health check failed gracefully")
+
+
+def _async_llm_enrich_and_edit(
+    symbol: str,
+    intel: dict,
+    scan_context: dict,
+    new_alerts: list,
+    news_data: dict,
+    fetched_at: str,
+    digest_id: str,
+    message_id: int,
+    paper_trade_report: dict | None,
+    live_trade_report: dict | None,
+    dedup_suppressed: int,
+    intel_text_base: str,
+) -> None:
+    """
+    ADR-007 §3 A3: Background thread to fetch LLM verdict and edit digest message.
+    Runs after digest v1 is sent; edits message with v2 containing thesis/invalidation.
+    """
+    try:
+        from src.engine.llm_enrichment import get_llm_verdict
+
+        llm_verdict = get_llm_verdict(
+            symbol,
+            intel,
+            scan_context,
+            alerts=new_alerts,
+            news_data=news_data,
+            open_trade=None,
+        )
+        if not llm_verdict:
+            log.debug("%s: async LLM returned no verdict", symbol)
+            return
+
+        log.info(
+            "%s: async LLM verdict — %s (%d%%) risk=%s",
+            symbol,
+            llm_verdict.action,
+            llm_verdict.confidence,
+            llm_verdict.risk_rating,
+        )
+
+        intel_v2 = intel.copy() if intel else {}
+        intel_v2 = generate_intelligence_structured(
+            symbol,
+            new_alerts,
+            scan_context=scan_context,
+            ai_verdict=llm_verdict,
+        )
+        intel_text_v2 = intel_v2.get("telegram_text", intel_text_base) if intel_v2 else intel_text_base
+
+        action_emoji = {
+            "GO_LONG": "🟢",
+            "GO_SHORT": "🔴",
+            "NO_TRADE": "⚪",
+        }.get(getattr(llm_verdict, "action", "NO_TRADE"), "❓")
+        risk_emoji = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🔴"}.get(
+            getattr(llm_verdict, "risk_rating", "MEDIUM"), "❓"
+        )
+
+        thesis_line = f"\n\n{action_emoji} *AI Trade Plan* ({llm_verdict.action}, {llm_verdict.confidence}%)\n"
+        thesis_line += f"📋 *Contract:* `{llm_verdict.instrument}`\n"
+        thesis_line += f"🎯 *Entry:* {llm_verdict.entry_trigger}\n"
+        thesis_line += f"💰 *Premium:* {llm_verdict.entry_premium_range}\n"
+        thesis_line += f"🛑 *SL:* {llm_verdict.stop_loss}\n"
+        thesis_line += f"🎯 *T1:* {llm_verdict.target_1} | *T2:* {llm_verdict.target_2}\n"
+        thesis_line += f"📊 *R:R:* {llm_verdict.risk_reward} | {risk_emoji} *Risk:* {llm_verdict.risk_rating}\n"
+        thesis_line += f"💡 *Thesis:* {llm_verdict.thesis}\n"
+        thesis_line += f"⚠️ *Invalidation:* {llm_verdict.invalidation}\n"
+        if llm_verdict.catalyst and llm_verdict.catalyst != "No major catalyst":
+            thesis_line += f"📅 *Catalyst:* {llm_verdict.catalyst}\n"
+
+        intel_text_v2 += thesis_line
+
+        _, digest_msg_v2 = build_digest(
+            symbol,
+            new_alerts,
+            fetched_at,
+            scan_context=scan_context,
+            intelligence_text=intel_text_v2,
+            detected_count=len(new_alerts),
+            dedup_suppressed_count=dedup_suppressed,
+            digest_id=digest_id,
+            paper_trade_status=paper_trade_report,
+            live_trade_status=live_trade_report,
+            llm_verdict=llm_verdict,
+        )
+
+        if edit_message_text(message_id, digest_msg_v2):
+            log.info("%s: async LLM digest v2 edit successful", symbol)
+        else:
+            log.debug("%s: async LLM digest v2 edit failed, sending follow-up", symbol)
+            send_text(f"🔄 *Updated analysis for {symbol}:*\n\n{thesis_line}")
+    except Exception as e:
+        log.warning("%s: async LLM enrichment thread failed: %s", symbol, e)
+
 
 
 def run_pipeline(
@@ -624,26 +727,28 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
         log.debug("%s: could not fetch open trade for AI context", symbol)
 
     # 3c. AI Enrichment (LLM — Deep Context)
-    from config.settings import DISABLE_LLM_ENRICHMENT
-    from src.engine.llm_enrichment import get_llm_verdict
-
+    # ADR-007 §3 A3: Async enrichment — entry verdict deferred to background thread if LLM_ENRICHMENT_ASYNC=True
+    DISABLE_LLM_ENRICHMENT = _DISABLE_LLM_ENV
+    intel_text_base = intel_text
     llm_verdict = None
     exit_advice = None
+    _async_llm_pending = False
 
     if DISABLE_LLM_ENRICHMENT:
         log.info("%s: LLM enrichment disabled (DISABLE_LLM_ENRICHMENT=true)", symbol)
     elif intel:
         try:
             if open_trade:
-                # C2: When a position is already open, skip the entry advisor entirely.
-                # Running both entry + exit on the same scan produces contradictory directional
-                # models (entry might say GO_LONG while exit manages a SHORT). Exit advisor
-                # runs below in 3d and is the sole AI voice when a position is held.
                 log.debug(
                     "%s: open position exists — skipping LLM entry verdict, exit advisor will run",
                     symbol,
                 )
+            elif LLM_ENRICHMENT_ASYNC:
+                _async_llm_pending = True
+                intel_text += "\n💡 *Thesis:* ⏳ Pending async analysis...\n"
+                log.debug("%s: async LLM enrichment mode — verdict deferred to background thread", symbol)
             else:
+                from src.engine.llm_enrichment import get_llm_verdict
                 llm_verdict = get_llm_verdict(
                     symbol,
                     intel,
@@ -652,48 +757,46 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
                     news_data=news_data,
                     open_trade=None,
                 )
-            if llm_verdict:
-                # Regenerate intelligence structured with the fetched AI verdict
-                # so the inline decision engine block reflects the AI boost/veto
-                intel = generate_intelligence_structured(
-                    symbol,
-                    new_alerts,
-                    scan_context=scan_context,
-                    ai_verdict=llm_verdict,
-                )
-                intel_text = intel.get("telegram_text", "") if intel else intel_text
+                if llm_verdict:
+                    intel = generate_intelligence_structured(
+                        symbol,
+                        new_alerts,
+                        scan_context=scan_context,
+                        ai_verdict=llm_verdict,
+                    )
+                    intel_text = intel.get("telegram_text", "") if intel else intel_text
 
-                log.info(
-                    "%s: AI verdict — %s (%d%%) risk=%s | Instrument: %s",
-                    symbol,
-                    llm_verdict.action,
-                    llm_verdict.confidence,
-                    llm_verdict.risk_rating,
-                    llm_verdict.instrument,
-                )
+                    log.info(
+                        "%s: AI verdict — %s (%d%%) risk=%s | Instrument: %s",
+                        symbol,
+                        llm_verdict.action,
+                        llm_verdict.confidence,
+                        llm_verdict.risk_rating,
+                        llm_verdict.instrument,
+                    )
 
-                action_emoji = {
-                    "GO_LONG": "🟢",
-                    "GO_SHORT": "🔴",
-                    "NO_TRADE": "⚪",
-                }.get(llm_verdict.action, "❓")
-                risk_emoji = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🔴"}.get(
-                    llm_verdict.risk_rating, "❓"
-                )
+                    action_emoji = {
+                        "GO_LONG": "🟢",
+                        "GO_SHORT": "🔴",
+                        "NO_TRADE": "⚪",
+                    }.get(llm_verdict.action, "❓")
+                    risk_emoji = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🔴"}.get(
+                        llm_verdict.risk_rating, "❓"
+                    )
 
-                intel_text += f"\n\n{action_emoji} *AI Trade Plan* ({llm_verdict.action}, {llm_verdict.confidence}%)\n"
-                intel_text += f"📋 *Contract:* `{llm_verdict.instrument}`\n"
-                intel_text += f"🎯 *Entry:* {llm_verdict.entry_trigger}\n"
-                intel_text += f"💰 *Premium:* {llm_verdict.entry_premium_range}\n"
-                intel_text += f"🛑 *SL:* {llm_verdict.stop_loss}\n"
-                intel_text += (
-                    f"🎯 *T1:* {llm_verdict.target_1} | *T2:* {llm_verdict.target_2}\n"
-                )
-                intel_text += f"📊 *R:R:* {llm_verdict.risk_reward} | {risk_emoji} *Risk:* {llm_verdict.risk_rating}\n"
-                intel_text += f"💡 *Thesis:* {llm_verdict.thesis}\n"
-                intel_text += f"⚠️ *Invalidation:* {llm_verdict.invalidation}\n"
-                if llm_verdict.catalyst and llm_verdict.catalyst != "No major catalyst":
-                    intel_text += f"📅 *Catalyst:* {llm_verdict.catalyst}\n"
+                    intel_text += f"\n\n{action_emoji} *AI Trade Plan* ({llm_verdict.action}, {llm_verdict.confidence}%)\n"
+                    intel_text += f"📋 *Contract:* `{llm_verdict.instrument}`\n"
+                    intel_text += f"🎯 *Entry:* {llm_verdict.entry_trigger}\n"
+                    intel_text += f"💰 *Premium:* {llm_verdict.entry_premium_range}\n"
+                    intel_text += f"🛑 *SL:* {llm_verdict.stop_loss}\n"
+                    intel_text += (
+                        f"🎯 *T1:* {llm_verdict.target_1} | *T2:* {llm_verdict.target_2}\n"
+                    )
+                    intel_text += f"📊 *R:R:* {llm_verdict.risk_reward} | {risk_emoji} *Risk:* {llm_verdict.risk_rating}\n"
+                    intel_text += f"💡 *Thesis:* {llm_verdict.thesis}\n"
+                    intel_text += f"⚠️ *Invalidation:* {llm_verdict.invalidation}\n"
+                    if llm_verdict.catalyst and llm_verdict.catalyst != "No major catalyst":
+                        intel_text += f"📅 *Catalyst:* {llm_verdict.catalyst}\n"
         except Exception:
             log.exception("%s: AI enrichment failed gracefully", symbol)
 
@@ -1024,11 +1127,41 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
         )
         send_text(digest_msg)
         sent_digest = False
+        telegram_message_id = None
     else:
         if should_send:
-            sent_digest = send_text(digest_msg)
+            if _async_llm_pending:
+                telegram_message_id = send_text_and_return_id(digest_msg)
+                sent_digest = telegram_message_id is not None
+                if sent_digest:
+                    log.info("%s: digest v1 sent (msg_id=%d), launching async LLM thread", symbol, telegram_message_id)
+                    thread = threading.Thread(
+                        target=_async_llm_enrich_and_edit,
+                        kwargs=dict(
+                            symbol=symbol,
+                            intel=intel,
+                            scan_context=scan_context,
+                            new_alerts=new_alerts,
+                            news_data=news_data,
+                            fetched_at=fetched_at,
+                            digest_id=digest_id,
+                            message_id=telegram_message_id,
+                            paper_trade_report=paper_trade_report,
+                            live_trade_report=live_trade_report,
+                            dedup_suppressed=dedup_suppressed,
+                            intel_text_base=intel_text_base,
+                        ),
+                        daemon=True,
+                    )
+                    thread.start()
+                else:
+                    log.warning("%s: digest v1 send failed, async LLM enrichment skipped", symbol)
+            else:
+                sent_digest = send_text(digest_msg)
+                telegram_message_id = None
         else:
             sent_digest = False
+            telegram_message_id = None
 
     # 5. Persist + record dedup
     if is_test:
