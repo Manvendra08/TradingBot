@@ -1090,6 +1090,17 @@ def start_scheduler(immediate: bool = False):
                         target=_run_eia_fetch, daemon=True, name="eia-consensus-fetch"
                     ).start()
 
+            # ── OPS Agent: heartbeat + health stamps ────────────────────────
+            try:
+                from pathlib import Path as _P
+                _hb = _P("/tmp/nsebot.heartbeat")
+                _hb.write_text(str(int(time.time())))
+                from src.models.schema import stamp_health, stamp_open_positions
+                stamp_health("scheduler_loop", "OK", f"interval_idx={current_interval_idx if 'current_interval_idx' in dir() else '?'}")
+                stamp_open_positions()
+            except Exception:
+                pass
+
             # Sleep in short increments to remain responsive to intervals and changes
 
             time.sleep(10)

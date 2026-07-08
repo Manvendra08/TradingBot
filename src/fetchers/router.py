@@ -235,10 +235,30 @@ def fetch_option_chain(symbol: str, expiry: str | None = None) -> dict | None:
                     expiry_used,
                     strikes_count,
                 )
+                # OPS Agent: stamp shoonya success
+                if source == "shoonya":
+                    try:
+                        from src.models.schema import stamp_health
+                        stamp_health("shoonya_session", "OK", f"last_fetch={symbol}")
+                    except Exception:
+                        pass
                 return result
             else:
                 log.debug("[router] %s | %-12s returned no data", symbol, source)
         except Exception as exc:
             log.error("[router] %s | %-12s raised exception: %s", symbol, source, exc)
+            # OPS Agent: stamp auth-fail for shoonya specifically
+            if source == "shoonya" and "401" in str(exc) or "403" in str(exc) or "Invalid Token" in str(exc):
+                try:
+                    from src.models.schema import stamp_health
+                    stamp_health("shoonya_session", "DOWN", f"auth-fail: {str(exc)[:100]}")
+                except Exception:
+                    pass
+    # OPS Agent: stamp fetch failure
+    try:
+        from src.models.schema import stamp_health
+        stamp_health("shoonya_session", "DOWN", f"all fetchers failed for {symbol}")
+    except Exception:
+        pass
     log.error("[router] %s | ❌ ALL fetchers failed", symbol)
     return None

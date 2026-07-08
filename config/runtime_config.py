@@ -62,6 +62,7 @@ def load_runtime_config() -> dict:
         "direct_kite_default_sl_pct": 30.0,
         "direct_kite_default_tgt_pct": 50.0,
         "live_broker_disabled": False,  # Completely block all broker order placement
+        "trading_paused": False,  # OPS Agent safety switch — one-way (human-only unpause)
     }
     if not RUNTIME_CONFIG_PATH.exists():
         return defaults

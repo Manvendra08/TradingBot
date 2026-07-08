@@ -1059,6 +1059,12 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
         ]
         insert_snapshots(rows)
         log.info("%s: persisted %d rows (source: %s)", symbol, len(rows), source)
+        # OPS Agent: stamp last scan per symbol
+        try:
+            from src.models.schema import stamp_health
+            stamp_health(f"last_scan_{symbol}", "OK", f"source={source} price={underlying}")
+        except Exception:
+            pass
 
         # Fetch and save next-expiry data when DTE <= 2
         if is_test:

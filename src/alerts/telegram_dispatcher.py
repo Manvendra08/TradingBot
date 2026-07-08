@@ -409,8 +409,19 @@ async def _send_async_safe(message: str, symbol: str = None, atype: str = None) 
                     )
             else:
                 log.error("Telegram HTTP fallback failed in bg")
+                # OPS Agent: stamp telegram failure
+                try:
+                    from src.models.schema import stamp_health
+                    stamp_health("telegram_send", "DOWN", f"async+http failed: {str(exc)[:80]}")
+                except Exception:
+                    pass
         except Exception as e:
             log.error("Telegram HTTP fallback exception in bg: %s", e)
+            try:
+                from src.models.schema import stamp_health
+                stamp_health("telegram_send", "DOWN", f"exception: {str(e)[:80]}")
+            except Exception:
+                pass
 
 
 def send_alert(alert: dict) -> bool:

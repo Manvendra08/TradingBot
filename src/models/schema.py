@@ -339,6 +339,14 @@ CREATE TABLE IF NOT EXISTS multi_leg_legs (
 
 CREATE INDEX IF NOT EXISTS idx_mll_trade_id ON multi_leg_legs (trade_id);
 
+-- OPS Agent: health state tracking (separate read path for ops_agent.py)
+CREATE TABLE IF NOT EXISTS health_state (
+    key         TEXT PRIMARY KEY,       -- component name
+    status      TEXT,                   -- OK | DEGRADED | DOWN
+    detail      TEXT,
+    updated_at  TEXT                    -- IST ISO
+);
+
 """
 
 
@@ -1810,3 +1818,89 @@ def update_multi_leg_leg_exit_premium(leg_id: int, exit_premium: float) -> None:
     sql = "UPDATE multi_leg_legs SET exit_premium=? WHERE id=?"
     with get_conn() as conn:
         conn.execute(sql, (exit_premium, leg_id))
+
+
+# ── OPS Agent: Health State Stamps ──────────────────────────────────────────
+
+def stamp_health(key: str, status: str, detail: str = "") -> None:
+    """Write a health state row for ops_agent.py to read."""
+    now_ist = datetime.now(_IST).isoformat()
+    sql = """
+        INSERT INTO health_state (key, status, detail, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+            status=excluded.status,
+            detail=excluded.detail,
+            updated_at=excluded.updated_at
+    """
+    with get_conn() as conn:
+        conn.execute(sql, (key, status, detail, now_ist))
+
+
+def read_health_state() -> list[dict]:
+    """Read all health state rows (for /health endpoint and ops_agent)."""
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM health_state").fetchall()
+    return [dict(r) for r in rows]
+
+
+def read_health_state_ro() -> list[dict]:
+    """Read-only health state for ops_agent (separate connection, no WAL lock)."""
+    try:
+        conn = sqlite3.connect(
+            f"file:{DB_PATH}?mode=ro",
+            uri=True,
+            detect_types=sqlite3.PARSE_DECLTYPES,
+            timeout=5.0,
+        )
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT * FROM health_state").fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+
+def get_open_positions_count() -> int:
+    """Count open paper + live positions."""
+    with get_conn() as conn:
+        paper = conn.execute(
+            "SELECT COUNT(*) as c FROM paper_trades WHERE status='OPEN'"
+        ).fetchone()["c"]
+        live = conn.execute(
+            "SELECT COUNT(*) as c FROM live_trades WHERE status='OPEN'"
+        ).fetchone()["c"]
+    return paper + live
+
+
+def get_oldest_open_position_age_min() -> float | None:
+    """Return age in minutes of the oldest open position, or None if none open."""
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT MIN(opened_at) as oldest FROM (
+                SELECT opened_at FROM paper_trades WHERE status='OPEN'
+                UNION ALL
+                SELECT opened_at FROM live_trades WHERE status='OPEN'
+            )
+            """
+        ).fetchone()
+    if not row or not row["oldest"]:
+        return None
+    try:
+        opened = datetime.fromisoformat(row["oldest"].replace("Z", "+00:00"))
+        if opened.tzinfo is None:
+            opened = opened.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - opened).total_seconds() / 60.0
+    except Exception:
+        return None
+
+
+def stamp_open_positions() -> None:
+    """Stamp open_positions health row with count and oldest age."""
+    count = get_open_positions_count()
+    age = get_oldest_open_position_age_min()
+    detail = f"count={count}"
+    if age is not None:
+        detail += f" oldest_age={age:.0f}m"
+    stamp_health("open_positions", "OK" if count == 0 else "OK", detail)

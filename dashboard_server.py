@@ -4083,6 +4083,27 @@ async def broker_page(username: str = Depends(authenticate)):
     return HTMLResponse("<h1>broker.html not found</h1>", status_code=404)
 
 
+@app.get("/health", response_class=JSONResponse)
+async def health_endpoint():
+    """Unauthenticated health endpoint for ops_agent.py and healthchecks.io."""
+    from src.models.schema import read_health_state, get_open_positions_count
+    try:
+        health = read_health_state()
+        open_count = get_open_positions_count()
+        heartbeat_path = Path("/tmp/nsebot.heartbeat")
+        heartbeat_age_s = None
+        if heartbeat_path.exists():
+            heartbeat_age_s = time.time() - heartbeat_path.stat().st_mtime
+        return JSONResponse({
+            "status": "ok",
+            "health": health,
+            "open_positions": open_count,
+            "heartbeat_age_s": heartbeat_age_s,
+        })
+    except Exception as e:
+        return JSONResponse({"status": "error", "detail": str(e)}, status_code=500)
+
+
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(username: str = Depends(authenticate)):
     html_path = ROOT / "src" / "dashboard" / "settings.html"
