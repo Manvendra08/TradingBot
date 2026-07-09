@@ -10,7 +10,9 @@ import logging
 import threading
 import time
 from datetime import datetime
+
 import pytz
+import requests as _requests
 import yfinance as yf
 
 log = logging.getLogger(__name__)
@@ -20,6 +22,36 @@ CACHE_FILE = os.path.join(CACHE_DIR, "index_weights_state.json")
 
 IST = pytz.timezone("Asia/Kolkata")
 REFRESH_LOCK = threading.Lock()
+
+# ── Persistent yfinance session with retry ────────────────────────────────
+# Yahoo Finance returns empty data / "possibly delisted" errors when requests
+# lack proper User-Agent headers or when rate-limited. A persistent session
+# with retry adapters mitigates both issues.
+_YF_SESSION = None
+_YF_SESSION_LOCK = threading.Lock()
+
+
+def _get_yf_session():
+    global _YF_SESSION
+    if _YF_SESSION is not None:
+        return _YF_SESSION
+    with _YF_SESSION_LOCK:
+        if _YF_SESSION is not None:
+            return _YF_SESSION
+        sess = _requests.Session()
+        sess.headers[
+            "User-Agent"
+        ] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        sess.headers["Accept"] = "application/json"
+        # Mount retry adapter
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+
+        retry = Retry(total=2, backoff_factor=1.5, status_forcelist=[429, 500, 502, 503, 504])
+        adapter = HTTPAdapter(max_retries=retry)
+        sess.mount("https://", adapter)
+        _YF_SESSION = sess
+        return sess
 
 # Curated free-float factors
 FREE_FLOAT_FACTORS = {
@@ -171,9 +203,10 @@ def refresh_index_weights(force: bool = False) -> dict:
         query_tickers = list(set(nse_tickers + bo_tickers))
 
         log.info("Fetching marketCap for %d tickers in a single batch...", len(query_tickers))
-        
-        # Fetch tickers info
-        tickers_data = yf.Tickers(" ".join(query_tickers))
+
+        # Fetch tickers info with retry session
+        session = _get_yf_session()
+        tickers_data = yf.Tickers(" ".join(query_tickers), session=session)
         mcaps = {}
         for ticker in query_tickers:
             try:
@@ -269,14 +302,44 @@ def get_live_constituent_changes(symbol: str) -> dict:
 
     try:
         log.info("Fetching live constituent changePct for %d missing tickers from yfinance...", len(missing))
-        
-        # We download 2d daily candles to get the accurate current regularMarketChangePercent (previous close vs today's close)
+
+        # We download 2d daily candles to get the accurate current regularMarketChangePercent
         # Using yf.download is much faster than yf.Tickers.info in a loop
-        df = yf.download(missing, period="2d", group_by="ticker", progress=False, timeout=8)
-        
+        # yfinance may return "possibly delisted" errors for Indian .NS tickers due to
+        # intermittent data gaps or rate limiting. We use a persistent session with retry
+        # headers and fall back to longer periods if the first attempt yields empty data.
+        session = _get_yf_session()
+        df = yf.download(
+            missing,
+            period="2d",
+            group_by="ticker",
+            progress=False,
+            timeout=12,
+            session=session,
+        )
+
+        # Check if data is empty (all tickers failed). If so, retry once with longer period.
+        if df is None or df.empty:
+            log.info("yfinance returned empty data for %s — retrying with period=5d", missing)
+            time.sleep(2)
+            df = yf.download(
+                missing,
+                period="5d",
+                group_by="ticker",
+                progress=False,
+                timeout=12,
+                session=session,
+            )
+
         for ticker in missing:
             try:
+                if df is None or df.empty:
+                    resolved[ticker] = 0.0
+                    continue
                 ticker_df = df[ticker] if len(missing) > 1 else df
+                if ticker_df is None or ticker_df.empty:
+                    resolved[ticker] = 0.0
+                    continue
                 close_prices = ticker_df["Close"].dropna()
                 change_pct = 0.0
                 if len(close_prices) >= 2:
@@ -290,7 +353,7 @@ def get_live_constituent_changes(symbol: str) -> dict:
                     last_p = float(close_prices.iloc[-1])
                     if open_p > 0:
                         change_pct = ((last_p - open_p) / open_p) * 100.0
-                
+
                 # Cache it
                 _LIVE_CHANGES_CACHE[ticker] = (change_pct, now)
                 resolved[ticker] = change_pct

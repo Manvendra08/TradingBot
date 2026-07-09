@@ -163,7 +163,6 @@ def _async_llm_enrich_and_edit(
             llm_verdict.risk_rating,
         )
 
-        intel_v2 = intel.copy() if intel else {}
         intel_v2 = generate_intelligence_structured(
             symbol,
             new_alerts,
@@ -728,6 +727,10 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
 
     # 3c. AI Enrichment (LLM — Deep Context)
     # ADR-007 §3 A3: Async enrichment — entry verdict deferred to background thread if LLM_ENRICHMENT_ASYNC=True
+    from config.runtime_config import load_runtime_config
+    rconf = load_runtime_config()
+    is_async_mode = rconf.get("llm_enrichment_async", LLM_ENRICHMENT_ASYNC)
+
     DISABLE_LLM_ENRICHMENT = _DISABLE_LLM_ENV
     intel_text_base = intel_text
     llm_verdict = None
@@ -743,7 +746,7 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
                     "%s: open position exists — skipping LLM entry verdict, exit advisor will run",
                     symbol,
                 )
-            elif LLM_ENRICHMENT_ASYNC:
+            elif is_async_mode:
                 _async_llm_pending = True
                 intel_text += "\n💡 *Thesis:* ⏳ Pending async analysis...\n"
                 log.debug("%s: async LLM enrichment mode — verdict deferred to background thread", symbol)

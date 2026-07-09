@@ -161,7 +161,10 @@ def write_autopsy_report(date_str: str, autopsies: list[dict]) -> Path:
 
 def run_nightly_autopsy() -> int:
     """Main entry point: run autopsy for all closed trades today."""
-    if not AUTOPSY_ENABLED:
+    from config.runtime_config import load_runtime_config
+    rconf = load_runtime_config()
+    autopsy_enabled = rconf.get("autopsy_enabled", AUTOPSY_ENABLED)
+    if not autopsy_enabled:
         log.info("Autopsy disabled (AUTOPSY_ENABLED=false)")
         return 0
 

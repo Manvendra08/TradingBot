@@ -1,0 +1,532 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NSEBOT — Ops Monitor</title>
+    <style>
+        @import url("https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600;800&display=swap");
+
+        :root {
+            --bg: #0a0c0f;
+            --surface: #111418;
+            --surface-2: #161b22;
+            --border: #1e2530;
+            --accent: #00e5a0;
+            --red: #ff4d6d;
+            --green: #00e5a0;
+            --yellow: #ffd166;
+            --orange: #fb923c;
+            --muted: #4a5568;
+            --text: #e2e8f0;
+            --text-dim: #718096;
+            --mono: "Space Mono", monospace;
+            --sans: "DM Sans", sans-serif;
+        }
+        [data-theme="light"] {
+            --bg: #f8fafc; --surface: #ffffff; --surface-2: #f1f5f9;
+            --border: #e2e8f0; --accent: #059669; --red: #e11d48;
+            --green: #059669; --yellow: #d97706; --orange: #ea580c;
+            --muted: #cbd5e1; --text: #0f172a; --text-dim: #64748b;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 14px; min-height: 100vh; }
+
+        /* ── Header (exact match with other pages) ── */
+        .app-header { display: flex; flex-direction: column; padding: 10px 24px; gap: 10px; background: var(--surface); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 100; }
+        .header-top-row { display: flex; align-items: center; justify-content: space-between; width: 100%; }
+        .header-bottom-row { display: flex; align-items: center; justify-content: space-between; width: 100%; }
+        .logo-stack { display: flex; flex-direction: column; }
+        .logo-text { font-family: var(--sans); font-weight: 800; font-size: 16px; letter-spacing: 1.5px; color: var(--text); }
+        .logo-sub { font-family: var(--mono); font-size: 9px; color: var(--accent); letter-spacing: 2px; text-transform: uppercase; }
+        .header-nav { display: flex; background: rgba(0,0,0,.15); border: 1px solid var(--border); border-radius: 8px; padding: 3px; gap: 2px; }
+        .nav-tab { color: var(--text-dim); text-decoration: none; padding: 6px 16px; font-size: 13px; font-weight: 600; border-radius: 6px; transition: all .2s; border: 1px solid transparent; font-family: var(--sans); }
+        .nav-tab:hover { color: var(--text); background: rgba(255,255,255,.03); }
+        .nav-tab.active { color: var(--accent); background: var(--surface-2); border-color: var(--border); }
+        .theme-toggle-btn { background: transparent; border: 1px solid var(--border); color: var(--text); width: 36px; height: 36px; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 16px; transition: all .2s; }
+        .theme-toggle-btn:hover { border-color: var(--accent); background: var(--surface-2); }
+        [data-theme="light"] .header-nav { background: rgba(0,0,0,.03); }
+        [data-theme="light"] .nav-tab.active { background: #fff; border-color: #cbd5e1; }
+
+        /* ── Page Body ── */
+        main { padding: 24px; display: flex; flex-direction: column; gap: 20px; max-width: 1400px; margin: 0 auto; }
+
+        /* ── Summary Banner ── */
+        .ops-banner {
+            background: linear-gradient(135deg, rgba(0,229,160,.08) 0%, rgba(0,229,160,.02) 100%);
+            border: 1px solid rgba(0,229,160,.25);
+            border-radius: 10px;
+            padding: 20px 24px;
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            position: relative;
+            overflow: hidden;
+        }
+        .ops-banner::before {
+            content: "";
+            position: absolute;
+            left: 0; top: 0; bottom: 0;
+            width: 3px;
+            background: var(--accent);
+            border-radius: 3px 0 0 3px;
+        }
+        .ops-banner-icon { font-size: 32px; flex-shrink: 0; }
+        .ops-banner-text h2 { font-size: 18px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
+        .ops-banner-text p { font-size: 13px; color: var(--text-dim); font-family: var(--mono); }
+        .ops-banner-status { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+        .ops-status-badge { display: flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 12px; font-weight: 700; letter-spacing: .5px; padding: 4px 10px; border-radius: 5px; }
+        .ops-status-badge.ok { background: rgba(0,229,160,.12); color: var(--green); border: 1px solid rgba(0,229,160,.3); }
+        .ops-status-badge.warn { background: rgba(255,209,102,.1); color: var(--yellow); border: 1px solid rgba(255,209,102,.3); }
+        .ops-status-badge.down { background: rgba(255,77,109,.1); color: var(--red); border: 1px solid rgba(255,77,109,.3); }
+        .pulse { width: 7px; height: 7px; border-radius: 50%; animation: pulse-anim 1.8s ease-in-out infinite; }
+        .pulse.ok { background: var(--green); box-shadow: 0 0 0 0 rgba(0,229,160,.6); }
+        .pulse.warn { background: var(--yellow); box-shadow: 0 0 0 0 rgba(255,209,102,.6); }
+        .pulse.down { background: var(--red); box-shadow: 0 0 0 0 rgba(255,77,109,.6); animation: none; }
+        @keyframes pulse-anim {
+            0%,100% { box-shadow: 0 0 0 0 currentColor; }
+            50% { box-shadow: 0 0 0 6px transparent; }
+        }
+        #banner-updated { font-size: 11px; color: var(--text-dim); font-family: var(--mono); }
+
+        /* ── KPI Row ── */
+        .kpi-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
+        .kpi { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; transition: border-color .2s; }
+        .kpi:hover { border-color: rgba(0,229,160,.2); }
+        .kpi-label { font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--text-dim); margin-bottom: 8px; font-family: var(--mono); }
+        .kpi-value { font-family: var(--mono); font-size: 22px; font-weight: 700; color: var(--text); }
+        .kpi-value.green { color: var(--green); }
+        .kpi-value.yellow { color: var(--yellow); }
+        .kpi-value.red { color: var(--red); }
+
+        /* ── Component Health Grid ── */
+        .section-title { font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--text-dim); display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+        .section-title::before { content: ""; display: inline-block; width: 3px; height: 14px; background: var(--accent); border-radius: 2px; }
+        .component-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+        .component-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 14px 16px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            transition: border-color .25s, transform .15s;
+        }
+        .component-card:hover { transform: translateY(-1px); }
+        .component-card.ok { border-left: 3px solid var(--green); }
+        .component-card.warn { border-left: 3px solid var(--yellow); }
+        .component-card.down { border-left: 3px solid var(--red); }
+        .component-card.unknown { border-left: 3px solid var(--muted); }
+        .comp-icon { font-size: 20px; flex-shrink: 0; width: 32px; text-align: center; }
+        .comp-body { flex: 1; min-width: 0; }
+        .comp-name { font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 2px; }
+        .comp-detail { font-size: 11px; color: var(--text-dim); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .comp-age { font-size: 10px; color: var(--text-dim); font-family: var(--mono); margin-top: 2px; }
+        .comp-badge { font-size: 10px; font-weight: 700; font-family: var(--mono); padding: 2px 7px; border-radius: 4px; letter-spacing: .5px; flex-shrink: 0; }
+        .comp-badge.ok { background: rgba(0,229,160,.12); color: var(--green); }
+        .comp-badge.warn { background: rgba(255,209,102,.1); color: var(--yellow); }
+        .comp-badge.down { background: rgba(255,77,109,.1); color: var(--red); }
+        .comp-badge.unknown { background: rgba(74,85,104,.2); color: var(--muted); }
+
+        /* ── Incidents Feed ── */
+        .incidents-wrap { display: flex; flex-direction: column; gap: 8px; }
+        .incident-row {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 12px 16px;
+            display: grid;
+            grid-template-columns: 80px 80px 1fr auto;
+            align-items: center;
+            gap: 12px;
+            font-family: var(--mono);
+            font-size: 12px;
+            transition: border-color .2s;
+            animation: fadeIn .3s ease;
+        }
+        .incident-row:hover { border-color: rgba(0,229,160,.15); }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+        .inc-playbook { font-weight: 700; padding: 2px 7px; border-radius: 4px; font-size: 11px; text-align: center; }
+        .inc-playbook.p01,.inc-playbook.p08 { background: rgba(0,229,160,.1); color: var(--green); }
+        .inc-playbook.p02,.inc-playbook.p04,.inc-playbook.p09,.inc-playbook.p10 { background: rgba(255,77,109,.1); color: var(--red); }
+        .inc-playbook.p03 { background: rgba(255,209,102,.1); color: var(--yellow); }
+        .inc-playbook.p05,.inc-playbook.p06,.inc-playbook.p07,.inc-playbook.p11 { background: rgba(251,146,60,.1); color: var(--orange); }
+        .inc-playbook.p12 { background: rgba(74,85,104,.2); color: var(--muted); }
+        .inc-ts { color: var(--text-dim); font-size: 11px; }
+        .inc-action { color: var(--text); }
+        .inc-result { font-size: 11px; padding: 2px 7px; border-radius: 4px; }
+        .inc-result.success { background: rgba(0,229,160,.08); color: var(--green); }
+        .inc-result.fail { background: rgba(255,77,109,.08); color: var(--red); }
+        .empty-state { text-align: center; padding: 40px; color: var(--text-dim); font-family: var(--mono); font-size: 13px; }
+        .empty-state span { font-size: 28px; display: block; margin-bottom: 8px; }
+
+        /* ── Raw Health JSON ── */
+        .raw-json { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; font-family: var(--mono); font-size: 11px; color: var(--text-dim); white-space: pre-wrap; word-break: break-all; max-height: 320px; overflow-y: auto; }
+        details summary { cursor: pointer; font-size: 11px; color: var(--text-dim); letter-spacing: 1px; text-transform: uppercase; user-select: none; padding: 4px 0; }
+        details summary:hover { color: var(--accent); }
+        details[open] summary { color: var(--accent); }
+
+        /* ── Refresh control ── */
+        .refresh-bar { display: flex; align-items: center; gap: 12px; font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
+        .refresh-bar select { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 4px 8px; border-radius: 4px; font-family: var(--mono); font-size: 11px; cursor: pointer; }
+        #refresh-btn { background: transparent; border: 1px solid var(--border); color: var(--accent); padding: 5px 14px; border-radius: 5px; cursor: pointer; font-family: var(--mono); font-size: 11px; transition: all .2s; }
+        #refresh-btn:hover { background: rgba(0,229,160,.07); border-color: var(--accent); }
+        #refresh-countdown { color: var(--text-dim); }
+
+        /* ── Skeleton loader ── */
+        .skeleton { background: linear-gradient(90deg, var(--surface) 25%, var(--surface-2) 50%, var(--surface) 75%); background-size: 200% 100%; animation: shimmer 1.4s infinite; border-radius: 6px; height: 60px; }
+        @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+        /* ── Responsive ── */
+        @media (max-width: 700px) {
+            .kpi-row { grid-template-columns: 1fr 1fr; }
+            .incident-row { grid-template-columns: 60px 1fr; grid-template-rows: auto auto; }
+            .inc-action { grid-column: 1/-1; }
+            .inc-result { display: none; }
+        }
+    </style>
+    <script>
+        (function(){ const k="nsebot-theme", s=localStorage.getItem(k)||"dark"; document.documentElement.setAttribute("data-theme",s); })();
+    </script>
+</head>
+<body>
+<header class="app-header">
+    <div class="header-top-row">
+        <div class="logo-stack">
+            <span class="logo-text">NSEBOT</span>
+            <span class="logo-sub">OPTION MONITOR</span>
+        </div>
+    </div>
+    <div class="header-bottom-row">
+        <div class="header-nav">
+            <a href="/" class="nav-tab" id="tab-dashboard">Dashboard</a>
+            <a href="/paper" class="nav-tab" id="tab-paper">Paper Trades</a>
+            <a href="/broker" class="nav-tab" id="tab-broker">Broker Console</a>
+            <a href="#" class="nav-tab" id="tab-ai-insights" data-tab="ai-insights">AI Insights</a>
+            <a href="/ops" class="nav-tab active" id="tab-ops">Ops Monitor</a>
+            <a href="/settings" class="nav-tab" id="tab-settings">Settings</a>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px;">
+            <div class="refresh-bar">
+                <label for="refresh-interval">Auto-refresh:</label>
+                <select id="refresh-interval">
+                    <option value="15">15s</option>
+                    <option value="30" selected>30s</option>
+                    <option value="60">60s</option>
+                    <option value="0">Off</option>
+                </select>
+                <span id="refresh-countdown"></span>
+                <button id="refresh-btn">↻ Refresh</button>
+            </div>
+            <button class="theme-toggle-btn" id="theme-toggle-btn" title="Toggle Day/Night">🌙</button>
+        </div>
+    </div>
+</header>
+
+<main>
+
+    <!-- ── Ops Summary Banner ── -->
+    <div class="ops-banner" id="ops-banner">
+        <div class="ops-banner-icon">🤖</div>
+        <div class="ops-banner-text">
+            <h2 style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                Ops Agent Monitor
+                <span style="font-size:11px; font-weight:500; font-family:var(--mono); color:var(--text-dim); background:rgba(255,255,255,0.04); padding:3px 10px; border-radius:4px; border:1px solid var(--border);">
+                    ⚡ Ops Engine: Deterministic Rule-Based Playbooks (P01–P12) | 🧠 Trade AI Advisor: OpenRouter Pool & Gemini/Bedrock SDK
+                </span>
+            </h2>
+            <p id="banner-sub">Fetching system health…</p>
+        </div>
+        <div class="ops-banner-status">
+            <div class="ops-status-badge ok" id="ops-status-badge">
+                <span class="pulse ok" id="ops-pulse"></span>
+                <span id="ops-status-text">LOADING</span>
+            </div>
+            <span id="banner-updated">—</span>
+        </div>
+    </div>
+
+    <!-- ── Architecture & Remediation Info Card ── -->
+    <div style="background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:14px 18px; margin-bottom:20px; display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:16px; font-size:12px;">
+        <div>
+            <div style="font-weight:700; color:var(--text); margin-bottom:4px; display:flex; align-items:center; gap:6px;">
+                <span>⚡ Ops Agent Execution Model</span>
+            </div>
+            <div style="color:var(--text-dim); line-height:1.5;">
+                Powered by a <strong>Deterministic Rule-Based State Machine (`ops_agent.py`)</strong> running 12 independent playbooks (`P01`–`P12`). Zero-latency execution without LLM API overhead ensures instantaneous system recovery and capital protection during broker or infrastructure incidents.
+            </div>
+        </div>
+        <div>
+            <div style="font-weight:700; color:var(--text); margin-bottom:4px; display:flex; align-items:center; gap:6px;">
+                <span>🧠 AI Strategy & Enrichment LLMs</span>
+            </div>
+            <div style="color:var(--text-dim); line-height:1.5;">
+                Trade decisions and news scoring use an engine-aligned multi-provider LLM hierarchy (`llm_enrichment.py`): <strong>OpenRouter Pool (`Llama 3.3 70B`, `Qwen 2.5 Coder`, `Nemotron 3 Super`)</strong>, backed by AWS Bedrock and Google Gemini SDK.
+            </div>
+        </div>
+        <div>
+            <div style="font-weight:700; color:var(--text); margin-bottom:4px; display:flex; align-items:center; gap:6px;">
+                <span>🛠️ Auto-Fix & Alert Capabilities</span>
+            </div>
+            <div style="color:var(--text-dim); line-height:1.5;">
+                <strong>Yes, both!</strong> The agent automatically fixes issues (restarts dead bot, re-auths Shoonya login up to 3×, runs emergency flat to close open positions on broker outage, rotates/vacuums disk) <em>and</em> dispatches real-time alerts.
+            </div>
+        </div>
+    </div>
+
+    <!-- ── KPIs ── -->
+    <div class="kpi-row" id="kpi-row">
+        <div class="skeleton"></div>
+        <div class="skeleton"></div>
+        <div class="skeleton"></div>
+        <div class="skeleton"></div>
+    </div>
+
+    <!-- ── Component Health ── -->
+    <div>
+        <div class="section-title">Component Health</div>
+        <div class="component-grid" id="component-grid">
+            <div class="skeleton"></div>
+            <div class="skeleton"></div>
+            <div class="skeleton"></div>
+        </div>
+    </div>
+
+    <!-- ── Ops Agent Incident Log ── -->
+    <div>
+        <div class="section-title">Ops Agent Activity Log</div>
+        <div class="incidents-wrap" id="incidents-wrap">
+            <div class="skeleton"></div>
+        </div>
+    </div>
+
+    <!-- ── Raw JSON ── -->
+    <details>
+        <summary>▶ Raw /health JSON</summary>
+        <pre class="raw-json" id="raw-json">Loading…</pre>
+    </details>
+
+</main>
+
+<script>
+// ── Theme ──────────────────────────────────────────────────────────────────
+const KEY = "nsebot-theme";
+document.getElementById("theme-toggle-btn").addEventListener("click", () => {
+    const cur = document.documentElement.getAttribute("data-theme");
+    const next = cur === "dark" ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", next);
+    localStorage.setItem(KEY, next);
+    document.getElementById("theme-toggle-btn").textContent = next === "dark" ? "🌙" : "☀️";
+});
+if (localStorage.getItem(KEY) === "light") document.getElementById("theme-toggle-btn").textContent = "☀️";
+
+// ── Component metadata (icon + display name) ───────────────────────────────
+const COMP_META = {
+    scheduler_loop:   { icon: "⏱", name: "Scheduler Loop",     staleMin: 3 },
+    shoonya_session:  { icon: "🔑", name: "Shoonya Session",    staleMin: 10 },
+    parity_feed:      { icon: "⚖️",  name: "Parity Feed",        staleMin: 10 },
+    telegram_send:    { icon: "📨", name: "Telegram Send",      staleMin: 999 },
+    db_write:         { icon: "💾", name: "DB Write",           staleMin: 5 },
+    open_positions:   { icon: "📊", name: "Open Positions",     staleMin: 5 },
+};
+function compMeta(key) {
+    if (COMP_META[key]) return COMP_META[key];
+    if (key.startsWith("last_scan_")) return { icon: "🔍", name: "Scan: " + key.replace("last_scan_", ""), staleMin: 30 };
+    return { icon: "🔧", name: key, staleMin: 30 };
+}
+
+// ── Staleness helper ───────────────────────────────────────────────────────
+function ageStr(updatedAt) {
+    if (!updatedAt) return "—";
+    try {
+        const ts = new Date(updatedAt);
+        const sec = Math.round((Date.now() - ts) / 1000);
+        if (sec < 60) return sec + "s ago";
+        if (sec < 3600) return Math.round(sec/60) + "m ago";
+        return Math.round(sec/3600) + "h ago";
+    } catch { return "—"; }
+}
+
+// ── Status derivation ──────────────────────────────────────────────────────
+function deriveStatus(row, meta) {
+    if (!row) return "unknown";
+    const s = (row.status||"").toUpperCase();
+    if (s === "OK") return "ok";
+    if (s === "DEGRADED") return "warn";
+    if (s === "DOWN") return "down";
+    // Staleness check
+    if (row.updated_at && meta.staleMin < 999) {
+        const ageMin = (Date.now() - new Date(row.updated_at)) / 60000;
+        if (ageMin > meta.staleMin * 2) return "down";
+        if (ageMin > meta.staleMin) return "warn";
+    }
+    return "ok";
+}
+
+// ── Render functions ───────────────────────────────────────────────────────
+function renderKPIs(data) {
+    const rows = data.health || [];
+    const openPos = data.open_positions ?? 0;
+    const heartbeatAge = data.heartbeat_age_s;
+    const downCount = rows.filter(r => (r.status||"").toUpperCase() === "DOWN").length;
+    const warnCount = rows.filter(r => (r.status||"").toUpperCase() === "DEGRADED").length;
+
+    const hbStatus = heartbeatAge == null ? "?" : heartbeatAge < 120 ? "OK" : "STALE";
+    const hbClass = hbStatus === "OK" ? "green" : "red";
+
+    const posClass = openPos > 0 ? "yellow" : "green";
+
+    document.getElementById("kpi-row").innerHTML = `
+        <div class="kpi"><div class="kpi-label">Heartbeat</div><div class="kpi-value ${hbClass}">${hbStatus}</div></div>
+        <div class="kpi"><div class="kpi-label">Components OK</div><div class="kpi-value green">${rows.length - downCount - warnCount}/${rows.length}</div></div>
+        <div class="kpi"><div class="kpi-label">Down / Warn</div><div class="kpi-value ${downCount > 0 ? "red" : warnCount > 0 ? "yellow" : "green"}">${downCount} / ${warnCount}</div></div>
+        <div class="kpi"><div class="kpi-label">Open Positions</div><div class="kpi-value ${posClass}">${openPos}</div></div>
+        <div class="kpi"><div class="kpi-label">HB Age</div><div class="kpi-value">${heartbeatAge != null ? Math.round(heartbeatAge) + "s" : "N/A"}</div></div>
+        <div class="kpi"><div class="kpi-label">Components</div><div class="kpi-value">${rows.length}</div></div>
+    `;
+}
+
+function renderComponents(data) {
+    const rows = data.health || [];
+    if (!rows.length) {
+        document.getElementById("component-grid").innerHTML = `<div class="empty-state"><span>💤</span>No health stamps yet. Bot may not have completed a scan cycle.</div>`;
+        return;
+    }
+    document.getElementById("component-grid").innerHTML = rows.map(row => {
+        const meta = compMeta(row.key);
+        const status = deriveStatus(row, meta);
+        const badgeLabel = status.toUpperCase();
+        const age = ageStr(row.updated_at);
+        const detail = row.detail || "—";
+        return `
+        <div class="component-card ${status}">
+            <div class="comp-icon">${meta.icon}</div>
+            <div class="comp-body">
+                <div class="comp-name">${meta.name}</div>
+                <div class="comp-detail" title="${detail}">${detail}</div>
+                <div class="comp-age">Updated ${age}</div>
+            </div>
+            <span class="comp-badge ${status}">${badgeLabel}</span>
+        </div>`;
+    }).join("");
+}
+
+function renderBanner(data) {
+    const rows = data.health || [];
+    const downCount = rows.filter(r => (r.status||"").toUpperCase() === "DOWN").length;
+    const warnCount = rows.filter(r => (r.status||"").toUpperCase() === "DEGRADED").length;
+    const heartbeatAge = data.heartbeat_age_s;
+    const heartbeatOk = heartbeatAge != null && heartbeatAge < 120;
+    const openPos = data.open_positions ?? 0;
+
+    let overallStatus = "ok";
+    let statusText = "ALL SYSTEMS OK";
+    let subText = `${rows.length} components monitored · ${openPos} open position${openPos !== 1 ? "s" : ""}`;
+
+    if (!heartbeatOk && heartbeatAge !== null) { overallStatus = "down"; statusText = "BOT HEARTBEAT LOST"; subText = `Heartbeat stale (${Math.round(heartbeatAge)}s) — scheduler may be down`; }
+    else if (downCount > 0) { overallStatus = "down"; statusText = `${downCount} COMPONENT${downCount > 1 ? "S" : ""} DOWN`; subText = `${warnCount} degraded · ${openPos} open position${openPos !== 1 ? "s" : ""}`; }
+    else if (warnCount > 0) { overallStatus = "warn"; statusText = `${warnCount} DEGRADED`; subText = `All critical components healthy · ${openPos} open position${openPos !== 1 ? "s" : ""}`; }
+
+    const badge = document.getElementById("ops-status-badge");
+    const pulse = document.getElementById("ops-pulse");
+    badge.className = `ops-status-badge ${overallStatus}`;
+    pulse.className = `pulse ${overallStatus}`;
+    document.getElementById("ops-status-text").textContent = statusText;
+    document.getElementById("banner-sub").textContent = subText;
+    document.getElementById("banner-updated").textContent = "Updated " + new Date().toLocaleTimeString("en-IN", {hour:"2-digit",minute:"2-digit",second:"2-digit"}) + " IST";
+}
+
+// ── Incidents from ops_agent.db via /api/ops-incidents ────────────────────
+async function loadIncidents() {
+    let incidents = [];
+    try {
+        const r = await fetch("/api/ops-incidents", { signal: AbortSignal.timeout(5000) });
+        if (r.ok) incidents = await r.json();
+    } catch {}
+
+    const wrap = document.getElementById("incidents-wrap");
+    if (!incidents.length) {
+        wrap.innerHTML = `<div class="empty-state"><span>🟢</span>No Ops Agent incidents recorded yet — all quiet.</div>`;
+        return;
+    }
+
+    const playbookClass = pid => {
+        const n = (pid||"").toLowerCase();
+        if (["p02","p04","p09","p10"].includes(n)) return "down";
+        if (["p03","p05","p06","p07","p11"].includes(n)) return "warn";
+        if (["p01","p08"].includes(n)) return "ok";
+        return "unknown";
+    };
+
+    wrap.innerHTML = incidents.slice(0, 50).map(inc => {
+        const ts = inc.ts ? new Date(inc.ts).toLocaleString("en-IN", {day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}) : "—";
+        const pid = (inc.playbook_id || "P??").toUpperCase();
+        const cls = playbookClass(pid.toLowerCase());
+        const action = inc.action || "—";
+        const result = inc.result || "";
+        const isSuccess = result.toLowerCase().includes("ok") || result.toLowerCase().includes("success") || result.toLowerCase().includes("verified");
+        const ackedBadge = inc.acked ? ' <span style="color:var(--text-dim);font-size:10px;">✓ acked</span>' : '';
+        return `
+        <div class="incident-row">
+            <span class="inc-playbook ${pid.toLowerCase().replace('+','')}">${pid}</span>
+            <span class="inc-ts">${ts}</span>
+            <span class="inc-action">${action}${ackedBadge}</span>
+            <span class="inc-result ${isSuccess ? 'success' : 'fail'}">${result ? (result.length > 40 ? result.slice(0,40)+"…" : result) : "—"}</span>
+        </div>`;
+    }).join("");
+}
+
+// ── Main fetch ─────────────────────────────────────────────────────────────
+async function refresh() {
+    try {
+        const r = await fetch("/health", { signal: AbortSignal.timeout(6000) });
+        const data = await r.json();
+
+        renderBanner(data);
+        renderKPIs(data);
+        renderComponents(data);
+
+        document.getElementById("raw-json").textContent = JSON.stringify(data, null, 2);
+    } catch (e) {
+        document.getElementById("ops-status-badge").className = "ops-status-badge down";
+        document.getElementById("ops-status-text").textContent = "DASHBOARD UNREACHABLE";
+        document.getElementById("banner-sub").textContent = "Cannot connect to /health — dashboard may be down";
+        document.getElementById("kpi-row").innerHTML = `<div style="grid-column:1/-1;color:var(--red);font-family:var(--mono);font-size:12px;">Error: ${e.message}</div>`;
+    }
+    await loadIncidents();
+}
+
+// ── Auto-refresh countdown ─────────────────────────────────────────────────
+let countdownTimer = null;
+let secondsLeft = 30;
+
+function startCountdown(intervalSec) {
+    clearInterval(countdownTimer);
+    if (intervalSec <= 0) { document.getElementById("refresh-countdown").textContent = ""; return; }
+    secondsLeft = intervalSec;
+    countdownTimer = setInterval(() => {
+        secondsLeft--;
+        document.getElementById("refresh-countdown").textContent = `(${secondsLeft}s)`;
+        if (secondsLeft <= 0) {
+            secondsLeft = intervalSec;
+            refresh();
+        }
+    }, 1000);
+}
+
+document.getElementById("refresh-interval").addEventListener("change", function() {
+    startCountdown(parseInt(this.value));
+});
+document.getElementById("refresh-btn").addEventListener("click", () => {
+    secondsLeft = parseInt(document.getElementById("refresh-interval").value) || 30;
+    refresh();
+});
+
+// Boot
+refresh();
+startCountdown(30);
+</script>
+</body>
+</html>

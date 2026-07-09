@@ -349,6 +349,45 @@ CREATE TABLE IF NOT EXISTS health_state (
     updated_at  TEXT                    -- IST ISO
 );
 
+-- ── ADR-007 v2 Schema Tables ──────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS shadow_decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    symbol TEXT, engine TEXT,                 -- CORE_OI / TIMEFRAME
+    rule_action TEXT, rule_block_reason TEXT,
+    old_ai_would_boost INTEGER,               -- OLD rule: ai_agrees & conf>=80
+    ai_bias TEXT, ai_conf INTEGER, ai_veto_flag INTEGER, ai_veto_reason TEXT,
+    empirical_n INTEGER, empirical_winrate REAL, empirical_avg_pnl REAL,
+    final_action TEXT, setup_type TEXT,
+    outcome_pnl REAL, outcome_filled_at TEXT  -- backfilled on close/expiry
+);
+CREATE INDEX IF NOT EXISTS idx_shadow_decisions_symbol_ts ON shadow_decisions (symbol, ts);
+
+CREATE TABLE IF NOT EXISTS shadow_predictions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL, symbol TEXT,
+    model_version TEXT, p_success REAL,
+    features_json TEXT,                        -- Phase-0 roadmap dependency
+    decision_id INTEGER,                       -- FK -> shadow_decisions
+    outcome INTEGER                            -- backfilled: 1 win / 0 loss
+);
+CREATE INDEX IF NOT EXISTS idx_shadow_predictions_symbol_ts ON shadow_predictions (symbol, ts);
+
+CREATE TABLE IF NOT EXISTS trade_autopsies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_id INTEGER, ts TEXT,
+    reasons_held INTEGER, primary_failure TEXT, note TEXT,
+    llm_model TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_trade_autopsies_trade_id ON trade_autopsies (trade_id);
+
+CREATE TABLE IF NOT EXISTS pattern_stats_rollup (
+    symbol TEXT, verdict_label TEXT, pcr_regime TEXT,
+    n_trades INTEGER, win_rate REAL, avg_pnl REAL,
+    computed_at TEXT,
+    PRIMARY KEY (symbol, verdict_label, pcr_regime)
+);
+
 """
 
 

@@ -34,11 +34,15 @@
   "live_ai_min_confidence_boost": 70,
   "live_ai_min_confidence_veto": 80,
   "live_ai_exit_advisor_enabled": true,
+  "emp_boost_min_trades": 20,
+  "emp_boost_min_winrate": 0.6,
+  "ml_predictor_mode": "shadow",
   "manage_direct_kite_positions": false,
   "direct_kite_initialization_mode": "dynamic",
   "direct_kite_default_sl_pct": 40,
   "direct_kite_default_tgt_pct": 60,
   "live_broker_disabled": true,
+  "trading_paused": false,
   "strategies": {
     "CORE": {
       "enabled": true,
@@ -57,7 +61,7 @@
       "ai_mode": "full",
       "symbols": {
         "NIFTY": false,
-        "BANKNIFTY": false,
+        "BANKNIFTY": true,
         "SENSEX": false,
         "FINNIFTY": false,
         "NATURALGAS": true,

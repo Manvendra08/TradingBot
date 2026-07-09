@@ -78,6 +78,10 @@ class IntelligenceResult:
     def get(self, key: str, default=None):
         return getattr(self, key, default)
 
+    def copy(self):
+        import copy
+        return copy.copy(self)
+
     def __str__(self) -> str:
         """Backward-compat: str(intel) returns the Telegram text."""
         return self.telegram_text

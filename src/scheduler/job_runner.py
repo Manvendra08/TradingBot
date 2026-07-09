@@ -536,6 +536,7 @@ def start_scheduler(immediate: bool = False):
     _last_eia_run_date = None
     _last_backup_date = None
     _last_fii_fetch_date = None
+    _last_autopsy_date = None
 
     # ── Instrument cache warm-up at scheduler start ────────────────────────
     cache_warmed_event = threading.Event()
@@ -1017,6 +1018,36 @@ def start_scheduler(immediate: bool = False):
                     target=_run_telegram_backup, daemon=True, name="telegram-backup"
                 ).start()
 
+            # 6b. Nightly Trade Autopsy (Runs at autopsy_time_ist, default 23:45 IST)
+            from config.runtime_config import load_runtime_config
+            rconf = load_runtime_config()
+            autopsy_time = rconf.get("autopsy_time_ist", "23:45")
+            try:
+                autopsy_hour, autopsy_minute = map(int, autopsy_time.split(":"))
+                is_autopsy_time = now_ist.hour == autopsy_hour and now_ist.minute == autopsy_minute
+            except Exception:
+                is_autopsy_time = now_ist.hour == 23 and now_ist.minute == 45
+
+            if is_autopsy_time and _last_autopsy_date != current_date:
+                _last_autopsy_date = current_date
+                log.info(
+                    "[scheduler] Nightly trade autopsy triggered (%s IST)", autopsy_time
+                )
+
+                def _run_autopsy():
+                    try:
+                        from src.engine.autopsy_writer import run_nightly_autopsy
+
+                        run_nightly_autopsy()
+                    except Exception as exc:
+                        log.warning(
+                            "[scheduler] Nightly trade autopsy failed: %s", exc
+                        )
+
+                threading.Thread(
+                    target=_run_autopsy, daemon=True, name="autopsy-writer"
+                ).start()
+
             # 7. Natural Gas Exit Check Loop (Runs every 120 seconds)
             if time.time() - last_ng_exit_check >= 120:
                 last_ng_exit_check = time.time()
@@ -1098,6 +1129,20 @@ def start_scheduler(immediate: bool = False):
                 from src.models.schema import stamp_health, stamp_open_positions
                 stamp_health("scheduler_loop", "OK", f"interval_idx={current_interval_idx if 'current_interval_idx' in dir() else '?'}")
                 stamp_open_positions()
+                # Auto-heal transient telegram_send errors if idle > 30m without new failures
+                try:
+                    from src.models.schema import read_health_state
+                    for h in read_health_state():
+                        if h.get("key") == "telegram_send" and h.get("status") in ("DOWN", "DEGRADED"):
+                            ts_str = h.get("updated_at", "")
+                            if ts_str:
+                                dt = datetime.fromisoformat(ts_str)
+                                if dt.tzinfo is None:
+                                    dt = dt.replace(tzinfo=IST)
+                                if (datetime.now(IST) - dt).total_seconds() > 1800:
+                                    stamp_health("telegram_send", "OK", "Idle (subsequent scans OK)")
+                except Exception:
+                    pass
             except Exception:
                 pass
 

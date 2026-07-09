@@ -2041,9 +2041,13 @@ def build_llm_consolidated_digest(
     
     verdict_conf = gv("confidence", 0)
     reasoning = str(gv("reasoning") or gv("thesis") or bias_display).strip()
-    # If the reasoning is a long paragraph, just take the first sentence or clip it so it fits on one line nicely
-    if len(reasoning) > 60:
-        reasoning = reasoning[:57] + "..."
+    # If reasoning is very long (>250 chars), extract complete first sentence(s) or clip cleanly at word boundary
+    if len(reasoning) > 250:
+        first_sent = reasoning.split(". ")[0] + "."
+        if len(first_sent) <= 250:
+            reasoning = first_sent
+        else:
+            reasoning = reasoning[:247].rsplit(" ", 1)[0] + "..."
     lines.append(f"*VERDICT*  {_esc(reasoning)} (OI conf {verdict_conf})")
     lines.append(f"  CE OI Δ {_fmt_oi(ce_net)} vs PE Δ {_fmt_oi(pe_net)} → {oi_text}")
     
@@ -2083,10 +2087,19 @@ def build_llm_consolidated_digest(
     strat = gv("strategy") or gv("instrument")
     if strat and bias_upper not in ("NO_TRADE", "NEUTRAL"):
         lines.append("")
+        # Double check option type consistency in the digest plan against directional bias
+        if is_bear and re.search(r"\bCE\b", strat, re.IGNORECASE):
+            strat = re.sub(r"\bCE\b", "PE", strat, flags=re.IGNORECASE)
+        elif is_bull and re.search(r"\bPE\b", strat, re.IGNORECASE):
+            strat = re.sub(r"\bPE\b", "CE", strat, flags=re.IGNORECASE)
+
         strat_upper = strat.upper().strip()
         prefix = ""
         if not (strat_upper.startswith("BUY") or strat_upper.startswith("SELL")):
-            prefix = "BUY "
+            if "FUT" in strat_upper and is_bear:
+                prefix = "SELL "
+            else:
+                prefix = "BUY "
         lines.append(f"📋 *PLAN* — {prefix}{_esc(strat)}")
         
         strike_sel = gv("strike_selection") or gv("entry_premium_range")

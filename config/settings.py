@@ -363,13 +363,22 @@ TRANSACTION_COSTS = {
 # ── AI Brain Settings ─────────────────────────────────────────────────────────────────────────────────────────────────
 # Controls how the AI verdict influences trade decisions.
 #   advisory   — AI verdict logged and displayed, but does NOT change trade outcomes
-#   boost_only — AI can promote BLOCKED → TRIGGERED_EXPERIMENTAL (never veto)
-#   full       — AI can both promote and veto trade decisions
-AI_DECISION_MODE = os.environ.get("AI_DECISION_MODE", "boost_only")
+#   empirical  — Empirical boost based on pattern history (ADR-007 v2)
+#   full       — AI can both promote (empirical) and veto trade decisions (post-Tier-2 only)
+AI_DECISION_MODE = os.environ.get("AI_DECISION_MODE", "empirical")
 
-# Minimum AI confidence to influence trade decisions (boost/veto)
+# Minimum AI confidence to influence trade decisions (boost/veto) - kept for backward compatibility
 AI_MIN_CONFIDENCE_BOOST = int(os.environ.get("AI_MIN_CONFIDENCE_BOOST", "80"))
 AI_MIN_CONFIDENCE_VETO = int(os.environ.get("AI_MIN_CONFIDENCE_VETO", "85"))
+
+# ── ADR-007: AI role redesign ──
+EMP_BOOST_MIN_TRADES = int(os.environ.get("EMP_BOOST_MIN_TRADES", "20"))
+EMP_BOOST_MIN_WINRATE = float(os.environ.get("EMP_BOOST_MIN_WINRATE", "0.60"))
+ML_PREDICTOR_MODE = os.environ.get("ML_PREDICTOR_MODE", "shadow")          # off | shadow | live (live gated by §7)
+LLM_ENRICHMENT_ASYNC = os.environ.get("LLM_ENRICHMENT_ASYNC", "true").lower() == "true"
+LLM_ENRICH_TIMEOUT_S = int(os.environ.get("LLM_ENRICH_TIMEOUT_S", "120"))
+AUTOPSY_ENABLED = os.environ.get("AUTOPSY_ENABLED", "true").lower() == "true"
+AUTOPSY_TIME_IST = os.environ.get("AUTOPSY_TIME_IST", "23:45")
 
 # Whether to call AI exit advisor for open trades during each scan
 AI_EXIT_ADVISOR_ENABLED = (

@@ -314,6 +314,22 @@ class StateMachine:
             state.detail = "parse error"
             return state.status
 
+        status = (health_row.get("status") or "UNKNOWN").upper()
+        # Auto-heal telegram_send transient error if idle > 30m without new failures
+        if key == "telegram_send" and status in ("DOWN", "DEGRADED") and age_s > 1800:
+            status = "OK"
+            try:
+                from src.models.schema import stamp_health
+                stamp_health("telegram_send", "OK", "Idle (no send errors in >30m)")
+            except Exception:
+                pass
+
+        if status in ("DOWN", "DEGRADED"):
+            state.consecutive_down += 1
+            state.status = status if state.consecutive_down >= 2 or status == "DOWN" else "DEGRADED"
+            state.detail = health_row.get("detail", "")
+            return state.status
+
         if age_s < stale_min * 60:
             state.consecutive_down = 0
             state.status = "OK"

@@ -818,6 +818,9 @@
                 <a href="/settings" class="nav-tab active" id="tab-settings"
                     >Settings</a
                 >
+                <a href="/ops" class="nav-tab" id="tab-ops"
+                    >Ops Monitor</a
+                >
             </div>
 
             <div
@@ -1170,7 +1173,7 @@
                                     AI Decision Mode
                                     <span
                                         class="info-icon"
-                                        data-tooltip="Controls AI influence on trade decisions: Advisory (log only), Boost Only (promote entries), or Full (both promote and veto entries)."
+                                        data-tooltip="Controls AI influence on trade decisions: Advisory (log only), Empirical (boost based on history stats), or Full (enable both vetoes and boosts)."
                                         >i</span
                                     >
                                 </label>
@@ -1178,8 +1181,8 @@
                                     <option value="advisory">
                                         Advisory Only
                                     </option>
-                                    <option value="boost_only">
-                                        AI Boost Only
+                                    <option value="empirical">
+                                        Empirical Boost (ADR-007)
                                     </option>
                                     <option value="full">
                                         Full AI Authority
@@ -1431,6 +1434,145 @@
                                             >
                                         </div>
                                     </div>
+                                </div>
+
+                                <!-- Min Empirical Boost Trades (ADR-007) -->
+                                <div class="form-group" style="margin-top: 20px" id="emp-trades-group">
+                                    <label style="display: inline-flex; align-items: center;">
+                                        Min Empirical Boost Trades
+                                        <span class="info-icon" data-tooltip="Minimum historical trades required in the pattern stats rollup to trigger empirical boost.">i</span>
+                                    </label>
+                                    <div class="slider-integrated-container">
+                                        <input
+                                            type="range"
+                                            id="sett-emp-trades-slider"
+                                            min="5"
+                                            max="100"
+                                            step="5"
+                                            class="integrated-slider"
+                                        />
+                                        <div class="integrated-badge">
+                                            <input
+                                                type="number"
+                                                id="sett-emp-trades"
+                                                min="5"
+                                                max="100"
+                                                required
+                                                class="integrated-input"
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Min Empirical Boost Winrate (ADR-007) -->
+                                <div class="form-group" style="margin-top: 20px" id="emp-winrate-group">
+                                    <label style="display: inline-flex; align-items: center;">
+                                        Min Empirical Boost Winrate
+                                        <span class="info-icon" data-tooltip="Minimum historical winrate required in the pattern stats rollup to trigger empirical boost.">i</span>
+                                    </label>
+                                    <div class="slider-integrated-container">
+                                        <input
+                                            type="range"
+                                            id="sett-emp-winrate-slider"
+                                            min="50"
+                                            max="100"
+                                            step="5"
+                                            class="integrated-slider"
+                                        />
+                                        <div class="integrated-badge">
+                                            <input
+                                                type="number"
+                                                id="sett-emp-winrate"
+                                                min="50"
+                                                max="100"
+                                                required
+                                                class="integrated-input"
+                                            />
+                                            <span class="suffix-percent">%</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- ML Predictor Mode (ADR-007) -->
+                                <div class="form-group" style="margin-top: 20px" id="ml-mode-group">
+                                    <label style="display: inline-flex; align-items: center;">
+                                        ML Predictor Mode
+                                        <span class="info-icon" data-tooltip="Execution mode for the offline XGBoost success predictor.">i</span>
+                                    </label>
+                                    <select id="sett-ml-mode">
+                                        <option value="off">Disabled (Off)</option>
+                                        <option value="shadow">Shadow Mode (Log Only)</option>
+                                        <option value="live">Live Mode (Execute)</option>
+                                    </select>
+                                </div>
+
+                                <!-- Async LLM Enrichment (ADR-007) -->
+                                <div class="switch-group" style="margin-top: 20px; border-top: 1px solid var(--border); padding-top: 20px;" id="llm-async-group">
+                                    <div class="switch-label">
+                                        <span>Async LLM Enrichment</span>
+                                        <span class="switch-sub">Run LLM analysis in a background thread to prevent scan cycle block</span>
+                                    </div>
+                                    <label class="switch">
+                                        <input type="checkbox" id="sett-llm-enrichment-async" />
+                                        <span class="slider"></span>
+                                    </label>
+                                </div>
+
+                                <!-- LLM Enrichment Timeout (ADR-007) -->
+                                <div class="form-group" style="margin-top: 20px" id="llm-timeout-group">
+                                    <label style="display: inline-flex; align-items: center;">
+                                        LLM Enrichment Timeout
+                                        <span class="info-icon" data-tooltip="Maximum seconds allowed for LLM API requests before aborting.">i</span>
+                                    </label>
+                                    <div class="slider-integrated-container">
+                                        <input
+                                            type="range"
+                                            id="sett-llm-enrich-timeout-slider"
+                                            min="5"
+                                            max="300"
+                                            step="5"
+                                            class="integrated-slider"
+                                        />
+                                        <div class="integrated-badge">
+                                            <input
+                                                type="number"
+                                                id="sett-llm-enrich-timeout"
+                                                min="5"
+                                                max="300"
+                                                required
+                                                class="integrated-input"
+                                            />
+                                            <span class="suffix-percent">s</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Nightly Autopsy Enabled (ADR-007) -->
+                                <div class="switch-group" style="margin-top: 20px; border-top: 1px solid var(--border); padding-top: 20px;" id="autopsy-enabled-group">
+                                    <div class="switch-label">
+                                        <span>Nightly Autopsy</span>
+                                        <span class="switch-sub">Generate detailed failure post-mortems for closed trades today</span>
+                                    </div>
+                                    <label class="switch">
+                                        <input type="checkbox" id="sett-autopsy-enabled" />
+                                        <span class="slider"></span>
+                                    </label>
+                                </div>
+
+                                <!-- Nightly Autopsy Time IST (ADR-007) -->
+                                <div class="form-group" style="margin-top: 20px" id="autopsy-time-group">
+                                    <label style="display: inline-flex; align-items: center;">
+                                        Nightly Autopsy Time (IST)
+                                        <span class="info-icon" data-tooltip="Time of day in IST (HH:MM format) when nightly autopsy is triggered.">i</span>
+                                    </label>
+                                    <input
+                                        type="text"
+                                        id="sett-autopsy-time-ist"
+                                        pattern="^(0[0-9]|1[0-9]|2[0-3]):[0-5][0-9]$"
+                                        placeholder="23:45"
+                                        required
+                                        style="width: 100%; max-width: 120px;"
+                                    />
                                 </div>
                             </div>
                         </div>
@@ -1863,8 +2005,7 @@
             </form>
         </div>
 
-        <!-- Unsaved Changes Floating Banner Backdrop -->
-        <div id="toast-backdrop" class="toast-backdrop"></div>
+
 
         <!-- Unsaved Changes Floating Banner -->
         <div id="unsaved-banner" class="unsaved-banner">
@@ -2046,6 +2187,9 @@
                     { slider: "sett-max-util-slider", num: "sett-max-util" },
                     { slider: "sett-ai-boost-slider", num: "sett-ai-boost" },
                     { slider: "sett-ai-veto-slider", num: "sett-ai-veto" },
+                    { slider: "sett-emp-trades-slider", num: "sett-emp-trades" },
+                    { slider: "sett-emp-winrate-slider", num: "sett-emp-winrate" },
+                    { slider: "sett-llm-enrich-timeout-slider", num: "sett-llm-enrich-timeout" },
                 ];
 
                 pairs.forEach((pair) => {
@@ -2388,35 +2532,25 @@
             }
 
             function updateAIDecisionFields() {
-                const mode = document.getElementById(
-                    "sett-ai-decision-mode",
-                ).value;
-                const boostSlider = document.getElementById(
-                    "sett-ai-boost-slider",
-                );
+                const mode = document.getElementById("sett-ai-decision-mode").value;
+                const boostSlider = document.getElementById("sett-ai-boost-slider");
                 const boostInput = document.getElementById("sett-ai-boost");
-                const vetoSlider = document.getElementById(
-                    "sett-ai-veto-slider",
-                );
+                const vetoSlider = document.getElementById("sett-ai-veto-slider");
                 const vetoInput = document.getElementById("sett-ai-veto");
-                const advancedToggle =
-                    document.getElementById("ai-advanced-toggle");
-                const advancedSection = document.getElementById(
-                    "ai-advanced-section",
-                );
+                const advancedToggle = document.getElementById("ai-advanced-toggle");
+                const advancedSection = document.getElementById("ai-advanced-section");
                 const chevron = document.getElementById("ai-advanced-chevron");
+
+                const empTradesGroup = document.getElementById("emp-trades-group");
+                const empWinrateGroup = document.getElementById("emp-winrate-group");
+                const mlModeGroup = document.getElementById("ml-mode-group");
 
                 if (!boostSlider || !vetoSlider) return;
 
-                const boostGroup =
-                    boostSlider.closest(".slider-integrated-container") ||
-                    boostSlider.closest(".form-group");
-                const vetoGroup =
-                    vetoSlider.closest(".slider-integrated-container") ||
-                    vetoSlider.closest(".form-group");
+                const boostGroup = boostSlider.closest(".form-group");
+                const vetoGroup = vetoSlider.closest(".form-group");
 
                 if (mode === "advisory") {
-                    // Automatically collapse and hide advanced AI criteria for advisory mode
                     if (advancedToggle) advancedToggle.style.display = "none";
                     if (advancedSection) advancedSection.style.display = "none";
                     if (chevron) chevron.style.transform = "rotate(0deg)";
@@ -2428,18 +2562,26 @@
                     if (vetoGroup) vetoGroup.classList.add("dormant");
                     vetoSlider.disabled = true;
                     vetoInput.disabled = true;
+
+                    if (empTradesGroup) empTradesGroup.style.display = "none";
+                    if (empWinrateGroup) empWinrateGroup.style.display = "none";
+                    if (mlModeGroup) mlModeGroup.style.display = "none";
                 } else {
                     if (advancedToggle) advancedToggle.style.display = "flex";
 
-                    if (mode === "boost_only") {
-                        if (boostGroup) boostGroup.classList.remove("dormant");
-                        boostSlider.disabled = false;
-                        boostInput.disabled = false;
+                    if (mode === "empirical") {
+                        if (boostGroup) boostGroup.classList.add("dormant");
+                        boostSlider.disabled = true;
+                        boostInput.disabled = true;
 
                         if (vetoGroup) vetoGroup.classList.add("dormant");
                         vetoSlider.disabled = true;
                         vetoInput.disabled = true;
-                    } else {
+
+                        if (empTradesGroup) empTradesGroup.style.display = "block";
+                        if (empWinrateGroup) empWinrateGroup.style.display = "block";
+                        if (mlModeGroup) mlModeGroup.style.display = "block";
+                    } else if (mode === "full") {
                         if (boostGroup) boostGroup.classList.remove("dormant");
                         boostSlider.disabled = false;
                         boostInput.disabled = false;
@@ -2447,6 +2589,10 @@
                         if (vetoGroup) vetoGroup.classList.remove("dormant");
                         vetoSlider.disabled = false;
                         vetoInput.disabled = false;
+
+                        if (empTradesGroup) empTradesGroup.style.display = "block";
+                        if (empWinrateGroup) empWinrateGroup.style.display = "block";
+                        if (mlModeGroup) mlModeGroup.style.display = "block";
                     }
                 }
             }
@@ -2504,6 +2650,20 @@
                     parseFloat(
                         document.getElementById("sett-direct-kite-tgt").value,
                     ) !== (runtimeConfig.direct_kite_default_tgt_pct || 50.0) ||
+                    parseInt(document.getElementById("sett-emp-trades").value) !==
+                        (runtimeConfig.emp_boost_min_trades || 20) ||
+                    Math.round(parseFloat(document.getElementById("sett-emp-winrate").value)) !==
+                        Math.round((runtimeConfig.emp_boost_min_winrate || 0.60) * 100) ||
+                    document.getElementById("sett-ml-mode").value !==
+                        (runtimeConfig.ml_predictor_mode || "shadow") ||
+                    document.getElementById("sett-llm-enrichment-async").checked !==
+                        (runtimeConfig.llm_enrichment_async !== false) ||
+                    parseInt(document.getElementById("sett-llm-enrich-timeout").value) !==
+                        (runtimeConfig.llm_enrich_timeout_s || 120) ||
+                    document.getElementById("sett-autopsy-enabled").checked !==
+                        (runtimeConfig.autopsy_enabled !== false) ||
+                    document.getElementById("sett-autopsy-time-ist").value !==
+                        (runtimeConfig.autopsy_time_ist || "23:45") ||
                     isLotsDirty() ||
                     isPaperLotsDirty() ||
                     isSymbolsDirty() ||
@@ -2514,16 +2674,13 @@
                     ) !== (runtimeConfig.paper_lots || 10);
 
                 const banner = document.getElementById("unsaved-banner");
-                const backdrop = document.getElementById("toast-backdrop");
                 const saveBtn = document.getElementById("save-btn");
 
                 if (isDirty) {
                     if (banner) banner.classList.add("show");
-                    if (backdrop) backdrop.classList.add("show");
                     if (saveBtn) saveBtn.classList.add("btn-dirty");
                 } else {
                     if (banner) banner.classList.remove("show");
-                    if (backdrop) backdrop.classList.remove("show");
                     if (saveBtn) saveBtn.classList.remove("btn-dirty");
                 }
             }
@@ -2734,6 +2891,43 @@
                             ).value = data.live_ai_min_confidence_veto || 85;
                         }
 
+                        // Empirical Boost & ML Predictor settings (ADR-007)
+                        const empTradesInput = document.getElementById("sett-emp-trades");
+                        if (empTradesInput) {
+                            empTradesInput.value = data.emp_boost_min_trades || 20;
+                            document.getElementById("sett-emp-trades-slider").value = data.emp_boost_min_trades || 20;
+                        }
+                        const empWinrateInput = document.getElementById("sett-emp-winrate");
+                        if (empWinrateInput) {
+                            // Convert decimal to percentage for UI (e.g. 0.60 -> 60)
+                            const wrPct = Math.round((data.emp_boost_min_winrate || 0.60) * 100);
+                            empWinrateInput.value = wrPct;
+                            document.getElementById("sett-emp-winrate-slider").value = wrPct;
+                        }
+                        const mlModeSelect = document.getElementById("sett-ml-mode");
+                        if (mlModeSelect) {
+                            mlModeSelect.value = data.ml_predictor_mode || "shadow";
+                        }
+
+                        // Load LLM enrichment & Autopsy settings (ADR-007)
+                        const asyncEnrichCheckbox = document.getElementById("sett-llm-enrichment-async");
+                        if (asyncEnrichCheckbox) {
+                            asyncEnrichCheckbox.checked = data.llm_enrichment_async !== false; // default true
+                        }
+                        const llmTimeoutInput = document.getElementById("sett-llm-enrich-timeout");
+                        if (llmTimeoutInput) {
+                            llmTimeoutInput.value = data.llm_enrich_timeout_s || 120;
+                            document.getElementById("sett-llm-enrich-timeout-slider").value = data.llm_enrich_timeout_s || 120;
+                        }
+                        const autopsyCheckbox = document.getElementById("sett-autopsy-enabled");
+                        if (autopsyCheckbox) {
+                            autopsyCheckbox.checked = data.autopsy_enabled !== false; // default true
+                        }
+                        const autopsyTimeInput = document.getElementById("sett-autopsy-time-ist");
+                        if (autopsyTimeInput) {
+                            autopsyTimeInput.value = data.autopsy_time_ist || "23:45";
+                        }
+
                         const manageDirectCheckbox = document.getElementById(
                             "sett-manage-direct-kite",
                         );
@@ -2809,13 +3003,9 @@
                         // Reset dirty state indicators
                         const unsavedBanner =
                             document.getElementById("unsaved-banner");
-                        const toastBackdrop =
-                            document.getElementById("toast-backdrop");
                         const saveBtn = document.getElementById("save-btn");
                         if (unsavedBanner)
                             unsavedBanner.classList.remove("show");
-                        if (toastBackdrop)
-                            toastBackdrop.classList.remove("show");
                         if (saveBtn) saveBtn.classList.remove("btn-dirty");
 
                         // Bind input events to detect dirty edits dynamically
@@ -2899,6 +3089,27 @@
                     live_ai_min_confidence_veto: parseInt(
                         document.getElementById("sett-ai-veto").value,
                     ),
+                    emp_boost_min_trades: parseInt(
+                        document.getElementById("sett-emp-trades").value,
+                    ),
+                    emp_boost_min_winrate: parseFloat(
+                        document.getElementById("sett-emp-winrate").value,
+                    ) / 100.0,
+                    ml_predictor_mode: document.getElementById(
+                        "sett-ml-mode",
+                    ).value,
+                    llm_enrichment_async: document.getElementById(
+                        "sett-llm-enrichment-async",
+                    ).checked,
+                    llm_enrich_timeout_s: parseInt(
+                        document.getElementById("sett-llm-enrich-timeout").value,
+                    ),
+                    autopsy_enabled: document.getElementById(
+                        "sett-autopsy-enabled",
+                    ).checked,
+                    autopsy_time_ist: document.getElementById(
+                        "sett-autopsy-time-ist",
+                    ).value,
                     manage_direct_kite_positions: document.getElementById(
                         "sett-manage-direct-kite",
                     ).checked,
@@ -2923,6 +3134,7 @@
                     .then((res) => {
                         alert("Settings saved successfully!");
                         runtimeConfig = updated;
+                        _savedStrategies = updated.strategies;
                         checkDirty(); // recalculate dirty state (will clear banner)
                     })
                     .catch((err) => alert("Error saving settings: " + err));

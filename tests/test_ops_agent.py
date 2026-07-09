@@ -9,7 +9,7 @@ import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
 
@@ -20,32 +20,20 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 @pytest.fixture
 def tmp_db(tmp_path):
-    """Create a temporary bot DB with health_state table."""
+    """Create a temporary bot DB with full production schema.
+
+    Uses init_db() from src.models.schema so the schema matches the real
+    database. This is required because dashboard_server.py patches
+    sqlite3.connect globally at import time with a PatchedConnection that
+    rewrites SQL to reference 40+ columns — the test fixture must have
+    those columns or the rewrite raises OperationalError.
+    """
     db_path = tmp_path / "nsebot.db"
-    conn = sqlite3.connect(str(db_path))
-    conn.executescript("""
-        CREATE TABLE health_state (
-            key TEXT PRIMARY KEY,
-            status TEXT,
-            detail TEXT,
-            updated_at TEXT
-        );
-        CREATE TABLE paper_trades (
-            id INTEGER PRIMARY KEY,
-            opened_at TEXT,
-            closed_at TEXT,
-            status TEXT,
-            symbol TEXT
-        );
-        CREATE TABLE live_trades (
-            id INTEGER PRIMARY KEY,
-            opened_at TEXT,
-            closed_at TEXT,
-            status TEXT,
-            symbol TEXT
-        );
-    """)
-    conn.close()
+    from src.models.schema import DB_PATH as _REAL_DB_PATH
+    from src.models.schema import init_db
+
+    with patch("src.models.schema.DB_PATH", str(db_path)):
+        init_db()
     return db_path
 
 
@@ -92,9 +80,11 @@ def suppress_ops_escalation(request, monkeypatch):
 
 # ── State Machine Tests ──────────────────────────────────────────────────────
 
+
 class TestStateMachine:
     def test_ok_to_ok(self):
         from ops_agent import StateMachine
+
         sm = StateMachine()
         row = {"status": "OK", "detail": "test"}
         result = sm.evaluate("scheduler_loop", row)
@@ -103,6 +93,7 @@ class TestStateMachine:
 
     def test_ok_to_degraded_to_down(self):
         from ops_agent import StateMachine
+
         sm = StateMachine()
         # First bad read → DEGRADED
         sm.evaluate("shoonya_session", {"status": "DOWN", "detail": "fail"})
@@ -115,6 +106,7 @@ class TestStateMachine:
 
     def test_degraded_resets_on_ok(self):
         from ops_agent import StateMachine
+
         sm = StateMachine()
         sm.evaluate("scheduler_loop", {"status": "DOWN", "detail": ""})
         assert sm.components["scheduler_loop"].status == "DEGRADED"
@@ -125,27 +117,42 @@ class TestStateMachine:
     def test_flapping_guard(self):
         """OK/DOWN alternating reads → no action until 2 consecutive DOWN."""
         from ops_agent import StateMachine
+
         sm = StateMachine()
-        sm.evaluate_stale("shoonya_session", {"status": "OK", "updated_at": datetime.now(IST).isoformat()}, 10)
+        sm.evaluate_stale(
+            "shoonya_session",
+            {"status": "OK", "updated_at": datetime.now(IST).isoformat()},
+            10,
+        )
         assert sm.components["shoonya_session"].status == "OK"
         # Stale read
         old_time = (datetime.now(IST) - timedelta(minutes=15)).isoformat()
-        sm.evaluate_stale("shoonya_session", {"status": "OK", "updated_at": old_time}, 10)
+        sm.evaluate_stale(
+            "shoonya_session", {"status": "OK", "updated_at": old_time}, 10
+        )
         assert sm.components["shoonya_session"].status == "DEGRADED"
         # Back to OK
-        sm.evaluate_stale("shoonya_session", {"status": "OK", "updated_at": datetime.now(IST).isoformat()}, 10)
+        sm.evaluate_stale(
+            "shoonya_session",
+            {"status": "OK", "updated_at": datetime.now(IST).isoformat()},
+            10,
+        )
         assert sm.components["shoonya_session"].status == "OK"
         assert sm.components["shoonya_session"].consecutive_down == 0
 
     def test_staleness_evaluation(self):
         from ops_agent import StateMachine
+
         sm = StateMachine()
         # Fresh → OK
         fresh = {"status": "OK", "updated_at": datetime.now(IST).isoformat()}
         sm.evaluate_stale("scheduler_loop", fresh, stale_min=3)
         assert sm.components["scheduler_loop"].status == "OK"
         # Stale → DEGRADED then DOWN
-        stale = {"status": "OK", "updated_at": (datetime.now(IST) - timedelta(minutes=5)).isoformat()}
+        stale = {
+            "status": "OK",
+            "updated_at": (datetime.now(IST) - timedelta(minutes=5)).isoformat(),
+        }
         sm.evaluate_stale("scheduler_loop", stale, stale_min=3)
         assert sm.components["scheduler_loop"].status == "DEGRADED"
         sm.evaluate_stale("scheduler_loop", stale, stale_min=3)
@@ -153,6 +160,7 @@ class TestStateMachine:
 
     def test_none_health_row(self):
         from ops_agent import StateMachine
+
         sm = StateMachine()
         result = sm.evaluate("scheduler_loop", None)
         assert result == "DOWN"
@@ -160,9 +168,11 @@ class TestStateMachine:
 
 # ── Health Reading Tests ─────────────────────────────────────────────────────
 
+
 class TestHealthReading:
     def test_heartbeat_age(self, tmp_path):
         from ops_agent import HealthSnapshot, _read_heartbeat_age
+
         # No heartbeat file
         with patch("ops_agent.HEARTBEAT_PATH", tmp_path / "missing"):
             age = _read_heartbeat_age()
@@ -177,6 +187,7 @@ class TestHealthReading:
         # Stale heartbeat
         hb_file.write_text(str(int(time.time()) - 300))
         import os
+
         stale_time = time.time() - 300
         os.utime(str(hb_file), (stale_time, stale_time))
         with patch("ops_agent.HEARTBEAT_PATH", hb_file):
@@ -186,6 +197,7 @@ class TestHealthReading:
 
     def test_read_health_via_sqlite(self, tmp_db):
         from ops_agent import _read_health_via_sqlite
+
         _stamp_health(tmp_db, "scheduler_loop", "OK", "test")
         with patch("ops_agent.BOT_DB_PATH", str(tmp_db)):
             rows = _read_health_via_sqlite()
@@ -195,9 +207,16 @@ class TestHealthReading:
 
     def test_read_open_positions_count(self, tmp_db):
         from ops_agent import _read_open_positions_count
+
         conn = sqlite3.connect(str(tmp_db))
-        conn.execute("INSERT INTO paper_trades (opened_at, status, symbol) VALUES (?, 'OPEN', 'NIFTY')", (datetime.now(IST).isoformat(),))
-        conn.execute("INSERT INTO live_trades (opened_at, status, symbol) VALUES (?, 'OPEN', 'BANKNIFTY')", (datetime.now(IST).isoformat(),))
+        conn.execute(
+            "INSERT INTO paper_trades (opened_at, status, symbol, option_type, entry_underlying) VALUES (?, 'OPEN', 'NIFTY', 'CE', 0.0)",
+            (datetime.now(IST).isoformat(),),
+        )
+        conn.execute(
+            "INSERT INTO live_trades (opened_at, status, symbol, option_type, entry_underlying) VALUES (?, 'OPEN', 'BANKNIFTY', 'CE', 0.0)",
+            (datetime.now(IST).isoformat(),),
+        )
         conn.commit()
         conn.close()
         with patch("ops_agent.BOT_DB_PATH", str(tmp_db)):
@@ -207,10 +226,12 @@ class TestHealthReading:
 
 # ── Playbook Tests ───────────────────────────────────────────────────────────
 
+
 class TestPlaybooks:
     def test_p01_restart_when_dead_no_positions(self):
         """P01: Bot dead + no open positions → restart issued."""
-        from ops_agent import StateMachine, HealthSnapshot, run_playbooks, ROLLOUT_LEVEL
+        from ops_agent import ROLLOUT_LEVEL, HealthSnapshot, StateMachine, run_playbooks
+
         snap = HealthSnapshot(
             heartbeat_age_s=300,
             heartbeat_ok=False,
@@ -224,7 +245,8 @@ class TestPlaybooks:
 
     def test_p02_crash_loop_no_restart(self):
         """P01 bound exceeded → P02 state, no third restart."""
-        from ops_agent import StateMachine, HealthSnapshot, run_playbooks
+        from ops_agent import HealthSnapshot, StateMachine, run_playbooks
+
         snap = HealthSnapshot(
             heartbeat_age_s=300,
             heartbeat_ok=False,
@@ -233,7 +255,9 @@ class TestPlaybooks:
         )
         sm = StateMachine()
         # Simulate 2 prior restarts
-        sm.components["_restart_count"] = type("C", (), {"consecutive_down": 2, "detail": ""})()
+        sm.components["_restart_count"] = type(
+            "C", (), {"consecutive_down": 2, "detail": ""}
+        )()
         results = run_playbooks(snap, sm)
         # Should NOT restart, should escalate P02
         assert not any(r.action_taken == "restart_nsebot" for r in results)
@@ -241,7 +265,8 @@ class TestPlaybooks:
 
     def test_p02_open_position_emergency_flat(self):
         """P02: Bot dead + open positions → emergency flat."""
-        from ops_agent import StateMachine, HealthSnapshot, run_playbooks
+        from ops_agent import HealthSnapshot, StateMachine, run_playbooks
+
         snap = HealthSnapshot(
             heartbeat_age_s=300,
             heartbeat_ok=False,
@@ -255,7 +280,13 @@ class TestPlaybooks:
 
     def test_p03_reauth_on_auth_fail(self):
         """P03: Shoonya auth-fail → re-auth hook called."""
-        from ops_agent import StateMachine, HealthSnapshot, ComponentState, run_playbooks
+        from ops_agent import (
+            ComponentState,
+            HealthSnapshot,
+            StateMachine,
+            run_playbooks,
+        )
+
         snap = HealthSnapshot(
             heartbeat_ok=True,
             heartbeat_age_s=5,
@@ -274,7 +305,13 @@ class TestPlaybooks:
 
     def test_p04_trading_paused_on_reauth_failure(self):
         """P04: Re-auth failed ×3 → trading_paused=true."""
-        from ops_agent import StateMachine, HealthSnapshot, ComponentState, run_playbooks
+        from ops_agent import (
+            ComponentState,
+            HealthSnapshot,
+            StateMachine,
+            run_playbooks,
+        )
+
         snap = HealthSnapshot(
             heartbeat_ok=True,
             heartbeat_age_s=5,
@@ -294,7 +331,13 @@ class TestPlaybooks:
 
     def test_p04_broker_down_pause(self):
         """P04: Broker down (502/Timeout) → pause trading."""
-        from ops_agent import StateMachine, HealthSnapshot, ComponentState, run_playbooks
+        from ops_agent import (
+            ComponentState,
+            HealthSnapshot,
+            StateMachine,
+            run_playbooks,
+        )
+
         snap = HealthSnapshot(
             heartbeat_ok=True,
             heartbeat_age_s=5,
@@ -313,7 +356,13 @@ class TestPlaybooks:
 
     def test_p12_unknown_state(self):
         """P12: Unknown component state → notification only."""
-        from ops_agent import StateMachine, HealthSnapshot, ComponentState, run_playbooks
+        from ops_agent import (
+            ComponentState,
+            HealthSnapshot,
+            StateMachine,
+            run_playbooks,
+        )
+
         snap = HealthSnapshot(
             heartbeat_ok=True,
             heartbeat_age_s=5,
@@ -328,8 +377,9 @@ class TestPlaybooks:
 
     def test_observe_only_no_actions(self):
         """In observe-only mode, no T1/T2 actions are taken."""
-        from ops_agent import StateMachine, HealthSnapshot, run_playbooks
         import ops_agent
+        from ops_agent import HealthSnapshot, StateMachine, run_playbooks
+
         snap = HealthSnapshot(
             heartbeat_age_s=300,
             heartbeat_ok=False,
@@ -349,12 +399,15 @@ class TestPlaybooks:
 
 # ── Incident Logging Tests ───────────────────────────────────────────────────
 
+
 class TestIncidents:
     def test_log_incident(self, agent_db):
         from ops_agent import _get_incidents_conn
+
         # Patch the incidents DB path
         with patch("ops_agent.AGENT_DB", agent_db):
             from ops_agent import _log_incident
+
             iid = _log_incident("P01", "heartbeat stale", "restart_nsebot", "success")
             assert iid is not None
             # Verify it was written
@@ -367,31 +420,41 @@ class TestIncidents:
 
 # ── Telegram Escalation Tests ────────────────────────────────────────────────
 
+
 class TestEscalation:
     def test_send_telegram_no_token(self):
         from ops_agent import _send_telegram
-        with patch("ops_agent.TELEGRAM_BOT_TOKEN", ""), patch("ops_agent.TELEGRAM_CHAT_ID", ""):
+
+        with (
+            patch("ops_agent.TELEGRAM_BOT_TOKEN", ""),
+            patch("ops_agent.TELEGRAM_CHAT_ID", ""),
+        ):
             result = _send_telegram("test")
             assert result is False
 
     def test_send_telegram_success(self):
         from ops_agent import _send_telegram
+
         mock_resp = MagicMock()
         mock_resp.read.return_value = b'{"ok":true}'
         mock_resp.__enter__ = lambda s: s
         mock_resp.__exit__ = MagicMock(return_value=False)
-        with patch("ops_agent.TELEGRAM_BOT_TOKEN", "test_token"), \
-             patch("ops_agent.TELEGRAM_CHAT_ID", "123"), \
-             patch("urllib.request.urlopen", return_value=mock_resp):
+        with (
+            patch("ops_agent.TELEGRAM_BOT_TOKEN", "test_token"),
+            patch("ops_agent.TELEGRAM_CHAT_ID", "123"),
+            patch("urllib.request.urlopen", return_value=mock_resp),
+        ):
             result = _send_telegram("test message")
             assert result is True
 
 
 # ── Set Trading Paused Tests ─────────────────────────────────────────────────
 
+
 class TestTradingPaused:
     def test_set_trading_paused(self, tmp_path):
         from ops_agent import _set_trading_paused
+
         config_path = tmp_path / "runtime_config.json"
         config_path.write_text(json.dumps({"trading_paused": False}))
         with patch("ops_agent.DATA_DIR", tmp_path):
@@ -402,6 +465,7 @@ class TestTradingPaused:
 
     def test_set_trading_paused_no_file(self, tmp_path):
         from ops_agent import _set_trading_paused
+
         with patch("ops_agent.DATA_DIR", tmp_path):
             result = _set_trading_paused()
             assert result is True
@@ -411,14 +475,18 @@ class TestTradingPaused:
 
 # ── Schema Health Stamp Tests ────────────────────────────────────────────────
 
+
 class TestSchemaHealthStamps:
     def test_stamp_health(self, tmp_db):
         from src.models.schema import stamp_health
+
         with patch("src.models.schema.DB_PATH", str(tmp_db)):
             stamp_health("scheduler_loop", "OK", "test detail")
             # Verify
             conn = sqlite3.connect(str(tmp_db))
-            row = conn.execute("SELECT * FROM health_state WHERE key='scheduler_loop'").fetchone()
+            row = conn.execute(
+                "SELECT * FROM health_state WHERE key='scheduler_loop'"
+            ).fetchone()
             conn.close()
             assert row is not None
             assert row[1] == "OK"
@@ -426,17 +494,21 @@ class TestSchemaHealthStamps:
 
     def test_stamp_health_upsert(self, tmp_db):
         from src.models.schema import stamp_health
+
         with patch("src.models.schema.DB_PATH", str(tmp_db)):
             stamp_health("scheduler_loop", "OK", "first")
             stamp_health("scheduler_loop", "DOWN", "second")
             conn = sqlite3.connect(str(tmp_db))
-            rows = conn.execute("SELECT * FROM health_state WHERE key='scheduler_loop'").fetchall()
+            rows = conn.execute(
+                "SELECT * FROM health_state WHERE key='scheduler_loop'"
+            ).fetchall()
             conn.close()
             assert len(rows) == 1
             assert rows[0][1] == "DOWN"
 
     def test_read_health_state(self, tmp_db):
-        from src.models.schema import stamp_health, read_health_state
+        from src.models.schema import read_health_state, stamp_health
+
         with patch("src.models.schema.DB_PATH", str(tmp_db)):
             stamp_health("scheduler_loop", "OK")
             stamp_health("shoonya_session", "DOWN")
@@ -447,8 +519,12 @@ class TestSchemaHealthStamps:
 
     def test_get_open_positions_count(self, tmp_db):
         from src.models.schema import get_open_positions_count
+
         conn = sqlite3.connect(str(tmp_db))
-        conn.execute("INSERT INTO paper_trades (opened_at, status, symbol) VALUES (?, 'OPEN', 'NIFTY')", (datetime.now(IST).isoformat(),))
+        conn.execute(
+            "INSERT INTO paper_trades (opened_at, status, symbol, option_type, entry_underlying) VALUES (?, 'OPEN', 'NIFTY', 'CE', 0.0)",
+            (datetime.now(IST).isoformat(),),
+        )
         conn.commit()
         conn.close()
         with patch("src.models.schema.DB_PATH", str(tmp_db)):
@@ -457,14 +533,20 @@ class TestSchemaHealthStamps:
 
     def test_stamp_open_positions(self, tmp_db):
         from src.models.schema import stamp_open_positions
+
         conn = sqlite3.connect(str(tmp_db))
-        conn.execute("INSERT INTO paper_trades (opened_at, status, symbol) VALUES (?, 'OPEN', 'NIFTY')", (datetime.now(IST).isoformat(),))
+        conn.execute(
+            "INSERT INTO paper_trades (opened_at, status, symbol, option_type, entry_underlying) VALUES (?, 'OPEN', 'NIFTY', 'CE', 0.0)",
+            (datetime.now(IST).isoformat(),),
+        )
         conn.commit()
         conn.close()
         with patch("src.models.schema.DB_PATH", str(tmp_db)):
             stamp_open_positions()
             conn = sqlite3.connect(str(tmp_db))
-            row = conn.execute("SELECT * FROM health_state WHERE key='open_positions'").fetchone()
+            row = conn.execute(
+                "SELECT * FROM health_state WHERE key='open_positions'"
+            ).fetchone()
             conn.close()
             assert row is not None
             assert "count=1" in row[2]

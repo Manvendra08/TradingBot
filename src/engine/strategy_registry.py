@@ -84,7 +84,7 @@ def get_runner(sid: str) -> Optional[Callable]:
         from src.engine.ng_eia_strategy import run_ng_eia_strategy
         return run_ng_eia_strategy
     elif sid == "NG_MOMENTUM":
-        def run_ng_momentum_strategy(sym, scan_ctx, dig_id, intel_dict, ai_v=None):
+        def run_ng_momentum_strategy(sym, scan_ctx, dig_id, intel_dict, ai_verdict=None):
             from src.engine.ng_momentum_strategy import check_ng_momentum_entry
             verdict = intel_dict.get("verdict_label", "")
             side = "BUY" if verdict in ("LONG", "BULLISH") else "SELL" if verdict in ("SHORT", "BEARISH") else None
@@ -94,7 +94,7 @@ def get_runner(sid: str) -> Optional[Callable]:
                     log.info("NG Momentum Entry Blocked: %s", reason)
                     return {"action": "BLOCKED_DECISION", "reason": reason}
             from src.engine.paper_trading import run_paper_trading
-            return run_paper_trading(sym, scan_ctx, dig_id, intel_dict, ai_v)
+            return run_paper_trading(sym, scan_ctx, dig_id, intel_dict, ai_verdict)
         return run_ng_momentum_strategy
     return None
 

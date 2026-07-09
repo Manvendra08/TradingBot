@@ -579,8 +579,8 @@ def place_kite_order(
             buffer_pct = 0.002 if is_future else 0.05
             # P2-05: Slippage buffer direction for SELL.
             # For BUY, paying above LTP ensures fill (hit the ask).
-            # For SELL (writing), offering above LTP ensures the order
-            # is competitive near the ask side, guaranteeing execution.
+            # For SELL (writing), offering below LTP crosses the spread
+            # to the bid side, guaranteeing execution.
             if transaction_type == "BUY":
                 limit_price = ltp * (1 + buffer_pct)
             else:

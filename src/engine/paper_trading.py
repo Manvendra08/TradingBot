@@ -960,23 +960,303 @@ def run_timeframe_strategy(
     else:
         scan_freq = get_scan_frequency_nse()
     fetched_at = ctx.get("fetched_at") or datetime.now(timezone.utc).isoformat()
+
+    is_hourly_boundary = True
+    current_scan_idx = 1
     if scan_freq in (15, 30):
         scans_needed = 60 // scan_freq
         today_scans = get_today_scan_count(symbol, fetched_at)
         current_scan_idx = today_scans + 1
         if current_scan_idx % scans_needed != 0:
-            log.info(
-                "%s: Timeframe strategy skipped — scan %d is not a 1-hour boundary",
-                symbol,
-                current_scan_idx,
-            )
-            return {
-                "action": "SKIPPED_TIMEFRAME_BOUNDARY",
-                "reason": f"Skipped scan {current_scan_idx}",
-            }
+            is_hourly_boundary = False
 
     open_trades_before = get_open_timeframe_trades(symbol)
+    now_iso = datetime.now(timezone.utc).isoformat()
 
+    # ── 1. EXIT LOGIC (SL / Target / Dead Trade checked on EVERY scan cycle for safety) ──
+    if open_trades_before:
+        # Pre-fetch completed candle crossovers exit requirements only if it is an hourly boundary
+        has_crossover_data = False
+        c_1h_close = 0.0
+        p_1h_low = 0.0
+        p_1h_high = 0.0
+        breakout_buffer = 0.0
+        long_oi_support = False
+        short_oi_support = False
+        bar_end_1h = None
+
+        if is_hourly_boundary:
+            chart_indicators = ctx.get("chart_indicators") or {}
+            tf_data = chart_indicators
+            if not any(k in chart_indicators for k in ("1h", "3h")):
+                tf_data = next(iter(chart_indicators.values()), {}) if chart_indicators else {}
+            pay_1h = tf_data.get("1h")
+            pay_3h = tf_data.get("3h")
+            if pay_1h and pay_3h:
+                ohlc_1h = pay_1h.get("ohlc")
+                prev_1h = pay_1h.get("prev_ohlc") or pay_1h.get("last_closed_ohlc")
+                ohlc_3h = pay_3h.get("ohlc")
+                prev_3h = pay_3h.get("prev_ohlc") or pay_3h.get("last_closed_ohlc")
+                if ohlc_1h and prev_1h and ohlc_3h and prev_3h:
+                    c_1h_close = float(ohlc_1h["close"])
+                    p_1h_high = float(prev_1h["high"])
+                    p_1h_low = float(prev_1h["low"])
+                    bar_end_1h = pay_1h.get("bar_end_utc")
+                    
+                    # Compute breakout buffer (0.5x ATR with 0.3% minimum floor)
+                    atr_val = _get_atr(ctx)
+                    breakout_buffer = max((atr_val or 0) * 0.5, underlying * 0.003)
+                    
+                    # Check scan history for OI support
+                    current_ce = ctx.get("total_ce_oi")
+                    current_pe = ctx.get("total_pe_oi")
+                    if current_ce is not None and current_pe is not None:
+                        scans_needed = 60 // scan_freq if scan_freq in (15, 30) else 1
+                        older = get_scan_summary_n_scans_ago(symbol, scans_needed - 1) if scan_freq in (15, 30) else get_scan_summary_at_least_1h_old(symbol, fetched_at)
+                        if older:
+                            prev_ce = older["total_ce_oi"]
+                            prev_pe = older["total_pe_oi"]
+                            ce_diff = current_ce - prev_ce
+                            pe_diff = current_pe - prev_pe
+                            min_diff_pct = TIMEFRAME_OI_MIN_DIFF_PCT
+                            long_oi_support = (pe_diff - ce_diff) > (prev_pe * min_diff_pct)
+                            short_oi_support = (ce_diff - pe_diff) > (prev_ce * min_diff_pct)
+                            has_crossover_data = True
+
+        for trade in open_trades_before:
+            exit_premium = None
+            if trade["option_type"] in ("CE", "PE"):
+                exit_premium = _get_option_premium(
+                    symbol,
+                    ctx.get("expiry", ""),
+                    trade["strike"],
+                    trade["option_type"],
+                    ctx.get("option_rows"),
+                )
+
+            # A. LLM Reversal Exit
+            if ai_verdict is not None:
+                ai_bias = _extract_ai_bias(ai_verdict) or "NEUTRAL"
+                ai_conf = float(
+                    ai_verdict.get("confidence", 50)
+                    if isinstance(ai_verdict, dict)
+                    else getattr(ai_verdict, "confidence", 50)
+                )
+
+                is_reversal = False
+                if trade["verdict_label"] == "LONG" and ai_bias == "BEARISH":
+                    is_reversal = True
+                elif trade["verdict_label"] == "SHORT" and ai_bias == "BULLISH":
+                    is_reversal = True
+
+                if is_reversal and ai_conf >= 70:
+                    close_paper_trade(
+                        trade["id"],
+                        now_iso,
+                        underlying,
+                        exit_premium,
+                        "LLM_REVERSAL",
+                        f"LLM sentiment reversal: bias {ai_bias} (confidence {ai_conf}%)",
+                    )
+                    continue
+
+            # B. Standard SL/Target update & checks
+            r_current = 0.0
+            if trade["option_type"] in ("CE", "PE"):
+                entry_prem = float(trade.get("entry_premium") or 0.0)
+                sl_prem = float(trade.get("sl_premium") or 0.0)
+                side = trade.get("side") or "BUY"
+                if side == "SELL":
+                    if sl_prem > entry_prem and exit_premium:
+                        r_current = (entry_prem - float(exit_premium)) / (sl_prem - entry_prem)
+                else:
+                    if entry_prem > sl_prem and exit_premium:
+                        r_current = (float(exit_premium) - entry_prem) / (entry_prem - sl_prem)
+            else:
+                entry_und = float(trade.get("entry_underlying") or 0.0)
+                sl_und = float(trade.get("sl_underlying") or 0.0)
+                if trade["verdict_label"] == "LONG":
+                    if entry_und > sl_und:
+                        r_current = (underlying - entry_und) / (entry_und - sl_und)
+                else:
+                    if sl_und > entry_und:
+                        r_current = (entry_und - underlying) / (sl_und - entry_und)
+
+            max_fav = max(float(trade.get("max_favorable_r") or 0.0), r_current)
+            with get_conn() as conn:
+                conn.execute(
+                    "UPDATE paper_trades SET max_favorable_r=? WHERE id=?",
+                    (max_fav, trade["id"]),
+                )
+
+            # SL/Target hit checks
+            is_sl_hit = False
+            is_tgt_hit = False
+
+            if trade["option_type"] in ("CE", "PE"):
+                sl_prem = trade.get("sl_premium")
+                tgt_prem = trade.get("target_premium")
+                side = trade.get("side") or "BUY"
+
+                if exit_premium:
+                    if sl_prem is not None and str(sl_prem).strip() not in ("", "None", "NULL"):
+                        try:
+                            sl_val = float(sl_prem)
+                            if sl_val > 0:
+                                if side == "SELL":
+                                    is_sl_hit = exit_premium >= sl_val
+                                else:
+                                    is_sl_hit = exit_premium <= sl_val
+                        except ValueError:
+                            pass
+                    if tgt_prem is not None and str(tgt_prem).strip() not in ("", "None", "NULL"):
+                        try:
+                            tgt_val = float(tgt_prem)
+                            if tgt_val > 0:
+                                if side == "SELL":
+                                    is_tgt_hit = exit_premium <= tgt_val
+                                else:
+                                    is_tgt_hit = exit_premium >= tgt_val
+                        except ValueError:
+                            pass
+            else:
+                sl_und = trade.get("sl_underlying")
+                tgt_und = trade.get("target_underlying")
+                if sl_und:
+                    sl_und_val = float(sl_und)
+                    if trade["verdict_label"] == "LONG" and underlying <= sl_und_val:
+                        is_sl_hit = True
+                    elif trade["verdict_label"] == "SHORT" and underlying >= sl_und_val:
+                        is_sl_hit = True
+                if tgt_und:
+                    tgt_und_val = float(tgt_und)
+                    if trade["verdict_label"] == "LONG" and underlying >= tgt_und_val:
+                        is_tgt_hit = True
+                    elif trade["verdict_label"] == "SHORT" and underlying <= tgt_und_val:
+                        is_tgt_hit = True
+
+            if is_sl_hit:
+                close_paper_trade(
+                    trade["id"],
+                    now_iso,
+                    underlying,
+                    exit_premium if trade["option_type"] in ("CE", "PE") else underlying,
+                    "CLOSED_SL",
+                    f"Options SL hit: premium {exit_premium} vs SL {sl_prem} ({side})" if trade["option_type"] in ("CE", "PE") else f"Futures SL hit: underlying {underlying} <= SL {sl_und}",
+                )
+                continue
+            elif is_tgt_hit:
+                close_paper_trade(
+                    trade["id"],
+                    now_iso,
+                    underlying,
+                    exit_premium if trade["option_type"] in ("CE", "PE") else underlying,
+                    "CLOSED_TARGET",
+                    f"Options Target hit: premium {exit_premium} vs Target {tgt_prem} ({side})" if trade["option_type"] in ("CE", "PE") else f"Futures Target hit: underlying {underlying} >= Target {tgt_und}",
+                )
+                continue
+
+            # C. Dead Trade check
+            opened_dt = datetime.fromisoformat(trade["opened_at"].replace("Z", "+00:00"))
+            time_diff = (datetime.now(timezone.utc) - opened_dt).total_seconds()
+            if time_diff >= 3.0 * 3600 - 60:
+                if max_fav < 0.5:
+                    close_paper_trade(
+                        trade["id"],
+                        now_iso,
+                        underlying,
+                        exit_premium if trade["option_type"] in ("CE", "PE") else underlying,
+                        "Dead Trade",
+                        f"Dead trade exit: 3 hours passed, max favorable R {max_fav:.2f} < 0.5",
+                    )
+                    continue
+
+            # D. 1H Crossover exit checks (only run on completed hour boundary)
+            if has_crossover_data:
+                # Exit Long trade (Crossover)
+                if trade["option_type"] in ("CE", "FUT") and trade["verdict_label"] == "LONG":
+                    if bar_end_1h and trade["opened_at"] < bar_end_1h:
+                        if c_1h_close < p_1h_low:
+                            crossover_size = p_1h_low - c_1h_close
+                            if crossover_size > 2 * breakout_buffer:
+                                close_paper_trade(
+                                    trade["id"],
+                                    now_iso,
+                                    underlying,
+                                    exit_premium if trade["option_type"] == "CE" else underlying,
+                                    "TF-1H-Cross",
+                                    f"timeframe exit | Large reversal move ({crossover_size:.2f} > 2x buffer {2 * breakout_buffer:.2f})",
+                                )
+                                continue
+                            elif short_oi_support:
+                                close_paper_trade(
+                                    trade["id"],
+                                    now_iso,
+                                    underlying,
+                                    exit_premium if trade["option_type"] == "CE" else underlying,
+                                    "TF-1H-Cross",
+                                    f"timeframe exit | 1H close {c_1h_close:.2f} < p1H_low {p_1h_low:.2f} + Short OI bias",
+                                )
+                                continue
+                # Exit Short trade (Crossover)
+                elif trade["option_type"] in ("PE", "FUT") and trade["verdict_label"] == "SHORT":
+                    if bar_end_1h and trade["opened_at"] < bar_end_1h:
+                        if c_1h_close > p_1h_high:
+                            crossover_size = c_1h_close - p_1h_high
+                            if crossover_size > 2 * breakout_buffer:
+                                close_paper_trade(
+                                    trade["id"],
+                                    now_iso,
+                                    underlying,
+                                    exit_premium if trade["option_type"] == "PE" else underlying,
+                                    "TF-1H-Cross",
+                                    f"timeframe exit | Large reversal move ({crossover_size:.2f} > 2x buffer {2 * breakout_buffer:.2f})",
+                                )
+                                continue
+                            elif long_oi_support:
+                                close_paper_trade(
+                                    trade["id"],
+                                    now_iso,
+                                    underlying,
+                                    exit_premium if trade["option_type"] == "PE" else underlying,
+                                    "TF-1H-Cross",
+                                    f"timeframe exit | 1H close {c_1h_close:.2f} > p1H_high {p_1h_high:.2f} + Long OI bias",
+                                )
+                                continue
+
+    open_trades_after = get_open_timeframe_trades(symbol)
+    closed_trade_id = None
+    for pt in open_trades_before:
+        if pt["id"] not in [ct["id"] for ct in open_trades_after]:
+            closed_trade_id = pt["id"]
+            break
+
+    if closed_trade_id:
+        with get_conn() as conn:
+            closed = conn.execute(
+                "SELECT * FROM paper_trades WHERE id=?", (closed_trade_id,)
+            ).fetchone()
+            if closed:
+                closed = dict(closed)
+                return {
+                    "action": "CLOSED",
+                    "trade": closed,
+                    "reason": f"Timeframe exit: {closed.get('exit_reason') or 'SL/Target hit'} (P&L: ₹{closed.get('pnl_rupees', 0.0):,.2f})",
+                }
+
+    # If it is not a 1-hour boundary, skip checking for new entries
+    if not is_hourly_boundary:
+        log.info(
+            "%s: Timeframe strategy skipped — scan %d is not a 1-hour boundary",
+            symbol,
+            current_scan_idx,
+        )
+        return {
+            "action": "SKIPPED_TIMEFRAME_BOUNDARY",
+            "reason": f"Skipped scan {current_scan_idx}",
+        }
+
+    # Pre-fetch entry indicators (we are on a 1-hour boundary here)
     chart_indicators = ctx.get("chart_indicators") or {}
     tf_data = chart_indicators
     if not any(k in chart_indicators for k in ("1h", "3h")):
@@ -1039,284 +1319,8 @@ def run_timeframe_strategy(
     long_oi_support = (pe_diff - ce_diff) > (prev_pe * min_diff_pct)
     short_oi_support = (ce_diff - pe_diff) > (prev_ce * min_diff_pct)
 
-    # M1 fix: ATR-based breakout buffer (0.5x ATR) with 0.3% minimum floor.
-    # Old 0.1% floor (e.g. 24pts on NIFTY, 0.3pts on NATURALGAS) was noise-level.
     atr_val = _get_atr(ctx)
     breakout_buffer = max((atr_val or 0) * 0.5, underlying * 0.003)
-
-    # ── 1. EXIT LOGIC ──
-    open_trades = get_open_timeframe_trades(symbol)
-    now_iso = datetime.now(timezone.utc).isoformat()
-    bar_end_1h = pay_1h.get("bar_end_utc")
-
-    for trade in open_trades:
-        exit_premium = None
-        if trade["option_type"] in ("CE", "PE"):
-            exit_premium = _get_option_premium(
-                symbol,
-                ctx.get("expiry", ""),
-                trade["strike"],
-                trade["option_type"],
-                ctx.get("option_rows"),
-            )
-
-        # LLM Reversal Exit
-        if ai_verdict is not None:
-            ai_bias = _extract_ai_bias(ai_verdict) or "NEUTRAL"
-            ai_conf = float(
-                ai_verdict.get("confidence", 50)
-                if isinstance(ai_verdict, dict)
-                else getattr(ai_verdict, "confidence", 50)
-            )
-
-            is_reversal = False
-            if trade["verdict_label"] == "LONG" and ai_bias == "BEARISH":
-                is_reversal = True
-            elif trade["verdict_label"] == "SHORT" and ai_bias == "BULLISH":
-                is_reversal = True
-
-            if is_reversal and ai_conf >= 70:
-                close_paper_trade(
-                    trade["id"],
-                    now_iso,
-                    underlying,
-                    exit_premium,
-                    "LLM_REVERSAL",
-                    f"LLM sentiment reversal: bias {ai_bias} (confidence {ai_conf}%)",
-                )
-                continue
-
-        r_current = 0.0
-        if trade["option_type"] in ("CE", "PE"):
-            entry_prem = float(trade.get("entry_premium") or 0.0)
-            sl_prem = float(trade.get("sl_premium") or 0.0)
-            side = trade.get("side") or "BUY"
-            if side == "SELL":
-                if sl_prem > entry_prem and exit_premium:
-                    r_current = (entry_prem - float(exit_premium)) / (
-                        sl_prem - entry_prem
-                    )
-            else:
-                if entry_prem > sl_prem and exit_premium:
-                    r_current = (float(exit_premium) - entry_prem) / (
-                        entry_prem - sl_prem
-                    )
-        else:
-            entry_und = float(trade.get("entry_underlying") or 0.0)
-            sl_und = float(trade.get("sl_underlying") or 0.0)
-            if trade["verdict_label"] == "LONG":
-                if entry_und > sl_und:
-                    r_current = (underlying - entry_und) / (entry_und - sl_und)
-            else:
-                if sl_und > entry_und:
-                    r_current = (entry_und - underlying) / (sl_und - entry_und)
-
-        max_fav = max(float(trade.get("max_favorable_r") or 0.0), r_current)
-        with get_conn() as conn:
-            conn.execute(
-                "UPDATE paper_trades SET max_favorable_r=? WHERE id=?",
-                (max_fav, trade["id"]),
-            )
-
-        # SL/Target checks
-        if trade["option_type"] in ("CE", "PE"):
-            sl_prem = trade.get("sl_premium")
-            tgt_prem = trade.get("target_premium")
-            side = trade.get("side") or "BUY"
-
-            is_sl_hit = False
-            is_tgt_hit = False
-
-            if exit_premium:
-                if sl_prem is not None and str(sl_prem).strip() not in (
-                    "",
-                    "None",
-                    "NULL",
-                ):
-                    try:
-                        sl_val = float(sl_prem)
-                        if sl_val > 0:
-                            if side == "SELL":
-                                is_sl_hit = exit_premium >= sl_val
-                            else:
-                                is_sl_hit = exit_premium <= sl_val
-                    except ValueError:
-                        pass
-                if tgt_prem is not None and str(tgt_prem).strip() not in (
-                    "",
-                    "None",
-                    "NULL",
-                ):
-                    try:
-                        tgt_val = float(tgt_prem)
-                        if tgt_val > 0:
-                            if side == "SELL":
-                                is_tgt_hit = exit_premium <= tgt_val
-                            else:
-                                is_tgt_hit = exit_premium >= tgt_val
-                    except ValueError:
-                        pass
-
-            if is_sl_hit:
-                close_paper_trade(
-                    trade["id"],
-                    now_iso,
-                    underlying,
-                    exit_premium,
-                    "CLOSED_SL",
-                    f"Options SL hit: premium {exit_premium} vs SL {sl_prem} ({side})",
-                )
-                continue
-            elif is_tgt_hit:
-                close_paper_trade(
-                    trade["id"],
-                    now_iso,
-                    underlying,
-                    exit_premium,
-                    "CLOSED_TARGET",
-                    f"Options Target hit: premium {exit_premium} vs Target {tgt_prem} ({side})",
-                )
-                continue
-        else:
-            sl_und = trade.get("sl_underlying")
-            tgt_und = trade.get("target_underlying")
-
-            is_sl_hit = False
-            is_tgt_hit = False
-
-            if sl_und:
-                sl_und_val = float(sl_und)
-                if trade["verdict_label"] == "LONG" and underlying <= sl_und_val:
-                    is_sl_hit = True
-                elif trade["verdict_label"] == "SHORT" and underlying >= sl_und_val:
-                    is_sl_hit = True
-
-            if tgt_und:
-                tgt_und_val = float(tgt_und)
-                if trade["verdict_label"] == "LONG" and underlying >= tgt_und_val:
-                    is_tgt_hit = True
-                elif trade["verdict_label"] == "SHORT" and underlying <= tgt_und_val:
-                    is_tgt_hit = True
-
-            if is_sl_hit:
-                close_paper_trade(
-                    trade["id"],
-                    now_iso,
-                    underlying,
-                    underlying,
-                    "CLOSED_SL",
-                    f"Futures SL hit: underlying {underlying} <= SL {sl_und}",
-                )
-                continue
-            elif is_tgt_hit:
-                close_paper_trade(
-                    trade["id"],
-                    now_iso,
-                    underlying,
-                    underlying,
-                    "CLOSED_TARGET",
-                    f"Futures Target hit: underlying {underlying} >= Target {tgt_und}",
-                )
-                continue
-
-        # Dead Trade exit
-        opened_dt = datetime.fromisoformat(trade["opened_at"].replace("Z", "+00:00"))
-        if bar_end_1h:
-            bar_end_dt = datetime.fromisoformat(bar_end_1h.replace("Z", "+00:00"))
-        else:
-            bar_end_dt = datetime.now(timezone.utc)
-        time_diff = (bar_end_dt - opened_dt).total_seconds()
-        if time_diff >= 3.0 * 3600 - 60:
-            if max_fav < 0.5:
-                close_paper_trade(
-                    trade["id"],
-                    now_iso,
-                    underlying,
-                    exit_premium
-                    if trade["option_type"] in ("CE", "PE")
-                    else underlying,
-                    "Dead Trade",
-                    f"Dead trade exit: 3 hours passed, max favorable R {max_fav:.2f} < 0.5",
-                )
-                continue
-
-        # Exit Long trade (Crossover)
-        if trade["option_type"] in ("CE", "FUT") and trade["verdict_label"] == "LONG":
-            if bar_end_1h and trade["opened_at"] < bar_end_1h:
-                if c_1h_close < p_1h_low:
-                    crossover_size = p_1h_low - c_1h_close
-                    if crossover_size > 2 * breakout_buffer:
-                        close_paper_trade(
-                            trade["id"],
-                            now_iso,
-                            underlying,
-                            exit_premium
-                            if trade["option_type"] == "CE"
-                            else underlying,
-                            "TF-1H-Cross",
-                            f"timeframe exit | Large reversal move ({crossover_size:.2f} > 2x buffer {2 * breakout_buffer:.2f})",
-                        )
-                    elif short_oi_support:
-                        close_paper_trade(
-                            trade["id"],
-                            now_iso,
-                            underlying,
-                            exit_premium
-                            if trade["option_type"] == "CE"
-                            else underlying,
-                            "TF-1H-Cross",
-                            f"timeframe exit | 1H close {c_1h_close:.2f} < p1H_low {p_1h_low:.2f} + Short OI bias",
-                        )
-
-        # Exit Short trade (Crossover)
-        elif (
-            trade["option_type"] in ("PE", "FUT") and trade["verdict_label"] == "SHORT"
-        ):
-            if bar_end_1h and trade["opened_at"] < bar_end_1h:
-                if c_1h_close > p_1h_high:
-                    crossover_size = c_1h_close - p_1h_high
-                    if crossover_size > 2 * breakout_buffer:
-                        close_paper_trade(
-                            trade["id"],
-                            now_iso,
-                            underlying,
-                            exit_premium
-                            if trade["option_type"] == "PE"
-                            else underlying,
-                            "TF-1H-Cross",
-                            f"timeframe exit | Large reversal move ({crossover_size:.2f} > 2x buffer {2 * breakout_buffer:.2f})",
-                        )
-                    elif long_oi_support:
-                        close_paper_trade(
-                            trade["id"],
-                            now_iso,
-                            underlying,
-                            exit_premium
-                            if trade["option_type"] == "PE"
-                            else underlying,
-                            "TF-1H-Cross",
-                            f"timeframe exit | 1H close {c_1h_close:.2f} > p1H_high {p_1h_high:.2f} + Long OI bias",
-                        )
-
-    open_trades_after = get_open_timeframe_trades(symbol)
-    closed_trade_id = None
-    for pt in open_trades_before:
-        if pt["id"] not in [ct["id"] for ct in open_trades_after]:
-            closed_trade_id = pt["id"]
-            break
-
-    if closed_trade_id:
-        with get_conn() as conn:
-            closed = conn.execute(
-                "SELECT * FROM paper_trades WHERE id=?", (closed_trade_id,)
-            ).fetchone()
-            if closed:
-                closed = dict(closed)
-                return {
-                    "action": "CLOSED",
-                    "trade": closed,
-                    "reason": f"Timeframe exit: {closed.get('reason')} (P&L: ₹{closed.get('pnl_rupees', 0.0):,.2f})",
-                }
 
     # ── 2. ENTRY LOGIC ──
     from src.engine.decision_audit import log_decision

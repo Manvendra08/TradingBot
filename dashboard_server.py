@@ -4190,6 +4190,36 @@ async def ai_insights_page():
     return HTMLResponse("<h1>ai.html not found</h1>", status_code=404)
 
 
+@app.get("/ops", response_class=HTMLResponse)
+async def ops_monitor_page():
+    """Ops Agent Monitor — health components, KPIs, and incident log."""
+    html_path = ROOT / "src" / "dashboard" / "ops.html"
+    if html_path.exists():
+        return HTMLResponse(html_path.read_text(encoding="utf-8"))
+    return HTMLResponse("<h1>ops.html not found</h1>", status_code=404)
+
+
+@app.get("/api/ops-incidents", response_class=JSONResponse)
+async def ops_incidents():
+    """Return last 100 Ops Agent incidents from ops_agent.db (read-only)."""
+    agent_db = DATA_DIR / "ops_agent.db"
+    if not agent_db.exists():
+        return JSONResponse([])
+    try:
+        db_uri = agent_db.as_uri() + "?mode=ro"
+        conn = sqlite3.connect(db_uri, uri=True, timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT id, ts, playbook_id, trigger_state, action, result, acked "
+            "FROM incidents ORDER BY ts DESC LIMIT 100"
+        ).fetchall()
+        conn.close()
+        return JSONResponse([dict(r) for r in rows])
+    except Exception as e:
+        log.warning("ops-incidents query failed: %s", e)
+        return JSONResponse([])
+
+
 if __name__ == "__main__":
     print(f"  DB: {DB_PATH}")
     print(f"  Dashboard: http://localhost:8080")

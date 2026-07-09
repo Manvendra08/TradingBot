@@ -53,6 +53,28 @@ def _extract_ai_bias(ai_verdict) -> str | None:
     # Legacy schema: bias field (BULLISH/BEARISH/NEUTRAL)
     bias = getattr(ai_verdict, 'bias', None) or (ai_verdict.get('bias') if isinstance(ai_verdict, dict) else None)
     return bias
+
+
+def _extract_ai_veto_flag(ai_verdict) -> bool:
+    """Extract veto_flag boolean from AI verdict across dict/dataclass schemas."""
+    if not ai_verdict:
+        return False
+    flag = getattr(ai_verdict, 'veto_flag', None)
+    if flag is None and isinstance(ai_verdict, dict):
+        flag = ai_verdict.get('veto_flag')
+    return bool(flag)
+
+
+def _extract_ai_veto_reason(ai_verdict) -> str:
+    """Extract veto_reason string from AI verdict across dict/dataclass schemas."""
+    if not ai_verdict:
+        return ""
+    reason = getattr(ai_verdict, 'veto_reason', None)
+    if reason is None and isinstance(ai_verdict, dict):
+        reason = ai_verdict.get('veto_reason')
+    return str(reason or "")
+
+
 from config.settings import (
     PAPER_RESEARCH_MODE,
     MIN_CONFIDENCE_CORE,
@@ -123,7 +145,7 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None, su
 
     if pipeline_ctx.passed:
         setup_type = pipeline_ctx.scan_context.get("_setup_type", "UNKNOWN")
-        if setup_type in ("EXPERIMENTAL_SETUP", "AI_PROMOTED"):
+        if setup_type in ("EXPERIMENTAL_SETUP", "AI_PROMOTED", "EMPIRICAL_PROMOTED"):
             status = "TRIGGERED_EXPERIMENTAL"
         else:
             status = "TRIGGERED_CORE"
