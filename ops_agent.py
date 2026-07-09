@@ -11,6 +11,7 @@ Usage:
 """
 
 import json
+import json
 import logging
 import os
 import sqlite3
@@ -34,6 +35,7 @@ BOT_DB_PATH = str(DATA_DIR / "nsebot.db")
 DASHBOARD_URL = os.environ.get("DASHBOARD_URL", "http://localhost:8080")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 OBSERVE_ONLY = "--observe-only" in sys.argv
 
 # Fallback notification channel (ntfy.sh)
@@ -345,31 +347,23 @@ class StateMachine:
 
 # ── Playbook Actions ─────────────────────────────────────────────────────────
 
-def _send_telegram(text: str, fallback: bool = False) -> bool:
-    """Send Telegram message. Returns True on success."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+def _send_discord(text: str) -> bool:
+    """Send message to Discord via webhook. Returns True on success."""
+    if not DISCORD_WEBHOOK_URL or DISCORD_WEBHOOK_URL == "your_discord_webhook_url":
         return False
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        payload = urllib.parse.urlencode(
-            {
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": text,
-                "parse_mode": "Markdown",
-                "disable_web_page_preview": "true",
-            }
-        ).encode("utf-8")
+        payload = json.dumps({"content": text[:2000]}).encode("utf-8")
         req = urllib.request.Request(
-            url,
+            DISCORD_WEBHOOK_URL,
             data=payload,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            headers={"Content-Type": "application/json", "User-Agent": "NSEBOT-OPS/1.0"},
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
-            body = resp.read().decode("utf-8")
-        return '"ok":true' in body.replace(" ", "")
+            resp.read()
+        return True
     except Exception as e:
-        log.error("Telegram send failed: %s", e)
+        log.error("Discord send failed: %s", e)
         return False
 
 
@@ -395,16 +389,16 @@ def _send_fallback(text: str) -> bool:
 
 
 def _escalate(playbook_id: str, message: str, critical: bool = False) -> None:
-    """Send escalation via Telegram + fallback for CRITICAL."""
+    """Send escalation via Discord + fallback for CRITICAL."""
     global _critical_last_sent
     prefix = "🚨 CRITICAL" if critical else "⚙️ OPS"
     ts = datetime.now(IST).strftime("%H:%M IST")
     text = f"{prefix} | {playbook_id} | {message} | {ts}"
     
-    # Always try Telegram first
-    tg_ok = _send_telegram(text)
+    # Send to Discord (primary channel for ops alerts)
+    _send_discord(text)
     
-    # For CRITICAL: send fallback simultaneously + track for repeat
+    # For CRITICAL: send fallback (ntfy.sh) simultaneously + track for repeat
     if critical:
         _send_fallback(text)
         _critical_last_sent[playbook_id] = time.time()
@@ -894,7 +888,7 @@ def _maybe_send_daily_digest(snap: HealthSnapshot) -> None:
         f"*Open Positions:* {snap.open_positions}\n"
         f"{hb_line}"
     )
-    _send_telegram(msg)
+    _send_discord(msg)
 
 
 # ── Main Loop ────────────────────────────────────────────────────────────────

@@ -468,9 +468,8 @@ def send_alert(alert: dict) -> bool:
     """Sync wrapper — safe to call from APScheduler thread. Returns True on success."""
     message = _format_message(alert)
     tg_queued = False
-    discord_queued = False
 
-    # 1. Telegram
+    # Telegram
     if TELEGRAM_BOT_TOKEN and TELEGRAM_BOT_TOKEN != "YOUR_BOT_TOKEN":
         _ensure_loop()
         try:
@@ -482,22 +481,9 @@ def send_alert(alert: dict) -> bool:
         except Exception as exc:
             log.error("Telegram unexpected error queueing alert: %s", exc)
 
-    # 2. Discord
-    from config.settings import DISCORD_WEBHOOK_URL
-    from src.alerts.discord_dispatcher import send_to_discord
-
-    if DISCORD_WEBHOOK_URL and DISCORD_WEBHOOK_URL != "your_discord_webhook_url":
-        _ensure_loop()
-        try:
-            loop = _loop or asyncio.get_event_loop()
-            loop.run_in_executor(None, send_to_discord, message)
-            discord_queued = True
-        except Exception as exc:
-            log.error("Discord unexpected error queueing alert: %s", exc)
-
-    if not tg_queued and not discord_queued:
+    if not tg_queued:
         log.warning(
-            "Neither Telegram nor Discord configured — alert suppressed: %s",
+            "Telegram not configured — alert suppressed: %s",
             alert.get("alert_type"),
         )
         return False
@@ -506,11 +492,10 @@ def send_alert(alert: dict) -> bool:
 
 
 def send_text(text: str) -> bool:
-    """Sends raw text to Telegram and Discord in background."""
+    """Sends raw text to Telegram in background."""
     tg_queued = False
-    discord_queued = False
 
-    # 1. Telegram
+    # Telegram
     if TELEGRAM_BOT_TOKEN and TELEGRAM_BOT_TOKEN != "YOUR_BOT_TOKEN":
         _ensure_loop()
         try:
@@ -519,20 +504,7 @@ def send_text(text: str) -> bool:
         except Exception as exc:
             log.error("Telegram unexpected error queueing text: %s", exc)
 
-    # 2. Discord
-    from config.settings import DISCORD_WEBHOOK_URL
-    from src.alerts.discord_dispatcher import send_to_discord
-
-    if DISCORD_WEBHOOK_URL and DISCORD_WEBHOOK_URL != "your_discord_webhook_url":
-        _ensure_loop()
-        try:
-            loop = _loop or asyncio.get_event_loop()
-            loop.run_in_executor(None, send_to_discord, text)
-            discord_queued = True
-        except Exception as exc:
-            log.error("Discord unexpected error queueing text: %s", exc)
-
-    return tg_queued or discord_queued
+    return tg_queued
 
 
 # ── ADR-007 §3 A3: Async LLM enrichment — message editing ──────────────────
