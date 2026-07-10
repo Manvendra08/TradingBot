@@ -172,6 +172,98 @@ def run_pipeline(symbols: list[str] | None = None, force: bool = False, is_test:
         log.info("Pipeline run complete | %s", fetched_at)
 
 
+def _async_llm_enrich_and_edit(
+    symbol: str,
+    intel: dict,
+    scan_context: dict,
+    new_alerts: list,
+    news_data: dict | None,
+    fetched_at: str,
+    digest_id: str,
+    message_id: int,
+    dedup_suppressed: int,
+    intel_text_base: str,
+) -> None:
+    """
+    Background task to fetch LLM verdict and edit digest message.
+    Runs after digest v1 is sent; edits message with v2 containing thesis.
+    """
+    try:
+        from src.engine.llm_enrichment import get_llm_verdict
+        llm_verdict = get_llm_verdict(
+            symbol,
+            intel,
+            scan_context,
+            alerts=new_alerts,
+            news_data=news_data,
+            open_trade=None,
+        )
+        if not llm_verdict:
+            log.debug("%s: async LLM returned no verdict", symbol)
+            return
+
+        log.info(
+            "%s: async LLM verdict — %s (%d%%) risk=%s",
+            symbol,
+            llm_verdict.action,
+            llm_verdict.confidence,
+            llm_verdict.risk_rating,
+        )
+
+        intel_v2 = generate_intelligence_structured(
+            symbol,
+            new_alerts,
+            scan_context=scan_context,
+            ai_verdict=llm_verdict,
+        )
+        intel_text_v2 = intel_v2.get("telegram_text", intel_text_base) if intel_v2 else intel_text_base
+
+        action_emoji = {
+            "GO_LONG": "🟢",
+            "GO_SHORT": "🔴",
+            "NO_TRADE": "⚪",
+        }.get(getattr(llm_verdict, "action", "NO_TRADE"), "❓")
+        risk_emoji = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🔴"}.get(
+            getattr(llm_verdict, "risk_rating", "MEDIUM"), "❓"
+        )
+
+        thesis_line = f"\n\n{action_emoji} *AI Trade Plan* ({llm_verdict.action}, {llm_verdict.confidence}%)\n"
+        thesis_line += f"📋 *Contract:* `{llm_verdict.instrument}`\n"
+        thesis_line += f"🎯 *Entry:* {llm_verdict.entry_trigger}\n"
+        thesis_line += f"💰 *Premium:* {llm_verdict.entry_premium_range}\n"
+        thesis_line += f"🛑 *SL:* {llm_verdict.stop_loss}\n"
+        thesis_line += f"🎯 *T1:* {llm_verdict.target_1} | *T2:* {llm_verdict.target_2}\n"
+        thesis_line += f"📊 *R:R:* {llm_verdict.risk_reward} | {risk_emoji} *Risk:* {llm_verdict.risk_rating}\n"
+        thesis_line += f"💡 *Thesis:* {llm_verdict.thesis}\n"
+        thesis_line += f"⚠️ *Invalidation:* {llm_verdict.invalidation}\n"
+        if llm_verdict.catalyst and llm_verdict.catalyst != "No major catalyst":
+            thesis_line += f"📅 *Catalyst:* {llm_verdict.catalyst}\n"
+
+        intel_text_v2 += thesis_line
+
+        _, digest_msg_v2 = build_digest(
+            symbol,
+            new_alerts,
+            fetched_at,
+            scan_context=scan_context,
+            intelligence_text=intel_text_v2,
+            detected_count=len(new_alerts),
+            dedup_suppressed_count=dedup_suppressed,
+            digest_id=digest_id,
+            paper_trade_status=None,
+            live_trade_status=None,
+            llm_verdict=llm_verdict,
+        )
+
+        if edit_message_text(message_id, digest_msg_v2):
+            log.info("%s: async LLM digest v2 edit successful", symbol)
+        else:
+            log.debug("%s: async LLM digest v2 edit failed, sending follow-up", symbol)
+            send_text(f"🔄 *Updated analysis for {symbol}:*\n\n{thesis_line}")
+    except Exception as e:
+        log.warning("%s: async LLM enrichment thread failed: %s", symbol, e)
+
+
 def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
     symbol = packet["symbol"]
     fetched_at = packet["fetched_at"]
@@ -293,6 +385,7 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
         "news_used": False if news_payload.get("bypassed") else bool(news_data),
     }
 
+    intel_text_base = intel_text
     if not _DISABLE_LLM_ENV and intel and not open_trade:
         if llm_async:
             intel_text += "\n💡 *Thesis:* ⏳ Pending async analysis...\n"
@@ -351,11 +444,38 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
             else:
                 should_send = should_send_zero_signal(symbol)
 
+        telegram_message_id = None
+        _async_llm_pending = False
+
         if is_test:
             send_text(f"⚠️ **TEST MODE** ⚠️\n\n{digest_msg}")
             sent_digest = False
         else:
-            sent_digest = send_text(digest_msg) if should_send else False
+            if should_send:
+                if llm_async and not _DISABLE_LLM_ENV and intel and not open_trade:
+                    telegram_message_id = send_text_and_return_id(digest_msg)
+                    sent_digest = telegram_message_id is not None
+                    if sent_digest:
+                        _async_llm_pending = True
+                else:
+                    sent_digest = send_text(digest_msg)
+            else:
+                sent_digest = False
+
+        if _async_llm_pending and telegram_message_id is not None:
+            pipeline_io_executor.submit(
+                _async_llm_enrich_and_edit,
+                symbol=symbol,
+                intel=intel,
+                scan_context=scan_context,
+                new_alerts=new_alerts,
+                news_data=news_data,
+                fetched_at=fetched_at,
+                digest_id=digest_id,
+                message_id=telegram_message_id,
+                dedup_suppressed=dedup_suppressed,
+                intel_text_base=intel_text_base,
+            )
 
         if not is_test:
             if new_alerts:

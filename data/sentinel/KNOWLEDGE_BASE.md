@@ -132,6 +132,11 @@
 - **Root Cause:** Global `socket.getaddrinfo` monkey-patch forced IPv4 for ALL Python networking, including non-HTTP libraries (asyncio, sqlite3 WAL, DNS resolvers).
 - **Fix:** Replaced with `urllib3.util.connection.allowed_gai_family = lambda: socket.AF_INET` — scopes IPv4 enforcement to urllib3 only (used by `requests`, Kite SDK, Dhan SDK). Fallback to global patch for older urllib3 versions.
 
+### F23: Missing Async LLM Enrichment in Parallel-V2 Refactor (P1)
+- **Symptom:** Scan completes without triggering LLM query, leaving Telegram messages in the permanent state "Pending async analysis...".
+- **Root Cause:** The parallelized pipeline refactoring in the `perf/safe-pipeline-io-parallelism-v2` branch deleted the `_async_llm_enrich_and_edit` thread pool submission code in `pipeline.py`.
+- **Fix:** Restored `_async_llm_enrich_and_edit` background execution by submitting it to the thread-pool-based `pipeline_io_executor` rather than spawning raw daemon threads, and added a task-wait step in `--once` mode to prevent premature shutdown before the background LLM task finishes.
+
 ## Architecture Notes
 - Pipeline logs go to `logs/main.log` (RotatingFileHandler, 10MB).
 - Health state stored in SQLite `health_state` table via `stamp_health()`.

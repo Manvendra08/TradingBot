@@ -162,7 +162,13 @@ Examples:
             f" for {args.symbols}" if args.symbols else " for all configured symbols",
         )
         run_pipeline(symbols=args.symbols or None, is_test=True)
-        log.info("One-shot run complete (no database modifications were made).")
+        try:
+            from src.engine.pipeline_concurrency import pipeline_io_executor
+            log.info("Waiting for any pending background tasks (like async LLM) to complete...")
+            pipeline_io_executor.shutdown(wait=True)
+        except Exception as e:
+            log.warning("Failed to wait for background executor: %s", e)
+        log.info("One-shot run complete.")
         return
 
     # Default: blocking scheduler
