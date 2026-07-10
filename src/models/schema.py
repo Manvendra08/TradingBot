@@ -1837,18 +1837,8 @@ def close_multi_leg_trade(
 
 
 def list_multi_leg_trades() -> list[dict]:
-    """List all multi-leg trades with their legs."""
-    sql = "SELECT * FROM multi_leg_trades ORDER BY id DESC"
-    with get_conn() as conn:
-        rows = conn.execute(sql).fetchall()
-        trades = [dict(r) for r in rows]
-    for t in trades:
-        with get_conn() as conn:
-            legs = conn.execute(
-                "SELECT * FROM multi_leg_legs WHERE trade_id=? ORDER BY id", (t["id"],)
-            ).fetchall()
-        t["legs"] = [dict(r) for r in legs]
-    return trades
+    """List all multi-leg trades with their legs (Disabled for NSEBOT)."""
+    return []
 
 
 def delete_multi_leg_trade(trade_ref: int) -> None:

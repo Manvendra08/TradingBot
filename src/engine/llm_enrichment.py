@@ -1036,7 +1036,7 @@ def _call_llm_api(
         raise_on_status=False,
     )
     adapter = ResilientTLSAdapter(max_retries=retry_strategy)
-    adapter.SSL_RETRY_ATTEMPTS = 2
+    adapter.SSL_RETRY_ATTEMPTS = 4
     session = requests.Session()
     session.mount("https://", adapter)
 
@@ -1052,6 +1052,42 @@ def _call_llm_api(
     # Route model pipeline based on purpose
     if purpose == "eod_review":
         FREE_MODEL_PIPELINE = [
+            {
+                "model_group": "opencode-zen-eod",
+                "providers": [
+                    {
+                        "name": "OpenCode Zen (Mimo V2.5 Free)",
+                        "env_key": "OPENCODE_API_KEY",
+                        "url": "https://opencode.ai/zen/v1/chat/completions",
+                        "model": "mimo-v2.5-free",
+                        "timeout": 20,
+                    },
+                    {
+                        "name": "OpenCode Zen (Big Pickle)",
+                        "env_key": "OPENCODE_API_KEY",
+                        "url": "https://opencode.ai/zen/v1/chat/completions",
+                        "model": "big-pickle",
+                        "timeout": 25,
+                    },
+                ],
+            },
+            {
+                "model_group": "nvidia-nim-eod",
+                "providers": [
+                    {
+                        "name": "NVIDIA NIM (Nemotron 3 Super 120B)",
+                        "env_key": "NVIDIA_API_KEY",
+                        "url": "https://integrate.api.nvidia.com/v1/chat/completions",
+                        "model": "nvidia/nemotron-3-super-120b-a12b",
+                    },
+                    {
+                        "name": "NVIDIA NIM (DeepSeek V4 Flash)",
+                        "env_key": "NVIDIA_API_KEY",
+                        "url": "https://integrate.api.nvidia.com/v1/chat/completions",
+                        "model": "deepseek-ai/deepseek-v4-flash",
+                    },
+                ],
+            },
             {
                 "model_group": "nemotron-eod-review",
                 "providers": [
@@ -1072,6 +1108,49 @@ def _call_llm_api(
         ]
     elif purpose == "formatting":
         FREE_MODEL_PIPELINE = [
+            {
+                "model_group": "opencode-zen-formatting",
+                "providers": [
+                    {
+                        "name": "OpenCode Zen (Mimo V2.5 Free)",
+                        "env_key": "OPENCODE_API_KEY",
+                        "url": "https://opencode.ai/zen/v1/chat/completions",
+                        "model": "mimo-v2.5-free",
+                        "timeout": 20,
+                    },
+                    {
+                        "name": "OpenCode Zen (Big Pickle)",
+                        "env_key": "OPENCODE_API_KEY",
+                        "url": "https://opencode.ai/zen/v1/chat/completions",
+                        "model": "big-pickle",
+                        "timeout": 25,
+                    },
+                    {
+                        "name": "OpenCode Zen (DeepSeek V4 Flash Free)",
+                        "env_key": "OPENCODE_API_KEY",
+                        "url": "https://opencode.ai/zen/v1/chat/completions",
+                        "model": "deepseek-v4-flash-free",
+                        "timeout": 20,
+                    },
+                ],
+            },
+            {
+                "model_group": "nvidia-nim-formatting",
+                "providers": [
+                    {
+                        "name": "NVIDIA NIM (Nemotron 3 Super 120B)",
+                        "env_key": "NVIDIA_API_KEY",
+                        "url": "https://integrate.api.nvidia.com/v1/chat/completions",
+                        "model": "nvidia/nemotron-3-super-120b-a12b",
+                    },
+                    {
+                        "name": "NVIDIA NIM (DeepSeek V4 Flash)",
+                        "env_key": "NVIDIA_API_KEY",
+                        "url": "https://integrate.api.nvidia.com/v1/chat/completions",
+                        "model": "deepseek-ai/deepseek-v4-flash",
+                    },
+                ],
+            },
             {
                 "model_group": "qwen-coder-formatting",
                 "providers": [
@@ -1124,6 +1203,78 @@ def _call_llm_api(
         _base = symbol.upper().strip().split()[0]
         _class = get_symbol_class(_base)
         _is_mcx = _class == "MCX_COMMODITY"
+
+        # ── opencode-zen-free group (PRIMARY — free, no rate limit) ──
+        _opencode_zen_group = {
+            "model_group": "opencode-zen-free",
+            "providers": [
+                {
+                    "name": "OpenCode Zen (Mimo V2.5 Free)",
+                    "env_key": "OPENCODE_API_KEY",
+                    "url": "https://opencode.ai/zen/v1/chat/completions",
+                    "model": "mimo-v2.5-free",
+                    "timeout": 20,
+                },
+                {
+                    "name": "OpenCode Zen (Big Pickle)",
+                    "env_key": "OPENCODE_API_KEY",
+                    "url": "https://opencode.ai/zen/v1/chat/completions",
+                    "model": "big-pickle",
+                    "timeout": 25,
+                },
+                {
+                    "name": "OpenCode Zen (DeepSeek V4 Flash Free)",
+                    "env_key": "OPENCODE_API_KEY",
+                    "url": "https://opencode.ai/zen/v1/chat/completions",
+                    "model": "deepseek-v4-flash-free",
+                    "timeout": 20,
+                },
+                {
+                    "name": "OpenCode Zen (Nemotron 3 Ultra Free)",
+                    "env_key": "OPENCODE_API_KEY",
+                    "url": "https://opencode.ai/zen/v1/chat/completions",
+                    "model": "nemotron-3-ultra-free",
+                    "timeout": 20,
+                },
+            ],
+        }
+
+        # ── nvidia-nim-free group (SECONDARY — 1000 credits, 40 RPM) ──
+        _nvidia_nim_group = {
+            "model_group": "nvidia-nim-free",
+            "providers": [
+                {
+                    "name": "NVIDIA NIM (Nemotron 3 Super 120B)",
+                    "env_key": "NVIDIA_API_KEY",
+                    "url": "https://integrate.api.nvidia.com/v1/chat/completions",
+                    "model": "nvidia/nemotron-3-super-120b-a12b",
+                },
+                {
+                    "name": "NVIDIA NIM (DeepSeek V4 Flash)",
+                    "env_key": "NVIDIA_API_KEY",
+                    "url": "https://integrate.api.nvidia.com/v1/chat/completions",
+                    "model": "deepseek-ai/deepseek-v4-flash",
+                },
+                {
+                    "name": "NVIDIA NIM (Llama 3.3 70B)",
+                    "env_key": "NVIDIA_API_KEY",
+                    "url": "https://integrate.api.nvidia.com/v1/chat/completions",
+                    "model": "meta/llama-3.3-70b-instruct",
+                },
+                {
+                    "name": "NVIDIA NIM (MiniMax M2.7)",
+                    "env_key": "NVIDIA_API_KEY",
+                    "url": "https://integrate.api.nvidia.com/v1/chat/completions",
+                    "model": "minimaxai/minimax-m2.7",
+                },
+                {
+                    "name": "NVIDIA NIM (Nemotron 3 Ultra 550B)",
+                    "env_key": "NVIDIA_API_KEY",
+                    "url": "https://integrate.api.nvidia.com/v1/chat/completions",
+                    "model": "nvidia/nemotron-3-ultra-550b-a55b",
+                },
+            ],
+        }
 
         # Define individual model groups
         _groq_group = {
@@ -1278,8 +1429,10 @@ def _call_llm_api(
         }
 
         if _is_mcx:
-            # MCX: Bedrock SDK (primary) → Groq → GitHub → OpenRouter GPT-OSS → OpenRouter pool → Gemini SDK → SambaNova (last fallback)
+            # MCX: OpenCode Zen (primary) → Nvidia NIM → Bedrock → Groq → GitHub → OpenRouter → Gemini → SambaNova
             FREE_MODEL_PIPELINE = [
+                _opencode_zen_group,
+                _nvidia_nim_group,
                 _bedrock_group,
                 _groq_group,
                 _github_models,
@@ -1322,8 +1475,10 @@ def _call_llm_api(
                 },
             ]
         else:
-            # NSE/BSE indices: Bedrock SDK (primary) → GitHub → Groq → OpenRouter pool → Gemini SDK
+            # NSE/BSE indices: OpenCode Zen (primary) → Nvidia NIM → Bedrock → GitHub → Groq → OpenRouter → Gemini
             FREE_MODEL_PIPELINE = [
+                _opencode_zen_group,
+                _nvidia_nim_group,
                 _bedrock_group,
                 _github_models,
                 _groq_group,
@@ -1700,13 +1855,8 @@ def _get_option_premium_for_instrument(
         return None
     opt_type = m.group(2).upper()
 
-    for row in option_rows or []:
-        if (
-            abs(float(row.get("strike") or 0.0) - strike) < 0.01
-            and str(row.get("option_type")).upper() == opt_type
-        ):
-            return float(row.get("ltp") or 0.0)
-    return None
+    from src.engine.trade_plan import get_option_premium
+    return get_option_premium(symbol, expiry, strike, opt_type, option_rows)
 
 
 def _round_echoed_numbers(text: str, runaway_word_cap: int = 90) -> str:
@@ -1762,12 +1912,16 @@ def _enforce_engine_alignment(
     """
     B2: Hard guard — LLM action MUST match engine bias.
     Direct direction flip (GO_LONG on a BEARISH engine, GO_SHORT on a BULLISH engine)
-    → forced NO_TRADE with HIGH risk.  Downgrading to NO_TRADE is allowed;
-    flipping is not, regardless of model or prompt.
+    → forced NO_TRADE with HIGH risk + explicit override reason.
+    Downgrading to NO_TRADE is allowed; flipping is not.
+    When LLM self-selects NO_TRADE despite engine having clear direction,
+    annotate with the engine's conviction level so the user understands why
+    the signal was suppressed.
     """
     from src.engine.verdict_sets import is_bearish, is_bullish
 
     vl = (intel or {}).get("verdict_label", "")
+    engine_conf = (intel or {}).get("confidence", 0)
     engine_bias = "NEUTRAL"
     if is_bullish(vl):
         engine_bias = "BULLISH"
@@ -1782,6 +1936,7 @@ def _enforce_engine_alignment(
         action, "NEUTRAL"
     )
 
+    # Case 1: LLM flips direction against engine → force NO_TRADE with explicit reason
     if llm_bias != "NEUTRAL" and llm_bias != engine_bias:
         log.warning(
             "[llm] %s: engine/LLM direction conflict — engine=%s (%s), LLM=%s. "
@@ -1791,19 +1946,37 @@ def _enforce_engine_alignment(
             vl,
             action,
         )
+        override_reason = (
+            f"AI OVERRIDE BLOCKED: engine={engine_bias} ({vl} @ {engine_conf}%), "
+            f"AI tried {action}. Direction flip not allowed — OI engine is authoritative."
+        )
         update = {
             "action": "NO_TRADE",
             "risk_rating": "HIGH",
-            "thesis": (
-                f"Engine/AI direction conflict: engine={engine_bias} ({vl}), "
-                f"AI={action}. Standing aside — do not trade against OI engine."
-            ),
+            "thesis": override_reason,
         }
         return (
             result.model_copy(update=update)
             if hasattr(result, "model_copy")
             else result.copy(update=update)
         )
+
+    # Case 2: LLM self-selects NO_TRADE despite engine having clear direction
+    # Annotate with engine conviction so user understands the suppression
+    if llm_bias == "NEUTRAL" and engine_bias != "NEUTRAL":
+        existing_thesis = result.thesis or ""
+        # Only annotate if thesis doesn't already explain the override
+        if "override" not in existing_thesis.lower() and "conflict" not in existing_thesis.lower():
+            override_note = (
+                f"AI chose NO_TRADE despite engine={engine_bias} ({vl} @ {engine_conf}%). "
+                f"AI reasoning: {existing_thesis or 'confidence insufficient'}"
+            )
+            update = {"thesis": override_note}
+            result = (
+                result.model_copy(update=update)
+                if hasattr(result, "model_copy")
+                else result.copy(update=update)
+            )
 
     return result
 
@@ -1848,19 +2021,19 @@ def _sanitize_llm_verdict(
     # 3. Action / option-type consistency check
     action_upper = str(result.action or "").upper()
     if "SHORT" in action_upper or "BEAR" in action_upper or "PUT" in action_upper:
-        if re.search(r"\bCE\b", instr, re.IGNORECASE):
+        if re.search(r"(?:\b|\d)CE\b", instr, re.IGNORECASE):
             log.warning(
                 "[llm] %s: Action is %s but instrument was %s. Correcting CE -> PE for consistency.",
                 symbol, action_upper, instr
             )
-            instr = re.sub(r"\bCE\b", "PE", instr, flags=re.IGNORECASE)
+            instr = re.sub(r"(?<=\d)CE\b|\bCE\b", "PE", instr, flags=re.IGNORECASE)
     elif "LONG" in action_upper or "BULL" in action_upper or "CALL" in action_upper:
-        if re.search(r"\bPE\b", instr, re.IGNORECASE):
+        if re.search(r"(?:\b|\d)PE\b", instr, re.IGNORECASE):
             log.warning(
                 "[llm] %s: Action is %s but instrument was %s. Correcting PE -> CE for consistency.",
                 symbol, action_upper, instr
             )
-            instr = re.sub(r"\bPE\b", "CE", instr, flags=re.IGNORECASE)
+            instr = re.sub(r"(?<=\d)PE\b|\bPE\b", "CE", instr, flags=re.IGNORECASE)
 
     if hasattr(result, "model_copy"):
         result = result.model_copy(update={"instrument": instr})
@@ -1882,23 +2055,6 @@ def _sanitize_llm_verdict(
             if target_opt == "FUT":
                 actual_premium = underlying
             else:
-                for row in option_rows:
-                    try:
-                        row_strike = float(row.get("strike") or 0)
-                        row_opt = str(row.get("option_type") or "").upper()
-                        row_ltp = float(row.get("ltp") or 0)
-                    except (TypeError, ValueError):
-                        continue
-                    if (
-                        abs(row_strike - target_strike) < 0.01
-                        and row_opt == target_opt
-                        and row_ltp > 0
-                    ):
-                        actual_premium = row_ltp
-                        break
-
-            # If we don't have option rows / ltp, try database snapshot fallback
-            if not actual_premium and target_opt != "FUT":
                 from src.engine.trade_plan import get_option_premium
                 scan_expiry = scan_context.get("expiry") or ""
                 actual_premium = get_option_premium(symbol, scan_expiry, target_strike, target_opt, option_rows)

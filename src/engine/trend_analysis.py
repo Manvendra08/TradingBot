@@ -92,12 +92,15 @@ def get_trend_alignment_score(symbol: str, verdict: str) -> int:
 
     bull_count = sum(1 for r in rows if is_bullish(r["verdict_label"] or ""))
     bear_count = sum(1 for r in rows if is_bearish(r["verdict_label"] or ""))
-    total = len(rows)
+    
+    total_directional = bull_count + bear_count
+    if total_directional == 0:
+        return 50
 
     if is_bullish(verdict):
-        return round(bull_count / total * 100)
+        return round(bull_count / total_directional * 100)
     if is_bearish(verdict):
-        return round(bear_count / total * 100)
+        return round(bear_count / total_directional * 100)
     return 50
 
 

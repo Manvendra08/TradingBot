@@ -74,7 +74,8 @@ def suppress_ops_escalation(request, monkeypatch):
     """Prevent tests from sending real Telegram messages via Ops Agent."""
     if request.cls and request.cls.__name__ == "TestEscalation":
         return
-    monkeypatch.setattr("ops_agent._send_telegram", lambda text, fallback=False: True)
+    monkeypatch.setattr("ops_agent._send_discord", lambda text: True)
+    monkeypatch.setattr("ops_agent._send_fallback", lambda text: True)
     monkeypatch.setattr("ops_agent._escalate", lambda p, m, critical=False: None)
 
 
@@ -422,29 +423,25 @@ class TestIncidents:
 
 
 class TestEscalation:
-    def test_send_telegram_no_token(self):
-        from ops_agent import _send_telegram
+    def test_send_discord_no_url(self):
+        from ops_agent import _send_discord
 
-        with (
-            patch("ops_agent.TELEGRAM_BOT_TOKEN", ""),
-            patch("ops_agent.TELEGRAM_CHAT_ID", ""),
-        ):
-            result = _send_telegram("test")
+        with patch("ops_agent.DISCORD_WEBHOOK_URL", ""):
+            result = _send_discord("test")
             assert result is False
 
-    def test_send_telegram_success(self):
-        from ops_agent import _send_telegram
+    def test_send_discord_success(self):
+        from ops_agent import _send_discord
 
         mock_resp = MagicMock()
         mock_resp.read.return_value = b'{"ok":true}'
         mock_resp.__enter__ = lambda s: s
         mock_resp.__exit__ = MagicMock(return_value=False)
         with (
-            patch("ops_agent.TELEGRAM_BOT_TOKEN", "test_token"),
-            patch("ops_agent.TELEGRAM_CHAT_ID", "123"),
+            patch("ops_agent.DISCORD_WEBHOOK_URL", "http://test_url"),
             patch("urllib.request.urlopen", return_value=mock_resp),
         ):
-            result = _send_telegram("test message")
+            result = _send_discord("test message")
             assert result is True
 
 

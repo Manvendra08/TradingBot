@@ -1184,6 +1184,9 @@
                                     <option value="empirical">
                                         Empirical Boost (ADR-007)
                                     </option>
+                                    <option value="boost_only">
+                                        Boost Only (Promote, no Veto)
+                                    </option>
                                     <option value="full">
                                         Full AI Authority
                                     </option>
@@ -2581,6 +2584,18 @@
                         if (empTradesGroup) empTradesGroup.style.display = "block";
                         if (empWinrateGroup) empWinrateGroup.style.display = "block";
                         if (mlModeGroup) mlModeGroup.style.display = "block";
+                    } else if (mode === "boost_only") {
+                        if (boostGroup) boostGroup.classList.remove("dormant");
+                        boostSlider.disabled = false;
+                        boostInput.disabled = false;
+
+                        if (vetoGroup) vetoGroup.classList.add("dormant");
+                        vetoSlider.disabled = true;
+                        vetoInput.disabled = true;
+
+                        if (empTradesGroup) empTradesGroup.style.display = "block";
+                        if (empWinrateGroup) empWinrateGroup.style.display = "block";
+                        if (mlModeGroup) mlModeGroup.style.display = "block";
                     } else if (mode === "full") {
                         if (boostGroup) boostGroup.classList.remove("dormant");
                         boostSlider.disabled = false;
@@ -3014,9 +3029,7 @@
                                 .getElementById("settings-form")
                                 .querySelectorAll("input, select");
                             formInputs.forEach((input) => {
-                                input.removeEventListener("input", checkDirty);
                                 input.removeEventListener("change", checkDirty);
-                                input.addEventListener("input", checkDirty);
                                 input.addEventListener("change", checkDirty);
                             });
                         }, 100);

@@ -21,7 +21,7 @@ import logging
 import threading
 from datetime import datetime, timezone
 
-from config.settings import WATCH_SYMBOLS, get_symbol_thresholds, LLM_ENRICHMENT_ASYNC, LLM_ENRICH_TIMEOUT_S
+from config.settings import WATCH_SYMBOLS, get_symbol_thresholds, LLM_ENRICHMENT_ASYNC, LLM_ENRICH_TIMEOUT_S, MAX_ANOMALIES_PER_SYMBOL, ANOMALY_MIN_SEVERITY
 from config.settings import DISABLE_LLM_ENRICHMENT as _DISABLE_LLM_ENV
 from src.alerts.dedup import is_duplicate, record_alert, should_send_zero_signal
 from src.alerts.digest import build_digest_wrapper as build_digest
@@ -404,6 +404,33 @@ def _get_current_option_ltp(
 
 
 def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None:
+    from src.engine.scan_sentinel import ScanRunRecorder, run_sentinel
+    
+    oc_data = None
+    scan_context = {}
+    intel = None
+    llm_verdict = None
+    exit_advice = None
+    
+    with ScanRunRecorder(symbol) as recorder:
+        try:
+            results = {}
+            _process_symbol_inner(symbol, fetched_at, is_test, results)
+            oc_data = results.get("oc_data")
+            scan_context = results.get("scan_context", {})
+            intel = results.get("intel")
+            llm_verdict = results.get("llm_verdict")
+            exit_advice = results.get("exit_advice")
+        finally:
+            if oc_data is None:
+                oc_data = {"underlying_price": 0.0, "expiry": "", "source": "failed", "strikes": []}
+            recorder.finalize(oc_data, scan_context, intel, llm_verdict, exit_advice, is_test)
+            if recorder.report:
+                run_sentinel(recorder.report)
+
+def _process_symbol_inner(symbol: str, fetched_at: str, is_test: bool = False, results: dict = None) -> None:
+    if results is None:
+        results = {}
     log.info("Processing %s ...", symbol)
 
     import sys
@@ -419,6 +446,7 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
             is_test = True
 
     oc_data = fetch_option_chain(symbol)
+    results["oc_data"] = oc_data
     if not oc_data:
         log.error("No data for %s — skipping", symbol)
         # OPS Agent: stamp failure
@@ -484,6 +512,7 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
         override_thresholds=symbol_thresholds,
     )
     scan_context["option_rows"] = list(oc_data.get("strikes") or [])
+    results["scan_context"] = scan_context
 
     # Phase 1: Natural Gas Parity Logging & context injection
     if str(symbol).upper().startswith("NATURALGAS"):
@@ -582,6 +611,14 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
 
     log.info("%s: %d anomalies detected", symbol, len(alerts))
 
+    # 1b. Severity filter + cap
+    _sev_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
+    min_sev = _sev_order.get(ANOMALY_MIN_SEVERITY, 1)
+    alerts = [a for a in alerts if _sev_order.get(a.get("severity", "LOW"), 2) <= min_sev]
+    if len(alerts) > MAX_ANOMALIES_PER_SYMBOL:
+        alerts = sorted(alerts, key=lambda a: _sev_order.get(a.get("severity", "LOW"), 2))[:MAX_ANOMALIES_PER_SYMBOL]
+        log.info("%s: capped to %d anomalies after severity filter", symbol, MAX_ANOMALIES_PER_SYMBOL)
+
     # 2. Dedup filter
     new_alerts = [a for a in alerts if not is_duplicate(a)]
     dedup_suppressed = max(0, len(alerts) - len(new_alerts))
@@ -599,6 +636,7 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
         intel = generate_intelligence_structured(
             symbol, new_alerts, scan_context=scan_context
         )
+        results["intel"] = intel
     except Exception as e:
         log.exception(
             "%s: intelligence generation failed with exception: %s",
@@ -760,6 +798,7 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
                     news_data=news_data,
                     open_trade=None,
                 )
+                results["llm_verdict"] = llm_verdict
                 if llm_verdict:
                     intel = generate_intelligence_structured(
                         symbol,
@@ -767,6 +806,7 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
                         scan_context=scan_context,
                         ai_verdict=llm_verdict,
                     )
+                    results["intel"] = intel
                     intel_text = intel.get("telegram_text", "") if intel else intel_text
 
                     log.info(
@@ -818,6 +858,7 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
             from src.engine.llm_enrichment import get_exit_advice
 
             exit_advice = get_exit_advice(symbol, open_trade, scan_context, news_data)
+            results["exit_advice"] = exit_advice
             if exit_advice:
                 log.info(
                     "%s: AI exit advice — %s (urgency=%s): %s",
@@ -1060,6 +1101,9 @@ def _process_symbol(symbol: str, fetched_at: str, is_test: bool = False) -> None
 
     if intel:
         scan_context["trade_decision"] = intel.get("trade_decision")
+        # Inject engine OI confidence so digest shows the rule-engine confidence,
+        # not the LLM confidence (which may be 0 when LLM self-selects NO_TRADE).
+        scan_context["engine_confidence"] = intel.get("confidence", 0)
 
     digest_id, digest_msg = build_digest(
         symbol,

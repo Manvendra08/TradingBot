@@ -501,6 +501,27 @@ def _format_trade_status(status: dict | None, is_live: bool = False) -> str:
         return f"• *Status:* BLOCKED | *Reason:* {_esc(status.get('reason', 'Filters not met'))}"
     elif action == "SKIPPED_MARKET_CLOSED":
         return f"• *Status:* SKIPPED | *Reason:* Market is currently closed"
+    elif action == "DRY_RUN_EXECUTED":
+        trade = status.get("trade", {})
+        opt = trade.get("option_type", "CE")
+        strike = trade.get("strike")
+        entry = trade.get("entry_premium") or trade.get("entry_underlying")
+        sl = trade.get("sl_premium") or trade.get("sl_underlying")
+        tgt = trade.get("target_premium") or trade.get("target_underlying")
+        side = str(trade.get("side") or "BUY").title()
+        entry_str = f"{entry:.2f}" if entry is not None else "—"
+        sl_str = f"{sl:.2f}" if sl is not None else "—"
+        tgt_str = f"{tgt:.2f}" if tgt is not None else "—"
+        strike_str = f"{strike:g}" if strike is not None else "—"
+        if opt == "FUT":
+            details = f"{side} FUT @ {entry_str} | SL: {sl_str} | Target: {tgt_str}"
+        else:
+            details = f"{side} {strike_str} {opt} @ {entry_str} | SL: {sl_str} | Target: {tgt_str}"
+        return (
+            f"• *Status:* DRY RUN (would execute)\n"
+            f"• *Details:* {_esc(details)}\n"
+            f"• *Reason:* {_esc(status.get('reason', 'Signal filters passed'))}"
+        )
     else:
         return f"• *Status:* NO TRADE | *Reason:* {_esc(status.get('reason', 'No directional setup'))}"
 
@@ -524,9 +545,6 @@ def build_digest(
     exit_advice: any = None,
 ) -> tuple[str, str]:
     if not _LEGACY_DIGEST:
-        log.warning(
-            "Legacy build_digest called but disabled. Redirecting to build_llm_consolidated_digest."
-        )
         return build_llm_consolidated_digest(
             symbol,
             alerts,
@@ -2007,6 +2025,22 @@ def build_llm_consolidated_digest(
         lines.append(f"{header_extra} | {ts}")
     else:
         lines.append(f"{ts}")
+    
+    # DTE warning for low expiry proximity
+    try:
+        exp_val = ctx.get("expiry") or ctx.get("futures_expiry")
+        if exp_val:
+            from datetime import datetime as _dt
+            exp_dt = _dt.strptime(str(exp_val).split(" ")[0], "%Y-%m-%d").date()
+            today_dt = datetime.now(timezone.utc).date()
+            dte = (exp_dt - today_dt).days
+            if dte <= 0:
+                lines.append(f"⚠️ *EXPIRY TODAY* — strictly intraday, close positions before settlement")
+            elif dte <= 2:
+                lines.append(f"⚠️ *LOW DTE ({dte}d)* — prefer closer strikes or hedged structures")
+    except Exception:
+        pass
+    
     lines.append(DIVIDER)
     
     # ── PROVENANCE
@@ -2039,7 +2073,11 @@ def build_llm_consolidated_digest(
     ce_net, pe_net = _net_oi_delta(alerts, ctx)
     _, oi_text = _oi_flow_read(ce_net, pe_net)
     
-    verdict_conf = gv("confidence", 0)
+    # Use engine OI confidence (from rule engine), NOT the LLM confidence.
+    # LLM confidence can be 0 when it self-selects NO_TRADE (e.g. position limit),
+    # which makes the display misleading — OI analysis may show 95% conviction.
+    engine_conf = ctx.get("engine_confidence", 0)
+    verdict_conf = engine_conf if engine_conf else gv("confidence", 0)
     reasoning = str(gv("reasoning") or gv("thesis") or bias_display).strip()
     # If reasoning is very long (>250 chars), extract complete first sentence(s) or clip cleanly at word boundary
     if len(reasoning) > 250:
@@ -2120,12 +2158,70 @@ def build_llm_consolidated_digest(
         rr = gv("risk_reward")
         risk_rate = gv("risk_rating")
         if rr:
+            # Calculate risk per lot from entry/SL premiums
+            risk_per_lot_str = ""
+            try:
+                entry_range = gv("entry_premium_range") or ""
+                sl_str = gv("stop_loss") or ""
+                # Extract numeric values
+                entry_match = re.search(r"(\d+(?:\.\d+)?)", entry_range)
+                sl_match = re.search(r"(\d+(?:\.\d+)?)", sl_str)
+                if entry_match and sl_match:
+                    entry_val = float(entry_match.group(1))
+                    sl_val = float(sl_match.group(1))
+                    # Determine direction
+                    if is_bull:
+                        risk_pts = entry_val - sl_val  # long: risk = entry - SL
+                    else:
+                        risk_pts = sl_val - entry_val  # short: risk = SL - entry
+                    if risk_pts > 0:
+                        from config.settings import LOT_SIZES
+                        base_sym = symbol.upper().strip().split()[0]
+                        lot_size = LOT_SIZES.get(base_sym, 1)
+                        lots = td.get("quantity", 1)
+                        risk_per_lot = risk_pts * lot_size
+                        total_risk = risk_per_lot * lots
+                        risk_per_lot_str = f" | Risk/lot: ₹{risk_per_lot:,.0f}"
+                        if lots > 1:
+                            risk_per_lot_str += f" (Total: ₹{total_risk:,.0f})"
+            except Exception:
+                pass
             size_qty = td.get("quantity", 1)
             size_str = f" | Size: {size_qty} lot"
             risk_str = f" | Risk: {_esc(risk_rate)}" if risk_rate else ""
-            lines.append(f"  R:R     {_esc(rr)}{size_str}{risk_str}")
+            lines.append(f"  R:R     {_esc(rr)}{size_str}{risk_str}{risk_per_lot_str}")
         elif risk_rate:
             lines.append(f"  Risk    {_esc(risk_rate)}")
+
+        # Position context: show if there's an existing open position
+        existing_position = None
+        if paper_trade_status and paper_trade_status.get("action") == "HELD":
+            existing_position = paper_trade_status.get("trade", {})
+        elif live_trade_status and live_trade_status.get("action") == "HELD":
+            existing_position = live_trade_status.get("trade", {})
+        if existing_position:
+            pos_opt = existing_position.get("option_type", "")
+            pos_strike = existing_position.get("strike")
+            pos_entry = existing_position.get("entry_premium")
+            pos_side = str(existing_position.get("side") or "BUY").upper()
+            pos_strike_str = f"{pos_strike:g}" if pos_strike is not None else "?"
+            pos_entry_str = f"₹{pos_entry:.1f}" if pos_entry is not None else "?"
+            lines.append(f"  📌 *Existing:* {pos_side} {pos_strike_str} {pos_opt} @ {pos_entry_str}")
+
+    # ── BLOCKED reason (human-readable)
+    if bias_upper in ("NO_TRADE", "NEUTRAL") and td_status and td_status.startswith("BLOCKED"):
+        block_reason = td.get("reason", "")
+        if block_reason:
+            # Make the block reason human-readable
+            readable = block_reason
+            # Replace technical jargon
+            readable = re.sub(r"alignment \((\d+)\) < required \((\d+)\)", 
+                            r"trend alignment \1% < required \2%", readable)
+            readable = re.sub(r"conf=(\d+) eq=(\d+) ta=(\d+)", 
+                            r"confidence \1% entry quality \2% trend alignment \3%", readable)
+            readable = re.sub(r"regime_sc=(\d+)", r"regime score \1%", readable)
+            lines.append("")
+            lines.append(f"🚫 *BLOCKED:* {_esc(readable)}")
 
     # ── Exit advice block
     exit_adv = gv("exit_advice")

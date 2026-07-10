@@ -826,6 +826,58 @@ def run_playbooks(snap: HealthSnapshot, sm: StateMachine) -> list[PlaybookResult
         results.append(PlaybookResult(action_taken="P12_unknown"))
         _escalate("P12", "Unknown component state detected — manual review needed")
 
+    # ── P13: Scan Sentinel Diagnostics ──
+    try:
+        db_uri = Path(BOT_DB_PATH).as_uri() + "?mode=ro"
+        conn = sqlite3.connect(db_uri, uri=True, timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        
+        # Check if table sentinel_incidents exists
+        table_exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='sentinel_incidents'"
+        ).fetchone()
+        
+        if table_exists:
+            # Get latest unnotified sentinel incidents
+            local_conn = _get_incidents_conn()
+            notified_rows = local_conn.execute(
+                "SELECT trigger_state FROM incidents WHERE playbook_id='P13'"
+            ).fetchall()
+            notified_ids = {int(r["trigger_state"]) for r in notified_rows if r["trigger_state"].isdigit()}
+            local_conn.close()
+            
+            # Fetch incidents from nsebot.db
+            db_incidents = conn.execute(
+                "SELECT * FROM sentinel_incidents ORDER BY id ASC"
+            ).fetchall()
+            
+            for incident in db_incidents:
+                inc_id = incident["id"]
+                if inc_id not in notified_ids:
+                    # Log locally to prevent duplicate alerts
+                    _log_incident(
+                        playbook_id="P13",
+                        trigger=str(inc_id),
+                        action=incident["recommended_action"],
+                        result="Alerted"
+                    )
+                    
+                    # Send escalation
+                    msg = (
+                        f"🔬 **SENTINEL | {incident['symbol']} | {incident['severity']}**\n\n"
+                        f"📊 **Anomaly:** {incident['summary']}\n"
+                        f"🔍 **Root Cause:** {incident['root_cause']}\n"
+                        f"🛠️ **Action:** {incident['recommended_action']}\n"
+                    )
+                    
+                    is_crit = incident["severity"].upper() == "CRITICAL"
+                    _escalate("P13", msg, critical=is_crit)
+                    results.append(PlaybookResult(action_taken=f"P13_sentinel_{incident['symbol']}", escalated=True, critical=is_crit))
+                    
+        conn.close()
+    except Exception as e:
+        log.warning("P13: Failed to check sentinel incidents: %s", e)
+
     return results
 
 

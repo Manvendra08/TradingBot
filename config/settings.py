@@ -188,6 +188,8 @@ TELEGRAM_CHAT_ID = _optional_env("TELEGRAM_CHAT_ID")
 DISCORD_WEBHOOK_URL = _optional_env("DISCORD_WEBHOOK_URL")
 GEMINI_API_KEY = _optional_env("GEMINI_API_KEY")
 SAMBANOVA_API_KEY = _optional_env("SAMBANOVA_API_KEY")
+OPENCODE_API_KEY = _optional_env("OPENCODE_API_KEY")
+NVIDIA_API_KEY = _optional_env("NVIDIA_API_KEY")
 
 # ── Dashboard Authentication ────────────────────────────────────────────────────────────────────────────
 # FIX #13: Removed insecure admin/admin defaults.
@@ -211,26 +213,88 @@ LOG_BACKUP_COUNT = 30
 # MCX commodities have lower absolute OI volumes than NSE indices.
 # Use tighter thresholds so the engine fires on meaningful but smaller moves.
 SYMBOL_THRESHOLD_OVERRIDES: dict[str, dict] = {
+    # ── NSE Indices (high liquidity, huge OI — need HIGHER thresholds) ──
+    "NIFTY": {
+        "oi_threshold": 30.0,        # most liquid, huge OI buffer
+        "ltp_threshold": 4.0,
+        "pcr_shift_threshold": 0.30,
+        "buildup_oi_min_pct": 25.0,
+        "buildup_ltp_min_pct": 6.0,
+        "otm_oi_spike_pct": 40.0,
+        "max_pain_shift_threshold": 75,
+    },
+    "BANKNIFTY": {
+        "oi_threshold": 25.0,        # very liquid but more volatile
+        "ltp_threshold": 3.5,
+        "pcr_shift_threshold": 0.25,
+        "buildup_oi_min_pct": 20.0,
+        "buildup_ltp_min_pct": 5.0,
+        "otm_oi_spike_pct": 35.0,
+        "max_pain_shift_threshold": 75,
+    },
+    "FINNIFTY": {
+        "oi_threshold": 20.0,        # less liquid than NIFTY/BANKNIFTY
+        "ltp_threshold": 3.0,
+        "pcr_shift_threshold": 0.20,
+        "buildup_oi_min_pct": 18.0,
+        "buildup_ltp_min_pct": 5.0,
+        "otm_oi_spike_pct": 30.0,
+        "max_pain_shift_threshold": 60,
+    },
+    "MIDCPNIFTY": {
+        "oi_threshold": 18.0,        # lower liquidity, higher volatility
+        "ltp_threshold": 3.0,
+        "pcr_shift_threshold": 0.20,
+        "buildup_oi_min_pct": 15.0,
+        "buildup_ltp_min_pct": 4.0,
+        "otm_oi_spike_pct": 25.0,
+        "max_pain_shift_threshold": 60,
+    },
+    "SENSEX": {
+        "oi_threshold": 28.0,        # similar to NIFTY, slightly less liquid
+        "ltp_threshold": 4.0,
+        "pcr_shift_threshold": 0.28,
+        "buildup_oi_min_pct": 22.0,
+        "buildup_ltp_min_pct": 6.0,
+        "otm_oi_spike_pct": 38.0,
+        "max_pain_shift_threshold": 75,
+    },
+    # ── MCX Commodities (lower liquidity, different volatility profiles) ──
     "NATURALGAS": {
-        "oi_threshold": 10.0,
+        "oi_threshold": 10.0,        # very volatile, low OI — tightest
         "ltp_threshold": 4.0,
         "pcr_shift_threshold": 0.10,
         "buildup_oi_min_pct": 10.0,
         "buildup_ltp_min_pct": 3.0,
+        "otm_oi_spike_pct": 15.0,
+        "max_pain_shift_threshold": 30,
     },
     "CRUDEOIL": {
-        "oi_threshold": 15.0,
+        "oi_threshold": 15.0,        # high volatility, moderate OI
         "ltp_threshold": 5.0,
         "pcr_shift_threshold": 0.15,
         "buildup_oi_min_pct": 12.0,
         "buildup_ltp_min_pct": 4.0,
+        "otm_oi_spike_pct": 20.0,
+        "max_pain_shift_threshold": 40,
     },
     "GOLD": {
-        "oi_threshold": 20.0,
+        "oi_threshold": 20.0,        # moderate volatility, decent OI
         "ltp_threshold": 5.0,
         "pcr_shift_threshold": 0.20,
         "buildup_oi_min_pct": 15.0,
         "buildup_ltp_min_pct": 5.0,
+        "otm_oi_spike_pct": 25.0,
+        "max_pain_shift_threshold": 50,
+    },
+    "SILVER": {
+        "oi_threshold": 18.0,        # moderate volatility, moderate OI
+        "ltp_threshold": 4.5,
+        "pcr_shift_threshold": 0.18,
+        "buildup_oi_min_pct": 14.0,
+        "buildup_ltp_min_pct": 4.5,
+        "otm_oi_spike_pct": 22.0,
+        "max_pain_shift_threshold": 45,
     },
 }
 
@@ -267,6 +331,8 @@ ALERT_COOLDOWN_MINUTES = 60  # don't re-alert same type within N minutes
 ALERT_COOLDOWN_HIGH_MINUTES = 30  # shorter cooldown for HIGH severity
 INDIVIDUAL_ALERT_MIN_SEVERITY = "LOW"  # min severity to send individual alerts
 DEDUP_CLUSTER_STRIKES = 2  # cluster strikes within N steps of fired key
+MAX_ANOMALIES_PER_SYMBOL = 25  # cap raw anomalies per symbol to prevent noise floods
+ANOMALY_MIN_SEVERITY = "MEDIUM"  # drop LOW severity anomalies before digest
 
 # Research mode: True = EXPERIMENTAL trades allowed; False = CORE only
 PAPER_RESEARCH_MODE = os.environ.get("PAPER_RESEARCH_MODE", "true").lower() == "true"
@@ -276,6 +342,9 @@ MIN_CONFIDENCE_CORE = 70
 MIN_ENTRY_QUALITY_CORE = 60
 MIN_TREND_ALIGNMENT_CORE = 70
 MIN_REGIME_SCORE_CORE = 60
+# High-confidence bypass: when OI confidence >= this, trend alignment check is relaxed
+# to MIN_TREND_ALIGNMENT_CORE * 0.6 (allows entries in choppy markets with strong OI conviction)
+HIGH_CONFIDENCE_BYPASS_THRESHOLD = 90
 HEAVYWEIGHT_THRESHOLDS = {
     "NIFTY": 0.30,
     "BANKNIFTY": 0.60,

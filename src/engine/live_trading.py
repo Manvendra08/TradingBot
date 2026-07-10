@@ -767,14 +767,14 @@ def _get_base_symbol(symbol: str) -> str:
         return "BANKNIFTY"
     if parts[0].startswith("CRUDEOIL"):
         return "CRUDEOIL"
-    if sym.startswith("GOLD"):
+    if parts[0].startswith("GOLD"):
         return "GOLD"
-    if sym.startswith("MCX"):
+    if parts[0].startswith("MCX"):
         return "MCX"
     import re
 
-    m = re.match(r"^[A-Z]+", sym)
-    return m.group(0) if m else sym
+    m = re.match(r"^[A-Z]+", parts[0])
+    return m.group(0) if m else parts[0]
 
 
 def _latest_live_trade(trade_id: int) -> dict | None:
@@ -1557,12 +1557,12 @@ def run_live_timeframe_strategy(
         if bar_end_1h and trade["opened_at"] < bar_end_1h:
             should_exit = False
             exit_reason = ""
-            if trade["verdict_label"] == "LONG" and c_1h_close < p_1h_low:
+            if is_bullish(trade["verdict_label"]) and c_1h_close < p_1h_low:
                 crossover_size = p_1h_low - c_1h_close
                 if crossover_size > 2 * breakout_buffer or short_oi_support:
                     should_exit = True
                     exit_reason = f"TF-1H-Cross: 1H close {c_1h_close:.2f} < p1H_low {p_1h_low:.2f}"
-            elif trade["verdict_label"] == "SHORT" and c_1h_close > p_1h_high:
+            elif is_bearish(trade["verdict_label"]) and c_1h_close > p_1h_high:
                 crossover_size = c_1h_close - p_1h_high
                 if crossover_size > 2 * breakout_buffer or long_oi_support:
                     should_exit = True

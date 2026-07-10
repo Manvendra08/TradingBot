@@ -23,6 +23,7 @@ from config.settings import (
     ENTRY_QUALITY_MIN_SCORE_TF,
     TREND_ALIGNMENT_MIN_SCORE_TF,
     TIMEFRAME_OI_MIN_DIFF_PCT,
+    HIGH_CONFIDENCE_BYPASS_THRESHOLD,
     EMP_BOOST_MIN_TRADES,
     EMP_BOOST_MIN_WINRATE,
 )
@@ -455,14 +456,23 @@ def step_trend_alignment_core(ctx: PipelineContext) -> StepResult:
 
         # Priority 2: Trend persistence
         elif is_persistent and entry_quality >= MIN_ENTRY_QUALITY_CORE and regime_ok:
-            if trend_alignment >= MIN_TREND_ALIGNMENT_CORE:
+            # High-confidence bypass: when OI confidence >= 90%, relax trend alignment
+            # to allow entries in choppy markets with strong OI conviction
+            effective_trend_threshold = MIN_TREND_ALIGNMENT_CORE
+            if confidence >= HIGH_CONFIDENCE_BYPASS_THRESHOLD:
+                effective_trend_threshold = int(MIN_TREND_ALIGNMENT_CORE * 0.6)
+                log.debug(
+                    "%s: High confidence bypass — trend threshold relaxed from %d to %d (conf=%d)",
+                    symbol, MIN_TREND_ALIGNMENT_CORE, effective_trend_threshold, confidence,
+                )
+            if trend_alignment >= effective_trend_threshold:
                 passed = True
                 setup_type = "TREND_CONTINUATION"
                 reason = persist_reason
                 if regime_sc < MIN_REGIME_SCORE_CORE:
                     soft_conflicts.append("LOW_REGIME_SCORE")
             else:
-                reason = f"Trend continuation blocked: alignment ({trend_alignment}) < required ({MIN_TREND_ALIGNMENT_CORE})"
+                reason = f"Trend continuation blocked: alignment ({trend_alignment}) < required ({effective_trend_threshold})"
 
         # Priority 3: Momentum scoring
         elif momentum_score >= MOMENTUM_SCORE_THRESHOLD and entry_quality >= MIN_ENTRY_QUALITY_CORE:

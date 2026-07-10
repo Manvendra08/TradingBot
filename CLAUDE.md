@@ -197,6 +197,7 @@ Key test files:
 - `AI_INTELLIGENCE_ROADMAP_v3.0.md` is the active ML roadmap — Phase 0 (feature persistence migration) is the current blocker before any ML training.
 - **Strategy Registry:** toggling a strategy/symbol in Settings → Strategies is hot-reload (no restart) — confirm by checking `pipeline.py` log line showing which strategy_ids dispatched for a symbol after a settings save.
 - **TFSS runner not built yet.** Do not register a `run_tfss` callable in `strategy_registry._get_runners()` until it exists and has been reviewed against `Trend_Following_Short_Strangle_FRS_v1.1.md` — registering an unbuilt/unreviewed callable will crash dispatch or execute an unvalidated short-strangle strategy with real risk parameters.
+- **Update KNOWLEDGE_BASE.md**: Always update the Scan Sentinel grounded codebase knowledge base at `data/sentinel/KNOWLEDGE_BASE.md` when making changes to codebase architecture, pipeline flow, or when introducing new features relevant to Scan Sentinel agentic AI diagnostics.
 
 ### Changes in this session
 

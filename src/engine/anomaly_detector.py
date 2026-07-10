@@ -615,13 +615,14 @@ def _detect_max_pain_shift(
     expiry: str,
     underlying: float,
     prev_snaps: list[dict],
+    max_pain_shift_threshold: float = MAX_PAIN_SHIFT_THRESHOLD,
 ) -> list[dict]:
     max_pain = _compute_max_pain(filtered)
     if max_pain is None or not prev_snaps:
         return []
     prev_mp = _compute_max_pain(prev_snaps)
-    if prev_mp and abs(max_pain - prev_mp) >= MAX_PAIN_SHIFT_THRESHOLD:
-        sev = _score_severity(abs(max_pain - prev_mp) / MAX_PAIN_SHIFT_THRESHOLD)
+    if prev_mp and abs(max_pain - prev_mp) >= max_pain_shift_threshold:
+        sev = _score_severity(abs(max_pain - prev_mp) / max_pain_shift_threshold)
         detail = {
             "prev_max_pain": prev_mp,
             "curr_max_pain": max_pain,
@@ -743,6 +744,7 @@ def _detect_otm_unusual(
     expiry: str,
     underlying: float,
     prev_by_key: PrevByKey,
+    otm_oi_spike_pct: float = OTM_OI_SPIKE_PCT,
 ) -> list[dict]:
     otm = _filter_otm_only(all_strikes, underlying)
     alerts = []
@@ -757,7 +759,7 @@ def _detect_otm_unusual(
         if prev_oi < MIN_OI_THRESHOLD or curr_oi < MIN_OI_THRESHOLD:
             continue
         pct = _pct_change(prev_oi, curr_oi)
-        if pct is None or pct < OTM_OI_SPIKE_PCT:
+        if pct is None or pct < otm_oi_spike_pct:
             continue
         detail = {
             "strike": strike,
@@ -768,7 +770,7 @@ def _detect_otm_unusual(
             "underlying": underlying,
             "note": "Far-OTM unusual activity",
         }
-        sev = _score_severity(pct / OTM_OI_SPIKE_PCT)
+        sev = _score_severity(pct / otm_oi_spike_pct)
         log.info(
             "[engine] OTM_UNUSUAL | %s %.0f %s: +%.1f%% [%s]",
             symbol,
@@ -957,12 +959,12 @@ def detect_anomalies(
     alerts += _detect_straddle_premium(
         filtered, symbol, expiry, underlying, prev_by_key
     )
-    alerts += _detect_max_pain_shift(filtered, symbol, expiry, underlying, prev_snaps)
+    alerts += _detect_max_pain_shift(filtered, symbol, expiry, underlying, prev_snaps, max_pain_shift_threshold=t.get("max_pain_shift_threshold", MAX_PAIN_SHIFT_THRESHOLD))
     alerts += _detect_oi_wall_shift(strikes, symbol, expiry, underlying, prev_snaps)
     alerts += _detect_volume_aggression(
         filtered, symbol, expiry, underlying, prev_by_key
     )
-    alerts += _detect_otm_unusual(strikes, symbol, expiry, underlying, prev_by_key)
+    alerts += _detect_otm_unusual(strikes, symbol, expiry, underlying, prev_by_key, otm_oi_spike_pct=t.get("otm_oi_spike_pct", OTM_OI_SPIKE_PCT))
 
     log.info("[engine] %s | %d anomalies detected", symbol, len(alerts))
 

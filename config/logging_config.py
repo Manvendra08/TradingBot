@@ -11,6 +11,7 @@ class ColoredFormatter(logging.Formatter):
     CYAN = "\033[36m"
     GREEN = "\033[32m"
     YELLOW = "\033[33m"
+    BOLD_YELLOW = "\033[1;33m"
     RED = "\033[31m"
     BOLD_RED = "\033[1;31m"
     RESET = "\033[0m"
@@ -18,7 +19,7 @@ class ColoredFormatter(logging.Formatter):
     COLORS = {
         logging.DEBUG: CYAN,
         logging.INFO: GREEN,
-        logging.WARNING: YELLOW,
+        logging.WARNING: BOLD_YELLOW,
         logging.ERROR: RED,
         logging.CRITICAL: BOLD_RED,
     }
@@ -39,6 +40,12 @@ class ColoredFormatter(logging.Formatter):
             result = super().format(record)
         finally:
             record.levelname = orig_levelname
+        
+        if record.levelno >= logging.WARNING:
+            parts = result.split(" | ", 3)
+            if len(parts) == 4:
+                result = f"{parts[0]} | {parts[1]} | {parts[2]} | {color}{parts[3]}{self.RESET}"
+        
         return result
 
 
