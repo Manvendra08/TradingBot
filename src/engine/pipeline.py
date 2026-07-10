@@ -1,6 +1,11 @@
 """
-Data Pipeline Orchestrator v2.10
+Data Pipeline Orchestrator v2.11
 fetch → detect → dedup → digest → alert
+
+Fixes (v2.11):
+  - PDM: Pipeline Decision Matrix injected after LLM+ML resolution.
+    Composite score, gate pass/fail, and per-signal breakdown appended to
+    scan_context, intel, and Telegram digest.
 
 Fixes (v2.10):
   - ADR-007 §3 A3: Async LLM enrichment — entry verdict deferred to background thread.
@@ -62,7 +67,7 @@ CLEANUP_DATA_FILE = Path("data") / "cleanup_dates.json"
 # 30 days is sufficient — cleanup is idempotent and re-running is harmless.
 _CLEANUP_DATES_MAX_ENTRIES = 30
 
-# ── P0-1: Pipeline re-entrancy lock ──────────────────────────────────────────
+# ── P0-1: Pipeline re-entrancy lock ────────────────────────────────────────────────
 # Prevents concurrent runs when pipeline execution exceeds the scheduler sleep
 # interval. Without this, double-entry into open positions is possible.
 _PIPELINE_LOCK = threading.Lock()
@@ -343,7 +348,7 @@ def run_pipeline(
         except Exception:
             log.exception("Direct Kite position synchronization failed")
 
-    # ── Kite connectivity check — auto-login if no valid session ──────────
+    # ── Kite connectivity check — auto-login if no valid session ─────────────────
     if not is_test:
         try:
             from src.engine.live_trading import get_kite_client
@@ -955,6 +960,56 @@ def _process_symbol_inner(symbol: str, fetched_at: str, is_test: bool = False, r
                         intel_text += f"\n🤖 *AI Close deferred*: LTP unavailable for {open_trade.get('option_type')} {open_trade.get('strike')} — will retry next scan\n"
     except Exception:
         log.debug("%s: AI exit advisor failed gracefully", symbol)
+
+    # ────────────────────────────────────────────────────────────────────────
+    # 3e. Pipeline Decision Matrix (PDM)
+    # Runs after all signal sources are resolved (OI, PCR, chart, regime,
+    # ML prediction, LLM verdict, Trade DNA).  Produces an auditable composite
+    # GO/NO-GO decision with per-signal breakdown.
+    # ────────────────────────────────────────────────────────────────────────
+    pdm_result = None
+    try:
+        from src.engine.decision_matrix import evaluate as pdm_evaluate
+
+        pdm_result = pdm_evaluate(
+            symbol=symbol,
+            new_alerts=new_alerts,
+            scan_context=scan_context,
+            intel=intel,
+            llm_verdict=llm_verdict,
+        )
+
+        # Inject serialisable summary into scan_context for scan_summary + LLM prompts
+        scan_context["decision_matrix"] = {
+            "direction":        pdm_result.direction,
+            "composite_score":  pdm_result.composite_score,
+            "strength":         pdm_result.strength,
+            "confidence_band":  pdm_result.confidence_band,
+            "gate_pass":        pdm_result.gate_pass,
+            "gate_reason":      pdm_result.gate_reason,
+            "signals": [
+                {
+                    "name":          s.name,
+                    "raw_score":     s.raw_score,
+                    "weight":        s.weight,
+                    "weighted_score":s.weighted_score,
+                    "detail":        s.detail,
+                }
+                for s in pdm_result.signals
+            ],
+        }
+
+        # Mirror into intel so downstream digest/LLM prompts can reference it
+        if intel:
+            intel["decision_matrix"] = scan_context["decision_matrix"]
+
+        # Append Telegram block when gate fails (operator needs to see WHY)
+        # or when confidence is HIGH (strong signal worth surfacing)
+        if not pdm_result.gate_pass or pdm_result.confidence_band == "HIGH":
+            intel_text += pdm_result.telegram_block
+
+    except Exception:
+        log.debug("%s: Pipeline Decision Matrix failed gracefully", symbol)
 
     import uuid
 
