@@ -55,7 +55,7 @@ def exit_all_positions_friday(market_class: str) -> None:
         "[Friday Exit] Weekend Risk auto-exit triggered for class: %s", market_class
     )
     config = load_runtime_config()
-    shadow_mode = config.get("live_shadow_mode", True)
+    shadow_mode = config.get("live_shadow_mode", False)  # P0-2 FIX: default to False so Friday live exits actually execute
     kite = get_kite_client()
     now_iso = datetime.now(timezone.utc).isoformat()
 
@@ -63,6 +63,16 @@ def exit_all_positions_friday(market_class: str) -> None:
     symbols = [s for s in WATCH_SYMBOLS if get_symbol_class(s) == market_class]
 
     for symbol in symbols:
+        # BUG-H08 FIX: Check if market is actually open before attempting exit.
+        # On holidays or when market is closed, fetching option chain data may
+        # fail or return stale prices, leading to incorrect exit premiums.
+        if not _is_open_for(symbol):
+            log.info(
+                "[Friday Exit] Market closed for %s — skipping exit (no valid prices available)",
+                symbol,
+            )
+            continue
+
         try:
             # 1. Fetch open paper trades
             with get_conn() as conn:
@@ -889,7 +899,7 @@ def start_scheduler(immediate: bool = False):
             if now_ist.weekday() == 4:  # Friday
                 current_time_str = now_ist.strftime("%H:%M")
                 if (
-                    current_time_str == "15:28"
+                    "15:25" <= current_time_str <= "15:30"
                     and _last_friday_nse_exit_date != current_date
                 ):
                     _last_friday_nse_exit_date = current_date
@@ -899,7 +909,7 @@ def start_scheduler(immediate: bool = False):
                     except Exception as e:
                         log.error("Friday auto-exit failed for NSE/BSE: %s", e)
                 elif (
-                    current_time_str == "23:28"
+                    "23:25" <= current_time_str <= "23:30"
                     and _last_friday_mcx_exit_date != current_date
                 ):
                     _last_friday_mcx_exit_date = current_date

@@ -79,36 +79,42 @@ def get_pattern_stats(
         log.debug("Error querying pattern_stats_rollup: %s", e)
 
     # 3. Live calculation from closed trades across rolling 90 days
+    # BUG-M14 FIX: Use a single UNION ALL query instead of two separate queries
+    # for paper_trades and live_trades. This is more efficient and ensures
+    # consistent filtering across both tables.
     cutoff = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
     pnls = []
 
     try:
         with get_conn() as conn:
-            # Query paper trades
-            query_paper = """
-                SELECT pnl_rupees FROM paper_trades
-                WHERE symbol = ? AND status != 'OPEN' AND opened_at >= ?
-            """
-            params_paper: list[Any] = [symbol, cutoff]
+            # BUG-M14: Single UNION ALL query for both paper and live trades
             if verdict_key:
-                query_paper += " AND (verdict_label = ? OR setup_type = ?)"
-                params_paper.extend([verdict_key, verdict_key])
+                query = """
+                    SELECT pnl_rupees FROM (
+                        SELECT pnl_rupees, verdict_label, setup_type
+                        FROM paper_trades
+                        WHERE symbol = ? AND status != 'OPEN' AND opened_at >= ?
+                        UNION ALL
+                        SELECT pnl_rupees, verdict_label, setup_type
+                        FROM live_trades
+                        WHERE symbol = ? AND status != 'OPEN' AND opened_at >= ?
+                    )
+                    WHERE (verdict_label = ? OR setup_type = ?)
+                """
+                params: list[Any] = [symbol, cutoff, symbol, cutoff, verdict_key, verdict_key]
+            else:
+                query = """
+                    SELECT pnl_rupees FROM (
+                        SELECT pnl_rupees FROM paper_trades
+                        WHERE symbol = ? AND status != 'OPEN' AND opened_at >= ?
+                        UNION ALL
+                        SELECT pnl_rupees FROM live_trades
+                        WHERE symbol = ? AND status != 'OPEN' AND opened_at >= ?
+                    )
+                """
+                params: list[Any] = [symbol, cutoff, symbol, cutoff]
 
-            for r in conn.execute(query_paper, params_paper):
-                if r["pnl_rupees"] is not None:
-                    pnls.append(float(r["pnl_rupees"]))
-
-            # Query live trades
-            query_live = """
-                SELECT pnl_rupees FROM live_trades
-                WHERE symbol = ? AND status != 'OPEN' AND opened_at >= ?
-            """
-            params_live: list[Any] = [symbol, cutoff]
-            if verdict_key:
-                query_live += " AND (verdict_label = ? OR setup_type = ?)"
-                params_live.extend([verdict_key, verdict_key])
-
-            for r in conn.execute(query_live, params_live):
+            for r in conn.execute(query, params):
                 if r["pnl_rupees"] is not None:
                     pnls.append(float(r["pnl_rupees"]))
     except Exception as e:

@@ -833,6 +833,20 @@ def _exit_open_live_trade(
     if broker_status in ("REJECTED", "CANCELLED"):
         raise RuntimeError(f"Exit order {broker_status.lower()}: {broker_message}")
 
+    # BUG-H07 FIX: Verify exit order is actually COMPLETE before closing trade.
+    # Previously, PENDING orders would still mark the trade as CLOSED even though
+    # the position remained open at the broker, causing phantom closed trades.
+    if not shadow_mode and broker_status != "COMPLETE":
+        log.warning(
+            "%s: Exit order %s is %s (not COMPLETE). Trade will NOT be marked closed. "
+            "Position may still be open at broker.",
+            symbol, order_id, broker_status,
+        )
+        raise RuntimeError(
+            f"Exit order not filled (status={broker_status}): {broker_message}. "
+            f"Trade remains OPEN to prevent phantom close."
+        )
+
     if trade.get("gtt_order_id"):
         cancel_kite_gtt(kite, trade["gtt_order_id"], shadow_mode)
 
@@ -1101,6 +1115,11 @@ def run_live_trading(
         "expiry": expiry,
         "option_rows": option_rows,
     }
+    # Pass LLM instrument so GO_LONG/GO_SHORT use the actual CE/PE from the LLM
+    if ai_verdict is not None:
+        ctx["instrument"] = getattr(ai_verdict, "instrument", None) or (
+            ai_verdict.get("instrument") if isinstance(ai_verdict, dict) else None
+        )
     decision = make_trade_decision(symbol, intel, ctx, ai_verdict=ai_verdict)
     if decision["status"] == "BLOCKED":
         return {"action": "BLOCKED_DECISION", "reason": decision["reason"]}

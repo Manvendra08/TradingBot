@@ -149,6 +149,83 @@ def _tf_sort_key(tf: str) -> int:
 #   Price ↓ + OI ↓ = Long Unwinding (Weak Bearish — longs exiting, not fresh selling)
 
 
+def _bullish_price_oi(
+    p_pct: float, ce_chg: int, pe_chg: int,
+    abs_ce: int, abs_pe: int, pcr: float | None, alerts: list
+) -> tuple[str, str, str] | None:
+    """BUG-M08: Extracted bullish branch from _price_oi_verdict."""
+    if ce_chg > 0:
+        contra = False
+        if pe_chg > 0 and ce_chg > pe_chg * 1.5:
+            contra = True
+        elif pe_chg <= 0:
+            has_spike = any(
+                a.get("severity") == "HIGH"
+                and a.get("alert_type") in ("OI_SPIKE", "BUILDUP_CLASSIFY", "OTM_UNUSUAL")
+                and a.get("option_type") == "CE" for a in alerts
+            )
+            if (pcr is not None and pcr <= 0.85) or has_spike:
+                contra = True
+        if contra:
+            return "Call Writing", "🔴", "Bearish — resistance building / call writing dominant despite price tick"
+    if pe_chg > 0 and (ce_chg <= 0 or abs_pe > abs_ce * 2):
+        return "Long Buildup", "🟢", "Bullish — fresh longs / heavy put writing"
+    if ce_chg < 0 and (pe_chg >= 0 or abs_ce > abs_pe * 2):
+        return "Short Covering", "🟡", "Weak Bullish — shorts exiting"
+    if ce_chg > 0 and pe_chg <= 0:
+        if pcr is not None and pcr <= 0.85:
+            pass
+        else:
+            return "Long Buildup", "🟢", "Bullish — fresh longs / call buying"
+    if p_pct > 0.15 or (ce_chg == 0 and pe_chg == 0):
+        return "Long Buildup", "🟢", "Bullish — upward price trend dominant"
+    return None
+
+
+def _bearish_price_oi(
+    p_pct: float, ce_chg: int, pe_chg: int,
+    abs_ce: int, abs_pe: int, pcr: float | None, alerts: list
+) -> tuple[str, str, str] | None:
+    """BUG-M08: Extracted bearish branch from _price_oi_verdict."""
+    if pe_chg > 0:
+        contra = False
+        if ce_chg > 0 and pe_chg > ce_chg * 1.5:
+            contra = True
+        elif ce_chg <= 0:
+            has_spike = any(
+                a.get("severity") == "HIGH"
+                and a.get("alert_type") in ("OI_SPIKE", "BUILDUP_CLASSIFY", "OTM_UNUSUAL")
+                and a.get("option_type") == "PE" for a in alerts
+            )
+            if (pcr is not None and pcr >= 1.25) or has_spike:
+                contra = True
+        if contra:
+            return "Put Writing", "🟢", "Bullish — support building / put writing dominant despite price dip"
+    if ce_chg > 0 and (pe_chg <= 0 or abs_ce > abs_pe * 2):
+        return "Short Buildup", "🔴", "Bearish — fresh shorts / heavy call writing"
+    if pe_chg < 0 and (ce_chg >= 0 or abs_pe > abs_ce * 2):
+        return "Long Unwinding", "🟠", "Weak Bearish — longs exiting"
+    if pe_chg > 0 and ce_chg <= 0:
+        if pcr is not None and pcr >= 1.25:
+            pass
+        else:
+            return "Short Buildup", "🔴", "Bearish — fresh shorts / put buying"
+    if pe_chg > 0 and ce_chg > 0 and abs_pe > abs_ce * 3:
+        return "Put Writing", "🟢", "Cautious Bullish — PE-heavy buildup despite price dip"
+    if pcr is not None:
+        hi_ce = sum(
+            1 for a in alerts
+            if a.get("severity") == "HIGH"
+            and a.get("alert_type") in ("OI_SPIKE", "BUILDUP_CLASSIFY", "OTM_UNUSUAL")
+            and a.get("option_type") == "CE"
+        )
+        if pcr >= 1.5 and hi_ce >= 1:
+            return "OI Bias Bullish", "🟡", "Cautious Bullish — PCR very high, CE accumulating despite dip"
+    if p_pct < -0.15 or (ce_chg == 0 and pe_chg == 0):
+        return "Short Buildup", "🔴", "Bearish — downward price trend dominant"
+    return None
+
+
 def _price_oi_verdict(
     price_pct: float | None,
     net_oi_change: int,
@@ -158,12 +235,10 @@ def _price_oi_verdict(
     alerts: list | None = None,
 ) -> tuple[str, str, str]:
     """
+    BUG-M08: Refactored into _bullish_price_oi and _bearish_price_oi helpers.
     Returns (verdict_label, emoji, trade_bias).
     Uses price × OI matrix as primary signal, with PCR and alert-level
     OI spikes as secondary override when price is flat.
-
-    Fix v3.2: Flat price no longer defaults to Sideways when PCR or
-    strike-level OI activity indicates clear directional positioning.
     """
     alerts = alerts or []
     p_pct = price_pct or 0
@@ -174,108 +249,16 @@ def _price_oi_verdict(
     abs_pe = abs(pe_oi_change)
     max_chg = max(abs_ce, abs_pe)
 
-    # ── PRIMARY: Directional price + OI ────────────────────────────────────
+    # ── PRIMARY: Directional price + OI (BUG-M08: delegated to helpers) ───
     if price_up:
-        # Check for contradictory Bearish options flow even though price is up
-        if ce_oi_change > 0:
-            is_contradictory = False
-            if pe_oi_change > 0 and ce_oi_change > pe_oi_change * 1.5:
-                is_contradictory = True
-            elif pe_oi_change <= 0:
-                has_ce_spike = any(
-                    a.get("severity") == "HIGH"
-                    and a.get("alert_type")
-                    in ("OI_SPIKE", "BUILDUP_CLASSIFY", "OTM_UNUSUAL")
-                    and a.get("option_type") == "CE"
-                    for a in alerts
-                )
-                if (pcr is not None and pcr <= 0.85) or has_ce_spike:
-                    is_contradictory = True
-            if is_contradictory:
-                return (
-                    "Call Writing",
-                    "🔴",
-                    "Bearish — resistance building / call writing dominant despite price tick",
-                )
-
-        if pe_oi_change > 0 and (ce_oi_change <= 0 or abs_pe > abs_ce * 2):
-            return "Long Buildup", "🟢", "Bullish — fresh longs / heavy put writing"
-        if ce_oi_change < 0 and (pe_oi_change >= 0 or abs_ce > abs_pe * 2):
-            return "Short Covering", "🟡", "Weak Bullish — shorts exiting"
-        if ce_oi_change > 0 and pe_oi_change <= 0:
-            # Symmetrically, only treat as Long Buildup if PCR isn't highly bearish
-            if pcr is not None and pcr <= 0.85:
-                pass
-            else:
-                return "Long Buildup", "🟢", "Bullish — fresh longs / call buying"
-
-        # Only return the default directional verdict if the price move is substantial (>0.15%)
-        # or if the options flow is completely flat/minor. Otherwise, fall through to check other indicators.
-        if p_pct > 0.15 or (ce_oi_change == 0 and pe_oi_change == 0):
-            return "Long Buildup", "🟢", "Bullish — upward price trend dominant"
+        result = _bullish_price_oi(p_pct, ce_oi_change, pe_oi_change, abs_ce, abs_pe, pcr, alerts)
+        if result:
+            return result
 
     if price_dn:
-        # Check for contradictory Bullish options flow even though price is down
-        if pe_oi_change > 0:
-            is_contradictory = False
-            if ce_oi_change > 0 and pe_oi_change > ce_oi_change * 1.5:
-                is_contradictory = True
-            elif ce_oi_change <= 0:
-                has_pe_spike = any(
-                    a.get("severity") == "HIGH"
-                    and a.get("alert_type")
-                    in ("OI_SPIKE", "BUILDUP_CLASSIFY", "OTM_UNUSUAL")
-                    and a.get("option_type") == "PE"
-                    for a in alerts
-                )
-                if (pcr is not None and pcr >= 1.25) or has_pe_spike:
-                    is_contradictory = True
-            if is_contradictory:
-                return (
-                    "Put Writing",
-                    "🟢",
-                    "Bullish — support building / put writing dominant despite price dip",
-                )
-
-        if ce_oi_change > 0 and (pe_oi_change <= 0 or abs_ce > abs_pe * 2):
-            return "Short Buildup", "🔴", "Bearish — fresh shorts / heavy call writing"
-        if pe_oi_change < 0 and (ce_oi_change >= 0 or abs_pe > abs_ce * 2):
-            return "Long Unwinding", "🟠", "Weak Bearish — longs exiting"
-        if pe_oi_change > 0 and ce_oi_change <= 0:
-            if pcr is not None and pcr >= 1.25:
-                pass
-            else:
-                return "Short Buildup", "🔴", "Bearish — fresh shorts / put buying"
-        # Both building but PE heavily dominates: price dip is noise / short-term pullback.
-        # Symmetric to price_up line 131 (abs_pe > abs_ce * 2 → Long Buildup).
-        if pe_oi_change > 0 and ce_oi_change > 0 and abs_pe > abs_ce * 3:
-            return (
-                "Put Writing",
-                "🟢",
-                "Cautious Bullish — PE-heavy buildup despite price dip",
-            )
-        # PCR extreme override: check even when price is slightly down.
-        # Prevents a tiny -0.05% dip from masking a PCR 2.0+ or 0.5- regime.
-        if pcr is not None:
-            high_ce_spikes_dn = sum(
-                1
-                for a in alerts
-                if a.get("severity") == "HIGH"
-                and a.get("alert_type")
-                in ("OI_SPIKE", "BUILDUP_CLASSIFY", "OTM_UNUSUAL")
-                and a.get("option_type") == "CE"
-            )
-            if pcr >= 1.5 and high_ce_spikes_dn >= 1:
-                return (
-                    "OI Bias Bullish",
-                    "🟡",
-                    "Cautious Bullish — PCR very high, CE accumulating despite dip",
-                )
-
-        # Only return the default directional verdict if the price move is substantial (<-0.15%)
-        # or if the options flow is completely flat/minor. Otherwise, fall through to check other indicators.
-        if p_pct < -0.15 or (ce_oi_change == 0 and pe_oi_change == 0):
-            return "Short Buildup", "🔴", "Bearish — downward price trend dominant"
+        result = _bearish_price_oi(p_pct, ce_oi_change, pe_oi_change, abs_ce, abs_pe, pcr, alerts)
+        if result:
+            return result
 
     # ── SECONDARY: Flat price — check OI dominance (relaxed ratio) ─────────
     if max_chg > 0:
@@ -462,63 +445,43 @@ def _get_alert_direction(a: dict) -> str:
 # ── Confidence Scorer ─────────────────────────────────────────────────────
 
 
-def _compute_confidence(
-    scan_ctx: dict,
-    alerts: list[dict],
-    parsed_chart: dict | None = None,
-    verdict_label: str | None = None,
-) -> tuple[int, bool]:
-    """
-    Score 0–100 based on signal confluence.
-    Base 10, +15 for HIGH severity, +10 for PCR confluence, +10 for levels.
-    """
-    score = 10  # base
-
-    price_pct = _safe(scan_ctx.get("price_change_pct"))
-    ce_chg = scan_ctx.get("ce_oi_change", 0)
-    pe_chg = scan_ctx.get("pe_oi_change", 0)
-    pcr = _safe(scan_ctx.get("pcr"))
-
-    # Determine verdict bias if label provided
-    verdict_bias = "NEUTRAL"
-    if verdict_label:
-        if is_bullish(verdict_label):
-            verdict_bias = "BULLISH"
-        elif is_bearish(verdict_label):
-            verdict_bias = "BEARISH"
-
-    # Alert severity weighting (Aggressive).
-    # Unwinding alerts are EXITS, not fresh conviction — weight them at ~40%.
+def _score_alert_severity(
+    alerts: list[dict], verdict_bias: str
+) -> int:
+    """BUG-M02: Extracted from _compute_confidence. Score alert severity weights."""
+    score = 0
     for a in alerts:
         sev = a.get("severity", "LOW")
         is_unwind = a.get("alert_type") == "OI_UNWIND" or (
             a.get("alert_type") == "BUILDUP_CLASSIFY"
             and "Unwinding" in (a.get("detail_json") or "")
         )
-
         weight = 8 if is_unwind else 20
         if sev == "MEDIUM":
             weight = 4 if is_unwind else 10
         elif sev == "LOW":
             weight = 0
-
         if weight > 0:
             alert_dir = _get_alert_direction(a)
             if verdict_bias != "NEUTRAL" and alert_dir != "NEUTRAL":
-                if alert_dir == verdict_bias:
-                    score += weight
-                else:
-                    score -= weight  # subtract points when alerts contradict
+                score += weight if alert_dir == verdict_bias else -weight
             else:
                 score += weight
+    return score
 
-    # PCR confirmation for directional momentum
+
+def _score_pcr_confluence(pcr: float, price_pct: float) -> int:
+    """BUG-M02: Extracted from _compute_confidence. PCR confirmation score."""
     if pcr and pcr < 0.75 and price_pct and price_pct > 0:
-        score += 15  # Strong Bullish Confluence
-    elif pcr and pcr > 1.25 and price_pct and price_pct < 0:
-        score += 15  # Strong Bearish Confluence
+        return 15  # Strong Bullish Confluence
+    if pcr and pcr > 1.25 and price_pct and price_pct < 0:
+        return 15  # Strong Bearish Confluence
+    return 0
 
-    # OI wall proximity (Support/Resistance respect)
+
+def _score_level_proximity(scan_ctx: dict, price_pct: float) -> int:
+    """BUG-M02: Extracted from _compute_confidence. OI wall + max pain proximity."""
+    score = 0
     underlying = _safe(scan_ctx.get("underlying"))
     support = _safe(scan_ctx.get("support"))
     resistance = _safe(scan_ctx.get("resistance"))
@@ -526,92 +489,118 @@ def _compute_confidence(
         total_range = resistance - support
         if total_range > 0:
             dist_to_support = underlying - support
-            # Bouncing off support?
             if dist_to_support < total_range * 0.15 and price_pct and price_pct > 0:
                 score += 15
             dist_to_resistance = resistance - underlying
-            # Rejecting from resistance?
             if dist_to_resistance < total_range * 0.15 and price_pct and price_pct < 0:
                 score += 15
-
-    # Max pain gravity
     max_pain = _safe(scan_ctx.get("max_pain"))
     if underlying and max_pain:
         mp_dist_pct = abs(underlying - max_pain) / underlying * 100
         if mp_dist_pct < 0.4:
             score += 10
+    return score
 
-    # Chart timeframe conflict detection
-    # Detects when 1H and 3H have opposite non-NEUTRAL sentiments
+
+def _score_chart_alignment(
+    parsed_chart: dict | None, verdict_bias: str
+) -> tuple[int, bool]:
+    """BUG-M02: Extracted from _compute_confidence. Chart alignment + conflict detection."""
     chart_conflict = False
+    score = 0
+    if not isinstance(parsed_chart, dict):
+        return score, chart_conflict
+    h1_sent = parsed_chart.get("1h", {}).get("sentiment", "NEUTRAL")
+    h3_sent = parsed_chart.get("3h", {}).get("sentiment", "NEUTRAL")
+    if h1_sent != "NEUTRAL" and h3_sent != "NEUTRAL" and h1_sent != h3_sent:
+        chart_conflict = True
+    if verdict_bias != "NEUTRAL":
+        for tf_key in sorted(parsed_chart.keys()):
+            tf_sent = parsed_chart[tf_key].get("sentiment", "NEUTRAL")
+            if (verdict_bias == "BULLISH" and tf_sent == "BULLISH") or (
+                verdict_bias == "BEARISH" and tf_sent == "BEARISH"
+            ):
+                score += 10
+                break
+    return score, chart_conflict
 
-    if isinstance(parsed_chart, dict):
-        # Extract 1h and 3h sentiments
-        h1_sent = parsed_chart.get("1h", {}).get("sentiment", "NEUTRAL")
-        h3_sent = parsed_chart.get("3h", {}).get("sentiment", "NEUTRAL")
 
-        # Conflict: both non-NEUTRAL and opposite directions
-        if h1_sent != "NEUTRAL" and h3_sent != "NEUTRAL" and h1_sent != h3_sent:
-            chart_conflict = True
-
-        # Chart alignment boost: +10 if chart sentiment matches verdict direction
-        if verdict_bias != "NEUTRAL":
-            for tf_key in sorted(parsed_chart.keys()):
-                tf_sent = parsed_chart[tf_key].get("sentiment", "NEUTRAL")
-                if (verdict_bias == "BULLISH" and tf_sent == "BULLISH") or (
-                    verdict_bias == "BEARISH" and tf_sent == "BEARISH"
-                ):
-                    score += 10
-                    break
-
+def _apply_confidence_caps(
+    score: int, scan_ctx: dict, alerts: list[dict], verdict_label: str | None
+) -> int:
+    """BUG-M02: Extracted from _compute_confidence. Apply all confidence ceilings."""
+    # Volume-dominant cap
     alert_types = [a.get("alert_type") for a in alerts]
     if alerts and alert_types.count("VOLUME_AGGRESSION") / max(len(alerts), 1) >= 0.70:
-        directional_types = {
-            "BUILDUP_CLASSIFY",
-            "OI_SPIKE",
-            "OI_UNWIND",
-            "ATM_LEG_MOVE",
-        }
+        directional_types = {"BUILDUP_CLASSIFY", "OI_SPIKE", "OI_UNWIND", "ATM_LEG_MOVE"}
         directional_count = sum(1 for t in alert_types if t in directional_types)
         if directional_count <= max(2, len(alerts) * 0.15):
             score = min(score, 88)
 
-    # Cap: Sideways verdict should never print 90%+ confidence — contradictory
+    # Flat price + balanced OI cap
     if score > 65:
-        # Re-derive verdict to check if it's sideways/neutral
         abs_ce = abs(scan_ctx.get("ce_oi_change", 0))
         abs_pe = abs(scan_ctx.get("pe_oi_change", 0))
         p_pct = scan_ctx.get("price_change_pct") or 0
-        is_flat_price = abs(p_pct) <= 0.05
-        no_dominant_oi = (
-            abs_ce > 0
-            and abs_pe > 0
-            and max(abs_ce, abs_pe) < min(abs_ce, abs_pe) * 1.5
-        )
-        if is_flat_price and no_dominant_oi:
-            score = min(score, 65)  # Flat price + balanced OI → cap confidence
+        is_flat = abs(p_pct) <= 0.05
+        no_dominant = abs_ce > 0 and abs_pe > 0 and max(abs_ce, abs_pe) < min(abs_ce, abs_pe) * 1.5
+        if is_flat and no_dominant:
+            score = min(score, 65)
 
-    # Squaring guard: if most alerts are unwinds AND both sides shrinking,
-    # this is not a high-conviction directional scan. Cap hard.
+    # BUG-H09: Squaring guard with minimum OI threshold
     if alerts:
+        ce_chg = scan_ctx.get("ce_oi_change", 0)
+        pe_chg = scan_ctx.get("pe_oi_change", 0)
         unwinds = sum(
-            1
-            for a in alerts
+            1 for a in alerts
             if a.get("alert_type") == "OI_UNWIND"
-            or (
-                a.get("alert_type") == "BUILDUP_CLASSIFY"
-                and "Unwinding" in (a.get("detail_json") or "")
-            )
+            or (a.get("alert_type") == "BUILDUP_CLASSIFY"
+                and "Unwinding" in (a.get("detail_json") or ""))
         )
         unwind_ratio = unwinds / len(alerts)
         both_shrinking = ce_chg < 0 and pe_chg < 0
-        if unwind_ratio >= 0.7 and both_shrinking:
+        significant_oi = abs(ce_chg) > 5000 or abs(pe_chg) > 5000
+        if unwind_ratio >= 0.7 and both_shrinking and significant_oi:
             score = min(score, 45)
 
-    # P2-01: Sideways verdict must never print high confidence — contradiction
-    # that confuses traders and may trigger incorrect paper trades.
+    # Sideways verdict cap
     if verdict_label and verdict_label in ("Sideways",):
         score = min(score, 50)
+    return score
+
+
+def _compute_confidence(
+    scan_ctx: dict,
+    alerts: list[dict],
+    parsed_chart: dict | None = None,
+    verdict_label: str | None = None,
+) -> tuple[int, bool]:
+    """
+    BUG-M02: Refactored into smaller helper functions for maintainability.
+    Score 0–100 based on signal confluence.
+    Base 10, +15 for HIGH severity, +10 for PCR confluence, +10 for levels.
+    """
+    price_pct = _safe(scan_ctx.get("price_change_pct"))
+    pcr = _safe(scan_ctx.get("pcr"))
+
+    # Determine verdict bias
+    verdict_bias = "NEUTRAL"
+    if verdict_label:
+        if is_bullish(verdict_label):
+            verdict_bias = "BULLISH"
+        elif is_bearish(verdict_label):
+            verdict_bias = "BEARISH"
+
+    # Compose score from modular components
+    score = 10  # base
+    score += _score_alert_severity(alerts, verdict_bias)
+    score += _score_pcr_confluence(pcr, price_pct)
+    score += _score_level_proximity(scan_ctx, price_pct)
+    chart_bonus, chart_conflict = _score_chart_alignment(parsed_chart, verdict_bias)
+    score += chart_bonus
+
+    # Apply caps
+    score = _apply_confidence_caps(score, scan_ctx, alerts, verdict_label)
 
     return min(max(score, 0), 98), chart_conflict
 
@@ -1427,6 +1416,11 @@ def generate_intelligence(
     paper_ctx.update(
         symbol=symbol, confidence=confidence, days_to_expiry=days_to_expiry
     )
+    # Pass LLM instrument so GO_LONG/GO_SHORT use the actual CE/PE from the LLM
+    if ai_verdict is not None:
+        paper_ctx["instrument"] = getattr(ai_verdict, "instrument", None) or (
+            ai_verdict.get("instrument") if isinstance(ai_verdict, dict) else None
+        )
     msg.append(f"- {_paper_trade_idea(verdict_label, paper_ctx)}")
 
     # ── Phase 2-4: Decision Engine Status ──────────────────────────────────

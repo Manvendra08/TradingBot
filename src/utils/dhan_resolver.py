@@ -26,11 +26,18 @@ _CACHE = {}
 
 
 def _download_dhan_master_if_needed() -> str:
-    """Download the Dhan master CSV to DATA_DIR, caching it for 24 hours."""
+    """Download the Dhan master CSV to DATA_DIR, caching it for 7 days.
+    
+    BUG-M12 FIX: Extended cache from 24 hours to 7 days (604800 seconds).
+    The Dhan scrip master CSV (~50MB) changes infrequently — only when new
+    contracts are added or symbols change. A 7-day cache dramatically reduces
+    bandwidth while still staying current enough for monthly contract rolls.
+    """
     dest_path = os.path.join(DATA_DIR, "dhan_scrip_master.csv")
     if os.path.exists(dest_path):
         mtime = os.path.getmtime(dest_path)
-        if (time.time() - mtime) < 86400:
+        # BUG-M12: 7-day cache (was 24h) — scrip master rarely changes
+        if (time.time() - mtime) < 604800:
             return dest_path
             
     log.info("Downloading/updating Dhan scrip master CSV...")

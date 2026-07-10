@@ -544,20 +544,45 @@ def build_digest(
     llm_verdict: dict | None = None,
     exit_advice: any = None,
 ) -> tuple[str, str]:
-    if not _LEGACY_DIGEST:
-        return build_llm_consolidated_digest(
-            symbol,
-            alerts,
-            fetched_at,
-            scan_context,
-            detected_count,
-            dedup_suppressed_count,
-            digest_id,
-            paper_trade_status,
-            live_trade_status,
-            llm_verdict,
-            exit_advice=exit_advice,
-        )
+    """BUG-M03 FIX: Consolidated entry point. Always routes to the LLM-consolidated
+    template which is the canonical, actively maintained template.
+    
+    The legacy template (previously behind _LEGACY_DIGEST=True) and the enhanced
+    template (build_enhanced_digest) have been merged into build_llm_consolidated_digest
+    which handles all rendering paths including no-trade and trade states.
+    """
+    return build_llm_consolidated_digest(
+        symbol,
+        alerts,
+        fetched_at,
+        scan_context,
+        detected_count,
+        dedup_suppressed_count,
+        digest_id,
+        paper_trade_status,
+        live_trade_status,
+        llm_verdict,
+        exit_advice=exit_advice,
+    )
+
+
+def _build_digest_legacy(
+    symbol: str,
+    alerts: list[dict],
+    fetched_at: str | None = None,
+    scan_context: dict | None = None,
+    intelligence_text: str | None = None,
+    detected_count: int | None = None,
+    dedup_suppressed_count: int | None = None,
+    digest_id: str | None = None,
+    paper_trade_status: dict | None = None,
+    live_trade_status: dict | None = None,
+    llm_verdict: dict | None = None,
+    exit_advice: any = None,
+) -> tuple[str, str]:
+    """Legacy digest builder — kept for backward compatibility only.
+    BUG-M03: This is no longer the primary path. Use build_digest() instead.
+    """
     if digest_id is None:
         digest_id = str(uuid.uuid4())[:8]
     try:

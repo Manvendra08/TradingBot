@@ -96,7 +96,7 @@ Follow below instructions before starting work:
 
 5. **NO SHORTCUTS** — Provide full, runnable code blocks. No placeholders like `// implement here`.
 
-6. **Use Sequential Thinking MCP** before starting any work.
+6. **Use required MCP** before starting any work.
 
 7. **Review previous code line-by-line** for deprecated methods, unhandled edge cases, or logic bugs before fixing.
 8. **Update KNOWLEDGE_BASE.md**: Always update the Scan Sentinel grounded codebase knowledge base at `data/sentinel/KNOWLEDGE_BASE.md` when making changes to codebase architecture, pipeline flow, or when introducing new features relevant to Scan Sentinel agentic AI diagnostics.

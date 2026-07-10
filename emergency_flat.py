@@ -224,6 +224,14 @@ def _close_all_positions(kite) -> int:
 def main():
     log.info("=== EMERGENCY FLAT STARTING (dry_run=%s) ===", DRY_RUN)
 
+    # P2-10: Interactive confirmation to prevent accidental position closure
+    if not DRY_RUN:
+        confirmation = input("Type CONFIRM to proceed with emergency flat: ").strip()
+        if confirmation != "CONFIRM":
+            log.info("Emergency flat cancelled — confirmation not received")
+            print("Cancelled. Type exactly 'CONFIRM' to execute.")
+            sys.exit(0)
+
     kite = _get_kite()
     if not kite:
         log.error("Cannot proceed — Kite client unavailable")

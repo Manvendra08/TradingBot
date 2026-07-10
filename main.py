@@ -16,21 +16,29 @@ import argparse
 import logging
 import socket
 
-# ── Force IPv4 globally ─────────────────────────────────────────────────────
+# ── Force IPv4 for HTTP clients (urllib3-scoped) ───────────────────────────
 # Zerodha Kite whitelists IPv4 only. When the OS prefers IPv6, requests
 # originate from a non-whitelisted address and get rejected.
+#
+# P2-11: Scope IPv4 enforcement to urllib3 only (used by requests/SDKs)
+# rather than patching global socket.getaddrinfo which affects ALL Python
+# networking (asyncio, database drivers, DNS resolvers, etc.).
 import sqlite3
 import sys
 from pathlib import Path
 
-_orig_getaddrinfo = socket.getaddrinfo
+import urllib3
 
+try:
+    urllib3.util.connection.allowed_gai_family = lambda: socket.AF_INET
+except AttributeError:
+    # Fallback for older urllib3 without allowed_gai_family
+    _orig_getaddrinfo = socket.getaddrinfo
 
-def _ipv4_only_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
-    return _orig_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+    def _ipv4_only_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        return _orig_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
 
-
-socket.getaddrinfo = _ipv4_only_getaddrinfo
+    socket.getaddrinfo = _ipv4_only_getaddrinfo
 
 # ── Disable SSL verification conflict globally ──────────────────────────────
 # Recent Python/urllib3 versions raise ValueError when verify=False is used

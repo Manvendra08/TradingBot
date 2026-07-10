@@ -21,7 +21,7 @@ from config.settings import (
     PCR_SHIFT_THRESHOLD,
     PCR_EXTREME_SEVERITY_BAND,
     IV_SPIKE_ATM_THRESHOLD,
-    MAX_PAIN_SHIFT_THRESHOLD,
+    MAX_PAIN_SHIFT_PCT,
     STRIKES_AROUND_ATM,
     SEVERITY_HIGH_MULT,
     SEVERITY_MED_MULT,
@@ -615,14 +615,15 @@ def _detect_max_pain_shift(
     expiry: str,
     underlying: float,
     prev_snaps: list[dict],
-    max_pain_shift_threshold: float = MAX_PAIN_SHIFT_THRESHOLD,
+    max_pain_shift_pct: float = MAX_PAIN_SHIFT_PCT,
 ) -> list[dict]:
     max_pain = _compute_max_pain(filtered)
-    if max_pain is None or not prev_snaps:
+    if max_pain is None or not prev_snaps or not underlying:
         return []
     prev_mp = _compute_max_pain(prev_snaps)
-    if prev_mp and abs(max_pain - prev_mp) >= max_pain_shift_threshold:
-        sev = _score_severity(abs(max_pain - prev_mp) / max_pain_shift_threshold)
+    shift_pct = abs(max_pain - prev_mp) / underlying * 100 if prev_mp else 0
+    if prev_mp and shift_pct >= max_pain_shift_pct:
+        sev = _score_severity(shift_pct / max_pain_shift_pct)
         detail = {
             "prev_max_pain": prev_mp,
             "curr_max_pain": max_pain,
@@ -959,7 +960,7 @@ def detect_anomalies(
     alerts += _detect_straddle_premium(
         filtered, symbol, expiry, underlying, prev_by_key
     )
-    alerts += _detect_max_pain_shift(filtered, symbol, expiry, underlying, prev_snaps, max_pain_shift_threshold=t.get("max_pain_shift_threshold", MAX_PAIN_SHIFT_THRESHOLD))
+    alerts += _detect_max_pain_shift(filtered, symbol, expiry, underlying, prev_snaps, max_pain_shift_pct=t.get("max_pain_shift_pct", MAX_PAIN_SHIFT_PCT))
     alerts += _detect_oi_wall_shift(strikes, symbol, expiry, underlying, prev_snaps)
     alerts += _detect_volume_aggression(
         filtered, symbol, expiry, underlying, prev_by_key

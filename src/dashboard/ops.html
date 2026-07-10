@@ -352,16 +352,16 @@ function ageStr(updatedAt) {
 // ── Status derivation ──────────────────────────────────────────────────────
 function deriveStatus(row, meta) {
     if (!row) return "unknown";
-    const s = (row.status||"").toUpperCase();
-    if (s === "OK") return "ok";
-    if (s === "DEGRADED") return "warn";
-    if (s === "DOWN") return "down";
-    // Staleness check
+    // Staleness check first: override database status if it hasn't been updated recently
     if (row.updated_at && meta.staleMin < 999) {
         const ageMin = (Date.now() - new Date(row.updated_at)) / 60000;
         if (ageMin > meta.staleMin * 2) return "down";
         if (ageMin > meta.staleMin) return "warn";
     }
+    const s = (row.status||"").toUpperCase();
+    if (s === "OK") return "ok";
+    if (s === "DEGRADED") return "warn";
+    if (s === "DOWN") return "down";
     return "ok";
 }
 

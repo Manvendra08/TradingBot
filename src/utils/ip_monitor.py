@@ -34,21 +34,34 @@ _HTTP_TIMEOUT = 10  # seconds per request
 
 
 def _fetch_public_ip() -> str | None:
-    """Return the current public IP address, or None if all providers fail."""
+    """Return the current public IP address, or None if all providers fail.
+
+    BUG-H12 FIX: Added retry logic with exponential backoff per provider.
+    Previously tried each provider only once, so a transient network blip
+    across all 3 providers would skip the IP check entirely for that cycle.
+    Now retries each provider up to 2 times with 1s/2s backoff.
+    """
+    max_retries_per_provider = 2
     last_error: str | None = None
     for url in _IP_PROVIDERS:
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "NSEBOT/1.0"})
-            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
-                data = json.loads(resp.read().decode("utf-8", errors="replace"))
-            ip = data.get("ip")
-            if ip and isinstance(ip, str) and ip.strip():
-                return ip.strip()
-        except Exception as e:
-            last_error = str(e)
-            log.debug("IP provider %s failed: %s", url, last_error)
-            continue
-    log.warning("All IP providers failed; last error: %s", last_error or "unknown")
+        for attempt in range(1, max_retries_per_provider + 1):
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "NSEBOT/1.0"})
+                with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
+                    data = json.loads(resp.read().decode("utf-8", errors="replace"))
+                ip = data.get("ip")
+                if ip and isinstance(ip, str) and ip.strip():
+                    return ip.strip()
+            except Exception as e:
+                last_error = str(e)
+                log.debug(
+                    "IP provider %s failed (attempt %d/%d): %s",
+                    url, attempt, max_retries_per_provider, last_error,
+                )
+                if attempt < max_retries_per_provider:
+                    time.sleep(attempt)  # 1s, 2s backoff
+                continue
+    log.warning("All IP providers failed after retries; last error: %s", last_error or "unknown")
     return None
 
 

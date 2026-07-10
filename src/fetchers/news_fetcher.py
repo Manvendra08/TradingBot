@@ -33,10 +33,8 @@ _SYMBOL_NEWSAPI_QUERIES: dict[str, str] = {
     "FINNIFTY": "Fin Nifty OR Nifty Financial Services India",
     "MIDCPNIFTY": "Midcap Nifty OR Nifty Midcap India stock market",
     "SENSEX": "Sensex OR BSE India stock market NSE",
-    "NATURALGAS": "Natural Gas India MCX commodity price",
-    "CRUDEOIL": "Crude Oil India MCX commodity price",
-    "GOLD": "Gold price India MCX commodity",
-    "SILVER": "Silver price India MCX commodity",
+    "GOLD": "\"Gold\" AND (MCX OR commodity)",
+    "SILVER": "\"Silver\" AND (MCX OR commodity)",
 }
 
 # ── TradingView News API ──────────────────────────────────────────────────
@@ -96,14 +94,16 @@ _NEG_WORDS = [
 ]
 
 
+import re
+
 def _news_sentiment_score(title: str) -> int:
     t = (title or "").lower()
     score = 0
     for w in _POS_WORDS:
-        if w in t:
+        if re.search(r'\b' + re.escape(w) + r'\b', t):
             score += 1
     for w in _NEG_WORDS:
-        if w in t:
+        if re.search(r'\b' + re.escape(w) + r'\b', t):
             score -= 1
     return score
 
@@ -123,7 +123,7 @@ def _fetch_tv_commodity_news(symbol: str) -> dict:
     """Fetch TradingView commodity news headlines (last 24h)."""
     # Map symbol to TradingView streaming symbol
     tv_symbols = {
-        "NATURALGAS": "MCX:NATURALGAS1!",
+        "NATURALGAS": "NYMEX:NG1!",
         "CRUDEOIL": "MCX:CRUDEOIL1!",
     }
     stream_sym = tv_symbols.get(symbol)
@@ -398,6 +398,117 @@ def _fetch_icici_commentary() -> list[dict]:
         log.info("ICICIDirect fetch failed (possibly blocked by WAF): %s", e)
     return rows
 
+# ── X.com & TradingEconomics Scrapers ──────────────────────────────────────
+
+def _fetch_x_nginews() -> list[dict]:
+    """Fetch tweets from @NGInews via X Syndication API."""
+    url = "https://syndication.twitter.com/srv/timeline-profile/screen-name/NGInews"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    }
+    rows = []
+    cutoff = int(time.time()) - (10 * 86400)
+    try:
+        import re
+        import json
+        res = requests.get(url, headers=headers, timeout=10)
+        if res.status_code == 200:
+            m = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.+?)</script>', res.text)
+            if m:
+                data = json.loads(m.group(1))
+                props = data.get('props', {})
+                pageProps = props.get('pageProps', {})
+                timeline = pageProps.get('timeline', {})
+                entries = timeline.get('entries', [])
+                for entry in entries:
+                    content = entry.get('content', {})
+                    tweet = content.get('tweet')
+                    if tweet:
+                        text = tweet.get('text') or tweet.get('full_text')
+                        created_at_str = tweet.get('created_at')
+                        if text:
+                            text = re.sub(r'https://t\.co/\S+', '', text).strip()
+                            pub_ts = int(time.time())
+                            if created_at_str:
+                                try:
+                                    dt = datetime.strptime(created_at_str, "%a %b %d %H:%M:%S %z %Y")
+                                    pub_ts = int(dt.timestamp())
+                                except Exception:
+                                    pass
+                            
+                            if pub_ts < cutoff:
+                                continue
+                            
+                            rows.append({
+                                "title": text,
+                                "provider": "X / @NGInews",
+                                "published": pub_ts,
+                                "published_at": datetime.fromtimestamp(pub_ts, timezone.utc).isoformat(),
+                                "url": f"https://x.com/NGInews/status/{tweet.get('id_str')}" if tweet.get('id_str') else "",
+                                "score": _news_sentiment_score(text),
+                            })
+    except Exception as e:
+        log.warning("X scraping failed: %s", e)
+    return rows
+
+
+def _fetch_te_naturalgas() -> list[dict]:
+    """Fetch Natural Gas news from TradingEconomics using Playwright."""
+    url = "https://tradingeconomics.com/commodity/natural-gas"
+    rows = []
+    cutoff = int(time.time()) - (10 * 86400)
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+            page.goto(url, timeout=15000)
+            page.wait_for_timeout(2000)
+            content = page.content()
+            browser.close()
+            
+        soup = BeautifulSoup(content, "html.parser")
+        items = soup.find_all("div", class_="te-stream-repeater")
+        for item in items:
+            a_tag = item.find("a")
+            if not a_tag:
+                continue
+            title = a_tag.text.strip()
+            href = a_tag.get("href")
+            
+            desc_div = item.find("div", class_="comment")
+            description = desc_div.text.strip() if desc_div else ""
+            
+            date_el = item.find(class_="te-stream-date")
+            date_str = date_el.text.strip() if date_el else ""
+            
+            pub_ts = int(time.time())
+            if date_str:
+                try:
+                    dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                    pub_ts = int(dt.timestamp())
+                except Exception:
+                    pass
+            
+            if pub_ts < cutoff:
+                continue
+            
+            article_url = f"https://tradingeconomics.com{href}" if href and href.startswith("/") else (href or "")
+            
+            rows.append({
+                "title": title,
+                "provider": "TradingEconomics",
+                "published": pub_ts,
+                "published_at": datetime.fromtimestamp(pub_ts, timezone.utc).isoformat(),
+                "url": article_url,
+                "score": _news_sentiment_score(title + " " + description),
+            })
+    except Exception as e:
+        log.warning("TE scraping failed: %s", e)
+    return rows
+
 
 # ── Public API ───────────────────────────────────────────────────────────
 
@@ -428,6 +539,10 @@ def fetch_news(symbol: str) -> dict:
     if sym in ("NATURALGAS", "CRUDEOIL"):
         tv_result = _fetch_tv_commodity_news(sym)
         primary_items = tv_result.get("items", [])
+        if sym == "NATURALGAS":
+            te_items = _fetch_te_naturalgas()
+            x_items = _fetch_x_nginews()
+            primary_items = primary_items + te_items + x_items
     elif sym in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"):
         icici_items = _fetch_icici_commentary()
         all_items = icici_items
@@ -442,8 +557,10 @@ def fetch_news(symbol: str) -> dict:
             else:
                 primary_items.append(item)
 
-    # Step 2: Supplement with NewsAPI.org for ALL symbols
-    newsapi_items = _fetch_newsapi_news(sym)
+    # Step 2: Supplement with NewsAPI.org for ALL symbols (except NATURALGAS)
+    newsapi_items = []
+    if sym != "NATURALGAS":
+        newsapi_items = _fetch_newsapi_news(sym)
 
     # Step 3: Merge — deduplicate by title, prefer primary source order
     seen_titles: set[str] = set()

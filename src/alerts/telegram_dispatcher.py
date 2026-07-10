@@ -62,13 +62,21 @@ def _start_loop():
 
 
 def _ensure_loop():
+    """BUG-M01 FIX: Ensure the dedicated background event loop is running.
+    
+    Uses a lock to prevent race conditions when multiple threads call this
+    simultaneously. The loop runs in a dedicated daemon thread, isolated from
+    the main thread's asyncio context.
+    """
     global _loop, _loop_thread
-    if _loop is None or not _loop.is_running():
-        _loop_thread = threading.Thread(target=_start_loop, daemon=True)
-        _loop_thread.start()
-        import time
-
-        time.sleep(0.2)  # let loop start
+    if not hasattr(_ensure_loop, '_lock'):
+        _ensure_loop._lock = threading.Lock()
+    with _ensure_loop._lock:
+        if _loop is None or not _loop.is_running():
+            _loop_thread = threading.Thread(target=_start_loop, daemon=True)
+            _loop_thread.start()
+            import time
+            time.sleep(0.2)  # let loop start
 
 
 async def _cleanup_loop() -> None:

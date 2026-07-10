@@ -61,6 +61,8 @@ def _check_consecutive_loss_breaker(conn, trades_table: str, label: str) -> tupl
     CONSECUTIVE_LOSS_WINDOW_MINUTES.  If >= CONSECUTIVE_LOSS_LIMIT, blocks
     all new entries until the rolling window moves past those losses.
     """
+    # P2-9: SQL injection guard — f-string table names must be allowlisted
+    assert trades_table in ("paper_trades", "live_trades"), f"Unexpected table: {trades_table}"
     window_start = (
         datetime.now(timezone.utc) - timedelta(minutes=CONSECUTIVE_LOSS_WINDOW_MINUTES)
     ).isoformat()
@@ -94,6 +96,9 @@ def _check_risk_limits_for_table(
     Used by both check_risk_limits (paper) and check_live_risk_limits (live).
     Returns (allowed, reason, sub_check_code).
     """
+    # P2-9: SQL injection guard — f-string table names must be allowlisted
+    assert trades_table in ("paper_trades", "live_trades"), f"Unexpected table: {trades_table}"
+
     today_start = _ist_day_start_utc()
 
     with get_conn() as conn:

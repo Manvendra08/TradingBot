@@ -11,7 +11,6 @@ Usage:
 """
 
 import json
-import json
 import logging
 import os
 import sqlite3
@@ -104,6 +103,68 @@ def _log_incident(
             (now, playbook_id, trigger, action, result),
         )
         return cursor.lastrowid
+
+
+def _is_playbook_active(playbook_id: str) -> bool:
+    """Return True if there is an active (unacknowledged) incident for this playbook."""
+    try:
+        with _get_incidents_conn() as conn:
+            row = conn.execute(
+                "SELECT id FROM incidents WHERE playbook_id=? AND acked=0 LIMIT 1",
+                (playbook_id,)
+            ).fetchone()
+            return row is not None
+    except Exception as e:
+        log.error("Failed to check if playbook %s is active: %s", playbook_id, e)
+        return False
+
+
+def _auto_resolve_incident(playbook_id: str) -> None:
+    """Automatically resolve (acknowledge) an active incident when healthy."""
+    try:
+        with _get_incidents_conn() as conn:
+            row = conn.execute(
+                "SELECT id, result FROM incidents WHERE playbook_id=? AND acked=0 ORDER BY ts DESC LIMIT 1",
+                (playbook_id,)
+            ).fetchone()
+            if row:
+                inc_id = row["id"]
+                orig_result = row["result"] or ""
+                new_result = orig_result if "(Auto-resolved)" in orig_result else f"{orig_result} (Auto-resolved)"
+                conn.execute(
+                    "UPDATE incidents SET acked=1, result=? WHERE id=?",
+                    (new_result, inc_id)
+                )
+                log.info("Auto-resolved active incident for playbook %s", playbook_id)
+    except Exception as e:
+        log.error("Failed to auto-resolve incident for playbook %s: %s", playbook_id, e)
+
+
+_COMPONENT_PLAYBOOK_MAP = {
+    "scheduler_loop": "P01",
+    "shoonya_session": "P03",
+    "parity_feed": "P05",
+    "db_write": "P06",
+    "telegram_send": "P07",
+}
+
+
+def _resolve_playbooks_if_healthy(sm: "StateMachine") -> None:
+    """Scan evaluated state machine components and resolve active incidents if OK."""
+    for comp_key, playbook_id in _COMPONENT_PLAYBOOK_MAP.items():
+        state = sm.components.get(comp_key)
+        if state and state.status == "OK":
+            _auto_resolve_incident(playbook_id)
+            # If P03 (Shoonya session) resolved, also resolve P04 (Broker down/paused)
+            if playbook_id == "P03":
+                _auto_resolve_incident("P04")
+
+    # Resolve last_scan (P11) if ALL last_scan_* components are OK
+    scan_keys = [k for k in sm.components.keys() if k.startswith("last_scan_") and not k.startswith("_")]
+    if scan_keys:
+        all_scan_ok = all(sm.components[k].status == "OK" for k in scan_keys)
+        if all_scan_ok:
+            _auto_resolve_incident("P11")
 
 
 # ── Health Reading ───────────────────────────────────────────────────────────
@@ -391,6 +452,24 @@ def _send_fallback(text: str) -> bool:
 def _escalate(playbook_id: str, message: str, critical: bool = False) -> None:
     """Send escalation via Discord + fallback for CRITICAL."""
     global _critical_last_sent
+    
+    # Check if there is already an active (unacknowledged) incident for this playbook
+    # to prevent spamming notifications and DB logs
+    if _is_playbook_active(playbook_id):
+        log.debug("Playbook %s already active and unacked. Skipping redundant escalation.", playbook_id)
+        return
+
+    # Log new incident to local DB
+    try:
+        _log_incident(
+            playbook_id=playbook_id,
+            trigger="Component DOWN/DEGRADED",
+            action="Escalation Triggered",
+            result=message
+        )
+    except Exception as e:
+        log.error("Failed to log incident for playbook %s: %s", playbook_id, e)
+
     prefix = "🚨 CRITICAL" if critical else "⚙️ OPS"
     ts = datetime.now(IST).strftime("%H:%M IST")
     text = f"{prefix} | {playbook_id} | {message} | {ts}"
@@ -602,8 +681,16 @@ def _validate_time_via_healthchecks() -> bool:
                 log.warning("Time drift detected: %.1f seconds from external reference", drift)
                 return False
             return True
-    except Exception:
-        return True  # On error, trust local clock
+    except Exception as e:
+        # BUG-H11 FIX: Log warning when healthchecks.io is unavailable instead
+        # of silently trusting local clock. This helps operators detect when
+        # the external time reference is down and clock drift may go undetected.
+        log.warning(
+            "Time validation via healthchecks.io failed (%s) — trusting local clock. "
+            "If this persists, clock drift may go undetected.",
+            str(e)[:100],
+        )
+        return True
 
 
 def _get_validated_now_ist() -> datetime:
@@ -994,6 +1081,9 @@ def main():
 
             # Open positions stamp
             sm.evaluate("open_positions", {"status": "OK", "detail": f"count={snap.open_positions}"})
+
+            # Auto-resolve incidents for healthy components
+            _resolve_playbooks_if_healthy(sm)
 
             # Run playbooks
             results = run_playbooks(snap, sm)

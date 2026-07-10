@@ -1194,7 +1194,9 @@ def _calc_transaction_costs(
         if is_mcx_commodity_future:
             stt_rate = 0.0001  # CTT rate for MCX commodities
         elif base_symbol in index_symbols:
-            stt_rate = 0.0001  # STT rate for NSE index futures (reduced from 0.02%)
+            # BUG-H04 FIX: NSE index futures STT is 0.01% (0.0001) — this is the
+            # correct current rate, not a reduction. The previous comment was misleading.
+            stt_rate = 0.0001  # STT rate for NSE index futures (0.01%)
         else:
             stt_rate = 0.0002  # STT rate for stock futures
 

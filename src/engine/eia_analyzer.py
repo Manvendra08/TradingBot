@@ -1,6 +1,6 @@
 import logging
 import json
-import subprocess
+import sys
 from pathlib import Path
 from config.settings import GEMINI_API_KEY
 from src.alerts.telegram_dispatcher import send_text
@@ -8,7 +8,6 @@ from src.models.schema import get_conn
 
 log = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parents[2]
-SCRAPE_SCRIPT = ROOT / "tools" / "scrape_eia_report.py"
 
 def _get_latest_naturalgas_oi():
     """Fetch the latest OI data for NATURALGAS from the database."""
@@ -31,21 +30,47 @@ def _get_latest_naturalgas_oi():
     return {}
 
 def analyze_eia_report():
-    """Run the EIA scraper and analyze the results using the LLM."""
+    """Run the EIA scraper and analyze the results using the LLM.
+    
+    BUG-L01 FIX: Import the scraper module directly instead of using subprocess.
+    This is more efficient (no process spawn overhead) and provides better error
+    handling through Python exceptions rather than stderr parsing.
+    """
     try:
-        import sys
-        result = subprocess.run(
-            [sys.executable, str(SCRAPE_SCRIPT)], 
-            capture_output=True, 
-            text=True, 
-            timeout=120
-        )
-        if result.returncode != 0:
-            log.error("EIA Scrape failed: %s", result.stderr)
+        # BUG-L01: Direct module import instead of subprocess
+        scrape_module_path = ROOT / "tools" / "scrape_eia_report.py"
+        if not scrape_module_path.exists():
+            log.error("EIA scraper script not found at %s", scrape_module_path)
             return
-
-        data = json.loads(result.stdout)
-        if "error" in data:
+        
+        # Add tools directory to sys.path temporarily for import
+        tools_dir = str(ROOT / "tools")
+        if tools_dir not in sys.path:
+            sys.path.insert(0, tools_dir)
+        
+        try:
+            import scrape_eia_report as scrape_module
+            # Call the scraper's main function directly
+            if hasattr(scrape_module, 'scrape_eia_report'):
+                data = scrape_module.scrape_eia_report()
+            elif hasattr(scrape_module, 'main'):
+                data = scrape_module.main()
+            else:
+                log.error("EIA scraper has no callable entry point")
+                return
+        except Exception as scrape_err:
+            log.error("EIA Scrape failed: %s", scrape_err)
+            return
+        finally:
+            # Clean up sys.path
+            if tools_dir in sys.path:
+                sys.path.remove(tools_dir)
+        
+        if not data:
+            log.error("EIA Scraper returned no data")
+            return
+        
+        if isinstance(data, dict) and "error" in data:
             log.error("EIA Scraper returned error: %s", data["error"])
             return
 

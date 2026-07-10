@@ -16,8 +16,15 @@ class GreeksCalculator:
     IV but no greeks. For NSE indices, Sensibull already supplies greeks.
     """
 
-    def __init__(self, risk_free_rate: float = 0.10) -> None:
-        self.r = risk_free_rate
+    def __init__(self, risk_free_rate: float | None = None) -> None:
+        # BUG-M10 FIX: Use current RBI repo rate (6.5%) instead of unrealistic 10%.
+        # Configurable via GREEKS_RISK_FREE_RATE env var for flexibility.
+        import os
+        if risk_free_rate is not None:
+            self.r = risk_free_rate
+        else:
+            env_rate = os.environ.get("GREEKS_RISK_FREE_RATE")
+            self.r = float(env_rate) if env_rate else 0.065  # RBI repo rate as of 2026
         self._vollib = None
 
     @staticmethod

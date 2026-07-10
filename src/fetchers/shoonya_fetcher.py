@@ -21,6 +21,7 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pyotp
 
@@ -135,8 +136,12 @@ def _write_shared_token_file(filepath: str, data: dict) -> bool:
 
 class ShoonyaFetcher(BaseFetcher):
     name = "shoonya"
-    # Shared Shoonya token JSON file in NSEBOT root folder
-    _TOKEN_CACHE = "C:/Users/manve/Downloads/NSEBOT/shoonya_shared_token.json"
+    # Shared Shoonya token JSON file — resolved relative to project root.
+    # Override via SHOONYA_TOKEN_PATH env var if needed.
+    _TOKEN_CACHE = os.environ.get(
+        "SHOONYA_TOKEN_PATH",
+        str(Path(__file__).resolve().parents[2] / "shoonya_shared_token.json"),
+    )
     _TOKEN_REFRESH_INTERVAL = (
         50400  # seconds (14 hours — session token is valid all day)
     )

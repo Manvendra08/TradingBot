@@ -18,14 +18,29 @@ def safe_num(val, default=0.0) -> float:
         return default
 
 
-def fmt_oi(n: int | float | str | None) -> str:
-    """Format OI/volume with Cr/L/K suffixes (NSE standard)."""
+def fmt_oi(n: int | float | str | None, is_change: bool = False) -> str:
+    """Format OI/volume with Cr/L/K suffixes (NSE standard).
+    
+    BUG-M11 FIX: Added `is_change` parameter to distinguish OI change from absolute OI.
+    OI change values display with +/- sign prefix; absolute OI always shows unsigned magnitude.
+    Absolute OI should never be negative — if it is, it's likely a data error or actually
+    an OI change value being passed incorrectly.
+    """
     n = safe_num(n, 0)
     an = abs(n)
-    if an >= 1e7: return f"{n/1e7:.2f}Cr"
-    if an >= 1e5: return f"{n/1e5:.2f}L"
-    if an >= 1e3: return f"{n/1e3:.1f}K"
-    return str(int(n))
+    
+    # BUG-M11: For absolute OI, ensure we never display a negative value
+    # (OI itself is always non-negative; negative indicates OI change)
+    display_n = n if is_change else an
+    
+    sign = ""
+    if is_change:
+        sign = "+" if n >= 0 else "-"
+    
+    if an >= 1e7: return f"{sign}{an/1e7:.2f}Cr"
+    if an >= 1e5: return f"{sign}{an/1e5:.2f}L"
+    if an >= 1e3: return f"{sign}{an/1e3:.1f}K"
+    return f"{sign}{int(an)}"
 
 
 def fmt_pct(n: float | None) -> str:

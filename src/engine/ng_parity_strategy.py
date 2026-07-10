@@ -100,7 +100,17 @@ def run_ng_parity_strategy(
     
     # Stop distance in rupees/points: dev_pct * multiplier
     stop_distance_points = abs(dev_pct * PARITY_DEV_STOP_MULT / 100.0 * underlying)
-    lots = calculate_ng_lot_size(capital, stop_distance_points)
+    
+    # Link lots to number defined in Setting cockpit (runtime_config.json)
+    try:
+        saved_lots = config.get("paper_symbol_lots") or {}
+        if "NATURALGAS" in saved_lots:
+            lots = max(1, int(saved_lots["NATURALGAS"]))
+        else:
+            lots = calculate_ng_lot_size(capital, stop_distance_points)
+    except Exception as e:
+        log.warning("Failed to load cockpit lots for NATURALGAS parity trade: %s", e)
+        lots = calculate_ng_lot_size(capital, stop_distance_points)
 
     sl_underlying = underlying + stop_distance_points if side == "SELL" else underlying - stop_distance_points
     # Target is parity (deviation = 0)

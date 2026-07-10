@@ -12,7 +12,7 @@ DATA_DIR = BASE_DIR / "data"
 # Global safeguard: Automatically redirect DB_PATH to test database when executing tests
 import sys
 _is_testing = (
-    "pytest" in sys.modules or 
+    "pytest" in sys.modules or
     any("pytest" in arg or arg.startswith("test_") for arg in sys.argv) or
     (len(sys.argv) > 0 and (sys.argv[0].endswith("test_manual.py") or "test_" in os.path.basename(sys.argv[0])))
 )
@@ -221,7 +221,7 @@ SYMBOL_THRESHOLD_OVERRIDES: dict[str, dict] = {
         "buildup_oi_min_pct": 25.0,
         "buildup_ltp_min_pct": 6.0,
         "otm_oi_spike_pct": 40.0,
-        "max_pain_shift_threshold": 75,
+        "max_pain_shift_pct": 0.5,
     },
     "BANKNIFTY": {
         "oi_threshold": 25.0,        # very liquid but more volatile
@@ -230,7 +230,7 @@ SYMBOL_THRESHOLD_OVERRIDES: dict[str, dict] = {
         "buildup_oi_min_pct": 20.0,
         "buildup_ltp_min_pct": 5.0,
         "otm_oi_spike_pct": 35.0,
-        "max_pain_shift_threshold": 75,
+        "max_pain_shift_pct": 0.5,
     },
     "FINNIFTY": {
         "oi_threshold": 20.0,        # less liquid than NIFTY/BANKNIFTY
@@ -239,7 +239,7 @@ SYMBOL_THRESHOLD_OVERRIDES: dict[str, dict] = {
         "buildup_oi_min_pct": 18.0,
         "buildup_ltp_min_pct": 5.0,
         "otm_oi_spike_pct": 30.0,
-        "max_pain_shift_threshold": 60,
+        "max_pain_shift_pct": 1.0,
     },
     "MIDCPNIFTY": {
         "oi_threshold": 18.0,        # lower liquidity, higher volatility
@@ -248,7 +248,7 @@ SYMBOL_THRESHOLD_OVERRIDES: dict[str, dict] = {
         "buildup_oi_min_pct": 15.0,
         "buildup_ltp_min_pct": 4.0,
         "otm_oi_spike_pct": 25.0,
-        "max_pain_shift_threshold": 60,
+        "max_pain_shift_pct": 1.0,
     },
     "SENSEX": {
         "oi_threshold": 28.0,        # similar to NIFTY, slightly less liquid
@@ -257,7 +257,7 @@ SYMBOL_THRESHOLD_OVERRIDES: dict[str, dict] = {
         "buildup_oi_min_pct": 22.0,
         "buildup_ltp_min_pct": 6.0,
         "otm_oi_spike_pct": 38.0,
-        "max_pain_shift_threshold": 75,
+        "max_pain_shift_pct": 0.5,
     },
     # ── MCX Commodities (lower liquidity, different volatility profiles) ──
     "NATURALGAS": {
@@ -267,7 +267,7 @@ SYMBOL_THRESHOLD_OVERRIDES: dict[str, dict] = {
         "buildup_oi_min_pct": 10.0,
         "buildup_ltp_min_pct": 3.0,
         "otm_oi_spike_pct": 15.0,
-        "max_pain_shift_threshold": 30,
+        "max_pain_shift_pct": 2.0,
     },
     "CRUDEOIL": {
         "oi_threshold": 15.0,        # high volatility, moderate OI
@@ -276,7 +276,7 @@ SYMBOL_THRESHOLD_OVERRIDES: dict[str, dict] = {
         "buildup_oi_min_pct": 12.0,
         "buildup_ltp_min_pct": 4.0,
         "otm_oi_spike_pct": 20.0,
-        "max_pain_shift_threshold": 40,
+        "max_pain_shift_pct": 1.0,
     },
     "GOLD": {
         "oi_threshold": 20.0,        # moderate volatility, decent OI
@@ -285,7 +285,7 @@ SYMBOL_THRESHOLD_OVERRIDES: dict[str, dict] = {
         "buildup_oi_min_pct": 15.0,
         "buildup_ltp_min_pct": 5.0,
         "otm_oi_spike_pct": 25.0,
-        "max_pain_shift_threshold": 50,
+        "max_pain_shift_pct": 1.0,
     },
     "SILVER": {
         "oi_threshold": 18.0,        # moderate volatility, moderate OI
@@ -294,7 +294,7 @@ SYMBOL_THRESHOLD_OVERRIDES: dict[str, dict] = {
         "buildup_oi_min_pct": 14.0,
         "buildup_ltp_min_pct": 4.5,
         "otm_oi_spike_pct": 22.0,
-        "max_pain_shift_threshold": 45,
+        "max_pain_shift_pct": 1.0,
     },
 }
 
@@ -313,7 +313,7 @@ PCR_EXTREME_HIGH = 1.8  # PCR above this is extreme bullish
 PCR_SHIFT_THRESHOLD = 0.3  # min PCR change to trigger alert
 PCR_EXTREME_SEVERITY_BAND = 0.1  # band around extremes for severity bump
 IV_SPIKE_ATM_THRESHOLD = 20.0  # % IV change at ATM to trigger alert
-MAX_PAIN_SHIFT_THRESHOLD = 50  # rupees max pain shift to trigger alert
+MAX_PAIN_SHIFT_PCT = 1.0  # % of underlying price — max pain shift to trigger alert
 SEVERITY_HIGH_MULT = 1.5  # multiplier for HIGH severity thresholds
 SEVERITY_MED_MULT = 1.0  # multiplier for MEDIUM severity thresholds
 BUILDUP_OI_MIN_PCT = 10.0  # min OI change % for buildup detection

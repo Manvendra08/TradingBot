@@ -102,30 +102,58 @@ def calculate_buy_sl_target(
         Tuple of (sl_underlying, target_underlying)
     """
     atr = get_atr(ctx, preferred_tf)
+    # BUG-H05 FIX: Detect MCX commodities for percentage-based fallback.
+    # Step-based fallback (e.g., step=100 for crude oil) produces extremely
+    # wide SL/target levels (200 pts = ~2% move). Percentage-based fallback
+    # is safer for MCX commodities with large step sizes.
+    from config.settings import MCX_SYMBOLS as _MCX_SYMS
+    base_sym = str(option_type).upper()  # placeholder; caller passes symbol via ctx
+    is_mcx = False
+    # Try to detect MCX from the underlying price magnitude + step size heuristic
+    # (crude oil step=100, NG step=10, gold step=100, silver step=100)
+    if step >= 50 and underlying > 100:
+        is_mcx = True  # Likely MCX commodity with large step
+
     if option_type == "PE":
         # PE: profit when underlying falls
         if atr and atr > 0:
             sl_underlying = underlying + 1.5 * atr
             target_underlying = underlying - 2.0 * atr
         else:
-            log.warning(
-                "calculate_buy_sl_target: Missing ATR data, using step-based fallback (step=%.1f)",
-                step,
-            )
-            sl_underlying = underlying + 2.0 * step
-            target_underlying = underlying - 2.0 * step
+            if is_mcx:
+                # Percentage-based fallback for MCX: 1.5% SL, 3% target
+                sl_underlying = underlying * 1.015
+                target_underlying = underlying * 0.97
+                log.warning(
+                    "calculate_buy_sl_target: Missing ATR, using %%-based MCX fallback (SL=1.5%%, Tgt=3%%)",
+                )
+            else:
+                log.warning(
+                    "calculate_buy_sl_target: Missing ATR data, using step-based fallback (step=%.1f)",
+                    step,
+                )
+                sl_underlying = underlying + 2.0 * step
+                target_underlying = underlying - 2.0 * step
     else:
         # CE/FUT: profit when underlying rises
         if atr and atr > 0:
             sl_underlying = underlying - 1.5 * atr
             target_underlying = underlying + 2.0 * atr
         else:
-            log.warning(
-                "calculate_buy_sl_target: Missing ATR data, using step-based fallback (step=%.1f)",
-                step,
-            )
-            sl_underlying = underlying - 2.0 * step
-            target_underlying = underlying + 2.0 * step
+            if is_mcx:
+                # Percentage-based fallback for MCX: 1.5% SL, 3% target
+                sl_underlying = underlying * 0.985
+                target_underlying = underlying * 1.03
+                log.warning(
+                    "calculate_buy_sl_target: Missing ATR, using %%-based MCX fallback (SL=1.5%%, Tgt=3%%)",
+                )
+            else:
+                log.warning(
+                    "calculate_buy_sl_target: Missing ATR data, using step-based fallback (step=%.1f)",
+                    step,
+                )
+                sl_underlying = underlying - 2.0 * step
+                target_underlying = underlying + 2.0 * step
 
     return round(sl_underlying, 2), round(target_underlying, 2)
 
@@ -155,30 +183,47 @@ def calculate_sell_sl_target(
         Tuple of (sl_underlying, target_underlying)
     """
     atr = get_atr(ctx, preferred_tf)
+    # BUG-H05 FIX: Detect MCX commodities for percentage-based fallback.
+    is_mcx = step >= 50 and underlying > 100
+
     if option_type == "PE":
         # PE: profit when underlying rises
         if atr and atr > 0:
             sl_underlying = underlying - 1.5 * atr
             target_underlying = underlying + 2.0 * atr
         else:
-            log.warning(
-                "calculate_sell_sl_target: Missing ATR data, using step-based fallback (step=%.1f)",
-                step,
-            )
-            sl_underlying = underlying - 2.0 * step
-            target_underlying = underlying + 2.0 * step
+            if is_mcx:
+                sl_underlying = underlying * 0.985
+                target_underlying = underlying * 1.03
+                log.warning(
+                    "calculate_sell_sl_target: Missing ATR, using %%-based MCX fallback (SL=1.5%%, Tgt=3%%)",
+                )
+            else:
+                log.warning(
+                    "calculate_sell_sl_target: Missing ATR data, using step-based fallback (step=%.1f)",
+                    step,
+                )
+                sl_underlying = underlying - 2.0 * step
+                target_underlying = underlying + 2.0 * step
     else:
         # CE/FUT: profit when underlying falls
         if atr and atr > 0:
             sl_underlying = underlying + 1.5 * atr
             target_underlying = underlying - 2.0 * atr
         else:
-            log.warning(
-                "calculate_sell_sl_target: Missing ATR data, using step-based fallback (step=%.1f)",
-                step,
-            )
-            sl_underlying = underlying + 2.0 * step
-            target_underlying = underlying - 2.0 * step
+            if is_mcx:
+                sl_underlying = underlying * 1.015
+                target_underlying = underlying * 0.97
+                log.warning(
+                    "calculate_sell_sl_target: Missing ATR, using %%-based MCX fallback (SL=1.5%%, Tgt=3%%)",
+                )
+            else:
+                log.warning(
+                    "calculate_sell_sl_target: Missing ATR data, using step-based fallback (step=%.1f)",
+                    step,
+                )
+                sl_underlying = underlying + 2.0 * step
+                target_underlying = underlying - 2.0 * step
 
     return round(sl_underlying, 2), round(target_underlying, 2)
 
@@ -362,6 +407,26 @@ def parse_verdict_and_confidence(intel_text: str) -> tuple[str, int]:
 # ---------------------------------------------------------------------------
 
 
+# P1-6: Per-symbol tick size to prevent broker order rejection on MCX
+# (MCX Natural Gas/CRUDEOIL tick is ₹1.0, not ₹0.05 like NSE index options)
+TICK_SIZES: dict[str, float] = {
+    "NATURALGAS": 1.0,
+    "CRUDEOIL": 1.0,
+    "GOLD": 1.0,
+    "GOLDM": 1.0,
+    "SILVER": 1.0,
+    "SILVERM": 1.0,
+    "NIFTY": 0.05,
+    "BANKNIFTY": 0.05,
+    "SENSEX": 0.05,
+}
+
+
+def _get_tick_size(symbol: str) -> float:
+    """Return the minimum price tick for a symbol."""
+    return TICK_SIZES.get(str(symbol).upper(), 0.05)
+
+
 def convert_underlying_sl_to_premium(
     underlying: float,
     sl_underlying: float,
@@ -371,6 +436,7 @@ def convert_underlying_sl_to_premium(
     option_type: str,
     strike: float | None = None,
     option_rows: list[dict] | None = None,
+    symbol: str = "",
 ) -> tuple[float, float]:
     """
     Convert underlying-based SL/Target to premium equivalents for GTT/polling.
@@ -429,17 +495,20 @@ def convert_underlying_sl_to_premium(
     underlying_sl_dist = abs(underlying - sl_underlying)
     underlying_tgt_dist = abs(target_underlying - underlying)
 
+    # P1-6: Use per-symbol tick size for safety bounds
+    tick = _get_tick_size(symbol)
+
     if side == "BUY":
         sl_premium = entry_premium - delta * underlying_sl_dist
         target_premium = entry_premium + delta * underlying_tgt_dist
         # Apply safety bounds to prevent negative or zero premiums
-        sl_premium = max(sl_premium, 0.05)
-        target_premium = max(target_premium, entry_premium + 0.05)
+        sl_premium = max(sl_premium, tick)
+        target_premium = max(target_premium, entry_premium + tick)
     else:  # SELL
         sl_premium = entry_premium + delta * underlying_sl_dist
         target_premium = entry_premium - delta * underlying_tgt_dist
         # Apply safety bounds to prevent negative or zero premiums
-        sl_premium = max(sl_premium, entry_premium + 0.05)
-        target_premium = max(target_premium, 0.05)
+        sl_premium = max(sl_premium, entry_premium + tick)
+        target_premium = max(target_premium, tick)
 
     return round(sl_premium, 2), round(target_premium, 2)

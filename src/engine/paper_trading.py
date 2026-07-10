@@ -853,8 +853,14 @@ def run_paper_trading(
 
     # Build paper plan
     from src.engine.paper_plan import build_paper_trade_plan
+    # Pass LLM instrument so GO_LONG/GO_SHORT use the actual CE/PE from the LLM
+    plan_ctx = dict(scan_context)
+    if ai_verdict is not None:
+        plan_ctx["instrument"] = getattr(ai_verdict, "instrument", None) or (
+            ai_verdict.get("instrument") if isinstance(ai_verdict, dict) else None
+        )
 
-    plan = build_paper_trade_plan(verdict, confidence, scan_context)
+    plan = build_paper_trade_plan(verdict, confidence, plan_ctx)
     if not plan:
         return {
             "action": "HOLD",

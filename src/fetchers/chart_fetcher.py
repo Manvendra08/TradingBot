@@ -291,10 +291,33 @@ def _tv_record_success():
 
 
 def _provider_order(base_symbol: str) -> list[str]:
-    # For all symbols chart fetcher:
-    # 1. Dhan Builtup (openweb-ticks.dhan.co) as primary
-    # 2. Yahoo Finance (yfinance pure-HTTP API) as fallback 1
-    # 3. Shoonya REST API (TPSeries candles) as fallback 2
+    """
+    BUG-M09 FIX: Chart provider order is now configurable via
+    CHART_PROVIDER_ORDER environment variable or config.settings.
+    Falls back to sensible defaults.
+    """
+    import os
+    import json
+    
+    # Check for runtime override (env var JSON)
+    override_json = os.environ.get("CHART_PROVIDER_ORDER")
+    if override_json:
+        try:
+            order = json.loads(override_json)
+            if isinstance(order, list):
+                return order
+        except (json.JSONDecodeError, TypeError):
+            pass
+    
+    # Check config.settings
+    try:
+        from config.settings import CHART_PROVIDER_PRIORITY
+        if isinstance(CHART_PROVIDER_PRIORITY, list):
+            return CHART_PROVIDER_PRIORITY
+    except (ImportError, AttributeError):
+        pass
+    
+    # Default: Dhan Builtup primary, Yahoo Finance fallback, Shoonya last
     return ["dhan_builtup", "yfinance", "shoonya"]
 
 

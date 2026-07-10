@@ -62,6 +62,11 @@ CLEANUP_DATA_FILE = Path("data") / "cleanup_dates.json"
 # 30 days is sufficient — cleanup is idempotent and re-running is harmless.
 _CLEANUP_DATES_MAX_ENTRIES = 30
 
+# ── P0-1: Pipeline re-entrancy lock ──────────────────────────────────────────
+# Prevents concurrent runs when pipeline execution exceeds the scheduler sleep
+# interval. Without this, double-entry into open positions is possible.
+_PIPELINE_LOCK = threading.Lock()
+
 
 def _load_cleanup_dates() -> set[str]:
     if not CLEANUP_DATA_FILE.exists():
@@ -230,6 +235,15 @@ def run_pipeline(
         is_test: Run in dry-run test mode without writing to DB or sending Telegram alerts.
     """
     symbols = symbols or WATCH_SYMBOLS
+
+    # P0-1: Non-blocking lock acquisition — if another pipeline run is still
+    # active, skip this interval entirely rather than risking double-entry.
+    if not _PIPELINE_LOCK.acquire(blocking=False):
+        log.warning(
+            "Pipeline re-entrancy: previous run still active — skipping this interval"
+        )
+        return
+
     fetched_at = datetime.now(timezone.utc).isoformat()
     log.info(
         "Pipeline run started | %s | symbols: %s | force=%s | is_test=%s",
@@ -359,19 +373,22 @@ def run_pipeline(
         except Exception:
             log.exception("Kite connectivity check failed")
 
-    for symbol in symbols:
-        try:
-            _process_symbol(symbol, fetched_at, is_test=is_test)
-        except Exception:
-            log.exception(
-                "Unhandled pipeline error for %s — continuing with next symbol", symbol
-            )
-            # OPS Agent: stamp failure
+    try:
+        for symbol in symbols:
             try:
-                from src.models.schema import stamp_health
-                stamp_health(f"last_scan_{symbol}", "DOWN", f"pipeline_error at {fetched_at}")
+                _process_symbol(symbol, fetched_at, is_test=is_test)
             except Exception:
-                pass
+                log.exception(
+                    "Unhandled pipeline error for %s — continuing with next symbol", symbol
+                )
+                # OPS Agent: stamp failure
+                try:
+                    from src.models.schema import stamp_health
+                    stamp_health(f"last_scan_{symbol}", "DOWN", f"pipeline_error at {fetched_at}")
+                except Exception:
+                    pass
+    finally:
+        _PIPELINE_LOCK.release()
     log.info("Pipeline run complete | %s", fetched_at)
 
 

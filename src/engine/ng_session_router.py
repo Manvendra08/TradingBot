@@ -33,9 +33,13 @@ def get_ng_regime(now_ist: datetime) -> tuple[str, str]:
 
     # Thursday EIA Storage Report Event
     if now_ist.weekday() == 3:
-        # Calculate 10:30 AM in New York for today
+        # BUG-H02 FIX: Use pytz localize for DST-aware time construction.
+        # Previously used .replace() which ignores DST transitions, causing
+        # the EIA window to shift by 1 hour during March/November transitions.
         ny_now = now_ist.astimezone(NY_TZ)
-        ny_eia_time = ny_now.replace(hour=10, minute=30, second=0, microsecond=0)
+        naive_eia = ny_now.replace(hour=10, minute=30, second=0, microsecond=0)
+        # Strip tzinfo and re-localize so pytz applies correct DST offset
+        ny_eia_time = NY_TZ.localize(naive_eia.replace(tzinfo=None))
         eia_ist = ny_eia_time.astimezone(IST)
         
         # Window: T-15 mins to T+90 mins

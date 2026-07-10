@@ -51,11 +51,8 @@ _SSL_EOF_MARKERS = frozenset(
 # Timeout markers for retry on connection/read timeouts
 _TIMEOUT_MARKERS = frozenset(
     (
-        "read timed out",
-        "read timeout",
         "connect timed out",
         "connect timeout",
-        "timed out",
         "winerror 10060",
         "connection timed out",
     )
@@ -147,7 +144,7 @@ class ResilientTLSAdapter(HTTPAdapter):
     SSL_RETRY_ATTEMPTS = 6
     SSL_BASE_DELAY = 0.1
 
-    def __init__(self, *args, ssl_verify: bool = True, **kwargs):
+    def __init__(self, *args, ssl_verify: bool = True, serialize: bool = False, **kwargs):
         _ensure_ssl_patched()
         self.ssl_context = ssl.create_default_context()
         self.ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
@@ -157,7 +154,7 @@ class ResilientTLSAdapter(HTTPAdapter):
         # Kite's REST edge is sensitive to concurrent reuse from multiple
         # dashboard/scheduler threads. Use one process-wide lock, not one lock
         # per adapter/client, so all Kite HTTPS requests are serialized.
-        self._send_lock = _GLOBAL_SEND_LOCK
+        self._send_lock = _GLOBAL_SEND_LOCK if serialize else None
         super().__init__(*args, **kwargs)
 
     def init_poolmanager(self, *args, **kwargs):
@@ -174,7 +171,16 @@ class ResilientTLSAdapter(HTTPAdapter):
         request.headers["Connection"] = "close"
         for attempt in range(self.SSL_RETRY_ATTEMPTS):
             try:
-                with self._send_lock:
+                if self._send_lock:
+                    with self._send_lock:
+                        log.debug(
+                            "[tls] Attempting request to %s (attempt %d/%d) (serialized)",
+                            request.url,
+                            attempt + 1,
+                            self.SSL_RETRY_ATTEMPTS,
+                        )
+                        return super().send(request, *args, **kwargs)
+                else:
                     log.debug(
                         "[tls] Attempting request to %s (attempt %d/%d)",
                         request.url,
@@ -300,7 +306,8 @@ def mount_resilient_tls(session, max_retries=None, ssl_verify: bool = True):
     _ensure_ssl_patched()
     _ensure_kite_ipv4_patched()
     session.headers["Connection"] = "close"
+    # Enable serialization for Kite (Zerodha) sessions mounted here
     adapter = ResilientTLSAdapter(
-        max_retries=max_retries or DEFAULT_RETRY, ssl_verify=ssl_verify
+        max_retries=max_retries or DEFAULT_RETRY, ssl_verify=ssl_verify, serialize=True
     )
     session.mount("https://", adapter)

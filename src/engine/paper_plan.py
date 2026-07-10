@@ -11,6 +11,7 @@ L5 fix: MCX commodities (NATURALGAS, CRUDEOIL) now use options when ATM
 from __future__ import annotations
 
 import logging
+import re
 
 from config.symbol_classes import get_strike_step
 from config.settings import MAX_LEVEL_DISTANCE_STEPS
@@ -159,6 +160,17 @@ def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | N
 
     side, option_type = VERDICT_ACTION_MAP[verdict_str]
     bullish = is_bullish(verdict_str)
+
+    # If LLM instrument is available, parse CE/PE from it instead of hardcoded map.
+    # GO_SHORT + CE (sell call = bearish) is valid — don't override to PE.
+    if verdict_str in ("GO_LONG", "GO_SHORT"):
+        llm_instr = str(ctx.get("instrument") or "")
+        if re.search(r"\bCE\b", llm_instr, re.IGNORECASE):
+            option_type = "CE"
+            side = "BUY" if verdict_str == "GO_LONG" else "SELL"
+        elif re.search(r"\bPE\b", llm_instr, re.IGNORECASE):
+            option_type = "PE"
+            side = "BUY" if verdict_str == "GO_LONG" else "SELL"
 
     step = float(get_strike_step(symbol) or 1)
     atm = _safe_float(ctx.get("atm_strike")) or _round_to_step(underlying, step)

@@ -39,28 +39,27 @@ def check_ng_daily_loss_cap(table: str = "paper_trades") -> bool:
     # Get today's date in IST
     now_ist = datetime.now(IST)
     today_ist_start = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
-    # Convert to UTC ISO format string for comparing stored closed_at timestamps
-    today_utc_iso = today_ist_start.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-    
+    # P1-5 FIX: Use isoformat() directly — DB stores without Z suffix, so
+    # the old .replace("+00:00", "Z") caused string comparison to silently miss rows.
+    today_utc_iso = today_ist_start.astimezone(timezone.utc).isoformat()
+
     with get_conn() as conn:
-        rows = conn.execute(
-            f"""
-            SELECT status FROM {table} 
-            WHERE symbol = 'NATURALGAS' 
-              AND status IN ('CLOSED_SL', 'SL_HIT')
-              AND closed_at >= ?
-              AND closed_at IS NOT NULL
-            ORDER BY closed_at DESC 
-            LIMIT ?
-            """,
-            (today_utc_iso, NG_DAILY_LOSS_CAP)
-        ).fetchall()
-        
-    statuses = [r["status"] for r in rows]
-    if len(statuses) >= NG_DAILY_LOSS_CAP and all(s in ("CLOSED_SL", "SL_HIT") for s in statuses):
-        log.warning("NG Daily Loss Cap hit! %d consecutive stops hit today in %s.", NG_DAILY_LOSS_CAP, table)
+        # P1-4 FIX: Simple COUNT(*) instead of LIMIT+all() which failed when
+        # non-consecutive TARGET wins sat between SL hits, preventing the cap
+        # from ever triggering.
+        sl_count = conn.execute(
+            f"SELECT COUNT(*) FROM {table} "
+            "WHERE symbol = 'NATURALGAS' "
+            "AND status IN ('CLOSED_SL', 'SL_HIT') "
+            "AND closed_at >= ? "
+            "AND closed_at IS NOT NULL",
+            (today_utc_iso,)
+        ).fetchone()[0]
+
+    if sl_count >= NG_DAILY_LOSS_CAP:
+        log.warning("NG Daily Loss Cap hit! %d stops hit today in %s.", sl_count, table)
         return True
-        
+
     return False
 
 def calculate_ng_lot_size(capital: float, stop_distance: float) -> int:

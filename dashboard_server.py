@@ -115,6 +115,9 @@ import requests
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
+# BUG-C06 FIX: Define DATA_DIR so ops-incidents endpoint can locate ops_agent.db
+DATA_DIR = ROOT / "data"
+
 try:
     from config.runtime_config import (
         ALLOWED_SCAN_FREQUENCIES,

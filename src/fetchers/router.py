@@ -74,23 +74,44 @@ def _get_fetcher(name: str):
 
 
 def _priority_for(symbol: str) -> list[str]:
+    """
+    BUG-M06 FIX: Fetcher priority is now configurable via FETCHER_PRIORITY_OVERRIDE
+    environment variable or config.settings. Falls back to sensible defaults per symbol class.
+    
+    Override format (env var): JSON dict mapping symbol base -> list of fetcher names.
+    e.g., FETCHER_PRIORITY_OVERRIDE='{"NATURALGAS": ["dhan_commodity", "shoonya"]}'
+    """
+    import os
+    import json
+    
     base = symbol.upper().split()[0]
+    
+    # Check for runtime override
+    override_json = os.environ.get("FETCHER_PRIORITY_OVERRIDE")
+    if override_json:
+        try:
+            overrides = json.loads(override_json)
+            if base in overrides:
+                return overrides[base]
+        except (json.JSONDecodeError, TypeError):
+            pass
+    
+    # Check config.settings for per-symbol override
+    try:
+        from config.settings import FETCHER_PRIORITY
+        if isinstance(FETCHER_PRIORITY, dict) and base in FETCHER_PRIORITY:
+            return FETCHER_PRIORITY[base]
+    except (ImportError, AttributeError):
+        pass
+    
+    # Default priorities per symbol class
     if base in _MCX_COMMODITIES:
-        # MCX: Shoonya primary (supports), Dhan fallback
         return ["shoonya", "dhan_commodity", "moneycontrol", "dhan", "dhan_headless"]
     if base == "SENSEX":
-        # SENSEX: Shoonya primary for live exchange data, Sensibull fallback
         return ["shoonya", "dhan_sensex", "sensibull", "dhan", "nse_public"]
-    # NSE F&O indices (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY)
-    # Sensibull primary: fast, no auth, full greeks
     return [
-        "sensibull",
-        "shoonya",
-        "paytm",
-        "dhan",
-        "nse_public",
-        "dhan_headless",
-        "moneycontrol",
+        "sensibull", "shoonya", "paytm", "dhan",
+        "nse_public", "dhan_headless", "moneycontrol",
     ]
 
 

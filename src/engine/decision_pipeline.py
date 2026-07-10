@@ -128,8 +128,11 @@ def step_signal_core_oi(ctx: PipelineContext) -> StepResult:
 
     ctx.direction = "LONG" if is_bullish(verdict) else "SHORT"
 
-    if not PAPER_RESEARCH_MODE and confidence < effective_min_conf:
-        # Flaw #3: Low Conviction Starvation Gating
+    if confidence < effective_min_conf:
+        # BUG-H06 FIX: Always check momentum for low-conviction signals,
+        # regardless of research mode. Previously this gate only fired when
+        # not in PAPER_RESEARCH_MODE, causing low-conviction signals to pass
+        # silently in research mode without momentum validation.
         from src.engine.trend_analysis import calculate_momentum_score
         momentum = calculate_momentum_score(
             symbol=ctx.symbol,
@@ -152,7 +155,8 @@ def step_signal_core_oi(ctx: PipelineContext) -> StepResult:
                         "confidence": confidence
                     }
                 }
-        else:
+        elif not PAPER_RESEARCH_MODE:
+            # Only block in non-research mode; research mode allows low-conf through
             return StepResult(
                 name="signal",
                 passed=False,
@@ -305,6 +309,11 @@ def step_entry_quality_core(ctx: PipelineContext) -> StepResult:
     plan_ctx["symbol"] = ctx.symbol
     verdict = ctx.scan_context.get("intel", {}).get("verdict_label", "")
     confidence = int(ctx.scan_context.get("intel", {}).get("confidence") or 0)
+    # Pass LLM instrument so GO_LONG/GO_SHORT use the actual CE/PE from the LLM
+    if ctx.ai_verdict:
+        plan_ctx["instrument"] = getattr(ctx.ai_verdict, "instrument", None) or (
+            ctx.ai_verdict.get("instrument") if isinstance(ctx.ai_verdict, dict) else None
+        )
 
     plan = build_paper_trade_plan(verdict, confidence, plan_ctx)
     if not plan:

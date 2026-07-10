@@ -10,13 +10,13 @@ from src.utils.tls_adapter import ResilientTLSAdapter, DEFAULT_RETRY
 
 log = logging.getLogger(__name__)
 
-# Fix: Ensure global SSL context handles unverified requests gracefully
-try:
-    ssl._create_default_https_context = ssl._create_unverified_context
-except AttributeError:
-    pass
+# BUG-C04 FIX: Removed global SSL verification disable.
+# Previously this set ssl._create_default_https_context = ssl._create_unverified_context
+# which disabled certificate verification for ALL HTTPS connections in the process,
+# creating a man-in-the-middle vulnerability. SSL verification is now controlled
+# per-session via ResilientTLSAdapter(ssl_verify=False) only where explicitly needed.
 
-# Suppress insecure request warnings from urllib3
+# Suppress insecure request warnings from urllib3 (only for sessions that opt out)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 

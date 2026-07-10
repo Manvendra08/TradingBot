@@ -126,15 +126,42 @@ def _calculate_live_lots(symbol: str, entry_premium: float, side: str, config: d
     max_auto_lots = int(config.get("live_max_auto_lots") or _DEFAULT_MAX_AUTO_LOTS)
 
     if side.upper() == "SELL":
-        effective_cost_per_lot = (
-            entry_premium * instrument_lot_size * _SELL_MARGIN_PREMIUM_MULTIPLIER
-        )
-        log.debug(
-            "%s: SELL leg — margin-adjusted cost/lot: %.2f "
-            "(premium=%.2f * lot_size=%d * margin_mult=%.1f)",
-            base, effective_cost_per_lot,
-            entry_premium, instrument_lot_size, _SELL_MARGIN_PREMIUM_MULTIPLIER,
-        )
+        # BUG-H01 FIX: Try broker margin API first for actual SPAN+exposure margin.
+        # Falls back to static multiplier if API is unavailable or times out.
+        broker_margin = None
+        try:
+            from src.engine.symbol_resolver import resolve_instrument
+            expiry = config.get("_current_expiry")  # Set by caller if available
+            if expiry:
+                resolved = resolve_instrument(base, expiry, 0.0, "FUT")
+                if resolved and resolved.get("tradingsymbol"):
+                    broker_margin = _fetch_broker_margin_requirement(
+                        symbol=base,
+                        tradingsymbol=resolved["tradingsymbol"],
+                        exchange=resolved.get("exchange", "NFO"),
+                        transaction_type="SELL",
+                        quantity=instrument_lot_size,
+                        premium=entry_premium,
+                    )
+        except Exception as e:
+            log.debug("%s: broker margin lookup failed: %s", base, e)
+
+        if broker_margin and broker_margin > 0:
+            effective_cost_per_lot = broker_margin
+            log.debug(
+                "%s: SELL leg — using broker margin API: ₹%.2f per lot",
+                base, effective_cost_per_lot,
+            )
+        else:
+            effective_cost_per_lot = (
+                entry_premium * instrument_lot_size * _SELL_MARGIN_PREMIUM_MULTIPLIER
+            )
+            log.debug(
+                "%s: SELL leg — margin-adjusted cost/lot: %.2f "
+                "(premium=%.2f * lot_size=%d * margin_mult=%.1f) [static fallback]",
+                base, effective_cost_per_lot,
+                entry_premium, instrument_lot_size, _SELL_MARGIN_PREMIUM_MULTIPLIER,
+            )
     else:
         effective_cost_per_lot = entry_premium * instrument_lot_size
 

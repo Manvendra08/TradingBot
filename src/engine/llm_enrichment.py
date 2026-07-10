@@ -1512,7 +1512,7 @@ def _call_llm_api(
             remaining = _remaining()
             if deadline and time.time() >= deadline - 3:
                 log.warning("[llm] Deadline reached, skipping remaining models")
-                break
+                return None
 
             if provider.get("use_gemini_sdk"):
                 if not genai or now < _API_QUOTA_EXHAUSTED_UNTIL:
@@ -2019,21 +2019,10 @@ def _sanitize_llm_verdict(
             pass
 
     # 3. Action / option-type consistency check
-    action_upper = str(result.action or "").upper()
-    if "SHORT" in action_upper or "BEAR" in action_upper or "PUT" in action_upper:
-        if re.search(r"(?:\b|\d)CE\b", instr, re.IGNORECASE):
-            log.warning(
-                "[llm] %s: Action is %s but instrument was %s. Correcting CE -> PE for consistency.",
-                symbol, action_upper, instr
-            )
-            instr = re.sub(r"(?<=\d)CE\b|\bCE\b", "PE", instr, flags=re.IGNORECASE)
-    elif "LONG" in action_upper or "BULL" in action_upper or "CALL" in action_upper:
-        if re.search(r"(?:\b|\d)PE\b", instr, re.IGNORECASE):
-            log.warning(
-                "[llm] %s: Action is %s but instrument was %s. Correcting PE -> CE for consistency.",
-                symbol, action_upper, instr
-            )
-            instr = re.sub(r"(?<=\d)PE\b|\bPE\b", "CE", instr, flags=re.IGNORECASE)
+    # All four combos are valid in Indian markets:
+    #   LONG+CE = buy call (bullish), LONG+PE = buy put (bearish)
+    #   SHORT+CE = sell call (bearish), SHORT+PE = sell put (bullish)
+    # No CE↔PE correction needed — the LLM chooses the correct instrument type.
 
     if hasattr(result, "model_copy"):
         result = result.model_copy(update={"instrument": instr})

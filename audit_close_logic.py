@@ -10,7 +10,7 @@ conn = sqlite3.connect("data/nsebot.db")
 conn.row_factory = sqlite3.Row
 
 rows = conn.execute(
-    "SELECT id, symbol, option_type, verdict_label, entry_premium, exit_premium, "
+    "SELECT id, symbol, option_type, side, verdict_label, entry_premium, exit_premium, "
     "sl_premium, target_premium, pnl_rupees, status, opened_at, closed_at "
     "FROM paper_trades WHERE status != 'OPEN' ORDER BY id"
 ).fetchall()
@@ -35,20 +35,39 @@ for r in rows:
     note = ""
     is_fake = False
 
+    trade_side = str(r.get("side") or "BUY").upper()
+
     if stat == "CLOSED_TARGET" and ep > 0 and xp > 0 and tgt > 0:
-        # Correct logic: target hit when exit >= target (long position)
-        if xp < tgt:
-            note = f"FAKE TARGET: exit {xp:.2f} < target {tgt:.2f} (old bug fired too early)"
-            is_fake = True
+        if trade_side == "SELL":
+            # SELL/short: target hit when exit_premium <= target_premium (profit on decline)
+            if xp > tgt:
+                note = f"FAKE TARGET (SELL): exit {xp:.2f} > target {tgt:.2f}"
+                is_fake = True
+            else:
+                note = f"REAL TARGET (SELL): exit {xp:.2f} <= target {tgt:.2f}"
         else:
-            note = f"REAL TARGET: exit {xp:.2f} >= target {tgt:.2f}"
+            # BUY/long: target hit when exit_premium >= target_premium
+            if xp < tgt:
+                note = f"FAKE TARGET: exit {xp:.2f} < target {tgt:.2f} (old bug fired too early)"
+                is_fake = True
+            else:
+                note = f"REAL TARGET: exit {xp:.2f} >= target {tgt:.2f}"
 
     elif stat == "CLOSED_SL" and ep > 0 and xp > 0 and sl > 0:
-        if xp > sl:
-            note = f"FAKE SL: exit {xp:.2f} > sl {sl:.2f}"
-            is_fake = True
+        if trade_side == "SELL":
+            # SELL/short: SL hit when exit_premium >= sl_premium (loss on rise)
+            if xp < sl:
+                note = f"FAKE SL (SELL): exit {xp:.2f} < sl {sl:.2f}"
+                is_fake = True
+            else:
+                note = f"REAL SL (SELL): exit {xp:.2f} >= sl {sl:.2f}"
         else:
-            note = f"REAL SL: exit {xp:.2f} <= sl {sl:.2f}"
+            # BUY/long: SL hit when exit_premium <= sl_premium
+            if xp > sl:
+                note = f"FAKE SL: exit {xp:.2f} > sl {sl:.2f}"
+                is_fake = True
+            else:
+                note = f"REAL SL: exit {xp:.2f} <= sl {sl:.2f}"
 
     flag = "FAKE" if is_fake else "    "
     print(f"[{flag}] #{tid:2d} {r['symbol']:12} {ot:3} ep={ep:8.2f} xp={xp:8.2f} sl={sl:8.2f} tgt={tgt:8.2f} {stat:16} [{verd:20}] {note}")
