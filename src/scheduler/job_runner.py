@@ -282,7 +282,7 @@ def _find_missed_intervals(class_key: str, current_interval_idx: int, interval_m
     return missed[-MAX_CATCHUP_INTERVALS:]
 
 
-def _run_catchup_scan(class_key: str, interval_idx: int, interval_min: int, market_open_time_ist: datetime, last_scanned_interval: dict[str, int]) -> None:
+def _run_catchup_scan(class_key: str, interval_idx: int, interval_min: int, market_open_time_ist: datetime, last_scanned_interval: dict[str, int], force: bool = False) -> None:
     """Run a catch-up scan for a missed interval."""
     from datetime import timedelta, timezone
 
@@ -294,7 +294,7 @@ def _run_catchup_scan(class_key: str, interval_idx: int, interval_min: int, mark
         interval_start_ist.strftime("%H:%M"),
     )
     try:
-        _guarded_run(class_key)
+        _guarded_run(class_key, force=force)
         last_scanned_interval[class_key] = max(
             last_scanned_interval.get(class_key, -1),
             interval_idx
@@ -303,13 +303,16 @@ def _run_catchup_scan(class_key: str, interval_idx: int, interval_min: int, mark
         log.error("[catchup] Catch-up scan failed for %s interval %d: %s", class_key, interval_idx, exc)
 
 
-def _guarded_run(class_key: str | None = None):
+def _guarded_run(class_key: str | None = None, force: bool = False):
     symbols_to_check = [
         s
         for s in WATCH_SYMBOLS
         if (class_key is None or get_symbol_class(s) == class_key)
     ]
-    open_symbols = [s for s in symbols_to_check if _is_open_for(s)]
+    if force:
+        open_symbols = symbols_to_check
+    else:
+        open_symbols = [s for s in symbols_to_check if _is_open_for(s)]
     if not open_symbols:
         log.info("[%s] Market is closed. Skipping scan.", class_key or "ALL")
         return
@@ -670,22 +673,23 @@ def start_scheduler(immediate: bool = False):
             )
 
             # Skip if today is not a trading day for this class
-            if now_ist.weekday() not in days:
+            if not immediate and now_ist.weekday() not in days:
                 has_done_startup_scan[class_key] = True
                 last_scanned_interval[class_key] = -1
                 continue
 
             # Enforce custom scan start times
-            if class_key in ("MCX_COMMODITY", "MCX_AGRI"):
-                if now_time < dt_mod.time(9, 15):
-                    has_done_startup_scan[class_key] = True
-                    last_scanned_interval[class_key] = -1
-                    continue
-            else:
-                if now_time < dt_mod.time(9, 30):
-                    has_done_startup_scan[class_key] = True
-                    last_scanned_interval[class_key] = -1
-                    continue
+            if not immediate:
+                if class_key in ("MCX_COMMODITY", "MCX_AGRI"):
+                    if now_time < dt_mod.time(9, 15):
+                        has_done_startup_scan[class_key] = True
+                        last_scanned_interval[class_key] = -1
+                        continue
+                else:
+                    if now_time < dt_mod.time(9, 30):
+                        has_done_startup_scan[class_key] = True
+                        last_scanned_interval[class_key] = -1
+                        continue
 
             delta_minutes = (now_ist - market_open_time).total_seconds() / 60.0
             if delta_minutes < 0:
@@ -724,7 +728,7 @@ def start_scheduler(immediate: bool = False):
                 with get_conn() as conn:
                     data_exists = False
                     for symbol in symbols:
-                        if not _is_open_for(symbol):
+                        if not immediate and not _is_open_for(symbol):
                             continue
                         row = conn.execute(
                             "SELECT 1 FROM scan_summaries WHERE symbol=? AND fetched_at >= ? LIMIT 1",
@@ -753,7 +757,7 @@ def start_scheduler(immediate: bool = False):
                         interval_ts.strftime("%H:%M"),
                     )
                     try:
-                        _guarded_run(class_key)
+                        _guarded_run(class_key, force=immediate)
                     except Exception as e:
                         log.error(
                             "[scheduler] --now %s: catch-up scan failed for interval %d: %s",
@@ -960,7 +964,7 @@ def start_scheduler(immediate: bool = False):
                 )
 
                 delta_minutes = (now_ist - market_open_time).total_seconds() / 60.0
-                if delta_minutes < 0:
+                if not immediate and delta_minutes < 0:
                     if not has_logged_closed_pre_open.get(class_key, False):
                         log.info(
                             "[%s] Market is closed (opens at %s). Scheduler will sleep until open.",
@@ -973,24 +977,25 @@ def start_scheduler(immediate: bool = False):
                 import datetime as dt_mod
 
                 now_time = now_ist.time()
-                if class_key in ("MCX_COMMODITY", "MCX_AGRI"):
-                    if now_time < dt_mod.time(9, 15):
-                        if not has_logged_closed_pre_open.get(class_key, False):
-                            log.info(
-                                "[%s] Market is closed (NSEBOT waits until 09:15 for MCX). Scheduler will sleep until open.",
-                                class_key,
-                            )
-                            has_logged_closed_pre_open[class_key] = True
-                        continue
-                else:
-                    if now_time < dt_mod.time(9, 30):
-                        if not has_logged_closed_pre_open.get(class_key, False):
-                            log.info(
-                                "[%s] Market is closed (NSEBOT waits until 09:30 for NSE). Scheduler will sleep until open.",
-                                class_key,
-                            )
-                            has_logged_closed_pre_open[class_key] = True
-                        continue
+                if not immediate:
+                    if class_key in ("MCX_COMMODITY", "MCX_AGRI"):
+                        if now_time < dt_mod.time(9, 15):
+                            if not has_logged_closed_pre_open.get(class_key, False):
+                                log.info(
+                                    "[%s] Market is closed (NSEBOT waits until 09:15 for MCX). Scheduler will sleep until open.",
+                                    class_key,
+                                )
+                                has_logged_closed_pre_open[class_key] = True
+                            continue
+                    else:
+                        if now_time < dt_mod.time(9, 30):
+                            if not has_logged_closed_pre_open.get(class_key, False):
+                                log.info(
+                                    "[%s] Market is closed (NSEBOT waits until 09:30 for NSE). Scheduler will sleep until open.",
+                                    class_key,
+                                )
+                                has_logged_closed_pre_open[class_key] = True
+                            continue
 
                 if class_key == "MCX_COMMODITY":
                     interval_min = get_scan_frequency_mcx()
