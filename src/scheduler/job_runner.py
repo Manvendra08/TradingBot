@@ -693,9 +693,12 @@ def start_scheduler(immediate: bool = False):
 
             delta_minutes = (now_ist - market_open_time).total_seconds() / 60.0
             if delta_minutes < 0:
-                has_done_startup_scan[class_key] = True
-                last_scanned_interval[class_key] = -1
-                continue
+                if not immediate:
+                    has_done_startup_scan[class_key] = True
+                    last_scanned_interval[class_key] = -1
+                    continue
+                # --now: run at interval 0 regardless (off-hours / weekend forced scan)
+                delta_minutes = 0.0
 
             if class_key == "MCX_COMMODITY":
                 interval_min = get_scan_frequency_mcx()
