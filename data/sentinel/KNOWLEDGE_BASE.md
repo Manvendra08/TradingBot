@@ -137,6 +137,11 @@
 - **Root Cause:** The parallelized pipeline refactoring in the `perf/safe-pipeline-io-parallelism-v2` branch deleted the `_async_llm_enrich_and_edit` thread pool submission code in `pipeline.py`.
 - **Fix:** Restored `_async_llm_enrich_and_edit` background execution by submitting it to the thread-pool-based `pipeline_io_executor` rather than spawning raw daemon threads, and added a task-wait step in `--once` mode to prevent premature shutdown before the background LLM task finishes.
 
+### F24: Saturday Scans Triggering Stale Alerts on Weekends (P1)
+- **Symptom:** Scheduler runs option chain scans and spams Telegram with "NO TRADE SIGNAL" alerts on weekends.
+- **Root Cause:** 1) `config/settings.py` mistakenly defined Saturday (`5`) as a trading day for `MCX_COMMODITY` (`[0, 1, 2, 3, 4, 5]`). 2) The full scan loop in `job_runner.py` did not check if the current day was a closed day (non-trading weekday or holiday) before entering the interval calculations and DB check code.
+- **Fix:** 1) Removed `5` from `MCX_COMMODITY` trading days. 2) Added a weekend/holiday detection check at the start of the `start_scheduler` loop, sending a single Telegram alert notifying that scheduled scans are suspended. 3) Added trading day/holiday checks inside the class-level scan loop to skip processing on closed days.
+
 ## Architecture Notes
 - Pipeline logs go to `logs/main.log` (RotatingFileHandler, 10MB).
 - Health state stored in SQLite `health_state` table via `stamp_health()`.

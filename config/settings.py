@@ -90,8 +90,8 @@ MARKET_WINDOWS = {
     "MCX_COMMODITY": (
         "09:00",
         "23:30",
-        [0, 1, 2, 3, 4, 5],
-    ),  # Saturday MCX session included
+        [0, 1, 2, 3, 4],
+    ),
 }
 
 # ── Symbol → Market Window mapping ───────────────────────────────────────────────────────────────────────

@@ -824,6 +824,7 @@ def start_scheduler(immediate: bool = False):
     last_ng_eia_pre_print_close_date = None
     last_ng_eia_consensus_fetch_date = None
     last_ng_exit_check = 0.0
+    _sent_market_closed_date = None
 
     try:
         while True:
@@ -836,6 +837,26 @@ def start_scheduler(immediate: bool = False):
                 last_scanned_interval.clear()
                 has_done_startup_scan.clear()
                 has_logged_closed_pre_open.clear()
+
+            # Weekend/Holiday Alert
+            if not immediate:
+                all_closed_today = True
+                for symbol in WATCH_SYMBOLS:
+                    _, _, days = market_window(symbol)
+                    if now_ist.weekday() in days:
+                        from config.holidays import is_market_holiday
+                        if not is_market_holiday(symbol, now_ist):
+                            all_closed_today = False
+                            break
+                if all_closed_today:
+                    if _sent_market_closed_date != current_date:
+                        _sent_market_closed_date = current_date
+                        log.info("[scheduler] Today is a weekend/holiday. All markets are closed today.")
+                        try:
+                            from src.alerts.telegram_dispatcher import send_text
+                            send_text("ℹ️ **Markets Closed** | Today is a weekend/holiday. Scheduled scans are suspended. (To force a scan, run with `--now` or `--once`.)")
+                        except Exception as e:
+                            log.warning("[scheduler] Failed to send market closed Telegram alert: %s", e)
 
             # ── Monday Weightage Refresh ──
             if now_ist.weekday() == 0 and _last_weights_refresh_date != current_date:
@@ -929,6 +950,9 @@ def start_scheduler(immediate: bool = False):
                     continue
 
                 open_t, close_t, days = MARKET_WINDOWS[class_key]
+                from config.holidays import is_market_holiday
+                if not immediate and (now_ist.weekday() not in days or all(is_market_holiday(s, now_ist) for s in class_symbols)):
+                    continue
                 open_h, open_m = map(int, open_t.split(":"))
                 market_open_time = now_ist.replace(
                     hour=open_h, minute=open_m, second=0, microsecond=0
