@@ -737,6 +737,7 @@ def start_scheduler(immediate: bool = False):
                         missed_intervals.append(idx)
 
             if missed_intervals:
+                missed_intervals = missed_intervals[-MAX_CATCHUP_INTERVALS:]
                 log.info(
                     "[scheduler] --now %s: %d missed interval(s): %s",
                     class_key,

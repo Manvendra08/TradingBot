@@ -148,3 +148,4 @@
 - Ops Agent runs as separate process, reads health_state every 60s.
 - LLM providers: Gemini (Primary), Groq (70b/8b fallback), Bedrock (cascading fallback).
 - Symbols: NIFTY (NFO), BANKNIFTY (NFO), SENSEX (BFO), NATURALGAS (MCX), CRUDEOIL (MCX).
+- Scan execution modes: `--now` executes a production-mode scan (`is_test=False`) but skips processing if the current interval's data is already up-to-date in the DB, capping catch-up backfilling to a maximum of the last 3 missed intervals. `--once` runs strictly as a test-mode scan (`is_test=True`) where production database writes and live trading actions are prohibited.
