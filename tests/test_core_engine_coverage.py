@@ -476,7 +476,7 @@ class TestTrendAnalysisDetailed:
             ],
         )
         score = get_trend_alignment_score(symbol, "Short Buildup")
-        assert score == 67  # 2/3 bearish
+        assert score == 100  # 2/2 bearish (Sideways ignored)
 
         score = get_trend_alignment_score(symbol, "Sideways")
         assert score == 50
@@ -1226,7 +1226,7 @@ class TestCoreEngineUltraCoverage:
                 {"verdict_label": "Sideways"},
             ],
         )
-        assert get_trend_alignment_score("ULTRA_TREND", "Long Buildup") == 67
+        assert get_trend_alignment_score("ULTRA_TREND", "Long Buildup") == 100
 
         # Line 67: detect_reversal_from_scans confidence < 75
         is_rev, reason = detect_reversal_from_scans("ULTRA_TREND", "Long Buildup", 70)

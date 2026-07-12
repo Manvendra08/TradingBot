@@ -107,12 +107,12 @@ def calculate_buy_sl_target(
     # wide SL/target levels (200 pts = ~2% move). Percentage-based fallback
     # is safer for MCX commodities with large step sizes.
     from config.settings import MCX_SYMBOLS as _MCX_SYMS
-    base_sym = str(option_type).upper()  # placeholder; caller passes symbol via ctx
     is_mcx = False
-    # Try to detect MCX from the underlying price magnitude + step size heuristic
-    # (crude oil step=100, NG step=10, gold step=100, silver step=100)
-    if step >= 50 and underlying > 100:
-        is_mcx = True  # Likely MCX commodity with large step
+    if ctx and ctx.get("symbol"):
+        is_mcx = any(s in str(ctx.get("symbol")).upper() for s in _MCX_SYMS)
+    elif step >= 50 and underlying > 100 and underlying < 15000:
+        is_mcx = True  # Heuristic fallback excluding Nifty/Banknifty
+
 
     if option_type == "PE":
         # PE: profit when underlying falls
@@ -183,8 +183,13 @@ def calculate_sell_sl_target(
         Tuple of (sl_underlying, target_underlying)
     """
     atr = get_atr(ctx, preferred_tf)
-    # BUG-H05 FIX: Detect MCX commodities for percentage-based fallback.
-    is_mcx = step >= 50 and underlying > 100
+    from config.settings import MCX_SYMBOLS as _MCX_SYMS
+    is_mcx = False
+    if ctx and ctx.get("symbol"):
+        is_mcx = any(s in str(ctx.get("symbol")).upper() for s in _MCX_SYMS)
+    elif step >= 50 and underlying > 100 and underlying < 15000:
+        is_mcx = True
+
 
     if option_type == "PE":
         # PE: profit when underlying rises

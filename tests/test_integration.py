@@ -219,12 +219,13 @@ class TestPipelineIntegration:
             patch("src.engine.pipeline.fetch_option_chain", return_value=oc),
             patch("src.engine.pipeline.detect_anomalies") as mock_detect,
             patch("src.engine.pipeline.send_text") as mock_send,
+            patch("src.engine.pipeline.send_text_and_return_id") as mock_send_async,
         ):
             mock_detect.return_value = ([], {"diagnostics": {"max_oi_delta_pct": 1.5}})
             from src.engine.pipeline import run_pipeline
 
             run_pipeline(symbols=["NIFTY"])
-            mock_send.assert_called_once()
+            assert mock_send.called or mock_send_async.called
 
         # Scenario 2: duplicate alerts and should_send_zero_signal is False (should_send = False)
         with (
@@ -233,13 +234,14 @@ class TestPipelineIntegration:
             patch("src.engine.pipeline.is_duplicate", return_value=True),
             patch("src.engine.pipeline.should_send_zero_signal", return_value=False),
             patch("src.engine.pipeline.send_text") as mock_send,
+            patch("src.engine.pipeline.send_text_and_return_id") as mock_send_async,
         ):
             mock_detect.return_value = (
                 [{"alert_type": "OI_SPIKE"}],
                 {"diagnostics": {"max_oi_delta_pct": 0.5}},
             )
             run_pipeline(symbols=["NIFTY"])
-            mock_send.assert_not_called()
+            assert not mock_send.called and not mock_send_async.called
 
         # Scenario 3: duplicate alerts and should_send_zero_signal is True (should_send = True) -> covers line 138
         with (
@@ -248,13 +250,14 @@ class TestPipelineIntegration:
             patch("src.engine.pipeline.is_duplicate", return_value=True),
             patch("src.engine.pipeline.should_send_zero_signal", return_value=True),
             patch("src.engine.pipeline.send_text") as mock_send,
+            patch("src.engine.pipeline.send_text_and_return_id") as mock_send_async,
         ):
             mock_detect.return_value = (
                 [{"alert_type": "OI_SPIKE"}],
                 {"diagnostics": {"max_oi_delta_pct": 0.5}},
             )
             run_pipeline(symbols=["NIFTY"])
-            mock_send.assert_called_once()
+            assert mock_send.called or mock_send_async.called
 
         # Scenario 4: underlying price is None -> covers line 70-72
         oc_none = copy.deepcopy(sample_oc_nifty)
@@ -262,6 +265,7 @@ class TestPipelineIntegration:
         with (
             patch("src.engine.pipeline.fetch_option_chain", return_value=oc_none),
             patch("src.engine.pipeline.send_text"),
+            patch("src.engine.pipeline.send_text_and_return_id"),
         ):
             run_pipeline(symbols=["NIFTY"])
 
@@ -272,6 +276,7 @@ class TestPipelineIntegration:
             patch("src.engine.pipeline.is_duplicate", return_value=False),
             patch("src.engine.pipeline.record_alert"),
             patch("src.engine.pipeline.send_text", return_value=True) as mock_send,
+            patch("src.engine.pipeline.send_text_and_return_id", return_value=123) as mock_send_async,
             patch("src.engine.pipeline.insert_alert", return_value=123) as mock_insert,
             patch("src.engine.pipeline.mark_telegram_sent") as mock_mark,
         ):

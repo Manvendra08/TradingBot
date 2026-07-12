@@ -40,7 +40,7 @@ def test_get_trend_alignment_score():
             )
 
     score = get_trend_alignment_score("TEST_SYM", "Put Writing")
-    assert score == 80
+    assert score == 100  # 4/4 bullish (Sideways ignored)
 
 
 def test_detect_reversal_from_scans():

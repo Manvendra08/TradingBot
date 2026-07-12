@@ -50,6 +50,12 @@ from src.utils.ip_monitor import check_ip_changed
 log = logging.getLogger(__name__)
 
 NSE_NEWS_BYPASS_SYMBOLS = {"NIFTY", "BANKNIFTY", "SENSEX", "FINNIFTY", "MIDCPNIFTY"}
+_CLEANUP_DATES = set()
+
+def _process_symbol(*args, **kwargs):
+    # Backward compatibility alias for _process_prefetched_symbol in test mocks
+    return _process_prefetched_symbol(*args, **kwargs)
+
 
 
 def _refresh_ip_async() -> None:

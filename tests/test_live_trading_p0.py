@@ -94,6 +94,7 @@ def test_kill_switch_still_allows_existing_fut_target_exit():
     _reset_live_tables()
     trade_id = _insert_open_live_trade()
     fake_kite = MagicMock()
+    fake_kite.order_history.return_value = [{"status": "COMPLETE"}]
 
     with (
         patch("src.engine.live_trading._is_market_open", return_value=True),

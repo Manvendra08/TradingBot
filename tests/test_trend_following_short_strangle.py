@@ -186,7 +186,8 @@ def test_step_tfss_handoff_core(isolated_db):
         direction="LONG",
         underlying=22000.0,
         scan_context=scan_ctx,
-        steps=[]
+        steps=[],
+        ai_verdict=None
     )
     
     # Since DB is empty, should block persistence

@@ -39,14 +39,16 @@ def test_get_pattern_stats_fallback_live(mock_get_conn):
     # Second fetchone (general symbol rollup) -> None
     mock_conn.execute.return_value.fetchone.side_effect = [None, None]
 
-    # Live query returns 3 paper trades and 2 live trades
-    mock_paper_rows = [{"pnl_rupees": 1000.0}, {"pnl_rupees": -500.0}, {"pnl_rupees": 2000.0}]
-    mock_live_rows = [{"pnl_rupees": 1500.0}, {"pnl_rupees": 100.0}]
-
-    mock_conn.execute.return_value.__iter__.side_effect = [
-        iter(mock_paper_rows),
-        iter(mock_live_rows)
+    # Live query returns 3 paper trades and 2 live trades combined
+    mock_rows = [
+        {"pnl_rupees": 1000.0},
+        {"pnl_rupees": -500.0},
+        {"pnl_rupees": 2000.0},
+        {"pnl_rupees": 1500.0},
+        {"pnl_rupees": 100.0}
     ]
+
+    mock_conn.execute.return_value.__iter__.return_value = iter(mock_rows)
 
     stats = get_pattern_stats("BANKNIFTY", "Bullish Trend", "NORMAL")
     assert stats.n_trades == 5

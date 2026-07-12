@@ -35,6 +35,8 @@ def test_fetch_news_tv_dict_provider():
     with (
         patch("requests.Session.get", return_value=mock_response) as mock_get,
         patch("src.fetchers.news_fetcher._fetch_newsapi_news", return_value=[]),
+        patch("src.fetchers.news_fetcher._fetch_te_naturalgas", return_value=[]),
+        patch("src.fetchers.news_fetcher._fetch_x_nginews", return_value=[]),
     ):
         data = fetch_news("NATURALGAS")
         mock_get.assert_called_once()

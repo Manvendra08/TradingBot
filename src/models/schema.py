@@ -234,6 +234,12 @@ CREATE TABLE IF NOT EXISTS live_trades (
 CREATE INDEX IF NOT EXISTS idx_live_symbol_status
     ON live_trades (symbol, status, opened_at);
 
+CREATE INDEX IF NOT EXISTS idx_live_trades_status
+    ON live_trades (status);
+
+CREATE INDEX IF NOT EXISTS idx_live_trades_status_setup_type
+    ON live_trades (status, setup_type);
+
 CREATE TABLE IF NOT EXISTS daily_equity_peaks (
     date            TEXT NOT NULL,
     mode            TEXT NOT NULL,

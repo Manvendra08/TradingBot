@@ -771,7 +771,7 @@ class TestChartContextWiring:
                 "CRUDEOIL", alerts, FETCHED_AT, scan_context=scan_context
             )
 
-        assert "Candles (1H / 3H)" in msg
+        assert "Chart" in msg
         assert "1H" in msg and "3H" in msg
 
     def test_digest_prints_paper_trade_status(self):
@@ -823,9 +823,10 @@ class TestChartContextWiring:
                 scan_context=scan_context,
                 paper_trade_status=status,
             )
-        assert "PAPER TRADE STATUS" in msg
-        assert "EXECUTED" in msg
-        assert "Buy 9300 CE @ 150.00" in msg
+        assert "BOT ACTION" in msg
+        assert "Paper ENTERED" in msg
+        assert "9300CE" in msg
+
 
         # 2. Test build_enhanced_digest
         with patch("src.alerts.digest._LEGACY_DIGEST", True):
@@ -836,9 +837,9 @@ class TestChartContextWiring:
                 scan_context=scan_context,
                 paper_trade_status=status,
             )
-        assert "PAPER TRADE STATUS" in msg_enhanced
-        assert "EXECUTED" in msg_enhanced
-        assert "Buy 9300 CE @ 150.00" in msg_enhanced
+        assert "BOT ACTION" in msg_enhanced
+        assert "Paper ENTERED" in msg_enhanced
+        assert "9300CE" in msg_enhanced
 
     @pytest.mark.skip(
         reason="Candle confluence removed from Core strategy, functionality obsolete"

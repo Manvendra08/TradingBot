@@ -134,11 +134,12 @@ class TestOptionBuyingExpiryDay:
 class TestFridayWeekendAutoExit:
     """Tests for Friday auto-exiting open trades."""
 
+    @patch("src.scheduler.job_runner._is_open_for", return_value=True)
     @patch("src.fetchers.router.fetch_option_chain")
     @patch("src.engine.live_trading.get_kite_client")
     @patch("src.engine.live_trading._exit_open_live_trade")
     def test_friday_exit_closes_open_trades(
-        self, mock_exit_live, mock_kite, mock_fetch
+        self, mock_exit_live, mock_kite, mock_fetch, mock_is_open
     ):
         # Setup mocks
         mock_fetch.return_value = {
