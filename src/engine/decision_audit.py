@@ -31,6 +31,15 @@ def log_decision(ctx: PipelineContext, action: str, trade_id: int | None = None)
         risk_passed = None
         risk_sub_check = None
 
+        # TFSS v4 audit fields (plan §4.9)
+        tfss_handoff_passed = None
+        tfss_persistence_source = ""
+        tfss_persistence_agreeing_count = 0
+        tfss_execution_side = ""
+        tfss_core_origin_verdict = ""
+        tfss_selected_trigger = ""
+        tfss_eligible = False
+
         for step in ctx.steps:
             if step.name == "signal":
                 signal_score = step.score if step.passed else None
@@ -48,6 +57,12 @@ def log_decision(ctx: PipelineContext, action: str, trade_id: int | None = None)
             elif step.name == "risk":
                 risk_passed = 1 if step.passed else 0
                 risk_sub_check = step.data.get("sub_check")
+            elif step.name == "tfss_handoff":
+                tfss_handoff_passed = 1 if step.passed else 0
+                tfss_eligible = step.data.get("tfss_eligible", False)
+                tfss_execution_side = step.data.get("tfss_execution_side", "")
+                tfss_persistence_source = "native_5scan" if tfss_eligible else ""
+                tfss_core_origin_verdict = ctx.scan_context.get("intel", {}).get("verdict_label", "")
 
         # Serialise full trail to JSON for debugging
         trail_json = json.dumps([asdict(s) for s in ctx.steps])
@@ -65,8 +80,11 @@ def log_decision(ctx: PipelineContext, action: str, trade_id: int | None = None)
                     signal_score, rule_passed, ai_score, ai_agrees,
                     entry_quality, trend_score, regime_score, risk_passed,
                     risk_sub_check, block_step, block_reason, trail_json,
-                    trade_id, bar_end_utc, scan_fetched_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    trade_id, bar_end_utc, scan_fetched_at,
+                    core_origin_verdict, core_execution_intent, primary_trigger,
+                    persistence_source, persistence_agreeing_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                          ?, ?, ?, ?, ?)
                 """,
                 (
                     timestamp,
@@ -89,6 +107,11 @@ def log_decision(ctx: PipelineContext, action: str, trade_id: int | None = None)
                     trade_id,
                     bar_end_utc,
                     scan_fetched_at,
+                    tfss_core_origin_verdict,
+                    tfss_execution_side,
+                    tfss_selected_trigger,
+                    tfss_persistence_source,
+                    tfss_persistence_agreeing_count,
                 ),
             )
             row_id = cur.lastrowid

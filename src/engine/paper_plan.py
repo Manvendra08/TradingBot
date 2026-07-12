@@ -161,22 +161,21 @@ def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | N
     side, option_type = VERDICT_ACTION_MAP[verdict_str]
     bullish = is_bullish(verdict_str)
 
-    # If TFSS execution side is already determined by the pipeline, override VERDICT_ACTION_MAP
+    # TFSS v4: If execution side is determined by the pipeline, override VERDICT_ACTION_MAP.
+    # LLM instrument type (CE/PE) is still respected for option_type, but side is ALWAYS SELL
+    # for qualifying Core verdicts — legacy BUY paths are deprecated per plan §1.4.
     tfss_side = ctx.get("_tfss_execution_side")
     if tfss_side in ("SELL_PE", "SELL_CE"):
         side = "SELL"
         option_type = "PE" if tfss_side == "SELL_PE" else "CE"
-    else:
-        # LLM instrument parsing ONLY if TFSS hasn't forced the side
-        if verdict_str in ("GO_LONG", "GO_SHORT"):
-            llm_instr = str(ctx.get("instrument") or "")
-            if re.search(r"\bCE\b", llm_instr, re.IGNORECASE):
-                option_type = "CE"
-                # If TFSS didn't force side, we keep legacy LLM override logic
-                side = "SELL" if verdict_str == "GO_SHORT" else "BUY" 
-            elif re.search(r"\bPE\b", llm_instr, re.IGNORECASE):
-                option_type = "PE"
-                side = "SELL" if verdict_str == "GO_LONG" else "BUY"
+    elif verdict_str in ("GO_LONG", "GO_SHORT"):
+        # LLM can influence option type (CE vs PE) but NOT side — side stays SELL
+        llm_instr = str(ctx.get("instrument") or "")
+        if re.search(r"\bCE\b", llm_instr, re.IGNORECASE):
+            option_type = "CE"
+        elif re.search(r"\bPE\b", llm_instr, re.IGNORECASE):
+            option_type = "PE"
+        # side remains from VERDICT_ACTION_MAP (always SELL for GO_LONG/GO_SHORT)
 
     step = float(get_strike_step(symbol) or 1)
     atm = _safe_float(ctx.get("atm_strike")) or _round_to_step(underlying, step)
@@ -188,7 +187,9 @@ def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | N
         use_options = mcx_option_liquidity_ok(symbol, atm, ctx)
         if not use_options:
             option_type = "FUT"
-            side = "BUY" if bullish else "SELL"
+            # TFSS v4: FUT fallback still uses SELL direction for short-premium strategy.
+            # Bullish → SELL FUT (short futures), Bearish → still SELL (no change needed for direction).
+            side = "SELL"
         # else: keep the original option_type (CE/PE) and side from VERDICT_ACTION_MAP
     support = _safe_float(ctx.get("support"))
     resistance = _safe_float(ctx.get("resistance"))

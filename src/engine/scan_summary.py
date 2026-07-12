@@ -79,6 +79,11 @@ def save_scan_summary(
         "trend_bias":            ctx.get("trend_bias"),
         "trend_strength":        ctx.get("trend_strength"),
         "market_regime":         ctx.get("market_regime"),
+        # TFSS v4 execution metadata (plan §4.11)
+        "execution_source":      ctx.get("_execution_source", ""),
+        "tfss_bias":             ctx.get("_tfss_bias", ""),
+        "tfss_execution_side":   ctx.get("_tfss_execution_side", ""),
+        "tfss_persistence":      ctx.get("_tfss_persistence", ""),
     }
 
     try:

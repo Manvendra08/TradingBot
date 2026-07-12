@@ -201,10 +201,24 @@ def _check_risk_limits_for_table(
         if not ok:
             return False, reason, "CIRCUIT_BREAKER"
             
-        # 7. TFSS specific checks
+        # 7. TFSS specific checks (plan §3.5 — additive, does not disturb other checks)
         if setup_type and "TFSS" in setup_type:
-            # Enforce max tranche size or other TFSS specific check
-            pass
+            # Enforce max TFSS tranches per symbol (3 tranches max from config)
+            from config.trend_following_short_strangle import TRANCHE_SEQUENCE
+            max_tranches = len(TRANCHE_SEQUENCE)
+            tfss_open = conn.execute(
+                f"""
+                SELECT COUNT(*) AS cnt FROM {trades_table}
+                WHERE symbol = ? AND status = 'OPEN'
+                  AND signal_key LIKE '%CORE_TFSS%'
+                """,
+                (symbol,),
+            ).fetchone()["cnt"]
+            if tfss_open >= max_tranches:
+                return False, (
+                    f"[{label}] TFSS max tranches for {symbol} reached "
+                    f"({tfss_open}/{max_tranches})"
+                ), "TFSS_MAX_TRANCHES"
 
     return True, "OK", "OK"
 
@@ -228,23 +242,97 @@ def check_live_risk_limits(symbol: str, setup_type: str | None = None) -> tuple[
 # --- TFSS Risk Helpers ---
 
 class TestedSideStatus:
-    def __init__(self, beyond_threshold: bool = False, current_delta: float = 0.0):
+    def __init__(self, beyond_threshold: bool = False, current_delta: float = 0.0,
+                 max_delta: float = 0.0, reason: str = ""):
         self.beyond_threshold = beyond_threshold
         self.current_delta = current_delta
+        self.max_delta = max_delta
+        self.reason = reason
 
 class CombinedBookStatus:
-    def __init__(self, within_caps: bool = True):
+    def __init__(self, within_caps: bool = True, total_delta: float = 0.0,
+                 max_total_delta: float = 0.0, open_count: int = 0, reason: str = ""):
         self.within_caps = within_caps
+        self.total_delta = total_delta
+        self.max_total_delta = max_total_delta
+        self.open_count = open_count
+        self.reason = reason
+
+# TFSS risk caps (plan §3.5 — additive to existing engine)
+_TFSS_MAX_TOTAL_DELTA = 0.60     # max combined delta across open TFSS legs
+_TFSS_MAX_OPEN_POSITIONS = 3     # max concurrent TFSS positions per symbol
+_HARD_STOP_DELTA = 0.35          # delta beyond which tested side must be reduced/closed
 
 def check_tested_side(side: str, market_state: dict, config: dict) -> TestedSideStatus:
-    """Evaluate if the tested side has breached its risk threshold (e.g. delta stop)."""
-    # Placeholder for actual delta checking logic
-    # In full implementation this would compare current option delta against config max delta
-    return TestedSideStatus(beyond_threshold=False, current_delta=0.0)
+    """
+    Evaluate if the tested side has breached its delta-stop threshold.
+    Plan §4.6: when delta-stop and profit-decay are both true, delta-stop wins.
+    
+    Args:
+        side: "SELL_PE" or "SELL_CE"
+        market_state: dict with 'current_delta' (abs delta of the tested leg),
+                      'underlying', 'entry_underlying' optional
+        config: dict with optional 'hard_stop_delta' override
+    """
+    hard_stop = config.get("hard_stop_delta", _HARD_STOP_DELTA) if isinstance(config, dict) else _HARD_STOP_DELTA
+    current_delta = 0.0
+
+    if isinstance(market_state, dict):
+        current_delta = abs(float(market_state.get("current_delta", 0.0)))
+    elif hasattr(market_state, "current_delta"):
+        current_delta = abs(float(getattr(market_state, "current_delta", 0.0)))
+
+    beyond = current_delta >= hard_stop
+    reason = ""
+    if beyond:
+        reason = f"DELTA_STOP: {side} delta {current_delta:.3f} >= threshold {hard_stop:.3f}"
+
+    return TestedSideStatus(
+        beyond_threshold=beyond,
+        current_delta=current_delta,
+        max_delta=hard_stop,
+        reason=reason,
+    )
 
 def compute_combined_book(symbol_state: dict, market_state: dict) -> CombinedBookStatus:
-    """Evaluate combined portfolio risk (e.g. max total delta/margin) for the underlying."""
-    return CombinedBookStatus(within_caps=True)
+    """
+    Evaluate combined portfolio risk for a symbol's TFSS book.
+    Checks: total open TFSS positions cap, combined delta cap.
+    
+    Args:
+        symbol_state: dict with 'symbol', 'open_count' (int), optionally 'open_sides' (list)
+        market_state: dict with 'total_delta' (combined abs delta), or individual leg deltas
+    """
+    open_count = 0
+    total_delta = 0.0
+
+    if isinstance(symbol_state, dict):
+        open_count = int(symbol_state.get("open_count", 0))
+    elif hasattr(symbol_state, "open_count"):
+        open_count = int(getattr(symbol_state, "open_count", 0))
+
+    if isinstance(market_state, dict):
+        total_delta = abs(float(market_state.get("total_delta", 0.0)))
+    elif hasattr(market_state, "total_delta"):
+        total_delta = abs(float(getattr(market_state, "total_delta", 0.0)))
+
+    within = True
+    reason = ""
+
+    if open_count >= _TFSS_MAX_OPEN_POSITIONS:
+        within = False
+        reason = f"TFSS_OPEN_CAP: {open_count} >= {_TFSS_MAX_OPEN_POSITIONS}"
+    elif total_delta >= _TFSS_MAX_TOTAL_DELTA:
+        within = False
+        reason = f"TFSS_DELTA_CAP: total delta {total_delta:.3f} >= {_TFSS_MAX_TOTAL_DELTA:.3f}"
+
+    return CombinedBookStatus(
+        within_caps=within,
+        total_delta=total_delta,
+        max_total_delta=_TFSS_MAX_TOTAL_DELTA,
+        open_count=open_count,
+        reason=reason,
+    )
 
 def exit_trigger_priority_list(active_triggers: list[str]) -> str | None:
     """

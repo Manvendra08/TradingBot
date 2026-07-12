@@ -282,7 +282,13 @@ CREATE TABLE IF NOT EXISTS decision_audit (
     trail_json      TEXT,                -- Full list[StepResult] as JSON
     trade_id        INTEGER,             -- FK to paper_trades.id (NULL if SKIP)
     bar_end_utc     TEXT,
-    scan_fetched_at TEXT
+    scan_fetched_at TEXT,
+    -- TFSS v4 audit fields (plan §4.9)
+    core_origin_verdict    TEXT,          -- Original Core verdict (e.g. GO_LONG, Long Buildup)
+    core_execution_intent  TEXT,          -- TFSS resolved side (SELL_PE / SELL_CE / empty)
+    primary_trigger        TEXT,          -- Selected exit trigger
+    persistence_source     TEXT,          -- native_5scan / empty
+    persistence_agreeing_count INTEGER    -- 3-5 agreeing scans
 );
 
 CREATE INDEX IF NOT EXISTS idx_da_symbol_ts ON decision_audit(symbol, timestamp);

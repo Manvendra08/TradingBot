@@ -110,9 +110,14 @@ def compute_persisted_trend(symbol: str, ctx: dict = None) -> PersistenceResult:
         broad = False
         
     result.broad_trend_corroboration = broad
-    if REQUIRE_BROAD_CORROBORATION and not broad:
-        result.is_valid = False
-        result.reason = "BROAD_TREND_CONTRADICTS_RECENT"
+    # Plan §3.2: broad trend is optional secondary corroboration only — never a hard gate.
+    # If broad contradicts but native 3/5 persistence passes, log warning but do not block.
+    if not broad:
+        log.info(
+            "TFSS: broad trend contradicts native persistence for %s "
+            "(native valid=%s, agreeing=%d) — proceeding as secondary info only",
+            symbol, result.is_valid, result.agreeing_count,
+        )
 
     return result
 
