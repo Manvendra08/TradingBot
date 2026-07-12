@@ -180,11 +180,91 @@ def _filter_atm_strikes(result: dict) -> None:
         log.warning("Failed to filter ATM strikes: %s", e)
 
 
+def _try_fetcher(source: str, symbol: str, expiry: str | None) -> dict | None:
+    """Run a single fetcher and return normalised result or None."""
+    if source not in _FETCHERS:
+        log.warning("Fetcher '%s' unavailable; skipping", source)
+        return None
+    fetcher = _get_fetcher(source)
+    try:
+        result = fetcher.fetch_option_chain(symbol, expiry=expiry)
+        if not result or not result.get("strikes"):
+            log.debug("[router] %s | %-12s returned no data", symbol, source)
+            return None
+        base = str(result.get("symbol") or symbol).upper().split()[0]
+        if base in _MCX_COMMODITIES and not result.get("underlying_price"):
+            log.warning(
+                "[router] %s | %-12s returned MCX data without underlying price — skipping",
+                symbol, source,
+            )
+            return None
+        total_oi = sum(s.get("oi") or 0 for s in result["strikes"])
+        total_ltp = sum(s.get("ltp") or 0 for s in result["strikes"])
+        if total_oi == 0 and total_ltp == 0:
+            log.warning(
+                "[router] %s | %-12s returned zero-filled strikes — skipping",
+                symbol, source,
+            )
+            return None
+        return result
+    except Exception as exc:
+        log.error("[router] %s | %-12s raised exception: %s", symbol, source, exc)
+        if source == "shoonya" and any(k in str(exc) for k in ("401", "403", "Invalid Token")):
+            try:
+                from src.models.schema import stamp_health
+                stamp_health("shoonya_session", "DOWN", f"auth-fail: {str(exc)[:100]}")
+            except Exception:
+                pass
+        return None
+
+
+def _finalise_result(result: dict, source: str, symbol: str, priority: list[str]) -> dict:
+    """Apply ATM filter, enrich greeks, log success, stamp health."""
+    _filter_atm_strikes(result)
+    underlying = result.get("underlying_price")
+    expiry_val = result.get("expiry", "")
+    if underlying and expiry_val:
+        n = enrich_missing_greeks(result["strikes"], underlying, expiry_val)
+        if n:
+            log.info(
+                "[router] enriched %d/%d strikes with computed greeks for %s",
+                n, len(result["strikes"]), symbol,
+            )
+    strikes_count = len(result.get("strikes", []))
+    is_fallback = source != priority[0]
+    prefix = "FALLBACK " if is_fallback else ""
+    log.info(
+        "[router] %s | ✅ %s%-12s | price=%-10.2f expiry=%s strikes=%d",
+        symbol, prefix, source,
+        result.get("underlying_price", 0),
+        result.get("expiry", "?"),
+        strikes_count,
+    )
+    if source == "shoonya":
+        try:
+            from src.models.schema import stamp_health
+            stamp_health("shoonya_session", "OK", f"last_fetch={symbol}")
+        except Exception:
+            pass
+    return result
+
+
+# Fetcher pairs that should race in parallel (primary vs hot-backup).
+# Only used when both are present in the symbol's priority list.
+_PARALLEL_RACE_PAIRS: list[tuple[str, str]] = [
+    ("sensibull", "shoonya"),
+]
+
+
 def fetch_option_chain(symbol: str, expiry: str | None = None) -> dict | None:
     """
     Try fetchers in configured priority order.
+    For NSE symbols sensibull and shoonya are raced concurrently so that
+    shoonya's result is not blocked behind sensibull's full retry chain.
     Returns normalised dict or None if all fail.
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
+
     priority = _priority_for(symbol)
     log.info("[router] %s option-chain | trying: %s", symbol, " → ".join(priority))
 
@@ -204,78 +284,61 @@ def fetch_option_chain(symbol: str, expiry: str | None = None) -> dict | None:
             "all_expiries": ["2026-06-25", "2026-07-02"],
         }
 
-    for source in priority:
+    # Build the effective fetch sequence, substituting any race-eligible pair
+    # with a single parallel step that resolves to the first valid result.
+    remaining = list(priority)
+    result_source: str | None = None
+    result_data: dict | None = None
+
+    # ── Step 1: check for a parallel race pair at the front of the queue ──
+    for primary, backup in _PARALLEL_RACE_PAIRS:
+        if primary in remaining and backup in remaining:
+            p_idx = remaining.index(primary)
+            b_idx = remaining.index(backup)
+            # Only race when primary is first (or backup is close behind it)
+            # so we don't disrupt an intentionally different ordering (e.g. MCX).
+            if p_idx < b_idx and p_idx == 0:
+                race_pair = [primary, backup]
+                # Remove both from the sequential queue; we handle them here.
+                remaining = [s for s in remaining if s not in race_pair]
+                log.debug("[router] %s | racing %s vs %s in parallel", symbol, primary, backup)
+                with ThreadPoolExecutor(max_workers=2, thread_name_prefix="router-race") as ex:
+                    futures = {
+                        ex.submit(_try_fetcher, src, symbol, expiry): src
+                        for src in race_pair
+                    }
+                    for fut in _as_completed(futures):
+                        src = futures[fut]
+                        try:
+                            data = fut.result()
+                        except Exception as exc:
+                            log.error("[router] %s | race %s raised: %s", symbol, src, exc)
+                            data = None
+                        if data is not None:
+                            result_data = data
+                            result_source = src
+                            # Cancel the other future (best-effort; won't interrupt
+                            # blocking I/O but prevents it from being scheduled).
+                            for other_fut in futures:
+                                if other_fut is not fut:
+                                    other_fut.cancel()
+                            break
+                break  # only one race pair at a time
+
+    # ── Step 2: if race produced a result, we're done ──
+    if result_data is not None:
+        return _finalise_result(result_data, result_source, symbol, priority)
+
+    # ── Step 3: fall through to remaining sequential fetchers ──
+    for source in remaining:
         if source not in _FETCHERS:
             log.warning("Fetcher '%s' unavailable; skipping", source)
             continue
-        fetcher = _get_fetcher(source)
-        try:
-            result = fetcher.fetch_option_chain(symbol, expiry=expiry)
-            if result and result.get("strikes"):
-                base = str(result.get("symbol") or symbol).upper().split()[0]
-                if base in _MCX_COMMODITIES and not result.get("underlying_price"):
-                    log.warning(
-                        "[router] %s | %-12s returned MCX data without underlying price — skipping",
-                        symbol,
-                        source,
-                    )
-                    continue
+        data = _try_fetcher(source, symbol, expiry)
+        if data is not None:
+            return _finalise_result(data, source, symbol, priority)
 
-                total_oi = sum(s.get("oi") or 0 for s in result["strikes"])
-                total_ltp = sum(s.get("ltp") or 0 for s in result["strikes"])
-                if total_oi == 0 and total_ltp == 0:
-                    log.warning(
-                        "[router] %s | %-12s returned zero-filled strikes — skipping",
-                        symbol,
-                        source,
-                    )
-                    continue
-
-                # Filter to ATM +- configured strike window
-                _filter_atm_strikes(result)
-
-                # Compute missing greeks (e.g. MCX from Shoonya has no delta/IV)
-                underlying = result.get("underlying_price")
-                expiry = result.get("expiry", "")
-                if underlying and expiry:
-                    n = enrich_missing_greeks(result["strikes"], underlying, expiry)
-                    if n:
-                        log.info("[router] enriched %d/%d strikes with computed greeks for %s", n, len(result["strikes"]), symbol)
-
-                strikes_count = len(result.get("strikes", []))
-                underlying = result.get("underlying_price", 0)
-                expiry_used = result.get("expiry", "?")
-                is_fallback = source != priority[0]
-                prefix = "FALLBACK " if is_fallback else ""
-                log.info(
-                    "[router] %s | ✅ %s%-12s | price=%-10.2f expiry=%s strikes=%d",
-                    symbol,
-                    prefix,
-                    source,
-                    underlying,
-                    expiry_used,
-                    strikes_count,
-                )
-                # OPS Agent: stamp shoonya success
-                if source == "shoonya":
-                    try:
-                        from src.models.schema import stamp_health
-                        stamp_health("shoonya_session", "OK", f"last_fetch={symbol}")
-                    except Exception:
-                        pass
-                return result
-            else:
-                log.debug("[router] %s | %-12s returned no data", symbol, source)
-        except Exception as exc:
-            log.error("[router] %s | %-12s raised exception: %s", symbol, source, exc)
-            # OPS Agent: stamp auth-fail for shoonya specifically
-            if source == "shoonya" and "401" in str(exc) or "403" in str(exc) or "Invalid Token" in str(exc):
-                try:
-                    from src.models.schema import stamp_health
-                    stamp_health("shoonya_session", "DOWN", f"auth-fail: {str(exc)[:100]}")
-                except Exception:
-                    pass
-    # OPS Agent: stamp fetch failure
+    # All failed
     try:
         from src.models.schema import stamp_health
         stamp_health("shoonya_session", "DOWN", f"all fetchers failed for {symbol}")
