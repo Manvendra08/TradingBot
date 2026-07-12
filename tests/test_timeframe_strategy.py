@@ -7,6 +7,14 @@ from src.engine.paper_trading import run_timeframe_strategy
 from src.models.schema import get_conn, init_db
 
 
+class MockDateTime(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        if tz:
+            return datetime(2026, 6, 1, 12, 0, 1, tzinfo=tz)
+        return datetime(2026, 6, 1, 12, 0, 1)
+
+
 @pytest.fixture(autouse=True)
 def setup_test_db():
     init_db()
@@ -59,6 +67,7 @@ def test_timeframe_strategy_long_entry():
             )
 
     with (
+        patch("src.engine.paper_trading.datetime", MockDateTime),
         patch("src.engine.paper_trading._is_market_open", return_value=True),
         patch("src.engine.paper_trading.check_risk_limits", return_value=(True, "")),
     ):
@@ -127,6 +136,7 @@ def test_timeframe_strategy_short_entry():
             )
 
     with (
+        patch("src.engine.paper_trading.datetime", MockDateTime),
         patch("src.engine.paper_trading._is_market_open", return_value=True),
         patch("src.engine.paper_trading.check_risk_limits", return_value=(True, "")),
     ):
@@ -220,6 +230,7 @@ def test_timeframe_strategy_exit_long():
     }
 
     with (
+        patch("src.engine.paper_trading.datetime", MockDateTime),
         patch("src.engine.paper_trading._is_market_open", return_value=True),
         patch("src.engine.paper_trading.check_risk_limits", return_value=(True, "")),
     ):
@@ -271,6 +282,7 @@ def test_timeframe_strategy_natgas_future():
             )
 
     with (
+        patch("src.engine.paper_trading.datetime", MockDateTime),
         patch("src.engine.paper_trading._is_market_open", return_value=True),
         patch("src.engine.paper_trading.check_risk_limits", return_value=(True, "")),
     ):
@@ -327,6 +339,7 @@ def test_timeframe_strategy_natgas_future_short():
             )
 
     with (
+        patch("src.engine.paper_trading.datetime", MockDateTime),
         patch("src.engine.paper_trading._is_market_open", return_value=True),
         patch("src.engine.paper_trading.check_risk_limits", return_value=(True, "")),
     ):
@@ -414,6 +427,7 @@ def test_timeframe_strategy_option_sl_hit():
     }
 
     with (
+        patch("src.engine.paper_trading.datetime", MockDateTime),
         patch("src.engine.paper_trading._is_market_open", return_value=True),
         patch("src.engine.paper_trading.check_risk_limits", return_value=(True, "")),
     ):
@@ -492,6 +506,7 @@ def test_timeframe_strategy_dead_trade_exit():
     }
 
     with (
+        patch("src.engine.paper_trading.datetime", MockDateTime),
         patch("src.engine.paper_trading._is_market_open", return_value=True),
         patch("src.engine.paper_trading.check_risk_limits", return_value=(True, "")),
     ):
@@ -570,6 +585,7 @@ def test_timeframe_strategy_pyramiding():
     }
 
     with (
+        patch("src.engine.paper_trading.datetime", MockDateTime),
         patch("src.engine.paper_trading._is_market_open", return_value=True),
         patch("src.engine.paper_trading.check_risk_limits", return_value=(True, "")),
         patch("src.engine.paper_trading.DEFAULT_LOTS_PER_TRADE", 4),
@@ -656,6 +672,7 @@ def test_timeframe_strategy_exit_long_large_move_candle_only():
     }
 
     with (
+        patch("src.engine.paper_trading.datetime", MockDateTime),
         patch("src.engine.paper_trading._is_market_open", return_value=True),
         patch("src.engine.paper_trading.check_risk_limits", return_value=(True, "")),
     ):
@@ -736,6 +753,7 @@ def test_timeframe_strategy_exit_long_small_move_with_oi():
     }
 
     with (
+        patch("src.engine.paper_trading.datetime", MockDateTime),
         patch("src.engine.paper_trading._is_market_open", return_value=True),
         patch("src.engine.paper_trading.check_risk_limits", return_value=(True, "")),
     ):
@@ -814,6 +832,7 @@ def test_timeframe_strategy_exit_long_small_move_no_oi():
     }
 
     with (
+        patch("src.engine.paper_trading.datetime", MockDateTime),
         patch("src.engine.paper_trading._is_market_open", return_value=True),
         patch("src.engine.paper_trading.check_risk_limits", return_value=(True, "")),
     ):
@@ -930,6 +949,7 @@ def test_run_timeframe_strategy_scan_frequency_gating():
     }
 
     with (
+        patch("src.engine.paper_trading.datetime", MockDateTime),
         patch("src.engine.paper_trading._is_market_open", return_value=True),
         patch("src.engine.paper_trading.check_risk_limits", return_value=(True, "")),
     ):
@@ -1034,6 +1054,7 @@ def test_timeframe_strategy_llm_gate_a_bias_blocking():
     ai_verdict = MockLLMVerdict(bias="BEARISH", confidence=80)
 
     with (
+        patch("src.engine.paper_trading.datetime", MockDateTime),
         patch("src.engine.paper_trading._is_market_open", return_value=True),
         patch("src.engine.paper_trading.check_risk_limits", return_value=(True, "")),
     ):
@@ -1102,6 +1123,7 @@ def test_timeframe_strategy_llm_gate_b_risk_blocking():
     ai_verdict = MockLLMVerdict(bias="BULLISH", confidence=85, risk_rating="HIGH")
 
     with (
+        patch("src.engine.paper_trading.datetime", MockDateTime),
         patch("src.engine.paper_trading._is_market_open", return_value=True),
         patch("src.engine.paper_trading.check_risk_limits", return_value=(True, "")),
     ):
@@ -1167,6 +1189,7 @@ def test_timeframe_strategy_llm_gate_c_sl_override():
     )
 
     with (
+        patch("src.engine.paper_trading.datetime", MockDateTime),
         patch("src.engine.paper_trading._is_market_open", return_value=True),
         patch("src.engine.paper_trading.check_risk_limits", return_value=(True, "")),
     ):
@@ -1260,6 +1283,7 @@ def test_timeframe_strategy_llm_gate_d_reversal_exit():
     ai_verdict = MockLLMVerdict(bias="BEARISH", confidence=75)
 
     with (
+        patch("src.engine.paper_trading.datetime", MockDateTime),
         patch("src.engine.paper_trading._is_market_open", return_value=True),
         patch("src.engine.paper_trading.check_risk_limits", return_value=(True, "")),
     ):

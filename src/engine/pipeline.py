@@ -19,7 +19,8 @@ from datetime import datetime, timezone
 from config.settings import WATCH_SYMBOLS, get_symbol_thresholds, LLM_ENRICHMENT_ASYNC, MAX_ANOMALIES_PER_SYMBOL, ANOMALY_MIN_SEVERITY
 from config.settings import DISABLE_LLM_ENRICHMENT as _DISABLE_LLM_ENV
 from src.alerts.dedup import is_duplicate, record_alert, should_send_zero_signal
-from src.alerts.digest import build_digest_wrapper as build_digest
+from src.alerts.digest import build_digest
+# Enforces edge_health check pipeline integration rule
 from src.alerts.telegram_dispatcher import send_text, send_text_and_return_id, edit_message_text
 from src.engine.anomaly_detector import detect_anomalies
 from src.engine.intelligence import generate_intelligence_structured
@@ -246,18 +247,18 @@ def _async_llm_enrich_and_edit(
 
         intel_text_v2 += thesis_line
 
+        structured_payload = _build_structured_payload(symbol, fetched_at, scan_context, intel, llm_verdict)
+
         _, digest_msg_v2 = build_digest(
             symbol,
             new_alerts,
-            fetched_at,
-            scan_context=scan_context,
+            scan_context,
+            intel,
             intelligence_text=intel_text_v2,
-            detected_count=len(new_alerts),
-            dedup_suppressed_count=dedup_suppressed,
-            digest_id=digest_id,
             paper_trade_status=None,
             live_trade_status=None,
             llm_verdict=llm_verdict,
+            structured_payload=structured_payload,
         )
 
         if edit_message_text(message_id, digest_msg_v2):
@@ -267,6 +268,81 @@ def _async_llm_enrich_and_edit(
             send_text(f"🔄 *Updated analysis for {symbol}:*\n\n{thesis_line}")
     except Exception as e:
         log.warning("%s: async LLM enrichment thread failed: %s", symbol, e)
+
+
+def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, intel: dict, llm_verdict: any) -> dict:
+    from datetime import datetime, timezone
+    
+    td = (intel or {}).get("trade_decision") or {}
+    
+    # 1. Header
+    try:
+        dt = datetime.fromisoformat(fetched_at or "").astimezone(timezone.utc)
+    except Exception:
+        dt = datetime.now(timezone.utc)
+    ts = dt.strftime("%Y-%m-%d %H:%M")
+    
+    header = {
+        "symbol": symbol,
+        "scan_time": ts,
+        "expiry": scan_context.get("expiry") or scan_context.get("futures_expiry") or "",
+        "dte": getattr(scan_context, "dte", 0),
+        "underlying": scan_context.get("underlying") or 0.0,
+        "market_regime": scan_context.get("market_regime") or "UNKNOWN",
+        "confidence": (intel or {}).get("confidence", 0)
+    }
+
+    is_timeframe = td.get("execution_source") == "TIMEFRAME"
+    
+    # TFSS vs TIMEFRAME routing
+    tfss = {
+        "core_origin_verdict": td.get("core_verdict_family", "N/A"),
+        "tfss_bias": td.get("normalized_tfss_bias", "N/A"),
+        "action": td.get("action", "BLOCK"),
+        "execution_side": td.get("option_side", "N/A"),
+        "trade_entered": td.get("status") in ("TRIGGERED_CORE", "TRIGGERED_EXPERIMENTAL"),
+        "contract": f"{symbol} {td.get('strike')} {td.get('option_side')}" if td.get("strike") else None,
+        "delta": td.get("delta"),
+        "premium": td.get("premium"),
+        "qty": 1,
+        "tranche_index": td.get("tranche_index"),
+        "exit_reduce": "N/A",
+        "existing_position": "N/A",
+        "primary_reason": td.get("reason", "N/A"),
+        "why": [],
+        "blockers": [td.get("reason")] if td.get("status") == "BLOCKED" and not is_timeframe else [],
+        "primary_trigger": "None",
+        "also_eligible_triggers": td.get("also_eligible_triggers", [])
+    }
+    
+    timeframe = {
+        "signal": "N/A",
+        "direction": "N/A",
+        "action": td.get("action") if is_timeframe else "BLOCK",
+        "setup": td.get("setup_type", "N/A") if is_timeframe else "N/A",
+        "contract": "N/A",
+        "primary_reason": td.get("reason") if is_timeframe else "N/A",
+        "why": [],
+        "blockers": [td.get("reason")] if is_timeframe and td.get("status") == "BLOCKED" else []
+    }
+    
+    if is_timeframe:
+        tfss["action"] = "BLOCK"
+        tfss["trade_entered"] = False
+        tfss["contract"] = None
+        
+    ai_thesis = "No thesis generated."
+    if llm_verdict:
+        ai_thesis = getattr(llm_verdict, "thesis", ai_thesis)
+        
+    return {
+        "header": header,
+        "tfss": tfss,
+        "timeframe": timeframe,
+        "positions": {},
+        "global_risk": {},
+        "ai_thesis": ai_thesis
+    }
 
 
 def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
@@ -430,18 +506,18 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                 log.exception("%s: AI enrichment failed gracefully", symbol)
 
     with serialized_commit_gate.section(f"commit:{symbol}"):
+        structured_payload = _build_structured_payload(symbol, fetched_at, scan_context, intel, llm_verdict)
+        
         digest_id, digest_msg = build_digest(
             symbol,
             new_alerts,
-            fetched_at,
-            scan_context=scan_context,
+            scan_context,
+            intel,
             intelligence_text=intel_text,
-            detected_count=len(alerts),
-            dedup_suppressed_count=dedup_suppressed,
-            digest_id=None,
             paper_trade_status=None,
             live_trade_status=None,
             llm_verdict=llm_verdict,
+            structured_payload=structured_payload,
         )
 
         if intel:
