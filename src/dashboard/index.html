@@ -1445,6 +1445,27 @@
     `,
                         )
                         .join("");
+                    let weatherSection = "";
+                    if (intel.weather && intel.weather.available) {
+                        const w = intel.weather;
+                        const stormTag = w.gulf_storm_active ? " 🌀GULF STORM" : "";
+                        const zColor = w.zscore >= 1.5 ? "color:var(--green)" : w.zscore <= -1.5 ? "color:var(--red)" : "";
+                        const dirColor = w.direction === "bullish" ? "color:var(--green)" : w.direction === "bearish" ? "color:var(--red)" : "";
+                        weatherSection = `
+      <div class="intel-section" style="margin-top:12px; border-top:1px solid var(--border-color); padding-top:12px;">
+        <div class="intel-head">Weather Intelligence (Phase 5)${stormTag}</div>
+        <div class="intel-row"><span>Source</span><strong>${esc(w.source || "N/A")}</strong></div>
+        <div class="intel-row"><span>Last Run</span><strong>${esc(w.ts ? w.ts.slice(0,16).replace("T"," ") : "N/A")}</strong></div>
+        <div class="intel-row"><span>15-Day HDD</span><strong>${Number(w.hdd_15d || 0).toFixed(1)}</strong></div>
+        <div class="intel-row"><span>15-Day CDD</span><strong>${Number(w.cdd_15d || 0).toFixed(1)}</strong></div>
+        <div class="intel-row"><span>ΔHDD (revision)</span><strong style="${zColor}">${Number(w.delta_hdd || 0) >= 0 ? "+" : ""}${Number(w.delta_hdd || 0).toFixed(1)}</strong></div>
+        <div class="intel-row"><span>ΔCDD (revision)</span><strong style="${zColor}">${Number(w.delta_cdd || 0) >= 0 ? "+" : ""}${Number(w.delta_cdd || 0).toFixed(1)}</strong></div>
+        <div class="intel-row"><span>Z-Score</span><strong style="${zColor}">${Number(w.zscore || 0).toFixed(2)}</strong></div>
+        <div class="intel-row"><span>Signal Direction</span><strong style="${dirColor}">${esc(w.direction || "neutral").toUpperCase()}</strong></div>
+        ${w.gulf_storm_active ? `<div class="intel-row"><span>Gulf Storm</span><strong style="color:var(--red)">ACTIVE</strong></div>` : ""}
+      </div>
+    `;
+                    }
                     symbolSpecific = `
       <div class="intel-section">
         <div class="intel-head">Natural Gas News (24h)</div>
@@ -1453,6 +1474,7 @@
         <div class="intel-row"><span>News Potential</span><strong>${esc(intel.news.potential_news_direction || "MIXED")}</strong></div>
         <div class="intel-news-list">${newsRows || '<div class="empty">No recent news in last 24h</div>'}</div>
       </div>
+      ${weatherSection}
     `;
                 } else if (
                     (intel.symbol === "NIFTY" ||

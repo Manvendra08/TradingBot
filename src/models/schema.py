@@ -301,6 +301,22 @@ CREATE TABLE IF NOT EXISTS eia_consensus (
     fetched_at TEXT, source TEXT
 );
 
+CREATE TABLE IF NOT EXISTS ng_weather_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,                   -- IST ISO
+    source TEXT NOT NULL,               -- open-meteo-gfs / open-meteo-ecmwf / nws
+    hdd_15d REAL,                       -- population-weighted 15-day HDD sum
+    cdd_15d REAL,                       -- population-weighted 15-day CDD sum
+    delta_hdd REAL,                     -- revision vs previous run (same source)
+    delta_cdd REAL,
+    zscore REAL,                        -- revision z vs trailing 30 runs (seasonal-aware)
+    gulf_storm_active INTEGER,          -- 1 = active Gulf tropical system
+    valid INTEGER                       -- 1 = successful fetch
+);
+
+CREATE INDEX IF NOT EXISTS idx_nwr_ts ON ng_weather_runs(ts);
+CREATE INDEX IF NOT EXISTS idx_nwr_source_ts ON ng_weather_runs(source, ts DESC);
+
 CREATE TABLE IF NOT EXISTS fii_positioning (
     report_date TEXT PRIMARY KEY, -- YYYY-MM-DD
     fii_index_long INTEGER,

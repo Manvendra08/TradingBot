@@ -833,6 +833,24 @@ def start_scheduler(immediate: bool = False):
     last_ng_eia_consensus_fetch_date = None
     last_ng_exit_check = 0.0
     _sent_market_closed_date = None
+    _last_weather_fetch_times: dict[str, float] = {}  # hour_key → last_ts
+
+    def _should_run_weather(now_ist) -> bool:
+        """Check if weather fetch should run (10:00, 16:00, 22:00 IST, once per hour)."""
+        from config.settings import WEATHER_SIGNAL_ENABLED
+        if not WEATHER_SIGNAL_ENABLED:
+            return False
+        target_hours = {10, 16, 22}
+        h = now_ist.hour
+        if h not in target_hours:
+            return False
+        hour_key = now_ist.strftime("%Y-%m-%d-%H")
+        now_ts = time.time()
+        last = _last_weather_fetch_times.get(hour_key, 0.0)
+        if now_ts - last < 3500:  # ~58 min debounce (once per target hour)
+            return False
+        _last_weather_fetch_times[hour_key] = now_ts
+        return True
 
     try:
         while True:
@@ -1295,6 +1313,23 @@ def start_scheduler(immediate: bool = False):
                     threading.Thread(
                         target=_run_eia_fetch, daemon=True, name="eia-consensus-fetch"
                     ).start()
+
+            # 10. Weather Intelligence (3x daily: 10:00, 16:00, 22:00 IST)
+            if _should_run_weather(now_ist):
+                log.info("[scheduler] Weather Intelligence Job triggered (%s)", now_ist.strftime("%H:%M IST"))
+
+                def _run_weather_fetch():
+                    try:
+                        from src.fetchers.weather_fetcher import fetch_weather_run, store_weather_run
+
+                        run = fetch_weather_run()
+                        store_weather_run(run)
+                    except Exception as exc:
+                        log.warning("[scheduler] Weather fetch failed: %s", exc)
+
+                threading.Thread(
+                    target=_run_weather_fetch, daemon=True, name="weather-fetch"
+                ).start()
 
             # ── OPS Agent: heartbeat + health stamps ────────────────────────
             try:

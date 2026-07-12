@@ -2090,7 +2090,15 @@ def build_llm_consolidated_digest(
         if ng_reg == "PARITY":
             regime_str += " ⚠️ conflicts"
         lines.append(regime_str)
-    
+
+        # Weather FV revision line (Phase 5)
+        weather = ctx.get("weather_signal") or {}
+        wz = weather.get("zscore", 0.0) or ctx.get("weather_z", 0.0) or 0.0
+        wdir = weather.get("direction") or ctx.get("weather_direction", "")
+        if wdir and abs(wz) >= 1.0:
+            storm_tag = " 🌀GULF" if weather.get("gulf_storm_active") or ctx.get("weather_gulf_storm") else ""
+            lines.append(f"🌤 Weather: z={wz:+.2f} ({wdir}){storm_tag}")
+
     lines.append("")
     
     # ── VERDICT

@@ -1202,6 +1202,7 @@ def get_intelligence_summary(symbol: str):
         },
         "news": None,
         "heatmap": None,
+        "weather": None,
         "market_direction_current": "MIXED",
         "market_direction_potential": "MIXED",
     }
@@ -1229,6 +1230,40 @@ def get_intelligence_summary(symbol: str):
         out["components"]["news_score_day"] = round(news_day, 3)
         out["market_direction_current"] = _dir_label(current_score)
         out["market_direction_potential"] = _dir_label(potential_score)
+
+        # Weather Intelligence (Phase 5)
+        try:
+            from src.fetchers.weather_fetcher import get_weather_signal, get_latest_weather
+
+            weather_latest = get_latest_weather()
+            weather_signal = get_weather_signal()
+            out["weather"] = {
+                "available": weather_latest is not None and weather_latest.get("valid", 0) == 1,
+                "hdd_15d": weather_latest.get("hdd_15d") if weather_latest else 0,
+                "cdd_15d": weather_latest.get("cdd_15d") if weather_latest else 0,
+                "delta_hdd": weather_latest.get("delta_hdd") if weather_latest else 0,
+                "delta_cdd": weather_latest.get("delta_cdd") if weather_latest else 0,
+                "zscore": weather_latest.get("zscore") if weather_latest else 0,
+                "source": weather_latest.get("source") if weather_latest else "",
+                "ts": weather_latest.get("ts") if weather_latest else "",
+                "gulf_storm_active": bool(weather_latest.get("gulf_storm_active")) if weather_latest else False,
+                "direction": weather_signal.get("direction") if weather_signal else "neutral",
+                "signal_z": weather_signal.get("zscore") if weather_signal else 0,
+            }
+            # Include in direction scoring
+            if weather_signal:
+                w_dir = 1.0 if weather_signal["direction"] == "bullish" else -1.0 if weather_signal["direction"] == "bearish" else 0.0
+                w_z = abs(weather_signal.get("zscore", 0.0))
+                w_score = w_dir * min(w_z / 3.0, 1.0)  # normalize z to [-1, 1]
+                current_score += w_score * 0.15  # 15% weather weight
+                potential_score += w_score * 0.10
+                out["components"]["weather_score"] = round(w_score, 3)
+                out["components"]["weather_direction"] = weather_signal["direction"]
+                out["market_direction_current"] = _dir_label(current_score)
+                out["market_direction_potential"] = _dir_label(potential_score)
+        except Exception as exc:
+            log.debug("Weather intelligence fetch failed for dashboard: %s", exc)
+            out["weather"] = {"available": False}
     elif sym in ("NIFTY", "BANKNIFTY"):
         heat = _fetch_scanx_heatmap(sym)
         heat_norm = max(

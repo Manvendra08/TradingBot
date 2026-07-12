@@ -149,3 +149,16 @@
 - LLM providers: Gemini (Primary), Groq (70b/8b fallback), Bedrock (cascading fallback).
 - Symbols: NIFTY (NFO), BANKNIFTY (NFO), SENSEX (BFO), NATURALGAS (MCX), CRUDEOIL (MCX).
 - Scan execution modes: `--now` executes a production-mode scan (`is_test=False`) but skips processing if the current interval's data is already up-to-date in the DB, capping catch-up backfilling to a maximum of the last 3 missed intervals. `--once` runs strictly as a test-mode scan (`is_test=True`) where production database writes and live trading actions are prohibited.
+
+## NG Weather Intelligence (Phase 5)
+- **Module:** `src/fetchers/weather_fetcher.py`
+- **Sources:** Open-Meteo (GFS+ECMWF), NOAA NWS fallback, NHC Gulf storm check.
+- **Signal:** 15-day HDD/CDD revision z-score vs trailing 30 runs (seasonal-aware).
+- **Winter (Nov–Mar):** HDD revision; z >= +1.5 → bullish, z <= -1.5 → bearish.
+- **Summer (Jun–Sep):** CDD revision (power-burn demand), same thresholds.
+- **Shoulder (Apr–May, Oct):** No weather signal (weight → 0).
+- **DB Table:** `ng_weather_runs` with columns: ts, source, hdd_15d, cdd_15d, delta_hdd, delta_cdd, zscore, gulf_storm_active, valid.
+- **Scheduler:** 3x daily at 10:00, 16:00, 22:00 IST (once per target hour, 58min debounce).
+- **Pipeline Integration:** ParityState + weather signal injected into `scan_context` for NATURALGAS.
+- **Digest Display:** Weather line shows z-score, direction, and Gulf storm flag after regime line.
+- **Guardrails:** WEATHER_Z_SIGNAL=1.5 (signal threshold), WEATHER_Z_PARITY_GUARD=2.0 (parity lockout), WEATHER_PARITY_LOCKOUT_MIN=60.0.

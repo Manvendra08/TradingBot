@@ -23,7 +23,6 @@ from src.alerts.digest import build_digest_wrapper as build_digest
 from src.alerts.telegram_dispatcher import send_text, send_text_and_return_id, edit_message_text
 from src.engine.anomaly_detector import detect_anomalies
 from src.engine.intelligence import generate_intelligence_structured
-from src.engine.live_trading import run_live_timeframe_strategy, run_live_trading
 from src.engine.paper_trading import _invalidate_pattern_cache
 from src.engine.pipeline_concurrency import single_flight_gate, serialized_commit_gate, pipeline_io_executor
 from src.engine.provider_parallel import run_with_deadline
@@ -301,6 +300,32 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
     )
     scan_context["option_rows"] = list(oc_data.get("strikes") or [])
 
+    # Inject NG parity + weather context for NATURALGAS scans
+    if symbol.upper().startswith("NATURALGAS"):
+        try:
+            from src.engine.parity_engine import get_parity_state
+            parity = get_parity_state()
+            if parity:
+                scan_context["ng_regime"] = parity.get("regime", "UNKNOWN")
+                scan_context["ng_fv"] = parity.get("fair_value", 0.0)
+                scan_context["ng_dev_pct"] = parity.get("dev_pct", 0.0)
+                scan_context["ng_mcx_src"] = parity.get("mcx_src", "")
+                scan_context["ng_fx_src"] = parity.get("fx_src", "")
+                scan_context["ng_nymex_src"] = parity.get("nymex_src", "")
+        except Exception:
+            log.debug("%s: parity injection failed gracefully", symbol)
+
+        try:
+            from src.fetchers.weather_fetcher import get_weather_signal
+            wsig = get_weather_signal()
+            if wsig:
+                scan_context["weather_signal"] = wsig
+                scan_context["weather_direction"] = wsig.get("direction", "neutral")
+                scan_context["weather_z"] = wsig.get("zscore", 0.0)
+                scan_context["weather_gulf_storm"] = wsig.get("gulf_storm_active", False)
+        except Exception:
+            log.debug("%s: weather signal injection failed gracefully", symbol)
+
     try:
         update_scan_snapshot(symbol, scan_context)
     except Exception:
@@ -513,12 +538,12 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
 
         if not is_test:
             try:
-                from src.engine.strategy_registry import active_strategies_for
-                active_strats = active_strategies_for(symbol)
-                if "CORE" in active_strats:
-                    run_live_trading(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
-                if "TIMEFRAME" in active_strats:
-                    run_live_timeframe_strategy(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
+                from src.engine.strategy_registry import active_strategies_for, get_runner
+                for sid in active_strategies_for(symbol):
+                    runner = get_runner(sid)
+                    if runner is None:
+                        continue
+                    runner(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
             except Exception:
                 position_sync_dirty_state.mark_dirty("broker_action_failed")
                 kite_health_cache.invalidate("session_ok")

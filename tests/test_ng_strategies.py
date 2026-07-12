@@ -121,3 +121,99 @@ class TestNGEIAStrategy(unittest.TestCase):
         self.assertEqual(parse_bcf_value("  5.5 B "), 5.5)
         self.assertIsNone(parse_bcf_value(None))
         self.assertIsNone(parse_bcf_value(""))
+
+
+class TestWeatherFetcher(unittest.TestCase):
+
+    def test_hdd_calculation(self):
+        from src.fetchers.weather_fetcher import _hdd, _cdd
+        # avg temp 50°F → HDD = 15
+        self.assertAlmostEqual(_hdd(55.0, 45.0), 15.0)
+        # avg temp 70°F → HDD = 0
+        self.assertAlmostEqual(_hdd(75.0, 65.0), 0.0)
+        # avg temp 75°F → CDD = 10
+        self.assertAlmostEqual(_cdd(80.0, 70.0), 10.0)
+
+    def test_is_season(self):
+        from src.fetchers.weather_fetcher import _is_winter, _is_summer, _is_shoulder
+        self.assertTrue(_is_winter(1))
+        self.assertTrue(_is_winter(12))
+        self.assertFalse(_is_winter(7))
+        self.assertTrue(_is_summer(7))
+        self.assertFalse(_is_summer(12))
+        self.assertTrue(_is_shoulder(4))
+        self.assertFalse(_is_shoulder(7))
+
+    @patch("src.fetchers.weather_fetcher.requests.get")
+    def test_fetch_open_meteo_success(self, mock_get):
+        from src.fetchers.weather_fetcher import _fetch_open_meteo
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "daily": {
+                "temperature_2m_max": [10.0] * 15,
+                "temperature_2m_min": [0.0] * 15,
+            }
+        }
+        mock_resp.raise_for_status = MagicMock()
+        mock_get.return_value = mock_resp
+
+        daily = _fetch_open_meteo(15)
+        self.assertIsNotNone(daily)
+        self.assertEqual(len(daily["temperature_2m_max"]), 15)
+
+    @patch("src.fetchers.weather_fetcher.requests.get")
+    def test_fetch_open_meteo_failure(self, mock_get):
+        from src.fetchers.weather_fetcher import _fetch_open_meteo
+        mock_get.side_effect = Exception("timeout")
+        daily = _fetch_open_meteo(15)
+        self.assertIsNone(daily)
+
+    @patch("src.fetchers.weather_fetcher.requests.get")
+    def test_check_gulf_storm_positive(self, mock_get):
+        from src.fetchers.weather_fetcher import _check_gulf_storm
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "activeStorms": [{"name": "Test Storm", "lat": "25.0", "lon": "-90.0"}]
+        }
+        mock_resp.raise_for_status = MagicMock()
+        mock_get.return_value = mock_resp
+        self.assertTrue(_check_gulf_storm())
+
+    @patch("src.fetchers.weather_fetcher.requests.get")
+    def test_check_gulf_storm_negative(self, mock_get):
+        from src.fetchers.weather_fetcher import _check_gulf_storm
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"activeStorms": []}
+        mock_resp.raise_for_status = MagicMock()
+        mock_get.return_value = mock_resp
+        self.assertFalse(_check_gulf_storm())
+
+    def test_compute_weighted_dd_empty(self):
+        from src.fetchers.weather_fetcher import _compute_weighted_dd
+        hdd, cdd = _compute_weighted_dd({})
+        self.assertAlmostEqual(hdd, 0.0)
+        self.assertAlmostEqual(cdd, 0.0)
+
+    @patch("src.fetchers.weather_fetcher.get_latest_weather")
+    def test_weather_signal_none_when_no_data(self, mock_latest):
+        from src.fetchers.weather_fetcher import get_weather_signal
+        mock_latest.return_value = None
+        self.assertIsNone(get_weather_signal())
+
+    @patch("src.fetchers.weather_fetcher.get_weather_signal")
+    def test_weather_confidence_boost(self, mock_signal):
+        from src.fetchers.weather_fetcher import weather_confidence_boost
+        mock_signal.return_value = None
+        self.assertEqual(weather_confidence_boost(), 0)
+
+        mock_signal.return_value = {"zscore": 2.0, "direction": "bullish"}
+        self.assertEqual(weather_confidence_boost(), 5)
+
+    @patch("src.fetchers.weather_fetcher.get_conn")
+    def test_get_trailing_zscore_insufficient_data(self, mock_get_conn):
+        from src.fetchers.weather_fetcher import _get_trailing_zscore
+        mock_conn = MagicMock()
+        mock_get_conn.return_value.__enter__.return_value = mock_conn
+        mock_conn.execute.return_value.fetchall.return_value = []
+        z = _get_trailing_zscore(10.0, "test-source")
+        self.assertAlmostEqual(z, 0.0)

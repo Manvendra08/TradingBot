@@ -496,3 +496,10 @@ EIA_NO_TRADE_BAND_BCF = 8
 EIA_TIME_STOP_IST = "21:30"
 NG_MAX_POSITIONS = 1               # one NG position at a time, all regimes
 NG_RISK_PCT_PER_TRADE = 0.5        # % of capital
+
+# ── Weather Intelligence (Phase 5) ────────────────────────────────────────────
+WEATHER_SIGNAL_ENABLED = _optional_env("WEATHER_SIGNAL_ENABLED", "true").lower() == "true"
+WEATHER_Z_SIGNAL = float(_optional_env("WEATHER_Z_SIGNAL", "1.5"))
+WEATHER_Z_PARITY_GUARD = float(_optional_env("WEATHER_Z_PARITY_GUARD", "2.0"))
+WEATHER_SIGNAL_MAX_AGE_H = float(_optional_env("WEATHER_SIGNAL_MAX_AGE_H", "4.0"))
+WEATHER_PARITY_LOCKOUT_MIN = float(_optional_env("WEATHER_PARITY_LOCKOUT_MIN", "60.0"))
