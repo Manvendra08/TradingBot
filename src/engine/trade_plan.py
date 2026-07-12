@@ -512,3 +512,72 @@ def convert_underlying_sl_to_premium(
         target_premium = max(target_premium, tick)
 
     return round(sl_premium, 2), round(target_premium, 2)
+
+def select_candidate(side: str, persisted_label: str, dte: int, atr_state: dict, option_chain: list) -> Optional[dict]:
+    """
+    Select the optimal option candidate for TFSS based on delta bands and ATR regime.
+    
+    Args:
+        side: The execution side (e.g. 'SELL_PE' or 'SELL_CE')
+        persisted_label: The confirmed persisted trend direction
+        dte: Days to expiry
+        atr_state: Dict with 'is_tightened' boolean or multiplier threshold status
+        option_chain: List of option rows (dict)
+        
+    Returns:
+        Dict representing the candidate (strike, delta, premium, side) or None.
+    """
+    from config.trend_following_short_strangle import DTE_DELTA_BANDS, ATR_TIGHTENING_MULTIPLIER_THRESHOLD
+    
+    if not option_chain:
+        return None
+        
+    is_tightened = atr_state.get('is_tightened', False)
+    # Find matching delta band
+    band = None
+    for b in DTE_DELTA_BANDS:
+        if b['min_dte'] <= dte <= b['max_dte']:
+            band = b
+            break
+            
+    if not band:
+        return None
+        
+    target_min = band['tight_delta_min'] if is_tightened else band['base_delta_min']
+    target_max = band['tight_delta_max'] if is_tightened else band['base_delta_max']
+    
+    # Filter and sort option chain based on side
+    option_type = "PE" if side == "SELL_PE" else "CE"
+    valid_candidates = []
+    
+    for row in option_chain:
+        if str(row.get('option_type', '')).upper() != option_type:
+            continue
+            
+        try:
+            # Assume option chain provides delta (or implied delta via strike distance calculation in reality, 
+            # but we assume the chain has it or we filter by something else if not available.
+            # Usually 'delta' is part of Greeks.
+            delta = abs(float(row.get('delta', 0)))
+            premium = float(row.get('premium', row.get('close', 0)))
+            strike = float(row.get('strike', 0))
+            
+            if target_min <= delta <= target_max:
+                valid_candidates.append({
+                    "strike": strike,
+                    "delta": delta,
+                    "premium": premium,
+                    "side": side,
+                    "option_type": option_type
+                })
+        except (ValueError, TypeError):
+            continue
+            
+    if not valid_candidates:
+        return None
+        
+    # Selection priority: return candidate closest to the midpoint of the delta band
+    midpoint = (target_min + target_max) / 2.0
+    valid_candidates.sort(key=lambda c: abs(c['delta'] - midpoint))
+    
+    return valid_candidates[0]

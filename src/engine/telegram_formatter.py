@@ -236,14 +236,10 @@ def _get_action_plan(verdict: str, confidence: int, status: str, symbol: str = "
             actions.append("  • Buy Futures (FUT)")
             actions.append("  • Set Stop Loss below support")
             actions.append("  • Target: Resistance level")
-        elif verdict == "Put Writing":
+        else:
             actions.append("  • Sell Put (PE) at support level (OTM)")
             actions.append("  • Set Stop Loss (Premium): +50% from entry")
             actions.append("  • Target (Premium): -40% from entry (decay)")
-        else:
-            actions.append("  • Buy Call (CE) at ATM")
-            actions.append("  • Set Stop Loss below support")
-            actions.append("  • Target: Resistance level")
     elif "Short" in verdict or "Call" in verdict or "Bearish" in verdict:
         actions.append("")
         actions.append("IF YOU TRADE BEARISH:")
@@ -251,14 +247,10 @@ def _get_action_plan(verdict: str, confidence: int, status: str, symbol: str = "
             actions.append("  • Sell Futures (FUT)")
             actions.append("  • Set Stop Loss above resistance")
             actions.append("  • Target: Support level")
-        elif verdict == "Call Writing":
+        else:
             actions.append("  • Sell Call (CE) at resistance level (OTM)")
             actions.append("  • Set Stop Loss (Premium): +50% from entry")
             actions.append("  • Target (Premium): -40% from entry (decay)")
-        else:
-            actions.append("  • Buy Put (PE) at ATM")
-            actions.append("  • Set Stop Loss above resistance")
-            actions.append("  • Target: Support level")
     
     # Confidence-based action
     if confidence < 55:
@@ -391,13 +383,19 @@ def format_detailed_message(intel: dict, decision: dict = None, scan_context: di
         reason = decision.get("reason", "")
         
         if status == "TRIGGERED_CORE":
-            lines.append("✅ TRADE APPROVED (High Quality)")
+            exec_src = decision.get("execution_source", "")
+            badge = f" [TFSS]" if "TFSS" in exec_src else ""
+            lines.append(f"✅ TRADE APPROVED{badge} (High Quality)")
         elif status == "TRIGGERED_EXPERIMENTAL":
-            lines.append("🧪 TRADE APPROVED (Experimental)")
+            exec_src = decision.get("execution_source", "")
+            badge = f" [TFSS]" if "TFSS" in exec_src else ""
+            lines.append(f"🧪 TRADE APPROVED{badge} (Experimental)")
         else:
             lines.append("❌ TRADE BLOCKED")
         
         lines.append(f"Setup Type: {setup}")
+        if decision.get("execution_source"):
+            lines.append(f"Execution Engine: {decision.get('execution_source')}")
         lines.append(f"Reason: {reason}")
         lines.append("")
         

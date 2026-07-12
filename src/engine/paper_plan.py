@@ -129,18 +129,18 @@ def mcx_option_liquidity_ok(symbol: str, atm_strike: float, ctx: dict) -> bool:
 
 VERDICT_ACTION_MAP = {
     # Bullish — OI labels
-    "Long Buildup":    ("BUY",  "CE"),
-    "Put Writing":     ("SELL", "PE"),   # sell PE = bullish (collect premium at support)
-    "Short Covering":  ("BUY",  "CE"),
-    "OI Bias Bullish": ("SELL", "PE"),   # sell PE = bullish (instead of buy CE)
+    "Long Buildup":    ("SELL", "PE"), # Handled by TFSS v4
+    "Put Writing":     ("SELL", "PE"), # Handled by TFSS v4
+    "Short Covering":  ("SELL", "PE"), # Handled by TFSS v4
+    "OI Bias Bullish": ("SELL", "PE"), # Handled by TFSS v4
     # Bearish — OI labels
-    "Short Buildup":   ("BUY",  "PE"),
-    "Call Writing":    ("SELL", "CE"),   # sell CE = bearish (collect premium at resistance)
-    "Long Unwinding":  ("BUY",  "PE"),
-    "OI Bias Bearish": ("SELL", "CE"),   # sell CE = bearish (instead of buy PE)
+    "Short Buildup":   ("SELL", "CE"), # Handled by TFSS v4
+    "Call Writing":    ("SELL", "CE"), # Handled by TFSS v4
+    "Long Unwinding":  ("SELL", "CE"), # Handled by TFSS v4
+    "OI Bias Bearish": ("SELL", "CE"), # Handled by TFSS v4
     # LLM action labels — map to canonical option actions
-    "GO_LONG":         ("BUY",  "CE"),   # LLM bullish directive
-    "GO_SHORT":        ("BUY",  "PE"),   # LLM bearish directive
+    "GO_LONG":         ("SELL", "PE"), # Handled by TFSS v4
+    "GO_SHORT":        ("SELL", "CE"), # Handled by TFSS v4
 }
 
 
@@ -161,16 +161,22 @@ def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | N
     side, option_type = VERDICT_ACTION_MAP[verdict_str]
     bullish = is_bullish(verdict_str)
 
-    # If LLM instrument is available, parse CE/PE from it instead of hardcoded map.
-    # GO_SHORT + CE (sell call = bearish) is valid — don't override to PE.
-    if verdict_str in ("GO_LONG", "GO_SHORT"):
-        llm_instr = str(ctx.get("instrument") or "")
-        if re.search(r"\bCE\b", llm_instr, re.IGNORECASE):
-            option_type = "CE"
-            side = "BUY" if verdict_str == "GO_LONG" else "SELL"
-        elif re.search(r"\bPE\b", llm_instr, re.IGNORECASE):
-            option_type = "PE"
-            side = "BUY" if verdict_str == "GO_LONG" else "SELL"
+    # If TFSS execution side is already determined by the pipeline, override VERDICT_ACTION_MAP
+    tfss_side = ctx.get("_tfss_execution_side")
+    if tfss_side in ("SELL_PE", "SELL_CE"):
+        side = "SELL"
+        option_type = "PE" if tfss_side == "SELL_PE" else "CE"
+    else:
+        # LLM instrument parsing ONLY if TFSS hasn't forced the side
+        if verdict_str in ("GO_LONG", "GO_SHORT"):
+            llm_instr = str(ctx.get("instrument") or "")
+            if re.search(r"\bCE\b", llm_instr, re.IGNORECASE):
+                option_type = "CE"
+                # If TFSS didn't force side, we keep legacy LLM override logic
+                side = "SELL" if verdict_str == "GO_SHORT" else "BUY" 
+            elif re.search(r"\bPE\b", llm_instr, re.IGNORECASE):
+                option_type = "PE"
+                side = "SELL" if verdict_str == "GO_LONG" else "BUY"
 
     step = float(get_strike_step(symbol) or 1)
     atm = _safe_float(ctx.get("atm_strike")) or _round_to_step(underlying, step)

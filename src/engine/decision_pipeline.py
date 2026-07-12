@@ -303,6 +303,68 @@ def step_ai_alignment(ctx: PipelineContext) -> StepResult:
     )
 
 
+def step_tfss_handoff_core(ctx: PipelineContext) -> StepResult:
+    from src.engine.trend_following_short_strangle import (
+        normalize_core_verdict_to_tfss_intent,
+        compute_persisted_trend,
+        resolve_tfss_execution_side
+    )
+    verdict = ctx.scan_context.get("intel", {}).get("verdict_label", "")
+    
+    tfss_intent = normalize_core_verdict_to_tfss_intent(verdict)
+    if not tfss_intent:
+        # Non-qualifying Core verdicts continue existing handling
+        return StepResult(
+            name="tfss_handoff",
+            passed=True,
+            score=100,
+            reason="Verdict does not qualify for TFSS execution",
+            data={"tfss_eligible": False}
+        )
+        
+    # Compute native persistence using the >=3 of last 5 rule
+    persisted = compute_persisted_trend(ctx.symbol, ctx.scan_context)
+    if not persisted.is_valid:
+        return StepResult(
+            name="tfss_handoff",
+            passed=False,
+            score=0,
+            reason=f"TFSS Persistence Blocked: {persisted.reason}",
+            data={"tfss_eligible": True, "persisted": persisted.is_valid}
+        )
+        
+    side_res = resolve_tfss_execution_side(tfss_intent, persisted)
+    if isinstance(side_res, dict) and side_res.get("action") == "BLOCK":
+        return StepResult(
+            name="tfss_handoff",
+            passed=False,
+            score=0,
+            reason=f"TFSS Blocked: {side_res.get('reason')}",
+            data={"tfss_eligible": True, "persisted": persisted.is_valid}
+        )
+    
+    # Store the TFSS resolution in scan_context for downstream steps
+    ctx.scan_context["_tfss_intent"] = tfss_intent.bias
+    ctx.scan_context["_tfss_bias"] = tfss_intent.bias
+    ctx.scan_context["_execution_source"] = "CORE_TFSS"
+    ctx.scan_context["_tfss_execution_side"] = side_res # e.g. "SELL_PE", "SELL_CE"
+    ctx.scan_context["_tfss_persistence"] = persisted.label
+    
+    return StepResult(
+        name="tfss_handoff",
+        passed=True,
+        score=100,
+        reason=f"TFSS Handoff OK: {tfss_intent.bias} -> {side_res}",
+        data={
+            "tfss_eligible": True,
+            "tfss_bias": tfss_intent.bias,
+            "tfss_execution_side": side_res,
+            "persisted_label": persisted.label
+        }
+    )
+
+
+
 def step_entry_quality_core(ctx: PipelineContext) -> StepResult:
     from src.engine.paper_plan import build_paper_trade_plan
     plan_ctx = {k: v for k, v in ctx.scan_context.items() if isinstance(k, str)}
@@ -1058,6 +1120,7 @@ CORE_OI_STEPS = [
     step_signal_core_oi,
     step_rule_core_oi,
     step_ai_alignment,
+    step_tfss_handoff_core,
     step_entry_quality_core,
     step_regime,
     step_trend_alignment_core,

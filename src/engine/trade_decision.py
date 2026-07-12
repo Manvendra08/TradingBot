@@ -164,6 +164,8 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None, su
     else:
         log.debug("Dry-run/preview decision: %s | %s | %s", status, setup_type, reason)
 
+    plan = pipeline_ctx.scan_context.get("_pipeline_plan") or {}
+    
     return {
         "status": status,
         "setup_type": setup_type,
@@ -171,6 +173,22 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None, su
         "soft_conflicts": soft_conflicts,
         "scores": scores,
         "audit_row_id": audit_row_id,
+        # TFSS specific extensions
+        "execution_source": pipeline_ctx.scan_context.get("_execution_source", "CORE_TFSS" if pipeline_ctx.scan_context.get("_tfss_bias") else "TIMEFRAME" if pipeline_ctx.engine == "TIMEFRAME" else "CORE"),
+        "core_verdict_family": intel.get("verdict_label", ""),
+        "normalized_tfss_bias": pipeline_ctx.scan_context.get("_tfss_bias"),
+        "action": plan.get("side"),
+        "symbol": symbol,
+        "option_side": plan.get("option_type"),
+        "strike": plan.get("strike"),
+        "delta": pipeline_ctx.scan_context.get("_candidate_delta"),
+        "premium": plan.get("premium"),
+        "risk_metrics": pipeline_ctx.scan_context.get("_risk_metrics"),
+        "eligible_triggers": pipeline_ctx.scan_context.get("_eligible_triggers", []),
+        "also_eligible_triggers": pipeline_ctx.scan_context.get("_also_eligible_triggers", []),
+        "tested_side_status": pipeline_ctx.scan_context.get("_tested_side_status"),
+        "combined_book_status": pipeline_ctx.scan_context.get("_combined_book_status"),
+        "tranche_index": pipeline_ctx.scan_context.get("_tranche_index", 0),
     }
 
 

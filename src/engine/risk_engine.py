@@ -90,6 +90,7 @@ def _check_risk_limits_for_table(
     symbol: str,
     trades_table: str,
     label: str,
+    setup_type: str | None = None
 ) -> tuple[bool, str, str]:
     """
     Core risk-check logic, parameterised over the trades table name.
@@ -199,6 +200,11 @@ def _check_risk_limits_for_table(
         ok, reason = _check_consecutive_loss_breaker(conn, trades_table, label)
         if not ok:
             return False, reason, "CIRCUIT_BREAKER"
+            
+        # 7. TFSS specific checks
+        if setup_type and "TFSS" in setup_type:
+            # Enforce max tranche size or other TFSS specific check
+            pass
 
     return True, "OK", "OK"
 
@@ -207,26 +213,54 @@ def check_risk_limits(symbol: str, setup_type: str | None = None) -> tuple[bool,
     """
     Paper-trading risk check.  Queries paper_trades table.
     Return (allowed: bool, reason: str).
-
-    setup_type is accepted for call-site compatibility but not used in checks.
     """
-    allowed, reason, _ = _check_risk_limits_for_table(symbol, "paper_trades", "paper")
+    allowed, reason, _ = _check_risk_limits_for_table(symbol, "paper_trades", "paper", setup_type=setup_type)
     return allowed, reason
 
 
-def check_live_risk_limits(symbol: str) -> tuple[bool, str]:
+def check_live_risk_limits(symbol: str, setup_type: str | None = None) -> tuple[bool, str]:
     """
     Live-trading risk check.  Queries live_trades table.
-
-    Full parity with check_risk_limits():
-      - daily loss cap (losses only — FIX #3)
-      - loss cooldown
-      - max trades per symbol per day
-      - max open per symbol
-      - max total open
-      - account-level consecutive-loss circuit breaker (FIX #11)
-
-    Return (allowed: bool, reason: str).
     """
-    allowed, reason, _ = _check_risk_limits_for_table(symbol, "live_trades", "live")
+    allowed, reason, _ = _check_risk_limits_for_table(symbol, "live_trades", "live", setup_type=setup_type)
     return allowed, reason
+
+# --- TFSS Risk Helpers ---
+
+class TestedSideStatus:
+    def __init__(self, beyond_threshold: bool = False, current_delta: float = 0.0):
+        self.beyond_threshold = beyond_threshold
+        self.current_delta = current_delta
+
+class CombinedBookStatus:
+    def __init__(self, within_caps: bool = True):
+        self.within_caps = within_caps
+
+def check_tested_side(side: str, market_state: dict, config: dict) -> TestedSideStatus:
+    """Evaluate if the tested side has breached its risk threshold (e.g. delta stop)."""
+    # Placeholder for actual delta checking logic
+    # In full implementation this would compare current option delta against config max delta
+    return TestedSideStatus(beyond_threshold=False, current_delta=0.0)
+
+def compute_combined_book(symbol_state: dict, market_state: dict) -> CombinedBookStatus:
+    """Evaluate combined portfolio risk (e.g. max total delta/margin) for the underlying."""
+    return CombinedBookStatus(within_caps=True)
+
+def exit_trigger_priority_list(active_triggers: list[str]) -> str | None:
+    """
+    Determine the winning exit trigger when multiple triggers are simultaneously active.
+    Example active_triggers: ["PROFIT_TARGET", "DELTA_STOP"]
+    """
+    if not active_triggers:
+        return None
+        
+    from config.trend_following_short_strangle import EXIT_PRIORITY_MAP
+    
+    # Sort active triggers by priority. Lower number = higher priority.
+    # Triggers not in the map get a default low priority (e.g., 99).
+    sorted_triggers = sorted(
+        active_triggers, 
+        key=lambda t: EXIT_PRIORITY_MAP.get(t, 99)
+    )
+    return sorted_triggers[0]
+

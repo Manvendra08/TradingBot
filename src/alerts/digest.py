@@ -1578,16 +1578,22 @@ def build_enhanced_digest(
         levels_parts.append(f"Resistance `{_fmt_val(ctx.get('resistance'), symbol)}`")
     levels_section = " | ".join(levels_parts) if levels_parts else "None identified"
 
-    if "Put Writing" in verdict:
-        trade_word = "SELL PE"
-    elif "Call Writing" in verdict:
-        trade_word = "SELL CE"
-    elif vbias == "BULLISH":
-        trade_word = "BUY CE"
-    elif vbias == "BEARISH":
-        trade_word = "BUY PE"
+    # Align trade_word with TFSS paradigm (Short option positions for core bullish/bearish, FUT for MCX)
+    is_mcx_c = symbol.upper() in {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"}
+    if is_mcx_c:
+        if vbias == "BULLISH":
+            trade_word = "BUY FUT"
+        elif vbias == "BEARISH":
+            trade_word = "SELL FUT"
+        else:
+            trade_word = "WAIT"
     else:
-        trade_word = "WAIT"
+        if "Put Writing" in verdict or vbias == "BULLISH":
+            trade_word = "SELL PE"
+        elif "Call Writing" in verdict or vbias == "BEARISH":
+            trade_word = "SELL CE"
+        else:
+            trade_word = "WAIT"
 
     trade_text = f"{emoji} *TRADE: {trade_word}* - {_esc(label)}"
     lines += [

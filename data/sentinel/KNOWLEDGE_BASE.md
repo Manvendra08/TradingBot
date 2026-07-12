@@ -162,3 +162,9 @@
 - **Pipeline Integration:** ParityState + weather signal injected into `scan_context` for NATURALGAS.
 - **Digest Display:** Weather line shows z-score, direction, and Gulf storm flag after regime line.
 - **Guardrails:** WEATHER_Z_SIGNAL=1.5 (signal threshold), WEATHER_Z_PARITY_GUARD=2.0 (parity lockout), WEATHER_PARITY_LOCKOUT_MIN=60.0.
+
+### F25: TFSS Core Engine Integration (Phase 4)
+- **Architecture Update:** Trend Following Short Strangle (TFSS) is no longer a standalone standalone peer strategy. It is now the mandatory execution layer for all Core bullish/bearish option expressions.
+- **Logic Split:** Core engine handles direction and confidence. TFSS handles side resolution (always selling PE for bullish, CE for bearish), candidate selection, and execution.
+- **Persistence:** TFSS execution is gated by native persistence (>= 3 of 5 scans align with direction).
+- **Fallback:** Timeframe engine remains an unmodified, parallel system.

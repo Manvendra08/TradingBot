@@ -479,7 +479,10 @@ def execute_paper_trade(
 
     now_iso = datetime.now(timezone.utc).isoformat()
     today_date = datetime.now(IST).strftime("%Y%m%d")
-    signal_key = f"{symbol}:{option_type}:{int(strike)}:{today_date}:paper"
+    
+    execution_source = ctx.get("_execution_source", plan.get("execution_source", "CORE"))
+    tranche_index = ctx.get("_tranche_index", plan.get("tranche_index", 0))
+    signal_key = f"{symbol}:{option_type}:{int(strike)}:{today_date}:{execution_source}:{tranche_index}:paper"
 
     # Phase 0: Capture ML feature snapshot at trade-open time
     ml_features = _build_ml_feature_snapshot(ctx, ai_verdict)

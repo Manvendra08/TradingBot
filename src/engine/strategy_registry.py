@@ -12,8 +12,7 @@ log = logging.getLogger(__name__)
 # Default startup strategies configuration if not present in DB
 DEFAULT_STRATEGIES = {
     "CORE": { "enabled": True, "ai_mode": "boost_only", "symbols": {} },
-    "TIMEFRAME": { "enabled": True, "ai_mode": "boost_only", "symbols": {} },
-    "TFSS": { "enabled": False, "ai_mode": "boost_only", "symbols": {} }
+    "TIMEFRAME": { "enabled": True, "ai_mode": "boost_only", "symbols": {} }
 }
 
 def active_strategies_for(symbol: str) -> list[str]:
@@ -52,7 +51,7 @@ def active_strategies_for(symbol: str) -> list[str]:
     
     active = []
     
-    for sid in ["CORE", "TIMEFRAME", "TFSS"]:
+    for sid in ["CORE", "TIMEFRAME"]:
         strat_conf = strategies.get(sid, {})
         if not strat_conf.get("enabled", False):
             continue
@@ -60,9 +59,6 @@ def active_strategies_for(symbol: str) -> list[str]:
         sym_map = strat_conf.get("symbols", {})
         # Symbol is active if not explicitly set to False
         if sym_map.get(symbol, True):
-            # Exception: TFSS has no runner yet
-            if sid == "TFSS":
-                continue
             active.append(sid)
             
     return active
