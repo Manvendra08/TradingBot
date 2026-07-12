@@ -530,6 +530,221 @@ def _format_paper_trade_status(status: dict | None) -> str:
     return _format_trade_status(status, is_live=False)
 
 
+def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[str, str]:
+    """
+    Renders the TFSS + Timeframe digest in a mobile-friendly compact format.
+    Drops fixed-width box borders, collapses N/A fields, uses emoji section headers.
+    """
+    import uuid
+    import textwrap
+
+    def _val(v) -> str | None:
+        """Return value if meaningful, else None (to skip rendering)."""
+        if v is None:
+            return None
+        s = str(v).strip()
+        if s.lower() in ("n/a", "none", "", "null"):
+            return None
+        return s
+
+    def _join_list(lst: list) -> str | None:
+        items = [str(i) for i in (lst or []) if _val(str(i))]
+        return " · ".join(items) if items else None
+
+    header      = payload.get("header", {})
+    tfss        = payload.get("tfss", {})
+    timeframe   = payload.get("timeframe", {})
+    positions   = payload.get("positions", {})
+    global_risk = payload.get("global_risk", {})
+    ai_thesis   = payload.get("ai_thesis", "")
+
+    sym   = _val(header.get("symbol")) or "?"
+    stime = _val(header.get("scan_time")) or ""
+    if " " in stime:
+        stime = stime.split(" ")[-1][:5]
+    expiry = _val(header.get("expiry"))
+    dte    = header.get("dte")
+    spot   = header.get("underlying")
+    regime = _val(header.get("market_regime"))
+    conf   = header.get("confidence")
+
+    lines: list[str] = []
+    DIV = "─" * 22
+
+    # ── HEADER ────────────────────────────────────────────
+    conf_bar = ""
+    if conf is not None:
+        filled = round(int(conf) / 10)
+        conf_bar = "▓" * filled + "░" * (10 - filled)
+
+    lines.append(f"📊 *{sym}* · {stime}")
+    if expiry:
+        dte_label = f" ({dte} DTE)" if dte is not None else ""
+        lines.append(f"Expiry: {expiry}{dte_label}")
+    if spot is not None:
+        spot_str = f"₹{spot:,.0f}" if isinstance(spot, (int, float)) else str(spot)
+        regime_str = f" · {regime}" if regime and regime.upper() != "UNKNOWN" else ""
+        lines.append(f"Spot: {spot_str}{regime_str}")
+    if conf is not None:
+        lines.append(f"Signal: {conf_bar} {conf}%")
+
+    # ── TFSS ──────────────────────────────────────────────
+    tfss_action  = _val(tfss.get("action"))
+    tfss_bias    = _val(tfss.get("tfss_bias"))
+    tfss_verdict = _val(tfss.get("core_origin_verdict"))
+    tfss_exec    = _val(tfss.get("execution_side"))
+    trade_ok     = tfss.get("trade_entered", False)
+    contract     = _val(tfss.get("contract"))
+    delta        = tfss.get("delta")
+    prem         = tfss.get("premium")
+    qty          = tfss.get("qty")
+    tranche      = tfss.get("tranche_index")
+    exit_reduce  = _val(tfss.get("exit_reduce"))
+    existing_pos = _val(tfss.get("existing_position"))
+    tfss_reason  = _val(tfss.get("primary_reason"))
+    tfss_why     = _join_list(tfss.get("why", []))
+    tfss_blockers = [str(b) for b in (tfss.get("blockers") or []) if _val(str(b))]
+
+    action_icon = {"ENTER": "🟢", "ADD": "🟢", "EXIT": "🔴", "REDUCE": "🟡",
+                   "BLOCK": "🚫", "NO_ACTION": "⏸️"}.get(str(tfss_action or "").upper(), "⚙️")
+
+    lines.append("")
+    lines.append(DIV)
+    header_tfss = f"{action_icon} *TFSS*"
+    if tfss_action:
+        header_tfss += f": {tfss_action}"
+    if tfss_bias:
+        header_tfss += f" ({tfss_bias})"
+    lines.append(header_tfss)
+
+    if tfss_verdict:
+        lines.append(f"Verdict: {tfss_verdict}")
+    if tfss_exec:
+        lines.append(f"Side: {tfss_exec}")
+
+    if trade_ok and contract:
+        lines.append(f"✅ Entered: {contract}")
+        parts = []
+        if delta is not None:
+            parts.append(f"Δ{delta}")
+        if prem is not None:
+            parts.append(f"₹{prem}")
+        if parts:
+            lines.append(f"   {' · '.join(parts)}")
+        if qty is not None or tranche is not None:
+            size_str = f"{qty} lots" if qty else ""
+            tr_str   = f"T{tranche}" if tranche else ""
+            combined = " · ".join(filter(None, [size_str, tr_str]))
+            if combined:
+                lines.append(f"   {combined}")
+    else:
+        lines.append("Trade: ✗ Not entered")
+
+    if exit_reduce:
+        lines.append(f"Exit/Reduce: {exit_reduce}")
+        if existing_pos:
+            lines.append(f"   Posn: {existing_pos}")
+
+    if tfss_reason:
+        lines.append(f"Reason: {tfss_reason}")
+    if tfss_why and tfss_why != tfss_reason:
+        lines.append(f"Why: {tfss_why}")
+    for b in tfss_blockers:
+        lines.append(f"  ⚠ {b}")
+
+    # ── TIMEFRAME ─────────────────────────────────────────
+    tf_action   = _val(timeframe.get("action"))
+    tf_signal   = _val(timeframe.get("signal"))
+    tf_dir      = _val(timeframe.get("direction"))
+    tf_setup    = _val(timeframe.get("setup"))
+    tf_contract = _val(timeframe.get("contract"))
+    tf_reason   = _val(timeframe.get("primary_reason"))
+    tf_why      = _join_list(timeframe.get("why", []))
+    tf_blockers = [str(b) for b in (timeframe.get("blockers") or []) if _val(str(b))]
+
+    tf_icon = {"ENTER": "🟢", "HOLD": "🔵", "EXIT": "🔴",
+               "BLOCK": "🚫", "NO_SIGNAL": "⏸️"}.get(str(tf_action or "").upper(), "📈")
+
+    lines.append("")
+    lines.append(DIV)
+    header_tf = f"{tf_icon} *Timeframe*"
+    if tf_action:
+        header_tf += f": {tf_action}"
+    if tf_dir:
+        header_tf += f" ({tf_dir})"
+    lines.append(header_tf)
+
+    has_tf_data = any([tf_signal, tf_setup, tf_contract, tf_reason, tf_why, tf_blockers])
+    if not has_tf_data:
+        lines.append("No active signal")
+    else:
+        if tf_signal:
+            lines.append(f"Signal: {tf_signal}")
+        if tf_setup:
+            lines.append(f"Setup: {tf_setup}")
+        if tf_contract:
+            lines.append(f"Contract: {tf_contract}")
+        if tf_reason:
+            lines.append(f"Reason: {tf_reason}")
+        if tf_why and tf_why != tf_reason:
+            lines.append(f"Why: {tf_why}")
+        for b in tf_blockers:
+            lines.append(f"  ⚠ {b}")
+
+    # ── POSITIONS ─────────────────────────────────────────
+    opened  = [str(x) for x in (positions.get("opened") or []) if _val(str(x))]
+    exited  = [str(x) for x in (positions.get("exited") or []) if _val(str(x))]
+    reduced = [str(x) for x in (positions.get("reduced") or []) if _val(str(x))]
+    book    = _val(positions.get("active_book"))
+
+    has_pos = any([opened, exited, reduced, book])
+    lines.append("")
+    lines.append(DIV)
+    lines.append("📋 *Positions*")
+    if not has_pos:
+        lines.append("No changes")
+    else:
+        for o in opened:
+            lines.append(f"  ✅ {o}")
+        for e in exited:
+            lines.append(f"  🔴 Exited: {e}")
+        for r in reduced:
+            lines.append(f"  🟡 Reduced: {r}")
+        if book:
+            lines.append(f"Book: {book}")
+
+    # ── BLOCKERS (consolidated, deduplicated, skip if none) ─
+    gr_blockers = [str(b) for b in (global_risk.get("blockers") or []) if _val(str(b))]
+    all_blockers_raw = tfss_blockers + tf_blockers + gr_blockers
+    seen: set[str] = set()
+    all_blockers: list[str] = []
+    for b in all_blockers_raw:
+        if b not in seen:
+            all_blockers.append(b)
+            seen.add(b)
+
+    if all_blockers:
+        lines.append("")
+        lines.append(DIV)
+        lines.append("⚠️ *Blockers*")
+        for b in all_blockers:
+            lines.append(f"  • {b}")
+
+    # ── AI THESIS ─────────────────────────────────────────
+    thesis_text = _val(ai_thesis)
+    if thesis_text:
+        lines.append("")
+        lines.append(DIV)
+        lines.append("🤖 *AI Thesis*")
+        for chunk in textwrap.wrap(thesis_text, width=38):
+            lines.append(chunk)
+
+    if digest_id is None:
+        digest_id = str(uuid.uuid4())[:8]
+
+    return digest_id, "\n".join(lines)
+
+
 def build_digest(
     symbol: str,
     alerts: list[dict],
@@ -543,6 +758,7 @@ def build_digest(
     live_trade_status: dict | None = None,
     llm_verdict: dict | None = None,
     exit_advice: any = None,
+    structured_payload: dict | None = None,
 ) -> tuple[str, str]:
     """BUG-M03 FIX: Consolidated entry point. Always routes to the LLM-consolidated
     template which is the canonical, actively maintained template.
@@ -551,6 +767,9 @@ def build_digest(
     template (build_enhanced_digest) have been merged into build_llm_consolidated_digest
     which handles all rendering paths including no-trade and trade states.
     """
+    if structured_payload:
+        return build_tfss_timeframe_digest(structured_payload, digest_id=digest_id)
+
     return build_llm_consolidated_digest(
         symbol,
         alerts,
