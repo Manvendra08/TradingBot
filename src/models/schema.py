@@ -506,6 +506,12 @@ _MIGRATIONS = [
     "ALTER TABLE broker_configs ADD COLUMN password TEXT",
     "ALTER TABLE paper_trades ADD COLUMN entry_dev_pct REAL",
     "ALTER TABLE live_trades ADD COLUMN entry_dev_pct REAL",
+    # TFSS v4 audit fields (plan §4.9)
+    "ALTER TABLE decision_audit ADD COLUMN core_origin_verdict TEXT",
+    "ALTER TABLE decision_audit ADD COLUMN core_execution_intent TEXT",
+    "ALTER TABLE decision_audit ADD COLUMN primary_trigger TEXT",
+    "ALTER TABLE decision_audit ADD COLUMN persistence_source TEXT",
+    "ALTER TABLE decision_audit ADD COLUMN persistence_agreeing_count INTEGER",
 ]
 
 
