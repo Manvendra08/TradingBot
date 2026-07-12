@@ -67,7 +67,12 @@ def _post_jdata(
 
     Cleans payload structures to pass authorization details via standard form
     bodies instead of conflicting Bearer headers, resolving the duplicate-auth bug.
+
+    Retries up to 2 times on transient 5xx errors (502/503/504) with exponential
+    backoff (1.5s, 3s). Does NOT retry on 4xx (auth errors handled by caller).
     """
+    import time as _time
+
     body_str = "jData=" + json.dumps(payload, separators=(",", ":"))
     if access_token:
         body_str += f"&jKey={access_token}"
@@ -76,23 +81,39 @@ def _post_jdata(
         "Content-Type": "application/x-www-form-urlencoded",
         "User-Agent": "Mozilla/5.0",
     }
-    req = urllib.request.Request(url, data=body, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read().decode())
-    except urllib.error.HTTPError as e:
-        raw = e.read().decode()
-        if "Session Expired" in raw:
-            log.info("[shoonya] POST %s -> Session Expired (HTTP %s)", url, e.code)
-        else:
-            log.error("[shoonya] POST %s -> HTTP %s: %s", url, e.code, raw[:200])
+
+    _TRANSIENT_5XX = {502, 503, 504}
+    _MAX_RETRIES = 2
+    _BACKOFF_BASE = 1.5  # seconds
+
+    for attempt in range(1, _MAX_RETRIES + 2):  # attempts: 1, 2, 3
+        req = urllib.request.Request(url, data=body, headers=headers)
         try:
-            return json.loads(raw)
-        except Exception:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            raw = e.read().decode()
+            if e.code in _TRANSIENT_5XX and attempt <= _MAX_RETRIES:
+                wait = _BACKOFF_BASE * attempt
+                log.warning(
+                    "[shoonya] POST %s -> HTTP %s (transient), retry %d/%d in %.1fs",
+                    url, e.code, attempt, _MAX_RETRIES, wait,
+                )
+                _time.sleep(wait)
+                continue
+            if "Session Expired" in raw:
+                log.info("[shoonya] POST %s -> Session Expired (HTTP %s)", url, e.code)
+            else:
+                log.error("[shoonya] POST %s -> HTTP %s: %s", url, e.code, raw[:200])
+            try:
+                return json.loads(raw)
+            except Exception:
+                return None
+        except Exception as exc:
+            log.error("[shoonya] POST %s failed: %s", url, exc)
             return None
-    except Exception as exc:
-        log.error("[shoonya] POST %s failed: %s", url, exc)
-        return None
+
+    return None  # exhausted retries
 
 
 def _read_shared_token_file(filepath: str) -> dict | None:

@@ -63,15 +63,44 @@ def _get_paytm_jwt_headless(api_key: str, api_secret: str, email: str, password:
             page.goto(authorize_url, wait_until="commit")
             log.debug("[paytm_auth] Landed on: %s", page.url)
 
-            # Wait for email field
-            page.wait_for_selector('input[type="email"], input[type="text"]', state="visible", timeout=30000)
+            # Paytm Money login accepts phone-first, email, or generic text inputs.
+            # The selector covers all known variants of their OAuth page.
+            _INPUT_SELECTOR = (
+                'input[type="email"], '
+                'input[type="tel"], '
+                'input[type="text"], '
+                'input[name*="phone"], '
+                'input[name*="mobile"], '
+                'input[name*="email"], '
+                'input[placeholder*="phone" i], '
+                'input[placeholder*="mobile" i], '
+                'input[placeholder*="email" i]'
+            )
+            try:
+                page.wait_for_selector(_INPUT_SELECTOR, state="visible", timeout=30000)
+            except Exception as sel_err:
+                # Dump page source for diagnosis and bail
+                try:
+                    html_snippet = page.content()[:2000]
+                except Exception:
+                    html_snippet = "<unavailable>"
+                log.error(
+                    "[paytm_auth] Login input not found after 30s. URL: %s\nPage HTML (first 2000 chars):\n%s",
+                    page.url, html_snippet,
+                )
+                browser.close()
+                return None
 
-            # Fill credentials
+            # Fill credentials — try email first, then tel/text (phone-first flow)
             email_inputs = page.locator('input[type="email"]')
+            tel_inputs   = page.locator('input[type="tel"]')
             if email_inputs.count() > 0:
                 email_inputs.first.fill(email)
+            elif tel_inputs.count() > 0:
+                # Phone-first flow: fill phone number (use email field value which
+                # may be a phone number depending on user config)
+                tel_inputs.first.fill(email)
             else:
-                # Try text input
                 page.locator('input[type="text"]').first.fill(email)
 
             password_inputs = page.locator('input[type="password"]')
