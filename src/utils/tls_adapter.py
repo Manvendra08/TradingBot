@@ -32,6 +32,14 @@ from urllib3.util import Retry
 log = logging.getLogger(__name__)
 
 _KITE_HOST = "api.kite.trade"
+# All hosts that need forced IPv4 resolution (DNS failures on IPv6)
+_IPV4_FORCED_HOSTS = {
+    "api.kite.trade",
+    "dhan.co",
+    "open-web-scanx.dhan.co",
+    "api.shoonya.com",
+    "syndication.twitter.com",
+}
 _ORIGINAL_GETADDRINFO = socket.getaddrinfo
 _getaddrinfo_patched = False
 _GLOBAL_SEND_LOCK = threading.RLock()
@@ -95,25 +103,25 @@ def _ensure_ssl_patched():
     log.debug("Patched ssl.create_default_context to inject OP_IGNORE_UNEXPECTED_EOF")
 
 
-def _kite_ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
-    if str(host).lower() == _KITE_HOST:
+def _ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    if str(host).lower() in _IPV4_FORCED_HOSTS:
         family = socket.AF_INET
     return _ORIGINAL_GETADDRINFO(host, port, family, type, proto, flags)
 
 
-def _ensure_kite_ipv4_patched() -> None:
-    """Force Kite REST traffic to IPv4 without affecting other hosts."""
+def _ensure_ipv4_patched() -> None:
+    """Force specified hosts to IPv4 without affecting other hosts."""
     global _getaddrinfo_patched
     if _getaddrinfo_patched:
         return
-    socket.getaddrinfo = _kite_ipv4_getaddrinfo
+    socket.getaddrinfo = _ipv4_getaddrinfo
     _getaddrinfo_patched = True
-    log.debug("Patched socket.getaddrinfo to force IPv4 for %s", _KITE_HOST)
+    log.debug("Patched socket.getaddrinfo to force IPv4 for %s", _IPV4_FORCED_HOSTS)
 
 
 # Apply patches at import time.
 _ensure_ssl_patched()
-_ensure_kite_ipv4_patched()
+_ensure_ipv4_patched()
 
 
 # urllib3-level retry: ONLY handles 5xx HTTP status codes.
@@ -304,7 +312,7 @@ def mount_resilient_tls(session, max_retries=None, ssl_verify: bool = True):
         ssl_verify: Set False for public non-Kite fetchers that use verify=False.
     """
     _ensure_ssl_patched()
-    _ensure_kite_ipv4_patched()
+    _ensure_ipv4_patched()
     session.headers["Connection"] = "close"
     # Enable serialization for Kite (Zerodha) sessions mounted here
     adapter = ResilientTLSAdapter(

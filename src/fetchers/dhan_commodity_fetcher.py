@@ -565,12 +565,57 @@ def _get_open_futures_expiry(symbol: str) -> Optional[str]:
 class DhanCommodityFetcher(BaseFetcher):
     name = "dhan_commodity"
 
+    # IP fallbacks for dhan.co domains (DNS failure workaround)
+    _DHAN_IPS = {
+        "dhan.co": ["3.109.120.173", "3.108.200.32", "13.127.116.81", "13.126.123.145", "13.233.166.198", "3.6.238.45"],
+        "open-web-scanx.dhan.co": ["108.159.91.82", "108.159.91.3", "108.159.91.115", "108.159.91.63"],
+        "openweb-ticks.dhan.co": ["13.233.166.198", "3.6.238.45", "13.126.123.145"],
+    }
+
+    def _try_fetch_with_ip_fallback(self, url: str, method: str = "GET", **kwargs) -> Optional[requests.Response]:
+        """Try fetching URL, with IP fallback on DNS failure."""
+        from urllib.parse import urlparse
+        import socket
+        
+        parsed = urlparse(url)
+        host = parsed.hostname
+        
+        # Try normal DNS first
+        try:
+            resp = getattr(self.session, method.lower())(url, timeout=HTTP_TIMEOUT_SECONDS, **kwargs)
+            resp.raise_for_status()
+            return resp
+        except Exception as exc:
+            exc_str = str(exc).lower()
+            if not ("nameresolutionerror" in exc_str or "getaddrinfo failed" in exc_str or "failed to resolve" in exc_str):
+                raise
+        
+        # DNS failed — try IP fallback
+        if host in self._DHAN_IPS:
+            log.warning("[dhan_commodity] DNS failed for %s, trying IP fallback", host)
+            for ip in self._DHAN_IPS[host]:
+                ip_url = url.replace(f"https://{host}", f"https://{ip}", 1)
+                # Need to set Host header for SNI/virtual hosting
+                headers = kwargs.get("headers", {}).copy()
+                headers["Host"] = host
+                kwargs["headers"] = headers
+                # Disable SSL verification for IP-based requests (cert won't match IP)
+                kwargs["verify"] = False
+                try:
+                    log.info("[dhan_commodity] Trying IP fallback: %s", ip)
+                    resp = getattr(self.session, method.lower())(ip_url, timeout=HTTP_TIMEOUT_SECONDS, **kwargs)
+                    resp.raise_for_status()
+                    return resp
+                except Exception as ip_exc:
+                    log.warning("[dhan_commodity] IP fallback %s failed: %s", ip, ip_exc)
+                    continue
+        raise
+
     def _fetch_html(self, url: str) -> Optional[str]:
         last_exc = None
         for attempt in range(1, HTTP_MAX_RETRIES + 1):
             try:
-                resp = self.session.get(url, headers=_HEADERS, timeout=HTTP_TIMEOUT_SECONDS)
-                resp.raise_for_status()
+                resp = self._try_fetch_with_ip_fallback(url, method="GET", headers=_HEADERS)
                 return resp.text
             except Exception as exc:
                 last_exc = exc

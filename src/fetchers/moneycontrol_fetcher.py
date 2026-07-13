@@ -10,8 +10,10 @@ This fetcher is a fallback; Dhan headless is primary for full data.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
+import threading
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
@@ -29,18 +31,61 @@ _MC_SYMBOL_MAP: dict[str, str] = {
     "SILVER": "silver",
 }
 
-# BUG-M13 FIX: Reusable browser context to avoid launching a full browser for every fetch.
-# Playwright browser instances are expensive to create (~2-3 seconds each).
-# A module-level singleton context is reused across calls, with new pages per request.
-import threading
+# BUG-M13 FIX: Reusable browser context (async version)
 _browser_lock = threading.Lock()
 _browser_instance = None
 _browser_context = None
 _browser_pw = None
 
 
+async def _get_browser_context_async():
+    """BUG-M13: Return a reusable async browser context, creating it on first call."""
+    global _browser_instance, _browser_context, _browser_pw
+    with _browser_lock:
+        if _browser_context is not None:
+            return _browser_context, _browser_instance
+        from playwright.async_api import async_playwright
+        _browser_pw = await async_playwright().start()
+        browser = None
+        for channel in ["chrome", "msedge", None]:
+            try:
+                browser = await _browser_pw.chromium.launch(
+                    headless=True,
+                    channel=channel,
+                    args=["--disable-blink-features=AutomationControlled"],
+                    timeout=10000
+                )
+                break
+            except Exception as e:
+                log.warning("[mc] failed to launch browser with channel %s: %s", channel, e)
+        if not browser:
+            await _browser_pw.stop()
+            _browser_pw = None
+            return None, None
+        ctx = await browser.new_context(
+            user_agent=_HEADERS["User-Agent"],
+            viewport={"width": 1280, "height": 900},
+        )
+        _browser_instance = browser
+        _browser_context = ctx
+        return ctx, browser
+
+
 def _get_browser_context():
-    """BUG-M13: Return a reusable browser context, creating it on first call."""
+    """Synchronous wrapper for compatibility — runs async version in event loop."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop and loop.is_running():
+        # Called from async context — cannot use asyncio.run()
+        # Fall back to sync for now (will be replaced fully)
+        return _get_browser_context_sync()
+    return asyncio.run(_get_browser_context_async())
+
+
+def _get_browser_context_sync():
+    """Fallback sync version for non-async callers."""
     global _browser_instance, _browser_context, _browser_pw
     with _browser_lock:
         if _browser_context is not None:
@@ -158,10 +203,10 @@ def _scrape_moneycontrol_spot(page) -> Optional[float]:
     return None
 
 
-def _fetch_side_sync(base_symbol: str, sym_slug: str, requested_expiry: Optional[str] = None) -> tuple[Optional[str], Optional[float], list[dict]]:
-    """Fetch option chain and spot price from Moneycontrol using synchronous Playwright."""
+async def _fetch_side_async(base_symbol: str, sym_slug: str, requested_expiry: Optional[str] = None) -> tuple[Optional[str], Optional[float], list[dict]]:
+    """Fetch option chain and spot price from Moneycontrol using async Playwright."""
     try:
-        from playwright.sync_api import sync_playwright
+        from playwright.async_api import async_playwright
     except ImportError:
         log.error("[mc] playwright not installed — pip install playwright && playwright install chromium")
         return None, None, []
@@ -174,39 +219,38 @@ def _fetch_side_sync(base_symbol: str, sym_slug: str, requested_expiry: Optional
         underlying_price = _fetch_nse_commodity_spot(base_symbol, requested_expiry)
     keep_strikes: set[float] = set()
 
-    # BUG-M13: Use reusable browser context instead of launching new browser each time
-    ctx, browser = _get_browser_context()
+    # Use reusable browser context
+    ctx, browser = await _get_browser_context_async()
     if not browser:
         log.error("[mc] could not launch browser with any channel")
         return None, None, []
 
-    page = ctx.new_page()
-    page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+    page = await ctx.new_page()
+    await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
     try:
         log.info("[mc] navigating to option chain: %s", url)
-        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
         
         # Wait for select element container to load
-        page.wait_for_selector("#sel_exp_date", state="attached", timeout=10000)
+        await page.wait_for_selector("#sel_exp_date", state="attached", timeout=10000)
         
         # Poll robustly until child options are populated in select element
         options = page.locator("#sel_exp_date option")
         for _ in range(50):
-            if options.count() > 0:
+            if await options.count() > 0:
                 break
-            page.wait_for_timeout(100)
+            await page.wait_for_timeout(100)
         
         # Get available expiries
-        count = options.count()
+        count = await options.count()
         available_expiries = []
         for i in range(count):
-            val = options.nth(i).get_attribute("value")
+            val = await options.nth(i).get_attribute("value")
             available_expiries.append(val)
             
         if not available_expiries:
             log.error("[mc] no expiries found in dropdown")
-            browser.close()
             return None, None, []
             
         if not underlying_price:
@@ -216,13 +260,12 @@ def _fetch_side_sync(base_symbol: str, sym_slug: str, requested_expiry: Optional
             if active_opt_expiry:
                 underlying_price = _fetch_nse_commodity_spot(base_symbol, active_opt_expiry)
 
-            if not underlying_price:
-                underlying_price = _scrape_moneycontrol_spot(page)
-                if underlying_price:
-                    log.info("[mc] Moneycontrol spot for %s: %.2f", base_symbol, underlying_price)
+        if not underlying_price:
+            underlying_price = _scrape_moneycontrol_spot(page)
+            if underlying_price:
+                log.info("[mc] Moneycontrol spot for %s: %.2f", base_symbol, underlying_price)
         if not underlying_price:
             log.error("[mc] no spot/underlying found for %s; cannot identify ATM", base_symbol)
-            browser.close()
             return None, None, []
 
         # Select the best expiry that actually covers the spot price
@@ -239,22 +282,22 @@ def _fetch_side_sync(base_symbol: str, sym_slug: str, requested_expiry: Optional
         for exp in expiries_to_test:
             try:
                 log.info("[mc] testing expiry candidate: %s", exp)
-                page.select_option("#sel_exp_date", exp)
+                await page.select_option("#sel_exp_date", exp)
                 
                 submit_btn = page.get_by_role("button", name="Submit")
-                if submit_btn.count() == 0:
+                if await submit_btn.count() == 0:
                     submit_btn = page.locator("input[value='Submit']")
-                submit_btn.first.click()
+                await submit_btn.first.click()
                 
-                page.wait_for_timeout(1000)
+                await page.wait_for_timeout(1000)
                 
                 # Wait for table
                 target_table = None
                 for attempt in range(15):
-                    tables = page.query_selector_all("table")
+                    tables = await page.query_selector_all("table")
                     for tbl in tables:
                         try:
-                            r_count = len(tbl.query_selector_all("tr"))
+                            r_count = len(await tbl.query_selector_all("tr"))
                             if r_count > 5:
                                 target_table = tbl
                                 break
@@ -262,7 +305,7 @@ def _fetch_side_sync(base_symbol: str, sym_slug: str, requested_expiry: Optional
                             continue
                     if target_table:
                         break
-                    page.wait_for_timeout(100)
+                    await page.wait_for_timeout(100)
                 
                 if not target_table:
                     log.warning("[mc] table not found for expiry: %s", exp)
@@ -273,7 +316,7 @@ def _fetch_side_sync(base_symbol: str, sym_slug: str, requested_expiry: Optional
                     if underlying_price:
                         log.info("[mc] Moneycontrol spot for %s: %.2f", base_symbol, underlying_price)
 
-                curr_html = target_table.inner_html()
+                curr_html = await target_table.inner_html()
                 soup = BeautifulSoup(curr_html, "html.parser")
                 trs = soup.find_all("tr")
                 strikes = []
@@ -320,17 +363,10 @@ def _fetch_side_sync(base_symbol: str, sym_slug: str, requested_expiry: Optional
 
         if not table_html:
             log.error("[mc] could not find any valid option chain table")
-            page.close()
             return None, None, []
 
-        page.close()
-        # BUG-M13: Don't close browser/context — they're reused across calls
     except Exception as exc:
         log.error("[mc] page interaction failed: %s", exc)
-        try:
-            page.close()
-        except Exception:
-            pass
         return None, None, []
 
     soup = BeautifulSoup(table_html, "html.parser")
@@ -388,6 +424,11 @@ def _fetch_side_sync(base_symbol: str, sym_slug: str, requested_expiry: Optional
     parsed_strikes.sort(key=lambda r: (r["strike"], r["option_type"]))
     log.info("[mc] parsed %d ATM-window strikes for %s", len(parsed_strikes) // 2, sym_slug)
     return actual_expiry, underlying_price, parsed_strikes
+
+
+def _fetch_side_sync(base_symbol: str, sym_slug: str, requested_expiry: Optional[str] = None) -> tuple[Optional[str], Optional[float], list[dict]]:
+    """Synchronous wrapper for async fetch — runs in thread pool."""
+    return asyncio.run(_fetch_side_async(base_symbol, sym_slug, requested_expiry))
 
 
 class MoneycontrolFetcher:

@@ -453,22 +453,28 @@ def _fetch_x_nginews() -> list[dict]:
 
 
 def _fetch_te_naturalgas() -> list[dict]:
-    """Fetch Natural Gas news from TradingEconomics using Playwright."""
+    """Fetch Natural Gas news from TradingEconomics using Playwright (async)."""
     url = "https://tradingeconomics.com/commodity/natural-gas"
     rows = []
     cutoff = int(time.time()) - (10 * 86400)
     try:
-        from playwright.sync_api import sync_playwright
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            )
-            page.goto(url, timeout=15000)
-            page.wait_for_timeout(2000)
-            content = page.content()
-            browser.close()
-            
+        import asyncio
+        from playwright.async_api import async_playwright
+
+        async def _fetch():
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                page = await browser.new_page(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                )
+                await page.goto(url, timeout=15000)
+                await page.wait_for_timeout(2000)
+                content = await page.content()
+                await browser.close()
+                return content
+
+        content = asyncio.run(_fetch())
+
         soup = BeautifulSoup(content, "html.parser")
         items = soup.find_all("div", class_="te-stream-repeater")
         for item in items:
@@ -477,13 +483,13 @@ def _fetch_te_naturalgas() -> list[dict]:
                 continue
             title = a_tag.text.strip()
             href = a_tag.get("href")
-            
+
             desc_div = item.find("div", class_="comment")
             description = desc_div.text.strip() if desc_div else ""
-            
+
             date_el = item.find(class_="te-stream-date")
             date_str = date_el.text.strip() if date_el else ""
-            
+
             pub_ts = int(time.time())
             if date_str:
                 try:
@@ -491,12 +497,12 @@ def _fetch_te_naturalgas() -> list[dict]:
                     pub_ts = int(dt.timestamp())
                 except Exception:
                     pass
-            
+
             if pub_ts < cutoff:
                 continue
-            
+
             article_url = f"https://tradingeconomics.com{href}" if href and href.startswith("/") else (href or "")
-            
+
             rows.append({
                 "title": title,
                 "provider": "TradingEconomics",

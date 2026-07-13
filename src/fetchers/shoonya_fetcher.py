@@ -70,7 +70,9 @@ def _post_jdata(
 
     Retries up to 2 times on transient 5xx errors (502/503/504) with exponential
     backoff (1.5s, 3s). Does NOT retry on 4xx (auth errors handled by caller).
+    Also retries on DNS resolution failures with IP fallback.
     """
+    import socket
     import time as _time
 
     body_str = "jData=" + json.dumps(payload, separators=(",", ":"))
@@ -85,6 +87,8 @@ def _post_jdata(
     _TRANSIENT_5XX = {502, 503, 504}
     _MAX_RETRIES = 2
     _BACKOFF_BASE = 1.5  # seconds
+    # Known IPv4 addresses for api.shoonya.com (fallback if DNS fails)
+    _SHOONYA_IPS = ["13.202.119.185"]
 
     for attempt in range(1, _MAX_RETRIES + 2):  # attempts: 1, 2, 3
         req = urllib.request.Request(url, data=body, headers=headers)
@@ -109,6 +113,28 @@ def _post_jdata(
                 return json.loads(raw)
             except Exception:
                 return None
+        except (urllib.error.URLError, socket.gaierror) as exc:
+            # DNS resolution failure or connection error
+            is_dns = isinstance(exc, socket.gaierror) or "getaddrinfo failed" in str(exc).lower() or "Name or service not known" in str(exc)
+            if is_dns and attempt <= _MAX_RETRIES:
+                log.warning("[shoonya] DNS failure for %s (attempt %d/%d): %s", url, attempt, _MAX_RETRIES + 1, exc)
+                # Try IP-based fallback on last DNS retry
+                if attempt == _MAX_RETRIES and _SHOONYA_IPS:
+                    for ip in _SHOONYA_IPS:
+                        try:
+                            ip_url = url.replace("api.shoonya.com", ip)
+                            req = urllib.request.Request(ip_url, data=body, headers={**headers, "Host": "api.shoonya.com"})
+                            with urllib.request.urlopen(req, timeout=10) as resp:
+                                log.info("[shoonya] DNS fallback succeeded via IP %s", ip)
+                                return json.loads(resp.read().decode())
+                        except Exception as ip_exc:
+                            log.debug("[shoonya] IP fallback %s failed: %s", ip, ip_exc)
+                            continue
+                wait = _BACKOFF_BASE * attempt
+                _time.sleep(wait)
+                continue
+            log.error("[shoonya] POST %s failed: %s", url, exc)
+            return None
         except Exception as exc:
             log.error("[shoonya] POST %s failed: %s", url, exc)
             return None
