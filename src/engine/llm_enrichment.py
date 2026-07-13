@@ -38,7 +38,30 @@ try:
 except ImportError:
     boto3 = None
 
+try:
+    import httpx as _httpx
+except ImportError:
+    _httpx = None
+
 _IST = pytz.timezone("Asia/Kolkata")
+
+_OPENCODE_HOST = "opencode.ai"
+
+
+def _opencode_post(url, headers, json_payload, timeout):
+    """POST to opencode.ai using httpx (requests/urllib3 fails TLS against Cloudflare)."""
+    if _httpx is None:
+        raise ImportError("httpx required for opencode.ai endpoints")
+    resp = _httpx.post(url, headers=headers, json=json_payload, timeout=timeout, verify=False)
+    # Return a requests-like object for the caller
+    class _Resp:
+        pass
+    r = _Resp()
+    r.status_code = resp.status_code
+    r.headers = dict(resp.headers)
+    r.text = resp.text
+    r.json = resp.json
+    return r
 
 
 # ── Response Schemas ─────────────────────────────────────────────────────
@@ -1635,12 +1658,20 @@ def _call_llm_api(
                     headers["X-Title"] = "NSEBOT Trading Engine"
                     json_payload["provider"] = {"allow_fallbacks": False}
 
-                resp = session.post(
-                    provider["url"],
-                    headers=headers,
-                    json=json_payload,
-                    timeout=min(remaining, provider.get("timeout", 12.0)),
-                )
+                if _OPENCODE_HOST in provider["url"] and _httpx is not None:
+                    resp = _opencode_post(
+                        provider["url"],
+                        headers,
+                        json_payload,
+                        min(remaining, provider.get("timeout", 12.0)),
+                    )
+                else:
+                    resp = session.post(
+                        provider["url"],
+                        headers=headers,
+                        json=json_payload,
+                        timeout=min(remaining, provider.get("timeout", 12.0)),
+                    )
                 if resp.status_code == 200:
                     content_type = resp.headers.get("Content-Type", "")
                     if "text/html" in content_type:
@@ -1745,12 +1776,20 @@ def _call_llm_api(
                     )
                     retry_payload = json_payload.copy()
                     retry_payload.pop("response_format", None)
-                    retry_resp = session.post(
-                        provider["url"],
-                        headers=headers,
-                        json=retry_payload,
-                        timeout=min(remaining, provider.get("timeout", 12.0)),
-                    )
+                    if _OPENCODE_HOST in provider["url"] and _httpx is not None:
+                        retry_resp = _opencode_post(
+                            provider["url"],
+                            headers,
+                            retry_payload,
+                            min(remaining, provider.get("timeout", 12.0)),
+                        )
+                    else:
+                        retry_resp = session.post(
+                            provider["url"],
+                            headers=headers,
+                            json=retry_payload,
+                            timeout=min(remaining, provider.get("timeout", 12.0)),
+                        )
                     if retry_resp.status_code == 200:
                         retry_content_type = retry_resp.headers.get("Content-Type", "")
                         if "text/html" in retry_content_type:
