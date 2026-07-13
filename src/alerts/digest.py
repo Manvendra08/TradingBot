@@ -618,12 +618,12 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
     lines.append(header_tfss)
 
     if tfss_verdict:
-        lines.append(f"Verdict: {tfss_verdict}")
+        lines.append(f"Verdict: {_esc(tfss_verdict)}")
     if tfss_exec:
-        lines.append(f"Side: {tfss_exec}")
+        lines.append(f"Side: {_esc(tfss_exec)}")
 
     if trade_ok and contract:
-        lines.append(f"✅ Entered: {contract}")
+        lines.append(f"✅ Entered: {_esc(contract)}")
         parts = []
         if delta is not None:
             parts.append(f"Δ{delta}")
@@ -641,16 +641,16 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
         lines.append("Trade: ✗ Not entered")
 
     if exit_reduce:
-        lines.append(f"Exit/Reduce: {exit_reduce}")
+        lines.append(f"Exit/Reduce: {_esc(exit_reduce)}")
         if existing_pos:
-            lines.append(f"   Posn: {existing_pos}")
+            lines.append(f"   Posn: {_esc(existing_pos)}")
 
     if tfss_reason:
-        lines.append(f"Reason: {tfss_reason}")
+        lines.append(f"Reason: {_esc(tfss_reason)}")
     if tfss_why and tfss_why != tfss_reason:
-        lines.append(f"Why: {tfss_why}")
+        lines.append(f"Why: {_esc(tfss_why)}")
     for b in tfss_blockers:
-        lines.append(f"  ⚠ {b}")
+        lines.append(f"  ⚠ {_esc(b)}")
 
     # ── TIMEFRAME ─────────────────────────────────────────
     tf_action   = _val(timeframe.get("action"))
@@ -679,17 +679,17 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
         lines.append("No active signal")
     else:
         if tf_signal:
-            lines.append(f"Signal: {tf_signal}")
+            lines.append(f"Signal: {_esc(tf_signal)}")
         if tf_setup:
-            lines.append(f"Setup: {tf_setup}")
+            lines.append(f"Setup: {_esc(tf_setup)}")
         if tf_contract:
-            lines.append(f"Contract: {tf_contract}")
+            lines.append(f"Contract: {_esc(tf_contract)}")
         if tf_reason:
-            lines.append(f"Reason: {tf_reason}")
+            lines.append(f"Reason: {_esc(tf_reason)}")
         if tf_why and tf_why != tf_reason:
-            lines.append(f"Why: {tf_why}")
+            lines.append(f"Why: {_esc(tf_why)}")
         for b in tf_blockers:
-            lines.append(f"  ⚠ {b}")
+            lines.append(f"  ⚠ {_esc(b)}")
 
     # ── POSITIONS ─────────────────────────────────────────
     opened  = [str(x) for x in (positions.get("opened") or []) if _val(str(x))]
@@ -705,13 +705,13 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
         lines.append("No changes")
     else:
         for o in opened:
-            lines.append(f"  ✅ {o}")
+            lines.append(f"  ✅ {_esc(o)}")
         for e in exited:
-            lines.append(f"  🔴 Exited: {e}")
+            lines.append(f"  🔴 Exited: {_esc(e)}")
         for r in reduced:
-            lines.append(f"  🟡 Reduced: {r}")
+            lines.append(f"  🟡 Reduced: {_esc(r)}")
         if book:
-            lines.append(f"Book: {book}")
+            lines.append(f"Book: {_esc(book)}")
 
     # ── BLOCKERS (consolidated, deduplicated, skip if none) ─
     gr_blockers = [str(b) for b in (global_risk.get("blockers") or []) if _val(str(b))]
@@ -728,7 +728,7 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
         lines.append(DIV)
         lines.append("⚠️ *Blockers*")
         for b in all_blockers:
-            lines.append(f"  • {b}")
+            lines.append(f"  • {_esc(b)}")
 
     # ── AI THESIS ─────────────────────────────────────────
     thesis_text = _val(ai_thesis)
@@ -737,7 +737,7 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
         lines.append(DIV)
         lines.append("🤖 *AI Thesis*")
         for chunk in textwrap.wrap(thesis_text, width=38):
-            lines.append(chunk)
+            lines.append(_esc(chunk))
 
     if digest_id is None:
         digest_id = str(uuid.uuid4())[:8]

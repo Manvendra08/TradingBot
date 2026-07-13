@@ -561,15 +561,30 @@ def send_text_and_return_id(text: str) -> int | None:
     try:
         async def _send_and_get_id():
             bot = _get_tg_bot()
-            msg = await asyncio.wait_for(
-                bot.send_message(
-                    chat_id=TELEGRAM_CHAT_ID,
-                    text=text,
-                    parse_mode="Markdown",
-                ),
-                timeout=10.0,
-            )
-            return msg.message_id
+            try:
+                msg = await asyncio.wait_for(
+                    bot.send_message(
+                        chat_id=TELEGRAM_CHAT_ID,
+                        text=text,
+                        parse_mode="Markdown",
+                    ),
+                    timeout=10.0,
+                )
+                return msg.message_id
+            except TelegramError as tg_err:
+                err_msg = str(tg_err).lower()
+                if "can't parse" in err_msg or "entity" in err_msg or "markdown" in err_msg:
+                    log.warning("Telegram send_and_return_id Markdown parse failed: %s. Retrying in plain text...", tg_err)
+                    msg = await asyncio.wait_for(
+                        bot.send_message(
+                            chat_id=TELEGRAM_CHAT_ID,
+                            text=text,
+                        ),
+                        timeout=10.0,
+                    )
+                    return msg.message_id
+                else:
+                    raise
 
         future = asyncio.run_coroutine_threadsafe(_send_and_get_id(), _loop)
         return future.result(timeout=15.0)

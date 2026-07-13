@@ -48,6 +48,12 @@ class BaseFetcher(abc.ABC):
                 return r.json()
             except (requests.RequestException, ValueError) as exc:
                 last_exc = exc
+                
+                if isinstance(exc, requests.HTTPError) and exc.response is not None:
+                    if exc.response.status_code in (401, 403):
+                        log.warning("[%s] HTTP %d (Auth/Forbidden) — skipping retries.", self.name, exc.response.status_code)
+                        break
+
                 exc_str = str(exc).lower()
                 if "nameresolutionerror" in exc_str or "getaddrinfo failed" in exc_str or "failed to resolve" in exc_str:
                     log.warning("[%s] Name resolution failed — network offline or DNS issue. Skipping retries.", self.name)
