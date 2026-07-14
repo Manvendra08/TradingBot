@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import datetime, timezone, timedelta
 
 from src.fetchers.base_fetcher import BaseFetcher
@@ -30,7 +31,13 @@ _INTERVAL_MAP: dict[str, int] = {
     "SENSEX": 100,
 }
 
-_REQ_HEADERS = {"User-Agent": "Mozilla/5.0"}
+_REQ_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Origin": "https://web.sensibull.com",
+    "Referer": "https://web.sensibull.com/",
+}
 
 
 class SensibullFetcher(BaseFetcher):
@@ -39,6 +46,40 @@ class SensibullFetcher(BaseFetcher):
     def __init__(self):
         super().__init__()
         self.session.headers.update(_REQ_HEADERS)
+        self._warmed_up = False
+        self._warm_up_lock = threading.Lock()
+
+    def _reset_session(self):
+        super().__init__()
+        self.session.headers.update(_REQ_HEADERS)
+        self._warmed_up = False
+
+    def _warm_up_session(self) -> bool:
+        with self._warm_up_lock:
+            if self._warmed_up:
+                return True
+            try:
+                try:
+                    from curl_cffi import requests as curl_requests
+                    session = curl_requests.Session(impersonate="chrome120")
+                    session.headers.update(_REQ_HEADERS)
+                    r = session.get("https://oxide.sensibull.com/v1/pluto/auth/web/session/a/platform/identify", timeout=15)
+                    r.raise_for_status()
+                    self.session = session
+                    self._warmed_up = True
+                    log.info("[sensibull] curl_cffi session successfully warmed up")
+                    return True
+                except ImportError:
+                    pass
+
+                r = self.session.get("https://oxide.sensibull.com/v1/pluto/auth/web/session/a/platform/identify", timeout=15)
+                r.raise_for_status()
+                self._warmed_up = True
+                log.info("[sensibull] requests session successfully warmed up")
+                return True
+            except Exception as e:
+                log.warning("[sensibull] session warm-up failed: %s", e)
+                return False
 
     def fetch_option_chain(self, symbol: str, expiry: str | None = None) -> dict | None:
         sym = symbol.upper().strip()
@@ -47,9 +88,18 @@ class SensibullFetcher(BaseFetcher):
             log.warning("[sensibull] no token for '%s'", sym)
             return None
 
+        if not self._warmed_up:
+            self._warm_up_session()
+
         raw = self._get(f"{_OXIDE_BASE}/live_derivative_prices/{token}")
+        if not raw:
+            log.warning("[sensibull] request failed or returned empty for %s, resetting session and retrying...", sym)
+            self._reset_session()
+            self._warm_up_session()
+            raw = self._get(f"{_OXIDE_BASE}/live_derivative_prices/{token}")
+
         if not raw or not isinstance(raw, dict):
-            log.warning("[sensibull] empty or invalid response for %s", sym)
+            log.warning("[sensibull] empty or invalid response for %s after retry", sym)
             return None
 
         data = raw.get("data")
