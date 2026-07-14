@@ -256,6 +256,13 @@ class SensibullFetcher(BaseFetcher):
             log.warning("[sensibull] no valid deltas for %s", sym)
             return None
         atm_pair_idx = min(valid_indices, key=lambda i: abs(pairs[i]["ce_delta"] - 0.5))
+
+        # Limit output to ATM +/- 15 strikes (31 strikes total)
+        start_idx = max(0, atm_pair_idx - 15)
+        end_idx = min(len(pairs), atm_pair_idx + 16)
+        pairs = pairs[start_idx:end_idx]
+        atm_pair_idx = atm_pair_idx - start_idx
+
         first_strike = round(atm_strike_num - atm_pair_idx * interval)
 
         # Build normalized strikes list
