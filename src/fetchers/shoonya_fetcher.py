@@ -386,11 +386,11 @@ class ShoonyaFetcher(BaseFetcher):
 
                 try:
                     # Step 1: Navigate — will redirect to /investor-entry-level/login
-                    page.goto(authorize_url, wait_until="commit", timeout=30000)
+                    page.goto(authorize_url, wait_until="domcontentloaded", timeout=60000)
                     log.debug("[shoonya] Landed on: %s", page.url)
 
-                    # Wait for React to render the login form (allow up to 30s for slow networks/9.5MB JS load)
-                    page.wait_for_selector("#lgnusrid", state="visible", timeout=30000)
+                    # Wait for React to render the login form
+                    page.wait_for_selector("#lgnusrid", state="visible", timeout=60000)
 
                     # Generate fresh TOTP right before filling (avoids expiry during navigation)
                     totp = pyotp.TOTP(self.totp_key).now()
