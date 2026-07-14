@@ -26,7 +26,7 @@ class ProviderResult:
 
 
 DEFAULT_PROVIDER_TIMEOUTS = {
-    "option_chain": 30.0,
+    "option_chain": 45.0,
     "chart": 8.0,
     "news": 4.0,
     "ip_refresh": 3.0,

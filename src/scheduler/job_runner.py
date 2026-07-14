@@ -96,7 +96,9 @@ def exit_all_positions_friday(market_class: str) -> None:
                 symbol,
             )
             # Fetch options chain to get latest premiums
-            oc_data = fetch_option_chain(symbol)
+            # Include strikes from open trades to ensure we get their premiums
+            required_strikes = _get_required_strikes(symbol)
+            oc_data = fetch_option_chain(symbol, required_strikes=required_strikes)
             if not oc_data or not oc_data.get("underlying_price"):
                 log.warning(
                     "[Friday Exit] Could not fetch latest prices for %s. Skipping Friday exit.",
@@ -350,7 +352,7 @@ def _run_dhan_naturalgas_scrape():
 def _check_live_exits(symbol: str, underlying: float, strikes: list[dict]) -> None:
     """
     H4 fix: Check open live trades for SL/Target hits using freshly fetched
-    option premiums.  Runs every 2 minutes inside _update_live_cmps() so exits
+    option premiums.  Runs every 15 minutes inside _update_live_cmps() so exits
     are detected between the 5-minute full pipeline scans.
 
     Only handles premium-poll exits (shadow mode, FUT, or POLL exit_mode).
@@ -498,11 +500,39 @@ def _update_live_cmps() -> None:
 
     from src.fetchers.router import fetch_option_chain
 
+    def _get_required_strikes(symbol: str) -> set[float]:
+        """Get strikes from open paper and live trades for a symbol."""
+        required = set()
+        with get_conn() as conn:
+            # Paper trades
+            paper_trades = conn.execute(
+                "SELECT strike FROM paper_trades WHERE symbol=? AND status='OPEN'",
+                (symbol,),
+            ).fetchall()
+            for row in paper_trades:
+                try:
+                    required.add(float(row["strike"]))
+                except (ValueError, TypeError):
+                    pass
+            # Live trades
+            live_trades = conn.execute(
+                "SELECT strike FROM live_trades WHERE symbol=? AND status='OPEN'",
+                (symbol,),
+            ).fetchall()
+            for row in live_trades:
+                try:
+                    required.add(float(row["strike"]))
+                except (ValueError, TypeError):
+                    pass
+        return required
+
     def _update_single_symbol(symbol: str) -> None:
         if not _is_open_for(symbol):
             return
         try:
-            oc_data = fetch_option_chain(symbol)
+            # Get strikes from open trades to ensure they're included in fetch
+            required_strikes = _get_required_strikes(symbol)
+            oc_data = fetch_option_chain(symbol, required_strikes=required_strikes)
             if oc_data and oc_data.get("strikes"):
                 fetched_at = datetime.now(timezone.utc).isoformat()
                 underlying = oc_data["underlying_price"]
@@ -1338,6 +1368,7 @@ def start_scheduler(immediate: bool = False):
                 _hb.write_text(str(int(time.time())))
                 from src.models.schema import stamp_health, stamp_open_positions
                 stamp_health("scheduler_loop", "OK", f"interval_idx={current_interval_idx if 'current_interval_idx' in dir() else '?'}")
+                stamp_health("db_write", "OK", "commit succeeded")
                 stamp_open_positions()
                 # Auto-heal transient telegram_send errors if idle > 30m without new failures
                 try:

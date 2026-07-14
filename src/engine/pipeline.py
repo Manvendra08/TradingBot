@@ -114,6 +114,32 @@ def _ensure_kite_health() -> None:
             log.exception("Kite connectivity check failed")
 
 
+def _ensure_shoonya_session() -> None:
+    """Pre-warm the Shoonya OAuth session before the fetch deadline clock starts.
+
+    login() holds a cross-process FileLock during Playwright (~25-35 s).  If we
+    call it inside the 30 s option_chain deadline window it almost always times
+    out on the first cold-start scan.  Calling it here — synchronously, before
+    prefetch futures are submitted — guarantees the token is on disk by the time
+    shoonya_fetcher.fetch_option_chain() runs, so the fetch itself stays fast.
+    """
+    try:
+        from src.fetchers.shoonya_fetcher import get_shoonya_fetcher
+        fetcher = get_shoonya_fetcher()
+        # _load_cached_token refreshes from disk; if token is already valid,
+        # login() returns immediately (no Playwright, no lock wait).
+        fetcher._load_cached_token()
+        if not fetcher.access_token:
+            log.info("[pipeline] Shoonya session not ready — warming up before fetch deadline starts")
+            ok = fetcher.login()
+            if ok:
+                log.info("[pipeline] Shoonya session ready")
+            else:
+                log.warning("[pipeline] Shoonya login failed — fetcher will fall back to dhan_commodity")
+    except Exception as exc:
+        log.warning("[pipeline] _ensure_shoonya_session error (non-fatal): %s", exc)
+
+
 def _prefetch_symbol_data(symbol: str, fetched_at: str) -> dict:
     packet = {"symbol": symbol, "fetched_at": fetched_at}
     oc = run_with_deadline("option_chain", lambda: fetch_option_chain(symbol))
@@ -160,6 +186,7 @@ def run_pipeline(symbols: list[str] | None = None, force: bool = False, is_test:
         if not is_test:
             _maybe_sync_positions()
             _ensure_kite_health()
+            _ensure_shoonya_session()  # warm Shoonya token before fetch deadline clock starts
 
         futures = [pipeline_io_executor.submit(_prefetch_symbol_data, symbol, fetched_at) for symbol in symbols]
         prefetched = []

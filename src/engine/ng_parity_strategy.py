@@ -92,7 +92,7 @@ def run_ng_parity_strategy(
 
     # Determine Side: dev > 0 (MCX rich) -> SELL FUT; dev < 0 (MCX cheap) -> BUY FUT
     side = "SELL" if dev_pct > 0 else "BUY"
-    verdict = "SHORT" if side == "SELL" else "LONG"
+    verdict = "NG Parity - Short" if side == "SELL" else "NG Parity - Long"
 
     # Sizing calculations
     config = load_runtime_config()

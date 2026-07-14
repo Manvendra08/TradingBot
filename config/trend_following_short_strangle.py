@@ -4,7 +4,7 @@ Configuration for the Trend Following Short Strangle (TFSS) strategy.
 from typing import TypedDict, List, Dict
 
 STRATEGY_MODE = "TREND_FOLLOWING_SHORT_STRANGLE"
-PERSISTENCE_WINDOW = 5
+PERSISTENCE_WINDOW = 3
 PERSISTENCE_MIN_MATCH = 3
 REQUIRE_BROAD_CORROBORATION = True
 

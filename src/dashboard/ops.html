@@ -80,10 +80,12 @@
         .ops-status-badge.ok { background: rgba(0,229,160,.12); color: var(--green); border: 1px solid rgba(0,229,160,.3); }
         .ops-status-badge.warn { background: rgba(255,209,102,.1); color: var(--yellow); border: 1px solid rgba(255,209,102,.3); }
         .ops-status-badge.down { background: rgba(255,77,109,.1); color: var(--red); border: 1px solid rgba(255,77,109,.3); }
+        .ops-status-badge.offline { background: rgba(74,85,104,.15); color: var(--text-dim); border: 1px solid rgba(74,85,104,.3); }
         .pulse { width: 7px; height: 7px; border-radius: 50%; animation: pulse-anim 1.8s ease-in-out infinite; }
         .pulse.ok { background: var(--green); box-shadow: 0 0 0 0 rgba(0,229,160,.6); }
         .pulse.warn { background: var(--yellow); box-shadow: 0 0 0 0 rgba(255,209,102,.6); }
         .pulse.down { background: var(--red); box-shadow: 0 0 0 0 rgba(255,77,109,.6); animation: none; }
+        .pulse.offline { background: var(--text-dim); box-shadow: 0 0 0 0 rgba(74,85,104,.4); animation: none; }
         @keyframes pulse-anim {
             0%,100% { box-shadow: 0 0 0 0 currentColor; }
             50% { box-shadow: 0 0 0 6px transparent; }
@@ -119,16 +121,20 @@
         .component-card.warn { border-left: 3px solid var(--yellow); }
         .component-card.down { border-left: 3px solid var(--red); }
         .component-card.unknown { border-left: 3px solid var(--muted); }
+        .component-card.offline { border-left: 3px solid var(--muted); opacity: 0.8; }
         .comp-icon { font-size: 20px; flex-shrink: 0; width: 32px; text-align: center; }
         .comp-body { flex: 1; min-width: 0; }
         .comp-name { font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 2px; }
-        .comp-detail { font-size: 11px; color: var(--text-dim); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .comp-detail { font-size: 11px; color: var(--text-dim); font-family: var(--sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .detail-key { color: var(--text-dim); font-weight: normal; margin-right: 1px; }
+        .detail-val { color: var(--text); font-weight: 500; }
         .comp-age { font-size: 10px; color: var(--text-dim); font-family: var(--mono); margin-top: 2px; }
         .comp-badge { font-size: 10px; font-weight: 700; font-family: var(--mono); padding: 2px 7px; border-radius: 4px; letter-spacing: .5px; flex-shrink: 0; }
         .comp-badge.ok { background: rgba(0,229,160,.12); color: var(--green); }
         .comp-badge.warn { background: rgba(255,209,102,.1); color: var(--yellow); }
         .comp-badge.down { background: rgba(255,77,109,.1); color: var(--red); }
         .comp-badge.unknown { background: rgba(74,85,104,.2); color: var(--muted); }
+        .comp-badge.offline { background: rgba(74,85,104,.15); color: var(--text-dim); }
 
         /* ── Incidents Feed ── */
         .incidents-wrap { display: flex; flex-direction: column; gap: 8px; }
@@ -337,6 +343,76 @@ function compMeta(key) {
     return { icon: "🔧", name: key, staleMin: 30 };
 }
 
+// ── Detail Formatter ────────────────────────────────────────────────────────
+function formatDetail(key, detail) {
+    if (!detail || detail === "—") return "—";
+    
+    function parseKV(str) {
+        const obj = {};
+        const pairs = str.split(/\s+/);
+        for (const p of pairs) {
+            const idx = p.indexOf("=");
+            if (idx !== -1) {
+                obj[p.substring(0, idx)] = p.substring(idx + 1);
+            }
+        }
+        return obj;
+    }
+
+    try {
+        if (key.startsWith("last_scan_")) {
+            const kv = parseKV(detail);
+            if (kv.source && kv.price) {
+                const src = kv.source.charAt(0).toUpperCase() + kv.source.slice(1);
+                return `<span class="detail-val">${src}</span> · <span class="detail-val">${kv.price}</span>`;
+            }
+        }
+        if (key === "shoonya_session") {
+            const kv = parseKV(detail);
+            if (kv.last_fetch) {
+                return `Last: <span class="detail-val">${kv.last_fetch}</span>`;
+            }
+        }
+        if (key === "scheduler_loop") {
+            const kv = parseKV(detail);
+            if (kv.interval_idx !== undefined) {
+                return `Interval: <span class="detail-val">${kv.interval_idx}</span>`;
+            }
+        }
+        if (key === "open_positions") {
+            const kv = parseKV(detail);
+            if (kv.count !== undefined && kv.oldest_age !== undefined) {
+                const count = parseInt(kv.count) || 0;
+                if (count === 0) return "No open positions";
+                return `<span class="detail-val">${count} position${count > 1 ? "s" : ""}</span> · age <span class="detail-val">${kv.oldest_age}</span>`;
+            }
+        }
+        if (key === "parity_feed") {
+            const kv = parseKV(detail);
+            const parts = [];
+            if (kv.nymex_age) parts.push(`NYMEX: ${kv.nymex_age}`);
+            if (kv.fx_age && kv.fx_age !== "0s") parts.push(`FX: ${kv.fx_age}`);
+            if (kv.mcx_age && kv.mcx_age !== "0s") parts.push(`MCX: ${kv.mcx_age}`);
+            if (kv.valid) parts.push(kv.valid === "True" ? "Valid" : "Invalid");
+            return parts.map(p => `<span class="detail-val">${p}</span>`).join(" · ");
+        }
+    } catch (e) {
+        console.error("formatDetail error:", e);
+    }
+    
+    if (detail.includes("=")) {
+        const pairs = detail.split(/\s+/);
+        return pairs.map(p => {
+            const idx = p.indexOf("=");
+            if (idx !== -1) {
+                return `<span class="detail-key">${p.substring(0, idx)}:</span><span class="detail-val">${p.substring(idx+1)}</span>`;
+            }
+            return p;
+        }).join(" · ");
+    }
+    return detail;
+}
+
 // ── Staleness helper ───────────────────────────────────────────────────────
 function ageStr(updatedAt) {
     if (!updatedAt) return "—";
@@ -349,19 +425,63 @@ function ageStr(updatedAt) {
     } catch { return "—"; }
 }
 
+// Helper to get current Date object set to IST timezone fields
+function getISTDate() {
+    const d = new Date();
+    // Convert local browser/machine time to UTC, then add 5.5 hours for IST
+    const utc = d.getTime() + (d.getTimezoneOffset() * 60000);
+    return new Date(utc + (3600000 * 5.5));
+}
+
 // ── Status derivation ──────────────────────────────────────────────────────
 function deriveStatus(row, meta) {
     if (!row) return "unknown";
-    // Staleness check first: override database status if it hasn't been updated recently
+    
+    // 1. Explicit database error states ALWAYS override market hours (to preserve actual crashes/alerts)
+    const dbStatus = (row.status || "").toUpperCase();
+    if (dbStatus === "DOWN") return "down";
+    if (dbStatus === "DEGRADED") return "warn";
+
+    // 2. Check if the market for this component is closed right now in IST
+    const nowIST = getISTDate();
+    const day = nowIST.getDay(); // 0 = Sunday, 6 = Saturday, 1-5 = Weekdays
+    const hour = nowIST.getHours();
+    const min = nowIST.getMinutes();
+    const timeVal = hour * 100 + min; // e.g. 1530 for 15:30
+
+    let isClosed = false;
+
+    if (day === 0 || day === 6) {
+        // Weekends: all markets closed
+        isClosed = true;
+    } else {
+        if (row.key.startsWith("last_scan_")) {
+            const sym = row.key.replace("last_scan_", "");
+            if (sym === "NATURALGAS" || sym === "CRUDEOIL") {
+                // MCX: 09:00 to 23:30
+                if (timeVal < 900 || timeVal > 2330) isClosed = true;
+            } else {
+                // NSE/BSE: 09:15 to 15:30
+                if (timeVal < 915 || timeVal > 1530) isClosed = true;
+            }
+        } else {
+            // General system components: active if any market is open (09:00 to 23:30)
+            if (timeVal < 900 || timeVal > 2330) isClosed = true;
+        }
+    }
+
+    // 3. If the market is closed, the component is OFFLINE rather than stale DOWN/WARN
+    if (isClosed) {
+        return "offline";
+    }
+
+    // 4. Staleness check (only enforced when the market is open)
     if (row.updated_at && meta.staleMin < 999) {
         const ageMin = (Date.now() - new Date(row.updated_at)) / 60000;
         if (ageMin > meta.staleMin * 2) return "down";
         if (ageMin > meta.staleMin) return "warn";
     }
-    const s = (row.status||"").toUpperCase();
-    if (s === "OK") return "ok";
-    if (s === "DEGRADED") return "warn";
-    if (s === "DOWN") return "down";
+    
     return "ok";
 }
 
@@ -370,8 +490,8 @@ function renderKPIs(data) {
     const rows = data.health || [];
     const openPos = data.open_positions ?? 0;
     const heartbeatAge = data.heartbeat_age_s;
-    const downCount = rows.filter(r => (r.status||"").toUpperCase() === "DOWN").length;
-    const warnCount = rows.filter(r => (r.status||"").toUpperCase() === "DEGRADED").length;
+    const downCount = rows.filter(r => r.derivedStatus === "down").length;
+    const warnCount = rows.filter(r => r.derivedStatus === "warn").length;
 
     const hbStatus = heartbeatAge == null ? "?" : heartbeatAge < 120 ? "OK" : "STALE";
     const hbClass = hbStatus === "OK" ? "green" : "red";
@@ -396,7 +516,7 @@ function renderComponents(data) {
     }
     document.getElementById("component-grid").innerHTML = rows.map(row => {
         const meta = compMeta(row.key);
-        const status = deriveStatus(row, meta);
+        const status = row.derivedStatus || "unknown";
         const badgeLabel = status.toUpperCase();
         const age = ageStr(row.updated_at);
         const detail = row.detail || "—";
@@ -405,7 +525,7 @@ function renderComponents(data) {
             <div class="comp-icon">${meta.icon}</div>
             <div class="comp-body">
                 <div class="comp-name">${meta.name}</div>
-                <div class="comp-detail" title="${detail}">${detail}</div>
+                <div class="comp-detail" title="${detail}">${formatDetail(row.key, detail)}</div>
                 <div class="comp-age">Updated ${age}</div>
             </div>
             <span class="comp-badge ${status}">${badgeLabel}</span>
@@ -415,8 +535,9 @@ function renderComponents(data) {
 
 function renderBanner(data) {
     const rows = data.health || [];
-    const downCount = rows.filter(r => (r.status||"").toUpperCase() === "DOWN").length;
-    const warnCount = rows.filter(r => (r.status||"").toUpperCase() === "DEGRADED").length;
+    const downCount = rows.filter(r => r.derivedStatus === "down").length;
+    const warnCount = rows.filter(r => r.derivedStatus === "warn").length;
+    const offlineCount = rows.filter(r => r.derivedStatus === "offline").length;
     const heartbeatAge = data.heartbeat_age_s;
     const heartbeatOk = heartbeatAge != null && heartbeatAge < 120;
     const openPos = data.open_positions ?? 0;
@@ -428,6 +549,7 @@ function renderBanner(data) {
     if (!heartbeatOk && heartbeatAge !== null) { overallStatus = "down"; statusText = "BOT HEARTBEAT LOST"; subText = `Heartbeat stale (${Math.round(heartbeatAge)}s) — scheduler may be down`; }
     else if (downCount > 0) { overallStatus = "down"; statusText = `${downCount} COMPONENT${downCount > 1 ? "S" : ""} DOWN`; subText = `${warnCount} degraded · ${openPos} open position${openPos !== 1 ? "s" : ""}`; }
     else if (warnCount > 0) { overallStatus = "warn"; statusText = `${warnCount} DEGRADED`; subText = `All critical components healthy · ${openPos} open position${openPos !== 1 ? "s" : ""}`; }
+    else if (offlineCount > 0 && (offlineCount + rows.filter(r => r.derivedStatus === "unknown").length) === rows.length) { overallStatus = "offline"; statusText = "MARKETS CLOSED (SLEEPING)"; subText = `Bot is sleeping until next market open · ${openPos} open position${openPos !== 1 ? "s" : ""}`; }
 
     const badge = document.getElementById("ops-status-badge");
     const pulse = document.getElementById("ops-pulse");
@@ -483,6 +605,15 @@ async function refresh() {
     try {
         const r = await fetch("/health", { signal: AbortSignal.timeout(6000) });
         const data = await r.json();
+
+        // Precompute derived status for all components to ensure consistency across Banner, KPIs, and Grid
+        if (data.health) {
+            data.health = data.health.map(row => {
+                const meta = compMeta(row.key);
+                const derived = deriveStatus(row, meta);
+                return { ...row, derivedStatus: derived };
+            });
+        }
 
         renderBanner(data);
         renderKPIs(data);

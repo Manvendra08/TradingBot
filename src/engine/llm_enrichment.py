@@ -1074,26 +1074,43 @@ def _call_llm_api(
 
     # Route model pipeline based on purpose
     if purpose == "eod_review":
+        _github_models_eod = {
+            "model_group": "github-models-eod",
+            "providers": [
+                {
+                    "name": "GitHub Models (GPT-4o-mini)",
+                    "env_key": "GITHUB_TOKEN",
+                    "url": "https://models.inference.ai.azure.com/chat/completions",
+                    "model": "gpt-4o-mini",
+                },
+                {
+                    "name": "GitHub Models (Llama 3.3 70B)",
+                    "env_key": "GITHUB_TOKEN",
+                    "url": "https://models.inference.ai.azure.com/chat/completions",
+                    "model": "Llama-3.3-70B-Instruct",
+                },
+            ],
+        }
+        _groq_group_eod = {
+            "model_group": "groq-eod",
+            "providers": [
+                {
+                    "name": "Groq (GPT-OSS 120B)",
+                    "env_key": "GROQ_API_KEY",
+                    "url": "https://api.groq.com/openai/v1/chat/completions",
+                    "model": "openai/gpt-oss-120b",
+                },
+                {
+                    "name": "Groq (Llama 3.3 70B)",
+                    "env_key": "GROQ_API_KEY",
+                    "url": "https://api.groq.com/openai/v1/chat/completions",
+                    "model": "llama-3.3-70b-versatile",
+                },
+            ],
+        }
         FREE_MODEL_PIPELINE = [
-            {
-                "model_group": "opencode-zen-eod",
-                "providers": [
-                    {
-                        "name": "OpenCode Zen (Nemotron 3 Ultra Free)",
-                        "env_key": "OPENCODE_API_KEY",
-                        "url": "https://opencode.ai/zen/v1/chat/completions",
-                        "model": "nemotron-3-ultra-free",
-                        "timeout": 35,
-                    },
-                    {
-                        "name": "OpenCode Zen (DeepSeek V4 Flash Free)",
-                        "env_key": "OPENCODE_API_KEY",
-                        "url": "https://opencode.ai/zen/v1/chat/completions",
-                        "model": "deepseek-v4-flash-free",
-                        "timeout": 25,
-                    },
-                ],
-            },
+            _github_models_eod,
+            _groq_group_eod,
             {
                 "model_group": "nvidia-nim-eod",
                 "providers": [
@@ -1127,12 +1144,9 @@ def _call_llm_api(
                         "model": "nvidia/nemotron-3-super-120b-a12b:free",
                     },
                 ],
-            }
-        ]
-    elif purpose == "formatting":
-        FREE_MODEL_PIPELINE = [
+            },
             {
-                "model_group": "opencode-zen-formatting",
+                "model_group": "opencode-zen-eod",
                 "providers": [
                     {
                         "name": "OpenCode Zen (Nemotron 3 Ultra Free)",
@@ -1150,6 +1164,51 @@ def _call_llm_api(
                     },
                 ],
             },
+        ]
+    elif purpose == "formatting":
+        _github_models_fmt = {
+            "model_group": "github-models-formatting",
+            "providers": [
+                {
+                    "name": "GitHub Models (GPT-4o-mini)",
+                    "env_key": "GITHUB_TOKEN",
+                    "url": "https://models.inference.ai.azure.com/chat/completions",
+                    "model": "gpt-4o-mini",
+                },
+                {
+                    "name": "GitHub Models (Llama 3.3 70B)",
+                    "env_key": "GITHUB_TOKEN",
+                    "url": "https://models.inference.ai.azure.com/chat/completions",
+                    "model": "Llama-3.3-70B-Instruct",
+                },
+            ],
+        }
+        _groq_group_fmt = {
+            "model_group": "groq-formatting",
+            "providers": [
+                {
+                    "name": "Groq (Qwen 3 32B)",
+                    "env_key": "GROQ_API_KEY",
+                    "url": "https://api.groq.com/openai/v1/chat/completions",
+                    "model": "qwen/qwen3-32b",
+                },
+                {
+                    "name": "Groq (Qwen 3.6 27B)",
+                    "env_key": "GROQ_API_KEY",
+                    "url": "https://api.groq.com/openai/v1/chat/completions",
+                    "model": "qwen/qwen3.6-27b",
+                },
+                {
+                    "name": "Groq (Qwen 2.5 Coder 32B)",
+                    "env_key": "GROQ_API_KEY",
+                    "url": "https://api.groq.com/openai/v1/chat/completions",
+                    "model": "qwen-2.5-coder-32b",
+                },
+            ],
+        }
+        FREE_MODEL_PIPELINE = [
+            _github_models_fmt,
+            _groq_group_fmt,
             {
                 "model_group": "nvidia-nim-formatting",
                 "providers": [
@@ -1183,24 +1242,6 @@ def _call_llm_api(
                         "model": "qwen/qwen3-next-80b-a3b-instruct:free",
                     },
                     {
-                        "name": "Groq (Qwen 3 32B)",
-                        "env_key": "GROQ_API_KEY",
-                        "url": "https://api.groq.com/openai/v1/chat/completions",
-                        "model": "qwen/qwen3-32b",
-                    },
-                    {
-                        "name": "Groq (Qwen 3.6 27B)",
-                        "env_key": "GROQ_API_KEY",
-                        "url": "https://api.groq.com/openai/v1/chat/completions",
-                        "model": "qwen/qwen3.6-27b",
-                    },
-                    {
-                        "name": "Groq (Qwen 2.5 Coder 32B)",
-                        "env_key": "GROQ_API_KEY",
-                        "url": "https://api.groq.com/openai/v1/chat/completions",
-                        "model": "qwen-2.5-coder-32b",
-                    },
-                    {
                         "name": "OpenRouter (Qwen 2.5 Coder 32B Free)",
                         "env_key": "OPENROUTER_API_KEY",
                         "url": "https://openrouter.ai/api/v1/chat/completions",
@@ -1213,7 +1254,26 @@ def _call_llm_api(
                         "model": "qwen/qwen-2.5-coder-32b-instruct",
                     },
                 ],
-            }
+            },
+            {
+                "model_group": "opencode-zen-formatting",
+                "providers": [
+                    {
+                        "name": "OpenCode Zen (Nemotron 3 Ultra Free)",
+                        "env_key": "OPENCODE_API_KEY",
+                        "url": "https://opencode.ai/zen/v1/chat/completions",
+                        "model": "nemotron-3-ultra-free",
+                        "timeout": 35,
+                    },
+                    {
+                        "name": "OpenCode Zen (DeepSeek V4 Flash Free)",
+                        "env_key": "OPENCODE_API_KEY",
+                        "url": "https://opencode.ai/zen/v1/chat/completions",
+                        "model": "deepseek-v4-flash-free",
+                        "timeout": 25,
+                    },
+                ],
+            },
         ]
     else:  # live_verdict — symbol-aware routing
         _base = symbol.upper().strip().split()[0]
@@ -1438,13 +1498,12 @@ def _call_llm_api(
         }
 
         if _is_mcx:
-            # MCX: OpenCode Zen (primary) → Nvidia NIM → Bedrock → Groq → GitHub → OpenRouter → Gemini → SambaNova
+            # MCX: GitHub Models (primary) → Groq → Nvidia NIM → Bedrock → OpenRouter → Gemini → SambaNova → Opencode Zen (fallback)
             FREE_MODEL_PIPELINE = [
-                _opencode_zen_group,
+                _github_models,
+                _groq_group,
                 _nvidia_nim_group,
                 _bedrock_group,
-                _groq_group,
-                _github_models,
                 {
                     "model_group": "openrouter-gpt-oss-free",
                     "providers": [
@@ -1482,17 +1541,18 @@ def _call_llm_api(
                         },
                     ],
                 },
+                _opencode_zen_group,
             ]
         else:
-            # NSE/BSE indices: OpenCode Zen (primary) → Nvidia NIM → Bedrock → GitHub → Groq → OpenRouter → Gemini
+            # NSE/BSE indices: GitHub Models (primary) → Groq → Nvidia NIM → Bedrock → OpenRouter → Gemini → Opencode Zen (fallback)
             FREE_MODEL_PIPELINE = [
-                _opencode_zen_group,
-                _nvidia_nim_group,
-                _bedrock_group,
                 _github_models,
                 _groq_group,
+                _nvidia_nim_group,
+                _bedrock_group,
                 _openrouter_group,
                 _gemini_group,
+                _opencode_zen_group,
             ]
 
     max_tokens = _max_tokens_for_purpose(purpose)

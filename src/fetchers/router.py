@@ -108,15 +108,18 @@ def _priority_for(symbol: str) -> list[str]:
     if base in _MCX_COMMODITIES:
         return ["shoonya", "dhan_commodity", "moneycontrol", "dhan", "dhan_headless"]
     if base == "SENSEX":
-        return ["shoonya", "dhan_sensex", "sensibull", "dhan", "nse_public"]
+        return ["shoonya", "dhan_sensex", "dhan", "nse_public", "sensibull"]
     return [
-        "sensibull", "shoonya", "paytm", "dhan",
-        "nse_public", "dhan_headless", "moneycontrol",
+        "shoonya", "paytm", "dhan",
+        "nse_public", "dhan_headless", "moneycontrol", "sensibull",
     ]
 
 
-def _filter_atm_strikes(result: dict) -> None:
-    """Filter strikes in-place to ATM +- configured strike window."""
+def _filter_atm_strikes(result: dict, required_strikes: set[float] | None = None) -> None:
+    """Filter strikes in-place to ATM +- configured strike window.
+    
+    Also preserves any required_strikes (e.g., from open trades) even if outside ATM window.
+    """
     strikes_data = result.get("strikes")
     if not strikes_data:
         return
@@ -167,14 +170,19 @@ def _filter_atm_strikes(result: dict) -> None:
         start_idx = max(0, idx - STRIKES_AROUND_ATM)
         end_idx = min(len(strikes_list), idx + STRIKES_AROUND_ATM + 1)
         kept_strikes = set(strikes_list[start_idx:end_idx])
+        
+        # Also keep any required strikes (e.g., from open trades)
+        if required_strikes:
+            kept_strikes |= required_strikes
 
         result["strikes"] = [s for s in strikes_data if s["strike"] in kept_strikes]
         log.debug(
-            "Filtered strikes for %s from %d to %d around ATM strike %s",
+            "Filtered strikes for %s from %d to %d around ATM strike %s (required: %d)",
             result.get("symbol"),
             len(strikes_list),
             len(kept_strikes),
             atm_strike,
+            len(required_strikes) if required_strikes else 0,
         )
     except Exception as e:
         log.warning("Failed to filter ATM strikes: %s", e)
@@ -218,13 +226,15 @@ def _try_fetcher(source: str, symbol: str, expiry: str | None) -> dict | None:
         return None
 
 
-def _finalise_result(result: dict, source: str, symbol: str, priority: list[str]) -> dict:
+def _finalise_result(result: dict, source: str, symbol: str, priority: list[str], required_strikes: set[float] | None = None) -> dict:
     """Apply ATM filter, enrich greeks, log success, stamp health."""
-    _filter_atm_strikes(result)
+    _filter_atm_strikes(result, required_strikes)
     underlying = result.get("underlying_price")
     expiry_val = result.get("expiry", "")
     if underlying and expiry_val:
-        n = enrich_missing_greeks(result["strikes"], underlying, expiry_val)
+        base = symbol.upper().split()[0]
+        exchange = "MCX" if base in _MCX_COMMODITIES else ("BFO" if base == "SENSEX" else "NFO")
+        n = enrich_missing_greeks(result["strikes"], underlying, expiry_val, exchange=exchange)
         if n:
             log.info(
                 "[router] enriched %d/%d strikes with computed greeks for %s",
@@ -256,12 +266,17 @@ _PARALLEL_RACE_PAIRS: list[tuple[str, str]] = [
 ]
 
 
-def fetch_option_chain(symbol: str, expiry: str | None = None) -> dict | None:
+def fetch_option_chain(symbol: str, expiry: str | None = None, required_strikes: set[float] | None = None) -> dict | None:
     """
     Try fetchers in configured priority order.
     For NSE symbols sensibull and shoonya are raced concurrently so that
     shoonya's result is not blocked behind sensibull's full retry chain.
     Returns normalised dict or None if all fail.
+    
+    Args:
+        symbol: Trading symbol
+        expiry: Expiry date (optional)
+        required_strikes: Set of strike prices that must be included in result (e.g., from open trades)
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
 
@@ -327,7 +342,7 @@ def fetch_option_chain(symbol: str, expiry: str | None = None) -> dict | None:
 
     # ── Step 2: if race produced a result, we're done ──
     if result_data is not None:
-        return _finalise_result(result_data, result_source, symbol, priority)
+        return _finalise_result(result_data, result_source, symbol, priority, required_strikes)
 
     # ── Step 3: fall through to remaining sequential fetchers ──
     for source in remaining:
@@ -336,7 +351,7 @@ def fetch_option_chain(symbol: str, expiry: str | None = None) -> dict | None:
             continue
         data = _try_fetcher(source, symbol, expiry)
         if data is not None:
-            return _finalise_result(data, source, symbol, priority)
+            return _finalise_result(data, source, symbol, priority, required_strikes)
 
     # All failed
     try:

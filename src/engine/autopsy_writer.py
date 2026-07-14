@@ -96,10 +96,11 @@ def _call_llm_autopsy(trade: dict, shadow: dict | None) -> dict:
     except ImportError:
         return {"reasons_held": None, "primary_failure": "LLM unavailable", "note": ""}
 
+    symbol = trade.get("symbol", "UNKNOWN")
     prompt = f"""Analyze this closed trade and determine if the decision logic held up.
 
 TRADE:
-- Symbol: {trade.get('symbol')}
+- Symbol: {symbol}
 - Verdict: {trade.get('verdict_label')}
 - Setup Type: {trade.get('setup_type')}
 - Entry: {trade.get('entry_premium')}
@@ -115,7 +116,7 @@ Respond in JSON:
 {{"reasons_held": bool, "primary_failure": "string or null", "note": "3 sentences max"}}
 """
     try:
-        response = _call_llm_api(prompt, model_override="gemini-2.0-flash")
+        response = _call_llm_api(symbol, prompt)
         if response:
             text = getattr(response, "text", "") or str(response)
             try:
@@ -129,7 +130,8 @@ Respond in JSON:
                 return {"reasons_held": None, "primary_failure": "JSON parse failed", "note": text[:500]}
     except Exception as e:
         log.warning("LLM autopsy call failed: %s", e)
-    return {"reasons_held": None, "primary_failure": str(e)[:100], "note": ""}
+        return {"reasons_held": None, "primary_failure": str(e)[:100], "note": ""}
+    return {"reasons_held": None, "primary_failure": "No LLM response", "note": ""}
 
 
 def _call_llm_autopsy_batch(trades_with_shadows: list[tuple[dict, dict | None]]) -> list[dict]:
@@ -175,7 +177,9 @@ def _call_llm_autopsy_batch(trades_with_shadows: list[tuple[dict, dict | None]])
         
         try:
             from src.engine.llm_enrichment import _call_llm_api
-            response = _call_llm_api(prompt, model_override="gemini-2.0-flash")
+            # Use first trade's symbol for routing; purpose=eod_review for batch analysis
+            first_symbol = batch[0][0].get("symbol", "AUTOPSY_BATCH") if batch else "AUTOPSY_BATCH"
+            response = _call_llm_api(first_symbol, prompt, purpose="eod_review")
             if response:
                 text = getattr(response, "text", "") or str(response)
                 match = re.search(r'\[.*\]', text, re.DOTALL) if 're' in dir() else None

@@ -183,3 +183,36 @@
   3. Fixed `PipelineContext` signature in TFSS tests.
   4. Updated trend score assertions to expect 100.
   5. Added missing SQLite indices on `live_trades` in `schema.py`.
+
+### F27: Sensibull Greeks Deprecation & Shoonya Real-Time Options Engine
+- **Architecture Update:** Sensibull fetcher for Greeks calculation has been deprecated due to blocked API endpoints.
+- **Fix:** Integrated a real-time `ShoonyaOptionsEngine` that connects to the Shoonya WebSocket (`shoonya_ws.py`). It calculates live Greeks (Delta, Theta, Gamma, Vega, IV) natively using Black-76 for MCX and BSM for NSE indices. The engine downloads token master files (`shoonya_master.py`) daily at 8:30 AM IST and caches Greeks in memory for `shoonya_fetcher.py` and `greeks_calculator.py` to consume instantly.
+
+### F28: Shoonya WebSocket Connection Rejections and Client Handshake
+- **Symptom:** WebSocket connections to `NorenWSTP/` return `{"t":"ck","s":"NOT_OK"}` during authentication.
+- **Root Cause:** 1) WebSocket payload keys are strict: the session token must be sent under the key `"susertoken"` (sending `"accesstoken"` or `"access_token"` triggers timeouts or failures). 2) Shoonya enforces a strict single-session policy for market data WebSockets; any active trading terminal (Shoonya Web, Mobile App, NEST Trader) will reject new connections or trigger Close Code 1008 on duplicate logins.
+- **Fix:** Confirmed standard connection parameters: `"uid": USER_ID`, `"actid": USER_ID`, `"susertoken": token`, `"source": "API"`, and `"t": "c"`. Removed experimental/duplicated fields from payload to ensure compatibility.
+
+### F29: Shoonya WebSocket Removal & REST-Based Local Greeks Fallback
+- **Architecture Update:** The Shoonya WebSocket integration (`shoonya_ws.py`) and streaming Greeks cache (`shoonya_options_engine.py`) have been completely removed.
+- **Reason:** Shoonya's strict single-session policy for market data WebSockets, session token collision/lockout on concurrent terminals, and complex authentication flows caused high overhead and reliability issues for commodity scans.
+- **Fix:** Reverted to a pure REST API OAuth flow. LTPs and Greeks are fetched and calculated on-demand during each scan interval. Missing Greeks (Delta, Gamma, Theta, Vega, IV) are computed locally via the BSM/Black-76 solver in `greeks_calculator.py` using spot/futures prices fetched during the REST scan. All `shoonya_ws` references, the option engine cache, and symbol token master downloads have been deleted.
+
+### F30: GreeksCalculator Local SciPy Engine & Exchange Bell Alignment
+- **Architecture Update:** Completely replaced the `vollib` library implementation inside `greeks_calculator.py` with a native `scipy`-based analytical solver.
+- **Bug Fixes:**
+  1. **Asset Class Mismatch:** Implemented the Black-76 model specifically for MCX options on futures, resolving the structural pricing error of evaluating them under spot BSM model assumptions.
+  2. **Time-To-Expiry Execution Trap:** Removed the midnight-aligned date parser, replacing it with explicit timezone-aware (`Asia/Kolkata`) target closing bell offsets (15:30 for NSE/BSE Spot, 23:30 for MCX Futures). Prevents negative time-to-expiry and zero-filled Greeks on expiry days.
+  3. **Timezone Awareness Blindspot:** Standardized calculations to localize dates and compare with system time using timezone safety.
+  4. **C-level compilation panics**: Vollib's dependencies could trigger thread-terminating C-level segmentation faults. Local calculation using SciPy functions resolves python/native thread panics.
+
+### F31: Ops Monitor Card UI Formatting & DB Write Health Stamp
+- **Architecture Update:** Cleaned up the Ops Monitor component card UI detail layout.
+- **Root Cause of UI "Junk":** 
+  1. The DB `health_state` table detail column stores raw key-value pairs (e.g. `source=dhan price=24227.05`). When displayed raw, they overflowed the narrow grid cards (rendering as truncated strings with `...`).
+  2. The monospace font (`Space Mono`) at small sizes (11px) had anti-aliasing issues where `=` signs scaled down to resemble simple dashes (`-`), creating confusing strings like `source-dhan price-..`.
+  3. `db_write` had no active updater in the codebase, causing it to remain stale and display as `DOWN` indefinitely after a few hours of inactivity.
+- **Fix:**
+  1. Implemented a `formatDetail` JavaScript parser in `ops.html` that extracts `key=value` strings and renders them as cleanly styled label-value pairs with middots (`·`).
+  2. Changed `.comp-detail` font to `var(--sans)` (`DM Sans`) to maximize space and guarantee crisp, legible rendering of equals/colon symbols.
+  3. Added an active `stamp_health("db_write", "OK", "commit succeeded")` to the scheduler's heartbeat loop in `job_runner.py` to continuously verify write capabilities.

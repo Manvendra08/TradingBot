@@ -1,143 +1,176 @@
 from __future__ import annotations
-
+import os
+import math
 import logging
-from datetime import datetime
+from datetime import datetime, time
+import pytz
+from scipy.stats import norm
 
 log = logging.getLogger(__name__)
 
-
 class GreeksCalculator:
     """
-    Calculates Option Greeks (Delta, Theta, Gamma, Vega, IV) locally
-    using vollib (Black-Scholes). Uses lazy import to avoid the ~19s
-    native-code compilation cost on module load.
-
-    Intended for MCX commodities where the data source (Shoonya) provides
-    IV but no greeks. For NSE indices, Sensibull already supplies greeks.
+    Calculates Option Greeks (Delta, Theta, Gamma, Vega, IV) locally.
+    Natively supports BSM (for NSE/BSE Spot) and Black-76 (for MCX Futures).
+    Replaces vollib completely to prevent C-level compilation panics and 
+    provides correct minute-precision expiry handling for Indian sessions.
     """
-
     def __init__(self, risk_free_rate: float | None = None) -> None:
-        # BUG-M10 FIX: Use current RBI repo rate (6.5%) instead of unrealistic 10%.
-        # Configurable via GREEKS_RISK_FREE_RATE env var for flexibility.
-        import os
+        self.tz = pytz.timezone('Asia/Kolkata')
         if risk_free_rate is not None:
             self.r = risk_free_rate
         else:
             env_rate = os.environ.get("GREEKS_RISK_FREE_RATE")
-            self.r = float(env_rate) if env_rate else 0.065  # RBI repo rate as of 2026
-        self._vollib = None
+            self.r = float(env_rate) if env_rate else 0.065  # RBI Repo Rate alignment
 
-    @staticmethod
-    def get_time_to_expiry(expiry_date_str: str) -> float:
-        try:
-            expiry = datetime.strptime(expiry_date_str, "%d-%b-%Y")
-        except ValueError:
+    def get_time_to_expiry(self, expiry_date_str: str, exchange: str = "NFO") -> float:
+        """
+        Calculates exact fractional years remaining. Maps expiry to official 
+        closing bells (NSE/BFO: 15:30, MCX: 23:30).
+        """
+        now = datetime.now(self.tz)
+        
+        # Multi-format parse sequence
+        parsed_date = None
+        for fmt in ("%d-%b-%Y", "%Y-%m-%d", "%d-%m-%Y"):
             try:
-                expiry = datetime.strptime(expiry_date_str, "%Y-%m-%d")
+                parsed_date = datetime.strptime(expiry_date_str, fmt).date()
+                break
             except ValueError:
-                log.warning("[greeks] unparseable expiry: %s", expiry_date_str)
-                return 0.0
-        minutes_remaining = (expiry - datetime.now()).total_seconds() / 60
-        if minutes_remaining <= 0:
-            return 1e-5
-        return minutes_remaining / (365 * 24 * 60)
+                continue
+                
+        if not parsed_date:
+            log.warning("[greeks] unparseable expiry string format: %s", expiry_date_str)
+            return 0.0
 
-    def _lazy_import(self):
-        if self._vollib is not None:
-            return
-        try:
-            from vollib.black_scholes.greeks.analytical import delta, gamma, theta, vega
-            from vollib.black_scholes.implied_volatility import implied_volatility
+        # Align target timestamp to the exchange closing hours
+        if exchange.upper() == "MCX":
+            expiry_datetime = self.tz.localize(datetime.combine(parsed_date, time(23, 30, 0)))
+        else:
+            expiry_datetime = self.tz.localize(datetime.combine(parsed_date, time(15, 30, 0)))
 
-            class V:
-                pass
-
-            v = V()
-            v.delta = delta
-            v.gamma = gamma
-            v.theta = theta
-            v.vega = vega
-            v.implied_volatility = implied_volatility
-            self._vollib = v
-        except ImportError:
-            log.warning(
-                "[greeks] vollib not installed — Greeks calculation disabled. Install: pip install vollib>=0.2.3"
-            )
-            self._vollib = None
-        except Exception as exc:
-            log.warning("[greeks] Failed to import vollib: %s", exc)
-            self._vollib = None
+        total_seconds = (expiry_datetime - now).total_seconds()
+        if total_seconds <= 0:
+            return 1e-6  # Prevent division by zero close to expiry
+            
+        return total_seconds / (365 * 24 * 60 * 60)
 
     def calculate_greeks(
         self,
-        spot_price: float,
+        underlying_price: float,
         strike_price: float,
         option_price: float,
         expiry_date: str,
         option_type: str,
+        exchange: str = "NFO",
         iv: float | None = None,
     ) -> dict:
         """
-        Parameters
-        ----------
-        spot_price : float
-            Underlying index/stock LTP.
-        strike_price : float
-            Option strike price.
-        option_price : float
-            Option LTP.
-        expiry_date : str
-            Expiry date, e.g. '26-JUN-2025' or '2025-06-26'.
-        option_type : str
-            'ce', 'pe', 'call', or 'put'.
-        iv : float, optional
-            Implied volatility (decimal, e.g. 0.15 for 15%).
-            If None, IV is computed from option price first.
-
-        Returns
-        -------
-        dict with keys: iv, delta, gamma, theta, vega
+        Executes local analytical calculations. Automatically switches context 
+        between BSM and Black-76 based on exchange definition.
         """
-        self._lazy_import()
-        v = self._vollib
+        t = self.get_time_to_expiry(expiry_date, exchange)
+        flag = "call" if option_type.lower() in ("ce", "call") else "put"
         
-        if v is None:
-            log.debug("[greeks] vollib not available — returning zero greeks")
+        # 1. Fallback IV Newton-Raphson Solver if IV is not supplied by stream
+        if iv is None or iv <= 0:
+            iv = self._solve_implied_vol(option_price, underlying_price, strike_price, t, flag, exchange)
+
+        if iv <= 1e-4:
             return {"iv": 0, "delta": 0, "gamma": 0, "theta": 0, "vega": 0}
 
-        t = self.get_time_to_expiry(expiry_date)
-        if t <= 0:
-            return {"iv": 0, "delta": 0, "gamma": 0, "theta": 0, "vega": 0}
+        # 2. Branch calculation engines based on asset category rules
+        if exchange.upper() == "MCX":
+            return self._calculate_black76(underlying_price, strike_price, t, iv, flag)
+        else:
+            return self._calculate_bsm(underlying_price, strike_price, t, iv, flag)
 
-        flag = "c" if option_type.lower() in ("ce", "call") else "p"
+    def _calculate_bsm(self, S: float, K: float, T: float, sigma: float, flag: str) -> dict:
+        """Black-Scholes-Merton Greek Engine for Index/Equity Spot."""
+        sqrt_T = math.sqrt(T)
+        d1 = (math.log(S / K) + (self.r + 0.5 * sigma ** 2) * T) / (sigma * sqrt_T)
+        d2 = d1 - sigma * sqrt_T
 
-        if iv is None or iv == 0:
-            try:
-                iv = v.implied_volatility(
-                    option_price, spot_price, strike_price, t, self.r, flag
-                )
-            except Exception:
-                iv = 0.0
+        n_d1 = norm.pdf(d1)
+        exp_rt = math.exp(-self.r * T)
 
-        if iv == 0.0:
-            return {"iv": 0, "delta": 0, "gamma": 0, "theta": 0, "vega": 0}
+        if flag == "call":
+            delta = norm.cdf(d1)
+            theta = (- (S * n_d1 * sigma) / (2 * sqrt_T) - self.r * K * exp_rt * norm.cdf(d2))
+        else:
+            delta = norm.cdf(d1) - 1.0
+            theta = (- (S * n_d1 * sigma) / (2 * sqrt_T) + self.r * K * exp_rt * norm.cdf(-d2))
 
-        _delta = v.delta(flag, spot_price, strike_price, t, self.r, iv)
-        _gamma = v.gamma(flag, spot_price, strike_price, t, self.r, iv)
-        _theta = v.theta(flag, spot_price, strike_price, t, self.r, iv)
-        _vega = v.vega(flag, spot_price, strike_price, t, self.r, iv)
+        gamma = n_d1 / (S * sigma * sqrt_T)
+        vega = S * sqrt_T * n_d1
 
         return {
-            "iv": round(iv * 100, 2),
-            "delta": round(_delta, 4),
-            "gamma": round(_gamma, 6),
-            "theta": round(_theta / 365, 2),
-            "vega": round(_vega / 100, 2),
+            "iv": round(sigma * 100, 2),
+            "delta": round(delta, 4),
+            "gamma": round(gamma, 6),
+            "theta": round(theta / 365, 2),
+            "vega": round(vega / 100, 2)
         }
 
+    def _calculate_black76(self, F: float, K: float, T: float, sigma: float, flag: str) -> dict:
+        """Black-76 Greek Engine for MCX Futures Contracts."""
+        sqrt_T = math.sqrt(T)
+        d1 = (math.log(F / K) + (0.5 * sigma ** 2) * T) / (sigma * sqrt_T)
+        d2 = d1 - sigma * sqrt_T
+
+        n_d1 = norm.pdf(d1)
+        exp_rt = math.exp(-self.r * T)
+
+        if flag == "call":
+            price = exp_rt * (F * norm.cdf(d1) - K * norm.cdf(d2))
+            delta = exp_rt * norm.cdf(d1)
+            theta = - (F * exp_rt * n_d1 * sigma) / (2 * sqrt_T) - self.r * price
+        else:
+            price = exp_rt * (K * norm.cdf(-d2) - F * norm.cdf(-d1))
+            delta = -exp_rt * norm.cdf(-d1)
+            theta = - (F * exp_rt * n_d1 * sigma) / (2 * sqrt_T) - self.r * price
+
+        gamma = (exp_rt * n_d1) / (F * sigma * sqrt_T)
+        vega = F * exp_rt * sqrt_T * n_d1
+
+        return {
+            "iv": round(sigma * 100, 2),
+            "delta": round(delta, 4),
+            "gamma": round(gamma, 6),
+            "theta": round(theta / 365, 2),
+            "vega": round(vega / 100, 2)
+        }
+
+    def _solve_implied_vol(self, target_price: float, underlying: float, K: float, T: float, flag: str, exchange: str) -> float:
+        """Robust internal numeric engine to derive IV without crashing external scripts."""
+        sigma = 0.20
+        for _ in range(25):
+            if exchange.upper() == "MCX":
+                res = self._calculate_black76(underlying, K, T, sigma, flag)
+                # Reverse engine back to raw analytical option price
+                exp_rt = math.exp(-self.r * T)
+                sqrt_T = math.sqrt(T)
+                d1 = (math.log(underlying / K) + (0.5 * sigma ** 2) * T) / (sigma * sqrt_T)
+                d2 = d1 - sigma * sqrt_T
+                current_price = exp_rt * (underlying * norm.cdf(d1) - K * norm.cdf(d2)) if flag == "call" else exp_rt * (K * norm.cdf(-d2) - underlying * norm.cdf(-d1))
+            else:
+                res = self._calculate_bsm(underlying, K, T, sigma, flag)
+                sqrt_T = math.sqrt(T)
+                d1 = (math.log(underlying / K) + (self.r + 0.5 * sigma ** 2) * T) / (sigma * sqrt_T)
+                d2 = d1 - sigma * sqrt_T
+                current_price = underlying * norm.cdf(d1) - K * math.exp(-self.r * T) * norm.cdf(d2) if flag == "call" else K * math.exp(-self.r * T) * norm.cdf(-d2) - underlying * norm.cdf(-d1)
+
+            diff = current_price - target_price
+            if abs(diff) < 1e-4:
+                return sigma
+            vega = res["vega"] * 100.0
+            if vega > 1e-3:
+                sigma -= diff / vega
+            else:
+                break
+        return max(0.01, min(sigma, 3.0)) # Hard limits to protect system threads
 
 _calculator: GreeksCalculator | None = None
-
 
 def get_greeks_calculator() -> GreeksCalculator:
     global _calculator
@@ -145,14 +178,10 @@ def get_greeks_calculator() -> GreeksCalculator:
         _calculator = GreeksCalculator()
     return _calculator
 
-
-def enrich_missing_greeks(strikes: list[dict], underlying: float, expiry: str) -> int:
+def enrich_missing_greeks(strikes: list[dict], underlying: float, expiry: str, exchange: str = "NFO") -> int:
     """
-    In-place update for any strike dict that is missing delta (or delta is 0
-    when IV is available).  If IV is also missing, it is computed from the
-    option price via Black-Scholes IV solver.
-
-    Returns the count of strikes enriched.
+    In-place dictionary pipeline updating engine configured to ingest 
+    live data models straight from Shoonya packets safely.
     """
     calc = get_greeks_calculator()
     enriched = 0
@@ -164,12 +193,14 @@ def enrich_missing_greeks(strikes: list[dict], underlying: float, expiry: str) -
         ltp = float(s.get("ltp", 0) or 0)
         if ltp <= 0:
             continue
+            
         g = calc.calculate_greeks(
-            spot_price=underlying,
+            underlying_price=underlying,
             strike_price=float(s["strike"]),
             option_price=ltp,
             expiry_date=expiry,
             option_type=str(s.get("option_type", "")),
+            exchange=exchange,
             iv=iv / 100.0 if iv else None,
         )
         if g["delta"] != 0:

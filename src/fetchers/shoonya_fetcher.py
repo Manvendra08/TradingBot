@@ -216,6 +216,7 @@ class ShoonyaFetcher(BaseFetcher):
         self.vendor_code = _optional_env(
             "SHOONYA_VENDOR_CODE", f"{self.user_id}_U" if self.user_id else ""
         )
+        self.actid: str | None = None
 
         # Cache for resolved MCX futures tokens: symbol -> (token, exchange, expires_at)
         self._futures_token_cache: dict[str, tuple[str, str, float]] = {}
@@ -225,6 +226,7 @@ class ShoonyaFetcher(BaseFetcher):
         # is saved before the next call reads `access_token`.  Eliminates the race
         # that caused "Session Expired" after ~1-2 calls under concurrent MCX fetches.
         self._api_lock = threading.Lock()
+        self._mcx_lock = threading.Lock()
 
         # Try to load cached token to avoid repeated OAuth browser launches.
         self._load_cached_token()
@@ -240,6 +242,7 @@ class ShoonyaFetcher(BaseFetcher):
             "susertoken": self.access_token,
             "access_token": self.access_token,
             "userid": self.user_id,
+            "actid": self.actid or self.user_id,
             "last_updated": self._token_created_at,
         }
         if _write_shared_token_file(self._TOKEN_CACHE, data):
@@ -255,6 +258,7 @@ class ShoonyaFetcher(BaseFetcher):
             if token:
                 self.access_token = token
                 self._token_created_at = data.get("last_updated", time.time())
+                self.actid = data.get("actid")
                 log.debug("[shoonya] loaded cached token from %s", self._TOKEN_CACHE)
 
     def _clear_cached_token(self) -> None:
@@ -465,53 +469,74 @@ class ShoonyaFetcher(BaseFetcher):
         if not token:
             log.error("[shoonya] GenAcsTok: no token in response: %s", res)
         else:
-            log.debug(
-                "[shoonya] GenAcsTok response keys: %s, token length: %d",
-                list(res.keys()),
-                len(token),
+            self.actid = res.get("actid")
+            has_susertoken = bool(res.get("susertoken"))
+            has_access_token = bool(res.get("access_token"))
+            log.info(
+                "[shoonya] GenAcsTok response keys=%s susertoken_present=%s access_token_present=%s "
+                "actid=%s token_len=%d",
+                list(res.keys()), has_susertoken, has_access_token,
+                self.actid, len(token),
             )
+            if not has_susertoken and has_access_token:
+                log.warning(
+                    "[shoonya] GenAcsTok returned ONLY access_token (OAuth Bearer), NOT susertoken. "
+                    "The Shoonya WebSocket requires susertoken for auth — WS will get NOT_OK until "
+                    "Shoonya provides susertoken in the GenAcsTok response."
+                )
         return token
 
     def login(self) -> bool:
-        with self._login_lock:
-            # Load from shared cache first to see if another process updated it
-            self._load_cached_token()
-            # If we have a cached token, trust it and let _api_call() handle expiry.
-            if self.access_token:
-                log.debug("[shoonya] using cached token — skipping OAuth")
-                return True
+        import filelock
+        lock_path = self._TOKEN_CACHE + ".lock"
+        # Cross-process mutex: only one Playwright session at a time.
+        # 120 s timeout — if another process holds the lock, we wait for it to write the token,
+        # then the double-check inside will find it and skip re-login.
+        lock = filelock.FileLock(lock_path, timeout=120)
+        try:
+            with lock:
+                with self._login_lock:
+                    # Double-checked load: another process may have already completed login.
+                    self._load_cached_token()
+                    if self.access_token:
+                        log.debug("[shoonya] using cached token — skipping OAuth")
+                        return True
 
-            missing = [
-                k
-                for k, v in [
-                    ("SHOONYA_USER_ID", self.user_id),
-                    ("SHOONYA_PASSWORD", self.password),
-                    ("SHOONYA_TOTP_KEY", self.totp_key),
-                    ("SHOONYA_API_SECRET", self.secret_code),
-                ]
-                if not v
-            ]
-            if missing:
-                log.warning("[shoonya] missing credentials: %s — skipping", missing)
-                return False
+                    missing = [
+                        k
+                        for k, v in [
+                            ("SHOONYA_USER_ID", self.user_id),
+                            ("SHOONYA_PASSWORD", self.password),
+                            ("SHOONYA_TOTP_KEY", self.totp_key),
+                            ("SHOONYA_API_SECRET", self.secret_code),
+                        ]
+                        if not v
+                    ]
+                    if missing:
+                        log.warning("[shoonya] missing credentials: %s — skipping", missing)
+                        return False
 
-            try:
-                auth_code = self._get_auth_code_playwright()
-                if not auth_code:
-                    log.error("[shoonya] Failed to obtain auth_code")
-                    return False
-                log.info("[shoonya] Exchanging auth_code for access_token...")
-                token = self._exchange_for_token(auth_code)
-                if not token:
-                    return False
-                self.access_token = token
-                self._token_created_at = time.time()
-                self._save_token()
-                log.info("[shoonya] OAuth login successful")
-                return True
-            except Exception as exc:
-                log.exception("[shoonya] login exception: %s", exc)
-                return False
+                    try:
+                        auth_code = self._get_auth_code_playwright()
+                        if not auth_code:
+                            log.error("[shoonya] Failed to obtain auth_code")
+                            return False
+                        log.info("[shoonya] Exchanging auth_code for access_token...")
+                        token = self._exchange_for_token(auth_code)
+                        if not token:
+                            return False
+                        self.access_token = token
+                        self._token_created_at = time.time()
+                        self._save_token()
+                        log.info("[shoonya] OAuth login successful")
+                        return True
+                    except Exception as exc:
+                        log.exception("[shoonya] login exception: %s", exc)
+                        return False
+        except filelock.Timeout:
+            log.error("[shoonya] Timeout waiting for login lock (120 s). Another process is likely still logging in.")
+            return False
+
 
     # ------------------------------------------------------------------
     # API helpers (Bearer auth)
@@ -969,38 +994,46 @@ class ShoonyaFetcher(BaseFetcher):
 
         import time
 
+        # 1. Quick check outside the lock
         if os.path.exists(dest_file):
             mtime = os.path.getmtime(dest_file)
             if (time.time() - mtime) < 86400:  # 24 hours
                 return dest_file
 
-        try:
-            os.makedirs(dest_dir, exist_ok=True)
-            url = "https://api.shoonya.com/MCX_symbols.txt.zip"
-            zip_path = os.path.join(dest_dir, "MCX_symbols.txt.zip")
-            log.info("[shoonya] Downloading MCX symbols master from %s...", url)
-
-            import urllib.request
-
-            urllib.request.urlretrieve(url, zip_path)
-
-            import zipfile
-
-            log.info("[shoonya] Extracting MCX symbols...")
-            with zipfile.ZipFile(zip_path, "r") as zip_ref:
-                zip_ref.extractall(dest_dir)
-
-            if os.path.exists(zip_path):
-                os.remove(zip_path)
-
-            log.info("[shoonya] MCX symbols updated successfully at %s", dest_file)
-            return dest_file
-        except Exception as e:
-            log.exception("[shoonya] Failed to download/extract MCX symbols: %s", e)
+        with self._mcx_lock:
+            # 2. Double-checked load pattern under lock
             if os.path.exists(dest_file):
-                log.warning("[shoonya] Using existing MCX symbols file")
+                mtime = os.path.getmtime(dest_file)
+                if (time.time() - mtime) < 86400:
+                    return dest_file
+
+            try:
+                os.makedirs(dest_dir, exist_ok=True)
+                url = "https://api.shoonya.com/MCX_symbols.txt.zip"
+                zip_path = os.path.join(dest_dir, "MCX_symbols.txt.zip")
+                log.info("[shoonya] Downloading MCX symbols master from %s...", url)
+
+                import urllib.request
+
+                urllib.request.urlretrieve(url, zip_path)
+
+                import zipfile
+
+                log.info("[shoonya] Extracting MCX symbols...")
+                with zipfile.ZipFile(zip_path, "r") as zip_ref:
+                    zip_ref.extractall(dest_dir)
+
+                if os.path.exists(zip_path):
+                    os.remove(zip_path)
+
+                log.info("[shoonya] MCX symbols updated successfully at %s", dest_file)
                 return dest_file
-            return None
+            except Exception as e:
+                log.exception("[shoonya] Failed to download/extract MCX symbols: %s", e)
+                if os.path.exists(dest_file):
+                    log.warning("[shoonya] Using existing MCX symbols file")
+                    return dest_file
+                return None
 
     def fetch_option_chain(self, symbol: str, expiry: str | None = None) -> dict | None:
         if not self.login():
@@ -1274,12 +1307,15 @@ class ShoonyaFetcher(BaseFetcher):
                             "iv": _f("iv"),
                             "bid": _f("bp1"),
                             "ask": _f("sp1"),
+                            "token": row.get("token"),
                         }
                     )
 
                 if not strikes:
                     log.warning("[shoonya] No quotes fetched for %s options", base)
                     return None
+
+
 
                 return {
                     "symbol": base,
@@ -1503,12 +1539,15 @@ class ShoonyaFetcher(BaseFetcher):
                         "iv": _fq("iv") or 0.0,
                         "bid": _fq("bp1") or 0.0,
                         "ask": _fq("sp1") or 0.0,
+                        "token": item.get("token"),
                     }
                 )
 
             if not strikes:
                 log.warning("[shoonya] no strikes parsed for %s", base)
                 return None
+
+
 
             return {
                 "symbol": base,
