@@ -85,15 +85,15 @@ def _post_jdata(
     }
 
     _TRANSIENT_5XX = {502, 503, 504}
-    _MAX_RETRIES = 2
+    _MAX_RETRIES = 1
     _BACKOFF_BASE = 1.5  # seconds
     # Known IPv4 addresses for api.shoonya.com (fallback if DNS fails)
     _SHOONYA_IPS = ["13.202.119.185"]
 
-    for attempt in range(1, _MAX_RETRIES + 2):  # attempts: 1, 2, 3
+    for attempt in range(1, _MAX_RETRIES + 2):  # attempts: 1, 2
         req = urllib.request.Request(url, data=body, headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with urllib.request.urlopen(req, timeout=6) as resp:
                 return json.loads(resp.read().decode())
         except urllib.error.HTTPError as e:
             raw = e.read().decode()
@@ -130,7 +130,7 @@ def _post_jdata(
                         try:
                             ip_url = url.replace("api.shoonya.com", ip)
                             req = urllib.request.Request(ip_url, data=body, headers={**headers, "Host": "api.shoonya.com"})
-                            with urllib.request.urlopen(req, timeout=10) as resp:
+                            with urllib.request.urlopen(req, timeout=6) as resp:
                                 log.info("[shoonya] DNS fallback succeeded via IP %s", ip)
                                 return json.loads(resp.read().decode())
                         except Exception as ip_exc:
@@ -198,7 +198,7 @@ class ShoonyaFetcher(BaseFetcher):
         str(Path(__file__).resolve().parents[2] / "shoonya_shared_token.json"),
     )
     _TOKEN_REFRESH_INTERVAL = (
-        50400  # seconds (14 hours — session token is valid all day)
+        21600  # seconds (6 hours — Shoonya session lifetime is often shorter than 14h)
     )
 
     # Token lifetimes are long (24h+ for Shoonya OAuth).  Genuine expiry is
@@ -499,8 +499,14 @@ class ShoonyaFetcher(BaseFetcher):
                     # Double-checked load: another process may have already completed login.
                     self._load_cached_token()
                     if self.access_token:
-                        log.debug("[shoonya] using cached token — skipping OAuth")
-                        return True
+                        # Check if cached token is still valid (not older than refresh interval)
+                        token_age = time.time() - self._token_created_at
+                        if token_age < self._TOKEN_REFRESH_INTERVAL:
+                            log.debug("[shoonya] using cached token — skipping OAuth (age %.0fs)", token_age)
+                            return True
+                        else:
+                            log.info("[shoonya] cached token expired (age %.0fs) — re-authenticating", token_age)
+                            self.access_token = None  # Force re-auth
 
                     missing = [
                         k
@@ -573,7 +579,7 @@ class ShoonyaFetcher(BaseFetcher):
         res = _post_jdata(f"{_API_BASE}/{endpoint}", payload, self.access_token)
 
         if res and isinstance(res, dict):
-            log.debug("[shoonya] %s response keys: %s", endpoint, list(res.keys()))
+            log.debug("[shoonya] %s response keys: %s stat=%s emsg=%s", endpoint, list(res.keys()), res.get("stat"), res.get("emsg"))
 
         # ── Extract fresh token from response ──────────────────────────────────
         # Shoonya rotates the session token on every successful API response.
@@ -620,6 +626,40 @@ class ShoonyaFetcher(BaseFetcher):
                     # Handle successful retry token rotation
                     if res.get("stat") == "Ok":
                         fresh_token = res.get("susertoken") or res.get("access_token")
+                        if fresh_token and fresh_token != self.access_token:
+                            self.access_token = fresh_token
+                            self._token_created_at = time.time()
+                            self._save_token()
+                        return res
+                    is_expired = res.get(
+                        "stat"
+                    ) == "Not_Ok" and "Session Expired" in res.get("emsg", "")
+                else:
+                    is_expired = False
+
+            if is_expired:
+                log.warning(
+                    "[shoonya] Token still expired. Clearing and performing login..."
+                )
+                self._clear_cached_token()
+                if retry_on_expiry:
+                    log.info(
+                        "[shoonya] Calling login() for re-authentication..."
+                    )
+                    if self.login():
+                        log.info("[shoonya] Login successful, retrying API call...")
+                        # ═════════════════════════════════════════════════════════════════════════════
+                        # FIX: Extract rotated token from retry response too.
+                        # Without this, the new token from the retry call would be
+                        # consumed but not saved, making the very next call fail
+                        # with "Session Expired".
+                        # ════════════════════════════════════════════════════════════════════════════
+                        res = _post_jdata(
+                            f"{_API_BASE}/{endpoint}", payload, self.access_token
+                        )
+                        self._increment_and_save_call_count()
+                        if res and isinstance(res, dict) and res.get("stat") == "Ok":
+                            fresh_token = res.get("susertoken") or res.get("access_token")
                         if fresh_token and fresh_token != self.access_token:
                             self.access_token = fresh_token
                             self._token_created_at = time.time()

@@ -4,9 +4,13 @@ Configuration for the Trend Following Short Strangle (TFSS) strategy.
 from typing import TypedDict, List, Dict
 
 STRATEGY_MODE = "TREND_FOLLOWING_SHORT_STRANGLE"
-PERSISTENCE_WINDOW = 3
+PERSISTENCE_WINDOW = 5
 PERSISTENCE_MIN_MATCH = 3
-REQUIRE_BROAD_CORROBORATION = True
+REQUIRE_BROAD_CORROBORATION = False
+
+# Master switch for TFSS Trade Blocked Rules (persistence history, min match, tranches, delta caps).
+# Disabled per requirement: Core engine verdict handles entry/exit rules directly.
+ENABLE_TFSS_TRADE_BLOCKED_RULES = False
 
 class DteDeltaBand(TypedDict):
     min_dte: int
@@ -20,18 +24,18 @@ class DteDeltaBand(TypedDict):
 DTE_DELTA_BANDS: List[DteDeltaBand] = [
     {
         "min_dte": 0, "max_dte": 2,
-        "base_delta_min": 0.05, "base_delta_max": 0.15,
-        "tight_delta_min": 0.02, "tight_delta_max": 0.08,
-    },
-    {
-        "min_dte": 3, "max_dte": 7,
         "base_delta_min": 0.10, "base_delta_max": 0.20,
         "tight_delta_min": 0.05, "tight_delta_max": 0.15,
     },
     {
-        "min_dte": 8, "max_dte": 30,
+        "min_dte": 3, "max_dte": 7,
         "base_delta_min": 0.15, "base_delta_max": 0.25,
         "tight_delta_min": 0.10, "tight_delta_max": 0.20,
+    },
+    {
+        "min_dte": 8, "max_dte": 30,
+        "base_delta_min": 0.20, "base_delta_max": 0.30,
+        "tight_delta_min": 0.15, "tight_delta_max": 0.25,
     }
 ]
 

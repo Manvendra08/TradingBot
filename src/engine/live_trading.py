@@ -294,6 +294,10 @@ def _is_reversal_against_open_trade(
         return False
 
     # Guard 2: entry quality (requires genuine setup, not noise)
+    # BUG-M15 FIX: Add early None check for ctx before any usage
+    if ctx is None:
+        return False
+
     if ctx and option_type and strike:
         entry_quality, entry_reasons = calculate_entry_quality(
             symbol, option_type, strike, ctx
@@ -601,7 +605,10 @@ def place_kite_order(
                 tradingsymbol=tradingsymbol,
                 transaction_type=transaction_type,
                 quantity=quantity,
-                product=kite.PRODUCT_MIS,
+                # BUG-H03 FIX: Use PRODUCT_NRML instead of PRODUCT_MIS for consistency with GTTs.
+                # GTTs require NRML product type. Using MIS for entry but NRML for GTT causes
+                # the GTT to fail because the position product type doesn't match.
+                product=kite.PRODUCT_NRML,
                 order_type=kite.ORDER_TYPE_LIMIT,
                 price=limit_price,
             )
@@ -617,7 +624,8 @@ def place_kite_order(
                 tradingsymbol=tradingsymbol,
                 transaction_type=transaction_type,
                 quantity=quantity,
-                product=kite.PRODUCT_MIS,
+                # BUG-H03 FIX: Use PRODUCT_NRML for consistency with GTTs
+                product=kite.PRODUCT_NRML,
                 order_type=kite.ORDER_TYPE_MARKET,
             )
         return order_id
@@ -637,8 +645,8 @@ def confirm_order_fill(kite, order_id: str, shadow_mode: bool) -> tuple[str, str
 
     import time
 
-    max_retries = 5
-    delay_sec = 0.5
+    max_retries = 10
+    delay_sec = 1.0
 
     for attempt in range(max_retries):
         try:
@@ -1956,11 +1964,16 @@ def sync_direct_kite_positions() -> None:
         # Also exclude DIRECT_KITE positions that were adopted and closed today.
         # Without this, a position closed by CMP poll exit immediately re-adopts on
         # the next sync because it's no longer in status='OPEN'.
-        today_prefix = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        # BUG-M8 FIX: Use precise timestamp range instead of LIKE with date prefix
+        # to avoid missing trades opened very close to midnight UTC
+        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        tomorrow_start = today_start + timedelta(days=1)
+        today_start_iso = today_start.isoformat()
+        tomorrow_start_iso = tomorrow_start.isoformat()
         closed_today = conn.execute(
             "SELECT symbol, option_type, strike, side FROM live_trades "
-            "WHERE setup_type='DIRECT_KITE' AND status!='OPEN' AND opened_at LIKE ?",
-            (f"{today_prefix}%",),
+            "WHERE setup_type='DIRECT_KITE' AND status!='OPEN' AND opened_at >= ? AND opened_at < ?",
+            (today_start_iso, tomorrow_start_iso),
         ).fetchall()
         for ct in closed_today:
             sig = f"{ct['symbol']}:{ct['option_type']}:{int(ct['strike'] or 0)}:{ct['side']}"

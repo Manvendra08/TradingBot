@@ -28,7 +28,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 AGENT_DB = DATA_DIR / "ops_agent.db"
-HEARTBEAT_PATH = Path("/tmp/nsebot.heartbeat")
+# BUG-C02 FIX: Use cross-platform temp directory instead of hardcoded /tmp
+import tempfile
+HEARTBEAT_PATH = Path(tempfile.gettempdir()) / "nsebot.heartbeat"
 HEALTHCHECKS_URL = os.environ.get("HEALTHCHECKS_URL", "")
 BOT_DB_PATH = str(DATA_DIR / "nsebot.db")
 DASHBOARD_URL = os.environ.get("DASHBOARD_URL", "http://localhost:8080")
@@ -44,6 +46,7 @@ NTFY_TOKEN = os.environ.get("NTFY_TOKEN", "")
 # CRITICAL repeat tracking
 _critical_last_sent: dict[str, float] = {}  # playbook_id → timestamp
 _critical_repeat_interval = 600  # 10 minutes
+_state_lock = __import__("threading").Lock()
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -149,22 +152,32 @@ _COMPONENT_PLAYBOOK_MAP = {
 }
 
 
+# BUG-M6 FIX: Debounce counter for auto-resolve. Require 3 consecutive OK readings
+# before resolving an incident. A single OK reading shouldn't clear a transient issue.
+_resolve_ok_count: dict[str, int] = {}
+_RESOLVE_DEBOUNCE_COUNT = 3
+
 def _resolve_playbooks_if_healthy(sm: "StateMachine") -> None:
     """Scan evaluated state machine components and resolve active incidents if OK."""
-    for comp_key, playbook_id in _COMPONENT_PLAYBOOK_MAP.items():
-        state = sm.components.get(comp_key)
-        if state and state.status == "OK":
-            _auto_resolve_incident(playbook_id)
-            # If P03 (Shoonya session) resolved, also resolve P04 (Broker down/paused)
-            if playbook_id == "P03":
-                _auto_resolve_incident("P04")
+    global _resolve_ok_count
+    with _state_lock:
+        for comp_key, playbook_id in _COMPONENT_PLAYBOOK_MAP.items():
+            state = sm.components.get(comp_key)
+            if state and state.status == "OK":
+                _resolve_ok_count[playbook_id] = _resolve_ok_count.get(playbook_id, 0) + 1
+                if _resolve_ok_count[playbook_id] >= _RESOLVE_DEBOUNCE_COUNT:
+                    _auto_resolve_incident(playbook_id)
+                    _resolve_ok_count[playbook_id] = 0
+                    if playbook_id == "P03":
+                        _auto_resolve_incident("P04")
+            else:
+                _resolve_ok_count[playbook_id] = 0
 
-    # Resolve last_scan (P11) if ALL last_scan_* components are OK
-    scan_keys = [k for k in sm.components.keys() if k.startswith("last_scan_") and not k.startswith("_")]
-    if scan_keys:
-        all_scan_ok = all(sm.components[k].status == "OK" for k in scan_keys)
-        if all_scan_ok:
-            _auto_resolve_incident("P11")
+        scan_keys = [k for k in sm.components.keys() if k.startswith("last_scan_") and not k.startswith("_")]
+        if scan_keys:
+            all_scan_ok = all(sm.components[k].status == "OK" for k in scan_keys)
+            if all_scan_ok:
+                _auto_resolve_incident("P11")
 
 
 # ── Health Reading ───────────────────────────────────────────────────────────
@@ -453,12 +466,11 @@ def _escalate(playbook_id: str, message: str, critical: bool = False) -> None:
     """Send escalation via Discord + fallback for CRITICAL."""
     global _critical_last_sent
     
-    # Check if there is already an active (unacknowledged) incident for this playbook
-    # to prevent spamming notifications and DB logs
-    if _is_playbook_active(playbook_id):
-        log.debug("Playbook %s already active and unacked. Skipping redundant escalation.", playbook_id)
-        return
-
+    with _state_lock:
+        if _is_playbook_active(playbook_id):
+            log.debug("Playbook %s already active and unacked. Skipping redundant escalation.", playbook_id)
+            return
+    
     # Log new incident to local DB
     try:
         _log_incident(
@@ -469,7 +481,7 @@ def _escalate(playbook_id: str, message: str, critical: bool = False) -> None:
         )
     except Exception as e:
         log.error("Failed to log incident for playbook %s: %s", playbook_id, e)
-
+    
     prefix = "🚨 CRITICAL" if critical else "⚙️ OPS"
     ts = datetime.now(IST).strftime("%H:%M IST")
     text = f"{prefix} | {playbook_id} | {message} | {ts}"
@@ -480,7 +492,8 @@ def _escalate(playbook_id: str, message: str, critical: bool = False) -> None:
     # For CRITICAL: send fallback (ntfy.sh) simultaneously + track for repeat
     if critical:
         _send_fallback(text)
-        _critical_last_sent[playbook_id] = time.time()
+        with _state_lock:
+            _critical_last_sent[playbook_id] = time.time()
     
     log.warning("ESCALATE [%s] %s: %s", playbook_id, "CRITICAL" if critical else "INFO", message)
 
@@ -489,7 +502,9 @@ def _repeat_critical_alerts() -> None:
     """Repeat CRITICAL alerts every 10 minutes until acked."""
     global _critical_last_sent
     now = time.time()
-    for playbook_id, last_sent in list(_critical_last_sent.items()):
+    with _state_lock:
+        items = list(_critical_last_sent.items())
+    for playbook_id, last_sent in items:
         if now - last_sent >= _critical_repeat_interval:
             # Check if acked in incidents DB
             try:
@@ -502,10 +517,12 @@ def _repeat_critical_alerts() -> None:
                 if row and not row["acked"]:
                     # Not acked yet, repeat
                     _send_fallback(f"🚨 CRITICAL REPEAT | {playbook_id} | Still active — not yet acked | {datetime.now(IST).strftime('%H:%M IST')}")
-                    _critical_last_sent[playbook_id] = now
+                    with _state_lock:
+                        _critical_last_sent[playbook_id] = now
                 else:
                     # Acked or no unacked incidents, stop repeating
-                    del _critical_last_sent[playbook_id]
+                    with _state_lock:
+                        _critical_last_sent.pop(playbook_id, None)
             except Exception:
                 pass
 
@@ -582,8 +599,9 @@ def _set_trading_paused() -> bool:
 def _run_emergency_flat() -> bool:
     """Run emergency_flat.py to close all open positions."""
     try:
+        # BUG-C01 FIX: Pass --auto flag to skip interactive input() prompt
         result = subprocess.run(
-            [sys.executable, str(ROOT / "emergency_flat.py")],
+            [sys.executable, str(ROOT / "emergency_flat.py"), "--auto"],
             capture_output=True,
             text=True,
             timeout=60,
@@ -641,10 +659,11 @@ def _vacuum_database() -> bool:
 
 
 def _prune_temp() -> bool:
-    """Prune /tmp files older than 1 day."""
+    """Prune temp files older than 1 day."""
     try:
         import glob
-        temp_dir = Path("/tmp")
+        # BUG-C02 FIX: Use cross-platform temp directory
+        temp_dir = Path(tempfile.gettempdir())
         cutoff = time.time() - 86400  # 1 day
         for f in temp_dir.glob("*"):
             try:
@@ -819,7 +838,7 @@ def run_playbooks(snap: HealthSnapshot, sm: StateMachine) -> list[PlaybookResult
             _escalate("P05", f"Parity feed DOWN during NG hours. Detail: {parity_state.detail}")
             
             # Check if PARITY position is open with feed dead > 15 min → P10
-            if parity_state.consecutive_down >= 2:  # 2 consecutive downs = ~2 min with feed dead
+            if parity_state.consecutive_down >= 2:  # 2 consecutive downs = ~2 min (60s loop interval)
                 # Check for open PARITY position
                 try:
                     conn = sqlite3.connect(f"file:{BOT_DB_PATH}?mode=ro", uri=True, timeout=5.0)
@@ -989,12 +1008,12 @@ def _maybe_send_daily_digest(snap: HealthSnapshot) -> None:
     now_ist = datetime.now(IST)
     today = now_ist.date()
 
-    if _last_digest_date == today:
-        return
-    if now_ist.hour != 8 or now_ist.minute != 45:
-        return
-
-    _last_digest_date = today
+    with _state_lock:
+        if _last_digest_date == today:
+            return
+        if now_ist.hour != 8 or now_ist.minute != 45:
+            return
+        _last_digest_date = today
 
     # Read overnight incidents
     try:

@@ -670,6 +670,43 @@ def start_scheduler(immediate: bool = False):
         target=_warmup_instrument_cache, daemon=True, name="instrument-cache-startup"
     ).start()
 
+    # ── Pre-pipeline authentication (Shoonya + Kite) at startup & daily ─────
+    _last_auth_date = None
+
+    def _pre_pipeline_auth():
+        """Run Shoonya & Kite login once per day (or on auth failure)."""
+        nonlocal _last_auth_date
+        today = datetime.now(IST).date()
+        if _last_auth_date == today:
+            return  # Already done today
+        try:
+            log.info("[scheduler] Running pre-pipeline authentication...")
+            # Shoonya: re-uses cached token if valid, only logs in if expired
+            from src.fetchers.shoonya_fetcher import get_shoonya_fetcher
+            shoonya = get_shoonya_fetcher()
+            if shoonya.login():
+                log.info("[scheduler] Shoonya authentication OK")
+            else:
+                log.warning("[scheduler] Shoonya login failed — will retry on next fetch")
+        except Exception as e:
+            log.warning("[scheduler] Shoonya auth error: %s", e)
+
+        try:
+            # Kite: ensure valid session
+            from src.engine.live_trading import get_kite_client
+            kite = get_kite_client()
+            if kite:
+                log.info("[scheduler] Kite session OK")
+            else:
+                log.info("[scheduler] Kite not configured or auto-login pending")
+        except Exception as e:
+            log.warning("[scheduler] Kite auth error: %s", e)
+
+        _last_auth_date = today
+
+    # Run auth immediately at startup
+    _pre_pipeline_auth()
+
     current_date = datetime.now(IST).date()
     last_scanned_interval: dict[str, int] = {}
     has_done_startup_scan: dict[str, bool] = {}
@@ -893,6 +930,29 @@ def start_scheduler(immediate: bool = False):
                 last_scanned_interval.clear()
                 has_done_startup_scan.clear()
                 has_logged_closed_pre_open.clear()
+
+                # Daily re-auth: refresh Shoonya token & Kite login if needed
+                def _daily_reauth():
+                    try:
+                        from src.fetchers.shoonya_fetcher import get_shoonya_fetcher
+                        fetcher = get_shoonya_fetcher()
+                        if fetcher.login():
+                            log.info("[scheduler] Daily Shoonya re-auth successful")
+                        else:
+                            log.warning("[scheduler] Daily Shoonya re-auth failed")
+                    except Exception as e:
+                        log.debug("[scheduler] Shoonya re-auth skipped: %s", e)
+                    try:
+                        from src.services.zerodha_auto_login import auto_login_kite
+                        result = auto_login_kite(force=False)
+                        if result.get("success"):
+                            log.info("[scheduler] Daily Kite auto-login: %s", result.get("message", "OK"))
+                        else:
+                            log.debug("[scheduler] Kite auto-login: %s", result.get("message", ""))
+                    except Exception as e:
+                        log.debug("[scheduler] Kite re-auth skipped: %s", e)
+
+                threading.Thread(target=_daily_reauth, daemon=True, name="daily-reauth").start()
 
             # Weekend/Holiday Alert
             if not immediate:
@@ -1363,8 +1423,9 @@ def start_scheduler(immediate: bool = False):
 
             # ── OPS Agent: heartbeat + health stamps ────────────────────────
             try:
+                import tempfile
                 from pathlib import Path as _P
-                _hb = _P("/tmp/nsebot.heartbeat")
+                _hb = _P(tempfile.gettempdir()) / "nsebot.heartbeat"
                 _hb.write_text(str(int(time.time())))
                 from src.models.schema import stamp_health, stamp_open_positions
                 stamp_health("scheduler_loop", "OK", f"interval_idx={current_interval_idx if 'current_interval_idx' in dir() else '?'}")

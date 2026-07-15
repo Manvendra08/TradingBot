@@ -560,8 +560,6 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
 
     sym   = _val(header.get("symbol")) or "?"
     stime = _val(header.get("scan_time")) or ""
-    if " " in stime:
-        stime = stime.split(" ")[-1][:5]
     expiry = _val(header.get("expiry"))
     dte    = header.get("dte")
     spot   = header.get("underlying")

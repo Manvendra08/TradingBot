@@ -73,25 +73,57 @@ def query_recent_scans(symbol: str, limit: int) -> List[Dict[str, Any]]:
         return [dict(r) for r in rows]
 
 def compute_persisted_trend(symbol: str, ctx: dict = None) -> PersistenceResult:
+    try:
+        from config.runtime_config import load_runtime_config
+        ENABLE_TFSS_TRADE_BLOCKED_RULES = load_runtime_config().get("enable_tfss_trade_blocked_rules", False)
+    except Exception:
+        from config.trend_following_short_strangle import ENABLE_TFSS_TRADE_BLOCKED_RULES
     recent_scans = query_recent_scans(symbol, PERSISTENCE_WINDOW)
     
+    # Extract current intent/direction from ctx as fallback when blocking rules are disabled
+    fallback_dir = "BULLISH"
+    if ctx and isinstance(ctx, dict):
+        ctx_verdict = ctx.get("intel", {}).get("verdict_label", "")
+        if not ctx_verdict and "_tfss_intent" in ctx:
+            fallback_dir = ctx["_tfss_intent"]
+        elif ctx_verdict:
+            classified = classify_direction(ctx_verdict)
+            if classified != "NEUTRAL":
+                fallback_dir = classified
+
     if len(recent_scans) < PERSISTENCE_WINDOW:
-        return PersistenceResult(is_valid=False, reason="INSUFFICIENT_SCAN_HISTORY")
+        if ENABLE_TFSS_TRADE_BLOCKED_RULES:
+            return PersistenceResult(is_valid=False, reason="INSUFFICIENT_SCAN_HISTORY")
+        else:
+            log.info(f"TFSS: Insufficient history ({len(recent_scans)} < {PERSISTENCE_WINDOW}) check disabled (ENABLE_TFSS_TRADE_BLOCKED_RULES=False)")
+            if len(recent_scans) > 0:
+                recent_dir = classify_direction(recent_scans[0]["verdict_label"])
+                if recent_dir != "NEUTRAL":
+                    fallback_dir = recent_dir
+            return PersistenceResult(is_valid=True, label=fallback_dir, agreeing_count=len(recent_scans), source="rules_disabled_fallback")
 
     directions = [classify_direction(scan["verdict_label"]) for scan in recent_scans]
     most_recent_direction = directions[0]
     
     if most_recent_direction == "NEUTRAL":
-        return PersistenceResult(is_valid=False, reason="MOST_RECENT_IS_NEUTRAL")
+        if ENABLE_TFSS_TRADE_BLOCKED_RULES:
+            return PersistenceResult(is_valid=False, reason="MOST_RECENT_IS_NEUTRAL")
+        else:
+            log.info("TFSS: Most recent neutral check disabled (ENABLE_TFSS_TRADE_BLOCKED_RULES=False)")
+            return PersistenceResult(is_valid=True, label=fallback_dir, agreeing_count=1, source="rules_disabled_fallback")
         
     agreeing_count = sum(1 for d in directions if d == most_recent_direction)
 
     if agreeing_count < PERSISTENCE_MIN_MATCH:
-        return PersistenceResult(
-            is_valid=False, 
-            reason="BELOW_MIN_MATCH",
-            agreeing_count=agreeing_count
-        )
+        if ENABLE_TFSS_TRADE_BLOCKED_RULES:
+            return PersistenceResult(
+                is_valid=False, 
+                reason="BELOW_MIN_MATCH",
+                agreeing_count=agreeing_count
+            )
+        else:
+            log.info(f"TFSS: Below min match ({agreeing_count} < {PERSISTENCE_MIN_MATCH}) check disabled (ENABLE_TFSS_TRADE_BLOCKED_RULES=False)")
+            return PersistenceResult(is_valid=True, label=most_recent_direction, agreeing_count=agreeing_count, source="rules_disabled_fallback")
 
     result = PersistenceResult(
         is_valid=True, 
@@ -132,13 +164,29 @@ def normalize_core_verdict_to_tfss_intent(core_verdict: str) -> Optional[TFSSInt
     return None
 
 def resolve_tfss_execution_side(tfss_intent: TFSSIntent, persisted_trend: PersistenceResult) -> Union[str, Dict[str, Any]]:
+    try:
+        from config.runtime_config import load_runtime_config
+        ENABLE_TFSS_TRADE_BLOCKED_RULES = load_runtime_config().get("enable_tfss_trade_blocked_rules", False)
+    except Exception:
+        from config.trend_following_short_strangle import ENABLE_TFSS_TRADE_BLOCKED_RULES
     if not persisted_trend.is_valid:
-        return {"action": "BLOCK", "reason": f"PERSISTENCE_NOT_CONFIRMED: {persisted_trend.reason}"}
+        if ENABLE_TFSS_TRADE_BLOCKED_RULES:
+            return {"action": "BLOCK", "reason": f"PERSISTENCE_NOT_CONFIRMED: {persisted_trend.reason}"}
+        else:
+            log.info(f"TFSS: PERSISTENCE_NOT_CONFIRMED ({persisted_trend.reason}) check bypassed (ENABLE_TFSS_TRADE_BLOCKED_RULES=False)")
+
     if tfss_intent.bias == "BULLISH":
         return "SELL_PE"
     if tfss_intent.bias == "BEARISH":
         return "SELL_CE"
-    return {"action": "BLOCK", "reason": "UNSUPPORTED_TFSS_INTENT"}
+
+    if ENABLE_TFSS_TRADE_BLOCKED_RULES:
+        return {"action": "BLOCK", "reason": "UNSUPPORTED_TFSS_INTENT"}
+    else:
+        log.info("TFSS: UNSUPPORTED_TFSS_INTENT check bypassed (ENABLE_TFSS_TRADE_BLOCKED_RULES=False)")
+        if persisted_trend and hasattr(persisted_trend, "label") and persisted_trend.label == "BEARISH":
+            return "SELL_CE"
+        return "SELL_PE"
 
 def is_confirmed_reversal(persisted_label: str, original_side: str) -> bool:
     if not original_side:

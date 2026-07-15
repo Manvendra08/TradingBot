@@ -146,15 +146,10 @@ def step_signal_core_oi(ctx: PipelineContext) -> StepResult:
                 ctx.symbol, confidence, effective_min_conf, momentum
             )
             confidence = effective_min_conf
-            # Update the underlying dict so downstream steps see the boosted confidence
+            # BUG-H10 FIX: Mutate scan_context in-place instead of replacing with new dict.
+            # Replacing breaks references held by other pipeline steps that still point to old dict.
             if "intel" in ctx.scan_context:
-                ctx.scan_context = {
-                    **ctx.scan_context,
-                    "intel": {
-                        **ctx.scan_context["intel"],
-                        "confidence": confidence
-                    }
-                }
+                ctx.scan_context["intel"]["confidence"] = confidence
         elif not PAPER_RESEARCH_MODE:
             # Only block in non-research mode; research mode allows low-conf through
             return StepResult(
@@ -377,7 +372,9 @@ def step_tfss_handoff_core(ctx: PipelineContext) -> StepResult:
 
 def step_entry_quality_core(ctx: PipelineContext) -> StepResult:
     from src.engine.paper_plan import build_paper_trade_plan
-    plan_ctx = {k: v for k, v in ctx.scan_context.items() if isinstance(k, str)}
+    # BUG-M10 FIX: Use dict(ctx.scan_context) without filtering non-string keys.
+    # Filtering out non-string keys may remove important data from scan_context.
+    plan_ctx = dict(ctx.scan_context)
     plan_ctx["symbol"] = ctx.symbol
     verdict = ctx.scan_context.get("intel", {}).get("verdict_label", "")
     confidence = int(ctx.scan_context.get("intel", {}).get("confidence") or 0)

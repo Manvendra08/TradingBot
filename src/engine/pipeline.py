@@ -14,7 +14,7 @@ Safe parallelism branch goals:
 import logging
 import threading
 from concurrent.futures import as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from config.settings import WATCH_SYMBOLS, get_symbol_thresholds, LLM_ENRICHMENT_ASYNC, MAX_ANOMALIES_PER_SYMBOL, ANOMALY_MIN_SEVERITY
 from config.settings import DISABLE_LLM_ENRICHMENT as _DISABLE_LLM_ENV
@@ -134,8 +134,18 @@ def _ensure_shoonya_session() -> None:
             ok = fetcher.login()
             if ok:
                 log.info("[pipeline] Shoonya session ready")
+                try:
+                    from src.models.schema import stamp_health
+                    stamp_health("shoonya_session", "OK", "session_ready")
+                except Exception:
+                    pass
             else:
                 log.warning("[pipeline] Shoonya login failed — fetcher will fall back to dhan_commodity")
+                try:
+                    from src.models.schema import stamp_health
+                    stamp_health("shoonya_session", "DOWN", "login_failed")
+                except Exception:
+                    pass
     except Exception as exc:
         log.warning("[pipeline] _ensure_shoonya_session error (non-fatal): %s", exc)
 
@@ -165,9 +175,23 @@ def _prefetch_symbol_data(symbol: str, fetched_at: str) -> dict:
             from src.fetchers.news_fetcher import fetch_news
             return fetch_news(symbol)
         news_future = pipeline_io_executor.submit(lambda: run_with_deadline("news", _fetch_news))
-        packet["news_result"] = news_future.result().__dict__
+        # BUG-H06 FIX: Safe dict conversion - result may be simple type or namedtuple
+        news_result = news_future.result()
+        if hasattr(news_result, '__dict__'):
+            packet["news_result"] = news_result.__dict__
+        elif isinstance(news_result, dict):
+            packet["news_result"] = news_result
+        else:
+            packet["news_result"] = {"ok": True, "data": news_result}
 
-    packet["chart_result"] = chart_future.result().__dict__
+    # BUG-H06 FIX: Safe dict conversion for chart_result
+    chart_result = chart_future.result()
+    if hasattr(chart_result, '__dict__'):
+        packet["chart_result"] = chart_result.__dict__
+    elif isinstance(chart_result, dict):
+        packet["chart_result"] = chart_result
+    else:
+        packet["chart_result"] = {"ok": True, "data": chart_result}
     packet["oc_data"] = oc_data
     return packet
 
@@ -196,11 +220,23 @@ def run_pipeline(symbols: list[str] | None = None, force: bool = False, is_test:
             except Exception:
                 log.exception("Prefetch stage failed for a symbol")
 
-        for packet in sorted(prefetched, key=lambda x: symbols.index(x["symbol"])):
+        # BUG-H07 FIX: Safe sorted() key with fallback for normalized symbols
+        symbols_list = list(symbols)
+        for packet in sorted(prefetched, key=lambda x: symbols_list.index(x["symbol"]) if x["symbol"] in symbols_list else 999):
             try:
                 _process_prefetched_symbol(packet, is_test=is_test)
+                try:
+                    from src.models.schema import stamp_health
+                    stamp_health(f"last_scan_{packet['symbol']}", "OK", f"scan_ok fetched_at={fetched_at}")
+                except Exception:
+                    pass
             except Exception:
                 log.exception("Unhandled pipeline error for %s", packet.get("symbol"))
+                try:
+                    from src.models.schema import stamp_health
+                    stamp_health(f"last_scan_{packet.get('symbol', 'UNKNOWN')}", "DOWN", f"pipeline_error")
+                except Exception:
+                    pass
 
         log.info("Pipeline run complete | %s", fetched_at)
 
@@ -307,13 +343,14 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
         dt = datetime.fromisoformat(fetched_at or "").astimezone(timezone.utc)
     except Exception:
         dt = datetime.now(timezone.utc)
-    ts = dt.strftime("%Y-%m-%d %H:%M")
+    IST = timezone(timedelta(hours=5, minutes=30))
+    ts = dt.astimezone(IST).strftime("%H:%M IST")
     
     header = {
         "symbol": symbol,
         "scan_time": ts,
         "expiry": scan_context.get("expiry") or scan_context.get("futures_expiry") or "",
-        "dte": getattr(scan_context, "dte", 0),
+        "dte": scan_context.get("dte", 0),
         "underlying": scan_context.get("underlying") or 0.0,
         "market_regime": scan_context.get("market_regime") or "UNKNOWN",
         "confidence": (intel or {}).get("confidence", 0)
@@ -597,18 +634,15 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                 sent_digest = False
 
         if _async_llm_pending and telegram_message_id is not None:
+            # BUG-M11 FIX: Use functools.partial for positional parameter submission
+            import functools
             pipeline_io_executor.submit(
-                _async_llm_enrich_and_edit,
-                symbol=symbol,
-                intel=intel,
-                scan_context=scan_context,
-                new_alerts=new_alerts,
-                news_data=news_data,
-                fetched_at=fetched_at,
-                digest_id=digest_id,
-                message_id=telegram_message_id,
-                dedup_suppressed=dedup_suppressed,
-                intel_text_base=intel_text_base,
+                functools.partial(
+                    _async_llm_enrich_and_edit,
+                    symbol, intel, scan_context, new_alerts, news_data,
+                    fetched_at, digest_id, telegram_message_id,
+                    dedup_suppressed, intel_text_base,
+                )
             )
 
         if not is_test:

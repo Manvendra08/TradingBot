@@ -1,6 +1,10 @@
 """
 Indian exchange trading holiday configuration for 2026.
 Handles full and session-specific holiday calendars for NSE and MCX.
+
+TODO (L1): Implement dynamic holiday fetching from NSE/MCX APIs.
+Hardcoded dates will become stale after 2026, causing is_market_holiday() 
+to incorrectly return False.
 """
 from datetime import datetime, date
 

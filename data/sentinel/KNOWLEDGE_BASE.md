@@ -216,3 +216,66 @@
   1. Implemented a `formatDetail` JavaScript parser in `ops.html` that extracts `key=value` strings and renders them as cleanly styled label-value pairs with middots (`·`).
   2. Changed `.comp-detail` font to `var(--sans)` (`DM Sans`) to maximize space and guarantee crisp, legible rendering of equals/colon symbols.
   3. Added an active `stamp_health("db_write", "OK", "commit succeeded")` to the scheduler's heartbeat loop in `job_runner.py` to continuously verify write capabilities.
+
+### F32: Thread Pool Starvation & Shoonya Timeout/Fallback Optimization
+- **Symptom:** Parallel pipeline scans timed out after 45 seconds ("No data for NIFTY - skipping"), but the background logs showed options successfully fetched and enriched 12 seconds later.
+- **Root Cause:**
+  1. **Thread Pool Starvation:** `pipeline_io_executor` was configured with `max_workers=4`. When multiple symbols were scanned concurrently, the outer `_prefetch_symbol_data` futures consumed the threads, leaving no free workers in the pool for the inner IO futures (`fetch_option_chain`, `chart`, `news`) they were synchronously waiting for, causing a deadlock/starvation until the 45-second deadline timed out.
+  2. **Blocking Shoonya API:** Shoonya's `GetQuotes` API request hung during connection slowdowns. With `_MAX_RETRIES = 2` and a `10s` timeout per request, a single hanging Shoonya request took up to 30 seconds to fail, exhausting the pipeline's overall 45s timeout limit before the router could fall back to Paytm or Dhan.
+- **Fix:**
+  1. Increased `pipeline_io_executor` thread pool capacity from `4` to `16` in `pipeline_concurrency.py`.
+  2. Reduced Shoonya `_post_jdata` API wrapper limits: set `_MAX_RETRIES = 1` and `timeout=6` in `shoonya_fetcher.py`. This ensures Shoonya fails within 13 seconds during API hiccups, leaving ample time for the router to fall back to Paytm/Dhan before the 45s deadline.
+
+### F33: Dashboard Server Host Binding Fix
+- **Symptom:** Dashboard pages were unreachable ("DASHBOARD UNREACHABLE" or blank loading state) for the user.
+- **Root Cause:** The uvicorn server in `dashboard_server.py` was bound strictly to `127.0.0.1`. When browsers or local machines resolved `localhost` to the IPv6 loopback address `::1` (common on Windows 10/11), the connection failed. It also prevented access from any local area network (LAN) IP addresses.
+- **Fix:** Changed uvicorn's host binding from `127.0.0.1` to `0.0.0.0` in `dashboard_server.py`, allowing the server to listen on all IPv4 interfaces, resolving IPv6 resolution mapping and external client connectivity. Restarted the server process.
+
+### F34: Symbol Classes Expiry Resolution Syntax Fix
+- **Symptom:** Python scheduler startup failed with `SyntaxError: invalid syntax` on line 331 of `config/symbol_classes.py`.
+- **Root Cause:** 
+  1. An `elif` block (`elif class_key in ("NSE_INDEX", "BSE_INDEX"):`) inside `get_futures_expiry()` was indented incorrectly at 0 spaces (module level), causing it to fail parsing.
+  2. The block contained a duplicate `else:` statement, which is syntactically invalid.
+- **Fix:** Corrected the indentation of the `elif` statement to match the parent function's indentation level (4 spaces), removed the duplicate `else:` statement, and verified clean compilation of both `symbol_classes.py` and `main.py`.
+
+### F35: Anomaly Detector PCR NameError Fix
+- **Symptom:** Pipeline run failed with `NameError: name 'pcr' is not defined` on line 928 of `src/engine/anomaly_detector.py` during commodity/index scans.
+- **Root Cause:** The `detect_anomalies` function evaluated the put-call ratio (`if pcr is not None:`) but never defined or computed the `pcr` variable beforehand.
+- **Fix:** Defined `pcr = _compute_pcr(filtered)` directly before checking it in `detect_anomalies`, and verified that `anomaly_detector.py` compiles successfully.
+
+### F36: Redundant Expiry Sensitive Block & NameError Fix
+- **Symptom:** Pipeline run failed with `NameError: name '_detect_iv_spike' is not defined` on line 920 of `src/engine/anomaly_detector.py` during commodity/index scans.
+- **Root Cause:** A duplicate, outdated `if expiry_sensitive:` block existed early in the `detect_anomalies` function. This block referenced non-existent helpers like `_detect_iv_spike` (which was previously merged into `_detect_iv_spike_crush`).
+- **Fix:** Deleted the redundant first `if expiry_sensitive:` block (lines 909 to 925), allowing the pipeline to rely on the second, fully-configured `expiry_sensitive` block downstream. Verified clean compilation.
+
+### F37: Sensibull Fetcher Priority Promotion
+- **Symptom:** The user wanted to configure Sensibull as the primary option chain data fetcher for all symbols (as it was confirmed working via curl_cffi fingerprint spoofing), with Shoonya + Dhan as fallbacks.
+- **Root Cause:** The default priorities in `router.py` placed `shoonya` first, and the configuration setting `FETCHER_PRIORITY` in `settings.py` was a list that was ignored by the router's per-symbol override logic.
+- **Fix:**
+  1. Updated `FETCHER_PRIORITY` in `config/settings.py` to be a dictionary, prioritizing `sensibull` first for all supported index symbols (`NIFTY`, `BANKNIFTY`, `FINNIFTY`, `MIDCPNIFTY`, `SENSEX`) while keeping `shoonya`/`dhan_commodity` as primary for commodities.
+  2. Modified default priority lists in `src/fetchers/router.py` to match, ensuring robust fallback configurations. Verified clean compilation of both files.
+
+### F38: TFSS Trade Blocked Rules Toggle & Handoff Alignment
+- **Architecture Update:** Disabled all TFSS (Trend Following Short Strangle) trade blocking rules (`Insufficient History`, `Most Recent Neutral`, `Below Min Match`, `Persistence Not Confirmed`, `Unsupported Intent`, `Max Tranches`, `Delta Cap`) via a centralized configuration toggle `ENABLE_TFSS_TRADE_BLOCKED_RULES = False` in `config/trend_following_short_strangle.py`.
+- **Root Cause:** The Core decision engine (`decision_pipeline.py`) already handles comprehensive entry and exit rules prior to the TFSS handoff. Enforcing strict secondary historical persistence rules (e.g. requiring `>= 3` agreeing directions across the last 5 scans or `< 0.60` combined delta) rejected valid signals from the core engine.
+- **Fix:**
+  1. Added `ENABLE_TFSS_TRADE_BLOCKED_RULES = False` switch in `config/trend_following_short_strangle.py`.
+  2. Updated `compute_persisted_trend` and `resolve_tfss_execution_side` in `src/engine/trend_following_short_strangle.py` to check `ENABLE_TFSS_TRADE_BLOCKED_RULES` before returning invalid persistence (`is_valid=False`) or rejecting intent/execution side. When disabled, the engine falls back gracefully to current scan verdict direction (`tfss_intent.bias`) without blocking.
+  3. Updated `compute_combined_book` in `src/engine/risk_engine.py` to check `ENABLE_TFSS_TRADE_BLOCKED_RULES` before marking `within_caps = False` for open tranche count (`>= 3`) and combined delta (`>= 0.60`).
+
+### F39: Setting Cockpit Integration for TFSS Trade Blocked Rules Toggle
+- **Architecture Update:** Integrated `enable_tfss_trade_blocked_rules` toggle into the Setting Cockpit runtime configuration framework.
+- **Fix:**
+  1. Added `enable_tfss_trade_blocked_rules: False` as a dynamic setting default in `config/runtime_config.py`.
+  2. Modified `compute_persisted_trend()`, `resolve_tfss_execution_side()` (`trend_following_short_strangle.py`), and `compute_combined_book()` (`risk_engine.py`) to dynamically query the live setting via `load_runtime_config().get("enable_tfss_trade_blocked_rules")`.
+  3. Integrated the checkbox element `sett-enable-tfss-blocked-rules` under the "AI Configuration & Strategy Controls" card in `src/dashboard/settings.html`.
+  4. Wired the element into JavaScript settings loading, `checkDirty()` change monitoring, and backend storage serialization.
+
+### F40: paper_trades Schema Migrations for reason and exit_reason
+- **Symptom:** Strategy execution failed with `sqlite3.OperationalError: no such column: exit_reason` inside `close_paper_trade` method of `src/models/schema.py`.
+- **Root Cause:** The `paper_trades` table schema definition in code had `reason` and `exit_reason` columns, but existing databases generated under older schema revisions did not contain these columns, resulting in query execution failures on trade exit updates.
+- **Fix:**
+  1. Added SQLite schema migrations `M070_add_paper_reason` (`ALTER TABLE paper_trades ADD COLUMN reason TEXT`) and `M071_add_paper_exit_reason` (`ALTER TABLE paper_trades ADD COLUMN exit_reason TEXT`) to the `_MIGRATIONS` execution pipeline list in `src/models/schema.py`.
+  2. Executed database migration sequence to apply missing columns.
+
+

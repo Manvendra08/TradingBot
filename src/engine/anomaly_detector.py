@@ -11,7 +11,7 @@ Performance fix (v2.7), Anomaly Logic Overhaul (v2.8):
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from config.settings import (
     OI_SPIKE_THRESHOLD_PCT,
@@ -47,6 +47,26 @@ from src.models.schema import (
 )
 
 log = logging.getLogger(__name__)
+
+
+def _dte_from_expiry(expiry: str) -> int:
+    """Calculate days to expiry from YYYY-MM-DD string."""
+    try:
+        exp_date = datetime.strptime(expiry, "%Y-%m-%d").date()
+        today = datetime.now(timezone.utc).date()
+        return (exp_date - today).days
+    except Exception:
+        return 999  # Unknown = far away
+
+
+def _dte_from_expiry(expiry: str) -> int:
+    """Calculate days to expiry from YYYY-MM-DD string."""
+    try:
+        exp_date = datetime.strptime(expiry, "%Y-%m-%d").date()
+        today = datetime.now(timezone.utc).date()
+        return (exp_date - today).days
+    except Exception:
+        return 999  # Unknown = far away
 
 # Type alias for the bulk prev-snapshot dict
 PrevByKey = dict[tuple, dict]
@@ -837,6 +857,11 @@ def detect_anomalies(
     if chart_indicators is None:
         chart_indicators = oc_data.get("chart_indicators")
 
+    # Calculate DTE (days to expiry) — suppress expiry-sensitive alerts beyond 2 days
+    dte = _dte_from_expiry(expiry)
+    expiry_sensitive = dte <= 2
+    log.debug("[engine] %s: DTE=%d, expiry_sensitive=%s", symbol, dte, expiry_sensitive)
+
     t = override_thresholds or {}
     oi_thresh = t.get("oi_threshold", OI_SPIKE_THRESHOLD_PCT)
     ltp_thresh = t.get("ltp_threshold", ATM_LEG_MOVE_PCT)
@@ -918,7 +943,21 @@ def detect_anomalies(
                 )
 
     alerts += _detect_pcr_velocity(symbol, expiry, underlying, pcr)
-    alerts += _detect_iv_spike_crush(filtered, symbol, expiry, underlying, prev_by_key)
+
+    # Expiry-sensitive detectors only when DTE ≤ 2
+    if expiry_sensitive:
+        alerts += _detect_iv_spike_crush(filtered, symbol, expiry, underlying, prev_by_key)
+
+        alerts += _detect_straddle_premium(
+            filtered, symbol, expiry, underlying, prev_by_key
+        )
+        alerts += _detect_max_pain_shift(filtered, symbol, expiry, underlying, prev_snaps, max_pain_shift_pct=t.get("max_pain_shift_pct", MAX_PAIN_SHIFT_PCT))
+        alerts += _detect_oi_wall_shift(strikes, symbol, expiry, underlying, prev_snaps)
+        alerts += _detect_volume_aggression(
+            filtered, symbol, expiry, underlying, prev_by_key
+        )
+    else:
+        log.debug("[engine] %s: skipping all expiry-sensitive detectors (DTE=%d > 2)", symbol, dte)
 
     atm = _atm_strike(filtered, underlying)
     moves = {}
@@ -956,16 +995,11 @@ def detect_anomalies(
                     sev,
                 )
             )
-
-    alerts += _detect_straddle_premium(
-        filtered, symbol, expiry, underlying, prev_by_key
-    )
-    alerts += _detect_max_pain_shift(filtered, symbol, expiry, underlying, prev_snaps, max_pain_shift_pct=t.get("max_pain_shift_pct", MAX_PAIN_SHIFT_PCT))
-    alerts += _detect_oi_wall_shift(strikes, symbol, expiry, underlying, prev_snaps)
-    alerts += _detect_volume_aggression(
-        filtered, symbol, expiry, underlying, prev_by_key
-    )
-    alerts += _detect_otm_unusual(strikes, symbol, expiry, underlying, prev_by_key, otm_oi_spike_pct=t.get("otm_oi_spike_pct", OTM_OI_SPIKE_PCT))
+    # OTM unusual is also expiry-sensitive
+    if expiry_sensitive:
+        alerts += _detect_otm_unusual(strikes, symbol, expiry, underlying, prev_by_key, otm_oi_spike_pct=t.get("otm_oi_spike_pct", OTM_OI_SPIKE_PCT))
+    else:
+        log.debug("[engine] %s: skipping OTM unusual (DTE=%d > 2)", symbol, dte)
 
     log.info("[engine] %s | %d anomalies detected", symbol, len(alerts))
 

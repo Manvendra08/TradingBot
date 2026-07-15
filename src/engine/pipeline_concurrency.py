@@ -72,4 +72,4 @@ class BoundedExecutor:
 
 single_flight_gate = SingleFlightGate()
 serialized_commit_gate = SerializedCommitGate()
-pipeline_io_executor = BoundedExecutor(max_workers=4)
+pipeline_io_executor = BoundedExecutor(max_workers=16)

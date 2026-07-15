@@ -51,8 +51,6 @@ except AttributeError:
 # certificate bypass in certain network environments.
 import ssl
 
-import urllib3
-
 try:
     _orig_create_context = urllib3.util.ssl_.create_urllib3_context
 

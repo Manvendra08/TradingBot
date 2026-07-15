@@ -159,12 +159,20 @@ def _compute_weighted_dd(
     hdd_15d = hdd_sum * norm_weight
     cdd_15d = cdd_sum * norm_weight
 
+    # Seasonal sanity check
+    import datetime as _dt
+    month = _dt.datetime.utcnow().month
+    if month in (6, 7, 8) and cdd_15d == 0.0:
+        log.warning("[weather] Summer month %d but CDD15=0.0 — check API temp data", month)
+    elif month in (12, 1, 2) and hdd_15d == 0.0:
+        log.warning("[weather] Winter month %d but HDD15=0.0 — check API temp data", month)
+
     return round(hdd_15d, 2), round(cdd_15d, 2)
 
 
-def _fetch_open_meteo(forecast_days: int = 15) -> dict | None:
+def _fetch_open_meteo(forecast_days: int = 15, model: str = "gfs_seamless") -> dict | None:
     """
-    Fetch 15-day daily forecast from Open-Meteo (GFS + ECMWF combined).
+    Fetch 15-day daily forecast from Open-Meteo.
     Returns daily data dict or None on failure.
     """
     params = {
@@ -173,16 +181,22 @@ def _fetch_open_meteo(forecast_days: int = 15) -> dict | None:
         "daily": "temperature_2m_max,temperature_2m_min",
         "forecast_days": forecast_days,
         "timezone": "America/New_York",
-        "models": "gfs_seamless,ecmwf_ifs025",
+        "models": model,
     }
     for attempt in range(MAX_RETRIES + 1):
         try:
             r = requests.get(OPEN_METEO_URL, params=params, timeout=REQUEST_TIMEOUT_S)
             r.raise_for_status()
             data = r.json()
-            return data.get("daily")
+            daily = data.get("daily")
+            if daily:
+                tmax = daily.get("temperature_2m_max", [])
+                tmin = daily.get("temperature_2m_min", [])
+                log.debug("[weather] %s: got %d days, tmax sample: %s, tmin sample: %s",
+                          model, len(tmax), tmax[:3] if tmax else [], tmin[:3] if tmin else [])
+            return daily
         except Exception as e:
-            log.debug("Open-Meteo attempt %d failed: %s", attempt + 1, e)
+            log.debug("Open-Meteo (%s) attempt %d failed: %s", model, attempt + 1, e)
             if attempt < MAX_RETRIES:
                 time.sleep(1.0 * (attempt + 1))
     return None
@@ -191,7 +205,7 @@ def _fetch_open_meteo(forecast_days: int = 15) -> dict | None:
 def _fetch_nws_fallback(forecast_days: int = 15) -> dict | None:
     """
     Fallback: NOAA NWS gridpoint forecast for a representative location.
-    Returns dict with 'temperature_max' and 'temperature_min' lists (°C), or None.
+    Returns dict with 'temperature_2m_max' and 'temperature_2m_min' lists (°C), or None.
     """
     try:
         # Use Kansas City as representative US interior location
@@ -331,15 +345,19 @@ def fetch_weather_run() -> WeatherRun:
     ist_hour = now_ist.hour
     if 9 <= ist_hour < 14:
         source = "open-meteo-gfs"  # ~10:00 IST → GFS 00z
+        model = "gfs_seamless"
     elif 15 <= ist_hour < 19:
         source = "open-meteo-ecmwf"  # ~16:00 IST → GFS 06z + ECMWF 00z
+        model = "ecmwf_ifs025"
     elif ist_hour >= 21 or ist_hour < 2:
         source = "open-meteo-gfs"  # ~22:00 IST → GFS 12z
+        model = "gfs_seamless"
     else:
         source = "open-meteo-gfs"
+        model = "gfs_seamless"
 
     # 1. Fetch forecast data
-    daily = _fetch_open_meteo(forecast_days=15)
+    daily = _fetch_open_meteo(forecast_days=15, model=model)
     fallback_used = False
     if daily is None:
         log.warning("[weather] Open-Meteo failed, trying NWS fallback")
@@ -355,6 +373,48 @@ def fetch_weather_run() -> WeatherRun:
             delta_hdd=0, delta_cdd=0, zscore=0,
             gulf_storm_active=False, valid=False,
             error="all sources failed",
+        )
+
+    # Validate temperature data: must have at least some valid temps
+    tmax = daily.get("temperature_2m_max", [])
+    tmin = daily.get("temperature_2m_min", [])
+    if not tmax or not tmin:
+        log.error("[weather] Empty temperature arrays from %s", source)
+        if not fallback_used:
+            log.warning("[weather] Trying NWS fallback due to empty temps")
+            daily = _fetch_nws_fallback(forecast_days=15)
+            if daily:
+                tmax = daily.get("temperature_2m_max", [])
+                tmin = daily.get("temperature_2m_min", [])
+    if not tmax or not tmin:
+        log.error("[weather] All sources failed — no temperature data")
+        return WeatherRun(
+            ts=ts_ist, source=source,
+            hdd_15d=0, cdd_15d=0,
+            delta_hdd=0, delta_cdd=0, zscore=0,
+            gulf_storm_active=False, valid=False,
+            error="no temperature data",
+        )
+
+    # Validate at least some days have realistic temps (Kansas July should be >20°C)
+    valid_temps = [(x, y) for x, y in zip(tmax, tmin) if x is not None and y is not None]
+    if not valid_temps:
+        log.error("[weather] No valid temperature pairs")
+        if not fallback_used:
+            log.warning("[weather] Trying NWS fallback due to invalid temps")
+            daily = _fetch_nws_fallback(forecast_days=15)
+            if daily:
+                tmax = daily.get("temperature_2m_max", [])
+                tmin = daily.get("temperature_2m_min", [])
+                valid_temps = [(x, y) for x, y in zip(tmax, tmin) if x is not None and y is not None]
+    if not valid_temps:
+        log.error("[weather] All sources failed — no valid temperature pairs")
+        return WeatherRun(
+            ts=ts_ist, source=source,
+            hdd_15d=0, cdd_15d=0,
+            delta_hdd=0, delta_cdd=0, zscore=0,
+            gulf_storm_active=False, valid=False,
+            error="invalid temperatures",
         )
 
     # 2. Compute weighted DD

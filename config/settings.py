@@ -10,11 +10,14 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 
 # Global safeguard: Automatically redirect DB_PATH to test database when executing tests
+# BUG-M1 FIX: More robust test detection - use pytest in sys.modules and
+# environment variables instead of fragile sys.argv checking.
+# Non-test scripts with "test_" prefix will no longer incorrectly use test DB.
 import sys
 _is_testing = (
     "pytest" in sys.modules or
-    any("pytest" in arg or arg.startswith("test_") for arg in sys.argv) or
-    (len(sys.argv) > 0 and (sys.argv[0].endswith("test_manual.py") or "test_" in os.path.basename(sys.argv[0])))
+    os.environ.get("PYTEST_CURRENT_TEST") is not None or
+    os.environ.get("NSEBOT_TEST") == "1"
 )
 DB_PATH = DATA_DIR / "nsebot_test.db" if _is_testing else DATA_DIR / "nsebot.db"
 
@@ -201,9 +204,16 @@ DASHBOARD_PASSWORD = _optional_env("DASHBOARD_PASSWORD")
 STRIKES_AROUND_ATM = 10
 
 # ── Fetcher Priority ────────────────────────────────────────────────────────────────────────────────────────────
-# Order in which fetchers are tried for NSE indices. MCX commodities have
-# their own priority defined in router.py.
-FETCHER_PRIORITY = ["shoonya", "paytm", "nse_public"]
+# Order in which fetchers are tried for each symbol.
+FETCHER_PRIORITY = {
+    "NIFTY": ["sensibull", "shoonya", "paytm", "dhan", "nse_public", "dhan_headless", "moneycontrol"],
+    "BANKNIFTY": ["sensibull", "shoonya", "paytm", "dhan", "nse_public", "dhan_headless", "moneycontrol"],
+    "FINNIFTY": ["sensibull", "shoonya", "paytm", "dhan", "nse_public", "dhan_headless", "moneycontrol"],
+    "MIDCPNIFTY": ["sensibull", "shoonya", "paytm", "dhan", "nse_public", "dhan_headless", "moneycontrol"],
+    "SENSEX": ["sensibull", "shoonya", "dhan_sensex", "dhan", "nse_public"],
+    "NATURALGAS": ["shoonya", "dhan_commodity", "moneycontrol", "dhan", "dhan_headless"],
+    "CRUDEOIL": ["shoonya", "dhan_commodity", "moneycontrol", "dhan", "dhan_headless"],
+}
 
 LOG_LEVEL = "INFO"
 LOG_ROTATION = "midnight"

@@ -1450,9 +1450,22 @@
         <header class="app-header">
             <!-- Top Row: Logo & Market Ticker -->
             <div class="header-top-row">
-                <div class="logo-stack">
-                    <span class="logo-text">NSEBOT</span>
-                    <span class="logo-sub">BROKER CONSOLE</span>
+                <div style="display: flex; align-items: center; gap: 20px;">
+                    <div class="logo-stack">
+                        <span class="logo-text">NSEBOT</span>
+                        <span class="logo-sub">BROKER CONSOLE</span>
+                    </div>
+                    <span
+                        id="last-refresh-time"
+                        style="
+                            font-size: 11px;
+                            color: var(--text-dim);
+                            font-family: var(--sans);
+                            font-weight: 500;
+                            opacity: 0.85;
+                            margin-top: 4px;
+                        "
+                    ></span>
                 </div>
 
                 <div
@@ -1636,17 +1649,6 @@
                 </div>
 
                 <div class="header-operations-cluster">
-                    <span
-                        id="last-refresh-time"
-                        style="
-                            font-size: 11px;
-                            color: var(--text-dim);
-                            font-family: var(--sans);
-                            font-weight: 500;
-                            opacity: 0.8;
-                            margin-right: 4px;
-                        "
-                    ></span>
 
                     <!-- SHADOW/LIVE/OFF Segment Switcher -->
                     <div class="segment-control" style="margin: 0">

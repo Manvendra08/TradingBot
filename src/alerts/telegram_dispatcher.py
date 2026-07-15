@@ -589,7 +589,7 @@ def send_text_and_return_id(text: str) -> int | None:
         future = asyncio.run_coroutine_threadsafe(_send_and_get_id(), _loop)
         return future.result(timeout=15.0)
     except Exception as exc:
-        log.warning("Telegram send_and_return_id failed: %s", exc)
+        log.warning("Telegram send_and_return_id failed: %s | type: %s", exc, type(exc).__name__)
         return None
 
 
@@ -604,5 +604,5 @@ def edit_message_text(message_id: int, text: str) -> bool:
         )
         return future.result(timeout=15.0)
     except Exception as exc:
-        log.warning("Telegram edit_message_text failed: %s", exc)
+        log.warning("Telegram edit_message_text failed: %s | type: %s", exc, type(exc).__name__)
         return False

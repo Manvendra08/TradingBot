@@ -110,6 +110,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
+from src.engine.intelligence import IntelligenceResult
 
 # ── Resolve project root so imports work regardless of cwd ────────────────
 ROOT = Path(__file__).resolve().parent
@@ -138,10 +139,10 @@ except ImportError:
     MIN_SCAN_FREQUENCY = 5
     MAX_SCAN_FREQUENCY = 1440
     LOT_SIZES = {
-        "NIFTY": 25,
-        "BANKNIFTY": 15,
-        "FINNIFTY": 25,
-        "MIDCPNIFTY": 50,
+        "NIFTY": 65,
+        "BANKNIFTY": 30,
+        "FINNIFTY": 60,
+        "MIDCPNIFTY": 75,
         "SENSEX": 20,
         "NATURALGAS": 1250,
         "CRUDEOIL": 100,
@@ -324,13 +325,20 @@ _MCX_SYMBOLS = {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"}
 
 
 def _db():
+    # BUG-H05 FIX: Use read-only SQLite connection for dashboard reads to prevent
+    # WAL lock contention with the main bot process during high-frequency polling.
     try:
         from config.settings import DB_PATH as settings_db_path
 
         db_p = settings_db_path
     except ImportError:
         db_p = DB_PATH
-    conn = sqlite3.connect(db_p)
+    try:
+        db_uri = Path(db_p).as_uri() + "?mode=ro"
+        conn = sqlite3.connect(db_uri, uri=True, timeout=10.0)
+    except Exception:
+        # Fallback to writable connection if read-only fails (e.g., file not yet created)
+        conn = sqlite3.connect(db_p)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -739,7 +747,9 @@ def _fetch_scanx_heatmap(symbol: str) -> dict:
             "sorder": "desc",
         }
     }
-    # Retry up to 3 times; 3rd attempt disables SSL verify as fallback
+    # BUG-M7 FIX: Always verify SSL - never disable SSL verification.
+    # Disabling SSL verify is a security concern and may leak data to MITM.
+    # If SSL fails, the request should fail rather than expose data.
     rows = []
     last_exc = None
     for attempt in range(3):
@@ -748,7 +758,7 @@ def _fetch_scanx_heatmap(symbol: str) -> dict:
                 _SCANX_HEATMAP_API,
                 json=payload,
                 timeout=15,
-                verify=(attempt < 2),  # SSL verify on attempts 0,1; off on attempt 2
+                verify=True,  # BUG-M7 FIX: Always verify SSL
                 headers={
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                     "Content-Type": "application/json",
@@ -817,10 +827,7 @@ def _fetch_scanx_heatmap(symbol: str) -> dict:
 
 def _parse_intel_fields(raw) -> dict:
     # Fast-path: IntelligenceResult has all fields natively (Phase 3)
-    try:
-        from src.engine.intelligence import IntelligenceResult
-
-        if isinstance(raw, IntelligenceResult):
+    if isinstance(raw, IntelligenceResult):
             summary_lines = [
                 x
                 for x in [
@@ -840,8 +847,6 @@ def _parse_intel_fields(raw) -> dict:
                 "trend": raw.trend,
                 "summary_lines": summary_lines,
             }
-    except ImportError:
-        pass
     # Legacy: parse from Telegram text string
     text = str(raw or "")
     verdict = "UNKNOWN"
@@ -1429,7 +1434,10 @@ def _enrich_open_trades_with_live_pnl(rows: list[dict]) -> None:
 
             lots = int(row.get("lots") or 1)
             side = str(row.get("side") or "BUY").upper().strip()
-            lot_size = LOT_SIZES.get(symbol, 1)
+            # BUG-M5 FIX: Extract base symbol before LOT_SIZES lookup to handle
+            # symbols with expiry suffixes like "NIFTY 25JUL CE"
+            base_sym = symbol.upper().split()[0]
+            lot_size = LOT_SIZES.get(base_sym, 1)
 
             pnl = (
                 (cmp - entry) * lots * lot_size
@@ -1473,7 +1481,7 @@ def _enrich_trade_details(rows: list[dict]) -> None:
                     row["duration_text"] = (
                         f"{hours}h {mins}m" if mins > 0 else f"{hours}h"
                     )
-            except:
+            except (ValueError, TypeError, KeyError):
                 row["duration_minutes"] = None
                 row["duration_text"] = "-"
         else:
@@ -1788,7 +1796,7 @@ def _calculate_holding_analysis(where: str, params: tuple) -> dict:
             closed = datetime.fromisoformat(r["closed_at"].replace("Z", "+00:00"))
             duration_min = (closed - opened).total_seconds() / 60
             durations.append(duration_min)
-        except:
+        except (ValueError, TypeError, KeyError):
             continue
 
     if not durations:
@@ -2078,10 +2086,20 @@ async def post_settings(data: dict):
     return {"status": "SUCCESS", "message": "Runtime settings updated successfully"}
 
 
+# BUG-H09/H12 FIX: Add threading locks for cache globals to prevent race conditions
+# from concurrent uvicorn requests.
+import threading as _dash_threading
+# BUG-H09/H12 FIX: Add threading locks for cache globals to prevent race conditions
+# from concurrent uvicorn requests.
+import threading as _dash_threading
 _positions_cache = None
 _positions_cache_ts = 0.0
 _positions_failure_ts = 0.0
 _KITE_FAILURE_COOLDOWN_SECONDS = 30.0
+_positions_cache_lock = _dash_threading.Lock()
+_margins_cache_lock = _dash_threading.Lock()
+_positions_cache_lock = _dash_threading.Lock()
+_margins_cache_lock = _dash_threading.Lock()
 
 
 def _fetch_real_kite_positions(kite) -> list[dict]:
@@ -2216,7 +2234,8 @@ def _fetch_real_kite_positions(kite) -> list[dict]:
             if exchange == "MCX":
                 lots_count = abs(qty)
             else:
-                lots_count = round(abs(qty) / lot_size, 2)
+                # BUG-M3 FIX: Use integer rounding for NSE lots (no fractional lots)
+                lots_count = round(abs(qty) / lot_size)
 
             pnl = float(pos.get("pnl", 0.0))
             cmp = float(pos.get("last_price", 0.0))
@@ -2584,7 +2603,16 @@ def _get_kite_closed_trades(kite) -> list[dict]:
         if tsym_orders:
             entry_order = tsym_orders[0]
             exit_order = tsym_orders[-1]
-            side = entry_order.get("transaction_type", "BUY").upper()
+            # BUG-M12 FIX: Verify side from position quantity sign instead of order history
+            # to handle complex orders (partial fills, amendments) correctly.
+            buy_qty = int(pos.get("buy_quantity", 0))
+            sell_qty = int(pos.get("sell_quantity", 0))
+            if buy_qty > sell_qty:
+                side = "BUY"
+            elif sell_qty > buy_qty:
+                side = "SELL"
+            else:
+                side = entry_order.get("transaction_type", "BUY").upper()
 
             raw_ts = exit_order.get("order_timestamp")
             if raw_ts:
@@ -3554,12 +3582,13 @@ async def broker_logout():
         clear_kite_client_cache()
     except Exception:
         log.exception("Failed to clear Kite client cache during logout")
-    _positions_cache = None
-    _positions_cache_ts = 0.0
-    _positions_failure_ts = 0.0
-    _margins_cache = None
-    _margins_cache_ts = 0.0
-    _margins_failure_ts = 0.0
+    finally:
+        _positions_cache = None
+        _positions_cache_ts = 0.0
+        _positions_failure_ts = 0.0
+        _margins_cache = None
+        _margins_cache_ts = 0.0
+        _margins_failure_ts = 0.0
     return {"status": "SUCCESS", "message": "Logged out successfully"}
 
 
@@ -4178,11 +4207,13 @@ async def broker_page(username: str = Depends(authenticate)):
 @app.get("/health", response_class=JSONResponse)
 async def health_endpoint():
     """Unauthenticated health endpoint for ops_agent.py and healthchecks.io."""
+    import tempfile
     from src.models.schema import read_health_state, get_open_positions_count
     try:
         health = read_health_state()
         open_count = get_open_positions_count()
-        heartbeat_path = Path("/tmp/nsebot.heartbeat")
+        # BUG-C02 FIX: Use cross-platform temp directory
+        heartbeat_path = Path(tempfile.gettempdir()) / "nsebot.heartbeat"
         heartbeat_age_s = None
         if heartbeat_path.exists():
             heartbeat_age_s = time.time() - heartbeat_path.stat().st_mtime
@@ -4261,4 +4292,4 @@ async def ops_incidents():
 if __name__ == "__main__":
     print(f"  DB: {DB_PATH}")
     print(f"  Dashboard: http://localhost:8080")
-    uvicorn.run(app, host="127.0.0.1", port=8080, log_level="warning")
+    uvicorn.run(app, host="0.0.0.0", port=8080, log_level="warning")

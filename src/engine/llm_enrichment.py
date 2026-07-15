@@ -994,15 +994,20 @@ def _call_llm_api(
     response_schema=None,
     deadline: float | None = None,
     purpose: str | None = None,
+    model_override: str | None = None,
 ) -> BaseModel | None:
     """Call LLM APIs in order of reasoning and output quality using available providers
     (OpenRouter, Groq, Gemini). If a model fails on one provider, we fallback
     to another provider hosting the same model group or a fast alternative.
 
     Args:
+        symbol: Trading symbol
+        prompt: User prompt text
+        response_schema: Pydantic model for response validation
         deadline: Unix timestamp by which we must finish. Each model attempt uses
                   remaining_time as its HTTP timeout, so we never overshoot.
         purpose: Routing classification ('live_verdict', 'eod_review', 'formatting')
+        model_override: Optional model name to force a specific provider/model
     """
     global \
         _API_QUOTA_EXHAUSTED_UNTIL, \
@@ -1558,8 +1563,20 @@ def _call_llm_api(
     max_tokens = _max_tokens_for_purpose(purpose)
 
     # Iterate through the prioritized pipeline
+    override_providers = None
+    if model_override:
+        override_providers = []
+        for group in FREE_MODEL_PIPELINE:
+            for provider in group["providers"]:
+                if provider.get("model") == model_override:
+                    override_providers.append(provider)
+        if not override_providers:
+            log.warning("[llm] model_override '%s' not found in any provider group", model_override)
+
     for group in FREE_MODEL_PIPELINE:
         for provider in group["providers"]:
+            if override_providers is not None and provider not in override_providers:
+                continue
             key_name = provider["env_key"]
             api_key = os.environ.get(key_name)
             if not api_key:

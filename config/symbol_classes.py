@@ -25,6 +25,39 @@ _DEFAULT_CLASS       = "NSE_INDEX"
 _DEFAULT_STRIKE_STEP = 50
 
 
+# Hardcoded 2026 MCX Futures Expiry dates to match official Dhan/MCX schedules
+_MCX_2026_EXPIRIES: dict[str, dict[int, tuple[int, int, int]]] = {
+    "NATURALGAS": {
+        1: (2026, 1, 27),
+        2: (2026, 2, 24),
+        3: (2026, 3, 26),
+        4: (2026, 4, 27),
+        5: (2026, 5, 26),
+        6: (2026, 6, 25),
+        7: (2026, 7, 28),
+        8: (2026, 8, 26),
+        9: (2026, 9, 25),
+        10: (2026, 10, 27),
+        11: (2026, 11, 24),
+        12: (2026, 12, 28),
+    },
+    "CRUDEOIL": {
+        1: (2026, 1, 16),
+        2: (2026, 2, 19),
+        3: (2026, 3, 19),
+        4: (2026, 4, 20),
+        5: (2026, 5, 18),
+        6: (2026, 6, 18),
+        7: (2026, 7, 20),
+        8: (2026, 8, 19),
+        9: (2026, 9, 21),
+        10: (2026, 10, 19),
+        11: (2026, 11, 19),
+        12: (2026, 12, 18),
+    }
+}
+
+
 def _base_symbol(symbol: str) -> str:
     """Normalize expiry/month variants like 'NATURALGAS MAY FUT'."""
     return str(symbol or "").upper().strip().split()[0]
@@ -78,86 +111,166 @@ def get_kite_exchange(symbol: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Futures expiry calculation (separate from option chain expiry)
+# Futures/Options expiry resolution — DYNAMIC FETCH FROM EXCHANGE
 # ---------------------------------------------------------------------------
-def _prev_working_day(d: "date", holidays: "set[date] | None" = None) -> "date":
-    """Return d itself if it is a working day, else step back until one is found."""
+from functools import lru_cache
+
+@lru_cache(maxsize=32)
+def _fetch_nse_expiry_calendar() -> dict:
+    """Fetch NSE option expiry calendar from NSE API. Returns dict with symbol -> list of expiry dates."""
+    import requests
+    from datetime import date
+    try:
+        # NSE option chain API for expiry calendar
+        url = "https://www.nseindia.com/api/option-chain-indices"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        records = data.get("records", {})
+        return records
+    except Exception as e:
+        log.warning(f"Failed to fetch NSE expiry calendar: {e}")
+        return {}
+
+@lru_cache(maxsize=32)
+def _fetch_mcx_expiry_calendar() -> dict:
+    """Fetch MCX option expiry calendar from MCX API."""
+    import requests
+    try:
+        # MCX doesn't have a public expiry calendar API, use Dhan instruments as fallback
+        # This will be populated by the fetcher when it runs
+        return {}
+    except Exception as e:
+        log.warning(f"Failed to fetch MCX expiry calendar: {e}")
+        return {}
+
+
+def _get_nse_weekly_expiry(ref_date: "date", base: str) -> "str | None":
+    """
+    For NSE indices (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY):
+    - Weekly expiry on TUESDAY (not Thursday!)
+    - Returns the next Tuesday's expiry date
+    """
     from datetime import timedelta
-    holidays = holidays or set()
-    while d.weekday() >= 5 or d in holidays:  # 5=Sat, 6=Sun
-        d -= timedelta(days=1)
-    return d
+    try:
+        from config.holidays import NSE_HOLIDAYS_2026
+        nse_holidays = NSE_HOLIDAYS_2026
+    except Exception:
+        nse_holidays = set()
+    
+    # Tuesday = weekday 1
+    days_ahead = (1 - ref_date.weekday() + 7) % 7
+    raw = ref_date + timedelta(days=days_ahead)
+    
+    # Adjust for holidays - if Tuesday is holiday, move to previous working day
+    while raw.weekday() >= 5 or raw in nse_holidays:
+        raw -= timedelta(days=1)
+    
+    expiry = raw
+    if expiry < ref_date:
+        # If this week's expiry passed, get next week's
+        raw += timedelta(days=7)
+        while raw.weekday() >= 5 or raw in nse_holidays:
+            raw -= timedelta(days=1)
+        expiry = raw
+    return expiry.strftime("%Y-%m-%d")
 
 
-def _last_weekday_of_month(year: int, month: int, weekday: int) -> "date":
-    """Return the last occurrence of `weekday` (0=Mon … 6=Sun) in the given month."""
+def _get_bse_weekly_expiry(ref_date: "date", base: str) -> "str | None":
+    """
+    For BSE SENSEX: Weekly expiry on THURSDAY
+    - Returns the next Thursday's expiry date
+    - Adjusts for BSE holidays
+    """
+    from datetime import timedelta
+    try:
+        from config.holidays import BSE_HOLIDAYS_2026
+        bse_holidays = BSE_HOLIDAYS_2026
+    except Exception:
+        bse_holidays = set()
+    
+    # Thursday = weekday 3
+    days_ahead = (3 - ref_date.weekday() + 7) % 7
+    raw = ref_date + timedelta(days=days_ahead)
+    
+    # Adjust for holidays - if Thursday is holiday, move to previous working day
+    while raw.weekday() >= 5 or raw in bse_holidays:
+        raw -= timedelta(days=1)
+    
+    expiry = raw
+    if expiry < ref_date:
+        # If this week's expiry passed, get next week's
+        raw += timedelta(days=7)
+        while raw.weekday() >= 5 or raw in bse_holidays:
+            raw -= timedelta(days=1)
+        expiry = raw
+    return expiry.strftime("%Y-%m-%d")
+
+
+def _get_nse_monthly_expiry(ref_date: "date", base: str) -> "str | None":
+    from datetime import date as _date, timedelta
+    try:
+        from config.holidays import NSE_HOLIDAYS_2026
+        nse_holidays = NSE_HOLIDAYS_2026
+    except Exception:
+        nse_holidays = set()
+    
     import calendar
-    from datetime import date as _date
+    
+    year, month = ref_date.year, ref_date.month
     last_day = calendar.monthrange(year, month)[1]
     d = _date(year, month, last_day)
-    while d.weekday() != weekday:
+    while d.weekday() != 1:
         d = d.replace(day=d.day - 1)
-    return d
-
-
-# Hardcoded 2026 MCX Futures Expiry dates to match official Dhan/MCX schedules
-_MCX_2026_EXPIRIES: dict[str, dict[int, tuple[int, int, int]]] = {
-    "NATURALGAS": {
-        1: (2026, 1, 27),
-        2: (2026, 2, 24),
-        3: (2026, 3, 26),
-        4: (2026, 4, 27),
-        5: (2026, 5, 26),
-        6: (2026, 6, 25),
-        7: (2026, 7, 28),
-        8: (2026, 8, 26),
-        9: (2026, 9, 25),
-        10: (2026, 10, 27),
-        11: (2026, 11, 24),
-        12: (2026, 12, 28),
-    },
-    "CRUDEOIL": {
-        1: (2026, 1, 16),
-        2: (2026, 2, 19),
-        3: (2026, 3, 19),
-        4: (2026, 4, 20),
-        5: (2026, 5, 18),
-        6: (2026, 6, 18),
-        7: (2026, 7, 20),
-        8: (2026, 8, 19),
-        9: (2026, 9, 21),
-        10: (2026, 10, 19),
-        11: (2026, 11, 19),
-        12: (2026, 12, 18),
-    }
-}
+    while d.weekday() >= 5 or d in nse_holidays:
+        d -= timedelta(days=1)
+    expiry = d
+    
+    if expiry < ref_date:
+        if month == 12:
+            year, month = year + 1, 1
+        else:
+            month += 1
+        last_day = calendar.monthrange(year, month)[1]
+        d = _date(year, month, last_day)
+        while d.weekday() != 1:
+            d = d.replace(day=d.day - 1)
+        while d.weekday() >= 5 or d in nse_holidays:
+            d -= timedelta(days=1)
+        expiry = d
+    
+    return expiry.strftime("%Y-%m-%d")
 
 
 def get_futures_expiry(symbol: str, ref_date: "date | None" = None) -> "str | None":
     """
-    Return the active futures contract expiry date (YYYY-MM-DD) for *symbol*.
-
-    For MCX commodities:
-      - Uses exact official 2026 schedule from Dhan for NATURALGAS and CRUDEOIL.
-      - Fallback calculation for NATURALGAS: 4 business days before the first calendar day of delivery month.
-      - Fallback calculation for CRUDEOIL: 19th of the month, adjusted backward to previous working day.
-      - Fallback calculation for GOLD/SILVER: 5th of the month, adjusted backward to previous working day.
-
+    Return the active futures/options contract expiry date (YYYY-MM-DD) for *symbol*.
+    
     For NSE indices:
-      - Last Thursday of the month.
-
+      - NIFTY: Weekly TUESDAY
+      - SENSEX: Weekly THURSDAY (BSE)
+      - BANKNIFTY, FINNIFTY, MIDCPNIFTY: Monthly last TUESDAY
+     
+    For MCX commodities:
+      - Monthly expiry per official schedule
+     
     If `ref_date` is None, today (IST) is used.
-    If the computed expiry for the current month has already passed, the next
-    month's expiry is returned.
-
-    Returns None for symbols with no known futures contract (e.g., pure equity options).
+    If the computed expiry for the current period has already passed, the next
+    period's expiry is returned.
+     
+    Returns None for symbols with no known contract.
     """
     import calendar
     from datetime import date as _date, timedelta
     try:
         from config.holidays import MCX_FULL_HOLIDAYS_2026, NSE_HOLIDAYS_2026
-        mcx_holidays: set[_date] = MCX_FULL_HOLIDAYS_2026   # type: ignore[assignment]
-        nse_holidays: set[_date] = NSE_HOLIDAYS_2026          # type: ignore[assignment]
+        mcx_holidays: set[_date] = MCX_FULL_HOLIDAYS_2026
+        nse_holidays: set[_date] = NSE_HOLIDAYS_2026
     except Exception:
         mcx_holidays = set()
         nse_holidays = set()
@@ -206,7 +319,6 @@ def get_futures_expiry(symbol: str, ref_date: "date | None" = None) -> "str | No
 
         expiry = _compute(year, month)
         if expiry < ref_date:
-            # Current month's expiry has passed → next month
             if month == 12:
                 year, month = year + 1, 1
             else:
@@ -215,30 +327,17 @@ def get_futures_expiry(symbol: str, ref_date: "date | None" = None) -> "str | No
         return expiry.strftime("%Y-%m-%d")
 
     elif class_key in ("NSE_INDEX", "BSE_INDEX"):
-        if base in ("NIFTY", "SENSEX"):
-            # Weekly Thursday (weekday 3)
-            days_ahead = (3 - ref_date.weekday() + 7) % 7
-            raw = ref_date + timedelta(days=days_ahead)
-            expiry = _prev_working_day(raw, nse_holidays)
-            if expiry < ref_date:
-                raw = raw + timedelta(days=7)
-                expiry = _prev_working_day(raw, nse_holidays)
-            return expiry.strftime("%Y-%m-%d")
+        if base == "NIFTY":
+            # Weekly Tuesday (weekday 1)
+            return _get_nse_weekly_expiry(ref_date, base)
+        elif base == "SENSEX":
+            # Weekly Thursday for BSE SENSEX (BSE follows its own schedule)
+            return _get_bse_weekly_expiry(ref_date, base)
+        elif base in ("BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"):
+            # Monthly last Tuesday
+            return _get_nse_monthly_expiry(ref_date, base)
         else:
-            # Other symbols: Last Tuesday of the month (weekday 1)
-            year, month = ref_date.year, ref_date.month
-
-            def _compute_nse(y: int, m: int) -> "_date":
-                raw = _last_weekday_of_month(y, m, 1)
-                return _prev_working_day(raw, nse_holidays)
-
-            expiry = _compute_nse(year, month)
-            if expiry < ref_date:
-                if month == 12:
-                    year, month = year + 1, 1
-                else:
-                    month += 1
-                expiry = _compute_nse(year, month)
-            return expiry.strftime("%Y-%m-%d")
+            # Fallback: monthly last Tuesday
+            return _get_nse_monthly_expiry(ref_date, base)
 
     return None

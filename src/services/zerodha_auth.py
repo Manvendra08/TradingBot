@@ -11,7 +11,11 @@ KEY_PATH = Path("data/.fernet_key")
 
 def _get_fernet() -> Fernet:
     if not KEY_PATH.exists():
-        KEY_PATH.parent.mkdir(exist_ok=True, parents=True)
+        if not KEY_PATH.parent.exists():
+            try:
+                KEY_PATH.parent.mkdir(exist_ok=True, parents=True)
+            except Exception as e:
+                log.warning("[zerodha_auth] Could not create parent directory %s: %s", KEY_PATH.parent, e)
         key = Fernet.generate_key()
         KEY_PATH.write_bytes(key)
     else:

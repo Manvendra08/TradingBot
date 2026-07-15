@@ -146,13 +146,16 @@ def _check_risk_limits_for_table(
             ), "MAX_TRADES_PER_SYMBOL_PER_DAY"
 
         # 4. Daily loss cap
+        # BUG-M4 FIX: Use parameterized timestamps only instead of mixing parameterized
+        # and CURRENT_TIMESTAMP. This prevents timezone offset mismatches.
+        now_utc = datetime.now(timezone.utc).isoformat()
         today_loss_row = conn.execute(
             f"""
             SELECT COALESCE(SUM(pnl_rupees), 0) AS total
             FROM {trades_table}
-            WHERE closed_at >= ? AND closed_at <= CURRENT_TIMESTAMP AND pnl_rupees < 0
+            WHERE closed_at >= ? AND closed_at <= ? AND pnl_rupees < 0
             """,
-            (today_start,),
+            (today_start, now_utc),
         ).fetchone()
         today_realized_loss = float(today_loss_row["total"] if today_loss_row else 0.0)
         if today_realized_loss < -abs(MAX_DAILY_LOSS_RUPEES):
@@ -319,12 +322,18 @@ def compute_combined_book(symbol_state: dict, market_state: dict) -> CombinedBoo
     within = True
     reason = ""
 
-    if open_count >= _TFSS_MAX_OPEN_POSITIONS:
-        within = False
-        reason = f"TFSS_OPEN_CAP: {open_count} >= {_TFSS_MAX_OPEN_POSITIONS}"
-    elif total_delta >= _TFSS_MAX_TOTAL_DELTA:
-        within = False
-        reason = f"TFSS_DELTA_CAP: total delta {total_delta:.3f} >= {_TFSS_MAX_TOTAL_DELTA:.3f}"
+    try:
+        from config.runtime_config import load_runtime_config
+        ENABLE_TFSS_TRADE_BLOCKED_RULES = load_runtime_config().get("enable_tfss_trade_blocked_rules", False)
+    except Exception:
+        from config.trend_following_short_strangle import ENABLE_TFSS_TRADE_BLOCKED_RULES
+    if ENABLE_TFSS_TRADE_BLOCKED_RULES:
+        if open_count >= _TFSS_MAX_OPEN_POSITIONS:
+            within = False
+            reason = f"TFSS_OPEN_CAP: {open_count} >= {_TFSS_MAX_OPEN_POSITIONS}"
+        elif total_delta >= _TFSS_MAX_TOTAL_DELTA:
+            within = False
+            reason = f"TFSS_DELTA_CAP: total delta {total_delta:.3f} >= {_TFSS_MAX_TOTAL_DELTA:.3f}"
 
     return CombinedBookStatus(
         within_caps=within,

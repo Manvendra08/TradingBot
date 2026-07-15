@@ -1237,6 +1237,29 @@
                                 </label>
                             </div>
 
+                            <div
+                                class="switch-group"
+                                style="
+                                    margin-bottom: 24px;
+                                    border-top: 1px solid var(--border);
+                                    padding-top: 20px;
+                                "
+                            >
+                                <div class="switch-label">
+                                    <span>TFSS Trade Blocked Rules</span>
+                                    <span class="switch-sub"
+                                        >Enable strict TFSS-specific blocking rules (Persistence history, Min scan match count, Max tranches limit, Delta Cap limit)</span
+                                    >
+                                </div>
+                                <label class="switch">
+                                    <input
+                                        type="checkbox"
+                                        id="sett-enable-tfss-blocked-rules"
+                                    />
+                                    <span class="slider"></span>
+                                </label>
+                            </div>
+
                             <!-- Adopted manual position configuration block -->
                             <div
                                 id="direct-kite-settings-wrapper"
@@ -2656,6 +2679,9 @@
                     document.getElementById("sett-manage-direct-kite")
                         .checked !==
                         (runtimeConfig.manage_direct_kite_positions || false) ||
+                    document.getElementById("sett-enable-tfss-blocked-rules")
+                        .checked !==
+                        (runtimeConfig.enable_tfss_trade_blocked_rules || false) ||
                     document.getElementById("sett-direct-kite-mode").value !==
                         (runtimeConfig.direct_kite_initialization_mode ||
                             "fixed_pct") ||
@@ -2950,6 +2976,13 @@
                             manageDirectCheckbox.checked =
                                 data.manage_direct_kite_positions || false;
 
+                        const enableTfssBlockedCheckbox = document.getElementById(
+                            "sett-enable-tfss-blocked-rules",
+                        );
+                        if (enableTfssBlockedCheckbox)
+                            enableTfssBlockedCheckbox.checked =
+                                data.enable_tfss_trade_blocked_rules || false;
+
                         const directModeSelect = document.getElementById(
                             "sett-direct-kite-mode",
                         );
@@ -3125,6 +3158,9 @@
                     ).value,
                     manage_direct_kite_positions: document.getElementById(
                         "sett-manage-direct-kite",
+                    ).checked,
+                    enable_tfss_trade_blocked_rules: document.getElementById(
+                        "sett-enable-tfss-blocked-rules",
                     ).checked,
                     direct_kite_initialization_mode: document.getElementById(
                         "sett-direct-kite-mode",

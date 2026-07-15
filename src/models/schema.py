@@ -66,6 +66,8 @@ CREATE INDEX IF NOT EXISTS idx_oc_symbol_time
     ON option_chain_snapshots (symbol, fetched_at);
 CREATE INDEX IF NOT EXISTS idx_oc_strike_type
     ON option_chain_snapshots (symbol, strike, option_type, fetched_at);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_oc_snap
+    ON option_chain_snapshots (fetched_at, symbol, expiry, strike, option_type);
 
 CREATE TABLE IF NOT EXISTS underlying_price (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -125,7 +127,8 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     pnl_points          REAL DEFAULT 0,     -- P&L in points (legacy)
     pnl_rupees          REAL DEFAULT 0,     -- P&L in ₹ net of transaction costs
     status              TEXT NOT NULL,      -- OPEN | CLOSED_TARGET | CLOSED_SL | CLOSED_MANUAL
-    reason              TEXT,
+    reason              TEXT,                -- entry reason (decision_reason at open time)
+    exit_reason         TEXT,                -- exit reason (set at close)
     digest_id           TEXT,
     signal_key          TEXT UNIQUE,
     pyramid_level       INTEGER DEFAULT 1,
@@ -416,6 +419,12 @@ CREATE TABLE IF NOT EXISTS pattern_stats_rollup (
     PRIMARY KEY (symbol, verdict_label, pcr_regime)
 );
 
+-- L5 FIX: Track applied schema migrations to avoid re-running every startup
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    migration_id TEXT PRIMARY KEY,
+    applied_at TEXT NOT NULL
+);
+
 """
 
 
@@ -434,84 +443,77 @@ def get_conn():
 
 
 _MIGRATIONS = [
-    "ALTER TABLE option_chain_snapshots ADD COLUMN ltp_change_pct REAL",
-    "ALTER TABLE option_chain_snapshots ADD COLUMN oi_change_pct REAL",
-    "ALTER TABLE anomaly_alerts ADD COLUMN severity TEXT DEFAULT 'LOW'",
-    "ALTER TABLE anomaly_alerts ADD COLUMN digest_id TEXT",
-    "ALTER TABLE alert_dedup    ADD COLUMN severity TEXT DEFAULT 'LOW'",
-    # Paper trading enhancements for realistic P&L
-    "ALTER TABLE paper_trades ADD COLUMN entry_premium REAL",
-    "ALTER TABLE paper_trades ADD COLUMN exit_premium REAL",
-    "ALTER TABLE paper_trades ADD COLUMN sl_premium REAL",
-    "ALTER TABLE paper_trades ADD COLUMN target_premium REAL",
-    "ALTER TABLE paper_trades ADD COLUMN lots INTEGER DEFAULT 1",
-    "ALTER TABLE paper_trades ADD COLUMN lot_size INTEGER DEFAULT 1",
-    "ALTER TABLE paper_trades ADD COLUMN pnl_rupees REAL DEFAULT 0",
-    # V2.2: trade decision metadata
-    "ALTER TABLE paper_trades ADD COLUMN trade_status TEXT DEFAULT 'TRIGGERED_CORE'",
-    "ALTER TABLE paper_trades ADD COLUMN setup_type TEXT",
-    "ALTER TABLE paper_trades ADD COLUMN decision_reason TEXT",
-    "ALTER TABLE paper_trades ADD COLUMN confidence_score INTEGER",
-    "ALTER TABLE paper_trades ADD COLUMN entry_quality_score INTEGER",
-    "ALTER TABLE paper_trades ADD COLUMN trend_alignment_score INTEGER",
-    "ALTER TABLE paper_trades ADD COLUMN regime_score INTEGER",
-    # Timeframe breakout enhancements
-    "ALTER TABLE paper_trades ADD COLUMN signal_key TEXT",
-    "ALTER TABLE paper_trades ADD COLUMN pyramid_level INTEGER DEFAULT 1",
-    "ALTER TABLE paper_trades ADD COLUMN max_favorable_r REAL DEFAULT 0",
-    "ALTER TABLE paper_trades ADD COLUMN side TEXT DEFAULT 'BUY'",
-    # B8: stale fallback tagging for regime isolation
-    "ALTER TABLE scan_summaries ADD COLUMN is_fallback INTEGER DEFAULT 0",
-    # Live trades decision metadata
-    "ALTER TABLE live_trades ADD COLUMN trade_status TEXT DEFAULT 'TRIGGERED_CORE'",
-    "ALTER TABLE live_trades ADD COLUMN setup_type TEXT",
-    "ALTER TABLE live_trades ADD COLUMN decision_reason TEXT",
-    "ALTER TABLE live_trades ADD COLUMN confidence_score INTEGER",
-    "ALTER TABLE live_trades ADD COLUMN entry_quality_score INTEGER",
-    "ALTER TABLE live_trades ADD COLUMN trend_alignment_score INTEGER",
-    "ALTER TABLE live_trades ADD COLUMN regime_score INTEGER",
-    "ALTER TABLE paper_trades ADD COLUMN expiry TEXT",
-    "ALTER TABLE live_trades ADD COLUMN expiry TEXT",
-    # ── Phase 0: ML feature columns (AI_INTELLIGENCE_ROADMAP_v3.0) ──────────
-    # These columns capture scan context at trade open time for ML training.
-    # All nullable — historical rows remain NULL, excluded from training.
-    "ALTER TABLE paper_trades ADD COLUMN price_change_pct REAL",
-    "ALTER TABLE paper_trades ADD COLUMN pcr REAL",
-    "ALTER TABLE paper_trades ADD COLUMN ce_oi_change REAL",
-    "ALTER TABLE paper_trades ADD COLUMN pe_oi_change REAL",
-    "ALTER TABLE paper_trades ADD COLUMN underlying REAL",
-    "ALTER TABLE paper_trades ADD COLUMN support REAL",
-    "ALTER TABLE paper_trades ADD COLUMN resistance REAL",
-    "ALTER TABLE paper_trades ADD COLUMN max_pain REAL",
-    "ALTER TABLE paper_trades ADD COLUMN days_to_expiry INTEGER",
-    "ALTER TABLE paper_trades ADD COLUMN chart_conflict INTEGER",
-    "ALTER TABLE paper_trades ADD COLUMN rsi_1h REAL",
-    "ALTER TABLE paper_trades ADD COLUMN rsi_3h REAL",
-    "ALTER TABLE paper_trades ADD COLUMN regime TEXT",
-    "ALTER TABLE live_trades ADD COLUMN price_change_pct REAL",
-    "ALTER TABLE live_trades ADD COLUMN pcr REAL",
-    "ALTER TABLE live_trades ADD COLUMN ce_oi_change REAL",
-    "ALTER TABLE live_trades ADD COLUMN pe_oi_change REAL",
-    "ALTER TABLE live_trades ADD COLUMN underlying REAL",
-    "ALTER TABLE live_trades ADD COLUMN support REAL",
-    "ALTER TABLE live_trades ADD COLUMN resistance REAL",
-    "ALTER TABLE live_trades ADD COLUMN max_pain REAL",
-    "ALTER TABLE live_trades ADD COLUMN days_to_expiry INTEGER",
-    "ALTER TABLE live_trades ADD COLUMN chart_conflict INTEGER",
-    "ALTER TABLE live_trades ADD COLUMN rsi_1h REAL",
-    "ALTER TABLE live_trades ADD COLUMN rsi_3h REAL",
-    "ALTER TABLE live_trades ADD COLUMN regime TEXT",
-    # ── Auto-login: user_id and encrypted password for headless Kite login ────
-    "ALTER TABLE broker_configs ADD COLUMN user_id TEXT",
-    "ALTER TABLE broker_configs ADD COLUMN password TEXT",
-    "ALTER TABLE paper_trades ADD COLUMN entry_dev_pct REAL",
-    "ALTER TABLE live_trades ADD COLUMN entry_dev_pct REAL",
-    # TFSS v4 audit fields (plan §4.9)
-    "ALTER TABLE decision_audit ADD COLUMN core_origin_verdict TEXT",
-    "ALTER TABLE decision_audit ADD COLUMN core_execution_intent TEXT",
-    "ALTER TABLE decision_audit ADD COLUMN primary_trigger TEXT",
-    "ALTER TABLE decision_audit ADD COLUMN persistence_source TEXT",
-    "ALTER TABLE decision_audit ADD COLUMN persistence_agreeing_count INTEGER",
+    ("M001_add_ltp_change_pct", "ALTER TABLE option_chain_snapshots ADD COLUMN ltp_change_pct REAL"),
+    ("M002_add_oi_change_pct", "ALTER TABLE option_chain_snapshots ADD COLUMN oi_change_pct REAL"),
+    ("M003_add_alert_severity", "ALTER TABLE anomaly_alerts ADD COLUMN severity TEXT DEFAULT 'LOW'"),
+    ("M004_add_alert_digest_id", "ALTER TABLE anomaly_alerts ADD COLUMN digest_id TEXT"),
+    ("M005_add_dedup_severity", "ALTER TABLE alert_dedup    ADD COLUMN severity TEXT DEFAULT 'LOW'"),
+    ("M006_add_entry_premium", "ALTER TABLE paper_trades ADD COLUMN entry_premium REAL"),
+    ("M007_add_exit_premium", "ALTER TABLE paper_trades ADD COLUMN exit_premium REAL"),
+    ("M008_add_sl_premium", "ALTER TABLE paper_trades ADD COLUMN sl_premium REAL"),
+    ("M009_add_target_premium", "ALTER TABLE paper_trades ADD COLUMN target_premium REAL"),
+    ("M010_add_lots", "ALTER TABLE paper_trades ADD COLUMN lots INTEGER DEFAULT 1"),
+    ("M011_add_lot_size", "ALTER TABLE paper_trades ADD COLUMN lot_size INTEGER DEFAULT 1"),
+    ("M012_add_pnl_rupees", "ALTER TABLE paper_trades ADD COLUMN pnl_rupees REAL DEFAULT 0"),
+    ("M013_add_trade_status", "ALTER TABLE paper_trades ADD COLUMN trade_status TEXT DEFAULT 'TRIGGERED_CORE'"),
+    ("M014_add_setup_type", "ALTER TABLE paper_trades ADD COLUMN setup_type TEXT"),
+    ("M015_add_decision_reason", "ALTER TABLE paper_trades ADD COLUMN decision_reason TEXT"),
+    ("M016_add_confidence_score", "ALTER TABLE paper_trades ADD COLUMN confidence_score INTEGER"),
+    ("M017_add_entry_quality_score", "ALTER TABLE paper_trades ADD COLUMN entry_quality_score INTEGER"),
+    ("M018_add_trend_alignment_score", "ALTER TABLE paper_trades ADD COLUMN trend_alignment_score INTEGER"),
+    ("M019_add_regime_score", "ALTER TABLE paper_trades ADD COLUMN regime_score INTEGER"),
+    ("M020_add_signal_key", "ALTER TABLE paper_trades ADD COLUMN signal_key TEXT"),
+    ("M021_add_pyramid_level", "ALTER TABLE paper_trades ADD COLUMN pyramid_level INTEGER DEFAULT 1"),
+    ("M022_add_max_favorable_r", "ALTER TABLE paper_trades ADD COLUMN max_favorable_r REAL DEFAULT 0"),
+    ("M023_add_side", "ALTER TABLE paper_trades ADD COLUMN side TEXT DEFAULT 'BUY'"),
+    ("M024_add_is_fallback", "ALTER TABLE scan_summaries ADD COLUMN is_fallback INTEGER DEFAULT 0"),
+    ("M025_add_live_trade_status", "ALTER TABLE live_trades ADD COLUMN trade_status TEXT DEFAULT 'TRIGGERED_CORE'"),
+    ("M026_add_live_setup_type", "ALTER TABLE live_trades ADD COLUMN setup_type TEXT"),
+    ("M027_add_live_decision_reason", "ALTER TABLE live_trades ADD COLUMN decision_reason TEXT"),
+    ("M028_add_live_confidence_score", "ALTER TABLE live_trades ADD COLUMN confidence_score INTEGER"),
+    ("M029_add_live_entry_quality_score", "ALTER TABLE live_trades ADD COLUMN entry_quality_score INTEGER"),
+    ("M030_add_live_trend_alignment_score", "ALTER TABLE live_trades ADD COLUMN trend_alignment_score INTEGER"),
+    ("M031_add_live_regime_score", "ALTER TABLE live_trades ADD COLUMN regime_score INTEGER"),
+    ("M032_add_paper_expiry", "ALTER TABLE paper_trades ADD COLUMN expiry TEXT"),
+    ("M033_add_live_expiry", "ALTER TABLE live_trades ADD COLUMN expiry TEXT"),
+    ("M034_add_paper_price_change_pct", "ALTER TABLE paper_trades ADD COLUMN price_change_pct REAL"),
+    ("M035_add_paper_pcr", "ALTER TABLE paper_trades ADD COLUMN pcr REAL"),
+    ("M036_add_paper_ce_oi_change", "ALTER TABLE paper_trades ADD COLUMN ce_oi_change REAL"),
+    ("M037_add_paper_pe_oi_change", "ALTER TABLE paper_trades ADD COLUMN pe_oi_change REAL"),
+    ("M038_add_paper_underlying", "ALTER TABLE paper_trades ADD COLUMN underlying REAL"),
+    ("M039_add_paper_support", "ALTER TABLE paper_trades ADD COLUMN support REAL"),
+    ("M040_add_paper_resistance", "ALTER TABLE paper_trades ADD COLUMN resistance REAL"),
+    ("M041_add_paper_max_pain", "ALTER TABLE paper_trades ADD COLUMN max_pain REAL"),
+    ("M042_add_paper_days_to_expiry", "ALTER TABLE paper_trades ADD COLUMN days_to_expiry INTEGER"),
+    ("M043_add_paper_chart_conflict", "ALTER TABLE paper_trades ADD COLUMN chart_conflict INTEGER"),
+    ("M044_add_paper_rsi_1h", "ALTER TABLE paper_trades ADD COLUMN rsi_1h REAL"),
+    ("M045_add_paper_rsi_3h", "ALTER TABLE paper_trades ADD COLUMN rsi_3h REAL"),
+    ("M046_add_paper_regime", "ALTER TABLE paper_trades ADD COLUMN regime TEXT"),
+    ("M047_add_live_price_change_pct", "ALTER TABLE live_trades ADD COLUMN price_change_pct REAL"),
+    ("M048_add_live_pcr", "ALTER TABLE live_trades ADD COLUMN pcr REAL"),
+    ("M049_add_live_ce_oi_change", "ALTER TABLE live_trades ADD COLUMN ce_oi_change REAL"),
+    ("M050_add_live_pe_oi_change", "ALTER TABLE live_trades ADD COLUMN pe_oi_change REAL"),
+    ("M051_add_live_underlying", "ALTER TABLE live_trades ADD COLUMN underlying REAL"),
+    ("M052_add_live_support", "ALTER TABLE live_trades ADD COLUMN support REAL"),
+    ("M053_add_live_resistance", "ALTER TABLE live_trades ADD COLUMN resistance REAL"),
+    ("M054_add_live_max_pain", "ALTER TABLE live_trades ADD COLUMN max_pain REAL"),
+    ("M055_add_live_days_to_expiry", "ALTER TABLE live_trades ADD COLUMN days_to_expiry INTEGER"),
+    ("M056_add_live_chart_conflict", "ALTER TABLE live_trades ADD COLUMN chart_conflict INTEGER"),
+    ("M057_add_live_rsi_1h", "ALTER TABLE live_trades ADD COLUMN rsi_1h REAL"),
+    ("M058_add_live_rsi_3h", "ALTER TABLE live_trades ADD COLUMN rsi_3h REAL"),
+    ("M059_add_live_regime", "ALTER TABLE live_trades ADD COLUMN regime TEXT"),
+    ("M060_add_broker_user_id", "ALTER TABLE broker_configs ADD COLUMN user_id TEXT"),
+    ("M061_add_broker_password", "ALTER TABLE broker_configs ADD COLUMN password TEXT"),
+    ("M062_add_paper_entry_dev_pct", "ALTER TABLE paper_trades ADD COLUMN entry_dev_pct REAL"),
+    ("M063_add_live_entry_dev_pct", "ALTER TABLE live_trades ADD COLUMN entry_dev_pct REAL"),
+    ("M064_add_core_origin_verdict", "ALTER TABLE decision_audit ADD COLUMN core_origin_verdict TEXT"),
+    ("M065_add_core_execution_intent", "ALTER TABLE decision_audit ADD COLUMN core_execution_intent TEXT"),
+    ("M066_add_primary_trigger", "ALTER TABLE decision_audit ADD COLUMN primary_trigger TEXT"),
+    ("M067_add_persistence_source", "ALTER TABLE decision_audit ADD COLUMN persistence_source TEXT"),
+    ("M068_add_persistence_agreeing_count", "ALTER TABLE decision_audit ADD COLUMN persistence_agreeing_count INTEGER"),
+    ("M069_add_live_lot_size", "ALTER TABLE live_trades ADD COLUMN lot_size INTEGER DEFAULT 1"),
+    ("M070_add_paper_reason", "ALTER TABLE paper_trades ADD COLUMN reason TEXT"),
+    ("M071_add_paper_exit_reason", "ALTER TABLE paper_trades ADD COLUMN exit_reason TEXT"),
 ]
 
 
@@ -519,12 +521,21 @@ def init_db() -> None:
     """Create tables + run safe column migrations. Call on every startup."""
     with get_conn() as conn:
         conn.executescript(DDL)
-        for sql in _MIGRATIONS:
-            try:
-                conn.execute(sql)
-            except sqlite3.OperationalError as e:
-                if "duplicate column" not in str(e).lower():
-                    raise
+        applied = {
+            row["migration_id"]
+            for row in conn.execute("SELECT migration_id FROM schema_migrations").fetchall()
+        }
+        for migration_id, sql in _MIGRATIONS:
+            if migration_id not in applied:
+                try:
+                    conn.execute(sql)
+                    conn.execute(
+                        "INSERT INTO schema_migrations (migration_id, applied_at) VALUES (?, ?)",
+                        (migration_id, datetime.now(timezone.utc).isoformat()),
+                    )
+                except sqlite3.OperationalError as e:
+                    if "duplicate column" not in str(e).lower():
+                        raise
         try:
             conn.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_trades_signal_key ON paper_trades (signal_key) WHERE signal_key IS NOT NULL"
@@ -538,7 +549,7 @@ def insert_snapshots(rows: list[dict]) -> int:
     if not rows:
         return 0
     sql = """
-        INSERT INTO option_chain_snapshots
+        INSERT OR REPLACE INTO option_chain_snapshots
             (fetched_at, symbol, expiry, strike, option_type, ltp, ltp_change_pct, oi,
              oi_change_pct, oi_change, volume, iv, bid, ask, delta, underlying_price, fetcher_source)
         VALUES
@@ -616,8 +627,6 @@ def get_previous_underlying(symbol: str) -> dict | None:
 
 
 def get_previous_underlying_before(symbol: str, fetched_at: str) -> dict | None:
-    from datetime import datetime, timedelta, timezone
-
     from config.runtime_config import get_scan_frequency_mcx, get_scan_frequency_nse
     from config.symbol_classes import get_symbol_class
 
@@ -718,8 +727,6 @@ def get_prev_snapshots_bulk(
     Returns:
         Dict mapping (strike, option_type) tuples to snapshot row dicts.
     """
-    from datetime import datetime, timedelta, timezone
-
     from config.runtime_config import get_scan_frequency_mcx, get_scan_frequency_nse
     from config.symbol_classes import get_symbol_class
 
@@ -807,12 +814,15 @@ def get_prev_snapshots_bulk(
 
         if best_dt is not None:
             age_minutes = (now_utc - best_dt).total_seconds() / 60
-            if age_minutes > max_age_minutes:
+            # Handle cross-session: if best_dt is in the future relative to now_utc
+            # (e.g., yesterday's 10:00 UTC vs today's 04:00 UTC), the age is negative
+            # which means the baseline belongs to a different trading session.
+            if age_minutes < 0 or age_minutes > max_age_minutes:
                 import logging as _log
 
                 _log.getLogger(__name__).debug(
-                    "[schema] get_prev_snapshots_bulk: %s prev snapshot is %.0f min old "
-                    "(> %d min cap) — returning empty baseline to suppress cross-session noise",
+                    "[schema] get_prev_snapshots_bulk: %s prev snapshot age=%.0f min "
+                    "(> %d min cap or cross-session) — returning empty baseline to suppress cross-session noise",
                     symbol,
                     age_minutes,
                     max_age_minutes,
@@ -918,8 +928,6 @@ def get_open_timeframe_trades(symbol: str, table: str = "paper_trades") -> list[
 def get_scan_summary_at_least_1h_old(
     symbol: str, current_fetched_at: str
 ) -> dict | None:
-    from datetime import datetime, timedelta
-
     try:
         curr_dt = datetime.fromisoformat(current_fetched_at.replace("Z", "+00:00"))
     except Exception:
@@ -1351,7 +1359,7 @@ def close_paper_trade(
         conn.execute(
             """
             UPDATE paper_trades
-            SET closed_at=?, exit_underlying=?, exit_premium=?, pnl_points=?, pnl_rupees=?, status=?, reason=?
+            SET closed_at=?, exit_underlying=?, exit_premium=?, pnl_points=?, pnl_rupees=?, status=?, exit_reason=?
             WHERE id=? AND status='OPEN'
             """,
             (
@@ -1578,8 +1586,9 @@ def close_live_trade(
     from config.settings import LOT_SIZES
 
     with get_conn() as conn:
+        # BUG-H04 FIX: Also select lot_size from the database for accurate PnL
         row = conn.execute(
-            "SELECT symbol, expiry, option_type, verdict_label, entry_underlying, entry_premium, lots, strike, side FROM live_trades WHERE id=? AND status='OPEN'",
+            "SELECT symbol, expiry, option_type, verdict_label, entry_underlying, entry_premium, lots, lot_size, strike, side FROM live_trades WHERE id=? AND status='OPEN'",
             (trade_id,),
         ).fetchone()
         if not row:
@@ -1598,9 +1607,15 @@ def close_live_trade(
         lots = int(row["lots"] or 1)
         side = row["side"] or "BUY"
 
+        # BUG-H04 FIX: Use stored lot_size from database if available, otherwise fall back to LOT_SIZES
+        stored_lot_size = row["lot_size"]
         # P0-05 FIX: Extract base symbol for LOT_SIZES lookup
         base_symbol = symbol.upper().split()[0] if symbol else symbol.upper()
-        lot_size = LOT_SIZES.get(base_symbol, 1)
+        lot_size = (
+            int(stored_lot_size)
+            if stored_lot_size is not None
+            else LOT_SIZES.get(base_symbol, 1)
+        )
 
         if option_type in ("CE", "PE"):
             if (
