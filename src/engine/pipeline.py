@@ -350,7 +350,7 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
         "symbol": symbol,
         "scan_time": ts,
         "expiry": scan_context.get("expiry") or scan_context.get("futures_expiry") or "",
-        "dte": scan_context.get("dte", 0),
+        "dte": scan_context.get("days_to_expiry", 0),
         "underlying": scan_context.get("underlying") or 0.0,
         "market_regime": scan_context.get("market_regime") or "UNKNOWN",
         "confidence": (intel or {}).get("confidence", 0)
@@ -691,3 +691,41 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                 position_sync_dirty_state.mark_dirty("broker_action_failed")
                 kite_health_cache.invalidate("session_ok")
                 log.exception("%s: serialized strategy execution failed", symbol)
+        
+        # Run Scan Sentinel diagnostics asynchronously (non-blocking)
+        if not is_test:
+            try:
+                from src.engine.scan_sentinel import run_sentinel
+                
+                # Build lightweight report for sentinel
+                sentinel_report = {
+                    "symbol": symbol,
+                    "timestamp_ist": datetime.now(timezone.utc).isoformat(),
+                    "scan_duration_ms": 0,  # Not tracked in this simplified integration
+                    "underlying_price": float(oc_data.get("underlying_price") or 0.0),
+                    "expiry": oc_data.get("expiry", ""),
+                    "source": oc_data.get("source", "unknown"),
+                    "total_strikes": len(oc_data.get("strikes") or []),
+                    "zero_ltp_strikes": sum(1 for s in oc_data.get("strikes", []) if float(s.get("ltp") or 0.0) == 0.0),
+                    "zero_oi_strikes": sum(1 for s in oc_data.get("strikes", []) if int(s.get("oi") or 0) == 0),
+                    "llm_action": getattr(llm_verdict, "action", None) if llm_verdict else None,
+                    "llm_instrument": getattr(llm_verdict, "instrument", None) if llm_verdict else None,
+                    "llm_entry_premium": getattr(llm_verdict, "entry_premium_range", None) if llm_verdict else None,
+                    "llm_target_1": getattr(llm_verdict, "target_1", None) if llm_verdict else None,
+                    "llm_target_2": getattr(llm_verdict, "target_2", None) if llm_verdict else None,
+                    "llm_stop_loss": getattr(llm_verdict, "stop_loss", None) if llm_verdict else None,
+                    "trade_decision_status": intel.get("trade_decision", {}).get("status") if intel else None,
+                    "trade_decision_reason": intel.get("trade_decision", {}).get("reason") if intel else None,
+                    "warnings": [],  # Could extract from logs if needed
+                    "errors": [],    # Could extract from logs if needed
+                    "fetcher_errors": scan_context.get("fetcher_errors", []),
+                    "option_premium_used": None,
+                    "log_lines": [],
+                    "is_test": is_test,
+                    "status": "COMPLETED"
+                }
+                
+                # Submit to thread pool for async execution (non-blocking)
+                pipeline_io_executor.submit(lambda: run_sentinel(sentinel_report))
+            except Exception:
+                log.debug("%s: Scan Sentinel submission failed gracefully", symbol)
