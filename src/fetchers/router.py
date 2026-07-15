@@ -108,10 +108,10 @@ def _priority_for(symbol: str) -> list[str]:
     if base in _MCX_COMMODITIES:
         return ["shoonya", "dhan_commodity", "moneycontrol", "dhan", "dhan_headless"]
     if base == "SENSEX":
-        return ["shoonya", "dhan_sensex", "dhan", "nse_public", "sensibull"]
+        return ["sensibull", "shoonya", "dhan_sensex", "dhan", "nse_public"]
     return [
-        "shoonya", "paytm", "dhan",
-        "nse_public", "dhan_headless", "moneycontrol", "sensibull",
+        "sensibull", "shoonya", "paytm", "dhan",
+        "nse_public", "dhan_headless", "moneycontrol",
     ]
 
 
@@ -241,8 +241,9 @@ def _finalise_result(result: dict, source: str, symbol: str, priority: list[str]
                 n, len(result["strikes"]), symbol,
             )
     strikes_count = len(result.get("strikes", []))
-    is_fallback = source != priority[0]
-    prefix = "FALLBACK " if is_fallback else ""
+    is_dualfetch = "+" in source
+    is_fallback = (source != priority[0]) and not is_dualfetch
+    prefix = "DUALFETCH " if is_dualfetch else ("FALLBACK " if is_fallback else "")
     log.info(
         "[router] %s | ✅ %s%-12s | price=%-10.2f expiry=%s strikes=%d",
         symbol, prefix, source,
@@ -250,7 +251,7 @@ def _finalise_result(result: dict, source: str, symbol: str, priority: list[str]
         result.get("expiry", "?"),
         strikes_count,
     )
-    if source == "shoonya":
+    if "shoonya" in source:
         try:
             from src.models.schema import stamp_health
             stamp_health("shoonya_session", "OK", f"last_fetch={symbol}")
@@ -262,8 +263,100 @@ def _finalise_result(result: dict, source: str, symbol: str, priority: list[str]
 # Fetcher pairs that should race in parallel (primary vs hot-backup).
 # Only used when both are present in the symbol's priority list.
 _PARALLEL_RACE_PAIRS: list[tuple[str, str]] = [
-    ("sensibull", "shoonya"),
+    ("shoonya", "sensibull"),
 ]
+
+
+def _merge_fetcher_results(primary: dict, fallback: dict, symbol: str) -> dict:
+    """
+    Merge two fetcher results for the same symbol.
+    Primary is preferred; missing strikes/data from primary are filled from fallback.
+    Only keeps ATM ± STRIKES_AROUND_ATM strikes from primary.
+    
+    Returns a new merged dict without modifying inputs.
+    """
+    if not primary:
+        return fallback
+    if not fallback:
+        return primary
+    
+    underlying = primary.get("underlying_price")
+    if not underlying:
+        log.warning("[router] %s | primary missing underlying_price, cannot filter ATM strikes", symbol)
+        return primary
+    
+    # Get primary strikes and filter to ATM ± STRIKES_AROUND_ATM
+    primary_strikes = primary.get("strikes", [])
+    if not primary_strikes:
+        return primary
+    
+    # Extract unique strikes from primary
+    primary_strike_vals = sorted(set(s.get("strike") for s in primary_strikes if s.get("strike") is not None))
+    if not primary_strike_vals:
+        return primary
+    
+    # Find ATM strike (closest to underlying)
+    atm_strike = min(primary_strike_vals, key=lambda x: abs(x - underlying))
+    atm_idx = primary_strike_vals.index(atm_strike)
+    
+    # Keep ATM ± STRIKES_AROUND_ATM
+    start_idx = max(0, atm_idx - STRIKES_AROUND_ATM)
+    end_idx = min(len(primary_strike_vals), atm_idx + STRIKES_AROUND_ATM + 1)
+    allowed_strikes = set(primary_strike_vals[start_idx:end_idx])
+    
+    # Build lookup maps for allowed strikes only
+    primary_map = {}
+    for s in primary_strikes:
+        key = (s.get("strike"), s.get("option_type"))
+        if s.get("strike") in allowed_strikes:
+            primary_map[key] = s
+    
+    fallback_map = {}
+    for s in fallback.get("strikes", []):
+        key = (s.get("strike"), s.get("option_type"))
+        if s.get("strike") in allowed_strikes:
+            fallback_map[key] = s
+    
+    # Merge: only allowed strikes, primary preferred, fallback fills gaps
+    merged = {
+        "symbol": primary.get("symbol"),
+        "underlying_price": primary.get("underlying_price") or fallback.get("underlying_price"),
+        "expiry": primary.get("expiry") or fallback.get("expiry"),
+        "strikes": [],
+        "source": f"{primary.get('source', 'unknown')}+{fallback.get('source', 'unknown')}",
+        "all_expiries": list(set(
+            (primary.get("all_expiries") or []) + (fallback.get("all_expiries") or [])
+        )),
+    }
+    
+    all_keys = set(primary_map.keys()) | set(fallback_map.keys())
+    
+    for key in sorted(all_keys):
+        strike, opt_type = key
+        primary_strike = primary_map.get(key)
+        fallback_strike = fallback_map.get(key)
+        
+        if primary_strike:
+            merged_strike = dict(primary_strike)
+            if fallback_strike:
+                for field in ("ltp", "oi", "oi_change", "volume", "iv", "bid", "ask", "delta", "ltp_change_pct", "oi_change_pct"):
+                    if merged_strike.get(field) in (None, 0, 0.0) and fallback_strike.get(field) not in (None, 0, 0.0):
+                        merged_strike[field] = fallback_strike[field]
+            merged["strikes"].append(merged_strike)
+        # DO NOT add fallback-only strikes - only keep allowed ATM strikes
+    
+    # Clean up: remove strikes with no valid LTP/OI
+    merged["strikes"] = [
+        s for s in merged["strikes"]
+        if s.get("ltp") not in (None, 0, 0.0) or s.get("oi") not in (None, 0, 0.0)
+    ]
+    
+    log.info(
+        "[router] %s | merged %d primary + %d fallback = %d strikes (ATM ±%d)",
+        symbol, len(primary_map), len(fallback_map), len(merged["strikes"]), STRIKES_AROUND_ATM
+    )
+    
+    return merged
 
 
 def fetch_option_chain(symbol: str, expiry: str | None = None, required_strikes: set[float] | None = None) -> dict | None:
@@ -271,6 +364,8 @@ def fetch_option_chain(symbol: str, expiry: str | None = None, required_strikes:
     Try fetchers in configured priority order.
     For NSE symbols sensibull and shoonya are raced concurrently so that
     shoonya's result is not blocked behind sensibull's full retry chain.
+    For MCX commodities (NATURALGAS, CRUDEOIL, GOLD, SILVER), primary (shoonya)
+    and fallback (dhan_commodity) are fetched in parallel and merged.
     Returns normalised dict or None if all fail.
     
     Args:
@@ -298,6 +393,46 @@ def fetch_option_chain(symbol: str, expiry: str | None = None, required_strikes:
             ],
             "all_expiries": ["2026-06-25", "2026-07-02"],
         }
+
+    # ── Special handling for MCX commodities: parallel fetch + merge ────
+    base = symbol.upper().split()[0]
+    if base in _MCX_COMMODITIES:
+        # Fetch from shoonya (primary) and dhan_commodity (fallback) in parallel
+        primary_src = "shoonya"
+        fallback_src = "dhan_commodity"
+        
+        if primary_src in _FETCHERS and fallback_src in _FETCHERS:
+            log.info("[router] %s | MCX parallel fetch: %s + %s", symbol, primary_src, fallback_src)
+            with ThreadPoolExecutor(max_workers=2, thread_name_prefix="router-mcx") as ex:
+                futures = {
+                    ex.submit(_try_fetcher, primary_src, symbol, expiry): primary_src,
+                    ex.submit(_try_fetcher, fallback_src, symbol, expiry): fallback_src,
+                }
+                primary_data = None
+                fallback_data = None
+                for fut in _as_completed(futures):
+                    src = futures[fut]
+                    try:
+                        data = fut.result()
+                    except Exception as exc:
+                        log.error("[router] %s | %s raised: %s", symbol, src, exc)
+                        data = None
+                    if data is not None:
+                        if src == primary_src:
+                            primary_data = data
+                        else:
+                            fallback_data = data
+                
+                # Merge results: primary preferred, gaps filled from fallback
+                if primary_data and fallback_data:
+                    merged = _merge_fetcher_results(primary_data, fallback_data, symbol)
+                    return _finalise_result(merged, f"{primary_src}+{fallback_src}", symbol, priority, required_strikes)
+                elif primary_data:
+                    return _finalise_result(primary_data, primary_src, symbol, priority, required_strikes)
+                elif fallback_data:
+                    return _finalise_result(fallback_data, fallback_src, symbol, priority, required_strikes)
+        else:
+            log.warning("[router] %s | required MCX fetchers not available: %s, %s", symbol, primary_src, fallback_src)
 
     # Build the effective fetch sequence, substituting any race-eligible pair
     # with a single parallel step that resolves to the first valid result.
