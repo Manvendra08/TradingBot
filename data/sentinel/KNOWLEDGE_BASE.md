@@ -508,3 +508,12 @@
 - **Fix:**
   1. Updated `fetch_option_chain()` in `src/fetchers/router.py` to implement a generalized dual-source parallel fetch and merge. The router now pulls the top 2 available providers (e.g. `shoonya`, `sensibull`, or `dhan_commodity`) from a symbol's priority list and fetches them concurrently in a thread pool.
   2. Modified `_merge_fetcher_results()` to merge option chain pricing and greeks fields (`ltp`, `oi`, `oi_change`, `volume`, `iv`, `implied_volatility`, `bid`, `ask`, `delta`, `gamma`, `vega`, `theta`, `rho`, `ltp_change_pct`, `oi_change_pct`). Primary values are preferred, and any missing fields or zero values are filled from the secondary source before returning the sanitized snapshot.
+
+### F69: TFSS Setup Type and DTE Resolution Fix (P0-CRITICAL)
+- **Symptoms:** Reversals and delta-stop exit checks for the Trend-Following Strangle System (TFSS) were bypassed. The system defaulted to standard CORE logic and threw NameErrors during TFSS evaluations.
+- **Root Causes:**
+  1. **Missing setup_type key**: `build_paper_trade_plan()` in `src/engine/paper_plan.py` never added `"setup_type": "TFSS"` to the returned dict when a TFSS side was resolved, causing the trade model to fall back to `"CORE"`.
+  2. **Undefined DTE helper**: `src/engine/paper_trading.py` called `_dte_from_expiry()` inside the TFSS evaluation block, but the helper function was never defined or imported in that module.
+- **Fixes:**
+  1. Updated `build_paper_trade_plan()` to initialize `setup_type = "CORE"` and override to `"TFSS"` when `_tfss_execution_side` is resolved to `SELL_PE` or `SELL_CE`, returning the key in the plan dict.
+  2. Defined `_dte_from_expiry()` helper function at the top of `src/engine/paper_trading.py` to calculate days to expiry dynamically from YYYY-MM-DD strings.

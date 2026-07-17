@@ -166,10 +166,12 @@ def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | N
     # TFSS v4: If execution side is determined by the pipeline, override VERDICT_ACTION_MAP.
     # LLM instrument type (CE/PE) is still respected for option_type, but side is ALWAYS SELL
     # for qualifying Core verdicts — legacy BUY paths are deprecated per plan §1.4.
+    setup_type = "CORE"
     tfss_side = ctx.get("_tfss_execution_side")
     if tfss_side in ("SELL_PE", "SELL_CE"):
         side = "SELL"
         option_type = "PE" if tfss_side == "SELL_PE" else "CE"
+        setup_type = "TFSS"
     elif verdict_str in ("GO_LONG", "GO_SHORT"):
         # LLM can influence option type (CE vs PE) but NOT side — side stays SELL
         llm_instr = str(ctx.get("instrument") or "")
@@ -232,6 +234,7 @@ def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | N
         "sl_underlying": round(sl, 4),
         "target_underlying": round(target, 4),
         "confidence": int(confidence or 0),
+        "setup_type": setup_type,
     }
 
 

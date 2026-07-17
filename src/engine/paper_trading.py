@@ -24,6 +24,16 @@ import pytz
 
 log = logging.getLogger(__name__)
 
+
+def _dte_from_expiry(expiry: str) -> int:
+    """Calculate days to expiry from YYYY-MM-DD string."""
+    try:
+        exp_date = datetime.strptime(expiry, "%Y-%m-%d").date()
+        today = datetime.now(timezone.utc).date()
+        return max(0, (exp_date - today).days)
+    except Exception:
+        return 999
+
 from config.runtime_config import (
     get_scan_frequency_mcx,
     get_scan_frequency_minutes,
