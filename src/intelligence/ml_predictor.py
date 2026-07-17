@@ -66,6 +66,12 @@ FEATURES_PATH = MODEL_DIR / "ml_features.json"
 MIN_TRADES_FOR_TRAINING = 30
 MIN_TRADES_FOR_PREDICTION = 10
 AUC_IMPROVEMENT_THRESHOLD = 0.02  # Only deploy if AUC improves >= 2%
+# v3.1 FIX: Absolute floor applied to EVERY deployment, including the very
+# first model. The relative gate below is skipped when self.model is None
+# (no baseline to compare against), which previously let a sub-random AUC
+# (e.g. 0.449) be saved as the "deployed" v1 model. This floor closes that
+# gap so a worse-than-random model is never written to disk.
+MIN_DEPLOY_AUC = 0.55
 
 # ── Explicit feature order — NEVER use sorted() at runtime ────────────────────
 # v2.0 FIX: This MUST match between training and prediction.
@@ -627,6 +633,19 @@ class TradeSuccessPredictor:
             holdout_auc,
             new_auc,
         )
+
+        # v3.1 FIX: Absolute deploy floor — applies to ALL deployments,
+        # including the first model (when self.model is None the relative
+        # gate below is skipped, so this is the ONLY protection for v1).
+        if new_auc < MIN_DEPLOY_AUC:
+            log.warning(
+                "New model CV_AUC (%.3f) below absolute deploy floor (%.3f). "
+                "Discarding — model is no better than (or worse than) random. "
+                "Not saved to disk.",
+                new_auc,
+                MIN_DEPLOY_AUC,
+            )
+            return False
 
         # v2.1 FIX: AUC floor to prevent startup blind spot. (v3.0: allow initial deploy if current model is None)
         AUC_FLOOR = 0.55

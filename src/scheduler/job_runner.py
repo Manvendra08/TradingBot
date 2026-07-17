@@ -247,6 +247,22 @@ def _latest_interval_data_available(class_key: str, current_interval_idx: int, i
     return True
 
 
+def _interval_in_market(class_key: str, interval_start_ist: datetime) -> bool:
+    """True if an interval's start timestamp falls inside the class market window."""
+    reps = [s for s in WATCH_SYMBOLS if get_symbol_class(s) == class_key]
+    if not reps:
+        return False
+    return is_market_open(reps[0], interval_start_ist)
+
+
+def _market_currently_open(class_key: str) -> bool:
+    """True if the class market is open right now (IST)."""
+    reps = [s for s in WATCH_SYMBOLS if get_symbol_class(s) == class_key]
+    if not reps:
+        return False
+    return is_market_open(reps[0])
+
+
 def _find_missed_intervals(class_key: str, current_interval_idx: int, interval_min: int, market_open_time_ist: datetime, last_scanned_interval: dict[str, int]) -> list[int]:
     """Find missed interval indices between the last successfully scanned interval and the current one."""
     from datetime import timedelta, timezone
@@ -259,8 +275,12 @@ def _find_missed_intervals(class_key: str, current_interval_idx: int, interval_m
     missed = []
     for idx in range(last_scanned + 1, current_interval_idx):
         interval_start_ist = market_open_time_ist + timedelta(minutes=idx * interval_min)
+        if not _interval_in_market(class_key, interval_start_ist):
+            continue
         interval_start_utc = interval_start_ist.astimezone(timezone.utc)
         interval_start_utc_str = interval_start_utc.isoformat()
+        interval_end_ist = interval_start_ist + timedelta(minutes=interval_min)
+        interval_end_utc_str = interval_end_ist.astimezone(timezone.utc).isoformat()
 
         symbols = [s for s in WATCH_SYMBOLS if get_symbol_class(s) == class_key]
         if not symbols:
@@ -272,8 +292,9 @@ def _find_missed_intervals(class_key: str, current_interval_idx: int, interval_m
                 if not _is_open_for(symbol):
                     continue
                 row = conn.execute(
-                    "SELECT 1 FROM scan_summaries WHERE symbol=? AND fetched_at >= ? LIMIT 1",
-                    (symbol, interval_start_utc_str)
+                    "SELECT 1 FROM scan_summaries WHERE symbol=? "
+                    "AND fetched_at >= ? AND fetched_at < ? LIMIT 1",
+                    (symbol, interval_start_utc_str, interval_end_utc_str)
                 ).fetchone()
                 if row:
                     data_exists = True
@@ -303,6 +324,104 @@ def _run_catchup_scan(class_key: str, interval_idx: int, interval_min: int, mark
         )
     except Exception as exc:
         log.error("[catchup] Catch-up scan failed for %s interval %d: %s", class_key, interval_idx, exc)
+
+
+def _startup_fill_missed(
+    class_key: str,
+    market_open_time_ist: datetime,
+    interval_min: int,
+    target_interval: int,
+    immediate_flag: bool,
+) -> None:
+    """Detect intervals 0..target_interval lacking scan_summaries data and
+    backfill them (capped at MAX_CATCHUP_INTERVALS).
+
+    v3.1 FIX: shared by BOTH startup paths. Previously only the
+    ``--now`` (immediate) path gap-filled missed intervals; a plain
+    ``start_scheduler`` (default) just resumed at the current interval and
+    silently dropped everything missed while the bot was offline.
+
+    CAVEAT (see KNOWLEDGE_BASE F46): catch-up re-runs the LIVE
+    fetcher and stamps the snapshot with the interval's UTC window — it
+    does NOT retrieve historical option-chain/OI data (no historical
+    source is wired in). It reconciles the interval grid / bookkeeping,
+    not the past market state.
+    """
+    from datetime import timedelta, timezone
+    from src.models.schema import get_conn
+
+    symbols = [s for s in WATCH_SYMBOLS if get_symbol_class(s) == class_key]
+    if not symbols or target_interval < 0:
+        return
+
+    # Off-market hours (default startup): no interval is scannable, so gap-filling
+    # past/closed intervals is pointless (each scan would just hit the market-closed
+    # guard). Skip tracking/catch-up entirely to save scan duration.
+    # The --now (immediate) path intentionally bypasses this to force a scan.
+    if not immediate_flag and not _market_currently_open(class_key):
+        log.info(
+            "[scheduler] %s: market closed — skipping startup gap-fill (no intervals to scan)",
+            class_key,
+        )
+        return
+
+    missed_intervals = []
+    for idx in range(target_interval + 1):
+        interval_start_ist = market_open_time_ist + timedelta(minutes=idx * interval_min)
+        if not _interval_in_market(class_key, interval_start_ist):
+            continue
+        interval_start_utc = interval_start_ist.astimezone(timezone.utc)
+        interval_start_utc_str = interval_start_utc.isoformat()
+        interval_end_ist = interval_start_ist + timedelta(minutes=interval_min)
+        interval_end_utc_str = interval_end_ist.astimezone(timezone.utc).isoformat()
+        with get_conn() as conn:
+            data_exists = False
+            for symbol in symbols:
+                if not immediate_flag and not _is_open_for(symbol):
+                    continue
+                row = conn.execute(
+                    "SELECT 1 FROM scan_summaries WHERE symbol=? "
+                    "AND fetched_at >= ? AND fetched_at < ? LIMIT 1",
+                    (symbol, interval_start_utc_str, interval_end_utc_str),
+                ).fetchone()
+                if row:
+                    data_exists = True
+                    break
+            if not data_exists:
+                missed_intervals.append(idx)
+
+    if not missed_intervals:
+        log.info(
+            "[scheduler] %s: all intervals up to %d already have data",
+            class_key,
+            target_interval,
+        )
+        return
+
+    missed_intervals = missed_intervals[-MAX_CATCHUP_INTERVALS:]
+    log.info(
+        "[scheduler] %s: %d missed interval(s) at startup: %s",
+        class_key,
+        len(missed_intervals),
+        missed_intervals,
+    )
+    for missed_idx in missed_intervals:
+        interval_ts = market_open_time_ist + timedelta(minutes=missed_idx * interval_min)
+        log.info(
+            "[scheduler] %s: catch-up scan for interval %d (%s)",
+            class_key,
+            missed_idx,
+            interval_ts.strftime("%H:%M"),
+        )
+        try:
+            _guarded_run(class_key, force=immediate_flag)
+        except Exception as e:
+            log.error(
+                "[scheduler] %s: catch-up scan failed for interval %d: %s",
+                class_key,
+                missed_idx,
+                e,
+            )
 
 
 def _guarded_run(class_key: str | None = None, force: bool = False):
@@ -711,6 +830,7 @@ def start_scheduler(immediate: bool = False):
     last_scanned_interval: dict[str, int] = {}
     has_done_startup_scan: dict[str, bool] = {}
     has_logged_closed_pre_open: dict[str, bool] = {}
+    has_logged_closed_post_close: dict[str, bool] = {}
 
     # If immediate scan is requested, detect and fill ALL missed intervals
     if immediate:
@@ -787,60 +907,8 @@ def start_scheduler(immediate: bool = False):
             else:
                 target_interval = current_interval_idx
 
-            # Detect missed intervals by checking DB
-            symbols = [s for s in WATCH_SYMBOLS if get_symbol_class(s) == class_key]
-            missed_intervals = []
-            for idx in range(target_interval + 1):
-                interval_start_ist = market_open_time + timedelta(minutes=idx * interval_min)
-                interval_start_utc = interval_start_ist.astimezone(timezone.utc)
-                interval_start_utc_str = interval_start_utc.isoformat()
-
-                with get_conn() as conn:
-                    data_exists = False
-                    for symbol in symbols:
-                        if not immediate and not _is_open_for(symbol):
-                            continue
-                        row = conn.execute(
-                            "SELECT 1 FROM scan_summaries WHERE symbol=? AND fetched_at >= ? LIMIT 1",
-                            (symbol, interval_start_utc_str)
-                        ).fetchone()
-                        if row:
-                            data_exists = True
-                            break
-                    if not data_exists:
-                        missed_intervals.append(idx)
-
-            if missed_intervals:
-                missed_intervals = missed_intervals[-MAX_CATCHUP_INTERVALS:]
-                log.info(
-                    "[scheduler] --now %s: %d missed interval(s): %s",
-                    class_key,
-                    len(missed_intervals),
-                    missed_intervals,
-                )
-                for missed_idx in missed_intervals:
-                    interval_ts = market_open_time + timedelta(minutes=missed_idx * interval_min)
-                    log.info(
-                        "[scheduler] --now %s: catch-up scan for interval %d (%s)",
-                        class_key,
-                        missed_idx,
-                        interval_ts.strftime("%H:%M"),
-                    )
-                    try:
-                        _guarded_run(class_key, force=immediate)
-                    except Exception as e:
-                        log.error(
-                            "[scheduler] --now %s: catch-up scan failed for interval %d: %s",
-                            class_key,
-                            missed_idx,
-                            e,
-                        )
-            else:
-                log.info(
-                    "[scheduler] --now %s: all intervals up to %d already have data",
-                    class_key,
-                    target_interval,
-                )
+            # Detect + fill missed intervals (shared helper, now also used by default path)
+            _startup_fill_missed(class_key, market_open_time, interval_min, target_interval, immediate)
 
             has_done_startup_scan[class_key] = True
             last_scanned_interval[class_key] = target_interval
@@ -872,6 +940,10 @@ def start_scheduler(immediate: bool = False):
                 else:
                     interval_min = get_scan_frequency_nse()
                 current_interval_idx = math.floor(delta_minutes / interval_min)
+
+                # v3.1 FIX: default startup now also gap-fills missed
+                # intervals (was --now only). Capped at MAX_CATCHUP_INTERVALS.
+                _startup_fill_missed(class_key, market_open_time, interval_min, current_interval_idx, False)
 
                 has_done_startup_scan[class_key] = True
                 last_scanned_interval[class_key] = current_interval_idx
@@ -930,6 +1002,7 @@ def start_scheduler(immediate: bool = False):
                 last_scanned_interval.clear()
                 has_done_startup_scan.clear()
                 has_logged_closed_pre_open.clear()
+                has_logged_closed_post_close.clear()
 
                 # Daily re-auth: refresh Shoonya token & Kite login if needed
                 def _daily_reauth():
@@ -1108,6 +1181,19 @@ def start_scheduler(immediate: bool = False):
                                 has_logged_closed_pre_open[class_key] = True
                             continue
 
+                    # Post-close guard: once the session is over, do not track or
+                    # scan off-market intervals — saves scan duration until next open.
+                    close_h, close_m = map(int, close_t.split(":"))
+                    if now_time > dt_mod.time(close_h, close_m):
+                        if not has_logged_closed_post_close.get(class_key, False):
+                            log.info(
+                                "[%s] Market closed (after %s). Scheduler will resume next session.",
+                                class_key,
+                                close_t,
+                            )
+                            has_logged_closed_post_close[class_key] = True
+                        continue
+
                 if class_key == "MCX_COMMODITY":
                     interval_min = get_scan_frequency_mcx()
                 else:
@@ -1260,17 +1346,21 @@ def start_scheduler(immediate: bool = False):
                     name="ml-training-weekly",
                 ).start()
 
-            # 5. EIA Report Job (Thursday 8:00 PM IST)
+            # 5. EIA Report Job (Thursday 8:02 PM IST)
             is_thursday = now_ist.weekday() == 3  # 0=Monday, 3=Thursday
-            is_8pm = now_ist.hour == 20 and now_ist.minute == 0
-            if is_thursday and is_8pm and _last_eia_run_date != current_date:
+            is_802pm = now_ist.hour == 20 and now_ist.minute == 2
+            if is_thursday and is_802pm and _last_eia_run_date != current_date:
                 _last_eia_run_date = current_date
-                log.info("[scheduler] EIA Report Job triggered (Thursday 8:00 PM IST)")
+                log.info("[scheduler] EIA Report Job triggered (Thursday 8:02 PM IST)")
 
                 def _run_eia_analyzer():
                     try:
-                        from src.engine.eia_analyzer import analyze_eia_report
+                        log.info("[scheduler] Running EIA consensus fetch at 8:02 PM before analysis...")
+                        from src.fetchers.eia_consensus_fetcher import fetch_and_store_eia_consensus
+                        fetch_and_store_eia_consensus()
+                        log.info("[scheduler] EIA consensus fetch finished. Starting EIA report analysis...")
 
+                        from src.engine.eia_analyzer import analyze_eia_report
                         analyze_eia_report()
                     except Exception as exc:
                         log.warning("[scheduler] EIA Report analyzer failed: %s", exc)

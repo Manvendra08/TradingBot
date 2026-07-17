@@ -14,7 +14,7 @@
 - Dashboard server: `python dashboard_server.py` (FastAPI — Streamlit legacy removed)
 - Paper trading page: `http://localhost:8080/paper`
 - Active scan interval options: `5m`, `15m`, `30m`, `1H`, `3H`, `1D`
-- Live option-chain output is limited to ATM +/- 15 strikes
+- Live option-chain output is limited to ATM +/- 10 strikes
 - Dashboard "Recent Intelligence" section:
   - NATURALGAS: TradingView 24h news + direction scoring
   - NIFTY/BANKNIFTY: ScanX heatmap + combined direction (OI + 1H/3H sentiments)
@@ -41,7 +41,7 @@
 
 ## AI / LLM state (v3.0)
 
-- `AI_DECISION_MODE = boost_only` (default in `settings.py`; override via env `AI_DECISION_MODE`)
+- `live_ai_decision_mode = full` (default in `runtime_config.json`; governs live AI decisions). NOTE: `settings.py AI_DECISION_MODE` (env `AI_DECISION_MODE`, default `empirical`) is legacy and NOT used by the live decision path.
 - LLM enrichment is **engine-aligned**: OI engine decides direction; LLM provides execution detail only
 - Direction inversion guard: `_enforce_engine_alignment()` in `llm_enrichment.py` — no model can flip the engine's directional call
 - Entry advisor is skipped when a position is already open; only exit advisor runs

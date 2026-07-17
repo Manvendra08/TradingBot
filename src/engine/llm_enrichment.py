@@ -137,10 +137,8 @@ class LLMTradeVerdict(BaseModel):
     # Thesis — ONE sentence bottom-line punchline
     thesis: str = Field(
         description=(
-            "ONE punchy sentence, max 20 words. The bottom-line case for the trade. "
-            "Start with the OI pattern name, end with the action implication. "
-            "Good: 'CE writing at 7000 with PCR 0.71 and dual bearish candles — short the bounce.' "
-            "Bad: multi-sentence recap of signal_chain data, or prose paragraphs."
+            "ONE punchy sentence, max 30 words. The bottom-line case for the trade. "
+            "Discuss not only the current per-scan verdict, but integrate the overall picture (underlying support/resistance, macro catalysts, PCR skew, or historical trend persistence)."
         )
     )
     invalidation: str = Field(
@@ -750,7 +748,7 @@ OUTPUT FIELDS (all required — signal_chain/thesis format is specified in the s
 • target_1       : first profit level with exact number
 • target_2       : extended target with exact number
 • risk_reward    : "1:X.X" format calculated from the levels above
-• thesis         : per schema format (one sentence, ≤20 words)
+• thesis         : ONE punchy sentence (≤25 words). Synthesize macro catalysts (like EIA/weather/news), underlying S&R levels, and PCR/OI positioning into WHY this trade edge exists. NEVER just restate signal_chain or verdict!
 • invalidation   : what kills the trade (specific level or OI condition)
 • risk_rating    : LOW | MEDIUM | HIGH
                    HIGH if any RISK flag present or chart genuine conflict (both TFs vs OI).
@@ -760,7 +758,7 @@ OUTPUT FIELDS (all required — signal_chain/thesis format is specified in the s
 RULES:
 1. Use ONLY levels from DATA for all numeric fields. Do not invent levels.
 2. If NO_TRADE: fill signal_chain with the OI squaring reason, fill instrument/entry_trigger with what WOULD change your view.
-3. thesis is the punchline — do not repeat signal_chain content in it."""
+3. thesis MUST NOT repeat signal_chain or verdict. Explain the fundamental & technical confluence driving the setup."""
 
     return prompt
 
@@ -1045,11 +1043,11 @@ def _call_llm_api(
 
     schema_json = json.dumps(schema.model_json_schema())
     system_prompt = (
-        "Options trading analyst. Respond with valid JSON matching this schema exactly.\n"
-        "Output ONLY the JSON object — no markdown fences, no prose before or after.\n"
+        "Options trading analyst. Respond with a valid JSON object populated with actual analysis values matching this schema.\n"
+        "Do NOT return the schema definition itself. Output ONLY the JSON object — no markdown fences, no prose before or after.\n"
         "Rules: Complete English only. No abbreviations (use 'underlying' not 'und', 'target' not 'tgt'). "
         "Specific numbers required. No vague language. Use only values present in the prompt data — never invent a level, date, or figure.\n"
-        f"Schema:\n{schema_json}"
+        f"Target Schema:\n{schema_json}"
     )
 
     # Configure retry strategy for transient network errors

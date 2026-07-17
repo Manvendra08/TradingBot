@@ -44,6 +44,9 @@ from src.engine.risk_engine import check_risk_limits
 from src.engine.trade_decision import _extract_ai_bias
 from src.engine.trade_plan import convert_underlying_sl_to_premium
 from src.engine.trend_analysis import get_trend_alignment_score
+from src.engine.trend_following_short_strangle import evaluate_reversal
+from src.engine.risk_engine import check_tested_side
+from config.trend_following_short_strangle import TRANCHE_SEQUENCE, EXIT_PRIORITY_MAP
 from src.engine.verdict_sets import is_bearish, is_bullish
 from src.models.schema import (
     close_paper_trade,
@@ -359,39 +362,152 @@ def execute_paper_trade(
 
     # Check reversal against open trade
     if open_trade:
-        is_reversal = _is_reversal_against_open_trade(
-            open_trade, verdict, confidence, symbol, option_type, strike, ctx
-        )
-        if is_reversal:
-            exit_premium = None
-            if open_trade["option_type"] != "FUT":
-                exit_premium = _get_option_premium(
-                    symbol,
-                    open_trade.get("expiry"),
-                    open_trade.get("strike"),
-                    open_trade.get("option_type"),
-                    ctx.get("option_rows"),
+        is_tfss = str(open_trade.get("setup_type", "")).upper() == "TFSS"
+        if is_tfss:
+            # ── TFSS: use evaluate_reversal() for reduce-then-evaluate sequencing ──
+            try:
+                # Count open TFSS tranches for this symbol to derive tranche_index
+                from src.models.schema import get_conn
+                with get_conn() as conn:
+                    row = conn.execute(
+                        "SELECT COUNT(*) as cnt FROM paper_trades WHERE symbol=? AND status='OPEN' AND setup_type='TFSS'",
+                        (symbol,),
+                    ).fetchone()
+                open_tfss_count = row["cnt"] if row else 0
+                ctx["_tranche_index"] = open_tfss_count
+
+                # Build symbol_state expected by evaluate_reversal()
+                class _SymState:
+                    pass
+                symbol_state = _SymState()
+                symbol_state.symbol = symbol
+                symbol_state.ctx = ctx
+                open_side_str = str(open_trade.get("side", "")).upper()
+                open_ot_str = str(open_trade.get("option_type", "")).upper()
+                symbol_state.open_side = f"{open_side_str}_{open_ot_str}"
+
+                # Build market_state
+                opt_chain = ctx.get("option_rows") or []
+                cur_delta = 0.0
+                tested_ot = open_trade.get("option_type", "")
+                tested_strike = open_trade.get("strike")
+                if tested_ot and tested_strike:
+                    for row in opt_chain:
+                        if (float(row.get("strike", 0)) == float(tested_strike)
+                                and str(row.get("option_type", "")).upper() == tested_ot):
+                            cur_delta = abs(float(row.get("delta", 0)))
+                            break
+                market_state = {
+                    "underlying": underlying,
+                    "dte": _dte_from_expiry(open_trade.get("expiry", "")),
+                    "option_chain": opt_chain,
+                    "current_delta": cur_delta,
+                    "total_delta": cur_delta,
+                }
+                tfss_config = {"hard_stop_delta": 0.35}
+
+                rev_result = evaluate_reversal(symbol_state, market_state, tfss_config)
+                rev_action = rev_result.get("action", "NO_REVERSAL_ACTION")
+
+                if rev_action == "BLOCK":
+                    return {
+                        "action": "HOLD",
+                        "trade_id": open_trade["id"],
+                        "reason": f"TFSS reversal blocked: {rev_result.get('reason', '')}",
+                    }
+                elif rev_action == "OPEN_OR_ADD":
+                    # Close existing leg (reduce_or_close already ran inside evaluate_reversal)
+                    exit_premium = None
+                    if open_trade["option_type"] != "FUT":
+                        exit_premium = _get_option_premium(
+                            symbol, open_trade.get("expiry"),
+                            open_trade.get("strike"), open_trade.get("option_type"),
+                            ctx.get("option_rows"),
+                        )
+                    close_paper_trade(
+                        open_trade["id"], datetime.now(timezone.utc).isoformat(),
+                        underlying, exit_premium, "CLOSED_REVERSAL",
+                        f"TFSS reversal: {rev_result.get('reversal_sequence_log', [])}",
+                    )
+                    log.info(
+                        "%s: TFSS closed trade #%s on reversal (delta_stop=%s).",
+                        symbol, open_trade["id"],
+                        any(s.get("step") == 1 and s.get("action")
+                            for s in rev_result.get("reversal_sequence_log", [])),
+                    )
+                    _invalidate_pattern_cache()
+                    _trigger_ml_retraining()
+                    open_trade = None  # fall through to open new trade
+                else:
+                    return {
+                        "action": "HOLD",
+                        "trade_id": open_trade["id"],
+                        "reason": "TFSS no reversal action",
+                    }
+            except Exception as exc:
+                log.warning("%s: TFSS evaluate_reversal failed: %s", symbol, exc)
+                # Fall through to generic reversal check
+                is_reversal = _is_reversal_against_open_trade(
+                    open_trade, verdict, confidence, symbol, option_type, strike, ctx
                 )
-            close_paper_trade(
-                open_trade["id"],
-                datetime.now(timezone.utc).isoformat(),
-                underlying,
-                exit_premium,
-                "CLOSED_REVERSAL",
-                f"reversal: verdict={verdict} conf={confidence}",
-            )
-            log.info(
-                "%s: closed trade #%s on reversal signal.", symbol, open_trade["id"]
-            )
-            _invalidate_pattern_cache()  # Phase 1: refresh patterns after close
-            _trigger_ml_retraining()  # Phase 2: increment ML retraining counter
-            open_trade = None  # fall through to open new trade
+                if not is_reversal:
+                    return {
+                        "action": "HOLD",
+                        "trade_id": open_trade["id"],
+                        "reason": "Open trade exists, no valid reversal",
+                    }
+                # If generic reversal fired, close and fall through
+                exit_premium = None
+                if open_trade["option_type"] != "FUT":
+                    exit_premium = _get_option_premium(
+                        symbol, open_trade.get("expiry"),
+                        open_trade.get("strike"), open_trade.get("option_type"),
+                        ctx.get("option_rows"),
+                    )
+                close_paper_trade(
+                    open_trade["id"], datetime.now(timezone.utc).isoformat(),
+                    underlying, exit_premium, "CLOSED_REVERSAL",
+                    f"reversal: verdict={verdict} conf={confidence}",
+                )
+                log.info("%s: closed trade #%s on reversal signal.", symbol, open_trade["id"])
+                _invalidate_pattern_cache()
+                _trigger_ml_retraining()
+                open_trade = None
         else:
-            return {
-                "action": "HOLD",
-                "trade_id": open_trade["id"],
-                "reason": "Open trade exists, no valid reversal",
-            }
+            # ── CORE/TIMEFRAME: existing reversal check ──
+            is_reversal = _is_reversal_against_open_trade(
+                open_trade, verdict, confidence, symbol, option_type, strike, ctx
+            )
+            if is_reversal:
+                exit_premium = None
+                if open_trade["option_type"] != "FUT":
+                    exit_premium = _get_option_premium(
+                        symbol,
+                        open_trade.get("expiry"),
+                        open_trade.get("strike"),
+                        open_trade.get("option_type"),
+                        ctx.get("option_rows"),
+                    )
+                close_paper_trade(
+                    open_trade["id"],
+                    datetime.now(timezone.utc).isoformat(),
+                    underlying,
+                    exit_premium,
+                    "CLOSED_REVERSAL",
+                    f"reversal: verdict={verdict} conf={confidence}",
+                )
+                log.info(
+                    "%s: closed trade #%s on reversal signal.", symbol, open_trade["id"]
+                )
+                _invalidate_pattern_cache()  # Phase 1: refresh patterns after close
+                _trigger_ml_retraining()  # Phase 2: increment ML retraining counter
+                open_trade = None  # fall through to open new trade
+            else:
+                return {
+                    "action": "HOLD",
+                    "trade_id": open_trade["id"],
+                    "reason": "Open trade exists, no valid reversal",
+                }
 
     # Risk limits
     risk_ok, risk_reason = check_risk_limits(symbol)
@@ -708,8 +824,8 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
                         (max_fav, open_trade["id"]),
                     )
 
-            # Dead Trade threshold (Flaw #7): 24h for FUT, 3h for options
-            dead_trade_hours = 24.0 if option_type == "FUT" else 3.0
+            # Dead Trade threshold: 48h for ALL strategies (CORE + TIMEFRAME, FUT + options)
+            dead_trade_hours = 48.0
             if hours_open >= dead_trade_hours and max_fav < 0.5:
                 dead_trade_close = True
                 log.info(
@@ -721,6 +837,38 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
                 )
         except Exception:
             log.debug("%s: Dead Trade check failed gracefully", symbol)
+
+    # ── TFSS-specific exit triggers ──────────────────────────────────────────
+    # Delta-stop: when the tested leg's delta exceeds the hard stop threshold,
+    # close the position regardless of SL/Target. Uses the same check_tested_side()
+    # from risk_engine that evaluate_reversal() uses internally.
+    if not hit_sl and not hit_target and not dead_trade_close:
+        is_tfss_trade = str(open_trade.get("setup_type", "")).upper() == "TFSS"
+        if is_tfss_trade:
+            try:
+                tested_ot = str(open_trade.get("option_type", "")).upper()
+                tested_strike = open_trade.get("strike")
+                cur_delta = 0.0
+                if tested_ot and tested_strike:
+                    for row in (current_ctx.get("option_rows") or []):
+                        if (float(row.get("strike", 0)) == float(tested_strike)
+                                and str(row.get("option_type", "")).upper() == tested_ot):
+                            cur_delta = abs(float(row.get("delta", 0)))
+                            break
+                tested_side = f"SELL_{tested_ot}" if open_trade.get("side") == "SELL" else f"BUY_{tested_ot}"
+                delta_result = check_tested_side(
+                    tested_side,
+                    {"current_delta": cur_delta, "underlying": underlying},
+                    {},
+                )
+                if delta_result.beyond_threshold:
+                    dead_trade_close = True
+                    log.info(
+                        "%s: TFSS trade #%s DELTA STOP — delta %.3f >= %.3f threshold",
+                        symbol, open_trade["id"], cur_delta, delta_result.max_delta,
+                    )
+            except Exception:
+                log.debug("%s: TFSS delta-stop check failed gracefully", symbol)
 
     if hit_sl or hit_target:
         if hit_sl:
@@ -779,19 +927,27 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
                 option_type,
                 current_ctx.get("option_rows"),
             )
+        # Distinguish TFSS delta-stop from actual dead trade
+        is_tfss_delta = str(open_trade.get("setup_type", "")).upper() == "TFSS" and hours_open < 48.0
+        close_status = "CLOSED_DELTA_STOP" if is_tfss_delta else "Dead Trade"
+        close_reason = (
+            f"TFSS delta stop: delta >= threshold"
+            if is_tfss_delta
+            else f"Dead trade exit: {hours_open:.1f}h passed, max favorable R {max_fav:.2f} < 0.5"
+        )
         close_paper_trade(
             open_trade["id"],
             datetime.now(timezone.utc).isoformat(),
             underlying,
             exit_premium if option_type in ("CE", "PE") else underlying,
-            "Dead Trade",
-            f"Dead trade exit: {hours_open:.1f}h passed, max favorable R {max_fav:.2f} < 0.5",
+            close_status,
+            close_reason,
         )
         _invalidate_pattern_cache()
         _trigger_ml_retraining()
         actions.append(
             {
-                "action": "DEAD_TRADE",
+                "action": "CLOSED_DELTA_STOP" if is_tfss_delta else "DEAD_TRADE",
                 "trade_id": open_trade["id"],
                 "underlying": underlying,
             }

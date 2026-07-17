@@ -26,7 +26,7 @@ class ProviderResult:
 
 
 DEFAULT_PROVIDER_TIMEOUTS = {
-    "option_chain": 45.0,
+    "option_chain": 90.0,  # Increased from 45s for MCX (Shoonya OAuth + Dhan resolver)
     "chart": 8.0,
     "news": 4.0,
     "ip_refresh": 3.0,

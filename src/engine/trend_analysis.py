@@ -125,14 +125,16 @@ def check_trend_persistence(
             return False, f"Counter-trend BUY — broader trend is {bt}"
         if "Mixed" in bt and confidence < MIN_CONFIDENCE_CORE:
             return False, f"Mixed trend + low confidence ({confidence}%) — no persistence"
-        return True, f"Trend persistent: {bt} | conf={confidence}%"
+        reason = f"Trend persistent: {bt}" if "Mixed" not in bt else f"Trend allowed: {bt} with High Confidence"
+        return True, f"{reason} | conf={confidence}%"
 
     if is_bearish(verdict):
         if "Bullish" in bt:
             return False, f"Counter-trend SELL — broader trend is {bt}"
         if "Mixed" in bt and confidence < MIN_CONFIDENCE_CORE:
             return False, f"Mixed trend + low confidence ({confidence}%) — no persistence"
-        return True, f"Trend persistent: {bt} | conf={confidence}%"
+        reason = f"Trend persistent: {bt}" if "Mixed" not in bt else f"Trend allowed: {bt} with High Confidence"
+        return True, f"{reason} | conf={confidence}%"
 
     return False, f"Non-directional verdict '{verdict}'"
 

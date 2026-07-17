@@ -14,7 +14,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field, fields
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any
 
 from src.engine.paper_plan import build_paper_trade_plan, format_paper_plan
@@ -1045,10 +1045,12 @@ def generate_intelligence(
     if expiry:
         try:
             exp_date = datetime.strptime(expiry, "%Y-%m-%d").date()
-            today_date = datetime.now(timezone.utc).date()
+            ist = timezone(timedelta(hours=5, minutes=30))
+            today_date = datetime.now(ist).date()
             days_to_expiry = (exp_date - today_date).days
         except Exception:
             pass
+    ctx["days_to_expiry"] = days_to_expiry
 
     # ── FII / DII Context ──────────────────────────────────────────────────
     fii_bull_forces: list[tuple[int, str]] = []

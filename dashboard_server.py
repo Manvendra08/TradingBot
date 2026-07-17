@@ -7,8 +7,12 @@ No pandas required.
 
 import json
 import logging
+import os
 import re
 import socket as _socket
+import subprocess
+import threading
+import time
 
 # ── Force IPv4 globally (Kite whitelists IPv4 only) ───────────────────────
 # Applied AFTER standard imports to avoid ordering side effects with
@@ -592,6 +596,37 @@ def _synthetic_chart_payload(symbol: str) -> dict:
 
 def _news_sentiment_score(title: str) -> int:
     t = (title or "").lower()
+
+    # Commodity-context overrides: supply-increase = bearish, demand-increase = bullish.
+    # These patterns take priority over generic keyword scoring because "storage rises"
+    # and "inventories rise" are fundamentally bearish in commodity markets (supply build).
+    _NG_SUPPLY_BEARISH = [
+        r"storage\s+(?:rises?|builds?|increases?|grows?|climbs?|expands?)",
+        r"inject(?:ion|s|ed|ing)\s+(?:rises?|increases?|grows?|climbs?)",
+        r"(?:inventories?|stockpiles?|stocks?)\s+(?:rises?|builds?|increases?|grows?|climbs?|expand|swell)",
+        r"(?:production|output)\s+(?:rises?|increases?|grows?|climbs?|jumps?|surges?|hits?)",
+        r"(?:supply|supplies)\s+(?:rises?|increases?|grows?|climbs?|glut|ample|abundant|surplus)",
+        r"(?:high|record|ample|ample|sufficient)\s+(?:supply|storage|inventor)",
+        r"(?:eases?|cools?|drops?|falls?|retreats?|declines?|tumbles?|plunges?)\s+to\s+\w*\s*(?:low|bottom|trough)",
+        r"(?:two|three|four|five|six)-month\s+low",
+        r"(?:low|bottom|trough)\s+(?:on|amid|as)\s+(?:rising|increased|ample|high)",
+    ]
+    _NG_DEMAND_BULLISH = [
+        r"demand\s+(?:rises?|increases?|grows?|climbs?|surges?|jumps?|soars?|spikes?)",
+        r"(?:cold|freezing|winter|polar|arctic|icy)\s+(?:weather|forecast|snap|wave|blast|temperatures?)",
+        r"heating\s+(?:degree|demand|needs?|season|loads?)",
+        r"(?:LNG|liquefied)\s+(?:exports?|demand|shipments?|cargoes?)\s+(?:rises?|increases?|grow|climb|surge|jump|hit|record)",
+        r"(?:exports?|exporting)\s+(?:rises?|increases?|grows?|climbs?|surges?)",
+        r"(?:freeze|freezing|cold|winter)\s+(?:drives?|fuels?|boosts?|supports?|lifts?)\s+(?:prices?|demand|rall)",
+    ]
+    for pat in _NG_SUPPLY_BEARISH:
+        if re.search(pat, t):
+            return -1
+    for pat in _NG_DEMAND_BULLISH:
+        if re.search(pat, t):
+            return 1
+
+    # Generic keyword fallback (non-commodity-aware)
     pos = [
         "rally",
         "rises",
@@ -1521,7 +1556,7 @@ async def get_paper_trades(symbol: str = "", status: str = "", limit: int = 300)
     # Common columns between both tables
     cols = (
         "id, opened_at, closed_at, symbol, verdict_label, option_type, strike, entry_underlying, "
-        "exit_underlying, sl_underlying, target_underlying, pnl_points, status, reason, digest_id, "
+        "exit_underlying, sl_underlying, target_underlying, pnl_points, status, reason, exit_reason, digest_id, "
         "entry_premium, exit_premium, sl_premium, target_premium, lots, pnl_rupees, trade_status, "
         "setup_type, decision_reason, confidence_score, entry_quality_score, trend_alignment_score, "
         "regime_score, signal_key, pyramid_level, max_favorable_r, side, expiry"
@@ -2490,6 +2525,13 @@ def _fetch_real_kite_positions(kite) -> list[dict]:
         return parsed_positions
     except Exception as e:
         _positions_failure_ts = now
+        err_msg = str(e).lower()
+        if "api_key" in err_msg or "token" in err_msg:
+            try:
+                from src.services.zerodha_auth import invalidate_token
+                invalidate_token()
+            except Exception:
+                pass
         log.error(
             "Failed to fetch positions from Kite; using cached data for %.0fs: %s",
             _KITE_FAILURE_COOLDOWN_SECONDS,
@@ -4289,7 +4331,160 @@ async def ops_incidents():
         return JSONResponse([])
 
 
+@app.get("/api/sentinel-incidents", response_class=JSONResponse)
+async def sentinel_incidents():
+    """Return last 50 Scan Sentinel incidents from nsebot.db."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """SELECT id, ts, symbol, severity, summary, root_cause, recommended_action, action_executed, diagnostics_json 
+               FROM sentinel_incidents ORDER BY ts DESC LIMIT 50"""
+        ).fetchall()
+        conn.close()
+        return JSONResponse([dict(r) for r in rows])
+    except Exception as e:
+        log.warning("sentinel-incidents query failed: %s", e)
+        return JSONResponse([])
+
+
+@app.get("/api/sentinel-runs", response_class=JSONResponse)
+async def sentinel_runs():
+    """Return recent scan run reports from data/sentinel/latest.jsonl."""
+    try:
+        runs_file = DATA_DIR / "sentinel" / "latest.jsonl"
+        if not runs_file.exists():
+            return JSONResponse([])
+        
+        runs = []
+        with open(runs_file, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    try:
+                        runs.append(json.loads(line))
+                    except:
+                        pass
+        # Return last 20 runs per symbol, max 50 total
+        return JSONResponse(runs[-50:])
+    except Exception as e:
+        log.warning("sentinel-runs query failed: %s", e)
+        return JSONResponse([])
+
+
+# ── Supervise Ops Agent (keeps the Ops Agent Activity Log live) ────────────
+def _ops_agent_already_running() -> bool:
+    """Best-effort check for an already-running ops_agent.py process."""
+    try:
+        if sys.platform == "win32":
+            out = subprocess.check_output(
+                ["wmic", "process", "where", "name='python.exe' or name='pythonw.exe'",
+                 "get", "commandline", "/format:csv"],
+                stderr=subprocess.DEVNULL, text=True, timeout=10,
+            )
+        else:
+            out = subprocess.check_output(
+                ["pgrep", "-af", "ops_agent.py"],
+                stderr=subprocess.DEVNULL, text=True, timeout=10,
+            )
+        return "ops_agent.py" in out
+    except Exception:
+        return False
+
+
+def _terminate_external_ops_agent():
+    """Best-effort kill of any ops_agent.py process not owned by this supervisor."""
+    try:
+        if sys.platform == "win32":
+            where = "name='python.exe' and commandline like '%ops_agent.py%'"
+            subprocess.call(
+                ["wmic", "process", "where", where, "call", "terminate"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20,
+            )
+        else:
+            subprocess.call(
+                ["pkill", "-f", "ops_agent.py"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20,
+            )
+    except Exception as e:
+        log.warning("ops_agent supervisor: failed to terminate external instance: %s", e)
+
+
+def _supervise_ops_agent():
+    """Launch ``ops_agent.py`` as a supervised child so the Ops Agent Activity
+    Log keeps updating even if the user only starts the dashboard.
+
+    The run mode (``observe`` = safe notify-only, ``normal`` = full protective
+    actions) is read from ``runtime_config["ops_agent_mode"]`` and re-applied
+    whenever it changes — the supervised process is restarted with the new flag.
+    The supervisor owns ops_agent: any external instance is terminated so the
+    UI-configured mode is authoritative. ops_agent dedups incidents per active
+    (unacked) playbook, so a transient missing bot health-state will not flood
+    ``ops_agent.db`` with duplicates.
+    """
+    agent_script = ROOT / "ops_agent.py"
+    if not agent_script.exists():
+        log.warning("ops_agent supervisor: %s not found — skipping auto-launch", agent_script)
+        return
+
+    py = sys.executable
+    proc = None
+    current_mode = None
+    while True:
+        try:
+            # Resolve desired mode from runtime config (default: observe / safe)
+            try:
+                from config.runtime_config import load_runtime_config
+                desired = (load_runtime_config().get("ops_agent_mode") or "observe").lower()
+            except Exception:
+                desired = "observe"
+            if desired not in ("observe", "normal"):
+                desired = "observe"
+
+            # Restart our owned instance if the configured mode changed.
+            if proc is not None and proc.poll() is None and desired != current_mode:
+                log.info("ops_agent mode changed %s -> %s — restarting", current_mode, desired)
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=10)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                proc = None
+                current_mode = None
+
+            # If we don't own an instance, take over from any external one so the
+            # UI-configured mode is authoritative.
+            if proc is None and _ops_agent_already_running():
+                log.info("ops_agent supervisor: taking over external instance")
+                _terminate_external_ops_agent()
+                time.sleep(2)
+
+            if proc is None or (proc is not None and proc.poll() is not None):
+                if proc is not None:
+                    log.warning("ops_agent exited (rc=%s) — restarting", proc.returncode)
+                args = [py, str(agent_script)]
+                if desired != "normal":
+                    args.append("--observe-only")
+                flags = 0x08000000 if sys.platform == "win32" else 0  # CREATE_NO_WINDOW
+                proc = subprocess.Popen(
+                    args,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=flags,
+                )
+                current_mode = desired
+                log.info("ops_agent supervisor: started pid=%s (mode=%s)", proc.pid, desired)
+        except Exception as e:  # pragma: no cover - best effort supervisor
+            log.error("ops_agent supervisor launch failed: %s", e)
+        time.sleep(15)
+
+
 if __name__ == "__main__":
+    # Supervise-launch ops_agent so the Ops Agent Activity Log stays live
+    threading.Thread(target=_supervise_ops_agent, daemon=True).start()
+
     print(f"  DB: {DB_PATH}")
     print(f"  Dashboard: http://localhost:8080")
     uvicorn.run(app, host="0.0.0.0", port=8080, log_level="warning")

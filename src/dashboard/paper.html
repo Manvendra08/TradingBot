@@ -2562,6 +2562,7 @@
                                     <th class="L">Symbol</th>
                                     <th>Type</th>
                                     <th>Instrument</th>
+                                    <th>Entry Spot</th>
                                     <th>Entry</th>
                                     <th class="cmp-col">CMP</th>
                                     <th>SL</th>
@@ -2574,7 +2575,7 @@
                             </thead>
                             <tbody id="open-body">
                                 <tr>
-                                    <td colspan="12">
+                                    <td colspan="13">
                                         <div class="empty-state">
                                             <div class="empty-icon">🟢</div>
                                             No open trades
@@ -2808,6 +2809,7 @@
                                 </th>
                                 <th>Type</th>
                                 <th>Strike</th>
+                                <th>Entry Spot</th>
                                 <th>Entry ₹</th>
                                 <th>Exit ₹</th>
                                 <th>SL ₹</th>
@@ -2818,12 +2820,12 @@
                                     P&amp;L (₹)
                                 </th>
                                 <th>pts</th>
-                                <th class="L">Verdict</th>
+                                <th class="L">Entry Verdict</th>
                             </tr>
                         </thead>
                         <tbody id="trades-body">
                             <tr>
-                                <td colspan="16">
+                                <td colspan="17">
                                     <div class="empty-state">
                                         <div class="empty-icon">⏳</div>
                                         Loading…
@@ -2922,8 +2924,25 @@
                     return s;
                 }
             }
+            function fdtSplit(s) {
+                if (!s) return '<span class="t-dim">—</span>';
+                try {
+                    const d = new Date(s);
+                    const dateStr = d.toLocaleString("en-IN", { day: "2-digit", month: "short" });
+                    const timeStr = d.toLocaleString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true });
+                    return `<div>${dateStr}</div><div class="t-dim" style="font-size:11px;margin-top:1px;">${timeStr}</div>`;
+                } catch {
+                    return s;
+                }
+            }
             function fp(v, d = 2) {
                 return v == null ? "—" : Number(v).toFixed(d);
+            }
+            function shortReason(str) {
+                if (!str) return "—";
+                const words = str.trim().split(/\s+/);
+                if (words.length <= 2) return str;
+                return words.slice(0, 2).join(" ") + "...";
             }
             function frsLong(v) {
                 if (v == null) return "—";
@@ -3184,13 +3203,14 @@
 
                               return `
       <tr class="${openRowClass(t)}">
-        <td class="L t-mono">${fdt(t.opened_at)}</td>
+        <td class="L t-mono">${fdtSplit(t.opened_at)}</td>
         <td class="L">
           <strong>${t.symbol}</strong>
           ${t.expiry ? `<div style="font-size:11px; color:var(--text-dim); margin-top:2px;">${t.expiry}</div>` : ""}
         </td>
         <td><span class="badge ${side === "SELL" ? "b-loss" : "b-win"}">${side}</span></td>
         <td class="t-mono">${instr}</td>
+        <td class="t-mono">${fp(t.entry_underlying)}</td>
         <td class="t-mono">${fp(entry)}</td>
         <td class="cmp-col t-mono">${fp(cmp)}</td>
         <td class="bad t-mono">${slPrice(t)}</td>
@@ -3370,7 +3390,7 @@
                 const tb = document.getElementById("trades-body");
                 if (!rows.length) {
                     tb.innerHTML =
-                        '<tr><td colspan="16"><div class="empty-state"><div class="empty-icon">📭</div>No trades found</div></td></tr>';
+                        '<tr><td colspan="18"><div class="empty-state"><div class="empty-icon">📭</div>No trades found</div></td></tr>';
                     return;
                 }
                 tb.innerHTML = rows
@@ -3378,8 +3398,8 @@
                         (t, idx) => `
     <tr>
       <td style="text-align:center;cursor:pointer;color:var(--accent);" onclick="toggleTradeDetails(${idx})" title="Expand details">▶</td>
-      <td class="L t-mono">${fdt(t.opened_at)}</td>
-      <td class="L t-mono">${fdt(t.closed_at)}</td>
+      <td class="L t-mono">${fdtSplit(t.opened_at)}</td>
+      <td class="L t-mono">${fdtSplit(t.closed_at)}</td>
       <td class="t-mono"><span class="b-dur">${t.duration_text || "—"}</span></td>
       <td class="L">
         <strong>${t.symbol}</strong>
@@ -3387,6 +3407,7 @@
       </td>
       <td>${typeChip(t)}</td>
       <td class="t-mono">${fp(t.strike)}</td>
+      <td class="t-mono">${fp(t.entry_underlying)}</td>
       <td class="t-mono">${entryPrice(t)}</td>
       <td class="t-mono">${exitPrice(t)}</td>
       <td class="bad t-mono">${slPrice(t)}</td>
@@ -3398,7 +3419,7 @@
       <td class="L">${vtag(t.verdict_label || t.reason, t.verdict_explanation)}</td>
     </tr>
     <tr id="details-${idx}" style="display:none;">
-      <td colspan="16" style="padding:0;border:none;">
+      <td colspan="17" style="padding:0;border:none;">
         <div style="background:var(--surface-2);padding:16px;border-top:1px solid var(--border);border-bottom:1px solid var(--border);text-align:left;white-space:normal;">
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;">
             <div>
@@ -3425,9 +3446,16 @@
                 <div>Lots: ${t.lots || 1}</div>
               </div>
             </div>
-            <div style="grid-column: 1 / -1; background: var(--bg); padding: 12px 16px; border-radius: 6px; border-left: 3px solid var(--accent); margin-top: 8px;">
-              <div style="font-size:9px;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);font-weight:700;margin-bottom:6px;">Trade Reason</div>
-              <div style="font-size:12px;color:var(--text);word-break:break-word;white-space:normal;line-height:1.5;font-family:var(--mono);">${t.reason || t.verdict_label || "—"}</div>
+            
+            <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; margin-top: 8px;">
+              <div style="background: var(--bg); padding: 12px 16px; border-radius: 6px; border-left: 3px solid var(--accent);">
+                <div style="font-size:9px;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);font-weight:700;margin-bottom:6px;">Entry Reason</div>
+                <div style="font-size:12px;color:var(--text);word-break:break-word;white-space:normal;line-height:1.5;font-family:var(--mono);">${t.reason || t.verdict_label || "—"}</div>
+              </div>
+              <div style="background: var(--bg); padding: 12px 16px; border-radius: 6px; border-left: 3px solid var(--warn); ${t.exit_reason ? '' : 'display:none;'}">
+                <div style="font-size:9px;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);font-weight:700;margin-bottom:6px;">Exit Reason</div>
+                <div style="font-size:12px;color:var(--text);word-break:break-word;white-space:normal;line-height:1.5;font-family:var(--mono);">${shortReason(t.exit_reason)}</div>
+              </div>
             </div>
           </div>
         </div>
@@ -3866,6 +3894,7 @@
                         "P&L (₹)",
                         "P&L (pts)",
                         "Verdict",
+                        "Exit Reason",
                     ];
                     const rows = trades.map((t) => [
                         t.opened_at || "",
@@ -3883,6 +3912,7 @@
                         t.pnl_rupees || 0,
                         t.pnl_points || 0,
                         t.verdict_label || t.reason || "",
+                        t.exit_reason || "",
                     ]);
 
                     content = [headers, ...rows]

@@ -150,17 +150,18 @@ DHAN_SECURITY_IDS = {
     # manually before each monthly rollover (or automated via Dhan instrument dump).
     # Update procedure: download https://images.dhan.co/api-data/api-scrip-master.csv,
     # filter SEM_SMST_SECURITY_ID where SEM_TRADING_SYMBOL matches the near-month
-    # continuous contract (e.g. NATURALGAS25JUNFUT), and replace the values below.
-    "NATURALGAS": 434817,  # NATURALGAS JUN 2026 FUT  <-- update on rollover
-    "CRUDEOIL": 435021,  # CRUDEOIL   JUN 2026 FUT  <-- update on rollover
-    "GOLD": 459277,  # GOLD       JUN 2026 FUT  <-- update on rollover
-    "SILVER": 464150,  # SILVER     JUL 2026 FUT  <-- update on rollover
+    # continuous contract (e.g. NATURALGAS25JULFUT), and replace the values below.
+    # Resolved via src/utils/dhan_resolver.py on 2026-07-15 (live near-month contracts):
+    "NATURALGAS": 538685,  # NATURALGAS 28JUL2026 FUT  <-- update on rollover
+    "CRUDEOIL": 520702,  # CRUDEOIL  20JUL2026 FUT  <-- update on rollover
+    "GOLD": 466583,  # GOLD      05AUG2026 FUT  <-- update on rollover
+    "SILVER": 471725,  # SILVER    04SEP2026 FUT  <-- update on rollover
 }
 DHAN_FALLBACK_EXPIRIES = {
-    "NATURALGAS": "2026-06",
-    "CRUDEOIL": "2026-06",
-    "GOLD": "2026-06",
-    "SILVER": "2026-07",
+    "NATURALGAS": "2026-07",
+    "CRUDEOIL": "2026-07",
+    "GOLD": "2026-08",
+    "SILVER": "2026-09",
 }
 DHAN_SEGMENTS = {
     "NIFTY": "IDX_I",

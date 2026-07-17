@@ -312,7 +312,7 @@ def read_health() -> HealthSnapshot:
 _COMPONENT_THRESHOLDS = {
     "scheduler_loop": {"stale_min": 3},
     "shoonya_session": {"stale_min": 10},
-    "parity_feed": {"stale_min": 10},
+    "parity_feed": {"stale_min": 20},  # MCX interval is 15m, so 10m triggers false alarms
     "telegram_send": {"stale_min": 999},  # on-failure only
     "db_write": {"stale_min": 5},
 }
@@ -748,7 +748,7 @@ def run_playbooks(snap: HealthSnapshot, sm: StateMachine) -> list[PlaybookResult
 
     # ── P01: Bot dead (heartbeat stale) + no open positions → restart ──
     hb_stale = not snap.heartbeat_ok and (snap.heartbeat_age_s is None or snap.heartbeat_age_s > 180)
-    if hb_stale and open_pos == 0 and ROLLOUT_LEVEL >= 1:
+    if hb_stale and open_pos == 0:
         restart_count = sm._get("_restart_count").consecutive_down
         # Track first restart timestamp for 30-min window
         first_ts_state = sm._get("_restart_first_ts")
@@ -759,37 +759,45 @@ def run_playbooks(snap: HealthSnapshot, sm: StateMachine) -> list[PlaybookResult
             restart_count = 0
             sm._get("_restart_count").consecutive_down = 0
         if restart_count < 2:
-            sm._get("_restart_count").consecutive_down += 1
-            ok = _restart_nsebot()
-            result = PlaybookResult(action_taken="restart_nsebot")
-            if ok:
-                # Verify heartbeat within 90 seconds
-                log.info("P01: Waiting 90s to verify heartbeat after restart...")
-                time.sleep(90)
-                hb_age = _read_heartbeat_age()
-                if hb_age is not None and hb_age < 120:
-                    _escalate("P01", f"Restarted nsebot (attempt {restart_count+1}). Heartbeat verified OK ({hb_age:.0f}s)")
+            if ROLLOUT_LEVEL >= 1:
+                sm._get("_restart_count").consecutive_down += 1
+                ok = _restart_nsebot()
+                result = PlaybookResult(action_taken="restart_nsebot")
+                if ok:
+                    # Verify heartbeat within 90 seconds
+                    log.info("P01: Waiting 90s to verify heartbeat after restart...")
+                    time.sleep(90)
+                    hb_age = _read_heartbeat_age()
+                    if hb_age is not None and hb_age < 120:
+                        _escalate("P01", f"Restarted nsebot (attempt {restart_count+1}). Heartbeat verified OK ({hb_age:.0f}s)")
+                    else:
+                        _escalate("P01", f"Restarted nsebot (attempt {restart_count+1}) but heartbeat NOT verified ({hb_age}s). May need manual check.", critical=True)
+                        result.critical = True
                 else:
-                    _escalate("P01", f"Restarted nsebot (attempt {restart_count+1}) but heartbeat NOT verified ({hb_age}s). May need manual check.", critical=True)
+                    _escalate("P01", f"Restart failed (attempt {restart_count+1})", critical=True)
                     result.critical = True
+                results.append(result)
             else:
-                _escalate("P01", f"Restart failed (attempt {restart_count+1})", critical=True)
-                result.critical = True
-            results.append(result)
+                # T0 observe-only: notify but never restart
+                _escalate("P01", "Bot dead (heartbeat stale). Restart REQUIRED — suppressed in observe-only mode.", critical=True)
         else:
             # P02: crash-loop → escalate CRITICAL
             results.append(PlaybookResult(action_taken="P02_crash_loop", escalated=True, critical=True))
             _escalate("P02", "Crash-loop detected (>2 restarts). Bot dead, no open positions.", critical=True)
 
     # ── P02: Bot dead + open positions → emergency flat ──
-    if hb_stale and open_pos > 0 and ROLLOUT_LEVEL >= 2:
-        ok = _run_emergency_flat()
-        result = PlaybookResult(action_taken="emergency_flat", escalated=True, critical=True)
-        if ok:
-            _escalate("P02", f"Emergency flat executed — {open_pos} positions closed", critical=True)
+    if hb_stale and open_pos > 0:
+        if ROLLOUT_LEVEL >= 2:
+            ok = _run_emergency_flat()
+            result = PlaybookResult(action_taken="emergency_flat", escalated=True, critical=True)
+            if ok:
+                _escalate("P02", f"Emergency flat executed — {open_pos} positions closed", critical=True)
+            else:
+                _escalate("P02", "Emergency flat FAILED — manual intervention required", critical=True)
+            results.append(result)
         else:
-            _escalate("P02", "Emergency flat FAILED — manual intervention required", critical=True)
-        results.append(result)
+            # T0 observe-only: notify but never flatten
+            _escalate("P02", f"Bot dead with {open_pos} open position(s). Emergency flat REQUIRED — suppressed in observe-only mode.", critical=True)
 
     # ── P03: Shoonya auth-fail → re-auth ──
     shoonya_state = sm.components.get("shoonya_session")
@@ -1072,24 +1080,58 @@ def main():
             health_by_key = {h["key"]: h for h in snap.health_rows}
 
             # Staleness-based checks
-            in_market = _is_market_hours()
+            now_ist = datetime.now(IST)
+            time_val = now_ist.hour * 100 + now_ist.minute
+            nse_open = 915 <= time_val <= 1530 and now_ist.weekday() < 5
+            mcx_open = 900 <= time_val <= 2330 and now_ist.weekday() < 5
+            in_market = nse_open or mcx_open
+
             for key, cfg in _COMPONENT_THRESHOLDS.items():
                 row = health_by_key.get(key)
                 # Only check shoonya_session staleness during market hours
                 if key == "shoonya_session" and not in_market:
                     continue
-                sm.evaluate_stale(key, row, cfg["stale_min"])
+                # Only check parity_feed staleness during MCX hours
+                if key == "parity_feed" and not mcx_open:
+                    continue
+                
+                stale_min = cfg["stale_min"]
+                if key == "parity_feed":
+                    try:
+                        from config.runtime_config import load_runtime_config
+                        rconf = load_runtime_config()
+                        mcx_interval = int(rconf.get("scan_frequency_mcx") or 15)
+                        stale_min = max(stale_min, mcx_interval * 2)
+                    except Exception:
+                        pass
+                sm.evaluate_stale(key, row, stale_min)
 
-            # Check last_scan_<SYM> staleness (2× scan interval = 10 min for NSE, 30 min for MCX)
+            # Check last_scan_<SYM> staleness (2× scan interval)
             for key, row in health_by_key.items():
                 if key.startswith("last_scan_"):
                     symbol = key[len("last_scan_"):]
-                    # Default stale threshold: 10 min (2× 5-min NSE interval)
-                    stale_min = 10
-                    # MCX symbols get 30 min (2× 15-min interval)
+                    
                     mcx_symbols = {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER", "COPPER"}
-                    if symbol.upper() in mcx_symbols:
-                        stale_min = 30
+                    is_mcx = symbol.upper() in mcx_symbols
+                    
+                    # Prevent false alarms by skipping staleness check if market is closed
+                    if is_mcx and not mcx_open:
+                        continue
+                    if not is_mcx and not nse_open:
+                        continue
+
+                    # Dynamic stale threshold: 2× configured scan interval
+                    try:
+                        from config.runtime_config import load_runtime_config
+                        rconf = load_runtime_config()
+                        if is_mcx:
+                            interval = int(rconf.get("scan_frequency_mcx") or 15)
+                        else:
+                            interval = int(rconf.get("scan_frequency_nse") or 5)
+                        stale_min = interval * 2
+                    except Exception:
+                        stale_min = 30 if is_mcx else 10
+                        
                     sm.evaluate_stale(key, row, stale_min)
 
             # Heartbeat-based scheduler check

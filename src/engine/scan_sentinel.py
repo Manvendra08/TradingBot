@@ -36,6 +36,22 @@ SENTINEL_DIR.mkdir(parents=True, exist_ok=True)
 # Self-healing config
 SENTINEL_HEAL_ENABLED = os.environ.get("SENTINEL_HEAL_ENABLED", "false").lower() == "true"
 
+# Report mode config
+SENTINEL_REPORT_MODES = ("anomalies", "full")
+
+
+def get_sentinel_report_mode() -> str:
+    """Returns 'full' (report every scan) or 'anomalies' (only when rules fire)."""
+    try:
+        from config.runtime_config import load_runtime_config
+
+        mode = str(load_runtime_config().get("sentinel_report_mode", "anomalies")).lower()
+        if mode not in SENTINEL_REPORT_MODES:
+            return "anomalies"
+        return mode
+    except Exception:
+        return "anomalies"
+
 
 @dataclass
 class ScanRunReport:
@@ -90,6 +106,90 @@ def emit_scan_run_report(report: ScanRunReport):
                 f.write(json.dumps(item) + "\n")
     except Exception as e:
         log.error("Failed to write latest run: %s", e)
+
+
+def report_from_dict(r: dict) -> ScanRunReport:
+    """Builds a ScanRunReport from the simplified pipeline dict."""
+    return ScanRunReport(
+        symbol=r.get("symbol"),
+        timestamp_ist=r.get("timestamp_ist") or datetime.now(timezone.utc).isoformat(),
+        scan_duration_ms=int(r.get("scan_duration_ms") or 0),
+        underlying_price=float(r.get("underlying_price") or 0.0),
+        expiry=r.get("expiry") or "",
+        source=r.get("source") or "unknown",
+        total_strikes=int(r.get("total_strikes") or 0),
+        zero_ltp_strikes=int(r.get("zero_ltp_strikes") or 0),
+        zero_oi_strikes=int(r.get("zero_oi_strikes") or 0),
+        llm_action=r.get("llm_action"),
+        llm_instrument=r.get("llm_instrument"),
+        llm_entry_premium=r.get("llm_entry_premium"),
+        llm_target_1=r.get("llm_target_1"),
+        llm_target_2=r.get("llm_target_2"),
+        llm_stop_loss=r.get("llm_stop_loss"),
+        trade_decision_status=r.get("trade_decision_status"),
+        trade_decision_reason=r.get("trade_decision_reason"),
+        warnings=list(r.get("warnings") or []),
+        errors=list(r.get("errors") or []),
+        fetcher_errors=list(r.get("fetcher_errors") or []),
+        option_premium_used=r.get("option_premium_used"),
+        log_lines=list(r.get("log_lines") or []),
+        is_test=bool(r.get("is_test", False)),
+        status=r.get("status") or "COMPLETED",
+    )
+
+
+def persist_scan_run(report_dict: dict, flags: "list[SentinelFlag]") -> None:
+    """Persists a per-scan summary row to sentinel_scan_runs (used by full-report mode)."""
+    try:
+        from src.models.schema import get_conn
+
+        with get_conn() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sentinel_scan_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    source TEXT,
+                    underlying_price REAL,
+                    expiry TEXT,
+                    total_strikes INTEGER,
+                    zero_ltp_strikes INTEGER,
+                    zero_oi_strikes INTEGER,
+                    llm_action TEXT,
+                    llm_instrument TEXT,
+                    flags TEXT,
+                    flag_count INTEGER DEFAULT 0,
+                    report_mode TEXT
+                )
+                """
+            )
+            IST_offset = timedelta(hours=5, minutes=30)
+            now_ist = datetime.now(timezone.utc) + IST_offset
+            conn.execute(
+                "INSERT INTO sentinel_scan_runs "
+                "(ts, symbol, source, underlying_price, expiry, total_strikes, "
+                " zero_ltp_strikes, zero_oi_strikes, llm_action, llm_instrument, "
+                " flags, flag_count, report_mode) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    now_ist.isoformat(),
+                    report_dict.get("symbol"),
+                    report_dict.get("source"),
+                    report_dict.get("underlying_price"),
+                    report_dict.get("expiry"),
+                    report_dict.get("total_strikes"),
+                    report_dict.get("zero_ltp_strikes"),
+                    report_dict.get("zero_oi_strikes"),
+                    report_dict.get("llm_action"),
+                    report_dict.get("llm_instrument"),
+                    json.dumps([f.rule for f in flags]),
+                    len(flags),
+                    report_dict.get("_report_mode", "anomalies"),
+                ),
+            )
+    except Exception as e:
+        log.error("%s: Failed to persist sentinel scan run: %s", report_dict.get("symbol"), e)
 
 
 class ScanRunRecorder:
@@ -289,10 +389,20 @@ def run_sentinel(report_data: dict | ScanRunReport) -> ScanDiagnostic | None:
         report_dict = report_data
         
     symbol = report_dict.get("symbol")
+    report_mode = get_sentinel_report_mode()
+    report_dict["_report_mode"] = report_mode
     
     # 1. Run deterministic rule checks
     flags = _check_rules(report_dict)
+    
     if not flags:
+        if report_mode == "full":
+            log.info("%s: Scan Sentinel | scan OK (no anomalies) — full-report logged", symbol)
+            persist_scan_run(report_dict, flags)
+            try:
+                emit_scan_run_report(report_from_dict(report_dict))
+            except Exception as e:
+                log.warning("%s: Failed to emit full-run report: %s", symbol, e)
         return None
         
     log.info("%s: Scan Sentinel flagged %d suspect conditions. Launching AI Diagnostic...", symbol, len(flags))

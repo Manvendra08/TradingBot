@@ -170,7 +170,7 @@ Examples:
         return
 
     # Default: blocking scheduler
-    log.info("Starting APScheduler — press Ctrl+C to stop")
+    log.info("Starting scheduler — press Ctrl+C to stop")
     from src.scheduler.job_runner import start_scheduler
 
     start_scheduler(immediate=args.now)

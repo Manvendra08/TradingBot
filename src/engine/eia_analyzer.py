@@ -37,42 +37,61 @@ def analyze_eia_report():
     handling through Python exceptions rather than stderr parsing.
     """
     try:
+        data = None
         # BUG-L01: Direct module import instead of subprocess
         scrape_module_path = ROOT / "tools" / "scrape_eia_report.py"
-        if not scrape_module_path.exists():
-            log.error("EIA scraper script not found at %s", scrape_module_path)
-            return
-        
-        # Add tools directory to sys.path temporarily for import
-        tools_dir = str(ROOT / "tools")
-        if tools_dir not in sys.path:
-            sys.path.insert(0, tools_dir)
-        
-        try:
-            import scrape_eia_report as scrape_module
-            # Call the scraper's main function directly
-            if hasattr(scrape_module, 'scrape_eia_report'):
-                data = scrape_module.scrape_eia_report()
-            elif hasattr(scrape_module, 'main'):
-                data = scrape_module.main()
-            else:
-                log.error("EIA scraper has no callable entry point")
-                return
-        except Exception as scrape_err:
-            log.error("EIA Scrape failed: %s", scrape_err)
-            return
-        finally:
-            # Clean up sys.path
-            if tools_dir in sys.path:
-                sys.path.remove(tools_dir)
-        
-        if not data:
-            log.error("EIA Scraper returned no data")
-            return
-        
-        if isinstance(data, dict) and "error" in data:
-            log.error("EIA Scraper returned error: %s", data["error"])
-            return
+        if scrape_module_path.exists():
+            tools_dir = str(ROOT / "tools")
+            if tools_dir not in sys.path:
+                sys.path.insert(0, tools_dir)
+            try:
+                import scrape_eia_report as scrape_module
+                if hasattr(scrape_module, 'scrape_eia'):
+                    data = scrape_module.scrape_eia()
+                elif hasattr(scrape_module, 'scrape_eia_report'):
+                    data = scrape_module.scrape_eia_report()
+                elif hasattr(scrape_module, 'main'):
+                    data = scrape_module.main()
+            except Exception as scrape_err:
+                log.warning("EIA Scrape via investing.com failed: %s", scrape_err)
+            finally:
+                if tools_dir in sys.path:
+                    sys.path.remove(tools_dir)
+
+        # Check if data is valid; if missing or has error, fallback to DB consensus and official EIA fallback
+        if not data or not isinstance(data, dict) or "error" in data:
+            log.info("Investing.com scraper unavailable (%s); falling back to DB consensus and EIA fallback.", data.get("error") if isinstance(data, dict) else "no data")
+            from datetime import datetime
+            import pytz
+            now_ist = datetime.now(pytz.timezone("Asia/Kolkata"))
+            today_str = now_ist.strftime("%Y-%m-%d")
+            
+            consensus = None
+            actual = None
+            release_date = today_str
+            with get_conn() as conn:
+                row = conn.execute("SELECT report_date, consensus_bcf, actual_bcf FROM eia_consensus ORDER BY report_date DESC LIMIT 1").fetchone()
+                if row:
+                    release_date = row["report_date"] or today_str
+                    if row["consensus_bcf"] is not None:
+                        consensus = float(row["consensus_bcf"])
+                    if row["actual_bcf"] is not None:
+                        actual = float(row["actual_bcf"])
+            
+            if actual is None:
+                from src.engine.ng_eia_strategy import fetch_eia_actual_fallback
+                actual = fetch_eia_actual_fallback()
+                if actual is not None and consensus is not None:
+                    with get_conn() as conn:
+                        conn.execute("UPDATE eia_consensus SET actual_bcf=?, surprise_bcf=? WHERE report_date=?", (actual, actual - consensus, release_date))
+            
+            data = {
+                "release_date": release_date,
+                "actual": f"{actual} Bcf" if actual is not None else "N/A",
+                "forecast": f"{consensus} Bcf" if consensus is not None else "N/A",
+                "previous": "N/A",
+                "surprise": f"{(actual - consensus):+.1f} Bcf" if (actual is not None and consensus is not None) else "N/A"
+            }
 
         oi_data = _get_latest_naturalgas_oi()
         
@@ -84,6 +103,7 @@ REPORT DATA:
 - Actual: {data.get("actual")}
 - Forecast: {data.get("forecast")}
 - Previous: {data.get("previous")}
+- Surprise (Actual - Forecast): {data.get("surprise", "N/A")}
 
 CONTEXT (MCX NATURALGAS):
 - Current Underlying Price: {oi_data.get('underlying', 'N/A')}

@@ -121,11 +121,11 @@ def calculate_buy_sl_target(
             target_underlying = underlying - 2.0 * atr
         else:
             if is_mcx:
-                # Percentage-based fallback for MCX: 1.5% SL, 3% target
-                sl_underlying = underlying * 1.015
-                target_underlying = underlying * 0.97
+                # Percentage-based fallback for MCX: 2.5% SL, 3.5% target
+                sl_underlying = underlying * 1.025
+                target_underlying = underlying * 0.965
                 log.warning(
-                    "calculate_buy_sl_target: Missing ATR, using %%-based MCX fallback (SL=1.5%%, Tgt=3%%)",
+                    "calculate_buy_sl_target: Missing ATR, using %%-based MCX fallback (SL=2.5%%, Tgt=3.5%%)",
                 )
             else:
                 log.warning(
@@ -141,11 +141,11 @@ def calculate_buy_sl_target(
             target_underlying = underlying + 2.0 * atr
         else:
             if is_mcx:
-                # Percentage-based fallback for MCX: 1.5% SL, 3% target
-                sl_underlying = underlying * 0.985
-                target_underlying = underlying * 1.03
+                # Percentage-based fallback for MCX: 2.5% SL, 3.5% target
+                sl_underlying = underlying * 0.975
+                target_underlying = underlying * 1.035
                 log.warning(
-                    "calculate_buy_sl_target: Missing ATR, using %%-based MCX fallback (SL=1.5%%, Tgt=3%%)",
+                    "calculate_buy_sl_target: Missing ATR, using %%-based MCX fallback (SL=2.5%%, Tgt=3.5%%)",
                 )
             else:
                 log.warning(
@@ -198,10 +198,10 @@ def calculate_sell_sl_target(
             target_underlying = underlying + 2.0 * atr
         else:
             if is_mcx:
-                sl_underlying = underlying * 0.985
-                target_underlying = underlying * 1.03
+                sl_underlying = underlying * 0.975
+                target_underlying = underlying * 1.035
                 log.warning(
-                    "calculate_sell_sl_target: Missing ATR, using %%-based MCX fallback (SL=1.5%%, Tgt=3%%)",
+                    "calculate_sell_sl_target: Missing ATR, using %%-based MCX fallback (SL=2.5%%, Tgt=3.5%%)",
                 )
             else:
                 log.warning(
@@ -217,10 +217,10 @@ def calculate_sell_sl_target(
             target_underlying = underlying - 2.0 * atr
         else:
             if is_mcx:
-                sl_underlying = underlying * 1.015
-                target_underlying = underlying * 0.97
+                sl_underlying = underlying * 1.025
+                target_underlying = underlying * 0.965
                 log.warning(
-                    "calculate_sell_sl_target: Missing ATR, using %%-based MCX fallback (SL=1.5%%, Tgt=3%%)",
+                    "calculate_sell_sl_target: Missing ATR, using %%-based MCX fallback (SL=2.5%%, Tgt=3.5%%)",
                 )
             else:
                 log.warning(

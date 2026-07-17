@@ -416,7 +416,7 @@ lot_size = LOT_SIZES.get(base_sym, 1)
 **Files:** `config/holidays.py`, `config/cme_holidays.py`, `config/symbol_classes.py`  
 **Impact:** After 2026, all holiday dates and MCX expiry dates will be stale. `is_market_holiday()` will always return False.
 
-**Fix:** Add 2027 dates or implement dynamic holiday fetching from exchange APIs.
+**Fix:** implement dynamic holiday fetching from exchange APIs.
 
 ---
 
@@ -443,7 +443,7 @@ lot_size = LOT_SIZES.get(base_sym, 1)
 **File:** `config/settings.py` vs `dashboard_server.py`  
 **Impact:** `settings.py` has NIFTY: 65 but `dashboard_server.py` fallback has NIFTY: 25. This causes inconsistent lot calculations.
 
-**Fix:** Reconcile lot sizes to use single source of truth.
+**Fix:** Reconcile lot sizes to use single source of truth as settings.py.
 
 ---
 

@@ -37,6 +37,7 @@
   "emp_boost_min_trades": 20,
   "emp_boost_min_winrate": 0.6,
   "ml_predictor_mode": "live",
+  "derive_min_confidence": false,
   "llm_enrichment_async": true,
   "llm_enrich_timeout_s": 120,
   "autopsy_enabled": true,
@@ -47,6 +48,9 @@
   "direct_kite_default_tgt_pct": 60,
   "live_broker_disabled": true,
   "trading_paused": false,
+  "enable_tfss_trade_blocked_rules": false,
+  "sentinel_report_mode": "anomalies",
+  "ops_agent_mode": "observe",
   "strategies": {
     "CORE": {
       "enabled": true,

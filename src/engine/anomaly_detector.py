@@ -374,8 +374,8 @@ def _detect_oi_spike_unwind(
             "curr_ltp": row.get("ltp"),
             "underlying": underlying,
         }
-        log.info(
-            "[engine] %s | %s %.0f %s: OI %d\u2192%d (%.1f%%) [%s]",
+        log.debug(
+            "[engine] %s | %s %.0f %s: OI %d→%d (%.1f%%) [%s]",
             symbol,
             atype,
             strike,
@@ -443,7 +443,7 @@ def _detect_buildup(
             "curr_ltp": curr_ltp,
             "underlying": underlying,
         }
-        log.info(
+        log.debug(
             "[engine] BUILDUP | %s %.0f %s: %s oi=%.1f%% ltp=%.1f%% [%s]",
             symbol,
             strike,
@@ -890,20 +890,45 @@ def detect_anomalies(
     )
     prev_snaps: list[dict] = list(prev_by_key.values())
 
+    # Skip OI spike/buildup on first scans after market open: OI is building
+    # up from near-zero at market open, causing massive false spike signals.
+    # Check if previous scan was within FIRST_SCAN_WINDOW_MIN of market open.
+    skip_oi_spike = False
+    if prev_snaps:
+        try:
+            from config.symbol_classes import market_window, is_market_open
+            from datetime import datetime, timezone
+            import pytz
+            prev_scan_time = datetime.fromisoformat(prev_snaps[0]["fetched_at"].replace("Z", "+00:00"))
+            if prev_scan_time.tzinfo is None:
+                prev_scan_time = prev_scan_time.replace(tzinfo=timezone.utc)
+            ist = pytz.timezone("Asia/Kolkata")
+            prev_ist = prev_scan_time.astimezone(ist)
+            open_t, close_t, _ = market_window(symbol)
+            open_h, open_m = map(int, open_t.split(":"))
+            market_open = prev_ist.replace(hour=open_h, minute=open_m, second=0, microsecond=0)
+            if 0 <= (prev_ist - market_open).total_seconds() / 60 <= 20:
+                skip_oi_spike = True
+                log.info("[engine] %s: skipping OI spike/buildup (prev scan %.0f min after market open)",
+                         symbol, (prev_ist - market_open).total_seconds() / 60)
+        except Exception:
+            pass
+
     alerts: list[dict] = []
 
-    alerts += _detect_oi_spike_unwind(
-        filtered, symbol, expiry, underlying, prev_by_key, oi_thresh=oi_thresh
-    )
-    alerts += _detect_buildup(
-        filtered,
-        symbol,
-        expiry,
-        underlying,
-        prev_by_key,
-        oi_min_pct=t.get("buildup_oi_min_pct", BUILDUP_OI_MIN_PCT),
-        ltp_min_pct=t.get("buildup_ltp_min_pct", BUILDUP_LTP_MIN_PCT),
-    )
+    if not skip_oi_spike:
+        alerts += _detect_oi_spike_unwind(
+            filtered, symbol, expiry, underlying, prev_by_key, oi_thresh=oi_thresh
+        )
+        alerts += _detect_buildup(
+            filtered,
+            symbol,
+            expiry,
+            underlying,
+            prev_by_key,
+            oi_min_pct=t.get("buildup_oi_min_pct", BUILDUP_OI_MIN_PCT),
+            ltp_min_pct=t.get("buildup_ltp_min_pct", BUILDUP_LTP_MIN_PCT),
+        )
     alerts += _detect_price_spike(symbol, expiry, underlying)
 
     pcr = _compute_pcr(filtered)
@@ -1001,9 +1026,17 @@ def detect_anomalies(
     else:
         log.debug("[engine] %s: skipping OTM unusual (DTE=%d > 2)", symbol, dte)
 
-    log.info("[engine] %s | %d anomalies detected", symbol, len(alerts))
+    # Enforce MAX_ANOMALIES_PER_SYMBOL early to prevent log floods.
+    # Keep highest-severity alerts first.
+    from config.settings import MAX_ANOMALIES_PER_SYMBOL
+    _sev_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
+    if len(alerts) > MAX_ANOMALIES_PER_SYMBOL:
+        alerts = sorted(alerts, key=lambda a: _sev_order.get(a.get("severity", "LOW"), 2))[:MAX_ANOMALIES_PER_SYMBOL]
+        log.info("[engine] %s | %d anomalies detected (capped to %d)", symbol, len(alerts), MAX_ANOMALIES_PER_SYMBOL)
+    else:
+        log.info("[engine] %s | %d anomalies detected", symbol, len(alerts))
 
-    # \u2500\u2500 Build scan context \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    # ── Build scan context ────────────────────────────────────────────────────
     total_ce_oi, total_pe_oi = _sum_oi_by_type(strikes)
     prev_ce_oi, prev_pe_oi = _sum_oi_by_type(prev_snaps) if prev_snaps else (0, 0)
 

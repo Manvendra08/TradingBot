@@ -9,7 +9,7 @@ NSEBOT is a local NSE option-chain monitor, signal engine, Telegram digest bot, 
 It:
 
 - fetches option-chain data for watched symbols (NSE indices + MCX commodities)
-- keeps live output limited to ATM +/- 15 strikes
+- keeps live output limited to ATM +/- 10 strikes
 - detects OI, PCR, IV, price, max-pain, and candle anomalies
 - builds trader-facing Telegram digests with action-oriented AI trade plans
 - auto-opens and manages paper trades from bot intelligence
@@ -65,8 +65,8 @@ The LLM returns structured trade plans with these fields:
 - 3H and 1H are NOT cross-checked against each other — independent, non-overlapping functions.
 - Chart candles never override OI engine direction; they carry zero weight in the confidence derivation.
 
-AI decision modes: `advisory` (info only), `boost_only` (promote blocked → TRIGGERED_EXPERIMENTAL), `full` (can also veto).
-**Current default: `boost_only`** (set in `settings.py` and overridable via `AI_DECISION_MODE` env var).
+AI decision modes (`live_ai_decision_mode` in runtime_config.json): `advisory` (info only), `boost_only` (promote blocked → TRIGGERED_EXPERIMENTAL), `full` (can also veto).
+**Current default: `full`** (set via `live_ai_decision_mode` in runtime_config.json). NOTE: `settings.AI_DECISION_MODE` / env `AI_DECISION_MODE` (default `empirical`) is legacy and NOT used by the live decision path.
 
 ## Trade Planning Architecture
 
@@ -132,7 +132,7 @@ Three strategies, each independently enable/disable-able globally and per-symbol
 ## Hard constraints
 
 - Do not reintroduce Upstox, Paytm, or NSE commodity chain routes.
-- Keep option-chain fetches within ATM +/- 15 strikes.
+- Keep option-chain fetches within ATM +/- 10 strikes.
 - Keep Telegram text clean, short, and trader-readable.
 - Keep docs aligned with the FastAPI dashboard, not old Streamlit references.
 - All SL/Target changes must go through `trade_plan.py` — never duplicate logic.
@@ -167,7 +167,7 @@ Three strategies, each independently enable/disable-able globally and per-symbol
 - `src/models/schema.py` — SQLite tables and helpers (transaction costs applied)
 - `src/scheduler/job_runner.py` — scheduler loop, live exit monitoring, position sync timer
 - `dashboard_server.py` — FastAPI dashboard API and pages
-- `config/settings.py` — `AI_DECISION_MODE=boost_only`, `MCX_MIN_CONFIDENCE=72`, `MCX_SYMBOLS`
+- `config/settings.py` — `MCX_MIN_CONFIDENCE=72`, `MCX_SYMBOLS` (NOTE: `AI_DECISION_MODE` here is legacy/unused; live mode = `live_ai_decision_mode` in runtime_config.json, currently `full`)
 - `config/holidays.py` — 2026 Indian market holiday calendar (NSE & MCX)
 
 ## Testing
@@ -187,7 +187,7 @@ Key test files:
 - Watch for `[llm] engine/LLM direction conflict` log lines — indicates model still attempting to flip; B2 guard is catching it correctly.
 - Watch for `[llm] ... _extract_json` parse failures — should be eliminated; if still occurring, check which provider and model.
 - Confirm exit advisor runs when position open, entry advisor does NOT (pipeline log: "open position exists — skipping LLM entry verdict").
-- Verify `AI_DECISION_MODE=boost_only` is active: log line `AI verdict — bias=X conf=Y% … (mode=boost_only)`.
+- Verify `live_ai_decision_mode` is active (runtime_config.json, currently `full`): log line `AI verdict — bias=X conf=Y% … (mode=<live_ai_decision_mode>)`. Note: `settings.AI_DECISION_MODE` is legacy/unused.
 - Watch `MCX_MIN_CONFIDENCE=72` blocking low-conviction NATURALGAS/CRUDEOIL setups (log: "Confidence X% below MCX threshold 72%").
 - Verify candles are still last-closed after any fetcher changes.
 - Keep `Delta prev scan` using actual prior scan data.

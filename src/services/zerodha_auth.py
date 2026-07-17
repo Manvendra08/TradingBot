@@ -63,3 +63,18 @@ def is_token_valid() -> bool:
     from datetime import datetime
     today = datetime.now().strftime("%Y-%m-%d")
     return config["last_login_date"] == today
+
+
+def invalidate_token() -> None:
+    """Clear access token and last login date to force re-auth on next check."""
+    log.warning("[zerodha_auth] Invalidating Kite access token to force re-login.")
+    try:
+        update_broker_config(access_token="", last_login_date="")
+        try:
+            from src.engine import live_trading
+            live_trading._cached_kite_client = None
+            live_trading._cached_access_token = None
+        except Exception:
+            pass
+    except Exception as e:
+        log.error("Failed to clear broker config: %s", e)

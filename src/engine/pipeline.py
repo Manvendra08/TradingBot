@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from config.settings import WATCH_SYMBOLS, get_symbol_thresholds, LLM_ENRICHMENT_ASYNC, MAX_ANOMALIES_PER_SYMBOL, ANOMALY_MIN_SEVERITY
 from config.settings import DISABLE_LLM_ENRICHMENT as _DISABLE_LLM_ENV
 from src.alerts.dedup import is_duplicate, record_alert, should_send_zero_signal
-from src.alerts.digest import build_digest
+from src.alerts.digest import build_digest, synthesize_market_insight, format_options_insight
 # Enforces edge_health check pipeline integration rule
 from src.alerts.telegram_dispatcher import send_text, send_text_and_return_id, edit_message_text
 from src.engine.anomaly_detector import detect_anomalies
@@ -310,7 +310,10 @@ def _async_llm_enrich_and_edit(
 
         intel_text_v2 += thesis_line
 
-        structured_payload = _build_structured_payload(symbol, fetched_at, scan_context, intel, llm_verdict)
+        structured_payload = _build_structured_payload(
+            symbol, fetched_at, scan_context, intel, llm_verdict,
+            news_data=news_data, open_trade=None,
+        )
 
         _, digest_msg_v2 = build_digest(
             symbol,
@@ -333,7 +336,7 @@ def _async_llm_enrich_and_edit(
         log.warning("%s: async LLM enrichment thread failed: %s", symbol, e)
 
 
-def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, intel: dict, llm_verdict: any) -> dict:
+def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, intel: dict, llm_verdict: any, news_data: dict | None = None, open_trade: dict | None = None, exit_advice: any = None) -> dict:
     from datetime import datetime, timezone
     
     td = (intel or {}).get("trade_decision") or {}
@@ -346,6 +349,7 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
     IST = timezone(timedelta(hours=5, minutes=30))
     ts = dt.astimezone(IST).strftime("%H:%M IST")
     
+    trade_entered = td.get("status") in ("TRIGGERED_CORE", "TRIGGERED_EXPERIMENTAL")
     header = {
         "symbol": symbol,
         "scan_time": ts,
@@ -353,7 +357,8 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
         "dte": scan_context.get("days_to_expiry", 0),
         "underlying": scan_context.get("underlying") or 0.0,
         "market_regime": scan_context.get("market_regime") or "UNKNOWN",
-        "confidence": (intel or {}).get("confidence", 0)
+        "confidence": (intel or {}).get("confidence", 0),
+        "trade_entered": trade_entered
     }
 
     is_timeframe = td.get("execution_source") == "TIMEFRAME"
@@ -364,7 +369,7 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
         "tfss_bias": td.get("normalized_tfss_bias", "N/A"),
         "action": td.get("action", "BLOCK"),
         "execution_side": td.get("option_side", "N/A"),
-        "trade_entered": td.get("status") in ("TRIGGERED_CORE", "TRIGGERED_EXPERIMENTAL"),
+        "trade_entered": trade_entered,
         "contract": f"{symbol} {td.get('strike')} {td.get('option_side')}" if td.get("strike") else None,
         "delta": td.get("delta"),
         "premium": td.get("premium"),
@@ -395,17 +400,33 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
         tfss["trade_entered"] = False
         tfss["contract"] = None
         
-    ai_thesis = "No thesis generated."
-    if llm_verdict:
-        ai_thesis = getattr(llm_verdict, "thesis", ai_thesis)
-        
+    ai_thesis = ""
+    llm_thesis = getattr(llm_verdict, "thesis", "") if llm_verdict else ""
+    if llm_thesis:
+        ai_thesis += llm_thesis
+
+    insight = synthesize_market_insight(
+        scan_context,
+        verdict_label=(intel or {}).get("verdict_label"),
+        bias=(intel or {}).get("bias") or scan_context.get("tfss_bias"),
+        confidence=(intel or {}).get("confidence", 0),
+        news_data=news_data,
+        open_trade=open_trade,
+    )
+    if insight:
+        ai_thesis += ("\n\n" if ai_thesis else "") + insight
+    if not ai_thesis:
+        ai_thesis = "No thesis generated."
+
     return {
         "header": header,
         "tfss": tfss,
         "timeframe": timeframe,
         "positions": {},
         "global_risk": {},
-        "ai_thesis": ai_thesis
+        "options_insight": format_options_insight(scan_context, symbol),
+        "ai_thesis": ai_thesis,
+        "exit_advice": exit_advice
     }
 
 
@@ -557,21 +578,37 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
     }
 
     intel_text_base = intel_text
-    if not _DISABLE_LLM_ENV and intel and not open_trade:
-        if llm_async:
-            intel_text += "\n💡 *Thesis:* ⏳ Pending async analysis...\n"
-        else:
+    exit_advice = None
+    if not _DISABLE_LLM_ENV:
+        if open_trade:
             try:
-                from src.engine.llm_enrichment import get_llm_verdict
-                llm_verdict = get_llm_verdict(symbol, intel, scan_context, alerts=new_alerts, news_data=news_data, open_trade=None)
-                if llm_verdict:
-                    intel_text += f"\n\n💡 *Thesis:* {getattr(llm_verdict, 'thesis', '')}\n"
+                from src.engine.llm_enrichment import get_exit_advice
+                exit_advice = get_exit_advice(symbol, open_trade, scan_context, news_data=news_data)
+                if exit_advice:
+                    ea_action = getattr(exit_advice, "action", "")
+                    ea_urgency = getattr(exit_advice, "urgency", "")
+                    ea_reasoning = getattr(exit_advice, "reasoning", "")
+                    intel_text += f"\n\n🚨 *AI EXIT ADVICE:* {ea_action} (Urgency: {ea_urgency})\n💡 *Reason:* {ea_reasoning}\n"
             except Exception:
-                log.exception("%s: AI enrichment failed gracefully", symbol)
+                log.exception("%s: AI exit advice failed gracefully", symbol)
+        elif intel:
+            if llm_async:
+                intel_text += "\n💡 *Thesis:* ⏳ Pending async analysis...\n"
+            else:
+                try:
+                    from src.engine.llm_enrichment import get_llm_verdict
+                    llm_verdict = get_llm_verdict(symbol, intel, scan_context, alerts=new_alerts, news_data=news_data, open_trade=None)
+                    if llm_verdict:
+                        intel_text += f"\n\n💡 *Thesis:* {getattr(llm_verdict, 'thesis', '')}\n"
+                except Exception:
+                    log.exception("%s: AI enrichment failed gracefully", symbol)
 
     with serialized_commit_gate.section(f"commit:{symbol}"):
-        structured_payload = _build_structured_payload(symbol, fetched_at, scan_context, intel, llm_verdict)
-        
+        structured_payload = _build_structured_payload(
+            symbol, fetched_at, scan_context, intel, llm_verdict,
+            news_data=news_data, open_trade=open_trade, exit_advice=exit_advice,
+        )
+
         digest_id, digest_msg = build_digest(
             symbol,
             new_alerts,
@@ -581,6 +618,7 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
             paper_trade_status=None,
             live_trade_status=None,
             llm_verdict=llm_verdict,
+            exit_advice=exit_advice,
             structured_payload=structured_payload,
         )
 
@@ -681,6 +719,45 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
 
         if not is_test:
             try:
+                # ── Global Trade Monitoring across ALL Regimes/Strategies ──
+                # Ensure mechanical SL/Target/Trailing/Dead/Delta monitoring runs
+                # on every scan regardless of session regime (PARITY, EVENT, MOMENTUM, CORE).
+                from src.engine.paper_trading import monitor_paper_trades, close_paper_trade
+                from src.engine.trade_plan import get_option_premium
+                monitor_paper_trades(symbol, scan_context)
+
+                # ── Actionable AI Exit Advice Execution ──
+                # If AI exit advice recommends CLOSE_EARLY/EXIT with HIGH urgency, auto-exit immediately.
+                if open_trade and exit_advice:
+                    ea_action = str(getattr(exit_advice, "action", "")).upper()
+                    ea_urgency = str(getattr(exit_advice, "urgency", "")).upper()
+                    if ea_action in ("CLOSE_EARLY", "FLAT_NOW", "EXIT") and ea_urgency == "HIGH":
+                        from src.models.schema import get_open_paper_trade
+                        live_check = get_open_paper_trade(symbol)
+                        if live_check and live_check["status"] == "OPEN":
+                            option_type = str(live_check.get("option_type", "")).upper()
+                            side = str(live_check.get("side", "")).upper()
+                            ea_prem = None
+                            if option_type != "FUT":
+                                ea_prem = get_option_premium(
+                                    symbol,
+                                    live_check.get("expiry"),
+                                    live_check.get("strike"),
+                                    option_type,
+                                    scan_context.get("option_rows"),
+                                )
+                                if ea_prem and ea_prem > 0:
+                                    ea_prem *= 0.995 if side == "BUY" else 1.005
+                            close_paper_trade(
+                                live_check["id"],
+                                datetime.now(timezone.utc).isoformat(),
+                                underlying,
+                                ea_prem,
+                                "CLOSED_AI_EXIT",
+                                f"AI_EXIT: {ea_action} (HIGH) | {getattr(exit_advice, 'reasoning', '')[:100]}",
+                            )
+                            log.info("%s: paper trade #%s closed via AI Exit Advice (%s HIGH)", symbol, live_check["id"], ea_action)
+
                 from src.engine.strategy_registry import active_strategies_for, get_runner
                 for sid in active_strategies_for(symbol):
                     runner = get_runner(sid)
@@ -714,8 +791,8 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                     "llm_target_1": getattr(llm_verdict, "target_1", None) if llm_verdict else None,
                     "llm_target_2": getattr(llm_verdict, "target_2", None) if llm_verdict else None,
                     "llm_stop_loss": getattr(llm_verdict, "stop_loss", None) if llm_verdict else None,
-                    "trade_decision_status": intel.get("trade_decision", {}).get("status") if intel else None,
-                    "trade_decision_reason": intel.get("trade_decision", {}).get("reason") if intel else None,
+                    "trade_decision_status": (intel.get("trade_decision") or {}).get("status") if intel else None,
+                    "trade_decision_reason": (intel.get("trade_decision") or {}).get("reason") if intel else None,
                     "warnings": [],  # Could extract from logs if needed
                     "errors": [],    # Could extract from logs if needed
                     "fetcher_errors": scan_context.get("fetcher_errors", []),
@@ -728,4 +805,4 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                 # Submit to thread pool for async execution (non-blocking)
                 pipeline_io_executor.submit(lambda: run_sentinel(sentinel_report))
             except Exception:
-                log.debug("%s: Scan Sentinel submission failed gracefully", symbol)
+                log.warning("%s: Scan Sentinel submission failed", symbol, exc_info=True)

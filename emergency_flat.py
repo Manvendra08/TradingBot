@@ -21,8 +21,10 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from config.settings import DB_PATH
+from src.models.schema import close_live_trade, get_conn
 
 DRY_RUN = "--dry-run" in sys.argv
+AUTO_MODE = "--auto" in sys.argv or "NSEBOT_AUTO" in __import__('os').environ  # BUG-C01 FIX: Skip input() when called by ops_agent
 
 logging.basicConfig(
     level=logging.INFO,
@@ -205,11 +207,16 @@ def _close_all_positions(kite) -> int:
             # Update DB
             if not DRY_RUN:
                 try:
-                    from src.models.schema import get_conn
-                    with get_conn() as conn:
-                        conn.execute(
-                            "UPDATE live_trades SET status='CLOSED_EMERGENCY', closed_at=?, reason='emergency_flat' WHERE id=?",
-                            (now_iso, trade["id"]),
+                    option_type = trade.get("option_type") or "FUT"
+                    if option_type == "FUT":
+                        close_live_trade(
+                            trade["id"], now_iso, ltp, None,
+                            "CLOSED_EMERGENCY", "emergency_flat",
+                        )
+                    else:
+                        close_live_trade(
+                            trade["id"], now_iso, 0.0, ltp,
+                            "CLOSED_EMERGENCY", "emergency_flat",
                         )
                 except Exception as e:
                     log.warning("Failed to update trade #%d in DB: %s", trade["id"], e)
@@ -225,12 +232,15 @@ def main():
     log.info("=== EMERGENCY FLAT STARTING (dry_run=%s) ===", DRY_RUN)
 
     # P2-10: Interactive confirmation to prevent accidental position closure
-    if not DRY_RUN:
+    # BUG-C01 FIX: Skip confirmation in AUTO_MODE (when called by ops_agent)
+    if not DRY_RUN and not AUTO_MODE:
         confirmation = input("Type CONFIRM to proceed with emergency flat: ").strip()
         if confirmation != "CONFIRM":
             log.info("Emergency flat cancelled — confirmation not received")
             print("Cancelled. Type exactly 'CONFIRM' to execute.")
             sys.exit(0)
+    elif AUTO_MODE:
+        log.info("Running in AUTO_MODE — skipping interactive confirmation")
 
     kite = _get_kite()
     if not kite:

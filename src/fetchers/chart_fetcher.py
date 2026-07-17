@@ -84,7 +84,7 @@ _TV_SYMBOL_MAP: dict[str, tuple[str, str]] = {
     "SILVER": ("MCX", "SILVER"),
 }
 _MCX_SYMBOLS = {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"}
-_DHAN_BUILTUP_SYMBOLS = {"NATURALGAS", "CRUDEOIL"}
+_DHAN_BUILTUP_SYMBOLS = {"NATURALGAS", "CRUDEOIL", "SENSEX"}
 _DHAN_BUILTUP_URL = "https://openweb-ticks.dhan.co/builtup"
 
 # Hardcoded Shoonya/Finvasia instrument tokens for major NSE/BSE indices.
@@ -736,6 +736,25 @@ def _aggregate_rows_to_payload(
             prev_ohlc = {"open": po, "high": ph, "low": pl, "close": pc}
         except Exception:
             pass
+    if prev_ohlc is None:
+        # Lenient fallback: the builtup API is queried without a time-range and
+        # returns only current-window candles, so the exact previous window is
+        # usually absent. Synthesize prev_ohlc from whatever trailing bars closed
+        # before the current window start, using Dhan's own history. If none exist,
+        # prev_ohlc stays None and the yfinance fallback (caller) recovers it.
+        trailing = sorted(
+            [r for r in rows if r.get("et") and float(r["et"]) <= start_utc.timestamp()],
+            key=lambda r: r.get("st") or 0,
+        )
+        if len(trailing) >= 2:
+            try:
+                po = float(trailing[0]["o"])
+                ph = max(float(r["h"]) for r in trailing)
+                pl = min(float(r["l"]) for r in trailing)
+                pc = float(trailing[-1]["c"])
+                prev_ohlc = {"open": po, "high": ph, "low": pl, "close": pc}
+            except Exception:
+                prev_ohlc = None
 
     return {
         "sentiment": _sentiment(o, c, h, l),
@@ -785,9 +804,11 @@ def _fetch_dhan_builtup_ohlc(
             "Secid": int(sid),
         }
     }
+
+    # 1. Fetch Primary Source: Dhan Builtup
+    dhan_payload = None
     try:
         import urllib.request
-
         with _without_proxy_env():
             req = urllib.request.Request(
                 _DHAN_BUILTUP_URL,
@@ -801,67 +822,84 @@ def _fetch_dhan_builtup_ohlc(
             with urllib.request.urlopen(req, timeout=15) as res:
                 raw = json.loads(res.read().decode("utf-8"))
         rows = raw.get("data") if isinstance(raw, dict) else None
-        if not isinstance(rows, list):
-            return None
+        if isinstance(rows, list) and len(rows) > 0:
+            dhan_atr = None
+            try:
+                dhan_bars = []
+                for r in rows:
+                    try:
+                        dhan_bars.append(
+                            {
+                                "High": float(r.get("h", 0)),
+                                "Low": float(r.get("l", 0)),
+                                "Close": float(r.get("c", 0)),
+                            }
+                        )
+                    except Exception:
+                        continue
+                if len(dhan_bars) >= 15:
+                    dhan_atr = _calculate_atr_from_bars(dhan_bars, period=14)
+            except Exception:
+                pass
 
-        # Compute ATR from the raw 15-min dhan rows before aggregation
-        # (the rows contain enough bars for ATR-14 calculation)
-        dhan_atr = None
-        try:
-            dhan_bars = []
-            for r in rows:
-                try:
-                    dhan_bars.append(
-                        {
-                            "High": float(r.get("h", 0)),
-                            "Low": float(r.get("l", 0)),
-                            "Close": float(r.get("c", 0)),
-                        }
-                    )
-                except Exception:
-                    continue
-            if len(dhan_bars) >= 15:
-                dhan_atr = _calculate_atr_from_bars(dhan_bars, period=14)
-        except Exception:
-            pass
-
-        out = _aggregate_rows_to_payload(rows, *window)
-        if out:
-            log.info(
-                "[chart] %s %s -> using dhan_builtup last-closed candle",
-                base_symbol,
-                tf,
-            )
-            if dhan_atr is not None:
-                out["atr_14"] = dhan_atr
-            
-            # Fallback to yfinance if ATR or prev_ohlc is missing (e.g. early session boundary)
-            if out.get("atr_14") is None or out.get("prev_ohlc") is None:
-                try:
-                    yf_payload = _fetch_yf(
-                        base_symbol, tf, reference_price=reference_price
-                    )
-                    if yf_payload:
-                        if out.get("atr_14") is None and "atr_14" in yf_payload:
-                            out["atr_14"] = yf_payload["atr_14"]
-                        if out.get("prev_ohlc") is None and "prev_ohlc" in yf_payload:
-                            out["prev_ohlc"] = yf_payload["prev_ohlc"]
-                            log.info(
-                                "[chart] %s %s -> recovered missing prev_ohlc from yfinance fallback",
-                                base_symbol,
-                                tf,
-                            )
-                except Exception as e:
-                    log.warning(
-                        "[chart] failed to fetch yfinance fallback indicators for %s %s: %s",
-                        base_symbol,
-                        tf,
-                        e,
-                    )
-        return out
+            out = _aggregate_rows_to_payload(rows, *window)
+            if out:
+                dhan_payload = out
+                if dhan_atr is not None:
+                    dhan_payload["atr_14"] = dhan_atr
+                log.info("[chart] %s %s -> fetched dhan_builtup primary successfully", base_symbol, tf)
     except Exception as exc:
-        log.warning("[chart] dhan_builtup fetch failed %s %s: %s", base_symbol, tf, exc)
+        log.warning("[chart] dhan_builtup fetch failed for %s %s: %s", base_symbol, tf, exc)
+
+    # 2. Fetch Secondary Source: Yahoo Finance
+    yf_payload = None
+    try:
+        yf_payload = _fetch_yf(base_symbol, tf, reference_price=reference_price)
+        if yf_payload:
+            log.info("[chart] %s %s -> fetched yfinance secondary successfully", base_symbol, tf)
+    except Exception as exc:
+        log.warning("[chart] yfinance secondary fetch failed for %s %s: %s", base_symbol, tf, exc)
+
+    # 3. Perform Dual-Source Fusion and Merging
+    if not dhan_payload and not yf_payload:
         return None
+
+    merged = {}
+    if dhan_payload and yf_payload:
+        # Prefer Dhan live price data as baseline, enrich history/indicators from yfinance
+        merged = dict(dhan_payload)
+        for key in ["sentiment", "ohlc", "last_closed_ohlc", "prev_ohlc", "atr_14"]:
+            if merged.get(key) is None and yf_payload.get(key) is not None:
+                merged[key] = yf_payload[key]
+        log.info("[chart] %s %s -> fused data from both Dhan and yfinance sources", base_symbol, tf)
+    elif dhan_payload:
+        merged = dict(dhan_payload)
+        log.info("[chart] %s %s -> using dhan_builtup primary (yfinance unavailable)", base_symbol, tf)
+    else:
+        merged = dict(yf_payload)
+        log.info("[chart] %s %s -> fell back to yfinance secondary (dhan_builtup unavailable)", base_symbol, tf)
+
+    # 4. Clean & Validate Snapshot before returning
+    for ohlc_key in ["ohlc", "last_closed_ohlc", "prev_ohlc"]:
+        val = merged.get(ohlc_key)
+        if val is not None:
+            if not isinstance(val, dict):
+                merged[ohlc_key] = None
+            else:
+                # Ensure all nested dictionary values are clean floats
+                try:
+                    merged[ohlc_key] = {
+                        k: float(v) for k, v in val.items() if v is not None
+                    }
+                except (ValueError, TypeError):
+                    merged[ohlc_key] = None
+
+    # Require at least the main ohlc to be present and populated for further processing
+    if not merged.get("ohlc") or not isinstance(merged["ohlc"], dict):
+        log.warning("[chart] %s %s -> snapshot rejected: missing valid ohlc", base_symbol, tf)
+        return None
+
+    return merged
 
 
 def _fetch_local_ohlc_from_db(base_symbol: str, tf: str) -> Optional[dict]:
@@ -917,9 +955,9 @@ def _fetch_local_ohlc_from_db(base_symbol: str, tf: str) -> Optional[dict]:
                 "bar_end_utc": end_utc.isoformat(),
             }
 
-            # Compute ATR from historical bars (need 15+ bars for ATR-14)
-            # For 1h tf, fetch last 20 hours; for 3h tf, fetch last 60 hours
-            hours_back = 20 if tf == "1h" else 60
+            # Compute ATR from historical bars (need 15+ bars for ATR-14, 100+ for Wilder's smoothing warm-up)
+            # For 1h tf, fetch last 100 hours; for 3h tf, fetch last 300 hours
+            hours_back = 100 if tf == "1h" else 300
             try:
                 from datetime import timedelta
 
@@ -1031,7 +1069,7 @@ def _fetch_shoonya_candles(
     # Shoonya does not support a native 3H interval.
     interval_minutes = 60
     end_epoch = int(_time.time())
-    start_epoch = end_epoch - (5 * 24 * 3600)  # 5 days of history
+    start_epoch = end_epoch - (30 * 24 * 3600)  # 30 days of history to warm up Wilder's ATR
 
     bars = fetcher.fetch_candles(
         exchange, token, interval_minutes, start_epoch, end_epoch
@@ -1099,7 +1137,7 @@ def _fetch_tv(base_symbol: str, tf: str) -> Optional[dict]:
     exchange, tv_sym = tv_info
     try:
         df = client.get_hist(
-            symbol=tv_sym, exchange=exchange, interval=interval, n_bars=30
+            symbol=tv_sym, exchange=exchange, interval=interval, n_bars=100
         )
         if df is None or getattr(df, "empty", True):
             _tv_record_failure()
@@ -1273,7 +1311,7 @@ def _fetch_yf(
                     except Exception:
                         pass
                 log.info(
-                    "[chart] successfully fetched %s %s using pure-HTTP API",
+                    "[chart] %s %s -> yfinance (pure-HTTP API) fetched successfully",
                     base_symbol,
                     tf,
                 )
@@ -1423,6 +1461,7 @@ class ChartFetcher:
         for tf in tfs:
             payload = None
             source = None
+            higher_priority_failed = False
 
             for provider in _provider_order(base):
                 if provider == "shoonya":
@@ -1444,6 +1483,7 @@ class ChartFetcher:
 
                 if payload:
                     break
+                higher_priority_failed = True
 
             if base in _MCX_SYMBOLS and (
                 payload is None or _is_payload_stale(payload, tf)
@@ -1452,6 +1492,7 @@ class ChartFetcher:
                 if local_payload:
                     payload = local_payload
                     source = "local_underlying_db"
+                    higher_priority_failed = True
                     log.info(
                         "[chart] %s %s -> using local_underlying_db (fresh MCX fallback)",
                         base,
@@ -1464,7 +1505,7 @@ class ChartFetcher:
 
             merged = self._merge_state(base, tf, payload)
             result.setdefault(base, {})[tf] = merged
-            is_fallback = source not in ("shoonya", "dhan_builtup")
+            is_fallback = higher_priority_failed
             prefix = "FALLBACK " if is_fallback else ""
             log.info("[chart] %s %s | ✅ %s%s", base, tf, prefix, source)
 

@@ -174,7 +174,7 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None, su
         "scores": scores,
         "audit_row_id": audit_row_id,
         # TFSS specific extensions
-        "execution_source": pipeline_ctx.scan_context.get("_execution_source", "CORE_TFSS" if pipeline_ctx.scan_context.get("_tfss_bias") else "TIMEFRAME" if pipeline_ctx.engine == "TIMEFRAME" else "CORE"),
+        "execution_source": pipeline_ctx.scan_context.get("_execution_source", "TIMEFRAME" if pipeline_ctx.engine == "TIMEFRAME" else "CORE_TFSS" if pipeline_ctx.scan_context.get("_tfss_bias") else "CORE"),
         "core_verdict_family": intel.get("verdict_label", ""),
         "normalized_tfss_bias": pipeline_ctx.scan_context.get("_tfss_bias"),
         "action": plan.get("side"),

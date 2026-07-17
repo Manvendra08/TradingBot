@@ -514,6 +514,7 @@ _MIGRATIONS = [
     ("M069_add_live_lot_size", "ALTER TABLE live_trades ADD COLUMN lot_size INTEGER DEFAULT 1"),
     ("M070_add_paper_reason", "ALTER TABLE paper_trades ADD COLUMN reason TEXT"),
     ("M071_add_paper_exit_reason", "ALTER TABLE paper_trades ADD COLUMN exit_reason TEXT"),
+    ("M072_add_live_exit_reason", "ALTER TABLE live_trades ADD COLUMN exit_reason TEXT"),
 ]
 
 
@@ -828,6 +829,27 @@ def get_prev_snapshots_bulk(
                     max_age_minutes,
                 )
                 return {}
+
+            # Session boundary check: if previous scan and current scan are on different
+            # IST calendar days, treat as cross-session to avoid false OI spikes
+            # at market open (e.g., yesterday 15:30 vs today 09:30 = different trading day).
+            try:
+                ist = timezone(timedelta(hours=5, minutes=30))
+                now_ist = now_utc.astimezone(ist)
+                prev_ist = best_dt.astimezone(ist)
+                if now_ist.date() != prev_ist.date():
+                    import logging as _log
+
+                    _log.getLogger(__name__).debug(
+                        "[schema] get_prev_snapshots_bulk: %s cross-session (prev=%s, now=%s) — "
+                        "returning empty baseline",
+                        symbol,
+                        prev_ist.strftime("%Y-%m-%d %H:%M IST"),
+                        now_ist.strftime("%Y-%m-%d %H:%M IST"),
+                    )
+                    return {}
+            except Exception:
+                pass
 
         # Fetch all snapshots matching this best_fetched_at_str
         sql_select = """

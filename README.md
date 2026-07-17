@@ -5,7 +5,7 @@ Local NSE option-chain monitor, signal engine, Telegram digest bot, and paper-tr
 ## What it does
 
 - Fetches option-chain data for watched symbols
-- Filters strikes to ATM +/- 15 only
+- Filters strikes to ATM +/- 10 only
 - Detects OI, PCR, IV, price, and max-pain anomalies
 - Builds a trader-facing Telegram digest
 - Auto-opens and manages paper trades from bot intelligence

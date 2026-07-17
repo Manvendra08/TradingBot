@@ -4,6 +4,8 @@ import logging
 import threading
 from datetime import datetime, timezone, timedelta
 
+from config.settings import STRIKES_AROUND_ATM
+
 from src.fetchers.base_fetcher import BaseFetcher
 
 log = logging.getLogger(__name__)
@@ -257,9 +259,9 @@ class SensibullFetcher(BaseFetcher):
             return None
         atm_pair_idx = min(valid_indices, key=lambda i: abs(pairs[i]["ce_delta"] - 0.5))
 
-        # Limit output to ATM +/- 15 strikes (31 strikes total)
-        start_idx = max(0, atm_pair_idx - 15)
-        end_idx = min(len(pairs), atm_pair_idx + 16)
+        # Limit output to ATM +/- STRIKES_AROUND_ATM strikes (driven by config.settings)
+        start_idx = max(0, atm_pair_idx - STRIKES_AROUND_ATM)
+        end_idx = min(len(pairs), atm_pair_idx + STRIKES_AROUND_ATM + 1)
         pairs = pairs[start_idx:end_idx]
         atm_pair_idx = atm_pair_idx - start_idx
 
@@ -314,7 +316,12 @@ class SensibullFetcher(BaseFetcher):
         # Add all available expiries
         result["all_expiries"] = all_expiries
 
-        unpaired_count = len(opts) - len(used)
+        # Calculate unpaired count within the bot's filtered strikes range
+        kept_strikes = set(s["strike"] for s in strikes_out) if strikes_out else set()
+        unpaired_count = sum(
+            1 for o in opts 
+            if o.get("strike") is not None and float(o["strike"]) in kept_strikes and o["token"] not in used
+        )
         log.info(
             "[sensibull] %s | underlying=%.2f expiry=%s strikes=%d pairs=%d unpaired=%d",
             sym, underlying, target_expiry, len(strikes_out), len(pairs), unpaired_count,

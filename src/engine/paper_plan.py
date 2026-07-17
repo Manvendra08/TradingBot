@@ -15,6 +15,7 @@ import re
 
 from config.symbol_classes import get_strike_step
 from config.settings import MAX_LEVEL_DISTANCE_STEPS
+from src.engine.confidence_threshold import get_effective_min_confidence
 from src.engine.verdict_sets import BULLISH_VERDICTS, BEARISH_VERDICTS, is_bullish, is_bearish
 
 log = logging.getLogger(__name__)
@@ -146,7 +147,8 @@ VERDICT_ACTION_MAP = {
 
 def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | None:
     """Return the executable paper plan, or None when no clean auto entry exists."""
-    if int(confidence or 0) < MIN_PAPER_CONFIDENCE:
+    min_conf = get_effective_min_confidence()
+    if int(confidence or 0) < min_conf:
         return None
 
     symbol = str(ctx.get("symbol") or "").upper()

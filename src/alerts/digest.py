@@ -79,12 +79,189 @@ def _format_expiry_and_dte(expiry_str: str | None) -> tuple[str, str]:
         return "", ""
     try:
         exp_date = datetime.strptime(str(expiry_str).strip(), "%Y-%m-%d").date()
-        today_date = datetime.now(timezone.utc).date()
+        ist = timezone(timedelta(hours=5, minutes=30))
+        today_date = datetime.now(ist).date()
         days_to_expiry = (exp_date - today_date).days
         formatted = exp_date.strftime("%d %b")
         return formatted, f"{days_to_expiry} DTE"
     except Exception:
         return str(expiry_str), ""
+
+
+def _humanize_age(iso_ts: str | None) -> str:
+    """Return a compact human-readable age like '47m' or '2h 5m' from an ISO ts."""
+    if not iso_ts:
+        return ""
+    try:
+        ts = datetime.fromisoformat(str(iso_ts).replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        age = datetime.now(timezone.utc) - ts
+        mins = int(age.total_seconds() // 60)
+        if mins < 60:
+            return f"{mins}m"
+        hrs = mins // 60
+        return f"{hrs}h {mins % 60}m"
+    except Exception:
+        return ""
+
+
+def _oi_buildup_label(ce, pe) -> str:
+    ce = ce or 0
+    pe = pe or 0
+    if ce > 0 and pe <= 0:
+        return "Short buildup (CE write)"
+    if pe > 0 and ce <= 0:
+        return "Long buildup (PE write)"
+    if ce < 0 and pe >= 0:
+        return "Short covering (CE unwind)"
+    if pe < 0 and ce >= 0:
+        return "Long unwinding (PE unwind)"
+    if ce > 0 and pe > 0:
+        return "OI building both sides"
+    if ce < 0 and pe < 0:
+        return "OI thinning both sides"
+    return ""
+
+
+def _top_news(news_data) -> str:
+    if not news_data or not news_data.get("items"):
+        return ""
+    direction = news_data.get("current_news_direction", "")
+    count = news_data.get("count_24h", 0)
+    items = news_data.get("items") or []
+    titles = [(it.get("title") or "").strip() for it in items[:2]]
+    titles = [t for t in titles if t]
+    if not titles:
+        return ""
+    head = f"{direction} ({count} articles): " if direction or count else ""
+    return head + " · ".join(titles)
+
+
+def _fmt_open_position(t) -> str:
+    if not t:
+        return ""
+    side = str(t.get("side") or "BUY").upper()
+    opt = t.get("option_type") or ""
+    strike = t.get("strike")
+    entry = t.get("entry_premium")
+    pnl = t.get("pnl_rupees")
+    age = _humanize_age(t.get("opened_at"))
+    parts = []
+    if strike is not None:
+        parts.append(f"{side} {float(strike):g} {opt}")
+    if entry is not None:
+        parts.append(f"@ ₹{float(entry):.1f}")
+    if pnl is not None:
+        try:
+            parts.append(f"{float(pnl):+.0f}₹")
+        except Exception:
+            pass
+    if age:
+        parts.append(f"({age})")
+    return " ".join(parts)
+
+
+def format_options_insight(ctx: dict | None, symbol: str = "") -> list[str]:
+    """Compact, scannable raw-options-data block for the OPTIONS INSIGHT section."""
+    ctx = ctx or {}
+    sym = str(symbol or ctx.get("symbol") or "").strip()
+    bits: list[str] = []
+
+    pcr = ctx.get("pcr")
+    ce = ctx.get("ce_oi_change", 0) or 0
+    pe = ctx.get("pe_oi_change", 0) or 0
+    mp = ctx.get("max_pain")
+    spot = ctx.get("underlying")
+    straddle = ctx.get("straddle_premium")
+    sup = ctx.get("support")
+    res = ctx.get("resistance")
+
+    # Line 1: PCR + OI flow
+    row1: list[str] = []
+    if pcr is not None:
+        try:
+            pcr_f = float(pcr)
+            tilt = "bearish" if pcr_f > 1.0 else ("bullish" if pcr_f < 0.9 else "neutral")
+            row1.append(f"PCR {pcr_f:.2f} ({tilt})")
+        except Exception:
+            pass
+    row1.append(f"ΔCE OI {_fmt_oi(ce)}")
+    row1.append(f"ΔPE OI {_fmt_oi(pe)}")
+    if row1:
+        bits.append(" · ".join(row1))
+
+    # Line 2: Max Pain / Spot distance (or straddle)
+    if mp is not None and spot is not None:
+        try:
+            mp_f = float(mp)
+            spot_f = float(spot)
+            dist = spot_f - mp_f
+            pct = (dist / mp_f * 100) if mp_f else 0.0
+            bits.append(
+                f"Max Pain {_fmt_val(mp, sym)} (spot {_fmt_signed(dist, 0)} / {_fmt_signed(pct, 2)}%)"
+            )
+        except Exception:
+            pass
+    elif straddle is not None:
+        try:
+            bits.append(f"Straddle ₹{float(straddle):,.0f}")
+        except Exception:
+            pass
+
+    # Line 3: OI buildup + Range
+    row3: list[str] = []
+    buildup = _oi_buildup_label(ce, pe)
+    if buildup:
+        row3.append(f"OI Buildup: {buildup}")
+    if sup is not None and res is not None:
+        row3.append(f"Range {_fmt_val(sup, sym)} / {_fmt_val(res, sym)}")
+    if row3:
+        bits.append(" · ".join(row3))
+
+    return bits
+
+
+def synthesize_market_insight(
+    ctx: dict | None,
+    verdict_label: str | None = None,
+    bias: str | None = None,
+    confidence=None,
+    news_data: dict | None = None,
+    open_trade: dict | None = None,
+) -> str:
+    """Always-available market-insight block (the 'AI Thesis').
+
+    Synthesizes raw options data, the engine verdict, key news, and any open
+    position so the user is kept up to date with market context regardless of
+    whether an LLM verdict is present.
+    """
+    ctx = ctx or {}
+    lines: list[str] = []
+
+    # ── Engine verdict (ties together the OPTIONS INSIGHT data above) ──
+    vc: list[str] = []
+    if verdict_label:
+        vc.append(str(verdict_label))
+    if bias:
+        vc.append(str(bias))
+    if vc:
+        conf = confidence if confidence is not None else ctx.get("engine_confidence", 0)
+        lines.append(f"Verdict: {' · '.join(vc)} @ {conf}%")
+
+    # ── News ──
+    news_str = _top_news(news_data)
+    if news_str:
+        lines.append(f"News: {news_str}")
+
+    # ── Open position ──
+    ot_str = _fmt_open_position(open_trade)
+    if ot_str:
+        lines.append(f"Open: {ot_str}")
+
+    if not lines:
+        return ""
+    return "\n".join(lines)
 
 
 def _fmt_num(value, digits: int = 0) -> str:
@@ -537,6 +714,7 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
     """
     import uuid
     import textwrap
+    from datetime import datetime
 
     def _val(v) -> str | None:
         """Return value if meaningful, else None (to skip rendering)."""
@@ -557,6 +735,7 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
     positions   = payload.get("positions", {})
     global_risk = payload.get("global_risk", {})
     ai_thesis   = payload.get("ai_thesis", "")
+    exit_advice = payload.get("exit_advice")
 
     sym   = _val(header.get("symbol")) or "?"
     stime = _val(header.get("scan_time")) or ""
@@ -569,28 +748,39 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
     lines: list[str] = []
     DIV = "─" * 22
 
-    # ── HEADER ────────────────────────────────────────────
+    # ── HEADER ──
     conf_bar = ""
     if conf is not None:
         filled = round(int(conf) / 10)
         conf_bar = "▓" * filled + "░" * (10 - filled)
 
-    lines.append(f"📊 *{sym}* · {stime}")
+    # Top line status:
+    trade_entered = header.get("trade_entered", False)
+    trade_status_str = "✅ Entered" if trade_entered else "✗ Not entered"
+    lines.append(f"📊 *{sym}* · {stime}  {trade_status_str}")
+
+    head2 = []
     if expiry:
-        dte_label = f" ({dte} DTE)" if dte is not None else ""
-        lines.append(f"Expiry: {expiry}{dte_label}")
+        try:
+            exp_dt = datetime.strptime(str(expiry).strip(), "%Y-%m-%d").date()
+            exp_fmt = exp_dt.strftime("%d %b")
+        except Exception:
+            exp_fmt = str(expiry)
+        dte_label = f"{dte} DTE" if dte is not None else ""
+        head2.append(f"Expiry {exp_fmt} · {dte_label}")
     if spot is not None:
         spot_str = f"₹{spot:,.0f}" if isinstance(spot, (int, float)) else str(spot)
-        regime_str = f" · {regime}" if regime and regime.upper() != "UNKNOWN" else ""
-        lines.append(f"Spot: {spot_str}{regime_str}")
-    if conf is not None:
-        lines.append(f"Signal: {conf_bar} {conf}%")
+        head2.append(f"Spot {spot_str}")
+    if regime and regime.upper() != "UNKNOWN":
+        head2.append(f"Regime: {regime}")
+    if head2:
+        lines.append("🗓 " + "  |  ".join(head2))
 
-    # ── TFSS ──────────────────────────────────────────────
+    # ── SIGNAL ──
     tfss_action  = _val(tfss.get("action"))
     tfss_bias    = _val(tfss.get("tfss_bias"))
     tfss_verdict = _val(tfss.get("core_origin_verdict"))
-    tfss_exec    = _val(tfss.get("execution_side"))
+    tf_action   = _val(timeframe.get("action"))
     trade_ok     = tfss.get("trade_entered", False)
     contract     = _val(tfss.get("contract"))
     delta        = tfss.get("delta")
@@ -600,7 +790,6 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
     exit_reduce  = _val(tfss.get("exit_reduce"))
     existing_pos = _val(tfss.get("existing_position"))
     tfss_reason  = _val(tfss.get("primary_reason"))
-    tfss_why     = _join_list(tfss.get("why", []))
     tfss_blockers = [str(b) for b in (tfss.get("blockers") or []) if _val(str(b))]
 
     action_icon = {"ENTER": "🟢", "ADD": "🟢", "EXIT": "🔴", "REDUCE": "🟡",
@@ -608,134 +797,115 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
 
     lines.append("")
     lines.append(DIV)
-    header_tfss = f"{action_icon} *TFSS*"
-    if tfss_action:
-        header_tfss += f": {tfss_action}"
+    sig_line = f"{action_icon} *SIGNAL*"
     if tfss_bias:
-        header_tfss += f" ({tfss_bias})"
-    lines.append(header_tfss)
-
+        sig_line += f": {tfss_bias}"
     if tfss_verdict:
-        lines.append(f"Verdict: {_esc(tfss_verdict)}")
-    if tfss_exec:
-        lines.append(f"Side: {_esc(tfss_exec)}")
+        sig_line += f" · {tfss_verdict}"
+    lines.append(sig_line)
+    if conf is not None:
+        lines.append(f"Confidence: {conf_bar} {conf}%")
 
     if trade_ok and contract:
-        lines.append(f"✅ Entered: {_esc(contract)}")
+        lines.append(f"Trade: ✅ Entered · {_esc(contract)}")
         parts = []
         if delta is not None:
             parts.append(f"Δ{delta}")
         if prem is not None:
             parts.append(f"₹{prem}")
-        if parts:
-            lines.append(f"   {' · '.join(parts)}")
         if qty is not None or tranche is not None:
             size_str = f"{qty} lots" if qty else ""
             tr_str   = f"T{tranche}" if tranche else ""
             combined = " · ".join(filter(None, [size_str, tr_str]))
             if combined:
-                lines.append(f"   {combined}")
+                parts.append(combined)
+        if parts:
+            lines.append("   " + " · ".join(parts))
+        if tfss_reason and tfss_reason != "N/A":
+            lines.append(f"Reason: {_esc(tfss_reason)}")
     else:
         lines.append("Trade: ✗ Not entered")
+
+    # Display blocked reason inside the SIGNAL section
+    tf_blockers = [str(b) for b in (timeframe.get("blockers") or []) if _val(str(b))]
+    gr_blockers = [str(b) for b in (global_risk.get("blockers") or []) if _val(str(b))]
+    all_blockers = list(dict.fromkeys(tfss_blockers + tf_blockers + gr_blockers))
+
+    if all_blockers:
+        for b in all_blockers:
+            lines.append(f" ⚠ Blocked: {_esc(b)}")
+    elif not trade_ok:
+        if tfss_reason and tfss_reason != "N/A":
+            lines.append(f"Reason: {_esc(tfss_reason)}")
 
     if exit_reduce:
         lines.append(f"Exit/Reduce: {_esc(exit_reduce)}")
         if existing_pos:
             lines.append(f"   Posn: {_esc(existing_pos)}")
 
-    if tfss_reason:
-        lines.append(f"Reason: {_esc(tfss_reason)}")
-    if tfss_why and tfss_why != tfss_reason:
-        lines.append(f"Why: {_esc(tfss_why)}")
-    for b in tfss_blockers:
-        lines.append(f"  ⚠ {_esc(b)}")
+    # Display AI Exit Advice
+    if exit_advice:
+        ea_action = exit_advice.get("action") if isinstance(exit_advice, dict) else getattr(exit_advice, "action", None)
+        if ea_action:
+            ea_urgency = exit_advice.get("urgency") if isinstance(exit_advice, dict) else getattr(exit_advice, "urgency", "")
+            ea_reasoning = exit_advice.get("reasoning") if isinstance(exit_advice, dict) else getattr(exit_advice, "reasoning", "")
+            ea_new_sl = exit_advice.get("new_sl_premium") if isinstance(exit_advice, dict) else getattr(exit_advice, "new_sl_premium", None)
+            
+            action_emoji = {"HOLD": "🔵", "TRAIL_SL": "🔄", "CLOSE_EARLY": "🔴", "EXTEND_TARGET": "🎯"}.get(str(ea_action).upper(), "⚙️")
+            lines.append(f"AI Exit Advice: {action_emoji} *{ea_action}* (Urgency: {ea_urgency})")
+            lines.append(f"   _{_esc(ea_reasoning)}_")
+            if ea_new_sl is not None:
+                lines.append(f"   New SL: `{ea_new_sl}`")
 
-    # ── TIMEFRAME ─────────────────────────────────────────
-    tf_action   = _val(timeframe.get("action"))
+    # ── THESIS (AI) ──
+    thesis_text = _val(ai_thesis)
+    if thesis_text:
+        lines.append("")
+        lines.append(DIV)
+        lines.append("💡 *THESIS (AI)*")
+        for raw_line in thesis_text.splitlines():
+            if not raw_line.strip():
+                continue
+            for chunk in textwrap.wrap(raw_line, width=38):
+                lines.append(_esc(chunk))
+
+    # ── TIMEFRAME STRATEGY ──
     tf_signal   = _val(timeframe.get("signal"))
     tf_dir      = _val(timeframe.get("direction"))
     tf_setup    = _val(timeframe.get("setup"))
     tf_contract = _val(timeframe.get("contract"))
     tf_reason   = _val(timeframe.get("primary_reason"))
     tf_why      = _join_list(timeframe.get("why", []))
-    tf_blockers = [str(b) for b in (timeframe.get("blockers") or []) if _val(str(b))]
 
     tf_icon = {"ENTER": "🟢", "HOLD": "🔵", "EXIT": "🔴",
                "BLOCK": "🚫", "NO_SIGNAL": "⏸️"}.get(str(tf_action or "").upper(), "📈")
 
     lines.append("")
     lines.append(DIV)
-    header_tf = f"{tf_icon} *Timeframe*"
+    tf_line = f"{tf_icon} *TIMEFRAME STRATEGY*"
     if tf_action:
-        header_tf += f": {tf_action}"
+        tf_line += f": {tf_action}"
     if tf_dir:
-        header_tf += f" ({tf_dir})"
-    lines.append(header_tf)
-
+        tf_line += f" ({tf_dir})"
+    lines.append(tf_line)
     has_tf_data = any([tf_signal, tf_setup, tf_contract, tf_reason, tf_why, tf_blockers])
-    if not has_tf_data:
-        lines.append("No active signal")
-    else:
+    if has_tf_data:
+        status = tf_action or "ACTIVE"
+        lines.append(f"Status: {status}")
         if tf_signal:
             lines.append(f"Signal: {_esc(tf_signal)}")
         if tf_setup:
             lines.append(f"Setup: {_esc(tf_setup)}")
         if tf_contract:
             lines.append(f"Contract: {_esc(tf_contract)}")
-        if tf_reason:
+        if tf_reason and tf_reason != tfss_reason:
             lines.append(f"Reason: {_esc(tf_reason)}")
         if tf_why and tf_why != tf_reason:
             lines.append(f"Why: {_esc(tf_why)}")
         for b in tf_blockers:
             lines.append(f"  ⚠ {_esc(b)}")
-
-    # ── POSITIONS ─────────────────────────────────────────
-    opened  = [str(x) for x in (positions.get("opened") or []) if _val(str(x))]
-    exited  = [str(x) for x in (positions.get("exited") or []) if _val(str(x))]
-    reduced = [str(x) for x in (positions.get("reduced") or []) if _val(str(x))]
-    book    = _val(positions.get("active_book"))
-
-    has_pos = any([opened, exited, reduced, book])
-    lines.append("")
-    lines.append(DIV)
-    lines.append("📋 *Positions*")
-    if not has_pos:
-        lines.append("No changes")
     else:
-        for o in opened:
-            lines.append(f"  ✅ {_esc(o)}")
-        for e in exited:
-            lines.append(f"  🔴 Exited: {_esc(e)}")
-        for r in reduced:
-            lines.append(f"  🟡 Reduced: {_esc(r)}")
-        if book:
-            lines.append(f"Book: {_esc(book)}")
-
-    # ── BLOCKERS (consolidated, deduplicated, skip if none) ─
-    gr_blockers = [str(b) for b in (global_risk.get("blockers") or []) if _val(str(b))]
-    all_blockers_raw = tfss_blockers + tf_blockers + gr_blockers
-    seen: set[str] = set()
-    all_blockers: list[str] = []
-    for b in all_blockers_raw:
-        if b not in seen:
-            all_blockers.append(b)
-            seen.add(b)
-
-    if all_blockers:
-        lines.append("")
-        lines.append(DIV)
-        lines.append("⚠️ *Blockers*")
-        for b in all_blockers:
-            lines.append(f"  • {_esc(b)}")
-
-    # ── AI THESIS ─────────────────────────────────────────
-    thesis_text = _val(ai_thesis)
-    if thesis_text:
-        lines.append("")
-        lines.append(DIV)
-        lines.append("🤖 *AI Thesis*")
-        for chunk in textwrap.wrap(thesis_text, width=38):
-            lines.append(_esc(chunk))
+        lines.append("Status: No active signal (3H breakout pending)")
 
     if digest_id is None:
         digest_id = str(uuid.uuid4())[:8]
@@ -2280,7 +2450,7 @@ def build_llm_consolidated_digest(
         if exp_val:
             from datetime import datetime as _dt
             exp_dt = _dt.strptime(str(exp_val).split(" ")[0], "%Y-%m-%d").date()
-            today_dt = datetime.now(timezone.utc).date()
+            today_dt = datetime.now(IST).date()
             dte = (exp_dt - today_dt).days
             if dte <= 0:
                 lines.append(f"⚠️ *EXPIRY TODAY* — strictly intraday, close positions before settlement")

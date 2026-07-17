@@ -60,6 +60,7 @@ def load_runtime_config() -> dict:
         "emp_boost_min_trades": 20,
         "emp_boost_min_winrate": 0.60,
         "ml_predictor_mode": "shadow",
+        "derive_min_confidence": False,  # v3.1: data-driven MIN_PAPER_CONFIDENCE (gated, needs 50+ trades)
         "llm_enrichment_async": True,
         "llm_enrich_timeout_s": 120,
         "autopsy_enabled": True,
@@ -71,6 +72,8 @@ def load_runtime_config() -> dict:
         "live_broker_disabled": False,  # Completely block all broker order placement
         "trading_paused": False,  # OPS Agent safety switch — one-way (human-only unpause)
         "enable_tfss_trade_blocked_rules": False,
+        "sentinel_report_mode": "anomalies",  # "anomalies" = only when rules fire; "full" = every scan
+        "ops_agent_mode": "observe",  # "observe" = safe notify-only; "normal" = full protective actions
     }
     if not RUNTIME_CONFIG_PATH.exists():
         return defaults

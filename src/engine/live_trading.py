@@ -106,6 +106,15 @@ def get_cached_user_name() -> str | None:
                     clear_kite_client_cache()
             except Exception:
                 pass
+            
+            err_msg = str(e).lower()
+            if "api_key" in err_msg or "token" in err_msg:
+                try:
+                    from src.services.zerodha_auth import invalidate_token
+                    invalidate_token()
+                except Exception:
+                    pass
+                    
             _profile_failure_ts = now
             log.warning(
                 "Failed to fetch Zerodha profile for user name; retry paused for %.0fs: %s",

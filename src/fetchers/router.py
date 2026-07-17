@@ -226,20 +226,48 @@ def _try_fetcher(source: str, symbol: str, expiry: str | None) -> dict | None:
         return None
 
 
+def _strike_has_greeks(s: dict) -> bool:
+    """A strike is considered to carry greeks data when it has a non-zero
+    delta or IV (either supplied by the source feed or computed locally)."""
+    d = s.get("delta")
+    if isinstance(d, (int, float)) and d != 0:
+        return True
+    iv = s.get("iv")
+    if isinstance(iv, (int, float)) and iv != 0:
+        return True
+    return False
+
+
 def _finalise_result(result: dict, source: str, symbol: str, priority: list[str], required_strikes: set[float] | None = None) -> dict:
     """Apply ATM filter, enrich greeks, log success, stamp health."""
     _filter_atm_strikes(result, required_strikes)
     underlying = result.get("underlying_price")
     expiry_val = result.get("expiry", "")
+    strikes = result.get("strikes", [])
+    total_strikes = len(strikes)
+    from_source = sum(1 for s in strikes if _strike_has_greeks(s))
+    computed = 0
     if underlying and expiry_val:
         base = symbol.upper().split()[0]
         exchange = "MCX" if base in _MCX_COMMODITIES else ("BFO" if base == "SENSEX" else "NFO")
-        n = enrich_missing_greeks(result["strikes"], underlying, expiry_val, exchange=exchange)
-        if n:
-            log.info(
-                "[router] enriched %d/%d strikes with computed greeks for %s",
-                n, len(result["strikes"]), symbol,
-            )
+        computed = enrich_missing_greeks(strikes, underlying, expiry_val, exchange=exchange)
+    with_greeks = sum(1 for s in strikes if _strike_has_greeks(s))
+    if computed:
+        log.info(
+            "[router] enriched %d/%d strikes with computed greeks for %s",
+            computed, total_strikes, symbol,
+        )
+    # Greeks coverage validation — reported for ALL symbols (not just when
+    # some were computed) so gaps in the greeks feed are visible at a glance.
+    log.info(
+        "[router] %s | greeks coverage: %d/%d strikes have greeks (computed=%d, from_source=%d)",
+        symbol, with_greeks, total_strikes, computed, from_source,
+    )
+    if underlying and expiry_val and total_strikes and with_greeks == 0:
+        log.warning(
+            "[router] %s | ⚠ greeks unavailable for all %d strikes (underlying=%.2f expiry=%s) — check LTP/IV feed",
+            symbol, total_strikes, underlying, expiry_val,
+        )
     strikes_count = len(result.get("strikes", []))
     is_dualfetch = "+" in source
     is_fallback = (source != priority[0]) and not is_dualfetch
@@ -339,7 +367,7 @@ def _merge_fetcher_results(primary: dict, fallback: dict, symbol: str) -> dict:
         if primary_strike:
             merged_strike = dict(primary_strike)
             if fallback_strike:
-                for field in ("ltp", "oi", "oi_change", "volume", "iv", "bid", "ask", "delta", "ltp_change_pct", "oi_change_pct"):
+                for field in ("ltp", "oi", "oi_change", "volume", "iv", "implied_volatility", "bid", "ask", "delta", "gamma", "vega", "theta", "rho", "ltp_change_pct", "oi_change_pct"):
                     if merged_strike.get(field) in (None, 0, 0.0) and fallback_strike.get(field) not in (None, 0, 0.0):
                         merged_strike[field] = fallback_strike[field]
             merged["strikes"].append(merged_strike)
@@ -362,21 +390,14 @@ def _merge_fetcher_results(primary: dict, fallback: dict, symbol: str) -> dict:
 def fetch_option_chain(symbol: str, expiry: str | None = None, required_strikes: set[float] | None = None) -> dict | None:
     """
     Try fetchers in configured priority order.
-    For NSE symbols sensibull and shoonya are raced concurrently so that
-    shoonya's result is not blocked behind sensibull's full retry chain.
-    For MCX commodities (NATURALGAS, CRUDEOIL, GOLD, SILVER), primary (shoonya)
-    and fallback (dhan_commodity) are fetched in parallel and merged.
-    Returns normalised dict or None if all fail.
-    
-    Args:
-        symbol: Trading symbol
-        expiry: Expiry date (optional)
-        required_strikes: Set of strike prices that must be included in result (e.g., from open trades)
+    Executes a dual-source parallel fetch and merge for the top 2 available fetchers in the priority list.
+    Fails over to remaining sequential fetchers if both primary/fallback fail.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
 
     priority = _priority_for(symbol)
-    log.info("[router] %s option-chain | trying: %s", symbol, " → ".join(priority))
+    available_priority = [s for s in priority if s in _FETCHERS]
+    log.info("[router] %s option-chain | priority order: %s", symbol, " → ".join(priority))
 
     if symbol == "TEST_SYM":
         return {
@@ -394,96 +415,54 @@ def fetch_option_chain(symbol: str, expiry: str | None = None, required_strikes:
             "all_expiries": ["2026-06-25", "2026-07-02"],
         }
 
-    # ── Special handling for MCX commodities: parallel fetch + merge ────
-    base = symbol.upper().split()[0]
-    if base in _MCX_COMMODITIES:
-        # Fetch from shoonya (primary) and dhan_commodity (fallback) in parallel
-        primary_src = "shoonya"
-        fallback_src = "dhan_commodity"
+    remaining = list(available_priority)
+    result_data = None
+    result_source = None
+
+    # ── Try parallel fetch + merge for the top 2 available fetchers ──
+    if len(available_priority) >= 2:
+        primary_src = available_priority[0]
+        fallback_src = available_priority[1]
+        remaining = available_priority[2:]
         
-        if primary_src in _FETCHERS and fallback_src in _FETCHERS:
-            log.info("[router] %s | MCX parallel fetch: %s + %s", symbol, primary_src, fallback_src)
-            with ThreadPoolExecutor(max_workers=2, thread_name_prefix="router-mcx") as ex:
-                futures = {
-                    ex.submit(_try_fetcher, primary_src, symbol, expiry): primary_src,
-                    ex.submit(_try_fetcher, fallback_src, symbol, expiry): fallback_src,
-                }
-                primary_data = None
-                fallback_data = None
-                for fut in _as_completed(futures):
-                    src = futures[fut]
-                    try:
-                        data = fut.result()
-                    except Exception as exc:
-                        log.error("[router] %s | %s raised: %s", symbol, src, exc)
-                        data = None
-                    if data is not None:
-                        if src == primary_src:
-                            primary_data = data
-                        else:
-                            fallback_data = data
-                
-                # Merge results: primary preferred, gaps filled from fallback
-                if primary_data and fallback_data:
-                    merged = _merge_fetcher_results(primary_data, fallback_data, symbol)
-                    return _finalise_result(merged, f"{primary_src}+{fallback_src}", symbol, priority, required_strikes)
-                elif primary_data:
-                    return _finalise_result(primary_data, primary_src, symbol, priority, required_strikes)
-                elif fallback_data:
-                    return _finalise_result(fallback_data, fallback_src, symbol, priority, required_strikes)
-        else:
-            log.warning("[router] %s | required MCX fetchers not available: %s, %s", symbol, primary_src, fallback_src)
+        log.info("[router] %s | Dual-source parallel fetch: %s (primary) + %s (fallback)", symbol, primary_src, fallback_src)
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="router-dual") as ex:
+            futures = {
+                ex.submit(_try_fetcher, primary_src, symbol, expiry): primary_src,
+                ex.submit(_try_fetcher, fallback_src, symbol, expiry): fallback_src,
+            }
+            primary_data = None
+            fallback_data = None
+            for fut in _as_completed(futures):
+                src = futures[fut]
+                try:
+                    data = fut.result()
+                except Exception as exc:
+                    log.error("[router] %s | %s raised: %s", symbol, src, exc)
+                    data = None
+                if data is not None:
+                    if src == primary_src:
+                        primary_data = data
+                    else:
+                        fallback_data = data
+            
+            # Merge results: primary preferred, gaps/Greeks filled from fallback
+            if primary_data and fallback_data:
+                result_data = _merge_fetcher_results(primary_data, fallback_data, symbol)
+                result_source = f"{primary_src}+{fallback_src}"
+            elif primary_data:
+                result_data = primary_data
+                result_source = primary_src
+            elif fallback_data:
+                result_data = fallback_data
+                result_source = fallback_src
 
-    # Build the effective fetch sequence, substituting any race-eligible pair
-    # with a single parallel step that resolves to the first valid result.
-    remaining = list(priority)
-    result_source: str | None = None
-    result_data: dict | None = None
-
-    # ── Step 1: check for a parallel race pair at the front of the queue ──
-    for primary, backup in _PARALLEL_RACE_PAIRS:
-        if primary in remaining and backup in remaining:
-            p_idx = remaining.index(primary)
-            b_idx = remaining.index(backup)
-            # Only race when primary is first (or backup is close behind it)
-            # so we don't disrupt an intentionally different ordering (e.g. MCX).
-            if p_idx < b_idx and p_idx == 0:
-                race_pair = [primary, backup]
-                # Remove both from the sequential queue; we handle them here.
-                remaining = [s for s in remaining if s not in race_pair]
-                log.debug("[router] %s | racing %s vs %s in parallel", symbol, primary, backup)
-                with ThreadPoolExecutor(max_workers=2, thread_name_prefix="router-race") as ex:
-                    futures = {
-                        ex.submit(_try_fetcher, src, symbol, expiry): src
-                        for src in race_pair
-                    }
-                    for fut in _as_completed(futures):
-                        src = futures[fut]
-                        try:
-                            data = fut.result()
-                        except Exception as exc:
-                            log.error("[router] %s | race %s raised: %s", symbol, src, exc)
-                            data = None
-                        if data is not None:
-                            result_data = data
-                            result_source = src
-                            # Cancel the other future (best-effort; won't interrupt
-                            # blocking I/O but prevents it from being scheduled).
-                            for other_fut in futures:
-                                if other_fut is not fut:
-                                    other_fut.cancel()
-                            break
-                break  # only one race pair at a time
-
-    # ── Step 2: if race produced a result, we're done ──
+    # If dual-source succeeded, finalize and return
     if result_data is not None:
         return _finalise_result(result_data, result_source, symbol, priority, required_strikes)
 
-    # ── Step 3: fall through to remaining sequential fetchers ──
+    # ── Fall through to remaining sequential fetchers ──
     for source in remaining:
-        if source not in _FETCHERS:
-            log.warning("Fetcher '%s' unavailable; skipping", source)
-            continue
         data = _try_fetcher(source, symbol, expiry)
         if data is not None:
             return _finalise_result(data, source, symbol, priority, required_strikes)

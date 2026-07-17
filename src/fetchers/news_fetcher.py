@@ -91,13 +91,52 @@ _NEG_WORDS = [
     "plunge",
     "weak",
     "tumble",
+    "builds",
+    "build",
+    "surplus",
+    "ample",
+    "glut",
 ]
 
 
 import re
 
+# Commodity-context overrides for NATURALGAS: supply-increase = bearish,
+# demand-increase = bullish.  These patterns take priority over generic
+# keyword scoring because "storage rises" and "inventories rise" are
+# fundamentally bearish in commodity markets (supply build).
+_NG_SUPPLY_BEARISH = [
+    r"storage\s+(?:rises?|builds?|increases?|grows?|climbs?|expands?)",
+    r"inject(?:ion|s|ed|ing)\s+(?:rises?|increases?|grows?|climbs?)",
+    r"(?:inventories?|stockpiles?|stocks?)\s+(?:rises?|builds?|increases?|grows?|climbs?|expand|swell)",
+    r"(?:production|output)\s+(?:rises?|increases?|grows?|climbs?|jumps?|surges?|hits?)",
+    r"(?:supply|supplies)\s+(?:rises?|increases?|grows?|climbs?|glut|ample|abundant|surplus)",
+    r"(?:high|record|ample|sufficient)\s+(?:supply|storage|inventor)",
+    r"(?:eases?|cools?|drops?|falls?|retreats?|declines?|tumbles?|plunges?)\s+to\s+\w*\s*(?:low|bottom|trough)",
+    r"(?:two|three|four|five|six)-month\s+low",
+    r"(?:low|bottom|trough)\s+(?:on|amid|as)\s+(?:rising|increased|ample|high)",
+]
+_NG_DEMAND_BULLISH = [
+    r"demand\s+(?:rises?|increases?|grows?|climbs?|surges?|jumps?|soars?|spikes?)",
+    r"(?:cold|freezing|winter|polar|arctic|icy)\s+(?:weather|forecast|snap|wave|blast|temperatures?)",
+    r"heating\s+(?:degree|demand|needs?|season|loads?)",
+    r"(?:LNG|liquefied)\s+(?:exports?|demand|shipments?|cargoes?)\s+(?:rises?|increases?|grow|climb|surge|jump|hit|record)",
+    r"(?:exports?|exporting)\s+(?:rises?|increases?|grows?|climbs?|surges?)",
+    r"(?:freeze|freezing|cold|winter)\s+(?:drives?|fuels?|boosts?|supports?|lifts?)\s+(?:prices?|demand|rall)",
+]
+
+
 def _news_sentiment_score(title: str) -> int:
     t = (title or "").lower()
+
+    # Commodity-context overrides take priority
+    for pat in _NG_SUPPLY_BEARISH:
+        if re.search(pat, t):
+            return -1
+    for pat in _NG_DEMAND_BULLISH:
+        if re.search(pat, t):
+            return 1
+
     score = 0
     for w in _POS_WORDS:
         if re.search(r'\b' + re.escape(w) + r'\b', t):
@@ -467,7 +506,7 @@ def _fetch_te_naturalgas() -> list[dict]:
                 page = await browser.new_page(
                     user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                 )
-                await page.goto(url, timeout=15000)
+                await page.goto(url, timeout=45000)
                 await page.wait_for_timeout(2000)
                 content = await page.content()
                 await browser.close()
