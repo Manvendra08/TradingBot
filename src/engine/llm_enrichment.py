@@ -137,8 +137,8 @@ class LLMTradeVerdict(BaseModel):
     # Thesis — ONE sentence bottom-line punchline
     thesis: str = Field(
         description=(
-            "ONE punchy sentence, max 30 words. The bottom-line case for the trade. "
-            "Discuss not only the current per-scan verdict, but integrate the overall picture (underlying support/resistance, macro catalysts, PCR skew, or historical trend persistence)."
+            "A rich, detailed narrative paragraph of 2-3 sentences (up to 70 words) explaining the structural, fundamental, and technical thesis. "
+            "Synthesize catalysts (EIA/weather), support/resistance levels, PCR/OI skew, and trend alignment into a cohesive case rather than repeating the verdict."
         )
     )
     invalidation: str = Field(
@@ -748,7 +748,7 @@ OUTPUT FIELDS (all required — signal_chain/thesis format is specified in the s
 • target_1       : first profit level with exact number
 • target_2       : extended target with exact number
 • risk_reward    : "1:X.X" format calculated from the levels above
-• thesis         : ONE punchy sentence (≤25 words). Synthesize macro catalysts (like EIA/weather/news), underlying S&R levels, and PCR/OI positioning into WHY this trade edge exists. NEVER just restate signal_chain or verdict!
+• thesis         : A detailed, insightful narrative paragraph (2-3 sentences, ≤70 words). Synthesize macro catalysts (like EIA/weather/news), underlying support/resistance levels, and PCR/OI positioning into a cohesive explanation of WHY this trade edge exists. NEVER just restate signal_chain or verdict!
 • invalidation   : what kills the trade (specific level or OI condition)
 • risk_rating    : LOW | MEDIUM | HIGH
                    HIGH if any RISK flag present or chart genuine conflict (both TFs vs OI).
