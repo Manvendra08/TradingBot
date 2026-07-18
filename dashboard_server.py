@@ -2102,10 +2102,11 @@ async def get_settings():
 @app.post("/api/settings", dependencies=[Depends(authenticate)])
 async def post_settings(data: dict):
     from config.runtime_config import save_runtime_config
+    from src.models.schema import get_conn
 
     save_runtime_config(data)
     shadow_mode = data.get("live_shadow_mode", True)
-    conn = _db()
+    conn = get_conn()
     try:
         with conn:
             if shadow_mode:

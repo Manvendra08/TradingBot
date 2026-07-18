@@ -184,7 +184,15 @@ def _calculate_live_lots(symbol: str, entry_premium: float, side: str, config: d
     return lots
 
 
-def calculate_trade_lots(symbol: str, entry_premium: float, side: str = "BUY", is_paper: bool = False, pyramid_level: int = 1) -> int:
+def calculate_trade_lots(
+    symbol: str,
+    entry_premium: float,
+    side: str = "BUY",
+    is_paper: bool = False,
+    pyramid_level: int = 1,
+    setup_type: str | None = None,
+    tranche_index: int = 0,
+) -> int:
     """
     Calculate the number of lots to trade for a symbol based on settings and premium.
 
@@ -197,6 +205,9 @@ def calculate_trade_lots(symbol: str, entry_premium: float, side: str = "BUY", i
       
     Pyramiding (pyramid_level > 1):
       - Scale down lots for subsequent entries (50% for level 2, 25% for level 3+).
+
+    TFSS Tranche Sizing (setup_type="TFSS"):
+      - Scale down lots per tranche index using TRANCHE_SEQUENCE (50%, 30%, 20%).
     """
     config = load_runtime_config()
     base = _base_symbol(symbol)
@@ -218,7 +229,19 @@ def calculate_trade_lots(symbol: str, entry_premium: float, side: str = "BUY", i
 
     # Pyramiding Sizing (Flaw #10): Reduce size on scaling in
     original_lots = lots
-    if pyramid_level == 2:
+    if setup_type and "TFSS" in str(setup_type).upper():
+        try:
+            from config.trend_following_short_strangle import TRANCHE_SEQUENCE
+            idx = min(max(0, tranche_index), len(TRANCHE_SEQUENCE) - 1)
+            scale = TRANCHE_SEQUENCE[idx]
+            lots = max(1, int(lots * scale))
+            if lots == original_lots:
+                log.warning("%s: TFSS tranche index %d scale-down (%.0f%%) had no effect because lot count is %d", base, tranche_index, scale * 100, lots)
+            else:
+                log.info("%s: TFSS tranche index %d — scaling lot size to %d (%.0f%%)", base, tranche_index, lots, scale * 100)
+        except Exception as exc:
+            log.warning("%s: TFSS tranche lot scaling failed: %s", base, exc)
+    elif pyramid_level == 2:
         lots = max(1, int(lots * 0.5))
         if lots == original_lots:
             log.warning("%s: Pyramiding level 2 scale-down to 50%% had no effect because lot count is %d", base, lots)

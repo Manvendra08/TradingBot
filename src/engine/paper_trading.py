@@ -520,7 +520,20 @@ def execute_paper_trade(
                 }
 
     # Risk limits
-    risk_ok, risk_reason = check_risk_limits(symbol)
+    setup_type = plan.get("setup_type") or "CORE"
+    candidate_leg = None
+    if "TFSS" in str(setup_type).upper():
+        candidate_leg = {
+            "symbol": symbol,
+            "side": side,
+            "option_type": option_type,
+            "strike": strike,
+            "entry_underlying": underlying,
+            "entry_premium": plan.get("entry_premium", 0),
+            "lots": plan.get("lots", 1),
+            "option_rows": ctx.get("option_rows") or [],
+        }
+    risk_ok, risk_reason = check_risk_limits(symbol, setup_type=setup_type, candidate_leg=candidate_leg)
     if not risk_ok:
         from src.engine.decision_audit import update_decision_audit
 
@@ -532,6 +545,18 @@ def execute_paper_trade(
         )
         return {"action": "BLOCKED_RISK", "trade_id": None, "reason": risk_reason}
 
+    # If TFSS, compute or verify tranche_index based on existing open legs for this side
+    if "TFSS" in str(setup_type).upper() and "_tranche_index" not in ctx:
+        from src.models.schema import get_conn
+        with get_conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) as cnt FROM paper_trades WHERE symbol=? AND status='OPEN' AND setup_type='TFSS' AND option_type=?",
+                (symbol, option_type),
+            ).fetchone()
+        ctx["_tranche_index"] = int(row["cnt"] if row else 0)
+
+    tranche_idx = int(ctx.get("_tranche_index", plan.get("tranche_index", 0)))
+
     # Lot sizing
     lots = calculate_trade_lots(
         symbol,
@@ -539,6 +564,8 @@ def execute_paper_trade(
         side,
         is_paper=True,
         pyramid_level=plan.get("pyramid_level", 1),
+        setup_type=setup_type,
+        tranche_index=tranche_idx,
     )
     if lots <= 0:
         from src.engine.decision_audit import update_decision_audit
@@ -607,12 +634,12 @@ def execute_paper_trade(
     today_date = datetime.now(IST).strftime("%Y%m%d")
     
     execution_source = ctx.get("_execution_source", plan.get("execution_source", "CORE"))
-    tranche_index = ctx.get("_tranche_index", plan.get("tranche_index", 0))
-    signal_key = f"{symbol}:{option_type}:{int(strike)}:{today_date}:{execution_source}:{tranche_index}:paper"
+    signal_key = f"{symbol}:{option_type}:{int(strike)}:{today_date}:{execution_source}:{tranche_idx}:paper"
 
     # Phase 0: Capture ML feature snapshot at trade-open time
     ml_features = _build_ml_feature_snapshot(ctx, ai_verdict)
 
+    is_tfss = "TFSS" in str(setup_type).upper()
     trade_data = {
         "opened_at": now_iso,
         "symbol": symbol,
@@ -632,7 +659,9 @@ def execute_paper_trade(
         "reason": f"auto | verdict={verdict} conf={confidence}",
         "digest_id": plan.get("digest_id") or ctx.get("digest_id"),
         "trade_status": "TRIGGERED_CORE",
-        "setup_type": plan.get("setup_type") or "CORE",
+        "setup_type": setup_type,
+        "leg_group_id": f"{symbol}:{today_date}:TFSS" if is_tfss else None,
+        "tranche_index": tranche_idx if is_tfss else 0,
         "decision_reason": "Signal filters passed",
         "confidence_score": confidence,
         "entry_quality_score": plan.get("entry_quality_score"),
@@ -684,20 +713,8 @@ def execute_paper_trade(
     }
 
 
-def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
-    """
-    Check all open paper trades for SL/Target hit and Dead Trade conditions.
-    Returns list of action dicts.
-    """
+def _monitor_single_paper_trade(symbol: str, open_trade: dict, current_ctx: dict, underlying: float) -> list[dict]:
     actions = []
-    open_trade = get_open_paper_trade(symbol)
-    if not open_trade:
-        return actions
-
-    underlying = float(current_ctx.get("underlying") or 0)
-    if underlying <= 0:
-        return actions
-
     sl_ul = float(open_trade.get("sl_underlying") or 0)
     tgt_ul = float(open_trade.get("target_underlying") or 0)
     side = str(open_trade.get("side", "")).upper()
@@ -705,27 +722,19 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
     option_type = str(open_trade.get("option_type", "")).upper()
 
     # ── Underlying-based SL/Target hit logic ────────────────────────────
-    # Direction depends on option_type, not just side:
-    #   BUY  CE / SELL PE → profit when underlying RISES
-    #   BUY  PE / SELL CE → profit when underlying FALLS
-    #   FUT follows CE logic (profit when underlying moves in trade direction)
     is_long = option_type in ("CE", "FUT")
     if side == "BUY":
         if option_type == "PE":
-            # Long put: profit when underlying FALLS
             hit_sl = sl_ul > 0 and underlying >= sl_ul
             hit_target = tgt_ul > 0 and underlying <= tgt_ul
         else:
-            # Long call / FUT: profit when underlying RISES
             hit_sl = sl_ul > 0 and underlying <= sl_ul
             hit_target = tgt_ul > 0 and underlying >= tgt_ul
     else:  # SELL
         if option_type == "PE":
-            # Short put: profit when underlying RISES
             hit_sl = sl_ul > 0 and underlying <= sl_ul
             hit_target = tgt_ul > 0 and underlying >= tgt_ul
         else:
-            # Short call / FUT: profit when underlying FALLS
             hit_sl = sl_ul > 0 and underlying >= sl_ul
             hit_target = tgt_ul > 0 and underlying <= tgt_ul
 
@@ -733,15 +742,11 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
     r_current = 0.0
     if entry_und > 0 and sl_ul > 0 and sl_ul != entry_und:
         if option_type == "PE":
-            # For puts: profit direction is inverted relative to underlying
             if side == "BUY":
-                # Long put: R = (entry - underlying) / (sl - entry)
                 r_current = (entry_und - underlying) / (sl_ul - entry_und)
             else:
-                # Short put: R = (underlying - entry) / (entry - sl)
                 r_current = (underlying - entry_und) / (entry_und - sl_ul)
         else:
-            # CE / FUT: profit direction follows underlying
             if side == "SELL":
                 r_current = (entry_und - underlying) / (sl_ul - entry_und)
             else:
@@ -752,133 +757,78 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
 
     # ── Trailing Stop Check (Flaw #1) ────────────────────────────────────────
     trailing_sl_hit = False
-    # BUG-014 FIX: The original guard `sl_ul != entry_und` only checked for
-    # exact equality, not distance. A near-zero SL gap (possible with degenerate
-    # ATR output) produces an extreme R-multiple and fires the trailing stop
-    # instantly. Added minimum distance check: R-distance must be at least
-    # 0.1% of entry to prevent division-by-near-zero artifacts.
-    min_r_distance = entry_und * 0.001  # 0.1% minimum R-distance
-    r_distance = abs(entry_und - sl_ul) if sl_ul != entry_und else 0.0
-    if max_fav >= 1.0 and entry_und > 0 and sl_ul > 0 and r_distance >= min_r_distance:
-        orig_r_dist = r_distance
-        trailed_r = int(max_fav) - 1  # 1R max_fav -> 0R (breakeven), 2R -> 1R, etc.
-        if option_type == "PE":
-            # For puts: trailing stop trails opposite to calls
-            if side == "BUY":
-                # Long put: profit when underlying FALLS, trail DOWN
-                trailing_sl = entry_und - trailed_r * orig_r_dist
-                if underlying >= trailing_sl:
-                    trailing_sl_hit = True
-            else:
-                # Short put: profit when underlying RISES, trail UP
-                trailing_sl = entry_und + trailed_r * orig_r_dist
-                if underlying <= trailing_sl:
-                    trailing_sl_hit = True
-        else:
-            # CE / FUT trailing stop (standard direction)
-            if side == "BUY":
-                trailing_sl = entry_und + trailed_r * orig_r_dist
-                if underlying <= trailing_sl:
-                    trailing_sl_hit = True
-            else:
-                trailing_sl = entry_und - trailed_r * orig_r_dist
-                if underlying >= trailing_sl:
-                    trailing_sl_hit = True
+    min_r_distance = entry_und * 0.001
+    if abs(sl_ul - entry_und) >= min_r_distance:
+        if max_fav >= 2.0 and r_current <= 0.5:
+            trailing_sl_hit = True
+            hit_sl = True
+            log.info(
+                "%s: trade #%s TRAILING SL HIT — max favorable R %.2f, current R %.2f",
+                symbol, open_trade["id"], max_fav, r_current,
+            )
 
-    if trailing_sl_hit:
-        hit_sl = True
+    # Persist updated max_favorable_r
+    if max_fav > stored_mfr:
+        with get_conn() as conn:
+            conn.execute(
+                "UPDATE paper_trades SET max_favorable_r = ? WHERE id = ?",
+                (max_fav, open_trade["id"]),
+            )
 
-    # C5: Also check premium-based SL/Target for options
+    # ── Option Premium SL/Target Check (Flaw #11) ────────────────────────────
+    # For option trades, also check if the option premium itself hit SL or Target
     if not hit_sl and not hit_target and option_type in ("CE", "PE"):
-        exit_premium_check = _get_option_premium(
-            symbol,
-            open_trade.get("expiry"),
-            open_trade.get("strike"),
-            option_type,
-            current_ctx.get("option_rows"),
-        )
-        if exit_premium_check and exit_premium_check > 0:
-            sl_prem = float(open_trade.get("sl_premium") or 0)
-            tgt_prem = float(open_trade.get("target_premium") or 0)
-            if side == "BUY":
-                if sl_prem > 0 and exit_premium_check <= sl_prem:
-                    hit_sl = True
-                if tgt_prem > 0 and exit_premium_check >= tgt_prem:
-                    hit_target = True
-            elif side == "SELL":
-                if sl_prem > 0 and exit_premium_check >= sl_prem:
-                    hit_sl = True
-                if tgt_prem > 0 and exit_premium_check <= tgt_prem:
-                    hit_target = True
+        sl_prem = float(open_trade.get("sl_premium") or 0)
+        tgt_prem = float(open_trade.get("target_premium") or 0)
+        if sl_prem > 0 or tgt_prem > 0:
+            current_prem = _get_option_premium(
+                symbol,
+                open_trade.get("expiry"),
+                open_trade.get("strike"),
+                option_type,
+                current_ctx.get("option_rows"),
+            )
+            if current_prem and current_prem > 0:
+                if side == "BUY":
+                    if sl_prem > 0 and current_prem <= sl_prem:
+                        hit_sl = True
+                    elif tgt_prem > 0 and current_prem >= tgt_prem:
+                        hit_target = True
+                else:  # SELL option
+                    if sl_prem > 0 and current_prem >= sl_prem:
+                        hit_sl = True
+                    elif tgt_prem > 0 and current_prem <= tgt_prem:
+                        hit_target = True
 
-    # ── Dead Trade check for CORE trades ─────────────────────────────────────
-    # CORE trades never got Dead Trade assessment because the logic only lived
-    # in run_timeframe_strategy() (TIMEFRAME-only). This adds the same check
-    # for CORE trades: if open > threshold hours with no meaningful favorable
-    # movement, close as Dead Trade to free up capital.
+    # ── Dead Trade Check (Flaw #2) ───────────────────────────────────────────
     dead_trade_close = False
-    hours_open = 0.0
     if not hit_sl and not hit_target:
         try:
-            opened_dt = datetime.fromisoformat(
-                open_trade["opened_at"].replace("Z", "+00:00")
-            )
-            hours_open = (
-                datetime.now(timezone.utc) - opened_dt
-            ).total_seconds() / 3600.0
-
-            if max_fav > stored_mfr:
-                with get_conn() as conn:
-                    conn.execute(
-                        "UPDATE paper_trades SET max_favorable_r=? WHERE id=?",
-                        (max_fav, open_trade["id"]),
-                    )
-
-            # Dead Trade threshold: 48h for ALL strategies (CORE + TIMEFRAME, FUT + options)
-            dead_trade_hours = 48.0
-            if hours_open >= dead_trade_hours and max_fav < 0.5:
-                dead_trade_close = True
-                log.info(
-                    "%s: paper trade #%s DEAD TRADE — open %.1fh, max favorable R %.2f < 0.5",
-                    symbol,
-                    open_trade["id"],
-                    hours_open,
-                    max_fav,
-                )
+            from config.runtime_config import load_runtime_config
+            rc = load_runtime_config()
+            ENABLE_DEAD_TRADE_RULES = rc.get("enable_dead_trade_rules", True)
         except Exception:
-            log.debug("%s: Dead Trade check failed gracefully", symbol)
-
-    # ── TFSS-specific exit triggers ──────────────────────────────────────────
-    # Delta-stop: when the tested leg's delta exceeds the hard stop threshold,
-    # close the position regardless of SL/Target. Uses the same check_tested_side()
-    # from risk_engine that evaluate_reversal() uses internally.
-    if not hit_sl and not hit_target and not dead_trade_close:
-        is_tfss_trade = str(open_trade.get("setup_type", "")).upper() == "TFSS"
-        if is_tfss_trade:
+            from config.settings import ENABLE_DEAD_TRADE_RULES
+        if not ENABLE_DEAD_TRADE_RULES:
+            log.debug("%s: Dead Trade checks disabled via config", symbol)
+        else:
+            opened_at_str = open_trade.get("opened_at", "")
             try:
-                tested_ot = str(open_trade.get("option_type", "")).upper()
-                tested_strike = open_trade.get("strike")
-                cur_delta = 0.0
-                if tested_ot and tested_strike:
-                    for row in (current_ctx.get("option_rows") or []):
-                        if (float(row.get("strike", 0)) == float(tested_strike)
-                                and str(row.get("option_type", "")).upper() == tested_ot):
-                            cur_delta = abs(float(row.get("delta", 0)))
-                            break
-                tested_side = f"SELL_{tested_ot}" if open_trade.get("side") == "SELL" else f"BUY_{tested_ot}"
-                delta_result = check_tested_side(
-                    tested_side,
-                    {"current_delta": cur_delta, "underlying": underlying},
-                    {},
-                )
-                if delta_result.beyond_threshold:
-                    dead_trade_close = True
-                    log.info(
-                        "%s: TFSS trade #%s DELTA STOP — delta %.3f >= %.3f threshold",
-                        symbol, open_trade["id"], cur_delta, delta_result.max_delta,
-                    )
+                if opened_at_str:
+                    dt = datetime.fromisoformat(opened_at_str.replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    hours_open = (
+                        datetime.now(timezone.utc) - dt
+                    ).total_seconds() / 3600.0
+                    if hours_open >= 48.0 and max_fav < 0.5:
+                        dead_trade_close = True
+                        log.info(
+                            "%s: trade #%s DEAD TRADE — open %.1fh, max favorable R %.2f < 0.5",
+                            symbol, open_trade["id"], hours_open, max_fav,
+                        )
             except Exception:
-                log.debug("%s: TFSS delta-stop check failed gracefully", symbol)
+                log.debug("%s: Dead Trade check failed gracefully", symbol)
 
     if hit_sl or hit_target:
         if hit_sl:
@@ -898,13 +848,10 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
                 option_type,
                 current_ctx.get("option_rows"),
             )
-            # Apply 0.5% slippage on exit for options (Flaw #9)
             if exit_premium and exit_premium > 0:
                 if side == "BUY":
-                    # closing a BUY means SELL -> lower price
                     exit_premium *= 0.995
                 else:
-                    # closing a SELL means BUY -> higher price
                     exit_premium *= 1.005
 
         close_paper_trade(
@@ -917,10 +864,7 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
         )
         log.info(
             "%s: paper trade #%s closed — %s at underlying %g",
-            symbol,
-            open_trade["id"],
-            reason,
-            underlying,
+            symbol, open_trade["id"], reason, underlying,
         )
         _invalidate_pattern_cache()
         _trigger_ml_retraining()
@@ -937,31 +881,141 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
                 option_type,
                 current_ctx.get("option_rows"),
             )
-        # Distinguish TFSS delta-stop from actual dead trade
-        is_tfss_delta = str(open_trade.get("setup_type", "")).upper() == "TFSS" and hours_open < 48.0
-        close_status = "CLOSED_DELTA_STOP" if is_tfss_delta else "Dead Trade"
-        close_reason = (
-            f"TFSS delta stop: delta >= threshold"
-            if is_tfss_delta
-            else f"Dead trade exit: {hours_open:.1f}h passed, max favorable R {max_fav:.2f} < 0.5"
-        )
         close_paper_trade(
             open_trade["id"],
             datetime.now(timezone.utc).isoformat(),
             underlying,
             exit_premium if option_type in ("CE", "PE") else underlying,
-            close_status,
-            close_reason,
+            "Dead Trade",
+            f"Dead trade exit: {hours_open:.1f}h passed, max favorable R {max_fav:.2f} < 0.5",
         )
         _invalidate_pattern_cache()
         _trigger_ml_retraining()
         actions.append(
             {
-                "action": "CLOSED_DELTA_STOP" if is_tfss_delta else "DEAD_TRADE",
+                "action": "DEAD_TRADE",
                 "trade_id": open_trade["id"],
                 "underlying": underlying,
             }
         )
+    return actions
+
+
+def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
+    """
+    Check all open paper trades for SL/Target hit and Dead Trade conditions.
+    Returns list of action dicts.
+    """
+    actions = []
+    underlying = float(current_ctx.get("underlying") or 0)
+    if underlying <= 0:
+        return actions
+
+    open_trade = get_open_paper_trade(symbol)
+    if open_trade:
+        actions.extend(_monitor_single_paper_trade(symbol, open_trade, current_ctx, underlying))
+
+    # ── TFSS Multi-Leg Book Monitoring ───────────────────────────────────────
+    from src.models.schema import get_open_tfss_legs
+    tfss_legs = get_open_tfss_legs(symbol)
+    if tfss_legs:
+        from src.engine.risk_engine import compute_combined_book
+        try:
+            from config.trend_following_short_strangle import HARD_STOP_DELTA
+        except Exception:
+            HARD_STOP_DELTA = 0.35
+
+        option_rows = current_ctx.get("option_rows") or []
+        book = compute_combined_book(symbol, option_rows)
+        leg_deltas = book.get("leg_deltas", {})
+        within_caps = book.get("within_caps", True)
+        net_delta = book.get("net_delta", 0.0)
+
+        # 1. Check if delta stop is breached across the book
+        delta_stop_leg = None
+        if legs_with_deltas := [l for l in tfss_legs if l["id"] in leg_deltas]:
+            tested_leg = max(legs_with_deltas, key=lambda l: leg_deltas[l["id"]])
+            tested_delta = leg_deltas[tested_leg["id"]]
+            if tested_delta >= HARD_STOP_DELTA:
+                if within_caps:
+                    log.info(
+                        "%s: leg #%s delta %.2f breached but net book delta %.2f within cap — holding",
+                        symbol, tested_leg["id"], tested_delta, net_delta,
+                    )
+                else:
+                    delta_stop_leg = tested_leg
+
+        # 2. Check per-leg SL / Target / Delta Stop
+        for leg in tfss_legs:
+            sl_ul = float(leg.get("sl_underlying") or 0)
+            tgt_ul = float(leg.get("target_underlying") or 0)
+            side = str(leg.get("side", "")).upper()
+            entry_und = float(leg.get("entry_underlying") or 0)
+            option_type = str(leg.get("option_type", "")).upper()
+
+            hit_sl = False
+            hit_target = False
+            if side == "BUY":
+                if option_type == "PE":
+                    hit_sl = sl_ul > 0 and underlying >= sl_ul
+                    hit_target = tgt_ul > 0 and underlying <= tgt_ul
+                else:
+                    hit_sl = sl_ul > 0 and underlying <= sl_ul
+                    hit_target = tgt_ul > 0 and underlying >= tgt_ul
+            else:  # SELL
+                if option_type == "PE":
+                    hit_sl = sl_ul > 0 and underlying <= sl_ul
+                    hit_target = tgt_ul > 0 and underlying >= tgt_ul
+                else:
+                    hit_sl = sl_ul > 0 and underlying >= sl_ul
+                    hit_target = tgt_ul > 0 and underlying <= tgt_ul
+
+            hit_delta_stop = (delta_stop_leg and leg["id"] == delta_stop_leg["id"])
+
+            if hit_sl or hit_target or hit_delta_stop:
+                reason = "CLOSED_SL" if hit_sl else ("CLOSED_TARGET" if hit_target else "CLOSED_DELTA_STOP")
+                if hit_sl:
+                    log_reason = "SL_HIT"
+                elif hit_target:
+                    log_reason = "TARGET_HIT"
+                else:
+                    log_reason = f"leg delta {leg_deltas.get(leg['id'], 0):.2f} + net book delta {net_delta:.2f} both breached"
+
+                exit_premium = None
+                if option_type != "FUT":
+                    exit_premium = _get_option_premium(
+                        symbol,
+                        leg.get("expiry"),
+                        leg.get("strike"),
+                        option_type,
+                        option_rows,
+                    )
+                    if exit_premium and exit_premium > 0:
+                        if side == "BUY":
+                            exit_premium *= 0.995
+                        else:
+                            exit_premium *= 1.005
+
+                close_paper_trade(
+                    leg["id"],
+                    datetime.now(timezone.utc).isoformat(),
+                    underlying,
+                    exit_premium,
+                    reason,
+                    log_reason,
+                )
+                log.info(
+                    "%s: TFSS leg #%s closed — %s at underlying %g",
+                    symbol,
+                    leg["id"],
+                    log_reason,
+                    underlying,
+                )
+                _invalidate_pattern_cache()
+                _trigger_ml_retraining()
+                actions.append(
+                    {"action": reason, "trade_id": leg["id"], "underlying": underlying}
+                )
 
     return actions
 

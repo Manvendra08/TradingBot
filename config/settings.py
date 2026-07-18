@@ -220,92 +220,193 @@ LOG_LEVEL = "INFO"
 LOG_ROTATION = "midnight"
 LOG_BACKUP_COUNT = 30
 
+# ── Global Anomaly Detection Defaults ─────────────────────────────────────────────────────────────────────────────
+# Default fallback values when no symbol-specific override is defined in SYMBOL_THRESHOLD_OVERRIDES.
+OI_SPIKE_THRESHOLD_PCT = 15.0      # % change in OI to trigger spike alert
+PRICE_SPIKE_THRESHOLD_PCT = 2.0    # % change in LTP to trigger price spike
+PCR_EXTREME_LOW = 0.5              # PCR below this is extreme bearish
+PCR_EXTREME_HIGH = 2             # PCR above this is extreme bullish
+PCR_SHIFT_THRESHOLD = 0.3          # min PCR change to trigger alert
+PCR_EXTREME_SEVERITY_BAND = 0.1    # band around extremes for severity bump
+IV_SPIKE_ATM_THRESHOLD = 20.0      # % IV change at ATM to trigger alert
+MAX_PAIN_SHIFT_PCT = 1.0           # % of underlying price — max pain shift to trigger alert
+SEVERITY_HIGH_MULT = 1.5           # multiplier for HIGH severity thresholds
+SEVERITY_MED_MULT = 1.0            # multiplier for MEDIUM severity thresholds
+BUILDUP_OI_MIN_PCT = 10.0          # min OI change % for buildup detection
+BUILDUP_LTP_MIN_PCT = 3.0          # min LTP change % for buildup detection
+OTM_STRIKE_RANGE = 3               # strikes to check for OTM unusual moves
+OTM_OI_SPIKE_PCT = 20.0            # OI spike % threshold for OTM unusual
+VOLUME_AGGRESSION_HIGH = 2.5       # volume multiplier for high aggression
+VOLUME_AGGRESSION_LOW = 1.5        # volume multiplier for low aggression
+IV_CRUSH_THRESHOLD = 15.0          # % IV drop to trigger crush alert
+STRADDLE_DELTA_PCT = 5.0           # delta move % for straddle premium alert
+ATM_LEG_MOVE_PCT = 2.0             # ATM premium move % for straddle
+PCR_VELOCITY_WINDOW = 3            # number of snapshots to track PCR velocity
+MIN_OI_THRESHOLD = 1000            # min OI for a strike to be considered
+ALERT_COOLDOWN_MINUTES = 60        # don't re-alert same type within N minutes
+ALERT_COOLDOWN_HIGH_MINUTES = 30   # shorter cooldown for HIGH severity
+INDIVIDUAL_ALERT_MIN_SEVERITY = "LOW"  # min severity to send individual alerts
+DEDUP_CLUSTER_STRIKES = 2          # cluster strikes within N steps of fired key
+MAX_ANOMALIES_PER_SYMBOL = 25      # cap raw anomalies per symbol to prevent noise floods
+ANOMALY_MIN_SEVERITY = "MEDIUM"    # drop LOW severity anomalies before digest
+
 # ── Per-symbol threshold overrides ──────────────────────────────────────────────────────────────────────────────
 # MCX commodities have lower absolute OI volumes than NSE indices.
 # Use tighter thresholds so the engine fires on meaningful but smaller moves.
 SYMBOL_THRESHOLD_OVERRIDES: dict[str, dict] = {
     # ── NSE Indices (high liquidity, huge OI — need HIGHER thresholds) ──
     "NIFTY": {
-        "oi_threshold": 30.0,        # most liquid, huge OI buffer
+        "oi_threshold": 30.0,
         "ltp_threshold": 4.0,
+        "price_spike_threshold_pct": 2.0,
         "pcr_shift_threshold": 0.30,
+        "pcr_extreme_low": 0.5,
+        "pcr_extreme_high": 1.8,
         "buildup_oi_min_pct": 25.0,
         "buildup_ltp_min_pct": 6.0,
         "otm_oi_spike_pct": 40.0,
+        "otm_strike_range": 3,
         "max_pain_shift_pct": 0.5,
+        "max_dte_expiry_sensitive": 2,
+        "min_oi_threshold": 1000,
     },
     "BANKNIFTY": {
-        "oi_threshold": 25.0,        # very liquid but more volatile
+        "oi_threshold": 25.0,
         "ltp_threshold": 3.5,
+        "price_spike_threshold_pct": 2.0,
         "pcr_shift_threshold": 0.25,
+        "pcr_extreme_low": 0.5,
+        "pcr_extreme_high": 1.8,
         "buildup_oi_min_pct": 20.0,
         "buildup_ltp_min_pct": 5.0,
         "otm_oi_spike_pct": 35.0,
+        "otm_strike_range": 3,
         "max_pain_shift_pct": 0.5,
+        "max_dte_expiry_sensitive": 2,
+        "min_oi_threshold": 1000,
     },
     "FINNIFTY": {
-        "oi_threshold": 20.0,        # less liquid than NIFTY/BANKNIFTY
+        "oi_threshold": 20.0,
         "ltp_threshold": 3.0,
+        "price_spike_threshold_pct": 2.0,
         "pcr_shift_threshold": 0.20,
+        "pcr_extreme_low": 0.5,
+        "pcr_extreme_high": 1.8,
         "buildup_oi_min_pct": 18.0,
         "buildup_ltp_min_pct": 5.0,
         "otm_oi_spike_pct": 30.0,
+        "otm_strike_range": 3,
         "max_pain_shift_pct": 1.0,
+        "max_dte_expiry_sensitive": 2,
+        "min_oi_threshold": 1000,
     },
     "MIDCPNIFTY": {
-        "oi_threshold": 18.0,        # lower liquidity, higher volatility
+        "oi_threshold": 18.0,
         "ltp_threshold": 3.0,
+        "price_spike_threshold_pct": 2.0,
         "pcr_shift_threshold": 0.20,
+        "pcr_extreme_low": 0.5,
+        "pcr_extreme_high": 1.8,
         "buildup_oi_min_pct": 15.0,
         "buildup_ltp_min_pct": 4.0,
         "otm_oi_spike_pct": 25.0,
+        "otm_strike_range": 3,
         "max_pain_shift_pct": 1.0,
+        "max_dte_expiry_sensitive": 2,
+        "min_oi_threshold": 1000,
     },
     "SENSEX": {
-        "oi_threshold": 28.0,        # similar to NIFTY, slightly less liquid
+        "oi_threshold": 28.0,
         "ltp_threshold": 4.0,
+        "price_spike_threshold_pct": 2.0,
         "pcr_shift_threshold": 0.28,
+        "pcr_extreme_low": 0.5,
+        "pcr_extreme_high": 1.8,
         "buildup_oi_min_pct": 22.0,
         "buildup_ltp_min_pct": 6.0,
         "otm_oi_spike_pct": 38.0,
+        "otm_strike_range": 3,
         "max_pain_shift_pct": 0.5,
+        "max_dte_expiry_sensitive": 2,
+        "min_oi_threshold": 1000,
     },
     # ── MCX Commodities (lower liquidity, different volatility profiles) ──
+    # Restructured: Using custom PCR extremes, DTE sensitive bounds, and price spike limits to avoid alert spam
     "NATURALGAS": {
-        "oi_threshold": 10.0,        # very volatile, low OI — tightest
+        "oi_threshold": 10.0,                 # very volatile, low OI — tightest
         "ltp_threshold": 4.0,
-        "pcr_shift_threshold": 0.10,
+        "price_spike_threshold_pct": 4.0,      # Natural Gas moves 4% intraday routinely
+        "pcr_shift_threshold": 0.20,           # PCR shift raised from 0.10 to 0.20 to avoid noise
+        "pcr_extreme_low": 0.3,                # swings naturally lower
+        "pcr_extreme_high": 2.2,               # swings naturally higher
         "buildup_oi_min_pct": 10.0,
         "buildup_ltp_min_pct": 3.0,
         "otm_oi_spike_pct": 15.0,
+        "otm_strike_range": 5,                 # Spaced by 1 rupee, need wider OTM range check
         "max_pain_shift_pct": 2.0,
+        "max_dte_expiry_sensitive": 5,        # monthly commodity contracts: allow IV/straddle check up to 10 DTE
+        "min_oi_threshold": 150,               # Commodity options are thin; lower from 1000 to 150
+        "min_vol_aggressive": 500,
+        "min_oi_delta": 50,
+        "volume_aggression_high": 2.5,
+        "volume_aggression_low": 1.5,
     },
     "CRUDEOIL": {
-        "oi_threshold": 15.0,        # high volatility, moderate OI
+        "oi_threshold": 15.0,
         "ltp_threshold": 5.0,
+        "price_spike_threshold_pct": 3.0,
         "pcr_shift_threshold": 0.15,
+        "pcr_extreme_low": 0.4,
+        "pcr_extreme_high": 2.0,
         "buildup_oi_min_pct": 12.0,
         "buildup_ltp_min_pct": 4.0,
         "otm_oi_spike_pct": 20.0,
+        "otm_strike_range": 5,
         "max_pain_shift_pct": 1.0,
+        "max_dte_expiry_sensitive": 10,
+        "min_oi_threshold": 150,
+        "min_vol_aggressive": 500,
+        "min_oi_delta": 50,
+        "volume_aggression_high": 2.5,
+        "volume_aggression_low": 1.5,
     },
     "GOLD": {
-        "oi_threshold": 20.0,        # moderate volatility, decent OI
+        "oi_threshold": 20.0,
         "ltp_threshold": 5.0,
+        "price_spike_threshold_pct": 2.5,
         "pcr_shift_threshold": 0.20,
+        "pcr_extreme_low": 0.4,
+        "pcr_extreme_high": 2.0,
         "buildup_oi_min_pct": 15.0,
         "buildup_ltp_min_pct": 5.0,
         "otm_oi_spike_pct": 25.0,
+        "otm_strike_range": 4,
         "max_pain_shift_pct": 1.0,
+        "max_dte_expiry_sensitive": 10,
+        "min_oi_threshold": 100,
+        "min_vol_aggressive": 200,
+        "min_oi_delta": 20,
+        "volume_aggression_high": 2.5,
+        "volume_aggression_low": 1.5,
     },
     "SILVER": {
-        "oi_threshold": 18.0,        # moderate volatility, moderate OI
+        "oi_threshold": 18.0,
         "ltp_threshold": 4.5,
+        "price_spike_threshold_pct": 2.5,
         "pcr_shift_threshold": 0.18,
+        "pcr_extreme_low": 0.4,
+        "pcr_extreme_high": 2.0,
         "buildup_oi_min_pct": 14.0,
         "buildup_ltp_min_pct": 4.5,
         "otm_oi_spike_pct": 22.0,
+        "otm_strike_range": 4,
         "max_pain_shift_pct": 1.0,
+        "max_dte_expiry_sensitive": 10,
+        "min_oi_threshold": 150,
+        "min_vol_aggressive": 300,
+        "min_oi_delta": 30,
+        "volume_aggression_high": 2.5,
+        "volume_aggression_low": 1.5,
     },
 }
 
@@ -314,36 +415,6 @@ def get_symbol_thresholds(symbol: str) -> dict:
     """Return threshold overrides for the given symbol, or empty dict for defaults."""
     base = symbol.upper().split()[0]
     return SYMBOL_THRESHOLD_OVERRIDES.get(base, {})
-
-
-# ── Anomaly Detection Thresholds ────────────────────────────────────────────────────────────────────────────────────
-OI_SPIKE_THRESHOLD_PCT = 15.0  # % change in OI to trigger spike alert
-PRICE_SPIKE_THRESHOLD_PCT = 2.0  # % change in LTP to trigger price spike
-PCR_EXTREME_LOW = 0.5  # PCR below this is extreme bearish
-PCR_EXTREME_HIGH = 1.8  # PCR above this is extreme bullish
-PCR_SHIFT_THRESHOLD = 0.3  # min PCR change to trigger alert
-PCR_EXTREME_SEVERITY_BAND = 0.1  # band around extremes for severity bump
-IV_SPIKE_ATM_THRESHOLD = 20.0  # % IV change at ATM to trigger alert
-MAX_PAIN_SHIFT_PCT = 1.0  # % of underlying price — max pain shift to trigger alert
-SEVERITY_HIGH_MULT = 1.5  # multiplier for HIGH severity thresholds
-SEVERITY_MED_MULT = 1.0  # multiplier for MEDIUM severity thresholds
-BUILDUP_OI_MIN_PCT = 10.0  # min OI change % for buildup detection
-BUILDUP_LTP_MIN_PCT = 3.0  # min LTP change % for buildup detection
-OTM_STRIKE_RANGE = 3  # strikes to check for OTM unusual moves
-OTM_OI_SPIKE_PCT = 20.0  # OI spike % threshold for OTM unusual
-VOLUME_AGGRESSION_HIGH = 2.5  # volume multiplier for high aggression
-VOLUME_AGGRESSION_LOW = 1.5  # volume multiplier for low aggression
-IV_CRUSH_THRESHOLD = 15.0  # % IV drop to trigger crush alert
-STRADDLE_DELTA_PCT = 5.0  # delta move % for straddle premium alert
-ATM_LEG_MOVE_PCT = 2.0  # ATM premium move % for straddle
-PCR_VELOCITY_WINDOW = 3  # number of snapshots to track PCR velocity
-MIN_OI_THRESHOLD = 1000  # min OI for a strike to be considered
-ALERT_COOLDOWN_MINUTES = 60  # don't re-alert same type within N minutes
-ALERT_COOLDOWN_HIGH_MINUTES = 30  # shorter cooldown for HIGH severity
-INDIVIDUAL_ALERT_MIN_SEVERITY = "LOW"  # min severity to send individual alerts
-DEDUP_CLUSTER_STRIKES = 2  # cluster strikes within N steps of fired key
-MAX_ANOMALIES_PER_SYMBOL = 25  # cap raw anomalies per symbol to prevent noise floods
-ANOMALY_MIN_SEVERITY = "MEDIUM"  # drop LOW severity anomalies before digest
 
 # Research mode: True = EXPERIMENTAL trades allowed; False = CORE only
 PAPER_RESEARCH_MODE = os.environ.get("PAPER_RESEARCH_MODE", "true").lower() == "true"
@@ -370,15 +441,15 @@ MIN_ENTRY_QUALITY_EXPERIMENTAL = 40
 REVERSAL_MIN_CONFIDENCE = 75
 
 # Risk engine — applies to paper trading too (overtrading distorts results)
-MAX_OPEN_TRADES_PER_SYMBOL = 2
-MAX_OPEN_TRADES_TOTAL = 5
-MAX_TRADES_PER_SYMBOL_PER_DAY = 4
-MAX_DAILY_LOSS_RUPEES = 200000
-LOSS_COOLDOWN_MINUTES = 30
+MAX_OPEN_TRADES_PER_SYMBOL = 5
+MAX_OPEN_TRADES_TOTAL = 20
+MAX_TRADES_PER_SYMBOL_PER_DAY = 10
+MAX_DAILY_LOSS_RUPEES = 250000
+LOSS_COOLDOWN_MINUTES = 60
 
 # Natural Gas Risk Settings
-NG_MAX_POSITIONS = 1
-NG_RISK_PCT_PER_TRADE = 2.0  # 2% capital risk per trade
+NG_MAX_POSITIONS = 10
+NG_RISK_PCT_PER_TRADE = 3  # 2% capital risk per trade
 
 
 # ── Trend-Based Trading Logic ──────────────────────────────────────────────────────────────────────────────────────

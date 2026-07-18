@@ -517,3 +517,36 @@
 - **Fixes:**
   1. Updated `build_paper_trade_plan()` to initialize `setup_type = "CORE"` and override to `"TFSS"` when `_tfss_execution_side` is resolved to `SELL_PE` or `SELL_CE`, returning the key in the plan dict.
   2. Defined `_dte_from_expiry()` helper function at the top of `src/engine/paper_trading.py` to calculate days to expiry dynamically from YYYY-MM-DD strings.
+
+### F70: TFSS Risk Limit Isolation & Quota Lockout (P0-CRITICAL)
+- **Symptom:** Timeframe strategies ceased to execute entries despite completed 3H breakouts/breakdowns.
+- **Root Cause:** 
+  1. `step_risk` inside `src/engine/decision_pipeline.py` did not pass `setup_type` or `candidate_leg` when calling `_check_risk_limits_for_table()`.
+  2. `_check_risk_limits_for_table()` checked the per-symbol `MAX_OPEN_TRADES_PER_SYMBOL = 2` limit globally for all non-TFSS setups, counting CORE and TIMEFRAME together. Since TFSS opened up to 6 legs per symbol, standard trade risk limits were exhausted, locking out TIMEFRAME signals.
+- **Fix:**
+  1. Updated `step_risk` to resolve `setup_type = "TIMEFRAME" if ctx.engine == "TIMEFRAME" else ...` and pass it to `_check_risk_limits_for_table()`.
+  2. Updated `_check_risk_limits_for_table()` in `src/engine/risk_engine.py` to isolate open trade quotas: TIMEFRAME only counts active TIMEFRAME trades, while CORE counts non-TFSS and non-TIMEFRAME trades.
+
+### F71: Anomaly Detector Threshold Gaps and MCX Silent Drop (P1-HIGH)
+- **Symptom:** MCX commodities (Natural Gas, Crude Oil) failed to fire any OI spikes, buildup classifications, or OTM unusual alerts. Price spikes fired too frequently.
+- **Root Cause:**
+  1. **Global Floor Lockout**: The anomaly detector had a hardcoded `MIN_OI_THRESHOLD = 1000`. Since Natural Gas option strikes typically have an Open Interest between 100 to 800 contracts, they were silently dropped from detection.
+  2. **DTE Expiry Gate**: IV spikes, straddles, max pain, and OTM alerts were restricted to `DTE <= 2`. Far-dated monthly MCX contracts (typically scanned at 7-14 DTE) were completely locked out of these checks.
+  3. **Override Bypass**: `_detect_price_spike()` ignored symbol-specific overrides and used the global `PRICE_SPIKE_THRESHOLD_PCT = 2.0%` directly, leading to false alarms on Natural Gas.
+  4. **Duplicated Function**: `_dte_from_expiry()` was defined twice in `anomaly_detector.py`.
+  5. **Expired Contract Roll Fault**: `shoonya_fetcher` blindly selected the earliest chronologically sorted expiry (`expiries[0]`) from the MCX symbol master file without filtering out expired dates. This caused it to stay stuck on the `16 Jul` contract (DTE `-1`) on `17 Jul`, failing to roll to the next active contract.
+  6. **Sentinel Diagnostics Blindspot**: Scan Sentinel's AI Diagnostic was skipped on expired contracts because `_check_rules` had no safety guard for negative DTE, allowing expired scans to pass without triggering the LLM.
+- **Fix:**
+  1. **Restructured settings.py**: Separated global defaults from symbol overrides. Added `min_oi_threshold` (150 for MCX), `otm_strike_range` (5 for NG), `price_spike_threshold_pct`, `pcr_extreme_low/high`, and `max_dte_expiry_sensitive` (10 for MCX) to `SYMBOL_THRESHOLD_OVERRIDES`.
+  2. **Parameter Propagation**: Plumbed these parameter overrides from `detect_anomalies()` into individual detection functions (`_detect_price_spike`, `_detect_oi_spike_unwind`, `_detect_buildup`, `_detect_volume_aggression`, `_detect_otm_unusual`).
+  3. **Cleanup**: Removed the duplicate `_dte_from_expiry()` function in `anomaly_detector.py`.
+  4. **Shoonya Expiry Roll**: Patched `fetch_option_chain` in `shoonya_fetcher.py` to check `dt >= today_ist` and filter out expired dates from the parsed symbol list before selecting the default contract.
+  5. **Sentinel Expiry Rule**: Added `R7_EXPIRED_CONTRACT` safety guard in `src/engine/scan_sentinel.py` to raise a `CRITICAL` flag and trigger diagnostics when `DTE < 0`.
+
+### F72: Option Chain Next Expiry Data Gaps on Roll Date (P2-MEDIUM)
+- **Symptom:** On the first day of a new contract cycle (Day 1), strategies like CORE and TIMEFRAME lack sufficient historical option chain data (like IV and PCR trends), leading to cold starts.
+- **Root Cause:** The pipeline previously only fetched the nearest current expiry's option chain. It had no mechanism to pre-fetch and record snapshots of the next contract before the current one expired.
+- **Fix:**
+  1. **DTE-triggered pre-fetching**: Updated `_prefetch_symbol_data` in `src/engine/pipeline.py` to calculate DTE for the current expiry. If `DTE < 2` days, the next future expiry is identified from `all_expiries`.
+  2. **Asynchronous parallel I/O**: The pipeline submits a parallel, non-blocking fetch task for the next expiry option chain via `pipeline_io_executor` concurrently with chart/news requests.
+  3. **Data Accumulation**: Updated `_process_prefetched_symbol` to retrieve the next expiry's option chain and save its strikes to `option_chain_snapshots`, ensuring historical data exists prior to contract rollover.

@@ -30,6 +30,12 @@ from config.settings import (
     LOSS_COOLDOWN_MINUTES,
 )
 
+try:
+    from config.settings import CAPITAL, MAX_ALLOCATION_PER_TRADE
+except ImportError:
+    CAPITAL = 500000.0
+    MAX_ALLOCATION_PER_TRADE = 0.10
+
 log = logging.getLogger(__name__)
 
 IST_OFFSET = timedelta(hours=5, minutes=30)
@@ -90,7 +96,8 @@ def _check_risk_limits_for_table(
     symbol: str,
     trades_table: str,
     label: str,
-    setup_type: str | None = None
+    setup_type: str | None = None,
+    candidate_leg: dict | None = None
 ) -> tuple[bool, str, str]:
     """
     Core risk-check logic, parameterised over the trades table name.
@@ -111,16 +118,27 @@ def _check_risk_limits_for_table(
             if check_ng_daily_loss_cap(trades_table):
                 return False, f"[{label}] NATURALGAS daily loss cap (2 consecutive SL) hit today.", "NG_DAILY_LOSS_CAP"
 
-        # 1. Max open trades per symbol
-        open_symbol = conn.execute(
-            f"SELECT COUNT(*) AS cnt FROM {trades_table} WHERE symbol = ? AND status = 'OPEN'",
-            (symbol,),
-        ).fetchone()["cnt"]
-        if open_symbol >= MAX_OPEN_TRADES_PER_SYMBOL:
-            return False, (
-                f"[{label}] Max open trades for {symbol} reached "
-                f"({open_symbol}/{MAX_OPEN_TRADES_PER_SYMBOL})"
-            ), "MAX_OPEN_TRADES_PER_SYMBOL"
+        # 1. Max open trades per symbol (for non-TFSS setups)
+        # TIMEFRAME entries are quota-isolated from CORE: each strategy gets its
+        # own MAX_OPEN_TRADES_PER_SYMBOL count so CORE and TFSS legs don't absorb
+        # the TIMEFRAME quota and block breakout signals (and vice-versa).
+        if not (setup_type and "TFSS" in str(setup_type).upper()):
+            if setup_type == "TIMEFRAME":
+                open_symbol = conn.execute(
+                    f"SELECT COUNT(*) AS cnt FROM {trades_table} WHERE symbol = ? AND status = 'OPEN' AND setup_type = 'TIMEFRAME'",
+                    (symbol,),
+                ).fetchone()["cnt"]
+            else:
+                # CORE: count all non-TFSS, non-TIMEFRAME open trades for the symbol
+                open_symbol = conn.execute(
+                    f"SELECT COUNT(*) AS cnt FROM {trades_table} WHERE symbol = ? AND status = 'OPEN' AND (setup_type IS NULL OR setup_type NOT IN ('TFSS', 'TIMEFRAME'))",
+                    (symbol,),
+                ).fetchone()["cnt"]
+            if open_symbol >= MAX_OPEN_TRADES_PER_SYMBOL:
+                return False, (
+                    f"[{label}] Max open trades for {symbol} reached "
+                    f"({open_symbol}/{MAX_OPEN_TRADES_PER_SYMBOL})"
+                ), "MAX_OPEN_TRADES_PER_SYMBOL"
 
         # 2. Max total open trades
         open_total = conn.execute(
@@ -128,22 +146,26 @@ def _check_risk_limits_for_table(
         ).fetchone()["cnt"]
         if open_total >= MAX_OPEN_TRADES_TOTAL:
             return False, (
-                f"[{label}] Max total open trades reached ({open_total}/{MAX_OPEN_TRADES_TOTAL})"
+                f"[{label}] Max total open trades reached "
+                f"({open_total}/{MAX_OPEN_TRADES_TOTAL})"
             ), "MAX_OPEN_TRADES_TOTAL"
 
-        # 3. Max trades per symbol per day
-        day_count = conn.execute(
+        # 3. Capital allocation limit (10% max per trade)
+        max_capital = CAPITAL * MAX_ALLOCATION_PER_TRADE
+        open_capital_row = conn.execute(
             f"""
-            SELECT COUNT(*) AS cnt FROM {trades_table}
-            WHERE symbol = ? AND opened_at >= ?
+            SELECT COALESCE(SUM(entry_underlying), 0) AS total
+            FROM {trades_table}
+            WHERE symbol = ? AND status = 'OPEN'
             """,
-            (symbol, today_start),
-        ).fetchone()["cnt"]
-        if day_count >= MAX_TRADES_PER_SYMBOL_PER_DAY:
+            (symbol,),
+        ).fetchone()
+        open_capital = float(open_capital_row["total"] if open_capital_row else 0.0)
+        if not (setup_type and "TFSS" in str(setup_type).upper()) and open_capital >= max_capital:
             return False, (
-                f"[{label}] Daily trade limit for {symbol} reached "
-                f"({day_count}/{MAX_TRADES_PER_SYMBOL_PER_DAY})"
-            ), "MAX_TRADES_PER_SYMBOL_PER_DAY"
+                f"[{label}] Capital allocation limit reached for {symbol} "
+                f"(\u20b9{open_capital:,.0f} / \u20b9{max_capital:,.0f})"
+            ), "CAPITAL_ALLOCATION"
 
         # 4. Daily loss cap
         # BUG-M4 FIX: Use parameterized timestamps only instead of mixing parameterized
@@ -204,42 +226,49 @@ def _check_risk_limits_for_table(
         if not ok:
             return False, reason, "CIRCUIT_BREAKER"
             
-        # 7. TFSS specific checks (plan §3.5 — additive, does not disturb other checks)
-        if setup_type and "TFSS" in setup_type:
-            # Enforce max TFSS tranches per symbol (3 tranches max from config)
-            from config.trend_following_short_strangle import TRANCHE_SEQUENCE
-            max_tranches = len(TRANCHE_SEQUENCE)
-            tfss_open = conn.execute(
-                f"""
-                SELECT COUNT(*) AS cnt FROM {trades_table}
-                WHERE symbol = ? AND status = 'OPEN'
-                  AND signal_key LIKE '%CORE_TFSS%'
-                """,
-                (symbol,),
-            ).fetchone()["cnt"]
-            if tfss_open >= max_tranches:
+        # 7. TFSS specific checks (plan §3.5 — additive, book-level)
+        if setup_type and "TFSS" in str(setup_type).upper():
+            from config.trend_following_short_strangle import TFSS_MAX_BOOK_MARGIN, TRANCHE_SEQUENCE, TFSS_COMBINED_DELTA_CAP
+            opt_rows = candidate_leg.get("option_rows") if candidate_leg and isinstance(candidate_leg, dict) else None
+            book = compute_combined_book(symbol, opt_rows, table=trades_table)
+            max_tranches = len(TRANCHE_SEQUENCE) * 2  # 3 per side = 6 legs max
+            if len(book.get("legs", [])) >= max_tranches:
                 return False, (
-                    f"[{label}] TFSS max tranches for {symbol} reached "
-                    f"({tfss_open}/{max_tranches})"
+                    f"[{label}] TFSS max book legs reached ({len(book['legs'])}/{max_tranches})"
                 ), "TFSS_MAX_TRANCHES"
+            total_margin = sum(_leg_margin(l) for l in book.get("legs", []))
+            if candidate_leg and isinstance(candidate_leg, dict):
+                total_margin += _leg_margin(candidate_leg)
+                if opt_rows:
+                    cand_d = _leg_delta(candidate_leg, opt_rows)
+                    signed_d = cand_d if candidate_leg.get("side") == "SELL" and candidate_leg.get("option_type") == "PE" else -cand_d
+                    new_net_delta = book.get("net_delta", 0.0) + signed_d
+                    if abs(new_net_delta) > TFSS_COMBINED_DELTA_CAP:
+                        return False, (
+                            f"[{label}] TFSS combined delta cap exceeded (|{new_net_delta:.2f}| > {TFSS_COMBINED_DELTA_CAP:.2f})"
+                        ), "TFSS_COMBINED_DELTA_CAP"
+            if total_margin > TFSS_MAX_BOOK_MARGIN:
+                return False, (
+                    f"[{label}] TFSS combined book margin cap exceeded (\u20b9{total_margin:,.0f} > \u20b9{TFSS_MAX_BOOK_MARGIN:,.0f})"
+                ), "TFSS_MAX_BOOK_MARGIN"
 
     return True, "OK", "OK"
 
 
-def check_risk_limits(symbol: str, setup_type: str | None = None) -> tuple[bool, str]:
+def check_risk_limits(symbol: str, setup_type: str | None = None, candidate_leg: dict | None = None) -> tuple[bool, str]:
     """
     Paper-trading risk check.  Queries paper_trades table.
     Return (allowed: bool, reason: str).
     """
-    allowed, reason, _ = _check_risk_limits_for_table(symbol, "paper_trades", "paper", setup_type=setup_type)
+    allowed, reason, _ = _check_risk_limits_for_table(symbol, "paper_trades", "paper", setup_type=setup_type, candidate_leg=candidate_leg)
     return allowed, reason
 
 
-def check_live_risk_limits(symbol: str, setup_type: str | None = None) -> tuple[bool, str]:
+def check_live_risk_limits(symbol: str, setup_type: str | None = None, candidate_leg: dict | None = None) -> tuple[bool, str]:
     """
     Live-trading risk check.  Queries live_trades table.
     """
-    allowed, reason, _ = _check_risk_limits_for_table(symbol, "live_trades", "live", setup_type=setup_type)
+    allowed, reason, _ = _check_risk_limits_for_table(symbol, "live_trades", "live", setup_type=setup_type, candidate_leg=candidate_leg)
     return allowed, reason
 
 # --- TFSS Risk Helpers ---
@@ -297,51 +326,59 @@ def check_tested_side(side: str, market_state: dict, config: dict) -> TestedSide
         reason=reason,
     )
 
-def compute_combined_book(symbol_state: dict, market_state: dict) -> CombinedBookStatus:
-    """
-    Evaluate combined portfolio risk for a symbol's TFSS book.
-    Checks: total open TFSS positions cap, combined delta cap.
-    
-    Args:
-        symbol_state: dict with 'symbol', 'open_count' (int), optionally 'open_sides' (list)
-        market_state: dict with 'total_delta' (combined abs delta), or individual leg deltas
-    """
-    open_count = 0
-    total_delta = 0.0
+def _leg_delta(leg: dict, option_rows: list[dict] | None) -> float:
+    if not option_rows:
+        return 0.0
+    tested_ot = str(leg.get("option_type", "")).upper()
+    tested_strike = float(leg.get("strike") or 0.0)
+    for row in option_rows:
+        if (float(row.get("strike", 0)) == tested_strike
+                and str(row.get("option_type", "")).upper() == tested_ot):
+            return abs(float(row.get("delta", 0.0)))
+    return 0.0
 
-    if isinstance(symbol_state, dict):
-        open_count = int(symbol_state.get("open_count", 0))
-    elif hasattr(symbol_state, "open_count"):
-        open_count = int(getattr(symbol_state, "open_count", 0))
 
-    if isinstance(market_state, dict):
-        total_delta = abs(float(market_state.get("total_delta", 0.0)))
-    elif hasattr(market_state, "total_delta"):
-        total_delta = abs(float(getattr(market_state, "total_delta", 0.0)))
-
-    within = True
-    reason = ""
-
+def _leg_margin(leg: dict) -> float:
     try:
-        from config.runtime_config import load_runtime_config
-        ENABLE_TFSS_TRADE_BLOCKED_RULES = load_runtime_config().get("enable_tfss_trade_blocked_rules", False)
+        from config.settings import LOT_SIZES
+        from src.engine.capital_allocator import _SELL_MARGIN_PREMIUM_MULTIPLIER
+        symbol = leg.get("symbol", "")
+        lot_size = LOT_SIZES.get(symbol, 1)
+        lots = int(leg.get("lots", 1))
+        prem = float(leg.get("entry_premium") or leg.get("entry_underlying") or 0.0)
+        side = str(leg.get("side", "BUY")).upper()
+        if side == "SELL":
+            return prem * lot_size * lots * _SELL_MARGIN_PREMIUM_MULTIPLIER
+        return prem * lot_size * lots
     except Exception:
-        from config.trend_following_short_strangle import ENABLE_TFSS_TRADE_BLOCKED_RULES
-    if ENABLE_TFSS_TRADE_BLOCKED_RULES:
-        if open_count >= _TFSS_MAX_OPEN_POSITIONS:
-            within = False
-            reason = f"TFSS_OPEN_CAP: {open_count} >= {_TFSS_MAX_OPEN_POSITIONS}"
-        elif total_delta >= _TFSS_MAX_TOTAL_DELTA:
-            within = False
-            reason = f"TFSS_DELTA_CAP: total delta {total_delta:.3f} >= {_TFSS_MAX_TOTAL_DELTA:.3f}"
+        return 100000.0
 
-    return CombinedBookStatus(
-        within_caps=within,
-        total_delta=total_delta,
-        max_total_delta=_TFSS_MAX_TOTAL_DELTA,
-        open_count=open_count,
-        reason=reason,
-    )
+
+def compute_combined_book(symbol: str, option_rows: list[dict] | None, table: str = "paper_trades") -> dict:
+    """
+    Evaluate combined portfolio delta and structure for a symbol's TFSS book.
+    """
+    from src.models.schema import get_open_tfss_legs
+    try:
+        from config.trend_following_short_strangle import TFSS_COMBINED_DELTA_CAP
+    except Exception:
+        TFSS_COMBINED_DELTA_CAP = 0.40
+
+    legs = get_open_tfss_legs(symbol, table=table)
+    net_delta = 0.0
+    leg_deltas = {}
+    for leg in legs:
+        d = _leg_delta(leg, option_rows)
+        signed = d if leg.get("side") == "SELL" and leg.get("option_type") == "PE" else -d
+        net_delta += signed
+        leg_deltas[leg["id"]] = d
+
+    return {
+        "net_delta": net_delta,
+        "leg_deltas": leg_deltas,
+        "legs": legs,
+        "within_caps": abs(net_delta) <= TFSS_COMBINED_DELTA_CAP,
+    }
 
 def exit_trigger_priority_list(active_triggers: list[str]) -> str | None:
     """

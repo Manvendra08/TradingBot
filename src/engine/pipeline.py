@@ -160,6 +160,31 @@ def _prefetch_symbol_data(symbol: str, fetched_at: str) -> dict:
     oc_data = oc.data
     underlying = oc_data.get("underlying_price")
 
+    # Accumulate next expiry options data when current expiry DTE is < 2 days
+    expiry = oc_data.get("expiry")
+    if expiry:
+        try:
+            from datetime import datetime
+            import pytz
+            exp_date = datetime.strptime(expiry, "%Y-%m-%d").date()
+            today = datetime.now(pytz.timezone("Asia/Kolkata")).date()
+            dte = (exp_date - today).days
+            if 0 <= dte < 2:
+                all_exps = sorted(list(set(oc_data.get("all_expiries", []))))
+                future_exps = [e for e in all_exps if datetime.strptime(e, "%Y-%m-%d").date() > exp_date]
+                if future_exps:
+                    next_exp = future_exps[0]
+                    packet["next_expiry_future"] = pipeline_io_executor.submit(
+                        lambda: run_with_deadline(
+                            "next_option_chain",
+                            lambda: fetch_option_chain(symbol, expiry=next_exp)
+                        )
+                    )
+                    log.info("[pipeline] %s | DTE is %d (< 2 days). Submitting parallel fetch for next expiry %s",
+                             symbol, dte, next_exp)
+        except Exception as e:
+            log.warning("[pipeline] %s | Failed to schedule next expiry pre-fetch: %s", symbol, e)
+
     chart_future = pipeline_io_executor.submit(
         lambda: run_with_deadline(
             "chart",
@@ -717,6 +742,38 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
             } for row in oc_data["strikes"]]
             insert_snapshots(rows)
 
+            # Insert next expiry snapshots if pre-fetched (DTE < 2 days)
+            next_exp_future = packet.get("next_expiry_future")
+            if next_exp_future:
+                try:
+                    next_oc_res = next_exp_future.result()
+                    next_oc = next_oc_res.data if (next_oc_res and next_oc_res.ok) else None
+                    if next_oc and next_oc.get("strikes"):
+                        next_rows = [{
+                            "fetched_at": fetched_at,
+                            "symbol": symbol,
+                            "expiry": next_oc["expiry"],
+                            "strike": r["strike"],
+                            "option_type": r["option_type"],
+                            "ltp": r.get("ltp"),
+                            "ltp_change_pct": r.get("ltp_change_pct"),
+                            "oi": r.get("oi"),
+                            "oi_change_pct": r.get("oi_change_pct"),
+                            "oi_change": r.get("oi_change"),
+                            "volume": r.get("volume"),
+                            "iv": r.get("iv"),
+                            "bid": r.get("bid"),
+                            "ask": r.get("ask"),
+                            "delta": r.get("delta"),
+                            "underlying_price": underlying,
+                            "fetcher_source": next_oc.get("source", "unknown"),
+                        } for r in next_oc["strikes"]]
+                        insert_snapshots(next_rows)
+                        log.info("[pipeline] %s | Accumulated next expiry (%s) option chain snapshots (%d rows)",
+                                 symbol, next_oc["expiry"], len(next_rows))
+                except Exception as e:
+                    log.warning("[pipeline] %s | Failed to retrieve/store next expiry option chain: %s", symbol, e)
+
         if not is_test:
             try:
                 # ── Global Trade Monitoring across ALL Regimes/Strategies ──
@@ -724,39 +781,20 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                 # on every scan regardless of session regime (PARITY, EVENT, MOMENTUM, CORE).
                 from src.engine.paper_trading import monitor_paper_trades, close_paper_trade
                 from src.engine.trade_plan import get_option_premium
+
                 monitor_paper_trades(symbol, scan_context)
 
-                # ── Actionable AI Exit Advice Execution ──
-                # If AI exit advice recommends CLOSE_EARLY/EXIT with HIGH urgency, auto-exit immediately.
+                # AI exit advice is advisory only per USER request. It should not execute trades.
                 if open_trade and exit_advice:
                     ea_action = str(getattr(exit_advice, "action", "")).upper()
                     ea_urgency = str(getattr(exit_advice, "urgency", "")).upper()
                     if ea_action in ("CLOSE_EARLY", "FLAT_NOW", "EXIT") and ea_urgency == "HIGH":
-                        from src.models.schema import get_open_paper_trade
-                        live_check = get_open_paper_trade(symbol)
-                        if live_check and live_check["status"] == "OPEN":
-                            option_type = str(live_check.get("option_type", "")).upper()
-                            side = str(live_check.get("side", "")).upper()
-                            ea_prem = None
-                            if option_type != "FUT":
-                                ea_prem = get_option_premium(
-                                    symbol,
-                                    live_check.get("expiry"),
-                                    live_check.get("strike"),
-                                    option_type,
-                                    scan_context.get("option_rows"),
-                                )
-                                if ea_prem and ea_prem > 0:
-                                    ea_prem *= 0.995 if side == "BUY" else 1.005
-                            close_paper_trade(
-                                live_check["id"],
-                                datetime.now(timezone.utc).isoformat(),
-                                underlying,
-                                ea_prem,
-                                "CLOSED_AI_EXIT",
-                                f"AI_EXIT: {ea_action} (HIGH) | {getattr(exit_advice, 'reasoning', '')[:100]}",
-                            )
-                            log.info("%s: paper trade #%s closed via AI Exit Advice (%s HIGH)", symbol, live_check["id"], ea_action)
+                        log.info(
+                            "%s: [Advisory Only] AI Exit Advice recommends %s (HIGH) | Reason: %s",
+                            symbol,
+                            ea_action,
+                            getattr(exit_advice, "reasoning", ""),
+                        )
 
                 from src.engine.strategy_registry import active_strategies_for, get_runner
                 for sid in active_strategies_for(symbol):

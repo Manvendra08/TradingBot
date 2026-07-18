@@ -140,7 +140,9 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     entry_quality_score INTEGER,
     trend_alignment_score INTEGER,
     regime_score        INTEGER,
-    entry_dev_pct       REAL
+    entry_dev_pct       REAL,
+    leg_group_id        TEXT,
+    tranche_index       INTEGER DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_paper_symbol_status
@@ -515,6 +517,8 @@ _MIGRATIONS = [
     ("M070_add_paper_reason", "ALTER TABLE paper_trades ADD COLUMN reason TEXT"),
     ("M071_add_paper_exit_reason", "ALTER TABLE paper_trades ADD COLUMN exit_reason TEXT"),
     ("M072_add_live_exit_reason", "ALTER TABLE live_trades ADD COLUMN exit_reason TEXT"),
+    ("M073_add_paper_leg_group_id", "ALTER TABLE paper_trades ADD COLUMN leg_group_id TEXT"),
+    ("M074_add_paper_tranche_index", "ALTER TABLE paper_trades ADD COLUMN tranche_index INTEGER DEFAULT 0"),
 ]
 
 
@@ -540,6 +544,9 @@ def init_db() -> None:
         try:
             conn.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_trades_signal_key ON paper_trades (signal_key) WHERE signal_key IS NOT NULL"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_paper_leg_group ON paper_trades (leg_group_id, status)"
             )
         except sqlite3.OperationalError:
             pass
@@ -925,7 +932,7 @@ def delete_alerts(symbol: str | None = None) -> int:
 def get_open_paper_trade(symbol: str) -> dict | None:
     sql = """
         SELECT * FROM paper_trades
-        WHERE symbol=? AND status='OPEN' AND (setup_type IS NULL OR setup_type != 'TIMEFRAME')
+        WHERE symbol=? AND status='OPEN' AND (setup_type IS NULL OR (setup_type != 'TIMEFRAME' AND setup_type != 'TFSS'))
         ORDER BY opened_at DESC
         LIMIT 1
     """
@@ -941,6 +948,20 @@ def get_open_timeframe_trades(symbol: str, table: str = "paper_trades") -> list[
         SELECT * FROM {table}
         WHERE symbol=? AND status='OPEN' AND setup_type='TIMEFRAME'
         ORDER BY opened_at DESC
+    """
+    with get_conn() as conn:
+        rows = conn.execute(sql, (symbol,)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_open_tfss_legs(symbol: str, table: str = "paper_trades") -> list[dict]:
+    """All open TFSS legs for symbol, both sides, all tranches."""
+    if table not in ("paper_trades", "live_trades"):
+        table = "paper_trades"
+    sql = f"""
+        SELECT * FROM {table}
+        WHERE symbol=? AND status='OPEN' AND setup_type='TFSS'
+        ORDER BY option_type, tranche_index
     """
     with get_conn() as conn:
         rows = conn.execute(sql, (symbol,)).fetchall()

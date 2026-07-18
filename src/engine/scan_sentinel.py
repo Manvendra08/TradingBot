@@ -508,6 +508,21 @@ def _check_rules(r: dict) -> list[SentinelFlag]:
                     detail=f"Target option entry premium is ₹{llm_prem} (above safety limit of ₹5000)"
                 ))
 
+    # R7: Expired contract check (DTE < 0)
+    expiry_str = r.get("expiry")
+    if expiry_str:
+        try:
+            exp_date = datetime.strptime(expiry_str, "%Y-%m-%d").date()
+            today = datetime.now(timezone.utc).date()
+            if exp_date < today:
+                flags.append(SentinelFlag(
+                    rule="R7_EXPIRED_CONTRACT",
+                    severity="CRITICAL",
+                    detail=f"Scan resolved to an expired contract: {expiry_str} (DTE: {(exp_date - today).days})"
+                ))
+        except Exception:
+            pass
+
     return flags
 
 

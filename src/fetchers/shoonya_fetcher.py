@@ -1237,7 +1237,18 @@ class ShoonyaFetcher(BaseFetcher):
                         )
                         return None
                 else:
-                    target_expiry_shoonya = expiries[0]
+                    import pytz
+                    today_ist = datetime.now(pytz.timezone("Asia/Kolkata")).date()
+                    future_expiries = []
+                    for exp in expiries:
+                        try:
+                            dt = datetime.strptime(exp, "%d-%b-%Y").date()
+                            if dt >= today_ist:
+                                future_expiries.append(exp)
+                        except Exception:
+                            pass
+                    # Fallback to expiries[0] if no future expiries are parsed
+                    target_expiry_shoonya = future_expiries[0] if future_expiries else expiries[0]
                     target_expiry_iso = datetime.strptime(
                         target_expiry_shoonya, "%d-%b-%Y"
                     ).strftime("%Y-%m-%d")

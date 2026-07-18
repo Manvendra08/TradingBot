@@ -660,7 +660,14 @@ def step_risk(ctx: PipelineContext) -> StepResult:
     is_live = ctx.scan_context.get("is_live", False)
     table = "live_trades" if is_live else "paper_trades"
     mode = "live" if is_live else "paper"
-    allowed, reason, sub_check_code = _check_risk_limits_for_table(ctx.symbol, table, mode)
+
+    # Resolve setup_type for risk-limit isolation:
+    # - TIMEFRAME entries must be counted separately from CORE and TFSS legs so
+    #   TFSS multi-leg books don't absorb the per-symbol open-trade quota and
+    #   block TIMEFRAME signals.
+    setup_type = "TIMEFRAME" if ctx.engine == "TIMEFRAME" else ctx.scan_context.get("_setup_type", None)
+
+    allowed, reason, sub_check_code = _check_risk_limits_for_table(ctx.symbol, table, mode, setup_type=setup_type)
     return StepResult(
         name="risk",
         passed=allowed,

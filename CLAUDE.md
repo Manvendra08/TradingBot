@@ -101,7 +101,7 @@ Three strategies, each independently enable/disable-able globally and per-symbol
 
 - `src/engine/strategy_registry.py` — `active_strategies_for(symbol)` resolves which strategies run this scan cycle (strategy enabled → symbol not explicitly disabled → runner registered). `get_runner()`, `get_params()`, `get_ai_mode()`.
 - `pipeline.py` dispatches through the registry (`active_strategies_for` + `get_runner`), not hardcoded `run_paper_trading`/`run_timeframe_strategy` calls. Precedence preserved: CORE report wins ties over TIMEFRAME (first EXECUTED/CLOSED report in registry order).
-- **TFSS has no runner yet.** `_get_runners()` in `strategy_registry.py` only maps CORE/TIMEFRAME — TFSS will never dispatch regardless of its `enabled` flag until a runner is built and registered. Spec: `Trend_Following_Short_Strangle_FRS_v1.1.md` (repo root) — delta-first strike selection, ATR as one-way tightening-only regime filter, 50/30/20 tranche scaling, mandatory reduce-then-evaluate reversal sequencing, ranked exit-trigger priority.
+- **TFSS is implemented for paper trading** using multi-leg book tracking (`leg_group_id`). It groups up to 2 sides × 3 tranches (6 legs total) per symbol-day, scaling lot sizes dynamically (`50% -> 30% -> 20%`) via `TRANCHE_SEQUENCE`. Risk Engine checks combined margin (<₹600k), combined net delta (<0.60), and max tranches. Delta-stop exits close the tested side selectively (prioritized via `EXIT_PRIORITY_MAP`), leaving the opposite untested side open.
 - Disabling a strategy mid-trade blocks new entries only; open positions run to their own SL/target (no forced close).
 
 ## Live Trading
@@ -110,6 +110,7 @@ Three strategies, each independently enable/disable-able globally and per-symbol
 - **Position sync:** `sync_direct_kite_positions()` runs every 5 min + on every scan cycle
 - **Exit monitoring:** `_check_live_exits()` runs every 2 min for premium-poll trades
 - **SL/Target unified:** Same ATR-based calculation as paper via `trade_plan.py`
+- **AI Exit Advice is advisory only:** Auto-exits (`CLOSED_AI_EXIT`) are disabled; high-urgency AI exit recommendations are purely logged and do not execute trades.
 
 ## Current behavior
 
@@ -208,3 +209,6 @@ Key test files:
 - **requirements.txt:** Stripped `APScheduler` and `dhanhq` (unused).
 - **Help text:** `main.py --dashboard` now shows FastAPI command, not Streamlit.
 - **Legend cleanup:** `docs/README.md` dashboard command updated.
+- **TFSS Multi-Leg Strangle Book:** Added `leg_group_id` and `tranche_index` fields to `paper_trades` table schema. Implemented book-level risk limits (max 6 tranches, total margin <= ₹600k, net delta <= 0.60), tranche scaling (`50% -> 30% -> 20%`), and selective tested-side exits based on `HARD_STOP_DELTA (0.35)` and `EXIT_PRIORITY_MAP`.
+- **Advisory-Only AI Exit:** Disabled automatic trade executions (`CLOSED_AI_EXIT`) triggered by AI exit advice. Recommendations are now logged as advisory only.
+- **Dashboard Broker Console Settings Fix:** Resolved `SyntaxError: Unexpected token 'I'` when updating Shadow Mode from the dashboard by using write-enabled connection `get_conn()` instead of read-only `_db()`.

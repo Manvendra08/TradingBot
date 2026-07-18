@@ -8,17 +8,21 @@
   "live_max_concurrent_positions": 5,
   "live_max_daily_loss_rupees": 200000,
   "live_symbol_lots": {
-    "NATURALGAS": 10,
     "NIFTY": 10,
     "BANKNIFTY": 10,
+    "FINNIFTY": 1,
+    "MIDCPNIFTY": 1,
     "SENSEX": 10,
+    "NATURALGAS": 10,
     "CRUDEOIL": 10
   },
   "paper_symbol_lots": {
-    "NATURALGAS": 10,
     "NIFTY": 10,
     "BANKNIFTY": 10,
+    "FINNIFTY": 10,
+    "MIDCPNIFTY": 10,
     "SENSEX": 10,
+    "NATURALGAS": 10,
     "CRUDEOIL": 5
   },
   "paper_lots": 10,
@@ -46,7 +50,7 @@
   "direct_kite_initialization_mode": "dynamic",
   "direct_kite_default_sl_pct": 40,
   "direct_kite_default_tgt_pct": 60,
-  "live_broker_disabled": true,
+  "live_broker_disabled": false,
   "trading_paused": false,
   "enable_tfss_trade_blocked_rules": false,
   "sentinel_report_mode": "anomalies",

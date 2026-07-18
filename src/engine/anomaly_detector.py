@@ -59,15 +59,6 @@ def _dte_from_expiry(expiry: str) -> int:
         return 999  # Unknown = far away
 
 
-def _dte_from_expiry(expiry: str) -> int:
-    """Calculate days to expiry from YYYY-MM-DD string."""
-    try:
-        exp_date = datetime.strptime(expiry, "%Y-%m-%d").date()
-        today = datetime.now(timezone.utc).date()
-        return (exp_date - today).days
-    except Exception:
-        return 999  # Unknown = far away
-
 # Type alias for the bulk prev-snapshot dict
 PrevByKey = dict[tuple, dict]
 
@@ -316,9 +307,9 @@ def _filter_atm_range(strikes_data: list[dict], underlying: float) -> list[dict]
     return [r for r in strikes_data if lo <= r["strike"] <= hi]
 
 
-def _filter_otm_only(strikes_data: list[dict], underlying: float) -> list[dict]:
+def _filter_otm_only(strikes_data: list[dict], underlying: float, otm_strike_range: int = OTM_STRIKE_RANGE) -> list[dict]:
     """
-    Return strikes strictly beyond ATM \u00b1 OTM_STRIKE_RANGE.
+    Return strikes strictly beyond ATM ± OTM_STRIKE_RANGE.
     """
     atm = _atm_strike(strikes_data, underlying)
     sorted_strikes = sorted({r["strike"] for r in strikes_data})
@@ -327,16 +318,16 @@ def _filter_otm_only(strikes_data: list[dict], underlying: float) -> list[dict]:
     except ValueError:
         return []
     # Boundary: last strike that is still within the ATM range
-    lo_idx = max(0, idx - OTM_STRIKE_RANGE)
-    hi_idx = min(len(sorted_strikes) - 1, idx + OTM_STRIKE_RANGE)
+    lo_idx = max(0, idx - otm_strike_range)
+    hi_idx = min(len(sorted_strikes) - 1, idx + otm_strike_range)
     lo_bound = sorted_strikes[lo_idx]
     hi_bound = sorted_strikes[hi_idx]
     return [r for r in strikes_data if r["strike"] < lo_bound or r["strike"] > hi_bound]
 
 
-# \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
+# ============================================================================
 # DETECTION RULES
-# \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
+# ============================================================================
 
 
 def _detect_oi_spike_unwind(
@@ -346,6 +337,7 @@ def _detect_oi_spike_unwind(
     underlying: float,
     prev_by_key: PrevByKey,
     oi_thresh: float = OI_SPIKE_THRESHOLD_PCT,
+    min_oi_threshold: float = MIN_OI_THRESHOLD,
 ) -> list[dict]:
     alerts = []
     for row in filtered:
@@ -356,7 +348,7 @@ def _detect_oi_spike_unwind(
             continue
         prev_oi = prev.get("oi") or 0
         curr_oi = row.get("oi") or 0
-        if prev_oi < MIN_OI_THRESHOLD or curr_oi < MIN_OI_THRESHOLD:
+        if prev_oi < min_oi_threshold or curr_oi < min_oi_threshold:
             continue
         pct = _pct_change(prev_oi, curr_oi)
         if pct is None or abs(pct) < oi_thresh:
@@ -397,6 +389,7 @@ def _detect_buildup(
     prev_by_key: PrevByKey,
     oi_min_pct: float = BUILDUP_OI_MIN_PCT,
     ltp_min_pct: float = BUILDUP_LTP_MIN_PCT,
+    min_oi_threshold: float = MIN_OI_THRESHOLD,
 ) -> list[dict]:
     alerts = []
     for row in filtered:
@@ -407,7 +400,7 @@ def _detect_buildup(
             continue
         prev_oi = prev.get("oi") or 0
         curr_oi = row.get("oi") or 0
-        if prev_oi < MIN_OI_THRESHOLD or curr_oi < MIN_OI_THRESHOLD:
+        if prev_oi < min_oi_threshold or curr_oi < min_oi_threshold:
             continue
         prev_ltp = prev.get("ltp") or 0
         curr_ltp = row.get("ltp") or 0
@@ -459,7 +452,12 @@ def _detect_buildup(
     return alerts
 
 
-def _detect_price_spike(symbol: str, expiry: str, underlying: float) -> list[dict]:
+def _detect_price_spike(
+    symbol: str,
+    expiry: str,
+    underlying: float,
+    price_spike_thresh: float = PRICE_SPIKE_THRESHOLD_PCT,
+) -> list[dict]:
     alerts = []
     prev_row = get_previous_underlying(symbol)
     if not prev_row:
@@ -705,12 +703,18 @@ def _detect_volume_aggression(
     expiry: str,
     underlying: float,
     prev_by_key: PrevByKey,
+    volume_aggression_high: float = VOLUME_AGGRESSION_HIGH,
+    volume_aggression_low: float = VOLUME_AGGRESSION_LOW,
+    min_vol_aggressive: int | None = None,
+    min_oi_delta: int | None = None,
 ) -> list[dict]:
     alerts = []
     # Determine minimum volume and OI delta based on symbol class to avoid signal spam
     is_mcx = symbol.upper() in ["NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"]
-    min_vol_aggressive = 500 if is_mcx else 5000
-    min_oi_delta = 50 if is_mcx else 500
+    if min_vol_aggressive is None:
+        min_vol_aggressive = 500 if is_mcx else 5000
+    if min_oi_delta is None:
+        min_oi_delta = 50 if is_mcx else 500
 
     for row in filtered:
         vol = row.get("volume") or 0
@@ -722,13 +726,13 @@ def _detect_volume_aggression(
         if oi_delta == 0:
             continue
         ratio = vol / oi_delta
-        if ratio > VOLUME_AGGRESSION_HIGH:
+        if ratio > volume_aggression_high:
             # Filter out insignificant volumes and OI shifts to avoid signal spam
             if vol < min_vol_aggressive or oi_delta < min_oi_delta:
                 continue
             label = "Aggressive Flow (high vol vs OI delta)"
-            sev = "HIGH" if ratio > VOLUME_AGGRESSION_HIGH * 2 else "MEDIUM"
-        elif ratio < VOLUME_AGGRESSION_LOW and vol > (100 if is_mcx else 1000):
+            sev = "HIGH" if ratio > volume_aggression_high * 2 else "MEDIUM"
+        elif ratio < volume_aggression_low and vol > (100 if is_mcx else 1000):
             # Passive Positioning requires a substantial OI buildup to be meaningful
             if oi_delta < min_oi_delta:
                 continue
@@ -766,8 +770,10 @@ def _detect_otm_unusual(
     underlying: float,
     prev_by_key: PrevByKey,
     otm_oi_spike_pct: float = OTM_OI_SPIKE_PCT,
+    otm_strike_range: int = OTM_STRIKE_RANGE,
+    min_oi_threshold: float = MIN_OI_THRESHOLD,
 ) -> list[dict]:
-    otm = _filter_otm_only(all_strikes, underlying)
+    otm = _filter_otm_only(all_strikes, underlying, otm_strike_range)
     alerts = []
     for row in otm:
         strike = row["strike"]
@@ -777,7 +783,7 @@ def _detect_otm_unusual(
             continue
         prev_oi = prev.get("oi") or 0
         curr_oi = row.get("oi") or 0
-        if prev_oi < MIN_OI_THRESHOLD or curr_oi < MIN_OI_THRESHOLD:
+        if prev_oi < min_oi_threshold or curr_oi < min_oi_threshold:
             continue
         pct = _pct_change(prev_oi, curr_oi)
         if pct is None or pct < otm_oi_spike_pct:
@@ -857,15 +863,20 @@ def detect_anomalies(
     if chart_indicators is None:
         chart_indicators = oc_data.get("chart_indicators")
 
-    # Calculate DTE (days to expiry) — suppress expiry-sensitive alerts beyond 2 days
+    # Calculate DTE (days to expiry) — suppress expiry-sensitive alerts beyond max DTE
     dte = _dte_from_expiry(expiry)
-    expiry_sensitive = dte <= 2
+    t = override_thresholds or {}
+    max_dte_expiry_sensitive = t.get("max_dte_expiry_sensitive", 2)
+    expiry_sensitive = dte <= max_dte_expiry_sensitive
     log.debug("[engine] %s: DTE=%d, expiry_sensitive=%s", symbol, dte, expiry_sensitive)
 
-    t = override_thresholds or {}
     oi_thresh = t.get("oi_threshold", OI_SPIKE_THRESHOLD_PCT)
     ltp_thresh = t.get("ltp_threshold", ATM_LEG_MOVE_PCT)
     pcr_shift_thresh = t.get("pcr_shift_threshold", PCR_SHIFT_THRESHOLD)
+    min_oi_thresh = t.get("min_oi_threshold", MIN_OI_THRESHOLD)
+    price_spike_thresh = t.get("price_spike_threshold_pct", PRICE_SPIKE_THRESHOLD_PCT)
+    pcr_extreme_low = t.get("pcr_extreme_low", PCR_EXTREME_LOW)
+    pcr_extreme_high = t.get("pcr_extreme_high", PCR_EXTREME_HIGH)
 
     if not strikes:
         log.warning("[engine] empty strikes | %s | expiry=%s", symbol, expiry)
@@ -918,7 +929,13 @@ def detect_anomalies(
 
     if not skip_oi_spike:
         alerts += _detect_oi_spike_unwind(
-            filtered, symbol, expiry, underlying, prev_by_key, oi_thresh=oi_thresh
+            filtered,
+            symbol,
+            expiry,
+            underlying,
+            prev_by_key,
+            oi_thresh=oi_thresh,
+            min_oi_threshold=min_oi_thresh,
         )
         alerts += _detect_buildup(
             filtered,
@@ -928,13 +945,16 @@ def detect_anomalies(
             prev_by_key,
             oi_min_pct=t.get("buildup_oi_min_pct", BUILDUP_OI_MIN_PCT),
             ltp_min_pct=t.get("buildup_ltp_min_pct", BUILDUP_LTP_MIN_PCT),
+            min_oi_threshold=min_oi_thresh,
         )
-    alerts += _detect_price_spike(symbol, expiry, underlying)
+    alerts += _detect_price_spike(
+        symbol, expiry, underlying, price_spike_thresh=price_spike_thresh
+    )
 
     pcr = _compute_pcr(filtered)
     if pcr is not None:
-        if pcr <= PCR_EXTREME_LOW or pcr >= PCR_EXTREME_HIGH:
-            boundary = PCR_EXTREME_LOW if pcr < 1 else PCR_EXTREME_HIGH
+        if pcr <= pcr_extreme_low or pcr >= pcr_extreme_high:
+            boundary = pcr_extreme_low if pcr < 1 else pcr_extreme_high
             sev = _score_severity(abs(pcr - boundary) / PCR_EXTREME_SEVERITY_BAND)
             alerts.append(
                 _make_alert(
@@ -969,7 +989,7 @@ def detect_anomalies(
 
     alerts += _detect_pcr_velocity(symbol, expiry, underlying, pcr)
 
-    # Expiry-sensitive detectors only when DTE ≤ 2
+    # Expiry-sensitive detectors only when DTE <= max_dte_expiry_sensitive
     if expiry_sensitive:
         alerts += _detect_iv_spike_crush(filtered, symbol, expiry, underlying, prev_by_key)
 
@@ -979,10 +999,18 @@ def detect_anomalies(
         alerts += _detect_max_pain_shift(filtered, symbol, expiry, underlying, prev_snaps, max_pain_shift_pct=t.get("max_pain_shift_pct", MAX_PAIN_SHIFT_PCT))
         alerts += _detect_oi_wall_shift(strikes, symbol, expiry, underlying, prev_snaps)
         alerts += _detect_volume_aggression(
-            filtered, symbol, expiry, underlying, prev_by_key
+            filtered,
+            symbol,
+            expiry,
+            underlying,
+            prev_by_key,
+            volume_aggression_high=t.get("volume_aggression_high", VOLUME_AGGRESSION_HIGH),
+            volume_aggression_low=t.get("volume_aggression_low", VOLUME_AGGRESSION_LOW),
+            min_vol_aggressive=t.get("min_vol_aggressive", None),
+            min_oi_delta=t.get("min_oi_delta", None),
         )
     else:
-        log.debug("[engine] %s: skipping all expiry-sensitive detectors (DTE=%d > 2)", symbol, dte)
+        log.debug("[engine] %s: skipping all expiry-sensitive detectors (DTE=%d > %d)", symbol, dte, max_dte_expiry_sensitive)
 
     atm = _atm_strike(filtered, underlying)
     moves = {}
@@ -1003,9 +1031,9 @@ def detect_anomalies(
                 "Bullish Flow"
                 if ce_p > 0 and pe_p < 0
                 else (
-                    "Bearish Flow"
-                    if ce_p < 0 and pe_p > 0
-                    else ("Vol Expansion" if ce_p > 0 and pe_p > 0 else "Vol Crush")
+                  "Bearish Flow"
+                  if ce_p < 0 and pe_p > 0
+                  else ("Vol Expansion" if ce_p > 0 and pe_p > 0 else "Vol Crush")
                 )
             )
             sev = _score_severity(max(abs(ce_p), abs(pe_p)) / ltp_thresh)
@@ -1022,9 +1050,18 @@ def detect_anomalies(
             )
     # OTM unusual is also expiry-sensitive
     if expiry_sensitive:
-        alerts += _detect_otm_unusual(strikes, symbol, expiry, underlying, prev_by_key, otm_oi_spike_pct=t.get("otm_oi_spike_pct", OTM_OI_SPIKE_PCT))
+        alerts += _detect_otm_unusual(
+            strikes,
+            symbol,
+            expiry,
+            underlying,
+            prev_by_key,
+            otm_oi_spike_pct=t.get("otm_oi_spike_pct", OTM_OI_SPIKE_PCT),
+            otm_strike_range=t.get("otm_strike_range", OTM_STRIKE_RANGE),
+            min_oi_threshold=min_oi_thresh,
+        )
     else:
-        log.debug("[engine] %s: skipping OTM unusual (DTE=%d > 2)", symbol, dte)
+        log.debug("[engine] %s: skipping OTM unusual (DTE=%d > %d)", symbol, dte, max_dte_expiry_sensitive)
 
     # Enforce MAX_ANOMALIES_PER_SYMBOL early to prevent log floods.
     # Keep highest-severity alerts first.
