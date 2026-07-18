@@ -566,6 +566,8 @@ def execute_paper_trade(
         pyramid_level=plan.get("pyramid_level", 1),
         setup_type=setup_type,
         tranche_index=tranche_idx,
+        option_type=option_type,
+        strike=plan.get("strike"),
     )
     if lots <= 0:
         from src.engine.decision_audit import update_decision_audit

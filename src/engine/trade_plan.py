@@ -395,7 +395,11 @@ def parse_verdict_and_confidence(intel_text: str) -> tuple[str, int]:
         verdict = m_v.group(1).strip()
     else:
         # Fallback: try without asterisks, non-greedy on line boundary
-        m_v2 = re.search(r"Verdict:\s*([A-Z][A-Z _]{1,30})(?=\s*\n|\s*$|\s*\*)", intel_text, re.IGNORECASE)
+        m_v2 = re.search(
+            r"Verdict:\s*(Long Buildup|Short Covering|Go Long|Put Writing|OI Bias Bullish|Short Buildup|Long Unwinding|Go Short|Call Writing|OI Bias Bearish|Sideways|NO_TRADE|GO_LONG|GO_SHORT)(?=\s*\n|\s*$|\s*\*)", 
+            intel_text, 
+            re.IGNORECASE
+        )
         if m_v2:
             verdict = m_v2.group(1).strip()
 
@@ -494,7 +498,13 @@ def convert_underlying_sl_to_premium(
                 continue
 
     if delta is None:
-        delta = 0.25 if side == "BUY" else 0.20
+        DEFAULT_SYMBOL_DELTAS = {
+            "NATURALGAS": 0.15,
+            "CRUDEOIL": 0.15,
+            "GOLD": 0.15,
+            "SILVER": 0.15,
+        }
+        delta = DEFAULT_SYMBOL_DELTAS.get(str(symbol).upper(), 0.25 if side == "BUY" else 0.20)
 
     # 2. Delta-based calculation
     underlying_sl_dist = abs(underlying - sl_underlying)
@@ -564,7 +574,10 @@ def select_candidate(side: str, persisted_label: str, dte: int, atr_state: dict,
             # but we assume the chain has it or we filter by something else if not available.
             # Usually 'delta' is part of Greeks.
             delta = abs(float(row.get('delta', 0)))
-            premium = float(row.get('premium', row.get('close', 0)))
+            premium_raw = row.get('ltp') or row.get('premium') or row.get('close')
+            if premium_raw is None:
+                continue
+            premium = float(premium_raw)
             strike = float(row.get('strike', 0))
             
             if target_min <= delta <= target_max:

@@ -154,12 +154,16 @@ def compute_persisted_trend(symbol: str, ctx: dict = None) -> PersistenceResult:
     return result
 
 def normalize_core_verdict_to_tfss_intent(core_verdict: str) -> Optional[TFSSIntent]:
-    bullish_verdicts = ["Long Buildup", "Short Covering", "GO_LONG", "Put Writing", "OI Bias Bullish"]
-    bearish_verdicts = ["Short Buildup", "Long Unwinding", "GO_SHORT", "Call Writing", "OI Bias Bearish"]
+    if not core_verdict:
+        return None
+    normalized = str(core_verdict).strip().upper().replace(" ", "_")
     
-    if core_verdict in bullish_verdicts:
+    bullish_verdicts = {"LONG_BUILDUP", "SHORT_COVERING", "GO_LONG", "PUT_WRITING", "OI_BIAS_BULLISH"}
+    bearish_verdicts = {"SHORT_BUILDUP", "LONG_UNWINDING", "GO_SHORT", "CALL_WRITING", "OI_BIAS_BEARISH"}
+    
+    if normalized in bullish_verdicts:
         return TFSSIntent(bias="BULLISH", execution_family="TFSS_BULLISH")
-    if core_verdict in bearish_verdicts:
+    if normalized in bearish_verdicts:
         return TFSSIntent(bias="BEARISH", execution_family="TFSS_BEARISH")
     return None
 

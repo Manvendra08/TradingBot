@@ -550,3 +550,27 @@
   1. **DTE-triggered pre-fetching**: Updated `_prefetch_symbol_data` in `src/engine/pipeline.py` to calculate DTE for the current expiry. If `DTE < 2` days, the next future expiry is identified from `all_expiries`.
   2. **Asynchronous parallel I/O**: The pipeline submits a parallel, non-blocking fetch task for the next expiry option chain via `pipeline_io_executor` concurrently with chart/news requests.
   3. **Data Accumulation**: Updated `_process_prefetched_symbol` to retrieve the next expiry's option chain and save its strikes to `option_chain_snapshots`, ensuring historical data exists prior to contract rollover.
+
+### F73: TFSS Execution, Margin Resolution, and Verdict Parsing Bugs (P0-CRITICAL)
+- **Symptoms:** 
+  1. TFSS option SELL legs calculated incorrect lot sizes due to futures margin fallbacks.
+  2. Stop-loss and target calculations used flat 0.20/0.25 delta defaults when option chain data lacked delta.
+  3. Non-expiry day trades were blocked between 15:00–15:30 IST.
+  4. TFSS option selection (`select_candidate()`) premium lookups returned `0.0` premium, preventing strategy entry.
+  5. Core verdicts mapping to TFSS intents failed silently due to strict case/underscore sensitivity.
+  6. Greedy fallback regex matched multi-line prose in intelligence summaries instead of exact verdict labels.
+- **Root Causes:**
+  1. `calculate_trade_lots` and `_calculate_live_lots` resolved instruments as `"FUT"` regardless of option type.
+  2. `_calculate_option_sl_target` fell back to hardcoded `0.20` (SELL) / `0.25` (BUY) when `delta is None`.
+  3. `time_guards.py` checked standard 15:00–15:30 window on non-expiry days without checking if the current day matches `expiry_str`.
+  4. `select_candidate()` read premium via `row.get('premium', row.get('close', 0))`, but the fetchers return `ltp` as key.
+  5. `normalize_core_verdict_to_tfss_intent()` used exact case-sensitive matching against `"Long Buildup"` etc., bypassing capitalized/underscore formats.
+  6. Fallback regex `[A-Z][A-Z _]{1,30}` matched long prose wrapping lines instead of restricting to known tokens.
+- **Fixes:**
+  1. Updated `calculate_trade_lots` to accept optional `option_type` and `strike` and propagate them to `resolve_instrument` to resolve option contracts correctly.
+  2. Implemented `DEFAULT_SYMBOL_DELTAS` fallback calibration map in `trade_plan.py`.
+  3. Added expiry day verification (`expiry_date == now.date()`) inside the 15:00–15:30 IST window guard in `time_guards.py`.
+  4. Updated `select_candidate()` to check `row.get('ltp')` first when extracting option premiums.
+  5. Added string normalization (strip, uppercase, replace spaces with underscores) before matching core verdicts in `trend_following_short_strangle.py`.
+  6. Constrained the fallback regex in `parse_verdict_and_confidence()` to match only known verdict tokens.
+

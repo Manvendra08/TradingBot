@@ -1156,6 +1156,8 @@ def run_live_trading(
         side=plan.get("side", "BUY"),
         is_paper=False,
         pyramid_level=plan.get("pyramid_level", 1),
+        option_type=plan.get("option_type"),
+        strike=plan.get("strike"),
     )
     today_date = datetime.now(IST).strftime("%Y%m%d")
     signal_key = f"{symbol}:{plan.get('option_type', '')}:{int(plan.get('strike') or 0)}:{today_date}:live"

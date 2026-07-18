@@ -76,7 +76,13 @@ def is_trading_allowed_now(symbol: str, expiry_str: str | None = None) -> tuple[
         # ── Window 2: Expiry end-of-session 15:00–15:30 IST ─────────────────
         if not is_mcx:
             if (h, m) >= (15, 0) and (h, m) <= (15, 30):
-                return False, "Expiry end-of-session window (15:00–15:30 IST)"
+                if expiry_str:
+                    try:
+                        expiry_date = datetime.strptime(expiry_str, "%Y-%m-%d").date()
+                        if expiry_date == now.date():
+                            return False, f"Expiry end-of-session window (15:00–15:30 IST) for expiry {expiry_str}"
+                    except Exception:
+                        pass
 
         # ── Window 3: EIA report ±15 min (NATURALGAS Thursday, CRUDEOIL Wednesday) ────────
         if sym in ("NATURALGAS", "NATGAS"):

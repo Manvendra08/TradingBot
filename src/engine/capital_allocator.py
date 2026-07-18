@@ -104,7 +104,14 @@ def _fetch_broker_margin_requirement(
     return None
 
 
-def _calculate_live_lots(symbol: str, entry_premium: float, side: str, config: dict) -> int:
+def _calculate_live_lots(
+    symbol: str,
+    entry_premium: float,
+    side: str,
+    config: dict,
+    option_type: str | None = None,
+    strike: float | None = None,
+) -> int:
     """Live/broker lot sizing: per-symbol override or capital-based auto-calc."""
     base = _base_symbol(symbol)
 
@@ -133,7 +140,9 @@ def _calculate_live_lots(symbol: str, entry_premium: float, side: str, config: d
             from src.engine.symbol_resolver import resolve_instrument
             expiry = config.get("_current_expiry")  # Set by caller if available
             if expiry:
-                resolved = resolve_instrument(base, expiry, 0.0, "FUT")
+                resolved_type = option_type if option_type in ("CE", "PE") else "FUT"
+                resolved_strike = float(strike or 0.0)
+                resolved = resolve_instrument(base, expiry, resolved_strike, resolved_type)
                 if resolved and resolved.get("tradingsymbol"):
                     broker_margin = _fetch_broker_margin_requirement(
                         symbol=base,
@@ -192,6 +201,8 @@ def calculate_trade_lots(
     pyramid_level: int = 1,
     setup_type: str | None = None,
     tranche_index: int = 0,
+    option_type: str | None = None,
+    strike: float | None = None,
 ) -> int:
     """
     Calculate the number of lots to trade for a symbol based on settings and premium.
@@ -214,7 +225,7 @@ def calculate_trade_lots(
 
     if is_paper:
         if _broker_mode_enabled(config):
-            lots = _calculate_live_lots(base, entry_premium, side, config)
+            lots = _calculate_live_lots(base, entry_premium, side, config, option_type, strike)
             log.debug("%s: paper trade — broker mode on, using live lot sizing (%d lots)", base, lots)
         else:
             paper_symbol_lots = config.get("paper_symbol_lots") or {}
@@ -225,7 +236,7 @@ def calculate_trade_lots(
                 lots = max(1, int(config.get("paper_lots") or 10))
                 log.debug("%s: paper trade — using global paper_lots=%d", base, lots)
     else:
-        lots = _calculate_live_lots(base, entry_premium, side, config)
+        lots = _calculate_live_lots(base, entry_premium, side, config, option_type, strike)
 
     # Pyramiding Sizing (Flaw #10): Reduce size on scaling in
     original_lots = lots
