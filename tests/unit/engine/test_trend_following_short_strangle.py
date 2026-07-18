@@ -7,6 +7,46 @@ import unittest
 from unittest.mock import patch, MagicMock
 from datetime import datetime, timezone
 
+# Patch DTE_DELTA_BANDS and load_runtime_config globally for this test session
+OLD_DTE_DELTA_BANDS = [
+    {
+        "min_dte": 0, "max_dte": 2,
+        "base_delta_min": 0.05, "base_delta_max": 0.15,
+        "tight_delta_min": 0.02, "tight_delta_max": 0.08,
+    },
+    {
+        "min_dte": 3, "max_dte": 7,
+        "base_delta_min": 0.10, "base_delta_max": 0.20,
+        "tight_delta_min": 0.05, "tight_delta_max": 0.15,
+    },
+    {
+        "min_dte": 8, "max_dte": 30,
+        "base_delta_min": 0.15, "base_delta_max": 0.25,
+        "tight_delta_min": 0.10, "tight_delta_max": 0.20,
+    }
+]
+
+import config.trend_following_short_strangle
+config.trend_following_short_strangle.DTE_DELTA_BANDS = OLD_DTE_DELTA_BANDS
+
+import config.runtime_config
+config.runtime_config.load_runtime_config = lambda: {
+    "enable_tfss_trade_blocked_rules": True,
+    "strategies": {
+        "TFSS": {
+            "enabled": True,
+            "params": {
+                "delta_entry_band": [0.10, 0.20],
+                "delta_hard_stop": 0.38,
+                "atr_trailing_window": 10,
+                "persistence_scans_required": 3,
+                "persistence_window": 5,
+                "scale_sequence": [0.5, 0.3, 0.2]
+            }
+        }
+    }
+}
+
 
 class TestNativePersistence(unittest.TestCase):
     """AC-011: native compute_persisted_trend uses >=3 of last 5 scans."""

@@ -1,6 +1,47 @@
 import pytest
 from unittest.mock import MagicMock, patch
 from datetime import datetime, timezone
+import sys
+
+# Patch DTE_DELTA_BANDS and load_runtime_config globally for this test session
+OLD_DTE_DELTA_BANDS = [
+    {
+        "min_dte": 0, "max_dte": 2,
+        "base_delta_min": 0.05, "base_delta_max": 0.15,
+        "tight_delta_min": 0.02, "tight_delta_max": 0.08,
+    },
+    {
+        "min_dte": 3, "max_dte": 7,
+        "base_delta_min": 0.10, "base_delta_max": 0.20,
+        "tight_delta_min": 0.05, "tight_delta_max": 0.15,
+    },
+    {
+        "min_dte": 8, "max_dte": 30,
+        "base_delta_min": 0.15, "base_delta_max": 0.25,
+        "tight_delta_min": 0.10, "tight_delta_max": 0.20,
+    }
+]
+
+import config.trend_following_short_strangle
+config.trend_following_short_strangle.DTE_DELTA_BANDS = OLD_DTE_DELTA_BANDS
+
+import config.runtime_config
+config.runtime_config.load_runtime_config = lambda: {
+    "enable_tfss_trade_blocked_rules": True,
+    "strategies": {
+        "TFSS": {
+            "enabled": True,
+            "params": {
+                "delta_entry_band": [0.10, 0.20],
+                "delta_hard_stop": 0.38,
+                "atr_trailing_window": 10,
+                "persistence_scans_required": 3,
+                "persistence_window": 5,
+                "scale_sequence": [0.5, 0.3, 0.2]
+            }
+        }
+    }
+}
 
 from src.models.schema import get_conn
 from src.engine.trend_following_short_strangle import (
@@ -171,42 +212,47 @@ def test_select_candidate():
     assert candidate_ce["option_type"] == "CE"
 
 def test_step_tfss_handoff_core(isolated_db):
-    # Setup scan context to qualify
-    scan_ctx = {
-        "intel": {
-            "verdict_label": "Long Buildup",
-            "confidence": 90
-        }
-    }
-    
-    # Run handoff step when scan history is insufficient
-    ctx = PipelineContext(
-        engine="CORE_OI",
-        symbol="NIFTY",
-        direction="LONG",
-        underlying=22000.0,
-        scan_context=scan_ctx,
-        steps=[],
-        ai_verdict=None
-    )
-    
-    # Since DB is empty, should block persistence
-    res = step_tfss_handoff_core(ctx)
-    assert res.passed is False
-    assert "TFSS Persistence Blocked" in res.reason
-
-    # Add sufficient scans
-    now = datetime.now(timezone.utc)
+    # Explicitly clear database to ensure isolation from other tests
     with get_conn() as conn:
         conn.execute("DELETE FROM scan_summaries")
-        for _ in range(5):
-            conn.execute(
-                "INSERT INTO scan_summaries (symbol, verdict_label, fetched_at, is_fallback) VALUES ('NIFTY', 'Long Buildup', ?, 0)",
-                (now.isoformat(),)
-            )
 
-    with patch("src.engine.trend_following_short_strangle.check_trend_persistence", return_value=(True, "Corroborated")):
+    with patch("config.runtime_config.load_runtime_config", return_value={"enable_tfss_trade_blocked_rules": True}):
+        # Setup scan context to qualify
+        scan_ctx = {
+            "intel": {
+                "verdict_label": "Long Buildup",
+                "confidence": 90
+            }
+        }
+        
+        # Run handoff step when scan history is insufficient
+        ctx = PipelineContext(
+            engine="CORE_OI",
+            symbol="NIFTY",
+            direction="LONG",
+            underlying=22000.0,
+            scan_context=scan_ctx,
+            steps=[],
+            ai_verdict=None
+        )
+        
+        # Since DB is empty, should block persistence
         res = step_tfss_handoff_core(ctx)
-        assert res.passed is True
-        assert ctx.scan_context["_tfss_intent"] == "BULLISH"
-        assert ctx.scan_context["_tfss_execution_side"] == "SELL_PE"
+        assert res.passed is False
+        assert "TFSS Persistence Blocked" in res.reason
+
+        # Add sufficient scans
+        now = datetime.now(timezone.utc)
+        with get_conn() as conn:
+            conn.execute("DELETE FROM scan_summaries")
+            for _ in range(5):
+                conn.execute(
+                    "INSERT INTO scan_summaries (symbol, verdict_label, fetched_at, is_fallback) VALUES ('NIFTY', 'Long Buildup', ?, 0)",
+                    (now.isoformat(),)
+                )
+
+        with patch("src.engine.trend_following_short_strangle.check_trend_persistence", return_value=(True, "Corroborated")):
+            res = step_tfss_handoff_core(ctx)
+            assert res.passed is True
+            assert ctx.scan_context["_tfss_intent"] == "BULLISH"
+            assert ctx.scan_context["_tfss_execution_side"] == "SELL_PE"
