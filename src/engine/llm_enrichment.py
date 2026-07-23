@@ -35,8 +35,12 @@ except ImportError:
 
 try:
     import boto3
+    from botocore.auth import SigV4Auth
+    from botocore.awsrequest import AWSRequest
 except ImportError:
     boto3 = None
+    SigV4Auth = None
+    AWSRequest = None
 
 try:
     import httpx as _httpx
@@ -1075,6 +1079,49 @@ def _call_llm_api(
         else:
             purpose = "formatting"
 
+    # Primary Bedrock Mantle group for reasoning
+    _bedrock_mantle_group = {
+        "model_group": "bedrock-mantle-primary",
+        "providers": [
+            {
+                "name": "Bedrock Mantle (DeepSeek V3.2)",
+                "env_key": "AWS_ACCESS_KEY_ID",
+                "model": "deepseek.v3.2",
+                "use_bedrock_mantle": True,
+            },
+            {
+                "name": "Bedrock Mantle (DeepSeek V3.1)",
+                "env_key": "AWS_ACCESS_KEY_ID",
+                "model": "deepseek.v3.1",
+                "use_bedrock_mantle": True,
+            },
+            {
+                "name": "Bedrock Mantle (Qwen3 235B)",
+                "env_key": "AWS_ACCESS_KEY_ID",
+                "model": "qwen.qwen3-235b-a22b-2507",
+                "use_bedrock_mantle": True,
+            },
+            {
+                "name": "Bedrock Mantle (Qwen3 Coder 480B)",
+                "env_key": "AWS_ACCESS_KEY_ID",
+                "model": "qwen.qwen3-coder-480b-a35b-instruct",
+                "use_bedrock_mantle": True,
+            },
+            {
+                "name": "Bedrock Mantle (Qwen3 32B)",
+                "env_key": "AWS_ACCESS_KEY_ID",
+                "model": "qwen.qwen3-32b",
+                "use_bedrock_mantle": True,
+            },
+            {
+                "name": "Bedrock Mantle (Mistral Large 3 675B)",
+                "env_key": "AWS_ACCESS_KEY_ID",
+                "model": "mistral.mistral-large-3-675b-instruct",
+                "use_bedrock_mantle": True,
+            },
+        ],
+    }
+
     # Route model pipeline based on purpose
     if purpose == "eod_review":
         _github_models_eod = {
@@ -1111,7 +1158,9 @@ def _call_llm_api(
                 },
             ],
         }
+
         FREE_MODEL_PIPELINE = [
+            _bedrock_mantle_group,
             _github_models_eod,
             _groq_group_eod,
             {
@@ -1210,6 +1259,7 @@ def _call_llm_api(
             ],
         }
         FREE_MODEL_PIPELINE = [
+            _bedrock_mantle_group,
             _github_models_fmt,
             _groq_group_fmt,
             {
@@ -1501,8 +1551,9 @@ def _call_llm_api(
         }
 
         if _is_mcx:
-            # MCX: GitHub Models (primary) → Groq → Nvidia NIM → Bedrock → OpenRouter → Gemini → SambaNova → Opencode Zen (fallback)
+            # MCX: Bedrock Mantle (primary) → GitHub Models → Groq → Nvidia NIM → Bedrock → OpenRouter → Gemini → SambaNova → Opencode Zen (fallback)
             FREE_MODEL_PIPELINE = [
+                _bedrock_mantle_group,
                 _github_models,
                 _groq_group,
                 _nvidia_nim_group,
@@ -1547,8 +1598,9 @@ def _call_llm_api(
                 _opencode_zen_group,
             ]
         else:
-            # NSE/BSE indices: GitHub Models (primary) → Groq → Nvidia NIM → Bedrock → OpenRouter → Gemini → Opencode Zen (fallback)
+            # NSE/BSE indices: Bedrock Mantle (primary) → GitHub Models → Groq → Nvidia NIM → Bedrock → OpenRouter → Gemini → Opencode Zen (fallback)
             FREE_MODEL_PIPELINE = [
+                _bedrock_mantle_group,
                 _github_models,
                 _groq_group,
                 _nvidia_nim_group,
@@ -1635,6 +1687,82 @@ def _call_llm_api(
                         )
                         _API_QUOTA_EXHAUSTED_UNTIL = now + 600.0
                         _PROVIDER_COOLDOWN_UNTIL[cooldown_key] = now + 600.0
+                continue
+
+            if provider.get("use_bedrock_mantle"):
+                if not boto3 or not SigV4Auth or not AWSRequest:
+                    continue
+                try:
+                    region = provider.get("region", "us-east-1")
+                    url = provider.get(
+                        "url",
+                        f"https://bedrock-mantle.{region}.api.aws/v1/chat/completions",
+                    )
+                    log.info(
+                        "[llm] Trying Bedrock Mantle model %s via SigV4 (%.0fs remaining)",
+                        provider["model"],
+                        remaining,
+                    )
+                    boto_session = boto3.Session()
+                    creds = boto_session.get_credentials()
+                    if not creds:
+                        log.info("[llm] Bedrock Mantle failed: No AWS credentials found")
+                        continue
+                    frozen_creds = creds.get_frozen_credentials()
+
+                    json_payload = {
+                        "model": provider["model"],
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": prompt},
+                        ],
+                        "response_format": {"type": "json_object"},
+                        "temperature": 0.2,
+                        "max_tokens": provider.get("max_tokens_override", max_tokens),
+                    }
+                    data_str = json.dumps(json_payload)
+
+                    aws_req = AWSRequest(method="POST", url=url, data=data_str)
+                    aws_req.context["payload_signing_enabled"] = True
+                    aws_req.headers["Content-Type"] = "application/json"
+
+                    auth = SigV4Auth(frozen_creds, "bedrock-mantle", region)
+                    auth.add_auth(aws_req)
+
+                    headers = dict(aws_req.headers)
+                    resp = session.post(
+                        url,
+                        headers=headers,
+                        data=data_str,
+                        timeout=min(remaining, provider.get("timeout", 15.0)),
+                    )
+
+                    if resp.status_code == 200:
+                        resp_json = resp.json()
+                        raw_content = resp_json["choices"][0]["message"]["content"]
+                        parsed = _extract_json(raw_content)
+                        result = schema(**parsed)
+                        log.info(
+                            "[llm] %s OK via Bedrock Mantle (%s)",
+                            schema.__name__,
+                            provider["model"],
+                        )
+                        _CONSECUTIVE_FAILURES = 0
+                        return result
+                    else:
+                        log.info(
+                            "[llm] Bedrock Mantle %s status %s: %s",
+                            provider["model"],
+                            resp.status_code,
+                            resp.text[:200],
+                        )
+                except Exception as inner_e:
+                    err = str(inner_e)
+                    log.info(
+                        "[llm] Bedrock Mantle %s failed: %s",
+                        provider["model"],
+                        err[:200],
+                    )
                 continue
 
             if provider.get("use_bedrock_sdk"):
@@ -2275,6 +2403,7 @@ def get_llm_verdict(
         or os.environ.get("GROQ_API_KEY")
         or os.environ.get("GEMINI_API_KEY")
         or os.environ.get("GITHUB_TOKEN")
+        or os.environ.get("AWS_ACCESS_KEY_ID")
     )
     if not has_keys:
         return None

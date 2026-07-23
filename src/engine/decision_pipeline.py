@@ -26,6 +26,8 @@ from config.settings import (
     HIGH_CONFIDENCE_BYPASS_THRESHOLD,
     EMP_BOOST_MIN_TRADES,
     EMP_BOOST_MIN_WINRATE,
+    TIERED_GATES_ENABLED,
+    get_tiered_gates_profile,
 )
 from src.engine.time_guards import is_trading_allowed_now
 from src.engine.entry_quality import calculate_entry_quality
@@ -1177,10 +1179,72 @@ def run_entry_pipeline(ctx: PipelineContext) -> PipelineContext:
     ctx.scan_context["_signal_key"] = ""
 
     steps = CORE_OI_STEPS if ctx.engine == "CORE_OI" else TIMEFRAME_STEPS
+    HARD_GATE_NAMES = {"signal", "rule", "ai", "tfss_handoff", "risk"}
+    SOFT_GATE_NAMES = {"entry_quality", "regime", "trend", "heavyweight_alignment"}
+
+    from config.runtime_config import load_runtime_config
+    rconf = load_runtime_config()
+    tiered_enabled = rconf.get("tiered_gates_enabled", TIERED_GATES_ENABLED)
+
     for step_fn in steps:
         result = step_fn(ctx)
         ctx.steps.append(result)
-        if not result.passed and PIPELINE_SHORT_CIRCUIT:
+        if not result.passed and PIPELINE_SHORT_CIRCUIT and not tiered_enabled:
             break
+
+    if tiered_enabled:
+        # Tiered Gates Evaluation (Option A):
+        # HARD gates are non-negotiable binary safety checks.
+        # SOFT gates combine into a weighted composite score with soft floors.
+        hard_failed = any(not s.passed for s in ctx.steps if s.name in HARD_GATE_NAMES)
+
+        if not hard_failed:
+            profile = get_tiered_gates_profile(ctx.symbol)
+            weights = profile.get("weights", {})
+            floors = profile.get("floors", {})
+
+            # 1. Check soft step floors
+            floor_breached = False
+            for s in ctx.steps:
+                if s.name in SOFT_GATE_NAMES:
+                    fl_val = float(floors.get(s.name, 0.0))
+                    if fl_val > 0.0 and float(s.score) < fl_val:
+                        floor_breached = True
+                        log.info(
+                            "%s: [Tiered Gates] Soft floor failed for %s: score %.1f < floor %.1f",
+                            ctx.symbol, s.name, s.score, fl_val,
+                        )
+                        break
+
+            # 2. Calculate composite score across active soft gates
+            composite_score = 0.0
+            for s in ctx.steps:
+                if s.name in SOFT_GATE_NAMES:
+                    w = float(weights.get(s.name, 0.0))
+                    sc = max(0.0, float(s.score))
+                    composite_score += sc * w
+
+            # 3. Calculate confidence-scaled effective composite threshold
+            confidence = int(ctx.scan_context.get("intel", {}).get("confidence") or 0)
+            conf_delta = max(0.0, float(confidence - 70))
+            step_size = float(profile.get("confidence_scaling_step", 5.0))
+            reduction_rate = float(profile.get("confidence_scaling_reduction", 1.5))
+            threshold_reduction = (conf_delta / step_size) * reduction_rate
+            effective_threshold = max(0.0, float(profile.get("composite_threshold", 62.0)) - threshold_reduction)
+
+            ctx.scan_context["_composite_score"] = round(composite_score, 2)
+            ctx.scan_context["_composite_threshold"] = round(effective_threshold, 2)
+
+            # 4. Apply composite approval if composite_score >= effective_threshold and no floor breach
+            if not floor_breached and composite_score >= effective_threshold:
+                for s in ctx.steps:
+                    if s.name in SOFT_GATE_NAMES and not s.passed:
+                        s.passed = True
+                        s.reason = f"{s.reason} [Approved by Tiered Gates Composite: {composite_score:.1f} >= {effective_threshold:.1f}]"
+                log.info(
+                    "%s: [Tiered Gates] Composite score %.2f >= %.2f (conf=%d) — Soft gates approved!",
+                    ctx.symbol, composite_score, effective_threshold, confidence,
+                )
+
     return ctx
 

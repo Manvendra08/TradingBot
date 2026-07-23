@@ -96,10 +96,23 @@ def _get_incidents_conn():
     return conn
 
 
+def _prune_old_incidents(hours: int = 72) -> None:
+    """Purge incident entries older than specified hours (default 72h)."""
+    try:
+        cutoff = (datetime.now(IST) - timedelta(hours=hours)).isoformat()
+        conn = sqlite3.connect(str(AGENT_DB), timeout=10.0)
+        conn.execute("DELETE FROM incidents WHERE ts < ?", (cutoff,))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log.debug("Failed to prune old incidents: %s", e)
+
+
 def _log_incident(
     playbook_id: str, trigger: str, action: str, result: str
 ) -> int:
     now = datetime.now(IST).isoformat()
+    _prune_old_incidents(72)
     with _get_incidents_conn() as conn:
         cursor = conn.execute(
             "INSERT INTO incidents (ts, playbook_id, trigger_state, action, result) VALUES (?,?,?,?,?)",
@@ -1091,9 +1104,16 @@ def main():
                 # Only check shoonya_session staleness during market hours
                 if key == "shoonya_session" and not in_market:
                     continue
-                # Only check parity_feed staleness during MCX hours
-                if key == "parity_feed" and not mcx_open:
-                    continue
+                # Only check parity_feed staleness during active PARITY regime hours (09:00-17:30 IST)
+                if key == "parity_feed":
+                    from src.engine.ng_session_router import get_ng_regime
+                    regime, _ = get_ng_regime(now_ist)
+                    if regime != "PARITY":
+                        continue
+                    # Grace period: allow 30 minutes after parity session open (09:00 IST) for first scan to run
+                    parity_start = now_ist.replace(hour=9, minute=0, second=0, microsecond=0)
+                    if now_ist >= parity_start and (now_ist - parity_start).total_seconds() < 1800:
+                        continue
                 
                 stale_min = cfg["stale_min"]
                 if key == "parity_feed":

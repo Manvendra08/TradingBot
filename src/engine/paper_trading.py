@@ -26,10 +26,11 @@ log = logging.getLogger(__name__)
 
 
 def _dte_from_expiry(expiry: str) -> int:
-    """Calculate days to expiry from YYYY-MM-DD string."""
+    """Calculate days to expiry from YYYY-MM-DD string using IST timezone date."""
     try:
+        from config.settings import IST
         exp_date = datetime.strptime(expiry, "%Y-%m-%d").date()
-        today = datetime.now(timezone.utc).date()
+        today = datetime.now(IST).date()
         return max(0, (exp_date - today).days)
     except Exception:
         return 999
@@ -832,6 +833,19 @@ def _monitor_single_paper_trade(symbol: str, open_trade: dict, current_ctx: dict
             except Exception:
                 log.debug("%s: Dead Trade check failed gracefully", symbol)
 
+    # ── Reversal Check ──
+    reversal_close = False
+    reversal_reason = ""
+    if not hit_sl and not hit_target and not dead_trade_close:
+        verdict = current_ctx.get("verdict_label", "")
+        confidence = int(current_ctx.get("confidence") or 0)
+        strike_val = float(open_trade.get("strike") or 0)
+        if _is_reversal_against_open_trade(
+            open_trade, verdict, confidence, symbol, option_type, strike_val, current_ctx
+        ):
+            reversal_close = True
+            reversal_reason = f"reversal: verdict={verdict} conf={confidence}"
+
     if hit_sl or hit_target:
         if hit_sl:
             if trailing_sl_hit:
@@ -896,6 +910,34 @@ def _monitor_single_paper_trade(symbol: str, open_trade: dict, current_ctx: dict
         actions.append(
             {
                 "action": "DEAD_TRADE",
+                "trade_id": open_trade["id"],
+                "underlying": underlying,
+            }
+        )
+    elif reversal_close:
+        exit_premium = None
+        if option_type != "FUT":
+            exit_premium = _get_option_premium(
+                symbol,
+                open_trade.get("expiry"),
+                open_trade.get("strike"),
+                option_type,
+                current_ctx.get("option_rows"),
+            )
+        close_paper_trade(
+            open_trade["id"],
+            datetime.now(timezone.utc).isoformat(),
+            underlying,
+            exit_premium if option_type in ("CE", "PE") else underlying,
+            "CLOSED_REVERSAL",
+            reversal_reason,
+        )
+        log.info("%s: paper trade #%s closed on reversal signal during monitoring.", symbol, open_trade["id"])
+        _invalidate_pattern_cache()
+        _trigger_ml_retraining()
+        actions.append(
+            {
+                "action": "CLOSED_REVERSAL",
                 "trade_id": open_trade["id"],
                 "underlying": underlying,
             }

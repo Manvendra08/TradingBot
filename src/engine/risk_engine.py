@@ -4,10 +4,9 @@ Risk engine — paper AND live trading.
 Checks performed before allowing a new trade:
   1. Max open trades per symbol
   2. Max total open trades
-  3. Max trades per symbol per day
-  4. Daily loss cap  [FIX #3: sums only negative P&L so profits don't mask losses]
-  5. Loss cooldown (wait N minutes after a loss before re-entering)
-  6. Account-level consecutive-loss circuit breaker [FIX #11: new]
+  3. Daily loss cap  [FIX #3: sums only negative P&L so profits don't mask losses]
+  4. Loss cooldown (wait N minutes after a loss before re-entering)
+  5. Account-level consecutive-loss circuit breaker [FIX #11: new]
 
 Both check_risk_limits() (paper) and check_live_risk_limits() (live) share
 identical logic — they only differ in which DB table they query.
@@ -29,12 +28,6 @@ from config.settings import (
     MAX_DAILY_LOSS_RUPEES,
     LOSS_COOLDOWN_MINUTES,
 )
-
-try:
-    from config.settings import CAPITAL, MAX_ALLOCATION_PER_TRADE
-except ImportError:
-    CAPITAL = 500000.0
-    MAX_ALLOCATION_PER_TRADE = 0.10
 
 log = logging.getLogger(__name__)
 
@@ -68,7 +61,8 @@ def _check_consecutive_loss_breaker(conn, trades_table: str, label: str) -> tupl
     all new entries until the rolling window moves past those losses.
     """
     # P2-9: SQL injection guard — f-string table names must be allowlisted
-    assert trades_table in ("paper_trades", "live_trades"), f"Unexpected table: {trades_table}"
+    if trades_table not in ("paper_trades", "live_trades"):
+        raise ValueError(f"Unexpected table: {trades_table}")
     window_start = (
         datetime.now(timezone.utc) - timedelta(minutes=CONSECUTIVE_LOSS_WINDOW_MINUTES)
     ).isoformat()
@@ -105,7 +99,8 @@ def _check_risk_limits_for_table(
     Returns (allowed, reason, sub_check_code).
     """
     # P2-9: SQL injection guard — f-string table names must be allowlisted
-    assert trades_table in ("paper_trades", "live_trades"), f"Unexpected table: {trades_table}"
+    if trades_table not in ("paper_trades", "live_trades"):
+        raise ValueError(f"Unexpected table: {trades_table}")
 
     today_start = _ist_day_start_utc()
 
@@ -113,7 +108,7 @@ def _check_risk_limits_for_table(
         # Hook for NATURALGAS specific risk limits (position limit and daily loss cap) (XBUG-002)
         if symbol == "NATURALGAS":
             from src.engine.ng_risk_manager import check_ng_position_limit, check_ng_daily_loss_cap
-            if not check_ng_position_limit(trades_table):
+            if not check_ng_position_limit(trades_table, setup_type):
                 return False, f"[{label}] NATURALGAS position limit reached.", "NG_POSITION_LIMIT"
             if check_ng_daily_loss_cap(trades_table):
                 return False, f"[{label}] NATURALGAS daily loss cap (2 consecutive SL) hit today.", "NG_DAILY_LOSS_CAP"
@@ -150,24 +145,7 @@ def _check_risk_limits_for_table(
                 f"({open_total}/{MAX_OPEN_TRADES_TOTAL})"
             ), "MAX_OPEN_TRADES_TOTAL"
 
-        # 3. Capital allocation limit (10% max per trade)
-        max_capital = CAPITAL * MAX_ALLOCATION_PER_TRADE
-        open_capital_row = conn.execute(
-            f"""
-            SELECT COALESCE(SUM(entry_underlying), 0) AS total
-            FROM {trades_table}
-            WHERE symbol = ? AND status = 'OPEN'
-            """,
-            (symbol,),
-        ).fetchone()
-        open_capital = float(open_capital_row["total"] if open_capital_row else 0.0)
-        if not (setup_type and "TFSS" in str(setup_type).upper()) and open_capital >= max_capital:
-            return False, (
-                f"[{label}] Capital allocation limit reached for {symbol} "
-                f"(\u20b9{open_capital:,.0f} / \u20b9{max_capital:,.0f})"
-            ), "CAPITAL_ALLOCATION"
-
-        # 4. Daily loss cap
+        # 3. Daily loss cap
         # BUG-M4 FIX: Use parameterized timestamps only instead of mixing parameterized
         # and CURRENT_TIMESTAMP. This prevents timezone offset mismatches.
         now_utc = datetime.now(timezone.utc).isoformat()
@@ -187,41 +165,42 @@ def _check_risk_limits_for_table(
                 f"limit -\u20b9{MAX_DAILY_LOSS_RUPEES:,.0f})"
             ), "DAILY_LOSS_CAP"
 
-        # 5. Cooldown after SL/loss (per-symbol)
-        cooldown_start = (
-            datetime.now(timezone.utc) - timedelta(minutes=LOSS_COOLDOWN_MINUTES)
-        ).isoformat()
-        last_loss = conn.execute(
-            f"""
-            SELECT closed_at FROM {trades_table}
-            WHERE symbol = ? AND status IN ('CLOSED_SL', 'CLOSED_MANUAL', 'CLOSED', 'SL_HIT', 'CLOSED_REVERSAL', 'CLOSED_TF_EXIT') AND pnl_rupees < 0
-              AND closed_at >= ?
-            ORDER BY closed_at DESC
-            LIMIT 1
-            """,
-            (symbol, cooldown_start),
-        ).fetchone()
-        if last_loss:
-            try:
-                last_loss_dt = datetime.fromisoformat(
-                    last_loss["closed_at"].replace("Z", "+00:00")
-                )
-                if last_loss_dt.tzinfo is None:
-                    last_loss_dt = last_loss_dt.replace(tzinfo=timezone.utc)
-                elapsed = (datetime.now(timezone.utc) - last_loss_dt).total_seconds() / 60
-                if elapsed < LOSS_COOLDOWN_MINUTES:
-                    remaining = int(LOSS_COOLDOWN_MINUTES - elapsed)
-                    return False, (
-                        f"[{label}] Loss cooldown active for {symbol} — "
-                        f"{remaining} min remaining"
-                    ), "LOSS_COOLDOWN"
-            except Exception as exc:
-                log.warning(
-                    "[%s] Could not parse last_loss closed_at for %s: %s",
-                    label, symbol, exc,
-                )
+        # 4. Cooldown after SL/loss (per-symbol)
+        if not (setup_type and "TFSS" in str(setup_type).upper()):
+            cooldown_start = (
+                datetime.now(timezone.utc) - timedelta(minutes=LOSS_COOLDOWN_MINUTES)
+            ).isoformat()
+            last_loss = conn.execute(
+                f"""
+                SELECT closed_at FROM {trades_table}
+                WHERE symbol = ? AND status IN ('CLOSED_SL', 'CLOSED_MANUAL', 'CLOSED', 'SL_HIT', 'CLOSED_REVERSAL', 'CLOSED_TF_EXIT') AND pnl_rupees < 0
+                  AND closed_at >= ?
+                ORDER BY closed_at DESC
+                LIMIT 1
+                """,
+                (symbol, cooldown_start),
+            ).fetchone()
+            if last_loss:
+                try:
+                    last_loss_dt = datetime.fromisoformat(
+                        last_loss["closed_at"].replace("Z", "+00:00")
+                    )
+                    if last_loss_dt.tzinfo is None:
+                        last_loss_dt = last_loss_dt.replace(tzinfo=timezone.utc)
+                    elapsed = (datetime.now(timezone.utc) - last_loss_dt).total_seconds() / 60
+                    if elapsed < LOSS_COOLDOWN_MINUTES:
+                        remaining = int(LOSS_COOLDOWN_MINUTES - elapsed)
+                        return False, (
+                            f"[{label}] Loss cooldown active for {symbol} — "
+                            f"{remaining} min remaining"
+                        ), "LOSS_COOLDOWN"
+                except Exception as exc:
+                    log.warning(
+                        "[%s] Could not parse last_loss closed_at for %s: %s",
+                        label, symbol, exc,
+                    )
 
-        # 6. Account-level consecutive-loss circuit breaker (FIX #11)
+        # 5. Account-level consecutive-loss circuit breaker (FIX #11)
         ok, reason = _check_consecutive_loss_breaker(conn, trades_table, label)
         if not ok:
             return False, reason, "CIRCUIT_BREAKER"

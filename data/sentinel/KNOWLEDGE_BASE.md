@@ -351,6 +351,21 @@
 - **Self-Heal:** `ALERT_ONLY` - skip X scrape, use TradingView commodity news only.
 - **Impact:** Minimal — X/NGInews is secondary supplementary source for NATURALGAS sentiment.
 
+### F47: Kite Auto-Login Not Triggered at Scheduler Startup (P1-HIGH)
+- **Symptom:** Scheduler logs "Kite not configured or auto-login pending" at startup even when Kite credentials are properly configured in `.env` file. Auto-login flow is never triggered during pre-pipeline authentication.
+- **Root Cause:** The pre-pipeline auth block in `job_runner.py` only called `get_kite_client()` which returns `None` if no session exists, but never invoked `auto_login_kite()` to actually perform the login flow.
+- **Fix:** Updated the pre-pipeline authentication section to explicitly call `auto_login_kite(force=False)` when `get_kite_client()` returns `None`, ensuring the TOTP-based auto-login is triggered at startup and daily re-auth.
+- **Self-Heal:** Automatic — scheduler now triggers Kite auto-login during startup authentication phase.
+
+### F48: Scan Sentinel Dashboard Integration (P1-HIGH)
+- **Architecture Update:** Added real-time Scan Sentinel diagnostics monitoring to Ops Monitor dashboard.
+- **Implementation:**
+  1. Created `/api/sentinel-incidents` endpoint in `dashboard_server.py` to query `sentinel_incidents` table.
+  2. Created `/api/sentinel-runs` endpoint to fetch recent scan run reports from `data/sentinel/latest.jsonl`.
+  3. Added "Scan Sentinel AI Diagnostics" section to `ops.html` with real-time incident cards showing symbol, severity, summary, root cause, and recommended action.
+  4. Cards are color-coded by severity (P0-CRITICAL=red, P1-HIGH=orange, P2-MEDIUM=yellow) and auto-refresh every 30s.
+- **Behavior:** Dashboard now shows both Ops Agent activity (playbook executions) and Scan Sentinel AI diagnostics (scan anomalies) in a unified monitoring view.
+
 ### F47: DTE=0 Display Bug + Mandatory Synthesized AI Thesis / Timeframe Status
 - **Symptom asked:** Alert on 15/07/2026 showed `Expiry: 2026-07-16 (0 DTE)` (should be 1 DTE). Also: AI Thesis must always be present (raw data + engine verdict + news + open positions) and the Timeframe strategy status must be included.
 - **Root Cause (DTE):** `generate_intelligence()` (intelligence.py:1044) computed `days_to_expiry` and returned it in the result dict, but NEVER wrote it back into `scan_context`. The digest header (`pipeline.py` header `"dte": scan_context.get("days_to_expiry", 0)` → `digest.py:564`) therefore always fell back to the default `0`. Only `llm_enrichment.py:2312` set it on a separate path. Also used UTC `now()`, which is wrong for the IST market-day boundary.
@@ -573,4 +588,119 @@
   4. Updated `select_candidate()` to check `row.get('ltp')` first when extracting option premiums.
   5. Added string normalization (strip, uppercase, replace spaces with underscores) before matching core verdicts in `trend_following_short_strangle.py`.
   6. Constrained the fallback regex in `parse_verdict_and_confidence()` to match only known verdict tokens.
+  
+### F74: Telegram Formatter ✅ Entered False-Positive for Async LLM (P2-MEDIUM)
+- **Symptom:** Telegram notifications edited by the async LLM background thread printed "Trade: ✅ Entered · [Contract] 1 lots", even though the trade was blocked/not executed by the main pipeline thread (and did not exist in the database).
+- **Root Cause:** The structured payload builder (`_build_structured_payload()`) resolved `trade_entered` solely by looking at whether the in-memory trade decision status was `TRIGGERED_CORE` or `TRIGGERED_EXPERIMENTAL`. During async LLM enrichment, the background thread updated the decision status to triggered, causing the formatter to see it as entered, despite the pipeline execution being already complete without executing the strategy runner. It also hardcoded `"qty": 1` in the payload.
+- **Fix:** Plumbed `digest_id` optional parameter into `_build_structured_payload()`. If a `digest_id` is supplied (which is true during background edits), it queries the `paper_trades` and `live_trades` database tables to confirm if a trade matching that `digest_id` actually exists. If no matching trade is found, `trade_entered` is forced to `False` (updating the Telegram alert to "✗ Not entered"), and if it does exist, it uses the actual `lots` from the database.
+
+### F75: Settings Save Endpoint Context Manager Error (P2-MEDIUM)
+- **Symptom:** Saving settings via the dashboard Cockpit returns an HTTP 500 error, displaying "SyntaxError: Unexpected token 'I', 'Internal S'... is not valid JSON".
+- **Root Cause:** In the settings POST API endpoint (`/api/settings` in `dashboard_server.py`), the generator context manager returned by `get_conn()` was treated as the raw connection object. It attempted to call `conn = get_conn()` and then `conn.execute(...)` and `conn.close()`. Because the context manager doesn't implement those attributes directly, it raised an `AttributeError`, causing uvicorn to crash with an Internal Server Error.
+- **Fix:** Refactored the endpoint to correctly use `with get_conn() as conn:` which binds the yielded connection to `conn` and automatically commits and closes it upon exiting the context.
+
+### F76: Kite Direct Trades Classified as Shadow Trades (P1-HIGH)
+- **Symptom:** Direct Kite manual/user-entered trades retrieved from the broker are labeled as "Shadow" trades (with an orange status dot), and there is no separate section grouping bot-triggered shadow trades in the dashboard positions view.
+- **Root Cause:**
+  1. **Backend classification logic**: In `dashboard_server.py` (`_fetch_real_kite_positions`), any position that didn't match a bot database record had its status set to `"LIVE" if not shadow_mode else "SHADOW"`. Since the bot was in shadow mode, direct Kite positions (which are always live real-money trades) were misclassified as shadow trades.
+  2. **Frontend grouping logic**: In `broker.html`, the groupings were hard-split strictly into `BOT TRADES` and `KITE TRADES (DIRECT)`. If the bot ran shadow trades, they were merged under `BOT TRADES` with no distinction.
+- **Fix:**
+  1. Updated `dashboard_server.py` to always return `"trade_status": "LIVE"` for all Kite manual trades (split manual overlays, unmatched direct broker positions, and closed manual trades).
+  2. Updated `broker.html` to separate the positions table into three distinct headers when "GROUP BY SOURCE" is checked: `🤖 BOT LIVE TRADES`, `🤖 BOT SHADOW TRADES`, and `KITE TRADES (DIRECT)`.
+
+### F77: False P05 Parity Feed Stale Alerts during Non-Parity Regimes (P2-MEDIUM)
+- **Symptom:** The `ops_agent.py` process triggers repeated `P05 | Parity feed DOWN during NG hours` alerts during late-afternoon or evening sessions, reporting `stale xxxxs (threshold 7200s)`.
+- **Root Cause:** The parity calculations and corresponding `stamp_health("parity_feed", ...)` execution only happen during the `PARITY` session regime (09:00 - 17:30 IST). During the `MOMENTUM` (18:00 - 23:00 IST) and `EVENT` regimes, the Parity Engine does not run, leaving the last database stamp static. `ops_agent.py` monitored the feed's age unconditionally throughout the entire duration of MCX market hours (09:00 - 23:30 IST), causing the feed to be flagged as stale during non-parity evening sessions.
+- **Fix:** Patched `ops_agent.py` to only evaluate `parity_feed` staleness if the current session regime resolved by `get_ng_regime()` is actively `"PARITY"`. Additionally, added a 30-minute grace period after the parity session starts today (from 09:00 to 09:30 IST) to allow the first scan of the day to update the DB before checking for staleness.
+
+### F78: Dashboard /health Endpoint SQLITE_BUSY Timeouts (P1-HIGH)
+- **Symptom:** Ops Agent Monitor page displays "DASHBOARD UNREACHABLE" with the console reporting "Error: signal timed out".
+- **Root Cause:** The `/health` endpoint of the dashboard server fetched health state and open positions using `read_health_state()` and `get_open_positions_count()`. Both functions used a read-write database connection via `get_conn()`. When heavy write operations (such as parallel option chain snapshot writes) locked the SQLite database, requests to `/health` were blocked waiting for the database lock, eventually timing out after the dashboard client's 6-second abort threshold.
+- **Fix:** 
+  1. Added `get_open_positions_count_ro()` to `schema.py` which opens a connection in read-only mode (`mode=ro`) via URI to bypass SQLite locks.
+  2. Modified the `/health` endpoint in `dashboard_server.py` to use `read_health_state_ro()` and `get_open_positions_count_ro()`, ensuring it never blocks on write locks.
+
+### F79: Live/Shadow Trading Bypassed in Production Pipeline (P0-CRITICAL)
+- **Symptom:** Paper trades are successfully triggered and recorded in `paper_trades` table, but shadow trades (live trades in shadow mode) are completely skipped and not recorded in the `live_trades` table, despite `live_shadow_mode = true`.
+- **Root Cause:** In `pipeline.py`'s scanning loop, strategies were dynamically resolved via `active_strategies_for(symbol)` and their runners called. However, all registered runners (`CORE`, `TIMEFRAME`, `NG_MOMENTUM`, etc.) were configured to only run paper trading (returning `run_paper_trading` or wrappers). `run_live_trading` and `run_live_timeframe_strategy` (the live/shadow execution entry points) were never imported or called sequentially in the production scan loop, completely bypassing live/shadow trade evaluation.
+- **Fix:** Updated the strategy execution loop in `pipeline.py` to sequentially trigger live/shadow execution:
+  1. For `CORE` and `NG_MOMENTUM` strategies, it now calls `run_live_trading()` immediately after the paper runner.
+  2. For the `TIMEFRAME` strategy, it now calls `run_live_timeframe_strategy()` immediately after the paper runner.
+
+### F80: Natural Gas Position Limit & Cooldown Blocking TFSS Tranche Entries (P1-HIGH)
+- **Symptom:** Active TFSS multi-leg strangle tranches for NATURALGAS are blocked with `NATURALGAS position limit reached` or `Loss cooldown active` errors, preventing the bot from scaling into higher tranches or managing opposite legs.
+- **Root Cause:** 
+  1. The specialized `check_ng_position_limit()` function in `ng_risk_manager.py` did not differentiate between strategies and counted all open NATURALGAS positions. Since `NG_MAX_POSITIONS = 1` in `settings.py` (which overrides the default value of 10), any active open leg blocked any further leg/tranche entries.
+  2. The symbol-level loss cooldown check in `risk_engine.py` blocked all entries on a symbol if any trade was stopped out within `LOSS_COOLDOWN_MINUTES`. Hitting a stop on one leg of a TFSS strangle blocked the next tranches or opposite sides from entering.
+- **Fix:**
+  1. Updated `check_ng_position_limit()` to accept `setup_type` and immediately return `True` for `"TFSS"`. Modified its database query to ignore trades belonging to `"TFSS"` and `"TIMEFRAME"` strategies.
+  2. Modified the `check_risk_limits` call in `risk_engine.py` to pass `setup_type` to `check_ng_position_limit`.
+  3. Wrapped the loss cooldown check in `risk_engine.py` to exempt the `"TFSS"` strategy completely, ensuring it can always scale/manage legs dynamically.
+
+### F97: Fix Telegram Alert Contradictions Between Trade Status and Blocker/Reason (P1-HIGH)
+- **Symptom:** 
+  1. Non-entered alert (CRUDEOIL) displayed `Trade: ✗ Not entered` alongside `Reason: Trend allowed...`.
+  2. Entered alert (SENSEX) displayed `Trade: ✅ Entered` alongside `⚠ Blocked: Trend continuation blocked...`.
+- **Root Cause:** In `src/alerts/digest.py`, `all_blockers` were printed unconditionally regardless of `trade_entered` status, and `tfss_reason` was printed under `Not entered` even if it contained a positive `Trend allowed...` string.
+- **Fix Applied:** Refactored `build_tfss_timeframe_digest()` in `src/alerts/digest.py`:
+  1. For `trade_entered == True`: Suppressed `⚠ Blocked:` outputs and filtered out negative blocker strings from `Reason:`.
+  2. For `trade_entered == False`: Suppressed positive `Trend allowed...` strings and printed actual execution blockers or clean non-entry reason.
+
+### F98: Paper Trading Dashboard Error Banner & Element Safeguards (P2-MEDIUM)
+- **Symptom:** Paper trading dashboard (`/paper`) could remain stuck on `⏳ Loading…` if API requests or DOM elements encountered temporary loading errors.
+- **Root Cause:** `loadAll()` in `src/dashboard/paper.html` logged API errors to console without rendering an error fallback in `trades-body`, and accessed `document.getElementById()` without null guards.
+- **Fix Applied:** Hardened `src/dashboard/paper.html` by adding null guards for `symbol` and `status` elements, and rendering an interactive error banner with a Retry button inside `trades-body` upon API failure.
+
+### F99: Portfolio Card Metrics Refactor & Dynamic Greeks Calculation (P1-HIGH)
+- **Symptom:**
+  1. Symbol cards displayed Gamma and Vega, crowding the metric display.
+  2. Metrics were hidden inside hover/expansion rather than permanently shown on the main card body.
+  3. Theta was `0.00` for all symbols in the portfolio metrics API.
+- **Root Cause:**
+  1. `option_chain_snapshots` table schema only stores `delta` (no `theta`, `gamma`, or `vega` columns), causing `match.get("theta")` to return `None` and default to `0`.
+  2. `_calculate_portfolio_metrics` in `dashboard_server.py` lacked analytical fallback calculation for missing Greeks.
+- **Fix Applied:**
+  1. Updated `_calculate_portfolio_metrics` in [dashboard_server.py](file:///c:/Users/manve/Downloads/NSEBOT/dashboard_server.py#L2995-L3025) to invoke `GreeksCalculator().calculate_greeks()` whenever `theta` is missing or 0, yielding real-time accurate Theta/Delta values.
+  2. Refactored [src/dashboard/broker.html](file:///c:/Users/manve/Downloads/NSEBOT/src/dashboard/broker.html#L3480-L3488) to remove `Gamma` and `Vega` and display `Net Delta`, `Theta`, `Max Profit`, and `Max Loss` permanently on the main card body without requiring hover.
+
+### F101: Synchronize Paper and Shadow/Live Trade Decision Check (P1-HIGH)
+- **Symptom:** Scan digest alert showed `Trade: ✗ Not entered` & `⚠ Blocked: ...`, and Paper Trading did not enter, but `live_trading.py` placed a `[SHADOW]` trade.
+- **Root Cause:** In [src/engine/live_trading.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/live_trading.py#L1130), `run_live_trading()` was calling `make_trade_decision()` from scratch with a fresh context instead of reusing `intel.get("trade_decision")` computed during the intelligence scan phase (which `paper_trading.py` uses).
+- **Fix Applied:** Refactored `run_live_trading()` in [src/engine/live_trading.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/live_trading.py#L1127-L1136) to inspect `intel.get("trade_decision")` first, ensuring 100% decision and execution parity across Paper, Shadow, Live, and Telegram Digest.
+
+### F102: Expanded Scan Sentinel Safety Guard Suite (R1–R12) (P0-CRITICAL)
+- **Architecture Update:** Expanded Scan Sentinel's deterministic safety rule engine in [src/engine/scan_sentinel.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/scan_sentinel.py#L433-L600) from 7 to 12 zero-latency rules to protect against critical scan anomalies:
+  - **R1 (`R1_PREMIUM_IS_UNDERLYING`)**: Target premium within 5% of underlying spot (BFO zero-volume spot LTP bug guard).
+  - **R2 (`R2_HIGH_ERROR_RATE`)**: High pipeline error rate (>=3 log errors in single scan).
+  - **R3 (`R3_DEAD_OPTION_CHAIN`)**: Dead option chain (>80% 0-LTP strikes).
+  - **R4 (`R4_SLOW_SCAN`)**: Scan duration anomaly (>120s execution time).
+  - **R5 (`R5_OPTION_TYPE_MISMATCH`)**: Option type vs action mismatch (`SHORT CE` / `LONG PE`).
+  - **R6 (`R6_PREMIUM_OUT_OF_BOUNDS`)**: Entry premium out of safety bounds (>₹5,000).
+  - **R7 (`R7_EXPIRED_CONTRACT`)**: Expired contract detection (`DTE < 0`).
+  - **R8 (`R8_INVERSE_TARGET_SL`)**: Inverted Target or SL premium order relative to entry premium.
+  - **R9 (`R9_ZERO_SPOT_PRICE`)**: Zero or missing underlying spot price (`spot <= 0.0`).
+  - **R10 (`R10_PIPELINE_CRASH`)**: Unhandled pipeline scan crash exception.
+  - **R11 (`R11_EXTREME_STRIKE_DISTANCE`)**: Target instrument strike >25% away from underlying spot.
+  - **R12 (`R12_ZERO_OI_DOMINANCE`)**: Option chain zero Open Interest dominance (>85% 0-OI strikes).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 

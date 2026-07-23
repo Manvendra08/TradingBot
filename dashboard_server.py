@@ -31,82 +31,7 @@ def _ipv4_only_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
 _socket.getaddrinfo = _ipv4_only_getaddrinfo
 
 
-# ── Patch sqlite3 to automatically merge paper_trades and shadow live_trades ──
-class PatchedCursor(sqlite3.Cursor):
-    def execute(self, sql, *args, **kwargs):
-        if (
-            isinstance(sql, str)
-            and re.match(r"(?i)^\s*(select|with)\b", sql)
-            and re.search(r"(?i)\bfrom\s+paper_trades\b", sql)
-            and not re.search(r"(?i)\bfrom\s+live_trades\b", sql)
-            # P0-02 FIX: Prevent double-rewriting by checking for our marker
-            and "__PAPER_UNION_INJECTED__" not in sql
-        ):
-            subquery = """(
-                SELECT id, opened_at, closed_at, symbol, verdict_label, option_type, strike, entry_underlying, exit_underlying, sl_underlying, target_underlying, pnl_points, status, reason, digest_id, entry_premium, exit_premium, sl_premium, target_premium, lots, lot_size, pnl_rupees, trade_status, setup_type, decision_reason, confidence_score, entry_quality_score, trend_alignment_score, regime_score, signal_key, pyramid_level, max_favorable_r, side, expiry,
-                    price_change_pct, pcr, ce_oi_change, pe_oi_change, underlying, support, resistance, max_pain, days_to_expiry, chart_conflict, rsi_1h, rsi_3h, regime
-                FROM paper_trades
-                UNION ALL
-                SELECT id, opened_at, closed_at, symbol, verdict_label, option_type, strike, entry_underlying, exit_underlying, sl_underlying, target_underlying, pnl_points, status, reason, digest_id, entry_premium, exit_premium, sl_premium, target_premium, lots, NULL AS lot_size, pnl_rupees, trade_status, setup_type, decision_reason, confidence_score, entry_quality_score, trend_alignment_score, regime_score, signal_key, pyramid_level, max_favorable_r, side, expiry,
-                    price_change_pct, pcr, ce_oi_change, pe_oi_change, underlying, support, resistance, max_pain, days_to_expiry, chart_conflict, rsi_1h, rsi_3h, regime
-                FROM live_trades
-                WHERE (status = 'CLOSED_SHADOW' OR trade_status = 'SHADOW' OR broker_status = 'SHADOW')
-                  AND (setup_type IS NULL OR setup_type != 'DIRECT_KITE')
-            )"""
-            # P0-02 FIX: Only replace the first occurrence to prevent corruption
-            sql = re.sub(
-                r"(?i)\bfrom\s+paper_trades\b",
-                f"FROM {subquery} /* __PAPER_UNION_INJECTED__ */",
-                sql,
-                count=1,
-            )
-        return super().execute(sql, *args, **kwargs)
 
-
-class PatchedConnection(sqlite3.Connection):
-    def execute(self, sql, *args, **kwargs):
-        if (
-            isinstance(sql, str)
-            and re.match(r"(?i)^\s*(select|with)\b", sql)
-            and re.search(r"(?i)\bfrom\s+paper_trades\b", sql)
-            and not re.search(r"(?i)\bfrom\s+live_trades\b", sql)
-            # P0-02 FIX: Prevent double-rewriting by checking for our marker
-            and "__PAPER_UNION_INJECTED__" not in sql
-        ):
-            subquery = """(
-                SELECT id, opened_at, closed_at, symbol, verdict_label, option_type, strike, entry_underlying, exit_underlying, sl_underlying, target_underlying, pnl_points, status, reason, digest_id, entry_premium, exit_premium, sl_premium, target_premium, lots, lot_size, pnl_rupees, trade_status, setup_type, decision_reason, confidence_score, entry_quality_score, trend_alignment_score, regime_score, signal_key, pyramid_level, max_favorable_r, side, expiry,
-                    price_change_pct, pcr, ce_oi_change, pe_oi_change, underlying, support, resistance, max_pain, days_to_expiry, chart_conflict, rsi_1h, rsi_3h, regime
-                FROM paper_trades
-                UNION ALL
-                SELECT id, opened_at, closed_at, symbol, verdict_label, option_type, strike, entry_underlying, exit_underlying, sl_underlying, target_underlying, pnl_points, status, reason, digest_id, entry_premium, exit_premium, sl_premium, target_premium, lots, NULL AS lot_size, pnl_rupees, trade_status, setup_type, decision_reason, confidence_score, entry_quality_score, trend_alignment_score, regime_score, signal_key, pyramid_level, max_favorable_r, side, expiry,
-                    price_change_pct, pcr, ce_oi_change, pe_oi_change, underlying, support, resistance, max_pain, days_to_expiry, chart_conflict, rsi_1h, rsi_3h, regime
-                FROM live_trades
-                WHERE (status = 'CLOSED_SHADOW' OR trade_status = 'SHADOW' OR broker_status = 'SHADOW')
-                  AND (setup_type IS NULL OR setup_type != 'DIRECT_KITE')
-            )"""
-            # P0-02 FIX: Only replace the first occurrence to prevent corruption
-            sql = re.sub(
-                r"(?i)\bfrom\s+paper_trades\b",
-                f"FROM {subquery} /* __PAPER_UNION_INJECTED__ */",
-                sql,
-                count=1,
-            )
-        return super().execute(sql, *args, **kwargs)
-
-    def cursor(self, *args, **kwargs):
-        return super().cursor(factory=PatchedCursor, *args, **kwargs)
-
-
-_orig_connect = sqlite3.connect
-
-
-def _patched_connect(*args, **kwargs):
-    if "factory" not in kwargs:
-        kwargs["factory"] = PatchedConnection
-    return _orig_connect(*args, **kwargs)
-
-
-sqlite3.connect = _patched_connect
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -973,7 +898,7 @@ def _in_clause(values: list[str]) -> tuple[str, tuple]:
 
 
 @app.get("/api/symbols")
-async def get_symbols():
+def get_symbols():
     rows = _q("SELECT DISTINCT symbol FROM option_chain_snapshots ORDER BY symbol")
     configured = [_canonical_symbol(s) for s in WATCH_SYMBOLS]
     from_db = [_canonical_symbol(r["symbol"]) for r in rows]
@@ -987,7 +912,7 @@ async def get_symbols():
 
 
 @app.get("/api/meta")
-async def get_meta(symbol: str):
+def get_meta(symbol: str):
     symbols = _matching_symbols(symbol)
     placeholders, params = _in_clause(symbols)
     rows = _q(
@@ -999,7 +924,7 @@ async def get_meta(symbol: str):
 
 
 @app.get("/api/price")
-async def get_price(symbol: str, hours: int = 6):
+def get_price(symbol: str, hours: int = 6):
     symbols = _matching_symbols(symbol)
     placeholders, symbol_params = _in_clause(symbols)
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
@@ -1020,7 +945,7 @@ async def get_price(symbol: str, hours: int = 6):
 
 @app.get("/api/topbar_cmps")
 def get_topbar_cmps():
-    symbols = ["NIFTY", "BANKNIFTY", "NATURALGAS", "CRUDEOIL"]
+    symbols = ["NIFTY", "BANKNIFTY", "SENSEX", "NATURALGAS", "CRUDEOIL"]
     today_start = (
         datetime.now(timezone.utc)
         .replace(hour=0, minute=0, second=0, microsecond=0)
@@ -1087,7 +1012,7 @@ def get_topbar_cmps():
 
 
 @app.get("/api/oi")
-async def get_oi(symbol: str):
+def get_oi(symbol: str):
     symbols = _matching_symbols(symbol)
     placeholders, params = _in_clause(symbols)
     rows = _q(
@@ -1105,7 +1030,7 @@ async def get_oi(symbol: str):
 
 
 @app.get("/api/pcr")
-async def get_pcr(symbol: str, hours: int = 6):
+def get_pcr(symbol: str, hours: int = 6):
     symbols = _matching_symbols(symbol)
     placeholders, symbol_params = _in_clause(symbols)
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
@@ -1145,7 +1070,7 @@ async def get_pcr(symbol: str, hours: int = 6):
 
 
 @app.get("/api/alerts")
-async def get_alerts(symbol: str, limit: int = 100):
+def get_alerts(symbol: str, limit: int = 100):
     symbols = _matching_symbols(symbol)
     placeholders, params = _in_clause(symbols)
     rows = _q(
@@ -1532,28 +1457,18 @@ def _enrich_trade_details(rows: list[dict]) -> None:
 @app.get("/api/paper_trades")
 async def get_paper_trades(symbol: str = "", status: str = "", limit: int = 300):
     clauses_pt = []
-    clauses_lt = []
     params_pt: list = []
-    params_lt: list = []
 
     if symbol:
         clauses_pt.append("symbol=?")
-        clauses_lt.append("symbol=?")
         params_pt.append(symbol.upper().strip())
-        params_lt.append(symbol.upper().strip())
     if status:
         clauses_pt.append("status=? COLLATE NOCASE")
-        clauses_lt.append("status=? COLLATE NOCASE")
         params_pt.append(status.strip())
-        params_lt.append(status.strip())
 
     where_pt = f"WHERE {' AND '.join(clauses_pt)}" if clauses_pt else ""
-    where_lt_base = "WHERE trade_status='SHADOW' AND (setup_type IS NULL OR setup_type != 'DIRECT_KITE')"
-    where_lt = where_lt_base + (
-        f" AND {' AND '.join(clauses_lt)}" if clauses_lt else ""
-    )
 
-    # Common columns between both tables
+    # Common columns
     cols = (
         "id, opened_at, closed_at, symbol, verdict_label, option_type, strike, entry_underlying, "
         "exit_underlying, sl_underlying, target_underlying, pnl_points, status, reason, exit_reason, digest_id, "
@@ -1564,15 +1479,14 @@ async def get_paper_trades(symbol: str = "", status: str = "", limit: int = 300)
 
     sql = f"""
     SELECT {cols} FROM paper_trades {where_pt}
-    UNION ALL
-    SELECT {cols} FROM live_trades {where_lt}
     ORDER BY opened_at DESC LIMIT ?
     """
 
-    all_params = params_pt + params_lt + [int(limit)]
+    all_params = params_pt + [int(limit)]
     rows = _q(sql, all_params)
     _enrich_open_trades_with_live_pnl(rows)
     _enrich_trade_details(rows)
+    return rows
     return rows
 
 
@@ -2039,24 +1953,13 @@ async def delete_paper_trades(date_from: str = "", date_to: str = ""):
         params.append(end)
     where = "WHERE " + " AND ".join(clauses)
 
-    # Count from both tables first
     count_rows = _q(f"SELECT COUNT(*) AS n FROM paper_trades {where}", tuple(params))
     n = int((count_rows[0] if count_rows else {}).get("n") or 0)
-
-    where_live = (
-        where
-        + " AND (status = 'CLOSED_SHADOW' OR trade_status = 'SHADOW' OR broker_status = 'SHADOW')"
-    )
-    count_rows_live = _q(
-        f"SELECT COUNT(*) AS n FROM live_trades {where_live}", tuple(params)
-    )
-    n += int((count_rows_live[0] if count_rows_live else {}).get("n") or 0)
 
     conn = _db()
     try:
         with conn:
             conn.execute(f"DELETE FROM paper_trades {where}", tuple(params))
-            conn.execute(f"DELETE FROM live_trades {where_live}", tuple(params))
             conn.commit()
     finally:
         conn.close()
@@ -2106,19 +2009,15 @@ async def post_settings(data: dict):
 
     save_runtime_config(data)
     shadow_mode = data.get("live_shadow_mode", True)
-    conn = get_conn()
-    try:
-        with conn:
-            if shadow_mode:
-                conn.execute(
-                    "UPDATE live_trades SET trade_status = 'SHADOW' WHERE status = 'OPEN' AND trade_status = 'LIVE'"
-                )
-            else:
-                conn.execute(
-                    "UPDATE live_trades SET trade_status = 'LIVE' WHERE status = 'OPEN' AND trade_status = 'SHADOW' AND setup_type = 'DIRECT_KITE'"
-                )
-    finally:
-        conn.close()
+    with get_conn() as conn:
+        if shadow_mode:
+            conn.execute(
+                "UPDATE live_trades SET trade_status = 'SHADOW' WHERE status = 'OPEN' AND trade_status = 'LIVE'"
+            )
+        else:
+            conn.execute(
+                "UPDATE live_trades SET trade_status = 'LIVE' WHERE status = 'OPEN' AND trade_status = 'SHADOW' AND setup_type = 'DIRECT_KITE'"
+            )
     return {"status": "SUCCESS", "message": "Runtime settings updated successfully"}
 
 
@@ -2141,7 +2040,7 @@ _margins_cache_lock = _dash_threading.Lock()
 def _fetch_real_kite_positions(kite) -> list[dict]:
     global _positions_cache, _positions_cache_ts, _positions_failure_ts
     now = time.time()
-    if _positions_cache is not None and (now - _positions_cache_ts) < 3.0:
+    if _positions_cache is not None and (now - _positions_cache_ts) < 10.0:
         return _positions_cache
     if (
         _positions_failure_ts
@@ -2438,7 +2337,7 @@ def _fetch_real_kite_positions(kite) -> list[dict]:
                             "target_premium": "—",
                             "pnl_rupees": round(manual_pnl, 2),
                             "exit_mode": "KITE",
-                            "trade_status": "LIVE" if not shadow_mode else "SHADOW",
+                            "trade_status": "LIVE",
                             "status": "OPEN",
                             "tradingsymbol": tradingsymbol,
                         }
@@ -2515,7 +2414,7 @@ def _fetch_real_kite_positions(kite) -> list[dict]:
                         "target_premium": tgt_val,
                         "pnl_rupees": pnl,
                         "exit_mode": "KITE",
-                        "trade_status": "LIVE" if not shadow_mode else "SHADOW",
+                        "trade_status": "LIVE",
                         "status": "OPEN",
                         "tradingsymbol": tradingsymbol,
                     }
@@ -2541,7 +2440,16 @@ def _fetch_real_kite_positions(kite) -> list[dict]:
         return _positions_cache if _positions_cache is not None else []
 
 
+_kite_closed_trades_cache = None
+_kite_closed_trades_cache_ts = 0.0
+
+
 def _get_kite_closed_trades(kite) -> list[dict]:
+    global _kite_closed_trades_cache, _kite_closed_trades_cache_ts
+    now = time.time()
+    if _kite_closed_trades_cache is not None and (now - _kite_closed_trades_cache_ts) < 15.0:
+        return _kite_closed_trades_cache
+
     import re
     from datetime import datetime
 
@@ -2706,7 +2614,7 @@ def _get_kite_closed_trades(kite) -> list[dict]:
                 "closed_at": closed_at,
                 "opened_at": None,
                 "reason": "Kite Manual Exit",
-                "trade_status": "LIVE" if not shadow_mode else "SHADOW",
+                "trade_status": "LIVE",
                 "exit_mode": "KITE",
                 "tradingsymbol": tradingsymbol,
             }
@@ -2767,8 +2675,17 @@ def _is_duplicate_closed_trade(kite_pos, db_trades, today_str) -> bool:
     return False
 
 
+_open_orders_cache = None
+_open_orders_cache_ts = 0.0
+
+
 @app.get("/api/open_orders")
 def get_open_orders():
+    global _open_orders_cache, _open_orders_cache_ts
+    now = time.time()
+    if _open_orders_cache is not None and (now - _open_orders_cache_ts) < 10.0:
+        return _open_orders_cache
+
     from src.engine.live_trading import get_kite_client
 
     kite = get_kite_client()
@@ -2794,6 +2711,8 @@ def get_open_orders():
                     }
                 )
         open_orders.sort(key=lambda x: x["order_timestamp"], reverse=True)
+        _open_orders_cache = open_orders
+        _open_orders_cache_ts = now
         return open_orders
     except Exception as e:
         log.error("Failed to fetch open orders: %s", e)
@@ -3075,7 +2994,34 @@ def get_portfolio_metrics():
                             u = match.get("underlying_price")
                             if u:
                                 underlying = float(u)
-                    else:
+
+                    # Dynamic Greeks calculation fallback if theta or delta is missing/zero
+                    if (th is None or th == 0) and strike:
+                        try:
+                            from src.utils.greeks_calculator import GreeksCalculator
+                            g_calc = GreeksCalculator()
+                            spot_val = float(underlying or p.get("entry_underlying") or p.get("cmp") or strike)
+                            opt_val = float(p.get("cmp") or p.get("entry_premium") or 10.0)
+                            exp_val = p.get("expiry") or (match.get("expiry") if match else None) or "2026-07-30"
+                            exch_val = "MCX" if base in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER") else "NFO"
+                            
+                            g_res = g_calc.calculate_greeks(
+                                underlying_price=spot_val,
+                                strike_price=strike,
+                                option_price=opt_val,
+                                expiry_date=exp_val,
+                                option_type=opt_type,
+                                exchange=exch_val
+                            )
+                            if d is None or d == 0:
+                                d = float(g_res.get("delta") or 0)
+                            th = float(g_res.get("theta") or 0)
+                            ga = float(g_res.get("gamma") or 0)
+                            ve = float(g_res.get("vega") or 0)
+                        except Exception as ge:
+                            log.warning("Greeks fallback failed for %s: %s", p.get("symbol"), ge)
+
+                    if d is None:
                         d = 0.5 if opt_type == "CE" else -0.5
 
                     if d is not None and not (d != d):  # NaN guard
@@ -3524,7 +3470,7 @@ def get_broker_margin():
 
     config = load_runtime_config()
 
-    if _margins_cache is not None and (now - _margins_cache_ts) < 10.0:
+    if _margins_cache is not None and (now - _margins_cache_ts) < 15.0:
         # Update shadow_mode to reflect latest config dynamically
         _margins_cache["shadow_mode"] = config.get("live_shadow_mode", True)
         return _margins_cache
@@ -4251,10 +4197,10 @@ async def broker_page(username: str = Depends(authenticate)):
 async def health_endpoint():
     """Unauthenticated health endpoint for ops_agent.py and healthchecks.io."""
     import tempfile
-    from src.models.schema import read_health_state, get_open_positions_count
+    from src.models.schema import read_health_state_ro, get_open_positions_count_ro
     try:
-        health = read_health_state()
-        open_count = get_open_positions_count()
+        health = read_health_state_ro()
+        open_count = get_open_positions_count_ro()
         # BUG-C02 FIX: Use cross-platform temp directory
         heartbeat_path = Path(tempfile.gettempdir()) / "nsebot.heartbeat"
         heartbeat_age_s = None

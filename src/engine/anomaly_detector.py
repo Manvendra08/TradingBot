@@ -50,10 +50,11 @@ log = logging.getLogger(__name__)
 
 
 def _dte_from_expiry(expiry: str) -> int:
-    """Calculate days to expiry from YYYY-MM-DD string."""
+    """Calculate days to expiry from YYYY-MM-DD string in IST timezone."""
     try:
+        from config.settings import IST
         exp_date = datetime.strptime(expiry, "%Y-%m-%d").date()
-        today = datetime.now(timezone.utc).date()
+        today = datetime.now(IST).date()
         return (exp_date - today).days
     except Exception:
         return 999  # Unknown = far away

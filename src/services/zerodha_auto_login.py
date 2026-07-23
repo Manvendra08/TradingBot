@@ -174,7 +174,7 @@ def auto_login_kite(force: bool = False) -> dict:
                 "action": "FAILED",
             }
 
-        request_token = _extract_request_token_via_playwright(
+        request_token, err_detail = _extract_request_token_via_playwright(
             user_id=user_id,
             password=password,
             totp=totp_code,
@@ -199,8 +199,16 @@ def auto_login_kite(force: bool = False) -> dict:
             if result["success"]:
                 return result
             last_error = result["message"]
+        elif err_detail and "unreachable" in err_detail:
+            # Fix 3: Don't retry login on redirect failure
+            log.error("[auto_login] %s", err_detail)
+            return {
+                "success": False,
+                "message": err_detail,
+                "action": "REDIRECT_FAILED",
+            }
         else:
-            last_error = "Failed to extract request_token from browser redirect"
+            last_error = err_detail or "Failed to extract request_token from browser redirect"
 
     return {
         "success": False,
@@ -214,13 +222,13 @@ def _extract_request_token_via_playwright(
     password: str,
     totp: str,
     api_key: str,
-) -> str | None:
+) -> tuple[str | None, str | None]:
     """
     Launch headless Chromium, navigate to Kite Connect login, fill credentials
     and TOTP, then capture the request_token from the OAuth redirect URL.
 
     Returns:
-        request_token string, or None on failure.
+        (request_token, error_detail) tuple.
     """
     try:
         from playwright.sync_api import TimeoutError as PwTimeout
@@ -230,7 +238,7 @@ def _extract_request_token_via_playwright(
             "[auto_login] playwright is not installed. "
             "Install it with: pip install playwright && playwright install chromium"
         )
-        return None
+        return None, "playwright not installed"
 
     login_url = f"https://kite.zerodha.com/connect/login?api_key={api_key}&v=3"
 
@@ -256,6 +264,10 @@ def _extract_request_token_via_playwright(
             )
             page = context.new_page()
 
+            captured_urls = []
+            page.on("request", lambda req: captured_urls.append(req.url) if "request_token=" in req.url else None)
+            page.on("framenavigated", lambda frame: captured_urls.append(frame.url) if "request_token=" in frame.url else None)
+
             # ── Navigate to login page ────────────────────────────────────
             log.info("[auto_login] Navigating to %s", login_url)
             try:
@@ -265,47 +277,47 @@ def _extract_request_token_via_playwright(
             except PwTimeout:
                 log.error("[auto_login] Timeout loading login page")
                 browser.close()
-                return None
+                return None, "Timeout loading login page"
             except Exception as e:
                 log.error("[auto_login] Failed to load login page: %s", e)
                 browser.close()
-                return None
+                return None, f"Failed to load login page: {e}"
 
             # Small wait for JS rendering
             page.wait_for_timeout(2000)
 
-            # ── Kite Connect login flow (current: userid + password on same page, TOTP on 2FA page) ──
+            # ── Kite Connect login flow ──────────────────────────────────
             # Step 1: Fill user_id
             if not _fill_field(page, "user_id", user_id, "User ID"):
                 log.error("[auto_login] Could not find user_id field")
                 browser.close()
-                return None
+                return None, "Could not find user_id field"
 
-            # Step 2: Fill password (now on the same page as userid in Kite's current UI)
+            # Step 2: Fill password
             if not _fill_field(page, "password", password, "Password"):
                 log.error("[auto_login] Could not find password field")
                 browser.close()
-                return None
+                return None, "Could not find password field"
 
-            # Step 3: Click the Login button (submits userid + password together)
+            # Step 3: Click the Login button
             _click_submit_button(page, "password")
 
-            # Step 4: Wait for navigation to 2FA page (URL changes to include sess_id)
+            # Fix 2: Don't re-navigate after clicking login. Wait for TOTP input to appear naturally.
             try:
-                page.wait_for_timeout(2000)
-                page.wait_for_load_state("networkidle", timeout=15000)
+                page.wait_for_selector(
+                    "input[type='number'], #totp, #pin, input[name='totp']",
+                    timeout=10000,
+                )
             except PwTimeout:
                 pass
 
-            # Check if we already got redirected (no TOTP needed in some flows)
-            if "request_token" in page.url:
-                token = _parse_request_token(page.url)
+            # Check if we already got redirected without 2FA
+            for candidate_url in captured_urls + [page.url]:
+                token = _parse_request_token(candidate_url)
                 if token:
-                    log.info(
-                        "[auto_login] Got request_token after password step (no TOTP)"
-                    )
+                    log.info("[auto_login] Got request_token after password step (no TOTP)")
                     browser.close()
-                    return token
+                    return token, None
 
             # Step 5: Wait for TOTP field to appear on the 2FA page
             try:
@@ -314,7 +326,6 @@ def _extract_request_token_via_playwright(
                     timeout=_NAV_TIMEOUT_MS,
                 )
             except PwTimeout:
-                # Try detecting credential errors on the login page
                 try:
                     body_text = page.inner_text("body", timeout=3000)
                     if (
@@ -328,17 +339,15 @@ def _extract_request_token_via_playwright(
                     pass
                 log.error("[auto_login] Could not find TOTP field on 2FA page")
                 browser.close()
-                return None
+                return None, "Could not find TOTP field on 2FA page"
 
             # Step 6: Fill TOTP code
             if not _fill_field(page, "totp", totp, "TOTP"):
                 log.error("[auto_login] Could not find TOTP field on 2FA page")
                 browser.close()
-                return None
+                return None, "Could not find TOTP field on 2FA page"
 
             # Step 7: Click submit and intercept the callback redirect
-            # Try clicking "Continue" button first, fall back to Enter
-            token = None
             try:
                 with page.expect_navigation(
                     url="**request_token**",
@@ -346,14 +355,13 @@ def _extract_request_token_via_playwright(
                     timeout=_NAV_TIMEOUT_MS,
                 ) as nav_info:
                     _click_submit_button(page, "totp")
-                # Navigation committed — extract URL before follow-through
                 nav_url = nav_info.value.url
                 log.info("[auto_login] Callback navigation URL: %s", nav_url)
                 token = _parse_request_token(nav_url)
                 if token:
                     log.info("[auto_login] Got request_token from callback redirect")
                     browser.close()
-                    return token
+                    return token, None
             except PwTimeout:
                 log.warning(
                     "[auto_login] No callback redirect detected after TOTP submit"
@@ -361,28 +369,31 @@ def _extract_request_token_via_playwright(
             except Exception as e:
                 log.warning("[auto_login] Navigation error: %s", e)
 
-            # Fallback: check current URL
+            # Check all captured URLs and final URL
             final_url = page.url
             log.info("[auto_login] Final URL (fallback): %s", final_url)
-            token = _parse_request_token(final_url)
-            if token:
-                browser.close()
-                return token
+            for candidate_url in captured_urls + [final_url]:
+                token = _parse_request_token(candidate_url)
+                if token:
+                    browser.close()
+                    return token, None
 
-            # ── Last resort: check for error messages ────────────────────
-            try:
-                body_text = page.inner_text("body", timeout=3000)
-                if "invalid" in body_text.lower() or "incorrect" in body_text.lower():
-                    log.error("[auto_login] 2FA page shows error — check TOTP secret")
-            except Exception:
-                pass
+            # Fix 3: Distinguish between login failure and redirect failure
+            if "chrome-error://" in final_url or "ERR_CONNECTION_REFUSED" in final_url:
+                log.error("[auto_login] Kite login succeeded but redirect_url is unreachable: %s", final_url)
+                browser.close()
+                return None, "Kite login succeeded but redirect_url is unreachable. Ensure your callback server is running."
+            elif "request_token" not in final_url:
+                log.error("[auto_login] Login actually failed — check credentials/TOTP. Final URL: %s", final_url)
+                browser.close()
+                return None, "Login actually failed - check credentials/TOTP"
 
             browser.close()
-            return None
+            return None, "Unknown error during login extraction"
 
     except Exception as e:
         log.error("[auto_login] Playwright automation failed: %s", e, exc_info=True)
-        return None
+        return None, f"Playwright automation failed: {e}"
 
 
 def _fill_field(page, field_type: str, value: str, label: str) -> bool:

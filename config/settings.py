@@ -157,11 +157,20 @@ DHAN_SECURITY_IDS = {
     "GOLD": 466583,  # GOLD      05AUG2026 FUT  <-- update on rollover
     "SILVER": 471725,  # SILVER    04SEP2026 FUT  <-- update on rollover
 }
+def _get_dynamic_fallback_expiry() -> str:
+    from datetime import datetime
+    now = datetime.now()
+    if now.day > 20:
+        m = now.month % 12 + 1
+        y = now.year + (1 if m == 1 else 0)
+        return f"{y:04d}-{m:02d}"
+    return now.strftime("%Y-%m")
+
 DHAN_FALLBACK_EXPIRIES = {
-    "NATURALGAS": "2026-07",
-    "CRUDEOIL": "2026-07",
-    "GOLD": "2026-08",
-    "SILVER": "2026-09",
+    "NATURALGAS": _get_dynamic_fallback_expiry(),
+    "CRUDEOIL": _get_dynamic_fallback_expiry(),
+    "GOLD": _get_dynamic_fallback_expiry(),
+    "SILVER": _get_dynamic_fallback_expiry(),
 }
 DHAN_SEGMENTS = {
     "NIFTY": "IDX_I",
@@ -440,16 +449,62 @@ MIN_ENTRY_QUALITY_EXPERIMENTAL = 40
 # Reversal trade: higher confidence bar
 REVERSAL_MIN_CONFIDENCE = 75
 
+# Tiered Gates Architecture (Option A) — Composite Scoring Profiles
+TIERED_GATES_ENABLED = os.environ.get("TIERED_GATES_ENABLED", "true").lower() == "true"
+
+TIERED_GATES_PROFILES = {
+    "MCX_COMMODITY": {
+        "composite_threshold": 55.0,
+        "weights": {
+            "entry_quality": 0.35,
+            "trend": 0.35,
+            "regime": 0.30,
+            "heavyweight_alignment": 0.0,
+        },
+        "floors": {
+            "entry_quality": 40.0,
+            "trend": 20.0,
+            "regime": 15.0,
+            "heavyweight_alignment": 0.0,
+        },
+        "confidence_scaling_step": 5.0,
+        "confidence_scaling_reduction": 2.0,
+    },
+    "DEFAULT": {
+        "composite_threshold": 62.0,
+        "weights": {
+            "entry_quality": 0.25,
+            "trend": 0.35,
+            "regime": 0.30,
+            "heavyweight_alignment": 0.10,
+        },
+        "floors": {
+            "entry_quality": 40.0,
+            "trend": 30.0,
+            "regime": 20.0,
+            "heavyweight_alignment": 0.0,
+        },
+        "confidence_scaling_step": 5.0,
+        "confidence_scaling_reduction": 1.5,
+    },
+}
+
+
+def get_tiered_gates_profile(symbol: str) -> dict:
+    """Return the symbol-class specific Tiered Gates profile."""
+    from config.symbol_classes import get_symbol_class
+    sym_class = get_symbol_class(symbol)
+    if sym_class == "MCX_COMMODITY":
+        return TIERED_GATES_PROFILES["MCX_COMMODITY"]
+    return TIERED_GATES_PROFILES["DEFAULT"]
+
+
 # Risk engine — applies to paper trading too (overtrading distorts results)
 MAX_OPEN_TRADES_PER_SYMBOL = 5
 MAX_OPEN_TRADES_TOTAL = 20
 MAX_TRADES_PER_SYMBOL_PER_DAY = 10
 MAX_DAILY_LOSS_RUPEES = 250000
 LOSS_COOLDOWN_MINUTES = 60
-
-# Natural Gas Risk Settings
-NG_MAX_POSITIONS = 10
-NG_RISK_PCT_PER_TRADE = 3  # 2% capital risk per trade
 
 
 # ── Trend-Based Trading Logic ──────────────────────────────────────────────────────────────────────────────────────
@@ -576,8 +631,8 @@ NG_WEEKEND_FLAT = True             # no NG position past Fri 23:00
 EIA_MIN_SURPRISE_BCF = 15
 EIA_NO_TRADE_BAND_BCF = 8
 EIA_TIME_STOP_IST = "21:30"
-NG_MAX_POSITIONS = 1               # one NG position at a time, all regimes
-NG_RISK_PCT_PER_TRADE = 0.5        # % of capital
+NG_MAX_POSITIONS = 20               # one NG position at a time, all regimes
+NG_RISK_PCT_PER_TRADE = 2        # % of capital
 
 # ── Weather Intelligence (Phase 5) ────────────────────────────────────────────
 WEATHER_SIGNAL_ENABLED = _optional_env("WEATHER_SIGNAL_ENABLED", "true").lower() == "true"

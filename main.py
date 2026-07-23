@@ -32,40 +32,7 @@ import urllib3
 try:
     urllib3.util.connection.allowed_gai_family = lambda: socket.AF_INET
 except AttributeError:
-    # Fallback for older urllib3 without allowed_gai_family
-    _orig_getaddrinfo = socket.getaddrinfo
-
-    def _ipv4_only_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
-        return _orig_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
-
-    socket.getaddrinfo = _ipv4_only_getaddrinfo
-
-# ── Disable SSL verification conflict globally ──────────────────────────────
-# Recent Python/urllib3 versions raise ValueError when verify=False is used
-# without explicitly disabling hostname checking.
-#
-# NOTE: We patch ONLY urllib3's context creation (used by requests/SDKs)
-# rather than ssl._create_default_https_context (which affects ALL Python
-# HTTPS including Gemini API, Telegram API, Google Drive). The urllib3-only
-# patch limits scope to NSE-specific HTTP clients (Kite, Dhan) that require
-# certificate bypass in certain network environments.
-import ssl
-
-try:
-    _orig_create_context = urllib3.util.ssl_.create_urllib3_context
-
-    def _patched_create_urllib3_context(cert_reqs=None, **kwargs):
-        ctx = _orig_create_context(cert_reqs=cert_reqs, **kwargs)
-        if cert_reqs == ssl.CERT_NONE:
-            ctx.check_hostname = False
-        return ctx
-
-    urllib3.util.ssl_.create_urllib3_context = _patched_create_urllib3_context
-except AttributeError:
-    # Legacy urllib3 without create_urllib3_context
     pass
-except Exception as e:
-    print(f"[NSEBOT] Warning: Failed to patch urllib3 SSL context: {e}")
 
 # ── Load .env first, before any config import ──────────────────────────────
 try:

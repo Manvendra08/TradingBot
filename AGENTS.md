@@ -102,3 +102,14 @@ Follow below instructions before starting work:
 
 7. **Review previous code line-by-line** for deprecated methods, unhandled edge cases, or logic bugs before fixing.
 8. **Update KNOWLEDGE_BASE.md**: Always update the Scan Sentinel grounded codebase knowledge base at `data/sentinel/KNOWLEDGE_BASE.md` when making changes to codebase architecture, pipeline flow, or when introducing new features relevant to Scan Sentinel agentic AI diagnostics.
+
+## Key Architectural Decisions (NSEBOT)
+
+- **Schema Migrations:** Managed inside `_MIGRATIONS` in [schema.py](file:///c:/Users/manve/Downloads/NSEBOT/src/models/schema.py). SQLite uses WAL (Write-Ahead Logging) mode with `timeout=30.0` to safely handle concurrent, multi-threaded engine and dashboard server writes.
+- **Strategy Routing & Models:** Plumbed dynamically via [strategy_registry.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/strategy_registry.py). Custom session overrides redirect `NATURALGAS` to specialized strategies (`NG_PARITY`, `NG_EVENT`, `NG_MOMENTUM`) based on time/regime rather than standard `CORE` logic.
+- **TFSS Option Execution:** The Trend-Following Strangle System (TFSS) acts as the execution layer for `CORE` signals (sells PE for bullish, CE for bearish). Groups multi-leg strangles via `leg_group_id` (`{symbol}:{date}:TFSS`), caps tranches at 6 per symbol-day, and limits combined net delta to `0.60`.
+- **Exit Logic Precedents:**
+  1. *AI Exit Advice:* Strictly **advisory-only** (auto-exits are disabled; high-urgency suggestions are logged only to prevent false liquidations).
+  2. *Mechanical Exits:* Checked continuously on every scan tick (based on SL/Target premium thresholds, trailing stops, or time-of-day guards).
+  3. *Friday Exits:* Mandatory square-off is executed between 15:25–15:30 IST (23:25–23:30 MCX) to avoid weekend gap risks.
+  4. *Daily Loss Cap:* Natural Gas blocks new entries for the day after 5 SL hits (query checks count of `CLOSED_SL` or `SL_HIT`).

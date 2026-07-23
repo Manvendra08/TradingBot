@@ -512,8 +512,9 @@ def _check_rules(r: dict) -> list[SentinelFlag]:
     expiry_str = r.get("expiry")
     if expiry_str:
         try:
+            from config.settings import IST
             exp_date = datetime.strptime(expiry_str, "%Y-%m-%d").date()
-            today = datetime.now(timezone.utc).date()
+            today = datetime.now(IST).date()
             if exp_date < today:
                 flags.append(SentinelFlag(
                     rule="R7_EXPIRED_CONTRACT",
@@ -522,6 +523,83 @@ def _check_rules(r: dict) -> list[SentinelFlag]:
                 ))
         except Exception:
             pass
+
+    # R8: Inverse Target / SL Premium Order
+    llm_prem = r.get("llm_entry_premium")
+    llm_t1 = r.get("llm_target_1")
+    llm_sl = r.get("llm_stop_loss")
+    llm_action = r.get("llm_action")
+    if llm_prem and llm_action:
+        action_str = str(llm_action).upper()
+        if "BUY" in action_str or "LONG" in action_str:
+            if llm_t1 and llm_t1 <= llm_prem:
+                flags.append(SentinelFlag(
+                    rule="R8_INVERSE_TARGET_SL",
+                    severity="CRITICAL",
+                    detail=f"BUY action target premium (₹{llm_t1}) <= entry premium (₹{llm_prem})"
+                ))
+            if llm_sl and llm_sl >= llm_prem:
+                flags.append(SentinelFlag(
+                    rule="R8_INVERSE_TARGET_SL",
+                    severity="CRITICAL",
+                    detail=f"BUY action stop loss premium (₹{llm_sl}) >= entry premium (₹{llm_prem})"
+                ))
+        elif "SELL" in action_str or "SHORT" in action_str:
+            if llm_t1 and llm_t1 >= llm_prem:
+                flags.append(SentinelFlag(
+                    rule="R8_INVERSE_TARGET_SL",
+                    severity="CRITICAL",
+                    detail=f"SELL action target premium (₹{llm_t1}) >= entry premium (₹{llm_prem})"
+                ))
+            if llm_sl and llm_sl <= llm_prem:
+                flags.append(SentinelFlag(
+                    rule="R8_INVERSE_TARGET_SL",
+                    severity="CRITICAL",
+                    detail=f"SELL action stop loss premium (₹{llm_sl}) <= entry premium (₹{llm_prem})"
+                ))
+
+    # R9: Zero or Missing Spot Price
+    if underlying <= 0.0:
+        flags.append(SentinelFlag(
+            rule="R9_ZERO_SPOT_PRICE",
+            severity="CRITICAL",
+            detail=f"Underlying spot price is 0.0 or missing for {symbol}"
+        ))
+
+    # R10: Unhandled Pipeline Exception / Crash
+    scan_status = str(r.get("status") or "").upper()
+    td_status = str(r.get("trade_decision_status") or "").upper()
+    if scan_status == "CRASHED" or td_status == "CRASHED":
+        flags.append(SentinelFlag(
+            rule="R10_PIPELINE_CRASH",
+            severity="CRITICAL",
+            detail=f"Pipeline scan encountered an unhandled exception crash for {symbol}: {r.get('trade_decision_reason')}"
+        ))
+
+    # R11: Extreme Strike Distance Out of Bounds
+    llm_instr = str(r.get("llm_instrument") or "")
+    m_strike = re.search(r"(\d+(?:\.\d+)?)", llm_instr)
+    if m_strike and underlying > 0 and "FUT" not in llm_instr.upper():
+        strike_val = float(m_strike.group(1))
+        dist_pct = abs(strike_val - underlying) / underlying
+        if dist_pct > 0.25:
+            flags.append(SentinelFlag(
+                rule="R11_EXTREME_STRIKE_DISTANCE",
+                severity="WARNING",
+                detail=f"Instrument strike {strike_val} is {dist_pct:.1%} away from underlying spot {underlying} (>25% safety limit)"
+            ))
+
+    # R12: Zero OI Dominance
+    total_strikes = int(r.get("total_strikes") or 0)
+    zero_oi = int(r.get("zero_oi_strikes") or 0)
+    if total_strikes > 10:
+        zero_oi_pct = zero_oi / total_strikes
+        if zero_oi_pct > 0.85:
+            flags.append(SentinelFlag(
+                rule="R12_ZERO_OI_DOMINANCE",
+                severity="WARNING",
+                detail=f"{zero_oi_pct:.0%} of option chain strikes ({zero_oi}/{total_strikes}) have 0 Open Interest"
+            ))
 
     return flags
 

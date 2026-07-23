@@ -35,7 +35,16 @@ def _clamp_minutes(value: int) -> int:
     return min(ALLOWED_SCAN_FREQUENCIES, key=lambda x: abs(x - v))
 
 
+import os
+import tempfile
+
+_CACHED_CONFIG: dict | None = None
+_CACHED_MTIME: float = 0.0
+
+
 def load_runtime_config() -> dict:
+    global _CACHED_CONFIG, _CACHED_MTIME
+
     default_freq = _clamp_minutes(int(FETCH_INTERVAL_MINUTES))
     defaults = {
         "scan_frequency_minutes": default_freq,
@@ -74,10 +83,17 @@ def load_runtime_config() -> dict:
         "enable_tfss_trade_blocked_rules": False,
         "sentinel_report_mode": "anomalies",  # "anomalies" = only when rules fire; "full" = every scan
         "ops_agent_mode": "observe",  # "observe" = safe notify-only; "normal" = full protective actions
+        "tiered_gates_enabled": True,
     }
+
     if not RUNTIME_CONFIG_PATH.exists():
-        return defaults
+        return defaults.copy()
+
     try:
+        current_mtime = os.path.getmtime(RUNTIME_CONFIG_PATH)
+        if _CACHED_CONFIG is not None and current_mtime == _CACHED_MTIME:
+            return json.loads(json.dumps(_CACHED_CONFIG))
+
         data = json.loads(RUNTIME_CONFIG_PATH.read_text(encoding="utf-8"))
         for k, v in data.items():
             defaults[k] = v
@@ -91,12 +107,17 @@ def load_runtime_config() -> dict:
         defaults["scan_frequency_minutes"] = _clamp_minutes(defaults.get("scan_frequency_minutes", default_freq))
         defaults["scan_frequency_nse"] = _clamp_minutes(defaults.get("scan_frequency_nse", defaults["scan_frequency_minutes"]))
         defaults["scan_frequency_mcx"] = _clamp_minutes(defaults.get("scan_frequency_mcx", defaults["scan_frequency_minutes"]))
-        return defaults
+
+        _CACHED_CONFIG = defaults
+        _CACHED_MTIME = current_mtime
+        return json.loads(json.dumps(defaults))
     except Exception:
-        return defaults
+        return defaults.copy()
 
 
 def save_runtime_config(config: dict) -> None:
+    global _CACHED_CONFIG, _CACHED_MTIME
+
     if "scan_frequency_minutes" in config:
         config["scan_frequency_minutes"] = _clamp_minutes(config["scan_frequency_minutes"])
     if "scan_frequency_nse" in config:
@@ -105,7 +126,18 @@ def save_runtime_config(config: dict) -> None:
         config["scan_frequency_mcx"] = _clamp_minutes(config["scan_frequency_mcx"])
         
     RUNTIME_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    RUNTIME_CONFIG_PATH.write_text(json.dumps(config, indent=2), encoding="utf-8")
+
+    # Atomic file write using temporary file replacement
+    content = json.dumps(config, indent=2)
+    tmp_path = RUNTIME_CONFIG_PATH.with_suffix(".tmp")
+    tmp_path.write_text(content, encoding="utf-8")
+    os.replace(tmp_path, RUNTIME_CONFIG_PATH)
+
+    _CACHED_CONFIG = json.loads(content)
+    try:
+        _CACHED_MTIME = os.path.getmtime(RUNTIME_CONFIG_PATH)
+    except Exception:
+        _CACHED_MTIME = 0.0
 
 
 def get_scan_frequency_minutes() -> int:

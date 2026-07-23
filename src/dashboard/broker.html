@@ -1575,6 +1575,43 @@
                                 letter-spacing: 0.5px;
                                 font-family: var(--sans);
                             "
+                            >SENSEX:</span
+                        >
+                        <span
+                            id="ticker-sensex-ltp"
+                            style="color: var(--text)"
+                            >Loading...</span
+                        >
+                        <span
+                            id="ticker-sensex-chg"
+                            style="font-size: 11px; font-weight: 700"
+                        ></span>
+                    </div>
+                    <div
+                        class="ticker-item"
+                        style="
+                            display: flex;
+                            align-items: center;
+                            gap: 6px;
+                            font-family: var(--mono);
+                            font-size: 12px;
+                            font-weight: 700;
+                            flex-shrink: 0;
+                            background: rgba(255, 255, 255, 0.02);
+                            border: 1px solid var(--border);
+                            padding: 4px 10px;
+                            border-radius: 6px;
+                        "
+                    >
+                        <span
+                            style="
+                                font-weight: 600;
+                                color: var(--text-dim);
+                                font-size: 11px;
+                                text-transform: uppercase;
+                                letter-spacing: 0.5px;
+                                font-family: var(--sans);
+                            "
                             >NATURALGAS:</span
                         >
                         <span
@@ -2664,13 +2701,15 @@
             }
 
             function refreshAll() {
-                fetchBrokerStatus();
-                fetchMargins();
-                fetchPositions();
-                fetchOpenOrders();
-                fetchClosedTrades();
-                fetchTopbarCMPs();
-                fetchRiskMetrics();
+                return Promise.all([
+                    fetchBrokerStatus(),
+                    fetchMargins(),
+                    fetchPositions(),
+                    fetchOpenOrders(),
+                    fetchClosedTrades(),
+                    fetchTopbarCMPs(),
+                    fetchRiskMetrics()
+                ]).catch(err => console.error("Error refreshing broker console:", err));
             }
 
             function fetchBrokerStatus() {
@@ -3438,13 +3477,11 @@
             <canvas id="sparkline-${base}"></canvas>
           </div>
         </div>
-        <div id="metrics-${base}" class="symbol-metrics" style="display: none;">
-          <div class="metric-item"><span class="metric-label">Delta</span><span class="metric-val">...</span></div>
+        <div id="metrics-${base}" class="symbol-metrics">
+          <div class="metric-item"><span class="metric-label">Net Delta</span><span class="metric-val">...</span></div>
           <div class="metric-item"><span class="metric-label">Theta</span><span class="metric-val">...</span></div>
-          <div class="metric-item"><span class="metric-label">Gamma</span><span class="metric-val">...</span></div>
-          <div class="metric-item"><span class="metric-label">Vega</span><span class="metric-val">...</span></div>
-          <div class="metric-item"><span class="metric-label">Max P</span><span class="metric-val">...</span></div>
-          <div class="metric-item"><span class="metric-label">Max L</span><span class="metric-val">...</span></div>
+          <div class="metric-item"><span class="metric-label">Max Profit</span><span class="metric-val">...</span></div>
+          <div class="metric-item"><span class="metric-label">Max Loss</span><span class="metric-val">...</span></div>
         </div>
       </div>
     `;
@@ -3549,20 +3586,34 @@
                 };
 
                 if (groupActive) {
-                    const botTrades = openPositions.filter(
-                        (p) => (p.exit_mode || "").toUpperCase() !== "KITE",
+                    const botLiveTrades = openPositions.filter(
+                        (p) => (p.exit_mode || "").toUpperCase() !== "KITE" && p.trade_status === "LIVE",
+                    );
+                    const botShadowTrades = openPositions.filter(
+                        (p) => (p.exit_mode || "").toUpperCase() !== "KITE" && p.trade_status !== "LIVE",
                     );
                     const kiteTrades = openPositions.filter(
                         (p) => (p.exit_mode || "").toUpperCase() === "KITE",
                     );
 
-                    if (botTrades.length > 0) {
+                    if (botLiveTrades.length > 0) {
                         tableHtml += `
-        <tr class="group-header bot-trades-header">
-          <td colspan="9" style="background:var(--surface-2); font-weight:700; text-align:left; padding:8px 12px; color:var(--accent); border-bottom:1.5px solid var(--border);">🤖 BOT TRADES</td>
+        <tr class="group-header bot-live-header">
+          <td colspan="9" style="background:var(--surface-2); font-weight:700; text-align:left; padding:8px 12px; color:var(--profit); border-bottom:1.5px solid var(--border);">🤖 BOT LIVE TRADES</td>
         </tr>
       `;
-                        botTrades.forEach((p) => {
+                        botLiveTrades.forEach((p) => {
+                            tableHtml += renderRow(p);
+                        });
+                    }
+
+                    if (botShadowTrades.length > 0) {
+                        tableHtml += `
+        <tr class="group-header bot-shadow-header">
+          <td colspan="9" style="background:var(--surface-2); font-weight:700; text-align:left; padding:8px 12px; color:#ff9f1c; border-bottom:1.5px solid var(--border);">🤖 BOT SHADOW TRADES</td>
+        </tr>
+      `;
+                        botShadowTrades.forEach((p) => {
                             tableHtml += renderRow(p);
                         });
                     }
@@ -3642,18 +3693,12 @@
                             );
                         };
 
-                        const thetaVal = m.net_theta;
-                    const gammaVal = m.net_gamma;
-                    const vegaVal = m.net_vega;
+                    const thetaVal = m.net_theta;
                     const formattedTheta = thetaVal != null ? (thetaVal > 0 ? "+" : "") + thetaVal.toFixed(2) : "—";
-                    const formattedGamma = gammaVal != null ? gammaVal.toFixed(4) : "—";
-                    const formattedVega = vegaVal != null ? (vegaVal > 0 ? "+" : "") + vegaVal.toFixed(2) : "—";
 
                     el.innerHTML = `
         <div class="metric-item"><span class="metric-label">Net Delta</span><span class="metric-val" style="color:var(--text-dim);">${formattedDelta}</span></div>
         <div class="metric-item"><span class="metric-label">Theta</span><span class="metric-val" style="color:var(--text-dim);">${formattedTheta}</span></div>
-        <div class="metric-item"><span class="metric-label">Gamma</span><span class="metric-val" style="color:var(--text-dim);">${formattedGamma}</span></div>
-        <div class="metric-item"><span class="metric-label">Vega</span><span class="metric-val" style="color:var(--text-dim);">${formattedVega}</span></div>
         <div class="metric-item"><span class="metric-label">Max Profit</span><span class="metric-val ${mpClass}">${formatVal(mpVal)}</span></div>
         <div class="metric-item"><span class="metric-label">Max Loss</span><span class="metric-val ${mlClass}">${formatVal(mlVal)}</span></div>
       `;

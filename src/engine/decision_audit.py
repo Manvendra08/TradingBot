@@ -72,6 +72,9 @@ def log_decision(ctx: PipelineContext, action: str, trade_id: int | None = None)
         scan_fetched_at = ctx.scan_context.get("fetched_at")
         bar_end_utc = ctx.scan_context.get("chart_indicators", {}).get("1h", {}).get("bar_end_utc")
 
+        composite_score = ctx.scan_context.get("_composite_score")
+        composite_threshold = ctx.scan_context.get("_composite_threshold")
+
         with get_conn() as conn:
             cur = conn.execute(
                 """
@@ -82,9 +85,10 @@ def log_decision(ctx: PipelineContext, action: str, trade_id: int | None = None)
                     risk_sub_check, block_step, block_reason, trail_json,
                     trade_id, bar_end_utc, scan_fetched_at,
                     core_origin_verdict, core_execution_intent, primary_trigger,
-                    persistence_source, persistence_agreeing_count
+                    persistence_source, persistence_agreeing_count,
+                    composite_score, composite_threshold
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                          ?, ?, ?, ?, ?)
+                          ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     timestamp,
@@ -112,6 +116,8 @@ def log_decision(ctx: PipelineContext, action: str, trade_id: int | None = None)
                     tfss_selected_trigger,
                     tfss_persistence_source,
                     tfss_persistence_agreeing_count,
+                    composite_score,
+                    composite_threshold,
                 ),
             )
             row_id = cur.lastrowid

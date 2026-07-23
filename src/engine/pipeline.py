@@ -131,7 +131,15 @@ def _ensure_shoonya_session() -> None:
         fetcher._load_cached_token()
         if not fetcher.access_token:
             log.info("[pipeline] Shoonya session not ready — warming up before fetch deadline starts")
-            ok = fetcher.login()
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(fetcher.login)
+                try:
+                    ok = future.result(timeout=8.0)
+                except concurrent.futures.TimeoutError:
+                    log.warning("[pipeline] Shoonya login timed out after 8s — falling back to dhan_commodity")
+                    ok = False
+
             if ok:
                 log.info("[pipeline] Shoonya session ready")
                 try:
@@ -337,7 +345,7 @@ def _async_llm_enrich_and_edit(
 
         structured_payload = _build_structured_payload(
             symbol, fetched_at, scan_context, intel, llm_verdict,
-            news_data=news_data, open_trade=None,
+            news_data=news_data, open_trade=None, digest_id=digest_id,
         )
 
         _, digest_msg_v2 = build_digest(
@@ -361,7 +369,7 @@ def _async_llm_enrich_and_edit(
         log.warning("%s: async LLM enrichment thread failed: %s", symbol, e)
 
 
-def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, intel: dict, llm_verdict: any, news_data: dict | None = None, open_trade: dict | None = None, exit_advice: any = None) -> dict:
+def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, intel: dict, llm_verdict: any, news_data: dict | None = None, open_trade: dict | None = None, exit_advice: any = None, digest_id: str | None = None) -> dict:
     from datetime import datetime, timezone
     
     td = (intel or {}).get("trade_decision") or {}
@@ -375,6 +383,27 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
     ts = dt.astimezone(IST).strftime("%H:%M IST")
     
     trade_entered = td.get("status") in ("TRIGGERED_CORE", "TRIGGERED_EXPERIMENTAL")
+    actual_lots = 1
+    if digest_id:
+        from src.models.schema import get_conn
+        try:
+            with get_conn() as conn:
+                # Check paper trades
+                row = conn.execute("SELECT lots FROM paper_trades WHERE digest_id=?", (digest_id,)).fetchone()
+                if row:
+                    trade_entered = True
+                    actual_lots = row[0]
+                else:
+                    # Check live trades
+                    row_live = conn.execute("SELECT lots FROM live_trades WHERE digest_id=?", (digest_id,)).fetchone()
+                    if row_live:
+                        trade_entered = True
+                        actual_lots = row_live[0]
+                    else:
+                        trade_entered = False
+        except Exception as e:
+            log.debug("Error checking actual trade for digest_id %s: %s", digest_id, e)
+
     header = {
         "symbol": symbol,
         "scan_time": ts,
@@ -398,7 +427,7 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
         "contract": f"{symbol} {td.get('strike')} {td.get('option_side')}" if td.get("strike") else None,
         "delta": td.get("delta"),
         "premium": td.get("premium"),
-        "qty": 1,
+        "qty": actual_lots,
         "tranche_index": td.get("tranche_index"),
         "exit_reduce": "N/A",
         "existing_position": "N/A",
@@ -550,6 +579,26 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
 
         try:
             from src.intelligence.ml_predictor import get_predictor
+
+            # Extract real DTE, RSI_1H, and RSI_3H features
+            dte = intel.get("days_to_expiry")
+            if dte is None or dte < 0:
+                exp_str = scan_context.get("expiry")
+                if exp_str:
+                    try:
+                        exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
+                        today_date = (datetime.now(timezone.utc) + IST_OFFSET).date()
+                        dte = max(0, (exp_date - today_date).days)
+                    except Exception:
+                        dte = None
+
+            chart_indicators = scan_context.get("chart_indicators") or {}
+            raw_rsi_1h = (chart_indicators.get("1h") or {}).get("rsi")
+            rsi_1h = float(raw_rsi_1h) if raw_rsi_1h is not None else None
+
+            raw_rsi_3h = (chart_indicators.get("3h") or {}).get("rsi")
+            rsi_3h = float(raw_rsi_3h) if raw_rsi_3h is not None else None
+
             ml_prediction = get_predictor().predict({
                 "symbol": symbol,
                 "confidence": intel.get("confidence", 0),
@@ -563,9 +612,9 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                 "resistance": scan_context.get("resistance"),
                 "max_pain": scan_context.get("max_pain"),
                 "chart_conflict": intel.get("chart_conflict"),
-                "days_to_expiry": None,
-                "rsi_1h": None,
-                "rsi_3h": None,
+                "days_to_expiry": dte,
+                "rsi_1h": rsi_1h,
+                "rsi_3h": rsi_3h,
                 "regime": scan_context.get("market_regime"),
                 "opened_at": scan_context.get("fetched_at"),
             })
@@ -802,6 +851,20 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                     if runner is None:
                         continue
                     runner(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
+                    
+                    # ── Sequentially Trigger Live/Shadow Execution for Active Strategies ──
+                    if sid in ("CORE", "NG_MOMENTUM", "NG_PARITY", "NG_EVENT"):
+                        try:
+                            from src.engine.live_trading import run_live_trading
+                            run_live_trading(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
+                        except Exception as le:
+                            log.exception("%s: live/shadow trading execution failed for %s", symbol, sid)
+                    elif sid == "TIMEFRAME":
+                        try:
+                            from src.engine.live_trading import run_live_timeframe_strategy
+                            run_live_timeframe_strategy(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
+                        except Exception as le:
+                            log.exception("%s: live/shadow timeframe strategy execution failed", symbol)
             except Exception:
                 position_sync_dirty_state.mark_dirty("broker_action_failed")
                 kite_health_cache.invalidate("session_ok")

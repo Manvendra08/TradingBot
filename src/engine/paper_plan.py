@@ -163,23 +163,34 @@ def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | N
     side, option_type = VERDICT_ACTION_MAP[verdict_str]
     bullish = is_bullish(verdict_str)
 
-    # TFSS v4: If execution side is determined by the pipeline, override VERDICT_ACTION_MAP.
-    # LLM instrument type (CE/PE) is still respected for option_type, but side is ALWAYS SELL
-    # for qualifying Core verdicts — legacy BUY paths are deprecated per plan §1.4.
+    # Merge CORE to TFSS: All core verdicts qualify for TFSS execution method.
+    from src.engine.trend_following_short_strangle import normalize_core_verdict_to_tfss_intent
+    tfss_intent = normalize_core_verdict_to_tfss_intent(verdict_str)
+    
     setup_type = "CORE"
-    tfss_side = ctx.get("_tfss_execution_side")
+    tfss_side = ctx.get("_tfss_execution_side") or (
+        "SELL_PE" if tfss_intent and tfss_intent.bias == "BULLISH" else
+        "SELL_CE" if tfss_intent and tfss_intent.bias == "BEARISH" else None
+    )
+    
     if tfss_side in ("SELL_PE", "SELL_CE"):
         side = "SELL"
         option_type = "PE" if tfss_side == "SELL_PE" else "CE"
         setup_type = "TFSS"
+        
+        # Support LLM override of option_type for GO_LONG/GO_SHORT if available
+        if verdict_str in ("GO_LONG", "GO_SHORT") or ctx.get("instrument"):
+            llm_instr = str(ctx.get("instrument") or "")
+            if re.search(r"\bCE\b", llm_instr, re.IGNORECASE):
+                option_type = "CE"
+            elif re.search(r"\bPE\b", llm_instr, re.IGNORECASE):
+                option_type = "PE"
     elif verdict_str in ("GO_LONG", "GO_SHORT"):
-        # LLM can influence option type (CE vs PE) but NOT side — side stays SELL
         llm_instr = str(ctx.get("instrument") or "")
         if re.search(r"\bCE\b", llm_instr, re.IGNORECASE):
             option_type = "CE"
         elif re.search(r"\bPE\b", llm_instr, re.IGNORECASE):
             option_type = "PE"
-        # side remains from VERDICT_ACTION_MAP (always SELL for GO_LONG/GO_SHORT)
 
     step = float(get_strike_step(symbol) or 1)
     atm = _safe_float(ctx.get("atm_strike")) or _round_to_step(underlying, step)

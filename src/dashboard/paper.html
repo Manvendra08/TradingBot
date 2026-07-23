@@ -2246,6 +2246,43 @@
                                 letter-spacing: 0.5px;
                                 font-family: var(--sans);
                             "
+                            >SENSEX:</span
+                        >
+                        <span
+                            id="ticker-sensex-ltp"
+                            style="color: var(--text)"
+                            >Loading...</span
+                        >
+                        <span
+                            id="ticker-sensex-chg"
+                            style="font-size: 11px; font-weight: 700"
+                        ></span>
+                    </div>
+                    <div
+                        class="ticker-item"
+                        style="
+                            display: flex;
+                            align-items: center;
+                            gap: 6px;
+                            font-family: var(--mono);
+                            font-size: 12px;
+                            font-weight: 700;
+                            flex-shrink: 0;
+                            background: rgba(255, 255, 255, 0.02);
+                            border: 1px solid var(--border);
+                            padding: 4px 10px;
+                            border-radius: 6px;
+                        "
+                    >
+                        <span
+                            style="
+                                font-weight: 600;
+                                color: var(--text-dim);
+                                font-size: 11px;
+                                text-transform: uppercase;
+                                letter-spacing: 0.5px;
+                                font-family: var(--sans);
+                            "
                             >NATURALGAS:</span
                         >
                         <span
@@ -3567,12 +3604,10 @@
 
             async function loadAll() {
                 fetchTopbarCMPs();
-                const sym = encodeURIComponent(
-                    document.getElementById("symbol").value || "",
-                );
-                const st = encodeURIComponent(
-                    document.getElementById("status").value || "",
-                );
+                const symEl = document.getElementById("symbol");
+                const stEl = document.getElementById("status");
+                const sym = symEl ? encodeURIComponent(symEl.value || "") : "";
+                const st = stEl ? encodeURIComponent(stEl.value || "") : "";
                 try {
                     const [summary, trades, equity] = await Promise.all([
                         api(`/api/paper_summary?symbol=${sym}`),
@@ -3589,6 +3624,10 @@
                         `Updated ${new Date().toLocaleTimeString("en-IN")}`;
                 } catch (e) {
                     console.error("API error:", e);
+                    const tb = document.getElementById("trades-body");
+                    if (tb) {
+                        tb.innerHTML = `<tr><td colspan="17"><div class="empty-state" style="color:var(--red)"><div class="empty-icon">⚠️</div>Failed to load trades: ${_esc(e.message || "Server Error")}<br/><button class="btn primary" onclick="loadAll()" style="margin-top:10px;">Retry</button></div></td></tr>`;
+                    }
                 }
             }
 

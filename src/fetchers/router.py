@@ -308,6 +308,15 @@ def _merge_fetcher_results(primary: dict, fallback: dict, symbol: str) -> dict:
     if not fallback:
         return primary
     
+    p_exp = primary.get("expiry")
+    f_exp = fallback.get("expiry")
+    if p_exp and f_exp and p_exp != f_exp:
+        log.warning(
+            "[router] %s | Cannot merge fetchers with mismatched expiries (primary=%s vs fallback=%s). Using primary only.",
+            symbol, p_exp, f_exp
+        )
+        return primary
+
     underlying = primary.get("underlying_price")
     if not underlying:
         log.warning("[router] %s | primary missing underlying_price, cannot filter ATM strikes", symbol)

@@ -746,7 +746,7 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
     conf   = header.get("confidence")
 
     lines: list[str] = []
-    DIV = "─" * 22
+    DIV = "─" * 15
 
     # ── HEADER ──
     conf_bar = ""
@@ -791,6 +791,8 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
     existing_pos = _val(tfss.get("existing_position"))
     tfss_reason  = _val(tfss.get("primary_reason"))
     tfss_blockers = [str(b) for b in (tfss.get("blockers") or []) if _val(str(b))]
+    tf_blockers   = [str(b) for b in (timeframe.get("blockers") or []) if _val(str(b))]
+    gr_blockers   = [str(b) for b in (global_risk.get("blockers") or []) if _val(str(b))]
 
     action_icon = {"ENTER": "🟢", "ADD": "🟢", "EXIT": "🔴", "REDUCE": "🟡",
                    "BLOCK": "🚫", "NO_ACTION": "⏸️"}.get(str(tfss_action or "").upper(), "⚙️")
@@ -821,22 +823,21 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
                 parts.append(combined)
         if parts:
             lines.append("   " + " · ".join(parts))
-        if tfss_reason and tfss_reason != "N/A":
+        # Only display positive reason for entered trades (filter out "blocked" text)
+        if tfss_reason and tfss_reason != "N/A" and "blocked" not in tfss_reason.lower():
             lines.append(f"Reason: {_esc(tfss_reason)}")
     else:
         lines.append("Trade: ✗ Not entered")
+        # Display blocked reasons ONLY when trade was NOT entered
+        all_blockers = list(dict.fromkeys(tfss_blockers + tf_blockers + gr_blockers))
 
-    # Display blocked reason inside the SIGNAL section
-    tf_blockers = [str(b) for b in (timeframe.get("blockers") or []) if _val(str(b))]
-    gr_blockers = [str(b) for b in (global_risk.get("blockers") or []) if _val(str(b))]
-    all_blockers = list(dict.fromkeys(tfss_blockers + tf_blockers + gr_blockers))
-
-    if all_blockers:
-        for b in all_blockers:
-            lines.append(f" ⚠ Blocked: {_esc(b)}")
-    elif not trade_ok:
-        if tfss_reason and tfss_reason != "N/A":
+        if all_blockers:
+            for b in all_blockers:
+                lines.append(f" ⚠ Blocked: {_esc(b)}")
+        elif tfss_reason and tfss_reason != "N/A" and "allowed" not in tfss_reason.lower():
             lines.append(f"Reason: {_esc(tfss_reason)}")
+        else:
+            lines.append("Reason: Setup did not meet execution criteria")
 
     if exit_reduce:
         lines.append(f"Exit/Reduce: {_esc(exit_reduce)}")
@@ -1071,14 +1072,14 @@ def _build_digest_legacy(
         msg = "\n".join(
             [
                 f"\U0001f4ca *{symbol}*{header_extra} | {ts} | {title}",
-                f"{'━' * 20}",
+                f"{'━' * 15}",
                 f"{px_label} `{_fmt_num(ctx.get('underlying'))}` | MP `{mp_val}{mp_chg_str}` | PCR `{_fmt_num(ctx.get('pcr'), 2)}` | OI CE `{total_ce}` PE `{total_pe}`",
                 f"{EMOJI_WHITE} *Market quiet*",
                 quiet_note,
                 ai_part,
                 f"OI max `{max_oi:.2f}%` | ATM LTP max `{max_ltp:.2f}%`",
                 f"_#{digest_id} · all symbols enabled_",
-                f"{'━' * 20}",
+                f"{'━' * 15}",
             ]
         )
         return digest_id, _fit_telegram(msg, digest_id)
@@ -1117,7 +1118,7 @@ def _build_digest_legacy(
 
     lines = [
         f"\U0001f4ca *{symbol}*{header_extra} | {ts} | {n} signals",
-        f"{'━' * 20}",
+        f"{'━' * 15}",
         counts or "No severity count",
         f"{px_label} `{_fmt_num(ctx.get('underlying'))}` | ATM `{_fmt_num(ctx.get('atm_strike'))}` | MP `{mp_val}{mp_chg_str}` | PCR `{_fmt_num(ctx.get('pcr'), 2)}` | OI CE `{total_ce}` PE `{total_pe}`",
         f"{emoji} *{_esc(label)}* - {_esc(_clip(intel['verdict'], 45))}",
@@ -1300,7 +1301,7 @@ def _build_digest_legacy(
             _format_trade_status(live_trade_status, is_live=True),
         ]
     lines += ["", f"_#{digest_id} · {n} signals · all symbols enabled_"]
-    lines += [f"{'━' * 20}"]
+    lines += [f"{'━' * 15}"]
     return digest_id, _fit_telegram("\n".join(lines), digest_id)
 
 
@@ -1308,7 +1309,7 @@ def _build_digest_legacy(
 # ENHANCED TELEGRAM TEMPLATE  (redesigned)
 # ═══════════════════════════════════════════════════════════════════════════
 
-DIVIDER = "\u2500" * 20  # single canonical divider
+DIVIDER = "\u2500" * 15  # single canonical divider
 
 
 def _verdict_bias(verdict: str) -> str:

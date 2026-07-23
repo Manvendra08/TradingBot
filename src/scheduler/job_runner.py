@@ -318,12 +318,13 @@ def _run_catchup_scan(class_key: str, interval_idx: int, interval_min: int, mark
     )
     try:
         _guarded_run(class_key, force=force)
+    except Exception as exc:
+        log.error("[catchup] Catch-up scan failed for %s interval %d: %s", class_key, interval_idx, exc)
+    finally:
         last_scanned_interval[class_key] = max(
             last_scanned_interval.get(class_key, -1),
             interval_idx
         )
-    except Exception as exc:
-        log.error("[catchup] Catch-up scan failed for %s interval %d: %s", class_key, interval_idx, exc)
 
 
 def _startup_fill_missed(
@@ -398,7 +399,8 @@ def _startup_fill_missed(
         )
         return
 
-    missed_intervals = missed_intervals[-MAX_CATCHUP_INTERVALS:]
+    limit = MAX_CATCHUP_INTERVALS if immediate_flag else 1
+    missed_intervals = missed_intervals[-limit:]
     log.info(
         "[scheduler] %s: %d missed interval(s) at startup: %s",
         class_key,
@@ -811,13 +813,21 @@ def start_scheduler(immediate: bool = False):
             log.warning("[scheduler] Shoonya auth error: %s", e)
 
         try:
-            # Kite: ensure valid session
+            # Kite: ensure valid session or trigger auto-login
             from src.engine.live_trading import get_kite_client
+            from src.services.zerodha_auto_login import auto_login_kite
+            
             kite = get_kite_client()
             if kite:
                 log.info("[scheduler] Kite session OK")
             else:
-                log.info("[scheduler] Kite not configured or auto-login pending")
+                # Trigger auto-login if Kite client not available
+                log.info("[scheduler] Kite client not available — attempting auto-login...")
+                result = auto_login_kite(force=False)
+                if result.get("success"):
+                    log.info("[scheduler] Kite auto-login successful")
+                else:
+                    log.info("[scheduler] Kite auto-login pending: %s", result.get("message", "credentials not configured"))
         except Exception as e:
             log.warning("[scheduler] Kite auth error: %s", e)
 
@@ -1202,20 +1212,21 @@ def start_scheduler(immediate: bool = False):
                 current_interval_idx = math.floor(delta_minutes / interval_min)
                 should_scan = False
 
-                data_available = _latest_interval_data_available(class_key, current_interval_idx, interval_min, market_open_time)
+                if last_scanned_interval.get(class_key, -1) < current_interval_idx:
+                    data_available = _latest_interval_data_available(class_key, current_interval_idx, interval_min, market_open_time)
 
-                if not data_available:
-                    attempts = _scan_attempts.get((class_key, current_interval_idx), 0)
-                    last_attempt = _last_scan_attempt_time.get(class_key, 0.0)
-                    if attempts < 3 and (time.time() - last_attempt >= 60.0):
-                        should_scan = True
-                        _scan_attempts[(class_key, current_interval_idx)] = attempts + 1
-                        _last_scan_attempt_time[class_key] = time.time()
-                else:
-                    last_scanned_interval[class_key] = max(
-                        last_scanned_interval.get(class_key, -1),
-                        current_interval_idx
-                    )
+                    if not data_available:
+                        attempts = _scan_attempts.get((class_key, current_interval_idx), 0)
+                        last_attempt = _last_scan_attempt_time.get(class_key, 0.0)
+                        if attempts < 3 and (time.time() - last_attempt >= 60.0):
+                            should_scan = True
+                            _scan_attempts[(class_key, current_interval_idx)] = attempts + 1
+                            _last_scan_attempt_time[class_key] = time.time()
+                    else:
+                        last_scanned_interval[class_key] = max(
+                            last_scanned_interval.get(class_key, -1),
+                            current_interval_idx
+                        )
 
                 if should_scan:
                     cycle_start = time.time()
@@ -1248,6 +1259,11 @@ def start_scheduler(immediate: bool = False):
                         elapsed,
                         success,
                     )
+                    if success:
+                        last_scanned_interval[class_key] = max(
+                            last_scanned_interval.get(class_key, -1),
+                            current_interval_idx,
+                        )
 
                 # ── Catch-up: run scans for missed intervals ──
                 if not should_scan and last_scanned_interval.get(class_key, -1) >= 0:

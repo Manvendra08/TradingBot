@@ -93,35 +93,20 @@ def get_cached_user_name() -> str | None:
         return None
     client = _cached_kite_client or get_kite_client()
     if client:
-        try:
-            profile = client.profile()
-            _cached_user_name = profile.get("user_name")
-            _profile_failure_ts = 0.0
-            return _cached_user_name
-        except Exception as e:
+        # Fetch profile asynchronously in background to avoid blocking server endpoints
+        def _bg_fetch_profile(cl):
+            global _cached_user_name, _profile_failure_ts
             try:
-                from src.utils.tls_adapter import is_retryable_transport_error
+                prof = cl.profile()
+                _cached_user_name = prof.get("user_name")
+                _profile_failure_ts = 0.0
+            except Exception as ex:
+                _profile_failure_ts = datetime.now(timezone.utc).timestamp()
+                log.debug("Background Zerodha profile fetch failed: %s", ex)
 
-                if is_retryable_transport_error(e):
-                    clear_kite_client_cache()
-            except Exception:
-                pass
-            
-            err_msg = str(e).lower()
-            if "api_key" in err_msg or "token" in err_msg:
-                try:
-                    from src.services.zerodha_auth import invalidate_token
-                    invalidate_token()
-                except Exception:
-                    pass
-                    
-            _profile_failure_ts = now
-            log.warning(
-                "Failed to fetch Zerodha profile for user name; retry paused for %.0fs: %s",
-                _PROFILE_FAILURE_COOLDOWN_SECONDS,
-                e,
-            )
-    return None
+        t = threading.Thread(target=_bg_fetch_profile, args=(client,), daemon=True)
+        t.start()
+    return _cached_user_name
 
 
 def _get_public_ip() -> str:
@@ -202,15 +187,20 @@ def get_kite_client() -> KiteConnect | None:
             _cached_access_token = None
             return None
 
-        from src.services.zerodha_auth import is_token_valid
+        from src.services.zerodha_auth import is_token_valid, invalidate_token
 
         if not is_token_valid():
             _cached_kite_client = None
             _cached_access_token = None
             return None
 
-        # Reuse cached client if access token matches
-        if _cached_kite_client and _cached_access_token == config["access_token"]:
+        db_token = config.get("access_token")
+        # Reuse cached client if access token matches active DB token and object state
+        if (
+            _cached_kite_client
+            and _cached_access_token == db_token
+            and getattr(_cached_kite_client, "access_token", None) == db_token
+        ):
             return _cached_kite_client
 
         try:
@@ -1137,9 +1127,15 @@ def run_live_trading(
         ctx["instrument"] = getattr(ai_verdict, "instrument", None) or (
             ai_verdict.get("instrument") if isinstance(ai_verdict, dict) else None
         )
-    decision = make_trade_decision(symbol, intel, ctx, ai_verdict=ai_verdict)
-    if decision["status"] == "BLOCKED":
-        return {"action": "BLOCKED_DECISION", "reason": decision["reason"]}
+    # Reuse existing decision if already computed in intel to ensure parity with paper_trading
+    decision = None
+    if isinstance(intel, dict) and intel.get("trade_decision"):
+        decision = intel["trade_decision"]
+    else:
+        decision = make_trade_decision(symbol, intel, ctx, ai_verdict=ai_verdict)
+
+    if decision.get("status") == "BLOCKED":
+        return {"action": "BLOCKED_DECISION", "reason": decision.get("reason", "Blocked by trade decision engine")}
 
     risk_ok, risk_reason = check_live_risk_limits(symbol)
     if not risk_ok:

@@ -369,7 +369,6 @@ def resolve_instrument(
     """
     symbol = symbol.upper()
     option_type = option_type.upper()
-    key = (symbol, expiry, float(strike), option_type)
 
     if not _instrument_cache_is_ready():
         try:
@@ -383,6 +382,20 @@ def resolve_instrument(
                 fetch_and_cache_instruments(kite)
         except Exception as e:
             log.warning("[resolver] Failed to auto-initialize cache: %s", e)
+
+    # 0. Check if symbol is already a full tradingsymbol (e.g. SENSEX2672376800PE)
+    for val in _INSTRUMENT_CACHE.values():
+        if val.get("tradingsymbol") == symbol:
+            return val
+
+    # Extract base symbol if full tradingsymbol was passed as symbol
+    base_sym = symbol
+    for known_base in ("NATURALGAS", "CRUDEOIL", "BANKNIFTY", "MIDCPNIFTY", "FINNIFTY", "NIFTY", "SENSEX", "GOLD", "SILVER"):
+        if symbol.startswith(known_base):
+            base_sym = known_base
+            break
+
+    key = (base_sym, expiry, float(strike), option_type)
 
     res = _INSTRUMENT_CACHE.get(key)
     if res:

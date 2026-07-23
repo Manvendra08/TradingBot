@@ -293,7 +293,9 @@ CREATE TABLE IF NOT EXISTS decision_audit (
     core_execution_intent  TEXT,          -- TFSS resolved side (SELL_PE / SELL_CE / empty)
     primary_trigger        TEXT,          -- Selected exit trigger
     persistence_source     TEXT,          -- native_5scan / empty
-    persistence_agreeing_count INTEGER    -- 3-5 agreeing scans
+    persistence_agreeing_count INTEGER,   -- 3-5 agreeing scans
+    composite_score        REAL,          -- Tiered Gates composite score
+    composite_threshold    REAL           -- Tiered Gates effective threshold
 );
 
 CREATE INDEX IF NOT EXISTS idx_da_symbol_ts ON decision_audit(symbol, timestamp);
@@ -431,14 +433,27 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 
 
 @contextlib.contextmanager
-def get_conn():
+def get_read_conn():
+    """Read-only context manager that does NOT commit on exit."""
     conn = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES, timeout=30.0)
     conn.row_factory = sqlite3.Row
     try:
         yield conn
-        conn.commit()
+    finally:
+        conn.close()
+
+
+@contextlib.contextmanager
+def get_conn(read_only: bool = False):
+    conn = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+        if not read_only:
+            conn.commit()
     except Exception:
-        conn.rollback()
+        if not read_only:
+            conn.rollback()
         raise
     finally:
         conn.close()
@@ -519,6 +534,8 @@ _MIGRATIONS = [
     ("M072_add_live_exit_reason", "ALTER TABLE live_trades ADD COLUMN exit_reason TEXT"),
     ("M073_add_paper_leg_group_id", "ALTER TABLE paper_trades ADD COLUMN leg_group_id TEXT"),
     ("M074_add_paper_tranche_index", "ALTER TABLE paper_trades ADD COLUMN tranche_index INTEGER DEFAULT 0"),
+    ("M075_add_composite_score", "ALTER TABLE decision_audit ADD COLUMN composite_score REAL"),
+    ("M076_add_composite_threshold", "ALTER TABLE decision_audit ADD COLUMN composite_threshold REAL"),
 ]
 
 
@@ -2001,6 +2018,30 @@ def get_open_positions_count() -> int:
             "SELECT COUNT(*) as c FROM live_trades WHERE status='OPEN'"
         ).fetchone()["c"]
     return paper + live
+
+
+def get_open_positions_count_ro() -> int:
+    """Count open paper + live positions using a read-only connection."""
+    try:
+        db_uri = Path(DB_PATH).as_uri() + "?mode=ro"
+        conn = sqlite3.connect(
+            db_uri,
+            uri=True,
+            detect_types=sqlite3.PARSE_DECLTYPES,
+            timeout=5.0,
+        )
+        conn.row_factory = sqlite3.Row
+        paper = conn.execute(
+            "SELECT COUNT(*) as c FROM paper_trades WHERE status='OPEN'"
+        ).fetchone()["c"]
+        live = conn.execute(
+            "SELECT COUNT(*) as c FROM live_trades WHERE status='OPEN'"
+        ).fetchone()["c"]
+        conn.close()
+        return paper + live
+    except Exception:
+        return 0
+
 
 
 def get_oldest_open_position_age_min() -> float | None:

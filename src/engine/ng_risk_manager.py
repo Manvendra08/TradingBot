@@ -12,19 +12,23 @@ log = logging.getLogger(__name__)
 
 IST = pytz.timezone("Asia/Kolkata")
 
-def check_ng_position_limit(table: str = "paper_trades") -> bool:
+def check_ng_position_limit(table: str = "paper_trades", setup_type: str = "CORE") -> bool:
     """Returns True if open positions are below limit (NG_MAX_POSITIONS = 1)."""
+    if setup_type and "TFSS" in str(setup_type).upper():
+        return True
+
     from config.settings import NG_MAX_POSITIONS
     if table not in ("paper_trades", "live_trades"):
         table = "paper_trades"
     
     with get_conn() as conn:
         row = conn.execute(
-            f"SELECT COUNT(*) FROM {table} WHERE symbol = 'NATURALGAS' AND status = 'OPEN'"
+            f"SELECT COUNT(*) FROM {table} WHERE symbol = 'NATURALGAS' AND status = 'OPEN' AND (setup_type IS NULL OR setup_type NOT IN ('TFSS', 'TIMEFRAME'))"
         ).fetchone()
         open_count = int(row[0]) if row else 0
         
     return open_count < NG_MAX_POSITIONS
+
 
 NG_DAILY_LOSS_CAP = 5
 
