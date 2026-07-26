@@ -98,7 +98,15 @@ shoonya_shared_token.json
 # Root-level DB artifacts
 nsebot.db
 nse_bot.db
+bot.db
+*.db
+*.db-shm
+*.db-wal
 nul
+
+# Scratch test outputs
+test_*.txt
 
 # Coverage data
 .coverage
+

@@ -12,7 +12,7 @@ import socket
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
 
 import pytz
@@ -38,6 +38,40 @@ SCRAPE_RUNNER = ROOT / "tools" / "scrape_dhan_naturalgas.py"
 IST = pytz.timezone("Asia/Kolkata")
 
 MAX_CATCHUP_INTERVALS = 3  # max missed intervals to backfill per tick
+
+
+def _get_required_strikes(symbol: str) -> set[float]:
+    """Get strikes from open paper and live trades for a symbol."""
+    from src.models.schema import get_conn
+
+    required = set()
+    try:
+        with get_conn() as conn:
+            # Paper trades
+            paper_trades = conn.execute(
+                "SELECT strike FROM paper_trades WHERE symbol=? AND status='OPEN'",
+                (symbol,),
+            ).fetchall()
+            for row in paper_trades:
+                try:
+                    if row["strike"] is not None:
+                        required.add(float(row["strike"]))
+                except (ValueError, TypeError):
+                    pass
+            # Live trades
+            live_trades = conn.execute(
+                "SELECT strike FROM live_trades WHERE symbol=? AND status='OPEN'",
+                (symbol,),
+            ).fetchall()
+            for row in live_trades:
+                try:
+                    if row["strike"] is not None:
+                        required.add(float(row["strike"]))
+                except (ValueError, TypeError):
+                    pass
+    except Exception as e:
+        log.warning("Error fetching required strikes for %s: %s", symbol, e)
+    return required
 
 
 def exit_all_positions_friday(market_class: str) -> None:
@@ -204,6 +238,197 @@ def exit_all_positions_friday(market_class: str) -> None:
         except Exception as sym_exc:
             log.error(
                 "[Friday Exit] Error executing Friday exit for %s: %s", symbol, sym_exc
+            )
+
+
+def exit_expiry_day_positions(market_class: str) -> None:
+    """
+    Exit open paper and live trades for current expiry positions 1 minute before market closing time.
+    Only closes positions whose contract expiry date matches today's date in IST.
+    """
+    from datetime import datetime, timezone
+
+    from config.runtime_config import load_runtime_config
+    from config.settings import WATCH_SYMBOLS
+    from src.engine.live_trading import _exit_open_live_trade, get_kite_client
+    from src.engine.trade_plan import get_option_premium
+    from src.fetchers.router import fetch_option_chain
+    from src.models.schema import close_paper_trade, get_conn
+
+    now_ist = datetime.now(IST)
+    today_ist_str = now_ist.strftime("%Y-%m-%d")
+
+    log.info(
+        "[Expiry Exit] Expiry day 1-min auto-exit triggered for class: %s (date: %s)",
+        market_class,
+        today_ist_str,
+    )
+    config = load_runtime_config()
+    shadow_mode = config.get("live_shadow_mode", False)
+    kite = get_kite_client()
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # Determine symbols matching class
+    symbols = [s for s in WATCH_SYMBOLS if get_symbol_class(s) == market_class]
+
+    for symbol in symbols:
+        if not _is_open_for(symbol):
+            log.info(
+                "[Expiry Exit] Market closed for %s — skipping exit (no valid prices available)",
+                symbol,
+            )
+            continue
+
+        try:
+            # 1. Fetch open paper trades
+            with get_conn() as conn:
+                open_paper = conn.execute(
+                    "SELECT * FROM paper_trades WHERE symbol=? AND status='OPEN'",
+                    (symbol,),
+                ).fetchall()
+
+            # 2. Fetch open live trades
+            with get_conn() as conn:
+                open_live = conn.execute(
+                    "SELECT * FROM live_trades WHERE symbol=? AND status='OPEN'",
+                    (symbol,),
+                ).fetchall()
+
+            # Strictly filter for current expiry positions matching TODAY's date
+            expiring_paper = [
+                row for row in open_paper
+                if str(dict(row).get("expiry") or "")[:10] == today_ist_str
+            ]
+            expiring_live = [
+                row for row in open_live
+                if str(dict(row).get("expiry") or "")[:10] == today_ist_str
+            ]
+
+            if not expiring_paper and not expiring_live:
+                continue
+
+            log.info(
+                "[Expiry Exit] Found %d paper and %d live expiring trades for %s (expiry: %s). Fetching CMP...",
+                len(expiring_paper),
+                len(expiring_live),
+                symbol,
+                today_ist_str,
+            )
+
+            required_strikes = _get_required_strikes(symbol)
+            oc_data = fetch_option_chain(symbol, required_strikes=required_strikes)
+            if not oc_data or not oc_data.get("underlying_price"):
+                log.warning(
+                    "[Expiry Exit] Could not fetch latest prices for %s. Skipping expiry exit.",
+                    symbol,
+                )
+                continue
+
+            underlying = oc_data["underlying_price"]
+            option_rows = oc_data.get("strikes") or []
+
+            # Exit Expiring Paper Trades
+            for row in expiring_paper:
+                trade = dict(row)
+                exit_premium = None
+                if trade.get("option_type") == "FUT":
+                    exit_premium = underlying
+                else:
+                    exit_premium = get_option_premium(
+                        symbol,
+                        trade.get("expiry"),
+                        trade.get("strike"),
+                        trade.get("option_type"),
+                        option_rows,
+                    )
+
+                # Fallback to intrinsic value if premium is missing / zero
+                if exit_premium is None or exit_premium <= 0:
+                    strike = float(trade.get("strike") or 0.0)
+                    if trade.get("option_type") == "CE":
+                        exit_premium = max(0.0, underlying - strike)
+                    else:
+                        exit_premium = max(0.0, strike - underlying)
+
+                close_paper_trade(
+                    trade["id"],
+                    now_iso,
+                    underlying,
+                    exit_premium,
+                    "CLOSED_EXPIRY",
+                    f"Expiry day auto-exit 1 min before market close (expiry: {today_ist_str})",
+                )
+                log.info(
+                    "[Expiry Exit] Successfully closed paper trade #%d for %s (expiry: %s) at premium %.2f",
+                    trade["id"],
+                    symbol,
+                    today_ist_str,
+                    exit_premium,
+                )
+                from src.alerts.telegram_dispatcher import send_text
+
+                send_text(
+                    f"⌛ **Expiry Auto-Exit** | Closed paper `{symbol}` `{trade.get('option_type')}` `{trade.get('strike')}` (Expiry: `{today_ist_str}`) 1 min before market close at premium `{exit_premium:.2f}`."
+                )
+
+            # Exit Expiring Live Trades
+            for row in expiring_live:
+                trade = dict(row)
+                exit_premium = None
+                if trade.get("option_type") == "FUT":
+                    exit_premium = underlying
+                else:
+                    exit_premium = get_option_premium(
+                        symbol,
+                        trade.get("expiry"),
+                        trade.get("strike"),
+                        trade.get("option_type"),
+                        option_rows,
+                    )
+
+                # Fallback to intrinsic value
+                if exit_premium is None or exit_premium <= 0:
+                    strike = float(trade.get("strike") or 0.0)
+                    if trade.get("option_type") == "CE":
+                        exit_premium = max(0.0, underlying - strike)
+                    else:
+                        exit_premium = max(0.0, strike - underlying)
+
+                try:
+                    _exit_open_live_trade(
+                        kite=kite,
+                        symbol=symbol,
+                        trade=trade,
+                        underlying=underlying,
+                        exit_premium=exit_premium,
+                        status="CLOSED_EXPIRY",
+                        reason=f"Expiry day auto-exit 1 min before market close (expiry: {today_ist_str})",
+                        shadow_mode=shadow_mode,
+                        now_iso=now_iso,
+                    )
+                    log.info(
+                        "[Expiry Exit] Successfully closed live trade #%d for %s (expiry: %s)",
+                        trade["id"],
+                        symbol,
+                        today_ist_str,
+                    )
+                    from src.alerts.telegram_dispatcher import send_text
+
+                    prefix = "[SHADOW]" if shadow_mode else "🚨 [LIVE]"
+                    send_text(
+                        f"{prefix} **Expiry Auto-Exit** | Closed live `{symbol}` `{trade.get('option_type')}` `{trade.get('strike')}` (Expiry: `{today_ist_str}`) 1 min before market close at underlying `{underlying}`."
+                    )
+                except Exception as live_exc:
+                    log.error(
+                        "[Expiry Exit] Failed to close live trade #%d for %s: %s",
+                        trade["id"],
+                        symbol,
+                        live_exc,
+                    )
+
+        except Exception as sym_exc:
+            log.error(
+                "[Expiry Exit] Error executing expiry exit for %s: %s", symbol, sym_exc
             )
 
 
@@ -823,7 +1048,7 @@ def start_scheduler(immediate: bool = False):
             else:
                 # Trigger auto-login if Kite client not available
                 log.info("[scheduler] Kite client not available — attempting auto-login...")
-                result = auto_login_kite(force=False)
+                result = auto_login_kite(force=True)
                 if result.get("success"):
                     log.info("[scheduler] Kite auto-login successful")
                 else:
@@ -851,7 +1076,6 @@ def start_scheduler(immediate: bool = False):
 
         import datetime as dt_mod
         import math
-        from datetime import timedelta, timezone
         from src.models.schema import get_conn
 
         now_ist = datetime.now(IST)
@@ -975,6 +1199,7 @@ def start_scheduler(immediate: bool = False):
 
     _last_friday_nse_exit_date = None
     _last_friday_mcx_exit_date = None
+    _last_expiry_exit_tracker: set[tuple[str, str, str]] = set()
     _last_auto_login_date = None
     _last_fii_fetch_date = None
     _last_weights_refresh_date = None
@@ -1137,6 +1362,27 @@ def start_scheduler(immediate: bool = False):
                         exit_all_positions_friday("MCX_COMMODITY")
                     except Exception as e:
                         log.error("Friday auto-exit failed for MCX: %s", e)
+
+            # Expiry Day Auto-Exits (1 min before market closing time for current expiry positions)
+            current_time_str = now_ist.strftime("%H:%M")
+            for class_key in MARKET_WINDOWS:
+                _, close_t, _ = MARKET_WINDOWS[class_key]
+                close_h, close_m = map(int, close_t.split(":"))
+                close_dt = datetime.combine(now_ist.date(), dt_time(close_h, close_m))
+                target_time_str = (close_dt - timedelta(minutes=1)).strftime("%H:%M")
+
+                if target_time_str <= current_time_str <= close_t:
+                    tracker_key = (class_key, target_time_str, current_date)
+                    if tracker_key not in _last_expiry_exit_tracker:
+                        _last_expiry_exit_tracker.add(tracker_key)
+                        try:
+                            exit_expiry_day_positions(class_key)
+                        except Exception as e:
+                            log.error(
+                                "[scheduler] Expiry 1-min auto-exit failed for %s: %s",
+                                class_key,
+                                e,
+                            )
 
             # 1. Full Scan Loop per market class
             import math

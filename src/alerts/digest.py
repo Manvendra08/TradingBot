@@ -741,7 +741,7 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
     stime = _val(header.get("scan_time")) or ""
     expiry = _val(header.get("expiry"))
     dte    = header.get("dte")
-    spot   = header.get("underlying")
+    spot   = header.get("underlying") if header.get("underlying") is not None else header.get("spot")
     regime = _val(header.get("market_regime"))
     conf   = header.get("confidence")
 
@@ -756,25 +756,39 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
 
     # Top line status:
     trade_entered = header.get("trade_entered", False)
-    trade_status_str = "✅ Entered" if trade_entered else "✗ Not entered"
-    lines.append(f"📊 *{sym}* · {stime}  {trade_status_str}")
-
-    head2 = []
+    trade_status_str = "🟢 Entered" if trade_entered else "X Not entered"
+    
     if expiry:
         try:
             exp_dt = datetime.strptime(str(expiry).strip(), "%Y-%m-%d").date()
             exp_fmt = exp_dt.strftime("%d %b")
+            if exp_fmt.startswith("0"):
+                exp_fmt = exp_fmt[1:]
+            if dte is None:
+                ist = timezone(timedelta(hours=5, minutes=30))
+                today_dt = datetime.now(ist).date()
+                dte = max(0, (exp_dt - today_dt).days)
         except Exception:
             exp_fmt = str(expiry)
-        dte_label = f"{dte} DTE" if dte is not None else ""
-        head2.append(f"Expiry {exp_fmt} · {dte_label}")
-    if spot is not None:
-        spot_str = f"₹{spot:,.0f}" if isinstance(spot, (int, float)) else str(spot)
-        head2.append(f"Spot {spot_str}")
-    if regime and regime.upper() != "UNKNOWN":
-        head2.append(f"Regime: {regime}")
-    if head2:
-        lines.append("🗓 " + "  |  ".join(head2))
+        expiry_str = f"🗓 Expiry {exp_fmt}"
+    else:
+        expiry_str = "🗓 Expiry N/A"
+
+    dte_str = f"{dte} DTE" if dte is not None else "N/A DTE"
+    
+    # Format spot with ₹ and comma
+    if isinstance(spot, (int, float)) and spot > 0:
+        if spot >= 1000:
+            spot_str = f"₹{spot:,.0f}"
+        else:
+            spot_str = f"₹{spot:.2f}".replace('.00', '')
+    else:
+        spot_str = f"₹{spot}" if spot not in (None, "", "N/A", 0, 0.0) else "N/A"
+        
+    stime_clean = stime.replace(" IST", "").strip() if stime else ""
+    time_str = f" · {stime_clean} IST" if stime_clean else ""
+    lines.append(f"📊 *{sym}*{time_str}  {trade_status_str}")
+    lines.append(f"{expiry_str} · {dte_str} | Spot {spot_str}")
 
     # ── SIGNAL ──
     tfss_action  = _val(tfss.get("action"))
@@ -879,17 +893,17 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
     tf_why      = _join_list(timeframe.get("why", []))
 
     tf_icon = {"ENTER": "🟢", "HOLD": "🔵", "EXIT": "🔴",
-               "BLOCK": "🚫", "NO_SIGNAL": "⏸️"}.get(str(tf_action or "").upper(), "📈")
+               "BLOCK": "🚫", "NO_SIGNAL": "⏸️"}.get(str(tf_action or "").upper(), "⏸️")
 
     lines.append("")
     lines.append(DIV)
     tf_line = f"{tf_icon} *TIMEFRAME STRATEGY*"
-    if tf_action:
+    if tf_action and str(tf_action).upper() != "NO_SIGNAL":
         tf_line += f": {tf_action}"
     if tf_dir:
         tf_line += f" ({tf_dir})"
     lines.append(tf_line)
-    has_tf_data = any([tf_signal, tf_setup, tf_contract, tf_reason, tf_why, tf_blockers])
+    has_tf_data = any([tf_signal, tf_setup, tf_contract, tf_reason, tf_why, tf_blockers]) and str(tf_action or "").upper() != "NO_SIGNAL"
     if has_tf_data:
         status = tf_action or "ACTIVE"
         lines.append(f"Status: {status}")
@@ -1890,8 +1904,29 @@ def build_enhanced_digest(
     mp_chg_str = f" ({mp_chg:+.0f})" if mp_chg is not None else ""
     total_ce = _fmt_oi(ctx.get("total_ce_oi", 0))
     total_pe = _fmt_oi(ctx.get("total_pe_oi", 0))
+
+    td = ctx.get("trade_decision") or {}
+    td_status_raw = td.get("status") or (paper_trade_status.get("action") if paper_trade_status else None) or "NO TRADE"
+    
+    if td_status_raw in ["ENTERED", "OPEN", "TRIGGERED", "LIVE_ENTERED"]:
+        td_status = "🟢 Entered"
+    else:
+        td_status = "X Not entered"
+
+    if exp_fmt:
+        if exp_fmt.startswith("0"):
+            exp_fmt = exp_fmt[1:]
+        expiry_str = f"🗓 Expiry {exp_fmt}"
+    else:
+        expiry_str = "🗓 Expiry N/A"
+        
+    dte_str = f"{dte_lbl}" if dte_lbl else "N/A DTE"
+    
+    spot_str = f"₹{spot_val}" if not str(spot_val).startswith("₹") else spot_val
+    
     lines = [
-        f"\U0001f4ca *{symbol}*{header_extra} | {ts}",
+        f"\U0001f4ca *{symbol}* · {ts} IST  {td_status}",
+        f"{expiry_str} · {dte_str} | Spot {spot_str}",
         f"{px_label} `{spot_val}{spot_delta_str}` | ATM `{atm_val}` | MP `{mp_val}{mp_chg_str}` | PCR `{pcr_val}` | OI CE `{total_ce}` PE `{total_pe}`",
         f"Net OI \u0394: CE `{_fmt_oi(ce_net)}` | PE `{_fmt_oi(pe_net)}`{oi_unwind_note}",
         DIVIDER,
@@ -2439,11 +2474,25 @@ def build_llm_consolidated_digest(
     lines: list[str] = []
     
     # ── HEADER
-    lines.append(f"{verdict_emoji} *{symbol}* — {verdict_label}")
-    if header_extra:
-        lines.append(f"{header_extra} | {ts}")
+    if td_status in ["ENTERED", "OPEN", "TRIGGERED", "LIVE_ENTERED"]:
+        status_text = "🟢 Entered"
     else:
-        lines.append(f"{ts}")
+        status_text = "X Not entered"
+
+    if exp_fmt:
+        if exp_fmt.startswith("0"):
+            exp_fmt = exp_fmt[1:]
+        expiry_str = f"🗓 Expiry {exp_fmt}"
+    else:
+        expiry_str = "🗓 Expiry N/A"
+
+    dte_str = f"{dte_lbl}" if dte_lbl else "N/A DTE"
+    spot = ctx.get("underlying")
+    spot_str = f"₹{float(spot):.2f}".replace('.00', '') if spot is not None else "N/A"
+
+    lines.append(f"{verdict_emoji} *{symbol}* · {ts} IST  {status_text}")
+    lines.append(f"{expiry_str} · {dte_str} | Spot {spot_str}")
+    lines.append(f"_{verdict_label}_")
     
     # DTE warning for low expiry proximity
     try:

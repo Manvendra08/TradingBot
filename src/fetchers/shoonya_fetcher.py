@@ -107,6 +107,8 @@ def _post_jdata(
                 continue
             if "Session Expired" in raw:
                 log.info("[shoonya] POST %s -> Session Expired (HTTP %s)", url, e.code)
+            elif e.code == 404 and "No Data" in raw:
+                log.debug("[shoonya] POST %s -> HTTP 404 (No Data)", url)
             else:
                 log.error("[shoonya] POST %s -> HTTP %s: %s", url, e.code, raw[:200])
             try:
@@ -1385,7 +1387,6 @@ class ShoonyaFetcher(BaseFetcher):
 
             if option_exch == "BFO":
                 # SENSEX/BANKEX weekly options chain in Shoonya is not grouped under the monthly futures contract.
-                # We need to find an active weekly option contract symbol (e.g. SENSEX2670966500CE) and use it as chain_tsym.
                 try:
                     now_ist = datetime.now(IST)
                     today_ist = now_ist.date()
@@ -1407,20 +1408,24 @@ class ShoonyaFetcher(BaseFetcher):
                         m_val = c_date.month
                         m_str = "O" if m_val == 10 else ("N" if m_val == 11 else ("D" if m_val == 12 else str(m_val)))
                         dd = c_date.strftime("%d")
-                        prefix = f"{base}{yy}{m_str}{dd}"
-                        
-                        log.info("[shoonya] Searching BFO for weekly prefix %s to resolve option chain...", prefix)
-                        res = self._search_scrip("BFO", prefix)
-                        if res and res.get("stat") == "Ok" and res.get("values"):
-                            for val in res["values"]:
-                                tsym_opt = val.get("tsym", "")
-                                if "CE" in tsym_opt or "PE" in tsym_opt:
-                                    resolved_weekly_tsym = tsym_opt
-                                    log.info("[shoonya] Resolved BFO weekly option symbol: %s", resolved_weekly_tsym)
-                                    break
+
+                        prefix_weekly = f"{base}{yy}{m_str}{dd}"
+                        prefix_monthly = f"{base}{yy}{c_date.strftime('%b').upper()}"
+
+                        for prefix in (prefix_weekly, prefix_monthly):
+                            log.info("[shoonya] Searching BFO for prefix %s to resolve option chain...", prefix)
+                            res = self._search_scrip("BFO", prefix)
+                            if res and res.get("stat") == "Ok" and res.get("values"):
+                                for val in res["values"]:
+                                    tsym_opt = val.get("tsym", "")
+                                    if "CE" in tsym_opt or "PE" in tsym_opt:
+                                        resolved_weekly_tsym = tsym_opt
+                                        log.info("[shoonya] Resolved BFO option symbol: %s", resolved_weekly_tsym)
+                                        break
+                            if resolved_weekly_tsym:
+                                break
                         if resolved_weekly_tsym:
                             break
-                    
                     if resolved_weekly_tsym:
                         chain_tsym = resolved_weekly_tsym
                 except Exception as ex_bfo:

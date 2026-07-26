@@ -272,7 +272,7 @@ class CombinedBookStatus:
 # TFSS risk caps (plan §3.5 — additive to existing engine)
 _TFSS_MAX_TOTAL_DELTA = 0.60     # max combined delta across open TFSS legs
 _TFSS_MAX_OPEN_POSITIONS = 3     # max concurrent TFSS positions per symbol
-_HARD_STOP_DELTA = 0.35          # delta beyond which tested side must be reduced/closed
+_HARD_STOP_DELTA = 0.60          # delta beyond which tested side must be reduced/closed
 
 def check_tested_side(side: str, market_state: dict, config: dict) -> TestedSideStatus:
     """
@@ -310,7 +310,11 @@ def _leg_delta(leg: dict, option_rows: list[dict] | None) -> float:
         return 0.0
     tested_ot = str(leg.get("option_type", "")).upper()
     tested_strike = float(leg.get("strike") or 0.0)
+    leg_exp = leg.get("expiry")
     for row in option_rows:
+        row_exp = row.get("expiry")
+        if row_exp and leg_exp and str(row_exp).strip() != str(leg_exp).strip():
+            continue
         if (float(row.get("strike", 0)) == tested_strike
                 and str(row.get("option_type", "")).upper() == tested_ot):
             return abs(float(row.get("delta", 0.0)))

@@ -69,11 +69,13 @@ def log_decision(ctx: PipelineContext, action: str, trade_id: int | None = None)
         timestamp = datetime.now(timezone.utc).isoformat()
 
         # Extract underlying and target timestamps
-        scan_fetched_at = ctx.scan_context.get("fetched_at")
-        bar_end_utc = ctx.scan_context.get("chart_indicators", {}).get("1h", {}).get("bar_end_utc")
+        scan_ctx = ctx.scan_context or {}
+        scan_fetched_at = scan_ctx.get("fetched_at")
+        chart_ind = scan_ctx.get("chart_indicators") or {}
+        bar_end_utc = (chart_ind.get("1h") or {}).get("bar_end_utc") if isinstance(chart_ind, dict) else None
 
-        composite_score = ctx.scan_context.get("_composite_score")
-        composite_threshold = ctx.scan_context.get("_composite_threshold")
+        composite_score = scan_ctx.get("_composite_score")
+        composite_threshold = scan_ctx.get("_composite_threshold")
 
         with get_conn() as conn:
             cur = conn.execute(

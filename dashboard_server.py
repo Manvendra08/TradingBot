@@ -1361,6 +1361,8 @@ def _enrich_open_trades_with_live_pnl(rows: list[dict]) -> None:
             continue
 
         symbol = str(row.get("symbol") or "").upper().strip()
+        base_sym = symbol.split()[0] if symbol else ""
+        expiry = str(row.get("expiry") or "").strip()
         option_type = str(row.get("option_type") or "").upper().strip()
         strike = row.get("strike")
 
@@ -1377,10 +1379,18 @@ def _enrich_open_trades_with_live_pnl(rows: list[dict]) -> None:
                 strike_val = float(strike)
             except (ValueError, TypeError):
                 strike_val = 0.0
-            res = _q(
-                "SELECT ltp FROM option_chain_snapshots WHERE symbol=? AND ABS(strike - ?) < 0.01 AND option_type=? ORDER BY fetched_at DESC LIMIT 1",
-                (symbol, strike_val, option_type),
-            )
+
+            res = None
+            if expiry:
+                res = _q(
+                    "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND expiry=? AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
+                    (symbol, base_sym, expiry, strike_val, option_type),
+                )
+            if not res:
+                res = _q(
+                    "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
+                    (symbol, base_sym, strike_val, option_type),
+                )
             if res:
                 cmp = res[0]["ltp"]
 
@@ -1622,15 +1632,15 @@ async def get_paper_summary(symbol: str = ""):
         SELECT
             COUNT(*) AS total,
             SUM(CASE WHEN status='OPEN' THEN 1 ELSE 0 END) AS open_count,
-            SUM(CASE WHEN status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross') THEN 1 ELSE 0 END) AS closed_count,
-            SUM(CASE WHEN (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees > 0 THEN 1 ELSE 0 END) AS wins,
-            SUM(CASE WHEN (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees < 0 THEN 1 ELSE 0 END) AS losses,
-            ROUND(COALESCE(SUM(CASE WHEN status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross') THEN pnl_rupees ELSE 0 END), 0), 2) AS closed_pnl,
-            ROUND(COALESCE(AVG(CASE WHEN status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross') THEN pnl_rupees END), 0), 2) AS avg_pnl,
-            ROUND(COALESCE(AVG(CASE WHEN (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees > 0 THEN pnl_rupees END), 0), 2) AS avg_win,
-            ROUND(COALESCE(AVG(CASE WHEN (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees < 0 THEN pnl_rupees END), 0), 2) AS avg_loss,
-            MAX(CASE WHEN status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross') THEN pnl_rupees ELSE 0 END) AS max_win,
-            MIN(CASE WHEN status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross') THEN pnl_rupees ELSE 0 END) AS max_loss
+            SUM(CASE WHEN (status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross') THEN 1 ELSE 0 END) AS closed_count,
+            SUM(CASE WHEN ((status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees > 0 THEN 1 ELSE 0 END) AS wins,
+            SUM(CASE WHEN ((status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees < 0 THEN 1 ELSE 0 END) AS losses,
+            ROUND(COALESCE(SUM(CASE WHEN (status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross') THEN pnl_rupees ELSE 0 END), 0), 2) AS closed_pnl,
+            ROUND(COALESCE(AVG(CASE WHEN (status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross') THEN pnl_rupees END), 0), 2) AS avg_pnl,
+            ROUND(COALESCE(AVG(CASE WHEN ((status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees > 0 THEN pnl_rupees END), 0), 2) AS avg_win,
+            ROUND(COALESCE(AVG(CASE WHEN ((status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees < 0 THEN pnl_rupees END), 0), 2) AS avg_loss,
+            MAX(CASE WHEN (status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross') THEN pnl_rupees ELSE 0 END) AS max_win,
+            MIN(CASE WHEN (status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross') THEN pnl_rupees ELSE 0 END) AS max_loss
         FROM paper_trades
         {where}
         """,
@@ -1649,11 +1659,11 @@ async def get_paper_summary(symbol: str = ""):
         SELECT
             UPPER(symbol) AS symbol,
             COUNT(*) AS total_trades,
-            SUM(CASE WHEN (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees > 0 THEN 1 ELSE 0 END) AS wins,
-            SUM(CASE WHEN (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees < 0 THEN 1 ELSE 0 END) AS losses,
-            ROUND(COALESCE(SUM(CASE WHEN status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross') THEN pnl_rupees ELSE 0 END), 0), 2) AS total_pnl,
-            ROUND(COALESCE(AVG(CASE WHEN status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross') THEN pnl_rupees END), 0), 2) AS avg_pnl,
-            SUM(CASE WHEN status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross') THEN 1 ELSE 0 END) AS closed_count
+            SUM(CASE WHEN ((status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees > 0 THEN 1 ELSE 0 END) AS wins,
+            SUM(CASE WHEN ((status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees < 0 THEN 1 ELSE 0 END) AS losses,
+            ROUND(COALESCE(SUM(CASE WHEN (status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross') THEN pnl_rupees ELSE 0 END), 0), 2) AS total_pnl,
+            ROUND(COALESCE(AVG(CASE WHEN (status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross') THEN pnl_rupees END), 0), 2) AS avg_pnl,
+            SUM(CASE WHEN (status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross') THEN 1 ELSE 0 END) AS closed_count
         FROM paper_trades
         {where}
         GROUP BY UPPER(symbol)
@@ -1676,11 +1686,11 @@ async def get_paper_summary(symbol: str = ""):
 
     # Profit factor calculation
     if where:
-        wins_where = f"{where} AND (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees > 0"
-        losses_where = f"{where} AND (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees < 0"
+        wins_where = f"{where} AND ((status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees > 0"
+        losses_where = f"{where} AND ((status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees < 0"
     else:
-        wins_where = "WHERE (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees > 0"
-        losses_where = "WHERE (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees < 0"
+        wins_where = "WHERE ((status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees > 0"
+        losses_where = "WHERE ((status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees < 0"
 
     total_wins = sum(
         float(r.get("pnl_rupees") or 0)
@@ -1713,9 +1723,9 @@ def _calculate_holding_analysis(where: str, params: tuple) -> dict:
 
     # Build WHERE clause properly
     if where:
-        sql_where = f"{where} AND (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross')) AND closed_at IS NOT NULL"
+        sql_where = f"{where} AND ((status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross')) AND closed_at IS NOT NULL"
     else:
-        sql_where = "WHERE (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross')) AND closed_at IS NOT NULL"
+        sql_where = "WHERE ((status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross')) AND closed_at IS NOT NULL"
 
     rows = _q(
         f"SELECT opened_at, closed_at, status FROM paper_trades {sql_where}", params
@@ -1827,10 +1837,10 @@ def _calculate_consecutive_wins(where: str, params: tuple) -> int:
     """Calculate current consecutive wins/losses streak."""
     # Build WHERE clause properly
     if where:
-        sql_where = f"{where} AND (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross'))"
+        sql_where = f"{where} AND ((status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross'))"
     else:
         sql_where = (
-            "WHERE (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross'))"
+            "WHERE ((status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross'))"
         )
 
     rows = _q(
@@ -1885,10 +1895,19 @@ async def manual_close_paper_trade(trade_id: int = Query(...)):
             strike_val = float(strike)
         except (ValueError, TypeError):
             strike_val = 0.0
-        res_opt = _q(
-            "SELECT ltp FROM option_chain_snapshots WHERE symbol=? AND ABS(strike - ?) < 0.01 AND option_type=? ORDER BY fetched_at DESC LIMIT 1",
-            (symbol, strike_val, option_type),
-        )
+        base_sym = symbol.split()[0]
+        expiry = str(row.get("expiry") or "").strip()
+        res_opt = None
+        if expiry:
+            res_opt = _q(
+                "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND expiry=? AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
+                (symbol, base_sym, expiry, strike_val, option_type),
+            )
+        if not res_opt:
+            res_opt = _q(
+                "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
+                (symbol, base_sym, strike_val, option_type),
+            )
         if res_opt:
             exit_prem = res_opt[0]["ltp"]
         else:
@@ -1968,7 +1987,7 @@ async def delete_paper_trades(date_from: str = "", date_to: str = ""):
 
 @app.get("/api/paper_equity")
 async def get_paper_equity(symbol: str = ""):
-    clauses = ["(status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross'))"]
+    clauses = ["((status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross'))"]
     params: list = []
     if symbol:
         clauses.append("symbol=?")
@@ -2813,7 +2832,7 @@ def get_live_trades(symbol: str = "", status: str = "", limit: int = 300):
         stat_up = status.upper().strip()
         if stat_up == "CLOSED":
             clauses.append(
-                "(status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross'))"
+                "((status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross'))"
             )
         else:
             clauses.append("status=?")
@@ -3169,7 +3188,7 @@ def get_risk_metrics(mode: str = "live"):
         closed_pnl = 0.0
         with get_conn() as conn:
             row = conn.execute(
-                "SELECT SUM(pnl_rupees) AS total FROM paper_trades WHERE (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross'))"
+                "SELECT SUM(pnl_rupees) AS total FROM paper_trades WHERE ((status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross'))"
             ).fetchone()
             if row and row["total"] is not None:
                 closed_pnl = float(row["total"])
@@ -3224,13 +3243,13 @@ def get_risk_metrics(mode: str = "live"):
     total_losses = 0.0
     with get_conn() as conn:
         wins_row = conn.execute(
-            f"SELECT SUM(pnl_rupees) AS total FROM {table_name} WHERE (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees > 0"
+            f"SELECT SUM(pnl_rupees) AS total FROM {table_name} WHERE ((status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees > 0"
         ).fetchone()
         if wins_row and wins_row["total"] is not None:
             total_wins = float(wins_row["total"])
 
         losses_row = conn.execute(
-            f"SELECT SUM(pnl_rupees) AS total FROM {table_name} WHERE (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees < 0"
+            f"SELECT SUM(pnl_rupees) AS total FROM {table_name} WHERE ((status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees < 0"
         ).fetchone()
         if losses_row and losses_row["total"] is not None:
             total_losses = abs(float(losses_row["total"]))
@@ -3241,7 +3260,7 @@ def get_risk_metrics(mode: str = "live"):
     db_today_closed_pnl = 0.0
     with get_conn() as conn:
         row = conn.execute(
-            f"SELECT SUM(pnl_rupees) AS total FROM {table_name} WHERE closed_at >= ? AND (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross'))",
+            f"SELECT SUM(pnl_rupees) AS total FROM {table_name} WHERE closed_at >= ? AND ((status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross'))",
             (today_start,),
         ).fetchone()
         if row and row["total"] is not None:
@@ -3256,7 +3275,7 @@ def get_risk_metrics(mode: str = "live"):
         if kite:
             try:
                 db_today_trades = _q(
-                    f"SELECT * FROM {table_name} WHERE closed_at >= ? AND (status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross'))",
+                    f"SELECT * FROM {table_name} WHERE closed_at >= ? AND ((status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross'))",
                     (today_start,),
                 )
                 kite_closed = _get_kite_closed_trades(kite)

@@ -415,7 +415,7 @@ def execute_paper_trade(
                     "current_delta": cur_delta,
                     "total_delta": cur_delta,
                 }
-                tfss_config = {"hard_stop_delta": 0.35}
+                tfss_config = {"hard_stop_delta": 0.60}
 
                 rev_result = evaluate_reversal(symbol_state, market_state, tfss_config)
                 rev_action = rev_result.get("action", "NO_REVERSAL_ACTION")
@@ -778,6 +778,7 @@ def _monitor_single_paper_trade(symbol: str, open_trade: dict, current_ctx: dict
                 (max_fav, open_trade["id"]),
             )
 
+    trade_option_rows = _get_option_rows_for_expiry(current_ctx, open_trade.get("expiry"))
     # ── Option Premium SL/Target Check (Flaw #11) ────────────────────────────
     # For option trades, also check if the option premium itself hit SL or Target
     if not hit_sl and not hit_target and option_type in ("CE", "PE"):
@@ -789,7 +790,7 @@ def _monitor_single_paper_trade(symbol: str, open_trade: dict, current_ctx: dict
                 open_trade.get("expiry"),
                 open_trade.get("strike"),
                 option_type,
-                current_ctx.get("option_rows"),
+                trade_option_rows,
             )
             if current_prem and current_prem > 0:
                 if side == "BUY":
@@ -862,7 +863,7 @@ def _monitor_single_paper_trade(symbol: str, open_trade: dict, current_ctx: dict
                 open_trade.get("expiry"),
                 open_trade.get("strike"),
                 option_type,
-                current_ctx.get("option_rows"),
+                trade_option_rows,
             )
             if exit_premium and exit_premium > 0:
                 if side == "BUY":
@@ -895,7 +896,7 @@ def _monitor_single_paper_trade(symbol: str, open_trade: dict, current_ctx: dict
                 open_trade.get("expiry"),
                 open_trade.get("strike"),
                 option_type,
-                current_ctx.get("option_rows"),
+                trade_option_rows,
             )
         close_paper_trade(
             open_trade["id"],
@@ -922,7 +923,7 @@ def _monitor_single_paper_trade(symbol: str, open_trade: dict, current_ctx: dict
                 open_trade.get("expiry"),
                 open_trade.get("strike"),
                 option_type,
-                current_ctx.get("option_rows"),
+                trade_option_rows,
             )
         close_paper_trade(
             open_trade["id"],
@@ -943,6 +944,18 @@ def _monitor_single_paper_trade(symbol: str, open_trade: dict, current_ctx: dict
             }
         )
     return actions
+
+
+def _get_option_rows_for_expiry(current_ctx: dict, expiry: str | None) -> list[dict]:
+    if not expiry:
+        return current_ctx.get("current_expiry_option_rows") or current_ctx.get("option_rows") or []
+    curr_exp = current_ctx.get("current_expiry")
+    if curr_exp and str(expiry).strip() == str(curr_exp).strip():
+        return current_ctx.get("current_expiry_option_rows") or current_ctx.get("option_rows") or []
+    target_exp = current_ctx.get("expiry")
+    if target_exp and str(expiry).strip() == str(target_exp).strip():
+        return current_ctx.get("option_rows") or []
+    return current_ctx.get("current_expiry_option_rows") or current_ctx.get("option_rows") or []
 
 
 def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
@@ -967,9 +980,10 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
         try:
             from config.trend_following_short_strangle import HARD_STOP_DELTA
         except Exception:
-            HARD_STOP_DELTA = 0.35
+            HARD_STOP_DELTA = 0.60
 
-        option_rows = current_ctx.get("option_rows") or []
+        sample_leg_exp = tfss_legs[0].get("expiry") if tfss_legs else None
+        option_rows = _get_option_rows_for_expiry(current_ctx, sample_leg_exp)
         book = compute_combined_book(symbol, option_rows)
         leg_deltas = book.get("leg_deltas", {})
         within_caps = book.get("within_caps", True)
@@ -1027,12 +1041,13 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
 
                 exit_premium = None
                 if option_type != "FUT":
+                    leg_option_rows = _get_option_rows_for_expiry(current_ctx, leg.get("expiry"))
                     exit_premium = _get_option_premium(
                         symbol,
                         leg.get("expiry"),
                         leg.get("strike"),
                         option_type,
-                        option_rows,
+                        leg_option_rows,
                     )
                     if exit_premium and exit_premium > 0:
                         if side == "BUY":
@@ -1531,9 +1546,12 @@ def run_timeframe_strategy(
 
     # Pre-fetch entry indicators (we are on a 1-hour boundary here)
     chart_indicators = ctx.get("chart_indicators") or {}
-    tf_data = chart_indicators
-    if not any(k in chart_indicators for k in ("1h", "3h")):
-        tf_data = next(iter(chart_indicators.values()), {}) if chart_indicators else {}
+    if isinstance(chart_indicators, dict) and symbol in chart_indicators:
+        tf_data = chart_indicators[symbol]
+    elif isinstance(chart_indicators, dict) and not any(k in chart_indicators for k in ("1h", "3h")):
+        tf_data = next((v for v in chart_indicators.values() if isinstance(v, dict) and any(k in v for k in ("1h", "3h"))), {})
+    else:
+        tf_data = chart_indicators if isinstance(chart_indicators, dict) else {}
 
     pay_3h = tf_data.get("3h")
     pay_1h = tf_data.get("1h")

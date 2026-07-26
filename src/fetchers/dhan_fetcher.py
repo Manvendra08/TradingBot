@@ -78,7 +78,8 @@ class DhanFetcher(BaseFetcher):
         if valid:
             valid = sorted(valid)
             base_sym = self._base_symbol(symbol)
-            if base_sym != "NIFTY":
+            weekly_indices = {"NIFTY", "SENSEX"}
+            if base_sym not in weekly_indices:
                 from collections import defaultdict
                 month_groups = defaultdict(list)
                 for v in valid:

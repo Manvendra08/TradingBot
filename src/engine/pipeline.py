@@ -168,16 +168,18 @@ def _prefetch_symbol_data(symbol: str, fetched_at: str) -> dict:
     oc_data = oc.data
     underlying = oc_data.get("underlying_price")
 
-    # Accumulate next expiry options data when current expiry DTE is < 2 days
+    # Accumulate next expiry options data when current expiry DTE is < 2 days (or < 5 days for MCX symbols)
     expiry = oc_data.get("expiry")
     if expiry:
         try:
-            from datetime import datetime
             import pytz
             exp_date = datetime.strptime(expiry, "%Y-%m-%d").date()
             today = datetime.now(pytz.timezone("Asia/Kolkata")).date()
             dte = (exp_date - today).days
-            if 0 <= dte < 2:
+            is_mcx = symbol.upper().strip().split()[0] in {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"}
+            threshold = 5 if is_mcx else 2
+
+            if 0 <= dte < threshold:
                 all_exps = sorted(list(set(oc_data.get("all_expiries", []))))
                 future_exps = [e for e in all_exps if datetime.strptime(e, "%Y-%m-%d").date() > exp_date]
                 if future_exps:
@@ -188,8 +190,8 @@ def _prefetch_symbol_data(symbol: str, fetched_at: str) -> dict:
                             lambda: fetch_option_chain(symbol, expiry=next_exp)
                         )
                     )
-                    log.info("[pipeline] %s | DTE is %d (< 2 days). Submitting parallel fetch for next expiry %s",
-                             symbol, dte, next_exp)
+                    log.info("[pipeline] %s | DTE is %d (< %d days). Submitting parallel fetch for next expiry %s",
+                             symbol, dte, threshold, next_exp)
         except Exception as e:
             log.warning("[pipeline] %s | Failed to schedule next expiry pre-fetch: %s", symbol, e)
 
@@ -197,6 +199,7 @@ def _prefetch_symbol_data(symbol: str, fetched_at: str) -> dict:
         lambda: run_with_deadline(
             "chart",
             lambda: get_chart_fetcher().fetch(symbol, reference_price=underlying) or {},
+            timeout_s=25.0
         )
     )
 
@@ -369,9 +372,7 @@ def _async_llm_enrich_and_edit(
         log.warning("%s: async LLM enrichment thread failed: %s", symbol, e)
 
 
-def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, intel: dict, llm_verdict: any, news_data: dict | None = None, open_trade: dict | None = None, exit_advice: any = None, digest_id: str | None = None) -> dict:
-    from datetime import datetime, timezone
-    
+def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, intel: dict, llm_verdict: any, news_data: dict | None = None, open_trade: dict | None = None, exit_advice: any = None, digest_id: str | None = None, timeframe_res: dict | None = None) -> dict:
     td = (intel or {}).get("trade_decision") or {}
     
     # 1. Header
@@ -382,7 +383,8 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
     IST = timezone(timedelta(hours=5, minutes=30))
     ts = dt.astimezone(IST).strftime("%H:%M IST")
     
-    trade_entered = td.get("status") in ("TRIGGERED_CORE", "TRIGGERED_EXPERIMENTAL")
+    tf_entered = timeframe_res and isinstance(timeframe_res, dict) and timeframe_res.get("action") == "EXECUTED"
+    trade_entered = td.get("status") in ("TRIGGERED_CORE", "TRIGGERED_EXPERIMENTAL", "TRIGGERED_TIMEFRAME") or tf_entered
     actual_lots = 1
     if digest_id:
         from src.models.schema import get_conn
@@ -398,18 +400,35 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
                     row_live = conn.execute("SELECT lots FROM live_trades WHERE digest_id=?", (digest_id,)).fetchone()
                     if row_live:
                         trade_entered = True
-                        actual_lots = row_live[0]
                     else:
                         trade_entered = False
         except Exception as e:
             log.debug("Error checking actual trade for digest_id %s: %s", digest_id, e)
+    
+    trade_entered = bool((intel or {}).get("trade_entered")) or trade_entered or tf_entered
+    
+    from config.settings import DEFAULT_LOTS_PER_TRADE
+    base_lots = DEFAULT_LOTS_PER_TRADE
+    actual_lots = base_lots * td.get("tranche_count", 1) if td.get("tranche_count") else base_lots
+
+    exp_val = scan_context.get("expiry")
+    dte_val = scan_context.get("dte")
+    if dte_val is None and exp_val:
+        try:
+            exp_dt = datetime.strptime(str(exp_val).strip(), "%Y-%m-%d").date()
+            import pytz
+            today_dt = datetime.now(pytz.timezone("Asia/Kolkata")).date()
+            dte_val = max(0, (exp_dt - today_dt).days)
+        except Exception:
+            pass
 
     header = {
         "symbol": symbol,
         "scan_time": ts,
-        "expiry": scan_context.get("expiry") or scan_context.get("futures_expiry") or "",
-        "dte": scan_context.get("days_to_expiry", 0),
-        "underlying": scan_context.get("underlying") or 0.0,
+        "expiry": exp_val,
+        "dte": dte_val,
+        "underlying": scan_context.get("underlying"),
+        "spot": scan_context.get("underlying") or 0.0,
         "market_regime": scan_context.get("market_regime") or "UNKNOWN",
         "confidence": (intel or {}).get("confidence", 0),
         "trade_entered": trade_entered
@@ -438,16 +457,58 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
         "also_eligible_triggers": td.get("also_eligible_triggers", [])
     }
     
-    timeframe = {
-        "signal": "N/A",
-        "direction": "N/A",
-        "action": td.get("action") if is_timeframe else "BLOCK",
-        "setup": td.get("setup_type", "N/A") if is_timeframe else "N/A",
-        "contract": "N/A",
-        "primary_reason": td.get("reason") if is_timeframe else "N/A",
-        "why": [],
-        "blockers": [td.get("reason")] if is_timeframe and td.get("status") == "BLOCKED" else []
-    }
+    if timeframe_res and isinstance(timeframe_res, dict):
+        tf_act = timeframe_res.get("action", "NO_SIGNAL")
+        if tf_act in ("SKIPPED_TIMEFRAME_BOUNDARY", "SKIPPED_MARKET_CLOSED", "NO_SIGNAL"):
+            tf_act_clean = "NO_SIGNAL"
+        elif "BLOCKED" in str(tf_act):
+            tf_act_clean = "BLOCK"
+        elif tf_act == "EXECUTED":
+            tf_act_clean = "ENTER"
+        else:
+            tf_act_clean = tf_act
+
+        tf_trade = timeframe_res.get("trade") or {}
+        tf_sig = timeframe_res.get("signal") or tf_trade.get("verdict_label") or timeframe_res.get("verdict_label") or "N/A"
+        tf_dir = timeframe_res.get("direction") or tf_trade.get("side") or tf_sig
+        tf_contract = timeframe_res.get("contract")
+        if not tf_contract and tf_trade:
+            stk = tf_trade.get("strike")
+            ot = tf_trade.get("option_type")
+            tf_contract = f"{symbol} {stk} {ot}" if stk else "N/A"
+
+        timeframe = {
+            "signal": tf_sig,
+            "direction": tf_dir,
+            "action": tf_act_clean,
+            "setup": timeframe_res.get("setup_type", "TIMEFRAME"),
+            "contract": tf_contract or "N/A",
+            "primary_reason": timeframe_res.get("reason", "No active signal (3H breakout pending)"),
+            "why": [],
+            "blockers": timeframe_res.get("blockers") or ([timeframe_res.get("reason")] if tf_act_clean == "BLOCK" and timeframe_res.get("reason") else [])
+        }
+    elif is_timeframe:
+        timeframe = {
+            "signal": td.get("verdict_family", "N/A"),
+            "direction": td.get("direction", "N/A"),
+            "action": td.get("action", "BLOCK"),
+            "setup": td.get("setup_type", "3H Breakout"),
+            "contract": f"{symbol} {td.get('strike')} {td.get('option_side')}" if td.get("strike") else "N/A",
+            "primary_reason": td.get("reason", "N/A"),
+            "why": [],
+            "blockers": [td.get("reason")] if td.get("status") == "BLOCKED" else []
+        }
+    else:
+        timeframe = {
+            "signal": "N/A",
+            "direction": "N/A",
+            "action": "NO_SIGNAL",
+            "setup": "N/A",
+            "contract": "N/A",
+            "primary_reason": "No active signal (3H breakout pending)",
+            "why": [],
+            "blockers": []
+        }
     
     if is_timeframe:
         tfss["action"] = "BLOCK"
@@ -513,13 +574,73 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
         oc_data["underlying_price"] = underlying
         is_fallback = True
 
+    current_expiry_oc_data = oc_data
+    current_expiry_str = current_expiry_oc_data.get("expiry")
+    if current_expiry_oc_data.get("strikes") and current_expiry_str:
+        for r in current_expiry_oc_data["strikes"]:
+            r["expiry"] = current_expiry_str
+
+    target_signal_oc_data = current_expiry_oc_data
+    is_mcx = symbol.upper().strip().split()[0] in {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"}
+
+    if is_mcx and current_expiry_str:
+        try:
+            import pytz
+            exp_date = datetime.strptime(current_expiry_str, "%Y-%m-%d").date()
+            today_date = datetime.now(pytz.timezone("Asia/Kolkata")).date()
+            dte = (exp_date - today_date).days
+
+            if dte == 0:  # Expiry day for MCX symbol
+                log.info("[pipeline] %s | Expiry day (DTE=0) for MCX commodity. Using next expiry for new trades while preserving current expiry for open trades...", symbol)
+                next_oc_data = None
+                next_exp_future = packet.get("next_expiry_future")
+                if next_exp_future:
+                    try:
+                        res = next_exp_future.result()
+                        if res and getattr(res, "ok", False) and getattr(res, "data", None):
+                            next_oc_data = res.data
+                    except Exception as ex:
+                        log.warning("[pipeline] %s | Failed retrieving next_expiry_future: %s", symbol, ex)
+
+                if not next_oc_data:
+                    all_exps = sorted(list(set(current_expiry_oc_data.get("all_expiries", []))))
+                    future_exps = [e for e in all_exps if datetime.strptime(e, "%Y-%m-%d").date() > exp_date]
+                    if future_exps:
+                        next_exp = future_exps[0]
+                        res = fetch_option_chain(symbol, expiry=next_exp)
+                        if res:
+                            next_oc_data = res
+
+                if next_oc_data and next_oc_data.get("strikes"):
+                    log.info("[pipeline] %s | Successfully set MCX expiry day signal target to next expiry %s (monitoring current expiry %s)",
+                             symbol, next_oc_data.get("expiry"), current_expiry_str)
+                    target_signal_oc_data = next_oc_data
+                    if "chart_indicators" not in target_signal_oc_data:
+                        target_signal_oc_data["chart_indicators"] = current_expiry_oc_data.get("chart_indicators") or {}
+                    for r in target_signal_oc_data["strikes"]:
+                        r["expiry"] = target_signal_oc_data.get("expiry")
+        except Exception as e:
+            log.warning("[pipeline] %s | MCX expiry day next option chain swap failed: %s", symbol, e)
+
     alerts, scan_context = detect_anomalies(
-        oc_data,
+        target_signal_oc_data,
         fetched_at,
-        chart_indicators=oc_data.get("chart_indicators"),
+        chart_indicators=target_signal_oc_data.get("chart_indicators"),
         override_thresholds=get_symbol_thresholds(symbol),
     )
-    scan_context["option_rows"] = list(oc_data.get("strikes") or [])
+    scan_context["option_rows"] = list(target_signal_oc_data.get("strikes") or [])
+    scan_context["current_expiry"] = current_expiry_str
+    scan_context["current_expiry_option_rows"] = list(current_expiry_oc_data.get("strikes") or [])
+
+    exp_str = scan_context.get("expiry") or current_expiry_str
+    if exp_str:
+        try:
+            exp_dt = datetime.strptime(str(exp_str).strip(), "%Y-%m-%d").date()
+            import pytz
+            today_dt = datetime.now(pytz.timezone("Asia/Kolkata")).date()
+            scan_context["dte"] = max(0, (exp_dt - today_dt).days)
+        except Exception:
+            pass
 
     # Inject NG parity + weather context for NATURALGAS scans
     if symbol.upper().startswith("NATURALGAS"):
@@ -678,9 +799,42 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                     log.exception("%s: AI enrichment failed gracefully", symbol)
 
     with serialized_commit_gate.section(f"commit:{symbol}"):
+        timeframe_res = None
+        if not is_test:
+            try:
+                from src.engine.paper_trading import monitor_paper_trades
+                monitor_paper_trades(symbol, scan_context)
+
+                from src.engine.strategy_registry import active_strategies_for, get_runner
+                for sid in active_strategies_for(symbol):
+                    runner = get_runner(sid)
+                    if runner is None:
+                        continue
+                    res = runner(symbol, scan_context, None, intel, ai_verdict=llm_verdict)
+                    if sid == "TIMEFRAME":
+                        timeframe_res = res
+                    
+                    if sid in ("CORE", "NG_MOMENTUM", "NG_PARITY", "NG_EVENT"):
+                        try:
+                            from src.engine.live_trading import run_live_trading
+                            run_live_trading(symbol, scan_context, None, intel, ai_verdict=llm_verdict)
+                        except Exception as le:
+                            log.exception("%s: live/shadow trading execution failed for %s", symbol, sid)
+                    elif sid == "TIMEFRAME":
+                        try:
+                            from src.engine.live_trading import run_live_timeframe_strategy
+                            run_live_timeframe_strategy(symbol, scan_context, None, intel, ai_verdict=llm_verdict)
+                        except Exception as le:
+                            log.exception("%s: live/shadow timeframe strategy execution failed", symbol)
+            except Exception:
+                position_sync_dirty_state.mark_dirty("broker_action_failed")
+                kite_health_cache.invalidate("session_ok")
+                log.exception("%s: serialized strategy execution failed", symbol)
+
         structured_payload = _build_structured_payload(
             symbol, fetched_at, scan_context, intel, llm_verdict,
             news_data=news_data, open_trade=open_trade, exit_advice=exit_advice,
+            timeframe_res=timeframe_res,
         )
 
         digest_id, digest_msg = build_digest(
@@ -823,52 +977,7 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                 except Exception as e:
                     log.warning("[pipeline] %s | Failed to retrieve/store next expiry option chain: %s", symbol, e)
 
-        if not is_test:
-            try:
-                # ── Global Trade Monitoring across ALL Regimes/Strategies ──
-                # Ensure mechanical SL/Target/Trailing/Dead/Delta monitoring runs
-                # on every scan regardless of session regime (PARITY, EVENT, MOMENTUM, CORE).
-                from src.engine.paper_trading import monitor_paper_trades, close_paper_trade
-                from src.engine.trade_plan import get_option_premium
 
-                monitor_paper_trades(symbol, scan_context)
-
-                # AI exit advice is advisory only per USER request. It should not execute trades.
-                if open_trade and exit_advice:
-                    ea_action = str(getattr(exit_advice, "action", "")).upper()
-                    ea_urgency = str(getattr(exit_advice, "urgency", "")).upper()
-                    if ea_action in ("CLOSE_EARLY", "FLAT_NOW", "EXIT") and ea_urgency == "HIGH":
-                        log.info(
-                            "%s: [Advisory Only] AI Exit Advice recommends %s (HIGH) | Reason: %s",
-                            symbol,
-                            ea_action,
-                            getattr(exit_advice, "reasoning", ""),
-                        )
-
-                from src.engine.strategy_registry import active_strategies_for, get_runner
-                for sid in active_strategies_for(symbol):
-                    runner = get_runner(sid)
-                    if runner is None:
-                        continue
-                    runner(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
-                    
-                    # ── Sequentially Trigger Live/Shadow Execution for Active Strategies ──
-                    if sid in ("CORE", "NG_MOMENTUM", "NG_PARITY", "NG_EVENT"):
-                        try:
-                            from src.engine.live_trading import run_live_trading
-                            run_live_trading(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
-                        except Exception as le:
-                            log.exception("%s: live/shadow trading execution failed for %s", symbol, sid)
-                    elif sid == "TIMEFRAME":
-                        try:
-                            from src.engine.live_trading import run_live_timeframe_strategy
-                            run_live_timeframe_strategy(symbol, scan_context, digest_id, intel, ai_verdict=llm_verdict)
-                        except Exception as le:
-                            log.exception("%s: live/shadow timeframe strategy execution failed", symbol)
-            except Exception:
-                position_sync_dirty_state.mark_dirty("broker_action_failed")
-                kite_health_cache.invalidate("session_ok")
-                log.exception("%s: serialized strategy execution failed", symbol)
         
         # Run Scan Sentinel diagnostics asynchronously (non-blocking)
         if not is_test:

@@ -266,6 +266,9 @@ def get_option_premium(
     # Try option_rows first (current scan data — always fresh)
     for row in option_rows or []:
         try:
+            row_exp = row.get("expiry")
+            if row_exp and expiry and str(row_exp).strip() != str(expiry).strip():
+                continue
             if (
                 abs(float(row.get("strike") or 0) - strike) < 0.01
                 and str(row.get("option_type") or "").upper() == option_type.upper()

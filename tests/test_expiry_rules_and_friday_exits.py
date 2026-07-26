@@ -207,3 +207,140 @@ class TestFridayWeekendAutoExit:
             args, kwargs = mock_exit_live.call_args
             assert kwargs["status"] == "CLOSED_WEEKEND"
             assert kwargs["symbol"] == "NIFTY"
+
+
+class TestExpiryDay1MinAutoExit:
+    """Tests for 1-min before market close expiry day auto-exits."""
+
+    @patch("src.scheduler.job_runner._is_open_for", return_value=True)
+    @patch("src.fetchers.router.fetch_option_chain")
+    @patch("src.engine.live_trading.get_kite_client")
+    @patch("src.engine.live_trading._exit_open_live_trade")
+    def test_expiry_exit_closes_only_current_expiry_trades(
+        self, mock_exit_live, mock_kite, mock_fetch, mock_is_open
+    ):
+        from datetime import datetime
+        import pytz
+        from src.scheduler.job_runner import exit_expiry_day_positions
+
+        IST = pytz.timezone("Asia/Kolkata")
+        today_str = datetime.now(IST).strftime("%Y-%m-%d")
+        future_str = "2099-12-31"
+
+        mock_fetch.return_value = {
+            "underlying_price": 22000.0,
+            "expiry": today_str,
+            "strikes": [{"strike": 22000.0, "option_type": "CE", "ltp": 120.0}],
+        }
+        mock_kite.return_value = MagicMock()
+
+        # 1. Insert paper trade expiring TODAY
+        paper_today_id = insert_paper_trade(
+            {
+                "opened_at": "2026-07-01T10:00:00Z",
+                "symbol": "NIFTY",
+                "expiry": today_str,
+                "verdict_label": "Long Buildup",
+                "side": "BUY",
+                "option_type": "CE",
+                "strike": 22000.0,
+                "entry_underlying": 22000.0,
+                "entry_premium": 150.0,
+                "lots": 1,
+                "status": "OPEN",
+            }
+        )
+
+        # 2. Insert paper trade expiring FUTURE DATE
+        paper_future_id = insert_paper_trade(
+            {
+                "opened_at": "2026-07-01T10:00:00Z",
+                "symbol": "NIFTY",
+                "expiry": future_str,
+                "verdict_label": "Long Buildup",
+                "side": "BUY",
+                "option_type": "CE",
+                "strike": 22000.0,
+                "entry_underlying": 22000.0,
+                "entry_premium": 150.0,
+                "lots": 1,
+                "status": "OPEN",
+            }
+        )
+
+        # 3. Insert live trade expiring TODAY
+        with get_conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO live_trades (
+                    opened_at, symbol, expiry, verdict_label, side, option_type, strike,
+                    entry_underlying, entry_premium, lots, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "2026-07-01T10:00:00Z",
+                    "NIFTY",
+                    today_str,
+                    "Long Buildup",
+                    "BUY",
+                    "CE",
+                    22000.0,
+                    22000.0,
+                    150.0,
+                    1,
+                    "OPEN",
+                ),
+            )
+            live_today_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+        # 4. Insert live trade expiring FUTURE DATE
+        with get_conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO live_trades (
+                    opened_at, symbol, expiry, verdict_label, side, option_type, strike,
+                    entry_underlying, entry_premium, lots, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "2026-07-01T10:00:00Z",
+                    "NIFTY",
+                    future_str,
+                    "Long Buildup",
+                    "BUY",
+                    "CE",
+                    22000.0,
+                    22000.0,
+                    150.0,
+                    1,
+                    "OPEN",
+                ),
+            )
+            live_future_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+        # Execute 1-min expiry day exit
+        exit_expiry_day_positions("NSE_INDEX")
+
+        # Verify Database States
+        with get_conn() as conn:
+            p_today = conn.execute("SELECT * FROM paper_trades WHERE id=?", (paper_today_id,)).fetchone()
+            p_future = conn.execute("SELECT * FROM paper_trades WHERE id=?", (paper_future_id,)).fetchone()
+            l_future = conn.execute("SELECT * FROM live_trades WHERE id=?", (live_future_id,)).fetchone()
+
+            # Today paper trade MUST be closed with CLOSED_EXPIRY
+            assert p_today["status"] == "CLOSED_EXPIRY"
+            assert p_today["exit_premium"] == 120.0
+
+            # Future paper trade MUST remain OPEN
+            assert p_future["status"] == "OPEN"
+
+            # Future live trade MUST remain OPEN
+            assert l_future["status"] == "OPEN"
+
+            # Only today's live trade should trigger mock_exit_live
+            assert mock_exit_live.call_count == 1
+            _, kwargs = mock_exit_live.call_args
+            assert kwargs["status"] == "CLOSED_EXPIRY"
+            assert kwargs["symbol"] == "NIFTY"
+            assert kwargs["trade"]["expiry"] == today_str
+

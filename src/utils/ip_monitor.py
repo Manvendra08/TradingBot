@@ -25,6 +25,7 @@ IP_STATE_PATH = DATA_DIR / "ip_state.json"
 # Ordered list of IP detection URLs (primary → fallback).
 # Each must return a JSON body with an "ip" key at the top level.
 _IP_PROVIDERS = [
+    "https://api4.ipify.org?format=json",
     "https://api.ipify.org?format=json",
     "https://api.myip.com",
     "https://ip-api.com/json/",
@@ -51,7 +52,12 @@ def _fetch_public_ip() -> str | None:
                     data = json.loads(resp.read().decode("utf-8", errors="replace"))
                 ip = data.get("ip")
                 if ip and isinstance(ip, str) and ip.strip():
-                    return ip.strip()
+                    ip_str = ip.strip()
+                    # Enforce IPv4 only to prevent false alerts between IPv4 and IPv6
+                    if "." in ip_str and ":" not in ip_str:
+                        return ip_str
+                    else:
+                        raise ValueError(f"Received IPv6 instead of IPv4: {ip_str}")
             except Exception as e:
                 last_error = str(e)
                 log.debug(

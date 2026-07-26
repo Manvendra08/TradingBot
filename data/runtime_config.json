@@ -1,60 +1,58 @@
 {
-  "scan_frequency_minutes": 60,
+  "scan_frequency_minutes": 5,
   "scan_frequency_nse": 60,
   "scan_frequency_mcx": 60,
-  "live_shadow_mode": true,
-  "live_capital_per_trade_inr": 300000,
-  "live_max_capital_utilisation_pct": 80,
-  "live_max_concurrent_positions": 5,
+  "live_shadow_mode": false,
+  "live_capital_per_trade_inr": 1000000,
+  "live_max_capital_utilisation_pct": 95,
+  "live_max_concurrent_positions": 10,
   "live_max_daily_loss_rupees": 200000,
   "live_symbol_lots": {
-    "NIFTY": 10,
-    "BANKNIFTY": 10,
-    "FINNIFTY": 1,
-    "MIDCPNIFTY": 1,
-    "SENSEX": 10,
-    "NATURALGAS": 10,
-    "CRUDEOIL": 10
+    "NATURALGAS": 5,
+    "NIFTY": 4,
+    "BANKNIFTY": 4,
+    "SENSEX": 4,
+    "CRUDEOIL": 1
   },
   "paper_symbol_lots": {
+    "NATURALGAS": 10,
     "NIFTY": 10,
     "BANKNIFTY": 10,
-    "FINNIFTY": 10,
-    "MIDCPNIFTY": 10,
     "SENSEX": 10,
-    "NATURALGAS": 10,
-    "CRUDEOIL": 5
+    "CRUDEOIL": 10
   },
   "paper_lots": 10,
   "live_enabled_broker_symbols": [
     "NATURALGAS",
     "NIFTY",
-    "BANKNIFTY"
+    "BANKNIFTY",
+    "SENSEX"
   ],
-  "oi_spike_threshold_pct": 50,
+  "oi_spike_threshold_pct": 45,
   "price_spike_threshold_pct": 3,
   "dashboard_auth_enabled": false,
-  "live_ai_decision_mode": "full",
-  "live_ai_min_confidence_boost": 75,
+  "live_ai_decision_mode": "advisory",
+  "live_ai_min_confidence_boost": 80,
   "live_ai_min_confidence_veto": 85,
   "live_ai_exit_advisor_enabled": true,
   "emp_boost_min_trades": 20,
   "emp_boost_min_winrate": 0.6,
-  "ml_predictor_mode": "live",
+  "ml_predictor_mode": "shadow",
   "derive_min_confidence": false,
   "llm_enrichment_async": true,
   "llm_enrich_timeout_s": 120,
   "autopsy_enabled": true,
-  "autopsy_time_ist": "23:35",
+  "autopsy_time_ist": "23:45",
   "manage_direct_kite_positions": false,
   "direct_kite_initialization_mode": "dynamic",
-  "direct_kite_default_sl_pct": 40,
+  "direct_kite_default_sl_pct": 100,
   "direct_kite_default_tgt_pct": 60,
   "live_broker_disabled": false,
   "trading_paused": false,
   "enable_tfss_trade_blocked_rules": false,
   "sentinel_report_mode": "anomalies",
   "ops_agent_mode": "observe",
+  "tiered_gates_enabled": true,
   "strategies": {
     "CORE": {
       "enabled": true,
@@ -63,14 +61,14 @@
         "NIFTY": true,
         "BANKNIFTY": true,
         "SENSEX": true,
-        "FINNIFTY": true,
+        "FINNIFTY": false,
         "NATURALGAS": true,
         "CRUDEOIL": true
       }
     },
     "TIMEFRAME": {
       "enabled": true,
-      "ai_mode": "full",
+      "ai_mode": "boost_only",
       "symbols": {
         "NIFTY": false,
         "BANKNIFTY": true,
@@ -81,22 +79,22 @@
       }
     },
     "TFSS": {
-      "enabled": false,
+      "enabled": true,
       "ai_mode": "advisory",
       "symbols": {
         "NIFTY": true,
         "BANKNIFTY": true,
         "SENSEX": true,
-        "FINNIFTY": true,
-        "NATURALGAS": false,
-        "CRUDEOIL": false
+        "FINNIFTY": false,
+        "NATURALGAS": true,
+        "CRUDEOIL": true
       },
       "params": {
         "delta_entry_band": [
-          0.16,
-          0.2
+          0.2,
+          0.4
         ],
-        "delta_hard_stop": 0.38,
+        "delta_hard_stop": 0.5,
         "atr_trailing_window": 10,
         "persistence_scans_required": 3,
         "persistence_window": 5,

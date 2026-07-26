@@ -37,14 +37,20 @@ def active_strategies_for(symbol: str) -> list[str]:
         now_ist = datetime.now(pytz.timezone("Asia/Kolkata"))
         regime, _ = get_ng_regime(now_ist)
         
+        active_ng = []
         if regime == "PARITY":
-            return ["NG_PARITY"]
+            active_ng.append("NG_PARITY")
         elif regime == "EVENT":
-            return ["NG_EVENT"]
+            active_ng.append("NG_EVENT")
         elif regime == "MOMENTUM":
-            return ["NG_MOMENTUM"]
-        else:
-            return []
+            active_ng.append("NG_MOMENTUM")
+
+        config = load_runtime_config()
+        strategies = config.get("strategies", DEFAULT_STRATEGIES)
+        if strategies.get("TIMEFRAME", {}).get("enabled", False):
+            active_ng.append("TIMEFRAME")
+
+        return active_ng
 
     config = load_runtime_config()
     strategies = config.get("strategies", DEFAULT_STRATEGIES)

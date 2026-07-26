@@ -683,8 +683,110 @@
   - **R11 (`R11_EXTREME_STRIKE_DISTANCE`)**: Target instrument strike >25% away from underlying spot.
   - **R12 (`R12_ZERO_OI_DOMINANCE`)**: Option chain zero Open Interest dominance (>85% 0-OI strikes).
 
+### F103: Expiry Day 1-Minute Before Close Auto-Exit System (P0-CRITICAL)
+- **Requirement:** On expiry day, all open paper and live/shadow positions for eligible symbols must be automatically squared off 1 minute before market closing time (15:29 IST for NSE/BSE, 23:29 IST for MCX), ensuring only positions expiring on that specific date are closed.
+- **Implementation:**
+  1. Added `exit_expiry_day_positions(market_class: str)` in [src/scheduler/job_runner.py](file:///c:/Users/manve/Downloads/NSEBOT/src/scheduler/job_runner.py#L210-L400).
+  2. Filters `open_paper` and `open_live` positions strictly by `str(trade.get("expiry"))[:10] == today_ist_str`. Future-expiry positions (DTE > 0) remain open.
+  3. Calculates 1-min before market close target time (`15:29` for `15:30` close; `23:29` for `23:30` close) and triggers auto-exits in [src/scheduler/job_runner.py](file:///c:/Users/manve/Downloads/NSEBOT/src/scheduler/job_runner.py#L1330-L1350).
+  4. Records trade exits as `CLOSED_EXPIRY` with CMP / intrinsic value fallback and dispatches Telegram notifications.
 
+### F104: Weekly Index Expiry Resolution Alignment (NIFTY & SENSEX) (P1-HIGH)
+- **Issue:** In [src/fetchers/dhan_fetcher.py](file:///c:/Users/manve/Downloads/NSEBOT/src/fetchers/dhan_fetcher.py#L81), `_nearest_expiry()` checked `if base_sym != "NIFTY"` and grouped all non-NIFTY expiries by month to select the monthly expiry (`max(d_list)`). For SENSEX, this forced selection of `2026-07-30` (monthly) back in late June instead of resolving nearest weekly contracts (`2026-07-09`, `2026-07-16`, `2026-07-23`).
+- **Fix Applied:** Updated `dhan_fetcher.py` to classify strictly `{"NIFTY", "SENSEX"}` as weekly options indices (all other index/stock contracts are monthly), resolving nearest weekly expiries correctly for both NIFTY and SENSEX.
+### F105: MCX Monthly Expiry Pre-Fetch (<5 DTE) and Expiry Day Next Contract Switch (P0-CRITICAL)
+- **Requirement 1 (Pre-fetch Threshold):** For MCX monthly commodities (`NATURALGAS`, `CRUDEOIL`, `GOLD`, `SILVER`), when current contract DTE $< 5$ days (vs $< 2$ days for weekly index contracts), [src/engine/pipeline.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/pipeline.py#L180) submits background task `next_expiry_future` to pre-fetch the next expiry option chain.
+### F108: Timeframe Strategy Pipeline Order & Contradictory Telegram Alert Fixes (P0-CRITICAL)
+- **Issue 1 (Pipeline Execution Sequence):** In [src/engine/pipeline.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/pipeline.py), `runner(symbol, ...)` was called **after** `build_digest` had already built and sent the Telegram alert. Consequently, `_build_structured_payload` had no `timeframe_res` and defaulted `timeframe["action"] = "BLOCK"` with `"N/A"` fields.
+- **Issue 2 (NATURALGAS Strategy Routing):** In [src/engine/strategy_registry.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/strategy_registry.py#L40), `active_strategies_for("NATURALGAS")` returned only session strategies (`NG_PARITY`, `NG_EVENT`, `NG_MOMENTUM`) without appending `"TIMEFRAME"`, preventing Timeframe strategy execution on NATURALGAS.
+- **Issue 3 (Telegram Digest Contradiction):** In [src/alerts/digest.py](file:///c:/Users/manve/Downloads/NSEBOT/src/alerts/digest.py#L881), `tf_action = "BLOCK"` with empty fields printed `🚫 TIMEFRAME STRATEGY: BLOCK` immediately followed by `Status: No active signal (3H breakout pending)`.
+- **Fixes Applied:**
+  1. Moved strategy runner evaluation inside `serialized_commit_gate` **before** `_build_structured_payload` in `pipeline.py`.
+  2. Passed `timeframe_res` into `_build_structured_payload` to populate real `timeframe` status (`NO_SIGNAL`, `BLOCK`, `ENTER`, `EXIT`, `CLOSED`).
+  3. Included `"TIMEFRAME"` in `active_strategies_for("NATURALGAS")` when `TIMEFRAME` strategy is enabled in `strategy_registry.py`.
+  4. Formatted `build_tfss_timeframe_digest` in `digest.py` to render `⏸️ TIMEFRAME STRATEGY` + `Status: No active signal (3H breakout pending)` cleanly when `action == "NO_SIGNAL"`, eliminating false `BLOCK` headers.
 
+### F109: LLM Schema Confusion Disambiguation & Bedrock Converse Reasoning Content Fix (P1-HIGH)
+- **Issue 1 (Schema Confusion Across All Models):** Prompt included `OPEN POSITION:` context when checking verdicts, causing models (DeepSeek, Qwen, GPT-4o-mini, Llama 3.3, Nemotron) to return `LLMExitAdvice` JSON fields (`reasons_held`, `position_age_min`, `urgency`) instead of `LLMTradeVerdict` fields (`action`, `signal_chain`, `thesis`), causing 14 validation errors across all provider fallbacks.
+- **Fix 1:** Enhanced system prompt in [src/engine/llm_enrichment.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/llm_enrichment.py#L1048) with explicit `schema_clarification` defining exact target schema fields (`LLMTradeVerdict` vs `LLMExitAdvice`) and explicitly warning models not to output exit fields for trade verdicts.
+- **Issue 2 (Bedrock Converse KeyError):** Models returning `reasoningContent` blocks in Bedrock Converse API caused `response["output"]["message"]["content"][0]["text"]` to throw `KeyError: 'text'`.
+- **Fix 2:** Updated [src/engine/llm_enrichment.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/llm_enrichment.py#L1816) to iterate through `content_blocks` and safely extract text blocks. Also updated deprecated Groq model `meta-llama/llama-4-scout-17b-16e-instruct` to `llama-3.1-8b-instant`.
+
+### F110: OpenCode Model Endpoint Correction & Promotion to Primary Provider (P0-CRITICAL)
+- **Model Verification**: Tested all OpenCode Zen models. Verified that models without `opencode/` prefix (`mimo-v2.5-free`, `deepseek-v4-flash-free`, `nemotron-3-ultra-free`) return `HTTP 200 OK` with valid JSON output.
+- **Model ID Fix**: Removed `opencode/` prefix from `_opencode_zen_group` provider definitions in [src/engine/llm_enrichment.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/llm_enrichment.py#L1359).
+### F111: Scan Sentinel Datetime UnboundLocalError Fix (P1-HIGH)
+- **Issue**: In [src/engine/pipeline.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/pipeline.py#L946), calling `datetime.now(timezone.utc)` for Scan Sentinel submission threw `UnboundLocalError` when processing non-MCX symbols (e.g. `NIFTY`). This occurred because line 558 contained a conditional `from datetime import datetime` inside `if is_mcx:`, binding `datetime` locally for `_process_prefetched_symbol()`.
+- **Fix Applied**: Removed inner conditional `from datetime import datetime` imports from [src/engine/pipeline.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/pipeline.py), relying on module-level `from datetime import datetime, timedelta, timezone` (line 17).
+
+### F112: Bedrock Mantle Provider Model Reordering (P1-HIGH)
+- **Change**: Promoted `GLM 5` (`zai.glm-5`) to **index 0** (primary model position) inside `_bedrock_mantle_group` in [src/engine/llm_enrichment.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/llm_enrichment.py#L1105). Bedrock Mantle requests will now try GLM 5 first before attempting DeepSeek V3.2 / Qwen3 fallbacks.
+
+### F113: Decision Audit Null Safety & Timeframe Chart Data Unwrapping Fix (P1-HIGH)
+- **Issue 1 (Decision Audit Crash)**: In [src/engine/decision_audit.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/decision_audit.py#L73), `ctx.scan_context.get("chart_indicators", {}).get("1h", {})` threw `AttributeError: 'NoneType' object has no attribute 'get'` when `scan_context` or `chart_indicators` was `None`.
+- **Fix 1**: Updated `decision_audit.py` with safe `scan_ctx = ctx.scan_context or {}` and `chart_ind = scan_ctx.get("chart_indicators") or {}` extraction.
+- **Issue 2 (Timeframe Chart Data Unwrapping)**: In [src/engine/paper_trading.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/paper_trading.py#L1533), `tf_data` extraction did not check for symbol-keyed wrappers (`{symbol: {"1h": ..., "3h": ...}}`), causing `Timeframe strategy skipped — missing 3h/1h chart data` warnings.
+- **Fix 2**: Hardened `tf_data` extraction in `paper_trading.py` to check `symbol in chart_indicators` before unwrapping.
+
+### F114: Target Expiry Futures Underlying Price Resolution Fix (P0-CRITICAL)
+- **Issue**: When fetching option chains for next/target expiries (e.g. `2026-08-24`), both Dhan (`dhan_commodity_fetcher.py`) and Shoonya (`shoonya_fetcher.py`) were defaulting `underlying_price` to near-month July spot/futures price (`282.70`) instead of the corresponding August futures contract price.
+- **Fix (Dhan)**: Updated [dhan_commodity_fetcher.py](file:///c:/Users/manve/Downloads/NSEBOT/src/fetchers/dhan_commodity_fetcher.py#L774) to update `underlying` with `api_underlying` (ScanX SLTP) or `live_fut` when `target_expiry` is specified.
+- **Fix (Shoonya)**: Updated [shoonya_fetcher.py](file:///c:/Users/manve/Downloads/NSEBOT/src/fetchers/shoonya_fetcher.py#L1142) to match the futures contract corresponding to `expiry` month (e.g., matching `26AUG` futures for `2026-08-24`).
+
+### F115: Shoonya BFO Monthly Expiry Prefix Fallback & NameError Fix (P1-HIGH)
+- **Issue**: On Shoonya BFO (BSE F&O), end-of-month expiry contracts (e.g., July 30) use monthly symbol format (`SENSEX26JUL`) rather than numeric date prefix (`SENSEX26730`), causing SearchScrip to return `HTTP 404: No Data`. A previous partial edit left `res` undefined inside the candidate search loop, throwing `NameError: name 'res' is not defined`.
+- **Fix**: Replaced the candidate loop in [shoonya_fetcher.py](file:///c:/Users/manve/Downloads/NSEBOT/src/fetchers/shoonya_fetcher.py#L1404) with clean search logic trying both `prefix_weekly` (`SENSEX26730`) and `prefix_monthly` (`SENSEX26JUL`), resolving 60 strikes cleanly. Verified operational in standalone test.
+
+### F116: Expiry Day Open Trade Monitoring vs Next Expiry Signal Separation (P0-CRITICAL)
+- **Issue**: On MCX expiry day (`dte == 0`), the pipeline was overwriting `oc_data` with `next_oc_data` (e.g. August expiry). Consequently, `scan_context["option_rows"]` contained August option rows, causing open July trades (e.g. NATURALGAS 290 CE) to be evaluated against August option premiums (LTP 12.66 vs July 0.05) and August deltas, triggering false `CLOSED_DELTA_STOP` liquidations.
+- **Fix**:
+  1. Updated [pipeline.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/pipeline.py#L550) to preserve `current_expiry_oc_data` as `scan_context["current_expiry_option_rows"]` while using `next_oc_data` strictly as the target for new trade signals & entries. Tagged `expiry` on all strike rows.
+  2. Updated [paper_trading.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/paper_trading.py#L948) and [live_trading.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/live_trading.py#L904) with `_get_option_rows_for_expiry` to monitor open trades against option rows matching the trade's specific expiry.
+  3. Added explicit expiry validation in [trade_plan.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/trade_plan.py#L266) (`get_option_premium`) and [risk_engine.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/risk_engine.py#L313) (`_leg_delta`).
+  4. Deleted invalid trade record #302 from `paper_trades`.
+### F117: Telegram Header Metadata Restoration (P1-HIGH)
+- **Issue**: Active digest builders (`build_llm_consolidated_digest` and `build_tfss_timeframe_digest`) were omitting the compact metadata header containing scan time, trade decision status, expiry date, DTE, and underlying spot price.
+- **Fix**: Updated all digest templates in [digest.py](file:///c:/Users/manve/Downloads/NSEBOT/src/alerts/digest.py#L1884) to render the unified sub-header: `24 Jul, 13:14, BLOCKED, 🗓 26 Jul, 2 DTE  |  Spot 75662.2`. Verified with test script.
+
+### F118: Kite API Market Data Insufficient Permission Graceful Fallback (P1-HIGH)
+- **Issue**: When `kite.ltp()` is invoked for `BSE:SENSEX` or `MCX:NATURALGAS26JULFUT` during direct Kite initialization, Kite API keys lacking explicit BSE index or MCX market data permissions throw `PermissionException: Insufficient permission for that call.` which logged as repeated warning noise.
+- **Fix**: Updated [live_trading.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/live_trading.py#L2084) to catch `Insufficient permission` gracefully, logging as informational context and immediately falling back to stored underlying prices from DB (`get_previous_underlying`).
+
+### F119: IP Monitor IPv6 False Alerts Fix (P1-HIGH)
+- **Issue**: Dual-stack local machines could occasionally receive an IPv6 address from public IP detection APIs (like api.myip.com), causing the `check_ip_changed()` routine to compare an IPv6 address against the stored IPv4 address and falsely trigger an "ISP IP Address Changed" alert.
+- **Fix**: Added strict IPv4 validation logic (`"." in ip_str and ":" not in ip_str`) in `_fetch_public_ip` in [ip_monitor.py](file:///c:/Users/manve/Downloads/NSEBOT/src/utils/ip_monitor.py#L56). Providers that return an IPv6 address are now gracefully discarded, and explicit IPv4-only domains (e.g., `api4.ipify.org`) were bumped in priority.
+
+### F120: Structured Payload Digest Header Missing Fields Fix (P0-CRITICAL)
+- **Issue**: In `_build_structured_payload()` ([pipeline.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/pipeline.py#L413)), the `header` dictionary was created with only `symbol`, `spot`, `market_regime`, `confidence`, and `trade_entered`, omitting `scan_time`, `expiry`, `dte`, and `underlying`. As a result, `build_tfss_timeframe_digest()` received `None` for those fields and rendered `CRUDEOIL · IST X Not entered` and `🗓 Expiry N/A · N/A DTE | Spot N/A`.
+- **Fix**: Populated `scan_time`, `expiry`, `dte`, and `underlying` inside the `header` dictionary in `_build_structured_payload()`. Hardened fallback extraction in [digest.py](file:///c:/Users/manve/Downloads/NSEBOT/src/alerts/digest.py#L744) to check both `underlying` and `spot`.
+
+### F121: TFSS Hard Stop Delta Threshold Increased to 0.60 (P1-HIGH)
+- **Issue**: `HARD_STOP_DELTA` was set to `0.35`, causing premature `CLOSED_DELTA_STOP` exits on option legs that were still profitable or slightly OTM as delta fluctuated around 0.37-0.42.
+- **Fix**: Updated `HARD_STOP_DELTA` from `0.35` to `0.60` across [config/trend_following_short_strangle.py](file:///c:/Users/manve/Downloads/NSEBOT/config/trend_following_short_strangle.py#L58), [risk_engine.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/risk_engine.py#L275), and [paper_trading.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/paper_trading.py#L983).
+
+### F122: Kite GTT Tick Size Rounding Fix (P0-CRITICAL)
+- **Issue**: `place_kite_gtt()` was passing unrounded stoploss trigger prices (e.g., `13.08`) directly to Zerodha's GTT endpoint, which rejected the placement with `Kite GTT placement failed: Stoploss trigger price should be a multiple of tick size 0.05`.
+- **Fix**: Enforced automatic tick-size rounding (`_round_tick` to multiples of `tick_size = 0.05`) for all `trigger_values`, `limit_prices`, and `last_price` inside `place_kite_gtt()` in [live_trading.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/live_trading.py#L727).
+
+### F123: Timeframe Strategy Executed Trade Digest Alert Fix (P0-CRITICAL)
+- **Issue**: When a Timeframe strategy trade triggered (e.g. `LIVE TF Order`), `_build_structured_payload()` in [pipeline.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/pipeline.py#L386) only checked for `TRIGGERED_CORE` and `TRIGGERED_EXPERIMENTAL` statuses. It omitted `TRIGGERED_TIMEFRAME` and `timeframe_res.get("action") == "EXECUTED"`. Consequently, the digest header rendered `📊 NATURALGAS · 19:00 IST X Not entered` and the Timeframe section defaulted to `Status: No active signal (3H breakout pending)`.
+- **Fix**: Updated `_build_structured_payload()` in [pipeline.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/pipeline.py#L386) to set `trade_entered = True` when `TRIGGERED_TIMEFRAME` or `timeframe_res.get("action") == "EXECUTED"`, mapped `timeframe_res["action"] = "ENTER"`, and populated `signal`, `direction`, and `contract` from `timeframe_res["trade"]`.
+
+### F124: Dashboard Live CMP & PnL Expiry Match Fix (P0-CRITICAL)
+- **Issue**: `_enrich_open_trades_with_live_pnl()` in [dashboard_server.py](file:///c:/Users/manve/Downloads/NSEBOT/dashboard_server.py#L1380) queried `option_chain_snapshots` for CMP using `WHERE symbol=? AND strike=? AND option_type=?` without filtering by `expiry`. For August trades (e.g. `NATURALGAS 2026-08-24 285 CE`), it fetched the July expiry 285 CE LTP (`0.60`) instead of the August expiry LTP (`16.15+`), causing a false negative PnL display (`-₹1,94,375`).
+- **Fix**: Added explicit `expiry=?` and `ltp > 0` filtering to option chain queries in `_enrich_open_trades_with_live_pnl()` and trade exit estimation in [dashboard_server.py](file:///c:/Users/manve/Downloads/NSEBOT/dashboard_server.py#L1380).
+
+### F125: Automatic DTE Calculation Failsafe Fix (P1-HIGH)
+- **Issue**: `scan_context` was not populating `scan_context["dte"]` during anomaly detection, causing `_build_structured_payload()` and `build_tfss_timeframe_digest()` to receive `None` for `dte` and render `N/A DTE` even when a valid expiry string like `'2026-08-24'` was present.
+- **Fix**: Added explicit `dte` calculation (`(exp_date - today_date).days`) across [pipeline.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/pipeline.py#L624) and dynamic fallback calculation in [digest.py](file:///c:/Users/manve/Downloads/NSEBOT/src/alerts/digest.py#L765).
+
+### F126: Paper Trading Summary Card SQL Closed Status Match Fix (P0-CRITICAL)
+- **Issue**: Summary card KPI and symbol stats queries in [dashboard_server.py](file:///c:/Users/manve/Downloads/NSEBOT/dashboard_server.py#L1635) checked closed trade status using `status LIKE 'CLOSED_%' OR status IN ('Dead Trade', 'TF-1H-Cross')`. Because SQL `LIKE 'CLOSED_%'` required an underscore, SQLite excluded 6 closed trades with exact `status = 'CLOSED'` (+₹37,596.73 P&L), underreporting total P&L as `+₹1,23,586` instead of `+₹1,61,182.73` and reporting Win Rate on 18 trades (`11 W / 7 L`) instead of all 24 closed trades (`15 W / 9 L = 62.5%`).
+- **Fix**: Updated SQL status matching in [dashboard_server.py](file:///c:/Users/manve/Downloads/NSEBOT/dashboard_server.py#L1635) to `((status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross'))`, ensuring all 24 closed trades are included in dashboard summary and per-symbol KPIs.
+
+### F127: Direct Kite Manual Trade Auto-Reconciliation Fix (P0-CRITICAL)
+- **Issue**: `sync_open_positions_with_kite()` in [live_trading.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/live_trading.py#L1990) auto-adopted active Zerodha positions into `live_trades` table as `setup_type='DIRECT_KITE'`. However, when those manual positions were closed on Zerodha, DB rows remained in `status='OPEN'`, causing stale positions (`SENSEX 75500 PE`, `NATURALGAS 285 PE/290 PE/290 CE/FUT`) to persist under `🤖 BOT LIVE TRADES` on the Broker Console page.
+- **Fix**: Added automated position reconciliation to `sync_open_positions_with_kite()` in [live_trading.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/live_trading.py#L2045) — whenever an adopted `DIRECT_KITE` trade is no longer active in Zerodha's `net_positions`, it is automatically set to `status='CLOSED'`, `reason='Closed on Kite'` in SQLite DB. Reconciled and closed all stale DB rows.
 
 
 

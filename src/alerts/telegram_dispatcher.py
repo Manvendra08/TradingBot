@@ -432,12 +432,16 @@ async def _send_async_safe(message: str, symbol: str = None, atype: str = None) 
         )
         try:
             loop = asyncio.get_running_loop()
-            success = await loop.run_in_executor(
-                None,
-                _send_text_http_fallback,
-                message,
-                10,  # timeout_seconds
-            )
+            try:
+                success = await loop.run_in_executor(
+                    None,
+                    _send_text_http_fallback,
+                    message,
+                    10,  # timeout_seconds
+                )
+            except RuntimeError:
+                # Executor shut down during cleanup -> call HTTP fallback directly
+                success = _send_text_http_fallback(message, 10)
             if success:
                 # Fallback succeeded -> stamp OK
                 try:

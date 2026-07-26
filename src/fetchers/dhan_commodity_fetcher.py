@@ -773,8 +773,7 @@ class DhanCommodityFetcher(BaseFetcher):
                 if strikes:
                     api_underlying = _parse_float(str(((raw or {}).get("data") or {}).get("sltp") or ""))
                     if api_underlying is not None and api_underlying > 0:
-                        # Prefer futures contract LTP from page props if already resolved
-                        if not underlying:
+                        if target_expiry or not underlying:
                             underlying = api_underlying
                     log.debug(
                         "[dhan_commodity] parsed %d strikes via optchainactive for %s (sid=%s expj=%s)",

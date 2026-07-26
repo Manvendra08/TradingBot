@@ -1045,13 +1045,31 @@ def _call_llm_api(
 
     from src.utils.tls_adapter import ResilientTLSAdapter
 
+    schema_name = schema.__name__
     schema_json = json.dumps(schema.model_json_schema())
+
+    schema_clarification = ""
+    if schema == LLMTradeVerdict:
+        schema_clarification = (
+            "Task: NEW TRADE VERDICT (LLMTradeVerdict). "
+            "You MUST output fields: action, confidence, signal_chain, instrument, entry_trigger, "
+            "entry_premium_range, stop_loss, target_1, target_2, risk_reward, thesis, invalidation, risk_rating, catalyst. "
+            "Do NOT output exit advice fields like reasons_held or position_age_min."
+        )
+    elif schema == LLMExitAdvice:
+        schema_clarification = (
+            "Task: OPEN POSITION EXIT ADVICE (LLMExitAdvice). "
+            "You MUST output fields: action, urgency, reasoning, new_sl_premium, new_target_premium, "
+            "reasons_held, position_age_min, price_distance_to_sl_pct, price_distance_to_target_pct."
+        )
+
     system_prompt = (
-        "Options trading analyst. Respond with a valid JSON object populated with actual analysis values matching this schema.\n"
+        f"Options trading analyst. {schema_clarification}\n"
+        f"Respond with a valid JSON object populated with actual analysis values matching schema '{schema_name}'.\n"
         "Do NOT return the schema definition itself. Output ONLY the JSON object — no markdown fences, no prose before or after.\n"
         "Rules: Complete English only. No abbreviations (use 'underlying' not 'und', 'target' not 'tgt'). "
         "Specific numbers required. No vague language. Use only values present in the prompt data — never invent a level, date, or figure.\n"
-        f"Target Schema:\n{schema_json}"
+        f"Target Schema ({schema_name}):\n{schema_json}"
     )
 
     # Configure retry strategy for transient network errors
@@ -1083,6 +1101,12 @@ def _call_llm_api(
     _bedrock_mantle_group = {
         "model_group": "bedrock-mantle-primary",
         "providers": [
+            {
+                "name": "Bedrock Mantle (GLM 5)",
+                "env_key": "AWS_ACCESS_KEY_ID",
+                "model": "zai.glm-5",
+                "use_bedrock_mantle": True,
+            },
             {
                 "name": "Bedrock Mantle (DeepSeek V3.2)",
                 "env_key": "AWS_ACCESS_KEY_ID",
@@ -1341,22 +1365,22 @@ def _call_llm_api(
                     "name": "OpenCode Zen (Mimo V2.5 Free)",
                     "env_key": "OPENCODE_API_KEY",
                     "url": "https://opencode.ai/zen/v1/chat/completions",
-                    "model": "opencode/mimo-v2.5-free",
-                    "timeout": 35,
-                },
-                {
-                    "name": "OpenCode Zen (Nemotron 3 Ultra Free)",
-                    "env_key": "OPENCODE_API_KEY",
-                    "url": "https://opencode.ai/zen/v1/chat/completions",
-                    "model": "opencode/nemotron-3-ultra-free",
+                    "model": "mimo-v2.5-free",
                     "timeout": 35,
                 },
                 {
                     "name": "OpenCode Zen (DeepSeek V4 Flash Free)",
                     "env_key": "OPENCODE_API_KEY",
                     "url": "https://opencode.ai/zen/v1/chat/completions",
-                    "model": "opencode/deepseek-v4-flash-free",
+                    "model": "deepseek-v4-flash-free",
                     "timeout": 25,
+                },
+                {
+                    "name": "OpenCode Zen (Nemotron 3 Ultra Free)",
+                    "env_key": "OPENCODE_API_KEY",
+                    "url": "https://opencode.ai/zen/v1/chat/completions",
+                    "model": "nemotron-3-ultra-free",
+                    "timeout": 35,
                 },
             ],
         }
@@ -1415,10 +1439,10 @@ def _call_llm_api(
                     "model": "llama-3.3-70b-versatile",
                 },
                 {
-                    "name": "Groq (Llama 4 Scout)",
+                    "name": "Groq (Llama 3.1 8B)",
                     "env_key": "GROQ_API_KEY",
                     "url": "https://api.groq.com/openai/v1/chat/completions",
-                    "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+                    "model": "llama-3.1-8b-instant",
                 },
             ],
         }
@@ -1598,8 +1622,9 @@ def _call_llm_api(
                 _opencode_zen_group,
             ]
         else:
-            # NSE/BSE indices: Bedrock Mantle (primary) → GitHub Models → Groq → Nvidia NIM → Bedrock → OpenRouter → Gemini → Opencode Zen (fallback)
+            # NSE/BSE indices: Opencode Zen (primary) → Bedrock Mantle → GitHub Models → Groq → Nvidia NIM → Bedrock → OpenRouter → Gemini
             FREE_MODEL_PIPELINE = [
+                _opencode_zen_group,
                 _bedrock_mantle_group,
                 _github_models,
                 _groq_group,
@@ -1607,7 +1632,6 @@ def _call_llm_api(
                 _bedrock_group,
                 _openrouter_group,
                 _gemini_group,
-                _opencode_zen_group,
             ]
 
     max_tokens = _max_tokens_for_purpose(purpose)
@@ -1795,9 +1819,16 @@ def _call_llm_api(
                             ),
                         },
                     )
-                    raw_content = response["output"]["message"]["content"][0]["text"]
+                    content_blocks = response.get("output", {}).get("message", {}).get("content", [])
+                    raw_content = ""
+                    for block in content_blocks:
+                        if isinstance(block, dict) and "text" in block:
+                            raw_content = block["text"]
+                            break
+                    if not raw_content and content_blocks:
+                        raw_content = str(content_blocks[-1].get("text") or content_blocks[-1])
                     parsed = _extract_json(raw_content)
-                    result = schema(**parsed)
+                    result = schema.model_validate(parsed)
                     log.info(
                         "[llm] %s OK via Bedrock (%s)",
                         schema.__name__,

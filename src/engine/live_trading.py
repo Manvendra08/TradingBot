@@ -217,6 +217,16 @@ def get_kite_client() -> KiteConnect | None:
             except Exception as e:
                 log.warning("Failed to configure TLS adapter: %s", e)
 
+            # Verify access_token validity against Zerodha API
+            try:
+                kite.profile()
+            except Exception as e:
+                log.warning("Kite access_token verification failed: %s — invalidating token", e)
+                invalidate_token()
+                _cached_kite_client = None
+                _cached_access_token = None
+                return None
+
             _cached_kite_client = kite
             _cached_access_token = config["access_token"]
 
@@ -701,6 +711,7 @@ def place_kite_gtt(
     limit_prices: list[float],
     last_price: float,
     shadow_mode: bool,
+    tick_size: float = 0.05,
 ) -> str:
     if shadow_mode:
         import uuid
@@ -715,8 +726,18 @@ def place_kite_gtt(
         )
         return sh_id
     try:
+        def _round_tick(val: float, tick: float = 0.05) -> float:
+            if not val or float(val) <= 0:
+                return 0.0
+            t = tick or 0.05
+            return round(round(float(val) / t) * t, 2)
+
+        rounded_triggers = [_round_tick(v, tick_size) for v in trigger_values]
+        rounded_limits = [_round_tick(v, tick_size) for v in limit_prices]
+        last_price_rounded = _round_tick(last_price, tick_size)
+
         # Sort trigger_values and limit_prices as pairs by trigger_value ascending (BUG-002)
-        pairs = sorted(zip(trigger_values, limit_prices), key=lambda x: x[0])
+        pairs = sorted(zip(rounded_triggers, rounded_limits), key=lambda x: x[0])
         sorted_triggers = [p[0] for p in pairs]
         sorted_limits = [p[1] for p in pairs]
 
@@ -725,7 +746,7 @@ def place_kite_gtt(
             tradingsymbol=tradingsymbol,
             exchange=exchange,
             trigger_values=sorted_triggers,
-            last_price=last_price,
+            last_price=last_price_rounded,
             orders=[
                 {
                     "transaction_type": transaction_type,
@@ -868,6 +889,17 @@ def _exit_open_live_trade(
     return _latest_live_trade(trade["id"]) or trade
 
 
+def _get_option_rows_for_expiry(current_ctx: dict, expiry: str | None) -> list[dict]:
+    if not expiry:
+        return current_ctx.get("current_expiry_option_rows") or current_ctx.get("option_rows") or []
+    curr_exp = current_ctx.get("current_expiry")
+    if curr_exp and str(expiry).strip() == str(curr_exp).strip():
+        return current_ctx.get("current_expiry_option_rows") or current_ctx.get("option_rows") or []
+    target_exp = current_ctx.get("expiry")
+    if target_exp and str(expiry).strip() == str(target_exp).strip():
+        return current_ctx.get("option_rows") or []
+    return current_ctx.get("current_expiry_option_rows") or current_ctx.get("option_rows") or []
+
 def run_live_trading(
     symbol: str, scan_context: dict, digest_id: str, intel: dict, ai_verdict=None
 ) -> dict | None:
@@ -897,12 +929,14 @@ def run_live_trading(
     scan_context = scan_context or {}
     underlying = float(scan_context.get("underlying") or 0.0)
     expiry = scan_context.get("expiry", "")
-    option_rows = scan_context.get("option_rows") or []
     verdict, confidence = _parse_verdict_and_confidence(
         intel.get("telegram_text") or ""
     )
 
     current_open_trade = get_open_live_trade(symbol)
+    trade_option_rows = _get_option_rows_for_expiry(scan_context, current_open_trade.get("expiry") if current_open_trade else None)
+    option_rows = trade_option_rows if current_open_trade else (scan_context.get("option_rows") or [])
+
     if not current_open_trade:
         broker_conf = get_broker_config()
         if broker_conf and broker_conf.get("kill_switch_active"):
@@ -1946,13 +1980,16 @@ def sync_direct_kite_positions() -> None:
         log.error("Failed to fetch Kite positions for direct sync: %s", e)
         # Clear Kite client cache if fetching positions failed, to force re-initialization
         clear_kite_client_cache()
+        if "access_token" in str(e).lower() or "api_key" in str(e).lower() or "TokenException" in type(e).__name__:
+            from src.services.zerodha_auth import invalidate_token
+            invalidate_token()
         log.warning("Cleared Kite client cache due to position sync failure.")
         return
 
     monitored_bases = ["NIFTY", "BANKNIFTY", "SENSEX", "NATURALGAS", "CRUDEOIL"]
 
     import re
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
 
     from src.models.schema import get_conn, insert_live_trade
 
@@ -1988,6 +2025,44 @@ def sync_direct_kite_positions() -> None:
                 open_db_signatures.append(sig)
 
         now_iso = datetime.now(timezone.utc).isoformat()
+        active_kite_sigs = set()
+        for p in net_positions:
+            net_qty = p.get("quantity", 0)
+            if net_qty == 0:
+                continue
+            ts = p.get("tradingsymbol", "")
+            base_sym = None
+            for mb in monitored_bases:
+                if ts.startswith(mb):
+                    base_sym = mb
+                    break
+            if not base_sym:
+                continue
+            side = "BUY" if net_qty > 0 else "SELL"
+            option_type = "FUT"
+            strike = 0.0
+            if ts.endswith("CE"):
+                option_type = "CE"
+            elif ts.endswith("PE"):
+                option_type = "PE"
+            if option_type in ("CE", "PE"):
+                m = re.search(r"(\d+(?:\.\d+)?)(?:CE|PE)$", ts)
+                if m:
+                    strike = float(m.group(1))
+            active_kite_sigs.add(f"{base_sym}:{option_type}:{int(strike)}:{side}")
+
+        # Auto-close DIRECT_KITE DB rows that are no longer open on Zerodha Kite
+        for dt in db_trades:
+            if dt.get("setup_type") == "DIRECT_KITE" or dt.get("reason") == "Direct Kite Manual Entry":
+                sym = dt["symbol"]
+                ot = dt["option_type"]
+                stk = int(dt["strike"] or 0)
+                sd = dt["side"]
+                sig = f"{sym}:{ot}:{stk}:{sd}"
+                if sig not in active_kite_sigs:
+                    log.info("Auto-closing reconciled DIRECT_KITE trade ID %s (%s) no longer active on Kite", dt["id"], sig)
+                    conn.execute("UPDATE live_trades SET status='CLOSED', closed_at=?, reason='Closed on Kite' WHERE id=?", (now_iso, dt["id"]))
+
         for p in net_positions:
             net_qty = p.get("quantity", 0)
             if net_qty == 0:
@@ -2067,9 +2142,14 @@ def sync_direct_kite_positions() -> None:
                         if underlying_price > 0:
                             live_resolved = True
                 except Exception as ltp_err:
-                    log.warning(
-                        "Failed to fetch live LTP for index %s: %s", symbol_key, ltp_err
-                    )
+                    if "Insufficient permission" in str(ltp_err):
+                        log.info(
+                            "Kite market data permission missing for %s (using stored underlying price fallback)", symbol_key
+                        )
+                    else:
+                        log.warning(
+                            "Failed to fetch live LTP for index %s: %s", symbol_key, ltp_err
+                        )
 
             if not live_resolved:
                 from src.models.schema import get_previous_underlying
