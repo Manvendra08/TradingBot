@@ -768,6 +768,11 @@
 - **Issue**: `place_kite_gtt()` was passing unrounded stoploss trigger prices (e.g., `13.08`) directly to Zerodha's GTT endpoint, which rejected the placement with `Kite GTT placement failed: Stoploss trigger price should be a multiple of tick size 0.05`.
 - **Fix**: Enforced automatic tick-size rounding (`_round_tick` to multiples of `tick_size = 0.05`) for all `trigger_values`, `limit_prices`, and `last_price` inside `place_kite_gtt()` in [live_trading.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/live_trading.py#L727).
 
+### F126: IP Monitor Hardening & IPv4 Regex Extraction (P1-HIGH)
+- **Issue**: ISP public IPv4 changes were missed because `ip-api.com` returned key `"query"` instead of `"ip"` (and returned 403 Forbidden), while `api.myip.com` returned IPv6 on dual-stack ISP connections. When all fallback providers failed or returned IPv6, `_fetch_public_ip()` returned `None`, skipping the IP change check.
+- **Fix**: Hardened [ip_monitor.py](file:///c:/Users/manve/Downloads/NSEBOT/src/utils/ip_monitor.py) with explicit IPv4 endpoints (`api4.ipify.org`, `ipv4.icanhazip.com`, `ipinfo.io`), regex IPv4 scanning (`_IPV4_REGEX`), multi-key extraction (`ip`, `query`), and public IPv4 validation (`_is_valid_public_ipv4`). Added unit tests in [test_ip_monitor.py](file:///c:/Users/manve/Downloads/NSEBOT/tests/test_ip_monitor.py).
+
+
 ### F123: Timeframe Strategy Executed Trade Digest Alert Fix (P0-CRITICAL)
 - **Issue**: When a Timeframe strategy trade triggered (e.g. `LIVE TF Order`), `_build_structured_payload()` in [pipeline.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/pipeline.py#L386) only checked for `TRIGGERED_CORE` and `TRIGGERED_EXPERIMENTAL` statuses. It omitted `TRIGGERED_TIMEFRAME` and `timeframe_res.get("action") == "EXECUTED"`. Consequently, the digest header rendered `📊 NATURALGAS · 19:00 IST X Not entered` and the Timeframe section defaulted to `Status: No active signal (3H breakout pending)`.
 - **Fix**: Updated `_build_structured_payload()` in [pipeline.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/pipeline.py#L386) to set `trade_entered = True` when `TRIGGERED_TIMEFRAME` or `timeframe_res.get("action") == "EXECUTED"`, mapped `timeframe_res["action"] = "ENTER"`, and populated `signal`, `direction`, and `contract` from `timeframe_res["trade"]`.
