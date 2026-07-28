@@ -974,6 +974,11 @@ def _register_provider_failure(
         if env_key:
             _PROVIDER_COOLDOWN_UNTIL[env_key] = now + retry
         log.info("[llm] %s rate-limited — cooldown %.0fs", provider.get("name"), retry)
+        return
+
+    # Generic server error (500), empty response, or connection timeout — 10m cooldown
+    _PROVIDER_COOLDOWN_UNTIL[key] = now + 600.0
+    log.info("[llm] %s failed (status=%d, err=%.50s) — 10m cooldown", provider.get("name"), status_code, body_l)
 
 
 def _max_tokens_for_purpose(purpose: str) -> int:
@@ -1366,21 +1371,21 @@ def _call_llm_api(
                     "env_key": "OPENCODE_API_KEY",
                     "url": "https://opencode.ai/zen/v1/chat/completions",
                     "model": "mimo-v2.5-free",
-                    "timeout": 35,
+                    "timeout": 12,
                 },
                 {
                     "name": "OpenCode Zen (DeepSeek V4 Flash Free)",
                     "env_key": "OPENCODE_API_KEY",
                     "url": "https://opencode.ai/zen/v1/chat/completions",
                     "model": "deepseek-v4-flash-free",
-                    "timeout": 25,
+                    "timeout": 12,
                 },
                 {
                     "name": "OpenCode Zen (Nemotron 3 Ultra Free)",
                     "env_key": "OPENCODE_API_KEY",
                     "url": "https://opencode.ai/zen/v1/chat/completions",
                     "model": "nemotron-3-ultra-free",
-                    "timeout": 35,
+                    "timeout": 12,
                 },
             ],
         }
@@ -1574,12 +1579,56 @@ def _call_llm_api(
             ],
         }
 
+        # ── AnyAPI free group (MCX PRIMARY — unified free-tier endpoint) ──
+        _anyapi_free_group = {
+            "model_group": "anyapi-free-mcx",
+            "providers": [
+                {
+                    "name": "AnyAPI (Nemotron 3 Ultra 550B Free)",
+                    "env_key": "ANY_API_KEY",
+                    "url": "https://api.anyapi.ai/v1/chat/completions",
+                    "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+                    "timeout": 45,
+                },
+                {
+                    "name": "AnyAPI (Gemma 4 26B Free)",
+                    "env_key": "ANY_API_KEY",
+                    "url": "https://api.anyapi.ai/v1/chat/completions",
+                    "model": "google/gemma-4-26b-a4b-it:free",
+                    "timeout": 45,
+                },
+                {
+                    "name": "AnyAPI (Nemotron 3 Nano 30B Free)",
+                    "env_key": "ANY_API_KEY",
+                    "url": "https://api.anyapi.ai/v1/chat/completions",
+                    "model": "nvidia/nemotron-3-nano-30b-a3b:free",
+                    "timeout": 45,
+                },
+                {
+                    "name": "AnyAPI (Laguna M.1 Free)",
+                    "env_key": "ANY_API_KEY",
+                    "url": "https://api.anyapi.ai/v1/chat/completions",
+                    "model": "poolside/laguna-m.1:free",
+                    "timeout": 50,
+                },
+                {
+                    "name": "AnyAPI (Nemotron Nano 12B VL Free)",
+                    "env_key": "ANY_API_KEY",
+                    "url": "https://api.anyapi.ai/v1/chat/completions",
+                    "model": "nvidia/nemotron-nano-12b-v2-vl:free",
+                    "timeout": 45,
+                },
+            ],
+        }
+
         if _is_mcx:
-            # MCX: Bedrock Mantle (primary) → GitHub Models → Groq → Nvidia NIM → Bedrock → OpenRouter → Gemini → SambaNova → Opencode Zen (fallback)
+            # MCX: GitHub Models (primary) → Groq → OpenCode Zen → AnyAPI Free → Bedrock Mantle → Nvidia NIM → Bedrock → OpenRouter → Gemini → SambaNova
             FREE_MODEL_PIPELINE = [
-                _bedrock_mantle_group,
                 _github_models,
                 _groq_group,
+                _opencode_zen_group,
+                _anyapi_free_group,
+                _bedrock_mantle_group,
                 _nvidia_nim_group,
                 _bedrock_group,
                 {
@@ -1619,15 +1668,13 @@ def _call_llm_api(
                         },
                     ],
                 },
-                _opencode_zen_group,
             ]
         else:
-            # NSE/BSE indices: Opencode Zen (primary) → Bedrock Mantle → GitHub Models → Groq → Nvidia NIM → Bedrock → OpenRouter → Gemini
+            # NSE/BSE indices: OpenCode Zen (primary) → Groq → GitHub Models → Nvidia NIM → Bedrock → OpenRouter → Gemini
             FREE_MODEL_PIPELINE = [
                 _opencode_zen_group,
-                _bedrock_mantle_group,
-                _github_models,
                 _groq_group,
+                _github_models,
                 _nvidia_nim_group,
                 _bedrock_group,
                 _openrouter_group,
@@ -2070,6 +2117,7 @@ def _call_llm_api(
                         resp.status_code,
                         resp.text[:200],
                     )
+                    _register_provider_failure(provider, resp.status_code, resp.text, now)
             except Exception as ex:
                 log.info(
                     "[llm] %s (%s) exception: %s",
@@ -2077,6 +2125,7 @@ def _call_llm_api(
                     provider["model"],
                     str(ex)[:200],
                 )
+                _register_provider_failure(provider, 500, str(ex), now)
 
     # Track consecutive failures and activate circuit breaker
     _CONSECUTIVE_FAILURES += 1

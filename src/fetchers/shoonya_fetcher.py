@@ -425,8 +425,23 @@ class ShoonyaFetcher(BaseFetcher):
                     raise page_exc
                 finally:
                     final_url = page.url
-                    log.debug("[shoonya] Post-login URL: %s", final_url)
+                    body_text = ""
+                    try:
+                        body_text = page.locator("body").inner_text()
+                    except Exception:
+                        pass
                     browser.close()
+
+                    if "blocked" in body_text.lower() or "unsuccessful login attempts" in body_text.lower():
+                        log.error(
+                            "[shoonya] ACCOUNT BLOCKED: Shoonya user '%s' is blocked by broker due to unsuccessful login attempts. Unblock via PAN + DOB on Shoonya portal: https://api.shoonya.com/OAuthlogin/investor-entry-level/login?api_key=%s",
+                            self.user_id,
+                            self.vendor_code,
+                        )
+                        self._login_failed_until = time.time() + 900
+                        return None
+
+                    log.debug("[shoonya] Post-login URL: %s", final_url)
 
                 # Extract auth_code from URL candidates (both final URL and any intermediate requests)
                 for candidate in [final_url] + captured_urls:
@@ -1141,46 +1156,13 @@ class ShoonyaFetcher(BaseFetcher):
                     if val.get("instname") == instname:
                         futures.append(val)
 
+            underlying_token = underlying_tsym = None
             if futures:
                 target_item = futures[0]
-                # If nearest expires today (e.g. 25JUN26), select next one if available
                 if len(futures) > 1 and "25JUN26" in target_item.get("tsym", ""):
                     target_item = futures[1]
                 underlying_token = target_item.get("token")
                 underlying_tsym = target_item.get("tsym")
-
-            if not underlying_token:
-                log.warning("[shoonya] underlying not resolved for %s", base)
-                return None
-
-            quote = self._get_quotes(exch, underlying_token)
-            if not quote or quote.get("stat") != "Ok":
-                log.warning(
-                    "[shoonya] failed quotes for underlying %s", underlying_tsym
-                )
-                return None
-
-            underlying_price = 0.0
-            # Try last traded price ('lp') first, then fall back to close price ('c')
-            for key in ("lp", "c"):
-                try:
-                    val = quote.get(key)
-                    if val is not None:
-                        underlying_price = float(val)
-                        if underlying_price > 0.0:
-                            if key == "c":
-                                log.warning(
-                                    "[shoonya] LTP (lp) is 0/unavailable for %s, falling back to close price (c): %s",
-                                    underlying_tsym,
-                                    underlying_price,
-                                )
-                            break
-                except (ValueError, TypeError):
-                    pass
-
-            if underlying_price == 0.0:
-                log.warning("[shoonya] underlying price is 0 for %s", underlying_tsym)
-                return None
 
             # Handle Non-index (MCX Commodities) using local symbol file fallback
             if not is_index:
@@ -1254,6 +1236,60 @@ class ShoonyaFetcher(BaseFetcher):
                     target_expiry_iso = datetime.strptime(
                         target_expiry_shoonya, "%d-%b-%Y"
                     ).strftime("%Y-%m-%d")
+
+                # Match futures contract to target option expiry month/year (e.g. 26AUG for 2026-08-24)
+                if futures:
+                    target_item = futures[0]
+                    if target_expiry_iso:
+                        try:
+                            dt_exp = datetime.strptime(target_expiry_iso, "%Y-%m-%d")
+                            exp_key = f"{dt_exp.strftime('%y')}{dt_exp.strftime('%b').upper()}"  # e.g. "26AUG"
+                            exp_month = dt_exp.strftime('%b').upper()  # e.g. "AUG"
+                            matched = None
+                            for item in futures:
+                                tsym_u = item.get("tsym", "").upper()
+                                if exp_key in tsym_u:
+                                    matched = item
+                                    break
+                            if not matched:
+                                for item in futures:
+                                    tsym_u = item.get("tsym", "").upper()
+                                    if exp_month in tsym_u:
+                                        matched = item
+                                        break
+                            if matched:
+                                target_item = matched
+                        except Exception as e_mat:
+                            log.warning("[shoonya] failed to match futures contract for %s: %s", target_expiry_iso, e_mat)
+
+                    underlying_token = target_item.get("token")
+                    underlying_tsym = target_item.get("tsym")
+
+                if not underlying_token:
+                    log.warning("[shoonya] underlying not resolved for %s", base)
+                    return None
+
+                quote = self._get_quotes(exch, underlying_token)
+                if not quote or quote.get("stat") != "Ok":
+                    log.warning(
+                        "[shoonya] failed quotes for underlying %s", underlying_tsym
+                    )
+                    return None
+
+                underlying_price = 0.0
+                for key in ("lp", "c"):
+                    try:
+                        val = quote.get(key)
+                        if val is not None:
+                            underlying_price = float(val)
+                            if underlying_price > 0.0:
+                                break
+                    except (ValueError, TypeError):
+                        pass
+
+                if underlying_price == 0.0:
+                    log.warning("[shoonya] underlying price is 0 for %s", underlying_tsym)
+                    return None
 
                 expiry_options = [
                     row for row in all_options if row["Expiry"] == target_expiry_shoonya
@@ -1368,7 +1404,157 @@ class ShoonyaFetcher(BaseFetcher):
                     log.warning("[shoonya] No quotes fetched for %s options", base)
                     return None
 
+                return {
+                    "symbol": base,
+                    "underlying_price": underlying_price,
+                    "expiry": target_expiry_iso,
+                    "strikes": strikes,
+                    "source": self.name,
+                    "all_expiries": [
+                        datetime.strptime(e, "%d-%b-%Y").strftime("%Y-%m-%d")
+                        for e in expiries
+                    ],
+                }
 
+            # Handle standard NSE/BSE indices using GetOptionChain
+            if not underlying_token:
+                log.warning("[shoonya] underlying not resolved for %s", base)
+                return None
+
+            quote = self._get_quotes(exch, underlying_token)
+            if not quote or quote.get("stat") != "Ok":
+                log.warning(
+                    "[shoonya] failed quotes for underlying %s", underlying_tsym
+                )
+                return None
+
+            underlying_price = 0.0
+            for key in ("lp", "c"):
+                try:
+                    val = quote.get(key)
+                    if val is not None:
+                        underlying_price = float(val)
+                        if underlying_price > 0.0:
+                            break
+                except (ValueError, TypeError):
+                    pass
+
+            if underlying_price == 0.0:
+                log.warning("[shoonya] underlying price is 0 for %s", underlying_tsym)
+                return None
+
+                expiry_options = [
+                    row for row in all_options if row["Expiry"] == target_expiry_shoonya
+                ]
+                if not expiry_options:
+                    log.warning(
+                        "[shoonya] No contracts found for expiry %s",
+                        target_expiry_shoonya,
+                    )
+                    return None
+
+                for row in expiry_options:
+                    try:
+                        row["strike_val"] = float(row["StrikePrice"])
+                    except (ValueError, TypeError):
+                        row["strike_val"] = 0.0
+
+                expiry_options = [
+                    row for row in expiry_options if row["strike_val"] > 0
+                ]
+                if not expiry_options:
+                    log.warning(
+                        "[shoonya] No valid strikes parsed for %s options", base
+                    )
+                    return None
+
+                unique_strikes = sorted(
+                    list(set(row["strike_val"] for row in expiry_options))
+                )
+                atm_strike = min(
+                    unique_strikes, key=lambda s: abs(s - underlying_price)
+                )
+                atm_idx = unique_strikes.index(atm_strike)
+
+                start_idx = max(0, atm_idx - STRIKES_AROUND_ATM)
+                end_idx = min(len(unique_strikes), atm_idx + STRIKES_AROUND_ATM + 1)
+                selected_strikes = set(unique_strikes[start_idx:end_idx])
+
+                contracts_to_fetch = [
+                    row
+                    for row in expiry_options
+                    if row["strike_val"] in selected_strikes
+                ]
+
+                import time
+                from concurrent.futures import ThreadPoolExecutor
+
+                quotes = {}
+
+                def fetch_quote(row):
+                    token = row["Token"]
+                    q = self._get_quotes(exch, token)
+                    if q and q.get("stat") == "Ok":
+                        return token, q
+                    return token, None
+
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    futures = []
+                    for row in contracts_to_fetch:
+                        futures.append(executor.submit(fetch_quote, row))
+                        time.sleep(
+                            0.12
+                        )  # Pace to stay strictly under the 10/sec rate limit
+
+                    for fut in futures:
+                        try:
+                            token, q = fut.result()
+                            if q:
+                                quotes[token] = q
+                        except Exception:
+                            pass
+
+                strikes = []
+                for row in contracts_to_fetch:
+                    token = row["Token"]
+                    q = quotes.get(token)
+                    if not q:
+                        continue
+
+                    ot = row["OptionType"]
+                    if ot not in ("CE", "PE"):
+                        continue
+
+                    def _f(key: str, _q: dict = q) -> float:
+                        try:
+                            return float(_q.get(key) or 0.0)
+                        except (ValueError, TypeError):
+                            return 0.0
+
+                    def _i(key: str, _q: dict = q) -> int:
+                        try:
+                            return int(_q.get(key) or 0)
+                        except (ValueError, TypeError):
+                            return 0
+
+                    strikes.append(
+                        {
+                            "strike": row["strike_val"],
+                            "option_type": ot,
+                            "ltp": _f("lp"),
+                            "oi": _i("oi"),
+                            "oi_change": _i("oichg"),
+                            "volume": _i("v"),
+                            "iv": _f("iv"),
+                            "bid": _f("bp1"),
+                            "ask": _f("sp1"),
+                            "token": row.get("token"),
+                        }
+                    )
+
+                if not strikes:
+                    log.warning("[shoonya] No quotes fetched for %s options", base)
+                    return None
 
                 return {
                     "symbol": base,
@@ -1468,12 +1654,12 @@ class ShoonyaFetcher(BaseFetcher):
                             item["expiry_parsed"] = exp_str
                             try:
                                 exp_month = datetime.strptime(exp_str[2:], "%b").month
-                                year = now.year
-                                # Infer year: if month is Dec and current is Jan, use prev year
-                                # If month is Jan and current is Dec, use next year
-                                if exp_month < now.month - 2:
-                                    year += 1
-                                dt = datetime(year, exp_month, int(exp_str[:2]))
+                                year = 2000 + int(exp_str[:2])
+                                import calendar
+                                last_day = calendar.monthrange(year, exp_month)[1]
+                                dt = datetime(year, exp_month, last_day)
+                                while dt.weekday() != 3:  # 3 is Thursday (monthly option expiry)
+                                    dt -= timedelta(days=1)
                                 expiry_dates[exp_str] = dt.strftime("%Y-%m-%d")
                             except ValueError:
                                 pass

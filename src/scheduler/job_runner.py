@@ -1464,7 +1464,7 @@ def start_scheduler(immediate: bool = False):
                     if not data_available:
                         attempts = _scan_attempts.get((class_key, current_interval_idx), 0)
                         last_attempt = _last_scan_attempt_time.get(class_key, 0.0)
-                        if attempts < 3 and (time.time() - last_attempt >= 60.0):
+                        if attempts < 3 and (time.time() - last_attempt >= (interval_min * 60.0)):
                             should_scan = True
                             _scan_attempts[(class_key, current_interval_idx)] = attempts + 1
                             _last_scan_attempt_time[class_key] = time.time()

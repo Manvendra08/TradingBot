@@ -384,8 +384,10 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
     ts = dt.astimezone(IST).strftime("%H:%M IST")
     
     tf_entered = timeframe_res and isinstance(timeframe_res, dict) and timeframe_res.get("action") == "EXECUTED"
-    trade_entered = td.get("status") in ("TRIGGERED_CORE", "TRIGGERED_EXPERIMENTAL", "TRIGGERED_TIMEFRAME") or tf_entered
+    paper_res = (intel or {}).get("paper_res") if isinstance(intel, dict) else None
+    paper_opened = isinstance(paper_res, dict) and paper_res.get("action") in ("OPENED", "EXECUTED")
     actual_lots = 1
+    db_entered = False
     if digest_id:
         from src.models.schema import get_conn
         try:
@@ -393,19 +395,17 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
                 # Check paper trades
                 row = conn.execute("SELECT lots FROM paper_trades WHERE digest_id=?", (digest_id,)).fetchone()
                 if row:
-                    trade_entered = True
+                    db_entered = True
                     actual_lots = row[0]
                 else:
                     # Check live trades
                     row_live = conn.execute("SELECT lots FROM live_trades WHERE digest_id=?", (digest_id,)).fetchone()
                     if row_live:
-                        trade_entered = True
-                    else:
-                        trade_entered = False
+                        db_entered = True
         except Exception as e:
             log.debug("Error checking actual trade for digest_id %s: %s", digest_id, e)
     
-    trade_entered = bool((intel or {}).get("trade_entered")) or trade_entered or tf_entered
+    trade_entered = db_entered or tf_entered or paper_opened or bool((intel or {}).get("trade_entered"))
     
     from config.settings import DEFAULT_LOTS_PER_TRADE
     base_lots = DEFAULT_LOTS_PER_TRADE
@@ -436,11 +436,18 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
 
     is_timeframe = td.get("execution_source") == "TIMEFRAME"
     
+    blocker_reason = None
+    if not trade_entered:
+        if isinstance(paper_res, dict) and paper_res.get("reason"):
+            blocker_reason = paper_res.get("reason")
+        elif td.get("reason"):
+            blocker_reason = td.get("reason")
+
     # TFSS vs TIMEFRAME routing
     tfss = {
         "core_origin_verdict": td.get("core_verdict_family", "N/A"),
         "tfss_bias": td.get("normalized_tfss_bias", "N/A"),
-        "action": td.get("action", "BLOCK"),
+        "action": td.get("action", "BLOCK") if trade_entered else "BLOCK",
         "execution_side": td.get("option_side", "N/A"),
         "trade_entered": trade_entered,
         "contract": f"{symbol} {td.get('strike')} {td.get('option_side')}" if td.get("strike") else None,
@@ -450,9 +457,9 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
         "tranche_index": td.get("tranche_index"),
         "exit_reduce": "N/A",
         "existing_position": "N/A",
-        "primary_reason": td.get("reason", "N/A"),
+        "primary_reason": blocker_reason if not trade_entered else td.get("reason", "N/A"),
         "why": [],
-        "blockers": [td.get("reason")] if td.get("status") == "BLOCKED" and not is_timeframe else [],
+        "blockers": [blocker_reason] if (blocker_reason and not is_timeframe) else [],
         "primary_trigger": "None",
         "also_eligible_triggers": td.get("also_eligible_triggers", [])
     }
@@ -798,6 +805,9 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                 except Exception:
                     log.exception("%s: AI enrichment failed gracefully", symbol)
 
+    import uuid
+    scan_digest_id = str(uuid.uuid4())[:8]
+
     with serialized_commit_gate.section(f"commit:{symbol}"):
         timeframe_res = None
         if not is_test:
@@ -810,20 +820,23 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                     runner = get_runner(sid)
                     if runner is None:
                         continue
-                    res = runner(symbol, scan_context, None, intel, ai_verdict=llm_verdict)
+                    res = runner(symbol, scan_context, scan_digest_id, intel, ai_verdict=llm_verdict)
                     if sid == "TIMEFRAME":
                         timeframe_res = res
+                    else:
+                        if isinstance(intel, dict):
+                            intel["paper_res"] = res
                     
                     if sid in ("CORE", "NG_MOMENTUM", "NG_PARITY", "NG_EVENT"):
                         try:
                             from src.engine.live_trading import run_live_trading
-                            run_live_trading(symbol, scan_context, None, intel, ai_verdict=llm_verdict)
+                            run_live_trading(symbol, scan_context, scan_digest_id, intel, ai_verdict=llm_verdict)
                         except Exception as le:
                             log.exception("%s: live/shadow trading execution failed for %s", symbol, sid)
                     elif sid == "TIMEFRAME":
                         try:
                             from src.engine.live_trading import run_live_timeframe_strategy
-                            run_live_timeframe_strategy(symbol, scan_context, None, intel, ai_verdict=llm_verdict)
+                            run_live_timeframe_strategy(symbol, scan_context, scan_digest_id, intel, ai_verdict=llm_verdict)
                         except Exception as le:
                             log.exception("%s: live/shadow timeframe strategy execution failed", symbol)
             except Exception:
@@ -834,7 +847,7 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
         structured_payload = _build_structured_payload(
             symbol, fetched_at, scan_context, intel, llm_verdict,
             news_data=news_data, open_trade=open_trade, exit_advice=exit_advice,
-            timeframe_res=timeframe_res,
+            digest_id=scan_digest_id, timeframe_res=timeframe_res,
         )
 
         digest_id, digest_msg = build_digest(
@@ -848,6 +861,7 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
             llm_verdict=llm_verdict,
             exit_advice=exit_advice,
             structured_payload=structured_payload,
+            digest_id=scan_digest_id,
         )
 
         if intel:

@@ -210,8 +210,10 @@ def refresh_index_weights(force: bool = False) -> dict:
         mcaps = {}
         for ticker in query_tickers:
             try:
-                info = tickers_data.tickers[ticker].info
-                mcap = info.get("marketCap")
+                t_obj = tickers_data.tickers[ticker]
+                mcap = getattr(getattr(t_obj, "fast_info", None), "market_cap", None)
+                if not mcap:
+                    mcap = t_obj.info.get("marketCap")
                 if mcap:
                     mcaps[ticker] = float(mcap)
             except Exception as e:

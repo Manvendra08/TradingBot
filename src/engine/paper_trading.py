@@ -972,6 +972,12 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
     if open_trade:
         actions.extend(_monitor_single_paper_trade(symbol, open_trade, current_ctx, underlying))
 
+    # ── TIMEFRAME Trade Monitoring ───────────────────────────────────────────
+    from src.models.schema import get_open_timeframe_trades
+    tf_trades = get_open_timeframe_trades(symbol, table="paper_trades")
+    for tf_trade in tf_trades:
+        actions.extend(_monitor_single_paper_trade(symbol, tf_trade, current_ctx, underlying))
+
     # ── TFSS Multi-Leg Book Monitoring ───────────────────────────────────────
     from src.models.schema import get_open_tfss_legs
     tfss_legs = get_open_tfss_legs(symbol)
@@ -1699,15 +1705,15 @@ def run_timeframe_strategy(
     is_mcx_commodity = "NATURALGAS" in symbol or "CRUDEOIL" in symbol
     use_mcx_options = is_mcx_commodity and mcx_option_liquidity_ok(symbol, atm, ctx)
 
+    from src.engine.trade_plan import get_atr
+    atr_val = get_atr(ctx) or (underlying * 0.005)
+    min_dist = max(1.5 * atr_val, underlying * 0.005)
+
     if direction == "LONG":
         if is_mcx_commodity and not use_mcx_options:
             opt_type = "FUT"
             strike = atm
             entry_premium = underlying
-            sl_underlying = float(ohlc_3h["low"])
-            if underlying - sl_underlying < underlying * 0.003:
-                sl_underlying = underlying - underlying * 0.003
-            tgt_underlying = underlying + 2 * (underlying - sl_underlying)
         else:
             opt_type = "CE"
             strike = atm if is_mcx_commodity else (atm - 4 * step)
@@ -1727,17 +1733,17 @@ def run_timeframe_strategy(
                     "action": "BLOCKED_PLAN",
                     "reason": f"Timeframe entry skipped: option premium unavailable for CE strike {strike}",
                 }
-            sl_underlying = float(ohlc_3h["low"])
-            tgt_underlying = underlying + 2 * (underlying - sl_underlying)
+        raw_sl = float(ohlc_3h.get("low") or (underlying - min_dist))
+        if (underlying - raw_sl) < min_dist:
+            sl_underlying = underlying - min_dist
+        else:
+            sl_underlying = raw_sl
+        tgt_underlying = underlying + 2 * (underlying - sl_underlying)
     else:  # SHORT
         if is_mcx_commodity and not use_mcx_options:
             opt_type = "FUT"
             strike = atm
             entry_premium = underlying
-            sl_underlying = float(ohlc_3h["high"])
-            if sl_underlying - underlying < underlying * 0.003:
-                sl_underlying = underlying + underlying * 0.003
-            tgt_underlying = underlying - 2 * (sl_underlying - underlying)
         else:
             opt_type = "PE"
             strike = atm if is_mcx_commodity else (atm + 4 * step)
@@ -1757,21 +1763,20 @@ def run_timeframe_strategy(
                     "action": "BLOCKED_PLAN",
                     "reason": f"Timeframe entry skipped: option premium unavailable for PE strike {strike}",
                 }
-            sl_underlying = float(ohlc_3h["high"])
-            tgt_underlying = underlying - 2 * (sl_underlying - underlying)
+        sl_underlying = underlying - (3.0 * atr_val) if direction == "LONG" else underlying + (3.0 * atr_val)
+        tgt_underlying = None
 
-    # Convert underlying SL/Target to premium equivalents (unified via trade_plan.py)
+    # TIMEFRAME Strategy Role Separation (AGENTS.md):
+    # Exits are driven by 1H candle breakdown/breakout triggers (TF-1H-Cross).
+    # Static profit targets are set to None (unlimited upside run).
+    # SL is set as an Emergency Safety Floor (50% max option value loss / 3x ATR underlying).
     side = "BUY" if direction == "LONG" else ("SELL" if opt_type == "FUT" else "BUY")
-    sl_premium, target_premium = convert_underlying_sl_to_premium(
-        underlying,
-        sl_underlying,
-        tgt_underlying,
-        entry_premium,
-        side,
-        opt_type,
-        strike,
-        ctx.get("option_rows"),
-    )
+    if opt_type in ("CE", "PE"):
+        sl_premium = round(entry_premium * 0.50, 2)
+        target_premium = None
+    else:
+        sl_premium = sl_underlying
+        target_premium = None
 
     reason_str = (
         f"timeframe entry | 3H close {c_3h_close:.2f} > p3H_high {p_3h_high:.2f} | level {pyramid_level}"

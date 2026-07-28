@@ -152,7 +152,7 @@ DHAN_SECURITY_IDS = {
     # filter SEM_SMST_SECURITY_ID where SEM_TRADING_SYMBOL matches the near-month
     # continuous contract (e.g. NATURALGAS25JULFUT), and replace the values below.
     # Resolved via src/utils/dhan_resolver.py on 2026-07-15 (live near-month contracts):
-    "NATURALGAS": 538685,  # NATURALGAS 28JUL2026 FUT  <-- update on rollover
+    "NATURALGAS": 561496,  # NATURALGAS 26AUG2026 FUT  <-- updated on rollover to Aug 2026 contract
     "CRUDEOIL": 520702,  # CRUDEOIL  20JUL2026 FUT  <-- update on rollover
     "GOLD": 466583,  # GOLD      05AUG2026 FUT  <-- update on rollover
     "SILVER": 471725,  # SILVER    04SEP2026 FUT  <-- update on rollover

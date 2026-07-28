@@ -1612,14 +1612,23 @@ def update_live_trade_entry(
 ) -> None:
     updates: list[str] = []
     params: list = []
+    def _clean_val(v):
+        if v is None:
+            return None
+        if isinstance(v, dict):
+            return str(v.get("trigger_id") or v.get("id") or v.get("order_id") or v)
+        if isinstance(v, list):
+            return ", ".join(map(str, v))
+        return v
+
     for column, value in (
-        ("broker_order_id", broker_order_id),
-        ("gtt_order_id", gtt_order_id),
-        ("broker_status", broker_status),
-        ("broker_message", broker_message),
-        ("exit_mode", exit_mode),
-        ("status", status),
-        ("reason", reason),
+        ("broker_order_id", _clean_val(broker_order_id)),
+        ("gtt_order_id", _clean_val(gtt_order_id)),
+        ("broker_status", _clean_val(broker_status)),
+        ("broker_message", _clean_val(broker_message)),
+        ("exit_mode", _clean_val(exit_mode)),
+        ("status", _clean_val(status)),
+        ("reason", _clean_val(reason)),
     ):
         if value is not None:
             updates.append(f"{column}=?")

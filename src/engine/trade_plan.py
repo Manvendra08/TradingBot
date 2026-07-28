@@ -573,10 +573,30 @@ def select_candidate(side: str, persisted_label: str, dte: int, atr_state: dict,
             continue
             
         try:
-            # Assume option chain provides delta (or implied delta via strike distance calculation in reality, 
-            # but we assume the chain has it or we filter by something else if not available.
-            # Usually 'delta' is part of Greeks.
-            delta = abs(float(row.get('delta', 0)))
+            raw_d = row.get('delta')
+            if raw_d is not None and float(raw_d) > 0:
+                delta = abs(float(raw_d))
+            else:
+                # Estimate implied delta based on OTM distance if delta is missing
+                strike_val = float(row.get('strike', 0))
+                und_val = float(atr_state.get('underlying') or row.get('underlying') or 0)
+                if strike_val > 0 and und_val > 0:
+                    otm_pct = abs(strike_val - und_val) / und_val * 100
+                    if otm_pct < 0.3:
+                        delta = 0.45
+                    elif otm_pct < 0.7:
+                        delta = 0.30
+                    elif otm_pct < 1.2:
+                        delta = 0.18
+                    elif otm_pct < 1.8:
+                        delta = 0.10
+                    elif otm_pct < 2.5:
+                        delta = 0.05
+                    else:
+                        delta = 0.02
+                else:
+                    delta = 0.0
+
             premium_raw = row.get('ltp') or row.get('premium') or row.get('close')
             if premium_raw is None:
                 continue

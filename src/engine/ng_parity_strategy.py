@@ -102,15 +102,16 @@ def run_ng_parity_strategy(
     stop_distance_points = abs(dev_pct * PARITY_DEV_STOP_MULT / 100.0 * underlying)
     
     # Link lots to number defined in Setting cockpit (runtime_config.json)
-    try:
-        saved_lots = config.get("paper_symbol_lots") or {}
-        if "NATURALGAS" in saved_lots:
-            lots = max(1, int(saved_lots["NATURALGAS"]))
-        else:
-            lots = calculate_ng_lot_size(capital, stop_distance_points)
-    except Exception as e:
-        log.warning("Failed to load cockpit lots for NATURALGAS parity trade: %s", e)
-        lots = calculate_ng_lot_size(capital, stop_distance_points)
+    from src.engine.capital_allocator import calculate_trade_lots
+    is_broker_mode = not bool(config.get("live_broker_disabled", False))
+    lots = calculate_trade_lots(
+        "NATURALGAS",
+        underlying,
+        side=side,
+        is_paper=not is_broker_mode,
+        setup_type="NG_PARITY",
+        option_type="FUT",
+    )
 
     sl_underlying = underlying + stop_distance_points if side == "SELL" else underlying - stop_distance_points
     # Target is parity (deviation = 0)
@@ -122,7 +123,7 @@ def run_ng_parity_strategy(
     trade_data = {
         "opened_at": opened_at,
         "symbol": "NATURALGAS",
-        "expiry": scan_context.get("futures_expiry"),
+        "expiry": scan_context.get("futures_expiry") or scan_context.get("expiry"),
         "verdict_label": verdict,
         "side": side,
         "option_type": "FUT",
@@ -174,9 +175,10 @@ def check_ng_parity_exits_every_2_min() -> None:
     if not open_trade or open_trade.get("setup_type") != "NG_PARITY":
         return
 
-    # Fetch real-time underlying price
+    # Fetch real-time underlying price for the same contract expiry as open trade
     from src.fetchers.router import fetch_option_chain
-    oc = fetch_option_chain("NATURALGAS")
+    trade_expiry = open_trade.get("expiry")
+    oc = fetch_option_chain("NATURALGAS", expiry=trade_expiry)
     if not oc:
         log.warning("NG Parity exits check: Failed to fetch underlying price for NATURALGAS")
         return

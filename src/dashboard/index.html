@@ -1242,7 +1242,7 @@
             async function loadRuntime() {
                 const rt = await api("/api/runtime");
                 const options = rt.scan_frequency_options || [
-                    5, 15, 30, 60, 180, 1440,
+                    5, 10, 15, 30, 60, 180, 1440,
                 ];
 
                 const selNse = document.getElementById("scan-freq-nse");

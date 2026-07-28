@@ -68,7 +68,8 @@ def check_ng_weekend_flat() -> None:
         if open_trade:
             log.info("Friday Weekend Flat rule: Force closing open NATURALGAS trade #%s", open_trade["id"])
             from src.fetchers.router import fetch_option_chain
-            oc = fetch_option_chain("NATURALGAS")
+            trade_expiry = open_trade.get("expiry")
+            oc = fetch_option_chain("NATURALGAS", expiry=trade_expiry)
             underlying = oc.get("underlying_price") if oc else open_trade["entry_underlying"]
             
             close_paper_trade(

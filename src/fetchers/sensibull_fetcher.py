@@ -119,12 +119,14 @@ class SensibullFetcher(BaseFetcher):
             log.warning("[sensibull] no expiry data for %s", sym)
             return None
 
-        # Pick target expiry: user-provided or nearest (chronologically)
+        # Pick target expiry: user-provided or nearest (chronologically, excluding past dates)
         all_expiries = sorted(per_expiry.keys())
         if expiry:
             target_expiry = expiry
         else:
-            target_expiry = all_expiries[0]
+            today = datetime.now(IST).date().isoformat()
+            future = [e for e in all_expiries if e >= today]
+            target_expiry = future[0] if future else all_expiries[0]
 
         exp_data = per_expiry_data = per_expiry.get(target_expiry)
         if not exp_data:

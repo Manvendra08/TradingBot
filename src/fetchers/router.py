@@ -427,54 +427,76 @@ def fetch_option_chain(symbol: str, expiry: str | None = None, required_strikes:
     remaining = list(available_priority)
     result_data = None
     result_source = None
+    best_single_data = None
+    best_single_source = None
 
-    # ── Try parallel fetch + merge for the top 2 available fetchers ──
-    if len(available_priority) >= 2:
-        primary_src = available_priority[0]
-        fallback_src = available_priority[1]
-        remaining = available_priority[2:]
-        
-        log.info("[router] %s | Dual-source parallel fetch: %s (primary) + %s (fallback)", symbol, primary_src, fallback_src)
-        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="router-dual") as ex:
-            futures = {
-                ex.submit(_try_fetcher, primary_src, symbol, expiry): primary_src,
-                ex.submit(_try_fetcher, fallback_src, symbol, expiry): fallback_src,
-            }
-            primary_data = None
-            fallback_data = None
-            for fut in _as_completed(futures):
-                src = futures[fut]
-                try:
-                    data = fut.result()
-                except Exception as exc:
-                    log.error("[router] %s | %s raised: %s", symbol, src, exc)
-                    data = None
-                if data is not None:
-                    if src == primary_src:
-                        primary_data = data
-                    else:
-                        fallback_data = data
-            
-            # Merge results: primary preferred, gaps/Greeks filled from fallback
-            if primary_data and fallback_data:
-                result_data = _merge_fetcher_results(primary_data, fallback_data, symbol)
+    from src.engine.pipeline_concurrency import pipeline_io_executor
+
+    active_futures = {}
+
+    def get_fetch_future(src: str):
+        if src not in active_futures:
+            active_futures[src] = pipeline_io_executor.submit(_try_fetcher, src, symbol, expiry)
+        return active_futures[src]
+
+    def get_fetch_data(src: str, timeout_s: float = 12.0):
+        fut = get_fetch_future(src)
+        try:
+            return fut.result(timeout=timeout_s)
+        except Exception as exc:
+            log.warning("[router] %s | %s fetch failed/timed out: %s", symbol, src, exc)
+            return None
+
+    i = 0
+    n = len(available_priority)
+
+    while i < n:
+        primary_src = available_priority[i]
+
+        if i + 1 < n:
+            fallback_src = available_priority[i + 1]
+            log.info("[router] %s | Dual-source parallel fetch: %s (primary) + %s (fallback)", symbol, primary_src, fallback_src)
+
+            p_fut = get_fetch_future(primary_src)
+            f_fut = get_fetch_future(fallback_src)
+
+            p_data = get_fetch_data(primary_src, timeout_s=12.0)
+
+            f_timeout = 0.1 if (p_data is not None and f_fut.done()) else (0.1 if p_data is not None else 12.0)
+            f_data = get_fetch_data(fallback_src, timeout_s=f_timeout)
+
+            if p_data and f_data:
+                result_data = _merge_fetcher_results(p_data, f_data, symbol)
                 result_source = f"{primary_src}+{fallback_src}"
-            elif primary_data:
-                result_data = primary_data
+                break
+            elif p_data:
+                result_data = p_data
                 result_source = primary_src
-            elif fallback_data:
-                result_data = fallback_data
-                result_source = fallback_src
+                break
+            elif f_data:
+                if best_single_data is None:
+                    best_single_data = f_data
+                    best_single_source = fallback_src
+                i += 1
+                continue
+            else:
+                i += 2
+                continue
+        else:
+            log.info("[router] %s | Single-source fetch: %s", symbol, primary_src)
+            s_data = get_fetch_data(primary_src, timeout_s=12.0)
+            if s_data:
+                result_data = s_data
+                result_source = primary_src
+                break
+            i += 1
 
-    # If dual-source succeeded, finalize and return
+    if result_data is None and best_single_data is not None:
+        result_data = best_single_data
+        result_source = best_single_source
+
     if result_data is not None:
         return _finalise_result(result_data, result_source, symbol, priority, required_strikes)
-
-    # ── Fall through to remaining sequential fetchers ──
-    for source in remaining:
-        data = _try_fetcher(source, symbol, expiry)
-        if data is not None:
-            return _finalise_result(data, source, symbol, priority, required_strikes)
 
     # All failed
     try:

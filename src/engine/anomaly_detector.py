@@ -243,36 +243,24 @@ def _key_levels(strikes_data: list[dict], underlying: float) -> dict:
     support = None
     resistance = None
 
-    if pe_rows:
-        support = max(pe_rows, key=lambda r: r.get("oi", 0))["strike"]
-    if ce_rows:
-        resistance = max(ce_rows, key=lambda r: r.get("oi", 0))["strike"]
+    # Compute top 3 CE resistance walls (CE strikes >= underlying, sorted by OI desc)
+    ce_above = [r for r in ce_rows if r.get("strike") is not None and r["strike"] >= underlying]
+    if not ce_above:
+        ce_above = ce_rows
+    ce_sorted = sorted(ce_above, key=lambda r: r.get("oi", 0), reverse=True)
+    resistance_walls = [r["strike"] for r in ce_sorted[:3] if r.get("strike") is not None]
 
-    # If they are inverted or overlap, fall back to the directional behavior (PE below spot, CE above spot)
-    if support is not None and resistance is not None and support >= resistance:
-        pe_below = [
-            r
-            for r in pe_rows
-            if r.get("strike") is not None and r["strike"] <= underlying
-        ]
-        support = (
-            max(pe_below, key=lambda r: r.get("oi", 0))
-            if pe_below
-            else max(pe_rows, key=lambda r: r.get("oi", 0))
-        )["strike"]
+    # Compute top 3 PE support walls (PE strikes <= underlying, sorted by OI desc)
+    pe_below = [r for r in pe_rows if r.get("strike") is not None and r["strike"] <= underlying]
+    if not pe_below:
+        pe_below = pe_rows
+    pe_sorted = sorted(pe_below, key=lambda r: r.get("oi", 0), reverse=True)
+    support_walls = [r["strike"] for r in pe_sorted[:3] if r.get("strike") is not None]
 
-        ce_above = [
-            r
-            for r in ce_rows
-            if r.get("strike") is not None and r["strike"] >= underlying
-        ]
-        resistance = (
-            max(ce_above, key=lambda r: r.get("oi", 0))
-            if ce_above
-            else max(ce_rows, key=lambda r: r.get("oi", 0))
-        )["strike"]
+    support = support_walls[0] if support_walls else None
+    resistance = resistance_walls[0] if resistance_walls else None
 
-    # If they still overlap or are inverted, resolve to adjacent strikes around underlying spot
+    # Fallback to adjacent strikes if inverted or overlapping
     if support is not None and resistance is not None and support >= resistance:
         all_strikes = sorted(
             {r["strike"] for r in strikes_data if r.get("strike") is not None}
@@ -287,6 +275,8 @@ def _key_levels(strikes_data: list[dict], underlying: float) -> dict:
     return {
         "support": support,
         "resistance": resistance,
+        "support_walls": support_walls,
+        "resistance_walls": resistance_walls,
         "max_pain": _compute_max_pain(strikes_data),
     }
 

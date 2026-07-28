@@ -35,35 +35,8 @@ NG_DAILY_LOSS_CAP = 5
 def check_ng_daily_loss_cap(table: str = "paper_trades") -> bool:
     """
     Returns True if the daily loss cap of NG_DAILY_LOSS_CAP consecutive stops has been hit today.
-    Returns False if clear.
+    Disabled per user directive.
     """
-    if table not in ("paper_trades", "live_trades"):
-        table = "paper_trades"
-
-    # Get today's date in IST
-    now_ist = datetime.now(IST)
-    today_ist_start = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
-    # P1-5 FIX: Use isoformat() directly — DB stores without Z suffix, so
-    # the old .replace("+00:00", "Z") caused string comparison to silently miss rows.
-    today_utc_iso = today_ist_start.astimezone(timezone.utc).isoformat()
-
-    with get_conn() as conn:
-        # P1-4 FIX: Simple COUNT(*) instead of LIMIT+all() which failed when
-        # non-consecutive TARGET wins sat between SL hits, preventing the cap
-        # from ever triggering.
-        sl_count = conn.execute(
-            f"SELECT COUNT(*) FROM {table} "
-            "WHERE symbol = 'NATURALGAS' "
-            "AND status IN ('CLOSED_SL', 'SL_HIT') "
-            "AND closed_at >= ? "
-            "AND closed_at IS NOT NULL",
-            (today_utc_iso,)
-        ).fetchone()[0]
-
-    if sl_count >= NG_DAILY_LOSS_CAP:
-        log.warning("NG Daily Loss Cap hit! %d stops hit today in %s.", sl_count, table)
-        return True
-
     return False
 
 def calculate_ng_lot_size(capital: float, stop_distance: float) -> int:

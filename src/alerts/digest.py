@@ -815,9 +815,9 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
     lines.append(DIV)
     sig_line = f"{action_icon} *SIGNAL*"
     if tfss_bias:
-        sig_line += f": {tfss_bias}"
+        sig_line += f": {_esc(tfss_bias)}"
     if tfss_verdict:
-        sig_line += f" · {tfss_verdict}"
+        sig_line += f" · {_esc(tfss_verdict)}"
     lines.append(sig_line)
     if conf is not None:
         lines.append(f"Confidence: {conf_bar} {conf}%")
@@ -867,7 +867,7 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
             ea_new_sl = exit_advice.get("new_sl_premium") if isinstance(exit_advice, dict) else getattr(exit_advice, "new_sl_premium", None)
             
             action_emoji = {"HOLD": "🔵", "TRAIL_SL": "🔄", "CLOSE_EARLY": "🔴", "EXTEND_TARGET": "🎯"}.get(str(ea_action).upper(), "⚙️")
-            lines.append(f"AI Exit Advice: {action_emoji} *{ea_action}* (Urgency: {ea_urgency})")
+            lines.append(f"AI Exit Advice: {action_emoji} *{_esc(ea_action)}* (Urgency: {_esc(ea_urgency)})")
             lines.append(f"   _{_esc(ea_reasoning)}_")
             if ea_new_sl is not None:
                 lines.append(f"   New SL: `{ea_new_sl}`")
@@ -899,14 +899,14 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
     lines.append(DIV)
     tf_line = f"{tf_icon} *TIMEFRAME STRATEGY*"
     if tf_action and str(tf_action).upper() != "NO_SIGNAL":
-        tf_line += f": {tf_action}"
+        tf_line += f": {_esc(tf_action)}"
     if tf_dir:
-        tf_line += f" ({tf_dir})"
+        tf_line += f" ({_esc(tf_dir)})"
     lines.append(tf_line)
     has_tf_data = any([tf_signal, tf_setup, tf_contract, tf_reason, tf_why, tf_blockers]) and str(tf_action or "").upper() != "NO_SIGNAL"
     if has_tf_data:
         status = tf_action or "ACTIVE"
-        lines.append(f"Status: {status}")
+        lines.append(f"Status: {_esc(status)}")
         if tf_signal:
             lines.append(f"Signal: {_esc(tf_signal)}")
         if tf_setup:

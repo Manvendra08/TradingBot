@@ -212,10 +212,80 @@ def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | N
     # Strike selection: OTM for SELL, ATM for BUY
     if option_type in ("CE", "PE"):
         if side == "SELL":
-            if option_type == "CE":
-                strike = _round_to_step(resistance, step) if (resistance and resistance > underlying) else _round_to_step(underlying + step * MAX_LEVEL_DISTANCE_STEPS, step)
+            from src.engine.trade_plan import select_candidate, get_option_premium
+            min_premium_threshold = 0.001 * underlying  # 0.1% of underlying index spot price
+            symbol_str = str(ctx.get("symbol") or symbol)
+            expiry_str = str(ctx.get("expiry") or "")
+            option_rows = ctx.get("option_rows") or []
+            dte_val = int(ctx.get("dte") or 0)
+            
+            selected_strike = None
+            selected_premium = None
+
+            # 1. Try DTE-Delta Band candidate selection (Requirement 1)
+            tfss_side = "SELL_PE" if option_type == "PE" else "SELL_CE"
+            cand = select_candidate(
+                side=tfss_side,
+                persisted_label="BULLISH" if option_type == "PE" else "BEARISH",
+                dte=dte_val,
+                atr_state={"underlying": underlying},
+                option_chain=option_rows
+            )
+            
+            if cand and cand.get("strike"):
+                cand_strike = float(cand["strike"])
+                cand_prem = get_option_premium(symbol_str, expiry_str, cand_strike, option_type, option_rows)
+                if cand_prem is not None and cand_prem > min_premium_threshold:
+                    selected_strike = cand_strike
+                    selected_premium = cand_prem
+                    log.info(
+                        "[paper_plan] %s TFSS DTE-Delta Band strike %.1f selected with premium %.2f (> 0.1%% threshold %.2f, delta %.2f)",
+                        symbol_str, cand_strike, cand_prem, min_premium_threshold, cand.get("delta", 0.0)
+                    )
+
+            # 2. If DTE-Delta candidate is unavailable or <= 0.1% threshold, escalate to Multi-Wall OI check (Requirement 2)
+            if selected_strike is None:
+                if option_type == "CE":
+                    raw_walls = ctx.get("resistance_walls") or ([resistance] if resistance else [])
+                else:
+                    raw_walls = ctx.get("support_walls") or ([support] if support else [])
+                
+                walls = [w for w in raw_walls if w is not None]
+                if not walls:
+                    fallback_w = underlying + (step * MAX_LEVEL_DISTANCE_STEPS if option_type == "CE" else -step * MAX_LEVEL_DISTANCE_STEPS)
+                    walls = [fallback_w]
+
+                for idx, wall_strike in enumerate(walls, start=1):
+                    cand_strike = _round_to_step(wall_strike, step)
+                    if option_type == "CE" and cand_strike < underlying:
+                        cand_strike = _round_to_step(underlying + step, step)
+                    elif option_type == "PE" and cand_strike > underlying:
+                        cand_strike = _round_to_step(underlying - step, step)
+                        
+                    prem = get_option_premium(symbol_str, expiry_str, cand_strike, option_type, option_rows)
+                    
+                    if prem is not None and prem > min_premium_threshold:
+                        selected_strike = cand_strike
+                        selected_premium = prem
+                        log.info(
+                            "[paper_plan] %s %s Wall %d strike %.1f selected with premium %.2f (> 0.1%% threshold %.2f)",
+                            symbol_str, option_type, idx, cand_strike, prem, min_premium_threshold
+                        )
+                        break
+                    else:
+                        log.info(
+                            "[paper_plan] %s %s Wall %d strike %.1f premium %s <= 0.1%% threshold (%.2f), checking next wall...",
+                            symbol_str, option_type, idx, cand_strike, f"{prem:.2f}" if prem is not None else "None", min_premium_threshold
+                        )
+
+            if selected_strike is not None:
+                strike = selected_strike
             else:
-                strike = _round_to_step(support, step) if (support and support < underlying) else _round_to_step(underlying - step * MAX_LEVEL_DISTANCE_STEPS, step)
+                log.warning(
+                    "[paper_plan] %s %s: All DTE-Delta candidates & OI walls failed >0.1%% premium threshold (min %.2f). Trade blocked.",
+                    symbol_str, option_type, min_premium_threshold
+                )
+                return None
         else:
             strike = atm
     else:

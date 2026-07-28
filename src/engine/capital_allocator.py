@@ -236,12 +236,41 @@ def calculate_trade_lots(
 
     # Pyramiding Sizing (Flaw #10): Reduce size on scaling in
     original_lots = lots
+    base_lots = lots
     if setup_type and "TFSS" in str(setup_type).upper():
         try:
             from config.trend_following_short_strangle import TRANCHE_SEQUENCE
+            
+            if tranche_index > 0:
+                from src.models.schema import get_read_conn
+                from datetime import datetime
+                from config.settings import IST
+                
+                today_str = datetime.now(IST).strftime("%Y-%m-%d")
+                leg_group_id = f"{base}:{datetime.now(IST).strftime('%Y%m%d')}:TFSS"
+                table_name = "paper_trades" if is_paper else "live_trades"
+                
+                with get_read_conn() as conn:
+                    if is_paper:
+                        row = conn.execute(
+                            f"SELECT lots FROM {table_name} WHERE leg_group_id=? AND tranche_index=0 ORDER BY id ASC LIMIT 1", 
+                            (leg_group_id,)
+                        ).fetchone()
+                    else:
+                        row = conn.execute(
+                            f"SELECT lots FROM {table_name} WHERE symbol LIKE ? AND setup_type LIKE '%TFSS%' AND opened_at >= ? ORDER BY id ASC LIMIT 1",
+                            (f"{base}%", f"{today_str} 00:00:00")
+                        ).fetchone()
+                        
+                    if row:
+                        tranche_0_lots = int(row["lots"])
+                        base_lots = tranche_0_lots / TRANCHE_SEQUENCE[0]
+                        log.debug("%s: tranche_index %d overriding base_lots to %.2f (from tranche 0 lots %d)", base, tranche_index, base_lots, tranche_0_lots)
+            
             idx = min(max(0, tranche_index), len(TRANCHE_SEQUENCE) - 1)
             scale = TRANCHE_SEQUENCE[idx]
-            lots = max(1, int(lots * scale))
+            lots = max(1, int(base_lots * scale + 0.5))
+            
             if lots == original_lots:
                 log.warning("%s: TFSS tranche index %d scale-down (%.0f%%) had no effect because lot count is %d", base, tranche_index, scale * 100, lots)
             else:

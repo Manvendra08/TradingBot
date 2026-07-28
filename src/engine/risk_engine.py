@@ -345,7 +345,7 @@ def compute_combined_book(symbol: str, option_rows: list[dict] | None, table: st
     try:
         from config.trend_following_short_strangle import TFSS_COMBINED_DELTA_CAP
     except Exception:
-        TFSS_COMBINED_DELTA_CAP = 0.40
+        TFSS_COMBINED_DELTA_CAP = 0.60
 
     legs = get_open_tfss_legs(symbol, table=table)
     net_delta = 0.0

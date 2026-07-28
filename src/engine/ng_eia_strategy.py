@@ -25,7 +25,8 @@ def force_close_eia_pre_print() -> None:
     
     # Get current price
     from src.fetchers.router import fetch_option_chain
-    oc = fetch_option_chain("NATURALGAS")
+    trade_expiry = open_trade.get("expiry")
+    oc = fetch_option_chain("NATURALGAS", expiry=trade_expiry)
     underlying = oc.get("underlying_price") if oc else open_trade["entry_underlying"]
     
     close_paper_trade(
@@ -299,7 +300,8 @@ def check_ng_eia_exits_every_2_min() -> None:
         return
         
     from src.fetchers.router import fetch_option_chain
-    oc = fetch_option_chain("NATURALGAS")
+    trade_expiry = open_trade.get("expiry")
+    oc = fetch_option_chain("NATURALGAS", expiry=trade_expiry)
     underlying = oc.get("underlying_price") if oc else None
     if not underlying or underlying <= 0:
         return
