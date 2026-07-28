@@ -3512,7 +3512,8 @@
                     const absPnl = Math.abs(pnl);
                     const sign = pnl >= 0 ? "+" : "-";
 
-                    const isLive = p.trade_status === "LIVE";
+                    const isShadow = p.trade_status === "SHADOW" || p.broker_status === "SHADOW";
+                    const isLive = !isShadow && p.broker_status !== "REJECTED";
                     const dotColor = isLive ? "var(--profit)" : "#ff9f1c";
                     const dotShadow = isLive
                         ? "0 0 6px var(--profit)"
@@ -3587,10 +3588,10 @@
 
                 if (groupActive) {
                     const botLiveTrades = openPositions.filter(
-                        (p) => (p.exit_mode || "").toUpperCase() !== "KITE" && p.trade_status === "LIVE",
+                        (p) => (p.exit_mode || "").toUpperCase() !== "KITE" && p.trade_status !== "SHADOW" && p.broker_status !== "SHADOW",
                     );
                     const botShadowTrades = openPositions.filter(
-                        (p) => (p.exit_mode || "").toUpperCase() !== "KITE" && p.trade_status !== "LIVE",
+                        (p) => (p.exit_mode || "").toUpperCase() !== "KITE" && (p.trade_status === "SHADOW" || p.broker_status === "SHADOW"),
                     );
                     const kiteTrades = openPositions.filter(
                         (p) => (p.exit_mode || "").toUpperCase() === "KITE",
@@ -3662,8 +3663,7 @@
                     const m = data[base];
                     const el = document.getElementById(`metrics-${base}`);
                     if (el) {
-                        const isExpanded = !!expandedSymbols[base];
-                        el.style.display = isExpanded ? "flex" : "none";
+                        el.style.display = "flex";
 
                         const dVal = m.net_delta;
                         const formattedDelta =
@@ -3793,7 +3793,8 @@
                             const pnlClass = pnl >= 0 ? "pnl-green" : "pnl-red";
                             const sign = pnl >= 0 ? "+" : "";
 
-                            const isLive = p.trade_status === "LIVE";
+                            const isShadow = p.trade_status === "SHADOW" || p.broker_status === "SHADOW";
+                            const isLive = !isShadow && p.broker_status !== "REJECTED";
                             const dotColor = isLive
                                 ? "var(--profit)"
                                 : "#ff9f1c";

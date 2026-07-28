@@ -909,6 +909,16 @@
 - **Symptom:** Telegram alert reported `CRUDEOIL · 18:00 IST 🟢 Entered` and `Trade: ✅ Entered` even though the trade was NOT inserted into `paper_trades` table.
 - **Root Cause:** In [pipeline.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/pipeline.py), `_build_structured_payload()` marked `trade_entered = True` if `td.get("status")` was `TRIGGERED_CORE`. However, `make_trade_decision()` only checks signal rules & score thresholds. When `run_paper_trading()` subsequently ran `check_risk_limits()`, the trade was **BLOCKED by the Risk Engine** (`[paper] TFSS combined delta cap exceeded (|0.43| > 0.40)`) and skipped insertion into `paper_trades`. Because `_build_structured_payload()` relied on `status_entered` rather than actual DB insertion or strategy execution result, the alert claimed the trade was entered.
 
+### F40: Symbol-Level TFSS Combined Delta Cap Update to 0.60 (Configuration)
+- **Requirement:** Confirm symbol-level combined net delta tracking and update TFSS combined delta risk cap from 0.40 to 0.60 for all symbols.
+- **Verification & Fix:** Verified that `compute_combined_book(symbol, ...)` and `get_open_tfss_legs(symbol)` in [risk_engine.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/risk_engine.py) already isolate open legs strictly per symbol (`WHERE symbol=?`). Updated `TFSS_COMBINED_DELTA_CAP` from `0.40` to `0.60` in [config/trend_following_short_strangle.py](file:///c:/Users/manve/Downloads/NSEBOT/config/trend_following_short_strangle.py#L56) and fallback default in [risk_engine.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/risk_engine.py#L348).
+
+### F41: Symbol-Specific LLM Provider Priority Re-Ordering (Configuration)
+- **Requirement:** Make OpenCode Zen primary for NSE/BSE followed by Groq, and GitHub Models primary for MCX followed by Groq.
+- **Fix:** Re-ordered `FREE_MODEL_PIPELINE` in [llm_enrichment.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/llm_enrichment.py#L1624-L1683):
+  - **NSE & BSE:** `OpenCode Zen` → `Groq` → `GitHub Models` → `NVIDIA NIM` → `Bedrock` → `OpenRouter` → `Gemini`
+  - **MCX Symbols:** `GitHub Models` → `Groq` → `OpenCode Zen` → `AnyAPI Free` → `Bedrock Mantle` → `NVIDIA NIM` → `Bedrock` → `OpenRouter` → `Gemini` → `SambaNova`
+
 ### F128: Shadow Mode Pending Trade Reconciliation & Paper Handoff Fix (P1-HIGH)
 - **Symptom:** Live trading engine blocked new entry signals (e.g. `NATURALGAS 295.0 CE` at 18:00 IST) with `NATURALGAS: Open trade is PENDING at broker. Checking for fill... Status: Shadow trade executed. Holding...` even though the earlier paper trade had already reached its target and closed.
 - **Root Cause:** 
@@ -919,6 +929,10 @@
   1. Updated `run_live_decision_engine` in [live_trading.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/live_trading.py#L967-L1031) to include `b_status in ("COMPLETE", "SHADOW")` in order fill reconciliation, updating `broker_status` to `"SHADOW"` in shadow mode so trades proceed directly to active exit management instead of hanging in `HELD_PENDING`.
   2. Added an automatic paper exit reconciliation check for shadow mode: if a shadow trade is open in `live_trades`, but its corresponding paper trade in `paper_trades` has closed, `update_live_trade_entry` automatically synchronizes the closed status (`CLOSED_TARGET`, `CLOSED_SL`, etc.) and P&L details.
   3. Cleaned up stuck `live_trades` record `#123` in SQLite DB (`data/nsebot.db`).
+
+### F129: Broker Console Main Card Metrics Display Fix (UI / UX)
+- **Requirement:** Display Net Delta and Theta (along with Max Profit and Max Loss) on the main position card by default on the Broker console instead of hiding them behind hover/click.
+- **Fix:** In [src/dashboard/broker.html](file:///c:/Users/manve/Downloads/NSEBOT/src/dashboard/broker.html#L3666), updated `renderMetricsHTML` to set `el.style.display = "flex";` unconditionally. The 4 metrics (`Net Delta`, `Theta`, `Max Profit`, `Max Loss`) now render persistently on every position card in default view across all symbols.
 
 
 
