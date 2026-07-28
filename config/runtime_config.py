@@ -7,7 +7,7 @@ from pathlib import Path
 from config.settings import DATA_DIR, FETCH_INTERVAL_MINUTES
 
 RUNTIME_CONFIG_PATH = DATA_DIR / "runtime_config.json"
-ALLOWED_SCAN_FREQUENCIES = [5, 15, 30, 60, 180, 1440]
+ALLOWED_SCAN_FREQUENCIES = [5, 10, 15, 30, 60, 180, 1440]
 MIN_SCAN_FREQUENCY = ALLOWED_SCAN_FREQUENCIES[0]
 MAX_SCAN_FREQUENCY = ALLOWED_SCAN_FREQUENCIES[-1]
 
@@ -76,8 +76,8 @@ def load_runtime_config() -> dict:
         "autopsy_time_ist": "23:45",
         "manage_direct_kite_positions": False,
         "direct_kite_initialization_mode": "fixed_pct",
-        "direct_kite_default_sl_pct": 30.0,
-        "direct_kite_default_tgt_pct": 50.0,
+        "direct_kite_default_sl_pct": 75.0,
+        "direct_kite_default_tgt_pct": 60.0,
         "live_broker_disabled": False,  # Completely block all broker order placement
         "trading_paused": False,  # OPS Agent safety switch — one-way (human-only unpause)
         "enable_tfss_trade_blocked_rules": False,

@@ -2422,10 +2422,10 @@
                     "fixed_pct") ||
                 parseFloat(
                     document.getElementById("sett-direct-kite-sl").value,
-                ) !== (runtimeConfig.direct_kite_default_sl_pct || 30.0) ||
+                ) !== (runtimeConfig.direct_kite_default_sl_pct || 75.0) ||
                 parseFloat(
                     document.getElementById("sett-direct-kite-tgt").value,
-                ) !== (runtimeConfig.direct_kite_default_tgt_pct || 50.0) ||
+                ) !== (runtimeConfig.direct_kite_default_tgt_pct || 60.0) ||
                 parseInt(document.getElementById("sett-emp-trades").value) !==
                 (runtimeConfig.emp_boost_min_trades || 20) ||
                 Math.round(parseFloat(document.getElementById("sett-emp-winrate").value)) !==
@@ -2750,14 +2750,14 @@
                     );
                     if (slInput)
                         slInput.value =
-                            data.direct_kite_default_sl_pct || 30.0;
+                            data.direct_kite_default_sl_pct || 75.0;
 
                     const tgtInput = document.getElementById(
                         "sett-direct-kite-tgt",
                     );
                     if (tgtInput)
                         tgtInput.value =
-                            data.direct_kite_default_tgt_pct || 50.0;
+                            data.direct_kite_default_tgt_pct || 60.0;
 
                     const directWrapper = document.getElementById(
                         "direct-kite-settings-wrapper",

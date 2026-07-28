@@ -2268,10 +2268,10 @@ def sync_direct_kite_positions() -> None:
                     )
                 else:
                     sl_pct = (
-                        float(config.get("direct_kite_default_sl_pct", 30.0)) / 100.0
+                        float(config.get("direct_kite_default_sl_pct", 75.0)) / 100.0
                     )
                     tgt_pct = (
-                        float(config.get("direct_kite_default_tgt_pct", 50.0)) / 100.0
+                        float(config.get("direct_kite_default_tgt_pct", 60.0)) / 100.0
                     )
                     if side == "BUY":
                         sl_underlying = round(entry_val * (1 - sl_pct), 2)
@@ -2296,10 +2296,10 @@ def sync_direct_kite_positions() -> None:
                     )
                 else:
                     sl_pct = (
-                        float(config.get("direct_kite_default_sl_pct", 30.0)) / 100.0
+                        float(config.get("direct_kite_default_sl_pct", 75.0)) / 100.0
                     )
                     tgt_pct = (
-                        float(config.get("direct_kite_default_tgt_pct", 50.0)) / 100.0
+                        float(config.get("direct_kite_default_tgt_pct", 60.0)) / 100.0
                     )
 
                 if side == "BUY":

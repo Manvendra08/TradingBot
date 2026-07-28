@@ -930,10 +930,10 @@
   2. Added an automatic paper exit reconciliation check for shadow mode: if a shadow trade is open in `live_trades`, but its corresponding paper trade in `paper_trades` has closed, `update_live_trade_entry` automatically synchronizes the closed status (`CLOSED_TARGET`, `CLOSED_SL`, etc.) and P&L details.
   3. Cleaned up stuck `live_trades` record `#123` in SQLite DB (`data/nsebot.db`).
 
-### F130: Timeframe Strategy & Missing Premium Target GTT None Guard (P1-HIGH)
-- **Symptom:** Alert dispatched `⚠️ [GTT FAILED] NATURALGAS TF — float() argument must be a string or a real number, not 'NoneType'; falling back to premium-poll exit.` during live timeframe strategy execution.
-- **Root Cause:** In [live_trading.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/live_trading.py#L1887), `run_live_timeframe_strategy` sets `target_premium = None` because timeframe strategy exits are managed dynamically by 1H candle cross ticks (`TF-1H-Cross`) rather than fixed GTT target prices. Attempting `float(target_premium)` raised an unhandled `TypeError` inside the GTT placement block.
-- **Fix:** Added explicit `sl_premium is not None and target_premium is not None` checks across all GTT placement and background placer spawn locations in [live_trading.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/live_trading.py#L1010-L1964). Strategies without static profit targets now bypass GTT placement cleanly without throwing exceptions or generating error alerts, leaving `exit_mode` as `"POLL"`.
+### F131: Direct Kite Default Safety Guard Thresholds Update (Configuration)
+- **Requirement:** Update default safety guard thresholds for adopted manual Direct Kite option positions to SL: 75% and Target: 60%.
+- **Fix:** Updated `direct_kite_default_sl_pct` to `75` (75% SL) and `direct_kite_default_tgt_pct` to `60` (60% Target) across [config/runtime_config.py](file:///c:/Users/manve/Downloads/NSEBOT/config/runtime_config.py#L79), [data/runtime_config.json](file:///c:/Users/manve/Downloads/NSEBOT/data/runtime_config.json#L47), [live_trading.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/live_trading.py#L2271), and [settings.html](file:///c:/Users/manve/Downloads/NSEBOT/src/dashboard/settings.html#L2753).
+  - For Short Options (`SELL`), SL triggers if option premium rises +75% (`entry * 1.75`), and Target triggers if option premium decays -60% (`entry * 0.40`).
 
 
 
