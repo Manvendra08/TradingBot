@@ -885,6 +885,41 @@
 - **Root Cause:** `calculate_trade_lots` applied tranche percentages (`TRANCHE_SEQUENCE`) on top of dynamically calculated `lots` for each tranche.
 - **Fix:** Updated [capital_allocator.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/capital_allocator.py) to look up Tranche 0's recorded quantity from `paper_trades`/`live_trades` when `tranche_index > 0`, backing out the initial base quantity (`tranche_0_lots / TRANCHE_SEQUENCE[0]`) and applying the current tranche sequence multiplier on that exact base quantity.
 
+### F35: Dual-Source Cascading Parallel Fetch & Non-Blocking Fallback (P0-CRITICAL)
+- **Symptom:** Log shows primary fetcher (`sensibull`) returned valid option chain data within 2 seconds, but pipeline logged `No data for SENSEX — skipping` and alerted `all fetchers failed for SENSEX`.
+- **Root Cause:** In [router.py](file:///c:/Users/manve/Downloads/NSEBOT/src/fetchers/router.py), dual-source parallel fetch used `with ThreadPoolExecutor(...) as ex:` which block-waited for ALL futures on context exit. When fallback (`shoonya`) hung for 88 seconds attempting headless browser login, the entire dual fetch stalled until the overall 90-second pipeline deadline (`run_with_deadline`) expired and cancelled the result, discarding `sensibull`'s successful 2-second payload.
+- **Fix:** Refactored option-chain fetching in [router.py](file:///c:/Users/manve/Downloads/NSEBOT/src/fetchers/router.py) into a **universal cascading dual-fetch loop** across all symbols:
+  1. Executes dual-source parallel fetch using non-blocking futures with a 12s primary timeout. If primary succeeds, it returns immediately without waiting for a hanging fallback fetcher.
+  2. If primary fails, it cascades to attempt the next available dual-fetch pair (e.g. `Fallback1 + Fallback2`).
+  3. If no dual-fetch pair completes, it returns any single data source that successfully completed before declaring all fetchers failed.
+
+### F36: Telegram Markdown Parse Entity Failure (P2-MEDIUM)
+- **Symptom:** Log shows `Telegram Markdown parse failed: Can't parse entities: can't find end of the entity starting at byte offset 93. Retrying in plain text...`
+- **Root Cause:** In [digest.py](file:///c:/Users/manve/Downloads/NSEBOT/src/alerts/digest.py), dynamic signal fields (`tfss_bias`, `tfss_verdict`, `ea_action`, `ea_urgency`, `tf_action`, `tf_dir`, `status`) were interpolated directly into Markdown-formatted string templates without passing through `_esc()`. When values contained underscores (e.g. `BEARISH_CALL_WRITING`, `NO_SIGNAL`, `CORE_OI`), Telegram's Markdown V1 parser interpreted the single underscore as an unclosed italic entity at byte offset 93 and returned `400 Bad Request`.
+### F37: LLM Provider Exception Cooldown & OpenCode Zen Fast Failover (P1-HIGH)
+- **Symptom:** Log shows `[llm] OpenCode Zen (DeepSeek V4 Flash Free) returned null/whitespace content` followed by `[llm] OpenCode Zen (Nemotron 3 Ultra Free) exception: The read operation timed out` after a 35-second stall.
+- **Root Cause:** In [llm_enrichment.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/llm_enrichment.py), exceptions (`TimeoutError`, read timeout), non-200 HTTP responses (e.g. 500), and empty responses did not invoke `_register_provider_failure()`. Consequently, failing/unresponsive models were not placed on cooldown and were repeatedly called on subsequent scan ticks. Additionally, OpenCode Zen model timeouts were set to 25s–35s, causing long stalls when endpoints degraded.
+- **Fix:** (1) Updated `_register_provider_failure()` in [llm_enrichment.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/llm_enrichment.py#L977) to place failing, empty, 500 error, or timing-out providers on a 10-minute cooldown (`_PROVIDER_COOLDOWN_UNTIL[key] = now + 600.0`). (2) Added `_register_provider_failure()` calls to `_call_llm_api`'s exception handler and non-200 HTTP error handler. (3) Reduced OpenCode Zen model timeouts from 35s to 12s for fast failover to remaining providers in the chain.
+
+### F38: Natural Gas Daily Loss Cap Deactivation (User Directive)
+- **Requirement:** Disable `NATURALGAS daily loss cap hit` block.
+- **Fix:** Updated `check_ng_daily_loss_cap()` in [ng_risk_manager.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/ng_risk_manager.py) to always return `False`. All Natural Gas strategies (`NG_PARITY`, `NG_MOMENTUM`, `NG_EVENT`, `CORE`) can now take trade setups without being blocked by consecutive stop-losses hit during the trading day.
+
+### F39: Alert Payload Discrepancy Fix for Risk Engine Blocked Trades (P1-HIGH)
+- **Symptom:** Telegram alert reported `CRUDEOIL · 18:00 IST 🟢 Entered` and `Trade: ✅ Entered` even though the trade was NOT inserted into `paper_trades` table.
+- **Root Cause:** In [pipeline.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/pipeline.py), `_build_structured_payload()` marked `trade_entered = True` if `td.get("status")` was `TRIGGERED_CORE`. However, `make_trade_decision()` only checks signal rules & score thresholds. When `run_paper_trading()` subsequently ran `check_risk_limits()`, the trade was **BLOCKED by the Risk Engine** (`[paper] TFSS combined delta cap exceeded (|0.43| > 0.40)`) and skipped insertion into `paper_trades`. Because `_build_structured_payload()` relied on `status_entered` rather than actual DB insertion or strategy execution result, the alert claimed the trade was entered.
+
+### F128: Shadow Mode Pending Trade Reconciliation & Paper Handoff Fix (P1-HIGH)
+- **Symptom:** Live trading engine blocked new entry signals (e.g. `NATURALGAS 295.0 CE` at 18:00 IST) with `NATURALGAS: Open trade is PENDING at broker. Checking for fill... Status: Shadow trade executed. Holding...` even though the earlier paper trade had already reached its target and closed.
+- **Root Cause:** 
+  1. In `live_trading.py`, when a trade was in `broker_status == 'PENDING'`, `confirm_order_fill` returned `("SHADOW", "Shadow trade executed")` in shadow mode.
+  2. The fill reconciliation check strictly checked `if b_status == "COMPLETE":`. Because `"SHADOW"` was neither `"COMPLETE"` nor `"REJECTED"`, it fell through to the `else:` block, logged `"PENDING trade still not filled"`, returned `HELD_PENDING`, and blocked exit monitoring & new entries indefinitely.
+  3. Closed paper trade exits were not automatically updating corresponding shadow live trades in `live_trades`.
+- **Fix:** 
+  1. Updated `run_live_decision_engine` in [live_trading.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/live_trading.py#L967-L1031) to include `b_status in ("COMPLETE", "SHADOW")` in order fill reconciliation, updating `broker_status` to `"SHADOW"` in shadow mode so trades proceed directly to active exit management instead of hanging in `HELD_PENDING`.
+  2. Added an automatic paper exit reconciliation check for shadow mode: if a shadow trade is open in `live_trades`, but its corresponding paper trade in `paper_trades` has closed, `update_live_trade_entry` automatically synchronizes the closed status (`CLOSED_TARGET`, `CLOSED_SL`, etc.) and P&L details.
+  3. Cleaned up stuck `live_trades` record `#123` in SQLite DB (`data/nsebot.db`).
+
 
 
 

@@ -959,6 +959,37 @@ def run_live_trading(
             )
             return {"action": "HELD_DIRECT_DISABLED", "trade": current_open_trade}
 
+        # Auto-reconcile shadow live trade exits with closed paper trades
+        if shadow_mode and current_open_trade:
+            try:
+                from src.models.schema import get_conn
+                with get_conn() as conn:
+                    p_row = conn.execute(
+                        "SELECT * FROM paper_trades WHERE symbol=? AND option_type=? AND abs(strike - ?) < 0.1 AND status != 'OPEN' ORDER BY id DESC LIMIT 1",
+                        (symbol, current_open_trade.get("option_type"), float(current_open_trade.get("strike") or 0))
+                    ).fetchone()
+                    if p_row:
+                        p_trade = dict(p_row)
+                        log.info(
+                            "%s: Shadow live trade #%d auto-closing in sync with closed paper trade #%d (%s)",
+                            symbol, current_open_trade["id"], p_trade["id"], p_trade["status"]
+                        )
+                        update_live_trade_entry(
+                            current_open_trade["id"],
+                            status=p_trade["status"],
+                            broker_status="SHADOW",
+                            closed_at=p_trade.get("closed_at") or now_iso,
+                            exit_underlying=p_trade.get("exit_underlying"),
+                            exit_premium=p_trade.get("exit_premium"),
+                            pnl_points=p_trade.get("pnl_points"),
+                            pnl_rupees=p_trade.get("pnl_rupees"),
+                            exit_reason=p_trade.get("exit_reason") or p_trade.get("reason"),
+                            broker_message=f"Shadow trade closed via paper {p_trade['status']} sync",
+                        )
+                        return {"action": "CLOSED", "trade": p_trade, "reason": f"shadow paper sync {p_trade['status']}"}
+            except Exception as se:
+                log.warning("%s: Failed to sync shadow live trade with paper exit: %s", symbol, se)
+
         # Check if the broker_status is PENDING. If so, reconcile/verify fill!
         if current_open_trade.get("broker_status") == "PENDING":
             log.info(
@@ -967,10 +998,11 @@ def run_live_trading(
             b_status, b_msg = confirm_order_fill(
                 kite, current_open_trade.get("broker_order_id"), shadow_mode
             )
-            if b_status == "COMPLETE":
+            if b_status in ("COMPLETE", "SHADOW"):
                 log.info(
-                    "%s: PENDING trade filled! Updating database status to COMPLETE.",
+                    "%s: PENDING trade filled! Updating database status to %s.",
                     symbol,
+                    "SHADOW" if shadow_mode else "COMPLETE",
                 )
                 # Try placing GTT now that the order is complete
                 gtt_order_id = None
@@ -1023,8 +1055,8 @@ def run_live_trading(
 
                 update_live_trade_entry(
                     current_open_trade["id"],
-                    broker_status="COMPLETE",
-                    broker_message="Reconciled: order filled",
+                    broker_status="SHADOW" if shadow_mode else "COMPLETE",
+                    broker_message="Reconciled: shadow order executed" if shadow_mode else "Reconciled: order filled",
                     gtt_order_id=gtt_order_id,
                     exit_mode=exit_mode,
                 )
