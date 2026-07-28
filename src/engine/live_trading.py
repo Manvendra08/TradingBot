@@ -2067,9 +2067,12 @@ def sync_direct_kite_positions() -> None:
     from src.models.schema import get_conn, insert_live_trade
 
     with get_conn() as conn:
-        db_trades = conn.execute(
-            "SELECT id, symbol, option_type, strike, side FROM live_trades WHERE status='OPEN'"
-        ).fetchall()
+        db_trades = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT id, symbol, option_type, strike, side, setup_type, reason FROM live_trades WHERE status='OPEN'"
+            ).fetchall()
+        ]
         open_db_signatures = []
         for dt in db_trades:
             sym = dt["symbol"]

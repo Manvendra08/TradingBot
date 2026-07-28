@@ -930,10 +930,10 @@
   2. Added an automatic paper exit reconciliation check for shadow mode: if a shadow trade is open in `live_trades`, but its corresponding paper trade in `paper_trades` has closed, `update_live_trade_entry` automatically synchronizes the closed status (`CLOSED_TARGET`, `CLOSED_SL`, etc.) and P&L details.
   3. Cleaned up stuck `live_trades` record `#123` in SQLite DB (`data/nsebot.db`).
 
-### F131: Direct Kite Default Safety Guard Thresholds Update (Configuration)
-- **Requirement:** Update default safety guard thresholds for adopted manual Direct Kite option positions to SL: 75% and Target: 60%.
-- **Fix:** Updated `direct_kite_default_sl_pct` to `75` (75% SL) and `direct_kite_default_tgt_pct` to `60` (60% Target) across [config/runtime_config.py](file:///c:/Users/manve/Downloads/NSEBOT/config/runtime_config.py#L79), [data/runtime_config.json](file:///c:/Users/manve/Downloads/NSEBOT/data/runtime_config.json#L47), [live_trading.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/live_trading.py#L2271), and [settings.html](file:///c:/Users/manve/Downloads/NSEBOT/src/dashboard/settings.html#L2753).
-  - For Short Options (`SELL`), SL triggers if option premium rises +75% (`entry * 1.75`), and Target triggers if option premium decays -60% (`entry * 0.40`).
+### F132: Direct Kite Position Sync sqlite3.Row AttributeError Fix (P1-HIGH)
+- **Symptom:** Scheduler logged `[scheduler] Kite position sync failed: 'sqlite3.Row' object has no attribute 'get'` during `sync_direct_kite_positions()`.
+- **Root Cause:** In [live_trading.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/live_trading.py#L2070), `db_trades` fetched `sqlite3.Row` instances. When checking auto-close reconciliation (`dt.get("setup_type")`), calling `.get()` on an `sqlite3.Row` raised an `AttributeError`. Additionally, `setup_type` and `reason` were omitted from the SQL `SELECT` string.
+- **Fix:** Included `setup_type` and `reason` in the SQL `SELECT` query in [live_trading.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/live_trading.py#L2070) and converted `db_trades` to a list of dictionaries (`[dict(r) for r in ...]`). `sync_direct_kite_positions()` now executes without error.
 
 
 
