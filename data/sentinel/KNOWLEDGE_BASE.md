@@ -930,9 +930,10 @@
   2. Added an automatic paper exit reconciliation check for shadow mode: if a shadow trade is open in `live_trades`, but its corresponding paper trade in `paper_trades` has closed, `update_live_trade_entry` automatically synchronizes the closed status (`CLOSED_TARGET`, `CLOSED_SL`, etc.) and P&L details.
   3. Cleaned up stuck `live_trades` record `#123` in SQLite DB (`data/nsebot.db`).
 
-### F129: Broker Console Main Card Metrics Display Fix (UI / UX)
-- **Requirement:** Display Net Delta and Theta (along with Max Profit and Max Loss) on the main position card by default on the Broker console instead of hiding them behind hover/click.
-- **Fix:** In [src/dashboard/broker.html](file:///c:/Users/manve/Downloads/NSEBOT/src/dashboard/broker.html#L3666), updated `renderMetricsHTML` to set `el.style.display = "flex";` unconditionally. The 4 metrics (`Net Delta`, `Theta`, `Max Profit`, `Max Loss`) now render persistently on every position card in default view across all symbols.
+### F130: Timeframe Strategy & Missing Premium Target GTT None Guard (P1-HIGH)
+- **Symptom:** Alert dispatched `⚠️ [GTT FAILED] NATURALGAS TF — float() argument must be a string or a real number, not 'NoneType'; falling back to premium-poll exit.` during live timeframe strategy execution.
+- **Root Cause:** In [live_trading.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/live_trading.py#L1887), `run_live_timeframe_strategy` sets `target_premium = None` because timeframe strategy exits are managed dynamically by 1H candle cross ticks (`TF-1H-Cross`) rather than fixed GTT target prices. Attempting `float(target_premium)` raised an unhandled `TypeError` inside the GTT placement block.
+- **Fix:** Added explicit `sl_premium is not None and target_premium is not None` checks across all GTT placement and background placer spawn locations in [live_trading.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/live_trading.py#L1010-L1964). Strategies without static profit targets now bypass GTT placement cleanly without throwing exceptions or generating error alerts, leaving `exit_mode` as `"POLL"`.
 
 
 

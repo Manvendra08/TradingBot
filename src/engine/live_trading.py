@@ -1007,7 +1007,11 @@ def run_live_trading(
                 # Try placing GTT now that the order is complete
                 gtt_order_id = None
                 exit_mode = current_open_trade.get("exit_mode")
-                if current_open_trade.get("option_type") != "FUT":
+                if (
+                    current_open_trade.get("option_type") != "FUT"
+                    and current_open_trade.get("sl_premium") is not None
+                    and current_open_trade.get("target_premium") is not None
+                ):
                     try:
                         resolved = resolve_instrument(
                             symbol,
@@ -1327,7 +1331,12 @@ def run_live_trading(
         return {"action": "BLOCKED_ORDER_FAILED", "reason": broker_message}
 
     gtt_order_id = None
-    if plan["option_type"] != "FUT" and broker_status == "COMPLETE":
+    if (
+        plan["option_type"] != "FUT"
+        and broker_status == "COMPLETE"
+        and plan.get("sl_premium") is not None
+        and plan.get("target_premium") is not None
+    ):
         # Only place GTT if order is complete/filled to avoid placing target/SL on unfilled orders
         try:
             sl_trigger = float(plan["sl_premium"])
@@ -1361,7 +1370,12 @@ def run_live_trading(
             send_text(
                 f"[GTT FAILED] `{symbol}` - {e}; falling back to premium-poll exit."
             )
-    elif plan["option_type"] != "FUT" and broker_status == "PENDING":
+    elif (
+        plan["option_type"] != "FUT"
+        and broker_status == "PENDING"
+        and plan.get("sl_premium") is not None
+        and plan.get("target_premium") is not None
+    ):
         # Defer GTT and use POLL exit fallback for safety until resolved
         exit_mode = "POLL"
         # Spawn background thread to poll fill and place GTT (BUG-003)
@@ -1881,7 +1895,12 @@ def run_live_timeframe_strategy(
 
     gtt_order_id = None
     exit_mode = "POLL"  # Timeframe strategy uses scan-tick 1H candle exit triggers, not static GTT profit targets
-    if opt_type != "FUT" and broker_status == "COMPLETE":
+    if (
+        opt_type != "FUT"
+        and broker_status == "COMPLETE"
+        and sl_premium is not None
+        and target_premium is not None
+    ):
         # Only place GTT if order is complete
         try:
             sl_trigger = float(sl_premium)
@@ -1961,7 +1980,12 @@ def run_live_timeframe_strategy(
 
     update_decision_audit(audit_row_id, action="TRADE", trade_id=inserted_id)
 
-    if opt_type != "FUT" and broker_status == "PENDING":
+    if (
+        opt_type != "FUT"
+        and broker_status == "PENDING"
+        and sl_premium is not None
+        and target_premium is not None
+    ):
         sl_trigger = float(sl_premium)
         target_trigger = float(target_premium)
         sl_limit = (
