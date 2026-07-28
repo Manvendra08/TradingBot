@@ -146,7 +146,9 @@
 - Pipeline logs go to `logs/main.log` (RotatingFileHandler, 10MB).
 - Health state stored in SQLite `health_state` table via `stamp_health()`.
 - Ops Agent runs as separate process, reads health_state every 60s.
-- LLM providers: Gemini (Primary), Groq (70b/8b fallback), Bedrock (cascading fallback).
+- LLM providers: AnyAPI Free (MCX Primary), Gemini (NSE/BSE Primary), Groq (70b/8b fallback), Bedrock (cascading fallback).
+- MCX LLM pipeline: AnyAPI Free (5 models, env_key `ANY_API_KEY`) → Bedrock Mantle → GitHub → Groq → NVIDIA NIM → Bedrock SDK → OpenRouter → Gemini → SambaNova → OpenCode Zen.
+- AnyAPI free models: Nemotron 3 Ultra 550B, Gemma 4 26B, Nemotron 3 Nano 30B, Laguna M.1, Nemotron Nano 12B VL.
 - Symbols: NIFTY (NFO), BANKNIFTY (NFO), SENSEX (BFO), NATURALGAS (MCX), CRUDEOIL (MCX).
 - Scan execution modes: `--now` executes a production-mode scan (`is_test=False`) but skips processing if the current interval's data is already up-to-date in the DB, capping catch-up backfilling to a maximum of the last 3 missed intervals. `--once` runs strictly as a test-mode scan (`is_test=True`) where production database writes and live trading actions are prohibited.
 
@@ -772,6 +774,11 @@
 - **Issue**: ISP public IPv4 changes were missed because `ip-api.com` returned key `"query"` instead of `"ip"` (and returned 403 Forbidden), while `api.myip.com` returned IPv6 on dual-stack ISP connections. When all fallback providers failed or returned IPv6, `_fetch_public_ip()` returned `None`, skipping the IP change check.
 - **Fix**: Hardened [ip_monitor.py](file:///c:/Users/manve/Downloads/NSEBOT/src/utils/ip_monitor.py) with explicit IPv4 endpoints (`api4.ipify.org`, `ipv4.icanhazip.com`, `ipinfo.io`), regex IPv4 scanning (`_IPV4_REGEX`), multi-key extraction (`ip`, `query`), and public IPv4 validation (`_is_valid_public_ipv4`). Added unit tests in [test_ip_monitor.py](file:///c:/Users/manve/Downloads/NSEBOT/tests/test_ip_monitor.py).
 
+### F127: Timeframe Strategy Pyramid Level AttributeError Fix (P0-CRITICAL)
+- **Issue**: `run_live_timeframe_strategy()` in [live_trading.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/live_trading.py#L1803) attempted `pyramid_level = ctx.scan_context.get("_pyramid_level", 1)`, throwing `AttributeError: 'dict' object has no attribute 'scan_context'` because `ctx` is assigned from `scan_context` directly (`ctx = scan_context or {}`).
+- **Fix**: Replaced `ctx.scan_context.get("_pyramid_level", 1)` with `ctx.get("_pyramid_level", 1)` in [live_trading.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/live_trading.py#L1803).
+
+
 
 ### F123: Timeframe Strategy Executed Trade Digest Alert Fix (P0-CRITICAL)
 - **Issue**: When a Timeframe strategy trade triggered (e.g. `LIVE TF Order`), `_build_structured_payload()` in [pipeline.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/pipeline.py#L386) only checked for `TRIGGERED_CORE` and `TRIGGERED_EXPERIMENTAL` statuses. It omitted `TRIGGERED_TIMEFRAME` and `timeframe_res.get("action") == "EXECUTED"`. Consequently, the digest header rendered `📊 NATURALGAS · 19:00 IST X Not entered` and the Timeframe section defaulted to `Status: No active signal (3H breakout pending)`.
@@ -792,6 +799,104 @@
 ### F127: Direct Kite Manual Trade Auto-Reconciliation Fix (P0-CRITICAL)
 - **Issue**: `sync_open_positions_with_kite()` in [live_trading.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/live_trading.py#L1990) auto-adopted active Zerodha positions into `live_trades` table as `setup_type='DIRECT_KITE'`. However, when those manual positions were closed on Zerodha, DB rows remained in `status='OPEN'`, causing stale positions (`SENSEX 75500 PE`, `NATURALGAS 285 PE/290 PE/290 CE/FUT`) to persist under `🤖 BOT LIVE TRADES` on the Broker Console page.
 - **Fix**: Added automated position reconciliation to `sync_open_positions_with_kite()` in [live_trading.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/live_trading.py#L2045) — whenever an adopted `DIRECT_KITE` trade is no longer active in Zerodha's `net_positions`, it is automatically set to `status='CLOSED'`, `reason='Closed on Kite'` in SQLite DB. Reconciled and closed all stale DB rows.
+
+
+### F129: Natural Gas Futures Expiry Lock & ShoonyaFetcher MCX Contract Resolution Fix (P1-HIGH)
+- **Issue**: For MCX Natural Gas, options expire ~5 days prior to futures. When options rolled over to August (`2026-08-24`), `ShoonyaFetcher._search_scrip("MCX", "NATURALGAS")` defaulted to `futures[0]` (`NATURALGAS26JULFUT`, `267.20`) for `underlying_price`, while selecting `2026-08-24` as `expiry`. This caused `scan_context` and open positions (trades #312, #314, #316, #317) to pair July entry prices with August options/exits.
+- **Fix**:
+  1. Updated `ShoonyaFetcher.fetch_option_chain()` in [shoonya_fetcher.py](file:///c:/Users/manve/Downloads/NSEBOT/src/fetchers/shoonya_fetcher.py#L1226) to dynamically match the futures contract (`NATURALGAS26AUGFUT`) to the resolved option expiry month (`2026-08-24`), ensuring `underlying_price` (`270.10`) matches the active option expiry contract.
+  2. Updated `ng_parity_strategy.py`, `ng_momentum_strategy.py`, and `ng_eia_strategy.py` to lock entry and exit calls to `trade_expiry`.
+  3. Corrected trade records `#312`, `#314`, `#316`, and `#317` in `paper_trades` to use matching contract prices (`#312` July `268.10`, `#314` July `269.80`, `#316` August `270.10`, `#317` August `270.10`).
+
+
+
+
+
+
+
+
+### F135: Cockpit Base Quantity & Tranche / Pyramiding Scaling Alignment (P0-VERIFIED)
+- **Rule Enforced**: Cockpit Settings (`live_symbol_lots` / `paper_symbol_lots`) represent the **Base Quantity** (`base_lots`) for initial trade entries (Level 1 / primary entry).
+- **Tranche & Pyramiding Scaling**:
+  - Tranches (TFSS `TRANCHE_SEQUENCE`: 50%, 30%, 20%) and Pyramiding entries (Level 2: 50%, Level 3+: 25%) scale **on top of Cockpit base quantity** (`int(base_lots * scale + 0.5)`).
+- **Examples**:
+  - `NATURALGAS` (Cockpit Base Quantity = 5 lots):
+    - Primary Entry: **5 Lots** (100%)
+    - Pyramid Level 2 / TFSS Tranche 0: **3 Lots** (50% of 5)
+    - TFSS Tranche 1: **2 Lots** (30% of 5)
+    - Pyramid Level 3 / TFSS Tranche 2: **1 Lot** (20%–25% of 5)
+  - `NIFTY` / `BANKNIFTY` / `SENSEX` (Cockpit Base Quantity = 4 lots):
+    - Primary Entry: **4 Lots** (100%)
+    - Pyramid Level 2 / TFSS Tranche 0: **2 Lots** (50% of 4)
+    - Pyramid Level 3 / TFSS Tranche 1 / 2: **1 Lot** (20%–30% of 4)
+- **Fix**: Updated `calculate_trade_lots()` in [capital_allocator.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/capital_allocator.py#L235) to enforce half-up scaling on top of Cockpit base lot size.
+
+
+
+
+### F135: Cockpit Base Quantity & Tranche / Pyramiding Scaling Alignment (P0-VERIFIED)
+- **Rule Enforced**: Cockpit Settings (`live_symbol_lots` / `paper_symbol_lots`) represent the **Base Quantity** (`base_lots`) for initial trade entries (Level 1 / primary entry).
+- **Tranche & Pyramiding Scaling**:
+  - Tranches (TFSS `TRANCHE_SEQUENCE`: 50%, 30%, 20%) and Pyramiding entries (Level 2: 50%, Level 3+: 25%) scale **on top of Cockpit base quantity** (`int(base_lots * scale + 0.5)`).
+
+### F136: Shoonya OAuth Login Failure Diagnostic (Password Expiry) (P0-DIAGNOSED)
+- **Root Cause**: Playwright headless login inspection revealed that Shoonya's authentication portal (`api.shoonya.com/OAuthlogin`) blocked the OAuth redirect with the message: `"Your password has expired or you are logging in for the first time. Please change your password."`
+- **Impact**: Shoonya API token generation (`GenAcsTok`) fails until the user updates their account password on Finvasia/Shoonya portal and updates `SHOONYA_PASSWORD` in `.env` / runtime config.
+
+
+
+### F137: Broker UI Position Grouping & Live Trade Badge Classification Fix (P0-FIXED)
+- **Issue**: In `broker.html`, open trade classification filtered live trades using `p.trade_status === 'LIVE'`. However, active real trades generated by the core/timeframe engine carry statuses like `TRIGGERED_CORE` or `TRIGGERED_TIMEFRAME` with `broker_status = 'PENDING'` / `'COMPLETE'`. As a result, valid live broker trades were incorrectly categorized under `🤖 BOT SHADOW TRADES` and rendered with the orange shadow dot badge in the UI.
+- **Fix**:
+  1. Updated `broker.html` lines 3515, 3590, and 3797 to classify live positions using `isShadow = p.trade_status === 'SHADOW' || p.broker_status === 'SHADOW'` and `isLive = !isShadow && p.broker_status !== 'REJECTED'`.
+  2. Verified that live trades with status `TRIGGERED_CORE` / `PENDING` / `COMPLETE` correctly render under **🤖 BOT LIVE TRADES** with the green live status badge.
+
+
+
+### F138: Telegram Digest Trade Status Overwrite Fix (P0-FIXED)
+- **Issue**: In `pipeline.py` (`_build_structured_payload`), `trade_entered` was initially set to `True` when `trade_decision.status` matched `TRIGGERED_EXPERIMENTAL` / `TRIGGERED_CORE`. However, a subsequent DB check looked for `digest_id` in `paper_trades` or `live_trades`. When the DB query returned no matching row (because `digest_id` check ran prior to record sync or `digest_id` was `None`), an `else: trade_entered = False` branch forcefully overwritten `trade_entered` back to `False`. This caused Telegram alerts to incorrectly report `Trade: ✗ Not entered` with blocked reasons even though orders were executed on Zerodha.
+- **Fix**:
+  1. Refactored `_build_structured_payload()` in [pipeline.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/pipeline.py#L384) to use `status_entered` and `db_entered`.
+  2. Enforced `trade_entered = status_entered or db_entered or tf_entered`, ensuring DB misses never overwrite valid decision status signals.
+
+
+
+### F139: SQLite Parameter Binding Error on Kite GTT Dict Return (P0-FIXED)
+- **Issue**: Zerodha Kite Connect `kite.place_gtt()` returns a dictionary (e.g. `{"trigger_id": 123456}`). When `gtt_order_id` returned from `place_kite_gtt()` was passed as a dictionary object to `update_live_trade_entry()`, SQLite raised: `sqlite3.ProgrammingError: Error binding parameter 2: type 'dict' is not supported`.
+- **Fix**:
+  1. Updated `place_kite_gtt()` in [live_trading.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/live_trading.py#L765) to extract `trigger_id` as a clean string if `kite.place_gtt()` returns a dictionary object.
+  2. Added defensive `_clean_val()` sanitizer to `update_live_trade_entry()` in [schema.py](file:///c:/Users/manve/Downloads/NSEBOT/src/models/schema.py#L1615) to guarantee no `dict` or `list` object is ever bound directly to SQLite statements.
+
+### F140: 10-Minute MCX Commodity Scan & Fetch Interval Configuration (P0-VERIFIED)
+- **Requirement**: Increase MCX (`NATURALGAS` / `CRUDEOIL`) option-chain dual-source polling and scan interval to 10 minutes.
+- **Changes Applied**:
+  1. Updated `ALLOWED_SCAN_FREQUENCIES` in [runtime_config.py](file:///c:/Users/manve/Downloads/NSEBOT/config/runtime_config.py#L10) to include `10` (`[5, 10, 15, 30, 60, 180, 1440]`).
+  2. Set `scan_frequency_mcx = 10` in `data/runtime_config.json` via `set_scan_frequency_mcx(10)`.
+  3. Throttled scan retry interval in [job_runner.py](file:///c:/Users/manve/Downloads/NSEBOT/src/scheduler/job_runner.py#L1467) to `interval_min * 60.0` seconds to eliminate 2-minute polling loops.
+  4. Updated fallback options list in UI dashboard [index.html](file:///c:/Users/manve/Downloads/NSEBOT/src/dashboard/index.html#L1244) to support `10m` selection.
+
+### F33: Trade Digest Status Discrepancy ("X Not entered" for executed trades) (P1-HIGH)
+- **Symptom:** Telegram alert reports `Trade: ✗ Not entered` despite the trade being inserted into `paper_trades` or `live_trades` database.
+- **Root Cause:** `digest_id` was created downstream in `build_digest()` or `_build_structured_payload()`, but `None` was passed as `digest_id` to strategy execution runners (`run_paper_trading`, `run_live_trading`). This left trade DB records with `digest_id = None`. When `_build_structured_payload()` queried the database `WHERE digest_id=?`, no matching row was found, causing `db_entered` to evaluate to `False`.
+- **Fix:** Generated `scan_digest_id = str(uuid.uuid4())[:8]` upfront in [pipeline.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/pipeline.py) and passed it to all strategy execution functions as well as `_build_structured_payload` and `build_digest`.
+
+### F34: TFSS Base Quantity Retention Across Scaling Tranches (P2-MEDIUM)
+- **Symptom:** Subsequent TFSS scaling tranches (tranche 1, 2) recalculated base lot sizing dynamically using the new option premium instead of maintaining the initial Tranche 0 base lot sizing.
+- **Root Cause:** `calculate_trade_lots` applied tranche percentages (`TRANCHE_SEQUENCE`) on top of dynamically calculated `lots` for each tranche.
+- **Fix:** Updated [capital_allocator.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/capital_allocator.py) to look up Tranche 0's recorded quantity from `paper_trades`/`live_trades` when `tranche_index > 0`, backing out the initial base quantity (`tranche_0_lots / TRANCHE_SEQUENCE[0]`) and applying the current tranche sequence multiplier on that exact base quantity.
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

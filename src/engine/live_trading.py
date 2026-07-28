@@ -741,7 +741,7 @@ def place_kite_gtt(
         sorted_triggers = [p[0] for p in pairs]
         sorted_limits = [p[1] for p in pairs]
 
-        gtt_id = kite.place_gtt(
+        res = kite.place_gtt(
             trigger_type=kite.GTT_TYPE_OCO,
             tradingsymbol=tradingsymbol,
             exchange=exchange,
@@ -764,6 +764,12 @@ def place_kite_gtt(
                 },
             ],
         )
+        if isinstance(res, dict):
+            gtt_id = str(res.get("trigger_id") or res.get("id") or res)
+        elif res is not None:
+            gtt_id = str(res)
+        else:
+            gtt_id = None
         return gtt_id
     except Exception as e:
         _handle_kite_ip_error(e)
@@ -1780,20 +1786,31 @@ def run_live_timeframe_strategy(
             sl_underlying = float(ohlc_3h["high"])
             tgt_underlying = underlying - 2 * (sl_underlying - underlying)
 
-    # Convert underlying SL/Target to premium equivalents (unified via trade_plan.py)
+    # TIMEFRAME Strategy Role Separation (AGENTS.md):
+    # Exits are driven by 1H candle breakdown/breakout triggers (TF-1H-Cross).
+    # Static profit targets are set to None (unlimited upside run).
+    # SL is set as an Emergency Safety Floor (50% max option value loss / 3x ATR underlying).
+    from src.engine.trade_plan import get_atr
+    atr_val = get_atr(ctx) or (underlying * 0.005)
+    sl_underlying = underlying - (3.0 * atr_val) if direction == "LONG" else underlying + (3.0 * atr_val)
+    tgt_underlying = None
     side = "BUY" if direction == "LONG" else ("SELL" if opt_type == "FUT" else "BUY")
-    sl_premium, target_premium = convert_underlying_sl_to_premium(
-        underlying,
-        sl_underlying,
-        tgt_underlying,
-        entry_premium,
-        side,
-        opt_type,
-        strike,
-        option_rows,
-    )
 
-    lots = max(1, DEFAULT_LOTS_PER_TRADE)
+    if opt_type in ("CE", "PE"):
+        sl_premium = round(entry_premium * 0.50, 2)
+        target_premium = None
+    from src.engine.capital_allocator import calculate_trade_lots
+    pyramid_level = ctx.get("_pyramid_level", 1)
+    lots = calculate_trade_lots(
+        symbol,
+        entry_premium,
+        side=side,
+        is_paper=False,
+        pyramid_level=pyramid_level,
+        setup_type="TIMEFRAME",
+        option_type=opt_type,
+        strike=strike,
+    )
     exchange = _get_exchange(symbol)
     resolved = resolve_instrument(symbol, expiry, strike, opt_type)
     reject_reason = _reject_fallback_instrument(symbol, resolved, shadow_mode)
@@ -1831,7 +1848,7 @@ def run_live_timeframe_strategy(
         return {"action": "BLOCKED_ORDER_FAILED", "reason": broker_message}
 
     gtt_order_id = None
-    exit_mode = "POLL" if opt_type == "FUT" else "GTT"
+    exit_mode = "POLL"  # Timeframe strategy uses scan-tick 1H candle exit triggers, not static GTT profit targets
     if opt_type != "FUT" and broker_status == "COMPLETE":
         # Only place GTT if order is complete
         try:
