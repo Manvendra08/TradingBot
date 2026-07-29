@@ -21,7 +21,7 @@ def check_ng_position_limit(table: str = "paper_trades", setup_type: str = "CORE
     if table not in ("paper_trades", "live_trades"):
         table = "paper_trades"
     
-    with get_conn() as conn:
+    with get_conn(read_only=True) as conn:
         row = conn.execute(
             f"SELECT COUNT(*) FROM {table} WHERE symbol = 'NATURALGAS' AND status = 'OPEN' AND (setup_type IS NULL OR setup_type NOT IN ('TFSS', 'TIMEFRAME'))"
         ).fetchone()

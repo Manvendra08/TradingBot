@@ -104,7 +104,7 @@ def _check_risk_limits_for_table(
 
     today_start = _ist_day_start_utc()
 
-    with get_conn() as conn:
+    with get_conn(read_only=True) as conn:
         # Hook for NATURALGAS specific risk limits (position limit and daily loss cap) (XBUG-002)
         if symbol == "NATURALGAS":
             from src.engine.ng_risk_manager import check_ng_position_limit, check_ng_daily_loss_cap
