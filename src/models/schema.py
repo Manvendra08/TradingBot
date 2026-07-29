@@ -27,6 +27,7 @@ Autopsy fix 4: close_paper_trade() and close_live_trade() now deduct
 import contextlib
 import logging
 import sqlite3
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -445,18 +446,56 @@ def get_read_conn():
 
 @contextlib.contextmanager
 def get_conn(read_only: bool = False):
-    conn = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES, timeout=30.0)
-    conn.row_factory = sqlite3.Row
-    try:
-        yield conn
-        if not read_only:
-            conn.commit()
-    except Exception:
-        if not read_only:
-            conn.rollback()
-        raise
-    finally:
-        conn.close()
+    max_attempts = 5
+    for attempt in range(max_attempts):
+        conn = sqlite3.connect(
+            DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES, timeout=60.0, isolation_level=None
+        )
+        conn.execute("PRAGMA busy_timeout = 60000")
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
+        conn.row_factory = sqlite3.Row
+        try:
+            if not read_only:
+                conn.execute("BEGIN IMMEDIATE")
+            else:
+                conn.execute("BEGIN DEFERRED")
+            yield conn
+            if not read_only:
+                try:
+                    conn.execute("COMMIT")
+                except sqlite3.OperationalError as ce:
+                    if "no transaction is active" not in str(ce).lower():
+                        raise
+            else:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+            break  # Success — break out of retry loop
+        except sqlite3.OperationalError as oe:
+            if not read_only:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+            err_msg = str(oe).lower()
+            if ("locked" in err_msg or "busy" in err_msg) and attempt < max_attempts - 1:
+                time.sleep(0.15 * (attempt + 1))
+                continue
+            raise
+        except Exception:
+            if not read_only:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+            raise
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 _MIGRATIONS = [
