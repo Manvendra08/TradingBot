@@ -2579,46 +2579,43 @@
                     const capInput =
                         document.getElementById("sett-capital");
                     if (capInput)
-                        capInput.value = data.live_capital_per_trade_inr;
+                        capInput.value = data.live_capital_per_trade_inr ?? 20000;
 
                     const utilInput =
                         document.getElementById("sett-max-util");
                     if (utilInput) {
                         utilInput.value =
-                            data.live_max_capital_utilisation_pct;
-                        document.getElementById(
-                            "sett-max-util-slider",
-                        ).value = data.live_max_capital_utilisation_pct;
+                            data.live_max_capital_utilisation_pct ?? 80;
+                        const slider = document.getElementById("sett-max-util-slider");
+                        if (slider) slider.value = data.live_max_capital_utilisation_pct ?? 80;
                     }
 
                     const posInput =
                         document.getElementById("sett-max-pos");
                     if (posInput)
-                        posInput.value = data.live_max_concurrent_positions;
+                        posInput.value = data.live_max_concurrent_positions ?? 2;
 
                     const lossInput = document.getElementById(
                         "sett-max-daily-loss",
                     );
                     if (lossInput)
                         lossInput.value =
-                            data.live_max_daily_loss_rupees || 200000;
+                            data.live_max_daily_loss_rupees ?? 200000;
 
                     const oiInput =
                         document.getElementById("sett-oi-spike");
                     if (oiInput) {
-                        oiInput.value = data.oi_spike_threshold_pct;
-                        document.getElementById(
-                            "sett-oi-spike-slider",
-                        ).value = data.oi_spike_threshold_pct;
+                        oiInput.value = data.oi_spike_threshold_pct ?? 10.0;
+                        const slider = document.getElementById("sett-oi-spike-slider");
+                        if (slider) slider.value = data.oi_spike_threshold_pct ?? 10.0;
                     }
 
                     const priceInput =
                         document.getElementById("sett-price-spike");
                     if (priceInput) {
-                        priceInput.value = data.price_spike_threshold_pct;
-                        document.getElementById(
-                            "sett-price-spike-slider",
-                        ).value = data.price_spike_threshold_pct;
+                        priceInput.value = data.price_spike_threshold_pct ?? 2.0;
+                        const slider = document.getElementById("sett-price-spike-slider");
+                        if (slider) slider.value = data.price_spike_threshold_pct ?? 2.0;
                     }
 
                     // Select boxes
@@ -2657,9 +2654,8 @@
                     if (boostInput) {
                         boostInput.value =
                             data.live_ai_min_confidence_boost || 80;
-                        document.getElementById(
-                            "sett-ai-boost-slider",
-                        ).value = data.live_ai_min_confidence_boost || 80;
+                        const slider = document.getElementById("sett-ai-boost-slider");
+                        if (slider) slider.value = data.live_ai_min_confidence_boost || 80;
                     }
 
                     const vetoInput =
@@ -2667,23 +2663,24 @@
                     if (vetoInput) {
                         vetoInput.value =
                             data.live_ai_min_confidence_veto || 85;
-                        document.getElementById(
-                            "sett-ai-veto-slider",
-                        ).value = data.live_ai_min_confidence_veto || 85;
+                        const slider = document.getElementById("sett-ai-veto-slider");
+                        if (slider) slider.value = data.live_ai_min_confidence_veto || 85;
                     }
 
                     // Empirical Boost & ML Predictor settings (ADR-007)
                     const empTradesInput = document.getElementById("sett-emp-trades");
                     if (empTradesInput) {
                         empTradesInput.value = data.emp_boost_min_trades || 20;
-                        document.getElementById("sett-emp-trades-slider").value = data.emp_boost_min_trades || 20;
+                        const slider = document.getElementById("sett-emp-trades-slider");
+                        if (slider) slider.value = data.emp_boost_min_trades || 20;
                     }
                     const empWinrateInput = document.getElementById("sett-emp-winrate");
                     if (empWinrateInput) {
                         // Convert decimal to percentage for UI (e.g. 0.60 -> 60)
                         const wrPct = Math.round((data.emp_boost_min_winrate || 0.60) * 100);
                         empWinrateInput.value = wrPct;
-                        document.getElementById("sett-emp-winrate-slider").value = wrPct;
+                        const slider = document.getElementById("sett-emp-winrate-slider");
+                        if (slider) slider.value = wrPct;
                     }
                     const mlModeSelect = document.getElementById("sett-ml-mode");
                     if (mlModeSelect) {
@@ -2698,7 +2695,8 @@
                     const llmTimeoutInput = document.getElementById("sett-llm-enrich-timeout");
                     if (llmTimeoutInput) {
                         llmTimeoutInput.value = data.llm_enrich_timeout_s || 120;
-                        document.getElementById("sett-llm-enrich-timeout-slider").value = data.llm_enrich_timeout_s || 120;
+                        const slider = document.getElementById("sett-llm-enrich-timeout-slider");
+                        if (slider) slider.value = data.llm_enrich_timeout_s || 120;
                     }
                     const autopsyCheckbox = document.getElementById("sett-autopsy-enabled");
                     if (autopsyCheckbox) {
