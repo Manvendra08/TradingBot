@@ -183,6 +183,18 @@ class LLMStrategyOptimization(BaseModel):
     )
 
 
+class LLMTradeAutopsy(BaseModel):
+    reasons_held: bool | None = Field(
+        default=None, description="True if original trade thesis held up, False otherwise"
+    )
+    primary_failure: str | None = Field(
+        default=None, description="Primary failure reason if thesis failed"
+    )
+    note: str = Field(
+        default="", description="Brief analysis note, 3 sentences max"
+    )
+
+
 # ── Client management ────────────────────────────────────────────────────
 
 _client = None
@@ -193,6 +205,28 @@ def _get_client(api_key: str):
     if _client is None:
         _client = genai.Client(api_key=api_key)
     return _client
+
+# ... (skipping unchanged code) ...
+
+    schema_clarification = ""
+    if schema == LLMTradeVerdict:
+        schema_clarification = (
+            "Task: NEW TRADE VERDICT (LLMTradeVerdict). "
+            "You MUST output fields: action, confidence, signal_chain, instrument, entry_trigger, "
+            "entry_premium_range, stop_loss, target_1, target_2, risk_reward, thesis, invalidation, risk_rating, catalyst. "
+            "Do NOT output exit advice fields like reasons_held or position_age_min."
+        )
+    elif schema == LLMExitAdvice:
+        schema_clarification = (
+            "Task: OPEN POSITION EXIT ADVICE (LLMExitAdvice). "
+            "You MUST output fields: action, urgency, reasoning, new_sl_premium, new_target_premium, "
+            "reasons_held, position_age_min, price_distance_to_sl_pct, price_distance_to_target_pct."
+        )
+    elif schema == LLMTradeAutopsy:
+        schema_clarification = (
+            "Task: TRADE AUTOPSY ANALYSIS (LLMTradeAutopsy). "
+            "You MUST output fields: reasons_held, primary_failure, note."
+        )
 
 
 # ── Deep prompt construction ─────────────────────────────────────────────
@@ -1066,6 +1100,11 @@ def _call_llm_api(
             "Task: OPEN POSITION EXIT ADVICE (LLMExitAdvice). "
             "You MUST output fields: action, urgency, reasoning, new_sl_premium, new_target_premium, "
             "reasons_held, position_age_min, price_distance_to_sl_pct, price_distance_to_target_pct."
+        )
+    elif schema == LLMTradeAutopsy:
+        schema_clarification = (
+            "Task: TRADE AUTOPSY ANALYSIS (LLMTradeAutopsy). "
+            "You MUST output fields: reasons_held, primary_failure, note."
         )
 
     system_prompt = (

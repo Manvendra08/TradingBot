@@ -92,7 +92,7 @@ def get_shadow_decisions_for_trade(trade_id: int, source_table: str) -> dict | N
 def _call_llm_autopsy(trade: dict, shadow: dict | None) -> dict:
     """Call LLM for single trade autopsy analysis."""
     try:
-        from src.engine.llm_enrichment import _call_llm_api
+        from src.engine.llm_enrichment import LLMTradeAutopsy, _call_llm_api
     except ImportError:
         return {"reasons_held": None, "primary_failure": "LLM unavailable", "note": ""}
 
@@ -116,18 +116,26 @@ Respond in JSON:
 {{"reasons_held": bool, "primary_failure": "string or null", "note": "3 sentences max"}}
 """
     try:
-        response = _call_llm_api(symbol, prompt)
+        response = _call_llm_api(symbol, prompt, response_schema=LLMTradeAutopsy)
         if response:
             text = getattr(response, "text", "") or str(response)
             try:
-                parsed = json.loads(text.strip().strip("```json").strip("```"))
+                parsed = json.loads(text.strip().strip("```json").strip("```")) if isinstance(text, str) else (
+                    response.model_dump() if hasattr(response, "model_dump") else dict(response)
+                )
                 return {
                     "reasons_held": parsed.get("reasons_held"),
                     "primary_failure": parsed.get("primary_failure"),
                     "note": parsed.get("note", "")[:500],
                 }
-            except json.JSONDecodeError:
-                return {"reasons_held": None, "primary_failure": "JSON parse failed", "note": text[:500]}
+            except Exception:
+                if hasattr(response, "reasons_held"):
+                    return {
+                        "reasons_held": getattr(response, "reasons_held", None),
+                        "primary_failure": getattr(response, "primary_failure", None),
+                        "note": (getattr(response, "note", "") or "")[:500],
+                    }
+                return {"reasons_held": None, "primary_failure": "JSON parse failed", "note": str(text)[:500]}
     except Exception as e:
         log.warning("LLM autopsy call failed: %s", e)
         return {"reasons_held": None, "primary_failure": str(e)[:100], "note": ""}
@@ -176,10 +184,10 @@ def _call_llm_autopsy_batch(trades_with_shadows: list[tuple[dict, dict | None]])
         )
         
         try:
-            from src.engine.llm_enrichment import _call_llm_api
+            from src.engine.llm_enrichment import LLMTradeAutopsy, _call_llm_api
             # Use first trade's symbol for routing; purpose=eod_review for batch analysis
             first_symbol = batch[0][0].get("symbol", "AUTOPSY_BATCH") if batch else "AUTOPSY_BATCH"
-            response = _call_llm_api(first_symbol, prompt, purpose="eod_review")
+            response = _call_llm_api(first_symbol, prompt, response_schema=LLMTradeAutopsy, purpose="eod_review")
             if response:
                 text = getattr(response, "text", "") or str(response)
                 match = re.search(r'\[.*\]', text, re.DOTALL) if 're' in dir() else None
