@@ -208,7 +208,7 @@ class ResilientTLSAdapter(HTTPAdapter):
                     raise
 
                 if attempt < self.SSL_RETRY_ATTEMPTS - 1:
-                    delay = self.SSL_BASE_DELAY * (3**attempt)
+                    delay = min(3.0, self.SSL_BASE_DELAY * (2**attempt))
                     if is_ssl_eof:
                         reason = "SSL EOF"
                     elif is_timeout:
