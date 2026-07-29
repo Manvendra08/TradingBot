@@ -424,18 +424,13 @@ def step_regime(ctx: PipelineContext) -> StepResult:
     confidence = int(ctx.scan_context.get("intel", {}).get("confidence") or 0)
 
     if regime == REGIME_NO_TRADE:
-        if PAPER_RESEARCH_MODE and confidence >= MIN_CONFIDENCE_CORE:
-            regime_sc = 50
+        regime_sc = 50
+        if ctx.engine == "TIMEFRAME" or (PAPER_RESEARCH_MODE and confidence >= MIN_CONFIDENCE_CORE):
             passed = True
-            reason = "Regime gate bypassed in research mode"
+            reason = "Neutral regime score (50) assigned due to unopinionated/insufficient scan history"
         else:
-            return StepResult(
-                name="regime",
-                passed=False,
-                score=0,
-                reason="Insufficient scan history for regime detection",
-                data={"regime": regime}
-            )
+            passed = False
+            reason = "Insufficient scan history for regime detection (neutral score 50 assigned)"
     else:
         plan = ctx.scan_context.get("_pipeline_plan") or {}
         option_type = plan.get("option_type", "CE")
