@@ -13,32 +13,14 @@ import socket as _socket
 import subprocess
 import threading
 import time
-
-# ── Force IPv4 globally (Kite whitelists IPv4 only) ───────────────────────
-# Applied AFTER standard imports to avoid ordering side effects with
-# sqlite3 (which is a C extension and does not use socket.getaddrinfo
-# during import on CPython). Keeping the patch here ensures all
-# Python-level socket resolution after this point uses IPv4 only.
-import sqlite3
-
-_orig_getaddrinfo = _socket.getaddrinfo
-
-
-def _ipv4_only_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
-    return _orig_getaddrinfo(host, port, _socket.AF_INET, type, proto, flags)
-
-
-_socket.getaddrinfo = _ipv4_only_getaddrinfo
-
-
-
 import sys
-import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
+import urllib3
+urllib3.util.connection.allowed_gai_family = lambda: __import__("socket").AF_INET
 from src.engine.intelligence import IntelligenceResult
 
 # ── Resolve project root so imports work regardless of cwd ────────────────
@@ -2127,7 +2109,9 @@ def _fetch_real_kite_positions(kite) -> list[dict]:
             strike = None
 
             m_opt = re.match(
-                r"^([A-Z\-]+)(\d{2}[A-Z]{3})(\d+)(CE|PE)$", tradingsymbol, re.IGNORECASE
+                r"^([A-Z\-]+)(\d{2}[A-Z]{3}|\d{2}[0-9OND][0-9]{2})(\d+)(CE|PE)$",
+                tradingsymbol,
+                re.IGNORECASE,
             )
             if m_opt:
                 symbol = m_opt.group(1).upper()
@@ -2135,7 +2119,9 @@ def _fetch_real_kite_positions(kite) -> list[dict]:
                 strike = float(m_opt.group(3))
             else:
                 m_fut = re.match(
-                    r"^([A-Z\-]+)(\d{2}[A-Z]{3})(FUT)?$", tradingsymbol, re.IGNORECASE
+                    r"^([A-Z\-]+)(\d{2}[A-Z]{3}|\d{2}[0-9OND][0-9]{2})(FUT)?$",
+                    tradingsymbol,
+                    re.IGNORECASE,
                 )
                 if m_fut:
                     symbol = m_fut.group(1).upper()
@@ -2212,7 +2198,7 @@ def _fetch_real_kite_positions(kite) -> list[dict]:
                     # Helper to smart-match expiries (YYYY-MM-DD vs YYMMM etc)
                     def _expiries_match(e1: str, e2: str) -> bool:
                         if not e1 or not e2 or e1 == "—" or e2 == "—":
-                            return True
+                            return False
                         e1_clean = e1.strip().upper().replace("-", "")
                         e2_clean = e2.strip().upper().replace("-", "")
                         if e1_clean == e2_clean:
