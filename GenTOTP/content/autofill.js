@@ -17,19 +17,16 @@ function detectBroker() {
 // Prevents GenTOTP from filling TOTP into order quantity/price fields after login!
 function isLoginPage(broker) {
   const path = window.location.pathname.toLowerCase();
-  const host = window.location.hostname.toLowerCase();
-
+  
   if (broker === "zerodha") {
     // DO NOT run on logged-in dashboard/trading pages
     if (path.includes("/dashboard") || path.includes("/orders") || path.includes("/positions") || path.includes("/holdings") || path.includes("/funds") || path.includes("/marketwatch") || path.includes("/apps")) {
       return false;
     }
-    // Only run on 2FA login page
-    return path.startsWith("/twofa") || path === "/" || path === "/login" || !!document.querySelector(".twofa-form");
+    return true; // if not on a known trading page, assume it could be login
   }
 
   if (broker === "shoonya") {
-    // Check if user is already logged in on dashboard
     const bodyText = (document.body ? document.body.innerText || "" : "").toLowerCase();
     if (bodyText.includes("watchlist") || bodyText.includes("orderbook") || bodyText.includes("net position") || bodyText.includes("portfolio")) {
       return false;
@@ -65,8 +62,6 @@ const ZERODHA_SELECTORS = [
 ];
 
 const SHOONYA_SELECTORS = [
-  'input.flt-text-editing.transparentTextEditing',
-  'input.flt-text-editing',
   'input[placeholder="OTP/TOTP"]',
   'input[placeholder*="OTP" i]',
   'input[placeholder*="TOTP" i]',
@@ -88,15 +83,32 @@ const SHOONYA_SELECTORS = [
   '#twofa',
 ];
 
+// ─── Shadow DOM / Flutter Helper ─────────────────────────────────────────────
+function getShoonyaFlutterInput() {
+  const pane = document.querySelector('flt-glass-pane');
+  if (pane && pane.shadowRoot) {
+    const inputs = Array.from(pane.shadowRoot.querySelectorAll('input.flt-text-editing')).filter(isVisible);
+    if (inputs.length >= 3) return inputs[2];
+    if (inputs.length === 1) return inputs[0];
+  }
+  return null;
+}
+
 // ─── TOTP Input Finder ───────────────────────────────────────────────────────
 function findInput(broker) {
   if (!isLoginPage(broker)) return null;
+
+  // For Shoonya, Flutter Web inputs are inside a Shadow DOM!
+  if (broker === "shoonya") {
+    const flutterEl = getShoonyaFlutterInput();
+    if (flutterEl) return flutterEl;
+  }
 
   const selectors = broker === "zerodha"
     ? [...ZERODHA_SELECTORS, ...SHOONYA_SELECTORS]
     : [...SHOONYA_SELECTORS, ...ZERODHA_SELECTORS];
 
-  // 1. Explicit broker selectors
+  // 1. Explicit broker selectors (Main DOM)
   for (const sel of selectors) {
     try {
       const el = document.querySelector(sel);
@@ -129,15 +141,13 @@ function findInput(broker) {
     return ["text","number","password","tel",""].includes(t);
   });
 
-  // Zerodha 2FA screen: exactly 1 input visible inside twofa-form or /twofa path
-  if (broker === "zerodha" && userInputs.length === 1 && window.location.pathname.startsWith("/twofa")) {
-    return userInputs[0];
+  // Zerodha 2FA screen: exactly 1 input visible
+  if (broker === "zerodha" && userInputs.length === 1) {
+    const sig = (userInputs[0].name + userInputs[0].id + userInputs[0].placeholder).toLowerCase();
+    if (!/username|userid|user_id|password|passwd/.test(sig)) {
+      return userInputs[0];
+    }
   }
-
-  // Shoonya Flutter Web: 3 flt-text-editing fields (User ID, Password, OTP) → 3rd is TOTP
-  const flutterInputs = Array.from(document.querySelectorAll("input.flt-text-editing")).filter(isVisible);
-  if (flutterInputs.length === 3) return flutterInputs[2];
-  if (flutterInputs.length === 1 && broker === "shoonya") return flutterInputs[0];
 
   if (userInputs.length === 3 && broker === "shoonya") {
     const third = userInputs[2];
