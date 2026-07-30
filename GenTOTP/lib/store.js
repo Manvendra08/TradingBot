@@ -20,7 +20,7 @@ const AccountStore = (() => {
   // ---------------------------------------------------------------------------
   // Folder-level persistent JSON sync (Zero-Config cross-browser loading)
   // ---------------------------------------------------------------------------
-  async function seedFromLocalFolder(masterPw = "manav") {
+  async function seedFromLocalFolder(masterPw = "12345678") {
     try {
       const url = chrome.runtime.getURL("vault_data.json");
       const resp = await fetch(url);

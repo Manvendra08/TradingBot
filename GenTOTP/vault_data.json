@@ -2,7 +2,7 @@
   "vault_initialized": true,
   "require_pw": false,
   "auto_fill_detect": true,
-  "cached_pw": "manav",
+  "cached_pw": "12345678",
   "accounts": [
     {
       "id": "zerodha-main",
