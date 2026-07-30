@@ -19,7 +19,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       try {
         const settings = await new Promise(r => chrome.storage.local.get(["gentop_auto_fill_detect", "gentop_cached_pw"], r));
-        if (!settings.gentop_auto_fill_detect) {
+        
+        // Default to true if undefined (e.g. before initial seed)
+        const autoFillEnabled = settings.gentop_auto_fill_detect !== false;
+        if (!autoFillEnabled) {
           sendResponse({ ok: false, error: "Auto-fill on detect disabled" });
           return;
         }

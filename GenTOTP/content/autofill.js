@@ -170,33 +170,36 @@ function setValueUniversal(el, value) {
   if (!el) return;
   el.focus();
 
-  // 1. Native Property Setter
+  const isFlutter = el.classList.contains("flt-text-editing") || el.classList.contains("transparentTextEditing");
+
+  if (isFlutter) {
+    // 1. For Flutter Web: Select existing text first to overwrite instead of append
+    try { document.execCommand("selectAll", false, null); } catch (_) {}
+    
+    // 2. Insert text (Flutter's TextController listens to this)
+    try {
+      const inserted = document.execCommand("insertText", false, value);
+      if (!inserted) {
+        // Fallback if execCommand failed
+        el.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true, inputType: "insertText", data: value }));
+      }
+    } catch (_) {}
+    
+    // 3. Trigger blur so Flutter finalizes the input
+    el.dispatchEvent(new Event("blur", { bubbles: true }));
+    return;
+  }
+
+  // Native Property Setter for React, Angular, Vue, Vanilla
   const nativeSetter =
     Object.getOwnPropertyDescriptor(el.constructor.prototype, "value")?.set ||
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
   if (nativeSetter) nativeSetter.call(el, value);
   else el.value = value;
 
-  // 2. React / Standard DOM events
+  // React / Standard DOM events
   el.dispatchEvent(new Event("input",  { bubbles: true, cancelable: true }));
   el.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
-
-  // 3. Flutter Web / Modern InputEvent
-  try {
-    el.dispatchEvent(new InputEvent("input", {
-      bubbles: true,
-      cancelable: true,
-      inputType: "insertText",
-      data: value
-    }));
-  } catch (_) {}
-
-  // 4. Flutter execCommand fallback
-  try {
-    document.execCommand("insertText", false, value);
-  } catch (_) {}
-
-  // 5. Blur event to trigger framework validations
   el.dispatchEvent(new Event("blur", { bubbles: true }));
 }
 
