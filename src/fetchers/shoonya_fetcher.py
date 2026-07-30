@@ -264,18 +264,14 @@ class ShoonyaFetcher(BaseFetcher):
                 log.debug("[shoonya] loaded cached token from %s", self._TOKEN_CACHE)
 
     def _clear_cached_token(self) -> None:
-        """Remove the cached token file (e.g. after expiry)."""
-        self.access_token = None
-        for _ in range(10):
-            try:
-                if os.path.exists(self._TOKEN_CACHE):
-                    os.remove(self._TOKEN_CACHE)
-                    log.debug("[shoonya] cleared cached token")
-                break
-            except (PermissionError, OSError):
-                import time
+        """Invalidate the cached token in-place without deleting the file.
 
-                time.sleep(0.05)
+        Other apps may reference the shared token file, so we overwrite it
+        with a cleared sentinel rather than removing it outright."""
+        self.access_token = None
+        stale_data = {"access_token": None, "susertoken": None, "userid": None, "actid": None}
+        _write_shared_token_file(self._TOKEN_CACHE, stale_data)
+        log.debug("[shoonya] invalidated cached token (file preserved)")
 
     def _check_session_quota(self) -> None:
         """Check if the session is approaching its call quota and re-auth if needed.
@@ -1576,42 +1572,67 @@ class ShoonyaFetcher(BaseFetcher):
                 try:
                     now_ist = datetime.now(IST)
                     today_ist = now_ist.date()
-                    # Find first Thursday >= today
-                    cand_dt = today_ist
-                    while cand_dt.weekday() != 3:  # 3 is Thursday
-                        cand_dt += timedelta(days=1)
-                    
-                    # If today is Thursday and past 15:30 IST, roll to next Thursday
-                    from datetime import time as dt_time
-                    if cand_dt == today_ist and now_ist.time() > dt_time(15, 30):
-                        cand_dt += timedelta(days=7)
-                    
-                    # Check next 3 Thursdays
-                    candidates = [cand_dt, cand_dt + timedelta(days=7), cand_dt + timedelta(days=14)]
+
                     resolved_weekly_tsym = None
-                    for c_date in candidates:
-                        yy = c_date.strftime("%y")
-                        m_val = c_date.month
-                        m_str = "O" if m_val == 10 else ("N" if m_val == 11 else ("D" if m_val == 12 else str(m_val)))
-                        dd = c_date.strftime("%d")
 
-                        prefix_weekly = f"{base}{yy}{m_str}{dd}"
-                        prefix_monthly = f"{base}{yy}{c_date.strftime('%b').upper()}"
-
-                        for prefix in (prefix_weekly, prefix_monthly):
-                            log.info("[shoonya] Searching BFO for prefix %s to resolve option chain...", prefix)
-                            res = self._search_scrip("BFO", prefix)
+                    # If a specific expiry is requested, generate its weekly prefix directly
+                    if expiry:
+                        try:
+                            exp_dt = datetime.strptime(expiry, "%Y-%m-%d")
+                            yy = exp_dt.strftime("%y")
+                            m_val = exp_dt.month
+                            m_str = "O" if m_val == 10 else ("N" if m_val == 11 else ("D" if m_val == 12 else str(m_val)))
+                            dd = exp_dt.strftime("%d")
+                            prefix_weekly = f"{base}{yy}{m_str}{dd}"
+                            log.info("[shoonya] Searching BFO for expiry-specific prefix %s...", prefix_weekly)
+                            res = self._search_scrip("BFO", prefix_weekly)
                             if res and res.get("stat") == "Ok" and res.get("values"):
                                 for val in res["values"]:
                                     tsym_opt = val.get("tsym", "")
                                     if "CE" in tsym_opt or "PE" in tsym_opt:
                                         resolved_weekly_tsym = tsym_opt
-                                        log.info("[shoonya] Resolved BFO option symbol: %s", resolved_weekly_tsym)
+                                        log.info("[shoonya] Resolved BFO option symbol for expiry %s: %s", expiry, resolved_weekly_tsym)
                                         break
+                        except Exception as exp_err:
+                            log.warning("[shoonya] failed to generate weekly prefix for expiry %s: %s", expiry, exp_err)
+
+                    if not resolved_weekly_tsym:
+                        # Find first Thursday >= today
+                        cand_dt = today_ist
+                        while cand_dt.weekday() != 3:  # 3 is Thursday
+                            cand_dt += timedelta(days=1)
+
+                        # If today is Thursday and past 15:30 IST, roll to next Thursday
+                        from datetime import time as dt_time
+                        if cand_dt == today_ist and now_ist.time() > dt_time(15, 30):
+                            cand_dt += timedelta(days=7)
+
+                        # Check next 3 Thursdays
+                        candidates = [cand_dt, cand_dt + timedelta(days=7), cand_dt + timedelta(days=14)]
+                        for c_date in candidates:
+                            yy = c_date.strftime("%y")
+                            m_val = c_date.month
+                            m_str = "O" if m_val == 10 else ("N" if m_val == 11 else ("D" if m_val == 12 else str(m_val)))
+                            dd = c_date.strftime("%d")
+
+                            prefix_weekly = f"{base}{yy}{m_str}{dd}"
+                            prefix_monthly = f"{base}{yy}{c_date.strftime('%b').upper()}"
+
+                            for prefix in (prefix_monthly, prefix_weekly):
+                                log.info("[shoonya] Searching BFO for prefix %s to resolve option chain...", prefix)
+                                res = self._search_scrip("BFO", prefix)
+                                if res and res.get("stat") == "Ok" and res.get("values"):
+                                    for val in res["values"]:
+                                        tsym_opt = val.get("tsym", "")
+                                        if "CE" in tsym_opt or "PE" in tsym_opt:
+                                            resolved_weekly_tsym = tsym_opt
+                                            log.info("[shoonya] Resolved BFO option symbol: %s", resolved_weekly_tsym)
+                                            break
+                                if resolved_weekly_tsym:
+                                    break
                             if resolved_weekly_tsym:
                                 break
-                        if resolved_weekly_tsym:
-                            break
+
                     if resolved_weekly_tsym:
                         chain_tsym = resolved_weekly_tsym
                 except Exception as ex_bfo:

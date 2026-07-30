@@ -106,7 +106,7 @@ def _priority_for(symbol: str) -> list[str]:
     
     # Default priorities per symbol class
     if base in _MCX_COMMODITIES:
-        return ["shoonya", "dhan_commodity", "moneycontrol", "dhan", "dhan_headless"]
+        return ["dhan_commodity", "moneycontrol", "shoonya", "dhan", "dhan_headless"]
     if base == "SENSEX":
         return ["sensibull", "shoonya", "dhan_sensex", "dhan", "nse_public"]
     return [
@@ -439,7 +439,7 @@ def fetch_option_chain(symbol: str, expiry: str | None = None, required_strikes:
             active_futures[src] = pipeline_io_executor.submit(_try_fetcher, src, symbol, expiry)
         return active_futures[src]
 
-    def get_fetch_data(src: str, timeout_s: float = 12.0):
+    def get_fetch_data(src: str, timeout_s: float = 16.0):
         fut = get_fetch_future(src)
         try:
             return fut.result(timeout=timeout_s)
