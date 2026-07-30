@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import socket as _socket
+import sqlite3
 import subprocess
 import threading
 import time
