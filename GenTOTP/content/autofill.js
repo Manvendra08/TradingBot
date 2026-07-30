@@ -14,45 +14,6 @@ function detectBroker() {
   return "unknown";
 }
 
-// ─── Input Field Selectors ───────────────────────────────────────────────────
-const SELECTORS = {
-  zerodha: [
-    'input[type="number"][placeholder]',   // Kite TOTP field (numeric)
-    'input[placeholder*="TOTP" i]',
-    'input[placeholder*="totp" i]',
-    'input[placeholder*="authenticator" i]',
-    'input[name="totp"]',
-    'input[id*="totp"]',
-    '.twofa-form input[type="number"]',
-    '.twofa-form input[type="text"]'
-  ],
-  shoonya: [
-    'input[placeholder*="OTP/TOTP" i]',
-    'input[placeholder*="OTP" i]',
-    'input[placeholder*="TOTP" i]',
-    'input[placeholder*="2FA" i]',
-    'input[name="totp"]',
-    'input[name="otp"]',
-    'input[name="twofa"]',
-    'input[name="code"]',
-    'input[id="totp"]',
-    'input[id="otp"]',
-    'input[id="twofa"]',
-    'input[id="otp_input"]',
-    'input[id*="totp" i]',
-    'input[id*="otp" i]',
-    'input[formcontrolname*="otp" i]',
-    'input[formcontrolname*="totp" i]',
-    'input[placeholder*="authenticator" i]',
-    'input[type="number"][maxlength="6"]',
-    'input[type="text"][maxlength="6"]',
-    'input[type="password"][maxlength="6"]',
-    '.otp-input',
-    '#twofa',
-    '.p-inputtext'
-  ]
-};
-
 // ─── Visibility Check ────────────────────────────────────────────────────────
 function isElementVisible(el) {
   if (!el || el.disabled || el.readOnly) return false;
@@ -66,38 +27,91 @@ function isElementVisible(el) {
   }
 }
 
-// ─── Utilities ────────────────────────────────────────────────────────────────
-function findInput(broker) {
-  const selectorList = SELECTORS[broker] ? [...SELECTORS[broker], ...SELECTORS.zerodha] : [...SELECTORS.zerodha, ...SELECTORS.shoonya];
-  
-  // 1. Try explicit selectors first
-  for (const sel of selectorList) {
-    try {
-      const el = document.querySelector(sel);
-      if (el && isElementVisible(el)) return el;
-    } catch (_) {}
-  }
+// ─── Precise TOTP Input Inspector ───────────────────────────────────────────
+function isTotpInput(el) {
+  if (!isElementVisible(el)) return false;
+  if (el.tagName !== "INPUT") return false;
 
-  // 2. Check for active/focused element if it's an input
-  const active = document.activeElement;
-  if (active && active.tagName === "INPUT" && active.type !== "hidden" && active.type !== "submit") {
-    return active;
-  }
+  const type = (el.type || "").toLowerCase();
+  if (["hidden", "submit", "button", "checkbox", "radio", "image", "file"].includes(type)) return false;
 
-  // 3. Fallback: Search all visible inputs for 2FA-like attributes
-  const allInputs = Array.from(document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"])'));
-  const visibleInputs = allInputs.filter(isElementVisible);
+  const name = (el.name || "").toLowerCase();
+  const id = (el.id || "").toLowerCase();
+  const placeholder = (el.placeholder || "").toLowerCase();
+  const className = (el.className || "").toLowerCase();
+  const formControl = (el.getAttribute("formcontrolname") || "").toLowerCase();
+  const ariaLabel = (el.getAttribute("aria-label") || "").toLowerCase();
+  const autocomplete = (el.getAttribute("autocomplete") || "").toLowerCase();
 
-  for (const input of visibleInputs) {
-    const attr = (input.name + " " + input.id + " " + input.className + " " + (input.placeholder || "") + " " + (input.getAttribute("aria-label") || "") + " " + (input.getAttribute("formcontrolname") || "")).toLowerCase();
-    if (attr.includes("totp") || attr.includes("otp") || attr.includes("2fa") || attr.includes("code") || attr.includes("auth") || input.getAttribute("maxlength") === "6") {
-      return input;
+  const fullText = `${name} ${id} ${placeholder} ${className} ${formControl} ${ariaLabel} ${autocomplete}`;
+
+  // 1. Never match primary username or password inputs
+  if (fullText.includes("password") || fullText.includes("passwd") || fullText.includes("username") || name === "userid" || id === "userid") {
+    // Exception: if placeholder specifically says OTP/TOTP alongside password type
+    if (!placeholder.includes("otp") && !placeholder.includes("totp") && !id.includes("otp") && !name.includes("otp")) {
+      return false;
     }
   }
 
-  // 4. Last resort: If 2 or 3 visible fields on page (e.g. User ID + Password + OTP/TOTP), the OTP/TOTP is the LAST input!
-  if (visibleInputs.length >= 2 && visibleInputs.length <= 4) {
-    return visibleInputs[visibleInputs.length - 1];
+  // 2. Positive 2FA / TOTP attribute indicators
+  if (
+    fullText.includes("totp") ||
+    fullText.includes("otp") ||
+    fullText.includes("2fa") ||
+    fullText.includes("authenticator") ||
+    fullText.includes("auth_code") ||
+    fullText.includes("security_code") ||
+    fullText.includes("twofa") ||
+    autocomplete === "one-time-code"
+  ) {
+    return true;
+  }
+
+  // 3. Length or type constraints (e.g. 6-digit numeric input)
+  if (el.getAttribute("maxlength") === "6" || el.getAttribute("maxlength") === "8") {
+    return true;
+  }
+
+  return false;
+}
+
+// ─── Input Field Discovery ───────────────────────────────────────────────────
+function findInput(broker) {
+  // 1. Search all inputs on page using isTotpInput inspector
+  const allInputs = Array.from(document.querySelectorAll("input"));
+  for (const input of allInputs) {
+    if (isTotpInput(input)) return input;
+  }
+
+  // 2. Active/focused element check
+  const active = document.activeElement;
+  if (active && active.tagName === "INPUT" && isElementVisible(active) && isTotpInput(active)) {
+    return active;
+  }
+
+  // 3. Form-based structural heuristics:
+  // If page has 3 inputs (e.g. Shoonya: User ID, Password, OTP/TOTP) or 1 input on a 2FA screen
+  const visibleInputs = allInputs.filter(el => {
+    if (!isElementVisible(el)) return false;
+    const t = (el.type || "").toLowerCase();
+    return !["hidden", "submit", "button", "checkbox", "radio"].includes(t);
+  });
+
+  if (visibleInputs.length === 1) {
+    // On dedicated 2FA screen (like Zerodha Step 2)
+    const single = visibleInputs[0];
+    const t = (single.name + " " + single.id + " " + single.placeholder).toLowerCase();
+    if (!t.includes("username") && !t.includes("userid")) {
+      return single;
+    }
+  } else if (visibleInputs.length === 3) {
+    // Single-page 3-field login (like Shoonya: User ID, Password, OTP)
+    const third = visibleInputs[2];
+    const name = (third.name || "").toLowerCase();
+    const id = (third.id || "").toLowerCase();
+    if (!name.includes("user") && !id.includes("user")) {
+      return third;
+    }
   }
 
   return null;
@@ -128,6 +142,7 @@ function setNativeValue(el, value) {
 
   el.dispatchEvent(new Event("input",  { bubbles: true }));
   el.dispatchEvent(new Event("change", { bubbles: true }));
+  el.dispatchEvent(new Event("blur",   { bubbles: true }));
 }
 
 function clickSubmit(broker) {
@@ -141,7 +156,7 @@ function clickSubmit(broker) {
   for (const sel of submitSelectors) {
     const btn = document.querySelector(sel);
     if (btn && isElementVisible(btn)) {
-      setTimeout(() => btn.click(), 250);
+      setTimeout(() => btn.click(), 300);
       return true;
     }
   }
@@ -215,10 +230,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 // ─── Auto-Fill on Detection ──────────────────────────────────────────────────
-let _autoFilled = false;
+let _autoFilledInput = null;
 
 function checkAndAutoFillOnDetect() {
-  if (_autoFilled) return;
   const broker = detectBroker();
   if (broker === "unknown") return;
 
@@ -226,6 +240,7 @@ function checkAndAutoFillOnDetect() {
   const input = multiBox ? multiBox[0] : findInput(broker);
 
   if (!input) return;
+  if (_autoFilledInput === input) return;
   if (input.value && input.value.trim().length >= 6) return;
 
   chrome.runtime.sendMessage({ type: "GET_AUTO_TOTP", broker }, (resp) => {
@@ -242,7 +257,7 @@ function checkAndAutoFillOnDetect() {
       setNativeValue(input, resp.code);
     }
 
-    _autoFilled = true;
+    _autoFilledInput = input;
     showToast(`⚡ GenTOTP: Auto-filled ${resp.label || broker} TOTP on detection`);
     clickSubmit(broker);
   });
