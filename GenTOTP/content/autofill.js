@@ -13,6 +13,33 @@ function detectBroker() {
   return "unknown";
 }
 
+// ─── Strict Login Page Guard ──────────────────────────────────────────────────
+// Prevents GenTOTP from filling TOTP into order quantity/price fields after login!
+function isLoginPage(broker) {
+  const path = window.location.pathname.toLowerCase();
+  const host = window.location.hostname.toLowerCase();
+
+  if (broker === "zerodha") {
+    // DO NOT run on logged-in dashboard/trading pages
+    if (path.includes("/dashboard") || path.includes("/orders") || path.includes("/positions") || path.includes("/holdings") || path.includes("/funds") || path.includes("/marketwatch") || path.includes("/apps")) {
+      return false;
+    }
+    // Only run on 2FA login page
+    return path.startsWith("/twofa") || path === "/" || path === "/login" || !!document.querySelector(".twofa-form");
+  }
+
+  if (broker === "shoonya") {
+    // Check if user is already logged in on dashboard
+    const bodyText = (document.body ? document.body.innerText || "" : "").toLowerCase();
+    if (bodyText.includes("watchlist") || bodyText.includes("orderbook") || bodyText.includes("net position") || bodyText.includes("portfolio")) {
+      return false;
+    }
+    return true;
+  }
+
+  return false;
+}
+
 // ─── Visibility Check ────────────────────────────────────────────────────────
 function isVisible(el) {
   if (!el || el.disabled || el.readOnly) return false;
@@ -29,7 +56,7 @@ const ZERODHA_SELECTORS = [
   '.twofa-form input[type="number"]',
   '.twofa-form input[type="text"]',
   '.twofa-form input',
-  'input[type="number"][placeholder]',
+  'input[type="number"][placeholder*="TOTP" i]',
   'input[name="totp"]',
   'input[id*="totp" i]',
   'input[placeholder*="TOTP" i]',
@@ -37,11 +64,9 @@ const ZERODHA_SELECTORS = [
   'input[placeholder*="2FA" i]',
 ];
 
-// Shoonya uses Flutter Web — the active editable input carries class .flt-text-editing
-// The 3rd visible flt-text-editing input on the login page is the OTP/TOTP field
 const SHOONYA_SELECTORS = [
-  'input.flt-text-editing.transparentTextEditing',   // Flutter Web active TOTP field (exact user-reported class)
-  'input.flt-text-editing',                          // Flutter Web generic editable input
+  'input.flt-text-editing.transparentTextEditing',
+  'input.flt-text-editing',
   'input[placeholder="OTP/TOTP"]',
   'input[placeholder*="OTP" i]',
   'input[placeholder*="TOTP" i]',
@@ -65,6 +90,8 @@ const SHOONYA_SELECTORS = [
 
 // ─── TOTP Input Finder ───────────────────────────────────────────────────────
 function findInput(broker) {
+  if (!isLoginPage(broker)) return null;
+
   const selectors = broker === "zerodha"
     ? [...ZERODHA_SELECTORS, ...SHOONYA_SELECTORS]
     : [...SHOONYA_SELECTORS, ...ZERODHA_SELECTORS];
@@ -77,7 +104,7 @@ function findInput(broker) {
     } catch (_) {}
   }
 
-  // 2. Keyword scan across all visible inputs
+  // 2. Keyword scan across visible inputs on login page
   const allVisible = Array.from(document.querySelectorAll("input"))
     .filter(el => {
       if (!isVisible(el)) return false;
@@ -94,27 +121,25 @@ function findInput(broker) {
     ].join(" ").toLowerCase();
     if (/(totp|otp|2fa|twofa|one.?time|auth.*code|security.?code)/.test(sig)) return el;
     if (el.getAttribute("autocomplete") === "one-time-code") return el;
-    if (el.getAttribute("maxlength") === "6") return el;
   }
 
-  // 3. Structural last-resort
+  // 3. Structural heuristics ONLY on login pages
   const userInputs = allVisible.filter(el => {
     const t = (el.type || "").toLowerCase();
     return ["text","number","password","tel",""].includes(t);
   });
 
-  if (userInputs.length === 1) {
-    const el = userInputs[0];
-    const sig = (el.name + el.id + el.placeholder).toLowerCase();
-    if (!/username|userid|user_id|password|passwd/.test(sig)) return el;
+  // Zerodha 2FA screen: exactly 1 input visible inside twofa-form or /twofa path
+  if (broker === "zerodha" && userInputs.length === 1 && window.location.pathname.startsWith("/twofa")) {
+    return userInputs[0];
   }
 
-  // Shoonya Flutter: 3 flt-text-editing fields (User ID, Password, OTP) → 3rd is TOTP
+  // Shoonya Flutter Web: 3 flt-text-editing fields (User ID, Password, OTP) → 3rd is TOTP
   const flutterInputs = Array.from(document.querySelectorAll("input.flt-text-editing")).filter(isVisible);
   if (flutterInputs.length === 3) return flutterInputs[2];
-  if (flutterInputs.length === 1) return flutterInputs[0];
+  if (flutterInputs.length === 1 && broker === "shoonya") return flutterInputs[0];
 
-  if (userInputs.length === 3) {
+  if (userInputs.length === 3 && broker === "shoonya") {
     const third = userInputs[2];
     const sig = (third.name + third.id + third.placeholder).toLowerCase();
     if (!/user|login/.test(sig)) return third;
@@ -130,51 +155,39 @@ function findMultiBoxInputs() {
   return inputs.length === 6 ? inputs : null;
 }
 
-// ─── React/Angular Value Setter ──────────────────────────────────────────────
-function setNativeValue(el, value) {
+// ─── Universal Value Setter (React, Angular, Vue, Flutter Web) ───────────────
+function setValueUniversal(el, value) {
+  if (!el) return;
+  el.focus();
+
+  // 1. Native Property Setter
   const nativeSetter =
     Object.getOwnPropertyDescriptor(el.constructor.prototype, "value")?.set ||
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
   if (nativeSetter) nativeSetter.call(el, value);
   else el.value = value;
-  el.dispatchEvent(new Event("input",  { bubbles: true }));
-  el.dispatchEvent(new Event("change", { bubbles: true }));
-  el.dispatchEvent(new Event("blur",   { bubbles: true }));
-}
 
-// ─── Flutter Web Value Setter ─────────────────────────────────────────────────
-// Flutter Web ignores el.value assignments and generic DOM events.
-// It only responds to execCommand('insertText') or compositionend + InputEvent with insertText.
-function setFlutterValue(el, value) {
-  el.focus();
+  // 2. React / Standard DOM events
+  el.dispatchEvent(new Event("input",  { bubbles: true, cancelable: true }));
+  el.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
 
-  // Step 1: Select all existing text (so we replace rather than append)
-  el.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "a", keyCode: 65, ctrlKey: true }));
-  el.select && el.select();
-
-  // Step 2: Use execCommand insertText — Flutter's text controller listens to this
-  const inserted = document.execCommand("insertText", false, value);
-
-  if (!inserted) {
-    // Fallback: dispatch InputEvent with insertText type (works in some Flutter versions)
+  // 3. Flutter Web / Modern InputEvent
+  try {
     el.dispatchEvent(new InputEvent("input", {
       bubbles: true,
       cancelable: true,
       inputType: "insertText",
-      data: value,
+      data: value
     }));
-  }
+  } catch (_) {}
 
-  // Step 3: Also fire compositionend in case Flutter is in composition mode
-  el.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: value }));
-}
+  // 4. Flutter execCommand fallback
+  try {
+    document.execCommand("insertText", false, value);
+  } catch (_) {}
 
-// ─── Is Flutter Input? ────────────────────────────────────────────────────────
-function isFlutterInput(el) {
-  return el && (
-    el.classList.contains("flt-text-editing") ||
-    el.classList.contains("transparentTextEditing")
-  );
+  // 5. Blur event to trigger framework validations
+  el.dispatchEvent(new Event("blur", { bubbles: true }));
 }
 
 // ─── Submit Clicker ──────────────────────────────────────────────────────────
@@ -210,8 +223,7 @@ function performFill(code, broker, autoSubmit) {
   const multiBox = findMultiBoxInputs();
   if (multiBox) {
     code.split("").forEach((ch, i) => {
-      multiBox[i].focus();
-      isFlutterInput(multiBox[i]) ? setFlutterValue(multiBox[i], ch) : setNativeValue(multiBox[i], ch);
+      setValueUniversal(multiBox[i], ch);
     });
     showToast(`✅ GenTOTP: ${broker} TOTP filled`);
     if (autoSubmit) clickSubmit();
@@ -224,12 +236,7 @@ function performFill(code, broker, autoSubmit) {
     return false;
   }
 
-  input.focus();
-  if (isFlutterInput(input)) {
-    setFlutterValue(input, code);
-  } else {
-    setNativeValue(input, code);
-  }
+  setValueUniversal(input, code);
   showToast(`✅ GenTOTP: ${broker} TOTP filled`);
   if (autoSubmit) clickSubmit();
   return true;
@@ -248,7 +255,8 @@ let _lastAutoFilledEl = null;
 
 function checkAndAutoFillOnDetect() {
   const broker = detectBroker();
-  if (broker === "unknown") return;
+  if (broker === "unknown" || !isLoginPage(broker)) return;
+
   const multiBox = findMultiBoxInputs();
   const input = multiBox ? multiBox[0] : findInput(broker);
   if (!input) return;
