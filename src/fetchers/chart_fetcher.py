@@ -996,6 +996,7 @@ def _fetch_local_ohlc_from_db(base_symbol: str, tf: str) -> Optional[dict]:
                                     bars_for_atr.append(current_bar)
                                 current_bar = {
                                     "key": bar_key,
+                                    "Open": price,
                                     "High": price,
                                     "Low": price,
                                     "Close": price,
@@ -1011,6 +1012,15 @@ def _fetch_local_ohlc_from_db(base_symbol: str, tf: str) -> Optional[dict]:
 
                     if current_bar is not None:
                         bars_for_atr.append(current_bar)
+
+                    if len(bars_for_atr) >= 2:
+                        prev_b = bars_for_atr[-2]
+                        result["prev_ohlc"] = {
+                            "open": prev_b.get("Open", prev_b["Close"]),
+                            "high": prev_b["High"],
+                            "low": prev_b["Low"],
+                            "close": prev_b["Close"],
+                        }
 
                     if len(bars_for_atr) >= 15:
                         atr = _calculate_atr_from_bars(bars_for_atr, period=14)

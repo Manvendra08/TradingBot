@@ -806,6 +806,7 @@ def _monitor_single_paper_trade(symbol: str, open_trade: dict, current_ctx: dict
 
     # ── Dead Trade Check (Flaw #2) ───────────────────────────────────────────
     dead_trade_close = False
+    hours_open = 0.0
     if not hit_sl and not hit_target:
         try:
             from config.runtime_config import load_runtime_config
@@ -870,6 +871,26 @@ def _monitor_single_paper_trade(symbol: str, open_trade: dict, current_ctx: dict
                     exit_premium *= 0.995
                 else:
                     exit_premium *= 1.005
+
+            # When SL was triggered by underlying check (not premium check),
+            # validate the fetched premium actually represents a loss.
+            if hit_sl and not hit_target:
+                sl_prem = float(open_trade.get("sl_premium") or 0)
+                if sl_prem > 0 and exit_premium and exit_premium > 0:
+                    if side == "BUY":
+                        if exit_premium > sl_prem:
+                            log.warning(
+                                "%s: trade #%s underlying SL triggered but premium (%.2f) > sl_premium (%.2f) — forcing exit to sl_premium",
+                                symbol, open_trade["id"], exit_premium, sl_prem,
+                            )
+                            exit_premium = sl_prem * 1.005
+                    else:
+                        if exit_premium < sl_prem:
+                            log.warning(
+                                "%s: trade #%s underlying SL triggered but premium (%.2f) < sl_premium (%.2f) — forcing exit to sl_premium",
+                                symbol, open_trade["id"], exit_premium, sl_prem,
+                            )
+                            exit_premium = sl_prem * 0.995
 
         close_paper_trade(
             open_trade["id"],
@@ -1060,6 +1081,22 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
                             exit_premium *= 0.995
                         else:
                             exit_premium *= 1.005
+
+                    if hit_sl and not hit_target:
+                        sl_prem = float(leg.get("sl_premium") or 0)
+                        if sl_prem > 0 and exit_premium and exit_premium > 0:
+                            if side == "BUY" and exit_premium > sl_prem:
+                                log.warning(
+                                    "%s: leg #%s underlying SL but premium (%.2f) > sl_premium (%.2f) — forcing to sl_premium",
+                                    symbol, leg["id"], exit_premium, sl_prem,
+                                )
+                                exit_premium = sl_prem * 1.005
+                            elif side == "SELL" and exit_premium < sl_prem:
+                                log.warning(
+                                    "%s: leg #%s underlying SL but premium (%.2f) < sl_premium (%.2f) — forcing to sl_premium",
+                                    symbol, leg["id"], exit_premium, sl_prem,
+                                )
+                                exit_premium = sl_prem * 0.995
 
                 close_paper_trade(
                     leg["id"],

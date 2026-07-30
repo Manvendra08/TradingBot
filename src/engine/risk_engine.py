@@ -50,7 +50,7 @@ def _ist_day_start_utc() -> str:
     now_ist = datetime.now(IST)
     midnight_ist = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
     midnight_utc = midnight_ist.astimezone(timezone.utc)
-    return midnight_utc.isoformat()
+    return midnight_utc.strftime("%Y-%m-%dT%H:%M:%S")
 
 
 def _check_consecutive_loss_breaker(conn, trades_table: str, label: str) -> tuple[bool, str]:

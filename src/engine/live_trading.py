@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -229,27 +230,6 @@ def get_kite_client() -> KiteConnect | None:
 
             _cached_kite_client = kite
             _cached_access_token = config["access_token"]
-
-            # Asynchronously populate instrument cache during Kite client init if not ready
-            try:
-                import threading
-
-                from src.engine.symbol_resolver import (
-                    _instrument_cache_is_ready,
-                    fetch_and_cache_instruments,
-                )
-
-                if not _instrument_cache_is_ready():
-                    log.info(
-                        "Instrument cache not ready. Spawning background thread to fetch instruments..."
-                    )
-                    threading.Thread(
-                        target=fetch_and_cache_instruments, args=(kite,), daemon=True
-                    ).start()
-            except Exception as e:
-                log.warning(
-                    "Failed to spawn background thread for instrument cache: %s", e
-                )
 
             return kite
         except Exception as e:
@@ -588,21 +568,30 @@ def place_kite_order(
 
         if ltp and ltp > 0:
             is_future = "FUT" in tradingsymbol.upper()
-            # Dynamic slippage buffer: 0.2% for futures to avoid circuit limits, 5% for options
-            buffer_pct = 0.002 if is_future else 0.05
-            # P2-05: Slippage buffer direction for SELL.
-            # For BUY, paying above LTP ensures fill (hit the ask).
-            # For SELL (writing), offering below LTP crosses the spread
-            # to the bid side, guaranteeing execution.
-            if transaction_type == "BUY":
-                limit_price = ltp * (1 + buffer_pct)
-            else:
-                limit_price = ltp * (1 - buffer_pct)
-
-            # Align to tick size
+            # BUG-C10 FIX: Use tick-based slippage instead of percentage-based.
+            # Previously used 5% buffer for options, which on a ₹50 premium meant
+            # placing limit at ₹52.50 (250% over tick size) — massive slippage.
+            # Now uses 3-5 ticks above/below LTP for tight market-like fills.
             t_size = tick_size or 0.05
             if t_size <= 0:
                 t_size = 0.05
+            
+            if is_future:
+                # Futures: use 0.2% buffer (existing behavior, avoids circuit limits)
+                buffer_pct = 0.002
+                if transaction_type == "BUY":
+                    limit_price = ltp * (1 + buffer_pct)
+                else:
+                    limit_price = ltp * (1 - buffer_pct)
+            else:
+                # Options: use tick-based buffer (5 ticks for BUY, 5 ticks for SELL)
+                TICKS_BUFFER = 5
+                if transaction_type == "BUY":
+                    limit_price = ltp + (TICKS_BUFFER * t_size)
+                else:
+                    limit_price = ltp - (TICKS_BUFFER * t_size)
+
+            # Align to tick size
             decimals = 2 if t_size >= 0.01 else 4
             limit_price = round(round(limit_price / t_size) * t_size, decimals)
             # Ensure price is at least tick size
@@ -622,20 +611,22 @@ def place_kite_order(
                 price=limit_price,
             )
         else:
-            # Fallback: use MARKET but this usually fails without Market Protection
             log.warning(
-                "No LTP and no expected price for %s, placing bare MARKET order",
-                full_symbol,
+                "No LTP and no expected price for %s — placing LIMIT at floor price (tick_size=%.2f)",
+                full_symbol, tick_size,
             )
+            t_size = tick_size or 0.05
+            if t_size <= 0:
+                t_size = 0.05
             order_id = kite.place_order(
                 variety=kite.VARIETY_REGULAR,
                 exchange=exchange,
                 tradingsymbol=tradingsymbol,
                 transaction_type=transaction_type,
                 quantity=quantity,
-                # BUG-H03 FIX: Use PRODUCT_NRML for consistency with GTTs
                 product=kite.PRODUCT_NRML,
-                order_type=kite.ORDER_TYPE_MARKET,
+                order_type=kite.ORDER_TYPE_LIMIT,
+                price=t_size,
             )
         return order_id
     except Exception as e:
@@ -1903,17 +1894,18 @@ def run_live_timeframe_strategy(
     ):
         # Only place GTT if order is complete
         try:
-            sl_trigger = float(sl_premium)
-            target_trigger = float(target_premium)
+            sl_trigger = float(sl_premium)            # BUG-C04 FIX: Use tight 1% / max ₹0.50 tick buffer instead of 5% slippage
+            sl_buf = max(0.25, min(round(sl_trigger * 0.01, 2), 0.50))
+            tgt_buf = max(0.25, min(round(target_trigger * 0.01, 2), 0.50))
             sl_limit = (
-                round(sl_trigger * 0.95, 2)
+                round(sl_trigger - sl_buf, 2)
                 if side == "BUY"
-                else round(sl_trigger * 1.05, 2)
+                else round(sl_trigger + sl_buf, 2)
             )
             target_limit = (
-                round(target_trigger * 0.95, 2)
+                round(target_trigger - tgt_buf, 2)
                 if side == "BUY"
-                else round(target_trigger * 1.05, 2)
+                else round(target_trigger + tgt_buf, 2)
             )
             gtt_order_id = place_kite_gtt(
                 kite,
@@ -2208,24 +2200,34 @@ def sync_direct_kite_positions() -> None:
                         "Failed to resolve futures symbol for %s: %s", base_sym, e
                     )
 
-            if symbol_key:
-                try:
-                    res = kite.ltp(symbol_key)
-                    if res and symbol_key in res:
-                        underlying_price = float(
-                            res[symbol_key].get("last_price") or 0.0
-                        )
-                        if underlying_price > 0:
+                if symbol_key.startswith("MCX:"):
+                    # Kite API accounts lack MCX market data permissions — fetch via commodity router
+                    try:
+                        from src.fetchers.router import get_commodity_ohlc
+                        cmd_res = get_commodity_ohlc(base_sym)
+                        if cmd_res and float(cmd_res.get("price") or 0.0) > 0:
+                            underlying_price = float(cmd_res["price"])
                             live_resolved = True
-                except Exception as ltp_err:
-                    if "Insufficient permission" in str(ltp_err):
-                        log.info(
-                            "Kite market data permission missing for %s (using stored underlying price fallback)", symbol_key
-                        )
-                    else:
-                        log.warning(
-                            "Failed to fetch live LTP for index %s: %s", symbol_key, ltp_err
-                        )
+                    except Exception as mcx_err:
+                        log.debug("MCX router fetch failed for %s: %s", base_sym, mcx_err)
+                else:
+                    try:
+                        res = kite.ltp(symbol_key)
+                        if res and symbol_key in res:
+                            underlying_price = float(
+                                res[symbol_key].get("last_price") or 0.0
+                            )
+                            if underlying_price > 0:
+                                live_resolved = True
+                    except Exception as ltp_err:
+                        if "Insufficient permission" in str(ltp_err):
+                            log.debug(
+                                "Kite market data permission missing for %s (using stored underlying price fallback)", symbol_key
+                            )
+                        else:
+                            log.warning(
+                                "Failed to fetch live LTP for index %s: %s", symbol_key, ltp_err
+                            )
 
             if not live_resolved:
                 from src.models.schema import get_previous_underlying
@@ -2256,12 +2258,13 @@ def sync_direct_kite_positions() -> None:
             if option_type == "FUT":
                 entry_val = avg_price
                 if init_mode == "dynamic" and atr and atr > 0:
+                    base_ref = underlying_price if underlying_price > 0 else avg_price
                     if side == "BUY":
-                        sl_underlying = round(entry_val - 1.5 * atr, 2)
-                        tgt_underlying = round(entry_val + 2.0 * atr, 2)
+                        sl_underlying = round(base_ref - 1.5 * atr, 2)
+                        tgt_underlying = round(base_ref + 2.0 * atr, 2)
                     else:
-                        sl_underlying = round(entry_val + 1.5 * atr, 2)
-                        tgt_underlying = round(entry_val - 2.0 * atr, 2)
+                        sl_underlying = round(base_ref + 1.5 * atr, 2)
+                        tgt_underlying = round(base_ref - 2.0 * atr, 2)
                     log.info(
                         "Dynamic FUT SL/Tgt computed for manual trade of %s: atr=%s, SL=%s, Tgt=%s",
                         base_sym,
@@ -2361,7 +2364,7 @@ def sync_direct_kite_positions() -> None:
                 "exit_mode": "POLL",
             }
 
-            inserted_id = insert_live_trade(trade_data)
+            inserted_id = insert_live_trade(trade_data, conn=conn)
             if inserted_id:
                 open_db_signatures.append(sig)
                 log.info("Adopted Kite direct position: %s as %s", ts, sig)

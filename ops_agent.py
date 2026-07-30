@@ -672,16 +672,22 @@ def _vacuum_database() -> bool:
 
 
 def _prune_temp() -> bool:
-    """Prune temp files older than 1 day."""
+    """Prune NSEBOT-specific temp files older than 1 day.
+    
+    BUG-C08 FIX: Scoped to nsebot* files only. Previously deleted ALL system
+    temp files older than 1 day, which could destroy files owned by other
+    applications or the OS itself.
+    """
     try:
-        import glob
         # BUG-C02 FIX: Use cross-platform temp directory
         temp_dir = Path(tempfile.gettempdir())
         cutoff = time.time() - 86400  # 1 day
-        for f in temp_dir.glob("*"):
+        # Only delete files matching nsebot* pattern to avoid collateral damage
+        for f in temp_dir.glob("nsebot*"):
             try:
                 if f.is_file() and f.stat().st_mtime < cutoff:
                     f.unlink()
+                    log.debug("Pruned temp file: %s", f.name)
             except Exception:
                 pass
         return True
@@ -858,8 +864,10 @@ def run_playbooks(snap: HealthSnapshot, sm: StateMachine) -> list[PlaybookResult
             results.append(PlaybookResult(action_taken="P05_parity_down"))
             _escalate("P05", f"Parity feed DOWN during NG hours. Detail: {parity_state.detail}")
             
-            # Check if PARITY position is open with feed dead > 15 min → P10
-            if parity_state.consecutive_down >= 2:  # 2 consecutive downs = ~2 min (60s loop interval)
+            # BUG-C09 FIX: Require ~10 min of consecutive downtime before emergency flat.
+            # Previously triggered after just 2 cycles (~2 min), causing premature
+            # emergency exits during brief network blips or API hiccups.
+            if parity_state.consecutive_down >= 10:  # 10 consecutive downs = ~10 min (60s loop interval)
                 # Check for open PARITY position
                 try:
                     conn = sqlite3.connect(f"file:{BOT_DB_PATH}?mode=ro", uri=True, timeout=5.0)
@@ -922,9 +930,13 @@ def run_playbooks(snap: HealthSnapshot, sm: StateMachine) -> list[PlaybookResult
         try:
             conn = sqlite3.connect(f"file:{BOT_DB_PATH}?mode=ro", uri=True, timeout=5.0)
             conn.row_factory = sqlite3.Row
-            ng_open = conn.execute(
+            ng_live = conn.execute(
                 "SELECT COUNT(*) as c FROM live_trades WHERE symbol='NATURALGAS' AND status='OPEN'"
             ).fetchone()["c"]
+            ng_paper = conn.execute(
+                "SELECT COUNT(*) as c FROM paper_trades WHERE symbol='NATURALGAS' AND status='OPEN'"
+            ).fetchone()["c"]
+            ng_open = ng_live + ng_paper
             conn.close()
             if ng_open > 0 and ROLLOUT_LEVEL >= 2:
                 ok = _run_emergency_flat()

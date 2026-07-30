@@ -251,15 +251,14 @@ def calculate_trade_lots(
                 table_name = "paper_trades" if is_paper else "live_trades"
                 
                 with get_read_conn() as conn:
-                    if is_paper:
+                    row = conn.execute(
+                        f"SELECT lots FROM {table_name} WHERE leg_group_id=? AND tranche_index=0 ORDER BY id ASC LIMIT 1", 
+                        (leg_group_id,)
+                    ).fetchone()
+                    if not row:
                         row = conn.execute(
-                            f"SELECT lots FROM {table_name} WHERE leg_group_id=? AND tranche_index=0 ORDER BY id ASC LIMIT 1", 
-                            (leg_group_id,)
-                        ).fetchone()
-                    else:
-                        row = conn.execute(
-                            f"SELECT lots FROM {table_name} WHERE symbol LIKE ? AND setup_type LIKE '%TFSS%' AND opened_at >= ? ORDER BY id ASC LIMIT 1",
-                            (f"{base}%", f"{today_str} 00:00:00")
+                            f"SELECT lots FROM {table_name} WHERE symbol LIKE ? AND setup_type LIKE '%TFSS%' AND (opened_at >= ? OR opened_at >= ?) ORDER BY id ASC LIMIT 1",
+                            (f"{base}%", f"{today_str} 00:00:00", f"{today_str}T00:00:00")
                         ).fetchone()
                         
                     if row:
