@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GenTOTP</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+
+  <!-- ────────────────────────────────────────── LOCK SCREEN -->
+  <div id="screen-lock" class="screen active">
+    <div class="brand">
+      <div class="brand-icon">🔐</div>
+      <h1 class="brand-name">GenTOTP</h1>
+      <p class="brand-sub">Trading 2FA Manager</p>
+    </div>
+
+    <div id="lock-setup" class="hidden">
+      <p class="section-label">Create master password</p>
+      <input id="setup-pw"     type="password" class="input" placeholder="New master password" autocomplete="new-password" />
+      <input id="setup-pw-cnf" type="password" class="input" placeholder="Confirm password"    autocomplete="new-password" />
+      <button id="btn-setup" class="btn btn-primary">Create Vault</button>
+    </div>
+
+    <div id="lock-unlock">
+      <p class="section-label">Enter master password</p>
+      <input id="unlock-pw" type="password" class="input" placeholder="Master password" autocomplete="current-password" />
+      <button id="btn-unlock" class="btn btn-primary">Unlock</button>
+    </div>
+
+    <p id="lock-error" class="error-text hidden"></p>
+  </div>
+
+  <!-- ────────────────────────────────────────── MAIN SCREEN -->
+  <div id="screen-main" class="screen hidden">
+
+    <header class="top-bar">
+      <span class="app-title">GenTOTP</span>
+      <div class="top-actions">
+        <button id="btn-add-account" class="icon-btn" title="Add account">＋</button>
+        <div class="settings-wrap">
+          <button id="btn-settings" class="icon-btn" title="Settings">⚙</button>
+          <div id="settings-menu" class="settings-menu hidden">
+            <label class="menu-item checkbox-item">
+              <input type="checkbox" id="chk-require-pw" checked />
+              <span>Ask password on click</span>
+            </label>
+            <label class="menu-item checkbox-item">
+              <input type="checkbox" id="chk-auto-fill-detect" />
+              <span>⚡ Instant Auto-Fill on detect</span>
+            </label>
+            <button id="btn-change-pw" class="menu-item">🔑 Change Password</button>
+            <button id="btn-logout"    class="menu-item danger">🚪 Logout &amp; Clear Vault</button>
+          </div>
+        </div>
+        <button id="btn-lock" class="icon-btn" title="Lock vault">🔒</button>
+      </div>
+    </header>
+
+    <!-- Account list -->
+    <div id="account-list" class="account-list">
+      <div class="empty-state" id="empty-state">
+        <div class="empty-icon">🔑</div>
+        <p>No accounts yet.<br/>Tap <strong>＋</strong> to add one.</p>
+      </div>
+    </div>
+
+    <!-- Auto-fill banner (visible only on broker pages) -->
+    <div id="autofill-banner" class="autofill-banner hidden">
+      <span id="autofill-broker-name"></span> login detected
+      <button id="btn-autofill" class="btn btn-accent">Auto-Fill TOTP</button>
+    </div>
+
+  </div>
+
+  <!-- ────────────────────────────────────────── CHANGE PASSWORD SCREEN -->
+  <div id="screen-change-pw" class="screen hidden">
+    <header class="top-bar">
+      <button id="btn-back-from-pw" class="icon-btn">←</button>
+      <span class="app-title">Change Password</span>
+    </header>
+
+    <div class="form-body">
+      <label class="field-label">Current Password</label>
+      <input id="cpw-current" type="password" class="input" placeholder="Current master password" autocomplete="current-password" />
+
+      <label class="field-label">New Password</label>
+      <input id="cpw-new"     type="password" class="input" placeholder="New master password (≥ 1 char)" autocomplete="new-password" />
+
+      <label class="field-label">Confirm New Password</label>
+      <input id="cpw-confirm" type="password" class="input" placeholder="Repeat new password" autocomplete="new-password" />
+
+      <button id="btn-save-pw" class="btn btn-primary">Update Password</button>
+      <p id="cpw-error"   class="error-text hidden"></p>
+      <p id="cpw-success" class="success-text hidden">✅ Password updated successfully</p>
+    </div>
+  </div>
+
+
+  <div id="screen-add" class="screen hidden">
+    <header class="top-bar">
+      <button id="btn-back" class="icon-btn">←</button>
+      <span class="app-title">Add Account</span>
+    </header>
+
+    <div class="form-body">
+      <label class="field-label">Label</label>
+      <input id="add-label" type="text" class="input" placeholder="e.g. Zerodha Main" />
+
+      <label class="field-label">Broker</label>
+      <select id="add-broker" class="input select">
+        <option value="zerodha">Zerodha (Kite)</option>
+        <option value="shoonya">Shoonya / Finvasia</option>
+        <option value="other">Other</option>
+      </select>
+
+      <label class="field-label">TOTP Secret (Base32)</label>
+      <div class="secret-row">
+        <input id="add-secret" type="password" class="input flex-1" placeholder="JBSWY3DPEHPK3PXP…" autocomplete="off" />
+        <button id="btn-toggle-secret" class="icon-btn" title="Show/hide secret">👁</button>
+      </div>
+      <p class="hint">Paste the <strong>raw Base32 key</strong> from the broker's 2FA setup page (e.g. <code>42YIOKNY2Q…</code>). Do <em>not</em> paste the encrypted value from NSEBOT's .env file (starts with <code>gAAAAA…</code>).</p>
+
+      <button id="btn-save-account" class="btn btn-primary">Save Account</button>
+      <p id="add-error" class="error-text hidden"></p>
+    </div>
+  </div>
+
+  <!-- Scripts -->
+  <script src="../lib/totp.js"></script>
+  <script src="../lib/vault.js"></script>
+  <script src="../lib/store.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+{
+  "vault_initialized": true,
+  "require_pw": false,
+  "auto_fill_detect": true,
+  "cached_pw": "manav",
+  "accounts": [
+    {
+      "id": "zerodha-main",
+      "label": "Zerodha",
+      "broker": "zerodha",
+      "secret": "42YIOKNY2QEBBBMYPSFGJJ3JGLF2NFBV"
+    },
+    {
+      "id": "shoonya-main",
+      "label": "Shoonya",
+      "broker": "shoonya",
+      "secret": "DCKRK73NFWSF3RTWASP25GW4FK7BSO4K"
+    }
+  ]
+}
