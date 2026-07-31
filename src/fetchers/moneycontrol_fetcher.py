@@ -40,6 +40,82 @@ _HEADERS = {
 }
 
 
+def _parse_number(text: str) -> Optional[float]:
+    if not text:
+        return None
+    cleaned = re.sub(r"[^\d.\-]", "", text.strip())
+    if not cleaned or cleaned in ("-", "."):
+        return None
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def _parse_int(text: str) -> Optional[int]:
+    val = _parse_number(text)
+    return int(val) if val is not None else None
+
+
+def _get_live_future_price(base_symbol: str, target_expiry: Optional[str] = None) -> Optional[float]:
+    try:
+        from src.fetchers.dhan_commodity_fetcher import DhanCommodityFetcher, _get_open_futures_expiry
+        from src.utils.dhan_resolver import get_dhan_security_id
+        
+        open_fut_expiry = _get_open_futures_expiry(base_symbol)
+        futures_target_expiry = open_fut_expiry or target_expiry
+        
+        secid = get_dhan_security_id(base_symbol, target_expiry=futures_target_expiry)
+        if secid:
+            fetcher = DhanCommodityFetcher()
+            val = fetcher._fetch_builtup_live_price(secid)
+            if val and val > 0:
+                log.info("[mc] Fetched live future price from Dhan for %s: %.2f", base_symbol, val)
+                return val
+    except Exception as exc:
+        log.warning("[mc] Could not fetch live future price from Dhan: %s", exc)
+    return None
+
+
+def _fetch_nse_commodity_spot(symbol: str, requested_expiry: Optional[str] = None) -> Optional[float]:
+    val = _get_live_future_price(symbol, target_expiry=requested_expiry)
+    if val:
+        return val
+    return None
+
+
+def _scrape_moneycontrol_spot(page) -> Optional[float]:
+    selectors = [
+        ".stkUp", ".stkDn", ".stkFlat", ".stkUnch",
+        "#last_price", ".price_dil", ".commodity-price", ".inprice1",
+        "div.price", "span.price",
+    ]
+    for selector in selectors:
+        try:
+            for el in page.query_selector_all(selector):
+                val = _parse_number(el.inner_text())
+                if val and val > 0:
+                    return val
+        except Exception:
+            continue
+
+    try:
+        text = page.inner_text("body", timeout=2000)
+    except Exception:
+        return None
+
+    patterns = (
+        r"(?:Spot|Underlying|Last(?:\s+Price)?|LTP)\s*[:\-]?\s*([\d,]+(?:\.\d+)?)",
+        r"([\d,]+(?:\.\d+)?)\s*(?:Spot|Underlying|LTP)",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, text, flags=re.I):
+            val = _parse_number(match.group(1))
+            if val and val > 0:
+                return val
+    return None
+
+
 async def _fetch_side_async(
     base_symbol: str, sym_slug: str, requested_expiry: Optional[str] = None
 ) -> tuple[Optional[str], Optional[float], list[dict]]:
