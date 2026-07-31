@@ -232,18 +232,20 @@ def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | N
                 option_chain=option_rows
             )
             
+            effective_threshold = min_premium_threshold * 0.90  # 10% tolerance buffer (e.g. 21.98 instead of 24.42)
+
             if cand and cand.get("strike"):
                 cand_strike = float(cand["strike"])
                 cand_prem = get_option_premium(symbol_str, expiry_str, cand_strike, option_type, option_rows)
-                if cand_prem is not None and cand_prem > min_premium_threshold:
+                if cand_prem is not None and cand_prem >= effective_threshold:
                     selected_strike = cand_strike
                     selected_premium = cand_prem
                     log.info(
-                        "[paper_plan] %s TFSS DTE-Delta Band strike %.1f selected with premium %.2f (> 0.1%% threshold %.2f, delta %.2f)",
-                        symbol_str, cand_strike, cand_prem, min_premium_threshold, cand.get("delta", 0.0)
+                        "[paper_plan] %s TFSS DTE-Delta Band strike %.1f selected with premium %.2f (>= threshold %.2f, delta %.2f)",
+                        symbol_str, cand_strike, cand_prem, effective_threshold, cand.get("delta", 0.0)
                     )
 
-            # 2. If DTE-Delta candidate is unavailable or <= 0.1% threshold, escalate to Multi-Wall OI check (Requirement 2)
+            # 2. If DTE-Delta candidate is unavailable or < threshold, escalate to Multi-Wall OI check (Requirement 2)
             if selected_strike is None:
                 if option_type == "CE":
                     raw_walls = ctx.get("resistance_walls") or ([resistance] if resistance else [])
@@ -264,26 +266,63 @@ def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | N
                         
                     prem = get_option_premium(symbol_str, expiry_str, cand_strike, option_type, option_rows)
                     
-                    if prem is not None and prem > min_premium_threshold:
+                    if prem is not None and prem >= effective_threshold:
                         selected_strike = cand_strike
                         selected_premium = prem
                         log.info(
-                            "[paper_plan] %s %s Wall %d strike %.1f selected with premium %.2f (> 0.1%% threshold %.2f)",
-                            symbol_str, option_type, idx, cand_strike, prem, min_premium_threshold
+                            "[paper_plan] %s %s Wall %d strike %.1f selected with premium %.2f (>= threshold %.2f)",
+                            symbol_str, option_type, idx, cand_strike, prem, effective_threshold
                         )
                         break
                     else:
                         log.info(
-                            "[paper_plan] %s %s Wall %d strike %.1f premium %s <= 0.1%% threshold (%.2f), checking next wall...",
-                            symbol_str, option_type, idx, cand_strike, f"{prem:.2f}" if prem is not None else "None", min_premium_threshold
+                            "[paper_plan] %s %s Wall %d strike %.1f premium %s < threshold (%.2f), checking next wall...",
+                            symbol_str, option_type, idx, cand_strike, f"{prem:.2f}" if prem is not None else "None", effective_threshold
                         )
+
+            # 3. If OI walls still failed, step inward towards ATM to find nearest OTM strike with premium >= effective_threshold
+            if selected_strike is None:
+                log.info("[paper_plan] %s %s: OI walls below threshold; stepping inward towards ATM...", symbol_str, option_type)
+                cur_strike = _round_to_step(underlying + step if option_type == "CE" else underlying - step, step)
+                max_steps = 10
+                for _ in range(max_steps):
+                    prem = get_option_premium(symbol_str, expiry_str, cur_strike, option_type, option_rows)
+                    if prem is not None and prem >= effective_threshold:
+                        selected_strike = cur_strike
+                        selected_premium = prem
+                        log.info(
+                            "[paper_plan] %s %s fallback OTM strike %.1f selected with premium %.2f (>= threshold %.2f)",
+                            symbol_str, option_type, cur_strike, prem, effective_threshold
+                        )
+                        break
+                    if option_type == "CE":
+                        cur_strike = _round_to_step(cur_strike - step, step)
+                        if cur_strike < underlying:
+                            break
+                    else:
+                        cur_strike = _round_to_step(cur_strike + step, step)
+                        if cur_strike > underlying:
+                            break
+
+            # 4. Final safety fallback: use the first wall or ATM+1 step if premium > 0
+            if selected_strike is None:
+                first_wall = walls[0] if 'walls' in locals() and walls else (underlying + step if option_type == "CE" else underlying - step)
+                cand_strike = _round_to_step(first_wall, step)
+                prem = get_option_premium(symbol_str, expiry_str, cand_strike, option_type, option_rows)
+                if prem is not None and prem > 0:
+                    selected_strike = cand_strike
+                    selected_premium = prem
+                    log.info(
+                        "[paper_plan] %s %s fallback best-available strike %.1f selected with premium %.2f",
+                        symbol_str, option_type, cand_strike, prem
+                    )
 
             if selected_strike is not None:
                 strike = selected_strike
             else:
                 log.warning(
-                    "[paper_plan] %s %s: All DTE-Delta candidates & OI walls failed >0.1%% premium threshold (min %.2f). Trade blocked.",
-                    symbol_str, option_type, min_premium_threshold
+                    "[paper_plan] %s %s: All DTE-Delta candidates & OI walls failed premium checks. Trade blocked.",
+                    symbol_str, option_type
                 )
                 return None
         else:
