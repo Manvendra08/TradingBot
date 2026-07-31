@@ -57,6 +57,7 @@ async def _fetch_side_async(
     if requested_expiry:
         underlying_price = _fetch_nse_commodity_spot(base_symbol, requested_expiry)
     keep_strikes: set[float] = set()
+    table_html = None
 
     try:
         async with async_playwright() as pw:
@@ -86,144 +87,136 @@ async def _fetch_side_async(
 
                 log.info("[mc] navigating to option chain: %s", url)
                 await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        
-        # Wait for select element container to load
-        await page.wait_for_selector("#sel_exp_date", state="attached", timeout=10000)
-        
-        # Poll robustly until child options are populated in select element
-        options = page.locator("#sel_exp_date option")
-        for _ in range(50):
-            if await options.count() > 0:
-                break
-            await page.wait_for_timeout(100)
-        
-        # Get available expiries
-        count = await options.count()
-        available_expiries = []
-        for i in range(count):
-            val = await options.nth(i).get_attribute("value")
-            available_expiries.append(val)
-            
-        if not available_expiries:
-            log.error("[mc] no expiries found in dropdown")
-            return None, None, []
-            
-        if not underlying_price:
-            # If no requested expiry was provided, default to the front-month active option contract
-            # from the dropdown to ensure correct future resolution.
-            active_opt_expiry = requested_expiry or (available_expiries[0] if available_expiries else None)
-            if active_opt_expiry:
-                underlying_price = _fetch_nse_commodity_spot(base_symbol, active_opt_expiry)
-
-        if not underlying_price:
-            underlying_price = _scrape_moneycontrol_spot(page)
-            if underlying_price:
-                log.info("[mc] Moneycontrol spot for %s: %.2f", base_symbol, underlying_price)
-        if not underlying_price:
-            log.error("[mc] no spot/underlying found for %s; cannot identify ATM", base_symbol)
-            return None, None, []
-
-        # Select the best expiry that actually covers the spot price
-        actual_expiry = None
-        table_html = None
-        
-        expiries_to_test = available_expiries
-        if requested_expiry and requested_expiry in available_expiries:
-            # Prioritize requested expiry
-            expiries_to_test = [requested_expiry] + [e for e in available_expiries if e != requested_expiry]
-
-        from bs4 import BeautifulSoup
-
-        for exp in expiries_to_test:
-            try:
-                log.info("[mc] testing expiry candidate: %s", exp)
-                await page.select_option("#sel_exp_date", exp)
                 
-                submit_btn = page.get_by_role("button", name="Submit")
-                if await submit_btn.count() == 0:
-                    submit_btn = page.locator("input[value='Submit']")
-                await submit_btn.first.click()
+                # Wait for select element container to load
+                await page.wait_for_selector("#sel_exp_date", state="attached", timeout=10000)
                 
-                await page.wait_for_timeout(1000)
-                
-                # Wait for table
-                target_table = None
-                for attempt in range(15):
-                    tables = await page.query_selector_all("table")
-                    for tbl in tables:
-                        try:
-                            r_count = len(await tbl.query_selector_all("tr"))
-                            if r_count > 5:
-                                target_table = tbl
-                                break
-                        except Exception:
-                            continue
-                    if target_table:
+                # Poll robustly until child options are populated in select element
+                options = page.locator("#sel_exp_date option")
+                for _ in range(50):
+                    if await options.count() > 0:
                         break
                     await page.wait_for_timeout(100)
                 
-                if not target_table:
-                    log.warning("[mc] table not found for expiry: %s", exp)
-                    continue
+                # Get available expiries
+                count = await options.count()
+                available_expiries = []
+                for i in range(count):
+                    val = await options.nth(i).get_attribute("value")
+                    available_expiries.append(val)
                     
+                if not available_expiries:
+                    log.error("[mc] no expiries found in dropdown")
+                    return None, None, []
+                    
+                if not underlying_price:
+                    active_opt_expiry = requested_expiry or (available_expiries[0] if available_expiries else None)
+                    if active_opt_expiry:
+                        underlying_price = _fetch_nse_commodity_spot(base_symbol, active_opt_expiry)
+
                 if not underlying_price:
                     underlying_price = _scrape_moneycontrol_spot(page)
                     if underlying_price:
                         log.info("[mc] Moneycontrol spot for %s: %.2f", base_symbol, underlying_price)
+                if not underlying_price:
+                    log.error("[mc] no spot/underlying found for %s; cannot identify ATM", base_symbol)
+                    return None, None, []
 
-                curr_html = await target_table.inner_html()
-                soup = BeautifulSoup(curr_html, "html.parser")
-                trs = soup.find_all("tr")
-                strikes = []
-                for tr in trs:
-                    cells = tr.find_all("td")
-                    if len(cells) >= 11:
-                        strike = _parse_number(cells[5].get_text(strip=True))
-                        if strike:
-                            strikes.append(strike)
-                
-                if not strikes:
-                    log.warning("[mc] no strikes parsed for expiry: %s", exp)
-                    continue
-                    
-                min_s, max_s = min(strikes), max(strikes)
-                log.info("[mc] expiry %s range: %s to %s", exp, min_s, max_s)
-                
-                # If spot is covered, or if we don't know the spot price, or if it's the only option
-                if not underlying_price or (min_s <= underlying_price <= max_s) or len(expiries_to_test) == 1:
-                    actual_expiry = exp
-                    table_html = curr_html
-                    strikes = sorted(set(strikes))
-                    atm_strike = min(strikes, key=lambda x: abs(x - underlying_price))
-                    idx = strikes.index(atm_strike)
-                    start_idx = max(0, idx - STRIKES_AROUND_ATM)
-                    end_idx = min(len(strikes), idx + STRIKES_AROUND_ATM + 1)
-                    keep_strikes = set(strikes[start_idx:end_idx])
-                    log.info("[mc] selected valid expiry: %s", actual_expiry)
-                    log.info(
-                        "[mc] ATM window for %s: spot %.2f, ATM %s, strikes %s-%s (%d)",
-                        base_symbol,
-                        underlying_price,
-                        atm_strike,
-                        min(keep_strikes),
-                        max(keep_strikes),
-                        len(keep_strikes),
-                    )
-                    break
-                else:
-                    log.warning("[mc] expiry %s does not cover spot %.2f", exp, underlying_price)
-            except Exception as e:
-                log.error("[mc] error testing expiry %s: %s", exp, e)
-                continue
+                expiries_to_test = available_expiries
+                if requested_expiry and requested_expiry in available_expiries:
+                    expiries_to_test = [requested_expiry] + [e for e in available_expiries if e != requested_expiry]
 
-        if not table_html:
-            log.error("[mc] could not find any valid option chain table")
-            return None, None, []
+                from bs4 import BeautifulSoup
 
+                for exp in expiries_to_test:
+                    try:
+                        log.info("[mc] testing expiry candidate: %s", exp)
+                        await page.select_option("#sel_exp_date", exp)
+                        
+                        submit_btn = page.get_by_role("button", name="Submit")
+                        if await submit_btn.count() == 0:
+                            submit_btn = page.locator("input[value='Submit']")
+                        await submit_btn.first.click()
+                        
+                        await page.wait_for_timeout(1000)
+                        
+                        target_table = None
+                        for attempt in range(15):
+                            tables = await page.query_selector_all("table")
+                            for tbl in tables:
+                                try:
+                                    r_count = len(await tbl.query_selector_all("tr"))
+                                    if r_count > 5:
+                                        target_table = tbl
+                                        break
+                                except Exception:
+                                    continue
+                            if target_table:
+                                break
+                            await page.wait_for_timeout(100)
+                        
+                        if not target_table:
+                            log.warning("[mc] table not found for expiry: %s", exp)
+                            continue
+                            
+                        if not underlying_price:
+                            underlying_price = _scrape_moneycontrol_spot(page)
+                            if underlying_price:
+                                log.info("[mc] Moneycontrol spot for %s: %.2f", base_symbol, underlying_price)
+
+                        curr_html = await target_table.inner_html()
+                        soup = BeautifulSoup(curr_html, "html.parser")
+                        trs = soup.find_all("tr")
+                        strikes = []
+                        for tr in trs:
+                            cells = tr.find_all("td")
+                            if len(cells) >= 11:
+                                strike = _parse_number(cells[5].get_text(strip=True))
+                                if strike:
+                                    strikes.append(strike)
+                        
+                        if not strikes:
+                            log.warning("[mc] no strikes parsed for expiry: %s", exp)
+                            continue
+                            
+                        min_s, max_s = min(strikes), max(strikes)
+                        log.info("[mc] expiry %s range: %s to %s", exp, min_s, max_s)
+                        
+                        if not underlying_price or (min_s <= underlying_price <= max_s) or len(expiries_to_test) == 1:
+                            actual_expiry = exp
+                            table_html = curr_html
+                            strikes = sorted(set(strikes))
+                            atm_strike = min(strikes, key=lambda x: abs(x - underlying_price))
+                            idx = strikes.index(atm_strike)
+                            start_idx = max(0, idx - STRIKES_AROUND_ATM)
+                            end_idx = min(len(strikes), idx + STRIKES_AROUND_ATM + 1)
+                            keep_strikes = set(strikes[start_idx:end_idx])
+                            log.info("[mc] selected valid expiry: %s", actual_expiry)
+                            break
+                        else:
+                            log.warning("[mc] expiry %s does not cover spot %.2f", exp, underlying_price)
+                    except Exception as e:
+                        log.error("[mc] error testing expiry %s: %s", exp, e)
+                        continue
+
+            except Exception as exc:
+                log.error("[mc] page interaction failed: %s", exc)
+                return None, None, []
+            finally:
+                try:
+                    await ctx.close()
+                    await browser.close()
+                except Exception:
+                    pass
     except Exception as exc:
-        log.error("[mc] page interaction failed: %s", exc)
+        log.error("[mc] outer fetch exception: %s", exc)
         return None, None, []
 
+    if not table_html:
+        log.error("[mc] could not find any valid option chain table")
+        return None, None, []
+
+    from bs4 import BeautifulSoup
     soup = BeautifulSoup(table_html, "html.parser")
     trs = soup.find_all("tr")
     for tr in trs:
@@ -238,19 +231,16 @@ async def _fetch_side_async(
         if keep_strikes and strike not in keep_strikes:
             continue
 
-        # Parse CE (left side)
         ce_ltp = _parse_number(texts[4]) or 0.0
         ce_oi = _parse_int(texts[0]) or 0
         ce_oi_change = _parse_int(texts[1]) or 0
         ce_vol = _parse_int(texts[2]) or 0
 
-        # Parse PE (right side)
         pe_ltp = _parse_number(texts[6]) or 0.0
         pe_oi = _parse_int(texts[10]) or 0
         pe_oi_change = _parse_int(texts[9]) or 0
         pe_vol = _parse_int(texts[8]) or 0
 
-        # Add CE row
         parsed_strikes.append({
             "strike": strike,
             "option_type": "CE",
@@ -262,8 +252,6 @@ async def _fetch_side_async(
             "bid": None,
             "ask": None
         })
-
-        # Add PE row
         parsed_strikes.append({
             "strike": strike,
             "option_type": "PE",
