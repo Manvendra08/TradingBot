@@ -6,6 +6,9 @@ from dotenv import load_dotenv
 # Load .env from project root (works whether you run from root or a subdirectory)
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
+from datetime import timezone, timedelta
+IST = timezone(timedelta(hours=5, minutes=30))
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 
@@ -25,12 +28,12 @@ LOG_DIR = BASE_DIR / "logs"
 DATA_DIR.mkdir(exist_ok=True)
 LOG_DIR.mkdir(exist_ok=True)
 
-WATCH_NSE = ["NIFTY", "BANKNIFTY"]
+WATCH_NSE = ["BANKNIFTY"]
 WATCH_BSE = ["SENSEX"]
-WATCH_MCX = ["NATURALGAS", "CRUDEOIL"]
+WATCH_MCX = ["NATURALGAS"]
 WATCH_SYMBOLS = WATCH_NSE + WATCH_BSE + WATCH_MCX
 
-FETCH_INTERVAL_MINUTES = 5
+FETCH_INTERVAL_MINUTES = 15
 
 HTTP_TIMEOUT_SECONDS = 15
 HTTP_MAX_RETRIES = 3
