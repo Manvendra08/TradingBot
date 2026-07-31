@@ -12,6 +12,10 @@ REQUIRE_BROAD_CORROBORATION = False
 # Disabled per requirement: Core engine verdict handles entry/exit rules directly.
 ENABLE_TFSS_TRADE_BLOCKED_RULES = False
 
+# Master switch for TFSS Multi-Leg Tranche Sizing Logic (scaling down per tranche).
+# Disabled per requirement: Every trade is placed with 100% full base lot size.
+ENABLE_TFSS_TRANCHE_SCALING = False
+
 class DteDeltaBand(TypedDict):
     min_dte: int
     max_dte: int

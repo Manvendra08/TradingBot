@@ -51,7 +51,7 @@
 - JSON parse hardening: `_extract_json()` handles fences, prose wrappers, control chars — eliminates per-cycle OpenRouter parse failures
 - HOLDING alerts now show position age (`entered 47m ago`) to disambiguate from new signals
 - **AI Exit Advice is Advisory Only:** Auto-exits (`CLOSED_AI_EXIT`) from AI exit advice are disabled; high-urgency exit suggestions are purely logged as advisory recommendations.
-- **TFSS Multi-Leg Strangle Book (v4.0):** Active TFSS strangles are grouped via `leg_group_id` (`{symbol}:{today_date}:TFSS`). Supports up to 6 open legs (3 per side) per symbol-day. Lot sizing scales dynamically by tranche (`50% -> 30% -> 20%`) via `TRANCHE_SEQUENCE`. Risk Engine checks combined margin (cap ₹600k), combined net delta (cap 0.60), and max tranches (6) before allowing new tranche entries. Delta-stop exits close the tested side selectively (prioritized via `EXIT_PRIORITY_MAP`), leaving the opposite untested side active.
+- **TFSS Multi-Leg Strangle Book (v4.0):** Active TFSS strangles are grouped via `leg_group_id` (`{symbol}:{today_date}:TFSS`). Supports up to 6 open legs (3 per side) per symbol-day. Tranche scale-down (`ENABLE_TFSS_TRANCHE_SCALING = False`) is disabled per requirement so every trade places at 100% full base size in market direction (Bullish → Sell PE, Bearish → Sell CE). Risk Engine checks combined margin (cap ₹600k), combined net delta (cap 0.60), and max tranches (6) before allowing new entries. Exit logic & `EXIT_PRIORITY_MAP` remain fully active (Delta-stop exits close the tested side selectively, leaving the opposite side active).
 
 ## Token Efficiency
 
