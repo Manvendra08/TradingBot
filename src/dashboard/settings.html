@@ -1517,9 +1517,9 @@
                     <!-- Card 3: Paper Symbol Lot Controls -->
                     <div class="card" id="paper-lots-card">
                         <div class="card-title">
-                            <span>📝 Paper Symbol Lot Controls</span>
+                            <span>📝 Paper Symbol Lot & Trade Controls</span>
                             <span class="info-icon"
-                                data-tooltip="Per-symbol lot sizes for paper trades. Editable only when Paper mode (Broker Off) is active.">i</span>
+                                data-tooltip="Enable/disable paper execution and set per-symbol lot sizes for paper trades. Editable only when Paper mode (Broker Off) is active.">i</span>
                         </div>
                         <p id="paper-lots-note" style="
                                     font-size: 12px;
@@ -1527,8 +1527,7 @@
                                     margin-bottom: 20px;
                                     line-height: 1.4;
                                 ">
-                            Set default paper lots per symbol. Active when
-                            Paper mode (Broker Off) is selected.
+                            Enable or disable paper trade execution and set default lots for each watch symbol in Paper mode.
                         </p>
                         <div class="form-group" style="margin-bottom: 16px">
                             <label style="
@@ -2123,7 +2122,7 @@
                     html += `
         <div class="symbol-lot-item" style="display:flex; justify-content:space-between; align-items:center; gap: 8px;">
           <div style="display:flex; align-items:center; gap:10px;">
-            <input type="checkbox" name="enable-${sym}" ${isChecked} style="width:16px; height:16px; cursor:pointer; accent-color:var(--accent);">
+            <input type="checkbox" name="enable-${namePrefix}-${sym}" ${isChecked} style="width:16px; height:16px; cursor:pointer; accent-color:var(--accent);">
             <label>${sym}</label>
           </div>
           <div style="display:flex; align-items:center; gap:8px;">
@@ -2443,6 +2442,7 @@
                 isLotsDirty() ||
                 isPaperLotsDirty() ||
                 isSymbolsDirty() ||
+                isPaperSymbolsDirty() ||
                 parseInt(
                     document.getElementById("sett-paper-lots-global")
                         ?.value || "0",
@@ -2504,7 +2504,20 @@
             const enabled = [];
             TRADE_CONTROL_SYMBOLS.forEach((sym) => {
                 const cb = document.querySelector(
-                    `input[name="enable-${sym}"]`,
+                    `input[name="enable-lot-${sym}"]`,
+                );
+                if (cb && cb.checked) {
+                    enabled.push(sym);
+                }
+            });
+            return enabled;
+        }
+
+        function getPaperEnabledSymbolsFromUI() {
+            const enabled = [];
+            TRADE_CONTROL_SYMBOLS.forEach((sym) => {
+                const cb = document.querySelector(
+                    `input[name="enable-paper-lot-${sym}"]`,
                 );
                 if (cb && cb.checked) {
                     enabled.push(sym);
@@ -2522,6 +2535,24 @@
                     "CRUDEOIL",
                 ];
             const uiEnabled = getEnabledSymbolsFromUI();
+            if (currentEnabled.length !== uiEnabled.length) return true;
+            const s1 = new Set(currentEnabled);
+            const s2 = new Set(uiEnabled);
+            for (let item of s1) {
+                if (!s2.has(item)) return true;
+            }
+            return false;
+        }
+
+        function isPaperSymbolsDirty() {
+            const currentEnabled =
+                runtimeConfig.paper_enabled_symbols || [
+                    "NIFTY",
+                    "BANKNIFTY",
+                    "NATURALGAS",
+                    "CRUDEOIL",
+                ];
+            const uiEnabled = getPaperEnabledSymbolsFromUI();
             if (currentEnabled.length !== uiEnabled.length) return true;
             const s1 = new Set(currentEnabled);
             const s2 = new Set(uiEnabled);
@@ -2792,8 +2823,13 @@
                         "paper-lots-container",
                         data.paper_symbol_lots || {},
                         "paper-lot",
-                        false,
-                        [],
+                        true,
+                        data.paper_enabled_symbols || [
+                            "NIFTY",
+                            "BANKNIFTY",
+                            "NATURALGAS",
+                            "CRUDEOIL",
+                        ],
                     );
                     updateSafetyZoneUI(
                         data.live_shadow_mode,
@@ -2839,6 +2875,7 @@
             );
 
             const enabledSymbols = getEnabledSymbolsFromUI();
+            const paperEnabledSymbols = getPaperEnabledSymbolsFromUI();
 
             const updated = {
                 ...runtimeConfig,
@@ -2880,6 +2917,7 @@
                     10,
                 ),
                 live_enabled_broker_symbols: enabledSymbols,
+                paper_enabled_symbols: paperEnabledSymbols,
                 live_ai_decision_mode: document.getElementById(
                     "sett-ai-decision-mode",
                 ).value,

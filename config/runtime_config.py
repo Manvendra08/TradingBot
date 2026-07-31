@@ -59,6 +59,7 @@ def load_runtime_config() -> dict:
         "paper_symbol_lots": default_symbol_lots(10),
         "paper_lots": 10,  # Global fallback when paper_symbol_lots has no entry
         "live_enabled_broker_symbols": ["NIFTY", "BANKNIFTY", "NATURALGAS", "CRUDEOIL"],
+        "paper_enabled_symbols": ["NIFTY", "BANKNIFTY", "NATURALGAS", "CRUDEOIL"],
         "oi_spike_threshold_pct": 10.0,
         "price_spike_threshold_pct": 2.0,
         "dashboard_auth_enabled": False,

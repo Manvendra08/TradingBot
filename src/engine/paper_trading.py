@@ -520,6 +520,22 @@ def execute_paper_trade(
                     "reason": "Open trade exists, no valid reversal",
                 }
 
+    if not open_trade:
+        from src.engine.live_trading import _get_base_symbol
+        base_sym = _get_base_symbol(symbol)
+        paper_enabled_symbols = rconf.get("paper_enabled_symbols")
+        if paper_enabled_symbols is not None and base_sym not in paper_enabled_symbols:
+            log.info(
+                "%s: paper trade entry blocked — paper trading disabled for symbol %s",
+                symbol,
+                base_sym,
+            )
+            return {
+                "action": "BLOCKED_DISABLED_SYMBOL",
+                "trade_id": None,
+                "reason": f"Paper trading disabled for {base_sym}",
+            }
+
     # Risk limits
     setup_type = plan.get("setup_type") or "CORE"
     candidate_leg = None
