@@ -394,15 +394,15 @@ def test_place_kite_order_pricing_rules():
         tradingsymbol="NATURALGAS26JUNFUT",
         transaction_type="BUY",
         quantity=1250,
-        product=fake_kite.PRODUCT_MIS,
+        product=fake_kite.PRODUCT_NRML,
         order_type=fake_kite.ORDER_TYPE_LIMIT,
         price=300.60,
     )
 
     fake_kite.place_order.reset_mock()
 
-    # 2. Options (transaction_type="BUY", tick_size=0.05, 5% buffer, check tick rounding)
-    # expected limit_price: ltp = 496.91 * 1.05 = 521.7555, rounded to 0.05 multiple = 521.75
+    # 2. Options (transaction_type="BUY", tick_size=0.05, 5-tick buffer, check tick rounding)
+    # expected limit_price: ltp = 496.91 + (5 * 0.05) = 497.16, rounded to 0.05 multiple = 497.15
     fake_kite.ltp.return_value = {"NFO:BANKNIFTY26JUN58000CE": {"last_price": 496.91}}
     place_kite_order(
         fake_kite,
@@ -420,9 +420,9 @@ def test_place_kite_order_pricing_rules():
         tradingsymbol="BANKNIFTY26JUN58000CE",
         transaction_type="BUY",
         quantity=30,
-        product=fake_kite.PRODUCT_MIS,
+        product=fake_kite.PRODUCT_NRML,
         order_type=fake_kite.ORDER_TYPE_LIMIT,
-        price=521.75,
+        price=497.15,
     )
 
 
@@ -530,13 +530,14 @@ def test_llm_alternative_fallbacks():
 
     # Enable alternative provider keys
     os.environ["GROQ_API_KEY"] = "fake-groq-key"
+    old_opencode_key = os.environ.pop("OPENCODE_API_KEY", None)
     old_github_token = os.environ.pop("GITHUB_TOKEN", None)
     old_openrouter_key = os.environ.pop("OPENROUTER_API_KEY", None)
     old_gemini_key = os.environ.pop("GEMINI_API_KEY", None)
 
     try:
         with patch("requests.Session.post", return_value=mock_resp) as mock_post:
-            # Call it with no GitHub/OpenRouter/Gemini key -> should go straight to Groq
+            # Call it with no OpenCode/GitHub/OpenRouter/Gemini key -> should go straight to Groq
             result = _call_llm_api("NIFTY", "dummy prompt", LLMTradeVerdict)
             assert result is not None
             assert result.action == "GO_SHORT"
@@ -544,6 +545,8 @@ def test_llm_alternative_fallbacks():
             assert mock_post.call_count >= 1
     finally:
         # Restore keys
+        if old_opencode_key:
+            os.environ["OPENCODE_API_KEY"] = old_opencode_key
         if old_github_token:
             os.environ["GITHUB_TOKEN"] = old_github_token
         if old_openrouter_key:
