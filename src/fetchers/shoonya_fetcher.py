@@ -93,7 +93,7 @@ def _post_jdata(
     for attempt in range(1, _MAX_RETRIES + 2):  # attempts: 1, 2
         req = urllib.request.Request(url, data=body, headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=6) as resp:
+            with urllib.request.urlopen(req, timeout=8) as resp:
                 return json.loads(resp.read().decode())
         except urllib.error.HTTPError as e:
             raw = e.read().decode()
@@ -132,7 +132,7 @@ def _post_jdata(
                         try:
                             ip_url = url.replace("api.shoonya.com", ip)
                             req = urllib.request.Request(ip_url, data=body, headers={**headers, "Host": "api.shoonya.com"})
-                            with urllib.request.urlopen(req, timeout=6) as resp:
+                            with urllib.request.urlopen(req, timeout=8) as resp:
                                 log.info("[shoonya] DNS fallback succeeded via IP %s", ip)
                                 return json.loads(resp.read().decode())
                         except Exception as ip_exc:

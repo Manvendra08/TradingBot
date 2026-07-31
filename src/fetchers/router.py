@@ -444,7 +444,10 @@ def fetch_option_chain(symbol: str, expiry: str | None = None, required_strikes:
         try:
             return fut.result(timeout=timeout_s)
         except Exception as exc:
-            log.warning("[router] %s | %s fetch failed/timed out: %s", symbol, src, exc)
+            if timeout_s < 1.0:
+                log.debug("[router] %s | %s optional fetch cutoff (%.1fs): %s", symbol, src, timeout_s, exc)
+            else:
+                log.warning("[router] %s | %s fetch failed/timed out: %s", symbol, src, exc)
             return None
 
     i = 0
