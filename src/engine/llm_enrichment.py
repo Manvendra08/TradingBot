@@ -1661,11 +1661,11 @@ def _call_llm_api(
         }
 
         if _is_mcx:
-            # MCX: GitHub Models (primary) → Groq → OpenCode Zen → AnyAPI Free → Bedrock Mantle → Nvidia NIM → Bedrock → OpenRouter → Gemini → SambaNova
+            # MCX: OpenCode Zen (primary) → Groq → GitHub Models → AnyAPI Free → Bedrock Mantle → Nvidia NIM → Bedrock → OpenRouter → Gemini → SambaNova
             FREE_MODEL_PIPELINE = [
-                _github_models,
-                _groq_group,
                 _opencode_zen_group,
+                _groq_group,
+                _github_models,
                 _anyapi_free_group,
                 _bedrock_mantle_group,
                 _nvidia_nim_group,

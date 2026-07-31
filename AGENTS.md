@@ -44,7 +44,7 @@
 - `live_ai_decision_mode = full` (default in `runtime_config.json`; governs live AI decisions). NOTE: `settings.py AI_DECISION_MODE` (env `AI_DECISION_MODE`, default `empirical`) is legacy and NOT used by the live decision path.
 - LLM enrichment is **engine-aligned**: OI engine decides direction; LLM provides execution detail only
 - **NSE/BSE Primary LLM Chain:** OpenCode Zen → Groq → GitHub Models → NVIDIA NIM → Bedrock → OpenRouter → Gemini.
-- **MCX Primary LLM Chain:** GitHub Models → Groq → OpenCode Zen → AnyAPI Free → Bedrock Mantle → NVIDIA NIM → Bedrock → OpenRouter → Gemini → SambaNova.
+- **MCX Primary LLM Chain:** OpenCode Zen → Groq → GitHub Models → AnyAPI Free → Bedrock Mantle → NVIDIA NIM → Bedrock → OpenRouter → Gemini → SambaNova.
 - Entry advisor is skipped when a position is already open; only exit advisor runs
 - Chart conflict (1H vs 3H): NO penalty for OI-based trades; a 1H opposing a completed 3H = entry timing signal
 - MCX confidence floor: 72% for NATURALGAS/CRUDEOIL/GOLD/SILVER (vs 70% NSE)
@@ -102,7 +102,7 @@ Follow below instructions before starting work:
 6. **Use required MCP** before starting any work.
 
 7. **Review previous code line-by-line** for deprecated methods, unhandled edge cases, or logic bugs before fixing.
-8. **Update KNOWLEDGE_BASE.md**: Always update the Scan Sentinel grounded codebase knowledge base at `data/sentinel/KNOWLEDGE_BASE.md` when making changes to codebase architecture, pipeline flow, or when introducing new features relevant to Scan Sentinel agentic AI diagnostics.
+8. **Update KNOWLEDGE_BASE.md**: Update `data/sentinel/KNOWLEDGE_BASE.md` only for **major changes/fixes** in the app or when changes are relevant to **Sentinel scan diagnostics**. Do not update for routine architecture/pipeline changes.
 
 ## Key Architectural Decisions (NSEBOT)
 
