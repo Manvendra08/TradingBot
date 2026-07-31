@@ -31,179 +31,18 @@ _MC_SYMBOL_MAP: dict[str, str] = {
     "SILVER": "silver",
 }
 
-# BUG-M13 FIX: Reusable browser context (async version)
-_browser_lock = threading.Lock()
-_browser_instance = None
-_browser_context = None
-_browser_pw = None
-
-
-async def _get_browser_context_async():
-    """BUG-M13: Return a reusable async browser context, creating it on first call."""
-    global _browser_instance, _browser_context, _browser_pw
-    with _browser_lock:
-        if _browser_context is not None:
-            return _browser_context, _browser_instance
-        from playwright.async_api import async_playwright
-        _browser_pw = await async_playwright().start()
-        browser = None
-        for channel in ["chrome", "msedge", None]:
-            try:
-                browser = await _browser_pw.chromium.launch(
-                    headless=True,
-                    channel=channel,
-                    args=["--disable-blink-features=AutomationControlled"],
-                    timeout=10000
-                )
-                break
-            except Exception as e:
-                log.warning("[mc] failed to launch browser with channel %s: %s", channel, e)
-        if not browser:
-            await _browser_pw.stop()
-            _browser_pw = None
-            return None, None
-        ctx = await browser.new_context(
-            user_agent=_HEADERS["User-Agent"],
-            viewport={"width": 1280, "height": 900},
-        )
-        _browser_instance = browser
-        _browser_context = ctx
-        return ctx, browser
-
-
-def _get_browser_context():
-    """Synchronous wrapper for compatibility — runs async version in event loop."""
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-    if loop and loop.is_running():
-        # Called from async context — cannot use asyncio.run()
-        # Fall back to sync for now (will be replaced fully)
-        return _get_browser_context_sync()
-    return asyncio.run(_get_browser_context_async())
-
-
-def _get_browser_context_sync():
-    """Fallback sync version for non-async callers."""
-    global _browser_instance, _browser_context, _browser_pw
-    with _browser_lock:
-        if _browser_context is not None:
-            return _browser_context, _browser_instance
-        from playwright.sync_api import sync_playwright
-        _browser_pw = sync_playwright().start()
-        browser = None
-        for channel in ["chrome", "msedge", None]:
-            try:
-                browser = _browser_pw.chromium.launch(
-                    headless=True,
-                    channel=channel,
-                    args=["--disable-blink-features=AutomationControlled"],
-                    timeout=10000
-                )
-                break
-            except Exception as e:
-                log.warning("[mc] failed to launch browser with channel %s: %s", channel, e)
-        if not browser:
-            _browser_pw.stop()
-            _browser_pw = None
-            return None, None
-        ctx = browser.new_context(
-            user_agent=_HEADERS["User-Agent"],
-            viewport={"width": 1280, "height": 900},
-        )
-        _browser_instance = browser
-        _browser_context = ctx
-        return ctx, browser
-
 _HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
+        "Chrome/120.0.0.0 Safari/537.36"
+    )
 }
 
 
-def _parse_number(text: str) -> Optional[float]:
-    if not text:
-        return None
-    cleaned = re.sub(r"[^\d.\-]", "", text.strip())
-    if not cleaned or cleaned in ("-", "."):
-        return None
-    try:
-        return float(cleaned)
-    except ValueError:
-        return None
-
-
-def _parse_int(text: str) -> Optional[int]:
-    val = _parse_number(text)
-    return int(val) if val is not None else None
-
-
-def _get_live_future_price(base_symbol: str, target_expiry: Optional[str] = None) -> Optional[float]:
-    try:
-        from src.fetchers.dhan_commodity_fetcher import DhanCommodityFetcher, _get_open_futures_expiry
-        from src.utils.dhan_resolver import get_dhan_security_id
-        
-        open_fut_expiry = _get_open_futures_expiry(base_symbol)
-        futures_target_expiry = open_fut_expiry or target_expiry
-        
-        secid = get_dhan_security_id(base_symbol, target_expiry=futures_target_expiry)
-        if secid:
-            fetcher = DhanCommodityFetcher()
-            val = fetcher._fetch_builtup_live_price(secid)
-            if val and val > 0:
-                log.info("[mc] Fetched live future price from Dhan for %s: %.2f", base_symbol, val)
-                return val
-    except Exception as exc:
-        log.warning("[mc] Could not fetch live future price from Dhan: %s", exc)
-    return None
-
-
-def _fetch_nse_commodity_spot(symbol: str, requested_expiry: Optional[str] = None) -> Optional[float]:
-    # For MCX commodities, we focus on the active Future contract price.
-    # Spot rates from NSE are not relevant to options pricing.
-    val = _get_live_future_price(symbol, target_expiry=requested_expiry)
-    if val:
-        return val
-    return None
-
-
-def _scrape_moneycontrol_spot(page) -> Optional[float]:
-    selectors = [
-        ".stkUp", ".stkDn", ".stkFlat", ".stkUnch",
-        "#last_price", ".price_dil", ".commodity-price", ".inprice1",
-        "div.price", "span.price",
-    ]
-    for selector in selectors:
-        try:
-            for el in page.query_selector_all(selector):
-                val = _parse_number(el.inner_text())
-                if val and val > 0:
-                    return val
-        except Exception:
-            continue
-
-    try:
-        text = page.inner_text("body", timeout=2000)
-    except Exception:
-        return None
-
-    patterns = (
-        r"(?:Spot|Underlying|Last(?:\s+Price)?|LTP)\s*[:\-]?\s*([\d,]+(?:\.\d+)?)",
-        r"([\d,]+(?:\.\d+)?)\s*(?:Spot|Underlying|LTP)",
-    )
-    for pattern in patterns:
-        for match in re.finditer(pattern, text, flags=re.I):
-            val = _parse_number(match.group(1))
-            if val and val > 0:
-                return val
-    return None
-
-
-async def _fetch_side_async(base_symbol: str, sym_slug: str, requested_expiry: Optional[str] = None) -> tuple[Optional[str], Optional[float], list[dict]]:
+async def _fetch_side_async(
+    base_symbol: str, sym_slug: str, requested_expiry: Optional[str] = None
+) -> tuple[Optional[str], Optional[float], list[dict]]:
     """Fetch option chain and spot price from Moneycontrol using async Playwright."""
     try:
         from playwright.async_api import async_playwright
@@ -219,18 +58,34 @@ async def _fetch_side_async(base_symbol: str, sym_slug: str, requested_expiry: O
         underlying_price = _fetch_nse_commodity_spot(base_symbol, requested_expiry)
     keep_strikes: set[float] = set()
 
-    # Use reusable browser context
-    ctx, browser = await _get_browser_context_async()
-    if not browser:
-        log.error("[mc] could not launch browser with any channel")
-        return None, None, []
-
-    page = await ctx.new_page()
-    await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-
     try:
-        log.info("[mc] navigating to option chain: %s", url)
-        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        async with async_playwright() as pw:
+            browser = None
+            for channel in ["chrome", "msedge", None]:
+                try:
+                    browser = await pw.chromium.launch(
+                        headless=True,
+                        channel=channel,
+                        args=["--disable-blink-features=AutomationControlled"],
+                        timeout=10000
+                    )
+                    break
+                except Exception as e:
+                    log.warning("[mc] failed to launch browser with channel %s: %s", channel, e)
+            if not browser:
+                log.error("[mc] could not launch browser with any channel")
+                return None, None, []
+
+            ctx = await browser.new_context(
+                user_agent=_HEADERS["User-Agent"],
+                viewport={"width": 1280, "height": 900},
+            )
+            try:
+                page = await ctx.new_page()
+                await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+
+                log.info("[mc] navigating to option chain: %s", url)
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
         
         # Wait for select element container to load
         await page.wait_for_selector("#sel_exp_date", state="attached", timeout=10000)
