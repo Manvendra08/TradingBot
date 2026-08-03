@@ -409,16 +409,16 @@ class ShoonyaFetcher(BaseFetcher):
                             click_err,
                         )
                 except Exception as page_exc:
-                    log.error("[shoonya] Playwright page interaction failed: %s", page_exc)
+                    log.warning("[shoonya] Playwright OAuth login page interaction failed/timed out: %s", page_exc)
                     try:
                         import os
                         os.makedirs("data", exist_ok=True)
                         screenshot_path = "data/shoonya_login_error.png"
                         page.screenshot(path=screenshot_path)
-                        log.error("[shoonya] Saved login failure screenshot to %s", screenshot_path)
+                        log.debug("[shoonya] Saved login failure screenshot to %s", screenshot_path)
                     except Exception as ss_err:
-                        log.warning("[shoonya] Could not save login failure screenshot: %s", ss_err)
-                    raise page_exc
+                        log.debug("[shoonya] Could not save login failure screenshot: %s", ss_err)
+                    return None
                 finally:
                     final_url = page.url
                     body_text = ""
@@ -564,11 +564,20 @@ class ShoonyaFetcher(BaseFetcher):
     def _api_call(
         self, endpoint: str, payload: dict, retry_on_expiry: bool = True
     ) -> dict | None:
-        # Acquire the serialisation lock so concurrent callers (e.g. MCX
-        # ThreadPoolExecutor) never race on token rotation.  Each call
-        # completes — including token save — before the next starts.
-        with self._api_lock:
+        # Non-blocking lock: if another symbol's fetch already holds the lock,
+        # fail immediately so the router can fall through to the next fetcher
+        # (e.g. sensibull).  Prevents cascading timeouts when multiple symbols
+        # are fetched concurrently via the 16-worker pipeline_io_executor.
+        if not self._api_lock.acquire(blocking=False):
+            log.debug(
+                "[shoonya] %s skipped — another fetch in progress (lock held)",
+                endpoint,
+            )
+            return None
+        try:
             return self._api_call_impl(endpoint, payload, retry_on_expiry)
+        finally:
+            self._api_lock.release()
 
     def _api_call_impl(
         self, endpoint: str, payload: dict, retry_on_expiry: bool = True
