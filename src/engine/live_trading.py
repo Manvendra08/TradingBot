@@ -99,10 +99,14 @@ def get_cached_user_name() -> str | None:
             global _cached_user_name, _profile_failure_ts
             try:
                 prof = cl.profile()
-                _cached_user_name = prof.get("user_name")
-                _profile_failure_ts = 0.0
+                # BUG-H04 FIX: Use lock when writing to globals to prevent race conditions
+                # when multiple threads call get_cached_user_name() simultaneously
+                with _kite_client_lock:
+                    _cached_user_name = prof.get("user_name")
+                    _profile_failure_ts = 0.0
             except Exception as ex:
-                _profile_failure_ts = datetime.now(timezone.utc).timestamp()
+                with _kite_client_lock:
+                    _profile_failure_ts = datetime.now(timezone.utc).timestamp()
                 log.debug("Background Zerodha profile fetch failed: %s", ex)
 
         t = threading.Thread(target=_bg_fetch_profile, args=(client,), daemon=True)

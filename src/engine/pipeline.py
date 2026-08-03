@@ -405,7 +405,11 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
         except Exception as e:
             log.debug("Error checking actual trade for digest_id %s: %s", digest_id, e)
     
-    trade_entered = db_entered or tf_entered or paper_opened or bool((intel or {}).get("trade_entered"))
+    is_decision_blocked = td.get("action") in ("BLOCK", "NO_ACTION", None) or not td.get("strike")
+    if is_decision_blocked and not (db_entered or tf_entered or paper_opened):
+        trade_entered = False
+    else:
+        trade_entered = db_entered or tf_entered or paper_opened or bool((intel or {}).get("trade_entered"))
     
     from config.settings import DEFAULT_LOTS_PER_TRADE
     base_lots = DEFAULT_LOTS_PER_TRADE

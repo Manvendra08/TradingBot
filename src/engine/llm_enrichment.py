@@ -1141,6 +1141,61 @@ def _call_llm_api(
         else:
             purpose = "formatting"
 
+    # OmniRouter primary group (#0 top-priority)
+    _omnirouter_base = (os.environ.get("OMNIROUTER_BASE_URL") or "http://localhost:3000/v1").rstrip("/")
+    if not _omnirouter_base.endswith("/chat/completions"):
+        _omnirouter_url = f"{_omnirouter_base}/chat/completions"
+    else:
+        _omnirouter_url = _omnirouter_base
+
+    _omnirouter_group = {
+        "model_group": "omnirouter-primary",
+        "providers": [
+            {
+                "name": "OmniRouter (Gemini 3.6 Flash Medium)",
+                "env_key": "OMNIROUTER_API_KEY",
+                "url": _omnirouter_url,
+                "model": "antigravity/gemini-3.6-flash-medium",
+                "timeout": 20,
+            },
+            {
+                "name": "OmniRouter (Gemini 3.1 Pro Low)",
+                "env_key": "OMNIROUTER_API_KEY",
+                "url": _omnirouter_url,
+                "model": "antigravity/gemini-3.1-pro-low",
+                "timeout": 20,
+            },
+            {
+                "name": "OmniRouter (Gemini 3.5 Flash Low)",
+                "env_key": "OMNIROUTER_API_KEY",
+                "url": _omnirouter_url,
+                "model": "antigravity/gemini-3.5-flash-low",
+                "timeout": 20,
+            },
+            {
+                "name": "OmniRouter (Gemini 2.5 Flash)",
+                "env_key": "OMNIROUTER_API_KEY",
+                "url": _omnirouter_url,
+                "model": "antigravity/gemini-2.5-flash",
+                "timeout": 20,
+            },
+            {
+                "name": "OmniRouter (GPT-OSS 120B Medium)",
+                "env_key": "OMNIROUTER_API_KEY",
+                "url": _omnirouter_url,
+                "model": "antigravity/gpt-oss-120b-medium",
+                "timeout": 20,
+            },
+            {
+                "name": "OmniRouter (Claude Sonnet 4.6)",
+                "env_key": "OMNIROUTER_API_KEY",
+                "url": _omnirouter_url,
+                "model": "antigravity/claude-sonnet-4-6",
+                "timeout": 20,
+            },
+        ],
+    }
+
     # Primary Bedrock Mantle group for reasoning
     _bedrock_mantle_group = {
         "model_group": "bedrock-mantle-primary",
@@ -1228,6 +1283,7 @@ def _call_llm_api(
         }
 
         FREE_MODEL_PIPELINE = [
+            _omnirouter_group,
             _bedrock_mantle_group,
             _github_models_eod,
             _groq_group_eod,
@@ -1327,6 +1383,7 @@ def _call_llm_api(
             ],
         }
         FREE_MODEL_PIPELINE = [
+            _omnirouter_group,
             _bedrock_mantle_group,
             _github_models_fmt,
             _groq_group_fmt,
@@ -1663,6 +1720,7 @@ def _call_llm_api(
         if _is_mcx:
             # MCX: OpenCode Zen (primary) → Groq → GitHub Models → AnyAPI Free → Bedrock Mantle → Nvidia NIM → Bedrock → OpenRouter → Gemini → SambaNova
             FREE_MODEL_PIPELINE = [
+                _omnirouter_group,
                 _opencode_zen_group,
                 _groq_group,
                 _github_models,
@@ -1711,6 +1769,7 @@ def _call_llm_api(
         else:
             # NSE/BSE indices: OpenCode Zen (primary) → Groq → GitHub Models → Nvidia NIM → Bedrock → OpenRouter → Gemini
             FREE_MODEL_PIPELINE = [
+                _omnirouter_group,
                 _opencode_zen_group,
                 _groq_group,
                 _github_models,
@@ -1958,6 +2017,7 @@ def _call_llm_api(
                     "response_format": {"type": "json_object"},
                     "temperature": 0.2,
                     "max_tokens": provider.get("max_tokens_override", max_tokens),
+                    "stream": False,
                 }
                 if provider["name"].startswith("OpenRouter"):
                     headers["HTTP-Referer"] = "https://github.com/nsebot"

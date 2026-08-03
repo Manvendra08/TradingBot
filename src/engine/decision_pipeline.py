@@ -27,6 +27,7 @@ from config.settings import (
     EMP_BOOST_MIN_TRADES,
     EMP_BOOST_MIN_WINRATE,
     TIERED_GATES_ENABLED,
+    CONTRA_ENABLED,
     get_tiered_gates_profile,
 )
 from src.engine.time_guards import is_trading_allowed_now
@@ -528,6 +529,33 @@ def step_trend_alignment_core(ctx: PipelineContext) -> StepResult:
             passed = True
             setup_type = "CONFIRMED_REVERSAL"
             reason = rev_reason
+
+        # Priority 1.5: Contra trade (counter-trend with strong confirmation)
+        if not passed and CONTRA_ENABLED:
+            from src.engine.contra_trade import evaluate_contra_setup
+            regime_label = str(
+                ctx.scan_context.get("intel", {}).get("pcr_regime")
+                or ctx.scan_context.get("pcr_regime")
+                or ""
+            )
+            is_contra, contra_score, contra_reason, contra_checks = evaluate_contra_setup(
+                symbol=symbol,
+                verdict=verdict,
+                confidence=confidence,
+                broader_trend=broader_trend,
+                regime=regime_label,
+            )
+            if is_contra and entry_quality >= MIN_ENTRY_QUALITY_CORE:
+                passed = True
+                setup_type = "CONTRA_REVERSAL"
+                reason = contra_reason
+                ctx.scan_context["_is_contra"] = True
+                ctx.scan_context["_contra_score"] = contra_score
+                ctx.scan_context["_contra_checks"] = contra_checks
+                log.info(
+                    "%s: CONTRA trade approved — %s",
+                    symbol, contra_reason,
+                )
 
         # Priority 2: Trend persistence
         elif is_persistent and entry_quality >= MIN_ENTRY_QUALITY_CORE and regime_ok:

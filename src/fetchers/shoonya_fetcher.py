@@ -564,13 +564,12 @@ class ShoonyaFetcher(BaseFetcher):
     def _api_call(
         self, endpoint: str, payload: dict, retry_on_expiry: bool = True
     ) -> dict | None:
-        # Non-blocking lock: if another symbol's fetch already holds the lock,
-        # fail immediately so the router can fall through to the next fetcher
-        # (e.g. sensibull).  Prevents cascading timeouts when multiple symbols
-        # are fetched concurrently via the 16-worker pipeline_io_executor.
-        if not self._api_lock.acquire(blocking=False):
-            log.debug(
-                "[shoonya] %s skipped — another fetch in progress (lock held)",
+        # Acquire lock with a 3.0s timeout to allow parallel symbol fetches
+        # (e.g. NIFTY, BANKNIFTY, SENSEX) to run sequentially without false drops,
+        # while keeping a deadline safety cap.
+        if not self._api_lock.acquire(blocking=True, timeout=3.0):
+            log.info(
+                "[shoonya] %s skipped — lock timeout (3s) due to concurrent fetch",
                 endpoint,
             )
             return None
@@ -1124,14 +1123,29 @@ class ShoonyaFetcher(BaseFetcher):
                 instname = "FUTCOM"
                 option_exch = "MCX"
 
-            # 1. Resolve underlying futures contract
+            # 1. Resolve underlying futures contract with search fallbacks
             search_res = self._search_scrip(exch, search_text)
             if (
                 not search_res
                 or search_res.get("stat") != "Ok"
                 or not search_res.get("values")
             ):
-                log.warning("[shoonya] could not search scrip for %s", search_text)
+                fallback_text = None
+                if base == "SENSEX" and search_text == "SENSEX FUT":
+                    fallback_text = "SENSEX"
+                elif is_index and search_text == base:
+                    fallback_text = f"{base} FUT"
+
+                if fallback_text:
+                    log.info("[shoonya] primary search '%s' yielded no data, trying fallback '%s'", search_text, fallback_text)
+                    search_res = self._search_scrip(exch, fallback_text)
+
+            if (
+                not search_res
+                or search_res.get("stat") != "Ok"
+                or not search_res.get("values")
+            ):
+                log.info("[shoonya] could not search scrip for %s on %s", search_text, exch)
                 return None
 
             values = search_res["values"]
@@ -1163,9 +1177,18 @@ class ShoonyaFetcher(BaseFetcher):
 
             underlying_token = underlying_tsym = None
             if futures:
-                target_item = futures[0]
-                if len(futures) > 1 and "25JUN26" in target_item.get("tsym", ""):
-                    target_item = futures[1]
+                today_ist = datetime.now(IST).date()
+
+                def _parse_exd(item: dict) -> datetime:
+                    exd_str = item.get("exd", "")
+                    try:
+                        return datetime.strptime(exd_str, "%d-%b-%Y")
+                    except Exception:
+                        return datetime.max
+
+                futures_sorted = sorted(futures, key=_parse_exd)
+                valid_futures = [f for f in futures_sorted if _parse_exd(f).date() >= today_ist]
+                target_item = valid_futures[0] if valid_futures else futures_sorted[0]
                 underlying_token = target_item.get("token")
                 underlying_tsym = target_item.get("tsym")
 
@@ -1447,131 +1470,6 @@ class ShoonyaFetcher(BaseFetcher):
             if underlying_price == 0.0:
                 log.warning("[shoonya] underlying price is 0 for %s", underlying_tsym)
                 return None
-
-                expiry_options = [
-                    row for row in all_options if row["Expiry"] == target_expiry_shoonya
-                ]
-                if not expiry_options:
-                    log.warning(
-                        "[shoonya] No contracts found for expiry %s",
-                        target_expiry_shoonya,
-                    )
-                    return None
-
-                for row in expiry_options:
-                    try:
-                        row["strike_val"] = float(row["StrikePrice"])
-                    except (ValueError, TypeError):
-                        row["strike_val"] = 0.0
-
-                expiry_options = [
-                    row for row in expiry_options if row["strike_val"] > 0
-                ]
-                if not expiry_options:
-                    log.warning(
-                        "[shoonya] No valid strikes parsed for %s options", base
-                    )
-                    return None
-
-                unique_strikes = sorted(
-                    list(set(row["strike_val"] for row in expiry_options))
-                )
-                atm_strike = min(
-                    unique_strikes, key=lambda s: abs(s - underlying_price)
-                )
-                atm_idx = unique_strikes.index(atm_strike)
-
-                start_idx = max(0, atm_idx - STRIKES_AROUND_ATM)
-                end_idx = min(len(unique_strikes), atm_idx + STRIKES_AROUND_ATM + 1)
-                selected_strikes = set(unique_strikes[start_idx:end_idx])
-
-                contracts_to_fetch = [
-                    row
-                    for row in expiry_options
-                    if row["strike_val"] in selected_strikes
-                ]
-
-                import time
-                from concurrent.futures import ThreadPoolExecutor
-
-                quotes = {}
-
-                def fetch_quote(row):
-                    token = row["Token"]
-                    q = self._get_quotes(exch, token)
-                    if q and q.get("stat") == "Ok":
-                        return token, q
-                    return token, None
-
-                with ThreadPoolExecutor(max_workers=2) as executor:
-                    futures = []
-                    for row in contracts_to_fetch:
-                        futures.append(executor.submit(fetch_quote, row))
-                        time.sleep(
-                            0.12
-                        )  # Pace to stay strictly under the 10/sec rate limit
-
-                    for fut in futures:
-                        try:
-                            token, q = fut.result()
-                            if q:
-                                quotes[token] = q
-                        except Exception:
-                            pass
-
-                strikes = []
-                for row in contracts_to_fetch:
-                    token = row["Token"]
-                    q = quotes.get(token)
-                    if not q:
-                        continue
-
-                    ot = row["OptionType"]
-                    if ot not in ("CE", "PE"):
-                        continue
-
-                    def _f(key: str, _q: dict = q) -> float:
-                        try:
-                            return float(_q.get(key) or 0.0)
-                        except (ValueError, TypeError):
-                            return 0.0
-
-                    def _i(key: str, _q: dict = q) -> int:
-                        try:
-                            return int(_q.get(key) or 0)
-                        except (ValueError, TypeError):
-                            return 0
-
-                    strikes.append(
-                        {
-                            "strike": row["strike_val"],
-                            "option_type": ot,
-                            "ltp": _f("lp"),
-                            "oi": _i("oi"),
-                            "oi_change": _i("oichg"),
-                            "volume": _i("v"),
-                            "iv": _f("iv"),
-                            "bid": _f("bp1"),
-                            "ask": _f("sp1"),
-                            "token": row.get("token"),
-                        }
-                    )
-
-                if not strikes:
-                    log.warning("[shoonya] No quotes fetched for %s options", base)
-                    return None
-
-                return {
-                    "symbol": base,
-                    "underlying_price": underlying_price,
-                    "expiry": target_expiry_iso,
-                    "strikes": strikes,
-                    "source": self.name,
-                    "all_expiries": [
-                        datetime.strptime(e, "%d-%b-%Y").strftime("%Y-%m-%d")
-                        for e in expiries
-                    ],
-                }
 
             # Handle standard NSE/BSE indices using GetOptionChain
             chain_tsym = underlying_tsym

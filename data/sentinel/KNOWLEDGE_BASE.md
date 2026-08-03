@@ -1,4 +1,11 @@
-# NSEBOT Architecture — Scan Sentinel Knowledge Base
+2026-07-29 13:55:42 | ERROR    | src.engine.pipeline       | Direct Kite position synchronization failed
+Traceback (most recent call last):
+  File "C:\Users\manve\Downloads\NSEBOT\src\engine\pipeline.py", line 84, in _maybe_sync_positions
+    sync_direct_kite_positions()
+  File "C:\Users\manve\Downloads\NSEBOT\src\engine\live_trading.py", line 2238, in sync_direct_kite_positions
+    prev_und = get_previous_underlying(base_sym, read_only=True)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: get_previous_underlying() got an unexpected keyword argument 'read_only'# NSEBOT Architecture — Scan Sentinel Knowledge Base
 
 ## 1. Core Pipeline Flow
 1. **Option Chain Fetching (`src.fetchers.router`)**: Cascading dual-source parallel fetch (`Sensibull` / `Shoonya` / `Dhan` / `Paytm` / `NSE`). Returns immediately on primary success (12s deadline) or falls back to completed sources.
@@ -33,10 +40,14 @@
 - **Root Cause:** Python `sqlite3` implicit DEFERRED transactions deadlocking during lock escalation.
 - **Self-Heal:** `get_conn()` uses `isolation_level=None` with explicit `BEGIN IMMEDIATE` for write operations, 60s busy timeout, WAL mode, and a 5-attempt backoff retry loop.
 
-### F5: Fetcher Degradation & Fast Dual-Fetch Failover (P1-HIGH)
-- **Symptom:** Primary fetcher hangs or fails (e.g. Shoonya auth or Dhan timeout).
-- **Root Cause:** Broker API rate-limits, session expiration, or network latency.
-- **Self-Heal:** `router.py` executes non-blocking parallel fetch loop across dual sources. Primary returns in 12s; if primary fails, cascades to secondary pairs before falling back to any single completed source.
+### F5: Fetcher Degradation, MCX Priority & Fast Dual-Fetch Failover (P1-HIGH)
+- **Symptom:** Primary fetcher hangs or fails (e.g. Shoonya timeout on MCX or Dhan timeout).
+- **Root Cause:** 
+  1. Shoonya API is an equity/index broker (NFO/BFO) and lacks full MCX commodity option chain structures, causing 12s timeouts when listed first for commodities.
+  2. Zerodha Kite API accounts lack MCX market data permissions, raising `Insufficient permission` warnings when querying `MCX:...` symbols.
+- **Self-Heal:** 
+  1. `_priority_for` in [router.py](file:///c:/Users/manve/Downloads/NSEBOT/src/fetchers/router.py#L108) prioritizes dedicated commodity fetchers (`dhan_commodity` -> `moneycontrol`) ahead of `shoonya` for MCX commodities (`NATURALGAS`, `CRUDEOIL`, `GOLD`, `SILVER`).
+  2. [live_trading.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/live_trading.py#L2212) bypasses `kite.ltp` for `MCX:` keys, resolving underlying prices via Dhan/MoneyControl and DB fallback cleanly without permission warnings.
 - **Caveat — Shoonya Sequential Call Avalanche:** Shoonya `fetch_option_chain()` makes 3–4 sequential API calls (`_search_scrip`, `_get_quotes`, `_get_option_chain` + per-strike fallbacks), each with 6s timeout + 1 retry. Worst-case wall time (~22.5s+) exceeds the router's 12s deadline. The `0.1s` fallback timeout when the primary source succeeds can also produce false "fetch failed/timed out" warnings. Session-quota re-login (Playwright OAuth, 60–75s) guarantees a timeout if it triggers during a fetch cycle. No per-source timeout configuration exists — all Shoonya timeouts are hardcoded.
 
 ### F6: Zero OI & Illiquid Option Chain Anomaly (P1-HIGH)
@@ -60,9 +71,13 @@
 - **Self-Heal:** 12-second provider timeout. HTTP 500, empty content, or network exceptions trigger an automatic 10-minute cooldown (`_PROVIDER_COOLDOWN_UNTIL[key] = now + 600.0`), skipping failing providers instantly on subsequent ticks.
 
 ### F9: Alert Payload Execution Discrepancy Guard (P1-HIGH)
-- **Symptom:** Alert reports `🟢 Entered` for setups blocked by Risk Engine.
-- **Root Cause:** Payload generator previously checked raw signal trigger status rather than DB commitment.
-- **Self-Heal:** `_build_structured_payload()` requires actual DB row existence (`db_entered`), timeframe execution (`tf_entered`), or paper runner confirmation (`paper_opened`). Non-entered signals report `✗ Not entered` with the exact Risk Engine block reason.
+- **Symptom:** Alert header reported `🟢 Entered` while the Signal section reported `Trade: ✗ Not entered` for setups blocked by Risk Engine or missing valid contracts.
+- **Root Cause:** 
+  1. `_build_structured_payload()` in `pipeline.py` evaluated `trade_entered = True` via fallback flags even when `trade_decision` action was `BLOCK` or missing contract strike.
+  2. `_format_alert_body()` in `digest.py` evaluated top header status from `header["trade_entered"]` independently of whether a contract existed and trade action was non-`BLOCK`.
+- **Self-Heal:** 
+  1. Updated `pipeline.py` to enforce `trade_entered = False` whenever `trade_decision` action is `BLOCK`/`NO_ACTION` or strike is missing (unless DB/paper trade is active).
+  2. Updated `digest.py` (`_format_alert_body`, `format_compact_digest`, `format_experimental_digest`) so header status (`trade_status_str`) requires `is_entered` (`trade_entered == True`, valid contract, and non-`BLOCK` action), guaranteeing 100% truthfulness between header and signal body.
 
 ### F10: Friday Mandatory Exit Window (P0-CRITICAL)
 - **Symptom:** Open position carried over the weekend exposing account to gap risk.
@@ -72,10 +87,35 @@
 - **Symptom:** Static NG strategy logic misaligned with market session hours.
 - **Self-Heal:** `ng_session_router.py` dynamically routes NATURALGAS to `NG_PARITY`, `NG_EVENT`, or `NG_MOMENTUM` based on time of day. Daily loss cap checks are disabled to allow valid setups.
 
-### F133: Missing import time in Database get_conn Retry Loop (P0-CRITICAL)
-- **Symptom:** Unhandled exception `NameError: name 'time' is not defined` raised in `src/models/schema.py` line 483 when `get_conn()` encountered a temporary SQLite database lock (`sqlite3.OperationalError: database is locked`).
-- **Root Cause:** In `src/models/schema.py`, the lock-retry loop attempted `time.sleep(0.15 * (attempt + 1))`, but `import time` was missing from the module-level imports.
-- **Fix:** Added `import time` to `src/models/schema.py` line 30. The lock retry handler in `get_conn()` now successfully executes `time.sleep()` during lock contention backoffs.
+### F13: Trade Status Discrepancy for Profitable Exits (P1-HIGH)
+- **Symptom:** Trade History displays red `SL HIT` status badge for trades with positive net P&L (e.g. +₹26,863 and +₹27,288).
+- **Root Cause:** 
+  1. In [ng_parity_strategy.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/ng_parity_strategy.py#L200), exit evaluation used `abs(dev_pct) >= sl_pct` without checking position side direction (`BUY` vs `SELL`). When `SELL` (short) parity positions crossed 0 into negative deviation (profitable price drop), `abs()` triggered `hit_sl = True` and set status to `CLOSED_SL`.
+  2. [schema.py](file:///c:/Users/manve/Downloads/NSEBOT/src/models/schema.py#L1460) stored `CLOSED_SL` status even if calculated net P&L was positive.
+- **Fix:** 
+  1. Fixed directional exit evaluation in `ng_parity_strategy.py` so profitable deviation contraction triggers `CLOSED_TARGET`.
+  2. Added auto-correction safeguards in `close_paper_trade` and `close_live_trade` in `schema.py`: if `pnl_rupees > 0` or `pnl_points > 0`, status is auto-corrected to `CLOSED_TARGET`.
+  3. Updated `sbadge()` in [paper.html](file:///c:/Users/manve/Downloads/NSEBOT/src/dashboard/paper.html#L3034) to render green `TARGET` badge for positive P&L trades.
+  4. Migrated historical DB records #341 and #342 in `data/nsebot.db` to `CLOSED_TARGET`.
+
+### F12: ContextManager Generator Protocol Violations & Read-Only Lock Contention (P0-CRITICAL)
+- **Symptom:** Logs show `[scheduler] Kite position sync failed: generator didn't stop after throw()`, `get_previous_underlying: database is locked`, and `_update_live_cmps timed out after 120s`.
+- **Root Cause:** 
+  1. In [schema.py](file:///c:/Users/manve/Downloads/NSEBOT/src/models/schema.py), `get_conn()` placed the `attempt` loop *inside* `@contextlib.contextmanager` surrounding `yield conn`. When an exception was thrown to the generator via `.throw()`, executing `continue` caused the generator to `yield` a second time, violating Python's context manager protocol and raising `RuntimeError: generator didn't stop after throw()`.
+  2. 25+ getter functions in `schema.py` (e.g. `get_previous_underlying`, `list_paper_trades`, `get_open_tfss_legs`) and `job_runner.py` called `get_conn()` without `read_only=True`. As a result, pure `SELECT` queries in concurrent background threads acquired exclusive `BEGIN IMMEDIATE` write locks, blocking active pipeline transactions with `sqlite3.OperationalError: database is locked`.
+- **Fix:** (1) Refactored `get_conn()` in [schema.py](file:///c:/Users/manve/Downloads/NSEBOT/src/models/schema.py#L448-L490) so connection setup and `BEGIN IMMEDIATE` retry loops execute *prior* to yielding, guaranteeing exactly one yield statement per context lifecycle. (2) Audited and updated all 25+ read-only getter functions in [schema.py](file:///c:/Users/manve/Downloads/NSEBOT/src/models/schema.py) and [job_runner.py](file:///c:/Users/manve/Downloads/NSEBOT/src/scheduler/job_runner.py#L842-L864) to pass `read_only=True`, ensuring non-modifying queries execute fast non-blocking `BEGIN DEFERRED` read transactions.
+
+### F14: Shoonya SearchScrip Concurrency Lock Timeout & Fallback Failure (P1-HIGH)
+- **Symptom:** Warnings logged during parallel prefetch: `[shoonya] could not search scrip for SENSEX FUT` and `[shoonya] could not search scrip for BANKNIFTY`.
+- **Root Cause:** 
+  1. `_api_lock.acquire(blocking=False)` in [shoonya_fetcher.py](file:///c:/Users/manve/Downloads/NSEBOT/src/fetchers/shoonya_fetcher.py#L571) instantly dropped concurrent calls when multiple symbols (`NIFTY`, `BANKNIFTY`, `SENSEX`, `NATURALGAS`) were fetched simultaneously by the 16-worker `pipeline_io_executor`.
+  2. `SearchScrip` primary text lacked fallback search queries when symbol format variants (`SENSEX FUT` vs `SENSEX`, `BANKNIFTY` vs `BANKNIFTY FUT`) produced no values.
+  3. `fetch_option_chain` used hardcoded legacy futures token check `"25JUN26"`.
+- **Fix:**
+  1. Replaced non-blocking lock with a 3.0s timeout lock `_api_lock.acquire(blocking=True, timeout=3.0)` in `_api_call`, serializing parallel symbol requests smoothly.
+  2. Added primary + fallback search queries in `fetch_option_chain` (`SENSEX FUT` -> `SENSEX`, `BANKNIFTY` -> `BANKNIFTY FUT`).
+  3. Refactored futures contract resolution to sort by `exd` expiry date chronologically and pick the near-month contract.
+  4. Removed orphaned dead code block after return line 1450.
 
 ---
 

@@ -91,6 +91,10 @@ def format_user_friendly_message(intel: dict, decision: dict = None, risk_info: 
         if setup_type == "CONFIRMED_REVERSAL":
             lines.append("  Type: 🔄 Reversal Trade (Counter-trend)")
             lines.append("  Why: Market reversing from previous trend")
+        elif setup_type == "CONTRA_REVERSAL":
+            lines.append("  Type: ⚠️ CONTRA Trade (Counter-trend)")
+            lines.append("  Why: Fading broader trend with strong confirmation")
+            lines.append("  ⚠️ Higher risk — use tighter SL and smaller size")
         elif setup_type == "TREND_CONTINUATION":
             lines.append("  Type: 📈 Trend Trade (Following trend)")
             lines.append("  Why: Multiple scans confirm same direction")

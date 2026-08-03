@@ -448,9 +448,18 @@ def _detect_price_spike(
     expiry: str,
     underlying: float,
     price_spike_thresh: float = PRICE_SPIKE_THRESHOLD_PCT,
+    fetched_at: str = "",
 ) -> list[dict]:
     alerts = []
-    prev_row = get_previous_underlying(symbol)
+    # BUG-C11 FIX: Use get_previous_underlying_before to get the price strictly
+    # before the current scan time. Previously used get_previous_underlying which
+    # could return the just-inserted current price, causing false positive spikes
+    # (comparing current price against itself = 0% change, or against a stale
+    # same-session price instead of the actual previous scan).
+    if fetched_at:
+        prev_row = get_previous_underlying_before(symbol, fetched_at)
+    else:
+        prev_row = get_previous_underlying(symbol)
     if not prev_row:
         return alerts
     prev_price = prev_row["price"]
@@ -939,7 +948,8 @@ def detect_anomalies(
             min_oi_threshold=min_oi_thresh,
         )
     alerts += _detect_price_spike(
-        symbol, expiry, underlying, price_spike_thresh=price_spike_thresh
+        symbol, expiry, underlying, price_spike_thresh=price_spike_thresh,
+        fetched_at=fetched_at,
     )
 
     pcr = _compute_pcr(filtered)

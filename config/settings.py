@@ -206,6 +206,8 @@ GEMINI_API_KEY = _optional_env("GEMINI_API_KEY")
 SAMBANOVA_API_KEY = _optional_env("SAMBANOVA_API_KEY")
 OPENCODE_API_KEY = _optional_env("OPENCODE_API_KEY")
 NVIDIA_API_KEY = _optional_env("NVIDIA_API_KEY")
+OMNIROUTER_API_KEY = _optional_env("OMNIROUTER_API_KEY")
+OMNIROUTER_BASE_URL = _optional_env("OMNIROUTER_BASE_URL", "http://localhost:3000/v1")
 
 # ── Dashboard Authentication ────────────────────────────────────────────────────────────────────────────
 # FIX #13: Removed insecure admin/admin defaults.
@@ -224,8 +226,10 @@ FETCHER_PRIORITY = {
     "FINNIFTY": ["sensibull", "shoonya", "paytm", "dhan", "nse_public", "dhan_headless", "moneycontrol"],
     "MIDCPNIFTY": ["sensibull", "shoonya", "paytm", "dhan", "nse_public", "dhan_headless", "moneycontrol"],
     "SENSEX": ["sensibull", "shoonya", "dhan_sensex", "dhan", "nse_public"],
-    "NATURALGAS": ["shoonya", "dhan_commodity", "moneycontrol", "dhan", "dhan_headless"],
-    "CRUDEOIL": ["shoonya", "dhan_commodity", "moneycontrol", "dhan", "dhan_headless"],
+    "NATURALGAS": ["shoonya", "dhan_commodity", "dhan", "dhan_headless", "moneycontrol"],
+    "CRUDEOIL": ["shoonya", "dhan_commodity", "dhan", "dhan_headless", "moneycontrol"],
+    "GOLD": ["shoonya", "dhan_commodity", "dhan", "dhan_headless", "moneycontrol"],
+    "SILVER": ["shoonya", "dhan_commodity", "dhan", "dhan_headless", "moneycontrol"],
 }
 
 LOG_LEVEL = "INFO"
@@ -451,6 +455,26 @@ MIN_ENTRY_QUALITY_EXPERIMENTAL = 40
 
 # Reversal trade: higher confidence bar
 REVERSAL_MIN_CONFIDENCE = 75
+
+# ── Contra (Counter-Trend) Trade Settings ───────────────────────────────────────────
+# Contra trades fire when the verdict opposes a strong directional broader trend
+# but has enough confirming evidence (consecutive scans, PCR divergence) to justify
+# fading the trend.  These are inherently higher-risk than trend-continuation setups.
+CONTRA_ENABLED = os.environ.get("CONTRA_ENABLED", "true").lower() == "true"
+CONTRA_MIN_CONFIDENCE = int(os.environ.get("CONTRA_MIN_CONFIDENCE", "75"))
+CONTRA_CONFIRM_SCANS = int(os.environ.get("CONTRA_CONFIRM_SCANS", "2"))
+CONTRA_MAX_LOOKBACK = int(os.environ.get("CONTRA_MAX_LOOKBACK", "6"))
+# Allowed regimes for contra trades. Empty set = allow all regimes.
+_contra_regimes_env = os.environ.get("CONTRA_ALLOWED_REGIMES", "TRENDING_UP,TRENDING_DOWN")
+CONTRA_ALLOWED_REGIMES: set[str] = {
+    r.strip() for r in _contra_regimes_env.split(",") if r.strip()
+}
+CONTRA_REQUIRE_DIVERGENCE = os.environ.get("CONTRA_REQUIRE_DIVERGENCE", "false").lower() == "true"
+CONTRA_PCR_MOVE = float(os.environ.get("CONTRA_PCR_MOVE", "0.08"))
+CONTRA_MIN_SCORE = int(os.environ.get("CONTRA_MIN_SCORE", "45"))
+CONTRA_RISK_SCALE = float(os.environ.get("CONTRA_RISK_SCALE", "0.5"))
+CONTRA_SL_SCALE = float(os.environ.get("CONTRA_SL_SCALE", "0.75"))
+CONTRA_MAX_PER_DAY = int(os.environ.get("CONTRA_MAX_PER_DAY", "2"))
 
 # Tiered Gates Architecture (Option A) — Composite Scoring Profiles
 TIERED_GATES_ENABLED = os.environ.get("TIERED_GATES_ENABLED", "true").lower() == "true"

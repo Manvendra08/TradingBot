@@ -3031,9 +3031,11 @@
                     return `<span class="${sideClass}" style="font-size:9px;padding:1px 4px;margin-right:4px;vertical-align:middle;">${side}</span><span class="b-type b-type-pe" style="vertical-align:middle;">PE</span>`;
                 return `<span class="${sideClass}" style="font-size:9px;padding:1px 4px;margin-right:4px;vertical-align:middle;">${side}</span><span class="b-type b-type-def" style="vertical-align:middle;">${ot || "—"}</span>`;
             }
-            function sbadge(s) {
+            function sbadge(s, pnl_rupees, pnl_points) {
                 if (s === "OPEN")
                     return '<span class="badge b-open">OPEN</span>';
+                if ((Number(pnl_rupees) > 0 || Number(pnl_points) > 0) && (s === "CLOSED_SL" || s === "SL HIT"))
+                    return '<span class="badge b-win">TARGET</span>';
                 if (s === "CLOSED_TARGET")
                     return '<span class="badge b-win">TARGET</span>';
                 if (s === "CLOSED_SL")
@@ -3450,7 +3452,7 @@
       <td class="bad t-mono">${slPrice(t)}</td>
       <td class="good t-mono">${targetPrice(t)}</td>
       <td class="t-mono">${t.lots ?? 1}</td>
-      <td>${sbadge(t.status)}</td>
+      <td>${sbadge(t.status, t.pnl_rupees, t.pnl_points)}</td>
       <td class="${pc(t.pnl_rupees)} t-mono">${signRs(t.pnl_rupees)}</td>
       <td class="${pc(t.pnl_points)} t-mono" style="font-size:10px;color:var(--text-dim)">${sign(t.pnl_points)}</td>
       <td class="L">${vtag(t.verdict_label || t.reason, t.verdict_explanation)}</td>

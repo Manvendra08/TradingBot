@@ -89,7 +89,10 @@ def exit_all_positions_friday(market_class: str) -> None:
         "[Friday Exit] Weekend Risk auto-exit triggered for class: %s", market_class
     )
     config = load_runtime_config()
-    shadow_mode = config.get("live_shadow_mode", False)  # P0-2 FIX: default to False so Friday live exits actually execute
+    shadow_mode = config.get("live_shadow_mode", True)  # BUG-C12 FIX: Default to True (shadow) for safety.
+    # Previously defaulted to False, which would execute LIVE broker exits when
+    # shadow_mode config key was missing — a dangerous silent default that could
+    # trigger real broker orders on a fresh/unconfigured deployment.
     kite = get_kite_client()
     now_iso = datetime.now(timezone.utc).isoformat()
 
@@ -264,7 +267,7 @@ def exit_expiry_day_positions(market_class: str) -> None:
         today_ist_str,
     )
     config = load_runtime_config()
-    shadow_mode = config.get("live_shadow_mode", False)
+    shadow_mode = config.get("live_shadow_mode", True)  # BUG-C12 FIX: Default to True (shadow) for safety
     kite = get_kite_client()
     now_iso = datetime.now(timezone.utc).isoformat()
 
@@ -819,14 +822,27 @@ def _check_live_exits(symbol: str, underlying: float, strikes: list[dict]) -> No
                     close_status,
                 )
         except Exception as e:
-            log.error("%s: CMP poll exit square-off failed: %s", symbol, e)
+            err_str = str(e).lower()
+            if "outside of trading hours" in err_str or "suspended from trading" in err_str:
+                from config.symbol_classes import is_market_open
+                if not is_market_open(symbol):
+                    log.warning("%s: CMP poll exit deferred — market is currently outside trading hours", symbol)
+                else:
+                    log.warning("%s: CMP poll exit rejected (instrument suspended/expired) — marking trade CLOSED_EXPIRED in DB: %s", symbol, e)
+                    try:
+                        from src.models.schema import close_live_trade
+                        close_live_trade(trade["id"], now_iso, underlying, exit_premium, "CLOSED_EXPIRED", f"Exit rejected: {e}")
+                    except Exception as db_err:
+                        log.error("%s: Failed to close suspended trade in DB: %s", symbol, db_err)
+            else:
+                log.error("%s: CMP poll exit square-off failed: %s", symbol, e)
 
 
 def _update_live_cmps() -> None:
     """Lightweight live CMP refresh for symbols with OPEN trades."""
     from src.models.schema import get_conn, insert_snapshots, insert_underlying_price
 
-    with get_conn() as conn:
+    with get_conn(read_only=True) as conn:
         paper_rows = conn.execute(
             "SELECT DISTINCT symbol FROM paper_trades WHERE status='OPEN'"
         ).fetchall()
@@ -849,7 +865,7 @@ def _update_live_cmps() -> None:
     def _get_required_strikes(symbol: str) -> set[float]:
         """Get strikes from open paper and live trades for a symbol."""
         required = set()
-        with get_conn() as conn:
+        with get_conn(read_only=True) as conn:
             # Paper trades
             paper_trades = conn.execute(
                 "SELECT strike FROM paper_trades WHERE symbol=? AND status='OPEN'",

@@ -113,6 +113,14 @@ def _check_risk_limits_for_table(
             if check_ng_daily_loss_cap(trades_table):
                 return False, f"[{label}] NATURALGAS daily loss cap (2 consecutive SL) hit today.", "NG_DAILY_LOSS_CAP"
 
+        # 0b. Contra trade daily cap
+        if setup_type == "CONTRA_REVERSAL":
+            from src.engine.contra_trade import count_contra_trades_today, contra_position_size
+            contra_today = count_contra_trades_today(symbol, table=trades_table)
+            _, block_reason = contra_position_size(1.0, contra_today)
+            if block_reason:
+                return False, f"[{label}] {block_reason}", "CONTRA_DAILY_LIMIT"
+
         # 1. Max open trades per symbol (for non-TFSS setups)
         # TIMEFRAME entries are quota-isolated from CORE: each strategy gets its
         # own MAX_OPEN_TRADES_PER_SYMBOL count so CORE and TFSS legs don't absorb

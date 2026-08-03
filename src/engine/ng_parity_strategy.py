@@ -200,9 +200,17 @@ def check_ng_parity_exits_every_2_min() -> None:
     side = open_trade["side"]
     sl_pct = abs(entry_dev_pct) * PARITY_DEV_STOP_MULT
 
-    # Check Exits:
-    hit_target = abs(dev_pct) <= 0.10
-    hit_sl = abs(dev_pct) >= sl_pct
+    # Check Exits (Directional):
+    if side == "SELL":
+        # Entered when deviation was positive. SL hits if deviation expands further positive.
+        hit_sl = dev_pct >= sl_pct
+        # Target hits if deviation drops to zero or goes negative (profitable)
+        hit_target = dev_pct <= 0.10
+    else:
+        # Entered when deviation was negative. SL hits if deviation expands further negative.
+        hit_sl = dev_pct <= -sl_pct
+        # Target hits if deviation rises to zero or goes positive (profitable)
+        hit_target = dev_pct >= -0.10
     feed_lost = not parity_state.valid
 
     # Hard time-stop flat at 17:30 IST

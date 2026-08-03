@@ -754,10 +754,19 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
         filled = round(int(conf) / 10)
         conf_bar = "▓" * filled + "░" * (10 - filled)
 
-    # Top line status:
-    trade_entered = header.get("trade_entered", False)
-    trade_status_str = "🟢 Entered" if trade_entered else "X Not entered"
-    
+    # ── SIGNAL ──
+    tfss_action  = _val(tfss.get("action"))
+    tfss_bias    = _val(tfss.get("tfss_bias"))
+    tfss_verdict = _val(tfss.get("core_origin_verdict"))
+    tf_action   = _val(timeframe.get("action"))
+    trade_ok     = tfss.get("trade_entered", False)
+    contract     = _val(tfss.get("contract"))
+
+    # Top line status: trade is Entered iff trade_entered is True AND contract exists AND action is not BLOCK
+    raw_header_entered = header.get("trade_entered", False)
+    is_entered = bool(raw_header_entered and trade_ok and contract and str(tfss_action or "").upper() not in ("BLOCK", "NO_ACTION", "NONE", "N/A"))
+    trade_status_str = "🟢 Entered" if is_entered else "✗ Not entered"
+
     if expiry:
         try:
             exp_dt = datetime.strptime(str(expiry).strip(), "%Y-%m-%d").date()
@@ -822,7 +831,7 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
     if conf is not None:
         lines.append(f"Confidence: {conf_bar} {conf}%")
 
-    if trade_ok and contract:
+    if is_entered and contract:
         lines.append(f"Trade: ✅ Entered · {_esc(contract)}")
         parts = []
         if delta is not None:
@@ -1906,12 +1915,11 @@ def build_enhanced_digest(
     total_pe = _fmt_oi(ctx.get("total_pe_oi", 0))
 
     td = ctx.get("trade_decision") or {}
-    td_status_raw = td.get("status") or (paper_trade_status.get("action") if paper_trade_status else None) or "NO TRADE"
-    
-    if td_status_raw in ["ENTERED", "OPEN", "TRIGGERED", "LIVE_ENTERED"]:
+    td_action = str(td.get("action") or "").upper()
+    if td_status_raw in ["ENTERED", "OPEN", "TRIGGERED", "LIVE_ENTERED"] and td_action not in ["BLOCK", "NO_ACTION"]:
         td_status = "🟢 Entered"
     else:
-        td_status = "X Not entered"
+        td_status = "✗ Not entered"
 
     if exp_fmt:
         if exp_fmt.startswith("0"):
@@ -2473,11 +2481,11 @@ def build_llm_consolidated_digest(
 
     lines: list[str] = []
     
-    # ── HEADER
-    if td_status in ["ENTERED", "OPEN", "TRIGGERED", "LIVE_ENTERED"]:
+    td_act = str(td.get("action") or "").upper()
+    if td_status in ["ENTERED", "OPEN", "TRIGGERED", "LIVE_ENTERED"] and td_act not in ["BLOCK", "NO_ACTION"]:
         status_text = "🟢 Entered"
     else:
-        status_text = "X Not entered"
+        status_text = "✗ Not entered"
 
     if exp_fmt:
         if exp_fmt.startswith("0"):
