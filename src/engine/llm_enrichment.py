@@ -1284,9 +1284,10 @@ def _call_llm_api(
 
         FREE_MODEL_PIPELINE = [
             _omnirouter_group,
-            _bedrock_mantle_group,
-            _github_models_eod,
+            _opencode_zen_eod,
             _groq_group_eod,
+            _github_models_eod,
+            _bedrock_mantle_group,
             {
                 "model_group": "nvidia-nim-eod",
                 "providers": [
@@ -1318,25 +1319,6 @@ def _call_llm_api(
                         "env_key": "OPENROUTER_API_KEY",
                         "url": "https://openrouter.ai/api/v1/chat/completions",
                         "model": "nvidia/nemotron-3-super-120b-a12b:free",
-                    },
-                ],
-            },
-            {
-                "model_group": "opencode-zen-eod",
-                "providers": [
-                    {
-                        "name": "OpenCode Zen (Nemotron 3 Ultra Free)",
-                        "env_key": "OPENCODE_API_KEY",
-                        "url": "https://opencode.ai/zen/v1/chat/completions",
-                        "model": "nemotron-3-ultra-free",
-                        "timeout": 35,
-                    },
-                    {
-                        "name": "OpenCode Zen (DeepSeek V4 Flash Free)",
-                        "env_key": "OPENCODE_API_KEY",
-                        "url": "https://opencode.ai/zen/v1/chat/completions",
-                        "model": "deepseek-v4-flash-free",
-                        "timeout": 25,
                     },
                 ],
             },
@@ -2288,27 +2270,57 @@ def _round_echoed_numbers(text: str, runaway_word_cap: int = 90) -> str:
     return text
 
 
-def _extract_json(raw: str) -> dict:
+def _extract_json(raw: str) -> dict | list:
     """
-    D1: Tolerant JSON extraction — handles markdown fences, leading prose,
-    and invalid control characters that cause free-tier model parse failures.
+    D1: Tolerant JSON extraction — handles markdown fences, leading/trailing prose,
+    JSON arrays, unescaped control characters, and strict string parsing.
     """
     original_raw = raw
     raw = raw.strip()
+
     # Strip markdown code fences (```json ... ``` or ``` ... ```)
-    if raw.startswith("```"):
+    if "```" in raw:
         raw = re.sub(r"^```(?:json)?\s*|```\s*$", "", raw, flags=re.MULTILINE).strip()
-    # Grab outermost {...} when surrounding prose is present
-    if not raw.startswith("{"):
-        m = re.search(r"\{.*\}", raw, re.DOTALL)
-        if m:
-            raw = m.group(0)
+        if "```" in raw:
+            raw = raw.split("```")[0].strip()
+
+    # Find outermost JSON container: {...} or [...]
+    first_brace = raw.find("{")
+    first_bracket = raw.find("[")
+
+    if first_brace != -1 or first_bracket != -1:
+        if first_bracket != -1 and (first_brace == -1 or first_bracket < first_brace):
+            last_bracket = raw.rfind("]")
+            if last_bracket != -1 and last_bracket > first_bracket:
+                raw = raw[first_bracket : last_bracket + 1]
+        else:
+            last_brace = raw.rfind("}")
+            if last_brace != -1 and last_brace > first_brace:
+                raw = raw[first_brace : last_brace + 1]
+
     # Remove invalid control characters (causes "Invalid control character" parse failures)
     raw = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", raw)
+
     try:
-        return json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"JSON extract failed: {e} | Raw: {original_raw[:200]}")
+        res = json.loads(raw, strict=False)
+        if isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
+            return res[0]
+        return res
+    except Exception:
+        try:
+            # Repair unescaped newlines inside strings
+            fixed = re.sub(
+                r'(?<=: ")(.*?)(?=")',
+                lambda m: m.group(1).replace("\n", "\\n").replace("\r", "\\r"),
+                raw,
+                flags=re.DOTALL,
+            )
+            res = json.loads(fixed, strict=False)
+            if isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
+                return res[0]
+            return res
+        except Exception as e:
+            raise ValueError(f"JSON extract failed: {e} | Raw: {original_raw[:200]}")
 
 
 def _enforce_engine_alignment(
