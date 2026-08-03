@@ -1152,6 +1152,13 @@ def _call_llm_api(
         "model_group": "omnirouter-primary",
         "providers": [
             {
+                "name": "OmniRouter (Claude Sonnet 4.6)",
+                "env_key": "OMNIROUTER_API_KEY",
+                "url": _omnirouter_url,
+                "model": "antigravity/claude-sonnet-4-6",
+                "timeout": 20,
+            },
+            {
                 "name": "OmniRouter (Gemini 3.6 Flash Medium)",
                 "env_key": "OMNIROUTER_API_KEY",
                 "url": _omnirouter_url,
@@ -1184,13 +1191,6 @@ def _call_llm_api(
                 "env_key": "OMNIROUTER_API_KEY",
                 "url": _omnirouter_url,
                 "model": "antigravity/gpt-oss-120b-medium",
-                "timeout": 20,
-            },
-            {
-                "name": "OmniRouter (Claude Sonnet 4.6)",
-                "env_key": "OMNIROUTER_API_KEY",
-                "url": _omnirouter_url,
-                "model": "antigravity/claude-sonnet-4-6",
                 "timeout": 20,
             },
         ],
