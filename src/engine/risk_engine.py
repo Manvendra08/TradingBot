@@ -317,7 +317,17 @@ def _leg_delta(leg: dict, option_rows: list[dict] | None) -> float:
             continue
         if (float(row.get("strike", 0)) == tested_strike
                 and str(row.get("option_type", "")).upper() == tested_ot):
-            return abs(float(row.get("delta", 0.0)))
+            raw_delta = abs(float(row.get("delta", 0.0)))
+            und = float(row.get("underlying_price") or leg.get("entry_underlying") or 0.0)
+            if und > 0 and tested_strike > 0:
+                # Sanity check: OTM Put / Call cannot have deep ITM delta (> 0.40)
+                if tested_ot == "PE" and und > tested_strike + 50 and raw_delta > 0.40:
+                    moneyness = (tested_strike - und) / (und * 0.02)
+                    return round(max(0.05, min(0.95, 0.5 + 0.3 * moneyness)), 2)
+                elif tested_ot == "CE" and und < tested_strike - 50 and raw_delta > 0.40:
+                    moneyness = (und - tested_strike) / (und * 0.02)
+                    return round(max(0.05, min(0.95, 0.5 + 0.3 * moneyness)), 2)
+            return raw_delta
     return 0.0
 
 

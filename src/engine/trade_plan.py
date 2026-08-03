@@ -238,12 +238,55 @@ def calculate_sell_sl_target(
 # ---------------------------------------------------------------------------
 
 
+def is_valid_option_premium(
+    strike: float,
+    option_type: str,
+    ltp: float | None,
+    underlying_price: float | None,
+) -> bool:
+    """
+    Validate an option LTP against underlying price bounds to reject corrupted/outlier quotes.
+
+    Rejects:
+    - Non-positive premiums (<= 0)
+    - Severe Intrinsic Floor violations for ITM options (e.g. LTP < 0.4 * intrinsic when intrinsic > 50)
+    - OTM Ceiling violations for OTM options (e.g. OTM option priced > 0.4 * otm_dist + max_time_val)
+    """
+    if ltp is None or ltp <= 0 or strike <= 0:
+        return False
+    if underlying_price is None or underlying_price <= 0:
+        return True  # Cannot check without underlying price
+
+    opt = str(option_type).upper()
+    if opt == "CE":
+        intrinsic = max(0.0, underlying_price - strike)
+        otm_dist = max(0.0, strike - underlying_price)
+    elif opt == "PE":
+        intrinsic = max(0.0, strike - underlying_price)
+        otm_dist = max(0.0, underlying_price - strike)
+    else:
+        return True
+
+    # 1. Intrinsic Floor check for deep ITM options
+    if intrinsic > 50.0 and ltp < 0.4 * intrinsic:
+        return False
+
+    # 2. OTM Ceiling check for OTM options
+    if otm_dist > 50.0:
+        max_allowed_ltp = max(500.0, underlying_price * 0.006) + otm_dist * 0.2
+        if ltp > max_allowed_ltp:
+            return False
+
+    return True
+
+
 def get_option_premium(
     symbol: str,
     expiry: str,
     strike: float,
     option_type: str,
     option_rows: list[dict] | None = None,
+    underlying_price: float | None = None,
 ) -> float | None:
     """
     Fetch current option premium (LTP) from option chain rows or database snapshots.
@@ -259,9 +302,10 @@ def get_option_premium(
         strike: Strike price
         option_type: "CE" or "PE"
         option_rows: List of option chain row dicts with 'strike', 'option_type', 'ltp'
+        underlying_price: Optional current spot price for premium sanity validation
 
     Returns:
-        Premium as float, or None if unavailable or stale
+        Premium as float, or None if unavailable, stale, or corrupted
     """
     # Try option_rows first (current scan data — always fresh)
     for row in option_rows or []:
@@ -289,7 +333,15 @@ def get_option_premium(
                 ltp_raw = row.get("ltp")
                 if ltp_raw is not None:
                     try:
-                        return float(ltp_raw)
+                        val = float(ltp_raw)
+                        und = underlying_price or float(row.get("underlying_price") or 0.0)
+                        if und > 0 and not is_valid_option_premium(strike, option_type, val, und):
+                            log.warning(
+                                "%s: get_option_premium REJECTED corrupted option row LTP=%.2f (strike=%.2f %s, spot=%.2f)",
+                                symbol, val, strike, option_type, und
+                            )
+                            return None
+                        return val
                     except ValueError:
                         return None
                 return None
@@ -350,7 +402,15 @@ def get_option_premium(
                 ltp_raw = snap.get("ltp")
                 if ltp_raw is not None:
                     try:
-                        return float(ltp_raw)
+                        val = float(ltp_raw)
+                        und = underlying_price or float(snap.get("underlying_price") or 0.0)
+                        if und > 0 and not is_valid_option_premium(strike, option_type, val, und):
+                            log.warning(
+                                "%s: DB premium fallback REJECTED corrupted snapshot LTP=%.2f (strike=%.2f %s, spot=%.2f)",
+                                symbol, val, strike, option_type, und
+                            )
+                            return None
+                        return val
                     except ValueError:
                         return None
                 return None

@@ -447,51 +447,56 @@ def get_read_conn():
 @contextlib.contextmanager
 def get_conn(read_only: bool = False):
     max_attempts = 5
+    conn = None
     for attempt in range(max_attempts):
-        conn = sqlite3.connect(
-            DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES, timeout=60.0, isolation_level=None
-        )
-        conn.execute("PRAGMA busy_timeout = 60000")
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA synchronous = NORMAL")
-        conn.row_factory = sqlite3.Row
         try:
+            conn = sqlite3.connect(
+                DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES, timeout=60.0, isolation_level=None
+            )
+            conn.execute("PRAGMA busy_timeout = 60000")
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
+            conn.row_factory = sqlite3.Row
             if not read_only:
                 conn.execute("BEGIN IMMEDIATE")
             else:
                 conn.execute("BEGIN DEFERRED")
-            yield conn
-            if not read_only:
-                try:
-                    conn.execute("COMMIT")
-                except sqlite3.OperationalError as ce:
-                    if "no transaction is active" not in str(ce).lower():
-                        raise
-            else:
-                try:
-                    conn.execute("ROLLBACK")
-                except Exception:
-                    pass
-            break  # Success — break out of retry loop
+            break  # Connection and transaction started successfully
         except sqlite3.OperationalError as oe:
-            if not read_only:
+            if conn:
                 try:
-                    conn.execute("ROLLBACK")
+                    conn.close()
                 except Exception:
                     pass
+                conn = None
             err_msg = str(oe).lower()
             if ("locked" in err_msg or "busy" in err_msg) and attempt < max_attempts - 1:
                 time.sleep(0.15 * (attempt + 1))
                 continue
             raise
-        except Exception:
-            if not read_only:
-                try:
-                    conn.execute("ROLLBACK")
-                except Exception:
-                    pass
-            raise
-        finally:
+
+    try:
+        yield conn
+        if not read_only:
+            try:
+                conn.execute("COMMIT")
+            except sqlite3.OperationalError as ce:
+                if "no transaction is active" not in str(ce).lower():
+                    raise
+        else:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+    except Exception:
+        if not read_only and conn:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+        raise
+    finally:
+        if conn:
             try:
                 conn.close()
             except Exception:
@@ -673,7 +678,7 @@ def get_previous_snapshot(
         ORDER BY fetched_at DESC
         LIMIT 1
     """
-    with get_conn() as conn:
+    with get_conn(read_only=True) as conn:
         row = conn.execute(sql, (symbol, expiry, strike, option_type)).fetchone()
         return dict(row) if row else None
 
@@ -685,7 +690,7 @@ def get_previous_underlying(symbol: str) -> dict | None:
         ORDER BY fetched_at DESC
         LIMIT 1
     """
-    with get_conn() as conn:
+    with get_conn(read_only=True) as conn:
         row = conn.execute(sql, (symbol,)).fetchone()
         return dict(row) if row else None
 
@@ -727,7 +732,7 @@ def get_previous_underlying_before(symbol: str, fetched_at: str) -> dict | None:
         ORDER BY fetched_at DESC
         LIMIT 20
     """
-    with get_conn() as conn:
+    with get_conn(read_only=True) as conn:
         rows = conn.execute(sql, (symbol, window_start, window_end)).fetchall()
         if not rows:
             return None
@@ -765,7 +770,7 @@ def get_latest_snapshots_for_symbol(symbol: str, expiry: str) -> list[dict]:
         )
         ORDER BY strike
     """
-    with get_conn() as conn:
+    with get_conn(read_only=True) as conn:
         rows = conn.execute(sql, (symbol, expiry, symbol, expiry)).fetchall()
         return [dict(r) for r in rows]
 
@@ -827,7 +832,7 @@ def get_prev_snapshots_bulk(
         ORDER BY fetched_at DESC
         LIMIT 50
     """
-    with get_conn() as conn:
+    with get_conn(read_only=True) as conn:
         rows = conn.execute(sql_fetched_ats, (symbol, expiry)).fetchall()
         if not rows:
             return {}
@@ -930,7 +935,7 @@ def get_latest_n_underlying(symbol: str, n: int = 4) -> list[dict]:
         SELECT * FROM underlying_price WHERE symbol=?
         ORDER BY fetched_at DESC LIMIT ?
     """
-    with get_conn() as conn:
+    with get_conn(read_only=True) as conn:
         rows = conn.execute(sql, (symbol, n)).fetchall()
         return [dict(r) for r in rows]
 
@@ -941,7 +946,7 @@ def get_latest_n_snapshots(symbol: str, expiry: str, n: int = 3) -> list[list[di
         WHERE symbol=? AND expiry=?
         ORDER BY fetched_at DESC LIMIT ?
     """
-    with get_conn() as conn:
+    with get_conn(read_only=True) as conn:
         times = [r[0] for r in conn.execute(times_sql, (symbol, expiry, n)).fetchall()]
         if not times:
             return []
@@ -969,7 +974,7 @@ def get_alert_history(symbol: str | None = None, limit: int = 100) -> list[dict]
         params.append(symbol)
     sql += " ORDER BY fired_at DESC LIMIT ?"
     params.append(limit)
-    with get_conn() as conn:
+    with get_conn(read_only=True) as conn:
         rows = conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
@@ -992,7 +997,7 @@ def get_open_paper_trade(symbol: str) -> dict | None:
         ORDER BY opened_at DESC
         LIMIT 1
     """
-    with get_conn() as conn:
+    with get_conn(read_only=True) as conn:
         row = conn.execute(sql, (symbol,)).fetchone()
         return dict(row) if row else None
 
@@ -1005,7 +1010,7 @@ def get_open_timeframe_trades(symbol: str, table: str = "paper_trades") -> list[
         WHERE symbol=? AND status='OPEN' AND setup_type='TIMEFRAME'
         ORDER BY opened_at DESC
     """
-    with get_conn() as conn:
+    with get_conn(read_only=True) as conn:
         rows = conn.execute(sql, (symbol,)).fetchall()
         return [dict(r) for r in rows]
 
@@ -1019,7 +1024,7 @@ def get_open_tfss_legs(symbol: str, table: str = "paper_trades") -> list[dict]:
         WHERE symbol=? AND status='OPEN' AND setup_type='TFSS'
         ORDER BY option_type, tranche_index
     """
-    with get_conn() as conn:
+    with get_conn(read_only=True) as conn:
         rows = conn.execute(sql, (symbol,)).fetchall()
         return [dict(r) for r in rows]
 
@@ -1038,7 +1043,7 @@ def get_scan_summary_at_least_1h_old(
         ORDER BY fetched_at DESC
         LIMIT 50
     """
-    with get_conn() as conn:
+    with get_conn(read_only=True) as conn:
         rows = conn.execute(sql, (symbol,)).fetchall()
         for row in rows:
             try:
@@ -1093,7 +1098,7 @@ def get_today_scan_count(symbol: str, current_fetched_at: str) -> int:
         # Fallback to UTC date LIKE (pre-fix behaviour)
         date_str = current_fetched_at.split("T")[0]
         sql = "SELECT COUNT(*) FROM scan_summaries WHERE symbol=? AND fetched_at LIKE ?"
-        with get_conn() as conn:
+        with get_conn(read_only=True) as conn:
             row = conn.execute(sql, (symbol, f"{date_str}%")).fetchone()
         return row[0] if row else 0
 
@@ -1103,7 +1108,7 @@ def get_today_scan_count(symbol: str, current_fetched_at: str) -> int:
           AND fetched_at >= ?
           AND fetched_at <  ?
     """
-    with get_conn() as conn:
+    with get_conn(read_only=True) as conn:
         row = conn.execute(sql, (symbol, window_start_utc, window_end_utc)).fetchone()
     return int(row[0]) if row else 0
 
@@ -1119,7 +1124,7 @@ def get_scan_summary_n_scans_ago(symbol: str, n: int) -> dict | None:
         ORDER BY fetched_at DESC
         LIMIT 1 OFFSET ?
     """
-    with get_conn() as conn:
+    with get_conn(read_only=True) as conn:
         row = conn.execute(sql, (symbol, n)).fetchone()
         return dict(row) if row else None
 
@@ -1134,7 +1139,7 @@ def get_recent_alerts_for_symbol(symbol: str, limit: int = 50) -> list[dict]:
         ORDER BY fetched_at DESC
         LIMIT ?
     """
-    with get_conn() as conn:
+    with get_conn(read_only=True) as conn:
         rows = conn.execute(sql, (symbol, limit)).fetchall()
         return [dict(r) for r in rows]
 
@@ -1390,7 +1395,19 @@ def close_paper_trade(
             else LOT_SIZES.get(base_symbol, 1)
         )
 
+        strike = float(row["strike"] or 0.0)
+
         if option_type in ("CE", "PE"):
+            from src.engine.trade_plan import is_valid_option_premium
+
+            # Validate passed exit_premium
+            if exit_premium and (exit_premium <= 0 or not is_valid_option_premium(strike, option_type, exit_premium, exit_underlying)):
+                log.warning(
+                    "close_paper_trade: trade %s %s %s strike=%.2f exit_premium=%.2f failed sanity check against spot=%.2f — discarding",
+                    trade_id, symbol, option_type, strike, exit_premium, exit_underlying
+                )
+                exit_premium = None
+
             if (
                 entry_premium
                 and entry_premium > 0
@@ -1402,23 +1419,39 @@ def close_paper_trade(
                 else:
                     pnl_points = exit_premium - entry_premium
             elif entry_premium and entry_premium > 0:
-                strike = float(row["strike"] or 0.0)
-                snap_row = conn.execute(
-                    "SELECT ltp FROM option_chain_snapshots WHERE symbol=? AND expiry=? AND strike=? AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
+                estimated_exit = None
+                snaps = conn.execute(
+                    "SELECT ltp FROM option_chain_snapshots WHERE symbol=? AND expiry=? AND strike=? AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 10",
                     (symbol.upper(), expiry, strike, option_type),
-                ).fetchone()
-                if snap_row:
-                    estimated_exit = float(snap_row["ltp"])
-                else:
-                    if option_type == "CE":
-                        estimated_exit = max(0.0, float(exit_underlying) - strike)
+                ).fetchall()
+                for snap_row in snaps:
+                    cand_ltp = float(snap_row["ltp"])
+                    if is_valid_option_premium(strike, option_type, cand_ltp, exit_underlying):
+                        estimated_exit = cand_ltp
+                        break
+
+                if estimated_exit is None:
+                    # Delta-underlying movement estimation fallback
+                    delta_und = float(exit_underlying) - entry_underlying
+                    opt = option_type.upper()
+                    if opt == "CE":
+                        moneyness = (float(exit_underlying) - strike) / (float(exit_underlying) * 0.02) if exit_underlying > 0 else 0.0
+                        approx_delta = max(0.05, min(0.95, 0.5 + 0.3 * moneyness))
+                        estimated_exit = max(0.05, entry_premium + approx_delta * delta_und)
                     else:
-                        estimated_exit = max(0.0, strike - float(exit_underlying))
+                        moneyness = (strike - float(exit_underlying)) / (float(exit_underlying) * 0.02) if exit_underlying > 0 else 0.0
+                        approx_delta = max(0.05, min(0.95, 0.5 + 0.3 * moneyness))
+                        estimated_exit = max(0.05, entry_premium - approx_delta * delta_und)
+                    log.info(
+                        "close_paper_trade: trade %s %s %s strike=%.2f calculated delta-based estimated exit_premium=%.2f (entry=%.2f, delta_spot=%.2f)",
+                        trade_id, symbol, option_type, strike, estimated_exit, entry_premium, delta_und
+                    )
+
+                exit_premium = round(estimated_exit, 2)
                 if side == "SELL":
-                    pnl_points = entry_premium - estimated_exit
+                    pnl_points = entry_premium - exit_premium
                 else:
-                    pnl_points = estimated_exit - entry_premium
-                exit_premium = estimated_exit
+                    pnl_points = exit_premium - entry_premium
             else:
                 pnl_points = 0.0
         else:
@@ -1455,6 +1488,16 @@ def close_paper_trade(
             pnl_rupees,
         )
 
+        if (pnl_rupees > 0 or pnl_points > 0) and status in ("CLOSED_SL", "SL_HIT"):
+            log.warning(
+                "close_paper_trade id=%s: Auto-correcting status from %s to CLOSED_TARGET (pnl_rupees=%.2f, pnl_points=%.2f)",
+                trade_id,
+                status,
+                pnl_rupees,
+                pnl_points,
+            )
+            status = "CLOSED_TARGET"
+
         conn.execute(
             """
             UPDATE paper_trades
@@ -1490,7 +1533,7 @@ def list_paper_trades(symbol: str | None = None, limit: int = 300) -> list[dict]
         params.append(symbol)
     sql += " ORDER BY opened_at DESC LIMIT ?"
     params.append(limit)
-    with get_conn() as conn:
+    with get_conn(read_only=True) as conn:
         rows = conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
@@ -1534,7 +1577,7 @@ def get_open_live_trade(symbol: str) -> dict | None:
         ORDER BY opened_at DESC
         LIMIT 1
     """
-    with get_conn() as conn:
+    with get_conn(read_only=True) as conn:
         row = conn.execute(sql, (symbol,)).fetchone()
         return dict(row) if row else None
 
@@ -1545,12 +1588,12 @@ def get_open_live_timeframe_trades(symbol: str) -> list[dict]:
         WHERE symbol=? AND status='OPEN' AND setup_type='TIMEFRAME'
         ORDER BY opened_at DESC
     """
-    with get_conn() as conn:
+    with get_conn(read_only=True) as conn:
         rows = conn.execute(sql, (symbol,)).fetchall()
         return [dict(r) for r in rows]
 
 
-def insert_live_trade(trade: dict) -> int:
+def insert_live_trade(trade: dict, conn: sqlite3.Connection | None = None) -> int:
     signal_key = trade.get("signal_key")
     verb = "INSERT OR IGNORE" if signal_key else "INSERT"
 
@@ -1633,6 +1676,9 @@ def insert_live_trade(trade: dict) -> int:
             )
         },
     }
+    if conn is not None:
+        row = conn.execute(sql, row_data).fetchone()
+        return int(row["id"]) if row else 0
     with get_conn() as conn:
         row = conn.execute(sql, row_data).fetchone()
         return int(row["id"]) if row else 0
@@ -1790,6 +1836,16 @@ def close_live_trade(
             pnl_rupees,
         )
 
+        if (pnl_rupees > 0 or pnl_points > 0) and status in ("CLOSED_SL", "SL_HIT"):
+            log.warning(
+                "close_live_trade id=%s: Auto-correcting status from %s to CLOSED_TARGET (pnl_rupees=%.2f, pnl_points=%.2f)",
+                trade_id,
+                status,
+                pnl_rupees,
+                pnl_points,
+            )
+            status = "CLOSED_TARGET"
+
         conn.execute(
             """
             UPDATE live_trades
@@ -1817,13 +1873,13 @@ def list_live_trades(symbol: str | None = None, limit: int = 300) -> list[dict]:
         params.append(symbol)
     sql += " ORDER BY opened_at DESC LIMIT ?"
     params.append(limit)
-    with get_conn() as conn:
+    with get_conn(read_only=True) as conn:
         rows = conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
 
 def get_broker_config() -> dict | None:
-    with get_conn() as conn:
+    with get_conn(read_only=True) as conn:
         row = conn.execute(
             "SELECT * FROM broker_configs ORDER BY id DESC LIMIT 1"
         ).fetchone()
@@ -1962,7 +2018,7 @@ def has_recent_scan_summary(symbol: str, max_age_minutes: int) -> bool:
         WHERE symbol = ? AND fetched_at >= ?
         LIMIT 1
     """
-    with get_conn() as conn:
+    with get_conn(read_only=True) as conn:
         row = conn.execute(sql, (symbol, cutoff_str)).fetchone()
         return row is not None
 
@@ -2033,7 +2089,7 @@ def stamp_health(key: str, status: str, detail: str = "") -> None:
 
 def read_health_state() -> list[dict]:
     """Read all health state rows (for /health endpoint and ops_agent)."""
-    with get_conn() as conn:
+    with get_conn(read_only=True) as conn:
         rows = conn.execute("SELECT * FROM health_state").fetchall()
     return [dict(r) for r in rows]
 
@@ -2058,7 +2114,7 @@ def read_health_state_ro() -> list[dict]:
 
 def get_open_positions_count() -> int:
     """Count open paper + live positions."""
-    with get_conn() as conn:
+    with get_conn(read_only=True) as conn:
         paper = conn.execute(
             "SELECT COUNT(*) as c FROM paper_trades WHERE status='OPEN'"
         ).fetchone()["c"]
@@ -2094,7 +2150,7 @@ def get_open_positions_count_ro() -> int:
 
 def get_oldest_open_position_age_min() -> float | None:
     """Return age in minutes of the oldest open position, or None if none open."""
-    with get_conn() as conn:
+    with get_conn(read_only=True) as conn:
         row = conn.execute(
             """
             SELECT MIN(opened_at) as oldest FROM (
