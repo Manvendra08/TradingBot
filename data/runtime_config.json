@@ -2,7 +2,7 @@
   "scan_frequency_minutes": 5,
   "scan_frequency_nse": 60,
   "scan_frequency_mcx": 60,
-  "live_shadow_mode": false,
+  "live_shadow_mode": true,
   "live_capital_per_trade_inr": 1000000,
   "live_max_capital_utilisation_pct": 95,
   "live_max_concurrent_positions": 10,
@@ -30,23 +30,23 @@
   "oi_spike_threshold_pct": 45,
   "price_spike_threshold_pct": 3,
   "dashboard_auth_enabled": false,
-  "live_ai_decision_mode": "advisory",
+  "live_ai_decision_mode": "empirical",
   "live_ai_min_confidence_boost": 80,
   "live_ai_min_confidence_veto": 85,
   "live_ai_exit_advisor_enabled": true,
   "emp_boost_min_trades": 20,
   "emp_boost_min_winrate": 0.6,
   "ml_predictor_mode": "shadow",
-  "derive_min_confidence": false,
+  "derive_min_confidence": true,
   "llm_enrichment_async": true,
   "llm_enrich_timeout_s": 120,
   "autopsy_enabled": true,
   "autopsy_time_ist": "23:45",
-  "manage_direct_kite_positions": true,
+  "manage_direct_kite_positions": false,
   "direct_kite_initialization_mode": "dynamic",
   "direct_kite_default_sl_pct": 75,
   "direct_kite_default_tgt_pct": 60,
-  "live_broker_disabled": false,
+  "live_broker_disabled": true,
   "trading_paused": false,
   "enable_tfss_trade_blocked_rules": false,
   "sentinel_report_mode": "anomalies",
@@ -57,12 +57,12 @@
       "enabled": true,
       "ai_mode": "boost_only",
       "symbols": {
-        "NIFTY": true,
+        "NIFTY": false,
         "BANKNIFTY": true,
         "SENSEX": true,
         "FINNIFTY": false,
         "NATURALGAS": true,
-        "CRUDEOIL": true
+        "CRUDEOIL": false
       }
     },
     "TIMEFRAME": {
@@ -81,12 +81,12 @@
       "enabled": true,
       "ai_mode": "advisory",
       "symbols": {
-        "NIFTY": true,
+        "NIFTY": false,
         "BANKNIFTY": true,
         "SENSEX": true,
         "FINNIFTY": false,
         "NATURALGAS": true,
-        "CRUDEOIL": true
+        "CRUDEOIL": false
       },
       "params": {
         "delta_entry_band": [
@@ -104,5 +104,10 @@
         ]
       }
     }
-  }
+  },
+  "paper_enabled_symbols": [
+    "NATURALGAS",
+    "BANKNIFTY",
+    "SENSEX"
+  ]
 }
