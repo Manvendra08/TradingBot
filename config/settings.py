@@ -207,7 +207,7 @@ SAMBANOVA_API_KEY = _optional_env("SAMBANOVA_API_KEY")
 OPENCODE_API_KEY = _optional_env("OPENCODE_API_KEY")
 NVIDIA_API_KEY = _optional_env("NVIDIA_API_KEY")
 OMNIROUTER_API_KEY = _optional_env("OMNIROUTER_API_KEY")
-OMNIROUTER_BASE_URL = _optional_env("OMNIROUTER_BASE_URL", "http://localhost:3000/v1")
+OMNIROUTER_BASE_URL = _optional_env("OMNIROUTER_BASE_URL", "http://localhost:20128/v1")
 
 # ── Dashboard Authentication ────────────────────────────────────────────────────────────────────────────
 # FIX #13: Removed insecure admin/admin defaults.
@@ -625,7 +625,7 @@ DISABLE_LLM_ENRICHMENT = (
 )
 
 # Cap completion tokens — prevents OpenRouter 402 "can only afford N" on default 65k max_tokens
-LLM_MAX_TOKENS_LIVE = int(os.environ.get("LLM_MAX_TOKENS_LIVE", "2048"))
+LLM_MAX_TOKENS_LIVE = int(os.environ.get("LLM_MAX_TOKENS_LIVE", "4096"))
 LLM_MAX_TOKENS_FORMATTING = int(os.environ.get("LLM_MAX_TOKENS_FORMATTING", "1024"))
 LLM_MAX_TOKENS_EOD = int(os.environ.get("LLM_MAX_TOKENS_EOD", "4096"))
 

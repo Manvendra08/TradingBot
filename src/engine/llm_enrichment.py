@@ -1146,7 +1146,7 @@ def _call_llm_api(
             purpose = "formatting"
 
     # OmniRouter primary group (#0 top-priority)
-    _omnirouter_base = (os.environ.get("OMNIROUTER_BASE_URL") or "http://localhost:3000/v1").rstrip("/")
+    _omnirouter_base = (os.environ.get("OMNIROUTER_BASE_URL") or "http://localhost:20128/v1").rstrip("/")
     if not _omnirouter_base.endswith("/chat/completions"):
         _omnirouter_url = f"{_omnirouter_base}/chat/completions"
     else:
@@ -1161,6 +1161,7 @@ def _call_llm_api(
                 "url": _omnirouter_url,
                 "model": "antigravity/claude-sonnet-4-6",
                 "timeout": 20,
+                "max_tokens_override": 4096,
             },
             {
                 "name": "OmniRouter (Gemini 3.6 Flash Medium)",
@@ -1168,6 +1169,7 @@ def _call_llm_api(
                 "url": _omnirouter_url,
                 "model": "antigravity/gemini-3.6-flash-medium",
                 "timeout": 20,
+                "max_tokens_override": 4096,
             },
             {
                 "name": "OmniRouter (Gemini 3.1 Pro Low)",
@@ -1175,6 +1177,7 @@ def _call_llm_api(
                 "url": _omnirouter_url,
                 "model": "antigravity/gemini-3.1-pro-low",
                 "timeout": 20,
+                "max_tokens_override": 4096,
             },
             {
                 "name": "OmniRouter (Gemini 3.5 Flash Low)",
@@ -1182,6 +1185,7 @@ def _call_llm_api(
                 "url": _omnirouter_url,
                 "model": "antigravity/gemini-3.5-flash-low",
                 "timeout": 20,
+                "max_tokens_override": 4096,
             },
             {
                 "name": "OmniRouter (Gemini 2.5 Flash)",
@@ -1189,6 +1193,7 @@ def _call_llm_api(
                 "url": _omnirouter_url,
                 "model": "antigravity/gemini-2.5-flash",
                 "timeout": 20,
+                "max_tokens_override": 4096,
             },
             {
                 "name": "OmniRouter (GPT-OSS 120B Medium)",
@@ -1196,6 +1201,7 @@ def _call_llm_api(
                 "url": _omnirouter_url,
                 "model": "antigravity/gpt-oss-120b-medium",
                 "timeout": 20,
+                "max_tokens_override": 4096,
             },
         ],
     }
