@@ -156,6 +156,10 @@ class LLMTradeVerdict(BaseModel):
     catalyst: str = Field(
         description="Upcoming event that could accelerate or invalidate: 'EIA report Thursday 8:00PM IST' or 'No major catalyst'"
     )
+    model_name: str | None = Field(
+        default=None,
+        description="Name of the LLM provider/model that generated this verdict",
+    )
 
 
 class LLMExitAdvice(BaseModel):
@@ -1822,6 +1826,8 @@ def _call_llm_api(
                         ),
                     )
                     result = schema.model_validate_json(response.text)
+                    if hasattr(result, "model_name"):
+                        result.model_name = provider.get("name") or provider["model"]
                     log.info(
                         "[llm] %s OK via Gemini SDK (%s)",
                         schema.__name__,
@@ -1893,6 +1899,8 @@ def _call_llm_api(
                         raw_content = resp_json["choices"][0]["message"]["content"]
                         parsed = _extract_json(raw_content)
                         result = schema(**parsed)
+                        if hasattr(result, "model_name"):
+                            result.model_name = provider.get("name") or provider["model"]
                         log.info(
                             "[llm] %s OK via Bedrock Mantle (%s)",
                             schema.__name__,
@@ -1956,6 +1964,8 @@ def _call_llm_api(
                         raw_content = str(content_blocks[-1].get("text") or content_blocks[-1])
                     parsed = _extract_json(raw_content)
                     result = schema.model_validate(parsed)
+                    if hasattr(result, "model_name"):
+                        result.model_name = provider.get("name") or provider["model"]
                     log.info(
                         "[llm] %s OK via Bedrock (%s)",
                         schema.__name__,
@@ -2092,6 +2102,8 @@ def _call_llm_api(
                                 f"{provider['name']} returned unexpected array with {len(parsed)} items"
                             )
                     result = schema.model_validate(parsed)
+                    if hasattr(result, "model_name"):
+                        result.model_name = provider.get("name") or provider["model"]
                     log.info(
                         "[llm] %s OK via %s (%s)",
                         schema.__name__,

@@ -331,8 +331,9 @@ def _async_llm_enrich_and_edit(
         risk_emoji = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🔴"}.get(
             getattr(llm_verdict, "risk_rating", "MEDIUM"), "❓"
         )
-
-        thesis_line = f"\n\n{action_emoji} *AI Trade Plan* ({llm_verdict.action}, {llm_verdict.confidence}%)\n"
+        m_name = getattr(llm_verdict, "model_name", None) or ""
+        m_tag = f" [{m_name}]" if m_name else ""
+        thesis_line = f"\n\n{action_emoji} *AI Trade Plan*{m_tag} ({llm_verdict.action}, {llm_verdict.confidence}%)\n"
         thesis_line += f"📋 *Contract:* `{llm_verdict.instrument}`\n"
         thesis_line += f"🎯 *Entry:* {llm_verdict.entry_trigger}\n"
         thesis_line += f"💰 *Premium:* {llm_verdict.entry_premium_range}\n"
@@ -378,11 +379,14 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
     # 1. Header
     try:
         dt = datetime.fromisoformat(fetched_at or "").astimezone(timezone.utc)
+        dt = dt.astimezone(timezone(timedelta(hours=5, minutes=30)))
+        ts = dt.strftime("%H:%M IST")
     except Exception:
-        dt = datetime.now(timezone.utc)
-    IST = timezone(timedelta(hours=5, minutes=30))
-    ts = dt.astimezone(IST).strftime("%H:%M IST")
+        ts = "N/A"
+
+    trade_entered = bool((intel or {}).get("trade_entered"))
     
+    # Check actual database trade status for paper/live trades
     tf_entered = timeframe_res and isinstance(timeframe_res, dict) and timeframe_res.get("action") == "EXECUTED"
     paper_res = (intel or {}).get("paper_res") if isinstance(intel, dict) else None
     paper_opened = isinstance(paper_res, dict) and paper_res.get("action") in ("OPENED", "EXECUTED")
@@ -426,6 +430,8 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
         except Exception:
             pass
 
+    ai_model_name = getattr(llm_verdict, "model_name", None) if llm_verdict else None
+
     header = {
         "symbol": symbol,
         "scan_time": ts,
@@ -435,7 +441,8 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
         "spot": scan_context.get("underlying") or 0.0,
         "market_regime": scan_context.get("market_regime") or "UNKNOWN",
         "confidence": (intel or {}).get("confidence", 0),
-        "trade_entered": trade_entered
+        "trade_entered": trade_entered,
+        "ai_model_name": ai_model_name
     }
 
     is_timeframe = td.get("execution_source") == "TIMEFRAME"
@@ -552,6 +559,7 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
         "global_risk": {},
         "options_insight": format_options_insight(scan_context, symbol),
         "ai_thesis": ai_thesis,
+        "ai_model_name": ai_model_name,
         "exit_advice": exit_advice
     }
 

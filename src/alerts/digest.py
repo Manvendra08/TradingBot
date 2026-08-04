@@ -735,6 +735,7 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
     positions   = payload.get("positions", {})
     global_risk = payload.get("global_risk", {})
     ai_thesis   = payload.get("ai_thesis", "")
+    ai_model_name = payload.get("ai_model_name") or header.get("ai_model_name")
     exit_advice = payload.get("exit_advice")
 
     sym   = _val(header.get("symbol")) or "?"
@@ -886,7 +887,8 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
     if thesis_text:
         lines.append("")
         lines.append(DIV)
-        lines.append("💡 *THESIS (AI)*")
+        model_str = f" · _{_esc(ai_model_name)}_" if ai_model_name else ""
+        lines.append(f"💡 *THESIS (AI)*{model_str}")
         for raw_line in thesis_text.splitlines():
             if not raw_line.strip():
                 continue
@@ -1083,8 +1085,14 @@ def _build_digest_legacy(
             action_emoji = {"GO_LONG": "🟢", "GO_SHORT": "🔴", "NO_TRADE": "⚪"}.get(
                 action, "❓"
             )
+            m_name = (
+                llm_verdict.get("model_name")
+                if isinstance(llm_verdict, dict)
+                else getattr(llm_verdict, "model_name", None)
+            )
+            m_str = f" [{_esc(m_name)}]" if m_name else ""
             ai_part = (
-                f"\n{action_emoji} *AI Trade Plan* ({action}, {conf}%)\n"
+                f"\n{action_emoji} *AI Trade Plan*{m_str} ({action}, {conf}%)\n"
                 f"📋 Contract: {_esc(instrument)}\n"
                 f"🎯 Entry: {_esc(entry_trigger)}\n"
                 f"🛑 SL: {_esc(stop_loss)} | T1: {_esc(target_1)}\n"
@@ -1302,9 +1310,15 @@ def _build_digest_legacy(
             "GO_SHORT": EMOJI_RED,
             "NO_TRADE": EMOJI_WHITE,
         }.get(action, EMOJI_YELLOW)
+        m_name = (
+            llm_verdict.get("model_name")
+            if isinstance(llm_verdict, dict)
+            else getattr(llm_verdict, "model_name", None)
+        )
+        m_str = f" [{_esc(m_name)}]" if m_name else ""
         lines += [
             "",
-            f"{action_emoji} *AI Trade Plan* ({_esc(action)}, {conf}%)",
+            f"{action_emoji} *AI Trade Plan*{m_str} ({_esc(action)}, {conf}%)",
             f"📋 {_esc(instrument)}",
             f"🎯 Entry: {_esc(entry_trigger)}",
             f"🛑 SL: {_esc(stop_loss)} | T1: {_esc(target_1)}",
