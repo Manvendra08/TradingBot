@@ -564,12 +564,12 @@ class ShoonyaFetcher(BaseFetcher):
     def _api_call(
         self, endpoint: str, payload: dict, retry_on_expiry: bool = True
     ) -> dict | None:
-        # Acquire lock with a 3.0s timeout to allow parallel symbol fetches
+        # Acquire lock with a 15.0s timeout to allow parallel symbol fetches
         # (e.g. NIFTY, BANKNIFTY, SENSEX) to run sequentially without false drops,
         # while keeping a deadline safety cap.
-        if not self._api_lock.acquire(blocking=True, timeout=3.0):
-            log.info(
-                "[shoonya] %s skipped — lock timeout (3s) due to concurrent fetch",
+        if not self._api_lock.acquire(blocking=True, timeout=15.0):
+            log.warning(
+                "[shoonya] %s skipped — lock timeout (15s) due to heavy concurrent fetch load",
                 endpoint,
             )
             return None

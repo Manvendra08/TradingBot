@@ -105,7 +105,7 @@ class DhanFetcher(BaseFetcher):
         if DHAN_SEGMENTS.get(base_symbol) != "MCX_COMM":
             return None
 
-        log.warning("[dhan] commodity fetch failed for %s: %s. Returning None for router fallback.", symbol, reason)
+        log.debug("[dhan] commodity fetch for %s: %s. Returning None for router fallback.", symbol, reason)
         return None
 
     @staticmethod
@@ -181,7 +181,11 @@ class DhanFetcher(BaseFetcher):
             for exp in expjs_list if exp
         ])))
 
-        target_expiry = expiry or self._nearest_expiry(all_expiries, symbol=symbol)
+        if expiry and expiry in all_expiries:
+            target_expiry = expiry
+        else:
+            target_expiry = self._nearest_expiry(all_expiries, symbol=symbol)
+
         if not target_expiry:
             log.warning("[dhan] no expiry returned for %s", symbol)
             return self._fallback_commodity(symbol, "no expiry returned")
@@ -208,7 +212,7 @@ class DhanFetcher(BaseFetcher):
             
         strikes = _normalise_scanx_oc(oc_data)
         if not strikes:
-            log.warning("[dhan] empty option chain after normalise for %s expiry=%s", symbol, target_expiry)
+            log.debug("[dhan] empty option chain after normalise for %s expiry=%s", symbol, target_expiry)
             return self._fallback_commodity(symbol, "normalise returned empty result")
 
         underlying = _safe_float((oc_data.get("data") or {}).get("sltp"), 0.0)
