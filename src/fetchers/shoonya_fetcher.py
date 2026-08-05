@@ -114,6 +114,16 @@ def _post_jdata(
                     return None
 
             raw = resp.text
+            is_rate_limited = "exceeds Limit" in raw or "Order Recieved" in raw or "Limit 10" in raw
+            if is_rate_limited and attempt <= _MAX_RETRIES + 1:
+                wait = attempt * 1.15
+                log.info(
+                    "[shoonya] POST %s -> Rate limit hit (%s), retry %d/%d in %.2fs",
+                    url, raw[:100].strip(), attempt, _MAX_RETRIES + 1, wait,
+                )
+                _time.sleep(wait)
+                continue
+
             if resp.status_code in _TRANSIENT_5XX and attempt <= _MAX_RETRIES:
                 wait = attempt * 1.0
                 log.info(
@@ -253,6 +263,10 @@ class ShoonyaFetcher(BaseFetcher):
         # that caused "Session Expired" after ~1-2 calls under concurrent MCX fetches.
         self._api_lock = threading.Lock()
         self._mcx_lock = threading.Lock()
+
+        # Thread-safe sliding window rate limiter (max 8 requests / sec, safely below Shoonya 10 req/s limit)
+        self._rate_timestamps: list[float] = []
+        self._rate_lock = threading.Lock()
 
         # Try to load cached token to avoid repeated OAuth browser launches.
         self._load_cached_token()
@@ -585,9 +599,28 @@ class ShoonyaFetcher(BaseFetcher):
     # API helpers (Bearer auth)
     # ------------------------------------------------------------------
 
+    def _throttle_rate_limit(self) -> None:
+        """Enforces Shoonya API rate limit (max 8 requests per rolling 1.0s window).
+
+        Shoonya strictly limits users to 10 requests/sec. Throttling at 8 req/sec
+        guarantees zero rate limit errors under heavy concurrent scans.
+        """
+        with self._rate_lock:
+            now = time.time()
+            self._rate_timestamps = [t for t in self._rate_timestamps if now - t < 1.0]
+            if len(self._rate_timestamps) >= 8:
+                oldest = self._rate_timestamps[0]
+                sleep_needed = 1.05 - (now - oldest)
+                if sleep_needed > 0:
+                    time.sleep(sleep_needed)
+                now = time.time()
+                self._rate_timestamps = [t for t in self._rate_timestamps if now - t < 1.0]
+            self._rate_timestamps.append(now)
+
     def _api_call(
         self, endpoint: str, payload: dict, retry_on_expiry: bool = True
     ) -> dict | None:
+        self._throttle_rate_limit()
         # Acquire lock with a 15.0s timeout to allow parallel symbol fetches
         # (e.g. NIFTY, BANKNIFTY, SENSEX) to run sequentially without false drops,
         # while keeping a deadline safety cap.

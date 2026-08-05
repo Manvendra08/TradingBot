@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python -m pytest tests/ --cov=src --cov-fail-under=50 -q)"
+      "Bash(python -m pytest tests/ --cov=src --cov-fail-under=50 -q)",
+      "Bash(git add *)",
+      "Bash(git reset *)",
+      "Bash(git commit *)"
     ]
   }
 }

@@ -50,6 +50,14 @@ TypeError: get_previous_underlying() got an unexpected keyword argument 'read_on
   2. [live_trading.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/live_trading.py#L2212) bypasses `kite.ltp` for `MCX:` keys, resolving underlying prices via Dhan/MoneyControl and DB fallback cleanly without permission warnings.
 - **Caveat — Shoonya Sequential Call Avalanche:** Shoonya `fetch_option_chain()` makes 3–4 sequential API calls (`_search_scrip`, `_get_quotes`, `_get_option_chain` + per-strike fallbacks), each with 6s timeout + 1 retry. Worst-case wall time (~22.5s+) exceeds the router's 12s deadline. The `0.1s` fallback timeout when the primary source succeeds can also produce false "fetch failed/timed out" warnings. Session-quota re-login (Playwright OAuth, 60–75s) guarantees a timeout if it triggers during a fetch cycle. No per-source timeout configuration exists — all Shoonya timeouts are hardcoded.
 
+### F127: Direct Kite Manual Trade Auto-Reconciliation Fix (P0-CRITICAL)
+- **Issue**: `sync_open_positions_with_kite()` in [live_trading.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/live_trading.py#L1990) auto-adopted active Zerodha positions into `live_trades` table as `setup_type='DIRECT_KITE'`. However, when those manual positions were closed on Zerodha, DB rows remained in `status='OPEN'`, causing stale positions (`SENSEX 75500 PE`, `NATURALGAS 285 PE/290 PE/290 CE/FUT`) to persist under `🤖 BOT LIVE TRADES` on the Broker Console page.
+- **Fix**: Added automated position reconciliation to `sync_open_positions_with_kite()` in [live_trading.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/live_trading.py#L2045) — whenever an adopted `DIRECT_KITE` trade is no longer active in Zerodha's `net_positions`, it is automatically set to `status='CLOSED'`, `reason='Closed on Kite'` in SQLite DB. Reconciled and closed all stale DB rows.
+
+### F128: Shoonya API Rate Limit (10 req/s User Cap) Fix (P0-CRITICAL)
+- **Issue**: High-cadence option chain fetches (e.g., `SENSEX26AUG` option chain resolution) burst >10 requests per second to `api.shoonya.com/NorenWClientAPI/GetQuotes`, triggering HTTP 400 errors: `{"stat":"Not_Ok","emsg":"Invalid Input : Order Recieved 11 in a current second exceeds Limit 10 for user"}`.
+- **Fix**: Implemented thread-safe sliding window rate limiter (`_throttle_rate_limit()` capping requests at max 8 req/sec) and added automatic 1.15s backoff retries on `exceeds Limit` responses in [shoonya_fetcher.py](file:///c:/Users/manve/Downloads/NSEBOT/src/fetchers/shoonya_fetcher.py#L585).
+
 ### F6: Zero OI & Illiquid Option Chain Anomaly (P1-HIGH)
 - **Symptom:** >80% of strikes return `oi=0` and `volume=0`.
 - **Root Cause:** After-hours scan, illiquid contract, or provider API drop.

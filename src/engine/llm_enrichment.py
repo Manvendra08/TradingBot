@@ -1146,7 +1146,7 @@ def _call_llm_api(
             purpose = "formatting"
 
     # OmniRouter primary group (#0 top-priority)
-    _omnirouter_base = (os.environ.get("OMNIROUTER_BASE_URL") or "http://localhost:20128/v1").rstrip("/")
+    _omnirouter_base = (os.environ.get("OMNIROUTER_BASE_URL") or "http://localhost:20128/v1").strip().rstrip("/").replace(":3000", ":20128")
     if not _omnirouter_base.endswith("/chat/completions"):
         _omnirouter_url = f"{_omnirouter_base}/chat/completions"
     else:
