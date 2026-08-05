@@ -60,3 +60,6 @@ ATR_TIGHTENING_MULTIPLIER_THRESHOLD = 1.5
 TFSS_COMBINED_DELTA_CAP = 0.60
 TFSS_MAX_BOOK_MARGIN = 500000.0
 HARD_STOP_DELTA = 0.60
+REBALANCE_DELTA_THRESHOLD = 0.50  # Dynamic delta rebalancing triggered when leg delta reaches 0.50
+TIME_DECAY_PROFIT_TARGET_PCT = 0.35  # 35% time decay profit target for option sell legs
+

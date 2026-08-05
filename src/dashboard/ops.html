@@ -162,7 +162,7 @@
         .inc-playbook.p12 { background: rgba(74,85,104,.2); color: var(--muted); }
         .inc-ts { color: var(--text-dim); font-size: 11px; }
         .inc-action { color: var(--text); }
-        .inc-result { font-size: 11px; padding: 2px 7px; border-radius: 4px; }
+        .inc-result { font-size: 11px; padding: 4px 10px; border-radius: 4px; white-space: normal; word-break: break-word; line-height: 1.4; display: inline-block; }
         .inc-result.success { background: rgba(0,229,160,.08); color: var(--green); }
         .inc-result.fail { background: rgba(255,77,109,.08); color: var(--red); }
         .empty-state { text-align: center; padding: 40px; color: var(--text-dim); font-family: var(--mono); font-size: 13px; }
@@ -597,16 +597,18 @@ async function loadIncidents() {
         const ts = inc.ts ? new Date(inc.ts).toLocaleString("en-IN", {day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}) : "—";
         const pid = (inc.playbook_id || "P??").toUpperCase();
         const cls = playbookClass(pid.toLowerCase());
-        const action = inc.action || "—";
-        const result = inc.result || "";
-        const isSuccess = result.toLowerCase().includes("ok") || result.toLowerCase().includes("success") || result.toLowerCase().includes("verified");
+        const rawAction = inc.action || "—";
+        const rawResult = inc.result || "";
+        const action = escapeHtml(rawAction);
+        const result = escapeHtml(rawResult);
+        const isSuccess = rawResult.toLowerCase().includes("ok") || rawResult.toLowerCase().includes("success") || rawResult.toLowerCase().includes("verified");
         const ackedBadge = inc.acked ? ' <span style="color:var(--text-dim);font-size:10px;">✓ acked</span>' : '';
         return `
         <div class="incident-row">
             <span class="inc-playbook ${pid.toLowerCase().replace('+','')}">${pid}</span>
             <span class="inc-ts">${ts}</span>
             <span class="inc-action">${action}${ackedBadge}</span>
-            <span class="inc-result ${isSuccess ? 'success' : 'fail'}">${result ? (result.length > 40 ? result.slice(0,40)+"…" : result) : "—"}</span>
+            <span class="inc-result ${isSuccess ? 'success' : 'fail'}" title="${result}">${result || "—"}</span>
         </div>`;
     }).join("");
 }

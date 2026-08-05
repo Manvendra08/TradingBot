@@ -220,9 +220,16 @@ def evaluate_reversal(symbol_state: Any, market_state: Any, config: Any) -> Dict
     if not original_side:
         return {"action": "NO_REVERSAL_ACTION"}
 
-    reversal_side = side_opposite(original_side)
+    cur_delta = 0.0
+    if isinstance(market_state, dict):
+        cur_delta = float(market_state.get("current_delta") or 0.0)
+    elif hasattr(market_state, "current_delta"):
+        cur_delta = float(getattr(market_state, "current_delta", 0.0))
 
-    if not is_confirmed_reversal(persisted.label, original_side):
+    rebalance_thresh = float((config or {}).get("rebalance_delta_threshold") or 0.50)
+    is_delta_rebalance = cur_delta >= rebalance_thresh
+
+    if not is_confirmed_reversal(persisted.label, original_side) and not is_delta_rebalance:
         return {"action": "NO_REVERSAL_ACTION"}
 
     reversal_audit = []

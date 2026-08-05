@@ -765,8 +765,9 @@ def run_playbooks(snap: HealthSnapshot, sm: StateMachine) -> list[PlaybookResult
     if shoonya_state and shoonya_state.status == "OK":
         sm._get("_reauth_count").consecutive_down = 0
 
-    # ── P01: Bot dead (heartbeat stale) + no open positions → restart ──
-    hb_stale = not snap.heartbeat_ok and (snap.heartbeat_age_s is None or snap.heartbeat_age_s > 180)
+    # ── P01 & P02: Bot dead (heartbeat stale) — ONLY evaluated during active market hours ──
+    market_open = _is_market_hours()
+    hb_stale = market_open and (not snap.heartbeat_ok) and (snap.heartbeat_age_s is None or snap.heartbeat_age_s > 180)
     if hb_stale and open_pos == 0:
         restart_count = sm._get("_restart_count").consecutive_down
         # Track first restart timestamp for 30-min window

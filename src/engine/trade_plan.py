@@ -536,7 +536,8 @@ def convert_underlying_sl_to_premium(
         # Fallback: fixed multipliers
         if side == "SELL":
             sl_premium = round(entry_premium * 1.50, 2)
-            target_premium = round(entry_premium * 0.60, 2)
+            # 35% time decay profit target (retains 65% of entry premium as exit trigger)
+            target_premium = round(entry_premium * 0.65, 2)
         else:
             sl_premium = round(entry_premium * 0.70, 2)
             target_premium = round(entry_premium * 1.50, 2)
@@ -584,7 +585,8 @@ def convert_underlying_sl_to_premium(
         target_premium = max(target_premium, entry_premium + tick)
     else:  # SELL
         sl_premium = entry_premium + delta * underlying_sl_dist
-        target_premium = entry_premium - delta * underlying_tgt_dist
+        # Cap target premium at 35% time decay target (exit when premium drops to 65% of entry)
+        target_premium = min(entry_premium - delta * underlying_tgt_dist, entry_premium * 0.65)
         # Apply safety bounds to prevent negative or zero premiums
         sl_premium = max(sl_premium, entry_premium + tick)
         target_premium = max(target_premium, tick)

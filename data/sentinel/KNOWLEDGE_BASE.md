@@ -58,6 +58,21 @@ TypeError: get_previous_underlying() got an unexpected keyword argument 'read_on
 - **Issue**: High-cadence option chain fetches (e.g., `SENSEX26AUG` option chain resolution) burst >10 requests per second to `api.shoonya.com/NorenWClientAPI/GetQuotes`, triggering HTTP 400 errors: `{"stat":"Not_Ok","emsg":"Invalid Input : Order Recieved 11 in a current second exceeds Limit 10 for user"}`.
 - **Fix**: Implemented thread-safe sliding window rate limiter (`_throttle_rate_limit()` capping requests at max 8 req/sec) and added automatic 1.15s backoff retries on `exceeds Limit` responses in [shoonya_fetcher.py](file:///c:/Users/manve/Downloads/NSEBOT/src/fetchers/shoonya_fetcher.py#L585).
 
+### F129: Dynamic Delta Rebalancing (0.50 Threshold) & 35% Time-Decay Profit Target (P1-HIGH)
+- **Issue**: Single-trade pipeline guard prevented entering/rolling opposite strangle legs when an open trade drifted ITM, leaving tested legs exposed to unhedged directional losses. Time-decay targets were also taking profits too late or unevenly.
+- **Fix**:
+  1. Updated [config/trend_following_short_strangle.py](file:///c:/Users/manve/Downloads/NSEBOT/config/trend_following_short_strangle.py#L60) with `REBALANCE_DELTA_THRESHOLD = 0.50` and `TIME_DECAY_PROFIT_TARGET_PCT = 0.35`.
+  2. Updated `evaluate_reversal` in [trend_following_short_strangle.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/trend_following_short_strangle.py#L220) to trigger `OPEN_OR_ADD` for dynamic delta rebalancing (rolling/adding opposite leg) when leg delta reaches `0.50`.
+  3. Capped target premium for short options in [trade_plan.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/trade_plan.py#L585) to `entry_premium * 0.65` (35% time-decay profit target).
+
+### F130: Ops Agent Detail Truncation & Market Hours Gate Fix (P1-HIGH)
+- **Issue**:
+  1. Ops Agent Activity Log on the dashboard UI (`/ops`) truncated detail text to 40 characters via JS string slicing (`result.slice(0, 40) + "…"`).
+  2. Ops Agent evaluated heartbeat staleness (`P01`/`P02`) outside active market operating hours, triggering false "Bot dead with X open positions" escalations at midnight (12:06 AM IST).
+- **Fix**:
+  1. Removed `result.slice(0, 40)` truncation in [src/dashboard/ops.html](file:///c:/Users/manve/Downloads/NSEBOT/src/dashboard/ops.html#L596) and enabled clean multi-line word wrapping with hover tooltips (`title="${result}"`).
+  2. Enforced `_is_market_hours()` gate before evaluating heartbeat staleness (`hb_stale`) in [ops_agent.py](file:///c:/Users/manve/Downloads/NSEBOT/ops_agent.py#L768) — suppresses off-market false alerts when scanners sleep.
+
 ### F6: Zero OI & Illiquid Option Chain Anomaly (P1-HIGH)
 - **Symptom:** >80% of strikes return `oi=0` and `volume=0`.
 - **Root Cause:** After-hours scan, illiquid contract, or provider API drop.
