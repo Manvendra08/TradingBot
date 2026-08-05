@@ -60,6 +60,20 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+_SHOONYA_HTTP_SESSION = None
+
+
+def _get_shoonya_session():
+    global _SHOONYA_HTTP_SESSION
+    if _SHOONYA_HTTP_SESSION is None:
+        import requests
+        _SHOONYA_HTTP_SESSION = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=20, max_retries=0)
+        _SHOONYA_HTTP_SESSION.mount("https://", adapter)
+        _SHOONYA_HTTP_SESSION.mount("http://", adapter)
+    return _SHOONYA_HTTP_SESSION
+
+
 def _post_jdata(
     url: str, payload: dict, access_token: str | None = None
 ) -> dict | None:
@@ -68,88 +82,98 @@ def _post_jdata(
     Cleans payload structures to pass authorization details via standard form
     bodies instead of conflicting Bearer headers, resolving the duplicate-auth bug.
 
-    Retries up to 2 times on transient 5xx errors (502/503/504) with exponential
-    backoff (1.5s, 3s). Does NOT retry on 4xx (auth errors handled by caller).
+    Retries up to 2 times on transient errors (502/503/504, SSL handshake, network timeouts)
+    with exponential backoff (1s, 2s). Does NOT retry on 4xx (auth errors handled by caller).
     Also retries on DNS resolution failures with IP fallback.
     """
     import socket
+    import ssl
     import time as _time
+    import requests
 
     body_str = "jData=" + json.dumps(payload, separators=(",", ":"))
     if access_token:
         body_str += f"&jKey={access_token}"
-    body = body_str.encode("utf-8")
     headers: dict[str, str] = {
         "Content-Type": "application/x-www-form-urlencoded",
         "User-Agent": "Mozilla/5.0",
     }
 
     _TRANSIENT_5XX = {502, 503, 504}
-    _MAX_RETRIES = 1
-    _BACKOFF_BASE = 1.5  # seconds
-    # Known IPv4 addresses for api.shoonya.com (fallback if DNS fails)
+    _MAX_RETRIES = 2
     _SHOONYA_IPS = ["13.202.119.185"]
+    session = _get_shoonya_session()
 
-    for attempt in range(1, _MAX_RETRIES + 2):  # attempts: 1, 2
-        req = urllib.request.Request(url, data=body, headers=headers)
+    for attempt in range(1, _MAX_RETRIES + 2):  # attempts: 1, 2, 3
         try:
-            with urllib.request.urlopen(req, timeout=8) as resp:
-                return json.loads(resp.read().decode())
-        except urllib.error.HTTPError as e:
-            raw = e.read().decode()
-            if e.code in _TRANSIENT_5XX and attempt <= _MAX_RETRIES:
-                wait = _BACKOFF_BASE * attempt
-                log.warning(
+            resp = session.post(url, data=body_str, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                try:
+                    return resp.json()
+                except Exception:
+                    return None
+
+            raw = resp.text
+            if resp.status_code in _TRANSIENT_5XX and attempt <= _MAX_RETRIES:
+                wait = attempt * 1.0
+                log.info(
                     "[shoonya] POST %s -> HTTP %s (transient), retry %d/%d in %.1fs",
-                    url, e.code, attempt, _MAX_RETRIES, wait,
+                    url, resp.status_code, attempt, _MAX_RETRIES + 1, wait,
                 )
                 _time.sleep(wait)
                 continue
             if "Session Expired" in raw:
-                log.info("[shoonya] POST %s -> Session Expired (HTTP %s)", url, e.code)
-            elif e.code == 404 and "No Data" in raw:
+                log.info("[shoonya] POST %s -> Session Expired (HTTP %s)", url, resp.status_code)
+            elif resp.status_code == 404 and "No Data" in raw:
                 log.debug("[shoonya] POST %s -> HTTP 404 (No Data)", url)
             else:
-                log.error("[shoonya] POST %s -> HTTP %s: %s", url, e.code, raw[:200])
+                log.error("[shoonya] POST %s -> HTTP %s: %s", url, resp.status_code, raw[:200])
             try:
-                return json.loads(raw)
+                return resp.json()
             except Exception:
                 return None
-        except (urllib.error.URLError, socket.gaierror, socket.timeout, TimeoutError, ConnectionError) as exc:
-            # Network failure: DNS, timeout, connection reset/refused
+
+        except (requests.RequestException, ssl.SSLError, urllib.error.URLError, socket.gaierror, socket.timeout, TimeoutError, ConnectionError) as exc:
             exc_str = str(exc).lower()
             is_dns = isinstance(exc, socket.gaierror) or "getaddrinfo failed" in exc_str or "name or service not known" in exc_str
-            is_timeout = isinstance(exc, (socket.timeout, TimeoutError)) or "timed out" in exc_str
-            is_transient_conn = isinstance(exc, ConnectionError) or "connection reset" in exc_str or "connection refused" in exc_str
+            is_timeout = isinstance(exc, (socket.timeout, TimeoutError, requests.Timeout)) or "timed out" in exc_str or "handshake" in exc_str
+            is_transient_conn = isinstance(exc, ConnectionError) or "connection reset" in exc_str or "connection refused" in exc_str or "ssl" in exc_str
 
             if (is_dns or is_timeout or is_transient_conn) and attempt <= _MAX_RETRIES:
-                log.warning("[shoonya] Network error %s for %s (attempt %d/%d): %s", 
-                            "DNS" if is_dns else "Timeout/Conn", url, attempt, _MAX_RETRIES + 1, exc)
-                
-                # Try IP-based fallback on last DNS retry
+                log.info(
+                    "[shoonya] Network error %s for %s (attempt %d/%d): %s",
+                    "DNS" if is_dns else "Timeout/Conn", url, attempt, _MAX_RETRIES + 1, exc,
+                )
+
                 if is_dns and attempt == _MAX_RETRIES and _SHOONYA_IPS:
                     for ip in _SHOONYA_IPS:
                         try:
                             ip_url = url.replace("api.shoonya.com", ip)
-                            req = urllib.request.Request(ip_url, data=body, headers={**headers, "Host": "api.shoonya.com"})
-                            with urllib.request.urlopen(req, timeout=8) as resp:
+                            ip_resp = session.post(
+                                ip_url,
+                                data=body_str,
+                                headers={**headers, "Host": "api.shoonya.com"},
+                                timeout=10,
+                                verify=False,
+                            )
+                            if ip_resp.status_code == 200:
                                 log.info("[shoonya] DNS fallback succeeded via IP %s", ip)
-                                return json.loads(resp.read().decode())
+                                return ip_resp.json()
                         except Exception as ip_exc:
                             log.debug("[shoonya] IP fallback %s failed: %s", ip, ip_exc)
                             continue
-                
-                wait = _BACKOFF_BASE * attempt
+
+                wait = attempt * 1.0
                 _time.sleep(wait)
                 continue
-                
+
             log.error("[shoonya] POST %s failed: %s", url, exc)
             return None
         except Exception as exc:
             log.error("[shoonya] POST %s failed: %s", url, exc)
             return None
 
-    return None  # exhausted retries
+    return None
 
 
 def _read_shared_token_file(filepath: str) -> dict | None:
