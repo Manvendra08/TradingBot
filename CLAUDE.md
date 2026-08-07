@@ -99,11 +99,13 @@ Three strategies, each independently enable/disable-able globally and per-symbol
 | **CORE** | OI verdict + confidence gate | SL/Target/Reversal/Dead Trade | BUY CE/PE (long premium) | All, enabled |
 | **TIMEFRAME** | 3H candle breakout + OI diff | 1H candle crossover | BUY CE/PE (long premium) | All, enabled |
 | **TFSS** (Trend-Following Short Strangle) | Persisted OI trend + delta gate | Delta stop / ATR / DTE | SELL CE/PE (short premium) | Index only (NIFTY/BANKNIFTY/FINNIFTY/SENSEX); disabled by default, MCX excluded |
+| **MULTILEG** (Multi-Leg Short Options) | LLM decides strategy + strikes | LLM decides exit/adjustment | SELL multi-leg (short premium) | NSE indices only (NIFTY/BANKNIFTY/FINNIFTY/SENSEX) |
 
 - `src/engine/strategy_registry.py` — `active_strategies_for(symbol)` resolves which strategies run this scan cycle (strategy enabled → symbol not explicitly disabled → runner registered). `get_runner()`, `get_params()`, `get_ai_mode()`.
 - `pipeline.py` dispatches through the registry (`active_strategies_for` + `get_runner`), not hardcoded `run_paper_trading`/`run_timeframe_strategy` calls. Precedence preserved: CORE report wins ties over TIMEFRAME (first EXECUTED/CLOSED report in registry order).
 - **TFSS is implemented for paper trading** using multi-leg book tracking (`leg_group_id`). It groups up to 2 sides × 3 tranches (6 legs total) per symbol-day, scaling lot sizes dynamically (`50% -> 30% -> 20%`) via `TRANCHE_SEQUENCE`. Risk Engine checks combined margin (<₹600k), combined net delta (<0.60), and max tranches. Delta-stop exits close the tested side selectively (prioritized via `EXIT_PRIORITY_MAP`), leaving the opposite untested side open.
 - Disabling a strategy mid-trade blocks new entries only; open positions run to their own SL/target (no forced close).
+- **MULTILEG** — LLM-driven multi-leg premium selling. The LLM acts as an experienced options seller, deciding strategy type (IRON_CONDOR/SHORT_STRANGLE/SHORT_STRADDLE/BEAR_CALL_SPREAD/BULL_PUT_SPREAD/JADE_LIZARD/CUSTOM), strikes, exits, and adjustments. All legs are SELL (short premium). Bot enforces hard risk limits: delta cap (0.60), margin cap (₹500K), max 6 legs, conflict detection. ai_mode controls execution: advisory (observe) → boost (promote blocked) → full (auto-execute). Files: `config/multileg_strategies.py`, `src/engine/multileg_*.py`. Subsumes TFSS — MULTILEG can choose SHORT_STRANGLE when trend conditions warrant.
 
 ## Live Trading
 
@@ -151,9 +153,15 @@ Three strategies, each independently enable/disable-able globally and per-symbol
 
 - `src/fetchers/router.py` — source routing and ATM strike filtering
 - `src/fetchers/chart_fetcher.py` — candle sourcing and aggregation
-- `src/fetchers/news_fetcher.py` — news sentiment (ICICIDirect + NewsAPI for indices; TradingView for MCX commodities; Way2Wealth removed)
+- `src/fetchers/news_fetcher.py` — news sentiment (ICICIDirect h4 headlines + NewsAPI for indices; TradingView for MCX commodities; Way2Wealth removed)
 - `src/engine/pipeline.py` — orchestrates the scan; dispatches strategies via `strategy_registry.active_strategies_for()`; skips LLM entry advisor when position open
-- `src/engine/strategy_registry.py` — Strategy × Symbol enable/disable resolution (CORE/TIMEFRAME/TFSS); DB-backed via `runtime_config.json`, defaults in `DEFAULT_STRATEGIES`
+- `src/engine/strategy_registry.py` — Strategy × Symbol enable/disable resolution (CORE/TIMEFRAME/TFSS/MULTILEG); DB-backed via `runtime_config.json`, defaults in `DEFAULT_STRATEGIES`
+- `src/engine/multileg_strategy.py` — Multi-leg validation, Greeks, margin, risk profile, scoring, conflicts
+- `src/engine/multileg_llm_prompt.py` — Full option chain + exit prompts for LLM
+- `src/engine/multileg_llm_schema.py` — Pydantic models for LLM output validation
+- `src/engine/multileg_paper_trading.py` — Paper trading runner with ai_mode integration
+- `src/engine/multileg_live_trading.py` — Live trading with Kite broker execution + rollback
+- `config/multileg_strategies.py` — Strategy types, risk caps, constraints
 - `src/engine/anomaly_detector.py` — computes alerts and scan context
 - `src/engine/intelligence.py` — verdict, trend, trade guidance; chart_conflict flag for display only (no penalty)
 - `src/engine/trade_plan.py` — **unified** SL/Target, premium resolution, verdict parsing
