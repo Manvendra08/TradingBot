@@ -1747,10 +1747,10 @@ def _call_llm_api(
         }
 
         if _is_mcx:
-            # MCX: OpenCode Zen (primary) → Groq → GitHub Models → AnyAPI Free → Bedrock Mantle → Nvidia NIM → Bedrock → OpenRouter → Gemini → SambaNova
+            # MCX: OmniRouter (cx/gpt-5.5 first) → OpenCode Zen → Groq → GitHub Models → AnyAPI Free → Bedrock Mantle → Nvidia NIM → Bedrock → OpenRouter → Gemini → SambaNova
             FREE_MODEL_PIPELINE = [
-                _opencode_zen_group,
                 _omnirouter_group,
+                _opencode_zen_group,
                 _groq_group,
                 _github_models,
                 _anyapi_free_group,
@@ -1798,8 +1798,8 @@ def _call_llm_api(
         else:
             # NSE/BSE indices: OpenCode Zen (primary) → Groq → GitHub Models → Nvidia NIM → Bedrock → OpenRouter → Gemini
             FREE_MODEL_PIPELINE = [
-                _opencode_zen_group,
                 _omnirouter_group,
+                _opencode_zen_group,
                 _groq_group,
                 _github_models,
                 _nvidia_nim_group,
