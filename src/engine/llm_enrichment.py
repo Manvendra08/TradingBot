@@ -1164,7 +1164,7 @@ def _call_llm_api(
                 "env_key": "OMNIROUTER_API_KEY",
                 "url": _omnirouter_url,
                 "model": "cx/gpt-5.5",
-                "timeout": 20,
+                "timeout": 30,
                 "max_tokens_override": 4096,
             },
             {
