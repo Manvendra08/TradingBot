@@ -1168,7 +1168,7 @@ def _call_llm_api(
                 "max_tokens_override": 4096,
             },
             {
-                "name": "OmniRouter (Claude Sonnet 4.6)",
+                "name": "OmniRouter (antigravity/claude-sonnet-4-6)",
                 "env_key": "OMNIROUTER_API_KEY",
                 "url": _omnirouter_url,
                 "model": "antigravity/claude-sonnet-4-6",
