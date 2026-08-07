@@ -1152,13 +1152,21 @@ def _call_llm_api(
     else:
         _omnirouter_url = _omnirouter_base
 
-    # OmniRouter primary group — Antigravity models only. This is a reverse proxy
-    # (OmniRouter → upstream Antigravity), so the meaningful latency is the
-    # upstream first-token time, not a localhost connect. timeout 20 gives a
+    # OmniRouter primary group — cx/gpt-5.5 first, then Antigravity models.
+    # OmniRouter is a reverse proxy (OmniRouter → upstream provider), so the
+    # meaningful latency is the upstream first-token time. timeout 20 gives a
     # proxy-backed model a real chance without overshooting the deadline cap.
     _omnirouter_group = {
         "model_group": "omnirouter-primary",
         "providers": [
+            {
+                "name": "OmniRouter (cx/gpt-5.5)",
+                "env_key": "OMNIROUTER_API_KEY",
+                "url": _omnirouter_url,
+                "model": "cx/gpt-5.5",
+                "timeout": 20,
+                "max_tokens_override": 4096,
+            },
             {
                 "name": "OmniRouter (Claude Sonnet 4.6)",
                 "env_key": "OMNIROUTER_API_KEY",
