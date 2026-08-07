@@ -12,7 +12,8 @@ log = logging.getLogger(__name__)
 # Default startup strategies configuration if not present in DB
 DEFAULT_STRATEGIES = {
     "CORE": { "enabled": True, "ai_mode": "boost_only", "symbols": {} },
-    "TIMEFRAME": { "enabled": True, "ai_mode": "boost_only", "symbols": {} }
+    "TIMEFRAME": { "enabled": True, "ai_mode": "boost_only", "symbols": {} },
+    "MULTILEG": { "enabled": True, "ai_mode": "advisory", "symbols": {} },
 }
 
 def active_strategies_for(symbol: str) -> list[str]:
@@ -57,7 +58,7 @@ def active_strategies_for(symbol: str) -> list[str]:
     
     active = []
     
-    for sid in ["CORE", "TIMEFRAME"]:
+    for sid in ["CORE", "TIMEFRAME", "MULTILEG"]:
         strat_conf = strategies.get(sid, {})
         if not strat_conf.get("enabled", False):
             continue
@@ -98,6 +99,9 @@ def get_runner(sid: str) -> Optional[Callable]:
             from src.engine.paper_trading import run_paper_trading
             return run_paper_trading(sym, scan_ctx, dig_id, intel_dict, ai_verdict)
         return run_ng_momentum_strategy
+    elif sid == "MULTILEG":
+        from src.engine.multileg_paper_trading import run_multileg_paper_strategy
+        return run_multileg_paper_strategy
     return None
 
 def get_ai_mode(sid: str) -> str:

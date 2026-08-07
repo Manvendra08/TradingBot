@@ -851,6 +851,12 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                             run_live_timeframe_strategy(symbol, scan_context, scan_digest_id, intel, ai_verdict=llm_verdict)
                         except Exception as le:
                             log.exception("%s: live/shadow timeframe strategy execution failed", symbol)
+                    elif sid == "MULTILEG":
+                        try:
+                            from src.engine.multileg_live_trading import run_multileg_live_strategy
+                            run_multileg_live_strategy(symbol, scan_context, scan_digest_id, intel, ai_verdict=llm_verdict)
+                        except Exception as le:
+                            log.exception("%s: live/shadow multileg strategy execution failed", symbol)
             except Exception:
                 position_sync_dirty_state.mark_dirty("broker_action_failed")
                 kite_health_cache.invalidate("session_ok")

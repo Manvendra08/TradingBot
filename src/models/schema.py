@@ -580,6 +580,41 @@ _MIGRATIONS = [
     ("M074_add_paper_tranche_index", "ALTER TABLE paper_trades ADD COLUMN tranche_index INTEGER DEFAULT 0"),
     ("M075_add_composite_score", "ALTER TABLE decision_audit ADD COLUMN composite_score REAL"),
     ("M076_add_composite_threshold", "ALTER TABLE decision_audit ADD COLUMN composite_threshold REAL"),
+    # ── Multi-Leg Strategy migrations (M077-M107) ──────────────────────────
+    # Extend multi_leg_trades with missing columns
+    ("M077_add_ml_book_id", "ALTER TABLE multi_leg_trades ADD COLUMN book_id TEXT"),
+    ("M078_add_ml_strategy_type", "ALTER TABLE multi_leg_trades ADD COLUMN strategy_type TEXT"),
+    ("M079_add_ml_expiry", "ALTER TABLE multi_leg_trades ADD COLUMN expiry TEXT"),
+    ("M080_add_ml_entry_underlying", "ALTER TABLE multi_leg_trades ADD COLUMN entry_underlying REAL"),
+    ("M081_add_ml_exit_underlying", "ALTER TABLE multi_leg_trades ADD COLUMN exit_underlying REAL"),
+    ("M082_add_ml_net_delta", "ALTER TABLE multi_leg_trades ADD COLUMN net_delta REAL"),
+    ("M083_add_ml_net_theta", "ALTER TABLE multi_leg_trades ADD COLUMN net_theta REAL"),
+    ("M084_add_ml_net_vega", "ALTER TABLE multi_leg_trades ADD COLUMN net_vega REAL"),
+    ("M085_add_ml_max_profit", "ALTER TABLE multi_leg_trades ADD COLUMN max_profit REAL"),
+    ("M086_add_ml_max_loss", "ALTER TABLE multi_leg_trades ADD COLUMN max_loss REAL"),
+    ("M087_add_ml_breakeven_upper", "ALTER TABLE multi_leg_trades ADD COLUMN breakeven_upper REAL"),
+    ("M088_add_ml_breakeven_lower", "ALTER TABLE multi_leg_trades ADD COLUMN breakeven_lower REAL"),
+    ("M089_add_ml_profit_target_pct", "ALTER TABLE multi_leg_trades ADD COLUMN profit_target_pct REAL"),
+    ("M090_add_ml_stop_loss_pct", "ALTER TABLE multi_leg_trades ADD COLUMN stop_loss_pct REAL"),
+    ("M091_add_ml_time_decay_exit_dte", "ALTER TABLE multi_leg_trades ADD COLUMN time_decay_exit_dte INTEGER"),
+    ("M092_add_ml_adjustment_count", "ALTER TABLE multi_leg_trades ADD COLUMN adjustment_count INTEGER DEFAULT 0"),
+    ("M093_add_ml_confidence_score", "ALTER TABLE multi_leg_trades ADD COLUMN confidence_score INTEGER"),
+    ("M094_add_ml_entry_quality_score", "ALTER TABLE multi_leg_trades ADD COLUMN entry_quality_score INTEGER"),
+    ("M095_add_ml_digest_id", "ALTER TABLE multi_leg_trades ADD COLUMN digest_id TEXT"),
+    ("M096_add_ml_ai_model_name", "ALTER TABLE multi_leg_trades ADD COLUMN ai_model_name TEXT"),
+    # Extend multi_leg_legs with missing columns
+    ("M097_add_mll_delta", "ALTER TABLE multi_leg_legs ADD COLUMN delta REAL"),
+    ("M098_add_mll_theta", "ALTER TABLE multi_leg_legs ADD COLUMN theta REAL"),
+    ("M099_add_mll_vega", "ALTER TABLE multi_leg_legs ADD COLUMN vega REAL"),
+    ("M100_add_mll_iv", "ALTER TABLE multi_leg_legs ADD COLUMN iv REAL"),
+    ("M101_add_mll_rationale", "ALTER TABLE multi_leg_legs ADD COLUMN rationale TEXT"),
+    ("M102_add_mll_status", "ALTER TABLE multi_leg_legs ADD COLUMN status TEXT DEFAULT 'OPEN'"),
+    ("M103_add_mll_closed_at", "ALTER TABLE multi_leg_legs ADD COLUMN closed_at TEXT"),
+    ("M104_add_mll_exit_reason", "ALTER TABLE multi_leg_legs ADD COLUMN exit_reason TEXT"),
+    ("M105_add_mll_broker_order_id", "ALTER TABLE multi_leg_legs ADD COLUMN broker_order_id TEXT"),
+    # Extend live_trades with multi-leg columns
+    ("M106_add_live_leg_group_id", "ALTER TABLE live_trades ADD COLUMN leg_group_id TEXT"),
+    ("M107_add_live_tranche_index", "ALTER TABLE live_trades ADD COLUMN tranche_index INTEGER DEFAULT 0"),
 ]
 
 
@@ -608,6 +643,15 @@ def init_db() -> None:
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_paper_leg_group ON paper_trades (leg_group_id, status)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ml_book_id ON multi_leg_trades (book_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ml_symbol_status ON multi_leg_trades (symbol, status)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_mll_status ON multi_leg_legs (status)"
             )
         except sqlite3.OperationalError:
             pass
@@ -2031,15 +2075,81 @@ def insert_multi_leg_trade(trade: dict) -> int:
     sql = """
         INSERT INTO multi_leg_trades
             (trade_ref, symbol, structure, net_premium, margin_req, total_pnl,
-             opened_at, closed_at, status, reason, profit_factor)
+             opened_at, closed_at, status, reason, profit_factor,
+             book_id, strategy_type, expiry, entry_underlying, exit_underlying,
+             net_delta, net_theta, net_vega, max_profit, max_loss,
+             breakeven_upper, breakeven_lower, profit_target_pct, stop_loss_pct,
+             time_decay_exit_dte, adjustment_count, confidence_score,
+             entry_quality_score, digest_id, ai_model_name)
         VALUES
             (:trade_ref, :symbol, :structure, :net_premium, :margin_req, :total_pnl,
-             :opened_at, :closed_at, :status, :reason, :profit_factor)
+             :opened_at, :closed_at, :status, :reason, :profit_factor,
+             :book_id, :strategy_type, :expiry, :entry_underlying, :exit_underlying,
+             :net_delta, :net_theta, :net_vega, :max_profit, :max_loss,
+             :breakeven_upper, :breakeven_lower, :profit_target_pct, :stop_loss_pct,
+             :time_decay_exit_dte, :adjustment_count, :confidence_score,
+             :entry_quality_score, :digest_id, :ai_model_name)
         RETURNING id
     """
     with get_conn() as conn:
         row = conn.execute(sql, trade).fetchone()
         return int(row["id"]) if row else 0
+
+
+def insert_multi_leg_leg(leg: dict) -> int:
+    """Insert a multi-leg leg and return its id."""
+    sql = """
+        INSERT INTO multi_leg_legs
+            (trade_id, side, lots, strike, option_type, entry_premium, exit_premium,
+             delta, theta, vega, iv, rationale, status, closed_at, exit_reason, broker_order_id)
+        VALUES
+            (:trade_id, :side, :lots, :strike, :option_type, :entry_premium, :exit_premium,
+             :delta, :theta, :vega, :iv, :rationale, :status, :closed_at, :exit_reason, :broker_order_id)
+        RETURNING id
+    """
+    with get_conn() as conn:
+        row = conn.execute(sql, leg).fetchone()
+        return int(row["id"]) if row else 0
+
+
+def insert_multileg_trade_atomically(trade: dict, legs: list[dict]) -> int:
+    """Atomic insert of a multi-leg trade + all legs. All-or-nothing."""
+    with get_conn() as conn:
+        trade_sql = """
+            INSERT INTO multi_leg_trades
+                (trade_ref, symbol, structure, net_premium, margin_req, total_pnl,
+                 opened_at, closed_at, status, reason, profit_factor,
+                 book_id, strategy_type, expiry, entry_underlying, exit_underlying,
+                 net_delta, net_theta, net_vega, max_profit, max_loss,
+                 breakeven_upper, breakeven_lower, profit_target_pct, stop_loss_pct,
+                 time_decay_exit_dte, adjustment_count, confidence_score,
+                 entry_quality_score, digest_id, ai_model_name)
+            VALUES
+                (:trade_ref, :symbol, :structure, :net_premium, :margin_req, :total_pnl,
+                 :opened_at, :closed_at, :status, :reason, :profit_factor,
+                 :book_id, :strategy_type, :expiry, :entry_underlying, :exit_underlying,
+                 :net_delta, :net_theta, :net_vega, :max_profit, :max_loss,
+                 :breakeven_upper, :breakeven_lower, :profit_target_pct, :stop_loss_pct,
+                 :time_decay_exit_dte, :adjustment_count, :confidence_score,
+                 :entry_quality_score, :digest_id, :ai_model_name)
+            RETURNING id
+        """
+        row = conn.execute(trade_sql, trade).fetchone()
+        trade_id = int(row["id"]) if row else 0
+        if not trade_id:
+            return 0
+        leg_sql = """
+            INSERT INTO multi_leg_legs
+                (trade_id, side, lots, strike, option_type, entry_premium, exit_premium,
+                 delta, theta, vega, iv, rationale, status, closed_at, exit_reason, broker_order_id)
+            VALUES
+                (:trade_id, :side, :lots, :strike, :option_type, :entry_premium, :exit_premium,
+                 :delta, :theta, :vega, :iv, :rationale, :status, :closed_at, :exit_reason, :broker_order_id)
+        """
+        for leg in legs:
+            leg["trade_id"] = trade_id
+            conn.execute(leg_sql, leg)
+        return trade_id
 
 
 def close_multi_leg_trade(
@@ -2051,9 +2161,66 @@ def close_multi_leg_trade(
         conn.execute(sql, (closed_at, status, reason, total_pnl, trade_id))
 
 
+def close_book(book_id: str, closed_at: str, status: str, reason: str, total_pnl: float) -> None:
+    """Close all legs in a book and update the trade record."""
+    with get_conn() as conn:
+        trade = conn.execute(
+            "SELECT id FROM multi_leg_trades WHERE book_id=? AND status='OPEN'", (book_id,)
+        ).fetchone()
+        if not trade:
+            return
+        trade_id = int(trade["id"])
+        conn.execute(
+            "UPDATE multi_leg_trades SET closed_at=?, status=?, reason=?, total_pnl=? WHERE id=?",
+            (closed_at, status, reason, total_pnl, trade_id),
+        )
+        conn.execute(
+            "UPDATE multi_leg_legs SET status='CLOSED', closed_at=?, exit_reason=? WHERE trade_id=? AND status='OPEN'",
+            (closed_at, reason, trade_id),
+        )
+
+
+def close_leg(leg_id: int, closed_at: str, exit_premium: float, exit_reason: str) -> None:
+    """Close a single leg in a multi-leg book."""
+    sql = "UPDATE multi_leg_legs SET status='CLOSED', closed_at=?, exit_premium=?, exit_reason=? WHERE id=?"
+    with get_conn() as conn:
+        conn.execute(sql, (closed_at, exit_premium, exit_reason, leg_id))
+
+
 def list_multi_leg_trades() -> list[dict]:
-    """List all multi-leg trades with their legs (Disabled for NSEBOT)."""
-    return []
+    """List all open multi-leg trades."""
+    sql = "SELECT * FROM multi_leg_trades WHERE status='OPEN' ORDER BY opened_at DESC"
+    with get_read_conn() as conn:
+        return [dict(r) for r in conn.execute(sql).fetchall()]
+
+
+def get_open_books_for_symbol(symbol: str) -> list[dict]:
+    """Get all distinct open books for a symbol, each with its legs."""
+    sql = "SELECT * FROM multi_leg_trades WHERE symbol=? AND status='OPEN' ORDER BY opened_at DESC"
+    with get_read_conn() as conn:
+        trades = [dict(r) for r in conn.execute(sql, (symbol,)).fetchall()]
+    for trade in trades:
+        trade["legs"] = get_open_book_legs(trade["id"])
+    return trades
+
+
+def get_open_book_legs(trade_id: int) -> list[dict]:
+    """Get all open legs for a multi-leg trade."""
+    sql = "SELECT * FROM multi_leg_legs WHERE trade_id=? AND status='OPEN' ORDER BY strike, option_type"
+    with get_read_conn() as conn:
+        return [dict(r) for r in conn.execute(sql, (trade_id,)).fetchall()]
+
+
+def get_open_book_legs_by_book_id(book_id: str) -> list[dict]:
+    """Get all open legs for a book identified by book_id."""
+    sql = """
+        SELECT l.* FROM multi_leg_legs l
+        JOIN multi_leg_trades t ON l.trade_id = t.id
+        WHERE t.book_id=? AND l.status='OPEN'
+        ORDER BY l.strike, l.option_type
+    """
+    with get_read_conn() as conn:
+        return [dict(r) for r in conn.execute(sql, (book_id,)).fetchall()]
 
 
 def delete_multi_leg_trade(trade_ref: int) -> None:
@@ -2068,6 +2235,20 @@ def update_multi_leg_leg_exit_premium(leg_id: int, exit_premium: float) -> None:
     sql = "UPDATE multi_leg_legs SET exit_premium=? WHERE id=?"
     with get_conn() as conn:
         conn.execute(sql, (exit_premium, leg_id))
+
+
+def update_leg_exit(leg_id: int, exit_premium: float, closed_at: str, exit_reason: str) -> None:
+    """Update leg exit details."""
+    sql = "UPDATE multi_leg_legs SET exit_premium=?, status='CLOSED', closed_at=?, exit_reason=? WHERE id=?"
+    with get_conn() as conn:
+        conn.execute(sql, (exit_premium, closed_at, exit_reason, leg_id))
+
+
+def increment_adjustment_count(book_id: str) -> None:
+    """Increment the adjustment count for a book."""
+    sql = "UPDATE multi_leg_trades SET adjustment_count = adjustment_count + 1 WHERE book_id=?"
+    with get_conn() as conn:
+        conn.execute(sql, (book_id,))
 
 
 # ── OPS Agent: Health State Stamps ──────────────────────────────────────────

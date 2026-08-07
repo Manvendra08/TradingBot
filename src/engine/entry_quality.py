@@ -113,3 +113,83 @@ def calculate_entry_quality(
     if score < 60:
         log.info("%s: entry quality LOW %d/100 — %s", symbol, score, "; ".join(reasons))
     return score, reasons
+
+
+def calculate_multileg_entry_quality(
+    symbol: str,
+    strategy_type: str,
+    legs: list[dict],
+    book_greeks: dict,
+    risk_profile: dict,
+    scan_context: dict,
+) -> tuple[int, list[str]]:
+    """
+    Score 0-100 for multi-leg entry quality.
+    Returns (score, reasons).
+    """
+    score = 100
+    reasons: list[str] = []
+
+    underlying = float(scan_context.get("underlying") or 0)
+    if underlying <= 0:
+        return 0, ["Missing underlying price"]
+
+    net_delta = abs(float(book_greeks.get("net_delta") or 0))
+    max_profit = float(risk_profile.get("max_profit") or 0)
+    max_loss = float(risk_profile.get("max_loss") or 1)
+    net_premium = float(scan_context.get("net_premium") or 0)
+
+    # 1. IV signal — high IV is good for selling premium
+    atm_iv = 0.0
+    for row in scan_context.get("option_rows", []):
+        strike = float(row.get("strike") or 0)
+        if abs(strike - underlying) < 1 and float(row.get("iv") or 0) > 0:
+            atm_iv = float(row["iv"])
+            break
+    if atm_iv >= 20:
+        score += 15
+        reasons.append(f"High IV ({atm_iv:.1f}%) — premium selling edge")
+    elif atm_iv < 12:
+        score -= 15
+        reasons.append(f"Low IV ({atm_iv:.1f}%) — thin premium")
+
+    # 2. Net delta near 0 (market neutral)
+    if net_delta < 0.10:
+        score += 15
+        reasons.append(f"Market neutral (Δ={net_delta:.2f})")
+    elif net_delta > 0.40:
+        score -= 20
+        reasons.append(f"High directional exposure (Δ={net_delta:.2f})")
+
+    # 3. Risk/reward ratio
+    rr = max_profit / max_loss if max_loss > 0 else 0
+    if rr > 0.3:
+        score += 10
+        reasons.append(f"Good R:R ({rr:.2f})")
+    elif rr < 0.1:
+        score -= 10
+        reasons.append(f"Poor R:R ({rr:.2f})")
+
+    # 4. Premium yield on margin
+    margin = float(risk_profile.get("margin", 0) or 0)
+    if margin > 0 and net_premium > 0:
+        yield_pct = (net_premium / margin) * 100
+        if yield_pct > 2:
+            score += 10
+            reasons.append(f"Good yield on margin ({yield_pct:.1f}%)")
+
+    # 5. Breakeven width
+    be_upper = float(risk_profile.get("breakeven_upper") or 0)
+    be_lower = float(risk_profile.get("breakeven_lower") or 0)
+    if be_upper > 0 and be_lower > 0 and underlying > 0:
+        width_pct = ((be_upper - be_lower) / underlying) * 100
+        if width_pct > 3:
+            score += 10
+            reasons.append(f"Wide breakeven ({width_pct:.1f}% of underlying)")
+
+    # 6. Max loss cap
+    if max_loss > 5 * max_profit and max_profit > 0:
+        score -= 15
+        reasons.append(f"Max loss {max_loss/max_profit:.1f}x max profit")
+
+    return max(0, min(100, score)), reasons

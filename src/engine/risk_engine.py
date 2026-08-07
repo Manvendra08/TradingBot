@@ -125,7 +125,7 @@ def _check_risk_limits_for_table(
         # TIMEFRAME entries are quota-isolated from CORE: each strategy gets its
         # own MAX_OPEN_TRADES_PER_SYMBOL count so CORE and TFSS legs don't absorb
         # the TIMEFRAME quota and block breakout signals (and vice-versa).
-        if not (setup_type and "TFSS" in str(setup_type).upper()):
+        if not (setup_type and ("TFSS" in str(setup_type).upper() or setup_type.upper() in ("IRON_CONDOR", "SHORT_STRANGLE", "SHORT_STRADDLE", "BEAR_CALL_SPREAD", "BULL_PUT_SPREAD", "JADE_LIZARD", "MULTILEG"))):
             if setup_type == "TIMEFRAME":
                 open_symbol = conn.execute(
                     f"SELECT COUNT(*) AS cnt FROM {trades_table} WHERE symbol = ? AND status = 'OPEN' AND setup_type = 'TIMEFRAME'",
@@ -238,6 +238,28 @@ def _check_risk_limits_for_table(
                 return False, (
                     f"[{label}] TFSS combined book margin cap exceeded (\u20b9{total_margin:,.0f} > \u20b9{TFSS_MAX_BOOK_MARGIN:,.0f})"
                 ), "TFSS_MAX_BOOK_MARGIN"
+
+        # 8. Multi-Leg Book Risk Checks
+        _MULTILEG_SETUPS = {"IRON_CONDOR", "SHORT_STRANGLE", "SHORT_STRADDLE",
+                            "BEAR_CALL_SPREAD", "BULL_PUT_SPREAD", "JADE_LIZARD", "MULTILEG"}
+        if setup_type and setup_type.upper() in _MULTILEG_SETUPS:
+            from config.multileg_strategies import MAX_BOOK_MARGIN, MAX_NET_DELTA, MAX_LEGS_PER_BOOK
+            from src.models.schema import get_open_books_for_symbol
+            open_books = get_open_books_for_symbol(symbol)
+            total_book_legs = sum(len(b.get("legs", [])) for b in open_books)
+            if candidate_leg and isinstance(candidate_leg, dict):
+                total_book_legs += 1
+            if total_book_legs > MAX_LEGS_PER_BOOK:
+                return False, (
+                    f"[{label}] Multi-leg max book legs reached ({total_book_legs}/{MAX_LEGS_PER_BOOK})"
+                ), "MULTILEG_MAX_LEGS"
+            total_margin = sum(float(b.get("margin_req") or 0) for b in open_books)
+            if candidate_leg and isinstance(candidate_leg, dict):
+                total_margin += _leg_margin(candidate_leg)
+            if total_margin > MAX_BOOK_MARGIN:
+                return False, (
+                    f"[{label}] Multi-leg combined book margin exceeded (₹{total_margin:,.0f} > ₹{MAX_BOOK_MARGIN:,.0f})"
+                ), "MULTILEG_MAX_MARGIN"
 
     return True, "OK", "OK"
 

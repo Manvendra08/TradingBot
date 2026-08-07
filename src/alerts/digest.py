@@ -2743,6 +2743,32 @@ def build_llm_consolidated_digest(
         elif exit_adv and str(exit_adv).strip():
             lines.append(f"  🛡️ Exit: _{_esc(str(exit_adv).strip())}_")
 
+    # ── MULTI-LEG BOOKS
+    try:
+        from src.models.schema import get_open_books_for_symbol
+        ml_books = get_open_books_for_symbol(symbol)
+        if ml_books:
+            lines.append("")
+            lines.append("📐 *MULTI-LEG BOOKS*")
+            for book in ml_books:
+                legs = book.get("legs", [])
+                strat = book.get("strategy_type", "N/A")
+                net_prem = float(book.get("net_premium") or 0)
+                total_pnl = float(book.get("total_pnl") or 0)
+                net_delta = float(book.get("net_delta") or 0)
+                pnl_emoji = "🟢" if total_pnl >= 0 else "🔴"
+                lines.append(f"  {strat} | Net Premium: ₹{net_prem:.0f} | {pnl_emoji} P&L: ₹{total_pnl:.0f}")
+                for l in legs:
+                    side = l.get("side", "?")
+                    opt = l.get("option_type", "?")
+                    strike = float(l.get("strike") or 0)
+                    prem = float(l.get("entry_premium") or 0)
+                    delta = float(l.get("delta") or 0)
+                    lines.append(f"    {side} {opt} {strike:.0f} @ ₹{prem:.1f} (Δ={delta:.2f})")
+                lines.append(f"    Net Δ: {net_delta:.2f}")
+    except Exception:
+        pass
+
     # ── BOT ACTION
     conflict_tag = _conflict_tag(bias_upper, c1, c3)
     bot_lines = _bot_action_block(

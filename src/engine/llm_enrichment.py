@@ -2952,3 +2952,117 @@ INSTRUCTIONS:
     except Exception as e:
         log.error("[llm] Strategy optimization call failed: %s", e)
         return None
+
+
+# ── Multi-Leg Strategy Verdict ──────────────────────────────────────────────
+
+def get_multileg_verdict(
+    symbol: str,
+    intel: dict,
+    scan_context: dict,
+    alerts: list[dict] | None = None,
+    news_data: dict | None = None,
+    open_books: list[dict] | None = None,
+) -> "LLMMultiLegVerdict | None":
+    """Get multi-leg strategy verdict from LLM.
+
+    The LLM acts as an experienced options seller, selecting strategy type,
+    legs, exit plan, and adjustment plan based on full option chain data.
+
+    Falls back to None if LLM call fails — caller should handle gracefully.
+    """
+    from config.settings import DISABLE_LLM_ENRICHMENT
+    if DISABLE_LLM_ENRICHMENT:
+        return None
+
+    from src.engine.multileg_llm_schema import LLMMultiLegVerdict
+    from src.engine.multileg_llm_prompt import build_multileg_prompt
+
+    prompt = build_multileg_prompt(
+        symbol=symbol,
+        intel=intel,
+        scan_context=scan_context,
+        open_books=open_books,
+        news_data=news_data,
+    )
+
+    deadline = time.time() + 30.0
+    try:
+        result = _call_llm_api(
+            symbol, prompt, LLMMultiLegVerdict, deadline=deadline, purpose="live_verdict"
+        )
+        if result:
+            # Validate legs count matches strategy constraints
+            from config.multileg_strategies import STRATEGY_CONSTRAINTS
+            constraints = STRATEGY_CONSTRAINTS.get(result.strategy_type, {})
+            min_legs = constraints.get("min_legs", 2)
+            max_legs = constraints.get("max_legs", 6)
+
+            if len(result.legs) < min_legs:
+                log.warning(
+                    "[llm-multileg] %s: %s requires %d+ legs, got %d — adjusting",
+                    symbol, result.strategy_type, min_legs, len(result.legs),
+                )
+                result.legs = result.legs[:max_legs]
+            elif len(result.legs) > max_legs:
+                log.warning(
+                    "[llm-multileg] %s: %s allows max %d legs, got %d — truncating",
+                    symbol, result.strategy_type, max_legs, len(result.legs),
+                )
+                result.legs = result.legs[:max_legs]
+
+            # Ensure all legs are SELL
+            for leg in result.legs:
+                leg.side = "SELL"
+
+            log.info(
+                "[llm-multileg] %s: %s with %d legs, net premium ₹%.1f, confidence %d%%",
+                symbol, result.strategy_type, len(result.legs),
+                result.net_premium, result.confidence,
+            )
+        return result
+    except Exception as e:
+        log.error("[llm-multileg] %s: Multi-leg verdict call failed: %s", symbol, e)
+        return None
+
+
+def get_multileg_exit_advice(
+    symbol: str,
+    book: dict,
+    legs: list[dict],
+    scan_context: dict,
+    intel: dict,
+) -> dict | None:
+    """Get exit/adjustment advice for an open multi-leg book.
+
+    Returns a dict with action (HOLD/ADJUST/CLOSE), reasoning, and
+    adjustment details if applicable.
+    """
+    from config.settings import DISABLE_LLM_ENRICHMENT
+    if DISABLE_LLM_ENRICHMENT:
+        return None
+
+    from src.engine.multileg_llm_prompt import build_multileg_exit_prompt
+
+    prompt = build_multileg_exit_prompt(
+        symbol=symbol,
+        book=book,
+        legs=legs,
+        scan_context=scan_context,
+        intel=intel,
+    )
+
+    deadline = time.time() + 25.0
+    try:
+        # Use generic dict schema for exit advice (flexible structure)
+        result = _call_llm_api(
+            symbol, prompt, None, deadline=deadline, purpose="live_verdict"
+        )
+        if result and hasattr(result, "dict"):
+            return result.dict()
+        elif isinstance(result, dict):
+            return result
+        return None
+    except Exception as e:
+        log.error("[llm-multileg] %s: Exit advice call failed: %s", symbol, e)
+        return None

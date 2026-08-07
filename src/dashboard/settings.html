@@ -1742,6 +1742,46 @@
                     </div>
                 </div>
 
+                <!-- MULTILEG Strategy -->
+                <div class="card" style="margin-bottom:24px" id="strategy-card-MULTILEG">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px">
+                        <div>
+                            <div class="card-title" style="margin-bottom:2px">📐 MULTILEG — Multi-Leg Short Options
+                            </div>
+                            <div style="font-size:11px; color:var(--text-dim)">LLM decides strategy (IC/Strangle/Straddle/Spreads) &nbsp;|&nbsp;
+                                All legs SELL premium &nbsp;|&nbsp; NSE indices only</div>
+                        </div>
+                        <label class="switch" style="flex-shrink:0">
+                            <input type="checkbox" id="strat-MULTILEG-enabled" onchange="onStrategyToggle('MULTILEG')">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    <div id="strat-MULTILEG-body">
+                        <div class="form-group" style="margin-bottom:16px">
+                            <label>AI Mode</label>
+                            <select id="strat-MULTILEG-ai-mode">
+                                <option value="advisory">Advisory Only</option>
+                                <option value="boost_only">Boost Only</option>
+                                <option value="full">Full Authority</option>
+                            </select>
+                            <div style="font-size:11px; color:var(--text-dim); margin-top:4px">
+                                Advisory: LLM suggests, no auto-execution &nbsp;|&nbsp;
+                                Boost: promote blocked signals &nbsp;|&nbsp;
+                                Full: LLM controls entry + exit
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label
+                                style="font-size:12px; font-weight:600; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; display:block; margin-bottom:10px">
+                                Per-Symbol Enable
+                                <span class="info-icon"
+                                    data-tooltip="Multi-leg strategies apply to NSE indices only (NIFTY, BANKNIFTY, FINNIFTY, SENSEX).">i</span>
+                            </label>
+                            <div class="symbol-lots-list" id="strat-MULTILEG-symbols"></div>
+                        </div>
+                    </div>
+                </div>
+
             </div>
 
             <!-- System Settings Tab (Tab 3: Hidden by default) -->
@@ -2223,7 +2263,7 @@
         }
 
         function loadStrategySettings(strategies) {
-            ["CORE", "TIMEFRAME", "TFSS"].forEach(sid => {
+            ["CORE", "TIMEFRAME", "TFSS", "MULTILEG"].forEach(sid => {
                 const s = strategies[sid] || {};
                 const enabledEl = document.getElementById(`strat-${sid}-enabled`);
                 if (enabledEl) { enabledEl.checked = s.enabled !== false; }
@@ -2249,7 +2289,7 @@
 
         function collectStrategySettings() {
             const out = {};
-            ["CORE", "TIMEFRAME", "TFSS"].forEach(sid => {
+            ["CORE", "TIMEFRAME", "TFSS", "MULTILEG"].forEach(sid => {
                 out[sid] = {
                     enabled: document.getElementById(`strat-${sid}-enabled`)?.checked ?? true,
                     ai_mode: document.getElementById(`strat-${sid}-ai-mode`)?.value || "boost_only",

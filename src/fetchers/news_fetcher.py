@@ -379,6 +379,12 @@ def _fetch_newsapi_news(symbol: str) -> list[dict]:
 
 
 def _fetch_icici_commentary() -> list[dict]:
+    """Fetch market commentary headlines from ICICI Direct.
+
+    The page uses <h4> tags for headlines and <div class="news_para"> for
+    summaries. The old scraper targeted <p>/<div>/<span>/<li> which pulled
+    in navigation text \u2014 this version targets the actual content structure.
+    """
     url = "https://www.icicidirect.com/share-market-today/market-news-commentary"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -389,37 +395,37 @@ def _fetch_icici_commentary() -> list[dict]:
     rows = []
     try:
         session = requests.Session()
-        # No retries to fail fast and avoid warnings for connection resets
         res = session.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, "html.parser")
-            elements = soup.find_all(["p", "div", "span", "li"])
-            for el in elements:
-                t = el.text.strip().replace("\xa0", " ").replace("\u200b", "")
-                if len(t) > 60 and any(
-                    w in t
-                    for w in [
-                        "Nifty",
-                        "Sensex",
-                        "market",
-                        "GIFT",
-                        "benchmark",
-                        "index",
-                        "indices",
-                    ]
-                ):
-                    if any(
-                        skip in t.lower()
-                        for skip in [
-                            "relationship manager",
-                            "kra",
-                            "kyc",
-                            "cheque",
-                            "disclaimer",
-                            "open an account",
-                        ]
-                    ):
-                        continue
+
+            # Target h4 tags \u2014 ICICI puts actual headlines there
+            headlines = soup.find_all("h4")
+            for h in headlines:
+                t = h.get_text().strip().replace("\xa0", " ").replace("\u200b", "")
+                if len(t) < 20 or len(t) > 300:
+                    continue
+                # Skip generic/non-news headings
+                skip_patterns = [
+                    "quick wrap", "select date", "view all", "explore",
+                    "related", "popular", "trending", "see more",
+                ]
+                t_lower = t.lower()
+                if any(s in t_lower for s in skip_patterns):
+                    continue
+                t = " ".join(t.split())
+                title = t[:200] + "..." if len(t) > 200 else t
+                if not any(r["title"] == title for r in rows):
+                    rows.append(
+                        {
+                            "title": title,
+                            "provider": "ICICIDirect",
+                            "published": int(time.time()),
+                            "published_at": datetime.now(timezone.utc).isoformat(),
+                            "url": url,
+                            "score": _news_sentiment_score(t),
+                        }
+                    )
                     t = " ".join(t.split())
                     title = t[:200] + "..." if len(t) > 200 else t
                     if not any(r["title"] == title for r in rows):
