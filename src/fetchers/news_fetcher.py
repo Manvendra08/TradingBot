@@ -613,13 +613,27 @@ def fetch_news(symbol: str) -> dict:
     if sym != "NATURALGAS":
         newsapi_items = _fetch_newsapi_news(sym)
 
-    # Step 3: Merge — deduplicate by title, prefer primary source order
+    # Step 3: Merge — deduplicate by title (fuzzy), prefer primary source order
     seen_titles: set[str] = set()
     merged: list[dict] = []
+
+    def _title_fingerprint(title: str) -> str:
+        """Create a fuzzy fingerprint for dedup — lowercase, strip common news boilerplate."""
+        import re
+        t = title.lower().strip()
+        # Remove common prefixes/suffixes that vary between sources
+        t = re.sub(r'\b(today|yesterday|shares?|stock|price|market|news|highlights|update)\b', '', t)
+        # Normalize whitespace
+        t = re.sub(r'\s+', ' ', t).strip()
+        # Take first 60 chars for comparison
+        return t[:60]
+
     for item in primary_items + newsapi_items:
         t = item["title"]
-        if t not in seen_titles:
+        fp = _title_fingerprint(t)
+        if t not in seen_titles and fp not in seen_titles:
             seen_titles.add(t)
+            seen_titles.add(fp)
             merged.append(item)
 
     merged.sort(key=lambda x: x["published"], reverse=True)

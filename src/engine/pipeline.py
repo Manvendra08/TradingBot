@@ -432,6 +432,14 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
 
     ai_model_name = getattr(llm_verdict, "model_name", None) if llm_verdict else None
 
+    # Use LLM confidence when available (it's what drives trade decisions),
+    # fall back to rule engine confidence
+    llm_conf = None
+    if llm_verdict:
+        llm_conf = getattr(llm_verdict, "confidence", None) if hasattr(llm_verdict, "confidence") else (
+            llm_verdict.get("confidence") if isinstance(llm_verdict, dict) else None
+        )
+
     header = {
         "symbol": symbol,
         "scan_time": ts,
@@ -440,7 +448,7 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
         "underlying": scan_context.get("underlying"),
         "spot": scan_context.get("underlying") or 0.0,
         "market_regime": scan_context.get("market_regime") or "UNKNOWN",
-        "confidence": (intel or {}).get("confidence", 0),
+        "confidence": llm_conf or (intel or {}).get("confidence", 0),
         "trade_entered": trade_entered,
         "ai_model_name": ai_model_name
     }

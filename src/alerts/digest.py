@@ -896,6 +896,15 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
                 lines.append(_esc(chunk))
 
     # ── TIMEFRAME STRATEGY ──
+    # Only show if TIMEFRAME strategy is enabled in config
+    _tf_enabled = False
+    try:
+        from config.runtime_config import load_runtime_config
+        _strategies = load_runtime_config().get("strategies", {})
+        _tf_enabled = _strategies.get("TIMEFRAME", {}).get("enabled", False)
+    except Exception:
+        pass
+
     tf_signal   = _val(timeframe.get("signal"))
     tf_dir      = _val(timeframe.get("direction"))
     tf_setup    = _val(timeframe.get("setup"))
@@ -903,35 +912,37 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
     tf_reason   = _val(timeframe.get("primary_reason"))
     tf_why      = _join_list(timeframe.get("why", []))
 
-    tf_icon = {"ENTER": "🟢", "HOLD": "🔵", "EXIT": "🔴",
-               "BLOCK": "🚫", "NO_SIGNAL": "⏸️"}.get(str(tf_action or "").upper(), "⏸️")
+    # Only show TIMEFRAME section if strategy is enabled
+    if _tf_enabled:
+        tf_icon = {"ENTER": "🟢", "HOLD": "🔵", "EXIT": "🔴",
+                   "BLOCK": "🚫", "NO_SIGNAL": "⏸️"}.get(str(tf_action or "").upper(), "⏸️")
 
-    lines.append("")
-    lines.append(DIV)
-    tf_line = f"{tf_icon} *TIMEFRAME STRATEGY*"
-    if tf_action and str(tf_action).upper() != "NO_SIGNAL":
-        tf_line += f": {_esc(tf_action)}"
-    if tf_dir:
-        tf_line += f" ({_esc(tf_dir)})"
-    lines.append(tf_line)
-    has_tf_data = any([tf_signal, tf_setup, tf_contract, tf_reason, tf_why, tf_blockers]) and str(tf_action or "").upper() != "NO_SIGNAL"
-    if has_tf_data:
-        status = tf_action or "ACTIVE"
-        lines.append(f"Status: {_esc(status)}")
-        if tf_signal:
-            lines.append(f"Signal: {_esc(tf_signal)}")
-        if tf_setup:
-            lines.append(f"Setup: {_esc(tf_setup)}")
-        if tf_contract:
-            lines.append(f"Contract: {_esc(tf_contract)}")
-        if tf_reason and tf_reason != tfss_reason:
-            lines.append(f"Reason: {_esc(tf_reason)}")
-        if tf_why and tf_why != tf_reason:
-            lines.append(f"Why: {_esc(tf_why)}")
-        for b in tf_blockers:
-            lines.append(f"  ⚠ {_esc(b)}")
-    else:
-        lines.append("Status: No active signal (3H breakout pending)")
+        lines.append("")
+        lines.append(DIV)
+        tf_line = f"{tf_icon} *TIMEFRAME STRATEGY*"
+        if tf_action and str(tf_action).upper() != "NO_SIGNAL":
+            tf_line += f": {_esc(tf_action)}"
+        if tf_dir:
+            tf_line += f" ({_esc(tf_dir)})"
+        lines.append(tf_line)
+        has_tf_data = any([tf_signal, tf_setup, tf_contract, tf_reason, tf_why, tf_blockers]) and str(tf_action or "").upper() != "NO_SIGNAL"
+        if has_tf_data:
+            status = tf_action or "ACTIVE"
+            lines.append(f"Status: {_esc(status)}")
+            if tf_signal:
+                lines.append(f"Signal: {_esc(tf_signal)}")
+            if tf_setup:
+                lines.append(f"Setup: {_esc(tf_setup)}")
+            if tf_contract:
+                lines.append(f"Contract: {_esc(tf_contract)}")
+            if tf_reason and tf_reason != tfss_reason:
+                lines.append(f"Reason: {_esc(tf_reason)}")
+            if tf_why and tf_why != tf_reason:
+                lines.append(f"Why: {_esc(tf_why)}")
+            for b in tf_blockers:
+                lines.append(f"  ⚠ {_esc(b)}")
+        else:
+            lines.append("Status: No active signal (3H breakout pending)")
 
     if digest_id is None:
         digest_id = str(uuid.uuid4())[:8]
