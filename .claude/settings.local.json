@@ -4,7 +4,22 @@
       "Bash(python -m pytest tests/ --cov=src --cov-fail-under=50 -q)",
       "Bash(git add *)",
       "Bash(git reset *)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/fetchers/shoonya_fetcher.py',encoding='utf-8'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
+      "Bash(python -c \"from src.fetchers.shoonya_fetcher import ShoonyaFetcher; print\\(ShoonyaFetcher._bulk_get_quotes.__name__, 'imported OK'\\)\")",
+      "Bash(python -m pytest tests/test_shoonya_bulk_quotes.py -v)",
+      "Bash(python -m pytest tests/test_shoonya_bulk_quotes.py tests/test_ng_strategies.py tests/test_scan_sentinel.py --no-cov -q)",
+      "Bash(python -m pytest tests/test_shoonya_bulk_quotes.py --no-cov -q)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/engine/llm_enrichment.py',encoding='utf-8'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
+      "Bash(python -c \"import importlib.util; spec=importlib.util.find_spec\\('src.engine.llm_enrichment'\\); print\\('module import path OK' if spec else 'MISSING'\\)\")",
+      "Bash(git log *)",
+      "Bash(python -c \"import src.engine.llm_enrichment as m; assert hasattr\\(m,'_call_llm_api'\\); print\\('module import OK'\\)\")",
+      "Bash(python -m pytest tests/test_llm_schema_v2.py -q --no-cov)",
+      "Bash(git stash *)",
+      "Bash(python -m pytest tests/test_llm_schema_v2.py::TestOpenRouterArrayUnwrap::test_array_wrapped_response_unwrapped -q --no-cov)",
+      "Bash(python -c ' *)",
+      "Bash(python -m pytest tests/test_llm_schema_v2.py tests/test_live_trading_p0.py -q --no-cov)",
+      "Bash(python -m pytest tests/test_llm_provider_resilience.py tests/test_adr007.py -q --no-cov)"
     ]
   }
 }

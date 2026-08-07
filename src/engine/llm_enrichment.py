@@ -1152,6 +1152,10 @@ def _call_llm_api(
     else:
         _omnirouter_url = _omnirouter_base
 
+    # OmniRouter primary group — Antigravity models only. This is a reverse proxy
+    # (OmniRouter → upstream Antigravity), so the meaningful latency is the
+    # upstream first-token time, not a localhost connect. timeout 20 gives a
+    # proxy-backed model a real chance without overshooting the deadline cap.
     _omnirouter_group = {
         "model_group": "omnirouter-primary",
         "providers": [
@@ -1257,6 +1261,29 @@ def _call_llm_api(
 
     # Route model pipeline based on purpose
     if purpose == "eod_review":
+        # OpenCode Zen EOD group — PRIMARY for eod (free, no rate limit). This was
+        # previously referenced by name but never defined → NameError only shipped
+        # because eod_review rarely ran. Now defined + placed first per the
+        # "OpenCode primary, then OmniRouter" routing rule.
+        _opencode_zen_eod = {
+            "model_group": "opencode-zen-eod",
+            "providers": [
+                {
+                    "name": "OpenCode Zen (Nemotron 3 Ultra Free)",
+                    "env_key": "OPENCODE_API_KEY",
+                    "url": "https://opencode.ai/zen/v1/chat/completions",
+                    "model": "nemotron-3-ultra-free",
+                    "timeout": 35,
+                },
+                {
+                    "name": "OpenCode Zen (DeepSeek V4 Flash Free)",
+                    "env_key": "OPENCODE_API_KEY",
+                    "url": "https://opencode.ai/zen/v1/chat/completions",
+                    "model": "deepseek-v4-flash-free",
+                    "timeout": 25,
+                },
+            ],
+        }
         _github_models_eod = {
             "model_group": "github-models-eod",
             "providers": [
@@ -1293,8 +1320,8 @@ def _call_llm_api(
         }
 
         FREE_MODEL_PIPELINE = [
-            _omnirouter_group,
             _opencode_zen_eod,
+            _omnirouter_group,
             _groq_group_eod,
             _github_models_eod,
             _bedrock_mantle_group,
@@ -1374,7 +1401,28 @@ def _call_llm_api(
                 },
             ],
         }
+        # OpenCode Zen formatting group — PRIMARY for formatting (free, no rate limit)
+        _opencode_zen_formatting_group = {
+            "model_group": "opencode-zen-formatting",
+            "providers": [
+                {
+                    "name": "OpenCode Zen (Nemotron 3 Ultra Free)",
+                    "env_key": "OPENCODE_API_KEY",
+                    "url": "https://opencode.ai/zen/v1/chat/completions",
+                    "model": "nemotron-3-ultra-free",
+                    "timeout": 35,
+                },
+                {
+                    "name": "OpenCode Zen (DeepSeek V4 Flash Free)",
+                    "env_key": "OPENCODE_API_KEY",
+                    "url": "https://opencode.ai/zen/v1/chat/completions",
+                    "model": "deepseek-v4-flash-free",
+                    "timeout": 25,
+                },
+            ],
+        }
         FREE_MODEL_PIPELINE = [
+            _opencode_zen_formatting_group,
             _omnirouter_group,
             _bedrock_mantle_group,
             _github_models_fmt,
@@ -1425,26 +1473,7 @@ def _call_llm_api(
                     },
                 ],
             },
-            {
-                "model_group": "opencode-zen-formatting",
-                "providers": [
-                    {
-                        "name": "OpenCode Zen (Nemotron 3 Ultra Free)",
-                        "env_key": "OPENCODE_API_KEY",
-                        "url": "https://opencode.ai/zen/v1/chat/completions",
-                        "model": "nemotron-3-ultra-free",
-                        "timeout": 35,
-                    },
-                    {
-                        "name": "OpenCode Zen (DeepSeek V4 Flash Free)",
-                        "env_key": "OPENCODE_API_KEY",
-                        "url": "https://opencode.ai/zen/v1/chat/completions",
-                        "model": "deepseek-v4-flash-free",
-                        "timeout": 25,
-                    },
-                ],
-            },
-        ]
+            ]
     else:  # live_verdict — symbol-aware routing
         _base = symbol.upper().strip().split()[0]
         _class = get_symbol_class(_base)
@@ -1712,8 +1741,8 @@ def _call_llm_api(
         if _is_mcx:
             # MCX: OpenCode Zen (primary) → Groq → GitHub Models → AnyAPI Free → Bedrock Mantle → Nvidia NIM → Bedrock → OpenRouter → Gemini → SambaNova
             FREE_MODEL_PIPELINE = [
-                _omnirouter_group,
                 _opencode_zen_group,
+                _omnirouter_group,
                 _groq_group,
                 _github_models,
                 _anyapi_free_group,
@@ -1761,8 +1790,8 @@ def _call_llm_api(
         else:
             # NSE/BSE indices: OpenCode Zen (primary) → Groq → GitHub Models → Nvidia NIM → Bedrock → OpenRouter → Gemini
             FREE_MODEL_PIPELINE = [
-                _omnirouter_group,
                 _opencode_zen_group,
+                _omnirouter_group,
                 _groq_group,
                 _github_models,
                 _nvidia_nim_group,
@@ -1791,13 +1820,19 @@ def _call_llm_api(
             key_name = provider["env_key"]
             api_key = os.environ.get(key_name)
             if not api_key:
-                continue
+                if key_name == "OMNIROUTER_API_KEY":
+                    api_key = "omnirouter_local"
+                elif key_name == "OPENCODE_API_KEY":
+                    api_key = "opencode_free"
+                else:
+                    continue
 
             cooldown_key = _provider_cooldown_key(provider)
-            cooldown_until = max(
-                _PROVIDER_COOLDOWN_UNTIL.get(cooldown_key, 0.0),
-                _PROVIDER_COOLDOWN_UNTIL.get(key_name, 0.0),
-            )
+            cooldown_until = _PROVIDER_COOLDOWN_UNTIL.get(cooldown_key, 0.0)
+            # Only apply key-wide cooldown if specifically set (e.g. 401/402 account level errors)
+            if key_name not in ("OMNIROUTER_API_KEY", "OPENCODE_API_KEY"):
+                cooldown_until = max(cooldown_until, _PROVIDER_COOLDOWN_UNTIL.get(key_name, 0.0))
+
             if cooldown_until > now:
                 log.debug(
                     "[llm] Skipping %s — cooldown %.0fs remaining",
@@ -2608,14 +2643,15 @@ def get_llm_verdict(
     Supports in-memory caching to save tokens and prevent 429 quota exhaustion.
     """
     has_keys = (
-        os.environ.get("OPENROUTER_API_KEY")
+        os.environ.get("OMNIROUTER_API_KEY")
+        or os.environ.get("OPENCODE_API_KEY")
+        or os.environ.get("OPENROUTER_API_KEY")
         or os.environ.get("GROQ_API_KEY")
         or os.environ.get("GEMINI_API_KEY")
         or os.environ.get("GITHUB_TOKEN")
         or os.environ.get("AWS_ACCESS_KEY_ID")
+        or True  # Default local OmniRouter proxy http://localhost:20128/v1 fallback
     )
-    if not has_keys:
-        return None
 
     # Check cache first
     now = time.time()
@@ -2781,13 +2817,14 @@ def get_exit_advice(
     Supports in-memory caching to save tokens and prevent 429 quota exhaustion.
     """
     has_keys = (
-        os.environ.get("OPENROUTER_API_KEY")
+        os.environ.get("OMNIROUTER_API_KEY")
+        or os.environ.get("OPENCODE_API_KEY")
+        or os.environ.get("OPENROUTER_API_KEY")
         or os.environ.get("GROQ_API_KEY")
         or os.environ.get("GEMINI_API_KEY")
         or os.environ.get("GITHUB_TOKEN")
+        or True  # Default local OmniRouter proxy http://localhost:20128/v1 fallback
     )
-    if not has_keys:
-        return None
 
     # Check cache first
     now = time.time()

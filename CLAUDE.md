@@ -31,9 +31,10 @@ It:
 
 Purpose-based routing — three separate pipelines, not one shared stack:
 
-- **`live_verdict`** (per-scan trade verdict/exit advice) — symbol-aware: MCX (NATURALGAS/CRUDEOIL/GOLD/SILVER) routes SambaNova → Groq → GitHub Models → OpenRouter GPT-OSS free → OpenRouter free pool → Gemini SDK. NSE indices route GitHub Models → Groq → OpenRouter free pool → Gemini SDK.
-- **`eod_review`** (strategy optimization, end of day) — OpenRouter Nemotron 3 Ultra/Super only.
-- **`formatting`** — OpenRouter/Groq Qwen 3 Coder / Qwen 2.5 Coder variants only.
+- **`live_verdict`** (per-scan trade verdict/exit advice) — symbol-aware, OpenCode Zen always primary: MCX (NATURALGAS/CRUDEOIL/GOLD/SILVER) routes OpenCode Zen → OmniRouter (Antigravity) → Groq → GitHub Models → AnyAPI Free → Bedrock Mantle → NVIDIA NIM → Bedrock → OpenRouter → Gemini → SambaNova. NSE indices route OpenCode Zen → OmniRouter (Antigravity) → Groq → GitHub Models → NVIDIA NIM → Bedrock → OpenRouter → Gemini.
+- **`eod_review`** (strategy optimization, end of day) — OpenCode Zen EOD → OmniRouter (Antigravity) → Groq → GitHub Models → Bedrock Mantle → NVIDIA NIM → OpenRouter Nemotron.
+- **`formatting`** — OpenCode Zen → OmniRouter (Antigravity) → Bedrock Mantle → GitHub Models → Groq → NVIDIA NIM → OpenRouter Qwen 3/2.5 Coder variants.
+- **OmniRouter group = Antigravity only** (`antigravity/*` on localhost:20128, `timeout: 20`). OpenCode free models (`claude/oc/*`) removed from it — OpenCode is the primary provider, OmniRouter second.
 - Per-purpose `max_tokens` via `LLM_MAX_TOKENS_LIVE` / `_EOD` / `_FORMATTING` in `config/settings.py`.
 - Default timeout: 12s per provider attempt (hard cap so ≥2 models fit in the 75s per-call budget)
 - JSON parsing is tolerant: strips markdown fences, grabs `{...}` from prose, removes control chars

@@ -103,6 +103,10 @@ def test_call_llm_api_sets_max_tokens():
         captured["json"] = kwargs.get("json")
         return mock_resp
 
+    def _capture_opencode(url, headers, json_payload, timeout):
+        captured["json"] = json_payload
+        return mock_resp
+
     import os
 
     os.environ["OPENROUTER_API_KEY"] = "fake-key"
@@ -111,11 +115,18 @@ def test_call_llm_api_sets_max_tokens():
     _PROVIDER_COOLDOWN_UNTIL.clear()
 
     try:
-        with patch("requests.Session.post", side_effect=_capture_post):
+        # OpenCode Zen is now the PRIMARY live_verdict provider and it posts via
+        # _opencode_post (httpx), so capture that transport too — patch both so
+        # whichever runs first is captured and the test stays hermetic.
+        with patch("requests.Session.post", side_effect=_capture_post), patch(
+            "src.engine.llm_enrichment._opencode_post", side_effect=_capture_opencode
+        ):
             result = _call_llm_api(
                 "NIFTY", "test prompt", LLMTradeVerdict, purpose="live_verdict"
             )
         assert result is not None
-        assert captured["json"]["max_tokens"] == 2048
+        # LLM budget is 4096 (LLM_MAX_TOKENS_LIVE / per-provider max_tokens_override),
+        # not the legacy 2048 this test hardcoded from before the 4096 bump.
+        assert captured["json"]["max_tokens"] == 4096
     finally:
         os.environ.pop("OPENROUTER_API_KEY", None)

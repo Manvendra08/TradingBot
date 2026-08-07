@@ -792,6 +792,75 @@ class ShoonyaFetcher(BaseFetcher):
     def _get_quotes(self, exchange: str, token: str) -> dict | None:
         return self._api_call("GetQuotes", {"exch": exchange, "token": token})
 
+    def _bulk_get_quotes(self, exchange: str, contracts: list[dict]) -> dict[str, dict]:
+        """
+        Fetch GetQuotes for a batch of MCX contracts in parallel, WITHOUT the
+        serialising ``_api_lock``.
+
+        Why not ``_get_quotes()``/``_api_call()``: those hold ``_api_lock`` for the
+        entire HTTP round-trip, so N contracts become N strictly-sequential POSTs.
+        For MCX (ATM ± STRIKES_AROUND_ATM ⇒ ~42 contracts) that needs ~20s+ on a
+        typical network — far past the router's 12s per-source deadline, which is
+        exactly why shoonya "fetch failed/timed out" for NATURALGAS and silently
+        fell back to dhan_commodity on every scan.
+
+        This path keeps the global 8 req/s throttle (`_throttle_rate_limit`) but
+        lets up to 6 HTTP calls be in flight at once, so the batch finishes in
+        ~42/8 ≈ 6s. The token is read once up front (every GetQuotes call in a
+        session uses the same token) and the freshest rotated token is persisted
+        after the batch. A Session Expired inside the batch degrades to dropped
+        strikes (the caller falls back to the next source) — it never triggers a
+        concurrent relogin, which is precisely the race ``_api_lock`` exists to
+        prevent. Single-quote callers (underlying quote, NSE fallback) keep using
+        ``_get_quotes``/``_api_call`` unchanged.
+
+        Returns dict mapping contract token (str) -> GetQuotes response.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        self._load_cached_token()
+        token = self.access_token
+        if not token:
+            log.warning("[shoonya] _bulk_get_quotes: no access_token — aborting batch")
+            return {}
+
+        url = f"{_API_BASE}/GetQuotes"
+
+        def _fetch(row: dict) -> tuple[str, dict | None]:
+            self._throttle_rate_limit()
+            tok = str(row.get("Token") or row.get("token") or "")
+            payload = {"uid": self.user_id, "exch": exchange, "token": tok}
+            q = _post_jdata(url, payload, token)
+            if q and q.get("stat") == "Ok":
+                return tok, q
+            return tok, None
+
+        results: dict[str, dict] = {}
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            futures = [executor.submit(_fetch, row) for row in contracts]
+            for fut in futures:
+                try:
+                    tok, q = fut.result()
+                    if q:
+                        results[tok] = q
+                except Exception:
+                    continue
+
+        # Persist the freshest rotated token (all responses carry the same session token).
+        for q in results.values():
+            fresh = q.get("susertoken") or q.get("access_token")
+            if fresh and fresh != self.access_token:
+                self.access_token = fresh
+                self._token_created_at = time.time()
+                self._save_token()
+                break
+
+        log.debug(
+            "[shoonya] _bulk_get_quotes: %d/%d quotes fetched for %s",
+            len(results), len(contracts), exchange,
+        )
+        return results
+
     def _get_option_chain(
         self, exchange: str, tsym: str, strikeprice: float, count: int = 15
     ) -> dict | None:
@@ -1419,33 +1488,7 @@ class ShoonyaFetcher(BaseFetcher):
                     if row["strike_val"] in selected_strikes
                 ]
 
-                import time
-                from concurrent.futures import ThreadPoolExecutor
-
-                quotes = {}
-
-                def fetch_quote(row):
-                    token = row["Token"]
-                    q = self._get_quotes(exch, token)
-                    if q and q.get("stat") == "Ok":
-                        return token, q
-                    return token, None
-
-                with ThreadPoolExecutor(max_workers=2) as executor:
-                    futures = []
-                    for row in contracts_to_fetch:
-                        futures.append(executor.submit(fetch_quote, row))
-                        time.sleep(
-                            0.12
-                        )  # Pace to stay strictly under the 10/sec rate limit
-
-                    for fut in futures:
-                        try:
-                            token, q = fut.result()
-                            if q:
-                                quotes[token] = q
-                        except Exception:
-                            pass
+                quotes = self._bulk_get_quotes(exch, contracts_to_fetch)
 
                 strikes = []
                 for row in contracts_to_fetch:

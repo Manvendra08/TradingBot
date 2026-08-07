@@ -1744,8 +1744,8 @@ def start_scheduler(immediate: bool = False):
                     except Exception as e:
                         log.error("[scheduler] EIA pre-print force close failed: %s", e)
 
-            # 9. EIA Consensus Scraper (Wednesday 20:00 IST)
-            if now_ist.weekday() == 2:  # Wednesday
+            # 9. EIA Consensus Scraper (Thursday 20:00 IST)
+            if now_ist.weekday() == 3:  # Thursday
                 now_time_str = now_ist.strftime("%H:%M")
                 if (
                     now_time_str == "20:00"
@@ -1753,7 +1753,7 @@ def start_scheduler(immediate: bool = False):
                 ):
                     last_ng_eia_consensus_fetch_date = current_date
                     log.info(
-                        "[scheduler] EIA Consensus Scraper Job triggered (Wednesday 8:00 PM IST)"
+                        "[scheduler] EIA Consensus Scraper Job triggered (Thursday 8:00 PM IST)"
                     )
 
                     def _run_eia_fetch():

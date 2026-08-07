@@ -272,9 +272,17 @@ class TestOpenRouterArrayUnwrap:
         }
 
         import os
+
         os.environ["OPENROUTER_API_KEY"] = "fake-key"
         try:
-            with patch("requests.Session.post", return_value=mock_resp):
+            # Hermetic: OpenRouter (requests.Session.post) AND OpenCode Zen
+            # (_opencode_post via httpx) are now both the live-verdict primary in
+            # this NIFTY pipeline. Mock BOTH transports so a mocked upstream wins
+            # regardless of the first provider tried, and the test never hits the
+            # real opencode.ai/httpx endpoint.
+            with patch("requests.Session.post", return_value=mock_resp), patch(
+                "src.engine.llm_enrichment._opencode_post", return_value=mock_resp
+            ):
                 result = _call_llm_api("NIFTY", "test prompt", LLMTradeVerdict)
             assert result is not None
             assert result.action == "GO_LONG"

@@ -1,20 +1,6 @@
 # KNOWLEDGE_BASE.md Enhancement for Scan Sentinel
 
-## ✅ What I Improved
-
-### 1. **Added Two New Failure Modes** (2026-07-15)
-
-**F45: TradingEconomics Timeout (P2-MEDIUM)**
-- Observed in logs: `TE scraping failed: Page.goto: Timeout 15000ms exceeded`
-- Root cause: External site blocking/slow
-- Self-heal: `ALERT_ONLY` - TradingView remains primary source
-
-**F46: X/Twitter SSL Handshake Failure (P2-MEDIUM)**
-- Observed in logs: `X scraping failed: SSLEOFError [SSL: UNEXPECTED_EOF_WHILE_READING]`
-- Root cause: X syndication endpoint issues
-- Self-heal: `ALERT_ONLY` - skip X, use TradingView only
-
-### 2. **Added Consistent Severity Tags** (P0-P3 Scale)
+### 1. **Added Consistent Severity Tags** (P0-P3 Scale)
 
 **P0-CRITICAL (4 items)** - Will cause financial loss or system crash:
 - F1: Premium == Underlying

@@ -74,7 +74,7 @@ TypeError: get_previous_underlying() got an unexpected keyword argument 'read_on
   2. Enforced `_is_market_hours()` gate before evaluating heartbeat staleness (`hb_stale`) in [ops_agent.py](file:///c:/Users/manve/Downloads/NSEBOT/ops_agent.py#L768) — suppresses off-market false alerts when scanners sleep.
 
 ### F6: Zero OI & Illiquid Option Chain Anomaly (P1-HIGH)
-- **Symptom:** >80% of strikes return `oi=0` and `volume=0`.
+- **Symptom:** >50% of strikes return `oi=0` and `volume=0`.
 - **Root Cause:** After-hours scan, illiquid contract, or provider API drop.
 - **Self-Heal:** Mark scan context as `LOW_CONFIDENCE` and downgrade signal confidence scores.
 
@@ -88,10 +88,13 @@ TypeError: get_previous_underlying() got an unexpected keyword argument 'read_on
 
 ### F8: Symbol-Aware LLM Provider Chain & Failure Cooldown (P1-HIGH)
 - **Symptom:** Unresponsive LLM provider causes 35s scan stalls on every tick.
-- **Chain Priorities:**
-  - **NSE & BSE:** OpenCode Zen -> Groq -> GitHub Models -> NVIDIA NIM -> Bedrock -> OpenRouter -> Gemini
-  - **MCX Symbols:** GitHub Models -> Groq -> OpenCode Zen -> AnyAPI Free -> Bedrock Mantle -> NVIDIA NIM -> Bedrock -> OpenRouter -> Gemini -> SambaNova
-- **Self-Heal:** 12-second provider timeout. HTTP 500, empty content, or network exceptions trigger an automatic 10-minute cooldown (`_PROVIDER_COOLDOWN_UNTIL[key] = now + 600.0`), skipping failing providers instantly on subsequent ticks.
+- **Chain Priorities (OpenCode Zen is always PRIMARY; OmniRouter Antigravity models come second):**
+  - **NSE & BSE (live_verdict):** OpenCode Zen -> OmniRouter (Antigravity) -> Groq -> GitHub Models -> NVIDIA NIM -> Bedrock -> OpenRouter -> Gemini
+  - **MCX Symbols (live_verdict):** OpenCode Zen -> OmniRouter (Antigravity) -> Groq -> GitHub Models -> AnyAPI Free -> Bedrock Mantle -> NVIDIA NIM -> Bedrock -> OpenRouter -> Gemini -> SambaNova
+  - **eod_review:** OpenCode Zen EOD -> OmniRouter (Antigravity) -> Groq -> GitHub Models -> Bedrock Mantle -> NVIDIA NIM -> OpenRouter (Nemotron)
+  - **formatting:** OpenCode Zen -> OmniRouter (Antigravity) -> Bedrock Mantle -> GitHub Models -> Groq -> NVIDIA NIM -> OpenRouter (Qwen coder)
+- **OmniRouter group is Antigravity-only** (`antigravity/*` via port 20128, timeout 20s) — OpenCode free models were removed from it. No `claude/oc/*` models remain.
+- **Self-Heal:** 12-second provider timeout (OmniRouter group 20s). HTTP 500, empty content, or network exceptions trigger an automatic 10-minute cooldown (`_PROVIDER_COOLDOWN_UNTIL[key] = now + 600.0`), skipping failing providers instantly on subsequent ticks.
 
 ### F9: Alert Payload Execution Discrepancy Guard (P1-HIGH)
 - **Symptom:** Alert header reported `🟢 Entered` while the Signal section reported `Trade: ✗ Not entered` for setups blocked by Risk Engine or missing valid contracts.

@@ -52,7 +52,7 @@
   "direct_kite_default_sl_pct": 75,
   "direct_kite_default_tgt_pct": 60,
   "live_broker_disabled": true,
-  "trading_paused": false,
+  "trading_paused": true,
   "enable_tfss_trade_blocked_rules": false,
   "sentinel_report_mode": "anomalies",
   "ops_agent_mode": "normal",
