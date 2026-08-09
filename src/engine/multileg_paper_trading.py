@@ -458,7 +458,27 @@ def _attempt_new_entry(
         check_book_conflicts = None
 
     strategy_type = verdict.strategy_type
-    legs = verdict.legs
+    # Convert Pydantic legs to mutable dicts and apply dashboard paper lot sizing.
+    legs = [
+        leg.model_dump() if hasattr(leg, "model_dump") else (leg.dict() if hasattr(leg, "dict") else dict(leg))
+        for leg in (verdict.legs or [])
+    ]
+    try:
+        from src.engine.capital_allocator import calculate_trade_lots
+        sizing_premium = max((float(l.get("premium") or 0) for l in legs), default=0.0)
+        dashboard_lots = calculate_trade_lots(
+            symbol,
+            sizing_premium,
+            side="SELL",
+            is_paper=True,
+            setup_type="MULTILEG",
+        )
+        for leg in legs:
+            leg["lots"] = dashboard_lots
+    except Exception as e:
+        log.warning("[multileg-paper] %s: lot sizing failed, defaulting to 1 lot: %s", symbol, e)
+        for leg in legs:
+            leg.setdefault("lots", 1)
 
     if validate_legs is not None:
         underlying = float((scan_context or {}).get("underlying") or 0.0)
@@ -603,12 +623,13 @@ def _attempt_new_entry(
     )
     for i, leg in enumerate(legs):
         log.debug(
-            "[multileg-paper]   leg %d: SELL %s %s @ ₹%.1f (delta=%.2f)",
+            "[multileg-paper]   leg %d: SELL %s %s @ ₹%.1f (delta=%.2f, lots=%s)",
             i + 1,
-            getattr(leg, "option_type", "?"),
-            getattr(leg, "strike", "?"),
-            getattr(leg, "premium", 0.0),
-            getattr(leg, "delta", 0.0),
+            leg.get("option_type", "?"),
+            leg.get("strike", "?"),
+            float(leg.get("premium") or 0.0),
+            float(leg.get("delta") or 0.0),
+            leg.get("lots", 1),
         )
 
     # ── 5i. Advisory mode — log only, no trade insertion ───────────────
@@ -670,17 +691,17 @@ def _attempt_new_entry(
     for leg in legs:
         leg_dicts.append({
             "trade_id": 0,  # Set by insert_multileg_trade_atomically
-            "side": getattr(leg, "side", "SELL"),
-            "lots": getattr(leg, "lots", 1),
-            "strike": getattr(leg, "strike", 0.0),
-            "option_type": getattr(leg, "option_type", ""),
-            "entry_premium": getattr(leg, "premium", 0.0),
+            "side": leg.get("side", "SELL"),
+            "lots": int(leg.get("lots") or 1),
+            "strike": float(leg.get("strike") or 0.0),
+            "option_type": leg.get("option_type", ""),
+            "entry_premium": float(leg.get("premium") or 0.0),
             "exit_premium": 0.0,
-            "delta": getattr(leg, "delta", 0.0),
+            "delta": float(leg.get("delta") or 0.0),
             "theta": 0.0,
             "vega": 0.0,
             "iv": 0.0,
-            "rationale": getattr(leg, "rationale", ""),
+            "rationale": leg.get("rationale", ""),
             "status": "OPEN",
             "closed_at": None,
             "exit_reason": None,

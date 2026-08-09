@@ -21,7 +21,7 @@ STRATEGY_TYPES = {
 ALLOWED_SYMBOLS = {"NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX"}
 
 # ── Book-Level Risk Caps ────────────────────────────────────────────
-MAX_BOOK_MARGIN = 500_000.0       # Maximum combined margin per book (₹)
+MAX_BOOK_MARGIN = 7_500_000.0     # Maximum combined margin per book (₹75L / 7500K)
 MAX_NET_DELTA = 0.60              # Maximum absolute net delta per book
 MAX_NET_VEGA = 500.0              # Maximum net vega exposure
 MAX_LEGS_PER_BOOK = 6             # Maximum legs in a single book

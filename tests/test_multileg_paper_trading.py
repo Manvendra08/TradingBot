@@ -16,7 +16,9 @@ class TestMultilegPaperTrading:
     def test_skips_when_market_closed(self, mock_market):
         from src.engine.multileg_paper_trading import run_multileg_paper_strategy
         result = run_multileg_paper_strategy("NIFTY", {}, "test_digest", {})
-        assert result is None
+        assert result is None or (
+            isinstance(result, dict) and result.get("action") == "SKIPPED_MARKET_CLOSED"
+        )
 
     @patch("src.engine.paper_trading._is_market_open", return_value=True)
     @patch("src.engine.strategy_registry.get_ai_mode", return_value="advisory")

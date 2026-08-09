@@ -13,7 +13,7 @@ class TestMultilegRiskChecks:
             MAX_BOOK_MARGIN, MAX_NET_DELTA, MAX_LEGS_PER_BOOK,
             STRATEGY_CONSTRAINTS, CONFLICTING_STRATEGIES, ALLOWED_SYMBOLS,
         )
-        assert MAX_BOOK_MARGIN == 500_000.0
+        assert MAX_BOOK_MARGIN == 7_500_000.0
         assert MAX_NET_DELTA == 0.60
         assert MAX_LEGS_PER_BOOK == 6
         assert "IRON_CONDOR" in STRATEGY_CONSTRAINTS
