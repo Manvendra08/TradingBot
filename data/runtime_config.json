@@ -42,7 +42,7 @@
   "emp_boost_min_trades": 20,
   "emp_boost_min_winrate": 0.6,
   "ml_predictor_mode": "live",
-  "derive_min_confidence": true,
+  "derive_min_confidence": false,
   "llm_enrichment_async": true,
   "llm_enrich_timeout_s": 120,
   "autopsy_enabled": true,
@@ -62,7 +62,7 @@
       "enabled": true,
       "ai_mode": "boost_only",
       "symbols": {
-        "NIFTY": false,
+        "NIFTY": true,
         "BANKNIFTY": true,
         "SENSEX": true,
         "FINNIFTY": false,
@@ -71,7 +71,7 @@
       }
     },
     "TIMEFRAME": {
-      "enabled": true,
+      "enabled": false,
       "ai_mode": "boost_only",
       "symbols": {
         "NIFTY": false,
@@ -83,15 +83,15 @@
       }
     },
     "TFSS": {
-      "enabled": true,
+      "enabled": false,
       "ai_mode": "advisory",
       "symbols": {
-        "NIFTY": false,
+        "NIFTY": true,
         "BANKNIFTY": true,
         "SENSEX": true,
         "FINNIFTY": false,
         "NATURALGAS": true,
-        "CRUDEOIL": false
+        "CRUDEOIL": true
       },
       "params": {
         "delta_entry_band": [
@@ -107,6 +107,18 @@
           0.3,
           0.2
         ]
+      }
+    },
+    "MULTILEG": {
+      "enabled": true,
+      "ai_mode": "full",
+      "symbols": {
+        "NIFTY": true,
+        "BANKNIFTY": true,
+        "SENSEX": true,
+        "FINNIFTY": false,
+        "NATURALGAS": true,
+        "CRUDEOIL": true
       }
     }
   }
