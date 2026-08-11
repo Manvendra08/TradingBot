@@ -774,17 +774,20 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
             exp_fmt = exp_dt.strftime("%d %b")
             if exp_fmt.startswith("0"):
                 exp_fmt = exp_fmt[1:]
-            if dte is None:
-                ist = timezone(timedelta(hours=5, minutes=30))
-                today_dt = datetime.now(ist).date()
-                dte = max(0, (exp_dt - today_dt).days)
+            ist = timezone(timedelta(hours=5, minutes=30))
+            today_dt = datetime.now(ist).date()
+            calc_dte = (exp_dt - today_dt).days
+            if dte is None or dte > 365 or dte < 0:
+                dte = calc_dte if 0 <= calc_dte <= 365 else None
+            if exp_dt.year > today_dt.year + 1 or calc_dte > 365:
+                exp_fmt = "N/A"
         except Exception:
             exp_fmt = str(expiry)
         expiry_str = f"🗓 Expiry {exp_fmt}"
     else:
         expiry_str = "🗓 Expiry N/A"
 
-    dte_str = f"{dte} DTE" if dte is not None else "N/A DTE"
+    dte_str = f"{dte} DTE" if (dte is not None and 0 <= dte <= 365) else "N/A DTE"
     
     # Format spot with ₹ and comma
     if isinstance(spot, (int, float)) and spot > 0:

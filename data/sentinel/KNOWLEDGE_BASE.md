@@ -73,6 +73,11 @@ TypeError: get_previous_underlying() got an unexpected keyword argument 'read_on
   1. Removed `result.slice(0, 40)` truncation in [src/dashboard/ops.html](file:///c:/Users/manve/Downloads/NSEBOT/src/dashboard/ops.html#L596) and enabled clean multi-line word wrapping with hover tooltips (`title="${result}"`).
   2. Enforced `_is_market_hours()` gate before evaluating heartbeat staleness (`hb_stale`) in [ops_agent.py](file:///c:/Users/manve/Downloads/NSEBOT/ops_agent.py#L768) — suppresses off-market false alerts when scanners sleep.
 
+### F131: Heterogeneous Option Chain Normalization (`AttributeError: 'list' object has no attribute 'get'`) (P0-CRITICAL)
+- **Symptom:** `AttributeError: 'list' object has no attribute 'get'` in multi-leg strategy runner (`src/engine/multileg_strategy.py`) during paper or live multi-leg trade evaluation.
+- **Root Cause:** `validate_legs()` and `build_execution_plan()` expected `option_chain` to be a `dict` keyed by `strike`, but callers in `multileg_paper_trading.py` and `multileg_live_trading.py` passed `option_rows` (a `list` of row dicts or list of contract dicts) from scan context.
+- **Self-Heal:** Added `_normalize_option_chain()` helper in [multileg_strategy.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/multileg_strategy.py) to dynamically convert list representations (both row dicts with `CE`/`PE` keys and individual contract dicts) into standard `dict[float, dict]` before leg validation and execution plan construction.
+
 ### F6: Zero OI & Illiquid Option Chain Anomaly (P1-HIGH)
 - **Symptom:** >50% of strikes return `oi=0` and `volume=0`.
 - **Root Cause:** After-hours scan, illiquid contract, or provider API drop.
@@ -142,6 +147,21 @@ TypeError: get_previous_underlying() got an unexpected keyword argument 'read_on
   2. Added primary + fallback search queries in `fetch_option_chain` (`SENSEX FUT` -> `SENSEX`, `BANKNIFTY` -> `BANKNIFTY FUT`).
   3. Refactored futures contract resolution to sort by `exd` expiry date chronologically and pick the near-month contract.
   4. Removed orphaned dead code block after return line 1450.
+
+### F129: Shoonya ISP IP Rotation — Daily Pre-Fetch Guard (P1-HIGH)
+- **Symptom:** `[shoonya] GenAcsTok failed: {'stat': 'Not_Ok', 'emsg': 'Invalid Input : INVALID_IP', ...}` after a ~60s Playwright OAuth, recurring every time the ISP rotates the public IP (3–4 day DHCP leases).
+- **Root Cause:** Shoonya validates the request source IP at login (`GenAcsTok`). A rotating ISP public IP is not bound to the account, so login is rejected even though the OAuth web login succeeds.
+- **Self-Heal:** `src/fetchers/shoonya_ip_guard.py` runs a once-per-IST-day public-IP check (reusing `src/utils/ip_monitor.py` detection). On rotation it sends a Telegram alert once and persists a `skip_date`; `router._try_fetcher` then skips the `shoonya` source for the rest of the day (falling through to `dhan_commodity` etc.), and `ShoonyaFetcher.login()` short-circuits to avoid the doomed OAuth. Fail-open when IP detection is unavailable. State: `data/shoonya_ip_state.json` (`baseline_ip`, `checked_date`, `skip_date`).
+
+### F131: Heterogeneous Option Chain Normalization (P0-CRITICAL)
+- **Symptom:** `AttributeError: 'list' object has no attribute 'get'` in `src.engine.multileg_strategy` when multi-leg trading runs on index option chains (`BANKNIFTY`, `SENSEX`).
+- **Root Cause:** Option chain data payloads passed to multi-leg strategy methods (`validate_legs`, `build_execution_plan`) varied between strike-keyed `dict[float, dict]` structures and raw `list[dict]` strike row / contract item lists.
+- **Fix:** Implemented `_normalize_option_chain()` helper in `src/engine/multileg_strategy.py` to transparently convert both `dict` and `list` payload formats into a unified strike-keyed dictionary before validating legs or building execution plans. Added unit test coverage in `tests/test_multileg_strategy.py`.
+
+### F132: OmniRouter HTTP Timeout Cap Truncation (P1-HIGH)
+- **Symptom:** LLM enrichment logs show `OmniRouter (antigravity/claude-sonnet-4-6) exception: JSON extract failed: Expecting ',' delimiter: line 19 column 6 (char 644)`.
+- **Root Cause:** In `src/engine/llm_enrichment.py`, provider HTTP requests enforced `timeout=min(remaining, provider.get("timeout", 12.0))`. The fallback default of `12.0` seconds truncated response generation mid-JSON for large schemas (e.g. `LLMMultiLegVerdict`) on OmniRouter models configured with 20s–30s provider timeouts.
+- **Fix:** Updated the timeout fallback in `_call_llm_api()` to default to `20.0` seconds (`provider.get("timeout", 20.0)`), allowing proxy-backed OmniRouter models (`antigravity/claude-sonnet-4-6`, `cx/gpt-5.5`) full timeout budget to complete complex structured JSON outputs without mid-stream truncation.
 
 ---
 

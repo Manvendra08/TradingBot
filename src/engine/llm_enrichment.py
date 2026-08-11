@@ -1016,6 +1016,15 @@ def _register_provider_failure(
 
     # Generic server error (500), empty response, or connection timeout — 10m cooldown
     _PROVIDER_COOLDOWN_UNTIL[key] = now + 600.0
+    group_name = provider.get("model_group")
+    is_conn_error = any(
+        e in body_l
+        for e in ("httpconnectionpool", "connectionrefusederror", "read timed out", "connecttimedout", "timed out", "connection reset", "host unreachable")
+    )
+    if is_conn_error and group_name:
+        _PROVIDER_COOLDOWN_UNTIL[group_name] = now + 120.0
+        log.info("[llm] Host/Endpoint connection error on %s — cooling down group '%s' for 120s", provider.get("name"), group_name)
+
     log.info("[llm] %s failed (status=%d, err=%.50s) — 10m cooldown", provider.get("name"), status_code, body_l)
 
 
@@ -1152,21 +1161,13 @@ def _call_llm_api(
     else:
         _omnirouter_url = _omnirouter_base
 
-    # OmniRouter primary group — cx/gpt-5.5 first, then Antigravity models.
+    # OmniRouter primary group — Antigravity models.
     # OmniRouter is a reverse proxy (OmniRouter → upstream provider), so the
     # meaningful latency is the upstream first-token time. timeout 20 gives a
     # proxy-backed model a real chance without overshooting the deadline cap.
     _omnirouter_group = {
         "model_group": "omnirouter-primary",
         "providers": [
-            {
-                "name": "OmniRouter (cx/gpt-5.5)",
-                "env_key": "OMNIROUTER_API_KEY",
-                "url": _omnirouter_url,
-                "model": "cx/gpt-5.5",
-                "timeout": 30,
-                "max_tokens_override": 4096,
-            },
             {
                 "name": "OmniRouter (antigravity/claude-sonnet-4-6)",
                 "env_key": "OMNIROUTER_API_KEY",
@@ -1188,22 +1189,6 @@ def _call_llm_api(
                 "env_key": "OMNIROUTER_API_KEY",
                 "url": _omnirouter_url,
                 "model": "antigravity/gemini-3.1-pro-low",
-                "timeout": 20,
-                "max_tokens_override": 4096,
-            },
-            {
-                "name": "OmniRouter (Gemini 3.5 Flash Low)",
-                "env_key": "OMNIROUTER_API_KEY",
-                "url": _omnirouter_url,
-                "model": "antigravity/gemini-3.5-flash-low",
-                "timeout": 20,
-                "max_tokens_override": 4096,
-            },
-            {
-                "name": "OmniRouter (Gemini 2.5 Flash)",
-                "env_key": "OMNIROUTER_API_KEY",
-                "url": _omnirouter_url,
-                "model": "antigravity/gemini-2.5-flash",
                 "timeout": 20,
                 "max_tokens_override": 4096,
             },
@@ -1747,7 +1732,7 @@ def _call_llm_api(
         }
 
         if _is_mcx:
-            # MCX: OmniRouter (cx/gpt-5.5 first) → OpenCode Zen → Groq → GitHub Models → AnyAPI Free → Bedrock Mantle → Nvidia NIM → Bedrock → OpenRouter → Gemini → SambaNova
+            # MCX: OmniRouter (primary) → OpenCode Zen → Groq → GitHub Models → AnyAPI Free → Bedrock Mantle → Nvidia NIM → Bedrock → OpenRouter → Gemini → SambaNova
             FREE_MODEL_PIPELINE = [
                 _omnirouter_group,
                 _opencode_zen_group,
@@ -1796,7 +1781,7 @@ def _call_llm_api(
                 },
             ]
         else:
-            # NSE/BSE indices: OpenCode Zen (primary) → Groq → GitHub Models → Nvidia NIM → Bedrock → OpenRouter → Gemini
+            # NSE/BSE indices: OmniRouter (primary) → OpenCode Zen → Groq → GitHub Models → Nvidia NIM → Bedrock → OpenRouter → Gemini
             FREE_MODEL_PIPELINE = [
                 _omnirouter_group,
                 _opencode_zen_group,
@@ -1822,7 +1807,18 @@ def _call_llm_api(
             log.warning("[llm] model_override '%s' not found in any provider group", model_override)
 
     for group in FREE_MODEL_PIPELINE:
+        group_name = group.get("model_group")
+        if group_name and _PROVIDER_COOLDOWN_UNTIL.get(group_name, 0.0) > now:
+            log.info(
+                "[llm] Skipping group %s — endpoint/host cooldown active (%.0fs left)",
+                group_name,
+                _PROVIDER_COOLDOWN_UNTIL[group_name] - now,
+            )
+            continue
+
         for provider in group["providers"]:
+            if group_name and "model_group" not in provider:
+                provider["model_group"] = group_name
             if override_providers is not None and provider not in override_providers:
                 continue
             key_name = provider["env_key"]
@@ -2065,19 +2061,20 @@ def _call_llm_api(
                     headers["X-Title"] = "NSEBOT Trading Engine"
                     json_payload["provider"] = {"allow_fallbacks": False}
 
+                default_timeout = provider.get("timeout", 20.0)
                 if _OPENCODE_HOST in provider["url"] and _httpx is not None:
                     resp = _opencode_post(
                         provider["url"],
                         headers,
                         json_payload,
-                        min(remaining, provider.get("timeout", 12.0)),
+                        min(remaining, default_timeout),
                     )
                 else:
                     resp = session.post(
                         provider["url"],
                         headers=headers,
                         json=json_payload,
-                        timeout=min(remaining, provider.get("timeout", 12.0)),
+                        timeout=min(remaining, default_timeout),
                     )
                 if resp.status_code == 200:
                     content_type = resp.headers.get("Content-Type", "")
@@ -2190,14 +2187,14 @@ def _call_llm_api(
                             provider["url"],
                             headers,
                             retry_payload,
-                            min(remaining, provider.get("timeout", 12.0)),
+                            min(remaining, default_timeout),
                         )
                     else:
                         retry_resp = session.post(
                             provider["url"],
                             headers=headers,
                             json=retry_payload,
-                            timeout=min(remaining, provider.get("timeout", 12.0)),
+                            timeout=min(remaining, default_timeout),
                         )
                     if retry_resp.status_code == 200:
                         retry_content_type = retry_resp.headers.get("Content-Type", "")
@@ -2334,16 +2331,21 @@ def _round_echoed_numbers(text: str, runaway_word_cap: int = 90) -> str:
 def _extract_json(raw: str) -> dict | list:
     """
     D1: Tolerant JSON extraction — handles markdown fences, leading/trailing prose,
-    JSON arrays, unescaped control characters, and strict string parsing.
+    JSON arrays, unescaped control characters, unescaped inner quotes, trailing
+    commas, and strict string parsing.
     """
     original_raw = raw
     raw = raw.strip()
 
     # Strip markdown code fences (```json ... ``` or ``` ... ```)
     if "```" in raw:
-        raw = re.sub(r"^```(?:json)?\s*|```\s*$", "", raw, flags=re.MULTILINE).strip()
-        if "```" in raw:
-            raw = raw.split("```")[0].strip()
+        m = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", raw)
+        if m:
+            raw = m.group(1).strip()
+        else:
+            raw = re.sub(r"^```(?:json)?\s*|```\s*$", "", raw, flags=re.MULTILINE).strip()
+            if "```" in raw:
+                raw = raw.split("```")[0].strip()
 
     # Find outermost JSON container: {...} or [...]
     first_brace = raw.find("{")
@@ -2362,26 +2364,113 @@ def _extract_json(raw: str) -> dict | list:
     # Remove invalid control characters (causes "Invalid control character" parse failures)
     raw = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", raw)
 
+    # ── Strategy A: Direct load ────────────────────────────────────────
     try:
         res = json.loads(raw, strict=False)
         if isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
             return res[0]
         return res
     except Exception:
-        try:
-            # Repair unescaped newlines inside strings
-            fixed = re.sub(
-                r'(?<=: ")(.*?)(?=")',
-                lambda m: m.group(1).replace("\n", "\\n").replace("\r", "\\r"),
-                raw,
-                flags=re.DOTALL,
-            )
-            res = json.loads(fixed, strict=False)
-            if isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
-                return res[0]
-            return res
-        except Exception as e:
-            raise ValueError(f"JSON extract failed: {e} | Raw: {original_raw[:200]}")
+        pass
+
+    # ── Strategy B: Strip trailing commas + comments ───────────────────
+    cleaned = re.sub(r",\s*([}\]])", r"\1", raw)
+    cleaned = re.sub(r"//.*?\n", "\n", cleaned)
+    try:
+        res = json.loads(cleaned, strict=False)
+        if isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
+            return res[0]
+        return res
+    except Exception:
+        pass
+
+    # ── Strategy C: Repair unescaped newlines inside strings ───────────
+    try:
+        fixed = re.sub(
+            r'(?<=: ")(.*?)(?=")',
+            lambda m: m.group(1).replace("\n", "\\n").replace("\r", "\\r"),
+            cleaned,
+            flags=re.DOTALL,
+        )
+        res = json.loads(fixed, strict=False)
+        if isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
+            return res[0]
+        return res
+    except Exception:
+        pass
+
+    # ── Strategy D: Fix unescaped inner quotes in string values ────────
+    # e.g. "rationale": "Sell 58000 "OTM" Call above resistance"
+    # The LLM sometimes writes unescaped quotes inside string values.
+    # Fix: walk the string char-by-char tracking whether we're inside a JSON
+    # string value, and escape any bare " that appears inside a value.
+    try:
+        repaired = _repair_inner_quotes(cleaned)
+        res = json.loads(repaired, strict=False)
+        if isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
+            return res[0]
+        return res
+    except Exception:
+        pass
+
+    raise ValueError(f"JSON extract failed: {e} | Raw: {original_raw[:200]}" if 'e' in dir() else f"JSON extract failed | Raw: {original_raw[:200]}")
+
+
+def _repair_inner_quotes(raw: str) -> str:
+    """Fix unescaped double quotes inside JSON string values.
+
+    LLMs sometimes produce: "rationale": "Sell 58000 "OTM" Call"
+    This function walks the string, tracking whether we are inside a JSON
+    string value, and escapes bare `"` characters that appear within values.
+    """
+    out: list[str] = []
+    in_string = False
+    i = 0
+    n = len(raw)
+
+    while i < n:
+        ch = raw[i]
+
+        if not in_string:
+            out.append(ch)
+            if ch == '"':
+                in_string = True
+            i += 1
+            continue
+
+        # Inside a string
+        if ch == '\\':
+            # Escaped character — copy both the backslash and next char as-is
+            out.append(ch)
+            if i + 1 < n:
+                out.append(raw[i + 1])
+                i += 2
+            else:
+                i += 1
+            continue
+
+        if ch == '"':
+            # Is this the closing quote of the JSON string?
+            # Look ahead: after the closing quote we expect , or } or ] or : or whitespace
+            j = i + 1
+            while j < n and raw[j] in ' \t\n\r':
+                j += 1
+            if j >= n or raw[j] in (',', '}', ']', ':'):
+                # This looks like the real closing quote
+                out.append(ch)
+                in_string = False
+                i += 1
+                continue
+            else:
+                # This is an unescaped inner quote — escape it
+                out.append('\\"')
+                i += 1
+                continue
+
+        out.append(ch)
+        i += 1
+
+    return ''.join(out)
 
 
 def _enforce_engine_alignment(
@@ -3007,11 +3096,18 @@ def get_multileg_verdict(
             max_legs = constraints.get("max_legs", 6)
 
             if len(result.legs) < min_legs:
-                log.warning(
-                    "[llm-multileg] %s: %s requires %d+ legs, got %d — adjusting",
-                    symbol, result.strategy_type, min_legs, len(result.legs),
-                )
-                result.legs = result.legs[:max_legs]
+                # If LLM returned 2 legs for IRON_CONDOR (common LLM mistake for strangle), auto-reclassify to SHORT_STRANGLE
+                if result.strategy_type == "IRON_CONDOR" and len(result.legs) == 2:
+                    log.info(
+                        "[llm-multileg] %s: Reclassifying 2-leg IRON_CONDOR to SHORT_STRANGLE",
+                        symbol,
+                    )
+                    result.strategy_type = "SHORT_STRANGLE"
+                else:
+                    log.warning(
+                        "[llm-multileg] %s: %s requires %d+ legs, got %d",
+                        symbol, result.strategy_type, min_legs, len(result.legs),
+                    )
             elif len(result.legs) > max_legs:
                 log.warning(
                     "[llm-multileg] %s: %s allows max %d legs, got %d — truncating",

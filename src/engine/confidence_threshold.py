@@ -43,7 +43,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 # ── Tunables ────────────────────────────────────────────────────────────────
-DEFAULT_MIN_PAPER_CONFIDENCE = 65      # fallback when derivation disabled/ungated
+DEFAULT_MIN_PAPER_CONFIDENCE = 55      # fallback when derivation disabled/ungated (was 65)
 MIN_TRADES_FOR_DERIVATION = 100       # need this many closed, scored trades before auto-derivation kicks in
 WIN_RATE_FLOOR = 0.55                 # required win rate in the >=T slice
 MIN_SLICE_TRADES = 10                 # a candidate slice must hold >= this many

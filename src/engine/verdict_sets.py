@@ -48,3 +48,7 @@ def is_bullish(verdict: str) -> bool:
 
 def is_bearish(verdict: str) -> bool:
     return str(verdict or "").strip() in BEARISH_VERDICTS
+
+
+def is_neutral(verdict: str) -> bool:
+    return str(verdict or "").strip() in NEUTRAL_VERDICTS

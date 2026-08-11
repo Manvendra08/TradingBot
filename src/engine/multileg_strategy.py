@@ -41,10 +41,56 @@ log = logging.getLogger(__name__)
 
 # ── Leg Validation ────────────────────────────────────────────────
 
+def _normalize_option_chain(chain_or_rows: dict | list | None) -> dict[float, dict]:
+    """
+    Normalize option chain inputs (dict or list of rows/contracts) into a
+    dict keyed by float(strike) -> {"CE": {...}, "PE": {...}}.
+    """
+    if not chain_or_rows:
+        return {}
+
+    normalized: dict[float, dict] = {}
+
+    if isinstance(chain_or_rows, dict):
+        for k, v in chain_or_rows.items():
+            try:
+                s_float = float(k)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(v, dict):
+                normalized[s_float] = v
+
+    elif isinstance(chain_or_rows, list):
+        for item in chain_or_rows:
+            if not isinstance(item, dict):
+                continue
+            strike = item.get("strike")
+            if strike is None:
+                continue
+            try:
+                s_float = float(strike)
+            except (ValueError, TypeError):
+                continue
+
+            if s_float not in normalized:
+                normalized[s_float] = {}
+
+            if "CE" in item and isinstance(item["CE"], dict):
+                normalized[s_float]["CE"] = item["CE"]
+            if "PE" in item and isinstance(item["PE"], dict):
+                normalized[s_float]["PE"] = item["PE"]
+
+            opt_type = (item.get("option_type") or "").upper()
+            if opt_type in ("CE", "PE"):
+                normalized[s_float][opt_type] = item
+
+    return normalized
+
+
 def validate_legs(
     strategy_type: str,
     legs: list[dict],
-    option_chain: dict,
+    option_chain: dict | list | None,
     underlying: float,
 ) -> tuple[bool, str]:
     """
@@ -56,9 +102,8 @@ def validate_legs(
         One of the keys in STRATEGY_CONSTRAINTS (e.g. "IRON_CONDOR").
     legs : list[dict]
         Each leg must have at least: strike, option_type, side, premium.
-    option_chain : dict
-        Option chain keyed by strike price; each strike maps to a dict
-        with "CE" and/or "PE" sub-dicts containing at least {"ltp": ...}.
+    option_chain : dict | list
+        Option chain keyed by strike price or list of option rows/contracts.
     underlying : float
         Current underlying spot / futures price.
 
@@ -93,6 +138,8 @@ def validate_legs(
         if leg.get("side", "").upper() != "SELL":
             return False, f"Leg {i} has side '{leg.get('side')}' — all legs must be SELL for {strategy_type}"
 
+    chain = _normalize_option_chain(option_chain)
+
     # 4. Each leg must exist in the option chain
     for i, leg in enumerate(legs):
         strike = leg.get("strike")
@@ -102,10 +149,12 @@ def validate_legs(
         if not opt_type:
             return False, f"Leg {i} missing 'option_type'"
 
-        strike_chain = option_chain.get(float(strike))
-        if strike_chain is None:
-            # Try integer match
-            strike_chain = option_chain.get(int(strike))
+        try:
+            s_float = float(strike)
+        except (ValueError, TypeError):
+            return False, f"Leg {i} strike {strike} invalid"
+
+        strike_chain = chain.get(s_float)
         if strike_chain is None:
             return False, f"Leg {i} strike {strike} not found in option chain"
 
@@ -338,6 +387,7 @@ def score_entry_quality(
     scan_context: dict,
     book_greeks: dict,
     risk_profile: dict,
+    **kwargs,
 ) -> tuple[int, list[str]]:
     """
     Score multi-leg book entry quality 0-100.
@@ -383,13 +433,16 @@ def score_entry_quality(
 
     # ── Positives ──────────────────────────────────────────────────
 
-    # 1. IV rank — high IV is good for selling premium
+    # 1. IV rank — high IV provides fat premium; moderate/low IV in calm markets provides safe decay
     if iv_rank >= 60:
         score += 15
         reasons.append(f"High IV rank {iv_rank:.0f} — good premium environment")
-    elif iv_rank >= 40:
+    elif iv_rank >= 30:
+        score += 10
+        reasons.append(f"Moderate IV rank {iv_rank:.0f} — balanced decay")
+    elif iv_rank >= 10 and (regime or "").lower() in ("range", "rangebound", "sideways"):
         score += 8
-        reasons.append(f"Moderate IV rank {iv_rank:.0f}")
+        reasons.append(f"Low IV {iv_rank:.0f} with calm/range regime — safe theta decay")
 
     # 2. Net delta near 0 — market neutral is ideal for non-directional
     if net_delta <= 0.15:
@@ -422,10 +475,11 @@ def score_entry_quality(
     # 5. Strategy-regime alignment
     rangebound_types = {"IRON_CONDOR", "SHORT_STRANGLE", "SHORT_STRADDLE", "JADE_LIZARD"}
     directional_types = {"BEAR_CALL_SPREAD", "BULL_PUT_SPREAD"}
-    if regime == "rangebound" and strategy_type in rangebound_types:
-        score += 10
-        reasons.append(f"{strategy_type} suits rangebound regime")
-    elif regime == "trending" and strategy_type in directional_types:
+    regime_lower = (regime or "").lower()
+    if regime_lower in ("range", "rangebound", "sideways") and strategy_type in rangebound_types:
+        score += 15
+        reasons.append(f"{strategy_type} suits calm/rangebound regime")
+    elif regime_lower in ("trending", "trending_up", "trending_down") and strategy_type in directional_types:
         score += 10
         reasons.append(f"{strategy_type} suits trending regime")
     elif regime:
@@ -546,7 +600,7 @@ def build_execution_plan(
     dict with the full execution plan, or an error-dict with
     ``"error"`` key if validation fails.
     """
-    option_chain = scan_context.get("option_chain", {})
+    option_chain = scan_context.get("option_chain") or scan_context.get("option_rows") or {}
     underlying = float(scan_context.get("underlying") or 0)
     expiry = scan_context.get("expiry", "")
 

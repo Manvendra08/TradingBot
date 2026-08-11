@@ -242,12 +242,19 @@ Market Regime: {regime}
 Analyze the data above and select the BEST multi-leg short options strategy. All legs must be SELL (you are the seller/writer of options).
 
 ### Strategy Selection Guide:
-- **Rangebound market + high IV** → IRON_CONDOR (sell both sides, defined risk) or SHORT_STRANGLE (higher premium, undefined risk)
-- **Trending market + high IV** → SHORT_STRANGLE aligned with trend, or directional spread (BEAR_CALL_SPREAD for bearish, BULL_PUT_SPREAD for bullish)
-- **Very high IV + neutral** → SHORT_STRADDLE (maximum premium, higher risk)
+- **Calm / Rangebound / Sideways market** → SHORT_STRADDLE (sell ATM CE + ATM PE for pure theta decay and low gamma risk) or SHORT_STRANGLE (sell OTM CE + OTM PE for wider buffer). This is the IDEAL environment for short delta-neutral premium selling!
+- **Rangebound market + elevated IV** → IRON_CONDOR (sell both sides, defined risk) or SHORT_STRANGLE (higher premium, undefined risk)
+- **Trending market + high IV** → SHORT_STRANGLE skewed with trend, or directional credit spread (BEAR_CALL_SPREAD for bearish, BULL_PUT_SPREAD for bullish)
+- **High IV + neutral** → SHORT_STRADDLE (maximum premium capture, high theta)
 - **Bullish bias + high IV** → JADE_LIZARD (sell CE spread + sell naked PE)
-- **Uncertain direction** → IRON_CONDOR (collect from both sides, widest breakeven)
-- **Low IV** → Consider NO_TRADE (premium too thin to sell)
+- **Uncertain direction / Volatile** → IRON_CONDOR (collect from both sides, widest breakeven)
+- **Extremely thin liquidity or severe event risk** → Consider NO_TRADE
+
+### Important Constraints on Legs:
+- **SHORT_STRADDLE**: Exactly 2 SELL legs (1 ATM CE + 1 ATM PE at the same strike).
+- **SHORT_STRANGLE**: Exactly 2 SELL legs (1 OTM CE + 1 OTM PE).
+- **IRON_CONDOR**: Exactly 4 SELL legs (2 inner short strikes + 2 outer protection legs) OR use SHORT_STRANGLE if only proposing 2 legs. Do NOT output a 2-leg IRON_CONDOR.
+- **BEAR_CALL_SPREAD / BULL_PUT_SPREAD**: Exactly 2 SELL legs.
 
 ### Strike Selection Principles:
 - Sell strikes at or beyond support/resistance levels

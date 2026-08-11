@@ -88,24 +88,34 @@ def _extract_ipv4_from_response(body_text: str) -> str | None:
     return None
 
 
-def _fetch_public_ip() -> str | None:
+def _fetch_public_ip(
+    timeout: float = _HTTP_TIMEOUT,
+    max_providers: int | None = None,
+    retries: int = 2,
+) -> str | None:
     """Return the current public IPv4 address, or None if all providers fail.
 
-    Tries each provider with exponential backoff. Hardened to parse JSON & text
+    Tries each provider with retries. Hardened to parse JSON & text
     responses and filter out IPv6/private IPs.
+
+    ``timeout`` bounds each HTTP request; ``max_providers`` caps how many of
+    ``_IP_PROVIDERS`` are tried; ``retries`` is the per-provider retry count.
+    Callers that must not block long (e.g. the Shoonya IP guard) pass tighter
+    bounds — defaults keep the full hardened chain.
     """
-    max_retries_per_provider = 2
+    max_retries_per_provider = retries
+    providers = _IP_PROVIDERS if max_providers is None else _IP_PROVIDERS[:max_providers]
     last_error: str | None = None
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) NSEBOT/1.0",
         "Accept": "application/json, text/plain, */*",
     }
 
-    for url in _IP_PROVIDERS:
+    for url in providers:
         for attempt in range(1, max_retries_per_provider + 1):
             try:
                 req = urllib.request.Request(url, headers=headers)
-                with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
                     raw_bytes = resp.read()
                     body_text = raw_bytes.decode("utf-8", errors="replace").strip()
 

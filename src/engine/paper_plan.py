@@ -139,6 +139,10 @@ VERDICT_ACTION_MAP = {
     "Call Writing":    ("SELL", "CE"), # Handled by TFSS v4
     "Long Unwinding":  ("SELL", "CE"), # Handled by TFSS v4
     "OI Bias Bearish": ("SELL", "CE"), # Handled by TFSS v4
+    # Neutral — ideal for option selling (strangle/straddle)
+    "Sideways":              ("SELL", "STRANGLE"), # Sell both CE + PE
+    "Volatility Expansion":  ("SELL", "STRANGLE"), # Sell premium into high IV
+    "Volatility Contraction": ("SELL", "STRANGLE"), # Sell before IV expansion
     # LLM action labels — map to canonical option actions
     "GO_LONG":         ("SELL", "PE"), # Handled by TFSS v4
     "GO_SHORT":        ("SELL", "CE"), # Handled by TFSS v4
@@ -147,9 +151,16 @@ VERDICT_ACTION_MAP = {
 
 def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | None:
     """Return the executable paper plan, or None when no clean auto entry exists."""
+    from config.settings import PAPER_RESEARCH_MODE
+
     min_conf = get_effective_min_confidence()
     if int(confidence or 0) < min_conf:
-        return None
+        # In research mode, allow lower-confidence trades through for observation
+        if not PAPER_RESEARCH_MODE:
+            return None
+        # Research mode: require at least 40% confidence (down from 65%)
+        if int(confidence or 0) < 40:
+            return None
 
     symbol = str(ctx.get("symbol") or "").upper()
     underlying = _safe_float(ctx.get("underlying"))
@@ -208,6 +219,91 @@ def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | N
         # else: keep the original option_type (CE/PE) and side from VERDICT_ACTION_MAP
     support = _safe_float(ctx.get("support"))
     resistance = _safe_float(ctx.get("resistance"))
+
+    # ── STRANGLE: select both CE and PE legs ───────────────────────────
+    if option_type == "STRANGLE":
+        from src.engine.trade_plan import select_candidate, get_option_premium, get_atr
+
+        symbol_str = str(ctx.get("symbol") or symbol)
+        expiry_str = str(ctx.get("expiry") or "")
+        option_rows = ctx.get("option_rows") or []
+        dte_val = int(ctx.get("dte") or 0)
+        min_premium_threshold = 0.001 * underlying  # 0.1% of underlying
+
+        legs = []
+        for leg_type in ("CE", "PE"):
+            effective_threshold = min_premium_threshold * 0.90
+            leg_strike = None
+            leg_premium = None
+
+            # 1. Try candidate selection, but enforce OTM
+            tfss_side = "SELL_PE" if leg_type == "PE" else "SELL_CE"
+            cand = select_candidate(
+                side=tfss_side,
+                persisted_label="BULLISH" if leg_type == "PE" else "BEARISH",
+                dte=dte_val,
+                atr_state={"underlying": underlying},
+                option_chain=option_rows,
+            )
+            if cand and cand.get("strike"):
+                cand_strike = float(cand["strike"])
+                # Enforce OTM: CE strike > ATM, PE strike < ATM
+                is_otm = (leg_type == "CE" and cand_strike > underlying) or \
+                         (leg_type == "PE" and cand_strike < underlying)
+                if is_otm:
+                    cand_prem = get_option_premium(symbol_str, expiry_str, cand_strike, leg_type, option_rows)
+                    if cand_prem is not None and cand_prem >= effective_threshold:
+                        leg_strike = cand_strike
+                        leg_premium = cand_prem
+
+            # 2. Step outward from ATM to find OTM strike with sufficient premium
+            if leg_strike is None:
+                cur = _round_to_step(underlying + step if leg_type == "CE" else underlying - step, step)
+                for _ in range(10):
+                    prem = get_option_premium(symbol_str, expiry_str, cur, leg_type, option_rows)
+                    if prem is not None and prem >= effective_threshold:
+                        leg_strike = cur
+                        leg_premium = prem
+                        break
+                    cur = _round_to_step(cur + step if leg_type == "CE" else cur - step, step)
+
+            # 3. Final fallback: best available OTM strike
+            if leg_strike is None:
+                cur = _round_to_step(underlying + step if leg_type == "CE" else underlying - step, step)
+                prem = get_option_premium(symbol_str, expiry_str, cur, leg_type, option_rows)
+                if prem is not None and prem > 0:
+                    leg_strike = cur
+                    leg_premium = prem
+
+            if leg_strike is None:
+                log.warning("[paper_plan] %s STRANGLE: failed to find %s leg — blocking", symbol, leg_type)
+                return None
+
+            legs.append({
+                "option_type": leg_type,
+                "strike": leg_strike,
+                "premium": leg_premium,
+            })
+
+        ce_leg = legs[0]
+        pe_leg = legs[1]
+        net_premium = (ce_leg["premium"] or 0) + (pe_leg["premium"] or 0)
+
+        return {
+            "verdict_label": verdict,
+            "side": "SELL",
+            "option_type": "STRANGLE",
+            "strike": ce_leg["strike"],  # primary reference
+            "premium": net_premium,
+            "sl": None,  # managed at book level, not per-leg
+            "target": None,
+            "atr": get_atr(ctx),
+            "setup_type": "CORE",
+            "legs": [
+                {"option_type": "CE", "strike": ce_leg["strike"], "premium": ce_leg["premium"]},
+                {"option_type": "PE", "strike": pe_leg["strike"], "premium": pe_leg["premium"]},
+            ],
+        }
 
     # Strike selection: OTM for SELL, ATM for BUY
     if option_type in ("CE", "PE"):

@@ -132,10 +132,11 @@ def _filter_atm_strikes(result: dict, required_strikes: set[float] | None = None
     underlying = result.get("underlying_price")
     atm_strike = None
 
-    if underlying:
+    if underlying and underlying > 0:
         # Closest strike to the underlying price
         atm_strike = min(strikes_list, key=lambda x: abs(x - underlying))
     elif str(result.get("symbol", "")).upper().split()[0] in _MCX_COMMODITIES:
+        # Don't use fallback if the underlying isn't populated well for MCX
         log.warning(
             "Skipping ATM filter for %s: missing underlying price",
             result.get("symbol"),
@@ -190,6 +191,24 @@ def _filter_atm_strikes(result: dict, required_strikes: set[float] | None = None
 
 def _try_fetcher(source: str, symbol: str, expiry: str | None) -> dict | None:
     """Run a single fetcher and return normalised result or None."""
+    if source == "shoonya":
+        # ISP IP-change guard: Shoonya validates the login source IP; a rotated
+        # public IP would burn a ~60s Playwright OAuth and fail with INVALID_IP.
+        # When the once-per-day check flags a change, skip Shoonya so the
+        # router falls through to fallback sources for this symbol.
+        try:
+            from src.fetchers.shoonya_ip_guard import shoonya_should_skip
+
+            if shoonya_should_skip():
+                log.warning(
+                    "[router] %s | shoonya SKIPPED — public IP changed (INVALID_IP risk); using fallback sources",
+                    symbol,
+                )
+                return None
+        except Exception as exc:
+            log.debug(
+                "[router] %s | shoonya IP guard error (fail-open): %s", symbol, exc
+            )
     if source not in _FETCHERS:
         log.warning("Fetcher '%s' unavailable; skipping", source)
         return None
@@ -465,7 +484,9 @@ def fetch_option_chain(symbol: str, expiry: str | None = None, required_strikes:
 
             p_data = get_fetch_data(primary_src, timeout_s=12.0)
 
-            f_timeout = 0.1 if (p_data is not None and f_fut.done()) else (0.1 if p_data is not None else 12.0)
+            # If primary succeeded and fallback is done, just grab fallback (0.1s).
+            # If primary failed (p_data is None), give fallback the remaining budget (up to 12.0s).
+            f_timeout = 0.1 if p_data is not None else 12.0
             f_data = get_fetch_data(fallback_src, timeout_s=f_timeout)
 
             if p_data and f_data:

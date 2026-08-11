@@ -19,7 +19,11 @@
       "Bash(python -m pytest tests/test_llm_schema_v2.py::TestOpenRouterArrayUnwrap::test_array_wrapped_response_unwrapped -q --no-cov)",
       "Bash(python -c ' *)",
       "Bash(python -m pytest tests/test_llm_schema_v2.py tests/test_live_trading_p0.py -q --no-cov)",
-      "Bash(python -m pytest tests/test_llm_provider_resilience.py tests/test_adr007.py -q --no-cov)"
+      "Bash(python -m pytest tests/test_llm_provider_resilience.py tests/test_adr007.py -q --no-cov)",
+      "Bash(git check-ignore *)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(git push *)",
+      "Bash(pytest tests/test_multileg_strategy.py -v)"
     ]
   }
 }

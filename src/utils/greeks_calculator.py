@@ -4,7 +4,15 @@ import math
 import logging
 from datetime import datetime, time
 import pytz
-from scipy.stats import norm
+class norm:
+    """Zero-dependency Normal Distribution CDF & PDF replacement for scipy.stats.norm."""
+    @staticmethod
+    def cdf(x: float) -> float:
+        return 0.5 * (1.0 + math.erf(x / 1.4142135623730951))
+
+    @staticmethod
+    def pdf(x: float) -> float:
+        return 0.3989422804014327 * math.exp(-0.5 * x * x)
 
 log = logging.getLogger(__name__)
 

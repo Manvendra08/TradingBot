@@ -8,7 +8,16 @@ Guarded windows
 ---------------
 All symbols:
   - 09:15–09:30 IST  Opening auction noise — bid/ask spreads 3-5× normal.
-  - 15:00–15:30 IST  Expiry end-of-session — MMs widen quotes aggressively.
+
+Index F&O (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX):
+  - Trade until 15:40 IST (effective Aug 3, 2026 per NSE circular)
+  - No 15:00–15:30 expiry guard (trades until CAS close at 15:40)
+
+F&O Stocks:
+  - Continuous trading stops 15:15, then CAS until 15:30
+
+Other stocks:
+  - Close 15:30 IST
 
 NATURALGAS / NATGAS:
   - Thursday 19:45–20:15 IST  EIA Weekly Natural Gas Storage Report (±15 min).
@@ -37,6 +46,9 @@ log = logging.getLogger(__name__)
 
 IST = pytz.timezone("Asia/Kolkata")
 
+# Symbols that trade until 15:40 IST (index F&O, effective Aug 3 2026)
+INDEX_FNO_SYMBOLS = frozenset({"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"})
+
 # EIA Natural Gas Storage Report — every Thursday, 20:00 IST
 _EIA_WEEKDAY = 3    # Thursday (0=Monday)
 _EIA_HOUR    = 20
@@ -60,6 +72,7 @@ def is_trading_allowed_now(symbol: str, expiry_str: str | None = None) -> tuple[
         h, m = now.hour, now.minute
         sym  = str(symbol).upper().split()[0]  # "NIFTY 50" → "NIFTY"
         is_mcx = sym in MCX_SYMBOLS or sym in ("NATURALGAS", "NATGAS", "CRUDEOIL", "GOLD", "SILVER")
+        is_index_fno = sym in INDEX_FNO_SYMBOLS
 
         # ── Window 0: CME (NYMEX) holidays (NATURALGAS, CRUDEOIL) ────────────
         if sym in ("NATURALGAS", "NATGAS", "CRUDEOIL"):
@@ -73,16 +86,24 @@ def is_trading_allowed_now(symbol: str, expiry_str: str | None = None) -> tuple[
         if (h, m) >= (9, 15) and (h, m) < (9, 30):
             return False, "Opening auction noise window (09:15–09:30 IST)"
 
-        # ── Window 2: Expiry end-of-session 15:00–15:30 IST ─────────────────
-        if not is_mcx:
-            if (h, m) >= (15, 0) and (h, m) <= (15, 30):
-                if expiry_str:
-                    try:
-                        expiry_date = datetime.strptime(expiry_str, "%Y-%m-%d").date()
-                        if expiry_date == now.date():
-                            return False, f"Expiry end-of-session window (15:00–15:30 IST) for expiry {expiry_str}"
-                    except Exception:
-                        pass
+        # ── Window 2: Expiry end-of-session guard ────────────────────────────
+        # For index F&O (trade until 15:40), only block last 15 min before CAS close
+        # For F&O stocks (continuous until 15:15, then CAS), block 15:15–15:30
+        # For other NSE stocks (close 15:30), block 15:15–15:30
+        if not is_mcx and expiry_str:
+            try:
+                expiry_date = datetime.strptime(expiry_str, "%Y-%m-%d").date()
+                if expiry_date == now.date():
+                    if is_index_fno:
+                        # Index F&O: trade until 15:40, block last 15 min (15:25–15:40)
+                        if (h, m) >= (15, 25):
+                            return False, f"Index F&O expiry end-of-session window (15:25–15:40 IST) for expiry {expiry_str}"
+                    else:
+                        # F&O stocks & other NSE: continuous stops 15:15, CAS 15:15–15:30
+                        if (h, m) >= (15, 15) and (h, m) <= (15, 30):
+                            return False, f"Expiry end-of-session window (15:15–15:30 IST) for expiry {expiry_str}"
+            except Exception:
+                pass
 
         # ── Window 3: EIA report ±15 min (NATURALGAS Thursday, CRUDEOIL Wednesday) ────────
         if sym in ("NATURALGAS", "NATGAS"):
@@ -136,10 +157,14 @@ def is_trading_allowed_now(symbol: str, expiry_str: str | None = None) -> tuple[
                         # MCX cutoff: 8:00 pm IST (20:00)
                         if (h, m) >= (20, 0):
                             return False, f"Expiry day trading cutoff (after 20:00 IST for MCX on expiry day)"
+                    elif is_index_fno:
+                        # Index F&O: trade until 15:40 (CAS closes)
+                        if (h, m) >= (15, 40):
+                            return False, f"Expiry day trading cutoff (after 15:40 IST for Index F&O on expiry day)"
                     else:
-                        # NSE/BSE cutoff: 2:30 pm IST (14:30)
-                        if (h, m) >= (14, 30):
-                            return False, f"Expiry day trading cutoff (after 14:30 IST for NSE/BSE on expiry day)"
+                        # F&O stocks & other NSE: cutoff at 15:30
+                        if (h, m) >= (15, 30):
+                            return False, f"Expiry day trading cutoff (after 15:30 IST for NSE on expiry day)"
             except Exception as parse_exc:
                 log.warning("time_guards: failed to parse expiry date %s (%s)", expiry_str, parse_exc)
 

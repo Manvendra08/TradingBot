@@ -91,6 +91,20 @@ def _run_multileg_live_strategy_inner(
         )
         return {"action": "SKIPPED_MARKET_CLOSED", "reason": "Outside market hours"}
 
+    # ── 1b. Broker disabled guard ─────────────────────────────────────
+    from config.runtime_config import load_runtime_config
+
+    _rt_cfg = load_runtime_config()
+    if _rt_cfg.get("live_broker_disabled", False):
+        log.debug(
+            "[multileg-live] %s: live broker disabled via cockpit — skipping",
+            symbol,
+        )
+        return {
+            "action": "SKIPPED_BROKER_DISABLED",
+            "reason": "Broker trades turned off in Cockpit",
+        }
+
     # ── 2. Basic validation ────────────────────────────────────────────
     from config.multileg_strategies import ALLOWED_SYMBOLS
 
@@ -447,19 +461,32 @@ def _close_live_book(
 
     Attempts to place exit orders for each leg. If any exit fails,
     logs the failure but continues closing remaining legs.
+    When live_broker_disabled is True, skips all broker interaction
+    and closes the book in DB only.
     """
     from src.models.schema import close_book, close_leg
 
+    # ── Check if broker is disabled ────────────────────────────────────
+    from config.runtime_config import load_runtime_config
+    broker_disabled = load_runtime_config().get("live_broker_disabled", False)
+
     # ── Attempt broker square-off for each leg ─────────────────────────
     kite = None
-    try:
-        from src.engine.live_trading import get_kite_client
-        kite = get_kite_client()
-    except Exception as e:
-        log.warning(
-            "[multileg-live] %s: could not get Kite client for book close: %s",
+    if not broker_disabled:
+        try:
+            from src.engine.live_trading import get_kite_client
+            kite = get_kite_client()
+        except Exception as e:
+            log.warning(
+                "[multileg-live] %s: could not get Kite client for book close: %s",
+                symbol,
+                e,
+            )
+    else:
+        log.info(
+            "[multileg-live] %s: broker disabled — closing book %s in DB only (no order placement)",
             symbol,
-            e,
+            book_id,
         )
 
     exit_results = []
@@ -487,7 +514,7 @@ def _close_live_book(
 
                 # Resolve the Kite tradingsymbol
                 resolved = resolve_instrument(
-                    symbol, strike, option_type, leg.get("expiry", "")
+                    symbol=symbol, expiry=leg.get("expiry", ""), strike=strike, option_type=option_type
                 )
                 if not resolved or not resolved.get("tradingsymbol"):
                     log.warning(
@@ -536,8 +563,8 @@ def _close_live_book(
                 )
                 exit_results.append({"leg_id": leg_id, "status": "FAILED", "error": str(e)})
         else:
-            log.warning(
-                "[multileg-live] %s: no Kite client — leg %d not squared off via broker",
+            log.debug(
+                "[multileg-live] %s: no Kite client (or broker disabled) — leg %d not squared off via broker",
                 symbol,
                 leg_id,
             )
@@ -877,7 +904,7 @@ def _attempt_new_live_entry(
 
         try:
             resolved = resolve_instrument(
-                symbol, strike, option_type, expiry
+                symbol=symbol, expiry=expiry, strike=strike, option_type=option_type
             )
             if not resolved or not resolved.get("tradingsymbol"):
                 log.error(
@@ -1111,7 +1138,7 @@ def _rollback_placed_legs(
 
         try:
             resolved = resolve_instrument(
-                symbol, strike, option_type, ""
+                symbol=symbol, expiry="", strike=strike, option_type=option_type
             )
             if not resolved or not resolved.get("tradingsymbol"):
                 log.warning(

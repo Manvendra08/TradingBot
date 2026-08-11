@@ -58,25 +58,57 @@ def fetch_and_store_fii_positioning() -> bool:
         # We can continue and try to fetch F&O data even if cash fails
 
     # 2. Fetch Participant-wise F&O OI CSV
+    #    NSE publishes this file after ~19:30 IST.  When today's file isn't
+    #    available yet (404), fall back to the previous trading day so the
+    #    fetch doesn't silently produce zero OI.
     if data_date_str:
         try:
             dt = datetime.strptime(data_date_str, "%d-%b-%Y")
             csv_date_str = dt.strftime("%d%m%Y")
             today_str = dt.strftime("%Y-%m-%d")
-        except:
+        except Exception:
             csv_date_str = now_ist.strftime("%d%m%Y")
     else:
         csv_date_str = now_ist.strftime("%d%m%Y")
-        
-    csv_url = f"https://nsearchives.nseindia.com/content/nsccl/fao_participant_oi_{csv_date_str}.csv"
-    
+
+    csv_dates_to_try = [csv_date_str]
+    # Also try the previous calendar day (skip weekends)
+    try:
+        prev_dt = datetime.strptime(csv_date_str, "%d%m%Y") - timedelta(days=1)
+        # Skip to Friday if previous day is weekend
+        while prev_dt.weekday() >= 5:  # 5=Sat, 6=Sun
+            prev_dt -= timedelta(days=1)
+        prev_str = prev_dt.strftime("%d%m%Y")
+        if prev_str != csv_date_str:
+            csv_dates_to_try.append(prev_str)
+    except Exception:
+        pass
+
     fii_long = 0
     fii_short = 0
     client_long = 0
     client_short = 0
-    
+
+    csv_resp = None
+    for csv_date in csv_dates_to_try:
+        csv_url = f"https://nsearchives.nseindia.com/content/nsccl/fao_participant_oi_{csv_date}.csv"
+        try:
+            csv_resp = fetcher.session.get(csv_url, headers=NSE_HEADERS, timeout=15)
+            if csv_resp.status_code == 200:
+                log.info("[fii] F&O participant OI CSV found for %s", csv_date)
+                break
+            log.debug("[fii] F&O participant OI CSV not available for %s (HTTP %d)", csv_date, csv_resp.status_code)
+            csv_resp = None
+        except Exception as exc:
+            log.debug("[fii] F&O participant OI fetch failed for %s: %s", csv_date, exc)
+            csv_resp = None
+
+    if csv_resp is None:
+        log.warning("[fii] F&O participant OI CSV not available for any candidate date (%s)", csv_dates_to_try)
+
     try:
-        csv_resp = fetcher.session.get(csv_url, headers=NSE_HEADERS, timeout=15)
+        if csv_resp is None:
+            raise FileNotFoundError(f"Participant OI CSV not found for dates {csv_dates_to_try}")
         csv_resp.raise_for_status()
         
         # Parse CSV

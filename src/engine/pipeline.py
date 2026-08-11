@@ -579,7 +579,11 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
     if not oc_result or not oc_result.ok or not packet.get("oc_data"):
         log.error("No data for %s — skipping", symbol)
         if not is_test:
-            send_text(f"⚠️ **NSEBOT ALERT**: all fetchers failed for `{symbol}` at scan interval.")
+            from config.symbol_classes import is_market_open
+            if is_market_open(symbol):
+                send_text(f"⚠️ **NSEBOT ALERT**: all fetchers failed for `{symbol}` at scan interval.")
+            else:
+                log.info("[pipeline] Market closed for %s — suppressing off-market fetcher failure alert", symbol)
         return
 
     oc_data = packet["oc_data"]
@@ -910,16 +914,28 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
             except Exception:
                 log.exception("%s: scan summary save failed", symbol)
 
+        from config.symbol_classes import is_market_open
+        from config.settings import ENABLE_ZERO_SIGNAL_TELEGRAM
+        market_is_active = is_market_open(symbol)
+        trade_entered = bool((structured_payload or {}).get("header", {}).get("trade_entered"))
+
         should_send = bool(new_alerts)
         if not should_send:
-            diag = (scan_context or {}).get("diagnostics", {})
-            max_oi = float(diag.get("max_oi_delta_pct") or 0)
-            if dedup_suppressed > 0:
-                should_send = should_send_zero_signal(symbol)
-            elif max_oi >= 1.0:
-                should_send = True
+            if not market_is_active:
+                log.info("[pipeline] Market closed for %s — suppressing off-market zero-signal digest send", symbol)
+                should_send = False
+            elif not trade_entered and not open_trade and not exit_advice and not ENABLE_ZERO_SIGNAL_TELEGRAM:
+                log.debug("[pipeline] %s: trade not entered & zero alerts — suppressing routine zero-signal Telegram send", symbol)
+                should_send = False
             else:
-                should_send = should_send_zero_signal(symbol)
+                diag = (scan_context or {}).get("diagnostics", {})
+                max_oi = float(diag.get("max_oi_delta_pct") or 0)
+                if dedup_suppressed > 0:
+                    should_send = should_send_zero_signal(symbol)
+                elif max_oi >= 1.0:
+                    should_send = True
+                else:
+                    should_send = should_send_zero_signal(symbol)
 
         telegram_message_id = None
         _async_llm_pending = False

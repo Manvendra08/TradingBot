@@ -87,6 +87,7 @@ data/google_drive_service_account.json
 
 # Runtime state files
 data/ip_state.json
+data/shoonya_ip_state.json
 data/runtime_config.json
 
 # ML model artifacts

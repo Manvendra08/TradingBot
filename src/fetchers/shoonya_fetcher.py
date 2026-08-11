@@ -538,12 +538,32 @@ class ShoonyaFetcher(BaseFetcher):
         return token
 
     def login(self) -> bool:
-        import filelock
-        lock_path = self._TOKEN_CACHE + ".lock"
-        # Cross-process mutex: only one Playwright session at a time.
-        # 120 s timeout — if another process holds the lock, we wait for it to write the token,
-        # then the double-check inside will find it and skip re-login.
-        lock = filelock.FileLock(lock_path, timeout=120)
+        # ISP IP-change guard: Shoonya rejects GenAcsTok with INVALID_IP when
+        # the source IP rotated (common with a dynamic ISP IP). If today's
+        # once-per-day check flagged a change, skip the ~60s Playwright OAuth —
+        # it would fail anyway; callers (scheduler pre-auth, daily reauth,
+        # quota re-auth, router) fall back to other sources.
+        try:
+            from src.fetchers.shoonya_ip_guard import shoonya_should_skip
+
+            if shoonya_should_skip():
+                log.warning(
+                    "[shoonya] login skipped — public IP changed (INVALID_IP risk); check Shoonya IP binding"
+                )
+                return False
+        except Exception as exc:
+            log.debug("[shoonya] IP guard error (fail-open): %s", exc)
+
+        try:
+            import filelock
+            lock_path = self._TOKEN_CACHE + ".lock"
+            lock = filelock.FileLock(lock_path, timeout=8)
+            lock_exception = (filelock.Timeout,)
+        except ImportError:
+            from contextlib import nullcontext
+            lock = nullcontext()
+            lock_exception = ()
+
         try:
             with lock:
                 with self._login_lock:
@@ -590,7 +610,7 @@ class ShoonyaFetcher(BaseFetcher):
                     except Exception as exc:
                         log.exception("[shoonya] login exception: %s", exc)
                         return False
-        except filelock.Timeout:
+        except lock_exception:
             log.error("[shoonya] Timeout waiting for login lock (120 s). Another process is likely still logging in.")
             return False
 
@@ -621,19 +641,10 @@ class ShoonyaFetcher(BaseFetcher):
         self, endpoint: str, payload: dict, retry_on_expiry: bool = True
     ) -> dict | None:
         self._throttle_rate_limit()
-        # Acquire lock with a 15.0s timeout to allow parallel symbol fetches
-        # (e.g. NIFTY, BANKNIFTY, SENSEX) to run sequentially without false drops,
-        # while keeping a deadline safety cap.
-        if not self._api_lock.acquire(blocking=True, timeout=15.0):
-            log.warning(
-                "[shoonya] %s skipped — lock timeout (15s) due to heavy concurrent fetch load",
-                endpoint,
-            )
-            return None
-        try:
-            return self._api_call_impl(endpoint, payload, retry_on_expiry)
-        finally:
-            self._api_lock.release()
+        # Removed _api_lock to prevent concurrent access slowdown during parallel
+        # option chain fetches across multiple symbols (NIFTY, BANKNIFTY, etc.).
+        # Session expiry and token rotation are handled gracefully in _api_call_impl.
+        return self._api_call_impl(endpoint, payload, retry_on_expiry)
 
     def _api_call_impl(
         self, endpoint: str, payload: dict, retry_on_expiry: bool = True
@@ -993,177 +1004,175 @@ class ShoonyaFetcher(BaseFetcher):
         url = "https://api.shoonya.com/NorenWClientTP/TPSeries"
 
         for attempt in range(1, max_attempts + 1):
-            # Acquire the same serialisation lock as _api_call() so token
-            # state is never mutated by _api_call while fetch_candles runs,
-            # and vice versa.
-            with self._api_lock:
+            self._load_cached_token()
+            if not self.access_token:
                 if not self.login():
                     log.warning("[shoonya] Candle fetch aborted: Login failed")
                     return None
 
-                # ── Proactively refresh if token nearing expiry ──────────────────
-                if (
-                    self._token_created_at > 0
-                    and time.time() - self._token_created_at
-                    > self._TOKEN_REFRESH_INTERVAL
-                ):
-                    log.info(
-                        "[shoonya] Token age %.0fs exceeds refresh interval — re-authenticating before candle fetch",
-                        time.time() - self._token_created_at,
-                    )
-                    self._clear_cached_token()
-                    self.login()
-
-                # Proactively re-auth if approaching the session call quota
-                self._check_session_quota()
-
-                # ── Use jKey-only auth (no Bearer header) ──────────────────
-                # Dual auth (jKey + Bearer) was found to double the session
-                # quota burn rate, causing premature Session Expired errors
-                # after ~45-50 effective API calls.  See _post_jdata() docstring.
-                body_str = "jData=" + json.dumps(payload, separators=(",", ":"))
-                body_str += f"&jKey={self.access_token}"
-                body = body_str.encode()
-                headers: dict[str, str] = {
-                    "Content-Type": "application/x-www-form-urlencoded"
-                }
-                req = urllib.request.Request(
-                    url,
-                    data=body,
-                    headers=headers,
+            # ── Proactively refresh if token nearing expiry ──────────────────
+            if (
+                self._token_created_at > 0
+                and time.time() - self._token_created_at
+                > self._TOKEN_REFRESH_INTERVAL
+            ):
+                log.info(
+                    "[shoonya] Token age %.0fs exceeds refresh interval — re-authenticating before candle fetch",
+                    time.time() - self._token_created_at,
                 )
+                self._clear_cached_token()
+                self.login()
+                self._load_cached_token()
+
+            # Proactively re-auth if approaching the session call quota
+            self._check_session_quota()
+
+            # ── Use jKey-only auth (no Bearer header) ──────────────────
+            # Dual auth (jKey + Bearer) was found to double the session
+            # quota burn rate, causing premature Session Expired errors
+            # after ~45-50 effective API calls.  See _post_jdata() docstring.
+            body_str = "jData=" + json.dumps(payload, separators=(",", ":"))
+            body_str += f"&jKey={self.access_token}"
+            body = body_str.encode()
+            headers: dict[str, str] = {
+                "Content-Type": "application/x-www-form-urlencoded"
+            }
+            req = urllib.request.Request(
+                url,
+                data=body,
+                headers=headers,
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    raw = json.loads(resp.read().decode())
+            except urllib.error.HTTPError as e:
+                raw_body = ""
                 try:
-                    with urllib.request.urlopen(req, timeout=15) as resp:
-                        raw = json.loads(resp.read().decode())
-                except urllib.error.HTTPError as e:
-                    raw_body = ""
-                    try:
-                        raw_body = e.read().decode()
-                    except Exception:
-                        pass
+                    raw_body = e.read().decode()
+                except Exception:
+                    pass
 
-                    log.warning(
-                        "[shoonya] chart-candles HTTP %s for %s token=%s (attempt %d/%d): %s",
-                        e.code,
-                        exchange,
-                        token,
-                        attempt,
-                        max_attempts,
-                        raw_body[:100].strip(),
-                    )
+                log.warning(
+                    "[shoonya] chart-candles HTTP %s for %s token=%s (attempt %d/%d): %s",
+                    e.code,
+                    exchange,
+                    token,
+                    attempt,
+                    max_attempts,
+                    raw_body[:100].strip(),
+                )
 
-                    # Retry on typical gateway or rate-limiting/server errors
-                    if e.code in (502, 503, 504, 429) and attempt < max_attempts:
-                        # Exit lock so the sleep + retry don't block other callers
-                        pass  # will sleep and continue below
-                    else:
-                        return None
-                except Exception as exc:
-                    log.warning(
-                        "[shoonya] chart-candles failed %s token=%s (attempt %d/%d): %s",
-                        exchange,
-                        token,
-                        attempt,
-                        max_attempts,
-                        exc,
-                    )
-                    if attempt < max_attempts:
-                        pass  # will sleep and continue below
-                    else:
-                        return None
+                # Retry on typical gateway or rate-limiting/server errors
+                if e.code in (502, 503, 504, 429) and attempt < max_attempts:
+                    pass  # will sleep and continue below
                 else:
-                    # ── Successful HTTP response — process result ────────────
+                    return None
+            except Exception as exc:
+                log.warning(
+                    "[shoonya] chart-candles failed %s token=%s (attempt %d/%d): %s",
+                    exchange,
+                    token,
+                    attempt,
+                    max_attempts,
+                    exc,
+                )
+                if attempt < max_attempts:
+                    pass  # will sleep and continue below
+                else:
+                    return None
+            else:
+                # ── Successful HTTP response — process result ────────────
 
-                    # Handle auth-failure response (single dict with stat != Ok)
-                    if isinstance(raw, dict):
-                        emsg = raw.get("emsg", str(raw))
-                        if (
-                            "session" in emsg.lower()
-                            or "token" in emsg.lower()
-                            or "invalid" in emsg.lower()
-                        ):
-                            log.info(
-                                "[shoonya] chart-candles: session expired (attempt %d/%d) — clearing token cache",
-                                attempt,
-                                max_attempts,
-                            )
-                            self._clear_cached_token()
-                            if attempt < max_attempts:
-                                # Re-authenticate on next loop iteration
-                                time.sleep(0.5)
-                                continue
-                        else:
-                            log.warning(
-                                "[shoonya] chart-candles unexpected response: %s", emsg
-                            )
-                        return None
-
-                    if not isinstance(raw, list):
-                        log.warning(
-                            "[shoonya] chart-candles: unexpected response type %s",
-                            type(raw),
+                # Handle auth-failure response (single dict with stat != Ok)
+                if isinstance(raw, dict):
+                    emsg = raw.get("emsg", str(raw))
+                    if (
+                        "session" in emsg.lower()
+                        or "token" in emsg.lower()
+                        or "invalid" in emsg.lower()
+                    ):
+                        log.info(
+                            "[shoonya] chart-candles: session expired (attempt %d/%d) — clearing token cache",
+                            attempt,
+                            max_attempts,
                         )
-                        return None
-
-                    bars: list[dict] = []
-                    for item in raw:
-                        try:
-                            # Shoonya returns: ssboe (bar start epoch), into/inth/intl/intc (OHLC)
-                            # Some API versions use 'o'/'h'/'l'/'c' — handle both.
-                            ts = float(item.get("ssboe") or item.get("ts") or 0)
-                            o = float(item.get("into") or item.get("o") or 0)
-                            h = float(item.get("inth") or item.get("h") or 0)
-                            l = float(item.get("intl") or item.get("l") or 0)
-                            c = float(item.get("intc") or item.get("c") or 0)
-                            if ts > 0 and all(x > 0 for x in (o, h, l, c)):
-                                bars.append(
-                                    {
-                                        "Open": o,
-                                        "High": h,
-                                        "Low": l,
-                                        "Close": c,
-                                        "_ts": ts,
-                                    }
-                                )
-                        except (ValueError, KeyError, TypeError):
+                        self._clear_cached_token()
+                        if attempt < max_attempts:
+                            # Re-authenticate on next loop iteration
+                            time.sleep(0.5)
                             continue
-
-                    if not bars:
-                        log.debug(
-                            "[shoonya] GetTimePriceSeries: zero valid bars for %s token=%s",
-                            exchange,
-                            token,
+                    else:
+                        log.warning(
+                            "[shoonya] chart-candles unexpected response: %s", emsg
                         )
-                        return None
+                    return None
 
-                    # ═══════════════════════════════════════════════════════════
-                    # Token rotation: TPSeries returns a list (not a dict with
-                    # susertoken), but the call still counts toward the session
-                    # quota.  Saving the current token at least ensures the
-                    # in-memory / on-disk state matches, preventing drift.
-                    # ═══════════════════════════════════════════════════════════
-                    self._token_created_at = time.time()
-                    self._save_token()
-                    self._increment_and_save_call_count()
+                if not isinstance(raw, list):
+                    log.warning(
+                        "[shoonya] chart-candles: unexpected response type %s",
+                        type(raw),
+                    )
+                    return None
 
+                bars: list[dict] = []
+                for item in raw:
+                    try:
+                        # Shoonya returns: ssboe (bar start epoch), into/inth/intl/intc (OHLC)
+                        # Some API versions use 'o'/'h'/'l'/'c' — handle both.
+                        ts = float(item.get("ssboe") or item.get("ts") or 0)
+                        o = float(item.get("into") or item.get("o") or 0)
+                        h = float(item.get("inth") or item.get("h") or 0)
+                        l = float(item.get("intl") or item.get("l") or 0)
+                        c = float(item.get("intc") or item.get("c") or 0)
+                        if ts > 0 and all(x > 0 for x in (o, h, l, c)):
+                            bars.append(
+                                {
+                                    "Open": o,
+                                    "High": h,
+                                    "Low": l,
+                                    "Close": c,
+                                    "_ts": ts,
+                                }
+                            )
+                    except (ValueError, KeyError, TypeError):
+                        continue
+
+                if not bars:
                     log.debug(
-                        "[shoonya] GetTimePriceSeries: %d bars for %s token=%s",
-                        len(bars),
+                        "[shoonya] GetTimePriceSeries: zero valid bars for %s token=%s",
                         exchange,
                         token,
                     )
-                    log.info(
-                        "[shoonya] chart-candles | %s token=%s | %d bars fetched",
-                        exchange,
-                        token,
-                        len(bars),
-                    )
-                    return bars
+                    return None
 
-            # If we reach here, an HTTP/gateway error occurred and we should
-            # retry — sleep outside the lock so concurrent callers are not blocked.
-            time.sleep(delay)
-            delay *= 2
+                # ═══════════════════════════════════════════════════════════
+                # Token rotation: TPSeries returns a list (not a dict with
+                # susertoken), but the call still counts toward the session
+                # quota.  Saving the current token at least ensures the
+                # in-memory / on-disk state matches, preventing drift.
+                # ═══════════════════════════════════════════════════════════
+                self._token_created_at = time.time()
+                self._save_token()
+                self._increment_and_save_call_count()
+
+                log.debug(
+                    "[shoonya] GetTimePriceSeries: %d bars for %s token=%s",
+                    len(bars),
+                    exchange,
+                    token,
+                )
+                log.info(
+                    "[shoonya] chart-candles | %s token=%s | %d bars fetched",
+                    exchange,
+                    token,
+                    len(bars),
+                )
+                return bars
+
+        # If we reach here, an HTTP/gateway error occurred and we should
+        # retry — sleep outside the lock so concurrent callers are not blocked.
+        time.sleep(delay)
+        delay *= 2
 
         return None
 
@@ -1431,15 +1440,12 @@ class ShoonyaFetcher(BaseFetcher):
                     return None
 
                 underlying_price = 0.0
-                for key in ("lp", "c"):
-                    try:
-                        val = quote.get(key)
-                        if val is not None:
-                            underlying_price = float(val)
-                            if underlying_price > 0.0:
-                                break
-                    except (ValueError, TypeError):
-                        pass
+                try:
+                    val = quote.get("lp")
+                    if val is not None:
+                        underlying_price = float(val)
+                except (ValueError, TypeError):
+                    underlying_price = 0.0
 
                 if underlying_price == 0.0:
                     log.warning("[shoonya] underlying price is 0 for %s", underlying_tsym)
@@ -1557,15 +1563,12 @@ class ShoonyaFetcher(BaseFetcher):
                 return None
 
             underlying_price = 0.0
-            for key in ("lp", "c"):
-                try:
-                    val = quote.get(key)
-                    if val is not None:
-                        underlying_price = float(val)
-                        if underlying_price > 0.0:
-                            break
-                except (ValueError, TypeError):
-                    pass
+            try:
+                val = quote.get("lp")
+                if val is not None:
+                    underlying_price = float(val)
+            except (ValueError, TypeError):
+                underlying_price = 0.0
 
             if underlying_price == 0.0:
                 log.warning("[shoonya] underlying price is 0 for %s", underlying_tsym)

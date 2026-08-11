@@ -41,7 +41,7 @@ from src.engine.trend_analysis import (
 )
 from src.engine.regime_detector import detect_market_regime, regime_score_for_trade, REGIME_NO_TRADE
 from src.engine.risk_engine import _check_risk_limits_for_table
-from src.engine.verdict_sets import is_bullish, is_bearish
+from src.engine.verdict_sets import is_bullish, is_bearish, is_neutral
 from src.engine.trade_decision import (
     _extract_ai_bias,
     _extract_ai_veto_flag,
@@ -117,12 +117,24 @@ def step_signal_core_oi(ctx: PipelineContext) -> StepResult:
     verdict = intel.get("verdict_label", "")
     confidence = int(intel.get("confidence") or 0)
 
+    # For option selling strategies, neutral verdicts (Sideways, Volatility
+    # Expansion/Contraction) are valid — range-bound markets maximize theta
+    # decay.  Directional verdicts remain the primary signal for buying premium.
     if not is_bullish(verdict) and not is_bearish(verdict):
+        if is_neutral(verdict):
+            ctx.direction = "NEUTRAL"
+            return StepResult(
+                name="signal",
+                passed=True,
+                score=80,
+                reason=f"Neutral signal '{verdict}' — valid for option selling (theta decay)",
+                data={"verdict": verdict, "confidence": confidence, "direction": "NEUTRAL"}
+            )
         return StepResult(
             name="signal",
             passed=False,
             score=0,
-            reason=f"Verdict '{verdict}' is not directional",
+            reason=f"Verdict '{verdict}' is not directional or neutral",
             data={"verdict": verdict, "confidence": confidence}
         )
 

@@ -201,6 +201,7 @@ NSE_HEADERS = {
 
 TELEGRAM_BOT_TOKEN = _optional_env("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = _optional_env("TELEGRAM_CHAT_ID")
+ENABLE_ZERO_SIGNAL_TELEGRAM: bool = os.environ.get("ENABLE_ZERO_SIGNAL_TELEGRAM", "false").lower() == "true"
 DISCORD_WEBHOOK_URL = _optional_env("DISCORD_WEBHOOK_URL")
 GEMINI_API_KEY = _optional_env("GEMINI_API_KEY")
 SAMBANOVA_API_KEY = _optional_env("SAMBANOVA_API_KEY")
@@ -216,7 +217,7 @@ OMNIROUTER_BASE_URL = _optional_env("OMNIROUTER_BASE_URL", "http://localhost:201
 DASHBOARD_USERNAME = _optional_env("DASHBOARD_USERNAME")
 DASHBOARD_PASSWORD = _optional_env("DASHBOARD_PASSWORD")
 
-STRIKES_AROUND_ATM = 10
+STRIKES_AROUND_ATM = 8
 
 # ── Fetcher Priority ────────────────────────────────────────────────────────────────────────────────────────────
 # Order in which fetchers are tried for each symbol.
