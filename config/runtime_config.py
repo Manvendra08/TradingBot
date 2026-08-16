@@ -177,3 +177,19 @@ def set_scan_frequency_mcx(minutes: int) -> int:
     config["scan_frequency_mcx"] = val
     save_runtime_config(config)
     return val
+
+
+def is_broker_trade_enabled() -> bool:
+    """Check whether live broker trade (order placement & broker sync) is enabled.
+
+    Returns False if:
+    - live_broker_disabled is True
+    - trading_paused is True
+    """
+    cfg = load_runtime_config()
+    if cfg.get("live_broker_disabled", False):
+        return False
+    if cfg.get("trading_paused", False):
+        return False
+    return True
+

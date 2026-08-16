@@ -72,6 +72,9 @@ def _refresh_ip_async() -> None:
 
 
 def _maybe_sync_positions(force_reason: str | None = None) -> None:
+    from config.runtime_config import is_broker_trade_enabled
+    if not is_broker_trade_enabled():
+        return
     dirty, reason = position_sync_dirty_state.consume()
     if force_reason:
         dirty = True
@@ -91,6 +94,9 @@ def _maybe_sync_positions(force_reason: str | None = None) -> None:
 
 
 def _ensure_kite_health() -> None:
+    from config.runtime_config import is_broker_trade_enabled
+    if not is_broker_trade_enabled():
+        return
     cached = kite_health_cache.get("session_ok")
     if cached:
         return
@@ -204,6 +210,7 @@ def _prefetch_symbol_data(symbol: str, fetched_at: str) -> dict:
     )
 
     skip_news = symbol.upper().strip().split()[0] in NSE_NEWS_BYPASS_SYMBOLS
+    news_future = None
     if skip_news:
         packet["news_result"] = {"ok": True, "data": None, "bypassed": True}
     else:
@@ -211,7 +218,17 @@ def _prefetch_symbol_data(symbol: str, fetched_at: str) -> dict:
             from src.fetchers.news_fetcher import fetch_news
             return fetch_news(symbol)
         news_future = pipeline_io_executor.submit(lambda: run_with_deadline("news", _fetch_news))
-        # BUG-H06 FIX: Safe dict conversion - result may be simple type or namedtuple
+
+    # BUG-H06 FIX: Safe dict conversion for chart_result - evaluate chart first
+    chart_result = chart_future.result()
+    if hasattr(chart_result, '__dict__'):
+        packet["chart_result"] = chart_result.__dict__
+    elif isinstance(chart_result, dict):
+        packet["chart_result"] = chart_result
+    else:
+        packet["chart_result"] = {"ok": True, "data": chart_result}
+
+    if news_future:
         news_result = news_future.result()
         if hasattr(news_result, '__dict__'):
             packet["news_result"] = news_result.__dict__
@@ -220,14 +237,6 @@ def _prefetch_symbol_data(symbol: str, fetched_at: str) -> dict:
         else:
             packet["news_result"] = {"ok": True, "data": news_result}
 
-    # BUG-H06 FIX: Safe dict conversion for chart_result
-    chart_result = chart_future.result()
-    if hasattr(chart_result, '__dict__'):
-        packet["chart_result"] = chart_result.__dict__
-    elif isinstance(chart_result, dict):
-        packet["chart_result"] = chart_result
-    else:
-        packet["chart_result"] = {"ok": True, "data": chart_result}
     packet["oc_data"] = oc_data
     return packet
 
@@ -389,7 +398,36 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
     # Check actual database trade status for paper/live trades
     tf_entered = timeframe_res and isinstance(timeframe_res, dict) and timeframe_res.get("action") == "EXECUTED"
     paper_res = (intel or {}).get("paper_res") if isinstance(intel, dict) else None
-    paper_opened = isinstance(paper_res, dict) and paper_res.get("action") in ("OPENED", "EXECUTED")
+    paper_opened = isinstance(paper_res, dict) and paper_res.get("action") in ("OPENED", "EXECUTED", "ENTERED")
+    
+    multileg_payload = None
+    if isinstance(paper_res, dict):
+        p_act = paper_res.get("action")
+        if p_act == "ENTERED":
+            multileg_payload = {
+                "action": "ENTERED",
+                "strategy_type": paper_res.get("strategy_type"),
+                "legs": paper_res.get("legs", []),
+                "net_premium": paper_res.get("net_premium"),
+                "confidence": paper_res.get("confidence"),
+                "entry_quality": paper_res.get("entry_quality"),
+                "book_id": paper_res.get("book_id"),
+            }
+        elif p_act in ("CLOSED", "MONITORED") or paper_res.get("closed"):
+            closed_items = paper_res.get("closed") or ([paper_res] if p_act == "CLOSED" else [])
+            if closed_items:
+                multileg_payload = {
+                    "action": "CLOSED",
+                    "closed_items": closed_items,
+                }
+        elif p_act == "NO_TRADE":
+            multileg_payload = {
+                "action": "NO_TRADE",
+                "strategy_type": paper_res.get("strategy_type"),
+                "reason": paper_res.get("reason"),
+                "thesis": paper_res.get("thesis"),
+                "confidence": paper_res.get("confidence"),
+            }
     actual_lots = 1
     db_entered = False
     if digest_id:
@@ -417,7 +455,8 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
     
     from config.settings import DEFAULT_LOTS_PER_TRADE
     base_lots = DEFAULT_LOTS_PER_TRADE
-    actual_lots = base_lots * td.get("tranche_count", 1) if td.get("tranche_count") else base_lots
+    if not db_entered:
+        actual_lots = base_lots * td.get("tranche_count", 1) if td.get("tranche_count") else base_lots
 
     exp_val = scan_context.get("expiry")
     dte_val = scan_context.get("dte")
@@ -543,6 +582,8 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
         
     ai_thesis = ""
     llm_thesis = getattr(llm_verdict, "thesis", "") if llm_verdict else ""
+    if not llm_thesis and isinstance(paper_res, dict) and paper_res.get("thesis"):
+        llm_thesis = paper_res.get("thesis")
     if llm_thesis:
         ai_thesis += llm_thesis
 
@@ -559,10 +600,18 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
     if not ai_thesis:
         ai_thesis = "No thesis generated."
 
+    if multileg_payload and multileg_payload.get("action") == "ENTERED":
+        tfss["action"] = "ENTER"
+        tfss["trade_entered"] = True
+        tfss["contract"] = f"{symbol} {multileg_payload.get('strategy_type')}"
+        tfss["multileg"] = multileg_payload
+        header["trade_entered"] = True
+
     return {
         "header": header,
         "tfss": tfss,
         "timeframe": timeframe,
+        "multileg": multileg_payload,
         "positions": {},
         "global_risk": {},
         "options_insight": format_options_insight(scan_context, symbol),

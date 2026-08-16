@@ -51,6 +51,10 @@ def active_strategies_for(symbol: str) -> list[str]:
         if strategies.get("TIMEFRAME", {}).get("enabled", False):
             active_ng.append("TIMEFRAME")
 
+        multileg_conf = strategies.get("MULTILEG", {})
+        if multileg_conf.get("enabled", False) and multileg_conf.get("symbols", {}).get(symbol, True):
+            active_ng.append("MULTILEG")
+
         return active_ng
 
     config = load_runtime_config()
@@ -58,7 +62,7 @@ def active_strategies_for(symbol: str) -> list[str]:
     
     active = []
     
-    for sid in ["CORE", "TIMEFRAME", "MULTILEG"]:
+    for sid in ["CORE", "TIMEFRAME", "TFSS", "MULTILEG"]:
         strat_conf = strategies.get(sid, {})
         if not strat_conf.get("enabled", False):
             continue
@@ -73,10 +77,18 @@ def active_strategies_for(symbol: str) -> list[str]:
 def get_runner(sid: str) -> Optional[Callable]:
     """
     Returns the strategy runner function for the strategy ID.
+    Note: CORE is an intelligence/analysis tool for the LLM and does not execute trades directly.
     """
     if sid == "CORE":
-        from src.engine.paper_trading import run_paper_trading
-        return run_paper_trading
+        # CORE functions as an intelligence tool for the LLM; no standalone trade execution
+        return None
+    elif sid == "TFSS":
+        config = load_runtime_config()
+        tfss_enabled = bool(config.get("strategies", {}).get("TFSS", {}).get("enabled", False))
+        if tfss_enabled:
+            from src.engine.paper_trading import run_paper_trading
+            return run_paper_trading
+        return None
     elif sid == "TIMEFRAME":
         from src.engine.paper_trading import run_timeframe_strategy
         return run_timeframe_strategy

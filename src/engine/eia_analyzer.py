@@ -120,24 +120,54 @@ RULES:
 
         try:
             from google import genai
+            from google.genai import types
+
+            # FIX: gemini-2.5-pro is a heavy reasoning model and was timing out
+            # (read operation timed out) because the SDK auto-enabled AFC
+            # (Automatic Function Calling, max 10 remote calls) even with no
+            # functions declared — inflating latency past the 15s read timeout.
+            # Use a fast flash model, explicitly disable AFC, and bound the
+            # timeout generously. Falls back to 2.0-flash on a read timeout.
             client = genai.Client(api_key=GEMINI_API_KEY)
-            
-            response = client.models.generate_content(
-                model='gemini-2.5-pro',
-                contents=prompt,
-                config={
-                    'temperature': 0.2,
-                    'http_options': {'timeout': 15.0}
-                }
-            )
-            
-            analysis = response.text.strip()
-            
+
+            _MODELS = ["gemini-2.5-flash", "gemini-2.0-flash"]
+            analysis = None
+            last_err = None
+            for _attempt_model in _MODELS:
+                try:
+                    response = client.models.generate_content(
+                        model=_attempt_model,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            temperature=0.2,
+                            http_options={"timeout": 45.0},
+                            # Disable Automatic Function Calling — no tools are
+                            # declared for this call, so AFC only adds latency.
+                            automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                                disable=True
+                            ),
+                        ),
+                    )
+                    analysis = (response.text or "").strip()
+                    if analysis:
+                        break
+                except Exception as _inner_e:
+                    last_err = _inner_e
+                    err_str = str(_inner_e).lower()
+                    # Retry on read/connection timeouts; hard-fail on auth/quota
+                    if "read operation timed out" in err_str or "timeout" in err_str or "deadline" in err_str:
+                        log.warning("EIA LLM (%s) timed out: %s", _attempt_model, _inner_e)
+                        continue
+                    raise
+
+            if not analysis:
+                raise last_err or RuntimeError("EIA LLM returned empty analysis")
+
             # Dispatch to Telegram
             msg = f"🛢️ *EIA Natural Gas Report Analysis*\n\n{analysis}"
             send_text(msg)
             log.info("EIA Report Analysis dispatched to Telegram.")
-            
+
         except Exception as e:
             log.error("LLM EIA Analysis failed: %s", e)
             

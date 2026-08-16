@@ -52,7 +52,12 @@ def detect_market_regime(symbol: str) -> str:
       4. RANGE         — low directional movement (abs change < REGIME_RANGE_MAX_CHANGE_PCT
                          AND range < REGIME_RANGE_MAX_RANGE_PCT) — explicit branch
                          before NO_TRADE so quiet mid-sessions are classified correctly.
-      5. NO_TRADE      — catch-all for ambiguous conditions.
+      5. RANGE         — catch-all for non-trending, sub-VOLATILE markets
+                         (e.g. MCX commodities in their natural 1.5-3.0% daily
+                         range band). Classified RANGE, not NO_TRADE, so the
+                         trade gate treats them as range-bound rather than
+                         "insufficient history".
+      6. NO_TRADE      — only reached if price data is degenerate.
     """
     with get_conn() as conn:
         rows = conn.execute(
@@ -172,7 +177,14 @@ def detect_market_regime(symbol: str) -> str:
     if (abs(price_change_pct) < REGIME_RANGE_MAX_CHANGE_PCT
             and price_range_pct < REGIME_RANGE_MAX_RANGE_PCT):
         return REGIME_RANGE
-    return REGIME_NO_TRADE
+    # DEAD-ZONE FIX: MCX commodities (NATURALGAS/CRUDEOIL/GOLD/SILVER) trade in
+    # tight daily ranges (~1.5-3.0%) that fall BETWEEN the RANGE band
+    # (range < 1.5%) and the VOLATILE band (range > 3.0%). With the old code
+    # those sessions had no matching branch and fell through to NO_TRADE —
+    # which step_regime() hard-blocked as "Insufficient scan history", even
+    # with hundreds of scans present. A non-trending, sub-VOLATILE market IS
+    # range-bound, so classify it RANGE rather than unclassifiable NO_TRADE.
+    return REGIME_RANGE
 
 
 def regime_score_for_trade(regime: str, option_type: str) -> int:

@@ -30,6 +30,7 @@ import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 from config.settings import DB_PATH
 
@@ -459,8 +460,6 @@ def get_conn(read_only: bool = False):
             conn.row_factory = sqlite3.Row
             if not read_only:
                 conn.execute("BEGIN IMMEDIATE")
-            else:
-                conn.execute("BEGIN DEFERRED")
             break  # Connection and transaction started successfully
         except sqlite3.OperationalError as oe:
             if conn:
@@ -483,11 +482,6 @@ def get_conn(read_only: bool = False):
             except sqlite3.OperationalError as ce:
                 if "no transaction is active" not in str(ce).lower():
                     raise
-        else:
-            try:
-                conn.execute("ROLLBACK")
-            except Exception:
-                pass
     except Exception:
         if not read_only and conn:
             try:
@@ -1046,6 +1040,17 @@ def get_open_paper_trade(symbol: str) -> dict | None:
         return dict(row) if row else None
 
 
+def get_all_open_paper_trades(symbol: str) -> list[dict]:
+    sql = """
+        SELECT * FROM paper_trades
+        WHERE symbol=? AND status='OPEN'
+        ORDER BY opened_at DESC
+    """
+    with get_conn(read_only=True) as conn:
+        rows = conn.execute(sql, (symbol,)).fetchall()
+        return [dict(r) for r in rows]
+
+
 def get_open_timeframe_trades(symbol: str, table: str = "paper_trades") -> list[dict]:
     if table not in ("paper_trades", "live_trades"):
         table = "paper_trades"
@@ -1209,7 +1214,7 @@ def insert_paper_trade(trade: dict) -> int:
              signal_key, pyramid_level, max_favorable_r,
              price_change_pct, pcr, ce_oi_change, pe_oi_change, underlying,
              support, resistance, max_pain, days_to_expiry, chart_conflict,
-             rsi_1h, rsi_3h, regime, entry_dev_pct)
+             rsi_1h, rsi_3h, regime, entry_dev_pct, leg_group_id, tranche_index)
         VALUES
             (:opened_at, :symbol, :expiry, :verdict_label, :side, :option_type, :strike, :entry_underlying,
              :entry_premium, :sl_underlying, :sl_premium, :target_underlying, :target_premium,
@@ -1219,7 +1224,7 @@ def insert_paper_trade(trade: dict) -> int:
              :signal_key, :pyramid_level, :max_favorable_r,
              :price_change_pct, :pcr, :ce_oi_change, :pe_oi_change, :underlying,
              :support, :resistance, :max_pain, :days_to_expiry, :chart_conflict,
-             :rsi_1h, :rsi_3h, :regime, :entry_dev_pct)
+             :rsi_1h, :rsi_3h, :regime, :entry_dev_pct, :leg_group_id, :tranche_index)
         RETURNING id
     """
     row_data = {
@@ -1234,6 +1239,8 @@ def insert_paper_trade(trade: dict) -> int:
         "signal_key": signal_key,
         "pyramid_level": trade.get("pyramid_level", 1),
         "max_favorable_r": trade.get("max_favorable_r", 0.0),
+        "leg_group_id": trade.get("leg_group_id"),
+        "tranche_index": trade.get("tranche_index", 0),
         "lot_size": trade["lot_size"]
         if "lot_size" in trade
         else LOT_SIZES.get(trade.get("symbol", "").upper(), 1),
@@ -1479,11 +1486,13 @@ def close_paper_trade(
                     delta_und = float(exit_underlying) - entry_underlying
                     opt = option_type.upper()
                     if opt == "CE":
-                        moneyness = (float(exit_underlying) - strike) / (float(exit_underlying) * 0.02) if exit_underlying > 0 else 0.0
+                        raw_mon = (float(exit_underlying) - strike) / (float(exit_underlying) * 0.02) if exit_underlying > 0 else 0.0
+                        moneyness = max(-1.0, min(1.0, raw_mon))
                         approx_delta = max(0.05, min(0.95, 0.5 + 0.3 * moneyness))
                         estimated_exit = max(0.05, entry_premium + approx_delta * delta_und)
                     else:
-                        moneyness = (strike - float(exit_underlying)) / (float(exit_underlying) * 0.02) if exit_underlying > 0 else 0.0
+                        raw_mon = (strike - float(exit_underlying)) / (float(exit_underlying) * 0.02) if exit_underlying > 0 else 0.0
+                        moneyness = max(-1.0, min(1.0, raw_mon))
                         approx_delta = max(0.05, min(0.95, 0.5 + 0.3 * moneyness))
                         estimated_exit = max(0.05, entry_premium - approx_delta * delta_und)
                     log.info(
@@ -2161,7 +2170,14 @@ def close_multi_leg_trade(
         conn.execute(sql, (closed_at, status, reason, total_pnl, trade_id))
 
 
-def close_book(book_id: str, closed_at: str, status: str, reason: str, total_pnl: float) -> None:
+def close_book(
+    book_id: str,
+    closed_at: str,
+    status: str,
+    reason: str,
+    total_pnl: float,
+    exit_underlying: float | None = None,
+) -> None:
     """Close all legs in a book and update the trade record."""
     with get_conn() as conn:
         trade = conn.execute(
@@ -2170,10 +2186,16 @@ def close_book(book_id: str, closed_at: str, status: str, reason: str, total_pnl
         if not trade:
             return
         trade_id = int(trade["id"])
-        conn.execute(
-            "UPDATE multi_leg_trades SET closed_at=?, status=?, reason=?, total_pnl=? WHERE id=?",
-            (closed_at, status, reason, total_pnl, trade_id),
-        )
+        if exit_underlying is not None:
+            conn.execute(
+                "UPDATE multi_leg_trades SET closed_at=?, status=?, reason=?, total_pnl=?, exit_underlying=? WHERE id=?",
+                (closed_at, status, reason, total_pnl, float(exit_underlying), trade_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE multi_leg_trades SET closed_at=?, status=?, reason=?, total_pnl=? WHERE id=?",
+                (closed_at, status, reason, total_pnl, trade_id),
+            )
         conn.execute(
             "UPDATE multi_leg_legs SET status='CLOSED', closed_at=?, exit_reason=? WHERE trade_id=? AND status='OPEN'",
             (closed_at, reason, trade_id),
@@ -2187,11 +2209,202 @@ def close_leg(leg_id: int, closed_at: str, exit_premium: float, exit_reason: str
         conn.execute(sql, (closed_at, exit_premium, exit_reason, leg_id))
 
 
-def list_multi_leg_trades() -> list[dict]:
-    """List all open multi-leg trades."""
-    sql = "SELECT * FROM multi_leg_trades WHERE status='OPEN' ORDER BY opened_at DESC"
-    with get_read_conn() as conn:
-        return [dict(r) for r in conn.execute(sql).fetchall()]
+def list_multi_leg_trades(status_filter: str | None = None) -> list[dict]:
+    """List multi-leg trades (from multi_leg_trades table and paper_trades leg_group_id) with live CMPs and P&L.
+    
+    :param status_filter: 'OPEN', 'CLOSED', or 'ALL' (default None/ALL)
+    """
+    from config.settings import LOT_SIZES
+
+    result_trades = []
+    sf = (status_filter or "ALL").upper().strip()
+    
+    # 1. Fetch from multi_leg_trades table
+    if sf == "OPEN":
+        sql = "SELECT * FROM multi_leg_trades WHERE status='OPEN' ORDER BY opened_at DESC"
+    elif sf == "CLOSED":
+        sql = "SELECT * FROM multi_leg_trades WHERE status != 'OPEN' ORDER BY opened_at DESC"
+    else:
+        sql = "SELECT * FROM multi_leg_trades ORDER BY opened_at DESC"
+        
+    try:
+        with get_read_conn() as conn:
+            ml_rows = [dict(r) for r in conn.execute(sql).fetchall()]
+            for t in ml_rows:
+                legs_sql = "SELECT * FROM multi_leg_legs WHERE trade_id=? ORDER BY strike, option_type"
+                legs = [dict(r) for r in conn.execute(legs_sql, (t["id"],)).fetchall()]
+                
+                symbol = t.get("symbol", "")
+                base_sym = symbol.upper().split()[0] if symbol else ""
+                lot_size = LOT_SIZES.get(base_sym, 1)
+                
+                live_book_pnl = 0.0
+                has_live_pnl = False
+                
+                for leg in legs:
+                    stk = leg.get("strike")
+                    op_type = leg.get("option_type", "CE")
+                    exp = leg.get("expiry") or t.get("expiry")
+                    side = (leg.get("side") or "SELL").upper()
+                    entry_p = float(leg.get("entry_premium") or leg.get("entry_price") or 0.0)
+                    lots = int(leg.get("lots") or leg.get("lot_size") or 1)
+                    
+                    cmp = None
+                    if op_type in ("CE", "PE") and stk:
+                        opt_row = conn.execute(
+                            "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
+                            (symbol, base_sym, float(stk), op_type)
+                        ).fetchone()
+                        if opt_row:
+                            cmp = float(opt_row["ltp"])
+                    
+                    if cmp is None:
+                        und_row = conn.execute(
+                            "SELECT price FROM underlying_price WHERE symbol=? OR symbol=? ORDER BY fetched_at DESC LIMIT 1",
+                            (symbol, base_sym)
+                        ).fetchone()
+                        if und_row:
+                            cmp = float(und_row["price"])
+                            
+                    leg["cmp"] = round(cmp, 2) if cmp is not None else entry_p
+                    
+                    if cmp is not None:
+                        has_live_pnl = True
+                        if side == "SELL":
+                            leg_pnl = (entry_p - cmp) * lots * lot_size
+                        else:
+                            leg_pnl = (cmp - entry_p) * lots * lot_size
+                        leg["pnl"] = round(leg_pnl, 2)
+                        live_book_pnl += leg_pnl
+                
+                t["legs"] = legs
+                if has_live_pnl:
+                    t["total_pnl"] = round(live_book_pnl, 2)
+                    sell_cmp_sum = sum(float(l.get("cmp") or l.get("entry_premium") or 0.0) for l in legs if (l.get("side") or "SELL").upper() == "SELL")
+                    buy_cmp_sum = sum(float(l.get("cmp") or l.get("entry_premium") or 0.0) for l in legs if (l.get("side") or "SELL").upper() == "BUY")
+                    t["cmp"] = round(sell_cmp_sum - buy_cmp_sum, 2)
+                result_trades.append(t)
+    except Exception as e:
+        log.exception("[schema] Error fetching multi_leg_trades: %s", e)
+            
+    # 2. Fetch TFSS/grouped strangles from paper_trades table by leg_group_id
+    group_sql = """
+        SELECT leg_group_id, symbol, MIN(opened_at) as opened_at, MAX(closed_at) as closed_at,
+               COUNT(*) as leg_count,
+               SUM(CASE WHEN status='OPEN' THEN 1 ELSE 0 END) as open_legs,
+               SUM(pnl_rupees) as total_pnl,
+               MAX(setup_type) as setup_type,
+               MAX(expiry) as expiry
+        FROM paper_trades
+        WHERE leg_group_id IS NOT NULL AND leg_group_id != ''
+        GROUP BY leg_group_id
+        ORDER BY opened_at DESC
+    """
+    try:
+        with get_read_conn() as conn:
+            grouped_rows = [dict(r) for r in conn.execute(group_sql).fetchall()]
+            existing_refs = {str(t.get("trade_ref") or t.get("id")) for t in result_trades}
+            
+            for g in grouped_rows:
+                gid = g["leg_group_id"]
+                if gid in existing_refs:
+                    continue
+
+                status = "OPEN" if g["open_legs"] > 0 else "CLOSED"
+                if sf == "OPEN" and status != "OPEN":
+                    continue
+                if sf == "CLOSED" and status != "CLOSED":
+                    continue
+
+                legs_sql = "SELECT * FROM paper_trades WHERE leg_group_id=? ORDER BY option_type, strike"
+                p_legs = [dict(r) for r in conn.execute(legs_sql, (gid,)).fetchall()]
+                if not p_legs:
+                    continue
+
+                symbol = g["symbol"]
+                base_sym = symbol.upper().split()[0] if symbol else ""
+                lot_size = LOT_SIZES.get(base_sym, 1)
+
+                status = "OPEN" if g["open_legs"] > 0 else "CLOSED"
+                net_prem = sum(float(l.get("entry_premium") or 0.0) * float(l.get("lots") or l.get("lot_size") or 1.0) for l in p_legs)
+                
+                formatted_legs = []
+                group_live_pnl = 0.0
+                has_group_live_pnl = False
+
+                for l in p_legs:
+                    stk = l.get("strike")
+                    op_type = (l.get("option_type") or "CE").upper()
+                    exp = l.get("expiry") or g.get("expiry")
+                    side = (l.get("side") or "SELL").upper()
+                    entry_p = float(l.get("entry_premium") or 0.0)
+                    lots = int(l.get("lots") or l.get("lot_size") or 1)
+                    l_size = int(l.get("lot_size") or lot_size)
+
+                    cmp = None
+                    if op_type in ("CE", "PE") and stk:
+                        opt_row = conn.execute(
+                            "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
+                            (symbol, base_sym, float(stk), op_type)
+                        ).fetchone()
+                        if opt_row:
+                            cmp = float(opt_row["ltp"])
+
+                    if cmp is None:
+                        und_row = conn.execute(
+                            "SELECT price FROM underlying_price WHERE symbol=? OR symbol=? ORDER BY fetched_at DESC LIMIT 1",
+                            (symbol, base_sym)
+                        ).fetchone()
+                        if und_row:
+                            cmp = float(und_row["price"])
+
+                    cmp_val = round(cmp, 2) if cmp is not None else entry_p
+                    if cmp is not None:
+                        has_group_live_pnl = True
+                        if side == "SELL":
+                            leg_pnl = (entry_p - cmp) * lots * l_size
+                        else:
+                            leg_pnl = (cmp - entry_p) * lots * l_size
+                        group_live_pnl += leg_pnl
+                    else:
+                        leg_pnl = float(l.get("pnl_rupees") or 0.0)
+
+                    formatted_legs.append({
+                        "id": l.get("id"),
+                        "side": side,
+                        "lots": lots,
+                        "strike": stk,
+                        "option_type": op_type,
+                        "entry_premium": entry_p,
+                        "exit_premium": l.get("exit_premium"),
+                        "cmp": cmp_val,
+                        "pnl": round(leg_pnl, 2)
+                    })
+
+                ref_id = gid.split(":")[-1] if ":" in gid else gid
+                calc_pnl = round(group_live_pnl, 2) if has_group_live_pnl else round(g["total_pnl"] or 0.0, 2)
+                group_cmp = round(sum(f["cmp"] for f in formatted_legs), 2)
+
+                result_trades.append({
+                    "id": gid,
+                    "trade_ref": f"#{ref_id}",
+                    "symbol": g["symbol"],
+                    "expiry": g.get("expiry"),
+                    "structure": g["setup_type"] or "TFSS_STRANGLE",
+                    "net_premium": round(net_prem, 2),
+                    "margin_req": round(net_prem * lot_size * 10, 2),
+                    "cmp": group_cmp,
+                    "total_pnl": calc_pnl,
+                    "opened_at": g["opened_at"],
+                    "closed_at": g["closed_at"],
+                    "status": status,
+                    "reason": p_legs[0].get("exit_reason") if p_legs else None,
+                    "legs": formatted_legs
+                })
+    except Exception as exc:
+        log.exception("[schema] Error building grouped multi-leg trades: %s", exc)
+
+    return result_trades
 
 
 def get_open_books_for_symbol(symbol: str) -> list[dict]:
@@ -2223,11 +2436,20 @@ def get_open_book_legs_by_book_id(book_id: str) -> list[dict]:
         return [dict(r) for r in conn.execute(sql, (book_id,)).fetchall()]
 
 
-def delete_multi_leg_trade(trade_ref: int) -> None:
-    """Delete a multi-leg trade by trade_ref (cascade deletes legs)."""
-    sql = "DELETE FROM multi_leg_trades WHERE trade_ref=?"
+def delete_multi_leg_trade(trade_ref: Any) -> None:
+    """Delete or close a multi-leg trade by trade_ref, id, or leg_group_id (cascade deletes legs)."""
+    ref_str = str(trade_ref).strip()
+    clean_ref = ref_str[1:] if ref_str.startswith("#") else ref_str
+
     with get_conn() as conn:
-        conn.execute(sql, (trade_ref,))
+        conn.execute(
+            "DELETE FROM multi_leg_trades WHERE trade_ref=? OR id=? OR trade_ref=?",
+            (clean_ref, clean_ref, f"#{clean_ref}")
+        )
+        conn.execute(
+            "UPDATE paper_trades SET status='CLOSED_MANUAL', closed_at=CURRENT_TIMESTAMP, exit_reason='Closed via dashboard' WHERE leg_group_id=? OR leg_group_id=?",
+            (ref_str, clean_ref)
+        )
 
 
 def update_multi_leg_leg_exit_premium(leg_id: int, exit_premium: float) -> None:

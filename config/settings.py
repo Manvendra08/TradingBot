@@ -28,7 +28,7 @@ LOG_DIR = BASE_DIR / "logs"
 DATA_DIR.mkdir(exist_ok=True)
 LOG_DIR.mkdir(exist_ok=True)
 
-WATCH_NSE = ["BANKNIFTY"]
+WATCH_NSE = ["NIFTY", "BANKNIFTY"]
 WATCH_BSE = ["SENSEX"]
 WATCH_MCX = ["NATURALGAS"]
 WATCH_SYMBOLS = WATCH_NSE + WATCH_BSE + WATCH_MCX
@@ -89,12 +89,12 @@ GOOGLE_DRIVE_FOLDER_ID = _optional_env("GOOGLE_DRIVE_FOLDER_ID")
 # ── Market Windows ─────────────────────────────────────────────────────────────────────────────────────────
 # Format: (open_time, close_time, weekdays)  — weekdays: 0=Mon … 6=Sun
 MARKET_WINDOWS = {
-    "NSE_INDEX": ("09:15", "15:30", [0, 1, 2, 3, 4]),
-    "BSE_INDEX": ("09:15", "15:30", [0, 1, 2, 3, 4]),
-    "NSE_EQUITY": ("09:15", "15:30", [0, 1, 2, 3, 4]),
-    "NFO": ("09:15", "15:30", [0, 1, 2, 3, 4]),
+    "NSE_INDEX": ("09:30", "15:30", [0, 1, 2, 3, 4]),
+    "BSE_INDEX": ("09:30", "15:30", [0, 1, 2, 3, 4]),
+    "NSE_EQUITY": ("09:30", "15:30", [0, 1, 2, 3, 4]),
+    "NFO": ("09:30", "15:30", [0, 1, 2, 3, 4]),
     "MCX_COMMODITY": (
-        "09:00",
+        "09:15",
         "23:30",
         [0, 1, 2, 3, 4],
     ),
@@ -227,10 +227,10 @@ FETCHER_PRIORITY = {
     "FINNIFTY": ["sensibull", "shoonya", "paytm", "dhan", "nse_public", "dhan_headless", "moneycontrol"],
     "MIDCPNIFTY": ["sensibull", "shoonya", "paytm", "dhan", "nse_public", "dhan_headless", "moneycontrol"],
     "SENSEX": ["sensibull", "shoonya", "dhan_sensex", "dhan", "nse_public"],
-    "NATURALGAS": ["shoonya", "dhan_commodity", "dhan", "dhan_headless", "moneycontrol"],
-    "CRUDEOIL": ["shoonya", "dhan_commodity", "dhan", "dhan_headless", "moneycontrol"],
-    "GOLD": ["shoonya", "dhan_commodity", "dhan", "dhan_headless", "moneycontrol"],
-    "SILVER": ["shoonya", "dhan_commodity", "dhan", "dhan_headless", "moneycontrol"],
+    "NATURALGAS": ["dhan_commodity", "shoonya", "dhan", "dhan_headless", "moneycontrol"],
+    "CRUDEOIL": ["dhan_commodity", "shoonya", "dhan", "dhan_headless", "moneycontrol"],
+    "GOLD": ["dhan_commodity", "shoonya", "dhan", "dhan_headless", "moneycontrol"],
+    "SILVER": ["dhan_commodity", "shoonya", "dhan", "dhan_headless", "moneycontrol"],
 }
 
 LOG_LEVEL = "INFO"

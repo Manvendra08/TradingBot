@@ -1339,6 +1339,8 @@ async def set_runtime(
 
 
 def _enrich_open_trades_with_live_pnl(rows: list[dict]) -> None:
+    from config.settings import LOT_SIZES
+
     for row in rows:
         if row.get("status") != "OPEN":
             continue
@@ -1349,6 +1351,49 @@ def _enrich_open_trades_with_live_pnl(rows: list[dict]) -> None:
         option_type = str(row.get("option_type") or "").upper().strip()
         strike = row.get("strike")
 
+        # ── Multi-Leg Trade Live P&L Enrichment ──────────────────────────────
+        if row.get("is_multileg") or option_type == "MULTILEG":
+            legs = row.get("legs") or []
+            if not legs and row.get("id"):
+                raw_id = str(row["id"]).replace("ML-", "")
+                legs = _q("SELECT * FROM multi_leg_legs WHERE trade_id=? ORDER BY strike, option_type", (raw_id,))
+                row["legs"] = legs
+
+            sell_cmp_sum = 0.0
+            buy_cmp_sum = 0.0
+            total_pnl = 0.0
+            lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_sym, 1))
+
+            for leg in legs:
+                leg_stk = float(leg.get("strike") or 0.0)
+                leg_opt = (leg.get("option_type") or "").upper()
+                leg_side = (leg.get("side") or "SELL").upper()
+                entry_p = float(leg.get("entry_premium") or leg.get("entry_price") or 0.0)
+                leg_lots = int(leg.get("lots") or 1)
+
+                cmp_res = _q(
+                    "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
+                    (symbol, base_sym, leg_stk, leg_opt),
+                )
+                leg_cmp = float(cmp_res[0]["ltp"]) if cmp_res else entry_p
+                leg["cmp"] = round(leg_cmp, 2)
+                leg["exit_or_cmp"] = round(leg_cmp, 2)
+
+                if leg_side == "SELL":
+                    pnl = (entry_p - leg_cmp) * leg_lots * lot_size
+                    sell_cmp_sum += leg_cmp
+                else:
+                    pnl = (leg_cmp - entry_p) * leg_lots * lot_size
+                    buy_cmp_sum += leg_cmp
+                total_pnl += pnl
+
+            row["pnl_rupees"] = round(total_pnl, 2)
+            row["cmp"] = round(sell_cmp_sum - buy_cmp_sum, 2)
+            total_lots = max((int(l.get("lots") or 1) for l in legs), default=1)
+            row["pnl_points"] = round(total_pnl / (lot_size * total_lots), 2) if (lot_size * total_lots) > 0 else 0.0
+            continue
+
+        # ── Single-Leg Trade Live P&L Enrichment ─────────────────────────────
         cmp = None
         if option_type == "FUT" or not option_type or strike is None:
             res = _q(
@@ -1387,8 +1432,6 @@ def _enrich_open_trades_with_live_pnl(rows: list[dict]) -> None:
 
             lots = int(row.get("lots") or 1)
             side = str(row.get("side") or "BUY").upper().strip()
-            # BUG-M5 FIX: Extract base symbol before LOT_SIZES lookup to handle
-            # symbols with expiry suffixes like "NIFTY 25JUL CE"
             base_sym = symbol.upper().split()[0]
             lot_size = LOT_SIZES.get(base_sym, 1)
 
@@ -1467,7 +1510,7 @@ async def get_paper_trades(symbol: str = "", status: str = "", limit: int = 300)
         "exit_underlying, sl_underlying, target_underlying, pnl_points, status, reason, exit_reason, digest_id, "
         "entry_premium, exit_premium, sl_premium, target_premium, lots, pnl_rupees, trade_status, "
         "setup_type, decision_reason, confidence_score, entry_quality_score, trend_alignment_score, "
-        "regime_score, signal_key, pyramid_level, max_favorable_r, side, expiry"
+        "regime_score, signal_key, pyramid_level, max_favorable_r, side, expiry, leg_group_id"
     )
 
     sql = f"""
@@ -1477,9 +1520,105 @@ async def get_paper_trades(symbol: str = "", status: str = "", limit: int = 300)
 
     all_params = params_pt + [int(limit)]
     rows = _q(sql, all_params)
+
+    # Also aggregate multi_leg_trades
+    clauses_ml = []
+    params_ml: list = []
+    if symbol:
+        clauses_ml.append("symbol=?")
+        params_ml.append(symbol.upper().strip())
+    if status:
+        st_u = status.strip().upper()
+        if st_u == "OPEN":
+            clauses_ml.append("status='OPEN'")
+        elif st_u in ("CLOSED", "CLOSED_TARGET", "CLOSED_SL", "CLOSED_MANUAL"):
+            clauses_ml.append("status != 'OPEN'")
+        else:
+            clauses_ml.append("status=?")
+            params_ml.append(status.strip())
+
+    where_ml = f"WHERE {' AND '.join(clauses_ml)}" if clauses_ml else ""
+    sql_ml = f"SELECT * FROM multi_leg_trades {where_ml} ORDER BY opened_at DESC LIMIT ?"
+    ml_params = params_ml + [int(limit)]
+    ml_rows = _q(sql_ml, ml_params)
+
+    for ml in ml_rows:
+        trade_id = ml["id"]
+        legs_sql = "SELECT * FROM multi_leg_legs WHERE trade_id=? ORDER BY strike, option_type"
+        legs = _q(legs_sql, (trade_id,))
+
+        total_lots = max((int(l.get("lots") or 1) for l in legs), default=1)
+        net_prem = float(ml.get("net_premium") or 0.0)
+        tot_pnl = float(ml.get("total_pnl") or 0.0)
+        sym = ml.get("symbol", "")
+        base_sym = sym.upper().split()[0] if sym else ""
+        from config.settings import LOT_SIZES
+        lot_size = LOT_SIZES.get(sym, LOT_SIZES.get(base_sym, 1))
+
+        exit_und = ml.get("exit_underlying")
+        if not exit_und:
+            und_row = _q("SELECT price FROM underlying_price WHERE symbol=? OR symbol=? ORDER BY fetched_at DESC LIMIT 1", (sym, base_sym))
+            if und_row:
+                exit_und = float(und_row[0]["price"])
+
+        exit_prem = None
+        if ml.get("status") != "OPEN" and net_prem > 0 and total_lots > 0 and lot_size > 0:
+            exit_prem = round(max(0.0, net_prem - (tot_pnl / (lot_size * total_lots))), 2)
+
+        struct = ml.get("strategy_type") or ml.get("structure") or "MULTILEG"
+
+        sell_cmp_sum = sum(float(l.get("cmp") or l.get("entry_premium") or 0.0) for l in legs if (l.get("side") or "SELL").upper() == "SELL")
+        buy_cmp_sum = sum(float(l.get("cmp") or l.get("entry_premium") or 0.0) for l in legs if (l.get("side") or "SELL").upper() == "BUY")
+        net_cmp = round(sell_cmp_sum - buy_cmp_sum, 2) if (sell_cmp_sum or buy_cmp_sum) else float(ml.get("cmp") or 0.0)
+
+        rows.append({
+            "id": f"ML-{ml['id']}",
+            "opened_at": ml.get("opened_at"),
+            "closed_at": ml.get("closed_at"),
+            "symbol": sym,
+            "verdict_label": struct.replace("_", " "),
+            "option_type": "MULTILEG",
+            "strike": None,
+            "entry_underlying": ml.get("entry_underlying") or 0.0,
+            "exit_underlying": exit_und,
+            "sl_underlying": None,
+            "target_underlying": None,
+            "breakeven_lower": ml.get("breakeven_lower"),
+            "breakeven_upper": ml.get("breakeven_upper"),
+            "pnl_points": round(tot_pnl / (lot_size * total_lots), 2) if (lot_size * total_lots) > 0 else 0.0,
+            "status": ml.get("status", "CLOSED"),
+            "reason": ml.get("reason"),
+            "exit_reason": ml.get("reason"),
+            "digest_id": ml.get("digest_id"),
+            "entry_premium": net_prem,
+            "exit_premium": exit_prem,
+            "cmp": net_cmp,
+            "sl_premium": None,
+            "target_premium": None,
+            "lots": total_lots,
+            "pnl_rupees": tot_pnl,
+            "trade_status": "TRIGGERED_CORE",
+            "setup_type": "MULTILEG",
+            "decision_reason": ml.get("reason"),
+            "confidence_score": ml.get("confidence_score"),
+            "entry_quality_score": ml.get("entry_quality_score"),
+            "trend_alignment_score": None,
+            "regime_score": None,
+            "signal_key": ml.get("book_id"),
+            "pyramid_level": 1,
+            "max_favorable_r": 0.0,
+            "side": "SELL",
+            "expiry": ml.get("expiry"),
+            "leg_group_id": ml.get("book_id"),
+            "is_multileg": True,
+            "legs": legs,
+        })
+
+    rows.sort(key=lambda r: r.get("opened_at") or "", reverse=True)
+    rows = rows[:limit]
+
     _enrich_open_trades_with_live_pnl(rows)
     _enrich_trade_details(rows)
-    return rows
     return rows
 
 
@@ -1587,14 +1726,14 @@ def _explain_verdict(verdict: str | None, option_type: str | None) -> dict:
 
 
 @app.get("/api/multi_leg_trades")
-def get_multi_leg_trades():
+def get_multi_leg_trades(status: str = "ALL"):
     from src.models.schema import list_multi_leg_trades
 
-    return list_multi_leg_trades()
+    return list_multi_leg_trades(status_filter=status)
 
 
 @app.delete("/api/multi_leg_trades/{trade_ref}")
-def delete_multi_leg_trade_endpoint(trade_ref: int):
+def delete_multi_leg_trade_endpoint(trade_ref: str):
     from src.models.schema import delete_multi_leg_trade
 
     delete_multi_leg_trade(trade_ref)
@@ -1603,100 +1742,182 @@ def delete_multi_leg_trade_endpoint(trade_ref: int):
 
 @app.get("/api/paper_summary")
 async def get_paper_summary(symbol: str = ""):
-    clauses = []
-    params: list = []
+    clauses_pt = []
+    params_pt: list = []
     if symbol:
-        clauses.append("symbol=?")
-        params.append(symbol.upper().strip())
-    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        clauses_pt.append("symbol=?")
+        params_pt.append(symbol.upper().strip())
+    where_pt = f"WHERE {' AND '.join(clauses_pt)}" if clauses_pt else ""
 
-    totals = _q(
-        f"""
-        SELECT
-            COUNT(*) AS total,
-            SUM(CASE WHEN status='OPEN' THEN 1 ELSE 0 END) AS open_count,
-            SUM(CASE WHEN (status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross') THEN 1 ELSE 0 END) AS closed_count,
-            SUM(CASE WHEN ((status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees > 0 THEN 1 ELSE 0 END) AS wins,
-            SUM(CASE WHEN ((status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees < 0 THEN 1 ELSE 0 END) AS losses,
-            ROUND(COALESCE(SUM(CASE WHEN (status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross') THEN pnl_rupees ELSE 0 END), 0), 2) AS closed_pnl,
-            ROUND(COALESCE(AVG(CASE WHEN (status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross') THEN pnl_rupees END), 0), 2) AS avg_pnl,
-            ROUND(COALESCE(AVG(CASE WHEN ((status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees > 0 THEN pnl_rupees END), 0), 2) AS avg_win,
-            ROUND(COALESCE(AVG(CASE WHEN ((status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees < 0 THEN pnl_rupees END), 0), 2) AS avg_loss,
-            MAX(CASE WHEN (status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross') THEN pnl_rupees ELSE 0 END) AS max_win,
-            MIN(CASE WHEN (status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross') THEN pnl_rupees ELSE 0 END) AS max_loss
-        FROM paper_trades
-        {where}
-        """,
-        tuple(params),
-    )
-    open_rows = _q(
-        f"SELECT * FROM paper_trades {where} {'AND' if where else 'WHERE'} status='OPEN' ORDER BY opened_at DESC",
-        tuple(params),
-    )
+    pt_rows = _q(f"SELECT * FROM paper_trades {where_pt}", tuple(params_pt))
+
+    clauses_ml = []
+    params_ml: list = []
+    if symbol:
+        clauses_ml.append("symbol=?")
+        params_ml.append(symbol.upper().strip())
+    where_ml = f"WHERE {' AND '.join(clauses_ml)}" if clauses_ml else ""
+
+    ml_rows = _q(f"SELECT * FROM multi_leg_trades {where_ml}", tuple(params_ml))
+
+    # Unified trade objects
+    all_trades = []
+    open_rows = []
+
+    for pt in pt_rows:
+        st = pt.get("status", "")
+        pnl = float(pt.get("pnl_rupees") or 0.0)
+        is_open = st == "OPEN"
+        is_closed = (st in ("CLOSED", "Dead Trade", "TF-1H-Cross") or str(st).startswith("CLOSED_"))
+        t_obj = {
+            "symbol": (pt.get("symbol") or "").upper(),
+            "status": st,
+            "pnl_rupees": pnl,
+            "is_closed": is_closed,
+            "is_open": is_open,
+            "opened_at": pt.get("opened_at"),
+            "closed_at": pt.get("closed_at"),
+            "raw": pt,
+        }
+        all_trades.append(t_obj)
+        if is_open:
+            open_rows.append(pt)
+
+    for ml in ml_rows:
+        st = ml.get("status", "CLOSED")
+        pnl = float(ml.get("total_pnl") or 0.0)
+        is_open = st == "OPEN"
+        is_closed = not is_open
+        ml_trade_dict = {
+            "id": f"ML-{ml['id']}",
+            "opened_at": ml.get("opened_at"),
+            "closed_at": ml.get("closed_at"),
+            "symbol": (ml.get("symbol") or "").upper(),
+            "verdict_label": ml.get("strategy_type") or ml.get("structure") or "MULTILEG",
+            "option_type": "MULTILEG",
+            "strike": None,
+            "entry_underlying": ml.get("entry_underlying") or 0.0,
+            "exit_underlying": ml.get("exit_underlying"),
+            "sl_underlying": None,
+            "target_underlying": None,
+            "breakeven_lower": ml.get("breakeven_lower"),
+            "breakeven_upper": ml.get("breakeven_upper"),
+            "pnl_points": 0.0,
+            "status": st,
+            "reason": ml.get("reason"),
+            "exit_reason": ml.get("reason"),
+            "digest_id": ml.get("digest_id"),
+            "entry_premium": ml.get("net_premium"),
+            "exit_premium": None,
+            "sl_premium": None,
+            "target_premium": None,
+            "lots": 1,
+            "pnl_rupees": pnl,
+            "trade_status": "TRIGGERED_CORE",
+            "setup_type": "MULTILEG",
+            "decision_reason": ml.get("reason"),
+            "confidence_score": ml.get("confidence_score"),
+            "entry_quality_score": ml.get("entry_quality_score"),
+            "trend_alignment_score": None,
+            "regime_score": None,
+            "signal_key": ml.get("book_id"),
+            "pyramid_level": 1,
+            "max_favorable_r": 0.0,
+            "side": "SELL",
+            "expiry": ml.get("expiry"),
+            "leg_group_id": ml.get("book_id"),
+        }
+        all_trades.append({
+            "symbol": (ml.get("symbol") or "").upper(),
+            "status": st,
+            "pnl_rupees": pnl,
+            "is_closed": is_closed,
+            "is_open": is_open,
+            "opened_at": ml.get("opened_at"),
+            "closed_at": ml.get("closed_at"),
+            "raw": ml_trade_dict,
+        })
+        if is_open:
+            open_rows.append(ml_trade_dict)
+
     _enrich_open_trades_with_live_pnl(open_rows)
     _enrich_trade_details(open_rows)
 
-    # Symbol breakdown — normalise symbol to UPPER to avoid crudeoil/CRUDEOIL duplicates
-    symbol_stats = _q(
-        f"""
-        SELECT
-            UPPER(symbol) AS symbol,
-            COUNT(*) AS total_trades,
-            SUM(CASE WHEN ((status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees > 0 THEN 1 ELSE 0 END) AS wins,
-            SUM(CASE WHEN ((status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees < 0 THEN 1 ELSE 0 END) AS losses,
-            ROUND(COALESCE(SUM(CASE WHEN (status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross') THEN pnl_rupees ELSE 0 END), 0), 2) AS total_pnl,
-            ROUND(COALESCE(AVG(CASE WHEN (status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross') THEN pnl_rupees END), 0), 2) AS avg_pnl,
-            SUM(CASE WHEN (status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross') THEN 1 ELSE 0 END) AS closed_count
-        FROM paper_trades
-        {where}
-        GROUP BY UPPER(symbol)
-        ORDER BY total_pnl DESC
-        """,
-        tuple(params),
-    )
+    closed_trades = [t for t in all_trades if t["is_closed"]]
+    wins = [t for t in closed_trades if t["pnl_rupees"] > 0]
+    losses = [t for t in closed_trades if t["pnl_rupees"] < 0]
 
-    # Calculate win rate per symbol
-    for s in symbol_stats:
-        closed = int(s.get("closed_count") or 0)
-        wins = int(s.get("wins") or 0)
-        s["win_rate"] = round((wins / closed) * 100, 2) if closed > 0 else 0.0
+    total_count = len(all_trades)
+    open_count = sum(1 for t in all_trades if t["is_open"])
+    closed_count = len(closed_trades)
+    win_count = len(wins)
+    loss_count = len(losses)
 
-    out = totals[0] if totals else {}
-    wins = int(out.get("wins") or 0)
-    losses = int(out.get("losses") or 0)
-    closed = int(out.get("closed_count") or 0)
-    out["win_rate"] = round((wins / closed) * 100, 2) if closed > 0 else 0.0
+    closed_pnl = round(sum(t["pnl_rupees"] for t in closed_trades), 2)
+    avg_pnl = round(closed_pnl / closed_count, 2) if closed_count > 0 else 0.0
+    avg_win = round(sum(t["pnl_rupees"] for t in wins) / win_count, 2) if win_count > 0 else 0.0
+    avg_loss = round(sum(t["pnl_rupees"] for t in losses) / loss_count, 2) if loss_count > 0 else 0.0
+    max_win = max((t["pnl_rupees"] for t in closed_trades), default=0.0)
+    max_loss = min((t["pnl_rupees"] for t in closed_trades), default=0.0)
+    win_rate = round((win_count / closed_count) * 100, 2) if closed_count > 0 else 0.0
 
-    # Profit factor calculation
-    if where:
-        wins_where = f"{where} AND ((status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees > 0"
-        losses_where = f"{where} AND ((status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees < 0"
-    else:
-        wins_where = "WHERE ((status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees > 0"
-        losses_where = "WHERE ((status = 'CLOSED' OR status LIKE 'CLOSED_%') OR status IN ('Dead Trade', 'TF-1H-Cross')) AND pnl_rupees < 0"
+    total_win_rs = sum(t["pnl_rupees"] for t in wins)
+    total_loss_rs = abs(sum(t["pnl_rupees"] for t in losses))
+    profit_factor = round(total_win_rs / total_loss_rs, 2) if total_loss_rs > 0 else 0.0
 
-    total_wins = sum(
-        float(r.get("pnl_rupees") or 0)
-        for r in _q(f"SELECT pnl_rupees FROM paper_trades {wins_where}", tuple(params))
-    )
-    total_losses = abs(
-        sum(
-            float(r.get("pnl_rupees") or 0)
-            for r in _q(
-                f"SELECT pnl_rupees FROM paper_trades {losses_where}", tuple(params)
-            )
-        )
-    )
-    out["profit_factor"] = (
-        round(total_wins / total_losses, 2) if total_losses > 0 else 0.0
-    )
-    out["consecutive_wins"] = _calculate_consecutive_wins(where, tuple(params))
+    # Symbol breakdown
+    sym_map = {}
+    for t in all_trades:
+        sym = t["symbol"]
+        if sym not in sym_map:
+            sym_map[sym] = {"symbol": sym, "total_trades": 0, "wins": 0, "losses": 0, "total_pnl": 0.0, "closed_count": 0}
+        sym_map[sym]["total_trades"] += 1
+        if t["is_closed"]:
+            sym_map[sym]["closed_count"] += 1
+            sym_map[sym]["total_pnl"] += t["pnl_rupees"]
+            if t["pnl_rupees"] > 0:
+                sym_map[sym]["wins"] += 1
+            elif t["pnl_rupees"] < 0:
+                sym_map[sym]["losses"] += 1
 
-    # Phase 2: Holding period analysis
-    out["holding_analysis"] = _calculate_holding_analysis(where, tuple(params))
+    symbol_stats = []
+    for sym, s in sym_map.items():
+        c_cnt = s["closed_count"]
+        w_cnt = s["wins"]
+        s["total_pnl"] = round(s["total_pnl"], 2)
+        s["avg_pnl"] = round(s["total_pnl"] / c_cnt, 2) if c_cnt > 0 else 0.0
+        s["win_rate"] = round((w_cnt / c_cnt) * 100, 2) if c_cnt > 0 else 0.0
+        symbol_stats.append(s)
 
-    out["open_trades"] = open_rows
-    out["symbol_breakdown"] = symbol_stats
+    symbol_stats.sort(key=lambda x: x["total_pnl"], reverse=True)
+
+    # Consecutive wins streak on closed trades sorted by closed_at
+    closed_trades.sort(key=lambda x: x.get("closed_at") or "")
+    consecutive_wins = 0
+    for t in reversed(closed_trades):
+        if t["pnl_rupees"] > 0:
+            consecutive_wins += 1
+        else:
+            break
+
+    out = {
+        "total": total_count,
+        "open_count": open_count,
+        "closed_count": closed_count,
+        "wins": win_count,
+        "losses": loss_count,
+        "closed_pnl": closed_pnl,
+        "avg_pnl": avg_pnl,
+        "avg_win": avg_win,
+        "avg_loss": avg_loss,
+        "max_win": max_win,
+        "max_loss": max_loss,
+        "win_rate": win_rate,
+        "profit_factor": profit_factor,
+        "consecutive_wins": consecutive_wins,
+        "open_trades": open_rows,
+        "symbol_breakdown": symbol_stats,
+    }
     return out
 
 
@@ -1980,9 +2201,24 @@ async def get_paper_equity(symbol: str = ""):
         f"SELECT closed_at, pnl_rupees FROM paper_trades {where} ORDER BY closed_at",
         tuple(params),
     )
+
+    clauses_ml = ["status != 'OPEN' AND closed_at IS NOT NULL"]
+    params_ml: list = []
+    if symbol:
+        clauses_ml.append("symbol=?")
+        params_ml.append(symbol.upper().strip())
+    where_ml = "WHERE " + " AND ".join(clauses_ml)
+    ml_rows = _q(
+        f"SELECT closed_at, total_pnl AS pnl_rupees FROM multi_leg_trades {where_ml} ORDER BY closed_at",
+        tuple(params_ml),
+    )
+
+    combined = rows + ml_rows
+    combined.sort(key=lambda r: r.get("closed_at") or "")
+
     equity = 0.0
     out = []
-    for row in rows:
+    for row in combined:
         equity += float(row.get("pnl_rupees") or 0.0)
         out.append(
             {

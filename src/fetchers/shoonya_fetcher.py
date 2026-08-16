@@ -75,16 +75,16 @@ def _get_shoonya_session():
 
 
 def _post_jdata(
-    url: str, payload: dict, access_token: str | None = None
+    url: str,
+    payload: dict,
+    access_token: str | None = None,
+    timeout: float = 5.0,
+    max_retries: int = 1,
 ) -> dict | None:
     """POST jData= encoded payload, return parsed JSON or None.
 
     Cleans payload structures to pass authorization details via standard form
     bodies instead of conflicting Bearer headers, resolving the duplicate-auth bug.
-
-    Retries up to 2 times on transient errors (502/503/504, SSL handshake, network timeouts)
-    with exponential backoff (1s, 2s). Does NOT retry on 4xx (auth errors handled by caller).
-    Also retries on DNS resolution failures with IP fallback.
     """
     import socket
     import ssl
@@ -100,13 +100,13 @@ def _post_jdata(
     }
 
     _TRANSIENT_5XX = {502, 503, 504}
-    _MAX_RETRIES = 2
+    _MAX_RETRIES = max_retries
     _SHOONYA_IPS = ["13.202.119.185"]
     session = _get_shoonya_session()
 
-    for attempt in range(1, _MAX_RETRIES + 2):  # attempts: 1, 2, 3
+    for attempt in range(1, _MAX_RETRIES + 2):  # attempts: 1, 2, ...
         try:
-            resp = session.post(url, data=body_str, headers=headers, timeout=10)
+            resp = session.post(url, data=body_str, headers=headers, timeout=timeout)
             if resp.status_code == 200:
                 try:
                     return resp.json()
@@ -605,6 +605,11 @@ class ShoonyaFetcher(BaseFetcher):
                         self.access_token = token
                         self._token_created_at = time.time()
                         self._save_token()
+                        try:
+                            from src.fetchers.shoonya_ip_guard import reset_shoonya_ip_skip
+                            reset_shoonya_ip_skip()
+                        except Exception:
+                            pass
                         log.info("[shoonya] OAuth login successful")
                         return True
                     except Exception as exc:
@@ -841,17 +846,17 @@ class ShoonyaFetcher(BaseFetcher):
             self._throttle_rate_limit()
             tok = str(row.get("Token") or row.get("token") or "")
             payload = {"uid": self.user_id, "exch": exchange, "token": tok}
-            q = _post_jdata(url, payload, token)
+            q = _post_jdata(url, payload, token, timeout=3.5, max_retries=1)
             if q and q.get("stat") == "Ok":
                 return tok, q
             return tok, None
 
         results: dict[str, dict] = {}
-        with ThreadPoolExecutor(max_workers=6) as executor:
+        with ThreadPoolExecutor(max_workers=12) as executor:
             futures = [executor.submit(_fetch, row) for row in contracts]
             for fut in futures:
                 try:
-                    tok, q = fut.result()
+                    tok, q = fut.result(timeout=4.0)
                     if q:
                         results[tok] = q
                 except Exception:

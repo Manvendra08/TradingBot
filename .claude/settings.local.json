@@ -23,7 +23,8 @@
       "Bash(git check-ignore *)",
       "Bash(echo \"exit: $?\")",
       "Bash(git push *)",
-      "Bash(pytest tests/test_multileg_strategy.py -v)"
+      "Bash(pytest tests/test_multileg_strategy.py -v)",
+      "Bash(python *)"
     ]
   }
 }

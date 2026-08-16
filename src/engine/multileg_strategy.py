@@ -92,6 +92,7 @@ def validate_legs(
     legs: list[dict],
     option_chain: dict | list | None,
     underlying: float,
+    symbol: str = "",
 ) -> tuple[bool, str]:
     """
     Validate proposed legs against strategy constraints and option chain.
@@ -106,15 +107,17 @@ def validate_legs(
         Option chain keyed by strike price or list of option rows/contracts.
     underlying : float
         Current underlying spot / futures price.
+    symbol : str
+        Symbol name (e.g., "NIFTY", "NATURALGAS") for MCX strategy restrictions.
 
     Returns
     -------
     (is_valid, error_message) — error_message is empty string on success.
     """
-    # 1. Strategy type check
-    if strategy_type not in STRATEGY_CONSTRAINTS:
-        valid = ", ".join(sorted(STRATEGY_CONSTRAINTS.keys()))
-        return False, f"Unknown strategy_type '{strategy_type}'. Valid: {valid}"
+    base_sym = symbol.upper().split()[0] if symbol else ""
+    is_mcx = symbol.upper() in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER") or base_sym in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER")
+    if is_mcx and strategy_type == "IRON_CONDOR":
+        return False, f"IRON_CONDOR strategy is disabled for MCX commodity symbol '{symbol}'"
 
     if not legs:
         return False, "No legs provided"
@@ -133,10 +136,14 @@ def validate_legs(
             f"{strategy_type} allows at most {max_legs} legs, got {len(legs)}"
         )
 
-    # 3. All legs must be SELL
+    # 3. Check leg side constraints (all_sell check if required)
+    all_sell_required = constraints.get("all_sell", False)
     for i, leg in enumerate(legs):
-        if leg.get("side", "").upper() != "SELL":
-            return False, f"Leg {i} has side '{leg.get('side')}' — all legs must be SELL for {strategy_type}"
+        side = (leg.get("side") or "").upper()
+        if side not in ("BUY", "SELL"):
+            return False, f"Leg {i} has invalid side '{leg.get('side')}' — must be BUY or SELL"
+        if all_sell_required and side != "SELL":
+            return False, f"Leg {i} has side '{side}' — all legs must be SELL for {strategy_type}"
 
     chain = _normalize_option_chain(option_chain)
 
@@ -214,16 +221,16 @@ def compute_book_greeks(
             option_type=opt_type,
         )
 
-        # SELL legs: negate delta (short position), theta is earned (+),
-        # vega exposure is negative (short vega)
-        leg_delta = -greeks["delta"]   # short delta
-        leg_theta = greeks["theta"]    # theta earned (already positive for short in BSM)
-        leg_vega = -greeks["vega"]     # short vega
-
-        # Theta from the calculator is negative (time decay). For SELL legs
-        # we earn theta, so negate it.
-        if leg_theta < 0:
-            leg_theta = -leg_theta
+        side = leg.get("side", "SELL").upper()
+        if side == "BUY":
+            leg_delta = greeks["delta"]
+            leg_theta = -abs(greeks["theta"])
+            leg_vega = greeks["vega"]
+        else:
+            # SELL legs: negate delta (short position), theta is earned (+)
+            leg_delta = -greeks["delta"]   # short delta
+            leg_theta = abs(greeks["theta"]) # theta earned (+)
+            leg_vega = -greeks["vega"]     # short vega
 
         net_delta += leg_delta
         net_theta += leg_theta
@@ -257,9 +264,8 @@ def compute_book_risk_profile(
     Compute max profit, max loss, and breakevens for a multi-leg book.
 
     Breakevens are derived from the short strikes (the strikes we are
-    selling).  For IC-style books the upper breakeven is the short CE
-    strike minus net premium; the lower is the short PE strike plus
-    net premium.
+    selling).  For credit books the upper breakeven is short CE strike + net premium;
+    the lower is short PE strike - net premium.
 
     Returns
     -------
@@ -269,9 +275,9 @@ def compute_book_risk_profile(
     pe_legs = [l for l in legs if (l.get("option_type") or "").upper() == "PE"]
     ce_legs = [l for l in legs if (l.get("option_type") or "").upper() == "CE"]
 
-    # Find the short strikes (all legs are SELL, so take the relevant ones)
-    short_pe_strike = max((float(l["strike"]) for l in pe_legs), default=0)
-    short_ce_strike = min((float(l["strike"]) for l in ce_legs), default=0)
+    # Find the short strikes (legs with side=SELL)
+    short_pe_strike = max((float(l["strike"]) for l in pe_legs if l.get("side", "SELL").upper() == "SELL"), default=0)
+    short_ce_strike = min((float(l["strike"]) for l in ce_legs if l.get("side", "SELL").upper() == "SELL"), default=0)
 
     max_profit = max(0.0, net_premium)
     max_loss = 0.0
@@ -286,20 +292,20 @@ def compute_book_risk_profile(
         ce_width = (ce_strikes[-1] - ce_strikes[0]) if len(ce_strikes) > 1 else 0
         spread_width = max(pe_width, ce_width, 1)
         max_loss = max(0.0, spread_width - net_premium)
-        breakeven_upper = short_ce_strike - net_premium if short_ce_strike else 0
-        breakeven_lower = short_pe_strike + net_premium if short_pe_strike else 0
+        breakeven_upper = short_ce_strike + net_premium if short_ce_strike else 0
+        breakeven_lower = short_pe_strike - net_premium if short_pe_strike else 0
 
     elif strategy_type == "SHORT_STRANGLE":
         max_loss = underlying * 0.5  # practical cap (unlimited in theory)
-        breakeven_upper = short_ce_strike - net_premium if short_ce_strike else 0
-        breakeven_lower = short_pe_strike + net_premium if short_pe_strike else 0
+        breakeven_upper = short_ce_strike + net_premium if short_ce_strike else 0
+        breakeven_lower = short_pe_strike - net_premium if short_pe_strike else 0
 
     elif strategy_type == "SHORT_STRADDLE":
         max_loss = underlying * 0.5
         # Straddle: same strike for both; use CE strike as reference
         ref_strike = short_ce_strike or short_pe_strike
-        breakeven_upper = ref_strike - net_premium if ref_strike else 0
-        breakeven_lower = ref_strike + net_premium if ref_strike else 0
+        breakeven_upper = ref_strike + net_premium if ref_strike else 0
+        breakeven_lower = ref_strike - net_premium if ref_strike else 0
 
     elif strategy_type in ("BEAR_CALL_SPREAD", "BULL_PUT_SPREAD"):
         ce_strikes = sorted(float(l["strike"]) for l in ce_legs)
@@ -307,20 +313,22 @@ def compute_book_risk_profile(
         if strategy_type == "BEAR_CALL_SPREAD" and len(ce_strikes) >= 2:
             spread_width = ce_strikes[-1] - ce_strikes[0]
             max_loss = max(0.0, spread_width - net_premium)
-            breakeven_upper = ce_strikes[-1] - net_premium
+            short_strike = min(ce_strikes)
+            breakeven_upper = short_strike + net_premium
         elif strategy_type == "BULL_PUT_SPREAD" and len(pe_strikes) >= 2:
             spread_width = pe_strikes[-1] - pe_strikes[0]
             max_loss = max(0.0, spread_width - net_premium)
-            breakeven_lower = pe_strikes[0] + net_premium
+            short_strike = max(pe_strikes)
+            breakeven_lower = short_strike - net_premium
         else:
             max_loss = underlying * 0.5
 
     elif strategy_type == "JADE_LIZARD":
         # Jade Lizard: no upside risk if short CE premium + short PE premium
-        # covers the spread.  PE side unlimited if market drops below PE strike.
+        # covers the spread. PE side unlimited if market drops below PE strike.
         max_loss = underlying * 0.5  # practical cap on PE-side risk
-        breakeven_upper = short_ce_strike - net_premium if short_ce_strike else 0
-        breakeven_lower = short_pe_strike + net_premium if short_pe_strike else 0
+        breakeven_upper = short_ce_strike + net_premium if short_ce_strike else 0
+        breakeven_lower = short_pe_strike - net_premium if short_pe_strike else 0
 
     elif strategy_type == "CUSTOM":
         all_strikes = [float(l["strike"]) for l in legs]
@@ -329,8 +337,8 @@ def compute_book_risk_profile(
             max_loss = max_distance * underlying * 0.1
         else:
             max_loss = underlying * 0.5
-        breakeven_upper = short_ce_strike - net_premium if short_ce_strike else 0
-        breakeven_lower = short_pe_strike + net_premium if short_pe_strike else 0
+        breakeven_upper = short_ce_strike + net_premium if short_ce_strike else 0
+        breakeven_lower = short_pe_strike - net_premium if short_pe_strike else 0
 
     else:
         # Fallback for unknown types
@@ -346,37 +354,42 @@ def compute_book_risk_profile(
 
 # ── Margin Calculation ────────────────────────────────────────────
 
-def calculate_combined_margin(legs: list[dict], symbol: str) -> float:
+def calculate_combined_margin(
+    legs: list[dict],
+    symbol: str,
+    risk_profile: dict | None = None,
+    underlying: float = 0.0,
+) -> float:
     """
-    Estimate combined margin for all SELL legs.
+    Estimate combined margin for all legs.
 
-    Uses a static 12x SELL margin multiplier (SPAN + exposure approximation)
-    applied to: premium * lot_size * lots.
+    For hedged/defined-risk structures (where risk_profile defines a valid bounded
+    max_loss < underlying * 0.45), margin is approximated via SPAN-like protection:
+      margin = max_loss * lot_size * total_lots * 1.25
 
+    For unhedged/naked short legs or fallback, static 12x SELL margin multiplier is used.
     Result is capped at MAX_BOOK_MARGIN from config.
-
-    Parameters
-    ----------
-    legs : list[dict]
-        Each leg needs: premium, lots (default 1).
-    symbol : str
-        Used to look up lot size from LOT_SIZES.
-
-    Returns
-    -------
-    Total margin in ₹, capped at MAX_BOOK_MARGIN.
     """
     lot_size = LOT_SIZES.get(symbol, 1)
     SELL_MARGIN_MULTIPLIER = 12
 
-    total_margin = 0.0
+    naked_margin = 0.0
+    total_lots = 1
     for leg in legs:
         premium = float(leg.get("premium", 0))
         lots = int(leg.get("lots", 1))
-        leg_margin = premium * lot_size * lots * SELL_MARGIN_MULTIPLIER
-        total_margin += leg_margin
+        total_lots = max(total_lots, lots)
+        side = leg.get("side", "SELL").upper()
+        multiplier = SELL_MARGIN_MULTIPLIER if side == "SELL" else 1.0
+        naked_margin += premium * lot_size * lots * multiplier
 
-    return float(min(total_margin, MAX_BOOK_MARGIN))
+    if risk_profile and underlying > 0:
+        max_loss = risk_profile.get("max_loss", 0.0)
+        if 0.0 < max_loss < (underlying * 0.45):
+            hedged_margin = max_loss * lot_size * total_lots * 1.25
+            return float(min(hedged_margin, naked_margin, MAX_BOOK_MARGIN))
+
+    return float(min(naked_margin, MAX_BOOK_MARGIN))
 
 
 # ── Entry Quality Scoring ─────────────────────────────────────────
@@ -625,13 +638,17 @@ def build_execution_plan(
     book_greeks = compute_book_greeks(legs, option_chain, underlying, expiry)
 
     # ── Step 4: Compute net premium ────────────────────────────────
-    net_premium = sum(float(l.get("premium", 0)) for l in legs)
+    net_premium = sum(
+        float(l.get("premium", 0)) if (l.get("side") or "SELL").upper() == "SELL"
+        else -float(l.get("premium", 0))
+        for l in legs
+    )
 
     # ── Step 5: Risk profile ───────────────────────────────────────
     risk_profile = compute_book_risk_profile(strategy_type, legs, net_premium, underlying)
 
     # ── Step 6: Margin ─────────────────────────────────────────────
-    margin = calculate_combined_margin(legs, symbol)
+    margin = calculate_combined_margin(legs, symbol, risk_profile=risk_profile, underlying=underlying)
 
     # ── Step 7: Entry quality score ────────────────────────────────
     quality_context = {

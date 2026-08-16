@@ -37,7 +37,25 @@ SCRAPE_RUNNER = ROOT / "tools" / "scrape_dhan_naturalgas.py"
 
 IST = pytz.timezone("Asia/Kolkata")
 
-MAX_CATCHUP_INTERVALS = 3  # max missed intervals to backfill per tick
+MAX_CATCHUP_INTERVALS = 3
+
+def _get_scan_window_times(class_key: str, now_ist: datetime) -> tuple[datetime, datetime, str, str]:
+    """Return (scan_open_time, scan_close_time, open_t_str, close_t_str) for class_key.
+    NSE and BSE scan window: 09:30 AM IST to 15:30 IST (3:30 PM).
+    MCX scan window: 09:15 AM IST to 23:30 IST.
+    """
+    if class_key in ("MCX_COMMODITY", "MCX_AGRI"):
+        open_t_str, close_t_str = "09:15", "23:30"
+    else:
+        open_t_str, close_t_str = "09:30", "15:30"
+
+    open_h, open_m = map(int, open_t_str.split(":"))
+    close_h, close_m = map(int, close_t_str.split(":"))
+
+    scan_open_time = now_ist.replace(hour=open_h, minute=open_m, second=0, microsecond=0)
+    scan_close_time = now_ist.replace(hour=close_h, minute=close_m, second=0, microsecond=0)
+    return scan_open_time, scan_close_time, open_t_str, close_t_str
+  # max missed intervals to backfill per tick
 
 
 def _get_required_strikes(symbol: str) -> set[float]:
@@ -1008,19 +1026,22 @@ def start_scheduler(immediate: bool = False):
 
     def _warmup_instrument_cache():
         try:
+            from config.runtime_config import is_broker_trade_enabled
             from src.engine.live_trading import get_kite_client
             from src.engine.symbol_resolver import (
                 _instrument_cache_is_ready,
                 fetch_and_cache_instruments,
             )
 
-            if not _instrument_cache_is_ready():
+            if not is_broker_trade_enabled():
+                log.debug("[scheduler] Broker trade disabled — instrument cache warm-up skipped.")
+            elif not _instrument_cache_is_ready():
                 kite = get_kite_client()
                 if kite:
                     log.info("[scheduler] Warming up instrument cache...")
                     fetch_and_cache_instruments(kite)
                 else:
-                    log.info(
+                    log.debug(
                         "[scheduler] Kite not connected; instrument cache warm-up skipped."
                     )
         except Exception as exc:
@@ -1053,24 +1074,28 @@ def start_scheduler(immediate: bool = False):
         except Exception as e:
             log.warning("[scheduler] Shoonya auth error: %s", e)
 
-        try:
-            # Kite: ensure valid session or trigger auto-login
-            from src.engine.live_trading import get_kite_client
-            from src.services.zerodha_auto_login import auto_login_kite
-            
-            kite = get_kite_client()
-            if kite:
-                log.info("[scheduler] Kite session OK")
-            else:
-                # Trigger auto-login if Kite client not available
-                log.info("[scheduler] Kite client not available — attempting auto-login...")
-                result = auto_login_kite(force=True)
-                if result.get("success"):
-                    log.info("[scheduler] Kite auto-login successful")
+        from config.runtime_config import is_broker_trade_enabled
+        if is_broker_trade_enabled():
+            try:
+                # Kite: ensure valid session or trigger auto-login
+                from src.engine.live_trading import get_kite_client
+                from src.services.zerodha_auto_login import auto_login_kite
+                
+                kite = get_kite_client()
+                if kite:
+                    log.info("[scheduler] Kite session OK")
                 else:
-                    log.info("[scheduler] Kite auto-login pending: %s", result.get("message", "credentials not configured"))
-        except Exception as e:
-            log.warning("[scheduler] Kite auth error: %s", e)
+                    # Trigger auto-login if Kite client not available
+                    log.info("[scheduler] Kite client not available — attempting auto-login...")
+                    result = auto_login_kite(force=True)
+                    if result.get("success"):
+                        log.info("[scheduler] Kite auto-login successful")
+                    else:
+                        log.info("[scheduler] Kite auto-login pending: %s", result.get("message", "credentials not configured"))
+            except Exception as e:
+                log.warning("[scheduler] Kite auth error: %s", e)
+        else:
+            log.debug("[scheduler] Broker trade disabled — skipping Kite pre-pipeline authentication.")
 
         _last_auth_date = today
 
@@ -1098,16 +1123,8 @@ def start_scheduler(immediate: bool = False):
         now_time = now_ist.time()
 
         for class_key in MARKET_WINDOWS:
-            open_t, close_t, days = MARKET_WINDOWS[class_key]
-            open_h, open_m = map(int, open_t.split(":"))
-            close_h, close_m = map(int, close_t.split(":"))
-
-            market_open_time = now_ist.replace(
-                hour=open_h, minute=open_m, second=0, microsecond=0
-            )
-            market_close_time = now_ist.replace(
-                hour=close_h, minute=close_m, second=0, microsecond=0
-            )
+            market_open_time, market_close_time, open_t, close_t = _get_scan_window_times(class_key, now_ist)
+            days = MARKET_WINDOWS[class_key][2]
 
             # Skip if today is not a trading day for this class
             if not immediate and now_ist.weekday() not in days:
@@ -1178,11 +1195,7 @@ def start_scheduler(immediate: bool = False):
                 if now_time < dt_mod.time(9, 30):
                     continue
 
-            open_t, _, _ = MARKET_WINDOWS[class_key]
-            open_h, open_m = map(int, open_t.split(":"))
-            market_open_time = now_ist.replace(
-                hour=open_h, minute=open_m, second=0, microsecond=0
-            )
+            market_open_time, market_close_time, open_t, close_t = _get_scan_window_times(class_key, now_ist)
             delta_minutes = (now_ist - market_open_time).total_seconds() / 60.0
             if delta_minutes >= 0:
                 if class_key == "MCX_COMMODITY":
@@ -1266,15 +1279,17 @@ def start_scheduler(immediate: bool = False):
                             log.warning("[scheduler] Daily Shoonya re-auth failed")
                     except Exception as e:
                         log.debug("[scheduler] Shoonya re-auth skipped: %s", e)
-                    try:
-                        from src.services.zerodha_auto_login import auto_login_kite
-                        result = auto_login_kite(force=False)
-                        if result.get("success"):
-                            log.info("[scheduler] Daily Kite auto-login: %s", result.get("message", "OK"))
-                        else:
-                            log.debug("[scheduler] Kite auto-login: %s", result.get("message", ""))
-                    except Exception as e:
-                        log.debug("[scheduler] Kite re-auth skipped: %s", e)
+                    from config.runtime_config import is_broker_trade_enabled
+                    if is_broker_trade_enabled():
+                        try:
+                            from src.services.zerodha_auto_login import auto_login_kite
+                            result = auto_login_kite(force=False)
+                            if result.get("success"):
+                                log.info("[scheduler] Daily Kite auto-login: %s", result.get("message", "OK"))
+                            else:
+                                log.debug("[scheduler] Kite auto-login: %s", result.get("message", ""))
+                        except Exception as e:
+                            log.debug("[scheduler] Kite re-auth skipped: %s", e)
 
                 threading.Thread(target=_daily_reauth, daemon=True, name="daily-reauth").start()
 
@@ -1315,25 +1330,29 @@ def start_scheduler(immediate: bool = False):
                 now_time_str = now_ist.strftime("%H:%M")
                 if now_time_str == "08:45" and _last_auto_login_date != current_date:
                     _last_auto_login_date = current_date
-                    log.info(
-                        "[scheduler] Pre-market: triggering headless Kite auto-login (08:45 IST)"
-                    )
-                    try:
-                        from src.services.zerodha_auto_login import auto_login_kite
+                    from config.runtime_config import is_broker_trade_enabled
+                    if is_broker_trade_enabled():
+                        log.info(
+                            "[scheduler] Pre-market: triggering headless Kite auto-login (08:45 IST)"
+                        )
+                        try:
+                            from src.services.zerodha_auto_login import auto_login_kite
 
-                        result = auto_login_kite(force=False)
-                        if result.get("success"):
-                            log.info(
-                                "[scheduler] Kite auto-login: %s",
-                                result.get("message", "OK"),
-                            )
-                        else:
-                            log.warning(
-                                "[scheduler] Kite auto-login failed: %s",
-                                result.get("message", "unknown error"),
-                            )
-                    except Exception as exc:
-                        log.error("[scheduler] Kite auto-login exception: %s", exc)
+                            result = auto_login_kite(force=False)
+                            if result.get("success"):
+                                log.info(
+                                    "[scheduler] Kite auto-login: %s",
+                                    result.get("message", "OK"),
+                                )
+                            else:
+                                log.warning(
+                                    "[scheduler] Kite auto-login failed: %s",
+                                    result.get("message", "unknown error"),
+                                )
+                        except Exception as exc:
+                            log.error("[scheduler] Kite auto-login exception: %s", exc)
+                    else:
+                        log.debug("[scheduler] Broker trade disabled — skipping pre-market Kite auto-login.")
 
             # ── Post-market: FII/DII Data Fetch at 19:15 IST (Mon-Fri) ──
             if now_ist.weekday() < 5:
@@ -1360,7 +1379,7 @@ def start_scheduler(immediate: bool = False):
             if now_ist.weekday() == 4:  # Friday
                 current_time_str = now_ist.strftime("%H:%M")
                 if (
-                    "15:25" <= current_time_str <= "15:30"
+                    "15:35" <= current_time_str <= "15:40"
                     and _last_friday_nse_exit_date != current_date
                 ):
                     _last_friday_nse_exit_date = current_date
@@ -1480,7 +1499,9 @@ def start_scheduler(immediate: bool = False):
                     if not data_available:
                         attempts = _scan_attempts.get((class_key, current_interval_idx), 0)
                         last_attempt = _last_scan_attempt_time.get(class_key, 0.0)
-                        if attempts < 3 and (time.time() - last_attempt >= (interval_min * 60.0)):
+                        # First attempt (attempts == 0) triggers immediately at interval boundary.
+                        # Subsequent retries use a 30s debounce.
+                        if attempts < 3 and (attempts == 0 or (time.time() - last_attempt >= 30.0)):
                             should_scan = True
                             _scan_attempts[(class_key, current_interval_idx)] = attempts + 1
                             _last_scan_attempt_time[class_key] = time.time()

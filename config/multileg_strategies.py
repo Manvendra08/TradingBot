@@ -17,8 +17,8 @@ STRATEGY_TYPES = {
     "CUSTOM": "Custom",
 }
 
-# ── Allowed Symbols (NSE indices only) ─────────────────────────────
-ALLOWED_SYMBOLS = {"NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX"}
+# ── Allowed Symbols (NSE indices & MCX commodities) ─────────────────────────────
+ALLOWED_SYMBOLS = {"NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX", "NATURALGAS", "CRUDEOIL"}
 
 # ── Book-Level Risk Caps ────────────────────────────────────────────
 MAX_BOOK_MARGIN = 7_500_000.0     # Maximum combined margin per book (₹75L / 7500K)
@@ -29,14 +29,14 @@ MIN_NET_PREMIUM = 2.0             # Minimum net premium collected (₹)
 
 # ── Strategy-Specific Constraints ───────────────────────────────────
 STRATEGY_CONSTRAINTS = {
-    "IRON_CONDOR":     {"min_legs": 4, "max_legs": 4, "all_sell": True},
+    "IRON_CONDOR":     {"min_legs": 4, "max_legs": 4, "all_sell": False},
     "SHORT_STRANGLE":  {"min_legs": 2, "max_legs": 2, "all_sell": True},
     "SHORT_STRADDLE":  {"min_legs": 2, "max_legs": 2, "all_sell": True},
-    "BEAR_CALL_SPREAD": {"min_legs": 2, "max_legs": 2, "all_sell": True},
-    "BULL_PUT_SPREAD": {"min_legs": 2, "max_legs": 2, "all_sell": True},
-    "JADE_LIZARD":     {"min_legs": 3, "max_legs": 3, "all_sell": True},
+    "BEAR_CALL_SPREAD": {"min_legs": 2, "max_legs": 2, "all_sell": False},
+    "BULL_PUT_SPREAD": {"min_legs": 2, "max_legs": 2, "all_sell": False},
+    "JADE_LIZARD":     {"min_legs": 3, "max_legs": 3, "all_sell": False},
     "TFSS_LEGACY":     {"min_legs": 2, "max_legs": 6, "all_sell": True},
-    "CUSTOM":          {"min_legs": 2, "max_legs": 6, "all_sell": True},
+    "CUSTOM":          {"min_legs": 2, "max_legs": 6, "all_sell": False},
 }
 
 # ── Conflicting Strategies ──────────────────────────────────────────
@@ -49,7 +49,7 @@ CONFLICTING_STRATEGIES = {
 # ── Exit Defaults ───────────────────────────────────────────────────
 DEFAULT_PROFIT_TARGET_PCT = 0.50   # Close book at 50% of max profit
 DEFAULT_STOP_LOSS_PCT = 2.0        # Close book at 200% of max loss (premium sold)
-DEFAULT_TIME_DECAY_EXIT_DTE = 3    # Close remaining legs when DTE < this
+DEFAULT_TIME_DECAY_EXIT_DTE = 0    # 0 = hold through expiry day until 15:25 IST market close square-off
 
 # ── IV Thresholds for Strategy Selection ────────────────────────────
 IV_HIGH_THRESHOLD = 20.0     # IV above this = high premium environment

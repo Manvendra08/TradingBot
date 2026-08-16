@@ -96,7 +96,7 @@ def is_trading_allowed_now(symbol: str, expiry_str: str | None = None) -> tuple[
                 if expiry_date == now.date():
                     if is_index_fno:
                         # Index F&O: trade until 15:40, block last 15 min (15:25–15:40)
-                        if (h, m) >= (15, 25):
+                        if (h, m) >= (15, 25) and (h, m) < (15, 40):
                             return False, f"Index F&O expiry end-of-session window (15:25–15:40 IST) for expiry {expiry_str}"
                     else:
                         # F&O stocks & other NSE: continuous stops 15:15, CAS 15:15–15:30
@@ -162,9 +162,9 @@ def is_trading_allowed_now(symbol: str, expiry_str: str | None = None) -> tuple[
                         if (h, m) >= (15, 40):
                             return False, f"Expiry day trading cutoff (after 15:40 IST for Index F&O on expiry day)"
                     else:
-                        # F&O stocks & other NSE: cutoff at 15:30
-                        if (h, m) >= (15, 30):
-                            return False, f"Expiry day trading cutoff (after 15:30 IST for NSE on expiry day)"
+                        # F&O stocks & other NSE: cutoff at 15:25
+                        if (h, m) >= (15, 25):
+                            return False, f"Expiry day trading cutoff (after 15:25 IST for NSE on expiry day)"
             except Exception as parse_exc:
                 log.warning("time_guards: failed to parse expiry date %s (%s)", expiry_str, parse_exc)
 

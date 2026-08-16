@@ -224,13 +224,20 @@ def calculate_trade_lots(
     base = _base_symbol(symbol)
 
     if is_paper:
-        paper_symbol_lots = config.get("paper_symbol_lots") or {}
-        if base in paper_symbol_lots:
-            lots = max(1, int(paper_symbol_lots[base]))
-            log.debug("%s: paper trade — using paper_symbol_lots=%d", base, lots)
+        broker_mode = _broker_mode_enabled(config)
+        if broker_mode:
+            # Broker mode ON: mirror live settings for paper trading
+            lots = _calculate_live_lots(base, entry_premium, side, config, option_type, strike)
+            log.debug("%s: paper trade (broker mode ON) — mirroring live lots=%d", base, lots)
         else:
-            lots = max(1, int(config.get("paper_lots") or 10))
-            log.debug("%s: paper trade — using global paper_lots=%d", base, lots)
+            # Broker mode OFF: use paper-specific settings
+            paper_symbol_lots = config.get("paper_symbol_lots") or {}
+            if base in paper_symbol_lots:
+                lots = max(1, int(paper_symbol_lots[base]))
+                log.debug("%s: paper trade — using paper_symbol_lots=%d", base, lots)
+            else:
+                lots = max(1, int(config.get("paper_lots") or 10))
+                log.debug("%s: paper trade — using global paper_lots=%d", base, lots)
     else:
         lots = _calculate_live_lots(base, entry_premium, side, config, option_type, strike)
 

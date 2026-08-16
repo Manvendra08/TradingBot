@@ -243,18 +243,12 @@ def _key_levels(strikes_data: list[dict], underlying: float) -> dict:
     support = None
     resistance = None
 
-    # Compute top 3 CE resistance walls (CE strikes >= underlying, sorted by OI desc)
-    ce_above = [r for r in ce_rows if r.get("strike") is not None and r["strike"] >= underlying]
-    if not ce_above:
-        ce_above = ce_rows
-    ce_sorted = sorted(ce_above, key=lambda r: r.get("oi", 0), reverse=True)
+    # Compute top 3 CE resistance walls (global max CE OI, not just above spot)
+    ce_sorted = sorted(ce_rows, key=lambda r: r.get("oi", 0), reverse=True)
     resistance_walls = [r["strike"] for r in ce_sorted[:3] if r.get("strike") is not None]
 
-    # Compute top 3 PE support walls (PE strikes <= underlying, sorted by OI desc)
-    pe_below = [r for r in pe_rows if r.get("strike") is not None and r["strike"] <= underlying]
-    if not pe_below:
-        pe_below = pe_rows
-    pe_sorted = sorted(pe_below, key=lambda r: r.get("oi", 0), reverse=True)
+    # Compute top 3 PE support walls (global max PE OI, not just below spot)
+    pe_sorted = sorted(pe_rows, key=lambda r: r.get("oi", 0), reverse=True)
     support_walls = [r["strike"] for r in pe_sorted[:3] if r.get("strike") is not None]
 
     support = support_walls[0] if support_walls else None

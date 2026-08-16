@@ -220,43 +220,46 @@ class TestPipelineIntegration:
             patch("src.engine.pipeline.detect_anomalies") as mock_detect,
             patch("src.engine.pipeline.send_text") as mock_send,
             patch("src.engine.pipeline.send_text_and_return_id") as mock_send_async,
+            patch("config.symbol_classes.is_market_open", return_value=True),
         ):
             mock_detect.return_value = ([], {"diagnostics": {"max_oi_delta_pct": 1.5}})
             from src.engine.pipeline import run_pipeline
 
-            run_pipeline(symbols=["NIFTY"])
+            run_pipeline(symbols=["NIFTY"], is_test=True)
             assert mock_send.called or mock_send_async.called
 
         # Scenario 2: duplicate alerts and should_send_zero_signal is False (should_send = False)
         with (
             patch("src.engine.pipeline.fetch_option_chain", return_value=oc),
             patch("src.engine.pipeline.detect_anomalies") as mock_detect,
-            patch("src.engine.pipeline.is_duplicate", return_value=True),
-            patch("src.engine.pipeline.should_send_zero_signal", return_value=False),
+            patch("src.alerts.dedup.is_duplicate", return_value=True),
+            patch("src.alerts.dedup.should_send_zero_signal", return_value=False),
             patch("src.engine.pipeline.send_text") as mock_send,
             patch("src.engine.pipeline.send_text_and_return_id") as mock_send_async,
+            patch("config.symbol_classes.is_market_open", return_value=True),
         ):
             mock_detect.return_value = (
                 [{"alert_type": "OI_SPIKE"}],
                 {"diagnostics": {"max_oi_delta_pct": 0.5}},
             )
-            run_pipeline(symbols=["NIFTY"])
+            run_pipeline(symbols=["NIFTY"])  # not test mode - test actual logic
             assert not mock_send.called and not mock_send_async.called
 
         # Scenario 3: duplicate alerts and should_send_zero_signal is True (should_send = True) -> covers line 138
         with (
             patch("src.engine.pipeline.fetch_option_chain", return_value=oc),
             patch("src.engine.pipeline.detect_anomalies") as mock_detect,
-            patch("src.engine.pipeline.is_duplicate", return_value=True),
-            patch("src.engine.pipeline.should_send_zero_signal", return_value=True),
+            patch("src.alerts.dedup.is_duplicate", return_value=True),
+            patch("src.alerts.dedup.should_send_zero_signal", return_value=True),
             patch("src.engine.pipeline.send_text") as mock_send,
             patch("src.engine.pipeline.send_text_and_return_id") as mock_send_async,
+            patch("config.symbol_classes.is_market_open", return_value=True),
         ):
             mock_detect.return_value = (
                 [{"alert_type": "OI_SPIKE"}],
                 {"diagnostics": {"max_oi_delta_pct": 0.5}},
             )
-            run_pipeline(symbols=["NIFTY"])
+            run_pipeline(symbols=["NIFTY"], is_test=True)
             assert mock_send.called or mock_send_async.called
 
         # Scenario 4: underlying price is None -> covers line 70-72
@@ -577,6 +580,10 @@ class TestSchedulerMarketHours:
             def fromtimestamp(cls, ts, tz=None):
                 return datetime.fromtimestamp(ts, tz)
 
+            @classmethod
+            def combine(cls, date, time, tzinfo=None):
+                return datetime.combine(date, time, tzinfo)
+
         t2 = ist.localize(datetime(2026, 6, 17, 10, 15, 0)).timestamp()
         with (
             patch("src.scheduler.job_runner.datetime", FakeDatetime),
@@ -622,6 +629,10 @@ class TestSchedulerMarketHours:
             @classmethod
             def fromtimestamp(cls, ts, tz=None):
                 return datetime.fromtimestamp(ts, tz)
+
+            @classmethod
+            def combine(cls, date, time, tzinfo=None):
+                return datetime.combine(date, time, tzinfo)
 
         t2 = ist.localize(datetime(2026, 6, 17, 10, 15, 0)).timestamp()
         with (

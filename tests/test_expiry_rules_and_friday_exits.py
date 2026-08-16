@@ -32,7 +32,7 @@ def setup_test_db():
 
 
 class TestExpiryCutoffs:
-    """Tests for expiry day time cutoffs (2:30 pm for NSE/BSE, 8 pm for MCX)."""
+    """Tests for expiry day time cutoffs (Index F&O trades until 15:40 IST effective Aug 3 2026)."""
 
     @patch("src.engine.time_guards.datetime")
     def test_nse_expiry_cutoff(self, mock_dt):
@@ -41,19 +41,26 @@ class TestExpiryCutoffs:
 
         mock_dt.strptime.side_effect = lambda s, f: _real_dt.datetime.strptime(s, f)
 
-        # 1. On expiry day, after 14:30 (2:30 pm) -> blocked
-        mock_dt.now.return_value = _make_ist_dt(14, 31, weekday=3)  # Thu July 2, 2026
+        # NIFTY is INDEX F&O - trades until 15:40 IST (effective Aug 3 2026)
+        # Window 2: Expiry end-of-session window 15:25-15:40
+        mock_dt.now.return_value = _make_ist_dt(15, 30, weekday=3)  # Thu July 2, 2026
+        allowed, reason = is_trading_allowed_now("NIFTY", "2026-07-02")
+        assert allowed is False
+        assert "end-of-session" in reason
+
+        # Window 5: Expiry day trading cutoff after 15:40
+        mock_dt.now.return_value = _make_ist_dt(15, 45, weekday=3)
         allowed, reason = is_trading_allowed_now("NIFTY", "2026-07-02")
         assert allowed is False
         assert "Expiry day trading cutoff" in reason
 
-        # 2. On expiry day, before 14:30 -> allowed
+        # 2. On expiry day, before 15:25 -> allowed
         mock_dt.now.return_value = _make_ist_dt(13, 0, weekday=3)
         allowed, reason = is_trading_allowed_now("NIFTY", "2026-07-02")
         assert allowed is True
 
-        # 3. Not expiry day, after 14:30 -> allowed
-        mock_dt.now.return_value = _make_ist_dt(14, 31, weekday=3)
+        # 3. Not expiry day, after 15:40 -> allowed
+        mock_dt.now.return_value = _make_ist_dt(15, 45, weekday=3)
         allowed, reason = is_trading_allowed_now("NIFTY", "2026-07-09")
         assert allowed is True
 

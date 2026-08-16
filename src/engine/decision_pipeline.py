@@ -39,7 +39,7 @@ from src.engine.trend_analysis import (
     calculate_momentum_score,
     get_broader_trend_from_alerts,
 )
-from src.engine.regime_detector import detect_market_regime, regime_score_for_trade, REGIME_NO_TRADE
+from src.engine.regime_detector import detect_market_regime, regime_score_for_trade, REGIME_NO_TRADE, REGIME_RANGE
 from src.engine.risk_engine import _check_risk_limits_for_table
 from src.engine.verdict_sets import is_bullish, is_bearish, is_neutral
 from src.engine.trade_decision import (
@@ -314,18 +314,15 @@ def step_ai_alignment(ctx: PipelineContext) -> StepResult:
 
 
 def step_tfss_handoff_core(ctx: PipelineContext) -> StepResult:
-    from src.engine.trend_following_short_strangle import (
-        normalize_core_verdict_to_tfss_intent,
-        compute_persisted_trend,
-        resolve_tfss_execution_side
-    )
-    # Bypass TFSS in legacy mock tests using 'TEST' symbol
-    if ctx.symbol == "TEST":
+    from config.runtime_config import load_runtime_config
+    rconf = load_runtime_config()
+    tfss_enabled = bool(rconf.get("strategies", {}).get("TFSS", {}).get("enabled", False))
+    if not tfss_enabled or ctx.symbol == "TEST":
         return StepResult(
             name="tfss_handoff",
             passed=True,
             score=100,
-            reason="TFSS bypassed for TEST symbol",
+            reason="TFSS strategy is disabled in settings" if not tfss_enabled else "TFSS bypassed for TEST symbol",
             data={"tfss_eligible": False}
         )
 
@@ -435,29 +432,52 @@ def step_entry_quality_core(ctx: PipelineContext) -> StepResult:
 def step_regime(ctx: PipelineContext) -> StepResult:
     regime = detect_market_regime(ctx.symbol)
     confidence = int(ctx.scan_context.get("intel", {}).get("confidence") or 0)
+    is_mcx = ctx.symbol.upper().strip().split()[0] in MCX_SYMBOLS
 
     if regime == REGIME_NO_TRADE:
+        # REGIME_NO_TRADE now only fires on degenerate price data (see
+        # regime_detector). Genuinely thin scan history (also surfaced as
+        # REGIME_NO_TRADE) is distinguished here so the log is honest.
         regime_sc = 50
+        scan_count = _count_valid_scans(ctx.symbol)
+        if scan_count < 5:
+            reason_prefix = f"Insufficient scan history ({scan_count} scans)"
+        else:
+            reason_prefix = "Unclassified regime (degenerate price data)"
         if ctx.engine == "TIMEFRAME" or (PAPER_RESEARCH_MODE and confidence >= MIN_CONFIDENCE_CORE):
             passed = True
-            reason = "Neutral regime score (50) assigned due to unopinionated/insufficient scan history"
+            reason = f"Neutral regime score (50) assigned — {reason_prefix}"
         else:
             passed = False
-            reason = "Insufficient scan history for regime detection (neutral score 50 assigned)"
+            reason = f"{reason_prefix} for regime detection (neutral score 50 assigned)"
     else:
         plan = ctx.scan_context.get("_pipeline_plan") or {}
         option_type = plan.get("option_type", "CE")
         regime_sc = regime_score_for_trade(regime, option_type)
-        # Flaw #4: Enforce Regime Score Gating
-        if PAPER_RESEARCH_MODE and confidence >= MIN_CONFIDENCE_CORE:
+
+        from config.runtime_config import load_runtime_config
+        rconf = load_runtime_config()
+        ai_decision_mode = rconf.get("live_ai_decision_mode", "advisory")
+
+        if ai_decision_mode == "full":
+            passed = True
+            reason = f"Market regime: {regime} (score={regime_sc}) — LLM primary decision ownership active"
+        elif PAPER_RESEARCH_MODE and confidence >= MIN_CONFIDENCE_CORE:
             passed = True
             reason = f"Market regime: {regime} (score={regime_sc}) - Bypassed in research mode"
         else:
-            passed = regime_sc >= MIN_REGIME_SCORE_CORE
-            if passed:
-                reason = f"Market regime: {regime} (score={regime_sc})"
+            if is_mcx and regime == REGIME_RANGE and confidence >= MCX_MIN_CONFIDENCE:
+                passed = True
+                reason = (
+                    f"Market regime: {regime} (score={regime_sc}) - "
+                    f"MCX range accepted at conf={confidence}>=MCX_MIN_CONFIDENCE({MCX_MIN_CONFIDENCE})"
+                )
             else:
-                reason = f"Market regime: {regime} (score={regime_sc}) below required {MIN_REGIME_SCORE_CORE}"
+                passed = regime_sc >= MIN_REGIME_SCORE_CORE
+                if passed:
+                    reason = f"Market regime: {regime} (score={regime_sc})"
+                else:
+                    reason = f"Market regime: {regime} (score={regime_sc}) below required {MIN_REGIME_SCORE_CORE}"
 
     return StepResult(
         name="regime",
@@ -557,6 +577,18 @@ def step_trend_alignment_core(ctx: PipelineContext) -> StepResult:
                 broader_trend=broader_trend,
                 regime=regime_label,
             )
+            regime_label = str(
+                ctx.scan_context.get("intel", {}).get("pcr_regime")
+                or ctx.scan_context.get("pcr_regime")
+                or ""
+            )
+            is_contra, contra_score, contra_reason, contra_checks = evaluate_contra_setup(
+                symbol=symbol,
+                verdict=verdict,
+                confidence=confidence,
+                broader_trend=broader_trend,
+                regime=regime_label,
+            )
             if is_contra and entry_quality >= MIN_ENTRY_QUALITY_CORE:
                 passed = True
                 setup_type = "CONTRA_REVERSAL"
@@ -570,7 +602,11 @@ def step_trend_alignment_core(ctx: PipelineContext) -> StepResult:
                 )
 
         # Priority 2: Trend persistence
-        elif is_persistent and entry_quality >= MIN_ENTRY_QUALITY_CORE and regime_ok:
+        # FIX: This must be `if` not `elif` — it was incorrectly chained to
+        # the Priority 1.5 outer `if not passed and CONTRA_ENABLED:` block.
+        # When CONTRA_ENABLED=True, that outer `if` always enters (even if
+        # is_contra=False), suppressing this `elif` entirely.
+        if is_persistent and entry_quality >= MIN_ENTRY_QUALITY_CORE and regime_ok:
             # High-confidence bypass: when OI confidence >= 90%, relax trend alignment
             # to allow entries in choppy markets with strong OI conviction
             effective_trend_threshold = MIN_TREND_ALIGNMENT_CORE
@@ -604,8 +640,19 @@ def step_trend_alignment_core(ctx: PipelineContext) -> StepResult:
                 f"ta={trend_alignment} momentum={momentum_score}"
             )
 
-        # Priority 5: Empirical promotion (ADR-007 v2)
-        if not passed and ai_decision_mode in ("full", "empirical"):
+        # Priority 5: Full AI Primary Decision Ownership (live_ai_decision_mode == "full")
+        if not passed and ai_decision_mode == "full":
+            veto_flag = _extract_ai_veto_flag(ctx.ai_verdict) if ctx.ai_verdict else False
+            if not veto_flag:
+                passed = True
+                setup_type = "AI_PRIMARY_DECISION"
+                reason = (
+                    f"AI decision mode 'full' active — LLM primary decision ownership enabled "
+                    f"(conf={confidence}%, eq={entry_quality}, ta={trend_alignment})"
+                )
+
+        # Priority 6: Empirical promotion (ADR-007 v2 fallback)
+        if not passed and ai_decision_mode == "empirical":
             block_parts = []
             if not is_rev:
                 block_parts.append(f"No reversal: {rev_reason}")
@@ -1126,9 +1173,9 @@ def step_heavyweight_alignment(ctx: PipelineContext) -> StepResult:
     if not direction:
         return StepResult(
             name="heavyweight_alignment",
-            passed=True,
-            score=100,
-            reason="No trade direction detected; bypassing guard",
+            passed=False,
+            score=0,
+            reason="No clear directional bias detected; blocking trade",
             data={}
         )
 

@@ -179,28 +179,37 @@ def _call_llm_autopsy_batch(trades_with_shadows: list[tuple[dict, dict | None]])
         prompt = (
             f"Analyze these {len(batch)} closed trades. For each, determine if the decision logic held up.\n\n"
             + "\n".join(trade_summaries)
-            + '\n\nRespond with a JSON array of objects, one per trade:\n'
-              '[{"reasons_held": bool, "primary_failure": "string or null", "note": "3 sentences max"}]'
+            + '\n\nRespond with a JSON object populated with "autopsies" list of objects, one per trade:\n'
+              '{"autopsies": [{"reasons_held": bool, "primary_failure": "string or null", "note": "3 sentences max"}]}'
         )
         
         try:
-            from src.engine.llm_enrichment import LLMTradeAutopsy, _call_llm_api
+            from src.engine.llm_enrichment import LLMTradeAutopsyBatch, _call_llm_api
             # Use first trade's symbol for routing; purpose=eod_review for batch analysis
             first_symbol = batch[0][0].get("symbol", "AUTOPSY_BATCH") if batch else "AUTOPSY_BATCH"
-            response = _call_llm_api(first_symbol, prompt, response_schema=LLMTradeAutopsy, purpose="eod_review")
+            response = _call_llm_api(first_symbol, prompt, response_schema=LLMTradeAutopsyBatch, purpose="eod_review")
             if response:
-                text = getattr(response, "text", "") or str(response)
-                match = re.search(r'\[.*\]', text, re.DOTALL) if 're' in dir() else None
-                if match:
-                    parsed_array = json.loads(match.group(0))
-                    if isinstance(parsed_array, list) and len(parsed_array) == len(batch):
-                        for parsed in parsed_array:
-                            results.append({
-                                "reasons_held": parsed.get("reasons_held"),
-                                "primary_failure": parsed.get("primary_failure"),
-                                "note": parsed.get("note", "")[:500],
-                            })
-                        continue  # batch succeeded, skip fallback
+                parsed_array = []
+                if isinstance(response, LLMTradeAutopsyBatch):
+                    parsed_array = response.autopsies
+                elif hasattr(response, "autopsies"):
+                    parsed_array = getattr(response, "autopsies", [])
+                else:
+                    text = getattr(response, "text", "") or str(response)
+                    match = re.search(r'\{.*\}', text, re.DOTALL)
+                    if match:
+                        parsed_dict = json.loads(match.group(0))
+                        parsed_array = parsed_dict.get("autopsies", [])
+                
+                if isinstance(parsed_array, list) and len(parsed_array) == len(batch):
+                    for item in parsed_array:
+                        parsed = item.model_dump() if hasattr(item, "model_dump") else (item if isinstance(item, dict) else {})
+                        results.append({
+                            "reasons_held": parsed.get("reasons_held"),
+                            "primary_failure": parsed.get("primary_failure"),
+                            "note": (parsed.get("note") or "")[:500],
+                        })
+                    continue  # batch succeeded, skip fallback
         except Exception as e:
             log.warning("LLM batch autopsy call failed: %s — falling back to individual", e)
         

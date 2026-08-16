@@ -153,7 +153,23 @@ def _check_risk_limits_for_table(
                 f"({open_total}/{MAX_OPEN_TRADES_TOTAL})"
             ), "MAX_OPEN_TRADES_TOTAL"
 
-        # 3. Daily loss cap
+        # 3. Max trades per symbol per day
+        # REGRESSION FIX: this check was dropped during the TFSS risk-engine
+        # refactor (commit 977820ed) even though MAX_TRADES_PER_SYMBOL_PER_DAY
+        # is still imported/used as a limit elsewhere. Without it the setting is
+        # dead and a symbol can be traded unlimited times per IST day. Re-added
+        # here, counting all trades (open or closed) opened since IST midnight.
+        day_count = conn.execute(
+            f"SELECT COUNT(*) AS cnt FROM {trades_table} WHERE symbol = ? AND opened_at >= ?",
+            (symbol, today_start),
+        ).fetchone()["cnt"]
+        if day_count >= MAX_TRADES_PER_SYMBOL_PER_DAY:
+            return False, (
+                f"[{label}] Daily trade limit for {symbol} reached "
+                f"({day_count}/{MAX_TRADES_PER_SYMBOL_PER_DAY})"
+            ), "MAX_TRADES_PER_SYMBOL_PER_DAY"
+
+        # 4. Daily loss cap
         # BUG-M4 FIX: Use parameterized timestamps only instead of mixing parameterized
         # and CURRENT_TIMESTAMP. This prevents timezone offset mismatches.
         now_utc = datetime.now(timezone.utc).isoformat()

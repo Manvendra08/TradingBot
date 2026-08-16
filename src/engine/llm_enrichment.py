@@ -199,6 +199,12 @@ class LLMTradeAutopsy(BaseModel):
     )
 
 
+class LLMTradeAutopsyBatch(BaseModel):
+    autopsies: list[LLMTradeAutopsy] = Field(
+        default_factory=list, description="List of trade autopsy records, one per trade in the batch"
+    )
+
+
 # ── Client management ────────────────────────────────────────────────────
 
 _client = None
@@ -226,10 +232,10 @@ def _get_client(api_key: str):
             "You MUST output fields: action, urgency, reasoning, new_sl_premium, new_target_premium, "
             "reasons_held, position_age_min, price_distance_to_sl_pct, price_distance_to_target_pct."
         )
-    elif schema == LLMTradeAutopsy:
+    elif schema in (LLMTradeAutopsy, LLMTradeAutopsyBatch):
         schema_clarification = (
-            "Task: TRADE AUTOPSY ANALYSIS (LLMTradeAutopsy). "
-            "You MUST output fields: reasons_held, primary_failure, note."
+            "Task: TRADE AUTOPSY ANALYSIS (LLMTradeAutopsy / LLMTradeAutopsyBatch). "
+            "You MUST output fields: reasons_held, primary_failure, note for each trade record."
         )
 
 
@@ -360,7 +366,9 @@ def _format_news(news_data: dict | None) -> str:
         title = item.get("title", "")[:100]
         s = item.get("score", 0)
         tag = "+" if s > 0 else ("-" if s < 0 else "=")
-        lines.append(f"  [{tag}] {title}")
+        pub = item.get("published_at", "")
+        time_str = pub[:16].replace("T", " ") if pub else "Unknown time"
+        lines.append(f"  [{tag}] {time_str} | {title}")
     return "\n".join(lines)
 
 
@@ -551,9 +559,32 @@ def _format_historical_oi(symbol: str) -> str:
         return "  Historical data unavailable."
 
     if not rows or len(rows) < 5:
-        raise ValueError(
-            f"Insufficient historical data ({len(rows) if rows else 0} scans < 5). Skipping LLM enrichment."
-        )
+        # Fallback to underlying_price history if scan_summaries is building up
+        try:
+            with get_conn() as conn:
+                und_rows = conn.execute(
+                    """
+                    SELECT fetched_at, price as underlying
+                    FROM underlying_price
+                    WHERE symbol = ?
+                    ORDER BY fetched_at DESC
+                    LIMIT 10
+                    """,
+                    (symbol,),
+                ).fetchall()
+                if und_rows and len(und_rows) >= 3:
+                    lines = [f"  Last {len(und_rows)} price snapshots (newest first):"]
+                    for r in und_rows:
+                        t_str = str(r["fetched_at"])[11:16] if len(str(r["fetched_at"])) > 16 else str(r["fetched_at"])
+                        lines.append(f"    {t_str}: Und {float(r['underlying']):.2f}")
+                    return "\n".join(lines)
+        except Exception:
+            pass
+
+        if not rows or len(rows) < 2:
+            raise ValueError(
+                f"Insufficient historical data ({len(rows) if rows else 0} scans < 2). Skipping LLM enrichment."
+            )
 
     lines = []
     lines.append(f"  Last {len(rows)} scans (newest first):")
@@ -997,6 +1028,8 @@ def _register_provider_failure(
     key = _provider_cooldown_key(provider)
     env_key = provider.get("env_key")
     body_l = (body or "").lower()
+    group_name = provider.get("model_group")
+
     if status_code == 402:
         _PROVIDER_COOLDOWN_UNTIL[key] = now + 86400.0
         if env_key:
@@ -1005,23 +1038,56 @@ def _register_provider_failure(
         return
 
     if status_code == 429:
-        retry = _parse_retry_after_seconds(body) or 300.0
+        # For Antigravity Direct models, Google API 429 bodies don't include
+        # "try again in Xs" so _parse_retry_after_seconds returns None.
+        # Use a short 30s default instead of 300s — upstream resets quickly.
+        is_antigravity = provider.get("use_antigravity_direct", False)
+        default_retry = 30.0 if is_antigravity else 300.0
+        retry = _parse_retry_after_seconds(body) or default_retry
         if "tokens per day" in body_l or "tpd" in body_l:
             retry = max(retry, 3600.0)
         _PROVIDER_COOLDOWN_UNTIL[key] = now + retry
-        if env_key:
+        # Don't propagate key-wide cooldown for ANTIGRAVITY_REFRESH_TOKEN —
+        # a 429 on claude-sonnet-4-6 should NOT block gemini-2.5-flash.
+        if env_key and env_key != "ANTIGRAVITY_REFRESH_TOKEN":
             _PROVIDER_COOLDOWN_UNTIL[env_key] = now + retry
         log.info("[llm] %s rate-limited — cooldown %.0fs", provider.get("name"), retry)
         return
 
-    # Generic server error (500), empty response, or connection timeout — 10m cooldown
-    _PROVIDER_COOLDOWN_UNTIL[key] = now + 600.0
-    group_name = provider.get("model_group")
-    is_conn_error = any(
+    if status_code == 400:
+        # Upstream rejection / bad request — 60s cooldown for specific provider only
+        _PROVIDER_COOLDOWN_UNTIL[key] = now + 60.0
+        log.info("[llm] %s returned 400 upstream rejection — 60s cooldown", provider.get("name"))
+        return
+
+    # Check for read timeout vs generic 500/connection error
+    is_read_timeout = any(
         e in body_l
-        for e in ("httpconnectionpool", "connectionrefusederror", "read timed out", "connecttimedout", "timed out", "connection reset", "host unreachable")
+        for e in ("read timed out", "read timeout", "readtimeout")
     )
-    if is_conn_error and group_name:
+    if is_read_timeout:
+        # Read timeout: 120s cooldown for this provider
+        _PROVIDER_COOLDOWN_UNTIL[key] = now + 120.0
+        if group_name:
+            c_key = f"_read_timeout_cnt_{group_name}"
+            cnt = _PROVIDER_COOLDOWN_UNTIL.get(c_key, 0) + 1
+            _PROVIDER_COOLDOWN_UNTIL[c_key] = cnt
+            if cnt >= 2:
+                _PROVIDER_COOLDOWN_UNTIL[group_name] = now + 180.0
+                _PROVIDER_COOLDOWN_UNTIL[c_key] = 0
+                log.warning("[llm] 2 consecutive read timeouts in group '%s' — cooling down entire group for 180s to preserve pipeline deadline budget for fallbacks", group_name)
+        log.info("[llm] Read timeout on %s — 120s cooldown", provider.get("name"))
+        return
+
+    # Generic server error (500) or connection error — 10m cooldown
+    _PROVIDER_COOLDOWN_UNTIL[key] = now + 600.0
+
+    # True host-level errors: host unreachable / connection refused / connect timeout
+    is_host_error = any(
+        e in body_l
+        for e in ("httpconnectionpool", "connectionrefusederror", "connecttimedout", "connection reset", "host unreachable", "connection refused", "name or service not known")
+    )
+    if is_host_error and group_name:
         _PROVIDER_COOLDOWN_UNTIL[group_name] = now + 120.0
         log.info("[llm] Host/Endpoint connection error on %s — cooling down group '%s' for 120s", provider.get("name"), group_name)
 
@@ -1040,6 +1106,101 @@ def _max_tokens_for_purpose(purpose: str) -> int:
     if purpose == "formatting":
         return LLM_MAX_TOKENS_FORMATTING
     return LLM_MAX_TOKENS_LIVE
+
+
+def _normalize_parsed_schema(parsed: dict, schema) -> dict:
+    """Normalize parsed LLM dict to ensure required fields for the target schema exist."""
+    if not isinstance(parsed, dict):
+        return parsed
+
+    schema_name = getattr(schema, "__name__", str(schema))
+
+    if schema_name == "LLMTradeVerdict":
+        act = str(parsed.get("action") or "").upper().strip()
+        if act in ("HOLD", "EXIT", "CLOSE", "CLOSE_EARLY", "TRAIL_SL", "EXTEND_TARGET", "REDUCE") or act not in ("GO_LONG", "GO_SHORT", "NO_TRADE"):
+            parsed["action"] = "NO_TRADE"
+
+        parsed.setdefault("confidence", 50)
+        parsed.setdefault("signal_chain", "OI: Neutral — No trade edge | Price: Rangebound | Chart: Aligned")
+        parsed.setdefault("instrument", "NONE")
+        parsed.setdefault("entry_trigger", "NONE")
+        parsed.setdefault("entry_premium_range", "0-0")
+        parsed.setdefault("stop_loss", "NONE")
+        parsed.setdefault("target_1", "NONE")
+        parsed.setdefault("target_2", "NONE")
+        parsed.setdefault("risk_reward", "1:1")
+        parsed.setdefault("thesis", str(parsed.get("reason") or "No trade edge identified; holding cash."))
+        parsed.setdefault("invalidation", "NONE")
+        parsed.setdefault("risk_rating", "LOW")
+        parsed.setdefault("catalyst", "NONE")
+
+    elif schema_name == "LLMExitAdvice":
+        act = str(parsed.get("action") or "").upper().strip()
+        if act in ("NO_TRADE", "GO_LONG", "GO_SHORT") or act not in ("HOLD", "TRAIL_SL", "CLOSE_EARLY", "EXTEND_TARGET"):
+            parsed["action"] = "HOLD"
+
+        parsed.setdefault("urgency", "LOW")
+        parsed.setdefault("reason", str(parsed.get("thesis") or parsed.get("signal_chain") or "Holding active position"))
+
+    elif schema_name == "LLMMultiLegVerdict":
+        # Handle case variations from LLM output (e.g., Net_premium vs net_premium)
+        field_mapping = {
+            "Net_premium": "net_premium",
+            "Net_delta": "net_delta",
+            "Net_theta": "net_theta",
+            "Net_vega": "net_vega",
+            "Max_profit": "max_profit",
+            "Max_loss": "max_loss",
+            "Breakeven_upper": "breakeven_upper",
+            "Breakeven_lower": "breakeven_lower",
+            "Profit_target_pct": "profit_target_pct",
+            "Stop_loss_pct": "stop_loss_pct",
+            "Time_decay_exit_dte": "time_decay_exit_dte",
+            "Per_leg_exit_triggers": "per_leg_exit_triggers",
+            "Book_level_exit_triggers": "book_level_exit_triggers",
+            "Entry_rationale": "entry_rationale",
+            "Strategy_type": "strategy_type",
+        }
+        for llm_key, schema_key in field_mapping.items():
+            if llm_key in parsed and schema_key not in parsed:
+                parsed[schema_key] = parsed.pop(llm_key)
+
+        # Ensure legs have correct field names
+        if "legs" in parsed and isinstance(parsed["legs"], list):
+            leg_field_mapping = {
+                "Option_type": "option_type",
+                "Strike": "strike",
+                "Premium": "premium",
+                "Delta": "delta",
+                "Rationale": "rationale",
+                "Side": "side",
+            }
+            for leg in parsed["legs"]:
+                if isinstance(leg, dict):
+                    for llm_key, schema_key in leg_field_mapping.items():
+                        if llm_key in leg and schema_key not in leg:
+                            leg[schema_key] = leg.pop(llm_key)
+
+        # Set sensible defaults for missing required fields
+        parsed.setdefault("confidence", 50)
+        parsed.setdefault("net_premium", 0.0)
+        parsed.setdefault("net_delta", 0.0)
+        parsed.setdefault("net_theta", 0.0)
+        parsed.setdefault("net_vega", 0.0)
+        parsed.setdefault("max_profit", 0.0)
+        parsed.setdefault("max_loss", 0.0)
+        parsed.setdefault("breakeven_upper", 0.0)
+        parsed.setdefault("breakeven_lower", 0.0)
+        parsed.setdefault("entry_rationale", "No rationale provided")
+        parsed.setdefault("thesis", "No thesis provided")
+        parsed.setdefault("profit_target_pct", 0.5)
+        parsed.setdefault("stop_loss_pct", 2.0)
+        parsed.setdefault("time_decay_exit_dte", 7)
+        parsed.setdefault("per_leg_exit_triggers", "NONE")
+        parsed.setdefault("book_level_exit_triggers", "NONE")
+        parsed.setdefault("adjustment_plan", "NONE")
+
+    return parsed
 
 
 def _call_llm_api(
@@ -1114,10 +1275,10 @@ def _call_llm_api(
             "You MUST output fields: action, urgency, reasoning, new_sl_premium, new_target_premium, "
             "reasons_held, position_age_min, price_distance_to_sl_pct, price_distance_to_target_pct."
         )
-    elif schema == LLMTradeAutopsy:
+    elif schema in (LLMTradeAutopsy, LLMTradeAutopsyBatch):
         schema_clarification = (
-            "Task: TRADE AUTOPSY ANALYSIS (LLMTradeAutopsy). "
-            "You MUST output fields: reasons_held, primary_failure, note."
+            "Task: TRADE AUTOPSY ANALYSIS (LLMTradeAutopsy / LLMTradeAutopsyBatch). "
+            "You MUST output fields: reasons_held, primary_failure, note for each trade record."
         )
 
     system_prompt = (
@@ -1173,7 +1334,8 @@ def _call_llm_api(
                 "env_key": "OMNIROUTER_API_KEY",
                 "url": _omnirouter_url,
                 "model": "antigravity/claude-sonnet-4-6",
-                "timeout": 20,
+                "model_group": "omnirouter-primary",
+                "timeout": 15,  # 15s — leaves budget for siblings on read timeout
                 "max_tokens_override": 4096,
             },
             {
@@ -1181,22 +1343,7 @@ def _call_llm_api(
                 "env_key": "OMNIROUTER_API_KEY",
                 "url": _omnirouter_url,
                 "model": "antigravity/gemini-3.6-flash-medium",
-                "timeout": 20,
-                "max_tokens_override": 4096,
-            },
-            {
-                "name": "OmniRouter (Gemini 3.1 Pro Low)",
-                "env_key": "OMNIROUTER_API_KEY",
-                "url": _omnirouter_url,
-                "model": "antigravity/gemini-3.1-pro-low",
-                "timeout": 20,
-                "max_tokens_override": 4096,
-            },
-            {
-                "name": "OmniRouter (GPT-OSS 120B Medium)",
-                "env_key": "OMNIROUTER_API_KEY",
-                "url": _omnirouter_url,
-                "model": "antigravity/gpt-oss-120b-medium",
+                "model_group": "omnirouter-primary",
                 "timeout": 20,
                 "max_tokens_override": 4096,
             },
@@ -1313,10 +1460,10 @@ def _call_llm_api(
         }
 
         FREE_MODEL_PIPELINE = [
-            _opencode_zen_eod,
             _omnirouter_group,
-            _groq_group_eod,
             _github_models_eod,
+            _groq_group_eod,
+            _opencode_zen_eod,
             _bedrock_mantle_group,
             {
                 "model_group": "nvidia-nim-eod",
@@ -1415,11 +1562,11 @@ def _call_llm_api(
             ],
         }
         FREE_MODEL_PIPELINE = [
-            _opencode_zen_formatting_group,
             _omnirouter_group,
-            _bedrock_mantle_group,
             _github_models_fmt,
             _groq_group_fmt,
+            _opencode_zen_formatting_group,
+            _bedrock_mantle_group,
             {
                 "model_group": "nvidia-nim-formatting",
                 "providers": [
@@ -1495,7 +1642,7 @@ def _call_llm_api(
                     "env_key": "OPENCODE_API_KEY",
                     "url": "https://opencode.ai/zen/v1/chat/completions",
                     "model": "nemotron-3-ultra-free",
-                    "timeout": 12,
+                    "timeout": 25,
                 },
             ],
         }
@@ -1732,12 +1879,12 @@ def _call_llm_api(
         }
 
         if _is_mcx:
-            # MCX: OmniRouter (primary) → OpenCode Zen → Groq → GitHub Models → AnyAPI Free → Bedrock Mantle → Nvidia NIM → Bedrock → OpenRouter → Gemini → SambaNova
+            # MCX: OmniRouter (primary) → GitHub Models → Groq → OpenCode Zen → AnyAPI Free → Bedrock Mantle → Nvidia NIM → Bedrock → OpenRouter → Gemini → SambaNova
             FREE_MODEL_PIPELINE = [
                 _omnirouter_group,
-                _opencode_zen_group,
-                _groq_group,
                 _github_models,
+                _groq_group,
+                _opencode_zen_group,
                 _anyapi_free_group,
                 _bedrock_mantle_group,
                 _nvidia_nim_group,
@@ -1781,12 +1928,12 @@ def _call_llm_api(
                 },
             ]
         else:
-            # NSE/BSE indices: OmniRouter (primary) → OpenCode Zen → Groq → GitHub Models → Nvidia NIM → Bedrock → OpenRouter → Gemini
+            # NSE/BSE indices: OmniRouter (primary) → GitHub Models → Groq → OpenCode Zen → Nvidia NIM → Bedrock → OpenRouter → Gemini
             FREE_MODEL_PIPELINE = [
                 _omnirouter_group,
-                _opencode_zen_group,
-                _groq_group,
                 _github_models,
+                _groq_group,
+                _opencode_zen_group,
                 _nvidia_nim_group,
                 _bedrock_group,
                 _openrouter_group,
@@ -1828,13 +1975,15 @@ def _call_llm_api(
                     api_key = "omnirouter_local"
                 elif key_name == "OPENCODE_API_KEY":
                     api_key = "opencode_free"
+                elif key_name == "ANTIGRAVITY_REFRESH_TOKEN":
+                    api_key = "antigravity_auto"
                 else:
                     continue
 
             cooldown_key = _provider_cooldown_key(provider)
             cooldown_until = _PROVIDER_COOLDOWN_UNTIL.get(cooldown_key, 0.0)
-            # Only apply key-wide cooldown if specifically set (e.g. 401/402 account level errors)
-            if key_name not in ("OMNIROUTER_API_KEY", "OPENCODE_API_KEY"):
+            # Only apply key-wide cooldown if specifically set (e.g. 401/402/429 account level errors)
+            if key_name not in ("OMNIROUTER_API_KEY", "ANTIGRAVITY_REFRESH_TOKEN"):
                 cooldown_until = max(cooldown_until, _PROVIDER_COOLDOWN_UNTIL.get(key_name, 0.0))
 
             if cooldown_until > now:
@@ -1943,7 +2092,8 @@ def _call_llm_api(
                         resp_json = resp.json()
                         raw_content = resp_json["choices"][0]["message"]["content"]
                         parsed = _extract_json(raw_content)
-                        result = schema(**parsed)
+                        parsed = _normalize_parsed_schema(parsed, schema)
+                        result = schema.model_validate(parsed)
                         if hasattr(result, "model_name"):
                             result.model_name = provider.get("name") or provider["model"]
                         log.info(
@@ -2008,6 +2158,7 @@ def _call_llm_api(
                     if not raw_content and content_blocks:
                         raw_content = str(content_blocks[-1].get("text") or content_blocks[-1])
                     parsed = _extract_json(raw_content)
+                    parsed = _normalize_parsed_schema(parsed, schema)
                     result = schema.model_validate(parsed)
                     if hasattr(result, "model_name"):
                         result.model_name = provider.get("name") or provider["model"]
@@ -2147,6 +2298,7 @@ def _call_llm_api(
                             raise ValueError(
                                 f"{provider['name']} returned unexpected array with {len(parsed)} items"
                             )
+                    parsed = _normalize_parsed_schema(parsed, schema)
                     result = schema.model_validate(parsed)
                     if hasattr(result, "model_name"):
                         result.model_name = provider.get("name") or provider["model"]
@@ -2233,6 +2385,7 @@ def _call_llm_api(
                                         raise ValueError(
                                             f"{provider['name']} retry returned unexpected array with {len(parsed)} items"
                                         )
+                                parsed = _normalize_parsed_schema(parsed, schema)
                                 result = schema.model_validate(parsed)
                                 log.info(
                                     "[llm] %s OK via %s (%s) [no json_mode]",
@@ -2413,7 +2566,116 @@ def _extract_json(raw: str) -> dict | list:
     except Exception:
         pass
 
-    raise ValueError(f"JSON extract failed: {e} | Raw: {original_raw[:200]}" if 'e' in dir() else f"JSON extract failed | Raw: {original_raw[:200]}")
+    # ── Strategy E: Stack-based Truncated JSON Repair ─────────────────
+    try:
+        res = _repair_truncated_json(raw)
+        if isinstance(res, (dict, list)):
+            log.info("[llm] Recovered truncated JSON via stack-based completion parser")
+            if isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
+                return res[0]
+            return res
+    except Exception:
+        pass
+
+    # Final attempt: try _repair_inner_quotes on original_raw
+    try:
+        res = json.loads(_repair_inner_quotes(original_raw), strict=False)
+        if isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
+            return res[0]
+        return res
+    except Exception:
+        pass
+
+    raise ValueError(f"JSON extract failed | Raw: {original_raw[:200]}")
+
+
+def _repair_truncated_json(raw: str) -> dict | list:
+    """
+    Robust stack-based truncation recovery for JSON responses cut off mid-stream.
+    Walks tokens/characters, tracks open strings, brackets, and braces,
+    sanitizes raw control newlines, and appends necessary closing quotes and structural brackets/braces.
+    """
+    s = raw.strip()
+    if not s:
+        raise ValueError("Empty string for truncated JSON repair")
+
+    first_brace = s.find("{")
+    first_bracket = s.find("[")
+    if first_brace == -1 and first_bracket == -1:
+        raise ValueError("No JSON container start found")
+
+    start_pos = first_brace if (first_brace != -1 and (first_bracket == -1 or first_brace < first_bracket)) else first_bracket
+    s = s[start_pos:]
+
+    # Sanitize literal unescaped raw newlines/tabs inside string values
+    s = re.sub(r"[\r\n\t]+", " ", s)
+
+    stack: list[str] = []
+    in_string = False
+    escape = False
+
+    for char in s:
+        if escape:
+            escape = False
+            continue
+        if char == "\\":
+            escape = True
+            continue
+        if char == '"':
+            in_string = not in_string
+            continue
+        if not in_string:
+            if char in ("{", "["):
+                stack.append(char)
+            elif char == "}":
+                if stack and stack[-1] == "{":
+                    stack.pop()
+            elif char == "]":
+                if stack and stack[-1] == "[":
+                    stack.pop()
+
+    patch = ""
+    if in_string:
+        patch += '"'
+
+    s_patched = (s + patch).rstrip()
+    s_patched = re.sub(r"[:,]\s*$", "", s_patched)
+
+    stack = []
+    in_string = False
+    escape = False
+    for char in s_patched:
+        if escape:
+            escape = False
+            continue
+        if char == "\\":
+            escape = True
+            continue
+        if char == '"':
+            in_string = not in_string
+            continue
+        if not in_string:
+            if char in ("{", "["):
+                stack.append(char)
+            elif char == "}":
+                if stack and stack[-1] == "{":
+                    stack.pop()
+            elif char == "]":
+                if stack and stack[-1] == "[":
+                    stack.pop()
+
+    for container in reversed(stack):
+        if container == "{":
+            s_patched += "}"
+        elif container == "[":
+            s_patched += "]"
+
+    try:
+        return json.loads(s_patched, strict=False)
+    except Exception:
+        # Final fallback: replace any remaining unescaped control chars
+        s_patched = re.sub(r"[\x00-\x1f\x7f]", " ", s_patched)
+        return json.loads(s_patched, strict=False)
 
 
 def _repair_inner_quotes(raw: str) -> str:
@@ -3089,7 +3351,20 @@ def get_multileg_verdict(
             symbol, prompt, LLMMultiLegVerdict, deadline=deadline, purpose="live_verdict"
         )
         if result:
-            # Validate legs count matches strategy constraints
+            base_sym = symbol.upper().split()[0] if symbol else ""
+            is_mcx = symbol.upper() in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER") or base_sym in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER")
+            if is_mcx and result.strategy_type == "IRON_CONDOR":
+                log.info("[llm-multileg] %s: Iron Condor is disabled for MCX symbols — auto-reclassifying to SHORT_STRANGLE", symbol)
+                result.strategy_type = "SHORT_STRANGLE"
+                sell_legs = [l for l in result.legs if getattr(l, "side", "").upper() == "SELL"]
+                if len(sell_legs) >= 2:
+                    result.legs = sell_legs[:2]
+                else:
+                    result.legs = result.legs[:2]
+                for leg in result.legs:
+                    leg.side = "SELL"
+
+            # Validate legs count matches updated strategy constraints
             from config.multileg_strategies import STRATEGY_CONSTRAINTS
             constraints = STRATEGY_CONSTRAINTS.get(result.strategy_type, {})
             min_legs = constraints.get("min_legs", 2)
@@ -3103,6 +3378,9 @@ def get_multileg_verdict(
                         symbol,
                     )
                     result.strategy_type = "SHORT_STRANGLE"
+                    constraints = STRATEGY_CONSTRAINTS.get("SHORT_STRANGLE", {})
+                    min_legs = constraints.get("min_legs", 2)
+                    max_legs = constraints.get("max_legs", 2)
                 else:
                     log.warning(
                         "[llm-multileg] %s: %s requires %d+ legs, got %d",
@@ -3115,9 +3393,13 @@ def get_multileg_verdict(
                 )
                 result.legs = result.legs[:max_legs]
 
-            # Ensure all legs are SELL
+            # Ensure legs observe strategy constraints (all_sell check)
+            all_sell_required = constraints.get("all_sell", False)
             for leg in result.legs:
-                leg.side = "SELL"
+                if all_sell_required:
+                    leg.side = "SELL"
+                elif not getattr(leg, "side", None) or leg.side.upper() not in ("BUY", "SELL"):
+                    leg.side = "SELL"  # default fallback if unspecified
 
             log.info(
                 "[llm-multileg] %s: %s with %d legs, net premium ₹%.1f, confidence %d%%",

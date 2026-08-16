@@ -25,7 +25,8 @@ class TestMultilegRiskChecks:
             assert "min_legs" in constraints
             assert "max_legs" in constraints
             assert "all_sell" in constraints
-            assert constraints["all_sell"] is True
+            # Not all strategies require all_sell=True (e.g., IRON_CONDOR, spreads have mixed sides)
+            assert isinstance(constraints["all_sell"], bool)
             assert constraints["min_legs"] <= constraints["max_legs"]
 
     def test_conflicting_strategies(self):

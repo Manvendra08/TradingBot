@@ -280,6 +280,24 @@ def is_valid_option_premium(
     return True
 
 
+def _normalize_expiry_date(d: any) -> str:
+    if not d:
+        return ""
+    s = str(d).strip().split("T")[0].split()[0]
+    if not s:
+        return ""
+    m = re.match(r"^(\d{1,2})[-]?([A-Za-z]{3})[-]?(\d{2,4})$", s)
+    if m:
+        day, month_str, year_str = m.groups()
+        if len(year_str) == 2:
+            year_str = "20" + year_str
+        months = {"JAN":"01","FEB":"02","MAR":"03","APR":"04","MAY":"05","JUN":"06","JUL":"07","AUG":"08","SEP":"09","OCT":"10","NOV":"11","DEC":"12"}
+        mo = months.get(month_str.upper())
+        if mo:
+            return f"{year_str}-{mo}-{int(day):02d}"
+    return s
+
+
 def get_option_premium(
     symbol: str,
     expiry: str,
@@ -311,8 +329,11 @@ def get_option_premium(
     for row in option_rows or []:
         try:
             row_exp = row.get("expiry")
-            if row_exp and expiry and str(row_exp).strip() != str(expiry).strip():
-                continue
+            if row_exp and expiry:
+                n_row_exp = _normalize_expiry_date(row_exp)
+                n_exp = _normalize_expiry_date(expiry)
+                if n_row_exp and n_exp and n_row_exp != n_exp:
+                    continue
             if (
                 abs(float(row.get("strike") or 0) - strike) < 0.01
                 and str(row.get("option_type") or "").upper() == option_type.upper()

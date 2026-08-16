@@ -26,6 +26,8 @@ env/
 data/*.db
 data/*.db-shm
 data/*.db-wal
+data/*.bak*
+*.bak*
 
 # Logs
 logs/

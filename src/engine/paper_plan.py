@@ -174,28 +174,33 @@ def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | N
     side, option_type = VERDICT_ACTION_MAP[verdict_str]
     bullish = is_bullish(verdict_str)
 
-    # Merge CORE to TFSS: All core verdicts qualify for TFSS execution method.
-    from src.engine.trend_following_short_strangle import normalize_core_verdict_to_tfss_intent
-    tfss_intent = normalize_core_verdict_to_tfss_intent(verdict_str)
-    
+    # Merge CORE to TFSS only if TFSS strategy is explicitly enabled in settings.
+    from config.runtime_config import load_runtime_config
+    rconf = load_runtime_config()
+    tfss_enabled = bool(rconf.get("strategies", {}).get("TFSS", {}).get("enabled", False))
+
     setup_type = "CORE"
-    tfss_side = ctx.get("_tfss_execution_side") or (
-        "SELL_PE" if tfss_intent and tfss_intent.bias == "BULLISH" else
-        "SELL_CE" if tfss_intent and tfss_intent.bias == "BEARISH" else None
-    )
-    
-    if tfss_side in ("SELL_PE", "SELL_CE"):
-        side = "SELL"
-        option_type = "PE" if tfss_side == "SELL_PE" else "CE"
-        setup_type = "TFSS"
-        
-        # Support LLM override of option_type for GO_LONG/GO_SHORT if available
-        if verdict_str in ("GO_LONG", "GO_SHORT") or ctx.get("instrument"):
-            llm_instr = str(ctx.get("instrument") or "")
-            if re.search(r"\bCE\b", llm_instr, re.IGNORECASE):
-                option_type = "CE"
-            elif re.search(r"\bPE\b", llm_instr, re.IGNORECASE):
-                option_type = "PE"
+    if tfss_enabled:
+        from src.engine.trend_following_short_strangle import normalize_core_verdict_to_tfss_intent
+        tfss_intent = normalize_core_verdict_to_tfss_intent(verdict_str)
+
+        tfss_side = ctx.get("_tfss_execution_side") or (
+            "SELL_PE" if tfss_intent and tfss_intent.bias == "BULLISH" else
+            "SELL_CE" if tfss_intent and tfss_intent.bias == "BEARISH" else None
+        )
+
+        if tfss_side in ("SELL_PE", "SELL_CE"):
+            side = "SELL"
+            option_type = "PE" if tfss_side == "SELL_PE" else "CE"
+            setup_type = "TFSS"
+
+            # Support LLM override of option_type for GO_LONG/GO_SHORT if available
+            if verdict_str in ("GO_LONG", "GO_SHORT") or ctx.get("instrument"):
+                llm_instr = str(ctx.get("instrument") or "")
+                if re.search(r"\bCE\b", llm_instr, re.IGNORECASE):
+                    option_type = "CE"
+                elif re.search(r"\bPE\b", llm_instr, re.IGNORECASE):
+                    option_type = "PE"
     elif verdict_str in ("GO_LONG", "GO_SHORT"):
         llm_instr = str(ctx.get("instrument") or "")
         if re.search(r"\bCE\b", llm_instr, re.IGNORECASE):
@@ -290,6 +295,7 @@ def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | N
         net_premium = (ce_leg["premium"] or 0) + (pe_leg["premium"] or 0)
 
         return {
+            "symbol": symbol,
             "verdict_label": verdict,
             "side": "SELL",
             "option_type": "STRANGLE",
@@ -297,6 +303,8 @@ def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | N
             "premium": net_premium,
             "sl": None,  # managed at book level, not per-leg
             "target": None,
+            "sl_underlying": round(underlying * 0.98, 4),
+            "target_underlying": round(underlying * 1.02, 4),
             "atr": get_atr(ctx),
             "setup_type": "CORE",
             "legs": [
@@ -337,8 +345,8 @@ def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | N
                     selected_strike = cand_strike
                     selected_premium = cand_prem
                     log.info(
-                        "[paper_plan] %s TFSS DTE-Delta Band strike %.1f selected with premium %.2f (>= threshold %.2f, delta %.2f)",
-                        symbol_str, cand_strike, cand_prem, effective_threshold, cand.get("delta", 0.0)
+                        "[paper_plan] %s %s DTE-Delta Band strike %.1f selected with premium %.2f (>= threshold %.2f, delta %.2f)",
+                        symbol_str, setup_type, cand_strike, cand_prem, effective_threshold, cand.get("delta", 0.0)
                     )
 
             # 2. If DTE-Delta candidate is unavailable or < threshold, escalate to Multi-Wall OI check (Requirement 2)
@@ -427,21 +435,23 @@ def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | N
         # FUT
         strike = atm
 
-    # Flaw #2: Mandate ATR for SL/Target calculation instead of fixed steps.
+    # ATR for SL/Target calculation — fall back to step-based ATR when candle ATR unavailable.
     from src.engine.trade_plan import get_atr
     atr = get_atr(ctx)
-    if atr and atr > 0:
-        if bullish:
-            sl = underlying - 1.5 * atr
-            target = underlying + 2.0 * atr
-        else:
-            sl = underlying + 1.5 * atr
-            target = underlying - 2.0 * atr
+    if not atr or atr <= 0:
+        step = float(get_strike_step(symbol) or 1.0)
+        atr = round(step * 1.5, 4)
+        log.info("%s: Missing candle ATR data — using step-based ATR fallback (%.2f)", symbol, atr)
+
+    if bullish:
+        sl = underlying - 1.5 * atr
+        target = underlying + 2.0 * atr
     else:
-        log.warning("%s: Missing ATR data, skipping trade plan creation (strict ATR requirement)", symbol)
-        return None
+        sl = underlying + 1.5 * atr
+        target = underlying - 2.0 * atr
 
     return {
+        "symbol": symbol,
         "verdict_label": verdict,
         "side": side,
         "option_type": option_type,
@@ -463,6 +473,18 @@ def format_paper_plan(plan: dict | None) -> str:
     sl = plan.get("sl_underlying")
     target = plan.get("target_underlying")
     side = str(plan.get("side", "BUY")).title()
+
+    if opt == "STRANGLE":
+        legs = plan.get("legs") or []
+        ce_stk = legs[0].get("strike") if len(legs) > 0 else "N/A"
+        pe_stk = legs[1].get("strike") if len(legs) > 1 else "N/A"
+        net_p = plan.get("premium", 0.0)
+        return f"Sell Short Strangle {symbol} | CE {ce_stk} + PE {pe_stk} @ Net Prem ₹{net_p:.2f} (Book SL/Target)"
+
+    # BUG FIX: Add None checks for sl and target before formatting
+    if sl is None or target is None:
+        log.warning("format_paper_plan: sl or target is None for %s — returning fallback", symbol or "N/A")
+        return "No auto paper trade: invalid SL/Target levels"
 
     is_commodity = symbol.upper() in {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"}
     if is_commodity and opt == "FUT":

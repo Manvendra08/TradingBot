@@ -514,11 +514,19 @@ def execute_paper_trade(
                 _trigger_ml_retraining()  # Phase 2: increment ML retraining counter
                 open_trade = None  # fall through to open new trade
             else:
-                return {
-                    "action": "HOLD",
-                    "trade_id": open_trade["id"],
-                    "reason": "Open trade exists, no valid reversal",
-                }
+                from src.models.schema import get_all_open_paper_trades
+                all_open = get_all_open_paper_trades(symbol)
+                max_pos = rconf.get("max_concurrent_positions_per_symbol", 3)
+                if len(all_open) < max_pos:
+                    log.info("%s: Open trade #%s exists, but total open (%d) < max (%d) — allowing new position entry.",
+                             symbol, open_trade["id"], len(all_open), max_pos)
+                    open_trade = None  # Allow opening additional trade
+                else:
+                    return {
+                        "action": "HOLD",
+                        "trade_id": open_trade["id"],
+                        "reason": f"Max open positions ({max_pos}) reached for {symbol}",
+                    }
 
     if not open_trade:
         from src.engine.live_trading import _get_base_symbol

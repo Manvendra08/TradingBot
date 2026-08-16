@@ -372,14 +372,16 @@ def resolve_instrument(
 
     if not _instrument_cache_is_ready():
         try:
-            from src.engine.live_trading import get_kite_client
+            from config.runtime_config import is_broker_trade_enabled
+            if is_broker_trade_enabled():
+                from src.engine.live_trading import get_kite_client
 
-            kite = get_kite_client()
-            if kite:
-                log.info(
-                    "[resolver] Cache not ready during resolve. Fetching instruments synchronously..."
-                )
-                fetch_and_cache_instruments(kite)
+                kite = get_kite_client()
+                if kite:
+                    log.info(
+                        "[resolver] Cache not ready during resolve. Fetching instruments synchronously..."
+                    )
+                    fetch_and_cache_instruments(kite)
         except Exception as e:
             log.warning("[resolver] Failed to auto-initialize cache: %s", e)
 
@@ -448,25 +450,25 @@ def resolve_instrument(
     if (now - float(_LAST_MISS_REFRESH_TS)) > _MISS_REFRESH_INTERVAL_SEC:
         _LAST_MISS_REFRESH_TS = now
         try:
-            import threading
+            from config.runtime_config import is_broker_trade_enabled
+            if is_broker_trade_enabled():
+                import threading
 
-            from src.engine.live_trading import get_kite_client
+                from src.engine.live_trading import get_kite_client
 
-            kite = get_kite_client()
-            if kite and not _REFRESH_IN_PROGRESS:
-                log.info(
-                    "[resolver] Cache miss triggered background instrument refresh..."
-                )
-                threading.Thread(
-                    target=fetch_and_cache_instruments,
-                    args=(kite,),
-                    daemon=True,
-                    name="instrument-cache-miss-refresh",
-                ).start()
-        except Exception as _re:
-            log.debug(
-                "[resolver] Could not trigger background refresh on cache miss: %s", _re
-            )
+                kite = get_kite_client()
+                if kite and not _REFRESH_IN_PROGRESS:
+                    log.info(
+                        "[resolver] Cache miss triggered background instrument refresh..."
+                    )
+                    threading.Thread(
+                        target=fetch_and_cache_instruments,
+                        args=(kite,),
+                        daemon=True,
+                        name="instrument-cache-miss-refresh",
+                    ).start()
+        except Exception as e:
+            log.debug("[resolver] Cache miss refresh error: %s", e)
 
     fallback_tsym = generate_fallback_tradingsymbol(symbol, expiry, strike, option_type)
     return {

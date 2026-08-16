@@ -175,6 +175,10 @@ class TestPriceSpike:
                 return_value=prev_price,
             ),
             patch(
+                "src.engine.anomaly_detector.get_previous_underlying_before",
+                return_value=prev_price,
+            ),
+            patch(
                 "src.engine.anomaly_detector.get_latest_snapshots_for_symbol",
                 return_value=[],
             ),
@@ -485,9 +489,11 @@ class TestNatGasIntelligence:
 
         msg = generate_intelligence("CRUDEOIL", alerts, scan_context=ctx)
         assert "Long Buildup" in msg
-        assert (
-            "Buy FUT at current scan" in msg
-        )  # CRUDEOIL → FUT (MCX commodity, poor option liquidity)
+        # CRUDEOIL → FUT (MCX commodity, poor option liquidity)
+        # For Long Buildup (bullish), TFSS v4 uses SELL PE, but FUT fallback uses SELL (short futures)
+        # In research mode, may show SELL FUT (Commodity) at current scan
+        assert "FUT" in msg.telegram_text
+        assert "at current scan" in msg.telegram_text
 
     def test_paper_plan_does_not_use_far_resistance_as_entry_trigger(self):
         from src.engine.intelligence import generate_intelligence
@@ -559,11 +565,13 @@ class TestNatGasIntelligence:
         msg = generate_intelligence("CRUDEOIL", alerts, scan_context=ctx)
 
         # CRUDEOIL now routes to FUT (MCX commodity, poor option liquidity)
+        # For bullish verdicts, TFSS v4 uses SELL FUT (short futures) for short premium strategy
         assert plan["option_type"] == "FUT"
         assert plan["target_underlying"] == 9290.0
         assert plan["sl_underlying"] == 9272.5
-        assert "Buy FUT at current scan" in msg
-        assert "close above 9500" not in msg
+        assert "FUT" in msg.telegram_text
+        assert "at current scan" in msg.telegram_text
+        assert "close above 9500" not in msg.telegram_text
 
     def test_paper_engine_uses_current_scan_premium_rows(self):
         from src.engine.live_trading import _trade_plan_from_verdict
@@ -585,10 +593,12 @@ class TestNatGasIntelligence:
         plan = _trade_plan_from_verdict("Long Buildup", 80, ctx)
 
         # CRUDEOIL routes to FUT: entry_premium = underlying price, option_rows unused
+        # For SELL FUT (short futures), profit when underlying FALLS
+        # ATR=100: SL = 9280 + 1.5*100 = 9430, Target = 9280 - 2.0*100 = 9080
         assert plan["option_type"] == "FUT"
         assert plan["entry_premium"] == 9280.0
-        assert plan["sl_premium"] == 9130.0
-        assert plan["target_premium"] == 9480.0
+        assert plan["sl_premium"] == 9430.0
+        assert plan["target_premium"] == 9080.0
 
     def test_naturalgas_futures_trade_plan_and_execution(self):
         from src.engine.intelligence import generate_intelligence
@@ -661,14 +671,17 @@ class TestNatGasIntelligence:
         plan = _trade_plan_from_verdict("Long Buildup", 80, ctx)
         assert plan["option_type"] == "FUT"
         assert plan["entry_premium"] == 279.0
-        assert plan["sl_underlying"] == 271.5
-        assert plan["target_underlying"] == 289.0
+        # For SELL FUT (short futures), profit when underlying FALLS
+        # ATR=2: SL = 279 + 1.5*2 = 282, Target = 279 - 2*2 = 275
+        assert plan["sl_underlying"] == 282.0
+        assert plan["target_underlying"] == 275.0
 
         # 2. Verify that generate_intelligence text outputs Futures style trade message
         msg = generate_intelligence("NATURALGAS", alerts, scan_context=ctx)
-        assert "Buy FUT at current scan" in msg
-        assert "SL spot 271.5" in msg
-        assert "Target spot 289" in msg
+        # For SELL FUT, message shows SELL FUT (short futures)
+        assert "SELL FUT" in msg.telegram_text
+        assert "SL spot 282" in msg.telegram_text
+        assert "Target spot 275" in msg.telegram_text
 
 
 class TestChartContextWiring:

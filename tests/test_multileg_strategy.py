@@ -139,8 +139,11 @@ class TestComputeBookRiskProfile:
         result = compute_book_risk_profile("SHORT_STRANGLE", legs, 125, 24500)
         assert result["max_profit"] == 125
         assert result["max_loss"] > 0  # unlimited capped
-        assert result["breakeven_upper"] == 24800 - 125
-        assert result["breakeven_lower"] == 24200 + 125
+        # SHORT STRANGLE: Short CE at 24800, Short PE at 24200, Net Premium = 125
+        # Upper breakeven = Short CE strike + net premium = 24800 + 125 = 24925
+        # Lower breakeven = Short PE strike - net premium = 24200 - 125 = 24075
+        assert result["breakeven_upper"] == 24800 + 125
+        assert result["breakeven_lower"] == 24200 - 125
 
     def test_iron_condor_profile(self):
         from src.engine.multileg_strategy import compute_book_risk_profile

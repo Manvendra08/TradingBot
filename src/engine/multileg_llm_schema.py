@@ -12,9 +12,9 @@ from pydantic import BaseModel, Field
 
 
 class LLMLeg(BaseModel):
-    """A single leg in a multi-leg strategy. All legs are SELL (short premium)."""
+    """A single leg in a multi-leg strategy. Side can be BUY or SELL."""
 
-    side: str = Field(description="Always SELL")
+    side: str = Field(description="BUY or SELL")
     option_type: str = Field(description="CE or PE")
     strike: float = Field(description="Strike price")
     premium: float = Field(description="Expected entry premium")
@@ -32,7 +32,7 @@ class LLMMultiLegVerdict(BaseModel):
     strategy_type: str = Field(
         description="IRON_CONDOR | SHORT_STRANGLE | SHORT_STRADDLE | BEAR_CALL_SPREAD | BULL_PUT_SPREAD | JADE_LIZARD | CUSTOM"
     )
-    legs: List[LLMLeg] = Field(description="List of legs (all SELL)")
+    legs: List[LLMLeg] = Field(description="List of legs (BUY or SELL)")
     net_premium: float = Field(description="Total premium collected across all legs")
     net_delta: float = Field(description="Combined book delta")
     net_theta: float = Field(description="Combined book theta (daily decay)")

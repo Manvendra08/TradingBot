@@ -580,9 +580,10 @@ class DhanCommodityFetcher(BaseFetcher):
         parsed = urlparse(url)
         host = parsed.hostname
         
+        req_timeout = kwargs.pop("timeout", 6.0)
         # Try normal DNS first
         try:
-            resp = getattr(self.session, method.lower())(url, timeout=HTTP_TIMEOUT_SECONDS, **kwargs)
+            resp = getattr(self.session, method.lower())(url, timeout=req_timeout, **kwargs)
             resp.raise_for_status()
             return resp
         except Exception as exc:
@@ -595,15 +596,13 @@ class DhanCommodityFetcher(BaseFetcher):
             log.warning("[dhan_commodity] DNS failed for %s, trying IP fallback", host)
             for ip in self._DHAN_IPS[host]:
                 ip_url = url.replace(f"https://{host}", f"https://{ip}", 1)
-                # Need to set Host header for SNI/virtual hosting
                 headers = kwargs.get("headers", {}).copy()
                 headers["Host"] = host
                 kwargs["headers"] = headers
-                # Disable SSL verification for IP-based requests (cert won't match IP)
                 kwargs["verify"] = False
                 try:
                     log.info("[dhan_commodity] Trying IP fallback: %s", ip)
-                    resp = getattr(self.session, method.lower())(ip_url, timeout=HTTP_TIMEOUT_SECONDS, **kwargs)
+                    resp = getattr(self.session, method.lower())(ip_url, timeout=req_timeout, **kwargs)
                     resp.raise_for_status()
                     return resp
                 except Exception as ip_exc:
@@ -843,19 +842,20 @@ class DhanCommodityFetcher(BaseFetcher):
                                         api_underlying = _parse_float(str((raw_oc.get("data") or {}).get("sltp") or ""))
                                         if api_underlying is not None:
                                             underlying = api_underlying
-                        else:
+                        if not strikes:
                             fut_exp = expjs_list[0]
                             seconds_per_day = 86400
-                            for days_before in range(0, 8):
+                            # MCX options expire 2-4 days before futures; check 2d & 3d offsets first
+                            for days_before in [2, 3, 4, 1, 0, 5, 6, 7]:
                                 test_exp = fut_exp - (days_before * seconds_per_day)
                                 payload_oc = {"Data": {"Seg": 5, "Sid": int(secid), "Exp": test_exp}}
                                 try:
-                                    log.debug("[dhan_commodity] ScanX scan: trying Exp=%d", test_exp)
+                                    log.debug("[dhan_commodity] ScanX scan: trying Exp=%d (offset=%dd)", test_exp, days_before)
                                     resp_oc = self.session.post(
                                         _SCANX_OPTCHAIN_URL,
                                         headers=_JSON_HEADERS,
                                         json=payload_oc,
-                                        timeout=15.0,
+                                        timeout=4.0,
                                     )
                                     if resp_oc.status_code == 200:
                                         raw_oc = resp_oc.json()

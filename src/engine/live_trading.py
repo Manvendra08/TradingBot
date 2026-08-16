@@ -1900,16 +1900,24 @@ def run_live_timeframe_strategy(
         try:
             sl_trigger = float(sl_premium)            # BUG-C04 FIX: Use tight 1% / max ₹0.50 tick buffer instead of 5% slippage
             sl_buf = max(0.25, min(round(sl_trigger * 0.01, 2), 0.50))
-            tgt_buf = max(0.25, min(round(target_trigger * 0.01, 2), 0.50))
+            if target_premium is not None:
+                target_trigger = float(target_premium)
+                tgt_buf = max(0.25, min(round(target_trigger * 0.01, 2), 0.50))
+                target_limit = (
+                    round(target_trigger - tgt_buf, 2)
+                    if side == "BUY"
+                    else round(target_trigger + tgt_buf, 2)
+                )
+                triggers = [sl_trigger, target_trigger]
+                limits = [sl_limit, target_limit]
+            else:
+                triggers = [sl_trigger]
+                limits = [round(sl_trigger - sl_buf, 2) if side == "BUY" else round(sl_trigger + sl_buf, 2)]
+
             sl_limit = (
                 round(sl_trigger - sl_buf, 2)
                 if side == "BUY"
                 else round(sl_trigger + sl_buf, 2)
-            )
-            target_limit = (
-                round(target_trigger - tgt_buf, 2)
-                if side == "BUY"
-                else round(target_trigger + tgt_buf, 2)
             )
             gtt_order_id = place_kite_gtt(
                 kite,
@@ -1918,8 +1926,8 @@ def run_live_timeframe_strategy(
                 tradingsymbol,
                 "SELL" if side == "BUY" else "BUY",
                 quantity,
-                [sl_trigger, target_trigger],
-                [sl_limit, target_limit],
+                triggers,
+                limits,
                 entry_premium,
                 shadow_mode,
             )

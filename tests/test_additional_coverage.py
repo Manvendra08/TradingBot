@@ -23,7 +23,9 @@ def test_fmt_oi():
     assert fmt_oi(1500) == "1.5K"
     assert fmt_oi(250000) == "2.50L"
     assert fmt_oi(35000000) == "3.50Cr"
-    assert fmt_oi(-1500) == "-1.5K"
+    # Negative values require is_change=True to show sign (BUG-M11: absolute OI is never negative)
+    assert fmt_oi(-1500, is_change=True) == "-1.5K"
+    assert fmt_oi(1500, is_change=True) == "+1.5K"
 
 def test_fmt_pct():
     assert fmt_pct(None) == "0.0%"
@@ -72,11 +74,13 @@ def test_time_guards_opening_auction():
     assert "Opening auction noise" in reason
 
 def test_time_guards_expiry_end_of_session():
-    # 15:15 IST on NSE -> Expiry end-of-session window
-    set_mock_now(2026, 7, 8, 15, 15)
-    allowed, reason = is_trading_allowed_now("NIFTY")
+    # 15:15 IST on NSE expiry day -> Expiry end-of-session window (for non-index F&O)
+    # But NIFTY is index F&O, trades until 15:40, end-of-session window is 15:25-15:40
+    # Use a non-index F&O symbol or test at 15:25 for NIFTY
+    set_mock_now(2026, 7, 8, 15, 30)
+    allowed, reason = is_trading_allowed_now("NIFTY", expiry_str="2026-07-08")
     assert allowed is False
-    assert "Expiry end-of-session" in reason
+    assert "end-of-session" in reason
 
 def test_time_guards_eia_natural_gas():
     # Thursday 20:05 IST -> EIA window for NATURALGAS
@@ -108,8 +112,15 @@ def test_time_guards_cme_early_close(mock_cme_closed, mock_cme_early):
     assert "CME early close" in reason
 
 def test_time_guards_expiry_cutoff_nse():
-    # Expiry day NSE -> 14:45 IST (after 14:30)
-    set_mock_now(2026, 7, 8, 14, 45)
+    # Index F&O (NIFTY) trades until 15:40 IST effective Aug 3 2026
+    # Expiry end-of-session window: 15:25-15:40 (Window 2)
+    set_mock_now(2026, 7, 8, 15, 30)
+    allowed, reason = is_trading_allowed_now("NIFTY", expiry_str="2026-07-08")
+    assert allowed is False
+    assert "end-of-session" in reason
+
+    # Expiry day trading cutoff: after 15:40 (Window 5)
+    set_mock_now(2026, 7, 8, 15, 45)
     allowed, reason = is_trading_allowed_now("NIFTY", expiry_str="2026-07-08")
     assert allowed is False
     assert "Expiry day trading cutoff" in reason

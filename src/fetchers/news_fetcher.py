@@ -203,8 +203,9 @@ def _fetch_tv_commodity_news(symbol: str) -> dict:
         res.raise_for_status()
         payload = res.json() if res.content else {}
         items = payload.get("items") if isinstance(payload, dict) else []
-        # Commodities look back up to 10 days to ensure recent headlines are not filtered out
-        cutoff = int(time.time()) - (10 * 86400)
+        # Commodities look back up to 48 hours to ensure recent headlines are not filtered out,
+        # but avoid sending excessively stale news to the LLM.
+        cutoff = int(time.time()) - (2 * 86400)
         rows = []
         for item in items or []:
             pub = int(item.get("published") or 0)
@@ -308,9 +309,9 @@ def _fetch_newsapi_news(symbol: str) -> list[dict]:
         articles = payload.get("articles") or []
         rows = []
         now_ts = int(time.time())
-        # Free tier articles may be up to ~48h old; use a loose cutoff
+        # Free tier articles may be up to ~48h old; use a 48h cutoff
         # to ensure we capture them despite staggered API caching
-        cutoff = now_ts - (48 * 86400)
+        cutoff = now_ts - (2 * 86400)
 
         for art in articles:
             title = (art.get("title") or "").strip()
@@ -452,7 +453,7 @@ def _fetch_x_nginews() -> list[dict]:
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     }
     rows = []
-    cutoff = int(time.time()) - (10 * 86400)
+    cutoff = int(time.time()) - (2 * 86400)
     try:
         import re
         import json
@@ -501,7 +502,7 @@ def _fetch_te_naturalgas() -> list[dict]:
     """Fetch Natural Gas news from TradingEconomics using Playwright (async)."""
     url = "https://tradingeconomics.com/commodity/natural-gas"
     rows = []
-    cutoff = int(time.time()) - (10 * 86400)
+    cutoff = int(time.time()) - (2 * 86400)
     try:
         import asyncio
         from playwright.async_api import async_playwright

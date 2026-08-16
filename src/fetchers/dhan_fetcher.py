@@ -202,15 +202,36 @@ class DhanFetcher(BaseFetcher):
 
         # 2. Fetch the actual option chain
         oc_payload = {"Data": {"Seg": scanx_seg, "Sid": int(security_id), "Exp": target_expj}}
+        oc_data = {}
         try:
-            r = self.session.post(scanx_url, json=oc_payload, timeout=15)
+            r = self.session.post(scanx_url, json=oc_payload, timeout=10)
             r.raise_for_status()
             oc_data = r.json()
         except Exception as exc:
             log.warning("[dhan] ScanX optchainactive fetch failed for %s: %s", symbol, exc)
-            return self._fallback_commodity(symbol, f"ScanX api fetch failed: {exc}")
             
         strikes = _normalise_scanx_oc(oc_data)
+        if not strikes and segment == "MCX_COMM":
+            seconds_per_day = 86400
+            for days_before in [2, 3, 4, 1, 0, 5, 6, 7]:
+                test_expj = target_expj - (days_before * seconds_per_day)
+                try:
+                    r_test = self.session.post(
+                        scanx_url,
+                        json={"Data": {"Seg": scanx_seg, "Sid": int(security_id), "Exp": test_expj}},
+                        timeout=4.0,
+                    )
+                    if r_test.status_code == 200:
+                        test_data = r_test.json()
+                        candidate = _normalise_scanx_oc(test_data)
+                        if candidate:
+                            strikes = candidate
+                            oc_data = test_data
+                            target_expiry = _julian_1980_to_expiry_iso(test_expj)
+                            break
+                except Exception:
+                    pass
+
         if not strikes:
             log.debug("[dhan] empty option chain after normalise for %s expiry=%s", symbol, target_expiry)
             return self._fallback_commodity(symbol, "normalise returned empty result")

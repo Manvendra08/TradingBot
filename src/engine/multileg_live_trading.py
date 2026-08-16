@@ -23,6 +23,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
+from config.settings import IST
+
 log = logging.getLogger(__name__)
 
 
@@ -36,6 +38,32 @@ def _dte_from_expiry(expiry: str) -> int:
         return max(0, (exp_date - today).days)
     except Exception:
         return 999
+
+
+def _get_stop_loss_threshold_rupees(book: dict, legs: list[dict], symbol: str) -> float:
+    """Calculate the exact Stop Loss threshold in Rupees for a multi-leg book."""
+    from config.settings import LOT_SIZES
+
+    base_symbol = symbol.upper().split()[0] if symbol else symbol.upper()
+    lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_symbol, 1))
+    total_lots = max((int(leg.get("lots") or 1) for leg in legs), default=1)
+
+    strategy_type = (book.get("strategy_type") or book.get("structure") or "").upper()
+    net_premium = float(book.get("net_premium") or 0.0)
+    max_loss_val = float(book.get("max_loss") or 0.0)
+    stop_loss_pct = float(book.get("stop_loss_pct") or 1.5)
+
+    underlying = float(book.get("entry_underlying") or 0.0)
+    is_defined_risk = strategy_type in ("IRON_CONDOR", "BEAR_CALL_SPREAD", "BULL_PUT_SPREAD")
+
+    if is_defined_risk and max_loss_val > 0 and (underlying <= 0 or max_loss_val < underlying * 0.4):
+        total_max_loss_rupees = max_loss_val * lot_size * total_lots * stop_loss_pct
+    else:
+        # Undefined risk / short strangle / straddle / fallback:
+        # Cap loss at stop_loss_pct (default 1.5x = 150%) of net premium collected
+        total_max_loss_rupees = max(net_premium, 1.0) * lot_size * total_lots * stop_loss_pct
+
+    return max(total_max_loss_rupees, 1.0)
 
 
 def run_multileg_live_strategy(
@@ -246,8 +274,12 @@ def _monitor_open_books_live(
         # ── Check exit conditions ──────────────────────────────────────
         # 4a. Profit target
         if net_premium > 0:
-            max_profit = net_premium
-            profit_pct = total_pnl / max_profit if max_profit > 0 else 0.0
+            from config.settings import LOT_SIZES
+            base_symbol = symbol.upper().split()[0] if symbol else symbol.upper()
+            lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_symbol, 1))
+            total_lots = max((int(leg.get("lots") or 1) for leg in legs), default=1)
+            max_profit_rupees = net_premium * lot_size * total_lots
+            profit_pct = total_pnl / max_profit_rupees if max_profit_rupees > 0 else 0.0
             if profit_pct >= profit_target_pct:
                 log.info(
                     "[multileg-live] %s: book %s hit profit target %.0f%% >= %.0f%%",
@@ -271,19 +303,19 @@ def _monitor_open_books_live(
                 continue
 
         # 4b. Stop loss
-        if max_loss > 0 and total_pnl <= -(max_loss * stop_loss_pct):
+        stop_loss_threshold_rupees = _get_stop_loss_threshold_rupees(book, legs, symbol)
+        if total_pnl <= -stop_loss_threshold_rupees:
             log.info(
-                "[multileg-live] %s: book %s hit stop loss — loss ₹%.1f exceeds %.0f%% of max loss ₹%.1f",
+                "[multileg-live] %s: book %s hit stop loss — loss ₹%.1f exceeds cap ₹%.1f",
                 symbol,
                 book_id,
                 abs(total_pnl),
-                stop_loss_pct * 100,
-                max_loss,
+                stop_loss_threshold_rupees,
             )
             _close_live_book(
                 symbol, book_id, legs, now_iso,
                 "CLOSED",
-                f"STOP_LOSS (loss ₹{abs(total_pnl):.0f} > {stop_loss_pct*100:.0f}% of max)",
+                f"STOP_LOSS (loss ₹{abs(total_pnl):.0f} > cap ₹{stop_loss_threshold_rupees:.0f})",
                 total_pnl,
             )
             closed_actions.append({
@@ -296,24 +328,39 @@ def _monitor_open_books_live(
 
         # 4c. Time decay exit
         dte = _dte_from_expiry(expiry)
-        if dte <= time_decay_exit_dte:
+        now_ist = datetime.now(IST)
+        is_mcx = symbol in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER")
+        is_expiry_close = False
+        if dte == 0:
+            if is_mcx:
+                is_expiry_close = (now_ist.hour > 23 or (now_ist.hour == 23 and now_ist.minute >= 25))
+            else:
+                is_expiry_close = (now_ist.hour > 15 or (now_ist.hour == 15 and now_ist.minute >= 25))
+
+        should_exit_time_decay = (
+            (time_decay_exit_dte > 0 and dte < time_decay_exit_dte and dte > 0) or
+            (dte == 0 and is_expiry_close) or
+            (dte < 0)
+        )
+        if should_exit_time_decay:
             log.info(
-                "[multileg-live] %s: book %s time decay exit — DTE %d <= %d",
+                "[multileg-live] %s: book %s time decay exit — DTE %d (time_decay_exit_dte=%d)",
                 symbol,
                 book_id,
                 dte,
                 time_decay_exit_dte,
             )
+            exit_reason_str = f"EXPIRY_SQUAREOFF (15:25 IST)" if (dte == 0 and is_expiry_close) else f"TIME_DECAY (DTE {dte} < {time_decay_exit_dte})"
             _close_live_book(
                 symbol, book_id, legs, now_iso,
                 "CLOSED",
-                f"TIME_DECAY (DTE {dte} <= {time_decay_exit_dte})",
+                exit_reason_str,
                 total_pnl,
             )
             closed_actions.append({
                 "action": "CLOSED",
                 "book_id": book_id,
-                "reason": f"Time decay exit: DTE {dte}",
+                "reason": exit_reason_str,
                 "total_pnl": total_pnl,
             })
             continue
@@ -409,15 +456,17 @@ def _update_live_book_pnl(
     legs: list[dict],
     scan_context: dict,
 ) -> float:
-    """Update book PnL using current option premiums from scan context.
+    """Update book PnL using current option premiums from scan context or DB snapshot.
 
     For short options: PnL = (entry_premium - current_premium) * lots * lot_size
     summed across all legs.
     """
     from config.settings import LOT_SIZES
+    from src.models.schema import get_read_conn
 
     option_rows = list((scan_context or {}).get("option_rows") or [])
-    lot_size = LOT_SIZES.get(symbol, 1)
+    base_sym = symbol.upper().split()[0] if symbol else ""
+    lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_sym, 1))
 
     total_pnl = 0.0
     for leg in legs:
@@ -427,20 +476,34 @@ def _update_live_book_pnl(
         lots = int(leg.get("lots") or 1)
         side = (leg.get("side") or "SELL").upper()
 
-        # Find current premium from scan option_rows
-        current_premium = 0.0
+        current_premium = None
         for row in option_rows:
             row_strike = float(row.get("strike") or 0.0)
             row_type = (row.get("option_type") or "").upper()
-            if row_strike == strike and row_type == option_type:
-                current_premium = float(row.get("ltp") or row.get("premium") or 0.0)
-                break
+            if abs(row_strike - strike) < 0.01 and row_type == option_type:
+                ltp = float(row.get("ltp") or row.get("premium") or 0.0)
+                if ltp > 0:
+                    current_premium = ltp
+                    break
+
+        if current_premium is None:
+            try:
+                with get_read_conn() as conn:
+                    opt_row = conn.execute(
+                        "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
+                        (symbol, base_sym, strike, option_type)
+                    ).fetchone()
+                    if opt_row:
+                        current_premium = float(opt_row["ltp"])
+            except Exception:
+                pass
+
+        if current_premium is None:
+            current_premium = entry_premium
 
         if side == "SELL":
-            # Short premium: profit when current < entry
             pnl = (entry_premium - current_premium) * lots * lot_size
         else:
-            # Long premium: profit when current > entry
             pnl = (current_premium - entry_premium) * lots * lot_size
 
         total_pnl += pnl
@@ -745,7 +808,9 @@ def _attempt_new_live_entry(
 
     if calculate_combined_margin is not None:
         try:
-            combined_margin = calculate_combined_margin(legs, symbol)
+            combined_margin = calculate_combined_margin(
+                legs, symbol, risk_profile=risk_profile, underlying=underlying
+            )
         except Exception as e:
             log.warning(
                 "[multileg-live] %s: Margin computation failed: %s", symbol, e

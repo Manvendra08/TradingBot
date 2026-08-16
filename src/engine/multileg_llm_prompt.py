@@ -202,12 +202,15 @@ def build_multileg_prompt(
     # News
     news_section = ""
     if news_data:
-        direction = news_data.get("direction", "neutral")
-        score = news_data.get("score", 0)
-        headlines = news_data.get("headlines", [])[:3]
+        direction = news_data.get("current_news_direction", "MIXED")
+        score = news_data.get("news_score_current", 0)
+        items = news_data.get("items", [])[:3]
         news_section = f"\nNEWS: {direction} (score: {score})\n"
-        for h in headlines:
-            news_section += f"  - {h.get('headline', '')[:80]}\n"
+        for item in items:
+            title = item.get("title", "")[:80]
+            pub = item.get("published_at", "")
+            time_str = pub[:16].replace("T", " ") if pub else "Unknown time"
+            news_section += f"  - [{time_str}] {title}\n"
 
     # Market regime
     regime = scan_context.get("market_regime", "unknown")
@@ -239,22 +242,23 @@ Market Regime: {regime}
 
 ## YOUR TASK
 
-Analyze the data above and select the BEST multi-leg short options strategy. All legs must be SELL (you are the seller/writer of options).
+Analyze the data above and select the BEST multi-leg options strategy.
+- For pure naked short strategies (SHORT_STRANGLE, SHORT_STRADDLE), all legs should be SELL.
+- For defined-risk strategies (IRON_CONDOR, BEAR_CALL_SPREAD, BULL_PUT_SPREAD, JADE_LIZARD), include BOTH SELL (short income leg) and BUY (long protective wing leg) to limit downside risk.
 
 ### Strategy Selection Guide:
-- **Calm / Rangebound / Sideways market** → SHORT_STRADDLE (sell ATM CE + ATM PE for pure theta decay and low gamma risk) or SHORT_STRANGLE (sell OTM CE + OTM PE for wider buffer). This is the IDEAL environment for short delta-neutral premium selling!
-- **Rangebound market + elevated IV** → IRON_CONDOR (sell both sides, defined risk) or SHORT_STRANGLE (higher premium, undefined risk)
-- **Trending market + high IV** → SHORT_STRANGLE skewed with trend, or directional credit spread (BEAR_CALL_SPREAD for bearish, BULL_PUT_SPREAD for bullish)
-- **High IV + neutral** → SHORT_STRADDLE (maximum premium capture, high theta)
-- **Bullish bias + high IV** → JADE_LIZARD (sell CE spread + sell naked PE)
-- **Uncertain direction / Volatile** → IRON_CONDOR (collect from both sides, widest breakeven)
+- **Calm / Rangebound / Sideways market** → SHORT_STRADDLE (sell ATM CE + ATM PE) or SHORT_STRANGLE (sell OTM CE + OTM PE for wider buffer).
+- **Rangebound market + defined risk** → IRON_CONDOR (sell inner OTM CE + PE, buy outer protective CE + PE)
+- **Trending market + defined risk** → BEAR_CALL_SPREAD for bearish (sell inner CE, buy outer CE) or BULL_PUT_SPREAD for bullish (sell inner PE, buy outer PE)
+- **Bullish bias + high IV** → JADE_LIZARD (sell OTM PE + sell OTM CE spread)
+- **Uncertain direction / Volatile** → IRON_CONDOR (collect from both sides with defined risk wings)
 - **Extremely thin liquidity or severe event risk** → Consider NO_TRADE
 
 ### Important Constraints on Legs:
-- **SHORT_STRADDLE**: Exactly 2 SELL legs (1 ATM CE + 1 ATM PE at the same strike).
+- **SHORT_STRADDLE**: Exactly 2 SELL legs (1 ATM CE + 1 ATM PE).
 - **SHORT_STRANGLE**: Exactly 2 SELL legs (1 OTM CE + 1 OTM PE).
-- **IRON_CONDOR**: Exactly 4 SELL legs (2 inner short strikes + 2 outer protection legs) OR use SHORT_STRANGLE if only proposing 2 legs. Do NOT output a 2-leg IRON_CONDOR.
-- **BEAR_CALL_SPREAD / BULL_PUT_SPREAD**: Exactly 2 SELL legs.
+- **IRON_CONDOR**: Exactly 4 legs (2 inner SELL legs + 2 outer protective BUY legs).
+- **BEAR_CALL_SPREAD / BULL_PUT_SPREAD**: Exactly 2 legs (1 inner SELL leg + 1 outer protective BUY leg).
 
 ### Strike Selection Principles:
 - Sell strikes at or beyond support/resistance levels

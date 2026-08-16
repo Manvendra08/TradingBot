@@ -673,11 +673,17 @@ def _last_closed_window(tf: str, base_symbol: str) -> tuple[datetime, datetime] 
     market_open = now_ist.replace(hour=open_h, minute=open_m, second=0, microsecond=0)
     delta_mins = (now_ist - market_open).total_seconds() / 60.0
 
-    if tf.endswith("m"):
-        tf_mins = int(tf[:-1])
-    elif tf.endswith("h"):
-        tf_mins = int(tf[:-1]) * 60
-    else:
+    tf_lower = str(tf or "").lower().strip()
+    try:
+        if tf_lower.endswith("m"):
+            tf_mins = int(tf_lower[:-1])
+        elif tf_lower.endswith("h"):
+            tf_mins = int(tf_lower[:-1]) * 60
+        elif tf_lower.endswith("d"):
+            tf_mins = int(tf_lower[:-1] or 1) * 1440
+        else:
+            tf_mins = 60
+    except (ValueError, TypeError):
         tf_mins = 60
 
     if delta_mins < tf_mins:

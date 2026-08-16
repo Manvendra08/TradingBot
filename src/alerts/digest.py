@@ -1857,8 +1857,95 @@ def build_enhanced_digest(
         else (f" (Exp: {exp_fmt})" if exp_fmt else "")
     )
 
-    n = len(alerts)
-    px_label = _price_label(symbol)
+def _format_ai_verdict_section(llm_verdict) -> list[str]:
+    if not llm_verdict:
+        return []
+
+    # 1. Multileg verdict schema (LLMMultiLegVerdict)
+    stype = getattr(llm_verdict, "strategy_type", None)
+    if stype:
+        conf = getattr(llm_verdict, "confidence", 0)
+        m_name = getattr(llm_verdict, "model_name", None) or ""
+        m_tag = f" [{m_name}]" if m_name else ""
+
+        body = [f"🧠 *AI MULTILEG STRATEGY VERDICT*{m_tag}"]
+        body.append(f"🎯 *Strategy:* `{stype}` (Conviction: {conf}%)")
+
+        entry_rat = getattr(llm_verdict, "entry_rationale", None)
+        if entry_rat:
+            body.append(f"💡 *Thought Process:* {entry_rat}")
+
+        thesis = getattr(llm_verdict, "thesis", None)
+        if thesis:
+            body.append(f"📖 *Thesis:* {thesis}")
+
+        legs = getattr(llm_verdict, "legs", [])
+        if legs:
+            body.append("📐 *Book Legs:*")
+            for leg in legs:
+                side = getattr(leg, "side", "")
+                ot = getattr(leg, "option_type", "")
+                strike = getattr(leg, "strike", 0)
+                prem = getattr(leg, "premium", 0)
+                delta = getattr(leg, "delta", 0)
+                rat = getattr(leg, "rationale", "")
+                rat_str = f" — {rat}" if rat else ""
+                body.append(f"  • `{side}` `{strike}` `{ot}` @ ₹{prem:.2f} (Δ {delta:+.2f}){rat_str}")
+
+            net_prem = getattr(llm_verdict, "net_premium", 0)
+            max_prof = getattr(llm_verdict, "max_profit", 0)
+            max_l = getattr(llm_verdict, "max_loss", 0)
+            net_d = getattr(llm_verdict, "net_delta", 0)
+            be_u = getattr(llm_verdict, "breakeven_upper", 0)
+            be_l = getattr(llm_verdict, "breakeven_lower", 0)
+            body.append(f"💰 *Net Prem:* ₹{net_prem:.2f} | *Max Profit:* ₹{max_prof:.2f}")
+            body.append(f"🛡️ *Max Loss:* ₹{max_l:.2f} | *Net Delta:* {net_d:+.2f}")
+            if be_l > 0 or be_u > 0:
+                body.append(f"📈 *Breakevens:* {be_l:.1f} — {be_u:.1f}")
+
+        adj = getattr(llm_verdict, "adjustment_plan", None)
+        if adj:
+            body.append(f"⚠️ *Adjustment Plan:* {adj}")
+
+        return ["", "\n".join(body)]
+
+    # 2. Standard LLMTradeVerdict schema
+    action = getattr(llm_verdict, "action", None) or (llm_verdict.get("action") if isinstance(llm_verdict, dict) else "")
+    if action:
+        conf = getattr(llm_verdict, "confidence", 0) if not isinstance(llm_verdict, dict) else llm_verdict.get("confidence", 0)
+        m_name = getattr(llm_verdict, "model_name", None) or ""
+        m_tag = f" [{m_name}]" if m_name else ""
+        action_emoji = {"GO_LONG": "🟢", "GO_SHORT": "🔴", "NO_TRADE": "⚪"}.get(action, "❓")
+
+        body = [f"🧠 *AI TRADE VERDICT*{m_tag}"]
+        body.append(f"🎯 *Action:* {action_emoji} `{action}` (Confidence: {conf}%)")
+
+        inst = getattr(llm_verdict, "instrument", "") if not isinstance(llm_verdict, dict) else llm_verdict.get("instrument", "")
+        if inst:
+            body.append(f"📋 *Contract:* `{inst}`")
+
+        sc = getattr(llm_verdict, "signal_chain", "") if not isinstance(llm_verdict, dict) else llm_verdict.get("signal_chain", "")
+        if sc:
+            body.append(f"⛓️ *Signal Chain:*\n{sc}")
+
+        thesis = getattr(llm_verdict, "thesis", "") if not isinstance(llm_verdict, dict) else llm_verdict.get("thesis", "")
+        if thesis:
+            body.append(f"💡 *Thought Process:* {thesis}")
+
+        sl = getattr(llm_verdict, "stop_loss", "") if not isinstance(llm_verdict, dict) else llm_verdict.get("stop_loss", "")
+        t1 = getattr(llm_verdict, "target_1", "") if not isinstance(llm_verdict, dict) else llm_verdict.get("target_1", "")
+        t2 = getattr(llm_verdict, "target_2", "") if not isinstance(llm_verdict, dict) else llm_verdict.get("target_2", "")
+        if sl or t1 or t2:
+            body.append(f"🛑 *SL:* {sl} | 🎯 *T1:* {t1} | *T2:* {t2}")
+
+        inv = getattr(llm_verdict, "invalidation", "") if not isinstance(llm_verdict, dict) else llm_verdict.get("invalidation", "")
+        if inv:
+            body.append(f"⚠️ *Invalidation:* {inv}")
+
+        return ["", "\n".join(body)]
+
+    return []
+
 
     if not alerts:
         return build_digest(
@@ -1944,6 +2031,7 @@ def build_enhanced_digest(
 
     td = ctx.get("trade_decision") or {}
     td_action = str(td.get("action") or "").upper()
+    td_status_raw = str(td.get("status") or "BLOCKED").upper()
     if td_status_raw in ["ENTERED", "OPEN", "TRIGGERED", "LIVE_ENTERED"] and td_action not in ["BLOCK", "NO_ACTION"]:
         td_status = "🟢 Entered"
     else:
@@ -2084,38 +2172,9 @@ def build_enhanced_digest(
     lines += sec("\U0001f4c8 *CONFIRMATION*", confirmation)
     lines += sec("\U0001f4a1 *BOTTOM LINE*", bottom_line)
     if llm_verdict:
-        bias = (
-            llm_verdict.get("bias")
-            if isinstance(llm_verdict, dict)
-            else getattr(llm_verdict, "bias", "")
-        )
-        conf = (
-            llm_verdict.get("confidence")
-            if isinstance(llm_verdict, dict)
-            else getattr(llm_verdict, "confidence", 0)
-        )
-        strat = (
-            llm_verdict.get("strategy")
-            if isinstance(llm_verdict, dict)
-            else getattr(llm_verdict, "strategy", "")
-        )
-        strike = (
-            llm_verdict.get("strike_selection")
-            if isinstance(llm_verdict, dict)
-            else getattr(llm_verdict, "strike_selection", "")
-        )
-        reason = (
-            llm_verdict.get("reasoning")
-            if isinstance(llm_verdict, dict)
-            else getattr(llm_verdict, "reasoning", "")
-        )
-        ai_body = [
-            f"\u2022 *Bias:* {_esc(bias)} ({conf}%)",
-            f"\u2022 *Strategy:* {_esc(strat)}",
-            f"\u2022 *Target:* {_esc(strike)}",
-            f"\u2022 *Reasoning:* _{_esc(reason)}_",
-        ]
-        lines += sec("🧠 *AI VERDICT*", "\n".join(ai_body))
+        ai_sec = _format_ai_verdict_section(llm_verdict)
+        if ai_sec:
+            lines += ai_sec
     if paper_trade_status:
         lines += sec(
             "🤖 *PAPER TRADE STATUS*", _format_paper_trade_status(paper_trade_status)

@@ -98,7 +98,7 @@ log = logging.getLogger(__name__)
 
 
 def _count_valid_scans(symbol: str) -> int:
-    """Return count of non-fallback scan summaries for symbol."""
+    """Return count of non-fallback scan summaries or underlying price entries for symbol."""
     from src.models.schema import get_conn
     with get_conn() as conn:
         row = conn.execute(
@@ -109,7 +109,16 @@ def _count_valid_scans(symbol: str) -> int:
             """,
             (symbol,),
         ).fetchone()
-    return int(row[0]) if row else 0
+        cnt = int(row[0]) if row else 0
+        if cnt >= 3:
+            return cnt
+
+        row_und = conn.execute(
+            "SELECT COUNT(*) FROM underlying_price WHERE symbol = ?",
+            (symbol,),
+        ).fetchone()
+        cnt_und = int(row_und[0]) if row_und else 0
+        return max(cnt, cnt_und)
 
 
 def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None, suppress_logs: bool = False) -> dict:
