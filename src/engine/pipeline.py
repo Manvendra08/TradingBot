@@ -406,12 +406,17 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
         if p_act == "ENTERED":
             multileg_payload = {
                 "action": "ENTERED",
+                "trade_id": paper_res.get("trade_id"),
                 "strategy_type": paper_res.get("strategy_type"),
                 "legs": paper_res.get("legs", []),
                 "net_premium": paper_res.get("net_premium"),
                 "confidence": paper_res.get("confidence"),
                 "entry_quality": paper_res.get("entry_quality"),
                 "book_id": paper_res.get("book_id"),
+                "thesis": paper_res.get("thesis"),
+                "risk_profile": paper_res.get("risk_profile"),
+                "book_greeks": paper_res.get("book_greeks"),
+                "quality_reasons": paper_res.get("quality_reasons", []),
             }
         elif p_act in ("CLOSED", "MONITORED") or paper_res.get("closed"):
             closed_items = paper_res.get("closed") or ([paper_res] if p_act == "CLOSED" else [])
@@ -444,6 +449,11 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
                     row_live = conn.execute("SELECT lots FROM live_trades WHERE digest_id=?", (digest_id,)).fetchone()
                     if row_live:
                         db_entered = True
+                    else:
+                        # Check multi-leg trades
+                        row_ml = conn.execute("SELECT id FROM multi_leg_trades WHERE digest_id=?", (digest_id,)).fetchone()
+                        if row_ml:
+                            db_entered = True
         except Exception as e:
             log.debug("Error checking actual trade for digest_id %s: %s", digest_id, e)
     
@@ -702,6 +712,38 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
         except Exception as e:
             log.warning("[pipeline] %s | MCX expiry day next option chain swap failed: %s", symbol, e)
 
+    # ── Pre-Flight Market Data Legitimacy Gate ──
+    from src.engine.data_validator import validate_market_data
+    legitimacy = validate_market_data(
+        symbol=symbol,
+        oc_data=target_signal_oc_data,
+        chart_payload=chart_payload,
+        prev_price=prev_price,
+    )
+    if not legitimacy.is_legitimate:
+        log.warning(
+            "[pipeline] %s | ⛔ DATA LEGITIMACY GATE REJECTED (score=%d/100, issues=%s) — aborting calculation/LLM to prevent false signals",
+            symbol,
+            legitimacy.score,
+            legitimacy.issues,
+        )
+        try:
+            save_scan_summary(
+                symbol,
+                verdict="DATA_LEGITIMACY_FAILURE",
+                confidence=0,
+                underlying=legitimacy.underlying_price or prev_price or 0.0,
+                fallback=True,
+                thesis=f"Pre-flight market data validation rejected snapshot: {', '.join(legitimacy.issues)}",
+            )
+        except Exception:
+            pass
+        return
+
+    # Use sanitized strikes from validator
+    if legitimacy.cleaned_strikes:
+        target_signal_oc_data["strikes"] = legitimacy.cleaned_strikes
+
     alerts, scan_context = detect_anomalies(
         target_signal_oc_data,
         fetched_at,
@@ -711,6 +753,7 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
     scan_context["option_rows"] = list(target_signal_oc_data.get("strikes") or [])
     scan_context["current_expiry"] = current_expiry_str
     scan_context["current_expiry_option_rows"] = list(current_expiry_oc_data.get("strikes") or [])
+    scan_context["data_legitimacy"] = legitimacy.to_dict()
 
     exp_str = scan_context.get("expiry") or current_expiry_str
     if exp_str:

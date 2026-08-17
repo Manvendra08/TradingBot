@@ -283,7 +283,8 @@ def _monitor_open_books(
                 for leg in legs:
                     leg_id = leg.get("id")
                     if leg_id:
-                        close_leg(leg_id, now_iso, 0.0, "BOOK_CLOSED_PROFIT_TARGET")
+                        leg_exit_prem = float(leg.get("current_premium") or leg.get("entry_premium") or 0.0)
+                        close_leg(leg_id, now_iso, leg_exit_prem, "BOOK_CLOSED_PROFIT_TARGET")
                 closed_actions.append({
                 "action": "CLOSED",
                 "book_id": book_id,
@@ -314,7 +315,8 @@ def _monitor_open_books(
             for leg in legs:
                 leg_id = leg.get("id")
                 if leg_id:
-                    close_leg(leg_id, now_iso, 0.0, "BOOK_CLOSED_STOP_LOSS")
+                    leg_exit_prem = float(leg.get("current_premium") or leg.get("entry_premium") or 0.0)
+                    close_leg(leg_id, now_iso, leg_exit_prem, "BOOK_CLOSED_STOP_LOSS")
             closed_actions.append({
                 "action": "CLOSED",
                 "book_id": book_id,
@@ -604,11 +606,32 @@ def _attempt_new_entry(
                 "reason": f"Legs validation: {validation_msg}",
             }
 
+    # ── Strict Binary Pre-Flight Validation for All Entry Legs (Flaw #5) ──
+    from src.engine.data_validator import validate_trade_leg_data
+    underlying = float((scan_context or {}).get("underlying") or 0.0)
+    oc_data_payload = {"strikes": list((scan_context or {}).get("option_rows") or [])}
+    is_binary_valid, binary_issues = validate_trade_leg_data(legs, oc_data_payload, underlying)
+    if not is_binary_valid:
+        log.warning(
+            "[multileg-paper] %s: atomic leg data validation failed — %s",
+            symbol,
+            binary_issues,
+        )
+        return {
+            "action": "REJECTED",
+            "reason": f"Leg data integrity rejected: {', '.join(binary_issues)}",
+        }
+
     # ── 5c. Compute Greeks and risk profile ────────────────────────────
     expiry = (scan_context or {}).get("expiry", "")
     underlying = float((scan_context or {}).get("underlying") or 0.0)
     option_rows = list((scan_context or {}).get("option_rows") or [])
-    net_premium = verdict.net_premium
+    
+    # Calculate net_premium from legs to protect against LLM returning 0.0
+    sell_prem_sum = sum(float(l.get("entry_premium") or l.get("premium") or 0.0) for l in legs if (l.get("side") or "SELL").upper() == "SELL")
+    buy_prem_sum = sum(float(l.get("entry_premium") or l.get("premium") or 0.0) for l in legs if (l.get("side") or "SELL").upper() == "BUY")
+    calc_net_prem = round(sell_prem_sum - buy_prem_sum, 2)
+    net_premium = calc_net_prem if calc_net_prem > 0 else (verdict.net_premium or 0.0)
 
     book_greeks = {}
     risk_profile = {}
@@ -862,12 +885,14 @@ def _calc_multileg_pnl(book: dict, legs: list[dict]) -> float:
     """
     from config.settings import LOT_SIZES
     from src.models.schema import get_read_conn
+    from src.engine.trade_plan import is_valid_option_premium
 
     scan_context = book.get("scan_context") or {}
     option_rows = list((scan_context or {}).get("option_rows") or [])
     symbol = book.get("symbol", "")
     base_sym = symbol.upper().split()[0] if symbol else ""
     lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_sym, 1))
+    underlying = float((scan_context or {}).get("underlying") or book.get("entry_underlying") or 0.0)
 
     total_pnl = 0.0
     for leg in legs:
@@ -884,8 +909,14 @@ def _calc_multileg_pnl(book: dict, legs: list[dict]) -> float:
             if abs(row_strike - strike) < 0.01 and row_type == option_type:
                 ltp = float(row.get("ltp") or row.get("premium") or 0.0)
                 if ltp > 0:
-                    current_premium = ltp
-                    break
+                    if underlying > 0 and not is_valid_option_premium(strike, option_type, ltp, underlying):
+                        log.warning(
+                            "[multileg-paper] %s: _calc_multileg_pnl rejected corrupted row LTP %.2f for %s %.0f (spot=%.2f)",
+                            symbol, ltp, option_type, strike, underlying,
+                        )
+                    else:
+                        current_premium = ltp
+                        break
 
         if current_premium is None:
             try:
@@ -895,12 +926,30 @@ def _calc_multileg_pnl(book: dict, legs: list[dict]) -> float:
                         (symbol, base_sym, strike, option_type)
                     ).fetchone()
                     if opt_row:
-                        current_premium = float(opt_row["ltp"])
+                        snap_ltp = float(opt_row["ltp"])
+                        if underlying > 0 and not is_valid_option_premium(strike, option_type, snap_ltp, underlying):
+                            log.warning(
+                                "[multileg-paper] %s: _calc_multileg_pnl rejected corrupted DB snapshot LTP %.2f for %s %.0f (spot=%.2f)",
+                                symbol, snap_ltp, option_type, strike, underlying,
+                            )
+                        else:
+                            current_premium = snap_ltp
             except Exception:
                 pass
 
         if current_premium is None:
-            current_premium = entry_premium
+            # Estimate using delta movement rather than raw fallback
+            if underlying > 0 and book.get("entry_underlying"):
+                entry_und = float(book.get("entry_underlying") or underlying)
+                und_move = underlying - entry_und
+                delta = float(leg.get("delta") or 0.25)
+                # For CE: price increases if spot increases; for PE: price increases if spot decreases
+                delta_sign = delta if option_type == "CE" else -abs(delta)
+                current_premium = max(0.05, entry_premium + delta_sign * und_move)
+            else:
+                current_premium = entry_premium
+
+        leg["current_premium"] = current_premium
 
         if side == "SELL":
             pnl = (entry_premium - current_premium) * lots * lot_size

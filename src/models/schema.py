@@ -1824,7 +1824,19 @@ def close_live_trade(
             else LOT_SIZES.get(base_symbol, 1)
         )
 
+        strike = float(row["strike"] or 0.0)
+
         if option_type in ("CE", "PE"):
+            from src.engine.trade_plan import is_valid_option_premium
+
+            # Validate passed exit_premium
+            if exit_premium and (exit_premium <= 0 or not is_valid_option_premium(strike, option_type, exit_premium, exit_underlying)):
+                log.warning(
+                    "close_live_trade: trade %s %s %s strike=%.2f exit_premium=%.2f failed sanity check against spot=%.2f — discarding",
+                    trade_id, symbol, option_type, strike, exit_premium, exit_underlying
+                )
+                exit_premium = None
+
             if (
                 entry_premium
                 and entry_premium > 0
@@ -2278,6 +2290,11 @@ def list_multi_leg_trades(status_filter: str | None = None) -> list[dict]:
                         live_book_pnl += leg_pnl
                 
                 t["legs"] = legs
+                if float(t.get("net_premium") or 0.0) <= 0 and legs:
+                    sell_entry_sum = sum(float(l.get("entry_premium") or l.get("entry_price") or 0.0) for l in legs if (l.get("side") or "SELL").upper() == "SELL")
+                    buy_entry_sum = sum(float(l.get("entry_premium") or l.get("entry_price") or 0.0) for l in legs if (l.get("side") or "SELL").upper() == "BUY")
+                    t["net_premium"] = round(sell_entry_sum - buy_entry_sum, 2)
+
                 if has_live_pnl:
                     t["total_pnl"] = round(live_book_pnl, 2)
                     sell_cmp_sum = sum(float(l.get("cmp") or l.get("entry_premium") or 0.0) for l in legs if (l.get("side") or "SELL").upper() == "SELL")

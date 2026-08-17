@@ -732,6 +732,7 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
     header      = payload.get("header", {})
     tfss        = payload.get("tfss", {})
     timeframe   = payload.get("timeframe", {})
+    multileg    = payload.get("multileg") or tfss.get("multileg") or {}
     positions   = payload.get("positions", {})
     global_risk = payload.get("global_risk", {})
     ai_thesis   = payload.get("ai_thesis", "")
@@ -747,27 +748,32 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
     conf   = header.get("confidence")
 
     lines: list[str] = []
-    DIV = "─" * 15
+    DIV = "───────────────"
 
-    # ── HEADER ──
+    # ── CONFIDENCE BAR ──
     conf_bar = ""
     if conf is not None:
         filled = round(int(conf) / 10)
         conf_bar = "▓" * filled + "░" * (10 - filled)
 
-    # ── SIGNAL ──
+    # Check execution status
+    ml_action = str(multileg.get("action") or "").upper()
+    is_ml_entered = ml_action == "ENTERED"
+    
     tfss_action  = _val(tfss.get("action"))
     tfss_bias    = _val(tfss.get("tfss_bias"))
     tfss_verdict = _val(tfss.get("core_origin_verdict"))
-    tf_action   = _val(timeframe.get("action"))
     trade_ok     = tfss.get("trade_entered", False)
     contract     = _val(tfss.get("contract"))
-
-    # Top line status: trade is Entered iff trade_entered is True AND contract exists AND action is not BLOCK
     raw_header_entered = header.get("trade_entered", False)
-    is_entered = bool(raw_header_entered and trade_ok and contract and str(tfss_action or "").upper() not in ("BLOCK", "NO_ACTION", "NONE", "N/A"))
-    trade_status_str = "🟢 Entered" if is_entered else "✗ Not entered"
+    
+    is_single_entered = bool(raw_header_entered and trade_ok and contract and str(tfss_action or "").upper() not in ("BLOCK", "NO_ACTION", "NONE", "N/A"))
+    is_entered = is_ml_entered or is_single_entered
 
+    # Header status badge
+    trade_status_str = "🟢 *ENTERED*" if is_entered else "⏸️ *NO TRADE*"
+
+    # Format expiry & DTE
     if expiry:
         try:
             exp_dt = datetime.strptime(str(expiry).strip(), "%Y-%m-%d").date()
@@ -789,7 +795,7 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
 
     dte_str = f"{dte} DTE" if (dte is not None and 0 <= dte <= 365) else "N/A DTE"
     
-    # Format spot with ₹ and comma
+    # Format spot
     if isinstance(spot, (int, float)) and spot > 0:
         if spot >= 1000:
             spot_str = f"₹{spot:,.0f}"
@@ -800,32 +806,15 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
         
     stime_clean = stime.replace(" IST", "").strip() if stime else ""
     time_str = f" · {stime_clean} IST" if stime_clean else ""
+    
+    # Header Line
     lines.append(f"📊 *{sym}*{time_str}  {trade_status_str}")
     lines.append(f"{expiry_str} · {dte_str} | Spot {spot_str}")
 
-    # ── SIGNAL ──
-    tfss_action  = _val(tfss.get("action"))
-    tfss_bias    = _val(tfss.get("tfss_bias"))
-    tfss_verdict = _val(tfss.get("core_origin_verdict"))
-    tf_action   = _val(timeframe.get("action"))
-    trade_ok     = tfss.get("trade_entered", False)
-    contract     = _val(tfss.get("contract"))
-    delta        = tfss.get("delta")
-    prem         = tfss.get("premium")
-    qty          = tfss.get("qty")
-    tranche      = tfss.get("tranche_index")
-    exit_reduce  = _val(tfss.get("exit_reduce"))
-    existing_pos = _val(tfss.get("existing_position"))
-    tfss_reason  = _val(tfss.get("primary_reason"))
-    tfss_blockers = [str(b) for b in (tfss.get("blockers") or []) if _val(str(b))]
-    tf_blockers   = [str(b) for b in (timeframe.get("blockers") or []) if _val(str(b))]
-    gr_blockers   = [str(b) for b in (global_risk.get("blockers") or []) if _val(str(b))]
-
-    action_icon = {"ENTER": "🟢", "ADD": "🟢", "EXIT": "🔴", "REDUCE": "🟡",
-                   "BLOCK": "🚫", "NO_ACTION": "⏸️"}.get(str(tfss_action or "").upper(), "⚙️")
-
+    # ── SIGNAL BAR ──
     lines.append("")
     lines.append(DIV)
+    action_icon = "🟢" if is_entered else "🚫"
     sig_line = f"{action_icon} *SIGNAL*"
     if tfss_bias:
         sig_line += f": {_esc(tfss_bias)}"
@@ -835,9 +824,74 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
     if conf is not None:
         lines.append(f"Confidence: {conf_bar} {conf}%")
 
-    if is_entered and contract:
+    # ── TRADE EXECUTION OR BLOCKER SECTION ──
+    if is_ml_entered:
+        # Multileg execution display
+        strat_type = str(multileg.get("strategy_type") or "MULTILEG").replace("_", " ").upper()
+        book_id = multileg.get("book_id") or ""
+        legs = multileg.get("legs") or []
+        net_prem = float(multileg.get("net_premium") or 0.0)
+        rp = multileg.get("risk_profile") or {}
+        greeks = multileg.get("book_greeks") or {}
+        
+        strat_icon_map = {
+            "BEAR CALL SPREAD": "🛡️",
+            "BULL PUT SPREAD": "🛡️",
+            "IRON CONDOR": "🦅",
+            "SHORT STRANGLE": "⚡",
+            "LONG STRANGLE": "⚡",
+            "BEAR PUT SPREAD": "📉",
+            "BULL CALL SPREAD": "📈",
+        }
+        icon = strat_icon_map.get(strat_type, "🎯")
+        
+        lots = legs[0].get("lots", 1) if legs else 1
+        lots_str = f" · {lots} Lots" if lots else ""
+        lines.append(f"Trade: ✅ Entered · {icon} *{_esc(strat_type)}*")
+        if book_id:
+            lines.append(f"   Book: `{_esc(book_id)}`{lots_str}")
+        
+        # Legs breakdown
+        if legs:
+            for leg in legs:
+                side = (leg.get("side") or "SELL").upper()
+                side_icon = "🔴" if side == "SELL" else "🟢"
+                opt_type = (leg.get("option_type") or "").upper()
+                strike_val = float(leg.get("strike") or 0.0)
+                prem_val = float(leg.get("entry_premium") or leg.get("premium") or 0.0)
+                delta_val = float(leg.get("delta") or 0.0)
+                
+                strike_fmt = f"{strike_val:,.0f}" if strike_val >= 1000 else f"{strike_val:.2f}".rstrip('0').rstrip('.')
+                lines.append(f"   {side_icon} {side} {strike_fmt} {opt_type} @ ₹{prem_val:.2f} (Δ{delta_val:+.2f})")
+
+        # Financials / Greeks
+        fin_parts = []
+        if net_prem > 0:
+            fin_parts.append(f"Net: ₹{net_prem:.2f}/lot")
+        net_delta = greeks.get("net_delta")
+        if net_delta is not None:
+            fin_parts.append(f"Δ Net: {net_delta:+.2f}")
+        if fin_parts:
+            lines.append("   " + " · ".join(fin_parts))
+            
+        # Breakeven & Risk bounds
+        be_lower = rp.get("breakeven_lower")
+        be_upper = rp.get("breakeven_upper")
+        if be_lower and be_upper:
+            lines.append(f"   BE: ₹{be_lower:,.1f} — ₹{be_upper:,.1f}")
+        elif be_lower:
+            lines.append(f"   BE: ₹{be_lower:,.1f}")
+        elif be_upper:
+            lines.append(f"   BE: ₹{be_upper:,.1f}")
+
+    elif is_single_entered and contract:
+        # Legacy single-leg entered
         lines.append(f"Trade: ✅ Entered · {_esc(contract)}")
         parts = []
+        delta = tfss.get("delta")
+        prem  = tfss.get("premium")
+        qty   = tfss.get("qty")
+        tranche = tfss.get("tranche_index")
         if delta is not None:
             parts.append(f"Δ{delta}")
         if prem is not None:
@@ -850,28 +904,42 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
                 parts.append(combined)
         if parts:
             lines.append("   " + " · ".join(parts))
-        # Only display positive reason for entered trades (filter out "blocked" text)
+        tfss_reason = _val(tfss.get("primary_reason"))
         if tfss_reason and tfss_reason != "N/A" and "blocked" not in tfss_reason.lower():
             lines.append(f"Reason: {_esc(tfss_reason)}")
     else:
         lines.append("Trade: ✗ Not entered")
-        # Display blocked reasons ONLY when trade was NOT entered
+        
+        # Clean up blocker reason
+        tfss_blockers = [str(b) for b in (tfss.get("blockers") or []) if _val(str(b))]
+        tf_blockers   = [str(b) for b in (timeframe.get("blockers") or []) if _val(str(b))]
+        gr_blockers   = [str(b) for b in (global_risk.get("blockers") or []) if _val(str(b))]
         all_blockers = list(dict.fromkeys(tfss_blockers + tf_blockers + gr_blockers))
-
+        
+        tfss_reason = _val(tfss.get("primary_reason")) or ""
+        
         if all_blockers:
             for b in all_blockers:
-                lines.append(f" ⚠ Blocked: {_esc(b)}")
+                # Sanitize confusing internal phrases like 'Trend allowed:'
+                b_clean = b
+                if "Trend allowed:" in b or "Trend persistent:" in b:
+                    b_clean = "Waiting for clearer directional confirmation / Active risk cap"
+                lines.append(f" ⚠ Blocked: {_esc(b_clean)}")
+        elif "Marginal setup" in tfss_reason:
+            lines.append(f" ⚠ Blocked: Sub-threshold conviction / Marginal setup")
         elif tfss_reason and tfss_reason != "N/A" and "allowed" not in tfss_reason.lower():
             lines.append(f"Reason: {_esc(tfss_reason)}")
         else:
             lines.append("Reason: Setup did not meet execution criteria")
 
+    exit_reduce  = _val(tfss.get("exit_reduce"))
+    existing_pos = _val(tfss.get("existing_position"))
     if exit_reduce:
         lines.append(f"Exit/Reduce: {_esc(exit_reduce)}")
         if existing_pos:
             lines.append(f"   Posn: {_esc(existing_pos)}")
 
-    # Display AI Exit Advice
+    # ── AI EXIT ADVICE / POSITION MONITOR ──
     if exit_advice:
         ea_action = exit_advice.get("action") if isinstance(exit_advice, dict) else getattr(exit_advice, "action", None)
         if ea_action:
@@ -880,12 +948,12 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
             ea_new_sl = exit_advice.get("new_sl_premium") if isinstance(exit_advice, dict) else getattr(exit_advice, "new_sl_premium", None)
             
             action_emoji = {"HOLD": "🔵", "TRAIL_SL": "🔄", "CLOSE_EARLY": "🔴", "EXTEND_TARGET": "🎯"}.get(str(ea_action).upper(), "⚙️")
-            lines.append(f"AI Exit Advice: {action_emoji} *{_esc(ea_action)}* (Urgency: {_esc(ea_urgency)})")
+            lines.append(f"AI Position Monitor: {action_emoji} *{_esc(ea_action)}* (Urgency: {_esc(ea_urgency)})")
             lines.append(f"   _{_esc(ea_reasoning)}_")
             if ea_new_sl is not None:
                 lines.append(f"   New SL: `{ea_new_sl}`")
 
-    # ── THESIS (AI) ──
+    # ── THESIS (AI) & MARKET MECHANICS ──
     thesis_text = _val(ai_thesis)
     if thesis_text:
         lines.append("")
@@ -898,8 +966,7 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
             for chunk in textwrap.wrap(raw_line, width=38):
                 lines.append(_esc(chunk))
 
-    # ── TIMEFRAME STRATEGY ──
-    # Only show if TIMEFRAME strategy is enabled in config
+    # ── TIMEFRAME STRATEGY (if active) ──
     _tf_enabled = False
     try:
         from config.runtime_config import load_runtime_config

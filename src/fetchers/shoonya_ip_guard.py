@@ -175,10 +175,13 @@ def shoonya_should_skip() -> bool:
     return state.get("skip_date") == today
 
 
-def reset_shoonya_ip_skip() -> None:
+def reset_shoonya_ip_skip(new_ip: str | None = None) -> None:
     """Clear today's skip flag when user updates IP binding or login succeeds."""
     with _lock:
         state = _load_state()
         state["skip_date"] = None
+        if new_ip:
+            state["baseline_ip"] = new_ip
+            state["checked_date"] = _today()
         _save_state(state)
-        log.info("[shoonya-ip] IP skip flag reset/cleared.")
+        log.info("[shoonya-ip] IP skip flag reset/cleared (baseline=%s).", state.get("baseline_ip"))

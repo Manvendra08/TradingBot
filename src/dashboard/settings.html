@@ -1146,6 +1146,21 @@
                             </label>
                         </div>
 
+                        <div class="switch-group" style="
+                                    margin-bottom: 24px;
+                                    border-top: 1px solid var(--border);
+                                    padding-top: 20px;
+                                ">
+                            <div class="switch-label">
+                                <span>Enable NG Parity Strategy</span>
+                                <span class="switch-sub">Execute statistical arbitrage / fair value deviation trades on MCX Natural Gas vs US NYMEX</span>
+                            </div>
+                            <label class="switch">
+                                <input type="checkbox" id="sett-enable-ng-parity" />
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+
                         <div class="switch-group" style="margin-bottom: 24px">
                             <div class="switch-label">
                                 <span>Scan Sentinel Report Mode</span>
@@ -1770,7 +1785,7 @@
                                 Full: LLM controls entry + exit
                             </div>
                         </div>
-                        <div class="form-group">
+                            <div class="form-group">
                             <label
                                 style="font-size:12px; font-weight:600; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; display:block; margin-bottom:10px">
                                 Per-Symbol Enable
@@ -1778,6 +1793,33 @@
                                     data-tooltip="Multi-leg strategies apply to NSE indices only (NIFTY, BANKNIFTY, FINNIFTY, SENSEX).">i</span>
                             </label>
                             <div class="symbol-lots-list" id="strat-MULTILEG-symbols"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- NG_PARITY Strategy -->
+                <div class="card" style="margin-bottom:24px" id="strategy-card-NG_PARITY">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px">
+                        <div>
+                            <div class="card-title" style="margin-bottom:2px">⚖️ NG PARITY — Natural Gas Fair Value Arbitrage</div>
+                            <div style="font-size:11px; color:var(--text-dim)">Entry: MCX vs US NYMEX Fair Value deviation &gt; 0.45% &nbsp;|&nbsp; Exit: Parity reached / Deviation stop / 17:30 IST &nbsp;|&nbsp; Symbol: NATURALGAS</div>
+                        </div>
+                        <label class="switch" style="flex-shrink:0">
+                            <input type="checkbox" id="strat-NG_PARITY-enabled" onchange="onStrategyToggle('NG_PARITY')">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    <div id="strat-NG_PARITY-body">
+                        <div class="form-group" style="margin-bottom:16px">
+                            <label>AI Mode</label>
+                            <select id="strat-NG_PARITY-ai-mode">
+                                <option value="advisory">Advisory Only</option>
+                                <option value="boost_only">Boost Only</option>
+                                <option value="full">Full Authority</option>
+                            </select>
+                        </div>
+                        <div style="font-size:12px; color:var(--text-dim); line-height:1.5">
+                            Trades MCX Natural Gas based on real-time Henry Hub landed fair value parity. When disabled, blocks new parity entries while allowing open positions to exit gracefully.
                         </div>
                     </div>
                 </div>
@@ -2263,7 +2305,7 @@
         }
 
         function loadStrategySettings(strategies) {
-            ["CORE", "TIMEFRAME", "TFSS", "MULTILEG"].forEach(sid => {
+            ["CORE", "TIMEFRAME", "TFSS", "MULTILEG", "NG_PARITY"].forEach(sid => {
                 const s = strategies[sid] || {};
                 const enabledEl = document.getElementById(`strat-${sid}-enabled`);
                 if (enabledEl) { enabledEl.checked = s.enabled !== false; }
@@ -2289,7 +2331,7 @@
 
         function collectStrategySettings() {
             const out = {};
-            ["CORE", "TIMEFRAME", "TFSS", "MULTILEG"].forEach(sid => {
+            ["CORE", "TIMEFRAME", "TFSS", "MULTILEG", "NG_PARITY"].forEach(sid => {
                 out[sid] = {
                     enabled: document.getElementById(`strat-${sid}-enabled`)?.checked ?? true,
                     ai_mode: document.getElementById(`strat-${sid}-ai-mode`)?.value || "boost_only",
@@ -2452,6 +2494,9 @@
                 document.getElementById("sett-enable-tfss-blocked-rules")
                     .checked !==
                 (runtimeConfig.enable_tfss_trade_blocked_rules || false) ||
+                document.getElementById("sett-enable-ng-parity")
+                    .checked !==
+                (runtimeConfig.enable_ng_parity_trades !== false) ||
                 document.getElementById("sett-sentinel-report-mode").value !==
                 (runtimeConfig.sentinel_report_mode || "anomalies") ||
                 document.getElementById("sett-ops-agent-mode").value !==
@@ -2792,6 +2837,13 @@
                         enableTfssBlockedCheckbox.checked =
                             data.enable_tfss_trade_blocked_rules || false;
 
+                    const enableNgParityCheckbox = document.getElementById(
+                        "sett-enable-ng-parity",
+                    );
+                    if (enableNgParityCheckbox)
+                        enableNgParityCheckbox.checked =
+                            data.enable_ng_parity_trades !== false;
+
                     const sentinelReportModeSelect = document.getElementById(
                         "sett-sentinel-report-mode",
                     );
@@ -2996,6 +3048,9 @@
                 ).checked,
                 enable_tfss_trade_blocked_rules: document.getElementById(
                     "sett-enable-tfss-blocked-rules",
+                ).checked,
+                enable_ng_parity_trades: document.getElementById(
+                    "sett-enable-ng-parity",
                 ).checked,
                 sentinel_report_mode: document.getElementById(
                     "sett-sentinel-report-mode",

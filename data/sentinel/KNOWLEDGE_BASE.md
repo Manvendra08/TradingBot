@@ -163,6 +163,17 @@ TypeError: get_previous_underlying() got an unexpected keyword argument 'read_on
 - **Root Cause:** In `src/engine/llm_enrichment.py`, provider HTTP requests enforced `timeout=min(remaining, provider.get("timeout", 12.0))`. The fallback default of `12.0` seconds truncated response generation mid-JSON for large schemas (e.g. `LLMMultiLegVerdict`) on OmniRouter models configured with 20s–30s provider timeouts.
 - **Fix:** Updated the timeout fallback in `_call_llm_api()` to default to `20.0` seconds (`provider.get("timeout", 20.0)`), allowing proxy-backed OmniRouter models (`antigravity/claude-sonnet-4-6`, `cx/gpt-5.5`) full timeout budget to complete complex structured JSON outputs without mid-stream truncation.
 
+### F133: Pre-Flight Data Legitimacy Gates & Theoretical Option Bounds (P0-CRITICAL)
+- **Symptom:** Generic spike/gap scrubbing on option premiums dropped breakout moves and 0DTE surges, blinding the risk engine during stop-loss events. Flat 8% proximity pruned Natural Gas chains, 0DTE caused division-by-zero risks in Greeks, and soft scores risked partial multi-leg execution.
+- **Root Cause:** Inflexible single-tick heuristics and missing asset-class awareness in `data_validator.py` and `trade_plan.py`.
+- **Fix:**
+  1. Replaced arbitrary OTM premium caps with theoretical boundary limits ($P \le S$ for CE, $P \le \max(K, S)$ for PE). Percentage anomaly checks applied exclusively to underlying spot/futures.
+  2. Implemented hierarchical liquidity validation (Primary market depth $\text{Spread}/\text{LTP} \le 0.40$ vs Secondary $\text{LTP} > 0 \land \text{OI} > 0$ with `FORCE_LIMIT` guardrails).
+  3. Asset-class dynamic proximity: Indices $\pm 8\%$ / $\pm 25$ strikes; Commodities (Natural Gas, Crude, Metals) $\pm 20\%$ / $\pm 10$ strikes minimum.
+  4. Fractional time-to-expiry ($T > 0$) calculation with hard 0DTE new-entry cutoffs at 15:15 IST (NSE) and 23:15 IST (MCX).
+  5. Implemented strict 100% binary data integrity validation (`validate_trade_leg_data`) for all target legs before multi-leg and single-leg order dispatch.
+  6. Internal candle continuity validation and spot vs forming candle envelope comparison $[0.95L, 1.05H]$.
+
 ---
 
 ## 3. Scan Sentinel Safety Suite (Rules R1–R12)

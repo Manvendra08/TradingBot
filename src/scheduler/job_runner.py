@@ -41,13 +41,13 @@ MAX_CATCHUP_INTERVALS = 3
 
 def _get_scan_window_times(class_key: str, now_ist: datetime) -> tuple[datetime, datetime, str, str]:
     """Return (scan_open_time, scan_close_time, open_t_str, close_t_str) for class_key.
-    NSE and BSE scan window: 09:30 AM IST to 15:30 IST (3:30 PM).
+    NSE and BSE scan window: 09:30 AM IST to 15:40 IST (3:40 PM).
     MCX scan window: 09:15 AM IST to 23:30 IST.
     """
     if class_key in ("MCX_COMMODITY", "MCX_AGRI"):
         open_t_str, close_t_str = "09:15", "23:30"
     else:
-        open_t_str, close_t_str = "09:30", "15:30"
+        open_t_str, close_t_str = "09:30", "15:40"
 
     open_h, open_m = map(int, open_t_str.split(":"))
     close_h, close_m = map(int, close_t_str.split(":"))

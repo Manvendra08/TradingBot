@@ -255,10 +255,12 @@ Analyze the data above and select the BEST multi-leg options strategy.
 - **Extremely thin liquidity or severe event risk** → Consider NO_TRADE
 
 ### Important Constraints on Legs:
-- **SHORT_STRADDLE**: Exactly 2 SELL legs (1 ATM CE + 1 ATM PE).
-- **SHORT_STRANGLE**: Exactly 2 SELL legs (1 OTM CE + 1 OTM PE).
-- **IRON_CONDOR**: Exactly 4 legs (2 inner SELL legs + 2 outer protective BUY legs).
-- **BEAR_CALL_SPREAD / BULL_PUT_SPREAD**: Exactly 2 legs (1 inner SELL leg + 1 outer protective BUY leg).
+- **SHORT_STRADDLE**: Exactly 2 SELL legs (1 ATM CE + 1 ATM PE). Never return 1 leg.
+- **SHORT_STRANGLE**: Exactly 2 SELL legs (1 OTM CE + 1 OTM PE). Never return 1 leg. Both CE and PE sides are strictly required.
+- **IRON_CONDOR**: Exactly 4 legs (2 inner SELL legs [1 CE + 1 PE] + 2 outer protective BUY legs [1 CE + 1 PE]).
+- **BEAR_CALL_SPREAD**: Exactly 2 CE legs (1 inner SELL CE + 1 outer protective BUY CE).
+- **BULL_PUT_SPREAD**: Exactly 2 PE legs (1 inner SELL PE + 1 outer protective BUY PE).
+- **NO_TRADE**: If no clean multi-leg structure fits, set strategy_type="NO_TRADE" and legs=[]. Never emit half-formed single-leg structures under multi-leg strategy names.
 
 ### Strike Selection Principles:
 - Sell strikes at or beyond support/resistance levels
@@ -273,6 +275,10 @@ Analyze the data above and select the BEST multi-leg options strategy.
 - Consider correlation between legs — don't create hidden directional bets
 - Set profit target at 30-50% of max profit (don't get greedy)
 - Set time decay exit at DTE ≤ 3
+
+### Data Legitimacy & Input Validation:
+- Before selecting a strategy, verify that the provided spot price, option chain strikes, and DTE are coherent and liquid.
+- If option chain data is empty, missing, has 0 volume/OI across all strikes, or DTE is 0 without a viable theta decay window, you MUST set strategy_type="NO_TRADE" and legs=[] with an explicit explanation in entry_rationale and thesis. Never invent strikes or artificial premiums.
 
 ### Output Format:
 Return a JSON object matching the LLMMultiLegVerdict schema. Think through each leg carefully with a specific rationale. Your thesis should explain the full setup narrative — why this strategy, why these strikes, what's the edge.

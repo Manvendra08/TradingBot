@@ -376,6 +376,50 @@
                 background: rgba(239, 68, 68, 0.15);
                 border-color: #ef4444;
             }
+            .multileg-group-block {
+                margin-bottom: 20px;
+                border-radius: 10px;
+                border: 1px solid var(--border);
+                overflow: hidden;
+                background: rgba(255, 255, 255, 0.015);
+            }
+            .multileg-group-header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 10px 16px;
+                background: rgba(255, 255, 255, 0.04);
+                border-bottom: 1px solid var(--border);
+            }
+            .multileg-group-title {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                font-size: 13px;
+                font-weight: 700;
+            }
+            .multileg-group-pnl {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                font-size: 12px;
+            }
+            .multileg-sortable {
+                cursor: pointer;
+                user-select: none;
+                transition: color 0.15s ease;
+            }
+            .multileg-sortable:hover {
+                color: var(--accent, #3b82f6) !important;
+            }
+            .multileg-sort-icon {
+                font-size: 10px;
+                margin-left: 4px;
+                opacity: 0.6;
+            }
+            .multileg-sortable:hover .multileg-sort-icon {
+                opacity: 1;
+            }
             .header-left {
                 display: flex !important;
                 align-items: center !important;
@@ -2638,6 +2682,32 @@
                 </div>
             </div>
 
+            <!-- Multi-Leg Options Section (StockMinded UI) -->
+            <div class="card" id="multi-leg-card" style="margin-bottom: 24px;">
+                <div class="card-title" style="justify-content: space-between">
+                    <div style="display: flex; align-items: center; gap: 8px">
+                        <span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #3b82f6;"></span>
+                        <span style="font-weight: 700; letter-spacing: 0.5px; font-size: 13px; text-transform: uppercase;">Multi-Leg Options</span>
+                        <span id="multi-leg-count-badge" class="badge" style="background: rgba(59, 130, 246, 0.15); color: #3b82f6; border: 1px solid rgba(59, 130, 246, 0.3);">0</span>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+                        <div class="eq-tf-bar" style="margin: 0;">
+                            <button class="eq-tf-btn active" id="ml-btn-grouped" onclick="toggleMultiLegGrouping(true)">📁 By Symbol</button>
+                            <button class="eq-tf-btn" id="ml-btn-flat" onclick="toggleMultiLegGrouping(false)">📋 Flat</button>
+                        </div>
+                        <div id="multi-leg-total-pnl-wrap" style="display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 6px; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border); transition: all 0.2s ease;">
+                            <span style="color: var(--text-dim); text-transform: uppercase; font-size: 10px; letter-spacing: 0.5px;">Live Total P&amp;L:</span>
+                            <span id="multi-leg-total-pnl-val" style="font-weight: 700; font-family: var(--mono);">—</span>
+                        </div>
+                        <span id="multi-leg-last-updated" class="dim" style="font-size: 11px; font-family: var(--mono); font-weight: 500;">—</span>
+                        <button id="btn-refresh-multileg" class="btn btn-sm" onclick="loadMultiLegTrades(true)" title="Refresh Multi-Leg Trades">🔄 Refresh</button>
+                    </div>
+                </div>
+                <div id="multi-leg-container" style="overflow-x: auto;">
+                    <p class="dim" style="padding: 16px;">Loading multi-leg options...</p>
+                </div>
+            </div>
+
             <!-- Equity + Open Positions -->
             <div class="grid2">
                 <div class="card">
@@ -2706,28 +2776,6 @@
                             </tbody>
                         </table>
                     </div>
-                </div>
-            </div>
-
-            <!-- Multi-Leg Options Section (StockMinded UI) -->
-            <div class="card" id="multi-leg-card" style="margin-bottom: 24px;">
-                <div class="card-title" style="justify-content: space-between">
-                    <div style="display: flex; align-items: center; gap: 8px">
-                        <span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #3b82f6;"></span>
-                        <span style="font-weight: 700; letter-spacing: 0.5px; font-size: 13px; text-transform: uppercase;">Multi-Leg Options</span>
-                        <span id="multi-leg-count-badge" class="badge" style="background: rgba(59, 130, 246, 0.15); color: #3b82f6; border: 1px solid rgba(59, 130, 246, 0.3);">0</span>
-                    </div>
-                    <div style="display: flex; align-items: center; gap: 14px;">
-                        <div id="multi-leg-total-pnl-wrap" style="display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 6px; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border); transition: all 0.2s ease;">
-                            <span style="color: var(--text-dim); text-transform: uppercase; font-size: 10px; letter-spacing: 0.5px;">Live Total P&amp;L:</span>
-                            <span id="multi-leg-total-pnl-val" style="font-weight: 700; font-family: var(--mono);">—</span>
-                        </div>
-                        <span id="multi-leg-last-updated" class="dim" style="font-size: 11px; font-family: var(--mono); font-weight: 500;">—</span>
-                        <button id="btn-refresh-multileg" class="btn btn-sm" onclick="loadMultiLegTrades(true)" title="Refresh Multi-Leg Trades">🔄 Refresh</button>
-                    </div>
-                </div>
-                <div id="multi-leg-container" style="overflow-x: auto;">
-                    <p class="dim" style="padding: 16px;">Loading multi-leg options...</p>
                 </div>
             </div>
 
@@ -3312,8 +3360,8 @@
                           .join("")
                     : '<div class="empty-state"><div class="empty-icon">🗃️</div>No trades yet</div>';
 
-                /* Open trades */
-                const ot = s.open_trades || [];
+                /* Open trades (exclude multi-leg trades as they have their dedicated section) */
+                const ot = (s.open_trades || []).filter(t => (t.option_type || '').toUpperCase() !== "MULTILEG" && (t.setup_type || '').toUpperCase() !== "MULTILEG" && !String(t.id).startsWith("ML-"));
                 document.getElementById("open-count").textContent = ot.length;
                 document.getElementById("open-body").innerHTML = ot.length
                     ? ot
@@ -4223,7 +4271,257 @@
 
             init().catch(console.error);
 
-            // ── StockMinded Multi-Leg Options Renderer ──
+            // ── StockMinded Multi-Leg Options State & Renderer ──
+            let mlGroupBySymbol = true;
+            let mlSortCol = null;
+            let mlSortAsc = true;
+            let _cachedMultiLegTrades = [];
+
+            function toggleMultiLegGrouping(isGrouped) {
+                mlGroupBySymbol = isGrouped;
+                const btnGrouped = document.getElementById("ml-btn-grouped");
+                const btnFlat = document.getElementById("ml-btn-flat");
+                if (btnGrouped) btnGrouped.className = `eq-tf-btn ${isGrouped ? "active" : ""}`;
+                if (btnFlat) btnFlat.className = `eq-tf-btn ${!isGrouped ? "active" : ""}`;
+                renderMultiLegView();
+            }
+
+            function sortMultiLeg(col) {
+                if (mlSortCol === col) {
+                    mlSortAsc = !mlSortAsc;
+                } else {
+                    mlSortCol = col;
+                    mlSortAsc = true;
+                }
+                renderMultiLegView();
+            }
+
+            function getSortIcon(col) {
+                if (mlSortCol === col) {
+                    return `<span style="color: var(--accent, #3b82f6); font-weight: bold; margin-left: 4px;">${mlSortAsc ? "▲" : "▼"}</span>`;
+                }
+                return `<span class="multileg-sort-icon">↕</span>`;
+            }
+
+            function getEffectiveNetPrem(t) {
+                let netPremVal = Number(t.net_premium || 0);
+                if (netPremVal <= 0 && t.legs && t.legs.length) {
+                    const sellSum = t.legs.filter(l => (l.side || "SELL").toUpperCase() === "SELL").reduce((acc, l) => acc + Number(l.entry_premium ?? l.entry_price ?? 0), 0);
+                    const buySum = t.legs.filter(l => (l.side || "SELL").toUpperCase() === "BUY").reduce((acc, l) => acc + Number(l.entry_premium ?? l.entry_price ?? 0), 0);
+                    netPremVal = Math.max(0, sellSum - buySum);
+                }
+                return netPremVal;
+            }
+
+            function sortTradesList(tradesList) {
+                if (!mlSortCol) return tradesList;
+                return [...tradesList].sort((a, b) => {
+                    let valA = 0, valB = 0;
+                    if (mlSortCol === "id") {
+                        valA = Number(a.id || a.trade_ref || 0);
+                        valB = Number(b.id || b.trade_ref || 0);
+                    } else if (mlSortCol === "symbol") {
+                        const sA = String(a.symbol || "");
+                        const sB = String(b.symbol || "");
+                        return mlSortAsc ? sA.localeCompare(sB) : sB.localeCompare(sA);
+                    } else if (mlSortCol === "structure") {
+                        const sA = String(a.structure || "");
+                        const sB = String(b.structure || "");
+                        return mlSortAsc ? sA.localeCompare(sB) : sB.localeCompare(sA);
+                    } else if (mlSortCol === "net_premium") {
+                        valA = getEffectiveNetPrem(a);
+                        valB = getEffectiveNetPrem(b);
+                    } else if (mlSortCol === "margin_req") {
+                        valA = Number(a.margin_req || 0);
+                        valB = Number(b.margin_req || 0);
+                    } else if (mlSortCol === "cmp") {
+                        valA = Number(a.cmp || 0);
+                        valB = Number(b.cmp || 0);
+                    } else if (mlSortCol === "pnl") {
+                        valA = Number(a.total_pnl || 0);
+                        valB = Number(b.total_pnl || 0);
+                    } else if (mlSortCol === "opened_at") {
+                        valA = new Date(a.opened_at || 0).getTime();
+                        valB = new Date(b.opened_at || 0).getTime();
+                    } else if (mlSortCol === "status") {
+                        const sA = String(a.status || "");
+                        const sB = String(b.status || "");
+                        return mlSortAsc ? sA.localeCompare(sB) : sB.localeCompare(sA);
+                    } else {
+                        return 0;
+                    }
+                    if (valA < valB) return mlSortAsc ? -1 : 1;
+                    if (valA > valB) return mlSortAsc ? 1 : -1;
+                    return 0;
+                });
+            }
+
+            function renderMultiLegTableHead() {
+                return `
+                    <thead>
+                        <tr>
+                            <th class="multileg-sortable" onclick="sortMultiLeg('id')">ID ${getSortIcon('id')}</th>
+                            <th class="multileg-sortable" onclick="sortMultiLeg('symbol')">Symbol ${getSortIcon('symbol')}</th>
+                            <th class="multileg-sortable" onclick="sortMultiLeg('structure')">Structure ${getSortIcon('structure')}</th>
+                            <th style="min-width: 310px;">Legs</th>
+                            <th class="multileg-sortable" onclick="sortMultiLeg('net_premium')">Net Premium ${getSortIcon('net_premium')}</th>
+                            <th class="multileg-sortable" onclick="sortMultiLeg('margin_req')">Margin Req ${getSortIcon('margin_req')}</th>
+                            <th class="multileg-sortable" onclick="sortMultiLeg('cmp')">CMP ${getSortIcon('cmp')}</th>
+                            <th class="multileg-sortable" onclick="sortMultiLeg('pnl')">P&amp;L ${getSortIcon('pnl')}</th>
+                            <th class="multileg-sortable" onclick="sortMultiLeg('opened_at')">Entry / Exit Time ${getSortIcon('opened_at')}</th>
+                            <th class="multileg-sortable" onclick="sortMultiLeg('status')">Status ${getSortIcon('status')}</th>
+                            <th style="text-align: right;">Action / Exit Reason</th>
+                        </tr>
+                    </thead>
+                `;
+            }
+
+            function renderMultiLegRow(t) {
+                const tradeId = t.trade_ref || `#${t.id}`;
+                const symbol = t.symbol || "N/A";
+                const expStr = t.expiry ? `<div class="dim" style="font-size: 11px; margin-top: 2px;">Exp: ${t.expiry}</div>` : "";
+                const structure = (t.structure || "STRADDLE").toUpperCase();
+                
+                // Build leg stack pills (StockMinded UI)
+                let legsHtml = `<div class="leg-stack">`;
+                if (t.legs && t.legs.length) {
+                    for (const leg of t.legs) {
+                        const side = (leg.side || "SELL").toUpperCase();
+                        const sideClass = side === "BUY" ? "buy" : "sell";
+                        const optType = (leg.option_type || "CE").toUpperCase();
+                        const optBadge = optType === "CE" ? `<span class="badge-ce">CE</span>` : `<span class="badge-pe">PE</span>`;
+                        const lotsStr = leg.lots ? `${leg.lots}x ` : "";
+                        const entryPrem = (leg.entry_premium !== undefined && leg.entry_premium !== null) ? leg.entry_premium : (leg.entry_price || 0);
+                        const legCmp = leg.cmp !== undefined && leg.cmp !== null ? leg.cmp : entryPrem;
+                        const legPnl = Number(leg.pnl || 0);
+                        const legPnlClass = legPnl > 0 ? "pp" : legPnl < 0 ? "pn" : "pz";
+                        const legPnlStr = legPnl !== 0 ? ` <span class="${legPnlClass}" style="font-weight:700;">(${legPnl > 0 ? '+' : ''}₹${Math.abs(legPnl).toLocaleString("en-IN")})</span>` : "";
+                        
+                        legsHtml += `
+                            <div class="leg-pill ${sideClass}">
+                                <span>${side} ${lotsStr}<strong>${leg.strike}</strong></span>
+                                ${optBadge}
+                                <span style="margin-left: auto; font-weight: 500;">@ ${entryPrem} <span class="dim">(CMP: ${legCmp})</span>${legPnlStr}</span>
+                            </div>
+                        `;
+                    }
+                } else {
+                    legsHtml += `<div class="dim">No legs recorded</div>`;
+                }
+                legsHtml += `</div>`;
+
+                const netPremVal = getEffectiveNetPrem(t);
+                const netPrem = netPremVal.toLocaleString("en-IN", { maximumFractionDigits: 2 });
+                const marginReq = t.margin_req ? (t.margin_req >= 100000 ? `₹${(t.margin_req / 100000).toFixed(2)}L` : `₹${t.margin_req.toLocaleString("en-IN")}`) : "—";
+                
+                // Live CMP column
+                const cmpVal = (t.cmp !== undefined && t.cmp !== null) ? `₹${Number(t.cmp).toLocaleString("en-IN", { maximumFractionDigits: 2 })}` : "—";
+
+                // Live P&L column
+                const pnlVal = Number(t.total_pnl || 0);
+                const pnlClass = pnlVal > 0 ? "pp" : pnlVal < 0 ? "pn" : "pz";
+                const pnlSign = pnlVal > 0 ? "+" : "";
+                const pnlFormatted = `${pnlSign}₹${Math.abs(pnlVal).toLocaleString("en-IN", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+
+                // Format Entry/Exit Times
+                const entTime = t.opened_at ? formatShortTime(t.opened_at) : "—";
+                const extTime = t.closed_at ? formatShortTime(t.closed_at) : "—";
+
+                // Status & Action
+                const isOpen = (t.status || "OPEN").toUpperCase() === "OPEN";
+                const statusBadge = isOpen 
+                    ? `<span class="badge" style="background: rgba(59, 130, 246, 0.15); color: #3b82f6; border: 1px solid rgba(59, 130, 246, 0.3);">OPEN</span>`
+                    : `<span class="badge dim">CLOSED</span>`;
+
+                const actionCol = isOpen 
+                    ? `<button class="btn-close-outline" onclick="closeMultiLegTrade('${t.trade_ref || t.id}')">✕ Close</button>`
+                    : `<span class="dim" style="font-size: 12px;">${t.reason || "Squared Off"}</span>`;
+
+                return `
+                    <tr class="multileg-row">
+                        <td style="font-family: monospace; color: var(--text-dim);">${tradeId}</td>
+                        <td><strong>${symbol}</strong>${expStr}</td>
+                        <td><span style="font-weight: 700; font-family: monospace; font-size: 12px;">${structure}</span></td>
+                        <td>${legsHtml}</td>
+                        <td style="font-weight: 600;">₹${netPrem}</td>
+                        <td style="font-weight: 600; color: var(--text-dim);">${marginReq}</td>
+                        <td style="font-weight: 600;">${cmpVal}</td>
+                        <td class="${pnlClass}" style="font-weight: 700; font-size: 14px;">${pnlFormatted}</td>
+                        <td style="font-size: 11px; line-height: 1.4;">
+                            <div>Ent: ${entTime}</div>
+                            <div class="dim">Ext: ${extTime}</div>
+                        </td>
+                        <td>${statusBadge}</td>
+                        <td style="text-align: right;">${actionCol}</td>
+                    </tr>
+                `;
+            }
+
+            function renderMultiLegView() {
+                const container = document.getElementById("multi-leg-container");
+                if (!container) return;
+
+                const trades = _cachedMultiLegTrades;
+                if (!Array.isArray(trades) || !trades.length) {
+                    container.innerHTML = `<p class="dim" style="padding: 20px; text-align: center;">No active multi-leg options.</p>`;
+                    return;
+                }
+
+                if (mlGroupBySymbol) {
+                    // Group trades by Symbol
+                    const groupMap = {};
+                    for (const t of trades) {
+                        const sym = (t.symbol || "OTHER").toUpperCase();
+                        if (!groupMap[sym]) groupMap[sym] = [];
+                        groupMap[sym].push(t);
+                    }
+
+                    let html = "";
+                    const symbols = Object.keys(groupMap).sort();
+                    for (const sym of symbols) {
+                        const groupTrades = sortTradesList(groupMap[sym]);
+                        const symTotalPnl = groupTrades.reduce((acc, t) => acc + Number(t.total_pnl || 0), 0);
+                        const symPnlClass = symTotalPnl > 0 ? "pp" : symTotalPnl < 0 ? "pn" : "pz";
+                        const symPnlSign = symTotalPnl > 0 ? "+" : "";
+                        const symPnlStr = `${symPnlSign}₹${Math.abs(symTotalPnl).toLocaleString("en-IN", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+
+                        html += `
+                            <div class="multileg-group-block">
+                                <div class="multileg-group-header">
+                                    <div class="multileg-group-title">
+                                        <span class="badge" style="background: rgba(59, 130, 246, 0.15); color: #3b82f6; border: 1px solid rgba(59, 130, 246, 0.3); font-weight: 800; font-size: 12px;">${sym}</span>
+                                        <span style="font-size: 12px; color: var(--text-dim); font-weight: 500;">${groupTrades.length} ${groupTrades.length === 1 ? 'Open Book' : 'Open Books'}</span>
+                                    </div>
+                                    <div class="multileg-group-pnl">
+                                        <span style="font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px;">Live Symbol P&amp;L:</span>
+                                        <span class="${symPnlClass}" style="font-weight: 800; font-family: var(--mono); font-size: 13px;">${symPnlStr}</span>
+                                    </div>
+                                </div>
+                                <table class="multileg-table">
+                                    ${renderMultiLegTableHead()}
+                                    <tbody>
+                                        ${groupTrades.map(renderMultiLegRow).join("")}
+                                    </tbody>
+                                </table>
+                            </div>
+                        `;
+                    }
+                    container.innerHTML = html;
+                } else {
+                    // Flat View
+                    const sortedTrades = sortTradesList(trades);
+                    let html = `
+                        <table class="multileg-table">
+                            ${renderMultiLegTableHead()}
+                            <tbody>
+                                ${sortedTrades.map(renderMultiLegRow).join("")}
+                            </tbody>
+                        </table>
+                    `;
+                    container.innerHTML = html;
+                }
+            }
+
             async function loadMultiLegTrades(isManualClick = false) {
                 const container = document.getElementById("multi-leg-container");
                 const badge = document.getElementById("multi-leg-count-badge");
@@ -4242,8 +4540,9 @@
                         throw new Error(`HTTP ${res.status}: ${res.statusText}`);
                     }
                     const trades = await res.json();
+                    _cachedMultiLegTrades = Array.isArray(trades) ? trades : [];
                     
-                    if (badge) badge.textContent = Array.isArray(trades) ? trades.length : 0;
+                    if (badge) badge.textContent = _cachedMultiLegTrades.length;
                     if (updatedEl) {
                         const nowStr = new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
                         updatedEl.textContent = `Updated ${nowStr}`;
@@ -4251,11 +4550,9 @@
 
                     // Compute Live Total P&L across all open multi-leg positions
                     let grandTotalPnl = 0;
-                    if (Array.isArray(trades)) {
-                        for (const t of trades) {
-                            if ((t.status || "OPEN").toUpperCase() === "OPEN") {
-                                grandTotalPnl += Number(t.total_pnl || 0);
-                            }
+                    for (const t of _cachedMultiLegTrades) {
+                        if ((t.status || "OPEN").toUpperCase() === "OPEN") {
+                            grandTotalPnl += Number(t.total_pnl || 0);
                         }
                     }
 
@@ -4279,111 +4576,7 @@
                         }
                     }
 
-                    if (!Array.isArray(trades) || !trades.length) {
-                        container.innerHTML = `<p class="dim" style="padding: 20px; text-align: center;">No active multi-leg options.</p>`;
-                        return;
-                    }
-
-                    let html = `<table class="multileg-table">
-                        <thead>
-                            <tr>
-                                <th>ID</th>
-                                <th>Symbol</th>
-                                <th>Structure</th>
-                                <th style="min-width: 310px;">Legs</th>
-                                <th>Net Premium</th>
-                                <th>Margin Req</th>
-                                <th>CMP</th>
-                                <th>P&amp;L</th>
-                                <th>Entry / Exit Time</th>
-                                <th>Status</th>
-                                <th style="text-align: right;">Action / Exit Reason</th>
-                            </tr>
-                        </thead>
-                        <tbody>`;
-
-                    for (const t of trades) {
-                        const tradeId = t.trade_ref || `#${t.id}`;
-                        const symbol = t.symbol || "N/A";
-                        const expStr = t.expiry ? `<div class="dim" style="font-size: 11px; margin-top: 2px;">Exp: ${t.expiry}</div>` : "";
-                        const structure = (t.structure || "STRADDLE").toUpperCase();
-                        
-                        // Build leg stack pills (StockMinded UI)
-                        let legsHtml = `<div class="leg-stack">`;
-                        if (t.legs && t.legs.length) {
-                            for (const leg of t.legs) {
-                                const side = (leg.side || "SELL").toUpperCase();
-                                const sideClass = side === "BUY" ? "buy" : "sell";
-                                const optType = (leg.option_type || "CE").toUpperCase();
-                                const optBadge = optType === "CE" ? `<span class="badge-ce">CE</span>` : `<span class="badge-pe">PE</span>`;
-                                const lotsStr = leg.lots ? `${leg.lots}x ` : "";
-                                const entryPrem = (leg.entry_premium !== undefined && leg.entry_premium !== null) ? leg.entry_premium : (leg.entry_price || 0);
-                                const legCmp = leg.cmp !== undefined && leg.cmp !== null ? leg.cmp : entryPrem;
-                                const legPnl = Number(leg.pnl || 0);
-                                const legPnlClass = legPnl > 0 ? "pp" : legPnl < 0 ? "pn" : "pz";
-                                const legPnlStr = legPnl !== 0 ? ` <span class="${legPnlClass}" style="font-weight:700;">(${legPnl > 0 ? '+' : ''}₹${Math.abs(legPnl).toLocaleString("en-IN")})</span>` : "";
-                                
-                                legsHtml += `
-                                    <div class="leg-pill ${sideClass}">
-                                        <span>${side} ${lotsStr}<strong>${leg.strike}</strong></span>
-                                        ${optBadge}
-                                        <span style="margin-left: auto; font-weight: 500;">@ ${entryPrem} <span class="dim">(CMP: ${legCmp})</span>${legPnlStr}</span>
-                                    </div>
-                                `;
-                            }
-                        } else {
-                            legsHtml += `<div class="dim">No legs recorded</div>`;
-                        }
-                        legsHtml += `</div>`;
-
-                        const netPrem = (t.net_premium || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 });
-                        const marginReq = t.margin_req ? (t.margin_req >= 100000 ? `₹${(t.margin_req / 100000).toFixed(2)}L` : `₹${t.margin_req.toLocaleString("en-IN")}`) : "—";
-                        
-                        // Live CMP column
-                        const cmpVal = (t.cmp !== undefined && t.cmp !== null) ? `₹${Number(t.cmp).toLocaleString("en-IN", { maximumFractionDigits: 2 })}` : "—";
-
-                        // Live P&L column
-                        const pnlVal = Number(t.total_pnl || 0);
-                        const pnlClass = pnlVal > 0 ? "pp" : pnlVal < 0 ? "pn" : "pz";
-                        const pnlSign = pnlVal > 0 ? "+" : "";
-                        const pnlFormatted = `${pnlSign}₹${Math.abs(pnlVal).toLocaleString("en-IN", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
-
-                        // Format Entry/Exit Times
-                        const entTime = t.opened_at ? formatShortTime(t.opened_at) : "—";
-                        const extTime = t.closed_at ? formatShortTime(t.closed_at) : "—";
-
-                        // Status & Action
-                        const isOpen = (t.status || "OPEN").toUpperCase() === "OPEN";
-                        const statusBadge = isOpen 
-                            ? `<span class="badge" style="background: rgba(59, 130, 246, 0.15); color: #3b82f6; border: 1px solid rgba(59, 130, 246, 0.3);">OPEN</span>`
-                            : `<span class="badge dim">CLOSED</span>`;
-
-                        const actionCol = isOpen 
-                            ? `<button class="btn-close-outline" onclick="closeMultiLegTrade('${t.trade_ref || t.id}')">✕ Close</button>`
-                            : `<span class="dim" style="font-size: 12px;">${t.reason || "Squared Off"}</span>`;
-
-                        html += `
-                            <tr class="multileg-row">
-                                <td style="font-family: monospace; color: var(--text-dim);">${tradeId}</td>
-                                <td><strong>${symbol}</strong>${expStr}</td>
-                                <td><span style="font-weight: 700; font-family: monospace; font-size: 12px;">${structure}</span></td>
-                                <td>${legsHtml}</td>
-                                <td style="font-weight: 600;">₹${netPrem}</td>
-                                <td style="font-weight: 600; color: var(--text-dim);">${marginReq}</td>
-                                <td style="font-weight: 600;">${cmpVal}</td>
-                                <td class="${pnlClass}" style="font-weight: 700; font-size: 14px;">${pnlFormatted}</td>
-                                <td style="font-size: 11px; line-height: 1.4;">
-                                    <div>Ent: ${entTime}</div>
-                                    <div class="dim">Ext: ${extTime}</div>
-                                </td>
-                                <td>${statusBadge}</td>
-                                <td style="text-align: right;">${actionCol}</td>
-                            </tr>
-                        `;
-                    }
-
-                    html += `</tbody></table>`;
-                    container.innerHTML = html;
+                    renderMultiLegView();
                 } catch (e) {
                     console.error("Error loading multi-leg trades:", e);
                     container.innerHTML = `<div class="error" style="padding: 16px; color: var(--red);">⚠️ Failed to load multi-leg trades: ${e.message || "Error"} <button class="btn btn-sm primary" onclick="loadMultiLegTrades(true)" style="margin-left: 8px;">Retry</button></div>`;

@@ -13,8 +13,9 @@ rows = conn.execute(
 ).fetchall()
 
 MARKET_WINDOWS = {
-    "NIFTY":       ("09:15", "15:30"),
-    "BANKNIFTY":   ("09:15", "15:30"),
+    "NIFTY":       ("09:15", "15:40"),
+    "BANKNIFTY":   ("09:15", "15:40"),
+    "SENSEX":      ("09:15", "15:40"),
     "NATURALGAS":  ("09:00", "23:30"),
     "CRUDEOIL":    ("09:00", "23:30"),
 }
@@ -27,7 +28,7 @@ for r in rows:
     tid = r["id"]
     sym = r["symbol"]
     sym_upper = sym.upper()
-    window = MARKET_WINDOWS.get(sym_upper, ("09:15", "15:30"))
+    window = MARKET_WINDOWS.get(sym_upper, ("09:15", "15:40"))
     ot_type = r.get("option_type", "")
     status = r.get("status", "")
     pnl = float(r.get("pnl_rupees") or 0)

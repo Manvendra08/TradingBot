@@ -82,6 +82,7 @@ def load_runtime_config() -> dict:
         "live_broker_disabled": False,  # Completely block all broker order placement
         "trading_paused": False,  # OPS Agent safety switch — one-way (human-only unpause)
         "enable_tfss_trade_blocked_rules": False,
+        "enable_ng_parity_trades": True,  # Natural Gas Fair Value Parity arbitrage
         "sentinel_report_mode": "anomalies",  # "anomalies" = only when rules fire; "full" = every scan
         "ops_agent_mode": "observe",  # "observe" = safe notify-only; "normal" = full protective actions
         "tiered_gates_enabled": True,

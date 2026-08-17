@@ -72,11 +72,25 @@ def check_ng_weekend_flat() -> None:
             oc = fetch_option_chain("NATURALGAS", expiry=trade_expiry)
             underlying = oc.get("underlying_price") if oc else open_trade["entry_underlying"]
             
+            exit_premium = None
+            if open_trade.get("option_type") != "FUT":
+                from src.engine.trade_plan import get_option_premium
+                exit_premium = get_option_premium(
+                    "NATURALGAS",
+                    trade_expiry,
+                    float(open_trade.get("strike") or 0.0),
+                    open_trade.get("option_type") or "PE",
+                    option_rows=oc.get("options") if oc else None,
+                    underlying_price=underlying,
+                )
+            else:
+                exit_premium = underlying
+            
             close_paper_trade(
                 open_trade["id"],
                 datetime.now(timezone.utc).isoformat(),
                 underlying,
-                underlying,
+                exit_premium,
                 "CLOSED_MANUAL",
                 "Friday Weekend Flat protection"
             )

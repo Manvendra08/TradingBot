@@ -1265,6 +1265,19 @@ def run_paper_trading(
             )
             return {"action": "BLOCKED_PLAN", "reason": "Option premium unavailable"}
 
+        # Strict 100% Binary Data Integrity check on target entry leg (Flaw #5)
+        from src.engine.data_validator import validate_trade_leg_data
+        single_leg = [{"strike": strike, "option_type": option_type, "entry_premium": entry_premium}]
+        oc_data_payload = {"strikes": option_rows}
+        is_leg_valid, leg_issues = validate_trade_leg_data(single_leg, oc_data_payload, underlying)
+        if not is_leg_valid:
+            log.warning(
+                "%s: paper trade plan aborted — leg data integrity validation failed: %s",
+                symbol,
+                leg_issues,
+            )
+            return {"action": "BLOCKED_PLAN", "reason": f"Leg validation failed: {', '.join(leg_issues)}"}
+
     plan["entry_premium"] = entry_premium
     plan["digest_id"] = digest_id
 

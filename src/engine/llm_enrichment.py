@@ -1066,17 +1066,17 @@ def _register_provider_failure(
         for e in ("read timed out", "read timeout", "readtimeout")
     )
     if is_read_timeout:
-        # Read timeout: 120s cooldown for this provider
-        _PROVIDER_COOLDOWN_UNTIL[key] = now + 120.0
+        # Read timeout: 60s cooldown for this provider
+        _PROVIDER_COOLDOWN_UNTIL[key] = now + 60.0
         if group_name:
             c_key = f"_read_timeout_cnt_{group_name}"
             cnt = _PROVIDER_COOLDOWN_UNTIL.get(c_key, 0) + 1
             _PROVIDER_COOLDOWN_UNTIL[c_key] = cnt
-            if cnt >= 2:
-                _PROVIDER_COOLDOWN_UNTIL[group_name] = now + 180.0
+            if cnt >= 3:
+                _PROVIDER_COOLDOWN_UNTIL[group_name] = now + 90.0
                 _PROVIDER_COOLDOWN_UNTIL[c_key] = 0
-                log.warning("[llm] 2 consecutive read timeouts in group '%s' — cooling down entire group for 180s to preserve pipeline deadline budget for fallbacks", group_name)
-        log.info("[llm] Read timeout on %s — 120s cooldown", provider.get("name"))
+                log.warning("[llm] %d consecutive read timeouts in group '%s' — cooling down group for 90s to preserve pipeline deadline budget for fallbacks", cnt, group_name)
+        log.info("[llm] Read timeout on %s — 60s cooldown", provider.get("name"))
         return
 
     # Generic server error (500) or connection error — 10m cooldown
@@ -1287,6 +1287,9 @@ def _call_llm_api(
         "Do NOT return the schema definition itself. Output ONLY the JSON object — no markdown fences, no prose before or after.\n"
         "Rules: Complete English only. No abbreviations (use 'underlying' not 'und', 'target' not 'tgt'). "
         "Specific numbers required. No vague language. Use only values present in the prompt data — never invent a level, date, or figure.\n"
+        "DATA LEGITIMACY & INTEGRITY: Validate that the provided underlying spot, strikes, and DTE are coherent. "
+        "If data is unpopulated, contradictory, or lacks liquidity across all strikes, you MUST set action='NO_TRADE' / strategy_type='NO_TRADE' "
+        "and explain the data discrepancy in the thesis.\n"
         f"Target Schema ({schema_name}):\n{schema_json}"
     )
 
@@ -1322,7 +1325,7 @@ def _call_llm_api(
     else:
         _omnirouter_url = _omnirouter_base
 
-    # OmniRouter primary group — Antigravity models.
+    # OmniRouter primary group — Antigravity & CW models.
     # OmniRouter is a reverse proxy (OmniRouter → upstream provider), so the
     # meaningful latency is the upstream first-token time. timeout 20 gives a
     # proxy-backed model a real chance without overshooting the deadline cap.
@@ -1330,12 +1333,21 @@ def _call_llm_api(
         "model_group": "omnirouter-primary",
         "providers": [
             {
+                "name": "OmniRouter (cw/claude-sonnet-5)",
+                "env_key": "OMNIROUTER_API_KEY",
+                "url": _omnirouter_url,
+                "model": "cw/claude-sonnet-5",
+                "model_group": "omnirouter-primary",
+                "timeout": 25,  # 25s — generous budget for deep multi-leg reasoning
+                "max_tokens_override": 4096,
+            },
+            {
                 "name": "OmniRouter (antigravity/claude-sonnet-4-6)",
                 "env_key": "OMNIROUTER_API_KEY",
                 "url": _omnirouter_url,
                 "model": "antigravity/claude-sonnet-4-6",
                 "model_group": "omnirouter-primary",
-                "timeout": 15,  # 15s — leaves budget for siblings on read timeout
+                "timeout": 20,
                 "max_tokens_override": 4096,
             },
             {
@@ -1451,10 +1463,10 @@ def _call_llm_api(
                     "model": "openai/gpt-oss-120b",
                 },
                 {
-                    "name": "Groq (Llama 3.3 70B)",
+                    "name": "Groq (Qwen 3.6 27B)",
                     "env_key": "GROQ_API_KEY",
                     "url": "https://api.groq.com/openai/v1/chat/completions",
-                    "model": "llama-3.3-70b-versatile",
+                    "model": "qwen/qwen3.6-27b",
                 },
             ],
         }
@@ -1522,10 +1534,10 @@ def _call_llm_api(
             "model_group": "groq-formatting",
             "providers": [
                 {
-                    "name": "Groq (Qwen 3 32B)",
+                    "name": "Groq (GPT-OSS 120B)",
                     "env_key": "GROQ_API_KEY",
                     "url": "https://api.groq.com/openai/v1/chat/completions",
-                    "model": "qwen/qwen3-32b",
+                    "model": "openai/gpt-oss-120b",
                 },
                 {
                     "name": "Groq (Qwen 3.6 27B)",
@@ -1534,10 +1546,10 @@ def _call_llm_api(
                     "model": "qwen/qwen3.6-27b",
                 },
                 {
-                    "name": "Groq (Qwen 2.5 Coder 32B)",
+                    "name": "Groq (GPT-OSS 20B)",
                     "env_key": "GROQ_API_KEY",
                     "url": "https://api.groq.com/openai/v1/chat/completions",
-                    "model": "qwen-2.5-coder-32b",
+                    "model": "openai/gpt-oss-20b",
                 },
             ],
         }
@@ -1695,16 +1707,16 @@ def _call_llm_api(
                     "model": "openai/gpt-oss-120b",
                 },
                 {
-                    "name": "Groq (Llama 3.3 70B)",
+                    "name": "Groq (Qwen 3.6 27B)",
                     "env_key": "GROQ_API_KEY",
                     "url": "https://api.groq.com/openai/v1/chat/completions",
-                    "model": "llama-3.3-70b-versatile",
+                    "model": "qwen/qwen3.6-27b",
                 },
                 {
-                    "name": "Groq (Llama 3.1 8B)",
+                    "name": "Groq (GPT-OSS 20B)",
                     "env_key": "GROQ_API_KEY",
                     "url": "https://api.groq.com/openai/v1/chat/completions",
-                    "model": "llama-3.1-8b-instant",
+                    "model": "openai/gpt-oss-20b",
                 },
             ],
         }
@@ -1879,10 +1891,9 @@ def _call_llm_api(
         }
 
         if _is_mcx:
-            # MCX: OmniRouter (primary) → GitHub Models → Groq → OpenCode Zen → AnyAPI Free → Bedrock Mantle → Nvidia NIM → Bedrock → OpenRouter → Gemini → SambaNova
+            # MCX: OmniRouter (primary) → Groq → OpenCode Zen → AnyAPI Free → Bedrock Mantle → Nvidia NIM → Bedrock → OpenRouter → Gemini → SambaNova
             FREE_MODEL_PIPELINE = [
                 _omnirouter_group,
-                _github_models,
                 _groq_group,
                 _opencode_zen_group,
                 _anyapi_free_group,
@@ -1928,10 +1939,9 @@ def _call_llm_api(
                 },
             ]
         else:
-            # NSE/BSE indices: OmniRouter (primary) → GitHub Models → Groq → OpenCode Zen → Nvidia NIM → Bedrock → OpenRouter → Gemini
+            # NSE/BSE indices: OmniRouter (primary) → Groq → OpenCode Zen → Nvidia NIM → Bedrock → OpenRouter → Gemini
             FREE_MODEL_PIPELINE = [
                 _omnirouter_group,
-                _github_models,
                 _groq_group,
                 _opencode_zen_group,
                 _nvidia_nim_group,
@@ -1977,7 +1987,17 @@ def _call_llm_api(
                     api_key = "opencode_free"
                 elif key_name == "ANTIGRAVITY_REFRESH_TOKEN":
                     api_key = "antigravity_auto"
-                else:
+                elif key_name == "GITHUB_TOKEN":
+                    api_key = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_PAT")
+                    if not api_key:
+                        try:
+                            import subprocess
+                            gh_tok = subprocess.check_output(["gh", "auth", "token"], text=True, timeout=2).strip()
+                            if gh_tok:
+                                api_key = gh_tok
+                        except Exception:
+                            pass
+                if not api_key:
                     continue
 
             cooldown_key = _provider_cooldown_key(provider)
@@ -2025,6 +2045,11 @@ def _call_llm_api(
                     log.info(
                         "[llm] %s OK via Gemini SDK (%s)",
                         schema.__name__,
+                        provider["model"],
+                    )
+                    log.info(
+                        "[llm-validator] %s: Tier-2 Contextual Validation OK ✅ via Gemini SDK (%s)",
+                        symbol,
                         provider["model"],
                     )
                     _CONSECUTIVE_FAILURES = 0
@@ -2101,6 +2126,11 @@ def _call_llm_api(
                             schema.__name__,
                             provider["model"],
                         )
+                        log.info(
+                            "[llm-validator] %s: Tier-2 Contextual Validation OK ✅ via Bedrock Mantle (%s)",
+                            symbol,
+                            provider["model"],
+                        )
                         _CONSECUTIVE_FAILURES = 0
                         return result
                     else:
@@ -2165,6 +2195,11 @@ def _call_llm_api(
                     log.info(
                         "[llm] %s OK via Bedrock (%s)",
                         schema.__name__,
+                        provider["model"],
+                    )
+                    log.info(
+                        "[llm-validator] %s: Tier-2 Contextual Validation OK ✅ via Bedrock (%s)",
+                        symbol,
                         provider["model"],
                     )
                     _CONSECUTIVE_FAILURES = 0
@@ -2308,7 +2343,15 @@ def _call_llm_api(
                         provider["name"],
                         provider["model"],
                     )
+                    log.info(
+                        "[llm-validator] %s: Tier-2 Contextual Validation OK ✅ via %s (%s)",
+                        symbol,
+                        provider.get("name") or provider["model"],
+                        provider["model"],
+                    )
                     _CONSECUTIVE_FAILURES = 0
+                    if group_name:
+                        _PROVIDER_COOLDOWN_UNTIL[f"_read_timeout_cnt_{group_name}"] = 0
                     return result
                 if resp.status_code == 429:
                     log.warning(
@@ -2391,6 +2434,12 @@ def _call_llm_api(
                                     "[llm] %s OK via %s (%s) [no json_mode]",
                                     schema.__name__,
                                     provider["name"],
+                                    provider["model"],
+                                    )
+                                log.info(
+                                    "[llm-validator] %s: Tier-2 Contextual Validation OK ✅ via %s (%s)",
+                                    symbol,
+                                    provider.get("name") or provider["model"],
                                     provider["model"],
                                 )
                                 _CONSECUTIVE_FAILURES = 0
@@ -2483,108 +2532,151 @@ def _round_echoed_numbers(text: str, runaway_word_cap: int = 90) -> str:
 
 def _extract_json(raw: str) -> dict | list:
     """
-    D1: Tolerant JSON extraction — handles markdown fences, leading/trailing prose,
-    JSON arrays, unescaped control characters, unescaped inner quotes, trailing
-    commas, and strict string parsing.
+    Tolerant multi-candidate JSON extraction:
+    Extracts valid JSON even when surrounded by thinking text, multiple code blocks,
+    trailing explanations, markdown fences, unescaped quotes, or truncated streams.
     """
     original_raw = raw
-    raw = raw.strip()
+    if not raw or not raw.strip():
+        raise ValueError("JSON extract failed | Empty input")
 
-    # Strip markdown code fences (```json ... ``` or ``` ... ```)
-    if "```" in raw:
-        m = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", raw)
-        if m:
-            raw = m.group(1).strip()
-        else:
-            raw = re.sub(r"^```(?:json)?\s*|```\s*$", "", raw, flags=re.MULTILINE).strip()
-            if "```" in raw:
-                raw = raw.split("```")[0].strip()
+    def _try_parse_candidate(cand: str) -> dict | list | None:
+        cand = cand.strip()
+        if not cand:
+            return None
+        # Remove invalid control characters
+        cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", cand)
 
-    # Find outermost JSON container: {...} or [...]
-    first_brace = raw.find("{")
-    first_bracket = raw.find("[")
+        # Strategy 1: Direct loads
+        try:
+            res = json.loads(cleaned, strict=False)
+            if isinstance(res, (dict, list)):
+                if isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
+                    return res[0]
+                return res
+        except Exception:
+            pass
 
-    if first_brace != -1 or first_bracket != -1:
-        if first_bracket != -1 and (first_brace == -1 or first_bracket < first_brace):
-            last_bracket = raw.rfind("]")
-            if last_bracket != -1 and last_bracket > first_bracket:
-                raw = raw[first_bracket : last_bracket + 1]
-        else:
-            last_brace = raw.rfind("}")
-            if last_brace != -1 and last_brace > first_brace:
-                raw = raw[first_brace : last_brace + 1]
+        # Strategy 2: Strip trailing commas and comments
+        c2 = re.sub(r",\s*([}\]])", r"\1", cleaned)
+        c2 = re.sub(r"//.*?\n", "\n", c2)
+        try:
+            res = json.loads(c2, strict=False)
+            if isinstance(res, (dict, list)):
+                if isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
+                    return res[0]
+                return res
+        except Exception:
+            pass
 
-    # Remove invalid control characters (causes "Invalid control character" parse failures)
-    raw = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", raw)
+        # Strategy 3: Fix unescaped newlines inside quotes
+        try:
+            c3 = re.sub(
+                r'(?<=: ")(.*?)(?=")',
+                lambda m: m.group(1).replace("\n", "\\n").replace("\r", "\\r"),
+                c2,
+                flags=re.DOTALL,
+            )
+            res = json.loads(c3, strict=False)
+            if isinstance(res, (dict, list)):
+                if isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
+                    return res[0]
+                return res
+        except Exception:
+            pass
 
-    # ── Strategy A: Direct load ────────────────────────────────────────
-    try:
-        res = json.loads(raw, strict=False)
-        if isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
-            return res[0]
-        return res
-    except Exception:
-        pass
+        # Strategy 4: Repair inner unescaped quotes
+        try:
+            repaired = _repair_inner_quotes(c2)
+            res = json.loads(repaired, strict=False)
+            if isinstance(res, (dict, list)):
+                if isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
+                    return res[0]
+                return res
+        except Exception:
+            pass
 
-    # ── Strategy B: Strip trailing commas + comments ───────────────────
-    cleaned = re.sub(r",\s*([}\]])", r"\1", raw)
-    cleaned = re.sub(r"//.*?\n", "\n", cleaned)
-    try:
-        res = json.loads(cleaned, strict=False)
-        if isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
-            return res[0]
-        return res
-    except Exception:
-        pass
+        # Strategy 5: Truncated JSON repair
+        try:
+            res = _repair_truncated_json(cand)
+            if isinstance(res, (dict, list)):
+                if isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
+                    return res[0]
+                return res
+        except Exception:
+            pass
 
-    # ── Strategy C: Repair unescaped newlines inside strings ───────────
-    try:
-        fixed = re.sub(
-            r'(?<=: ")(.*?)(?=")',
-            lambda m: m.group(1).replace("\n", "\\n").replace("\r", "\\r"),
-            cleaned,
-            flags=re.DOTALL,
-        )
-        res = json.loads(fixed, strict=False)
-        if isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
-            return res[0]
-        return res
-    except Exception:
-        pass
+        return None
 
-    # ── Strategy D: Fix unescaped inner quotes in string values ────────
-    # e.g. "rationale": "Sell 58000 "OTM" Call above resistance"
-    # The LLM sometimes writes unescaped quotes inside string values.
-    # Fix: walk the string char-by-char tracking whether we're inside a JSON
-    # string value, and escape any bare " that appears inside a value.
-    try:
-        repaired = _repair_inner_quotes(cleaned)
-        res = json.loads(repaired, strict=False)
-        if isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
-            return res[0]
-        return res
-    except Exception:
-        pass
+    # ── Gather Candidate Substrings in Priority Order ──
+    candidates: list[str] = []
 
-    # ── Strategy E: Stack-based Truncated JSON Repair ─────────────────
-    try:
-        res = _repair_truncated_json(raw)
-        if isinstance(res, (dict, list)):
-            log.info("[llm] Recovered truncated JSON via stack-based completion parser")
-            if isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
-                return res[0]
-            return res
-    except Exception:
-        pass
+    # Candidate Group A: All fenced code blocks (```json ... ``` or ``` ... ```)
+    # Reverse order first (the final block is usually the payload), then forward
+    fenced_blocks = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", original_raw, flags=re.IGNORECASE)
+    if fenced_blocks:
+        for fb in reversed(fenced_blocks):
+            if fb.strip() and fb.strip() not in candidates:
+                candidates.append(fb.strip())
+        for fb in fenced_blocks:
+            if fb.strip() and fb.strip() not in candidates:
+                candidates.append(fb.strip())
 
-    # Final attempt: try _repair_inner_quotes on original_raw
-    try:
-        res = json.loads(_repair_inner_quotes(original_raw), strict=False)
-        if isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
-            return res[0]
-        return res
-    except Exception:
-        pass
+    # Candidate Group B: Outermost brace pair {...}
+    first_brace = original_raw.find("{")
+    last_brace = original_raw.rfind("}")
+    if first_brace != -1 and last_brace > first_brace:
+        brace_span = original_raw[first_brace : last_brace + 1].strip()
+        if brace_span not in candidates:
+            candidates.append(brace_span)
+
+    # Candidate Group C: Outermost bracket pair [...]
+    first_bracket = original_raw.find("[")
+    last_bracket = original_raw.rfind("]")
+    if first_bracket != -1 and last_bracket > first_bracket:
+        bracket_span = original_raw[first_bracket : last_bracket + 1].strip()
+        if bracket_span not in candidates:
+            candidates.append(bracket_span)
+
+    # Candidate Group D: Balanced brace blocks
+    in_str = False
+    esc = False
+    depth = 0
+    start_idx = -1
+    for idx, ch in enumerate(original_raw):
+        if esc:
+            esc = False
+            continue
+        if ch == "\\":
+            esc = True
+            continue
+        if ch == '"':
+            in_str = not in_str
+            continue
+        if not in_str:
+            if ch == "{":
+                if depth == 0:
+                    start_idx = idx
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0 and start_idx != -1:
+                    block = original_raw[start_idx : idx + 1].strip()
+                    if block not in candidates:
+                        candidates.append(block)
+                    start_idx = -1
+
+    # Candidate Group E: Raw stripped and raw after stripping fence markers
+    candidates.append(original_raw.strip())
+    no_fences = re.sub(r"^```(?:json)?\s*|```\s*$", "", original_raw, flags=re.MULTILINE).strip()
+    if no_fences not in candidates:
+        candidates.append(no_fences)
+
+    # ── Evaluate Candidates ──
+    for cand in candidates:
+        parsed = _try_parse_candidate(cand)
+        if parsed is not None:
+            return parsed
 
     raise ValueError(f"JSON extract failed | Raw: {original_raw[:200]}")
 
@@ -3015,6 +3107,7 @@ def get_llm_verdict(
     # Check cache first
     now = time.time()
     deadline = now + 90.0  # 90-second budget for the entire call
+    scan_context = scan_context or {}
     current_underlying = float(scan_context.get("underlying") or 0.0)
     is_triggering = (
         trade_decision and "TRIGGERED" in str(trade_decision.get("status", "")).upper()
@@ -3345,7 +3438,7 @@ def get_multileg_verdict(
         news_data=news_data,
     )
 
-    deadline = time.time() + 30.0
+    deadline = time.time() + 60.0
     try:
         result = _call_llm_api(
             symbol, prompt, LLMMultiLegVerdict, deadline=deadline, purpose="live_verdict"
@@ -3383,15 +3476,28 @@ def get_multileg_verdict(
                     max_legs = constraints.get("max_legs", 2)
                 else:
                     log.warning(
-                        "[llm-multileg] %s: %s requires %d+ legs, got %d",
+                        "[llm-multileg] %s: %s requires %d+ legs, got %d — invalid verdict, defaulting to NO_TRADE",
                         symbol, result.strategy_type, min_legs, len(result.legs),
                     )
+                    result.strategy_type = "NO_TRADE"
+                    result.legs = []
             elif len(result.legs) > max_legs:
                 log.warning(
                     "[llm-multileg] %s: %s allows max %d legs, got %d — truncating",
                     symbol, result.strategy_type, max_legs, len(result.legs),
                 )
                 result.legs = result.legs[:max_legs]
+
+            # For Strangles & Straddles, ensure both CE and PE are present
+            if result.strategy_type in ("SHORT_STRANGLE", "SHORT_STRADDLE", "LONG_STRANGLE", "LONG_STRADDLE") and len(result.legs) == 2:
+                opt_types = {str(getattr(l, "option_type", "")).upper() for l in result.legs}
+                if opt_types != {"CE", "PE"}:
+                    log.warning(
+                        "[llm-multileg] %s: %s requires 1 CE and 1 PE leg, got %s — invalid, defaulting to NO_TRADE",
+                        symbol, result.strategy_type, opt_types,
+                    )
+                    result.strategy_type = "NO_TRADE"
+                    result.legs = []
 
             # Ensure legs observe strategy constraints (all_sell check)
             all_sell_required = constraints.get("all_sell", False)
@@ -3438,7 +3544,7 @@ def get_multileg_exit_advice(
         intel=intel,
     )
 
-    deadline = time.time() + 25.0
+    deadline = time.time() + 45.0
     try:
         # Use generic dict schema for exit advice (flexible structure)
         result = _call_llm_api(

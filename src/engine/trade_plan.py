@@ -244,13 +244,16 @@ def is_valid_option_premium(
     ltp: float | None,
     underlying_price: float | None,
 ) -> bool:
-    """
-    Validate an option LTP against underlying price bounds to reject corrupted/outlier quotes.
+    r"""
+    Validate an option LTP against theoretical intrinsic and price boundary limits
+    to reject corrupted/outlier quotes without scrubbing valid high-momentum breakouts or 0DTE surges.
 
-    Rejects:
-    - Non-positive premiums (<= 0)
-    - Severe Intrinsic Floor violations for ITM options (e.g. LTP < 0.4 * intrinsic when intrinsic > 50)
-    - OTM Ceiling violations for OTM options (e.g. OTM option priced > 0.4 * otm_dist + max_time_val)
+    Boundary Rules:
+    - Non-positive premiums (<= 0) or non-positive strikes (<= 0) are rejected.
+    - CE Upper Bound: Option premium cannot exceed underlying spot price ($P \le S$).
+    - PE Upper Bound: Option premium cannot exceed strike price ($P \le K$) and $\le \max(K, S)$.
+    - ITM Intrinsic Floor: For deep ITM options (intrinsic > 10.0), premium must not be trivial garbage (< 0.15 * intrinsic).
+    - OTM Options: Never scrubbed by percentage jumps or arbitrary caps.
     """
     if ltp is None or ltp <= 0 or strike <= 0:
         return False
@@ -260,21 +263,19 @@ def is_valid_option_premium(
     opt = str(option_type).upper()
     if opt == "CE":
         intrinsic = max(0.0, underlying_price - strike)
-        otm_dist = max(0.0, strike - underlying_price)
+        # Absolute ceiling: Call premium cannot exceed underlying spot price (with tiny float tolerance)
+        if ltp > (underlying_price + 0.05):
+            return False
+        # Intrinsic Floor check for deep ITM options (protects against placeholder ticks like 0.05 on deep ITM)
+        if intrinsic > 10.0 and ltp < 0.15 * intrinsic:
+            return False
     elif opt == "PE":
         intrinsic = max(0.0, strike - underlying_price)
-        otm_dist = max(0.0, underlying_price - strike)
-    else:
-        return True
-
-    # 1. Intrinsic Floor check for deep ITM options
-    if intrinsic > 50.0 and ltp < 0.4 * intrinsic:
-        return False
-
-    # 2. OTM Ceiling check for OTM options
-    if otm_dist > 50.0:
-        max_allowed_ltp = max(500.0, underlying_price * 0.006) + otm_dist * 0.2
-        if ltp > max_allowed_ltp:
+        # Absolute ceiling: Put premium cannot exceed strike or max(strike, spot)
+        if ltp > (max(strike, underlying_price) + 0.05):
+            return False
+        # Intrinsic Floor check for deep ITM options
+        if intrinsic > 10.0 and ltp < 0.15 * intrinsic:
             return False
 
     return True
@@ -339,13 +340,15 @@ def get_option_premium(
                 and str(row.get("option_type") or "").upper() == option_type.upper()
             ):
                 # Reject completely dead options to prevent placeholder/stale premiums
-                # Only reject if volume AND oi are explicitly present and both 0
+                # Only reject if volume AND oi AND bid/ask are all 0 or non-existent
                 vol = row.get("volume")
                 oi = row.get("oi")
+                bid = float(row.get("bid") or row.get("best_bid") or row.get("bid_price") or 0.0)
+                ask = float(row.get("ask") or row.get("best_ask") or row.get("ask_price") or 0.0)
                 if vol is not None and oi is not None:
-                    if int(vol) == 0 and int(oi) == 0:
-                        log.warning(
-                            "%s: get_option_premium — strike=%.2f %s has 0 volume and 0 OI. Rejecting premium.",
+                    if int(vol) == 0 and int(oi) == 0 and bid <= 0 and ask <= 0:
+                        log.debug(
+                            "%s: get_option_premium — strike=%.2f %s has 0 volume, 0 OI, and no market depth. Rejecting premium.",
                             symbol,
                             strike,
                             option_type,
@@ -383,7 +386,7 @@ def get_option_premium(
                 oi = snap.get("oi")
                 if vol is not None and oi is not None:
                     if int(vol) == 0 and int(oi) == 0:
-                        log.warning(
+                        log.debug(
                             "%s: get_option_premium (DB fallback) — strike=%.2f %s has 0 volume and 0 OI. Rejecting premium.",
                             symbol,
                             strike,

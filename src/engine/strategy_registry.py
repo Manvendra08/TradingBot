@@ -14,6 +14,7 @@ DEFAULT_STRATEGIES = {
     "CORE": { "enabled": True, "ai_mode": "boost_only", "symbols": {} },
     "TIMEFRAME": { "enabled": True, "ai_mode": "boost_only", "symbols": {} },
     "MULTILEG": { "enabled": True, "ai_mode": "advisory", "symbols": {} },
+    "NG_PARITY": { "enabled": True, "ai_mode": "boost_only", "symbols": {} },
 }
 
 def active_strategies_for(symbol: str) -> list[str]:
@@ -38,16 +39,21 @@ def active_strategies_for(symbol: str) -> list[str]:
         now_ist = datetime.now(pytz.timezone("Asia/Kolkata"))
         regime, _ = get_ng_regime(now_ist)
         
+        config = load_runtime_config()
+        strategies = config.get("strategies", DEFAULT_STRATEGIES)
+        ng_parity_enabled = bool(
+            config.get("enable_ng_parity_trades", True)
+            and strategies.get("NG_PARITY", {}).get("enabled", True)
+        )
+
         active_ng = []
-        if regime == "PARITY":
+        if regime == "PARITY" and ng_parity_enabled:
             active_ng.append("NG_PARITY")
         elif regime == "EVENT":
             active_ng.append("NG_EVENT")
         elif regime == "MOMENTUM":
             active_ng.append("NG_MOMENTUM")
 
-        config = load_runtime_config()
-        strategies = config.get("strategies", DEFAULT_STRATEGIES)
         if strategies.get("TIMEFRAME", {}).get("enabled", False):
             active_ng.append("TIMEFRAME")
 

@@ -1837,8 +1837,7 @@ async def get_paper_summary(symbol: str = ""):
             "closed_at": ml.get("closed_at"),
             "raw": ml_trade_dict,
         })
-        if is_open:
-            open_rows.append(ml_trade_dict)
+        # Note: Do not append multileg trades to open_rows; they are rendered in their dedicated Multi-Leg Options table
 
     _enrich_open_trades_with_live_pnl(open_rows)
     _enrich_trade_details(open_rows)
@@ -3841,6 +3840,8 @@ async def internal_reauth():
     """
     try:
         from src.fetchers.shoonya_fetcher import get_shoonya_fetcher
+        from src.fetchers.shoonya_ip_guard import reset_shoonya_ip_skip
+        reset_shoonya_ip_skip()
         f = get_shoonya_fetcher()
         # Clear cached token to force fresh OAuth
         f.access_token = None

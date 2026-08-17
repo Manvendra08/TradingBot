@@ -55,7 +55,7 @@ class GreeksCalculator:
         if exchange.upper() == "MCX":
             expiry_datetime = self.tz.localize(datetime.combine(parsed_date, time(23, 30, 0)))
         else:
-            expiry_datetime = self.tz.localize(datetime.combine(parsed_date, time(15, 30, 0)))
+            expiry_datetime = self.tz.localize(datetime.combine(parsed_date, time(15, 40, 0)))
 
         total_seconds = (expiry_datetime - now).total_seconds()
         if total_seconds <= 0:
