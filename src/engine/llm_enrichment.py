@@ -3457,55 +3457,60 @@ def get_multileg_verdict(
                 for leg in result.legs:
                     leg.side = "SELL"
 
-            # Validate legs count matches updated strategy constraints
-            from config.multileg_strategies import STRATEGY_CONSTRAINTS
-            constraints = STRATEGY_CONSTRAINTS.get(result.strategy_type, {})
-            min_legs = constraints.get("min_legs", 2)
-            max_legs = constraints.get("max_legs", 6)
+            st_upper = str(getattr(result, "strategy_type", "")).upper().strip()
+            if st_upper in ("NO_TRADE", "NONE", "", "NULL"):
+                result.strategy_type = "NO_TRADE"
+                result.legs = []
+            else:
+                # Validate legs count matches updated strategy constraints
+                from config.multileg_strategies import STRATEGY_CONSTRAINTS
+                constraints = STRATEGY_CONSTRAINTS.get(result.strategy_type, {})
+                min_legs = constraints.get("min_legs", 2)
+                max_legs = constraints.get("max_legs", 6)
 
-            if len(result.legs) < min_legs:
-                # If LLM returned 2 legs for IRON_CONDOR (common LLM mistake for strangle), auto-reclassify to SHORT_STRANGLE
-                if result.strategy_type == "IRON_CONDOR" and len(result.legs) == 2:
-                    log.info(
-                        "[llm-multileg] %s: Reclassifying 2-leg IRON_CONDOR to SHORT_STRANGLE",
-                        symbol,
-                    )
-                    result.strategy_type = "SHORT_STRANGLE"
-                    constraints = STRATEGY_CONSTRAINTS.get("SHORT_STRANGLE", {})
-                    min_legs = constraints.get("min_legs", 2)
-                    max_legs = constraints.get("max_legs", 2)
-                else:
+                if len(result.legs) < min_legs:
+                    # If LLM returned 2 legs for IRON_CONDOR (common LLM mistake for strangle), auto-reclassify to SHORT_STRANGLE
+                    if result.strategy_type == "IRON_CONDOR" and len(result.legs) == 2:
+                        log.info(
+                            "[llm-multileg] %s: Reclassifying 2-leg IRON_CONDOR to SHORT_STRANGLE",
+                            symbol,
+                        )
+                        result.strategy_type = "SHORT_STRANGLE"
+                        constraints = STRATEGY_CONSTRAINTS.get("SHORT_STRANGLE", {})
+                        min_legs = constraints.get("min_legs", 2)
+                        max_legs = constraints.get("max_legs", 2)
+                    else:
+                        log.warning(
+                            "[llm-multileg] %s: %s requires %d+ legs, got %d — invalid verdict, defaulting to NO_TRADE",
+                            symbol, result.strategy_type, min_legs, len(result.legs),
+                        )
+                        result.strategy_type = "NO_TRADE"
+                        result.legs = []
+                elif len(result.legs) > max_legs:
                     log.warning(
-                        "[llm-multileg] %s: %s requires %d+ legs, got %d — invalid verdict, defaulting to NO_TRADE",
-                        symbol, result.strategy_type, min_legs, len(result.legs),
+                        "[llm-multileg] %s: %s allows max %d legs, got %d — truncating",
+                        symbol, result.strategy_type, max_legs, len(result.legs),
                     )
-                    result.strategy_type = "NO_TRADE"
-                    result.legs = []
-            elif len(result.legs) > max_legs:
-                log.warning(
-                    "[llm-multileg] %s: %s allows max %d legs, got %d — truncating",
-                    symbol, result.strategy_type, max_legs, len(result.legs),
-                )
-                result.legs = result.legs[:max_legs]
+                    result.legs = result.legs[:max_legs]
 
-            # For Strangles & Straddles, ensure both CE and PE are present
-            if result.strategy_type in ("SHORT_STRANGLE", "SHORT_STRADDLE", "LONG_STRANGLE", "LONG_STRADDLE") and len(result.legs) == 2:
-                opt_types = {str(getattr(l, "option_type", "")).upper() for l in result.legs}
-                if opt_types != {"CE", "PE"}:
-                    log.warning(
-                        "[llm-multileg] %s: %s requires 1 CE and 1 PE leg, got %s — invalid, defaulting to NO_TRADE",
-                        symbol, result.strategy_type, opt_types,
-                    )
-                    result.strategy_type = "NO_TRADE"
-                    result.legs = []
+                # For Strangles & Straddles, ensure both CE and PE are present
+                if result.strategy_type in ("SHORT_STRANGLE", "SHORT_STRADDLE", "LONG_STRANGLE", "LONG_STRADDLE") and len(result.legs) == 2:
+                    opt_types = {str(getattr(l, "option_type", "")).upper() for l in result.legs}
+                    if opt_types != {"CE", "PE"}:
+                        log.warning(
+                            "[llm-multileg] %s: %s requires 1 CE and 1 PE leg, got %s — invalid, defaulting to NO_TRADE",
+                            symbol, result.strategy_type, opt_types,
+                        )
+                        result.strategy_type = "NO_TRADE"
+                        result.legs = []
 
-            # Ensure legs observe strategy constraints (all_sell check)
-            all_sell_required = constraints.get("all_sell", False)
-            for leg in result.legs:
-                if all_sell_required:
-                    leg.side = "SELL"
-                elif not getattr(leg, "side", None) or leg.side.upper() not in ("BUY", "SELL"):
-                    leg.side = "SELL"  # default fallback if unspecified
+                # Ensure legs observe strategy constraints (all_sell check)
+                all_sell_required = constraints.get("all_sell", False)
+                for leg in result.legs:
+                    if all_sell_required:
+                        leg.side = "SELL"
+                    elif not getattr(leg, "side", None) or leg.side.upper() not in ("BUY", "SELL"):
+                        leg.side = "SELL"  # default fallback if unspecified
 
             log.info(
                 "[llm-multileg] %s: %s with %d legs, net premium ₹%.1f, confidence %d%%",
