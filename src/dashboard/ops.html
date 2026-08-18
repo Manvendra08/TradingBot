@@ -623,18 +623,64 @@ function escapeHtml(s) {
         .replace(/'/g, "&#39;");
 }
 
-// ── Scan Sentinel Incidents from nsebot.db via /api/sentinel-incidents ───
+// ── Scan Sentinel Live Telemetry & Incidents ───────────────────────────────
 async function loadSentinelIncidents() {
     let incidents = [];
+    let runs = [];
     try {
-        const r = await fetch("/api/sentinel-incidents", { signal: AbortSignal.timeout(5000) });
-        if (r.ok) incidents = await r.json();
+        const [rInc, rRuns] = await Promise.all([
+            fetch("/api/sentinel-incidents", { signal: AbortSignal.timeout(5000) }),
+            fetch("/api/sentinel-runs", { signal: AbortSignal.timeout(5000) })
+        ]);
+        if (rInc.ok) incidents = await rInc.json();
+        if (rRuns.ok) runs = await rRuns.json();
     } catch {}
 
     const grid = document.getElementById("sentinel-grid");
-    if (!incidents.length) {
-        grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;"><span>🛡️</span>No Scan Sentinel incidents detected — all scans healthy.</div>`;
-        return;
+    
+    // Group latest runs by symbol
+    const latestRunsBySymbol = {};
+    for (const r of runs) {
+        if (r && r.symbol) {
+            latestRunsBySymbol[r.symbol] = r;
+        }
+    }
+    const runSymbols = Object.keys(latestRunsBySymbol);
+
+    let runsHtml = "";
+    if (runSymbols.length > 0) {
+        runsHtml = `
+        <div style="grid-column:1/-1; margin-bottom:6px;">
+            <div style="font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-dim); margin-bottom:6px;">
+                ⚡ Live Scan Telemetry (${runSymbols.length} Symbols Monitored)
+            </div>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:8px;">
+                ${runSymbols.map(sym => {
+                    const r = latestRunsBySymbol[sym];
+                    const ts = r.timestamp_ist ? new Date(r.timestamp_ist).toLocaleTimeString("en-IN", {hour:"2-digit",minute:"2-digit",second:"2-digit"}) : "—";
+                    const dur = r.scan_duration_ms > 0 ? (r.scan_duration_ms / 1000).toFixed(1) + "s" : "<1s";
+                    const hasAnom = (r.zero_ltp_strikes > 0 && r.zero_ltp_strikes === r.total_strikes) || r.status === "CRASHED";
+                    const badgeCls = hasAnom ? "down" : "ok";
+                    const statusText = hasAnom ? "ANOMALY" : "HEALTHY";
+                    const spot = r.underlying_price ? Number(r.underlying_price).toLocaleString("en-IN", {maximumFractionDigits:2}) : "—";
+                    return `
+                    <div class="component-card ${badgeCls}" style="padding:8px 12px; gap:4px; flex-direction:column; align-items:flex-start;">
+                        <div style="display:flex; width:100%; justify-content:space-between; align-items:center;">
+                            <span style="font-weight:700; font-size:12px;">${sym}</span>
+                            <span class="comp-badge ${badgeCls}" style="font-size:9px; padding:2px 6px;">${statusText}</span>
+                        </div>
+                        <div style="font-size:11px; color:var(--text-dim); display:flex; justify-content:space-between; width:100%;">
+                            <span>Spot: ₹${spot}</span>
+                            <span>${dur}</span>
+                        </div>
+                        <div style="font-size:10px; color:var(--text-dim); display:flex; justify-content:space-between; width:100%;">
+                            <span>${r.total_strikes || 0} strikes (${r.zero_ltp_strikes || 0} 0-LTP)</span>
+                            <span style="font-family:var(--mono); color:var(--text);">${r.source || "live"} · ${ts}</span>
+                        </div>
+                    </div>`;
+                }).join("")}
+            </div>
+        </div>`;
     }
 
     const severityClass = sev => {
@@ -644,29 +690,83 @@ async function loadSentinelIncidents() {
         return "ok";
     };
 
-    grid.innerHTML = incidents.slice(0, 12).map(inc => {
-        const ts = inc.ts ? new Date(inc.ts).toLocaleString("en-IN", {day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}) : "—";
-        const sev = (inc.severity || "INFO").toUpperCase();
-        const cls = severityClass(sev);
-        const sym = escapeHtml(inc.symbol || "—");
-        const summary = inc.summary || "No summary";
-        const rootCause = inc.root_cause || "—";
-        const action = inc.recommended_action || "ALERT_ONLY";
+    // Filter recent vs older incidents
+    const nowMs = Date.now();
+    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+    const recentIncidents = incidents.filter(i => {
+        if (!i.ts) return false;
+        const incMs = new Date(i.ts).getTime();
+        return (nowMs - incMs) <= sevenDaysMs;
+    });
+    const historicalIncidents = incidents.filter(i => {
+        if (!i.ts) return true;
+        const incMs = new Date(i.ts).getTime();
+        return (nowMs - incMs) > sevenDaysMs;
+    });
 
-        return `
-        <div class="component-card ${cls}" style="flex-direction:column; align-items:flex-start; gap:8px;">
-            <div style="display:flex; width:100%; justify-content:space-between; align-items:center;">
-                <span style="font-weight:600; font-size:13px;">${sym}</span>
-                <span class="comp-badge ${cls}">${sev}</span>
+    let incidentsHtml = "";
+    if (recentIncidents.length > 0) {
+        incidentsHtml = `
+        <div style="grid-column:1/-1; margin-top:8px;">
+            <div style="font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-dim); margin-bottom:6px;">
+                🚨 Active AI Diagnostic Incidents (Last 7 Days)
             </div>
-            <div style="font-size:12px; color:var(--text); width:100%; white-space:pre-wrap; word-break:break-word;">${escapeHtml(summary)}</div>
-            <div style="font-size:11px; color:var(--text-dim); width:100%; white-space:pre-wrap; word-break:break-word;"><strong>Root cause:</strong> ${escapeHtml(rootCause)}</div>
-            <div style="display:flex; width:100%; justify-content:space-between; margin-top:4px;">
-                <span style="font-size:10px; color:var(--text-dim);">${ts}</span>
-                <span style="font-size:10px; font-family:var(--mono); color:var(--accent);">${action}</span>
+            <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:10px;">
+                ${recentIncidents.map(inc => renderIncidentCard(inc, severityClass)).join("")}
             </div>
         </div>`;
-    }).join("");
+    } else if (runSymbols.length > 0) {
+        incidentsHtml = `
+        <div style="grid-column:1/-1; margin-top:4px;">
+            <div class="empty-state" style="padding:12px; background:var(--surface); border:1px solid rgba(46,213,115,0.2); border-radius:6px; color:var(--green); font-size:12px; display:flex; align-items:center; gap:8px;">
+                <span>🛡️</span>
+                <span>All active scans healthy — Zero anomaly triggers across monitored symbols in the last 7 days.</span>
+            </div>
+        </div>`;
+    } else if (!incidents.length) {
+        incidentsHtml = `<div class="empty-state" style="grid-column:1/-1;"><span>🛡️</span>No Scan Sentinel incidents detected — all scans healthy.</div>`;
+    }
+
+    let historyToggleHtml = "";
+    if (historicalIncidents.length > 0) {
+        historyToggleHtml = `
+        <div style="grid-column:1/-1; margin-top:10px;">
+            <details style="font-size:11px; color:var(--text-dim); cursor:pointer;">
+                <summary style="font-weight:600; padding:4px 0; color:var(--text-dim);">
+                    ▶ View Historical Incidents (${historicalIncidents.length} past incident${historicalIncidents.length !== 1 ? "s" : ""})
+                </summary>
+                <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:10px; margin-top:8px;">
+                    ${historicalIncidents.map(inc => renderIncidentCard(inc, severityClass)).join("")}
+                </div>
+            </details>
+        </div>`;
+    }
+
+    grid.innerHTML = runsHtml + incidentsHtml + historyToggleHtml;
+}
+
+function renderIncidentCard(inc, severityClass) {
+    const ts = inc.ts ? new Date(inc.ts).toLocaleString("en-IN", {day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}) : "—";
+    const sev = (inc.severity || "INFO").toUpperCase();
+    const cls = severityClass(sev);
+    const sym = escapeHtml(inc.symbol || "—");
+    const summary = inc.summary || "No summary";
+    const rootCause = inc.root_cause || "—";
+    const action = inc.recommended_action || "ALERT_ONLY";
+
+    return `
+    <div class="component-card ${cls}" style="flex-direction:column; align-items:flex-start; gap:8px; width:100%;">
+        <div style="display:flex; width:100%; justify-content:space-between; align-items:center;">
+            <span style="font-weight:600; font-size:13px;">${sym}</span>
+            <span class="comp-badge ${cls}">${sev}</span>
+        </div>
+        <div style="font-size:12px; color:var(--text); width:100%; white-space:pre-wrap; word-break:break-word;">${escapeHtml(summary)}</div>
+        <div style="font-size:11px; color:var(--text-dim); width:100%; white-space:pre-wrap; word-break:break-word;"><strong>Root cause:</strong> ${escapeHtml(rootCause)}</div>
+        <div style="display:flex; width:100%; justify-content:space-between; margin-top:4px; align-items:center;">
+            <span style="font-size:10px; color:var(--text-dim);">${ts}</span>
+            <span style="font-size:10px; font-family:var(--mono); color:var(--accent); font-weight:600;">${action}</span>
+        </div>
+    </div>`;
 }
 
 // ── Main fetch ─────────────────────────────────────────────────────────────

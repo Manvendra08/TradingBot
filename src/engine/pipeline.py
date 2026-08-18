@@ -12,7 +12,9 @@ Safe parallelism branch goals:
 """
 
 import logging
+import re
 import threading
+import time
 from concurrent.futures import as_completed
 from datetime import datetime, timedelta, timezone
 
@@ -165,7 +167,7 @@ def _ensure_shoonya_session() -> None:
 
 
 def _prefetch_symbol_data(symbol: str, fetched_at: str) -> dict:
-    packet = {"symbol": symbol, "fetched_at": fetched_at}
+    packet = {"symbol": symbol, "fetched_at": fetched_at, "start_time": time.time()}
     oc = run_with_deadline("option_chain", lambda: fetch_option_chain(symbol))
     packet["option_chain_result"] = oc
     if not oc.ok or not oc.data:
@@ -378,6 +380,46 @@ def _async_llm_enrich_and_edit(
         else:
             log.debug("%s: async LLM digest v2 edit failed, sending follow-up", symbol)
             send_text(f"🔄 *Updated analysis for {symbol}:*\n\n{thesis_line}")
+
+        # Update Scan Sentinel with enriched LLM verdict
+        try:
+            from src.engine.scan_sentinel import run_sentinel
+            def _get_num_val(val):
+                if val is None:
+                    return None
+                m = re.search(r"(\d+(?:\.\d+)?)", str(val))
+                return float(m.group(1)) if m else None
+
+            oc_data = scan_context.get("oc_data") or {}
+            sentinel_report_v2 = {
+                "symbol": symbol,
+                "timestamp_ist": datetime.now(timezone.utc).isoformat(),
+                "scan_duration_ms": 0,
+                "underlying_price": float(scan_context.get("underlying_price") or oc_data.get("underlying_price") or 0.0),
+                "expiry": oc_data.get("expiry", ""),
+                "source": oc_data.get("source", "unknown"),
+                "total_strikes": len(oc_data.get("strikes") or []),
+                "zero_ltp_strikes": sum(1 for s in oc_data.get("strikes", []) if float(s.get("ltp") or 0.0) == 0.0),
+                "zero_oi_strikes": sum(1 for s in oc_data.get("strikes", []) if int(s.get("oi") or 0) == 0),
+                "llm_action": getattr(llm_verdict, "action", None),
+                "llm_instrument": getattr(llm_verdict, "instrument", None),
+                "llm_entry_premium": _get_num_val(getattr(llm_verdict, "entry_premium_range", None)),
+                "llm_target_1": _get_num_val(getattr(llm_verdict, "target_1", None)),
+                "llm_target_2": _get_num_val(getattr(llm_verdict, "target_2", None)),
+                "llm_stop_loss": _get_num_val(getattr(llm_verdict, "stop_loss", None)),
+                "trade_decision_status": (intel.get("trade_decision") or {}).get("status") if intel else None,
+                "trade_decision_reason": (intel.get("trade_decision") or {}).get("reason") if intel else None,
+                "warnings": [w for w in (scan_context.get("warnings") or []) if w],
+                "errors": [e for e in (scan_context.get("errors") or []) if e],
+                "fetcher_errors": scan_context.get("fetcher_errors", []),
+                "option_premium_used": _get_num_val(getattr(llm_verdict, "entry_premium_range", None)),
+                "log_lines": [],
+                "is_test": False,
+                "status": "COMPLETED"
+            }
+            pipeline_io_executor.submit(lambda: run_sentinel(sentinel_report_v2))
+        except Exception:
+            log.warning("%s: Scan Sentinel async update failed", symbol, exc_info=True)
     except Exception as e:
         log.warning("%s: async LLM enrichment thread failed: %s", symbol, e)
 
@@ -1128,39 +1170,47 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
 
         
         # Run Scan Sentinel diagnostics asynchronously (non-blocking)
-        if not is_test:
-            try:
-                from src.engine.scan_sentinel import run_sentinel
-                
-                # Build lightweight report for sentinel
-                sentinel_report = {
-                    "symbol": symbol,
-                    "timestamp_ist": datetime.now(timezone.utc).isoformat(),
-                    "scan_duration_ms": 0,  # Not tracked in this simplified integration
-                    "underlying_price": float(oc_data.get("underlying_price") or 0.0),
-                    "expiry": oc_data.get("expiry", ""),
-                    "source": oc_data.get("source", "unknown"),
-                    "total_strikes": len(oc_data.get("strikes") or []),
-                    "zero_ltp_strikes": sum(1 for s in oc_data.get("strikes", []) if float(s.get("ltp") or 0.0) == 0.0),
-                    "zero_oi_strikes": sum(1 for s in oc_data.get("strikes", []) if int(s.get("oi") or 0) == 0),
-                    "llm_action": getattr(llm_verdict, "action", None) if llm_verdict else None,
-                    "llm_instrument": getattr(llm_verdict, "instrument", None) if llm_verdict else None,
-                    "llm_entry_premium": getattr(llm_verdict, "entry_premium_range", None) if llm_verdict else None,
-                    "llm_target_1": getattr(llm_verdict, "target_1", None) if llm_verdict else None,
-                    "llm_target_2": getattr(llm_verdict, "target_2", None) if llm_verdict else None,
-                    "llm_stop_loss": getattr(llm_verdict, "stop_loss", None) if llm_verdict else None,
-                    "trade_decision_status": (intel.get("trade_decision") or {}).get("status") if intel else None,
-                    "trade_decision_reason": (intel.get("trade_decision") or {}).get("reason") if intel else None,
-                    "warnings": [],  # Could extract from logs if needed
-                    "errors": [],    # Could extract from logs if needed
-                    "fetcher_errors": scan_context.get("fetcher_errors", []),
-                    "option_premium_used": None,
-                    "log_lines": [],
-                    "is_test": is_test,
-                    "status": "COMPLETED"
-                }
-                
-                # Submit to thread pool for async execution (non-blocking)
-                pipeline_io_executor.submit(lambda: run_sentinel(sentinel_report))
-            except Exception:
-                log.warning("%s: Scan Sentinel submission failed", symbol, exc_info=True)
+        try:
+            from src.engine.scan_sentinel import run_sentinel
+            
+            t_start = packet.get("start_time", time.time())
+            scan_duration_ms = max(1, int((time.time() - t_start) * 1000))
+
+            def _get_num_val(val):
+                if val is None:
+                    return None
+                m = re.search(r"(\d+(?:\.\d+)?)", str(val))
+                return float(m.group(1)) if m else None
+            
+            # Build report for sentinel
+            sentinel_report = {
+                "symbol": symbol,
+                "timestamp_ist": datetime.now(timezone.utc).isoformat(),
+                "scan_duration_ms": scan_duration_ms,
+                "underlying_price": float(oc_data.get("underlying_price") or 0.0),
+                "expiry": oc_data.get("expiry", ""),
+                "source": oc_data.get("source", "unknown"),
+                "total_strikes": len(oc_data.get("strikes") or []),
+                "zero_ltp_strikes": sum(1 for s in oc_data.get("strikes", []) if float(s.get("ltp") or 0.0) == 0.0),
+                "zero_oi_strikes": sum(1 for s in oc_data.get("strikes", []) if int(s.get("oi") or 0) == 0),
+                "llm_action": getattr(llm_verdict, "action", None) if llm_verdict else None,
+                "llm_instrument": getattr(llm_verdict, "instrument", None) if llm_verdict else None,
+                "llm_entry_premium": _get_num_val(getattr(llm_verdict, "entry_premium_range", None)) if llm_verdict else None,
+                "llm_target_1": _get_num_val(getattr(llm_verdict, "target_1", None)) if llm_verdict else None,
+                "llm_target_2": _get_num_val(getattr(llm_verdict, "target_2", None)) if llm_verdict else None,
+                "llm_stop_loss": _get_num_val(getattr(llm_verdict, "stop_loss", None)) if llm_verdict else None,
+                "trade_decision_status": (intel.get("trade_decision") or {}).get("status") if intel else None,
+                "trade_decision_reason": (intel.get("trade_decision") or {}).get("reason") if intel else None,
+                "warnings": [w for w in (scan_context.get("warnings") or []) if w],
+                "errors": [e for e in (scan_context.get("errors") or []) if e],
+                "fetcher_errors": scan_context.get("fetcher_errors", []),
+                "option_premium_used": _get_num_val(getattr(llm_verdict, "entry_premium_range", None)) if llm_verdict else None,
+                "log_lines": [],
+                "is_test": is_test,
+                "status": "COMPLETED"
+            }
+            
+            # Submit to thread pool for async execution (non-blocking)
+            pipeline_io_executor.submit(lambda: run_sentinel(sentinel_report))
+        except Exception:
+            log.warning("%s: Scan Sentinel submission failed", symbol, exc_info=True)

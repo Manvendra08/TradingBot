@@ -381,12 +381,11 @@ class ScanDiagnostic(BaseModel):
 
 
 def run_sentinel(report_data: dict | ScanRunReport) -> ScanDiagnostic | None:
-    """Runs the rule engine and invokes LLM diagnostic if a suspect flag is raised."""
-    
+    """Runs the rule engine, logs telemetry, and invokes LLM diagnostic if an anomaly is raised."""
     if isinstance(report_data, ScanRunReport):
         report_dict = asdict(report_data)
     else:
-        report_dict = report_data
+        report_dict = dict(report_data)
         
     symbol = report_dict.get("symbol")
     report_mode = get_sentinel_report_mode()
@@ -395,17 +394,32 @@ def run_sentinel(report_data: dict | ScanRunReport) -> ScanDiagnostic | None:
     # 1. Run deterministic rule checks
     flags = _check_rules(report_dict)
     
+    # ALWAYS record the scan run and persist health state
+    try:
+        emit_scan_run_report(report_from_dict(report_dict))
+        persist_scan_run(report_dict, flags)
+    except Exception as e:
+        log.warning("%s: Failed to emit/persist scan run report: %s", symbol, e)
+
+    # Stamp component health for Sentinel
+    try:
+        total_strikes = int(report_dict.get("total_strikes") or 0)
+        zero_ltp = int(report_dict.get("zero_ltp_strikes") or 0)
+        source = report_dict.get("source", "unknown")
+        dur_s = (int(report_dict.get("scan_duration_ms") or 0)) / 1000.0
+        if any(f.severity == "CRITICAL" for f in flags):
+            stamp_health(f"sentinel_{symbol}", "DOWN", f"Critical anomaly: {flags[0].detail}")
+        elif flags:
+            stamp_health(f"sentinel_{symbol}", "DEGRADED", f"{len(flags)} warning(s): {flags[0].detail}")
+        else:
+            stamp_health(f"sentinel_{symbol}", "OK", f"{source} ({total_strikes} strk, {dur_s:.1f}s)")
+    except Exception:
+        pass
+
     if not flags:
-        if report_mode == "full":
-            log.info("%s: Scan Sentinel | scan OK (no anomalies) — full-report logged", symbol)
-            persist_scan_run(report_dict, flags)
-            try:
-                emit_scan_run_report(report_from_dict(report_dict))
-            except Exception as e:
-                log.warning("%s: Failed to emit full-run report: %s", symbol, e)
         return None
         
-    log.info("%s: Scan Sentinel flagged %d suspect conditions. Launching AI Diagnostic...", symbol, len(flags))
+    log.info("%s: Scan Sentinel flagged %d suspect condition(s). Launching AI Diagnostic...", symbol, len(flags))
     
     # 2. Invoke LLM diagnostic
     try:
@@ -414,7 +428,7 @@ def run_sentinel(report_data: dict | ScanRunReport) -> ScanDiagnostic | None:
             log.warning("%s: Sentinel Diagnosis: %s | Severity: %s | Recommended Action: %s",
                         symbol, diagnostic.anomaly_summary, diagnostic.severity, diagnostic.recommended_action)
             
-            # Log diagnostic findings to sentinel database or health state
+            # Log diagnostic findings to sentinel database
             _persist_sentinel_incident(symbol, flags, diagnostic)
             
             # 3. Self-healing execution
@@ -695,8 +709,8 @@ def _persist_sentinel_incident(symbol: str, flags: list[SentinelFlag], diag: Sca
             )
             """)
             
-            IST_offset = timedelta(hours=5, minutes=30)
-            now_ist = datetime.now(timezone.utc) + IST_offset
+            IST = timezone(timedelta(hours=5, minutes=30))
+            now_ist = datetime.now(IST)
             
             diag_dict = diag.model_dump() if hasattr(diag, "model_dump") else diag.dict()
             diag_dict["triggered_rules"] = [f.rule for f in flags]
