@@ -95,6 +95,11 @@ Examples:
         metavar="SYM",
         help="Override WATCH_SYMBOLS for --once runs",
     )
+    parser.add_argument(
+        "--update-shoonya-ip",
+        action="store_true",
+        help="Headlessly login to Shoonya portal and update Primary & Backup IP address to current public IP",
+    )
     args = parser.parse_args()
 
     configure_logging("bridge" if args.bridge else "main")
@@ -105,6 +110,14 @@ Examples:
 
     # Always ensure DB is initialised
     init_db()
+
+    if args.update_shoonya_ip:
+        from src.fetchers.shoonya_ip_updater import update_shoonya_portal_ip
+
+        log.info("Triggering headless Shoonya IP update to current public IP...")
+        success, msg = update_shoonya_portal_ip()
+        print(f"\nShoonya IP Update: {'SUCCESS' if success else 'FAILED'} — {msg}\n")
+        return
 
     if args.dashboard:
         cmd = "python dashboard_server.py"

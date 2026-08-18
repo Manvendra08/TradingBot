@@ -148,10 +148,10 @@ TypeError: get_previous_underlying() got an unexpected keyword argument 'read_on
   3. Refactored futures contract resolution to sort by `exd` expiry date chronologically and pick the near-month contract.
   4. Removed orphaned dead code block after return line 1450.
 
-### F129: Shoonya ISP IP Rotation — Daily Pre-Fetch Guard (P1-HIGH)
+### F129: Shoonya ISP IP Rotation — Automated Headless Portal IP Updater (P1-HIGH)
 - **Symptom:** `[shoonya] GenAcsTok failed: {'stat': 'Not_Ok', 'emsg': 'Invalid Input : INVALID_IP', ...}` after a ~60s Playwright OAuth, recurring every time the ISP rotates the public IP (3–4 day DHCP leases).
 - **Root Cause:** Shoonya validates the request source IP at login (`GenAcsTok`). A rotating ISP public IP is not bound to the account, so login is rejected even though the OAuth web login succeeds.
-- **Self-Heal:** `src/fetchers/shoonya_ip_guard.py` runs a once-per-IST-day public-IP check (reusing `src/utils/ip_monitor.py` detection). On rotation it sends a Telegram alert once and persists a `skip_date`; `router._try_fetcher` then skips the `shoonya` source for the rest of the day (falling through to `dhan_commodity` etc.), and `ShoonyaFetcher.login()` short-circuits to avoid the doomed OAuth. Fail-open when IP detection is unavailable. State: `data/shoonya_ip_state.json` (`baseline_ip`, `checked_date`, `skip_date`).
+- **Self-Heal:** `src/fetchers/shoonya_ip_guard.py` runs a once-per-IST-day public-IP check (reusing `src/utils/ip_monitor.py` detection). On rotation, it immediately triggers `src/fetchers/shoonya_ip_updater.py` which launches headless Playwright, logs into Shoonya's portal (`https://api.shoonya.com/OAuthlogin/`), and automatically updates the `Primary IP Address` and `Backup IP Address` to the new public IP. If the update succeeds, the new baseline IP is saved, skip flag is cleared, and normal Shoonya fetching resumes without interruption. If the update fails, it falls back to setting `skip_date` and alerts via Telegram. Manual trigger available via `python main.py --update-shoonya-ip`. State: `data/shoonya_ip_state.json` (`baseline_ip`, `checked_date`, `skip_date`).
 
 ### F131: Heterogeneous Option Chain Normalization (P0-CRITICAL)
 - **Symptom:** `AttributeError: 'list' object has no attribute 'get'` in `src.engine.multileg_strategy` when multi-leg trading runs on index option chains (`BANKNIFTY`, `SENSEX`).

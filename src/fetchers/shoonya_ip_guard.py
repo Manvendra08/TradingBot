@@ -83,17 +83,27 @@ def _save_state(state: dict) -> None:
         log.warning("[shoonya-ip] failed to write state %s: %s", STATE_PATH, exc)
 
 
-def _send_alert(old_ip: str, new_ip: str) -> None:
+def _send_alert(
+    old_ip: str, new_ip: str, success: bool = False, err_msg: str | None = None
+) -> None:
     try:
         from src.alerts.telegram_dispatcher import send_text
 
-        send_text(
-            "🚨 **Shoonya IP Changed** | ISP public IP moved `{}` → `{}`.\n"
-            "Shoonya will reject login (`INVALID_IP`). **Skipping Shoonya "
-            "fetches today — using fallback sources.**\n"
-            "Action: bind `{}` in the Shoonya portal (api.shoonya.com) or "
-            "contact support, then restart the bot.".format(old_ip, new_ip, new_ip)
-        )
+        if success:
+            send_text(
+                "✅ **Shoonya IP Auto-Updated** | ISP public IP moved `{}` → `{}`.\n"
+                "Successfully updated Primary & Backup IP binding headlessly on Shoonya portal.\n"
+                "**Shoonya fetches active and running normally.**".format(old_ip, new_ip)
+            )
+        else:
+            err_detail = f"\nError: `{err_msg}`" if err_msg else ""
+            send_text(
+                "🚨 **Shoonya IP Changed** | ISP public IP moved `{}` → `{}`.{}\n"
+                "Shoonya will reject login (`INVALID_IP`). **Skipping Shoonya "
+                "fetches today — using fallback sources.**\n"
+                "Action: bind `{}` in the Shoonya portal (trade.shoonya.com / api.shoonya.com) or "
+                "contact support, then restart the bot.".format(old_ip, new_ip, err_detail, new_ip)
+            )
     except Exception as exc:
         log.warning("[shoonya-ip] failed to send Telegram alert: %s", exc)
 
@@ -104,8 +114,10 @@ def run_daily_ip_check() -> dict:
     Returns a status dict:
       {"skip": bool, "old_ip": str|None, "new_ip": str|None, "reason": str}
 
-    - skip is True only on the day a rotation was detected (alerted once).
-    - Fail-open: returns skip False when detection fails.
+    - When IP rotates, attempts headless Shoonya portal IP update automatically.
+    - If update succeeds: adopts new IP, clears skip flag, and alerts success.
+    - If update fails: sets skip True for today and alerts failure once.
+    - Fail-open: returns skip False when IP detection fails.
     - Thread-safe; re-entrant calls on the same day return the cached decision
       without re-fetching or re-alerting.
     """
@@ -147,17 +159,44 @@ def run_daily_ip_check() -> dict:
             log.debug("[shoonya-ip] public IP unchanged: %s", current_ip)
             return {"skip": False, "old_ip": baseline, "new_ip": current_ip, "reason": "unchanged"}
 
-        # IP rotated — alert once and skip Shoonya for the rest of today.
+        # IP rotated — attempt headless Shoonya portal update before giving up
         old_ip = baseline
-        state.update(baseline_ip=current_ip, checked_date=today, skip_date=today)
-        _save_state(state)
         log.warning(
-            "[shoonya-ip] public IP changed %s → %s — skipping Shoonya today",
+            "[shoonya-ip] public IP changed %s → %s — attempting automated headless portal update",
             old_ip,
             current_ip,
         )
-        _send_alert(old_ip, current_ip)
-        return {"skip": True, "old_ip": old_ip, "new_ip": current_ip, "reason": "ip_changed"}
+
+        update_ok = False
+        update_msg = ""
+        try:
+            from src.fetchers.shoonya_ip_updater import update_shoonya_portal_ip
+
+            update_ok, update_msg = update_shoonya_portal_ip(new_ip=current_ip, headless=True)
+        except Exception as upd_exc:
+            update_msg = str(upd_exc)
+            log.exception("[shoonya-ip] error executing shoonya_ip_updater: %s", upd_exc)
+
+        if update_ok:
+            # Successfully updated Shoonya portal binding
+            state.update(baseline_ip=current_ip, checked_date=today, skip_date=None)
+            _save_state(state)
+            log.info(
+                "[shoonya-ip] Shoonya portal IP updated successfully to %s. Resuming fetches.",
+                current_ip,
+            )
+            _send_alert(old_ip, current_ip, success=True)
+            return {"skip": False, "old_ip": old_ip, "new_ip": current_ip, "reason": "ip_auto_updated"}
+
+        # Auto-update failed — alert once and skip Shoonya for today
+        state.update(baseline_ip=current_ip, checked_date=today, skip_date=today)
+        _save_state(state)
+        log.warning(
+            "[shoonya-ip] Shoonya portal IP auto-update failed (%s) — skipping Shoonya today",
+            update_msg,
+        )
+        _send_alert(old_ip, current_ip, success=False, err_msg=update_msg)
+        return {"skip": True, "old_ip": old_ip, "new_ip": current_ip, "reason": f"ip_auto_update_failed: {update_msg}"}
 
 
 def shoonya_should_skip() -> bool:
