@@ -23,12 +23,12 @@ def check_nymex_1h_trend() -> str:
         if len(df) < 21:
             return "NEUTRAL"
             
-        closes = df["Close"]
+        closes = df["Close"].squeeze()
         # Calculate 20-period EMA
         ema20 = closes.ewm(span=20, adjust=False).mean()
         
-        last_close = float(closes.iloc[-1])
-        last_ema = float(ema20.iloc[-1])
+        last_close = float(closes.iloc[-1].item() if hasattr(closes.iloc[-1], "item") else closes.iloc[-1])
+        last_ema = float(ema20.iloc[-1].item() if hasattr(ema20.iloc[-1], "item") else ema20.iloc[-1])
         
         if last_close > last_ema:
             return "BULLISH"

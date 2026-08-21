@@ -571,6 +571,37 @@ def _attempt_new_entry(
         leg.model_dump() if hasattr(leg, "model_dump") else (leg.dict() if hasattr(leg, "dict") else dict(leg))
         for leg in (verdict.legs or [])
     ]
+
+    # Resolve REAL live market premiums from option chain snapshots (never trust LLM estimated premiums)
+    from src.engine.trade_plan import get_option_premium
+    expiry = (scan_context or {}).get("expiry", "")
+    underlying = float((scan_context or {}).get("underlying") or 0.0)
+    option_rows = list((scan_context or {}).get("option_rows") or [])
+
+    for leg in legs:
+        leg_strike = float(leg.get("strike") or 0.0)
+        leg_opt = str(leg.get("option_type") or "").upper()
+        live_prem = get_option_premium(
+            symbol=symbol,
+            expiry=expiry,
+            strike=leg_strike,
+            option_type=leg_opt,
+            option_rows=option_rows,
+            underlying_price=underlying,
+        )
+        if live_prem is not None and live_prem > 0:
+            leg["premium"] = float(live_prem)
+            leg["entry_premium"] = float(live_prem)
+        else:
+            # Fallback to search directly in option_rows
+            for row in option_rows:
+                if abs(float(row.get("strike") or 0.0) - leg_strike) < 0.01 and str(row.get("option_type") or "").upper() == leg_opt:
+                    r_ltp = float(row.get("ltp") or 0.0)
+                    if r_ltp > 0:
+                        leg["premium"] = r_ltp
+                        leg["entry_premium"] = r_ltp
+                        break
+
     try:
         from src.engine.capital_allocator import calculate_trade_lots
         sizing_premium = max((float(l.get("premium") or 0) for l in legs), default=0.0)

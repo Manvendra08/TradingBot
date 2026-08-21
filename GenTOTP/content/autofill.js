@@ -16,19 +16,58 @@ function detectBroker() {
 // ─── Strict Login Page Guard ──────────────────────────────────────────────────
 // Prevents GenTOTP from filling TOTP into order quantity/price fields after login!
 function isLoginPage(broker) {
-  const path = window.location.pathname.toLowerCase();
-  
-  if (broker === "zerodha") {
-    // DO NOT run on logged-in dashboard/trading pages
-    if (path.includes("/dashboard") || path.includes("/orders") || path.includes("/positions") || path.includes("/holdings") || path.includes("/funds") || path.includes("/marketwatch") || path.includes("/apps")) {
+  const b = (broker || "").toLowerCase();
+
+  if (b.includes("zerodha")) {
+    // 1. Definite logged-in indicators in DOM (navbar, avatar, user ID, trading tabs)
+    if (
+      document.querySelector(".user-nav") ||
+      document.querySelector(".app-nav") ||
+      document.querySelector(".avatar, #avatar") ||
+      document.querySelector("span.user-id") ||
+      document.querySelector('.header-right') ||
+      document.querySelector('a[href*="orders"], a[href*="positions"], a[href*="holdings"]')
+    ) {
       return false;
     }
-    return true; // if not on a known trading page, assume it could be login
+
+    // 2. DO NOT run on logged-in dashboard/trading paths
+    const path = window.location.pathname.toLowerCase();
+    if (
+      path.includes("/dashboard") ||
+      path.includes("/orders") ||
+      path.includes("/positions") ||
+      path.includes("/holdings") ||
+      path.includes("/funds") ||
+      path.includes("/marketwatch") ||
+      path.includes("/apps") ||
+      path.includes("/chart")
+    ) {
+      return false;
+    }
+
+    // 3. Must be on an actual login or 2FA container
+    const hasLoginContainer = !!(
+      document.querySelector(".container-login") ||
+      document.querySelector("form.twofa-form") ||
+      document.querySelector("form.login-form") ||
+      document.querySelector(".login-box")
+    );
+    const bodyText = (document.body ? document.body.innerText || "" : "").toLowerCase();
+    const has2FAText = bodyText.includes("two-factor") || bodyText.includes("totp") || bodyText.includes("authenticator");
+
+    return hasLoginContainer || has2FAText;
   }
 
-  if (broker === "shoonya") {
+  if (b.includes("shoonya") || b.includes("finvasia")) {
     const bodyText = (document.body ? document.body.innerText || "" : "").toLowerCase();
-    if (bodyText.includes("watchlist") || bodyText.includes("orderbook") || bodyText.includes("net position") || bodyText.includes("portfolio")) {
+    if (
+      bodyText.includes("watchlist") ||
+      bodyText.includes("orderbook") ||
+      bodyText.includes("net position") ||
+      bodyText.includes("portfolio") ||
+      document.querySelector(".header-profile, .user-info, .dashboard-container")
+    ) {
       return false;
     }
     return true;
@@ -141,11 +180,14 @@ function findInput(broker) {
     return ["text","number","password","tel",""].includes(t);
   });
 
-  // Zerodha 2FA screen: exactly 1 input visible
+  // Zerodha 2FA screen: exactly 1 input visible inside login/2FA container
   if (broker === "zerodha" && userInputs.length === 1) {
-    const sig = (userInputs[0].name + userInputs[0].id + userInputs[0].placeholder).toLowerCase();
-    if (!/username|userid|user_id|password|passwd/.test(sig)) {
-      return userInputs[0];
+    const el = userInputs[0];
+    const sig = (el.name + el.id + el.placeholder).toLowerCase();
+    if (!/username|userid|user_id|password|passwd|search|filter/.test(sig)) {
+      if (el.closest(".container-login, .twofa-form, form.login-form, .login-box")) {
+        return el;
+      }
     }
   }
 
@@ -232,7 +274,7 @@ function showToast(msg, type = "success") {
 }
 
 // ─── Core Fill ───────────────────────────────────────────────────────────────
-function performFill(code, broker, autoSubmit) {
+function performFill(code, broker, autoSubmit, silent = false) {
   const multiBox = findMultiBoxInputs();
   if (multiBox) {
     code.split("").forEach((ch, i) => {
@@ -245,7 +287,9 @@ function performFill(code, broker, autoSubmit) {
 
   const input = findInput(broker);
   if (!input) {
-    showToast("❌ TOTP field not found on this page", "error");
+    if (!silent) {
+      showToast("❌ TOTP field not found on this page", "error");
+    }
     return false;
   }
 
@@ -259,7 +303,7 @@ function performFill(code, broker, autoSubmit) {
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type !== "FILL_TOTP") return;
   const broker = detectBroker();
-  const ok = performFill(message.code, broker, message.autoSubmit !== false);
+  const ok = performFill(message.code, broker, message.autoSubmit !== false, false);
   sendResponse({ ok, broker });
 });
 
@@ -278,7 +322,7 @@ function checkAndAutoFillOnDetect() {
 
   chrome.runtime.sendMessage({ type: "GET_AUTO_TOTP", broker }, (resp) => {
     if (chrome.runtime.lastError || !resp?.ok || !resp.code) return;
-    const ok = performFill(resp.code, resp.label || broker, true);
+    const ok = performFill(resp.code, broker, true, true);
     if (ok) _lastAutoFilledEl = input;
   });
 }

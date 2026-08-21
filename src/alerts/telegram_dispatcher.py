@@ -428,20 +428,21 @@ async def _send_async_safe(message: str, symbol: str = None, atype: str = None) 
             log.info("Telegram sent text (bg): %s", first_line)
     except Exception as exc:
         log.warning(
-            "Telegram async send failed: %s; trying HTTP fallback in background", exc
+            "Telegram async send failed: %s; waiting 2s for DNS/network recovery before HTTP fallback...", exc
         )
         try:
+            await asyncio.sleep(2.0)
             loop = asyncio.get_running_loop()
             try:
                 success = await loop.run_in_executor(
                     None,
                     _send_text_http_fallback,
                     message,
-                    10,  # timeout_seconds
+                    12,  # timeout_seconds
                 )
             except RuntimeError:
                 # Executor shut down during cleanup -> call HTTP fallback directly
-                success = _send_text_http_fallback(message, 10)
+                success = _send_text_http_fallback(message, 12)
             if success:
                 # Fallback succeeded -> stamp OK
                 try:
@@ -460,7 +461,7 @@ async def _send_async_safe(message: str, symbol: str = None, atype: str = None) 
                         "Telegram sent text via HTTP fallback (bg): %s", first_line
                     )
             else:
-                log.error("Telegram HTTP fallback failed in bg")
+                log.warning("Telegram HTTP fallback failed in bg (transient network/DNS drop)")
                 # Both direct and fallback failed -> stamp DOWN
                 try:
                     from src.models.schema import stamp_health

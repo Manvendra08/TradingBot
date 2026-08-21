@@ -54,6 +54,7 @@ log = logging.getLogger(__name__)
 
 NSE_NEWS_BYPASS_SYMBOLS = {"NIFTY", "BANKNIFTY", "SENSEX", "FINNIFTY", "MIDCPNIFTY"}
 _CLEANUP_DATES = set()
+_llm_pacing_lock = threading.Lock()
 
 def _process_symbol(*args, **kwargs):
     # Backward compatibility alias for _process_prefetched_symbol in test mocks
@@ -306,14 +307,18 @@ def _async_llm_enrich_and_edit(
     """
     try:
         from src.engine.llm_enrichment import get_llm_verdict
-        llm_verdict = get_llm_verdict(
-            symbol,
-            intel,
-            scan_context,
-            alerts=new_alerts,
-            news_data=news_data,
-            open_trade=None,
-        )
+        
+        with _llm_pacing_lock:
+            time.sleep(1.5)  # Pacing delay to avoid Groq TPM limits
+            llm_verdict = get_llm_verdict(
+                symbol,
+                intel,
+                scan_context,
+                alerts=new_alerts,
+                news_data=news_data,
+                open_trade=None,
+            )
+            
         if not llm_verdict:
             log.debug("%s: async LLM returned no verdict", symbol)
             return

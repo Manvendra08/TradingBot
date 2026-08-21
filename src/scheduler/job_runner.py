@@ -615,7 +615,7 @@ def _startup_fill_missed(
     missed_intervals = []
     for idx in range(target_interval + 1):
         interval_start_ist = market_open_time_ist + timedelta(minutes=idx * interval_min)
-        if not _interval_in_market(class_key, interval_start_ist):
+        if not immediate_flag and not _interval_in_market(class_key, interval_start_ist):
             continue
         interval_start_utc = interval_start_ist.astimezone(timezone.utc)
         interval_start_utc_str = interval_start_utc.isoformat()
@@ -638,12 +638,23 @@ def _startup_fill_missed(
                 missed_intervals.append(idx)
 
     if not missed_intervals:
-        log.info(
-            "[scheduler] %s: all intervals up to %d already have data",
-            class_key,
-            target_interval,
-        )
-        return
+        if immediate_flag:
+            log.info(
+                "[scheduler] --now flag active for %s: forcing immediate startup scan",
+                class_key,
+            )
+            try:
+                _guarded_run(class_key, force=True)
+            except Exception as e:
+                log.error("[scheduler] %s: forced immediate scan failed: %s", class_key, e)
+            return
+        else:
+            log.info(
+                "[scheduler] %s: all intervals up to %d already have data",
+                class_key,
+                target_interval,
+            )
+            return
 
     limit = MAX_CATCHUP_INTERVALS if immediate_flag else 1
     missed_intervals = missed_intervals[-limit:]

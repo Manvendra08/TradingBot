@@ -631,7 +631,7 @@ def _run_ai_diagnostic(r: dict, flags: list[SentinelFlag]) -> ScanDiagnostic | N
         log.warning("Could not read KNOWLEDGE_BASE.md: %s", e)
 
     flags_summary = "\n".join([f"- [{f.rule}] {f.severity}: {f.detail}" for f in flags])
-    recent_logs = "\n".join((r.get("log_lines") or [])[-50:])  # Last 50 log lines
+    recent_logs = "\n".join((r.get("log_lines") or [])[-20:])  # Last 20 log lines to keep prompt token-compact
     
     prompt = f"""You are the Scan Sentinel — an automated Agentic AI Operations Diagnostic Agent.
 Review the following flagged scan metadata and logs to produce a diagnostic thesis.
@@ -677,11 +677,10 @@ DIAGNOSTIC CRITERIA:
 
     from src.engine.llm_enrichment import _call_llm_api
     
-    # Call the API using Gemini/OpenRouter/Groq cascading infrastructure
-    # Run with a 30s timeout to avoid holding up the process
-    deadline = time.time() + 30.0
+    # Run with a 60s timeout to allow full multi-provider cascading if primary models stall
+    deadline = time.time() + 60.0
     try:
-        diagnostic = _call_llm_api(symbol, prompt, ScanDiagnostic, deadline=deadline)
+        diagnostic = _call_llm_api(symbol, prompt, ScanDiagnostic, deadline=deadline, purpose="sentinel_diagnostic")
         return diagnostic
     except Exception as e:
         log.error("%s: LLM call for Scan Sentinel failed: %s", symbol, e)

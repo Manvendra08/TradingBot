@@ -273,26 +273,42 @@ def validate_market_data(
             if stk <= 0:
                 continue
 
-            ce_ltp = float(r.get("ce_ltp") or r.get("call_ltp") or 0.0)
-            pe_ltp = float(r.get("pe_ltp") or r.get("put_ltp") or 0.0)
-            ce_vol = float(r.get("ce_volume") or r.get("call_volume") or 0.0)
-            pe_vol = float(r.get("pe_volume") or r.get("put_volume") or 0.0)
-            ce_oi = float(r.get("ce_oi") or r.get("call_oi") or 0.0)
-            pe_oi = float(r.get("pe_oi") or r.get("put_oi") or 0.0)
+            opt_type_val = str(r.get("option_type") or "").upper().strip()
+            is_ce_row = opt_type_val in ("CE", "CALL")
+            is_pe_row = opt_type_val in ("PE", "PUT")
+            is_dual_row = not opt_type_val
 
-            ce_bid = float(r.get("ce_bid") or r.get("call_bid") or 0.0)
-            ce_ask = float(r.get("ce_ask") or r.get("call_ask") or 0.0)
-            pe_bid = float(r.get("pe_bid") or r.get("put_bid") or 0.0)
-            pe_ask = float(r.get("pe_ask") or r.get("put_ask") or 0.0)
+            ce_ltp = float(r.get("ce_ltp") or r.get("call_ltp") or (r.get("ltp") if is_ce_row else 0.0) or 0.0)
+            pe_ltp = float(r.get("pe_ltp") or r.get("put_ltp") or (r.get("ltp") if is_pe_row else 0.0) or 0.0)
+            ce_vol = float(r.get("ce_volume") or r.get("call_volume") or (r.get("volume") if is_ce_row else 0.0) or 0.0)
+            pe_vol = float(r.get("pe_volume") or r.get("put_volume") or (r.get("volume") if is_pe_row else 0.0) or 0.0)
+            ce_oi = float(r.get("ce_oi") or r.get("call_oi") or (r.get("oi") if is_ce_row else 0.0) or 0.0)
+            pe_oi = float(r.get("pe_oi") or r.get("put_oi") or (r.get("oi") if is_pe_row else 0.0) or 0.0)
+
+            ce_bid = float(r.get("ce_bid") or r.get("call_bid") or (r.get("bid") if is_ce_row else 0.0) or 0.0)
+            ce_ask = float(r.get("ce_ask") or r.get("call_ask") or (r.get("ask") if is_ce_row else 0.0) or 0.0)
+            pe_bid = float(r.get("pe_bid") or r.get("put_bid") or (r.get("bid") if is_pe_row else 0.0) or 0.0)
+            pe_ask = float(r.get("pe_ask") or r.get("put_ask") or (r.get("ask") if is_pe_row else 0.0) or 0.0)
 
             # Hierarchical liquidity check
             ce_tier, _ = _classify_leg_liquidity(ce_ltp, ce_bid, ce_ask, ce_vol, ce_oi)
             pe_tier, _ = _classify_leg_liquidity(pe_ltp, pe_bid, pe_ask, pe_vol, pe_oi)
 
-            if ce_tier != "illiquid" or pe_tier != "illiquid":
-                liquid_count += 1
-            if ce_tier == "secondary" or pe_tier == "secondary":
-                has_secondary_only_strikes = True
+            if is_ce_row:
+                if ce_tier != "illiquid":
+                    liquid_count += 1
+                if ce_tier == "secondary":
+                    has_secondary_only_strikes = True
+            elif is_pe_row:
+                if pe_tier != "illiquid":
+                    liquid_count += 1
+                if pe_tier == "secondary":
+                    has_secondary_only_strikes = True
+            else:
+                if ce_tier != "illiquid" or pe_tier != "illiquid":
+                    liquid_count += 1
+                if ce_tier == "secondary" or pe_tier == "secondary":
+                    has_secondary_only_strikes = True
 
             # Validate premiums using theoretical bounds
             valid_ce = True
@@ -442,34 +458,43 @@ def validate_trade_leg_data(
             if not isinstance(row, dict):
                 continue
             row_strike = float(row.get("strike_price") or row.get("strike") or 0.0)
-            if abs(row_strike - target_strike) < 0.01:
-                matched = True
-                if target_opt_norm == "CE":
-                    ltp = float(row.get("ce_ltp") or row.get("call_ltp") or (row.get("ltp") if str(row.get("option_type")).upper() == "CE" else 0.0) or 0.0)
-                    oi = float(row.get("ce_oi") or row.get("call_oi") or (row.get("oi") if str(row.get("option_type")).upper() == "CE" else 0.0) or 0.0)
-                    vol = float(row.get("ce_volume") or row.get("call_volume") or (row.get("volume") if str(row.get("option_type")).upper() == "CE" else 0.0) or 0.0)
-                    bid = float(row.get("ce_bid") or row.get("call_bid") or (row.get("bid") if str(row.get("option_type")).upper() == "CE" else 0.0) or 0.0)
-                    ask = float(row.get("ce_ask") or row.get("call_ask") or (row.get("ask") if str(row.get("option_type")).upper() == "CE" else 0.0) or 0.0)
-                else:
-                    ltp = float(row.get("pe_ltp") or row.get("put_ltp") or (row.get("ltp") if str(row.get("option_type")).upper() == "PE" else 0.0) or 0.0)
-                    oi = float(row.get("pe_oi") or row.get("put_oi") or (row.get("oi") if str(row.get("option_type")).upper() == "PE" else 0.0) or 0.0)
-                    vol = float(row.get("pe_volume") or row.get("put_volume") or (row.get("volume") if str(row.get("option_type")).upper() == "PE" else 0.0) or 0.0)
-                    bid = float(row.get("pe_bid") or row.get("put_bid") or (row.get("bid") if str(row.get("option_type")).upper() == "PE" else 0.0) or 0.0)
-                    ask = float(row.get("pe_ask") or row.get("put_ask") or (row.get("ask") if str(row.get("option_type")).upper() == "PE" else 0.0) or 0.0)
+            if abs(row_strike - target_strike) >= 0.01:
+                continue
 
-                # Fallback to leg premium if row ltp is 0 but leg specifies entry premium
-                if ltp <= 0:
-                    ltp = float(leg.get("entry_premium") or leg.get("premium") or 0.0)
+            # If the row has an explicit option_type (per-contract row format), ensure it matches target_opt_norm
+            row_opt = str(row.get("option_type") or "").upper().strip()
+            if row_opt:
+                row_opt_norm = "CE" if row_opt in ("CE", "CALL") else ("PE" if row_opt in ("PE", "PUT") else "")
+                if row_opt_norm and row_opt_norm != target_opt_norm:
+                    continue
 
-                if ltp <= 0:
-                    issues.append(f"Leg #{idx} ({target_strike} {target_opt_norm}): LTP is zero or missing")
-                elif not is_valid_option_premium(target_strike, target_opt_norm, ltp, underlying):
-                    issues.append(f"Leg #{idx} ({target_strike} {target_opt_norm}): LTP {ltp:.2f} violates intrinsic/boundary limits")
+            matched = True
+            if target_opt_norm == "CE":
+                ltp = float(row.get("ce_ltp") or row.get("call_ltp") or (row.get("ltp") if row_opt in ("CE", "CALL", "") else 0.0) or 0.0)
+                oi = float(row.get("ce_oi") or row.get("call_oi") or (row.get("oi") if row_opt in ("CE", "CALL", "") else 0.0) or 0.0)
+                vol = float(row.get("ce_volume") or row.get("call_volume") or (row.get("volume") if row_opt in ("CE", "CALL", "") else 0.0) or 0.0)
+                bid = float(row.get("ce_bid") or row.get("call_bid") or (row.get("bid") if row_opt in ("CE", "CALL", "") else 0.0) or 0.0)
+                ask = float(row.get("ce_ask") or row.get("call_ask") or (row.get("ask") if row_opt in ("CE", "CALL", "") else 0.0) or 0.0)
+            else:
+                ltp = float(row.get("pe_ltp") or row.get("put_ltp") or (row.get("ltp") if row_opt in ("PE", "PUT", "") else 0.0) or 0.0)
+                oi = float(row.get("pe_oi") or row.get("put_oi") or (row.get("oi") if row_opt in ("PE", "PUT", "") else 0.0) or 0.0)
+                vol = float(row.get("pe_volume") or row.get("put_volume") or (row.get("volume") if row_opt in ("PE", "PUT", "") else 0.0) or 0.0)
+                bid = float(row.get("pe_bid") or row.get("put_bid") or (row.get("bid") if row_opt in ("PE", "PUT", "") else 0.0) or 0.0)
+                ask = float(row.get("pe_ask") or row.get("put_ask") or (row.get("ask") if row_opt in ("PE", "PUT", "") else 0.0) or 0.0)
 
-                tier, _ = _classify_leg_liquidity(ltp, bid, ask, vol, oi)
-                if tier == "illiquid":
-                    issues.append(f"Leg #{idx} ({target_strike} {target_opt_norm}): completely illiquid with 0 OI and no market depth")
-                break
+            # Fallback to leg premium if row ltp is 0 but leg specifies entry premium
+            if ltp <= 0:
+                ltp = float(leg.get("entry_premium") or leg.get("premium") or 0.0)
+
+            if ltp <= 0:
+                issues.append(f"Leg #{idx} ({target_strike} {target_opt_norm}): LTP is zero or missing")
+            elif not is_valid_option_premium(target_strike, target_opt_norm, ltp, underlying):
+                issues.append(f"Leg #{idx} ({target_strike} {target_opt_norm}): LTP {ltp:.2f} violates intrinsic/boundary limits")
+
+            tier, _ = _classify_leg_liquidity(ltp, bid, ask, vol, oi)
+            if tier == "illiquid":
+                issues.append(f"Leg #{idx} ({target_strike} {target_opt_norm}): completely illiquid with 0 OI and no market depth")
+            break
 
         if not matched:
             issues.append(f"Leg #{idx} ({target_strike} {target_opt_norm}): strike not found in option chain")

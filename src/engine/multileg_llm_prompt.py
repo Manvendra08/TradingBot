@@ -51,16 +51,38 @@ def _format_full_option_chain(
         ce = strikes[s].get("CE", {})
         pe = strikes[s].get("PE", {})
         marker = " ◄ ATM" if abs(s - atm_strike) < 0.01 else ""
-        ce_ltp = f"{float(ce.get('ltp') or 0):.1f}" if ce else "  -"
-        ce_oi = f"{int(ce.get('oi') or 0):,}" if ce else "  -"
-        ce_delta = f"{float(ce.get('delta') or 0):.2f}" if ce else "  -"
-        ce_iv = f"{float(ce.get('iv') or 0):.1f}" if ce else "  -"
-        pe_ltp = f"{float(pe.get('ltp') or 0):.1f}" if pe else "  -"
-        pe_oi = f"{int(pe.get('oi') or 0):,}" if pe else "  -"
-        pe_delta = f"{float(pe.get('delta') or 0):.2f}" if pe else "  -"
-        pe_iv = f"{float(pe.get('iv') or 0):.1f}" if pe else "  -"
+
+        ce_oi_val = int(ce.get("oi") or 0)
+        ce_ltp_val = float(ce.get("ltp") or 0)
+        ce_vol_val = float(ce.get("volume") or 0)
+        if not ce or (ce_oi_val <= 0 and ce_ltp_val <= 0 and ce_vol_val <= 0):
+            ce_ltp = "  -"
+            ce_oi = "0 [NO LIQ]"
+            ce_delta = "  -"
+            ce_iv = "  -"
+        else:
+            ce_ltp = f"{ce_ltp_val:.1f}" if ce_ltp_val > 0 else "  -"
+            ce_oi = f"{ce_oi_val:,}" if ce_oi_val > 0 else "0 [NO LIQ]"
+            ce_delta = f"{float(ce.get('delta') or 0):.2f}"
+            ce_iv = f"{float(ce.get('iv') or 0):.1f}"
+
+        pe_oi_val = int(pe.get("oi") or 0)
+        pe_ltp_val = float(pe.get("ltp") or 0)
+        pe_vol_val = float(pe.get("volume") or 0)
+        if not pe or (pe_oi_val <= 0 and pe_ltp_val <= 0 and pe_vol_val <= 0):
+            pe_ltp = "  -"
+            pe_oi = "0 [NO LIQ]"
+            pe_delta = "  -"
+            pe_iv = "  -"
+        else:
+            pe_ltp = f"{pe_ltp_val:.1f}" if pe_ltp_val > 0 else "  -"
+            pe_oi = f"{pe_oi_val:,}" if pe_oi_val > 0 else "0 [NO LIQ]"
+            pe_delta = f"{float(pe.get('delta') or 0):.2f}"
+            pe_iv = f"{float(pe.get('iv') or 0):.1f}"
+
+        strike_fmt = f"{s:.1f}" if s % 1 != 0 else f"{s:.0f}"
         lines.append(
-            f"  {s:>10.0f}  {ce_ltp:>8}  {ce_oi:>10}  {ce_delta:>6}  {ce_iv:>6}  │  {pe_ltp:>8}  {pe_oi:>10}  {pe_delta:>6}  {pe_iv:>6}{marker}"
+            f"  {strike_fmt:>10}  {ce_ltp:>8}  {ce_oi:>10}  {ce_delta:>6}  {ce_iv:>6}  │  {pe_ltp:>8}  {pe_oi:>10}  {pe_delta:>6}  {pe_iv:>6}{marker}"
         )
 
     if start > 0 or end < len(sorted_strikes):
@@ -166,6 +188,71 @@ def _format_open_books(open_books: list[dict] | None) -> str:
     return "\n".join(lines)
 
 
+def _format_commodity_regime_intelligence(symbol: str, scan_context: dict) -> str:
+    """Format specialized commodity, parity divergence, momentum, and event intelligence."""
+    base_sym = symbol.upper().split()[0] if symbol else ""
+    is_mcx = symbol.upper() in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER") or base_sym in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER")
+    if not is_mcx and "ng_regime" not in scan_context and "ng_dev_pct" not in scan_context:
+        return ""
+
+    lines = ["## SPECIALIZED COMMODITY & REGIME INTELLIGENCE"]
+    
+    if base_sym.startswith("NATURALGAS") or "ng_regime" in scan_context or "ng_dev_pct" in scan_context:
+        from datetime import datetime
+        import pytz
+        
+        IST = pytz.timezone("Asia/Kolkata")
+        now_ist = datetime.now(IST)
+        
+        # 1. Parity State
+        ng_regime = scan_context.get("ng_regime", "UNKNOWN")
+        ng_fv = float(scan_context.get("ng_fv") or 0.0)
+        ng_dev = float(scan_context.get("ng_dev_pct") or 0.0)
+        parity_bias = "MCX Overvalued vs US Spot — Bearish Parity Edge" if ng_dev > 1.5 else (
+            "MCX Undervalued vs US Spot — Bullish Parity Edge" if ng_dev < -1.5 else
+            "Aligned with US Fair Value — Mean-Reverting / Rangebound"
+        )
+        lines.append(f"- Session Regime : {ng_regime}")
+        if ng_fv > 0:
+            lines.append(f"- Parity Fair Value : ₹{ng_fv:.2f} (Henry Hub Spot parity)")
+            lines.append(f"- Parity Deviation  : {ng_dev:+.2f}% ({parity_bias})")
+            
+        # 2. EIA Inventory Schedule
+        is_thu = now_ist.weekday() == 3
+        is_eia_window = is_thu and (18 <= now_ist.hour <= 22)
+        if is_eia_window:
+            eia_status = "ACTIVE TODAY ~8:00 PM IST (Extreme Gamma & Volatility Shock Window — Avoid Naked Straddles)"
+        elif is_thu:
+            eia_status = "TODAY ~8:00 PM IST (Pre-event positioning)"
+        else:
+            eia_status = "Thursdays ~8:00 PM IST (Normal theta session)"
+        lines.append(f"- EIA Inventory     : {eia_status}")
+
+        # 3. Momentum Engine Status
+        try:
+            from src.engine.ng_momentum_strategy import check_ng_momentum_entry
+            bull_ok, bull_msg = check_ng_momentum_entry("BUY")
+            bear_ok, bear_msg = check_ng_momentum_entry("SELL")
+            if bull_ok:
+                mom_status = "Bullish momentum breakout active"
+            elif bear_ok:
+                mom_status = "Bearish momentum breakdown active"
+            else:
+                mom_status = "No momentum breakout — consolidating in range"
+        except Exception:
+            mom_status = "Momentum engine nominal"
+        lines.append(f"- Momentum Engine   : {mom_status}")
+
+        # 4. Weather Context
+        weather_dir = scan_context.get("weather_direction", "neutral")
+        weather_z = float(scan_context.get("weather_z") or 0.0)
+        storm = scan_context.get("weather_gulf_storm", False)
+        if weather_dir != "neutral" or weather_z != 0.0 or storm:
+            lines.append(f"- Weather Factors   : Direction={weather_dir}, Z-Score={weather_z:+.2f}, Storm={'Active' if storm else 'Inactive'}")
+
+    return "\n" + "\n".join(lines) + "\n"
+
+
 def build_multileg_prompt(
     symbol: str,
     intel: dict,
@@ -214,15 +301,16 @@ def build_multileg_prompt(
 
     # Market regime
     regime = scan_context.get("market_regime", "unknown")
+    commodity_intel = _format_commodity_regime_intelligence(symbol, scan_context)
 
-    prompt = f"""You are an expert NSE options seller with 15+ years of experience. You sell premium consistently and profit from time decay and IV crush. You think in terms of probability, risk/reward, and portfolio-level risk — not just single-trade math.
+    prompt = f"""You are an expert options seller with 15+ years of experience in NSE and MCX derivatives. You sell premium consistently and profit from time decay and IV crush. You think in terms of probability, risk/reward, and portfolio-level risk — not just single-trade math.
 
 ## MARKET DATA — {symbol}
 Underlying: {underlying:.2f} | ATM: {atm_strike:.0f} | Expiry: {expiry} | DTE: {dte}
 Verdict: {verdict_label} | Confidence: {confidence}%
 PCR: {pcr:.2f} | Support: {support:.0f} | Resistance: {resistance:.0f} | Max Pain: {max_pain:.0f}
 Market Regime: {regime}
-
+{commodity_intel}
 ## OPTION CHAIN (all strikes)
 {_format_full_option_chain(option_rows, atm_strike, underlying)}
 
@@ -233,7 +321,6 @@ Market Regime: {regime}
 3H: O={float(ohlc_3h.get('open',0)):.0f} H={float(ohlc_3h.get('high',0)):.0f} L={float(ohlc_3h.get('low',0)):.0f} C={float(ohlc_3h.get('close',0)):.0f}
 1H: O={float(ohlc_1h.get('open',0)):.0f} H={float(ohlc_1h.get('high',0)):.0f} L={float(ohlc_1h.get('low',0)):.0f} C={float(ohlc_1h.get('close',0)):.0f}
 {news_section}
-
 ## CURRENT OPEN BOOKS
 {_format_open_books(open_books)}
 
@@ -249,10 +336,16 @@ Analyze the data above and select the BEST multi-leg options strategy.
 ### Strategy Selection Guide:
 - **Calm / Rangebound / Sideways market** → SHORT_STRADDLE (sell ATM CE + ATM PE) or SHORT_STRANGLE (sell OTM CE + OTM PE for wider buffer).
 - **Rangebound market + defined risk** → IRON_CONDOR (sell inner OTM CE + PE, buy outer protective CE + PE)
-- **Trending market + defined risk** → BEAR_CALL_SPREAD for bearish (sell inner CE, buy outer CE) or BULL_PUT_SPREAD for bullish (sell inner PE, buy outer PE)
+- **Trending / Directional market + defined risk** → BEAR_CALL_SPREAD for bearish (sell inner CE, buy outer CE) or BULL_PUT_SPREAD for bullish (sell inner PE, buy outer PE)
 - **Bullish bias + high IV** → JADE_LIZARD (sell OTM PE + sell OTM CE spread)
 - **Uncertain direction / Volatile** → IRON_CONDOR (collect from both sides with defined risk wings)
 - **Extremely thin liquidity or severe event risk** → Consider NO_TRADE
+
+### Commodity & Parity Tactical Rules (MCX NATURALGAS / CRUDEOIL):
+- **Parity Divergence (Deviation > +1.5%)**: MCX premium is inflated relative to Henry Hub fair value. Exploit downside re-pricing using a **BEAR_CALL_SPREAD** (sell OTM CE, buy further OTM CE) or selling upper CE in a strangle.
+- **Parity Divergence (Deviation < -1.5%)**: MCX is discounted relative to Henry Hub fair value. Exploit upside convergence using a **BULL_PUT_SPREAD** (sell OTM PE, buy further OTM PE) or selling lower PE.
+- **Parity Alignment (|Deviation| ≤ 1.0%)**: Market in fair-value equilibrium. Exploit theta decay with a **SHORT_STRANGLE** (sell OTM CE + sell OTM PE at key support/resistance) or **IRON_CONDOR**.
+- **EIA Report Day / Window**: If EIA inventory release is active/imminent, avoid naked straddles; prefer defined-risk spreads or wider strangle strikes with safe deltas (Δ 0.10 - 0.15), or emit **NO_TRADE** if event risk is extreme.
 
 ### Important Constraints on Legs:
 - **SHORT_STRADDLE**: Exactly 2 SELL legs (1 ATM CE + 1 ATM PE). Never return 1 leg.
@@ -262,12 +355,20 @@ Analyze the data above and select the BEST multi-leg options strategy.
 - **BULL_PUT_SPREAD**: Exactly 2 PE legs (1 inner SELL PE + 1 outer protective BUY PE).
 - **NO_TRADE**: If no clean multi-leg structure fits, set strategy_type="NO_TRADE" and legs=[]. Never emit half-formed single-leg structures under multi-leg strategy names.
 
-### Strike Selection Principles:
-- Sell strikes at or beyond support/resistance levels
-- Use max pain as a magnet — strikes near max pain have highest probability of expiring worthless
-- For spreads: width determines max loss — keep width reasonable (1-3% of underlying for indices)
-- Delta guidance: 0.15-0.30 for OTM sold strikes (70-85% probability of profit)
-- Avoid strikes with unusually low OI (thin liquidity)
+### Strike Selection & Strict Liquidity Rules:
+- **LIQUIDITY REQUIREMENT**: ONLY select strikes that have active open interest (OI > 0) and positive premium (LTP > 0). NEVER select strikes marked `[NO LIQ]`, `0`, or `-`. Selecting an illiquid strike will cause immediate rejection by the risk engine.
+- **SHORT_STRANGLE**:
+  * OTM CE strike MUST be strictly ABOVE the underlying spot price ({underlying:.2f}).
+  * OTM PE strike MUST be strictly BELOW the underlying spot price ({underlying:.2f}).
+  * PE strike < underlying < CE strike. NEVER select In-The-Money (ITM) strikes for a strangle.
+  * Both CE and PE strikes MUST have active liquidity (OI > 0 and LTP > 0).
+- **SHORT_STRADDLE**: Both CE and PE MUST be at the ATM strike ({atm_strike:.0f}), and both MUST have active liquidity.
+- **SPREADS / CONDORS**: All sold and bought legs must have active liquidity (OI > 0 and LTP > 0).
+- If liquid strikes meeting the strategy requirements are not available, you MUST set strategy_type="NO_TRADE" and legs=[].
+- Sell strikes at or beyond support/resistance levels when available.
+- Use max pain as a magnet — strikes near max pain have highest probability of expiring worthless.
+- For spreads: width determines max loss — keep width reasonable.
+- Delta guidance: 0.15-0.30 for OTM sold strikes (70-85% probability of profit).
 
 ### Risk Management:
 - Max loss should be ≤ 3x net premium collected

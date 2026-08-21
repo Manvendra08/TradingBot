@@ -18,7 +18,7 @@ STRATEGY_TYPES = {
 }
 
 # ── Allowed Symbols (NSE indices & MCX commodities) ─────────────────────────────
-ALLOWED_SYMBOLS = {"NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX", "NATURALGAS", "CRUDEOIL"}
+ALLOWED_SYMBOLS = {"NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX", "NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"}
 
 # ── Book-Level Risk Caps ────────────────────────────────────────────
 MAX_BOOK_MARGIN = 7_500_000.0     # Maximum combined margin per book (₹75L / 7500K)

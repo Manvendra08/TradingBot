@@ -517,10 +517,27 @@ def execute_paper_trade(
                 from src.models.schema import get_all_open_paper_trades
                 all_open = get_all_open_paper_trades(symbol)
                 max_pos = rconf.get("max_concurrent_positions_per_symbol", 3)
+
+                # If a position for the EXACT same strike & option_type is already open, do not open duplicate
+                duplicate_open = next(
+                    (
+                        t for t in all_open
+                        if abs(float(t.get("strike") or 0) - float(strike)) < 0.01
+                        and str(t.get("option_type") or "").upper() == str(option_type).upper()
+                    ),
+                    None,
+                )
+                if duplicate_open:
+                    return {
+                        "action": "HOLD",
+                        "trade_id": duplicate_open["id"],
+                        "reason": f"Position on {symbol} {strike} {option_type} already open (trade #{duplicate_open['id']})",
+                    }
+
                 if len(all_open) < max_pos:
                     log.info("%s: Open trade #%s exists, but total open (%d) < max (%d) — allowing new position entry.",
                              symbol, open_trade["id"], len(all_open), max_pos)
-                    open_trade = None  # Allow opening additional trade
+                    open_trade = None  # Allow opening additional trade on different strike
                 else:
                     return {
                         "action": "HOLD",

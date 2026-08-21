@@ -232,6 +232,8 @@ def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | N
         symbol_str = str(ctx.get("symbol") or symbol)
         expiry_str = str(ctx.get("expiry") or "")
         option_rows = ctx.get("option_rows") or []
+        if not option_rows:
+            return None
         dte_val = int(ctx.get("dte") or 0)
         min_premium_threshold = 0.001 * underlying  # 0.1% of underlying
 
@@ -281,7 +283,7 @@ def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | N
                     leg_premium = prem
 
             if leg_strike is None:
-                log.warning("[paper_plan] %s STRANGLE: failed to find %s leg — blocking", symbol, leg_type)
+                log.debug("[paper_plan] %s STRANGLE: failed to find %s leg — blocking", symbol, leg_type)
                 return None
 
             legs.append({
@@ -321,6 +323,8 @@ def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | N
             symbol_str = str(ctx.get("symbol") or symbol)
             expiry_str = str(ctx.get("expiry") or "")
             option_rows = ctx.get("option_rows") or []
+            if not option_rows:
+                return None
             dte_val = int(ctx.get("dte") or 0)
             
             selected_strike = None
@@ -424,7 +428,7 @@ def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | N
             if selected_strike is not None:
                 strike = selected_strike
             else:
-                log.warning(
+                log.debug(
                     "[paper_plan] %s %s: All DTE-Delta candidates & OI walls failed premium checks. Trade blocked.",
                     symbol_str, option_type
                 )

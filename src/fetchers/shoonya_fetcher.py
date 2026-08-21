@@ -1214,18 +1214,21 @@ class ShoonyaFetcher(BaseFetcher):
                 zip_path = os.path.join(dest_dir, "MCX_symbols.txt.zip")
                 log.info("[shoonya] Downloading MCX symbols master from %s...", url)
 
-                import urllib.request
-
-                urllib.request.urlretrieve(url, zip_path)
-
+                import io
                 import zipfile
+                import requests
+
+                try:
+                    resp = requests.get(url, timeout=30)
+                    resp.raise_for_status()
+                except requests.exceptions.SSLError:
+                    log.warning("[shoonya] SSL verification failed downloading %s, retrying with verify=False", url)
+                    resp = requests.get(url, timeout=30, verify=False)
+                    resp.raise_for_status()
 
                 log.info("[shoonya] Extracting MCX symbols...")
-                with zipfile.ZipFile(zip_path, "r") as zip_ref:
+                with zipfile.ZipFile(io.BytesIO(resp.content), "r") as zip_ref:
                     zip_ref.extractall(dest_dir)
-
-                if os.path.exists(zip_path):
-                    os.remove(zip_path)
 
                 log.info("[shoonya] MCX symbols updated successfully at %s", dest_file)
                 return dest_file

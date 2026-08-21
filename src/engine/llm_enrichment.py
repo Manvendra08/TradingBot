@@ -51,6 +51,19 @@ _IST = pytz.timezone("Asia/Kolkata")
 
 _OPENCODE_HOST = "opencode.ai"
 
+# Groq models that DO NOT support `response_format={"type":"json_object"}`.
+# Sending it triggers a 400 `json_validate_failed`; the retry then often trips a
+# 429. We skip json_mode for these and rely on reasoning_format='parsed' + the
+# tolerant _extract_json() parser instead. Keep this list in sync with observed
+# Groq 400 json_validate_failed failures.
+_GROQ_NO_JSON_MODELS = frozenset(
+    {
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
+        "qwen/qwen3.6-27b",
+    }
+)
+
 
 def _opencode_post(url, headers, json_payload, timeout):
     """POST to opencode.ai using httpx (requests/urllib3 fails TLS against Cloudflare)."""
@@ -374,125 +387,25 @@ def _format_news(news_data: dict | None) -> str:
 
 def _format_macro_context(symbol: str) -> str:
     """
-    Inject symbol-specific fundamental & macro context into the LLM prompt.
-    This runs regardless of whether live news is available — it gives the LLM
-    the structural knowledge of what DRIVES this instrument, so it can flag
-    risks even in the absence of fresh headlines.
+    Inject condensed symbol-specific fundamental & macro context.
     """
     base = symbol.upper().strip()
+    _is_thu = datetime.now(_IST).weekday() == 3
+    _is_wed = datetime.now(_IST).weekday() == 2
 
-    _MACRO_PREFIX = (
-        "  ⚠️ BACKGROUND CONTEXT ONLY — not a directional signal for today.\n"
-        "  Do NOT use seasonality or macro narrative to override live OI Δ or price action.\n"
-    )
-
-    # ── MCX Commodities ──────────────────────────────────────────────────
     if "NATURALGAS" in base:
-        _is_eia_day = datetime.now(_IST).weekday() == 3  # Thursday
-        _eia_block = (
-            "    - EIA Weekly Natural Gas Storage Report: TODAY ~8:00 PM IST / 10:30 AM ET\n"
-            "      → Surprise builds = bearish pressure; surprise draws = bullish spike\n"
-            "      → Flag as catalyst; avoid fresh entries 2h before/after report"
-            if _is_eia_day
-            else "    - EIA Weekly Natural Gas Storage Report: Thursdays ~8:00 PM IST — not today, do not flag as catalyst"
-        )
-        return (
-            _MACRO_PREFIX
-            + f"""  Symbol type: MCX Natural Gas Futures (USD-denominated, INR-settled)
-  Primary drivers:
-{_eia_block}
-    - Henry Hub spot price (US benchmark): MCX closely tracks it with INR/USD multiplier
-    - Weather demand: Summer cooling (US/EU) and winter heating drive consumption
-    - LNG export demand from US Gulf Coast terminals
-    - INR/USD rate: Every 1 rupee depreciation in INR adds ~1.5-2% to MCX price
-  Key risk: US weather model updates (Mon/Wed) can move Henry Hub 3-5% intraday
-  Seasonality: Jun-Aug = low demand (shoulder season) → structurally bearish bias
-  Correlation: Positive with crude (energy complex); negative with renewable output"""
-        )
-
+        return f"  NATURALGAS: Track Henry Hub, Weather, INR/USD. {'EIA Report TODAY 8PM IST (Risk/Catalyst)' if _is_thu else 'EIA on Thursdays.'}"
     if "CRUDEOIL" in base:
-        _is_eia_day = datetime.now(_IST).weekday() == 2  # Wednesday
-        _eia_line = (
-            "    - EIA Weekly Petroleum Status Report: TODAY ~8:00 PM IST — flag HIGH risk if trade near report\n"
-            "      → Inventory build = bearish; inventory draw = bullish"
-            if _is_eia_day
-            else "    - EIA Weekly Petroleum Status Report: Wednesdays ~8:00 PM IST — not today, do not flag as catalyst"
-        )
-        return (
-            _MACRO_PREFIX
-            + f"""  Symbol type: MCX Crude Oil Futures (Brent/WTI proxy, USD-denominated, INR-settled)
-  Primary drivers:
-{_eia_line}
-    - API Crude Inventory (Tuesday ~4:30 AM IST, unofficial early signal)
-    - OPEC+ production quota decisions and compliance rates
-    - USD Index (DXY): Strong USD → lower crude; weak USD → higher crude
-    - INR/USD rate: Direct multiplier on MCX price (1% INR move = ~1% MCX move)
-    - Geopolitical risk premium: Middle East tensions, Russia-Ukraine supply routes
-  Key risk: OPEC+ meetings (quarterly) = binary risk for trend trades
-  Seasonality: Summer driving season (Jun-Aug) supports demand; shoulder in Sep-Oct
-  Correlation: Natural Gas (energy complex), DXY (inverse), equities (risk-on)"""
-        )
-
+        return f"  CRUDEOIL: Track WTI/Brent, OPEC+, INR/USD. {'EIA Report TODAY 8PM IST (Risk/Catalyst)' if _is_wed else 'EIA on Wednesdays.'}"
     if "GOLD" in base:
-        return (
-            _MACRO_PREFIX
-            + """  Symbol type: MCX Gold Futures (USD-denominated, INR-settled)
-  Primary drivers:
-    - US Federal Reserve rate decisions and dot-plot guidance
-    - US CPI/PCE inflation prints (monthly) — higher inflation = bullish gold
-    - USD Index (DXY): Strong USD = bearish gold; weak USD = bullish gold
-    - INR/USD: Weaker INR inflates MCX gold price independently of spot
-    - Geopolitical safe-haven demand; central bank gold buying (RBI, PBoC)
-  Key risk: Fed FOMC statements, US NFP, CPI day volatility is extreme
-  Seasonality: Akshaya Tritiya / Dhanteras / wedding season → INR demand spikes"""
-        )
-
+        return "  GOLD: Track Fed rates, US CPI/NFP, USD Index (DXY), INR/USD, Safe-haven flows."
     if "SILVER" in base:
-        return (
-            _MACRO_PREFIX
-            + """  Symbol type: MCX Silver Futures (USD-denominated, INR-settled)
-  Primary drivers: Industrial demand (solar panels, EVs), Gold correlation (~0.85)
-  Key risk: More volatile than gold; tracks gold direction but amplifies moves 2-3x
-  Watch: US manufacturing PMI (industrial demand signal), Gold/Silver ratio extremes"""
-        )
-
-    # ── NSE Index Options ────────────────────────────────────────────────
+        return "  SILVER: High-beta Gold proxy. Track industrial demand (solar/EV), Gold/Silver ratio."
     if "BANKNIFTY" in base:
-        return (
-            _MACRO_PREFIX
-            + """  Symbol type: NSE BANKNIFTY Index Options (INR)
-  Primary drivers:
-    - RBI Monetary Policy Committee (MPC) — rate decisions & stance (every 2 months)
-    - Bank credit growth, NPA cycles, PSU bank disinvestment news
-    - FII/DII net flows (daily): Sustained FII selling → index headwind
-    - US Fed policy (risk-on/risk-off global sentiment)
-    - India VIX: VIX > 20 = elevated uncertainty; VIX < 12 = complacency risk
-  BANKNIFTY-specific: Beta ~1.5x vs Nifty; highly sensitive to RBI rate surprises
-  Expiry behaviour: Weekly expiry (Thursday) → gamma squeeze risk near ATM last 2 days
-  Key risk: RBI policy day, budget day, election results = binary events"""
-        )
-
+        return "  BANKNIFTY: High-beta Indian banking index. Track HDFC/ICICI, RBI rates, bond yields, FII flows."
     if "NIFTY" in base:
-        return (
-            _MACRO_PREFIX
-            + """  Symbol type: NSE NIFTY 50 Index Options (INR)
-  Primary drivers:
-    - RBI Monetary Policy Committee (MPC) — rate decisions & stance (every 2 months)
-    - FII/DII net flows (daily): Sustained FII selling → index headwind
-    - US Fed policy, DXY, US equity overnight moves (SGX Nifty pre-market)
-    - India macro: GDP, CPI, IIP prints (monthly)
-    - India VIX: VIX > 20 = elevated uncertainty; VIX < 12 = complacency risk
-  Expiry behaviour: Weekly expiry (Thursday) → gamma squeeze risk near ATM last 2 days
-  Key risk: Budget day, election results, RBI policy day = binary events"""
-        )
-
-    # ── Generic fallback ─────────────────────────────────────────────────
-    return (
-        _MACRO_PREFIX
-        + """  No specific macro context available for this symbol.
-  General reminder: Consider broader market sentiment, FII flows, and any
-  scheduled economic events before taking directional positions."""
-    )
+        return "  NIFTY: Broad Indian index. Track IT, Bank, Reliance, FII flows, USDINR, Global indices."
+    return "  Standard contract."
 
 
 def _format_open_trade(open_trade: dict | None) -> str:
@@ -550,7 +463,7 @@ def _format_historical_oi(symbol: str) -> str:
                 WHERE symbol = ?
                   AND (is_fallback IS NULL OR is_fallback = 0)
                 ORDER BY fetched_at DESC
-                LIMIT 10
+                LIMIT 5
                 """,
                 (symbol,),
             ).fetchall()
@@ -568,7 +481,7 @@ def _format_historical_oi(symbol: str) -> str:
                     FROM underlying_price
                     WHERE symbol = ?
                     ORDER BY fetched_at DESC
-                    LIMIT 10
+                    LIMIT 5
                     """,
                     (symbol,),
                 ).fetchall()
@@ -778,25 +691,8 @@ ENGINE DECISION (authoritative — you MUST respect this):
 • Pattern   : {_vl}
 • Rationale : {_bias_rationale}
 
-OI SEMANTICS (facts, not opinions):
-  CE OI rising + price flat/down  = Call Writing   = BEARISH  (resistance — shorts defending topside)
-  PE OI rising + price flat/up    = Put Writing    = BULLISH  (support — shorts defending downside)
-  Price ↑ + total OI ↑            = Long Buildup   = BULLISH  (fresh longs entering)
-  Price ↓ + total OI ↑            = Short Buildup  = BEARISH  (fresh shorts entering)
-  CE OI falling faster            = CE unwinding   = BULLISH  (shorts covering calls)
-  PE OI falling faster            = PE unwinding   = BEARISH  (longs exiting puts)
-  Both sides unwinding            = Squaring / expiry — NO directional edge
-  PCR rising                      = more puts → BULLISH skew
-  PCR falling                     = fewer puts → BEARISH skew
-
-CHART ROLE (Strict separation — do not cross-use):
-  - 3H candles are used ONLY for entry timing via breakout/breakdown confirmation. Never for trend/signals.
-  - 1H candles are used ONLY for exit timing (strategy exit trigger). Never for trend/signals or entries.
-  - 3H and 1H are NOT to be cross-checked against each other. They serve independent, non-overlapping functions.
-  - Chart candles do NOT override OI engine direction.
-
 ANALYSIS CHAIN — think through these IN ORDER before generating output:
-  Step 1 — OI Pattern : What does the OI Δ shown in DATA above mean? Apply OI semantics above.
+  Step 1 — OI Pattern : What does the OI Δ shown in DATA above mean? Apply standard OI analysis.
   Step 2 — Price Check: Does the Price Δ shown in DATA confirm or contradict the OI signal?
              Is price near the S/R or MaxPain levels shown in DATA?
   Step 3 — History    : Is this pattern new or persistent? (See HISTORICAL OI CONTEXT above)
@@ -995,6 +891,23 @@ URGENCY: HIGH only for immediate adverse threat (sharp move against position, SL
 # ── Gemini API calls ─────────────────────────────────────────────────────
 
 import time
+import threading
+
+# LLM enrichment runs inside pipeline_io_executor (BoundedExecutor, max_workers=16),
+# so multiple symbols' _call_llm_api invocations execute concurrently in different
+# threads. The cooldown dict below is mutated from many threads; single-key writes
+# are atomic under CPython's GIL, but the read-modify-write "consecutive read timeout"
+# counter MUST NOT be shared across calls. We therefore keep that counter in
+# thread-local storage so one symbol's timeouts cannot prematurely cool down a group
+# for every other concurrently-running symbol.
+_cooldown_lock = threading.Lock()
+_per_thread_state = threading.local()
+
+
+def _reset_thread_read_timeouts() -> None:
+    """Reset this thread's per-call read-timeout tally (call at _call_llm_api entry)."""
+    _per_thread_state.read_timeouts = {}
+
 
 _VERDICT_CACHE = {}
 _EXIT_CACHE = {}
@@ -1047,11 +960,25 @@ def _register_provider_failure(
         if "tokens per day" in body_l or "tpd" in body_l:
             retry = max(retry, 3600.0)
         _PROVIDER_COOLDOWN_UNTIL[key] = now + retry
-        # Don't propagate key-wide cooldown for ANTIGRAVITY_REFRESH_TOKEN —
-        # a 429 on claude-sonnet-4-6 should NOT block gemini-2.5-flash.
-        if env_key and env_key != "ANTIGRAVITY_REFRESH_TOKEN":
+        # Don't propagate key-wide cooldown for multi-model providers where
+        # 429s are per-model quotas (e.g. OpenCode, Groq, OpenRouter, AnyAPI, Antigravity)
+        _PER_MODEL_PROVIDERS = (
+            "ANTIGRAVITY_REFRESH_TOKEN",
+            "OPENCODE_API_KEY",
+            "GROQ_API_KEY",
+            "OPENROUTER_API_KEY",
+            "ANY_API_KEY",
+            "NVIDIA_API_KEY",
+        )
+        if env_key and env_key not in _PER_MODEL_PROVIDERS:
             _PROVIDER_COOLDOWN_UNTIL[env_key] = now + retry
         log.info("[llm] %s rate-limited — cooldown %.0fs", provider.get("name"), retry)
+        return
+
+    if status_code in (413, 502, 503, 504):
+        # Transient upstream overload, gateway error, or TPM limit — 60s cooldown
+        _PROVIDER_COOLDOWN_UNTIL[key] = now + 60.0
+        log.info("[llm] %s transient error / TPM limit (status=%d) — 60s cooldown", provider.get("name"), status_code)
         return
 
     if status_code == 400:
@@ -1067,14 +994,17 @@ def _register_provider_failure(
     )
     if is_read_timeout:
         # Read timeout: 60s cooldown for this provider
-        _PROVIDER_COOLDOWN_UNTIL[key] = now + 60.0
+        with _cooldown_lock:
+            _PROVIDER_COOLDOWN_UNTIL[key] = now + 60.0
         if group_name:
-            c_key = f"_read_timeout_cnt_{group_name}"
-            cnt = _PROVIDER_COOLDOWN_UNTIL.get(c_key, 0) + 1
-            _PROVIDER_COOLDOWN_UNTIL[c_key] = cnt
-            if cnt >= 3:
-                _PROVIDER_COOLDOWN_UNTIL[group_name] = now + 90.0
-                _PROVIDER_COOLDOWN_UNTIL[c_key] = 0
+            # Per-thread tally: concurrent symbol enrichments must not share this count.
+            rt = getattr(_per_thread_state, "read_timeouts", {})
+            rt[group_name] = rt.get(group_name, 0) + 1
+            cnt = rt[group_name]
+            if cnt >= 2:
+                with _cooldown_lock:
+                    _PROVIDER_COOLDOWN_UNTIL[group_name] = now + 90.0
+                rt[group_name] = 0
                 log.warning("[llm] %d consecutive read timeouts in group '%s' — cooling down group for 90s to preserve pipeline deadline budget for fallbacks", cnt, group_name)
         log.info("[llm] Read timeout on %s — 60s cooldown", provider.get("name"))
         return
@@ -1231,6 +1161,8 @@ def _call_llm_api(
         _PROVIDER_COOLDOWN_UNTIL
     schema = response_schema or LLMTradeVerdict
     now = time.time()
+    # Isolate this call's read-timeout tally from concurrently-running symbols.
+    _reset_thread_read_timeouts()
 
     from config.settings import DISABLE_LLM_ENRICHMENT
 
@@ -1315,6 +1247,8 @@ def _call_llm_api(
             purpose = "eod_review"
         elif schema in (LLMTradeVerdict, LLMExitAdvice):
             purpose = "live_verdict"
+        elif getattr(schema, "__name__", "") == "ScanDiagnostic":
+            purpose = "sentinel_diagnostic"
         else:
             purpose = "formatting"
 
@@ -1325,39 +1259,133 @@ def _call_llm_api(
     else:
         _omnirouter_url = _omnirouter_base
 
-    # OmniRouter primary group — Antigravity & CW models.
-    # OmniRouter is a reverse proxy (OmniRouter → upstream provider), so the
-    # meaningful latency is the upstream first-token time. timeout 20 gives a
-    # proxy-backed model a real chance without overshooting the deadline cap.
+    # OmniRouter primary group — ChatGPT CX, Claude Web, KR & TRK models.
     _omnirouter_group = {
         "model_group": "omnirouter-primary",
         "providers": [
             {
-                "name": "OmniRouter (cw/claude-sonnet-5)",
+                "name": "OmniRouter (GPT 5.5 CX)",
+                "env_key": "OMNIROUTER_API_KEY",
+                "url": _omnirouter_url,
+                "model": "cx/gpt-5.5",
+                "model_group": "omnirouter-primary",
+                "timeout": 15,
+                "max_tokens_override": 4096,
+            },
+            {
+                "name": "OmniRouter (Claude Sonnet 5)",
                 "env_key": "OMNIROUTER_API_KEY",
                 "url": _omnirouter_url,
                 "model": "cw/claude-sonnet-5",
                 "model_group": "omnirouter-primary",
-                "timeout": 25,  # 25s — generous budget for deep multi-leg reasoning
+                "timeout": 15,
                 "max_tokens_override": 4096,
             },
             {
-                "name": "OmniRouter (antigravity/claude-sonnet-4-6)",
+                "name": "OmniRouter (Claude Haiku 4.5)",
                 "env_key": "OMNIROUTER_API_KEY",
                 "url": _omnirouter_url,
-                "model": "antigravity/claude-sonnet-4-6",
+                "model": "cw/claude-haiku-4-5-20251001",
                 "model_group": "omnirouter-primary",
-                "timeout": 20,
+                "timeout": 12,
                 "max_tokens_override": 4096,
             },
             {
-                "name": "OmniRouter (Gemini 3.6 Flash Medium)",
+                "name": "OmniRouter (Claude Haiku 4.5 KR)",
                 "env_key": "OMNIROUTER_API_KEY",
                 "url": _omnirouter_url,
-                "model": "antigravity/gemini-3.6-flash-medium",
+                "model": "kr/claude-haiku-4.5",
                 "model_group": "omnirouter-primary",
-                "timeout": 20,
+                "timeout": 12,
                 "max_tokens_override": 4096,
+            },
+            {
+                "name": "OmniRouter (GLM 5 KR)",
+                "env_key": "OMNIROUTER_API_KEY",
+                "url": _omnirouter_url,
+                "model": "kr/glm-5",
+                "model_group": "omnirouter-primary",
+                "timeout": 12,
+                "max_tokens_override": 4096,
+            },
+            {
+                "name": "OmniRouter (DeepSeek 3.2 KR)",
+                "env_key": "OMNIROUTER_API_KEY",
+                "url": _omnirouter_url,
+                "model": "kr/deepseek-3.2",
+                "model_group": "omnirouter-primary",
+                "timeout": 12,
+                "max_tokens_override": 4096,
+            },
+            {
+                "name": "OmniRouter (Claude Sonnet 5 Fast)",
+                "env_key": "OMNIROUTER_API_KEY",
+                "url": _omnirouter_url,
+                "model": "no-think/cw/claude-sonnet-5",
+                "model_group": "omnirouter-primary",
+                "timeout": 12,
+                "max_tokens_override": 4096,
+            },
+            {
+                "name": "OmniRouter (Qwen 3.8 Max Free TRK)",
+                "env_key": "OMNIROUTER_API_KEY",
+                "url": _omnirouter_url,
+                "model": "trk/qwen/qwen3.8-max-free",
+                "model_group": "omnirouter-primary",
+                "timeout": 10,
+                "max_tokens_override": 4096,
+            },
+        ],
+    }
+
+    # OmniRouter Sentinel group — PRIMARY for Scan Sentinel Diagnostics
+    _omnirouter_sentinel_group = {
+        "model_group": "omnirouter-sentinel",
+        "providers": [
+            {
+                "name": "OmniRouter (Claude Haiku 4.5 KR)",
+                "env_key": "OMNIROUTER_API_KEY",
+                "url": _omnirouter_url,
+                "model": "kr/claude-haiku-4.5",
+                "model_group": "omnirouter-sentinel",
+                "timeout": 10,
+                "max_tokens_override": 2048,
+            },
+            {
+                "name": "OmniRouter (Claude Haiku 4.5 KR Fast)",
+                "env_key": "OMNIROUTER_API_KEY",
+                "url": _omnirouter_url,
+                "model": "no-think/kr/claude-haiku-4.5",
+                "model_group": "omnirouter-sentinel",
+                "timeout": 10,
+                "max_tokens_override": 2048,
+            },
+            {
+                "name": "OmniRouter (GLM 5 KR)",
+                "env_key": "OMNIROUTER_API_KEY",
+                "url": _omnirouter_url,
+                "model": "kr/glm-5",
+                "model_group": "omnirouter-sentinel",
+                "timeout": 10,
+                "max_tokens_override": 2048,
+            },
+            {
+                "name": "OmniRouter (DeepSeek 3.2 KR)",
+                "env_key": "OMNIROUTER_API_KEY",
+                "url": _omnirouter_url,
+                "model": "kr/deepseek-3.2",
+                "model_group": "omnirouter-sentinel",
+                "timeout": 10,
+                "max_tokens_override": 2048,
+            },
+            {
+                "name": "OmniRouter (Qwen 3.8 Max Free TRK)",
+                "env_key": "OMNIROUTER_API_KEY",
+                "url": _omnirouter_url,
+                "model": "trk/qwen/qwen3.8-max-free",
+                "model_group": "omnirouter-sentinel",
+                "timeout": 8,
+                "max_tokens_override": 2048,
             },
         ],
     }
@@ -1411,6 +1439,25 @@ def _call_llm_api(
         ],
     }
 
+    # Gemini SDK group
+    _gemini_group = {
+        "model_group": "gemini-sdk",
+        "providers": [
+            {
+                "name": "Gemini SDK (2.5 Flash)",
+                "env_key": "GEMINI_API_KEY",
+                "model": "gemini-2.5-flash",
+                "use_gemini_sdk": True,
+            },
+            {
+                "name": "Gemini SDK (2.0 Flash)",
+                "env_key": "GEMINI_API_KEY",
+                "model": "gemini-2.0-flash",
+                "use_gemini_sdk": True,
+            },
+        ],
+    }
+
     # Route model pipeline based on purpose
     if purpose == "eod_review":
         # OpenCode Zen EOD group — PRIMARY for eod (free, no rate limit). This was
@@ -1421,17 +1468,38 @@ def _call_llm_api(
             "model_group": "opencode-zen-eod",
             "providers": [
                 {
+                    "name": "OpenCode Zen (Nemotron 3.5 Lightning Free)",
+                    "env_key": "OPENCODE_API_KEY",
+                    "url": "https://opencode.ai/zen/v1/chat/completions",
+                    "model": "nemotron-3.5-lightning-free",
+                    "timeout": 20,
+                },
+                {
+                    "name": "OpenCode Zen (Laguna S 2.1 Free)",
+                    "env_key": "OPENCODE_API_KEY",
+                    "url": "https://opencode.ai/zen/v1/chat/completions",
+                    "model": "laguna-s-2.1-free",
+                    "timeout": 20,
+                },
+                {
+                    "name": "OpenCode Zen (HY3 Free)",
+                    "env_key": "OPENCODE_API_KEY",
+                    "url": "https://opencode.ai/zen/v1/chat/completions",
+                    "model": "hy3-free",
+                    "timeout": 20,
+                },
+                {
+                    "name": "OpenCode Zen (X-Preview-F Free)",
+                    "env_key": "OPENCODE_API_KEY",
+                    "url": "https://opencode.ai/zen/v1/chat/completions",
+                    "model": "x-preview-f-free",
+                    "timeout": 20,
+                },
+                {
                     "name": "OpenCode Zen (Nemotron 3 Ultra Free)",
                     "env_key": "OPENCODE_API_KEY",
                     "url": "https://opencode.ai/zen/v1/chat/completions",
                     "model": "nemotron-3-ultra-free",
-                    "timeout": 35,
-                },
-                {
-                    "name": "OpenCode Zen (DeepSeek V4 Flash Free)",
-                    "env_key": "OPENCODE_API_KEY",
-                    "url": "https://opencode.ai/zen/v1/chat/completions",
-                    "model": "deepseek-v4-flash-free",
                     "timeout": 25,
                 },
             ],
@@ -1461,21 +1529,23 @@ def _call_llm_api(
                     "env_key": "GROQ_API_KEY",
                     "url": "https://api.groq.com/openai/v1/chat/completions",
                     "model": "openai/gpt-oss-120b",
+                    "max_tokens_override": 1024,
                 },
                 {
                     "name": "Groq (Qwen 3.6 27B)",
                     "env_key": "GROQ_API_KEY",
                     "url": "https://api.groq.com/openai/v1/chat/completions",
                     "model": "qwen/qwen3.6-27b",
+                    "max_tokens_override": 1024,
                 },
             ],
         }
 
         FREE_MODEL_PIPELINE = [
             _omnirouter_group,
-            _github_models_eod,
             _groq_group_eod,
             _opencode_zen_eod,
+            _github_models_eod,
             _bedrock_mantle_group,
             {
                 "model_group": "nvidia-nim-eod",
@@ -1485,29 +1555,25 @@ def _call_llm_api(
                         "env_key": "NVIDIA_API_KEY",
                         "url": "https://integrate.api.nvidia.com/v1/chat/completions",
                         "model": "nvidia/nemotron-3-super-120b-a12b",
+                        "timeout": 25,
                     },
                     {
                         "name": "NVIDIA NIM (DeepSeek V4 Flash)",
                         "env_key": "NVIDIA_API_KEY",
                         "url": "https://integrate.api.nvidia.com/v1/chat/completions",
-                        "model": "deepseek-ai/deepseek-v4-flash",
+                        "model": "deepseek-ai/deepseek-v4-flash-0731",
                     },
                 ],
             },
             {
-                "model_group": "nemotron-eod-review",
+                "model_group": "openrouter-eod",
                 "providers": [
                     {
-                        "name": "OpenRouter (Nemotron 3 Ultra 550B Free)",
+                        "name": "OpenRouter (Nemotron 70B Free)",
                         "env_key": "OPENROUTER_API_KEY",
                         "url": "https://openrouter.ai/api/v1/chat/completions",
-                        "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
-                    },
-                    {
-                        "name": "OpenRouter (Nemotron 3 Super 120B Free)",
-                        "env_key": "OPENROUTER_API_KEY",
-                        "url": "https://openrouter.ai/api/v1/chat/completions",
-                        "model": "nvidia/nemotron-3-super-120b-a12b:free",
+                        "model": "nvidia/nemotron-70b-instruct:free",
+                        "timeout": 20,
                     },
                 ],
             },
@@ -1538,94 +1604,158 @@ def _call_llm_api(
                     "env_key": "GROQ_API_KEY",
                     "url": "https://api.groq.com/openai/v1/chat/completions",
                     "model": "openai/gpt-oss-120b",
+                    "max_tokens_override": 1024,
                 },
                 {
                     "name": "Groq (Qwen 3.6 27B)",
                     "env_key": "GROQ_API_KEY",
                     "url": "https://api.groq.com/openai/v1/chat/completions",
                     "model": "qwen/qwen3.6-27b",
+                    "max_tokens_override": 1024,
                 },
                 {
                     "name": "Groq (GPT-OSS 20B)",
                     "env_key": "GROQ_API_KEY",
                     "url": "https://api.groq.com/openai/v1/chat/completions",
                     "model": "openai/gpt-oss-20b",
+                    "max_tokens_override": 1024,
+                },
+                {
+                    "name": "Groq (Compound Mini)",
+                    "env_key": "GROQ_API_KEY",
+                    "url": "https://api.groq.com/openai/v1/chat/completions",
+                    "model": "groq/compound-mini",
+                    "max_tokens_override": 1024,
                 },
             ],
         }
-        # OpenCode Zen formatting group — PRIMARY for formatting (free, no rate limit)
+        # OpenCode Zen formatting group
         _opencode_zen_formatting_group = {
             "model_group": "opencode-zen-formatting",
             "providers": [
+                {
+                    "name": "OpenCode Zen (Nemotron 3.5 Lightning Free)",
+                    "env_key": "OPENCODE_API_KEY",
+                    "url": "https://opencode.ai/zen/v1/chat/completions",
+                    "model": "nemotron-3.5-lightning-free",
+                    "timeout": 20,
+                },
+                {
+                    "name": "OpenCode Zen (Laguna S 2.1 Free)",
+                    "env_key": "OPENCODE_API_KEY",
+                    "url": "https://opencode.ai/zen/v1/chat/completions",
+                    "model": "laguna-s-2.1-free",
+                    "timeout": 20,
+                },
+                {
+                    "name": "OpenCode Zen (HY3 Free)",
+                    "env_key": "OPENCODE_API_KEY",
+                    "url": "https://opencode.ai/zen/v1/chat/completions",
+                    "model": "hy3-free",
+                    "timeout": 20,
+                },
+                {
+                    "name": "OpenCode Zen (X-Preview-F Free)",
+                    "env_key": "OPENCODE_API_KEY",
+                    "url": "https://opencode.ai/zen/v1/chat/completions",
+                    "model": "x-preview-f-free",
+                    "timeout": 20,
+                },
                 {
                     "name": "OpenCode Zen (Nemotron 3 Ultra Free)",
                     "env_key": "OPENCODE_API_KEY",
                     "url": "https://opencode.ai/zen/v1/chat/completions",
                     "model": "nemotron-3-ultra-free",
-                    "timeout": 35,
-                },
-                {
-                    "name": "OpenCode Zen (DeepSeek V4 Flash Free)",
-                    "env_key": "OPENCODE_API_KEY",
-                    "url": "https://opencode.ai/zen/v1/chat/completions",
-                    "model": "deepseek-v4-flash-free",
                     "timeout": 25,
                 },
             ],
         }
         FREE_MODEL_PIPELINE = [
             _omnirouter_group,
-            _github_models_fmt,
             _groq_group_fmt,
             _opencode_zen_formatting_group,
+            _github_models_fmt,
             _bedrock_mantle_group,
-            {
-                "model_group": "nvidia-nim-formatting",
-                "providers": [
-                    {
-                        "name": "NVIDIA NIM (Nemotron 3 Super 120B)",
-                        "env_key": "NVIDIA_API_KEY",
-                        "url": "https://integrate.api.nvidia.com/v1/chat/completions",
-                        "model": "nvidia/nemotron-3-super-120b-a12b",
-                    },
-                    {
-                        "name": "NVIDIA NIM (DeepSeek V4 Flash)",
-                        "env_key": "NVIDIA_API_KEY",
-                        "url": "https://integrate.api.nvidia.com/v1/chat/completions",
-                        "model": "deepseek-ai/deepseek-v4-flash",
-                    },
-                ],
-            },
-            {
-                "model_group": "qwen-coder-formatting",
-                "providers": [
-                    {
-                        "name": "OpenRouter (Qwen 3 Coder Free)",
-                        "env_key": "OPENROUTER_API_KEY",
-                        "url": "https://openrouter.ai/api/v1/chat/completions",
-                        "model": "qwen/qwen3-coder:free",
-                    },
-                    {
-                        "name": "OpenRouter (Qwen 3 Next 80B Free)",
-                        "env_key": "OPENROUTER_API_KEY",
-                        "url": "https://openrouter.ai/api/v1/chat/completions",
-                        "model": "qwen/qwen3-next-80b-a3b-instruct:free",
-                    },
-                    {
-                        "name": "OpenRouter (Qwen 2.5 Coder 32B Free)",
-                        "env_key": "OPENROUTER_API_KEY",
-                        "url": "https://openrouter.ai/api/v1/chat/completions",
-                        "model": "qwen/qwen-2.5-coder-32b-instruct:free",
-                    },
-                    {
-                        "name": "OpenRouter (Qwen 2.5 Coder 32B)",
-                        "env_key": "OPENROUTER_API_KEY",
-                        "url": "https://openrouter.ai/api/v1/chat/completions",
-                        "model": "qwen/qwen-2.5-coder-32b-instruct",
-                    },
-                ],
-            },
-            ]
+        ]
+    elif purpose == "sentinel_diagnostic":
+        _groq_group_sentinel = {
+            "model_group": "groq-sentinel",
+            "providers": [
+                {
+                    "name": "Groq (GPT-OSS 120B)",
+                    "env_key": "GROQ_API_KEY",
+                    "url": "https://api.groq.com/openai/v1/chat/completions",
+                    "model": "openai/gpt-oss-120b",
+                    "max_tokens_override": 1024,
+                },
+                {
+                    "name": "Groq (Qwen 3.6 27B)",
+                    "env_key": "GROQ_API_KEY",
+                    "url": "https://api.groq.com/openai/v1/chat/completions",
+                    "model": "qwen/qwen3.6-27b",
+                    "max_tokens_override": 1024,
+                },
+                {
+                    "name": "Groq (GPT-OSS 20B)",
+                    "env_key": "GROQ_API_KEY",
+                    "url": "https://api.groq.com/openai/v1/chat/completions",
+                    "model": "openai/gpt-oss-20b",
+                    "max_tokens_override": 1024,
+                },
+                {
+                    "name": "Groq (Compound Mini)",
+                    "env_key": "GROQ_API_KEY",
+                    "url": "https://api.groq.com/openai/v1/chat/completions",
+                    "model": "groq/compound-mini",
+                    "max_tokens_override": 1024,
+                },
+            ],
+        }
+        _opencode_zen_sentinel = {
+            "model_group": "opencode-zen-sentinel",
+            "providers": [
+                {
+                    "name": "OpenCode Zen (Nemotron 3.5 Lightning Free)",
+                    "env_key": "OPENCODE_API_KEY",
+                    "url": "https://opencode.ai/zen/v1/chat/completions",
+                    "model": "nemotron-3.5-lightning-free",
+                    "timeout": 15,
+                },
+                {
+                    "name": "OpenCode Zen (Laguna S 2.1 Free)",
+                    "env_key": "OPENCODE_API_KEY",
+                    "url": "https://opencode.ai/zen/v1/chat/completions",
+                    "model": "laguna-s-2.1-free",
+                    "timeout": 15,
+                },
+                {
+                    "name": "OpenCode Zen (HY3 Free)",
+                    "env_key": "OPENCODE_API_KEY",
+                    "url": "https://opencode.ai/zen/v1/chat/completions",
+                    "model": "hy3-free",
+                    "timeout": 15,
+                },
+                {
+                    "name": "OpenCode Zen (X-Preview-F Free)",
+                    "env_key": "OPENCODE_API_KEY",
+                    "url": "https://opencode.ai/zen/v1/chat/completions",
+                    "model": "x-preview-f-free",
+                    "timeout": 15,
+                },
+                {
+                    "name": "OpenCode Zen (Nemotron 3 Ultra Free)",
+                    "env_key": "OPENCODE_API_KEY",
+                    "url": "https://opencode.ai/zen/v1/chat/completions",
+                    "model": "nemotron-3-ultra-free",
+                    "timeout": 20,
+                },
+            ],
+        }
+        FREE_MODEL_PIPELINE = [
+            _omnirouter_sentinel_group,
+            _groq_group_sentinel,
+            _opencode_zen_sentinel,
+        ]
     else:  # live_verdict — symbol-aware routing
         _base = symbol.upper().strip().split()[0]
         _class = get_symbol_class(_base)
@@ -1636,18 +1766,32 @@ def _call_llm_api(
             "model_group": "opencode-zen-free",
             "providers": [
                 {
-                    "name": "OpenCode Zen (Mimo V2.5 Free)",
+                    "name": "OpenCode Zen (Nemotron 3.5 Lightning Free)",
                     "env_key": "OPENCODE_API_KEY",
                     "url": "https://opencode.ai/zen/v1/chat/completions",
-                    "model": "mimo-v2.5-free",
-                    "timeout": 12,
+                    "model": "nemotron-3.5-lightning-free",
+                    "timeout": 20,
                 },
                 {
-                    "name": "OpenCode Zen (DeepSeek V4 Flash Free)",
+                    "name": "OpenCode Zen (Laguna S 2.1 Free)",
                     "env_key": "OPENCODE_API_KEY",
                     "url": "https://opencode.ai/zen/v1/chat/completions",
-                    "model": "deepseek-v4-flash-free",
-                    "timeout": 12,
+                    "model": "laguna-s-2.1-free",
+                    "timeout": 20,
+                },
+                {
+                    "name": "OpenCode Zen (HY3 Free)",
+                    "env_key": "OPENCODE_API_KEY",
+                    "url": "https://opencode.ai/zen/v1/chat/completions",
+                    "model": "hy3-free",
+                    "timeout": 20,
+                },
+                {
+                    "name": "OpenCode Zen (X-Preview-F Free)",
+                    "env_key": "OPENCODE_API_KEY",
+                    "url": "https://opencode.ai/zen/v1/chat/completions",
+                    "model": "x-preview-f-free",
+                    "timeout": 20,
                 },
                 {
                     "name": "OpenCode Zen (Nemotron 3 Ultra Free)",
@@ -1673,7 +1817,7 @@ def _call_llm_api(
                     "name": "NVIDIA NIM (DeepSeek V4 Flash)",
                     "env_key": "NVIDIA_API_KEY",
                     "url": "https://integrate.api.nvidia.com/v1/chat/completions",
-                    "model": "deepseek-ai/deepseek-v4-flash",
+                    "model": "deepseek-ai/deepseek-v4-flash-0731",
                 },
                 {
                     "name": "NVIDIA NIM (Llama 3.3 70B)",
@@ -1705,18 +1849,21 @@ def _call_llm_api(
                     "env_key": "GROQ_API_KEY",
                     "url": "https://api.groq.com/openai/v1/chat/completions",
                     "model": "openai/gpt-oss-120b",
+                    "max_tokens_override": 1024,
                 },
                 {
                     "name": "Groq (Qwen 3.6 27B)",
                     "env_key": "GROQ_API_KEY",
                     "url": "https://api.groq.com/openai/v1/chat/completions",
                     "model": "qwen/qwen3.6-27b",
+                    "max_tokens_override": 1024,
                 },
                 {
                     "name": "Groq (GPT-OSS 20B)",
                     "env_key": "GROQ_API_KEY",
                     "url": "https://api.groq.com/openai/v1/chat/completions",
                     "model": "openai/gpt-oss-20b",
+                    "max_tokens_override": 1024,
                 },
             ],
         }
@@ -1857,41 +2004,41 @@ def _call_llm_api(
                     "env_key": "ANY_API_KEY",
                     "url": "https://api.anyapi.ai/v1/chat/completions",
                     "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
-                    "timeout": 45,
+                    "timeout": 15,
                 },
                 {
                     "name": "AnyAPI (Gemma 4 26B Free)",
                     "env_key": "ANY_API_KEY",
                     "url": "https://api.anyapi.ai/v1/chat/completions",
                     "model": "google/gemma-4-26b-a4b-it:free",
-                    "timeout": 45,
+                    "timeout": 15,
                 },
                 {
                     "name": "AnyAPI (Nemotron 3 Nano 30B Free)",
                     "env_key": "ANY_API_KEY",
                     "url": "https://api.anyapi.ai/v1/chat/completions",
                     "model": "nvidia/nemotron-3-nano-30b-a3b:free",
-                    "timeout": 45,
+                    "timeout": 15,
                 },
                 {
                     "name": "AnyAPI (Laguna M.1 Free)",
                     "env_key": "ANY_API_KEY",
                     "url": "https://api.anyapi.ai/v1/chat/completions",
                     "model": "poolside/laguna-m.1:free",
-                    "timeout": 50,
+                    "timeout": 15,
                 },
                 {
                     "name": "AnyAPI (Nemotron Nano 12B VL Free)",
                     "env_key": "ANY_API_KEY",
                     "url": "https://api.anyapi.ai/v1/chat/completions",
                     "model": "nvidia/nemotron-nano-12b-v2-vl:free",
-                    "timeout": 45,
+                    "timeout": 15,
                 },
             ],
         }
 
         if _is_mcx:
-            # MCX: OmniRouter (primary) → Groq → OpenCode Zen → AnyAPI Free → Bedrock Mantle → Nvidia NIM → Bedrock → OpenRouter → Gemini → SambaNova
+            # MCX: OmniRouter → Groq → OpenCode Zen → AnyAPI Free → Bedrock Mantle → Nvidia NIM → Bedrock → OpenRouter → Gemini → SambaNova
             FREE_MODEL_PIPELINE = [
                 _omnirouter_group,
                 _groq_group,
@@ -1939,7 +2086,7 @@ def _call_llm_api(
                 },
             ]
         else:
-            # NSE/BSE indices: OmniRouter (primary) → Groq → OpenCode Zen → Nvidia NIM → Bedrock → OpenRouter → Gemini
+            # NSE/BSE indices: OmniRouter → Groq → OpenCode Zen → Nvidia NIM → Bedrock → OpenRouter → Gemini
             FREE_MODEL_PIPELINE = [
                 _omnirouter_group,
                 _groq_group,
@@ -1974,6 +2121,14 @@ def _call_llm_api(
             continue
 
         for provider in group["providers"]:
+            now_loop = time.time()
+            if group_name and _PROVIDER_COOLDOWN_UNTIL.get(group_name, 0.0) > now_loop:
+                log.info(
+                    "[llm] Breaking out of group %s — group cooldown active (%.0fs left)",
+                    group_name,
+                    _PROVIDER_COOLDOWN_UNTIL[group_name] - now_loop,
+                )
+                break
             if group_name and "model_group" not in provider:
                 provider["model_group"] = group_name
             if override_providers is not None and provider not in override_providers:
@@ -2036,7 +2191,7 @@ def _call_llm_api(
                             response_mime_type="application/json",
                             response_schema=schema,
                             temperature=0.2,
-                            http_options={"timeout": min(remaining, 12.0)},
+                            http_options={"timeout": int(min(remaining, 12.0))},
                         ),
                     )
                     result = schema.model_validate_json(response.text)
@@ -2237,11 +2392,25 @@ def _call_llm_api(
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": prompt},
                     ],
-                    "response_format": {"type": "json_object"},
                     "temperature": 0.2,
                     "max_tokens": provider.get("max_tokens_override", max_tokens),
                     "stream": False,
                 }
+                # Groq reasoning models (gpt-oss-120b, qwen3.6-27b) require BOTH:
+                #   reasoning_format='parsed'  → puts thinking in reasoning_content, answer in content
+                #   response_format='json_object' → forces JSON output
+                # Using 'hidden' causes these models to return null content because they
+                # output their final answer inside the suppressed reasoning trace.
+                # Using 'parsed' + json_object keeps content populated with the JSON answer.
+                if "api.groq.com" in provider.get("url", ""):
+                    json_payload["reasoning_format"] = "parsed"
+                    # Some Groq models reject response_format=json_object with a 400
+                    # json_validate_failed — skip json_mode for those and let the tolerant
+                    # _extract_json() parser recover the JSON from the free-text answer.
+                    if provider["model"] not in _GROQ_NO_JSON_MODELS:
+                        json_payload["response_format"] = {"type": "json_object"}
+                else:
+                    json_payload["response_format"] = {"type": "json_object"}
                 if provider["name"].startswith("OpenRouter"):
                     headers["HTTP-Referer"] = "https://github.com/nsebot"
                     headers["X-Title"] = "NSEBOT Trading Engine"
@@ -2314,6 +2483,9 @@ def _call_llm_api(
                         continue
                     raw_content = message.get("content")
                     if not raw_content or not raw_content.strip():
+                        # Fallback to reasoning or reasoning_content field if content is empty
+                        raw_content = message.get("reasoning") or message.get("reasoning_content") or ""
+                    if not raw_content or not raw_content.strip():
                         log.info(
                             "[llm] %s (%s) returned null/whitespace content",
                             provider["name"],
@@ -2351,9 +2523,11 @@ def _call_llm_api(
                     )
                     _CONSECUTIVE_FAILURES = 0
                     if group_name:
-                        _PROVIDER_COOLDOWN_UNTIL[f"_read_timeout_cnt_{group_name}"] = 0
+                        # Clear this call's read-timeout tally for the group on success.
+                        rt = getattr(_per_thread_state, "read_timeouts", {})
+                        rt[group_name] = 0
                     return result
-                if resp.status_code == 429:
+                elif resp.status_code == 429:
                     log.warning(
                         "[llm] %s (%s) returned 429 (Too Many Requests/Quota Exceeded). Payload: %s",
                         provider["name"],
@@ -2376,7 +2550,13 @@ def _call_llm_api(
                         provider["model"],
                     )
                     retry_payload = json_payload.copy()
-                    retry_payload.pop("response_format", None)
+                    # Remove both response_format AND reasoning_format for Groq models
+                    # that don't support the combined parsed+json_object mode
+                    if "api.groq.com" in provider.get("url", ""):
+                        retry_payload.pop("response_format", None)
+                        retry_payload.pop("reasoning_format", None)
+                    else:
+                        retry_payload.pop("response_format", None)
                     if _OPENCODE_HOST in provider["url"] and _httpx is not None:
                         retry_resp = _opencode_post(
                             provider["url"],
@@ -2441,11 +2621,17 @@ def _call_llm_api(
                                     symbol,
                                     provider.get("name") or provider["model"],
                                     provider["model"],
-                                )
+                                    )
                                 _CONSECUTIVE_FAILURES = 0
                                 return result
+                    # After retry, if still not 200, register the failure and skip this model.
+                    # Do NOT re-try indefinitely — move to next model in pipeline.
+                    _register_provider_failure(
+                        provider, retry_resp.status_code if retry_resp.status_code else 500,
+                        retry_resp.text if retry_resp else "no response", now
+                    )
                     log.info(
-                        "[llm] %s (%s) retry also failed (status=%d) — skipping",
+                        "[llm] %s (%s) retry also failed (status=%d) — skipping to next model",
                         provider["name"],
                         provider["model"],
                         retry_resp.status_code if retry_resp.status_code else -1,
@@ -2539,6 +2725,15 @@ def _extract_json(raw: str) -> dict | list:
     original_raw = raw
     if not raw or not raw.strip():
         raise ValueError("JSON extract failed | Empty input")
+
+    # Strip thinking tags (<think>...</think>, <thought>...</thought>) if present
+    stripped_raw = re.sub(r"<(?:think|thought)>[\s\S]*?</(?:think|thought)>", "", original_raw, flags=re.IGNORECASE).strip()
+    if not stripped_raw and "<think>" in original_raw.lower():
+        think_pos = original_raw.lower().rfind("</think>")
+        if think_pos != -1:
+            stripped_raw = original_raw[think_pos + 8:].strip()
+    if stripped_raw:
+        original_raw = stripped_raw
 
     def _try_parse_candidate(cand: str) -> dict | list | None:
         cand = cand.strip()
@@ -3511,6 +3706,39 @@ def get_multileg_verdict(
                         leg.side = "SELL"
                     elif not getattr(leg, "side", None) or leg.side.upper() not in ("BUY", "SELL"):
                         leg.side = "SELL"  # default fallback if unspecified
+
+                # Validate that all legs exist with valid liquidity in option_rows
+                option_rows = scan_context.get("option_rows") or []
+                if option_rows and result.legs and result.strategy_type != "NO_TRADE":
+                    illiquid_issues = []
+                    for leg_idx, leg in enumerate(result.legs, 1):
+                        tgt_strike = float(getattr(leg, "strike", 0) or 0)
+                        tgt_type = str(getattr(leg, "option_type", "")).upper()
+                        matched_row = None
+                        for row in option_rows:
+                            r_strike = float(row.get("strike") or 0)
+                            r_type = str(row.get("option_type") or "").upper()
+                            if abs(r_strike - tgt_strike) < 0.01 and r_type == tgt_type:
+                                matched_row = row
+                                break
+                        if not matched_row:
+                            illiquid_issues.append(f"Leg #{leg_idx} ({tgt_strike} {tgt_type}): strike not found in option chain")
+                        else:
+                            oi = float(matched_row.get("oi") or 0)
+                            vol = float(matched_row.get("volume") or 0)
+                            ltp = float(matched_row.get("ltp") or 0)
+                            bid = float(matched_row.get("bid") or 0)
+                            ask = float(matched_row.get("ask") or 0)
+                            if oi <= 0 and vol <= 0 and (bid <= 0 or ask <= 0) and ltp <= 0:
+                                illiquid_issues.append(f"Leg #{leg_idx} ({tgt_strike} {tgt_type}): 0 OI and no market depth")
+
+                    if illiquid_issues:
+                        log.warning(
+                            "[llm-multileg] %s: Multi-leg verdict contains illiquid legs %s — discarding to NO_TRADE",
+                            symbol, illiquid_issues,
+                        )
+                        result.strategy_type = "NO_TRADE"
+                        result.legs = []
 
             log.info(
                 "[llm-multileg] %s: %s with %d legs, net premium ₹%.1f, confidence %d%%",

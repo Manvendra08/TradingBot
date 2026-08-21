@@ -177,35 +177,27 @@ class TradeHistoryAnalyzer:
             from src.models.schema import get_conn
 
             with get_conn() as conn:
-                # v3.0 FIX: Atomic refresh. Previously DELETE then loop-INSERT
-                # ran un-transactioned -- a crash mid-loop wiped the cache table
-                # and left it empty. Wrap both in one transaction so the table
-                # is never observed empty.
-                conn.execute("BEGIN")
-                try:
-                    conn.execute("DELETE FROM ai_pattern_insights")
-                    for p in patterns:
-                        conn.execute(
-                            """
-                            INSERT INTO ai_pattern_insights
-                            (pattern_name, pattern_type, sample_size, win_rate, avg_pnl,
-                             best_conditions, recommendation, discovered_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                        """,
-                            (
-                                p.pattern_name,
-                                "auto",
-                                p.sample_size,
-                                p.win_rate,
-                                p.avg_pnl,
-                                json.dumps(p.best_conditions),
-                                p.recommendation,
-                            ),
-                        )
-                    conn.execute("COMMIT")
-                except Exception:
-                    conn.execute("ROLLBACK")
-                    raise
+                # get_conn() context manager opens a BEGIN IMMEDIATE transaction automatically
+                # and commits/rolls back on exit, ensuring the table refresh is strictly atomic.
+                conn.execute("DELETE FROM ai_pattern_insights")
+                for p in patterns:
+                    conn.execute(
+                        """
+                        INSERT INTO ai_pattern_insights
+                        (pattern_name, pattern_type, sample_size, win_rate, avg_pnl,
+                         best_conditions, recommendation, discovered_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    """,
+                        (
+                            p.pattern_name,
+                            "auto",
+                            p.sample_size,
+                            p.win_rate,
+                            p.avg_pnl,
+                            json.dumps(p.best_conditions),
+                            p.recommendation,
+                        ),
+                    )
         except Exception as e:
             log.warning(f"Failed to persist patterns to DB cache: {e}")
 
