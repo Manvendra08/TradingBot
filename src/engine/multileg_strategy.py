@@ -285,18 +285,13 @@ def compute_book_risk_profile(
     breakeven_lower = 0.0
 
     if strategy_type == "IRON_CONDOR":
-        # For iron condor: max loss = narrower spread width - net premium
-        # (worst case is the side that gets breached, limited by the narrower spread)
+        # For iron condor: max loss = wider spread width - net premium
+        # Worst case is the side that gets breached (max of PE spread vs CE spread)
         pe_strikes = sorted(float(l["strike"]) for l in pe_legs)
         ce_strikes = sorted(float(l["strike"]) for l in ce_legs)
         pe_width = (pe_strikes[-1] - pe_strikes[0]) if len(pe_strikes) > 1 else 0
         ce_width = (ce_strikes[-1] - ce_strikes[0]) if len(ce_strikes) > 1 else 0
-        # Use min spread (narrower = less risk) for defined-risk iron condors
-        # If one side has only 1 leg (unhedged), treat it as having no spread width
-        if pe_width > 0 and ce_width > 0:
-            spread_width = min(pe_width, ce_width)
-        else:
-            spread_width = max(pe_width, ce_width)  # fallback for unhedged side
+        spread_width = max(pe_width, ce_width)
         max_loss = max(0.0, spread_width - net_premium)
         breakeven_upper = short_ce_strike + net_premium if short_ce_strike else 0
         breakeven_lower = short_pe_strike - net_premium if short_pe_strike else 0

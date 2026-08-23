@@ -29,7 +29,9 @@
       "Bash(git -C /c/Users/manve/VibeProjects/NSEBOT diff --stat)",
       "Bash(git -C /c/Users/manve/VibeProjects/NSEBOT diff)",
       "Bash(git -C /c/Users/manve/VibeProjects/NSEBOT add -A)",
-      "Bash(git -C /c/Users/manve/VibeProjects/NSEBOT commit -m ' *)"
+      "Bash(git -C /c/Users/manve/VibeProjects/NSEBOT commit -m ' *)",
+      "Bash(git -C /c/Users/manve/VibeProjects/NSEBOT push origin dev)",
+      "Bash(git -C /c/Users/manve/VibeProjects/NSEBOT diff src/engine/)"
     ]
   }
 }

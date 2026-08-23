@@ -35,7 +35,7 @@ def _dte_from_expiry(expiry: str) -> int:
 
         exp_date = datetime.strptime(expiry, "%Y-%m-%d").date()
         today = datetime.now(IST).date()
-        return max(0, (exp_date - today).days)
+        return (exp_date - today).days
     except Exception:
         return 999
 
@@ -168,9 +168,9 @@ def _run_multileg_live_strategy_inner(
     )
 
     open_books = get_open_books_for_symbol(symbol)
-
+    mon_res = None
     if open_books:
-        return _monitor_open_books_live(
+        mon_res = _monitor_open_books_live(
             symbol,
             scan_context,
             digest_id,
@@ -179,18 +179,28 @@ def _run_multileg_live_strategy_inner(
             ai_mode,
             now_iso,
         )
+        # Re-fetch open books in case monitoring closed a book
+        open_books = get_open_books_for_symbol(symbol)
 
-    # ── 5. No open books — attempt new entry ──────────────────────────
-    return _attempt_new_live_entry(
-        symbol,
-        scan_context,
-        digest_id,
-        intel,
-        ai_verdict,
-        ai_mode,
-        now_iso,
-        open_books=[],
-    )
+    # ── 5. Check book limit & attempt new entry ──────────────────────────
+    rconf = load_runtime_config()
+    max_books = rconf.get("max_concurrent_multileg_books_per_symbol", 3)
+
+    if len(open_books) < max_books:
+        new_res = _attempt_new_live_entry(
+            symbol,
+            scan_context,
+            digest_id,
+            intel,
+            ai_verdict,
+            ai_mode,
+            now_iso,
+            open_books=open_books,
+        )
+        return new_res if new_res else mon_res
+
+    log.info("[multileg-live] %s: %d open books exist (max=%d) — skipping new entry attempt", symbol, len(open_books), max_books)
+    return mon_res or {"action": "HOLD", "reason": f"Max open multileg books ({max_books}) reached"}
 
 
 # ── Open Book Monitoring (Live) ──────────────────────────────────────────────
@@ -653,15 +663,14 @@ def _close_live_book(
                     # Attempt to fetch current LTP from broker quote
                     exchange = resolved.get("exchange", "NFO")
                     tradingsymbol = resolved["tradingsymbol"]
-                    quote_data = kite.quote(f"{exchange}:{tradingsymbol}")
-                    if quote_data:
-                        # Kite quote returns dict with 'last_price' key
-                        if isinstance(quote_data, dict):
-                            last_price = quote_data.get("last_price", 0)
-                        else:
-                            last_price = 0
-                        if last_price and last_price > 0:
-                            exit_premium = float(last_price)
+                    quote_key = f"{exchange}:{tradingsymbol}"
+                    quote_data = kite.quote(quote_key)
+                    if quote_data and isinstance(quote_data, dict):
+                        instr_quote = quote_data.get(quote_key, {})
+                        if isinstance(instr_quote, dict):
+                            last_price = instr_quote.get("last_price", 0)
+                            if last_price and float(last_price) > 0:
+                                exit_premium = float(last_price)
                 except Exception as ltp_err:
                     log.warning(
                         "[multileg-live] %s: could not fetch exit LTP for leg %d, using fallback: %s",
@@ -759,6 +768,17 @@ def _attempt_new_live_entry(
     if verdict is None:
         log.debug("[multileg-live] %s: LLM returned no verdict", symbol)
         return None
+
+    st_upper = str(getattr(verdict, "strategy_type", "")).upper().strip()
+    if st_upper in ("NONE", "NO_TRADE", "NO_SIGNAL", "SKIP", "N/A", "") or not getattr(verdict, "legs", None):
+        log.info("[multileg-live] %s: LLM returned no-trade verdict (%s)", symbol, st_upper or "NO_LEGS")
+        return {
+            "action": "NO_TRADE",
+            "strategy_type": getattr(verdict, "strategy_type", "NO_TRADE"),
+            "reason": f"LLM multileg verdict: {getattr(verdict, 'strategy_type', 'NO_TRADE')}",
+            "thesis": getattr(verdict, "thesis", ""),
+            "confidence": getattr(verdict, "confidence", 0),
+        }
 
     # ── 5b. Validate legs ─────────────────────────────────────────────
     try:
@@ -1054,7 +1074,8 @@ def _attempt_new_live_entry(
     from src.engine.live_trading import place_kite_order
     from src.engine.symbol_resolver import resolve_instrument
 
-    lot_size = LOT_SIZES.get(symbol, 1)
+    base_sym = symbol.upper().split()[0] if symbol else ""
+    lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_sym, 1))
 
     for i, leg in enumerate(legs):
         strike = float(leg.get("strike") or 0.0)
@@ -1110,11 +1131,44 @@ def _attempt_new_live_entry(
 
             if broker_status != "COMPLETE":
                 log.error(
-                    "[multileg-live] %s: leg %d order status is %s (not COMPLETE) — aborting entry to prevent unhedged exposure",
+                    "[multileg-live] %s: leg %d order status is %s (not COMPLETE) — attempting cancel to prevent unhedged exposure",
                     symbol,
                     i + 1,
                     broker_status,
                 )
+                cancelled_ok = False
+                try:
+                    kite.cancel_order(variety=kite.VARIETY_REGULAR, order_id=order_id)
+                    c_status, _ = confirm_order_fill(kite, order_id, shadow_mode=False)
+                    if c_status in ("CANCELLED", "REJECTED"):
+                        cancelled_ok = True
+                except Exception as cancel_err:
+                    log.error(
+                        "[multileg-live] %s: cancel order %s failed: %s",
+                        symbol, order_id, cancel_err
+                    )
+
+                if not cancelled_ok:
+                    # Cancel failed or order filled during cancel attempt; add to placed_legs so rollback squares it off
+                    placed_legs.append({
+                        "trade_id": 0,
+                        "side": side,
+                        "lots": lots,
+                        "strike": strike,
+                        "option_type": option_type,
+                        "expiry": expiry,
+                        "entry_premium": premium,
+                        "exit_premium": 0.0,
+                        "delta": float(leg.get("delta") or 0.0),
+                        "theta": 0.0,
+                        "vega": 0.0,
+                        "iv": 0.0,
+                        "rationale": leg.get("rationale", ""),
+                        "status": "OPEN",
+                        "closed_at": None,
+                        "exit_reason": None,
+                        "broker_order_id": order_id,
+                    })
                 failed = True
                 break
 

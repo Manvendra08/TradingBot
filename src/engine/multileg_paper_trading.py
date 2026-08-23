@@ -31,7 +31,7 @@ def _dte_from_expiry(expiry: str) -> int:
 
         exp_date = datetime.strptime(expiry, "%Y-%m-%d").date()
         today = datetime.now(IST).date()
-        return max(0, (exp_date - today).days)
+        return (exp_date - today).days
     except Exception:
         return 999
 
