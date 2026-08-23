@@ -953,8 +953,8 @@ def _calc_multileg_pnl(book: dict, legs: list[dict]) -> float:
             try:
                 with get_read_conn() as conn:
                     opt_row = conn.execute(
-                        "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
-                        (symbol, base_sym, strike, option_type)
+                        "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND expiry=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
+                        (symbol, base_sym, strike, option_type, leg.get("expiry", ""))
                     ).fetchone()
                     if opt_row:
                         snap_ltp = float(opt_row["ltp"])

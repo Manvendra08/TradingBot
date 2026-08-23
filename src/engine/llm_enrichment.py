@@ -19,6 +19,22 @@ import json
 import logging
 log = logging.getLogger("nsebot.llm_enrichment")
 import os
+
+# Adapter that prefixes every [llm] line with the active symbol. LLM enrichment
+# runs concurrently across up to 16 worker threads (pipeline_io_executor), so without
+# the symbol in the message, timeouts/cooldowns from different symbols are
+# indistinguishable in the logs. Used by rebinding a local `log` inside the
+# per-symbol call path (see _call_llm_api / _register_provider_failure).
+class _SymbolLogAdapter(logging.LoggerAdapter):
+    def process(self, msg, kwargs):
+        sym = self.extra.get("symbol", "?") if self.extra else "?"
+        return f"[{sym}] {msg}", kwargs
+
+
+# Module-level base logger. Functions rebind a *local* `log` to a _SymbolLogAdapter
+# built on top of this, so we keep a stable reference to the real logger.
+_MODULE_LOG = log
+
 import re
 from datetime import datetime
 
@@ -938,6 +954,10 @@ def _parse_retry_after_seconds(text: str) -> float | None:
 def _register_provider_failure(
     provider: dict, status_code: int, body: str, now: float
 ) -> None:
+    # Rebind log to a symbol-tagged adapter (symbol set by the calling _call_llm_api via
+    # thread-local state). Tests that call this directly get a "?" placeholder.
+    sym = getattr(_per_thread_state, "symbol", "?")
+    log = _SymbolLogAdapter(_MODULE_LOG, {"symbol": sym})
     key = _provider_cooldown_key(provider)
     env_key = provider.get("env_key")
     body_l = (body or "").lower()
@@ -1163,6 +1183,10 @@ def _call_llm_api(
     now = time.time()
     # Isolate this call's read-timeout tally from concurrently-running symbols.
     _reset_thread_read_timeouts()
+    # Carry the symbol on thread-local state + rebind log so every [llm] line below
+    # is tagged with the symbol (makes the 16-thread concurrent path debuggable).
+    _per_thread_state.symbol = symbol
+    log = _SymbolLogAdapter(_MODULE_LOG, {"symbol": symbol})
 
     from config.settings import DISABLE_LLM_ENRICHMENT
 

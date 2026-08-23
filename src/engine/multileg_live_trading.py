@@ -490,8 +490,8 @@ def _update_live_book_pnl(
             try:
                 with get_read_conn() as conn:
                     opt_row = conn.execute(
-                        "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
-                        (symbol, base_sym, strike, option_type)
+                        "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND expiry=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
+                        (symbol, base_sym, strike, option_type, leg.get("expiry", ""))
                     ).fetchone()
                     if opt_row:
                         current_premium = float(opt_row["ltp"])
@@ -552,6 +552,11 @@ def _close_live_book(
             book_id,
         )
 
+    from config.settings import LOT_SIZES
+    from src.engine.symbol_resolver import resolve_instrument
+    
+    base_sym = symbol.upper().split()[0] if symbol else ""
+    
     exit_results = []
     for leg in legs:
         leg_id = leg.get("id")
@@ -560,24 +565,20 @@ def _close_live_book(
         option_type = (leg.get("option_type") or "").upper()
         lots = int(leg.get("lots") or 1)
         side = (leg.get("side") or "SELL").upper()
+        leg_expiry = leg.get("expiry", "")
 
         if not leg_id:
             continue
 
         # Determine exit transaction type (opposite of entry)
         exit_transaction = "BUY" if side == "SELL" else "SELL"
-
+        
+        # Resolve instrument for this leg (needed for both broker orders and premium lookup)
+        resolved = None
         if kite:
             try:
-                from config.settings import LOT_SIZES
-                from src.engine.symbol_resolver import resolve_instrument
-
-                lot_size = LOT_SIZES.get(symbol, 1)
-                quantity = lots * lot_size
-
-                # Resolve the Kite tradingsymbol
                 resolved = resolve_instrument(
-                    symbol=symbol, expiry=leg.get("expiry", ""), strike=strike, option_type=option_type
+                    symbol=symbol, expiry=leg_expiry, strike=strike, option_type=option_type
                 )
                 if not resolved or not resolved.get("tradingsymbol"):
                     log.warning(
@@ -589,6 +590,16 @@ def _close_live_book(
                     )
                     exit_results.append({"leg_id": leg_id, "status": "UNRESOLVED"})
                     continue
+            except Exception as resolve_err:
+                log.warning(
+                    "[multileg-live] %s: resolve_instrument failed for leg %d: %s",
+                    symbol, leg_id, resolve_err
+                )
+
+        if kite and resolved:
+            try:
+                lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_sym, 1))
+                quantity = lots * lot_size
 
                 from src.engine.live_trading import place_kite_order
 
@@ -633,9 +644,46 @@ def _close_live_book(
             )
             exit_results.append({"leg_id": leg_id, "status": "NO_BROKER"})
 
-        # Close leg in DB regardless of broker order success
+        # Close leg in DB with actual exit premium from current market
         try:
-            close_leg(leg_id, closed_at, 0.0, reason)
+            # Get current premium for accurate PnL tracking
+            exit_premium = 0.0
+            if kite and resolved:
+                try:
+                    # Attempt to fetch current LTP from broker quote
+                    exchange = resolved.get("exchange", "NFO")
+                    tradingsymbol = resolved["tradingsymbol"]
+                    quote_data = kite.quote(f"{exchange}:{tradingsymbol}")
+                    if quote_data:
+                        # Kite quote returns dict with 'last_price' key
+                        if isinstance(quote_data, dict):
+                            last_price = quote_data.get("last_price", 0)
+                        else:
+                            last_price = 0
+                        if last_price and last_price > 0:
+                            exit_premium = float(last_price)
+                except Exception as ltp_err:
+                    log.warning(
+                        "[multileg-live] %s: could not fetch exit LTP for leg %d, using fallback: %s",
+                        symbol, leg_id, ltp_err
+                    )
+            
+            # Fallback: try DB snapshot with expiry filter
+            if exit_premium <= 0:
+                try:
+                    from src.models.schema import get_read_conn
+                    leg_expiry = leg.get("expiry", "")
+                    with get_read_conn() as conn:
+                        opt_row = conn.execute(
+                            "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND expiry=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
+                            (symbol, base_sym, strike, option_type, leg_expiry)
+                        ).fetchone()
+                        if opt_row:
+                            exit_premium = float(opt_row["ltp"])
+                except Exception:
+                    pass
+            
+            close_leg(leg_id, closed_at, exit_premium, reason)
         except Exception as e:
             log.error(
                 "[multileg-live] %s: failed to close leg %d in DB: %s",
@@ -806,6 +854,24 @@ def _attempt_new_live_entry(
                 "action": "REJECTED",
                 "reason": f"Legs validation: {validation_msg}",
             }
+
+    # ── Strict Binary Pre-Flight Validation for All Entry Legs (Safety Gate) ──
+    # Mirrors the paper-trading safety check to ensure atomic leg data integrity
+    # before risking real capital with the broker.
+    from src.engine.data_validator import validate_trade_leg_data
+    underlying_for_binary = float((scan_context or {}).get("underlying") or 0.0)
+    oc_data_payload = {"strikes": list((scan_context or {}).get("option_rows") or [])}
+    is_binary_valid, binary_issues = validate_trade_leg_data(legs, oc_data_payload, underlying_for_binary)
+    if not is_binary_valid:
+        log.warning(
+            "[multileg-live] %s: atomic leg data validation failed — %s",
+            symbol,
+            binary_issues,
+        )
+        return {
+            "action": "REJECTED",
+            "reason": f"Leg data integrity rejected: {', '.join(binary_issues)}",
+        }
 
     # ── 5c. Compute Greeks and risk profile ────────────────────────────
     expiry = (scan_context or {}).get("expiry", "")
@@ -1025,8 +1091,35 @@ def _attempt_new_live_entry(
                 expected_price=premium,
             )
 
+            # Verify order status before proceeding to next leg (Risk 4 fix)
+            from src.engine.live_trading import confirm_order_fill
+            broker_status, broker_message = confirm_order_fill(kite, order_id, shadow_mode=False)
+
+            if broker_status in ("REJECTED", "CANCELLED"):
+                log.error(
+                    "[multileg-live] %s: leg %d order %s by exchange — %s %s: %s",
+                    symbol,
+                    i + 1,
+                    broker_status,
+                    side,
+                    option_type,
+                    broker_message,
+                )
+                failed = True
+                break
+
+            if broker_status != "COMPLETE":
+                log.error(
+                    "[multileg-live] %s: leg %d order status is %s (not COMPLETE) — aborting entry to prevent unhedged exposure",
+                    symbol,
+                    i + 1,
+                    broker_status,
+                )
+                failed = True
+                break
+
             log.info(
-                "[multileg-live] %s: leg %d order placed — %s %s %s Qty=%d, order_id=%s",
+                "[multileg-live] %s: leg %d order placed and verified — %s %s %s Qty=%d, order_id=%s, status=%s",
                 symbol,
                 i + 1,
                 side,
@@ -1034,6 +1127,7 @@ def _attempt_new_live_entry(
                 option_type,
                 quantity,
                 order_id,
+                broker_status,
             )
 
             placed_legs.append({
@@ -1042,6 +1136,7 @@ def _attempt_new_live_entry(
                 "lots": lots,
                 "strike": strike,
                 "option_type": option_type,
+                "expiry": expiry,
                 "entry_premium": premium,
                 "exit_premium": 0.0,
                 "delta": float(leg.get("delta") or 0.0),
@@ -1202,20 +1297,27 @@ def _attempt_new_live_entry(
 
 def _rollback_placed_legs(
     symbol: str, kite, placed_legs: list[dict]
-) -> None:
+) -> dict:
     """Square off all already-placed legs on a failed multi-leg entry.
 
     Places opposite-side orders to flatten any opened positions.
-    Logs each rollback attempt but does not raise — best-effort cleanup.
+    Verifies rollback order fills and returns status summary.
+    
+    Returns:
+        dict with rollback status: {"total": N, "filled": N, "failed": N, "pending": N}
     """
     if not placed_legs:
-        return
+        return {"total": 0, "filled": 0, "failed": 0, "pending": 0}
 
     from config.settings import LOT_SIZES
     from src.engine.live_trading import place_kite_order
     from src.engine.symbol_resolver import resolve_instrument
 
-    lot_size = LOT_SIZES.get(symbol, 1)
+    base_sym = symbol.upper().split()[0] if symbol else ""
+    lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_sym, 1))
+    
+    rollback_results = []
+    rollback_order_ids = []
 
     for leg in placed_legs:
         side = (leg.get("side") or "SELL").upper()
@@ -1226,23 +1328,28 @@ def _rollback_placed_legs(
         quantity = lots * lot_size
 
         if not kite:
-            log.warning(
-                "[multileg-live] %s: rollback skipped — no Kite client",
+            log.error(
+                "[multileg-live] %s: CRITICAL — rollback skipped for %d legs, no Kite client!",
                 symbol,
+                len(placed_legs),
             )
-            break
+            return {"total": len(placed_legs), "filled": 0, "failed": len(placed_legs), "pending": 0}
 
         try:
+            leg_expiry = leg.get("expiry", "")
             resolved = resolve_instrument(
-                symbol=symbol, expiry="", strike=strike, option_type=option_type
+                symbol=symbol, expiry=leg_expiry, strike=strike, option_type=option_type
             )
             if not resolved or not resolved.get("tradingsymbol"):
-                log.warning(
-                    "[multileg-live] %s: rollback skipped — could not resolve %s %s",
+                log.error(
+                    "[multileg-live] %s: CRITICAL — rollback failed, could not resolve %s %s",
                     symbol,
                     strike,
                     option_type,
                 )
+                rollback_results.append({
+                    "strike": strike, "option_type": option_type, "status": "RESOLVE_FAILED"
+                })
                 continue
 
             order_id = place_kite_order(
@@ -1263,11 +1370,104 @@ def _rollback_placed_legs(
                 quantity,
                 order_id,
             )
+            rollback_order_ids.append({
+                "order_id": order_id,
+                "strike": strike,
+                "option_type": option_type,
+                "quantity": quantity,
+            })
         except Exception as e:
             log.error(
-                "[multileg-live] %s: rollback FAILED for %s %s — %s",
+                "[multileg-live] %s: CRITICAL — rollback order FAILED for %s %s — %s",
                 symbol,
                 strike,
                 option_type,
                 e,
             )
+            rollback_results.append({
+                "strike": strike, "option_type": option_type, "status": "ORDER_FAILED", "error": str(e)
+            })
+
+    # Verify rollback order fills (poll for up to 30 seconds)
+    filled_count = 0
+    failed_count = len([r for r in rollback_results if r["status"] in ("RESOLVE_FAILED", "ORDER_FAILED")])
+    pending_count = 0
+    
+    if rollback_order_ids and kite:
+        try:
+            import time
+            max_wait = 30  # seconds
+            check_interval = 3  # seconds
+            elapsed = 0
+            
+            while elapsed < max_wait:
+                all_completed = True
+                for rb_order in rollback_order_ids:
+                    if "filled" in rb_order:
+                        continue
+                    
+                    try:
+                        order_info = kite.order_history(rb_order["order_id"])
+                        if order_info:
+                            # Check if order is COMPLETE (filled) or REJECTED/CANCELLED
+                            latest_state = order_info[-1] if isinstance(order_info, list) else order_info
+                            status = latest_state.get("status", "")
+                            
+                            if status == "COMPLETE":
+                                rb_order["filled"] = True
+                                filled_count += 1
+                            elif status in ("REJECTED", "CANCELLED"):
+                                rb_order["filled"] = False
+                                failed_count += 1
+                                log.error(
+                                    "[multileg-live] %s: CRITICAL — rollback order %s was %s for %s %s!",
+                                    symbol, rb_order["order_id"], status,
+                                    rb_order["strike"], rb_order["option_type"]
+                                )
+                            else:
+                                all_completed = False
+                    except Exception as e:
+                        log.warning(
+                            "[multileg-live] %s: could not check rollback order %s status: %s",
+                            symbol, rb_order["order_id"], e
+                        )
+                        all_completed = False
+                
+                if all_completed:
+                    break
+                
+                time.sleep(check_interval)
+                elapsed += check_interval
+            
+            # Count any still-pending orders
+            pending_count = len([r for r in rollback_order_ids if "filled" not in r])
+            if pending_count > 0:
+                log.error(
+                    "[multileg-live] %s: WARNING — %d rollback orders still pending after %ds!",
+                    symbol, pending_count, max_wait
+                )
+        except Exception as e:
+            log.error(
+                "[multileg-live] %s: could not verify rollback order fills: %s",
+                symbol, e
+            )
+
+    summary = {
+        "total": len(placed_legs),
+        "filled": filled_count,
+        "failed": failed_count,
+        "pending": pending_count,
+    }
+    
+    if summary["failed"] > 0 or summary["pending"] > 0:
+        log.error(
+            "[multileg-live] %s: CRITICAL ROLLBACK SUMMARY — Total=%d, Filled=%d, Failed=%d, Pending=%d",
+            symbol, summary["total"], summary["filled"], summary["failed"], summary["pending"]
+        )
+    else:
+        log.info(
+            "[multileg-live] %s: rollback complete — all %d legs squared off",
+            symbol, summary["total"]
+        )
+    
+    return summary

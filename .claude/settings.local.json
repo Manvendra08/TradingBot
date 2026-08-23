@@ -24,7 +24,12 @@
       "Bash(echo \"exit: $?\")",
       "Bash(git push *)",
       "Bash(pytest tests/test_multileg_strategy.py -v)",
-      "Bash(python *)"
+      "Bash(python *)",
+      "Bash(git -C /c/Users/manve/VibeProjects/NSEBOT status)",
+      "Bash(git -C /c/Users/manve/VibeProjects/NSEBOT diff --stat)",
+      "Bash(git -C /c/Users/manve/VibeProjects/NSEBOT diff)",
+      "Bash(git -C /c/Users/manve/VibeProjects/NSEBOT add -A)",
+      "Bash(git -C /c/Users/manve/VibeProjects/NSEBOT commit -m ' *)"
     ]
   }
 }

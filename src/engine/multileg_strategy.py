@@ -285,12 +285,18 @@ def compute_book_risk_profile(
     breakeven_lower = 0.0
 
     if strategy_type == "IRON_CONDOR":
-        # Widest spread = max distance between PE legs or CE legs
+        # For iron condor: max loss = narrower spread width - net premium
+        # (worst case is the side that gets breached, limited by the narrower spread)
         pe_strikes = sorted(float(l["strike"]) for l in pe_legs)
         ce_strikes = sorted(float(l["strike"]) for l in ce_legs)
         pe_width = (pe_strikes[-1] - pe_strikes[0]) if len(pe_strikes) > 1 else 0
         ce_width = (ce_strikes[-1] - ce_strikes[0]) if len(ce_strikes) > 1 else 0
-        spread_width = max(pe_width, ce_width, 1)
+        # Use min spread (narrower = less risk) for defined-risk iron condors
+        # If one side has only 1 leg (unhedged), treat it as having no spread width
+        if pe_width > 0 and ce_width > 0:
+            spread_width = min(pe_width, ce_width)
+        else:
+            spread_width = max(pe_width, ce_width)  # fallback for unhedged side
         max_loss = max(0.0, spread_width - net_premium)
         breakeven_upper = short_ce_strike + net_premium if short_ce_strike else 0
         breakeven_lower = short_pe_strike - net_premium if short_pe_strike else 0
@@ -372,6 +378,21 @@ def calculate_combined_margin(
     """
     lot_size = LOT_SIZES.get(symbol, 1)
     SELL_MARGIN_MULTIPLIER = 12
+
+    # Risk 5 fix: Validate that all legs have uniform lot counts.
+    # The capital allocator enforces this upstream, but we add a defensive check
+    # here to prevent silent miscalculation if leg data is inconsistent.
+    # If lots are non-uniform, the risk profile's max_loss (which assumes 1:1 spread)
+    # is fundamentally invalid. Return margin > MAX_BOOK_MARGIN to force rejection.
+    lot_counts = [int(leg.get("lots", 1)) for leg in legs]
+    if lot_counts and len(set(lot_counts)) > 1:
+        log.error(
+            "calculate_combined_margin: legs have non-uniform lot counts %s for %s. "
+            "Cannot accurately estimate hedged margin. Returning margin above cap to reject trade.",
+            lot_counts,
+            symbol,
+        )
+        return float(MAX_BOOK_MARGIN + 1.0)
 
     naked_margin = 0.0
     total_lots = 1
