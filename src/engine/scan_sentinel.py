@@ -543,33 +543,39 @@ def _check_rules(r: dict) -> list[SentinelFlag]:
     llm_t1 = r.get("llm_target_1")
     llm_sl = r.get("llm_stop_loss")
     llm_action = r.get("llm_action")
+    llm_instr = str(r.get("llm_instrument") or "").upper()
     if llm_prem and llm_action:
         action_str = str(llm_action).upper()
-        if "BUY" in action_str or "LONG" in action_str:
+        # Directional options (GO_LONG, GO_SHORT, BUY_CE, BUY_PE, BUY) buy options -> Target premium > Entry premium
+        is_option_buy = any(k in action_str for k in ("GO_LONG", "GO_SHORT", "BUY")) or ("PE" in llm_instr and "SELL" not in action_str) or ("CE" in llm_instr and "SELL" not in action_str and "WRITING" not in action_str)
+        is_option_sell = any(k in action_str for k in ("SELL_CE", "SELL_PE", "WRITING")) or (action_str.startswith("SELL") and "BUY" not in action_str)
+
+        if is_option_buy and not is_option_sell:
             if llm_t1 and llm_t1 <= llm_prem:
                 flags.append(SentinelFlag(
                     rule="R8_INVERSE_TARGET_SL",
                     severity="CRITICAL",
-                    detail=f"BUY action target premium (₹{llm_t1}) <= entry premium (₹{llm_prem})"
+                    detail=f"BUY option target premium (₹{llm_t1}) <= entry premium (₹{llm_prem})"
                 ))
-            if llm_sl and llm_sl >= llm_prem:
+            # Only validate SL if it's an option premium (not underlying index spot level)
+            if llm_sl and llm_sl < 3000.0 and llm_sl >= llm_prem:
                 flags.append(SentinelFlag(
                     rule="R8_INVERSE_TARGET_SL",
                     severity="CRITICAL",
-                    detail=f"BUY action stop loss premium (₹{llm_sl}) >= entry premium (₹{llm_prem})"
+                    detail=f"BUY option stop loss premium (₹{llm_sl}) >= entry premium (₹{llm_prem})"
                 ))
-        elif "SELL" in action_str or "SHORT" in action_str:
+        elif is_option_sell:
             if llm_t1 and llm_t1 >= llm_prem:
                 flags.append(SentinelFlag(
                     rule="R8_INVERSE_TARGET_SL",
                     severity="CRITICAL",
-                    detail=f"SELL action target premium (₹{llm_t1}) >= entry premium (₹{llm_prem})"
+                    detail=f"SELL option target premium (₹{llm_t1}) >= entry premium (₹{llm_prem})"
                 ))
-            if llm_sl and llm_sl <= llm_prem:
+            if llm_sl and llm_sl < 3000.0 and llm_sl <= llm_prem:
                 flags.append(SentinelFlag(
                     rule="R8_INVERSE_TARGET_SL",
                     severity="CRITICAL",
-                    detail=f"SELL action stop loss premium (₹{llm_sl}) <= entry premium (₹{llm_prem})"
+                    detail=f"SELL option stop loss premium (₹{llm_sl}) <= entry premium (₹{llm_prem})"
                 ))
 
     # R9: Zero or Missing Spot Price

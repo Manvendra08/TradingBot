@@ -396,16 +396,21 @@ def _async_llm_enrich_and_edit(
                 return float(m.group(1)) if m else None
 
             oc_data = scan_context.get("oc_data") or {}
+            opt_rows = scan_context.get("option_rows") or oc_data.get("strikes") or []
+            src_val = scan_context.get("source") or (opt_rows[0].get("fetcher_source") if opt_rows else oc_data.get("source", "unknown"))
+            exp_val = scan_context.get("current_expiry") or scan_context.get("expiry") or oc_data.get("expiry", "")
+            ul_val = float(scan_context.get("underlying") or scan_context.get("underlying_price") or oc_data.get("underlying_price") or 0.0)
+
             sentinel_report_v2 = {
                 "symbol": symbol,
                 "timestamp_ist": datetime.now(timezone.utc).isoformat(),
                 "scan_duration_ms": 0,
-                "underlying_price": float(scan_context.get("underlying_price") or oc_data.get("underlying_price") or 0.0),
-                "expiry": oc_data.get("expiry", ""),
-                "source": oc_data.get("source", "unknown"),
-                "total_strikes": len(oc_data.get("strikes") or []),
-                "zero_ltp_strikes": sum(1 for s in oc_data.get("strikes", []) if float(s.get("ltp") or 0.0) == 0.0),
-                "zero_oi_strikes": sum(1 for s in oc_data.get("strikes", []) if int(s.get("oi") or 0) == 0),
+                "underlying_price": ul_val,
+                "expiry": exp_val,
+                "source": src_val,
+                "total_strikes": len(opt_rows),
+                "zero_ltp_strikes": sum(1 for s in opt_rows if float(s.get("ltp") or 0.0) == 0.0),
+                "zero_oi_strikes": sum(1 for s in opt_rows if int(s.get("oi") or 0) == 0),
                 "llm_action": getattr(llm_verdict, "action", None),
                 "llm_instrument": getattr(llm_verdict, "instrument", None),
                 "llm_entry_premium": _get_num_val(getattr(llm_verdict, "entry_premium_range", None)),
@@ -798,6 +803,8 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
         override_thresholds=get_symbol_thresholds(symbol),
     )
     scan_context["option_rows"] = list(target_signal_oc_data.get("strikes") or [])
+    scan_context["source"] = target_signal_oc_data.get("source", "unknown")
+    scan_context["oc_data"] = target_signal_oc_data
     scan_context["current_expiry"] = current_expiry_str
     scan_context["current_expiry_option_rows"] = list(current_expiry_oc_data.get("strikes") or [])
     scan_context["data_legitimacy"] = legitimacy.to_dict()
