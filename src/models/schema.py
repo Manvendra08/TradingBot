@@ -968,6 +968,24 @@ def get_prev_snapshots_bulk(
         return {(r["strike"], r["option_type"]): dict(r) for r in result_rows}
 
 
+def get_latest_option_snapshot(
+    symbol: str, expiry: str, strike: float, option_type: str
+) -> dict | None:
+    """Fetch the most recent option chain snapshot for a specific symbol, expiry, strike, and option_type."""
+    base_sym = symbol.upper().split()[0] if symbol else ""
+    sql = """
+        SELECT * FROM option_chain_snapshots
+        WHERE (symbol=? OR symbol=?) AND expiry=? AND ABS(strike - ?) < 0.01 AND option_type=?
+          AND ltp IS NOT NULL AND ltp > 0
+        ORDER BY fetched_at DESC LIMIT 1
+    """
+    with get_conn(read_only=True) as conn:
+        row = conn.execute(
+            sql, (symbol, base_sym, expiry, float(strike), str(option_type).upper())
+        ).fetchone()
+        return dict(row) if row else None
+
+
 def get_latest_n_underlying(symbol: str, n: int = 4) -> list[dict]:
     sql = """
         SELECT * FROM underlying_price WHERE symbol=?
@@ -2260,13 +2278,20 @@ def list_multi_leg_trades(status_filter: str | None = None) -> list[dict]:
                     side = (leg.get("side") or "SELL").upper()
                     entry_p = float(leg.get("entry_premium") or leg.get("entry_price") or 0.0)
                     lots = int(leg.get("lots") or leg.get("lot_size") or 1)
-                    
+
                     cmp = None
                     if op_type in ("CE", "PE") and stk:
-                        opt_row = conn.execute(
-                            "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
-                            (symbol, base_sym, float(stk), op_type)
-                        ).fetchone()
+                        if exp:
+                            # Strict expiry filter — prevents cross-expiry LTP collisions
+                            opt_row = conn.execute(
+                                "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND expiry=? AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
+                                (symbol, base_sym, exp, float(stk), op_type)
+                            ).fetchone()
+                        else:
+                            opt_row = conn.execute(
+                                "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
+                                (symbol, base_sym, float(stk), op_type)
+                            ).fetchone()
                         if opt_row:
                             cmp = float(opt_row["ltp"])
                     
@@ -2360,10 +2385,17 @@ def list_multi_leg_trades(status_filter: str | None = None) -> list[dict]:
 
                     cmp = None
                     if op_type in ("CE", "PE") and stk:
-                        opt_row = conn.execute(
-                            "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
-                            (symbol, base_sym, float(stk), op_type)
-                        ).fetchone()
+                        if exp:
+                            # Strict expiry filter — prevents cross-expiry LTP collisions
+                            opt_row = conn.execute(
+                                "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND expiry=? AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
+                                (symbol, base_sym, exp, float(stk), op_type)
+                            ).fetchone()
+                        else:
+                            opt_row = conn.execute(
+                                "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
+                                (symbol, base_sym, float(stk), op_type)
+                            ).fetchone()
                         if opt_row:
                             cmp = float(opt_row["ltp"])
 
