@@ -1370,12 +1370,26 @@ def _enrich_open_trades_with_live_pnl(rows: list[dict]) -> None:
                 leg_side = (leg.get("side") or "SELL").upper()
                 entry_p = float(leg.get("entry_premium") or leg.get("entry_price") or 0.0)
                 leg_lots = int(leg.get("lots") or 1)
+                leg_exp = str(leg.get("expiry") or expiry or "").strip()
 
-                cmp_res = _q(
-                    "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
-                    (symbol, base_sym, leg_stk, leg_opt),
-                )
-                leg_cmp = float(cmp_res[0]["ltp"]) if cmp_res else entry_p
+                cmp_res = None
+                if leg_exp:
+                    cmp_res = _q(
+                        "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND expiry=? AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
+                        (symbol, base_sym, leg_exp, leg_stk, leg_opt),
+                    )
+
+                leg_cmp = entry_p
+                if cmp_res:
+                    raw_ltp = float(cmp_res[0]["ltp"])
+                    underlying_spot = float(row.get("entry_underlying") or 0.0)
+                    if underlying_spot > 0:
+                        from src.engine.trade_plan import is_valid_option_premium
+                        if is_valid_option_premium(leg_stk, leg_opt, raw_ltp, underlying_spot):
+                            leg_cmp = raw_ltp
+                    else:
+                        leg_cmp = raw_ltp
+
                 leg["cmp"] = round(leg_cmp, 2)
                 leg["exit_or_cmp"] = round(leg_cmp, 2)
 
@@ -1414,11 +1428,8 @@ def _enrich_open_trades_with_live_pnl(rows: list[dict]) -> None:
                     "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND expiry=? AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
                     (symbol, base_sym, expiry, strike_val, option_type),
                 )
-            if not res:
-                res = _q(
-                    "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
-                    (symbol, base_sym, strike_val, option_type),
-                )
+            if res:
+                cmp = res[0]["ltp"]
             if res:
                 cmp = res[0]["ltp"]
 

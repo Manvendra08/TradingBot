@@ -1523,5 +1523,100 @@ def _rollback_placed_legs(
             "[multileg-live] %s: rollback complete — all %d legs squared off",
             symbol, summary["total"]
         )
-    
+
     return summary
+
+
+def _update_live_book_pnl(
+    symbol: str, book: dict, legs: list[dict], scan_context: dict
+) -> float:
+    """Calculate and return updated total PnL for a live multi-leg book."""
+    from config.settings import LOT_SIZES
+    from src.models.schema import get_read_conn
+    from src.engine.trade_plan import is_valid_option_premium
+
+    base_sym = symbol.upper().split()[0] if symbol else ""
+    lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_sym, 1))
+    book_expiry = str(book.get("expiry") or "").strip()
+    underlying = float(
+        (scan_context or {}).get("underlying")
+        or book.get("entry_underlying")
+        or 0.0
+    )
+    option_rows = list((scan_context or {}).get("option_rows") or [])
+
+    total_pnl = 0.0
+    for leg in legs:
+        strike = float(leg.get("strike") or 0.0)
+        option_type = (leg.get("option_type") or "").upper()
+        entry_premium = float(
+            leg.get("entry_premium") or leg.get("premium") or 0.0
+        )
+        lots = int(leg.get("lots") or 1)
+        side = (leg.get("side") or "SELL").upper()
+        leg_expiry = str(leg.get("expiry") or book_expiry or "").strip()
+
+        current_premium = None
+        for row in option_rows:
+            row_strike = float(row.get("strike") or 0.0)
+            row_type = (row.get("option_type") or "").upper()
+            if abs(row_strike - strike) < 0.01 and row_type == option_type:
+                ltp = float(row.get("ltp") or row.get("premium") or 0.0)
+                if ltp > 0:
+                    if underlying > 0 and not is_valid_option_premium(
+                        strike, option_type, ltp, underlying
+                    ):
+                        log.warning(
+                            "[multileg-live] %s: rejected corrupted scan row LTP %.2f for %s %.0f",
+                            symbol,
+                            ltp,
+                            option_type,
+                            strike,
+                        )
+                    else:
+                        current_premium = ltp
+                        break
+
+        if current_premium is None:
+            try:
+                with get_read_conn() as conn:
+                    if leg_expiry:
+                        opt_row = conn.execute(
+                            "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND expiry=? AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
+                            (symbol, base_sym, leg_expiry, strike, option_type),
+                        ).fetchone()
+                    else:
+                        opt_row = conn.execute(
+                            "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
+                            (symbol, base_sym, strike, option_type),
+                        ).fetchone()
+                    if opt_row:
+                        snap_ltp = float(opt_row["ltp"])
+                        if underlying > 0 and not is_valid_option_premium(
+                            strike, option_type, snap_ltp, underlying
+                        ):
+                            log.warning(
+                                "[multileg-live] %s: rejected corrupted snapshot LTP %.2f for %s %.0f",
+                                symbol,
+                                snap_ltp,
+                                option_type,
+                                strike,
+                            )
+                        else:
+                            current_premium = snap_ltp
+            except Exception:
+                pass
+
+        if current_premium is None:
+            current_premium = entry_premium
+
+        leg["current_premium"] = current_premium
+
+        if side == "SELL":
+            pnl = (entry_premium - current_premium) * lots * lot_size
+        else:
+            pnl = (current_premium - entry_premium) * lots * lot_size
+
+        total_pnl += pnl
+
+    return total_pnl

@@ -951,20 +951,24 @@ def _calc_multileg_pnl(book: dict, legs: list[dict]) -> float:
 
         if current_premium is None:
             try:
-                with get_read_conn() as conn:
-                    opt_row = conn.execute(
-                        "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND expiry=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
-                        (symbol, base_sym, strike, option_type, leg.get("expiry", ""))
-                    ).fetchone()
-                    if opt_row:
-                        snap_ltp = float(opt_row["ltp"])
-                        if underlying > 0 and not is_valid_option_premium(strike, option_type, snap_ltp, underlying):
-                            log.warning(
-                                "[multileg-paper] %s: _calc_multileg_pnl rejected corrupted DB snapshot LTP %.2f for %s %.0f (spot=%.2f)",
-                                symbol, snap_ltp, option_type, strike, underlying,
-                            )
-                        else:
-                            current_premium = snap_ltp
+                leg_expiry = str(leg.get("expiry") or book.get("expiry") or "").strip()
+                if leg_expiry:
+                    with get_read_conn() as conn:
+                        opt_row = conn.execute(
+                            "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND expiry=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
+                            (symbol, base_sym, strike, option_type, leg_expiry)
+                        ).fetchone()
+                        if opt_row:
+                            snap_ltp = float(opt_row["ltp"])
+                            if underlying > 0 and not is_valid_option_premium(strike, option_type, snap_ltp, underlying):
+                                log.warning(
+                                    "[multileg-paper] %s: _calc_multileg_pnl rejected corrupted DB snapshot LTP %.2f for %s %.0f (spot=%.2f)",
+                                    symbol, snap_ltp, option_type, strike, underlying,
+                                )
+                            else:
+                                current_premium = snap_ltp
+            except Exception:
+                pass
             except Exception:
                 pass
 

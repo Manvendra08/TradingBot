@@ -56,3 +56,31 @@ class TestMultilegEntryQuality:
         from src.engine.entry_quality import calculate_multileg_entry_quality
         score, reasons = calculate_multileg_entry_quality("NIFTY", "SHORT_STRANGLE", [], {}, {}, {"underlying": 0})
         assert score == 0
+
+
+class TestMultilegPnlAndSnapshotFixes:
+    """Tests for multi-leg snapshot lookups and PnL calculation fixes."""
+
+    def test_get_latest_option_snapshot_exists(self):
+        from src.models.schema import get_latest_option_snapshot
+        assert callable(get_latest_option_snapshot)
+
+    def test_multileg_live_trading_update_pnl_exists(self):
+        from src.engine.multileg_live_trading import _update_live_book_pnl
+        assert callable(_update_live_book_pnl)
+
+    def test_calc_multileg_pnl_expiry_fallback(self):
+        from src.engine.multileg_paper_trading import _calc_multileg_pnl
+        book = {
+            "symbol": "BANKNIFTY",
+            "expiry": "2026-08-27",
+            "entry_underlying": 51000.0,
+            "scan_context": {"underlying": 51000.0, "option_rows": []},
+        }
+        legs = [
+            {"strike": 52000, "option_type": "CE", "entry_premium": 100.0, "side": "SELL", "lots": 1},
+            {"strike": 50000, "option_type": "PE", "entry_premium": 100.0, "side": "SELL", "lots": 1},
+        ]
+        pnl = _calc_multileg_pnl(book, legs)
+        assert isinstance(pnl, float)
+

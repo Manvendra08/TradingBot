@@ -48,6 +48,11 @@ TypeError: get_previous_underlying() got an unexpected keyword argument 'read_on
 - **Self-Heal:** 
   1. `_priority_for` in [router.py](file:///c:/Users/manve/Downloads/NSEBOT/src/fetchers/router.py#L108) prioritizes dedicated commodity fetchers (`dhan_commodity` -> `moneycontrol`) ahead of `shoonya` for MCX commodities (`NATURALGAS`, `CRUDEOIL`, `GOLD`, `SILVER`).
   2. [live_trading.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/live_trading.py#L2212) bypasses `kite.ltp` for `MCX:` keys, resolving underlying prices via Dhan/MoneyControl and DB fallback cleanly without permission warnings.
+
+### F6: Multi-Leg Expiry Filter & CMP Inflation (P0-CRITICAL)
+- **Symptom:** Dashboard and paper trading show massive bloated CMPs (e.g. ₹500–790 on OTM options with entry premiums of ₹30–100), distorting open position PnL by lakhs.
+- **Root Cause:** Live PnL enrichment queries (`_enrich_open_trades_with_live_pnl` in `dashboard_server.py` and `_calc_multileg_pnl` in `src/engine/multileg_paper_trading.py`) fell back to unfiltered option chain snapshot queries (`WHERE symbol=? AND strike=? AND option_type=?` WITHOUT filtering by `expiry`), selecting next-month expiry options (e.g., 2026-09-29 vs 2026-08-25) which have massive time value.
+- **Self-Heal:** Enforce strict `expiry=?` filtering in option snapshot queries for both multi-leg and single-leg trades. Remove cross-expiry fallback queries completely.
 - **Caveat — Shoonya Sequential Call Avalanche:** Shoonya `fetch_option_chain()` makes 3–4 sequential API calls (`_search_scrip`, `_get_quotes`, `_get_option_chain` + per-strike fallbacks), each with 6s timeout + 1 retry. Worst-case wall time (~22.5s+) exceeds the router's 12s deadline. The `0.1s` fallback timeout when the primary source succeeds can also produce false "fetch failed/timed out" warnings. Session-quota re-login (Playwright OAuth, 60–75s) guarantees a timeout if it triggers during a fetch cycle. No per-source timeout configuration exists — all Shoonya timeouts are hardcoded.
 
 ### F127: Direct Kite Manual Trade Auto-Reconciliation Fix (P0-CRITICAL)
@@ -77,6 +82,19 @@ TypeError: get_previous_underlying() got an unexpected keyword argument 'read_on
 - **Symptom:** `AttributeError: 'list' object has no attribute 'get'` in multi-leg strategy runner (`src/engine/multileg_strategy.py`) during paper or live multi-leg trade evaluation.
 - **Root Cause:** `validate_legs()` and `build_execution_plan()` expected `option_chain` to be a `dict` keyed by `strike`, but callers in `multileg_paper_trading.py` and `multileg_live_trading.py` passed `option_rows` (a `list` of row dicts or list of contract dicts) from scan context.
 - **Self-Heal:** Added `_normalize_option_chain()` helper in [multileg_strategy.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/multileg_strategy.py) to dynamically convert list representations (both row dicts with `CE`/`PE` keys and individual contract dicts) into standard `dict[float, dict]` before leg validation and execution plan construction.
+
+### F132: Multi-Leg Snapshot Expiry Resolution & Live PnL Distortion Fix (P0-CRITICAL)
+- **Symptom:** Multi-leg trade cards on dashboard displayed abnormal CMP spikes (e.g., ₹480–791 for OTM options vs entry prices of ₹30–120) and distorted PnL (-₹1,46,475).
+- **Root Cause:**
+  1. `_enrich_open_trades_with_live_pnl()` in `dashboard_server.py` queried `option_chain_snapshots` without filtering by `expiry`, fetching arbitrary contract snapshots across different expiries.
+  2. `_calc_multileg_pnl()` in `multileg_paper_trading.py` passed `leg.get("expiry", "")` which evaluated to `""` (since `expiry` is stored on the parent `book`), causing DB snapshot queries to return 0 rows and triggering inaccurate Delta-based price estimation.
+  3. `_update_live_book_pnl()` was called in `multileg_live_trading.py` but was undefined, raising `NameError`.
+  4. `get_latest_option_snapshot` was missing from `schema.py`.
+- **Fix:**
+  1. Added `expiry` filtering and `is_valid_option_premium()` sanity checks in `dashboard_server.py`.
+  2. Resolved `leg_expiry = str(leg.get("expiry") or book.get("expiry") or "")` in `multileg_paper_trading.py`.
+  3. Added `get_latest_option_snapshot` helper to `schema.py`.
+  4. Implemented `_update_live_book_pnl()` in `multileg_live_trading.py`.
 
 ### F6: Zero OI & Illiquid Option Chain Anomaly (P1-HIGH)
 - **Symptom:** >50% of strikes return `oi=0` and `volume=0`.
