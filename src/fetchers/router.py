@@ -106,12 +106,11 @@ def _priority_for(symbol: str) -> list[str]:
     
     # Default priorities per symbol class
     if base in _MCX_COMMODITIES:
-        return ["dhan_commodity", "shoonya", "dhan", "dhan_headless", "moneycontrol"]
+        return ["dhan_commodity", "shoonya", "dhan", "dhan_headless"]
     if base == "SENSEX":
         return ["sensibull", "shoonya", "dhan_sensex", "dhan", "nse_public"]
     return [
-        "sensibull", "shoonya", "paytm", "dhan",
-        "nse_public", "dhan_headless", "moneycontrol",
+        "sensibull", "shoonya", "dhan", "nse_public", "dhan_headless",
     ]
 
 
@@ -259,6 +258,7 @@ def _strike_has_greeks(s: dict) -> bool:
 
 def _finalise_result(result: dict, source: str, symbol: str, priority: list[str], required_strikes: set[float] | None = None) -> dict:
     """Apply ATM filter, enrich greeks, log success, stamp health."""
+    result["source"] = source
     _filter_atm_strikes(result, required_strikes)
     underlying = result.get("underlying_price")
     expiry_val = result.get("expiry", "")
@@ -498,11 +498,9 @@ def fetch_option_chain(symbol: str, expiry: str | None = None, required_strikes:
                 result_source = primary_src
                 break
             elif f_data:
-                if best_single_data is None:
-                    best_single_data = f_data
-                    best_single_source = fallback_src
-                i += 1
-                continue
+                result_data = f_data
+                result_source = fallback_src
+                break
             else:
                 i += 2
                 continue

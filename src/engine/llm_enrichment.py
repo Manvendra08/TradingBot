@@ -1283,10 +1283,37 @@ def _call_llm_api(
     else:
         _omnirouter_url = _omnirouter_base
 
-    # OmniRouter primary group — ChatGPT CX, Claude Web, KR & TRK models.
+    # OmniRouter primary group — Claude Combos, Antigravity, ChatGPT CX, KR & TRK models.
     _omnirouter_group = {
         "model_group": "omnirouter-primary",
         "providers": [
+            {
+                "name": "OmniRouter (Claude-Models Combo)",
+                "env_key": "OMNIROUTER_API_KEY",
+                "url": _omnirouter_url,
+                "model": "Claude-Models",
+                "model_group": "omnirouter-primary",
+                "timeout": 15,
+                "max_tokens_override": 4096,
+            },
+            {
+                "name": "OmniRouter (Claude/Antigravity)",
+                "env_key": "OMNIROUTER_API_KEY",
+                "url": _omnirouter_url,
+                "model": "Claude/Antigravity",
+                "model_group": "omnirouter-primary",
+                "timeout": 15,
+                "max_tokens_override": 4096,
+            },
+            {
+                "name": "OmniRouter (Claude/Free)",
+                "env_key": "OMNIROUTER_API_KEY",
+                "url": _omnirouter_url,
+                "model": "claude/Free",
+                "model_group": "omnirouter-primary",
+                "timeout": 15,
+                "max_tokens_override": 4096,
+            },
             {
                 "name": "OmniRouter (GPT 5.5 CX)",
                 "env_key": "OMNIROUTER_API_KEY",
@@ -1294,24 +1321,6 @@ def _call_llm_api(
                 "model": "cx/gpt-5.5",
                 "model_group": "omnirouter-primary",
                 "timeout": 15,
-                "max_tokens_override": 4096,
-            },
-            {
-                "name": "OmniRouter (Claude Sonnet 5)",
-                "env_key": "OMNIROUTER_API_KEY",
-                "url": _omnirouter_url,
-                "model": "cw/claude-sonnet-5",
-                "model_group": "omnirouter-primary",
-                "timeout": 15,
-                "max_tokens_override": 4096,
-            },
-            {
-                "name": "OmniRouter (Claude Haiku 4.5)",
-                "env_key": "OMNIROUTER_API_KEY",
-                "url": _omnirouter_url,
-                "model": "cw/claude-haiku-4-5-20251001",
-                "model_group": "omnirouter-primary",
-                "timeout": 12,
                 "max_tokens_override": 4096,
             },
             {
@@ -1342,15 +1351,6 @@ def _call_llm_api(
                 "max_tokens_override": 4096,
             },
             {
-                "name": "OmniRouter (Claude Sonnet 5 Fast)",
-                "env_key": "OMNIROUTER_API_KEY",
-                "url": _omnirouter_url,
-                "model": "no-think/cw/claude-sonnet-5",
-                "model_group": "omnirouter-primary",
-                "timeout": 12,
-                "max_tokens_override": 4096,
-            },
-            {
                 "name": "OmniRouter (Qwen 3.8 Max Free TRK)",
                 "env_key": "OMNIROUTER_API_KEY",
                 "url": _omnirouter_url,
@@ -1367,19 +1367,37 @@ def _call_llm_api(
         "model_group": "omnirouter-sentinel",
         "providers": [
             {
+                "name": "OmniRouter (Claude-Models Combo)",
+                "env_key": "OMNIROUTER_API_KEY",
+                "url": _omnirouter_url,
+                "model": "Claude-Models",
+                "model_group": "omnirouter-sentinel",
+                "timeout": 12,
+                "max_tokens_override": 2048,
+            },
+            {
+                "name": "OmniRouter (Claude/Antigravity)",
+                "env_key": "OMNIROUTER_API_KEY",
+                "url": _omnirouter_url,
+                "model": "Claude/Antigravity",
+                "model_group": "omnirouter-sentinel",
+                "timeout": 12,
+                "max_tokens_override": 2048,
+            },
+            {
+                "name": "OmniRouter (Claude/Free)",
+                "env_key": "OMNIROUTER_API_KEY",
+                "url": _omnirouter_url,
+                "model": "claude/Free",
+                "model_group": "omnirouter-sentinel",
+                "timeout": 12,
+                "max_tokens_override": 2048,
+            },
+            {
                 "name": "OmniRouter (Claude Haiku 4.5 KR)",
                 "env_key": "OMNIROUTER_API_KEY",
                 "url": _omnirouter_url,
                 "model": "kr/claude-haiku-4.5",
-                "model_group": "omnirouter-sentinel",
-                "timeout": 10,
-                "max_tokens_override": 2048,
-            },
-            {
-                "name": "OmniRouter (Claude Haiku 4.5 KR Fast)",
-                "env_key": "OMNIROUTER_API_KEY",
-                "url": _omnirouter_url,
-                "model": "no-think/kr/claude-haiku-4.5",
                 "model_group": "omnirouter-sentinel",
                 "timeout": 10,
                 "max_tokens_override": 2048,

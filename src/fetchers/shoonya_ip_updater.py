@@ -129,77 +129,125 @@ def update_shoonya_portal_ip(
 
         try:
             # -----------------------------------------------------------------
-            # Strategy A: Shoonya Developer Portal (OAuthlogin Smart Window)
+            # Shoonya Trading Portal (trade.shoonya.com) Automated Update
             # -----------------------------------------------------------------
-            portal_url = f"https://api.shoonya.com/OAuthlogin/authorize/oauth?client_id={vendor_code}"
+            portal_url = "https://trade.shoonya.com/#/"
             log.info("[shoonya-ip-updater] Navigating to %s ...", portal_url)
-            page.goto(portal_url, wait_until="commit", timeout=int(timeout_s * 1000))
+            page.goto(portal_url, wait_until="networkidle", timeout=int(timeout_s * 1000))
+            time.sleep(3.0)
 
-            # Wait for login inputs
-            page.wait_for_selector("#lgnusrid", state="visible", timeout=int(timeout_s * 1000))
-            log.debug("[shoonya-ip-updater] Login form detected. Filling credentials...")
-
-            page.locator("#lgnusrid").fill(user_id)
-            page.locator("#lgnpwd").fill(password)
+            log.info("[shoonya-ip-updater] Submitting login credentials with dynamic TOTP...")
+            page.keyboard.type(user_id, delay=50)
+            time.sleep(0.3)
+            page.keyboard.press("Tab")
+            time.sleep(0.3)
+            page.keyboard.type(password, delay=50)
+            time.sleep(0.3)
+            page.keyboard.press("Tab")
+            time.sleep(0.3)
             totp_code = pyotp.TOTP(totp_key).now()
-            page.locator("#lgnotp").fill(totp_code)
+            page.keyboard.type(totp_code, delay=50)
+            time.sleep(0.3)
+            page.keyboard.press("Enter")
 
-            # Open API Key Smart Window in DOM
-            log.debug("[shoonya-ip-updater] Opening API Key modal...")
-            page.evaluate("""() => {
-                const win = document.querySelector('smart-window[label="API Key"]');
-                if (win) {
-                    if (typeof win.open === 'function') {
-                        win.open();
-                    } else {
-                        win.classList.remove('smart-visibility-hidden');
-                        win.style.display = 'block';
-                    }
+            # Wait for authenticated session to establish
+            log.info("[shoonya-ip-updater] Authenticating session...")
+            time.sleep(5.0)
+
+            # Step 1: Retrieve App Key List
+            app_keys_res = page.evaluate("""async (uid) => {
+                try {
+                    const resp = await fetch('https://trade.shoonya.com/NorenWClientWeb/GetAppKeys', {
+                        method: 'POST',
+                        body: 'jData=' + JSON.stringify({ uid: uid })
+                    });
+                    return await resp.json();
+                } catch (e) {
+                    return { stat: 'Error', emsg: String(e) };
                 }
-            }""")
-            time.sleep(1.0)
+            }""", user_id)
 
-            # Locate Primary and Backup IP input elements inside smart-window
-            prim_input = page.locator("smart-window[label='API Key'] input[placeholder*='Primary IP']")
-            back_input = page.locator("smart-window[label='API Key'] input[placeholder*='Backup IP']")
+            if not app_keys_res or app_keys_res.get("stat") != "Ok" or not app_keys_res.get("app_key_list"):
+                err_msg = f"Failed to retrieve App Keys from Shoonya: {app_keys_res}"
+                log.error("[shoonya-ip-updater] %s", err_msg)
+                page.screenshot(path=str(error_screenshot))
+                return False, err_msg
 
-            if prim_input.count() > 0:
-                log.info(
-                    "[shoonya-ip-updater] Binding IP addresses: Primary=%s, Backup=%s",
-                    target_ip,
-                    target_backup_ip,
+            app_key = app_keys_res["app_key_list"][0].get("app_key")
+            log.info("[shoonya-ip-updater] Detected active App Key: %s", app_key)
+
+            # Step 2: Retrieve App Key Metadata (sec_code, red_url, dname)
+            app_data_res = page.evaluate("""async (app_key) => {
+                try {
+                    const resp = await fetch('https://trade.shoonya.com/NorenWClientWeb/GetAppKeyData', {
+                        method: 'POST',
+                        body: 'jData=' + JSON.stringify({ app_key: app_key })
+                    });
+                    return await resp.json();
+                } catch (e) {
+                    return { stat: 'Error', emsg: String(e) };
+                }
+            }""", app_key)
+
+            if not app_data_res or app_data_res.get("stat") != "Ok":
+                err_msg = f"Failed to retrieve App Key metadata: {app_data_res}"
+                log.error("[shoonya-ip-updater] %s", err_msg)
+                page.screenshot(path=str(error_screenshot))
+                return False, err_msg
+
+            sec_code = app_data_res.get("sec_code")
+            red_url = app_data_res.get("red_url", "https://NSEBOT.com/")
+            dname = app_data_res.get("dname", "")
+
+            # Step 3: Update Primary & Backup IP via AppKeyStore
+            log.info(
+                "[shoonya-ip-updater] Updating IP binding via AppKeyStore: Primary=%s, Backup=%s",
+                target_ip,
+                target_backup_ip,
+            )
+            store_res = page.evaluate("""async (params) => {
+                try {
+                    const payload = {
+                        app_key: params.app_key,
+                        sec_code: params.sec_code,
+                        red_url: params.red_url,
+                        dname: params.dname,
+                        ipaddr: [
+                            { ipaddr: params.target_ip },
+                            { ipaddr: params.target_backup_ip }
+                        ],
+                        uid: [{ uid: params.uid }]
+                    };
+                    const resp = await fetch('https://trade.shoonya.com/NorenWClientWeb/AppKeyStore', {
+                        method: 'POST',
+                        body: 'jData=' + JSON.stringify(payload)
+                    });
+                    return await resp.json();
+                } catch (e) {
+                    return { stat: 'Error', emsg: String(e) };
+                }
+            }""", {
+                "app_key": app_key,
+                "sec_code": sec_code,
+                "red_url": red_url,
+                "dname": dname,
+                "target_ip": target_ip,
+                "target_backup_ip": target_backup_ip,
+                "uid": user_id,
+            })
+
+            if store_res and store_res.get("stat") == "Ok":
+                success_msg = (
+                    f"Successfully updated Shoonya API Key ({app_key}) IP binding to "
+                    f"{target_ip} (backup={target_backup_ip})"
                 )
-                prim_input.fill(target_ip)
-                if back_input.count() > 0:
-                    back_input.fill(target_backup_ip)
+                log.info("[shoonya-ip-updater] %s", success_msg)
+                return True, success_msg
 
-                # Click Update button inside API Key smart window
-                update_btn = page.locator("smart-window[label='API Key'] button:has-text('Update')")
-                if update_btn.count() > 0:
-                    update_btn.first.click()
-                    time.sleep(1.5)
-
-                    # Handle confirmation modal if prompted
-                    confirm_btn = page.locator(
-                        "button.proceedbutton:has-text('Yes'), button:has-text('Yes'), button:has-text('Proceed'), button:has-text('Confirm')"
-                    )
-                    for i in range(confirm_btn.count()):
-                        btn = confirm_btn.nth(i)
-                        if btn.is_visible():
-                            log.debug("[shoonya-ip-updater] Confirming update dialog...")
-                            btn.click()
-                            break
-
-                    time.sleep(3.0)
-
-                    log.info(
-                        "[shoonya-ip-updater] Successfully updated Shoonya API Key IP binding to %s (backup=%s)",
-                        target_ip,
-                        target_backup_ip,
-                    )
-                    return True, f"Shoonya IP binding updated to {target_ip} (backup={target_backup_ip})"
-
-            log.warning("[shoonya-ip-updater] Primary IP field not found in Developer Portal modal.")
+            err_msg = f"AppKeyStore returned unexpected response: {store_res}"
+            log.error("[shoonya-ip-updater] %s", err_msg)
+            page.screenshot(path=str(error_screenshot))
+            return False, err_msg
 
         except Exception as exc:
             log.warning("[shoonya-ip-updater] Exception during portal update: %s", exc)
