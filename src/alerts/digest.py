@@ -920,13 +920,15 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
         
         if all_blockers:
             for b in all_blockers:
-                # Sanitize confusing internal phrases like 'Trend allowed:'
+                # Sanitize confusing internal phrases
                 b_clean = b
-                if "Trend allowed:" in b or "Trend persistent:" in b:
+                if "Trend allowed:" in b or "Trend persistent:" in b or "AI decision mode 'full'" in b:
                     b_clean = "Waiting for clearer directional confirmation / Active risk cap"
+                elif "Marginal setup" in b:
+                    b_clean = "Awaiting clear directional confirmation / Sub-threshold conviction"
                 lines.append(f" ⚠ Blocked: {_esc(b_clean)}")
         elif "Marginal setup" in tfss_reason:
-            lines.append(f" ⚠ Blocked: Sub-threshold conviction / Marginal setup")
+            lines.append(f" ⚠ Blocked: Awaiting clear directional confirmation / Sub-threshold conviction")
         elif tfss_reason and tfss_reason != "N/A" and "allowed" not in tfss_reason.lower():
             lines.append(f"Reason: {_esc(tfss_reason)}")
         else:
