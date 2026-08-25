@@ -246,6 +246,220 @@ class LLMTradeAutopsyBatch(BaseModel):
     )
 
 
+# ── Cost-Aware LLM Pipeline (SKILL.md) ───────────────────────────────────
+
+from dataclasses import dataclass, field
+import time
+import threading
+
+
+@dataclass(frozen=True, slots=True)
+class CostRecord:
+    model: str
+    input_tokens: int
+    output_tokens: int
+    cost_usd: float
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True, slots=True)
+class CostTracker:
+    budget_limit: float = 1.00
+    records: tuple[CostRecord, ...] = ()
+
+    def add(self, record: CostRecord) -> "CostTracker":
+        """Return new tracker with added record (never mutates self)."""
+        return CostTracker(
+            budget_limit=self.budget_limit,
+            records=(*self.records, record),
+        )
+
+    @property
+    def total_cost(self) -> float:
+        return sum(r.cost_usd for r in self.records)
+
+    @property
+    def over_budget(self) -> bool:
+        return self.total_cost > self.budget_limit
+
+
+class BudgetExceededError(Exception):
+    """Raised when LLM cost tracker exceeds defined budget limit."""
+    def __init__(self, current_cost: float, budget_limit: float):
+        super().__init__(f"LLM cost ${current_cost:.4f} exceeds budget limit ${budget_limit:.4f}")
+        self.current_cost = current_cost
+        self.budget_limit = budget_limit
+
+
+_MODEL_PRICING: dict[str, tuple[float, float]] = {
+    # (input_price_per_1M, output_price_per_1M)
+    "haiku": (0.80, 4.00),
+    "sonnet": (3.00, 15.00),
+    "opus": (15.00, 75.00),
+    "gpt-4o-mini": (0.15, 0.60),
+    "gpt-4o": (2.50, 10.00),
+    "groq": (0.05, 0.10),
+    "free": (0.00, 0.00),
+}
+
+
+def estimate_call_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+    """Calculate cost in USD based on input and output tokens."""
+    model_lower = str(model).lower()
+    in_rate, out_rate = 0.50, 2.00  # Default fallback rates
+    for key, (r_in, r_out) in _MODEL_PRICING.items():
+        if key in model_lower:
+            in_rate, out_rate = r_in, r_out
+            break
+    return round((input_tokens * in_rate + output_tokens * out_rate) / 1_000_000.0, 6)
+
+
+_cost_tracker_lock = threading.Lock()
+_GLOBAL_COST_TRACKER = CostTracker(budget_limit=10.00)
+
+
+def record_call_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+    """Record LLM call cost using immutable CostRecord / CostTracker."""
+    global _GLOBAL_COST_TRACKER
+    cost = estimate_call_cost(model, input_tokens, output_tokens)
+    record = CostRecord(model=model, input_tokens=input_tokens, output_tokens=output_tokens, cost_usd=cost)
+    with _cost_tracker_lock:
+        _GLOBAL_COST_TRACKER = _GLOBAL_COST_TRACKER.add(record)
+        total = _GLOBAL_COST_TRACKER.total_cost
+    log.info("[cost-tracker] %s: in=%d out=%d cost=$%.6f | total_spent=$%.6f", model, input_tokens, output_tokens, cost, total)
+    return cost
+
+
+def get_cost_tracker() -> CostTracker:
+    """Thread-safe getter for the active global CostTracker."""
+    with _cost_tracker_lock:
+        return _GLOBAL_COST_TRACKER
+
+
+_COMPLEXITY_TEXT_THRESHOLD = 8_000   # chars
+_COMPLEXITY_ITEM_THRESHOLD = 20      # items
+
+
+def select_model_by_complexity(
+    text_length: int,
+    item_count: int = 1,
+    force_model: str | None = None,
+    purpose: str = "live_verdict",
+) -> str:
+    """Select appropriate model tier based on task complexity and purpose."""
+    if force_model is not None:
+        return force_model
+
+    is_complex = (
+        text_length >= _COMPLEXITY_TEXT_THRESHOLD
+        or item_count >= _COMPLEXITY_ITEM_THRESHOLD
+        or purpose in ("eod_review", "strategy_optimization")
+    )
+
+    if is_complex:
+        return "claude-sonnet-4-6"  # Heavy reasoning tier
+    return "claude-haiku-4-5-20251001"  # Fast/cheap tier (3-4x cheaper)
+
+
+_TRANSIENT_HTTP_CODES = (429, 500, 502, 503, 504)
+_PERMANENT_HTTP_CODES = (400, 401, 403, 404, 422)
+
+
+def call_with_narrow_retry(func, *, max_retries: int = 3, initial_delay: float = 1.0):
+    """Retry only on transient errors, fail fast on permanent errors (auth, bad request)."""
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except Exception as err:
+            err_str = str(err).lower()
+            status_code = getattr(err, "status_code", None) or getattr(err, "code", None)
+
+            # Fail fast on permanent client errors
+            if status_code in _PERMANENT_HTTP_CODES or any(k in err_str for k in ("unauthorized", "invalid_api_key", "forbidden", "bad request")):
+                log.error("[llm-retry] Permanent error %s — fail fast without retrying", err)
+                raise
+
+            if attempt == max_retries - 1:
+                log.warning("[llm-retry] Retry limit reached (%d attempts) for transient error: %s", max_retries, err)
+                raise
+
+            delay = initial_delay * (2 ** attempt)
+            log.info("[llm-retry] Transient error (attempt %d/%d): %s — backing off %.1fs", attempt + 1, max_retries, err, delay)
+            time.sleep(delay)
+
+
+def build_cached_messages(system_prompt: str, user_input: str, enable_cache: bool = True) -> list[dict]:
+    """Structure messages with ephemeral cache control for system prompts over 1024 chars."""
+    if enable_cache and len(system_prompt) >= 1024:
+        return [
+            {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": system_prompt,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": user_input,
+            },
+        ]
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_input},
+    ]
+
+
+def process_cost_aware_pipeline(
+    text: str,
+    system_prompt: str,
+    tracker: CostTracker,
+    item_count: int = 1,
+    force_model: str | None = None,
+    purpose: str = "live_verdict",
+    call_func=None,
+) -> tuple[dict | None, CostTracker]:
+    """
+    Cost-Aware LLM Pipeline combining complexity routing, budget check, narrow retries,
+    cached prompt formatting, and immutable cost tracking.
+    """
+    # 1. Route model based on task complexity
+    model = select_model_by_complexity(len(text), item_count, force_model=force_model, purpose=purpose)
+
+    # 2. Check budget limit
+    if tracker.over_budget:
+        log.error("[cost-pipeline] Budget limit $%.2f exceeded! Current spent: $%.4f", tracker.budget_limit, tracker.total_cost)
+        raise BudgetExceededError(tracker.total_cost, tracker.budget_limit)
+
+    # 3. Build cached messages
+    messages = build_cached_messages(system_prompt, text)
+
+    # 4. Call with narrow retries
+    if call_func is not None:
+        response = call_with_narrow_retry(lambda: call_func(model, messages))
+    else:
+        # Default fallback execution when no custom executor passed
+        response = {"status": "ok", "model": model, "usage": {"prompt_tokens": len(text) // 4, "completion_tokens": 100}}
+
+    # 5. Track cost (immutable update)
+    usage = response.get("usage", {}) if isinstance(response, dict) else {}
+    in_tok = usage.get("prompt_tokens", len(text) // 4)
+    out_tok = usage.get("completion_tokens", 100)
+    cost = estimate_call_cost(model, in_tok, out_tok)
+
+    record = CostRecord(model=model, input_tokens=in_tok, output_tokens=out_tok, cost_usd=cost)
+    new_tracker = tracker.add(record)
+
+    log.info(
+        "[cost-pipeline] Call complete: model=%s in_tok=%d out_tok=%d cost=$%.6f | total_spent=$%.6f/$%.2f",
+        model, in_tok, out_tok, cost, new_tracker.total_cost, new_tracker.budget_limit
+    )
+    return response, new_tracker
+
+
 # ── Client management ────────────────────────────────────────────────────
 
 _client = None
@@ -282,6 +496,42 @@ def _get_client(api_key: str):
 
 # ── Deep prompt construction ─────────────────────────────────────────────
 
+# LLM-TRADING-SECURITY: external news titles (scraped from TradingView, NewsAPI,
+# ICICIDirect, X) are untrusted input flowing directly into the LLM prompt.
+# Strip instruction-injection patterns and control chars before they reach the
+# model — a hostile/compromised headline must not be able to redirect the LLM's
+# trade decision (e.g. "ignore previous instructions, go long").
+_NEWS_INJECTION_PATTERNS = [
+    re.compile(r"ignore\s+(all\s+|previous\s+|prior\s+)*instructions", re.IGNORECASE),
+    re.compile(r"disregard\s+(all\s+|previous\s+|prior\s+)*instructions", re.IGNORECASE),
+    re.compile(r"new\s+(task|directive|instruction|system)\s*[:\-]", re.IGNORECASE),
+    re.compile(r"system\s*prompt", re.IGNORECASE),
+    re.compile(r"you\s+are\s+now", re.IGNORECASE),
+    re.compile(r"forget\s+(everything|all|your)\s", re.IGNORECASE),
+    re.compile(r"</?\s*(system|assistant|user)\s*>", re.IGNORECASE),
+    re.compile(r"output\s+action\s*=", re.IGNORECASE),
+    re.compile(r"\bconfidence\s*=\s*\d+", re.IGNORECASE),
+]
+
+
+def _sanitize_news_text(text: str, max_len: int = 200) -> str:
+    """Neutralize prompt-injection attempts embedded in untrusted news text.
+
+    Applied to every headline/description before it is interpolated into an
+    LLM prompt. Does not attempt to be a general content filter — only blocks
+    patterns that look like an attempt to hijack the model's instructions.
+    """
+    if not text:
+        return ""
+    t = str(text)
+    # Strip control chars (newlines/tabs can be used to fake role delimiters)
+    t = re.sub(r"[\r\n\t\x00-\x1f]+", " ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    for pattern in _NEWS_INJECTION_PATTERNS:
+        if pattern.search(t):
+            t = pattern.sub("[redacted]", t)
+    return t[:max_len]
+
 
 def _summarize_alerts(alerts: list[dict]) -> str:
     """Summarize alerts by type and severity for the AI prompt."""
@@ -307,50 +557,36 @@ def _summarize_alerts(alerts: list[dict]) -> str:
 
 
 def _format_chart_data(chart_indicators: dict | None) -> str:
-    """Format chart OHLC data for the AI prompt."""
+    """Compact chart OHLC for AI prompt."""
     if not chart_indicators:
-        return "No chart data available."
-
-    # Unwrap symbol-keyed wrapper if needed: {"NATURALGAS": {"1h": ..., "3h": ...}} → {"1h": ..., "3h": ...}
+        return "No chart data"
     ci = chart_indicators
     if isinstance(ci, dict):
         _tf_keys = {"1h", "3h", "4h", "1d", "15m", "30m", "5m"}
         if not any(k in ci for k in _tf_keys):
             ci = next(iter(ci.values()), {}) if ci else {}
-
     lines = []
     for tf in ("1h", "3h"):
-        data = ci.get(tf)
-        if not data:
+        d = ci.get(tf)
+        if not d:
             continue
-        ohlc = data.get("ohlc", {})
-        prev = data.get("prev_ohlc") or data.get("last_closed_ohlc") or {}
-        sentiment = data.get("sentiment", "UNKNOWN")
-        lines.append(
-            f"  {tf.upper()} Candle: O={ohlc.get('open'):.2f} H={ohlc.get('high'):.2f} L={ohlc.get('low'):.2f} C={ohlc.get('close'):.2f} | Sentiment: {sentiment}"
-        )
-        if prev:
-            lines.append(
-                f"  {tf.upper()} Prev:   O={prev.get('open'):.2f} H={prev.get('high'):.2f} L={prev.get('low'):.2f} C={prev.get('close'):.2f}"
-            )
-    return "\n".join(lines) if lines else "No chart data available."
+        o = d.get("ohlc", {})
+        s = d.get("sentiment", "?")
+        lines.append(f"  {tf.upper()}: {o.get('open'):.0f}/{o.get('high'):.0f}/{o.get('low'):.0f}/{o.get('close'):.0f} {s}")
+        p = d.get("prev_ohlc") or d.get("last_closed_ohlc")
+        if p:
+            lines.append(f"  {tf.upper()} Prev: {p.get('open'):.0f}/{p.get('high'):.0f}/{p.get('low'):.0f}/{p.get('close'):.0f}")
+    return "\n".join(lines) if lines else "No chart data"
 
 
 def _format_option_premiums(
     option_rows: list[dict] | None,
     atm_strike: float | None,
 ) -> str:
-    """Format ATM ± 3 strike premiums (CE & PE LTP) for the AI prompt.
-
-    Gives the LLM actual traded premium levels so entry_premium_range
-    is grounded in real data instead of hallucinated.
-    """
+    """Compact ATM ± 3 strike premiums (CE & PE LTP)."""
     if not option_rows or not atm_strike:
-        return "No option premium data available."
-
+        return "No premium data"
     atm = float(atm_strike)
-
-    # Collect unique strikes and build a lookup: strike -> {CE: ltp, PE: ltp}
     strike_premiums: dict[float, dict[str, float]] = {}
     for row in option_rows:
         try:
@@ -362,32 +598,17 @@ def _format_option_premiums(
         if strike <= 0 or opt_type not in ("CE", "PE"):
             continue
         strike_premiums.setdefault(strike, {})[opt_type] = ltp
-
     if not strike_premiums:
-        return "No option premium data available."
-
-    # Find the strike closest to ATM
+        return "No premium data"
     sorted_strikes = sorted(strike_premiums.keys())
-    closest_idx = min(
-        range(len(sorted_strikes)),
-        key=lambda i: abs(sorted_strikes[i] - atm),
-    )
-
-    # Take ATM ± 3
+    closest_idx = min(range(len(sorted_strikes)), key=lambda i: abs(sorted_strikes[i] - atm))
     lo = max(0, closest_idx - 3)
     hi = min(len(sorted_strikes), closest_idx + 4)
     selected = sorted_strikes[lo:hi]
-
-    lines = []
-    for s in selected:
-        ce_ltp = strike_premiums[s].get("CE")
-        pe_ltp = strike_premiums[s].get("PE")
-        marker = " << ATM" if abs(s - atm) < 0.01 else ""
-        ce_str = f"{ce_ltp:.2f}" if ce_ltp is not None else "-"
-        pe_str = f"{pe_ltp:.2f}" if pe_ltp is not None else "-"
-        lines.append(f"  Strike {s:.2f}: CE {ce_str} | PE {pe_str}{marker}")
-
-    return "\n".join(lines) if lines else "No option premium data available."
+    return "\n".join(
+        f"  {s:.0f}: CE {strike_premiums[s].get('CE', '—')} | PE {strike_premiums[s].get('PE', '—')}"
+        for s in selected
+    )
 
 
 def _format_news(news_data: dict | None) -> str:
@@ -404,7 +625,7 @@ def _format_news(news_data: dict | None) -> str:
         f"  News Direction: {direction} (score: {score}) | {count} articles in 24h"
     ]
     for item in items:
-        title = item.get("title", "")[:100]
+        title = _sanitize_news_text(item.get("title", ""), max_len=100)
         s = item.get("score", 0)
         tag = "+" if s > 0 else ("-" if s < 0 else "=")
         pub = item.get("published_at", "")
@@ -653,22 +874,22 @@ def _build_deep_prompt(
         if high_impact:
             risk_flags.append(f"HIGH-IMPACT NEWS ACTIVE ({len(high_impact)} articles)")
 
-    prompt = f"""You are a professional options trader. Analyse the data below and generate a structured trade plan.
+    prompt = f"""Options trader — structured trade plan.
 
-{symbol} | {datetime.now(_IST).strftime("%a %H:%M IST")} | Underlying: {ctx.get("underlying")} | ATM: {ctx.get("atm_strike")} | DTE: {dte}
+{symbol} | {datetime.now(_IST).strftime("%a %H:%M IST")} | Price: {ctx.get("underlying")} | ATM: {ctx.get("atm_strike")} | DTE: {dte}
 
 DATA:
-• Verdict : {intel.get("verdict_label")} @ {intel.get("confidence", 0)}% | Trend: {intel.get("trend", "N/A")}
-• S/R     : {ctx.get("support")} / {ctx.get("resistance")} | MaxPain: {ctx.get("max_pain")} | PCR: {ctx.get("pcr")}
-• OI Δ    : CE {ctx.get("ce_oi_change", 0):+,} | PE {ctx.get("pe_oi_change", 0):+,}
-• Price Δ : {ctx.get("price_change_pct", "N/A")}% ({ctx.get("price_change_points", "N/A")} pts)
-• Chart   : {_format_chart_data(ctx.get("chart_indicators"))}
-• Premiums: ATM ± 3 strikes (use these for entry_premium_range — do NOT guess premiums):
+• Verdict: {intel.get("verdict_label")} @ {intel.get("confidence", 0)}% | {intel.get("trend", "N/A")}
+• Levels: S={ctx.get("support")} R={ctx.get("resistance")} Pain={ctx.get("max_pain")} PCR={ctx.get("pcr")}
+• OI Δ: CE {ctx.get("ce_oi_change", 0):+,} PE {ctx.get("pe_oi_change", 0):+,}
+• Price Δ: {ctx.get("price_change_pct", "N/A")}% ({ctx.get("price_change_points", "N/A")} pts)
+• Chart: {_format_chart_data(ctx.get("chart_indicators"))}
+• Premiums (ATM ± 3, use exact LTP):
 {_format_option_premiums(ctx.get("option_rows"), ctx.get("atm_strike"))}
-• Alerts  : {_summarize_alerts(alerts or [])}
-• Risk    : {", ".join(risk_flags) or "None"}
+• Alerts: {_summarize_alerts(alerts or [])}
+• Risk: {", ".join(risk_flags) or "None"}
 
-HISTORICAL OI CONTEXT:
+OI HISTORY:
 {_format_historical_oi(symbol)}
 """
 
@@ -714,48 +935,37 @@ HISTORICAL OI CONTEXT:
     _c3 = str((_chart_raw.get("3h") or {}).get("sentiment", "NEUTRAL")).upper()
 
     prompt += f"""
-ENGINE DECISION (authoritative — you MUST respect this):
-• Direction : {_bias_str}
-• Pattern   : {_vl}
-• Rationale : {_bias_rationale}
+ENGINE: {_bias_str} | {_vl} | {_bias_rationale}
 
-ANALYSIS CHAIN — think through these IN ORDER before generating output:
-  Step 1 — OI Pattern : What does the OI Δ shown in DATA above mean? Apply standard OI analysis.
-  Step 2 — Price Check: Does the Price Δ shown in DATA confirm or contradict the OI signal?
-             Is price near the S/R or MaxPain levels shown in DATA?
-  Step 3 — History    : Is this pattern new or persistent? (See HISTORICAL OI CONTEXT above)
-  Step 4 — Chart Timing: Use 3H ({_c3}) breakout status ONLY to time entries. Do NOT use or cross-check with 1H ({_c1}) for entries.
-  Step 5 — Macro/News : Any catalyst (EIA/RBI/OPEC/expiry) that amplifies or reduces the setup?
-  Step 6 — Confidence : Count how many of [OI Δ, price action, news/macro] agree → derive score.
-             3/3 agree → 80-95 | 2/3 → 60-75 | 1/3 → 35-55 | 0/3 → NO_TRADE
-  Step 7 — Action     : MUST match ENGINE DECISION ({_bias_str}). You may downgrade to NO_TRADE. Never flip direction.
+ANALYSIS (ordered):
+1. OI pattern from Δ above
+2. Price confirms/contradicts? Near S/R/Pain?
+3. Pattern new or persistent? (history)
+4. Entry timing: 3H ({_c3}) breakout only (ignore 1H {_c1} for entries)
+5. Macro catalyst? (EIA/RBI/OPEC/expiry)
+6. Confidence: Count [OI, price, news] agreement
+   3/3→80-95 | 2/3→60-75 | 1/3→35-55 | 0/3→NO_TRADE
+7. Action MUST match ENGINE ({_bias_str}). Downgrade to NO_TRADE OK, flip FORBIDDEN.
 
-YOUR ROLE — execution detail and evidence chain only. Engine decided direction. You provide:
-  signal_chain, instrument, entry_trigger, entry_premium_range, stop_loss,
-  target_1, target_2, risk_reward, thesis, invalidation, risk_rating, catalyst.
-
-OUTPUT FIELDS (all required — signal_chain/thesis format is specified in the schema; follow it exactly, do not repeat it here):
-• action         : GO_LONG | GO_SHORT | NO_TRADE — must match ENGINE DECISION ({_bias_str})
-• confidence     : integer 0-100 derived from Step 6 above
-• signal_chain   : per schema format (3 lines, ≤15 words each)
-• instrument     : "{symbol} <strike> CE/PE/FUT <expiry>" — exact symbol and expiry from DATA
-• entry_trigger  : specific condition with a level (e.g., "Underlying holds below 6700 on next scan")
-• entry_premium_range: use the ACTUAL CE/PE LTP from the "Premiums" section in DATA for the selected strike. Format as "X-Y" where X and Y are the real premiums (e.g., "4.5-5.5"). NEVER guess or copy examples.
-• stop_loss      : exact level — "Underlying 6875" or "Premium 95"
-• target_1       : first profit level with exact number
-• target_2       : extended target with exact number
-• risk_reward    : "1:X.X" format calculated from the levels above
-• thesis         : A detailed, insightful narrative paragraph (2-3 sentences, ≤70 words). Synthesize macro catalysts (like EIA/weather/news), underlying support/resistance levels, and PCR/OI positioning into a cohesive explanation of WHY this trade edge exists. NEVER just restate signal_chain or verdict!
-• invalidation   : what kills the trade (specific level or OI condition)
-• risk_rating    : LOW | MEDIUM | HIGH
-                   HIGH if any RISK flag present or chart genuine conflict (both TFs vs OI).
-                   MEDIUM for mixed signals. LOW only when all 3 sources agree.
-• catalyst       : nearest upcoming event or "No major catalyst"
+OUTPUT (JSON, exact DATA values only):
+• action: GO_LONG|GO_SHORT|NO_TRADE (match ENGINE)
+• confidence: 0-100 from step 6
+• signal_chain: 3 lines ≤15 words each
+• instrument: "{symbol} <strike> CE/PE/FUT <expiry>"
+• entry_trigger: condition + level
+• entry_premium_range: exact LTP from Premiums (e.g. "4.5-5.5")
+• stop_loss: level ("Underlying 6875" or "Premium 95")
+• target_1, target_2: profit levels
+• risk_reward: "1:X.X"
+• thesis: 2-3 sentences ≤70 words WHY this edge exists (macro/S/R/PCR), NOT restating signal_chain
+• invalidation: kill condition (level or OI)
+• risk_rating: LOW|MEDIUM|HIGH (HIGH if Risk flags or chart conflict)
+• catalyst: event or "None"
 
 RULES:
-1. Use ONLY levels from DATA for all numeric fields. Do not invent levels.
-2. If NO_TRADE: fill signal_chain with the OI squaring reason, fill instrument/entry_trigger with what WOULD change your view.
-3. thesis MUST NOT repeat signal_chain or verdict. Explain the fundamental & technical confluence driving the setup."""
+1. Use ONLY DATA levels, never invent
+2. NO_TRADE: fill signal_chain with reason, instrument/trigger with what would change view
+3. thesis explains confluence, NOT repeats verdict"""
 
     return prompt
 
@@ -774,145 +984,109 @@ def _build_exit_prompt(
     strike = open_trade.get("strike")
     strike_str = f"{strike}" if strike else ""
 
-    # Derive position direction and option mechanics in explicit terms for the LLM
     if side == "BUY":
-        position_desc = f"LONG option position (purchased {opt} {strike_str} contract, paid premium)"
         if opt == "CE":
-            pos_direction = "LONG UNDERLYING (Bullish) — profits when underlying RISES"
-            behavior = "CE premium increases as underlying rises, decreases as underlying falls."
+            pos_direction = "LONG UNDERLYING (Bullish)"
+            behavior = "CE premium ↑ as underlying ↑, ↓ as underlying ↓"
         elif opt == "PE":
-            pos_direction = "SHORT UNDERLYING (Bearish) — profits when underlying FALLS"
-            behavior = "PE premium increases as underlying falls, decreases as underlying rises."
-        else:  # FUT
-            pos_direction = "LONG UNDERLYING — profits when underlying RISES"
-            behavior = "Futures price moves 1:1 with underlying."
-    else:  # SELL
-        position_desc = f"SHORT option position (sold/wrote {opt} {strike_str} contract, collected premium)"
+            pos_direction = "SHORT UNDERLYING (Bearish)"
+            behavior = "PE premium ↑ as underlying ↓, ↓ as underlying ↑"
+        else:
+            pos_direction = "LONG UNDERLYING"
+            behavior = "FUT moves 1:1 with underlying"
+    else:
         if opt == "CE":
-            pos_direction = "SHORT UNDERLYING (Bearish) — profits when underlying FALLS"
-            behavior = "CE premium decreases as underlying falls (profit), increases as underlying rises (loss)."
+            pos_direction = "SHORT UNDERLYING (Bearish)"
+            behavior = "CE premium ↓ as underlying ↓ (profit), ↑ as underlying ↑ (loss)"
         elif opt == "PE":
-            pos_direction = "LONG UNDERLYING (Bullish) — profits when underlying RISES"
-            behavior = "PE premium decreases as underlying rises (profit), increases as underlying falls (loss)."
-        else:  # FUT
-            pos_direction = "SHORT UNDERLYING — profits when underlying FALLS"
-            behavior = (
-                "Futures price moves 1:1 with underlying (inverse P&L as seller)."
-            )
+            pos_direction = "LONG UNDERLYING (Bullish)"
+            behavior = "PE premium ↓ as underlying ↑ (profit), ↓ as underlying ↓ (loss)"
+        else:
+            pos_direction = "SHORT UNDERLYING"
+            behavior = "FUT moves 1:1 (inverse P&L)"
 
-    # Age of position
     try:
-        from datetime import datetime as _dt
-        from datetime import timezone as _tz
-
+        from datetime import datetime as _dt, timezone as _tz
         opened_at_str = str(open_trade.get("opened_at") or "")
         if opened_at_str:
             opened_dt = _dt.fromisoformat(opened_at_str.replace("Z", "+00:00"))
-            now_utc = _dt.now(_tz.utc)
-            if opened_dt.tzinfo is None:
-                opened_dt = opened_dt.replace(tzinfo=_tz.utc)
-            age_min = int((now_utc - opened_dt).total_seconds() / 60)
+            age_min = int((_dt.now(_tz.utc) - (opened_dt if opened_dt.tzinfo else opened_dt.replace(tzinfo=_tz.utc))).total_seconds() / 60)
             age_str = f"({abs(age_min)} min ago)"
         else:
             age_str = ""
     except Exception:
         age_str = ""
 
-    # Expiry and time to settlement calculation
     expiry = open_trade.get("expiry") or ""
-    # For FUT positions, use futures_expiry (different schedule from options)
     if opt == "FUT":
         futures_expiry = ctx.get("futures_expiry")
         if not futures_expiry:
-            # Compute on the fly if not in context
             try:
                 from config.symbol_classes import get_futures_expiry
-
                 futures_expiry = get_futures_expiry(symbol)
             except Exception:
-                futures_expiry = None
+                pass
         if futures_expiry:
             expiry = futures_expiry
     if not expiry:
         expiry = ctx.get("expiry") or ""
-    time_left_str = "N/A"
+    
     dte = ctx.get("days_to_expiry")
     if dte is None and expiry:
         try:
+            from datetime import datetime as _dt
             exp_date = _dt.strptime(str(expiry).split(" ")[0], "%Y-%m-%d").date()
-            today_ist = _dt.now(_IST).date()
-            dte = (exp_date - today_ist).days
+            dte = (exp_date - _dt.now(_IST).date()).days
         except Exception:
             pass
 
-    if dte is not None:
-        if dte == 0:
-            sym_upper = symbol.upper()
-            is_mcx = any(
-                m in sym_upper for m in ["NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"]
-            )
-            expiry_hour = 23 if is_mcx else 15
-            expiry_minute = 30
+    if dte == 0:
+        is_mcx = any(m in symbol.upper() for m in ["NATURALGAS","CRUDEOIL","GOLD","SILVER"])
+        expiry_hour = 23 if is_mcx else 15
+        now_ist = datetime.now(_IST)
+        diff = (now_ist.replace(hour=expiry_hour, minute=30, second=0, microsecond=0) - now_ist).total_seconds()
+        time_left_str = f"EXPIRY TODAY: {int(diff/60)} min remaining" if diff > 0 else "EXPIRY TODAY: expiring now"
+    elif dte and dte > 0:
+        time_left_str = f"{dte} days to expiry"
+    else:
+        time_left_str = "Expired"
 
-            now_ist = _dt.now(_IST)
-            expiry_dt = now_ist.replace(
-                hour=expiry_hour, minute=expiry_minute, second=0, microsecond=0
-            )
+    ep = open_trade.get("entry_premium", "—")
+    sl_p = open_trade.get("sl_premium", "—")
+    tgt_p = open_trade.get("target_premium", "—")
+    eu = open_trade.get("entry_underlying", "—")
+    sl_u = f"{open_trade.get('sl_underlying')}" if open_trade.get("sl_underlying") is not None else "—"
+    tgt_u = f"{open_trade.get('target_underlying')}" if open_trade.get("target_underlying") is not None else "—"
 
-            diff_seconds = (expiry_dt - now_ist).total_seconds()
-            if diff_seconds > 0:
-                mins_left = int(diff_seconds / 60)
-                time_left_str = f"EXPIRY TODAY: {mins_left} minutes remaining until contract expiry/settlement at {expiry_hour:02d}:{expiry_minute:02d} IST"
-            else:
-                time_left_str = f"EXPIRY TODAY: Contract expired/settling now (expired at {expiry_hour:02d}:{expiry_minute:02d} IST)"
-        elif dte > 0:
-            time_left_str = f"{dte} days remaining until expiry"
-        else:
-            time_left_str = f"Expired {abs(dte)} days ago"
-
-    entry_premium = open_trade.get("entry_premium", "—")
-    sl_premium = open_trade.get("sl_premium", "—")
-    target_premium = open_trade.get("target_premium", "—")
-
-    entry_underlying = open_trade.get("entry_underlying", "—")
-    sl_underlying = open_trade.get("sl_underlying")
-    target_underlying = open_trade.get("target_underlying")
-
-    sl_ul_str = f"{sl_underlying}" if sl_underlying is not None else "—"
-    tgt_ul_str = f"{target_underlying}" if target_underlying is not None else "—"
-
-    return f"""Trade management decision. Evaluate exit/hold for the EXISTING position below.
+    return f"""Trade exit decision for EXISTING position.
 
 TIME: {datetime.now(_IST).strftime("%a %H:%M IST")}
 
-OPEN POSITION (authoritative — evaluate THIS side and its mechanics only):
-  Position Type: {position_desc}
-  Underlying Direction: {pos_direction}
-  Mechanics: {behavior}
-  Entry Underlying: {entry_underlying} | SL (Underlying): {sl_ul_str} | Target (Underlying): {tgt_ul_str}
-  Entry Premium: ₹{entry_premium} | SL (Premium): ₹{sl_premium} | Target (Premium): ₹{target_premium}
+POSITION:
+  {pos_direction} | {opt} {strike_str} | {behavior}
+  Entry: Und {eu} | SL Und {sl_u} | Target Und {tgt_u}
+  Prem: Entry ₹{ep} | SL ₹{sl_p} | Target ₹{tgt_p}
   Opened: {str(open_trade.get("opened_at", ""))[:16]} {age_str}
-  Contract Expiry: {expiry} | Time to Expiry: {time_left_str}
+  Expiry: {expiry} | {time_left_str}
 
-MARKET NOW:
-  Underlying {ctx.get("underlying")} | Chg {ctx.get("price_change_points", 0)}pts ({ctx.get("price_change_pct", "N/A")}%)
+MARKET:
+  Und {ctx.get("underlying")} | Chg {ctx.get("price_change_points",0)}pts ({ctx.get("price_change_pct","N/A")}%)
   PCR {ctx.get("pcr")} | S/R {ctx.get("support")}/{ctx.get("resistance")}
-  OI Δ: CE {ctx.get("ce_oi_change", 0):,} | PE {ctx.get("pe_oi_change", 0):,}
+  OI Δ: CE {ctx.get("ce_oi_change",0):,} PE {ctx.get("pe_oi_change",0):,}
   Chart: {_format_chart_data(ctx.get("chart_indicators"))}
 NEWS: {_format_news(news_data)}
 
-EVALUATE ONLY these options for the {pos_direction.split(" ")[0]} position:
-• HOLD: Thesis intact, underlying moving favourably or consolidating — no change.
-• TRAIL_SL: Position profitable — lock in gains by raising SL (provide new_sl_premium as number).
-• CLOSE_EARLY: Thesis broken (underlying moving against position, key level breached) — exit now.
-  Provide exit reasoning with current premium estimate.
-• EXTEND_TARGET: Strong momentum in favour — raise target (provide new_target_premium as number).
+ACTIONS for {pos_direction.split()[0]} position:
+• HOLD: Thesis intact, favorable/consolidating
+• TRAIL_SL: Profitable — raise SL (new_sl_premium)
+• CLOSE_EARLY: Thesis broken — exit now (reason + premium)
+• EXTEND_TARGET: Strong momentum — raise target (new_target_premium)
 
-CRITICAL EXPIRY RULES:
-- If TIME TO EXPIRY shows "EXPIRY TODAY" with less than 60 minutes remaining, you MUST prioritize CLOSE_EARLY or CLOSE to secure profits/minimize losses and prevent physical delivery/cash settlement penalties, unless the target is already hit or the option is completely worthless.
-- You must explicitly state the remaining minutes to contract expiry in your reasoning to show awareness.
+EXPIRY RULES (CRITICAL):
+- <60 min to expiry → CLOSE_EARLY/CLOSE (avoid settlement penalties)
+- State remaining minutes in reasoning
 
-URGENCY: HIGH only for immediate adverse threat (sharp move against position, SL imminently breached, or contract expiring in less than 30 minutes).
+URGENCY: HIGH only for sharp adverse move, SL breach, or <30 min to expiry.
 """
 
 
@@ -1011,9 +1185,9 @@ def _register_provider_failure(
         return
 
     if status_code in (413, 502, 503, 504):
-        # Transient upstream overload, gateway error, or TPM limit — 60s cooldown
+        # Transient upstream overload, gateway error, or TPM limit — 60s cooldown for specific model
         _PROVIDER_COOLDOWN_UNTIL[key] = now + 60.0
-        if group_name and ("opencode" in group_name or "omnirouter" in group_name):
+        if group_name and "opencode" in group_name:
             with _cooldown_lock:
                 _PROVIDER_COOLDOWN_UNTIL[group_name] = now + 90.0
             log.warning("[llm] Group '%s' returned %d unavailable — cooling down group for 90s to preserve pipeline budget", group_name, status_code)
@@ -1036,7 +1210,14 @@ def _register_provider_failure(
         with _cooldown_lock:
             _PROVIDER_COOLDOWN_UNTIL[key] = now + 60.0
         if group_name:
-            if "opencode" in group_name or "omnirouter" in group_name or "nvidia" in group_name:
+            # NOTE: omnirouter intentionally uses the 2-strike tally below, NOT an
+            # immediate group cooldown. Each OmniRouter model route fronts a different
+            # upstream (Combo/Antigravity/Free/CX/KR/TRK) behind the same local proxy,
+            # so one slow upstream route (e.g. agent-backed Claude/Antigravity on large
+            # prompts) must not bench the entire premium group for 90s. True proxy-down
+            # cases are still caught by the host-error branch (120s group cooldown) and
+            # by 2 consecutive route timeouts within one call.
+            if "opencode" in group_name or "nvidia" in group_name:
                 with _cooldown_lock:
                     _PROVIDER_COOLDOWN_UNTIL[group_name] = now + 90.0
                 log.warning("[llm] Read timeout in group '%s' — cooling down group for 90s to preserve pipeline deadline budget for fallbacks", group_name)
@@ -1173,6 +1354,15 @@ def _normalize_parsed_schema(parsed: dict, schema) -> dict:
         parsed.setdefault("per_leg_exit_triggers", "NONE")
         parsed.setdefault("book_level_exit_triggers", "NONE")
         parsed.setdefault("adjustment_plan", "NONE")
+
+    elif schema_name == "LLMMultiLegExit":
+        act = str(parsed.get("action") or "").upper().strip()
+        parsed["action"] = act if act in ("HOLD", "ADJUST", "CLOSE") else "HOLD"
+        parsed.setdefault("urgency", "LOW")
+        parsed.setdefault("reasoning", str(parsed.get("reason") or "Holding open book"))
+        # An ADJUST verdict with no adjustment payload is unactionable — downgrade to HOLD.
+        if parsed["action"] == "ADJUST" and not parsed.get("adjustment"):
+            parsed["action"] = "HOLD"
 
     return parsed
 
@@ -1337,19 +1527,19 @@ def _call_llm_api(
         "model_group": "omnirouter-primary",
         "providers": [
             {
-                "name": "OmniRouter (Claude-Models Combo)",
+                "name": "OmniRouter (Claude/Antigravity)",
                 "env_key": "OMNIROUTER_API_KEY",
                 "url": _omnirouter_url,
-                "model": "Claude-Models",
+                "model": "Claude/Antigravity",
                 "model_group": "omnirouter-primary",
                 "timeout": 25,
                 "max_tokens_override": 4096,
             },
             {
-                "name": "OmniRouter (Claude/Antigravity)",
+                "name": "OmniRouter (Claude-Models Combo)",
                 "env_key": "OMNIROUTER_API_KEY",
                 "url": _omnirouter_url,
-                "model": "Claude/Antigravity",
+                "model": "Claude-Models",
                 "model_group": "omnirouter-primary",
                 "timeout": 25,
                 "max_tokens_override": 4096,
@@ -1416,19 +1606,19 @@ def _call_llm_api(
         "model_group": "omnirouter-sentinel",
         "providers": [
             {
-                "name": "OmniRouter (Claude-Models Combo)",
+                "name": "OmniRouter (Claude/Antigravity)",
                 "env_key": "OMNIROUTER_API_KEY",
                 "url": _omnirouter_url,
-                "model": "Claude-Models",
+                "model": "Claude/Antigravity",
                 "model_group": "omnirouter-sentinel",
                 "timeout": 25,
                 "max_tokens_override": 2048,
             },
             {
-                "name": "OmniRouter (Claude/Antigravity)",
+                "name": "OmniRouter (Claude-Models Combo)",
                 "env_key": "OMNIROUTER_API_KEY",
                 "url": _omnirouter_url,
-                "model": "Claude/Antigravity",
+                "model": "Claude-Models",
                 "model_group": "omnirouter-sentinel",
                 "timeout": 25,
                 "max_tokens_override": 2048,
@@ -2647,6 +2837,13 @@ def _call_llm_api(
                     result = schema.model_validate(parsed)
                     if hasattr(result, "model_name"):
                         result.model_name = provider.get("name") or provider["model"]
+
+                    # Record cost metrics using immutable CostTracker (SKILL.md)
+                    usage = resp_json.get("usage") or {} if isinstance(resp_json, dict) else {}
+                    in_tok = usage.get("prompt_tokens") or (len(prompt) // 4)
+                    out_tok = usage.get("completion_tokens") or 100
+                    record_call_cost(provider.get("name") or provider["model"], in_tok, out_tok)
+
                     log.info(
                         "[llm] %s OK via %s (%s)",
                         schema.__name__,
@@ -3327,12 +3524,20 @@ def _sanitize_llm_verdict(
                 atr = get_atr(scan_context)
                 step = float(get_strike_step(symbol) or 1)
 
-                # Determine direction
+                # Determine direction for underlying price movement
                 action_upper = str(result.action or "").upper()
-                bullish = "LONG" in action_upper or "BULL" in action_upper
                 is_no_trade = "NO_TRADE" in action_upper or "NEUTRAL" in action_upper
+                is_action_long = "LONG" in action_upper or "BUY" in action_upper
 
                 if not is_no_trade:
+                    # GO_LONG -> underlying spot moves UP (bullish=True)
+                    # GO_SHORT -> underlying spot moves DOWN (bullish=False)
+                    # For single-leg options, side is always BUY (GO_LONG buys CE, GO_SHORT buys PE)
+                    bullish = is_action_long
+                    side = "BUY"
+                    if target_opt == "FUT":
+                        side = "BUY" if bullish else "SELL"
+
                     if atr and atr > 0:
                         if bullish:
                             sl_underlying = underlying - 1.5 * atr
@@ -3352,11 +3557,6 @@ def _sanitize_llm_verdict(
                             sl_underlying = underlying + 2.0 * step
                             target_underlying_1 = underlying - 2.0 * step
                             target_underlying_2 = underlying - 4.0 * step
-
-                    # Determine side/option_type for GTT conversion
-                    side = "BUY"
-                    if target_opt == "FUT":
-                        side = "BUY" if bullish else "SELL"
 
                     sl_premium, target_premium_1 = convert_underlying_sl_to_premium(
                         underlying, sl_underlying, target_underlying_1, actual_premium,
@@ -3713,20 +3913,11 @@ INSTRUCTIONS:
 7. Ensure suggested values are within reasonable bounds (e.g., confidence 0-100, positions 1-5).
 """
 
-    has_keys = (
-        os.environ.get("OPENROUTER_API_KEY")
-        or os.environ.get("GROQ_API_KEY")
-        or os.environ.get("GEMINI_API_KEY")
-        or os.environ.get("GITHUB_TOKEN")
-    )
-    if not has_keys:
-        log.warning("[llm] Strategy optimization skipped: No LLM API key configured.")
-        return None
-
-    deadline = time.time() + 30.0
+    deadline = time.time() + 60.0
     try:
         result = _call_llm_api(
-            "portfolio", prompt, LLMStrategyOptimization, deadline=deadline
+            "portfolio", prompt, LLMStrategyOptimization, deadline=deadline,
+            purpose="eod_review",
         )
         if result:
             log.info(
@@ -3906,6 +4097,7 @@ def get_multileg_exit_advice(
         return None
 
     from src.engine.multileg_llm_prompt import build_multileg_exit_prompt
+    from src.engine.multileg_llm_schema import LLMMultiLegExit
 
     prompt = build_multileg_exit_prompt(
         symbol=symbol,
@@ -3917,12 +4109,11 @@ def get_multileg_exit_advice(
 
     deadline = time.time() + 45.0
     try:
-        # Use generic dict schema for exit advice (flexible structure)
         result = _call_llm_api(
-            symbol, prompt, None, deadline=deadline, purpose="live_verdict"
+            symbol, prompt, LLMMultiLegExit, deadline=deadline, purpose="live_verdict"
         )
-        if result and hasattr(result, "dict"):
-            return result.dict()
+        if result and hasattr(result, "model_dump"):
+            return result.model_dump()
         elif isinstance(result, dict):
             return result
         return None
