@@ -1342,7 +1342,7 @@ def _call_llm_api(
                 "url": _omnirouter_url,
                 "model": "Claude-Models",
                 "model_group": "omnirouter-primary",
-                "timeout": 15,
+                "timeout": 25,
                 "max_tokens_override": 4096,
             },
             {
@@ -1351,7 +1351,7 @@ def _call_llm_api(
                 "url": _omnirouter_url,
                 "model": "Claude/Antigravity",
                 "model_group": "omnirouter-primary",
-                "timeout": 15,
+                "timeout": 25,
                 "max_tokens_override": 4096,
             },
             {
@@ -1360,7 +1360,7 @@ def _call_llm_api(
                 "url": _omnirouter_url,
                 "model": "claude/Free",
                 "model_group": "omnirouter-primary",
-                "timeout": 15,
+                "timeout": 25,
                 "max_tokens_override": 4096,
             },
             {
@@ -1369,7 +1369,7 @@ def _call_llm_api(
                 "url": _omnirouter_url,
                 "model": "cx/gpt-5.5",
                 "model_group": "omnirouter-primary",
-                "timeout": 15,
+                "timeout": 25,
                 "max_tokens_override": 4096,
             },
             {
@@ -1378,7 +1378,7 @@ def _call_llm_api(
                 "url": _omnirouter_url,
                 "model": "kr/claude-haiku-4.5",
                 "model_group": "omnirouter-primary",
-                "timeout": 12,
+                "timeout": 20,
                 "max_tokens_override": 4096,
             },
             {
@@ -1387,7 +1387,7 @@ def _call_llm_api(
                 "url": _omnirouter_url,
                 "model": "kr/glm-5",
                 "model_group": "omnirouter-primary",
-                "timeout": 12,
+                "timeout": 20,
                 "max_tokens_override": 4096,
             },
             {
@@ -1396,7 +1396,7 @@ def _call_llm_api(
                 "url": _omnirouter_url,
                 "model": "kr/deepseek-3.2",
                 "model_group": "omnirouter-primary",
-                "timeout": 12,
+                "timeout": 20,
                 "max_tokens_override": 4096,
             },
             {
@@ -1405,7 +1405,7 @@ def _call_llm_api(
                 "url": _omnirouter_url,
                 "model": "trk/qwen/qwen3.8-max-free",
                 "model_group": "omnirouter-primary",
-                "timeout": 10,
+                "timeout": 15,
                 "max_tokens_override": 4096,
             },
         ],
@@ -1421,7 +1421,7 @@ def _call_llm_api(
                 "url": _omnirouter_url,
                 "model": "Claude-Models",
                 "model_group": "omnirouter-sentinel",
-                "timeout": 12,
+                "timeout": 25,
                 "max_tokens_override": 2048,
             },
             {
@@ -1430,7 +1430,7 @@ def _call_llm_api(
                 "url": _omnirouter_url,
                 "model": "Claude/Antigravity",
                 "model_group": "omnirouter-sentinel",
-                "timeout": 12,
+                "timeout": 25,
                 "max_tokens_override": 2048,
             },
             {
@@ -1439,7 +1439,7 @@ def _call_llm_api(
                 "url": _omnirouter_url,
                 "model": "claude/Free",
                 "model_group": "omnirouter-sentinel",
-                "timeout": 12,
+                "timeout": 25,
                 "max_tokens_override": 2048,
             },
             {
@@ -1448,7 +1448,7 @@ def _call_llm_api(
                 "url": _omnirouter_url,
                 "model": "kr/claude-haiku-4.5",
                 "model_group": "omnirouter-sentinel",
-                "timeout": 10,
+                "timeout": 20,
                 "max_tokens_override": 2048,
             },
             {
@@ -1457,7 +1457,7 @@ def _call_llm_api(
                 "url": _omnirouter_url,
                 "model": "kr/glm-5",
                 "model_group": "omnirouter-sentinel",
-                "timeout": 10,
+                "timeout": 20,
                 "max_tokens_override": 2048,
             },
             {
@@ -1466,7 +1466,7 @@ def _call_llm_api(
                 "url": _omnirouter_url,
                 "model": "kr/deepseek-3.2",
                 "model_group": "omnirouter-sentinel",
-                "timeout": 10,
+                "timeout": 20,
                 "max_tokens_override": 2048,
             },
             {
@@ -1475,7 +1475,7 @@ def _call_llm_api(
                 "url": _omnirouter_url,
                 "model": "trk/qwen/qwen3.8-max-free",
                 "model_group": "omnirouter-sentinel",
-                "timeout": 8,
+                "timeout": 15,
                 "max_tokens_override": 2048,
             },
         ],
