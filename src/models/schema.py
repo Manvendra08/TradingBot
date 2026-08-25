@@ -609,6 +609,8 @@ _MIGRATIONS = [
     # Extend live_trades with multi-leg columns
     ("M106_add_live_leg_group_id", "ALTER TABLE live_trades ADD COLUMN leg_group_id TEXT"),
     ("M107_add_live_tranche_index", "ALTER TABLE live_trades ADD COLUMN tranche_index INTEGER DEFAULT 0"),
+    ("M108_add_ml_entry_reason", "ALTER TABLE multi_leg_trades ADD COLUMN entry_reason TEXT"),
+    ("M109_add_ml_exit_reason", "ALTER TABLE multi_leg_trades ADD COLUMN exit_reason TEXT"),
 ]
 
 
@@ -2111,10 +2113,15 @@ def has_recent_scan_summary(symbol: str, max_age_minutes: int) -> bool:
 
 def insert_multi_leg_trade(trade: dict) -> int:
     """Insert a multi-leg trade and return its id."""
+    trade = dict(trade)
+    if "entry_reason" not in trade or not trade.get("entry_reason"):
+        trade["entry_reason"] = trade.get("reason", "")
+    if "exit_reason" not in trade:
+        trade["exit_reason"] = None
     sql = """
         INSERT INTO multi_leg_trades
             (trade_ref, symbol, structure, net_premium, margin_req, total_pnl,
-             opened_at, closed_at, status, reason, profit_factor,
+             opened_at, closed_at, status, reason, entry_reason, exit_reason, profit_factor,
              book_id, strategy_type, expiry, entry_underlying, exit_underlying,
              net_delta, net_theta, net_vega, max_profit, max_loss,
              breakeven_upper, breakeven_lower, profit_target_pct, stop_loss_pct,
@@ -2122,7 +2129,7 @@ def insert_multi_leg_trade(trade: dict) -> int:
              entry_quality_score, digest_id, ai_model_name)
         VALUES
             (:trade_ref, :symbol, :structure, :net_premium, :margin_req, :total_pnl,
-             :opened_at, :closed_at, :status, :reason, :profit_factor,
+             :opened_at, :closed_at, :status, :reason, :entry_reason, :exit_reason, :profit_factor,
              :book_id, :strategy_type, :expiry, :entry_underlying, :exit_underlying,
              :net_delta, :net_theta, :net_vega, :max_profit, :max_loss,
              :breakeven_upper, :breakeven_lower, :profit_target_pct, :stop_loss_pct,
@@ -2153,11 +2160,16 @@ def insert_multi_leg_leg(leg: dict) -> int:
 
 def insert_multileg_trade_atomically(trade: dict, legs: list[dict]) -> int:
     """Atomic insert of a multi-leg trade + all legs. All-or-nothing."""
+    trade = dict(trade)
+    if "entry_reason" not in trade or not trade.get("entry_reason"):
+        trade["entry_reason"] = trade.get("reason", "")
+    if "exit_reason" not in trade:
+        trade["exit_reason"] = None
     with get_conn() as conn:
         trade_sql = """
             INSERT INTO multi_leg_trades
                 (trade_ref, symbol, structure, net_premium, margin_req, total_pnl,
-                 opened_at, closed_at, status, reason, profit_factor,
+                 opened_at, closed_at, status, reason, entry_reason, exit_reason, profit_factor,
                  book_id, strategy_type, expiry, entry_underlying, exit_underlying,
                  net_delta, net_theta, net_vega, max_profit, max_loss,
                  breakeven_upper, breakeven_lower, profit_target_pct, stop_loss_pct,
@@ -2165,7 +2177,7 @@ def insert_multileg_trade_atomically(trade: dict, legs: list[dict]) -> int:
                  entry_quality_score, digest_id, ai_model_name)
             VALUES
                 (:trade_ref, :symbol, :structure, :net_premium, :margin_req, :total_pnl,
-                 :opened_at, :closed_at, :status, :reason, :profit_factor,
+                 :opened_at, :closed_at, :status, :reason, :entry_reason, :exit_reason, :profit_factor,
                  :book_id, :strategy_type, :expiry, :entry_underlying, :exit_underlying,
                  :net_delta, :net_theta, :net_vega, :max_profit, :max_loss,
                  :breakeven_upper, :breakeven_lower, :profit_target_pct, :stop_loss_pct,
@@ -2195,9 +2207,11 @@ def close_multi_leg_trade(
     trade_id: int, closed_at: str, status: str, reason: str, total_pnl: float
 ) -> None:
     """Close a multi-leg trade."""
-    sql = "UPDATE multi_leg_trades SET closed_at=?, status=?, reason=?, total_pnl=? WHERE id=?"
     with get_conn() as conn:
-        conn.execute(sql, (closed_at, status, reason, total_pnl, trade_id))
+        trade = conn.execute("SELECT reason, entry_reason FROM multi_leg_trades WHERE id=?", (trade_id,)).fetchone()
+        orig_entry_reason = (trade["entry_reason"] or trade["reason"] or "") if trade else ""
+        sql = "UPDATE multi_leg_trades SET closed_at=?, status=?, reason=?, exit_reason=?, entry_reason=?, total_pnl=? WHERE id=?"
+        conn.execute(sql, (closed_at, status, reason, reason, orig_entry_reason, total_pnl, trade_id))
 
 
 def close_book(
@@ -2211,20 +2225,21 @@ def close_book(
     """Close all legs in a book and update the trade record."""
     with get_conn() as conn:
         trade = conn.execute(
-            "SELECT id FROM multi_leg_trades WHERE book_id=? AND status='OPEN'", (book_id,)
+            "SELECT id, reason, entry_reason FROM multi_leg_trades WHERE book_id=? AND status='OPEN'", (book_id,)
         ).fetchone()
         if not trade:
             return
         trade_id = int(trade["id"])
+        orig_entry_reason = trade["entry_reason"] or trade["reason"] or ""
         if exit_underlying is not None:
             conn.execute(
-                "UPDATE multi_leg_trades SET closed_at=?, status=?, reason=?, total_pnl=?, exit_underlying=? WHERE id=?",
-                (closed_at, status, reason, total_pnl, float(exit_underlying), trade_id),
+                "UPDATE multi_leg_trades SET closed_at=?, status=?, reason=?, exit_reason=?, entry_reason=?, total_pnl=?, exit_underlying=? WHERE id=?",
+                (closed_at, status, reason, reason, orig_entry_reason, total_pnl, float(exit_underlying), trade_id),
             )
         else:
             conn.execute(
-                "UPDATE multi_leg_trades SET closed_at=?, status=?, reason=?, total_pnl=? WHERE id=?",
-                (closed_at, status, reason, total_pnl, trade_id),
+                "UPDATE multi_leg_trades SET closed_at=?, status=?, reason=?, exit_reason=?, entry_reason=?, total_pnl=? WHERE id=?",
+                (closed_at, status, reason, reason, orig_entry_reason, total_pnl, trade_id),
             )
         conn.execute(
             "UPDATE multi_leg_legs SET status='CLOSED', closed_at=?, exit_reason=? WHERE trade_id=? AND status='OPEN'",

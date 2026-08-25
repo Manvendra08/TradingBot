@@ -331,27 +331,33 @@ def _monitor_open_books(
         dte = _dte_from_expiry(expiry)
         now_ist = datetime.now(IST)
         is_mcx = symbol in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER")
+        is_weekly_index = symbol in ("NIFTY", "BANKNIFTY", "SENSEX")
         is_expiry_close = False
+        is_expiry_after_1pm = False
         if dte == 0:
             if is_mcx:
                 is_expiry_close = (now_ist.hour > 23 or (now_ist.hour == 23 and now_ist.minute >= 25))
             else:
                 is_expiry_close = (now_ist.hour > 15 or (now_ist.hour == 15 and now_ist.minute >= 25))
+                is_expiry_after_1pm = (now_ist.hour >= 13)
 
-        should_exit_time_decay = (
-            (time_decay_exit_dte > 0 and dte < time_decay_exit_dte and dte > 0) or
-            (dte == 0 and is_expiry_close) or
-            (dte < 0)
-        )
-        if should_exit_time_decay:
-            log.info(
-                "[multileg-paper] %s: book %s time decay exit — DTE %d (time_decay_exit_dte=%d)",
-                symbol,
-                book_id,
-                dte,
-                time_decay_exit_dte,
+        if is_weekly_index:
+            # Weekly index options (NIFTY, BANKNIFTY, SENSEX): DTE 1 or 2 is standard holding territory.
+            # Time decay exit occurs ONLY on expiry day after 1:00 PM IST (13:00) or at 15:25 close squareoff.
+            should_exit_time_decay = (
+                (dte == 0 and is_expiry_after_1pm) or
+                (dte < 0)
             )
-            exit_reason_str = f"EXPIRY_SQUAREOFF (15:25 IST)" if (dte == 0 and is_expiry_close) else f"TIME_DECAY (DTE {dte} < {time_decay_exit_dte})"
+            exit_reason_str = f"EXPIRY_SQUAREOFF (15:25 IST)" if (dte == 0 and is_expiry_close) else (
+                "EXPIRY_TIME_DECAY (DTE 0 after 13:00 IST)" if (dte == 0 and is_expiry_after_1pm) else f"EXPIRED (DTE {dte})"
+            )
+        else:
+            should_exit_time_decay = (
+                (time_decay_exit_dte > 0 and dte < time_decay_exit_dte and dte > 0) or
+                (dte == 0 and is_expiry_close) or
+                (dte < 0)
+            )
+            exit_reason_str = f"EXPIRY_SQUAREOFF ({'23:25' if is_mcx else '15:25'} IST)" if (dte == 0 and is_expiry_close) else f"TIME_DECAY (DTE {dte} < {time_decay_exit_dte})"
 
             # BUG FIX: Fetch live exit premiums from DB instead of hardcoding 0.0
             from src.models.schema import get_latest_option_snapshot

@@ -286,7 +286,9 @@ def build_multileg_prompt(
     ohlc_1h = chart_1h.get("ohlc") or {}
     ohlc_3h = chart_3h.get("ohlc") or {}
 
-    # News
+    # News (external headlines are untrusted input — sanitize before prompt injection)
+    from src.engine.llm_enrichment import _sanitize_news_text
+
     news_section = ""
     if news_data:
         direction = news_data.get("current_news_direction", "MIXED")
@@ -294,7 +296,7 @@ def build_multileg_prompt(
         items = news_data.get("items", [])[:3]
         news_section = f"\nNEWS: {direction} (score: {score})\n"
         for item in items:
-            title = item.get("title", "")[:80]
+            title = _sanitize_news_text(item.get("title", ""), max_len=80)
             pub = item.get("published_at", "")
             time_str = pub[:16].replace("T", " ") if pub else "Unknown time"
             news_section += f"  - [{time_str}] {title}\n"
@@ -387,6 +389,39 @@ Return a JSON object matching the LLMMultiLegVerdict schema. Think through each 
     return prompt
 
 
+def _format_roll_candidates(option_rows: list[dict], underlying: float) -> str:
+    """Liquid OTM strikes the LLM may roll a tested leg into."""
+    if not option_rows or underlying <= 0:
+        return "  No option chain available — do not propose ADJUST."
+
+    ce: list[str] = []
+    pe: list[str] = []
+    for row in sorted(option_rows, key=lambda r: float(r.get("strike") or 0)):
+        strike = float(row.get("strike") or 0)
+        ltp = float(row.get("ltp") or 0)
+        oi = int(row.get("oi") or 0)
+        if strike <= 0 or ltp <= 0 or oi <= 0:
+            continue
+        opt = str(row.get("option_type") or "").upper()
+        line = f"    {strike:.0f} @ ₹{ltp:.1f} (OI {oi:,}, Δ={float(row.get('delta') or 0):.2f})"
+        if opt == "CE" and strike > underlying:
+            ce.append(line)
+        elif opt == "PE" and strike < underlying:
+            pe.append(line)
+
+    if not ce and not pe:
+        return "  No liquid OTM strikes — do not propose ADJUST."
+
+    out = []
+    if ce:
+        out.append("  OTM CE (roll a tested CE up into one of these):")
+        out.extend(ce[:8])
+    if pe:
+        out.append("  OTM PE (roll a tested PE down into one of these):")
+        out.extend(pe[-8:])
+    return "\n".join(out)
+
+
 def build_multileg_exit_prompt(
     symbol: str,
     book: dict,
@@ -396,7 +431,13 @@ def build_multileg_exit_prompt(
 ) -> str:
     """Build prompt for multi-leg book exit/adjustment decisions."""
     underlying = float(scan_context.get("underlying") or 0)
-    dte = int(scan_context.get("dte") or 0)
+    dte = int(scan_context.get("dte") or scan_context.get("days_to_expiry") or 0)
+
+    try:
+        from config.settings import LOT_SIZES
+        lot_size = int(LOT_SIZES.get(symbol.upper().split()[0], 1))
+    except Exception:
+        lot_size = 1
 
     leg_lines = []
     for l in legs:
@@ -407,7 +448,9 @@ def build_multileg_exit_prompt(
                     and row.get("option_type") == l["option_type"]):
                 current_premium = float(row.get("ltp") or 0)
                 break
-        pnl = (float(l["entry_premium"]) - current_premium) * int(l.get("lots", 1)) * 75
+        # Short legs profit as premium decays; long (BUY) legs profit as premium rises.
+        direction = 1 if str(l.get("side") or "SELL").upper() == "SELL" else -1
+        pnl = direction * (float(l["entry_premium"]) - current_premium) * int(l.get("lots", 1)) * lot_size
         leg_lines.append(
             f"  {l['side']} {l['option_type']} {l['strike']:.0f} | "
             f"Entry: ₹{float(l['entry_premium']):.1f} | "
@@ -418,6 +461,15 @@ def build_multileg_exit_prompt(
     total_pnl = float(book.get("total_pnl") or 0)
     net_premium = float(book.get("net_premium") or 0)
     adjustment_count = int(book.get("adjustment_count") or 0)
+    max_profit = float(book.get("max_profit") or net_premium)
+    profit_target_pct = float(book.get("profit_target_pct") or 0.5)
+    stop_loss_pct = float(book.get("stop_loss_pct") or 1.5)
+    time_decay_exit_dte = int(book.get("time_decay_exit_dte") or 0)
+    profit_pct_of_max = (total_pnl / max_profit) if max_profit > 0 else 0.0
+
+    is_weekly = symbol in ("NIFTY", "BANKNIFTY", "SENSEX")
+    now_ist = datetime.now(IST)
+    current_time_str = now_ist.strftime("%H:%M IST")
 
     prompt = f"""You are managing an open multi-leg short options position on {symbol}.
 
@@ -425,9 +477,14 @@ def build_multileg_exit_prompt(
 Book ID: {book.get('book_id', 'N/A')}
 Strategy: {book.get('strategy_type', 'N/A')}
 Net Premium Collected: ₹{net_premium:.1f}
-Net P&L: ₹{total_pnl:.0f}
+Net P&L: ₹{total_pnl:.0f} ({profit_pct_of_max:+.0%} of max profit ₹{max_profit:.0f})
 Adjustments Done: {adjustment_count}
-DTE: {dte}
+DTE: {dte} | Current Time: {current_time_str} | Instrument Type: {'Weekly Index Option' if is_weekly else 'Commodity Option'}
+
+## BOOK EXIT PLAN (set at entry — these are the authoritative thresholds)
+Profit target: {profit_target_pct:.0%} of max profit
+Stop loss: {stop_loss_pct:.0%} of net premium
+Time-decay exit rule: {'Exit after 1:00 PM IST on Expiry Day (DTE=0). DTE 1 or 2 is standard holding territory.' if is_weekly else f'Time-decay exit DTE: {time_decay_exit_dte}'}
 
 ## LEGS
 {chr(10).join(leg_lines)}
@@ -435,6 +492,9 @@ DTE: {dte}
 ## CURRENT MARKET
 Underlying: {underlying:.2f}
 Verdict: {intel.get('verdict_label', 'N/A')} | Confidence: {intel.get('confidence', 0)}%
+
+## LIQUID ROLL CANDIDATES (ADJUST must use a strike from this list — never invent one)
+{_format_roll_candidates(scan_context.get("option_rows") or [], underlying)}
 
 ## YOUR TASK
 
@@ -444,13 +504,22 @@ Decide: HOLD, ADJUST, or CLOSE the book.
 - **ADJUST**: Roll a tested leg to a further OTM strike, or add/remove a leg to improve risk profile
 - **CLOSE**: Book profit (if target hit), cut loss (if stop hit), or exit due to changing conditions
 
-Rules:
-- If net P&L ≥ 50% of max profit → strongly consider closing
-- If any leg delta > 0.50 → the market is testing that side heavily
-- If DTE ≤ 3 → close remaining legs regardless of P&L (gamma risk too high)
-- Max 2 adjustments per book (avoid over-trading)
-- Don't adjust just to avoid realizing a loss
+Rules (use the BOOK EXIT PLAN values above — do not substitute your own thresholds):
+- If net P&L ≥ the profit target shown above → CLOSE.
+- If loss exceeds the stop loss shown above → CLOSE.
+- **Time Decay & Expiry Timing**:
+  * For weekly index options ({symbol}): DTE = 1, 2, or 3 is normal holding territory to harvest theta. Do NOT exit for time decay on DTE ≥ 1. Only exit for time decay on Expiry Day (DTE == 0) after 1:00 PM IST (13:00) to protect against 0-DTE gamma risk.
+  * For commodity options: If DTE ≤ the time-decay exit DTE ({time_decay_exit_dte}) → CLOSE.
+- If any leg delta > 0.50 → the market is testing that side heavily; prefer ADJUST (roll that leg further OTM) over CLOSE if the untested side is still safe.
+- Adjustments already done: {adjustment_count}. Hard cap is 3 per book — if {adjustment_count} ≥ 3, ADJUST is not available; choose HOLD or CLOSE.
+- Don't adjust just to avoid realizing a loss.
 
-Return a JSON object with: action (HOLD/ADJUST/CLOSE), reasoning, and if ADJUSTING: the specific adjustment (which leg to close, what new leg to open).
+Output (JSON matching the LLMMultiLegExit schema):
+- action: HOLD | ADJUST | CLOSE
+- reasoning: 1-3 sentences citing the actual P&L, delta, or DTE numbers shown above
+- urgency: LOW | MEDIUM | HIGH
+- adjustment: required ONLY when action=ADJUST — give close_strike, close_option_type,
+  new_strike, new_option_type, new_side, rationale. Set null for HOLD and CLOSE.
+  An ADJUST with no adjustment object will be discarded and treated as HOLD.
 """
     return prompt
