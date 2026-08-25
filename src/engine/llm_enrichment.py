@@ -80,6 +80,18 @@ _GROQ_NO_JSON_MODELS = frozenset(
     }
 )
 
+# Groq models that support `reasoning_format="parsed"`.
+# Passing `reasoning_format` to standard models (like compound-mini, llama-3.3-70b-versatile)
+# causes Groq to reject the request with HTTP 400 (`reasoning_format is not supported`).
+_GROQ_REASONING_MODELS = frozenset(
+    {
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
+        "qwen/qwen3.6-27b",
+        "deepseek-r1-distill-llama-70b",
+    }
+)
+
 
 def _opencode_post(url, headers, json_payload, timeout):
     """POST to opencode.ai using httpx (requests/urllib3 fails TLS against Cloudflare)."""
@@ -1001,6 +1013,10 @@ def _register_provider_failure(
     if status_code in (413, 502, 503, 504):
         # Transient upstream overload, gateway error, or TPM limit — 60s cooldown
         _PROVIDER_COOLDOWN_UNTIL[key] = now + 60.0
+        if group_name and ("opencode" in group_name or "omnirouter" in group_name):
+            with _cooldown_lock:
+                _PROVIDER_COOLDOWN_UNTIL[group_name] = now + 90.0
+            log.warning("[llm] Group '%s' returned %d unavailable — cooling down group for 90s to preserve pipeline budget", group_name, status_code)
         log.info("[llm] %s transient error / TPM limit (status=%d) — 60s cooldown", provider.get("name"), status_code)
         return
 
@@ -1020,15 +1036,20 @@ def _register_provider_failure(
         with _cooldown_lock:
             _PROVIDER_COOLDOWN_UNTIL[key] = now + 60.0
         if group_name:
-            # Per-thread tally: concurrent symbol enrichments must not share this count.
-            rt = getattr(_per_thread_state, "read_timeouts", {})
-            rt[group_name] = rt.get(group_name, 0) + 1
-            cnt = rt[group_name]
-            if cnt >= 2:
+            if "opencode" in group_name or "omnirouter" in group_name or "nvidia" in group_name:
                 with _cooldown_lock:
                     _PROVIDER_COOLDOWN_UNTIL[group_name] = now + 90.0
-                rt[group_name] = 0
-                log.warning("[llm] %d consecutive read timeouts in group '%s' — cooling down group for 90s to preserve pipeline deadline budget for fallbacks", cnt, group_name)
+                log.warning("[llm] Read timeout in group '%s' — cooling down group for 90s to preserve pipeline deadline budget for fallbacks", group_name)
+            else:
+                # Per-thread tally: concurrent symbol enrichments must not share this count.
+                rt = getattr(_per_thread_state, "read_timeouts", {})
+                rt[group_name] = rt.get(group_name, 0) + 1
+                cnt = rt[group_name]
+                if cnt >= 2:
+                    with _cooldown_lock:
+                        _PROVIDER_COOLDOWN_UNTIL[group_name] = now + 90.0
+                    rt[group_name] = 0
+                    log.warning("[llm] %d consecutive read timeouts in group '%s' — cooling down group for 90s to preserve pipeline deadline budget for fallbacks", cnt, group_name)
         log.info("[llm] Read timeout on %s — 60s cooldown", provider.get("name"))
         return
 
@@ -1613,9 +1634,10 @@ def _call_llm_api(
 
         FREE_MODEL_PIPELINE = [
             _omnirouter_group,
-            _groq_group_eod,
-            _opencode_zen_eod,
             _github_models_eod,
+            _groq_group_eod,
+            _gemini_group,
+            _opencode_zen_eod,
             _bedrock_mantle_group,
             {
                 "model_group": "nvidia-nim-eod",
@@ -1625,13 +1647,14 @@ def _call_llm_api(
                         "env_key": "NVIDIA_API_KEY",
                         "url": "https://integrate.api.nvidia.com/v1/chat/completions",
                         "model": "nvidia/nemotron-3-super-120b-a12b",
-                        "timeout": 25,
+                        "timeout": 8,
                     },
                     {
                         "name": "NVIDIA NIM (DeepSeek V4 Flash)",
                         "env_key": "NVIDIA_API_KEY",
                         "url": "https://integrate.api.nvidia.com/v1/chat/completions",
                         "model": "deepseek-ai/deepseek-v4-flash-0731",
+                        "timeout": 8,
                     },
                 ],
             },
@@ -1643,7 +1666,7 @@ def _call_llm_api(
                         "env_key": "OPENROUTER_API_KEY",
                         "url": "https://openrouter.ai/api/v1/chat/completions",
                         "model": "nvidia/nemotron-70b-instruct:free",
-                        "timeout": 20,
+                        "timeout": 10,
                     },
                 ],
             },
@@ -1708,43 +1731,44 @@ def _call_llm_api(
                     "env_key": "OPENCODE_API_KEY",
                     "url": "https://opencode.ai/zen/v1/chat/completions",
                     "model": "nemotron-3.5-lightning-free",
-                    "timeout": 20,
+                    "timeout": 6,
                 },
                 {
                     "name": "OpenCode Zen (Laguna S 2.1 Free)",
                     "env_key": "OPENCODE_API_KEY",
                     "url": "https://opencode.ai/zen/v1/chat/completions",
                     "model": "laguna-s-2.1-free",
-                    "timeout": 20,
+                    "timeout": 6,
                 },
                 {
                     "name": "OpenCode Zen (HY3 Free)",
                     "env_key": "OPENCODE_API_KEY",
                     "url": "https://opencode.ai/zen/v1/chat/completions",
                     "model": "hy3-free",
-                    "timeout": 20,
+                    "timeout": 6,
                 },
                 {
                     "name": "OpenCode Zen (X-Preview-F Free)",
                     "env_key": "OPENCODE_API_KEY",
                     "url": "https://opencode.ai/zen/v1/chat/completions",
                     "model": "x-preview-f-free",
-                    "timeout": 20,
+                    "timeout": 6,
                 },
                 {
                     "name": "OpenCode Zen (Nemotron 3 Ultra Free)",
                     "env_key": "OPENCODE_API_KEY",
                     "url": "https://opencode.ai/zen/v1/chat/completions",
                     "model": "nemotron-3-ultra-free",
-                    "timeout": 25,
+                    "timeout": 6,
                 },
             ],
         }
         FREE_MODEL_PIPELINE = [
             _omnirouter_group,
-            _groq_group_fmt,
-            _opencode_zen_formatting_group,
             _github_models_fmt,
+            _groq_group_fmt,
+            _gemini_group,
+            _opencode_zen_formatting_group,
             _bedrock_mantle_group,
         ]
     elif purpose == "sentinel_diagnostic":
@@ -1789,41 +1813,77 @@ def _call_llm_api(
                     "env_key": "OPENCODE_API_KEY",
                     "url": "https://opencode.ai/zen/v1/chat/completions",
                     "model": "nemotron-3.5-lightning-free",
-                    "timeout": 15,
+                    "timeout": 6,
                 },
                 {
                     "name": "OpenCode Zen (Laguna S 2.1 Free)",
                     "env_key": "OPENCODE_API_KEY",
                     "url": "https://opencode.ai/zen/v1/chat/completions",
                     "model": "laguna-s-2.1-free",
-                    "timeout": 15,
+                    "timeout": 6,
                 },
                 {
                     "name": "OpenCode Zen (HY3 Free)",
                     "env_key": "OPENCODE_API_KEY",
                     "url": "https://opencode.ai/zen/v1/chat/completions",
                     "model": "hy3-free",
-                    "timeout": 15,
+                    "timeout": 6,
                 },
                 {
                     "name": "OpenCode Zen (X-Preview-F Free)",
                     "env_key": "OPENCODE_API_KEY",
                     "url": "https://opencode.ai/zen/v1/chat/completions",
                     "model": "x-preview-f-free",
-                    "timeout": 15,
+                    "timeout": 6,
                 },
                 {
                     "name": "OpenCode Zen (Nemotron 3 Ultra Free)",
                     "env_key": "OPENCODE_API_KEY",
                     "url": "https://opencode.ai/zen/v1/chat/completions",
                     "model": "nemotron-3-ultra-free",
-                    "timeout": 20,
+                    "timeout": 6,
+                },
+            ],
+        }
+        _gemini_group_sentinel = {
+            "model_group": "gemini-sdk-sentinel",
+            "providers": [
+                {
+                    "name": "Gemini SDK (2.5 Flash)",
+                    "env_key": "GEMINI_API_KEY",
+                    "model": "gemini-2.5-flash",
+                    "use_gemini_sdk": True,
+                },
+                {
+                    "name": "Gemini SDK (2.0 Flash)",
+                    "env_key": "GEMINI_API_KEY",
+                    "model": "gemini-2.0-flash",
+                    "use_gemini_sdk": True,
+                },
+            ],
+        }
+        _github_models_sentinel = {
+            "model_group": "github-models-sentinel",
+            "providers": [
+                {
+                    "name": "GitHub Models (GPT-4o-mini)",
+                    "env_key": "GITHUB_TOKEN",
+                    "url": "https://models.inference.ai.azure.com/chat/completions",
+                    "model": "gpt-4o-mini",
+                },
+                {
+                    "name": "GitHub Models (Llama 3.3 70B)",
+                    "env_key": "GITHUB_TOKEN",
+                    "url": "https://models.inference.ai.azure.com/chat/completions",
+                    "model": "Llama-3.3-70B-Instruct",
                 },
             ],
         }
         FREE_MODEL_PIPELINE = [
             _omnirouter_sentinel_group,
             _groq_group_sentinel,
+            _gemini_group_sentinel,
+            _github_models_sentinel,
             _opencode_zen_sentinel,
         ]
     else:  # live_verdict — symbol-aware routing
@@ -1840,35 +1900,35 @@ def _call_llm_api(
                     "env_key": "OPENCODE_API_KEY",
                     "url": "https://opencode.ai/zen/v1/chat/completions",
                     "model": "nemotron-3.5-lightning-free",
-                    "timeout": 20,
+                    "timeout": 6,
                 },
                 {
                     "name": "OpenCode Zen (Laguna S 2.1 Free)",
                     "env_key": "OPENCODE_API_KEY",
                     "url": "https://opencode.ai/zen/v1/chat/completions",
                     "model": "laguna-s-2.1-free",
-                    "timeout": 20,
+                    "timeout": 6,
                 },
                 {
                     "name": "OpenCode Zen (HY3 Free)",
                     "env_key": "OPENCODE_API_KEY",
                     "url": "https://opencode.ai/zen/v1/chat/completions",
                     "model": "hy3-free",
-                    "timeout": 20,
+                    "timeout": 6,
                 },
                 {
                     "name": "OpenCode Zen (X-Preview-F Free)",
                     "env_key": "OPENCODE_API_KEY",
                     "url": "https://opencode.ai/zen/v1/chat/completions",
                     "model": "x-preview-f-free",
-                    "timeout": 20,
+                    "timeout": 6,
                 },
                 {
                     "name": "OpenCode Zen (Nemotron 3 Ultra Free)",
                     "env_key": "OPENCODE_API_KEY",
                     "url": "https://opencode.ai/zen/v1/chat/completions",
                     "model": "nemotron-3-ultra-free",
-                    "timeout": 25,
+                    "timeout": 6,
                 },
             ],
         }
@@ -1882,30 +1942,35 @@ def _call_llm_api(
                     "env_key": "NVIDIA_API_KEY",
                     "url": "https://integrate.api.nvidia.com/v1/chat/completions",
                     "model": "nvidia/nemotron-3-super-120b-a12b",
+                    "timeout": 8,
                 },
                 {
                     "name": "NVIDIA NIM (DeepSeek V4 Flash)",
                     "env_key": "NVIDIA_API_KEY",
                     "url": "https://integrate.api.nvidia.com/v1/chat/completions",
                     "model": "deepseek-ai/deepseek-v4-flash-0731",
+                    "timeout": 8,
                 },
                 {
                     "name": "NVIDIA NIM (Llama 3.3 70B)",
                     "env_key": "NVIDIA_API_KEY",
                     "url": "https://integrate.api.nvidia.com/v1/chat/completions",
                     "model": "meta/llama-3.3-70b-instruct",
+                    "timeout": 8,
                 },
                 {
                     "name": "NVIDIA NIM (MiniMax M2.7)",
                     "env_key": "NVIDIA_API_KEY",
                     "url": "https://integrate.api.nvidia.com/v1/chat/completions",
                     "model": "minimaxai/minimax-m2.7",
+                    "timeout": 8,
                 },
                 {
                     "name": "NVIDIA NIM (Nemotron 3 Ultra 550B)",
                     "env_key": "NVIDIA_API_KEY",
                     "url": "https://integrate.api.nvidia.com/v1/chat/completions",
                     "model": "nvidia/nemotron-3-ultra-550b-a55b",
+                    "timeout": 8,
                 },
             ],
         }
@@ -2108,10 +2173,12 @@ def _call_llm_api(
         }
 
         if _is_mcx:
-            # MCX: OmniRouter → Groq → OpenCode Zen → AnyAPI Free → Bedrock Mantle → Nvidia NIM → Bedrock → OpenRouter → Gemini → SambaNova
+            # MCX: OmniRouter → GitHub Models → Groq → Gemini → OpenCode Zen → AnyAPI Free → Bedrock Mantle → Nvidia NIM → Bedrock → OpenRouter → SambaNova
             FREE_MODEL_PIPELINE = [
                 _omnirouter_group,
+                _github_models,
                 _groq_group,
+                _gemini_group,
                 _opencode_zen_group,
                 _anyapi_free_group,
                 _bedrock_mantle_group,
@@ -2129,7 +2196,6 @@ def _call_llm_api(
                     ],
                 },
                 _openrouter_group,
-                _gemini_group,
                 {
                     "model_group": "sambanova-mcx",
                     "providers": [
@@ -2156,15 +2222,16 @@ def _call_llm_api(
                 },
             ]
         else:
-            # NSE/BSE indices: OmniRouter → Groq → OpenCode Zen → Nvidia NIM → Bedrock → OpenRouter → Gemini
+            # NSE/BSE indices: OmniRouter → GitHub Models → Groq → Gemini → OpenCode Zen → Nvidia NIM → Bedrock → OpenRouter
             FREE_MODEL_PIPELINE = [
                 _omnirouter_group,
+                _github_models,
                 _groq_group,
+                _gemini_group,
                 _opencode_zen_group,
                 _nvidia_nim_group,
                 _bedrock_group,
                 _openrouter_group,
-                _gemini_group,
             ]
 
     max_tokens = _max_tokens_for_purpose(purpose)
@@ -2473,7 +2540,8 @@ def _call_llm_api(
                 # output their final answer inside the suppressed reasoning trace.
                 # Using 'parsed' + json_object keeps content populated with the JSON answer.
                 if "api.groq.com" in provider.get("url", ""):
-                    json_payload["reasoning_format"] = "parsed"
+                    if provider["model"] in _GROQ_REASONING_MODELS:
+                        json_payload["reasoning_format"] = "parsed"
                     # Some Groq models reject response_format=json_object with a 400
                     # json_validate_failed — skip json_mode for those and let the tolerant
                     # _extract_json() parser recover the JSON from the free-text answer.
@@ -2613,9 +2681,9 @@ def _call_llm_api(
                         resp.text[:200],
                     )
                     _register_provider_failure(provider, 402, resp.text, now)
-                elif resp.status_code == 400 and "json_validate_failed" in resp.text:
+                elif resp.status_code == 400 and ("json_validate_failed" in resp.text or "reasoning_format" in resp.text):
                     log.info(
-                        "[llm] %s (%s) returned 400 json_validate_failed — model does not support response_format=json_object. Retrying without it.",
+                        "[llm] %s (%s) returned 400 formatting error — retrying without json_mode/reasoning_format.",
                         provider["name"],
                         provider["model"],
                     )
