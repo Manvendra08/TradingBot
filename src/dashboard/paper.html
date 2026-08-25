@@ -3131,9 +3131,7 @@
             }
             function shortReason(str) {
                 if (!str) return "—";
-                const words = str.trim().split(/\s+/);
-                if (words.length <= 2) return str;
-                return words.slice(0, 2).join(" ") + "...";
+                return str;
             }
             function frsLong(v) {
                 if (v == null) return "—";
