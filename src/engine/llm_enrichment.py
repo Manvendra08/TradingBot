@@ -933,6 +933,9 @@ _CIRCUIT_BREAKER_THRESHOLD = 3
 _CIRCUIT_BREAKER_COOLDOWN = 300.0  # 5 minutes
 _CIRCUIT_OPEN_UNTIL = 0.0
 _PROVIDER_COOLDOWN_UNTIL: dict[str, float] = {}
+_FREE_MODEL_SYMBOL_PACING_LOCK = threading.Lock()
+_LAST_FREE_PROMPT_CALL_TIME: float = 0.0
+_LAST_FREE_PROMPT_SYMBOL: str | None = None
 
 
 def _provider_cooldown_key(provider: dict) -> str:
@@ -1178,7 +1181,9 @@ def _call_llm_api(
         _API_QUOTA_EXHAUSTED_UNTIL, \
         _CONSECUTIVE_FAILURES, \
         _CIRCUIT_OPEN_UNTIL, \
-        _PROVIDER_COOLDOWN_UNTIL
+        _PROVIDER_COOLDOWN_UNTIL, \
+        _LAST_FREE_PROMPT_CALL_TIME, \
+        _LAST_FREE_PROMPT_SYMBOL
     schema = response_schema or LLMTradeVerdict
     now = time.time()
     # Isolate this call's read-timeout tally from concurrently-running symbols.
@@ -1193,6 +1198,29 @@ def _call_llm_api(
     if DISABLE_LLM_ENRICHMENT:
         log.debug("[llm] DISABLE_LLM_ENRICHMENT=true — skipping %s", symbol)
         return None
+
+    # When multiple symbols scan sequentially (e.g. NIFTY -> BANKNIFTY -> SENSEX),
+    # enforce a 60-second gap between symbols to protect free model TPM quotas (e.g. Groq 8k TPM).
+    if symbol and purpose in ("live_verdict", "formatting", "strategy_optimization"):
+        with _FREE_MODEL_SYMBOL_PACING_LOCK:
+            curr_t = time.time()
+            if _LAST_FREE_PROMPT_SYMBOL and _LAST_FREE_PROMPT_SYMBOL != symbol and _LAST_FREE_PROMPT_CALL_TIME > 0:
+                elapsed = curr_t - _LAST_FREE_PROMPT_CALL_TIME
+                if elapsed < 60.0:
+                    wait_s = 60.0 - elapsed
+                    log.info(
+                        "[llm-throttle] Pacing multi-leg prompt between %s and %s — waiting %.1fs (60s free-model symbol gap)",
+                        _LAST_FREE_PROMPT_SYMBOL,
+                        symbol,
+                        wait_s,
+                    )
+                    time.sleep(wait_s)
+                    if deadline:
+                        deadline += wait_s
+            _LAST_FREE_PROMPT_CALL_TIME = time.time()
+            _LAST_FREE_PROMPT_SYMBOL = symbol
+
+    now = time.time()
 
     # Circuit breaker: If we've had too many consecutive failures, pause LLM calls
     if _CIRCUIT_OPEN_UNTIL > now:
