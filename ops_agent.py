@@ -413,6 +413,15 @@ class StateMachine:
             except Exception:
                 pass
 
+        # If last scan timestamp was before today's market open, measure staleness
+        # only since today's opening time rather than counting the entire overnight closure.
+        if key.startswith("last_scan_"):
+            now_dt = datetime.now(IST)
+            is_mcx_sym = any(s in key.upper() for s in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER", "COPPER"))
+            market_open_today = now_dt.replace(hour=9, minute=0 if is_mcx_sym else 15, second=0, microsecond=0)
+            if ts < market_open_today and now_dt >= market_open_today:
+                age_s = (now_dt - market_open_today).total_seconds()
+
         if status in ("DOWN", "DEGRADED"):
             state.consecutive_down += 1
             state.status = status if state.consecutive_down >= 2 or status == "DOWN" else "DEGRADED"
@@ -779,7 +788,11 @@ def run_playbooks(snap: HealthSnapshot, sm: StateMachine) -> list[PlaybookResult
             restart_count = 0
             sm._get("_restart_count").consecutive_down = 0
         if restart_count < 2:
-            if ROLLOUT_LEVEL >= 1:
+            if os.name == "nt":
+                # On Windows, systemctl auto-restart is not applicable.
+                _escalate("P01", "Bot scheduler heartbeat stale (manual restart/check required if process stopped).", critical=False)
+                results.append(PlaybookResult(action_taken="windows_notify_only"))
+            elif ROLLOUT_LEVEL >= 1:
                 sm._get("_restart_count").consecutive_down += 1
                 ok = _restart_nsebot()
                 result = PlaybookResult(action_taken="restart_nsebot")
@@ -801,9 +814,12 @@ def run_playbooks(snap: HealthSnapshot, sm: StateMachine) -> list[PlaybookResult
                 # T0 observe-only: notify but never restart
                 _escalate("P01", "Bot dead (heartbeat stale). Restart REQUIRED — suppressed in observe-only mode.", critical=True)
         else:
-            # P02: crash-loop → escalate CRITICAL
-            results.append(PlaybookResult(action_taken="P02_crash_loop", escalated=True, critical=True))
-            _escalate("P02", "Crash-loop detected (>2 restarts). Bot dead, no open positions.", critical=True)
+            if os.name == "nt":
+                pass
+            else:
+                # P02: crash-loop → escalate CRITICAL
+                results.append(PlaybookResult(action_taken="P02_crash_loop", escalated=True, critical=True))
+                _escalate("P02", "Crash-loop detected (>2 restarts). Bot dead, no open positions.", critical=True)
 
     # ── P02: Bot dead + open positions → emergency flat ──
     if hb_stale and open_pos > 0:
