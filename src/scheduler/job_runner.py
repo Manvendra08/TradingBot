@@ -41,14 +41,10 @@ MAX_CATCHUP_INTERVALS = 3
 
 def _get_scan_window_times(class_key: str, now_ist: datetime) -> tuple[datetime, datetime, str, str]:
     """Return (scan_open_time, scan_close_time, open_t_str, close_t_str) for class_key.
-    NSE and BSE scan window: 09:30 AM IST to 15:40 IST (3:40 PM).
-    MCX scan window: 09:15 AM IST to 23:30 IST.
+    NSE and BSE scan window: 09:15 AM IST to 15:30 IST.
+    MCX scan window: 09:00 AM IST to 23:30 IST.
     """
-    if class_key in ("MCX_COMMODITY", "MCX_AGRI"):
-        open_t_str, close_t_str = "09:15", "23:30"
-    else:
-        open_t_str, close_t_str = "09:30", "15:40"
-
+    open_t_str, close_t_str, _ = MARKET_WINDOWS.get(class_key, ("09:15", "15:30", [0, 1, 2, 3, 4]))
     open_h, open_m = map(int, open_t_str.split(":"))
     close_h, close_m = map(int, close_t_str.split(":"))
 
@@ -1453,7 +1449,7 @@ def start_scheduler(immediate: bool = False):
                 if not immediate and delta_minutes < 0:
                     if not has_logged_closed_pre_open.get(class_key, False):
                         log.info(
-                            "[%s] Market is closed (opens at %s). Scheduler will sleep until open.",
+                            "[%s] Market is closed (opens at %s IST). Scheduler waiting for market open.",
                             class_key,
                             open_t,
                         )
@@ -1464,32 +1460,13 @@ def start_scheduler(immediate: bool = False):
 
                 now_time = now_ist.time()
                 if not immediate:
-                    if class_key in ("MCX_COMMODITY", "MCX_AGRI"):
-                        if now_time < dt_mod.time(9, 15):
-                            if not has_logged_closed_pre_open.get(class_key, False):
-                                log.info(
-                                    "[%s] Market is closed (NSEBOT waits until 09:15 for MCX). Scheduler will sleep until open.",
-                                    class_key,
-                                )
-                                has_logged_closed_pre_open[class_key] = True
-                            continue
-                    else:
-                        if now_time < dt_mod.time(9, 30):
-                            if not has_logged_closed_pre_open.get(class_key, False):
-                                log.info(
-                                    "[%s] Market is closed (NSEBOT waits until 09:30 for NSE). Scheduler will sleep until open.",
-                                    class_key,
-                                )
-                                has_logged_closed_pre_open[class_key] = True
-                            continue
-
                     # Post-close guard: once the session is over, do not track or
                     # scan off-market intervals — saves scan duration until next open.
                     close_h, close_m = map(int, close_t.split(":"))
                     if now_time > dt_mod.time(close_h, close_m):
                         if not has_logged_closed_post_close.get(class_key, False):
                             log.info(
-                                "[%s] Market closed (after %s). Scheduler will resume next session.",
+                                "[%s] Market closed (after %s IST). Scheduler will resume next session.",
                                 class_key,
                                 close_t,
                             )
