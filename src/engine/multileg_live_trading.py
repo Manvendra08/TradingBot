@@ -367,6 +367,15 @@ def _monitor_open_books_live(
                 (dte < 0)
             )
             exit_reason_str = f"EXPIRY_SQUAREOFF ({'23:25' if is_mcx else '15:25'} IST)" if (dte == 0 and is_expiry_close) else f"TIME_DECAY (DTE {dte} < {time_decay_exit_dte})"
+
+        if should_exit_time_decay:
+            log.info(
+                "[multileg-live] %s: book %s time decay exit — DTE %d (time_decay_exit_dte=%d)",
+                symbol,
+                book_id,
+                dte,
+                time_decay_exit_dte,
+            )
             _close_live_book(
                 symbol, book_id, legs, now_iso,
                 "CLOSED",
