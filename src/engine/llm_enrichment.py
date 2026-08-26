@@ -42,6 +42,7 @@ import pytz
 from pydantic import BaseModel, Field
 
 from config.symbol_classes import get_symbol_class
+from src.utils.text_sanitizer import sanitize_mojibake
 
 try:
     from google import genai
@@ -3051,6 +3052,17 @@ def _round_echoed_numbers(text: str, runaway_word_cap: int = 90) -> str:
     return text
 
 
+def _sanitize_parsed_strings(data: any) -> any:
+    """Recursively repair Mojibake in all string fields of a parsed JSON payload."""
+    if isinstance(data, str):
+        return sanitize_mojibake(data)
+    elif isinstance(data, dict):
+        return {k: _sanitize_parsed_strings(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [_sanitize_parsed_strings(v) for v in data]
+    return data
+
+
 def _extract_json(raw: str) -> dict | list:
     """
     Tolerant multi-candidate JSON extraction:
@@ -3206,7 +3218,7 @@ def _extract_json(raw: str) -> dict | list:
     for cand in candidates:
         parsed = _try_parse_candidate(cand)
         if parsed is not None:
-            return parsed
+            return _sanitize_parsed_strings(parsed)
 
     raise ValueError(f"JSON extract failed | Raw: {original_raw[:200]}")
 
