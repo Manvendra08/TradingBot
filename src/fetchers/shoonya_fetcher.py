@@ -336,6 +336,10 @@ class ShoonyaFetcher(BaseFetcher):
             self.login()
             self._session_call_count = 0
 
+    def _increment_and_save_call_count(self) -> None:
+        """Increment session API call counter and check quota."""
+        self._check_session_quota()
+
     def _verify_token(self) -> bool:
         """Quick lightweight check: does the cached token still work?
         Uses SearchScrip on a known symbol (minimal overhead) instead of
@@ -1584,6 +1588,37 @@ class ShoonyaFetcher(BaseFetcher):
 
             # Handle standard NSE/BSE indices using GetOptionChain
             chain_tsym = underlying_tsym
+
+            # NFO: GetOptionChain is anchored to the futures contract's month.
+            # If a specific expiry was requested, re-anchor to the futures
+            # contract of that month so the chain contains the target expiry.
+            if option_exch == "NFO" and expiry and futures:
+                try:
+                    exp_dt = datetime.strptime(expiry, "%Y-%m-%d")
+                    exp_key = f"{exp_dt.strftime('%y')}{exp_dt.strftime('%b').upper()}"  # e.g. "26SEP"
+                    matched_fut = next(
+                        (f for f in futures if exp_key in f.get("tsym", "").upper()),
+                        None,
+                    )
+                    if matched_fut and matched_fut.get("tsym"):
+                        chain_tsym = matched_fut["tsym"]
+                        log.info(
+                            "[shoonya] re-anchored NFO chain for expiry %s to %s",
+                            expiry,
+                            chain_tsym,
+                        )
+                    else:
+                        log.info(
+                            "[shoonya] no futures contract matching expiry %s (key %s) — chain may not contain it",
+                            expiry,
+                            exp_key,
+                        )
+                except Exception as e_anchor:
+                    log.warning(
+                        "[shoonya] failed to re-anchor chain for expiry %s: %s",
+                        expiry,
+                        e_anchor,
+                    )
 
             if option_exch == "BFO":
                 # SENSEX/BANKEX weekly options chain in Shoonya is not grouped under the monthly futures contract.
