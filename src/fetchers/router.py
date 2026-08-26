@@ -415,6 +415,54 @@ def _merge_fetcher_results(primary: dict, fallback: dict, symbol: str) -> dict:
     return merged
 
 
+def _get_open_position_strikes(symbol: str) -> set[float]:
+    """Retrieve strikes for all currently OPEN single-leg and multi-leg trades for this symbol."""
+    from src.models.schema import get_conn
+
+    strikes = set()
+    base_sym = symbol.split()[0] if symbol else ""
+    try:
+        with get_conn(read_only=True) as conn:
+            # Single-leg paper trades
+            for row in conn.execute(
+                "SELECT strike FROM paper_trades WHERE (symbol=? OR symbol=?) AND status='OPEN'",
+                (symbol, base_sym),
+            ).fetchall():
+                if row["strike"] is not None:
+                    try:
+                        strikes.add(float(row["strike"]))
+                    except (ValueError, TypeError):
+                        pass
+            # Single-leg live trades
+            for row in conn.execute(
+                "SELECT strike FROM live_trades WHERE (symbol=? OR symbol=?) AND status='OPEN'",
+                (symbol, base_sym),
+            ).fetchall():
+                if row["strike"] is not None:
+                    try:
+                        strikes.add(float(row["strike"]))
+                    except (ValueError, TypeError):
+                        pass
+            # Multi-leg legs
+            for row in conn.execute(
+                """
+                SELECT mll.strike 
+                FROM multi_leg_legs mll
+                JOIN multi_leg_trades mlt ON mll.trade_id = mlt.id
+                WHERE (mlt.symbol=? OR mlt.symbol=?) AND mlt.status='OPEN' AND mll.status='OPEN'
+                """,
+                (symbol, base_sym),
+            ).fetchall():
+                if row["strike"] is not None:
+                    try:
+                        strikes.add(float(row["strike"]))
+                    except (ValueError, TypeError):
+                        pass
+    except Exception as exc:
+        log.debug("[router] Error retrieving open position strikes: %s", exc)
+    return strikes
+
+
 def fetch_option_chain(symbol: str, expiry: str | None = None, required_strikes: set[float] | None = None) -> dict | None:
     """
     Try fetchers in configured priority order.
@@ -422,6 +470,12 @@ def fetch_option_chain(symbol: str, expiry: str | None = None, required_strikes:
     Fails over to remaining sequential fetchers if both primary/fallback fail.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
+
+    open_strikes = _get_open_position_strikes(symbol)
+    if required_strikes is None:
+        required_strikes = open_strikes
+    else:
+        required_strikes = set(required_strikes) | open_strikes
 
     priority = _priority_for(symbol)
     available_priority = [s for s in priority if s in _FETCHERS]

@@ -83,6 +83,22 @@ def _get_required_strikes(symbol: str) -> set[float]:
                         required.add(float(row["strike"]))
                 except (ValueError, TypeError):
                     pass
+            # Multi-leg trades
+            ml_trades = conn.execute(
+                """
+                SELECT mll.strike 
+                FROM multi_leg_legs mll
+                JOIN multi_leg_trades mlt ON mll.trade_id = mlt.id
+                WHERE mlt.symbol=? AND mlt.status='OPEN' AND mll.status='OPEN'
+                """,
+                (symbol,),
+            ).fetchall()
+            for row in ml_trades:
+                try:
+                    if row["strike"] is not None:
+                        required.add(float(row["strike"]))
+                except (ValueError, TypeError):
+                    pass
     except Exception as e:
         log.warning("Error fetching required strikes for %s: %s", symbol, e)
     return required
@@ -907,6 +923,21 @@ def _update_live_cmps() -> None:
                 (symbol,),
             ).fetchall()
             for row in live_trades:
+                try:
+                    required.add(float(row["strike"]))
+                except (ValueError, TypeError):
+                    pass
+            # Multi-leg trades
+            ml_trades = conn.execute(
+                """
+                SELECT mll.strike 
+                FROM multi_leg_legs mll
+                JOIN multi_leg_trades mlt ON mll.trade_id = mlt.id
+                WHERE mlt.symbol=? AND mlt.status='OPEN' AND mll.status='OPEN'
+                """,
+                (symbol,),
+            ).fetchall()
+            for row in ml_trades:
                 try:
                     required.add(float(row["strike"]))
                 except (ValueError, TypeError):

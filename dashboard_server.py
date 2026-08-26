@@ -1364,6 +1364,9 @@ def _enrich_open_trades_with_live_pnl(rows: list[dict]) -> None:
             total_pnl = 0.0
             lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_sym, 1))
 
+            spot_res = _q("SELECT price FROM underlying_price WHERE (symbol=? OR symbol=?) ORDER BY fetched_at DESC LIMIT 1", (symbol, base_sym))
+            current_spot = float(spot_res[0]["price"]) if spot_res else float(row.get("entry_underlying") or 0.0)
+
             for leg in legs:
                 leg_stk = float(leg.get("strike") or 0.0)
                 leg_opt = (leg.get("option_type") or "").upper()
@@ -1382,10 +1385,9 @@ def _enrich_open_trades_with_live_pnl(rows: list[dict]) -> None:
                 leg_cmp = entry_p
                 if cmp_res:
                     raw_ltp = float(cmp_res[0]["ltp"])
-                    underlying_spot = float(row.get("entry_underlying") or 0.0)
-                    if underlying_spot > 0:
+                    if current_spot > 0:
                         from src.engine.trade_plan import is_valid_option_premium
-                        if is_valid_option_premium(leg_stk, leg_opt, raw_ltp, underlying_spot):
+                        if is_valid_option_premium(leg_stk, leg_opt, raw_ltp, current_spot):
                             leg_cmp = raw_ltp
                     else:
                         leg_cmp = raw_ltp
@@ -1399,6 +1401,8 @@ def _enrich_open_trades_with_live_pnl(rows: list[dict]) -> None:
                 else:
                     pnl = (leg_cmp - entry_p) * leg_lots * lot_size
                     buy_cmp_sum += leg_cmp
+
+                leg["pnl"] = round(pnl, 2)
                 total_pnl += pnl
 
             row["pnl_rupees"] = round(total_pnl, 2)
