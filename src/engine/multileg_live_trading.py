@@ -1255,6 +1255,15 @@ def _attempt_new_live_entry(
         }
 
     # ── All legs placed — insert trade atomically ──────────────────────
+    entry_reason = (
+        getattr(verdict, "entry_rationale", None)
+        or getattr(verdict, "thesis", None)
+        or f"{strategy_type} setup for {symbol} ({len(placed_legs)} legs, net prem ₹{net_premium:.2f})"
+    )
+    if not entry_reason:
+        leg_rats = [l.get("rationale") for l in placed_legs if l.get("rationale")]
+        entry_reason = "; ".join(leg_rats) if leg_rats else f"{strategy_type} entry"
+
     trade_dict = {
         "trade_ref": 0,
         "symbol": symbol,
@@ -1265,7 +1274,9 @@ def _attempt_new_live_entry(
         "opened_at": now_iso,
         "closed_at": None,
         "status": "OPEN",
-        "reason": None,
+        "reason": entry_reason,
+        "entry_reason": entry_reason,
+        "exit_reason": None,
         "profit_factor": 0.0,
         "book_id": book_id,
         "strategy_type": strategy_type,

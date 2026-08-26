@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from config.settings import IST
+from src.utils.text_sanitizer import sanitize_mojibake
 
 log = logging.getLogger(__name__)
 
@@ -413,7 +414,7 @@ def _monitor_open_books(
                 )
                 if advice and isinstance(advice, dict):
                     action = (advice.get("action") or "HOLD").upper()
-                    reasoning = advice.get("reasoning", "")
+                    reasoning = sanitize_mojibake(advice.get("reasoning", ""))
 
                     if action == "CLOSE":
                         log.info(
@@ -829,6 +830,15 @@ def _attempt_new_entry(
     book_id = f"ML-{symbol[:3]}-{uuid.uuid4().hex[:8]}"
     trade_id = int(uuid.uuid4().int % 999999999)  # Fallback; DB generates real ID
 
+    entry_reason = (
+        getattr(verdict, "entry_rationale", None)
+        or getattr(verdict, "thesis", None)
+        or f"{strategy_type} setup for {symbol} ({len(legs)} legs, net prem ₹{net_premium:.2f})"
+    )
+    if not entry_reason:
+        leg_rats = [l.get("rationale") for l in legs if l.get("rationale")]
+        entry_reason = "; ".join(leg_rats) if leg_rats else f"{strategy_type} entry"
+
     trade_dict = {
         "trade_ref": 0,  # Will be set by DB if needed
         "symbol": symbol,
@@ -839,7 +849,9 @@ def _attempt_new_entry(
         "opened_at": now_iso,
         "closed_at": None,
         "status": "OPEN",
-        "reason": None,
+        "reason": entry_reason,
+        "entry_reason": entry_reason,
+        "exit_reason": None,
         "profit_factor": 0.0,
         "book_id": book_id,
         "strategy_type": strategy_type,
