@@ -69,27 +69,18 @@ _IST = pytz.timezone("Asia/Kolkata")
 _OPENCODE_HOST = "opencode.ai"
 
 # Groq models that DO NOT support `response_format={"type":"json_object"}`.
-# Sending it triggers a 400 `json_validate_failed`; the retry then often trips a
-# 429. We skip json_mode for these and rely on reasoning_format='parsed' + the
-# tolerant _extract_json() parser instead. Keep this list in sync with observed
-# Groq 400 json_validate_failed failures.
-_GROQ_NO_JSON_MODELS = frozenset(
-    {
-        "openai/gpt-oss-120b",
-        "openai/gpt-oss-20b",
-        "qwen/qwen3.6-27b",
-    }
-)
+# Modern Groq models (gpt-oss-120b, gpt-oss-20b, qwen3.6-27b, compound) all support json_object.
+_GROQ_NO_JSON_MODELS = frozenset()
 
 # Groq models that support `reasoning_format="parsed"`.
-# Passing `reasoning_format` to standard models (like compound-mini, llama-3.3-70b-versatile)
+# Passing `reasoning_format` to standard models (like compound, compound-mini)
 # causes Groq to reject the request with HTTP 400 (`reasoning_format is not supported`).
 _GROQ_REASONING_MODELS = frozenset(
     {
         "openai/gpt-oss-120b",
         "openai/gpt-oss-20b",
         "qwen/qwen3.6-27b",
-        "deepseek-r1-distill-llama-70b",
+        "qwen/qwen3.8-27b",
     }
 )
 
@@ -1811,14 +1802,21 @@ def _call_llm_api(
                     "env_key": "GROQ_API_KEY",
                     "url": "https://api.groq.com/openai/v1/chat/completions",
                     "model": "openai/gpt-oss-120b",
-                    "max_tokens_override": 1024,
+                    "max_tokens_override": 1536,
                 },
                 {
                     "name": "Groq (Qwen 3.6 27B)",
                     "env_key": "GROQ_API_KEY",
                     "url": "https://api.groq.com/openai/v1/chat/completions",
                     "model": "qwen/qwen3.6-27b",
-                    "max_tokens_override": 1024,
+                    "max_tokens_override": 1536,
+                },
+                {
+                    "name": "Groq (Compound)",
+                    "env_key": "GROQ_API_KEY",
+                    "url": "https://api.groq.com/openai/v1/chat/completions",
+                    "model": "groq/compound",
+                    "max_tokens_override": 1536,
                 },
             ],
         }
@@ -2175,21 +2173,28 @@ def _call_llm_api(
                     "env_key": "GROQ_API_KEY",
                     "url": "https://api.groq.com/openai/v1/chat/completions",
                     "model": "openai/gpt-oss-120b",
-                    "max_tokens_override": 1024,
+                    "max_tokens_override": 1536,
                 },
                 {
                     "name": "Groq (Qwen 3.6 27B)",
                     "env_key": "GROQ_API_KEY",
                     "url": "https://api.groq.com/openai/v1/chat/completions",
                     "model": "qwen/qwen3.6-27b",
-                    "max_tokens_override": 1024,
+                    "max_tokens_override": 1536,
+                },
+                {
+                    "name": "Groq (Compound)",
+                    "env_key": "GROQ_API_KEY",
+                    "url": "https://api.groq.com/openai/v1/chat/completions",
+                    "model": "groq/compound",
+                    "max_tokens_override": 1536,
                 },
                 {
                     "name": "Groq (GPT-OSS 20B)",
                     "env_key": "GROQ_API_KEY",
                     "url": "https://api.groq.com/openai/v1/chat/completions",
                     "model": "openai/gpt-oss-20b",
-                    "max_tokens_override": 1024,
+                    "max_tokens_override": 1536,
                 },
             ],
         }
