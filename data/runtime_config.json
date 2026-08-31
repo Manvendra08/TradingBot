@@ -55,6 +55,7 @@
   "live_broker_disabled": true,
   "trading_paused": true,
   "enable_tfss_trade_blocked_rules": false,
+  "enable_ng_parity_trades": true,
   "sentinel_report_mode": "anomalies",
   "ops_agent_mode": "normal",
   "tiered_gates_enabled": true,
@@ -119,10 +120,13 @@
         "SENSEX": true,
         "FINNIFTY": true,
         "NATURALGAS": true,
-        "CRUDEOIL": true,
-        "GOLD": true,
-        "SILVER": true
+        "CRUDEOIL": false
       }
+    },
+    "NG_PARITY": {
+      "enabled": true,
+      "ai_mode": "boost_only",
+      "symbols": {}
     }
   }
 }
