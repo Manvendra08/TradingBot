@@ -30,13 +30,23 @@ except ImportError:
     pass
 
 from config.logging_config import configure_logging
-from src.models.schema import init_db, insert_snapshots, insert_underlying_price, get_conn, get_alert_history, delete_alerts
+from src.models.schema import (
+    init_db,
+    insert_snapshots,
+    insert_underlying_price,
+    get_conn,
+    get_alert_history,
+    delete_alerts,
+    insert_alert,
+    mark_telegram_sent,
+)
 from src.engine.anomaly_detector import detect_anomalies
 from src.alerts.dedup import is_duplicate, record_alert
 from src.alerts.telegram_dispatcher import send_alert, send_text
-from src.models.schema import insert_alert, mark_telegram_sent
 from src.alerts.digest import build_digest_wrapper as build_digest
 from config.settings import INDIVIDUAL_ALERT_MIN_SEVERITY
+
+_SEV_RANKS = {"LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
 
 configure_logging(name="bridge")
 log = logging.getLogger("extension_bridge")
@@ -297,8 +307,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 for a in new_alerts:
                     aid = insert_alert(a)
                     record_alert(a)
-                    # Individual message only for HIGH when digest failed
-                    if a.get("severity") == INDIVIDUAL_ALERT_MIN_SEVERITY and not sent_digest:
+                    # Individual message for HIGH+ when digest failed
+                    sev = str(a.get("severity") or "LOW").upper()
+                    min_sev = str(INDIVIDUAL_ALERT_MIN_SEVERITY or "HIGH").upper()
+                    if _SEV_RANKS.get(sev, 1) >= _SEV_RANKS.get(min_sev, 3) and not sent_digest:
                         if send_alert(a):
                             mark_telegram_sent(aid)
                     elif sent_digest:

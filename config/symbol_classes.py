@@ -4,21 +4,24 @@ strike step size, and market window key.
 """
 from __future__ import annotations
 
-from config.settings import MARKET_WINDOWS
+import logging
+from config.settings import MARKET_WINDOWS, STRIKE_STEPS
+
+log = logging.getLogger(__name__)
 
 
 # symbol → (class_key, strike_step_points)
 # strike_step_points is used for cluster-dedup width calculation.
 _SYMBOL_META: dict[str, tuple[str, int]] = {
-    "NIFTY":       ("NSE_INDEX", 50),
-    "BANKNIFTY":   ("NSE_INDEX", 100),
-    "FINNIFTY":    ("NSE_INDEX", 50),
-    "MIDCPNIFTY":  ("NSE_INDEX", 25),
-    "SENSEX":      ("BSE_INDEX", 100),
-    "NATURALGAS":  ("MCX_COMMODITY", 5),
-    "CRUDEOIL":    ("MCX_COMMODITY", 100),
-    "GOLD":        ("MCX_COMMODITY", 100),
-    "SILVER":      ("MCX_COMMODITY", 500),
+    "NIFTY":       ("NSE_INDEX", STRIKE_STEPS.get("NIFTY", 50)),
+    "BANKNIFTY":   ("NSE_INDEX", STRIKE_STEPS.get("BANKNIFTY", 100)),
+    "FINNIFTY":    ("NSE_INDEX", STRIKE_STEPS.get("FINNIFTY", 50)),
+    "MIDCPNIFTY":  ("NSE_INDEX", STRIKE_STEPS.get("MIDCPNIFTY", 25)),
+    "SENSEX":      ("BSE_INDEX", STRIKE_STEPS.get("SENSEX", 100)),
+    "NATURALGAS":  ("MCX_COMMODITY", STRIKE_STEPS.get("NATURALGAS", 5)),
+    "CRUDEOIL":    ("MCX_COMMODITY", STRIKE_STEPS.get("CRUDEOIL", 50)),
+    "GOLD":        ("MCX_COMMODITY", STRIKE_STEPS.get("GOLD", 100)),
+    "SILVER":      ("MCX_COMMODITY", STRIKE_STEPS.get("SILVER", 100)),
 }
 
 _DEFAULT_CLASS       = "NSE_INDEX"

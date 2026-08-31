@@ -154,7 +154,7 @@ def is_trading_allowed_now(symbol: str, expiry_str: str | None = None) -> tuple[
                 expiry_date = datetime.strptime(expiry_str, "%Y-%m-%d").date()
                 if expiry_date == now.date():
                     if is_mcx:
-                        # MCX cutoff: 8:00 pm IST (20:00)
+                        # MCX cutoff: 8:00 pm IST (20:00) on expiry day
                         if (h, m) >= (20, 0):
                             return False, f"Expiry day trading cutoff (after 20:00 IST for MCX on expiry day)"
                     elif is_index_fno:

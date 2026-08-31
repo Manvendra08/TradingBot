@@ -40,10 +40,11 @@ import tempfile
 
 _CACHED_CONFIG: dict | None = None
 _CACHED_MTIME: float = 0.0
+_CACHED_PATH: str | None = None
 
 
 def load_runtime_config() -> dict:
-    global _CACHED_CONFIG, _CACHED_MTIME
+    global _CACHED_CONFIG, _CACHED_MTIME, _CACHED_PATH
 
     default_freq = _clamp_minutes(int(FETCH_INTERVAL_MINUTES))
     defaults = {
@@ -89,11 +90,14 @@ def load_runtime_config() -> dict:
     }
 
     if not RUNTIME_CONFIG_PATH.exists():
+        _CACHED_CONFIG = None
+        _CACHED_PATH = None
         return defaults.copy()
 
     try:
+        current_path_str = str(RUNTIME_CONFIG_PATH)
         current_mtime = os.path.getmtime(RUNTIME_CONFIG_PATH)
-        if _CACHED_CONFIG is not None and current_mtime == _CACHED_MTIME:
+        if _CACHED_CONFIG is not None and current_mtime == _CACHED_MTIME and _CACHED_PATH == current_path_str:
             return json.loads(json.dumps(_CACHED_CONFIG))
 
         data = json.loads(RUNTIME_CONFIG_PATH.read_text(encoding="utf-8"))
@@ -112,46 +116,56 @@ def load_runtime_config() -> dict:
 
         _CACHED_CONFIG = defaults
         _CACHED_MTIME = current_mtime
+        _CACHED_PATH = current_path_str
         return json.loads(json.dumps(defaults))
     except Exception:
         return defaults.copy()
 
 
+import threading
+
+_CONFIG_LOCK = threading.Lock()
+
+
 def save_runtime_config(config: dict) -> None:
-    global _CACHED_CONFIG, _CACHED_MTIME
+    global _CACHED_CONFIG, _CACHED_MTIME, _CACHED_PATH
 
-    if "scan_frequency_minutes" in config:
-        config["scan_frequency_minutes"] = _clamp_minutes(config["scan_frequency_minutes"])
-    if "scan_frequency_nse" in config:
-        config["scan_frequency_nse"] = _clamp_minutes(config["scan_frequency_nse"])
-    if "scan_frequency_mcx" in config:
-        config["scan_frequency_mcx"] = _clamp_minutes(config["scan_frequency_mcx"])
-        
-    RUNTIME_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with _CONFIG_LOCK:
+        if "scan_frequency_minutes" in config:
+            config["scan_frequency_minutes"] = _clamp_minutes(config["scan_frequency_minutes"])
+        if "scan_frequency_nse" in config:
+            config["scan_frequency_nse"] = _clamp_minutes(config["scan_frequency_nse"])
+        if "scan_frequency_mcx" in config:
+            config["scan_frequency_mcx"] = _clamp_minutes(config["scan_frequency_mcx"])
+            
+        RUNTIME_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-    # Atomic file write using temporary file replacement
-    content = json.dumps(config, indent=2)
-    tmp_path = RUNTIME_CONFIG_PATH.with_suffix(".tmp")
-    tmp_path.write_text(content, encoding="utf-8")
-    os.replace(tmp_path, RUNTIME_CONFIG_PATH)
+        # Atomic file write using thread/PID unique temporary file replacement
+        content = json.dumps(config, indent=2)
+        tmp_path = RUNTIME_CONFIG_PATH.with_suffix(f".{os.getpid()}_{threading.get_ident()}.tmp")
+        tmp_path.write_text(content, encoding="utf-8")
+        os.replace(tmp_path, RUNTIME_CONFIG_PATH)
 
-    _CACHED_CONFIG = json.loads(content)
-    try:
-        _CACHED_MTIME = os.path.getmtime(RUNTIME_CONFIG_PATH)
-    except Exception:
-        _CACHED_MTIME = 0.0
+        _CACHED_CONFIG = json.loads(content)
+        _CACHED_PATH = str(RUNTIME_CONFIG_PATH)
+        try:
+            _CACHED_MTIME = os.path.getmtime(RUNTIME_CONFIG_PATH)
+        except Exception:
+            _CACHED_MTIME = 0.0
 
 
 def get_scan_frequency_minutes() -> int:
-    return load_runtime_config()["scan_frequency_minutes"]
+    return load_runtime_config().get("scan_frequency_minutes", 15)
 
 
 def get_scan_frequency_nse() -> int:
-    return load_runtime_config()["scan_frequency_nse"]
+    cfg = load_runtime_config()
+    return cfg.get("scan_frequency_nse", cfg.get("scan_frequency_minutes", 15))
 
 
 def get_scan_frequency_mcx() -> int:
-    return load_runtime_config()["scan_frequency_mcx"]
+    cfg = load_runtime_config()
+    return cfg.get("scan_frequency_mcx", cfg.get("scan_frequency_minutes", 15))
 
 
 def set_scan_frequency_minutes(minutes: int) -> int:
@@ -184,10 +198,13 @@ def is_broker_trade_enabled() -> bool:
     """Check whether live broker trade (order placement & broker sync) is enabled.
 
     Returns False if:
+    - live_shadow_mode is True (shadow/paper mode — broker activities disabled)
     - live_broker_disabled is True
     - trading_paused is True
     """
     cfg = load_runtime_config()
+    if cfg.get("live_shadow_mode", True):
+        return False
     if cfg.get("live_broker_disabled", False):
         return False
     if cfg.get("trading_paused", False):

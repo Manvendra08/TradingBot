@@ -70,6 +70,17 @@ def _refresh_ip_async() -> None:
             send_text(
                 f"🌐 **ISP IP Address Changed**\nOld: `{old_ip}`\nNew: `{new_ip}`\n\nPlease review broker allowlist settings if applicable."
             )
+            # Also trigger Shoonya IP guard with the known new IP so it
+            # attempts the headless portal update immediately (mid-day change)
+            try:
+                from src.fetchers.shoonya_ip_guard import run_daily_ip_check
+                guard_result = run_daily_ip_check(known_new_ip=new_ip, force_rerun=True)
+                if guard_result.get("reason") == "ip_auto_updated":
+                    log.info("[pipeline] Shoonya IP auto-updated via mid-day guard trigger")
+                elif guard_result.get("skip"):
+                    log.warning("[pipeline] Shoonya IP guard skipped after mid-day change: %s", guard_result.get("reason"))
+            except Exception as guard_exc:
+                log.warning("Shoonya IP guard mid-day trigger failed: %s", guard_exc)
     except Exception as exc:
         log.warning("Async IP refresh failed: %s", exc)
 
@@ -454,36 +465,43 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
     
     multileg_payload = None
     if isinstance(paper_res, dict):
-        p_act = paper_res.get("action")
-        if p_act == "ENTERED":
+        p_act = str(paper_res.get("action") or "").upper()
+        # Only populate multileg_payload if it is genuinely a MULTILEG / TFSS strategy
+        strat_type = str(paper_res.get("strategy_type") or "").upper()
+        is_ml_strat = strat_type in (
+            "TFSS", "MULTILEG", "IRON_CONDOR", "SHORT_STRANGLE", 
+            "SHORT_STRADDLE", "BEAR_CALL_SPREAD", "BULL_PUT_SPREAD", 
+            "JADE_LIZARD"
+        ) or bool(paper_res.get("legs"))
+        
+        if is_ml_strat:
+            closed_items = paper_res.get("closed") or ([paper_res] if p_act == "CLOSED" else [])
             multileg_payload = {
-                "action": "ENTERED",
+                "action": p_act or "NONE",
+                "decision_stage": paper_res.get("decision_stage"),
                 "trade_id": paper_res.get("trade_id"),
+                "book_id": paper_res.get("book_id"),
                 "strategy_type": paper_res.get("strategy_type"),
-                "legs": paper_res.get("legs", []),
+                "legs": paper_res.get("legs") or [],
                 "net_premium": paper_res.get("net_premium"),
+                "margin": paper_res.get("margin"),
+                "margin_cap": paper_res.get("margin_cap"),
+                "net_delta": paper_res.get("net_delta"),
+                "delta_cap": paper_res.get("delta_cap"),
                 "confidence": paper_res.get("confidence"),
                 "entry_quality": paper_res.get("entry_quality"),
-                "book_id": paper_res.get("book_id"),
+                "quality_reasons": paper_res.get("quality_reasons") or [],
+                "risk_profile": paper_res.get("risk_profile") or {},
+                "book_greeks": paper_res.get("book_greeks") or {},
+                "exit_plan": paper_res.get("exit_plan") or {},
+                "adjustment_plan": paper_res.get("adjustment_plan"),
+                "entry_rationale": paper_res.get("entry_rationale"),
                 "thesis": paper_res.get("thesis"),
-                "risk_profile": paper_res.get("risk_profile"),
-                "book_greeks": paper_res.get("book_greeks"),
-                "quality_reasons": paper_res.get("quality_reasons", []),
-            }
-        elif p_act in ("CLOSED", "MONITORED") or paper_res.get("closed"):
-            closed_items = paper_res.get("closed") or ([paper_res] if p_act == "CLOSED" else [])
-            if closed_items:
-                multileg_payload = {
-                    "action": "CLOSED",
-                    "closed_items": closed_items,
-                }
-        elif p_act == "NO_TRADE":
-            multileg_payload = {
-                "action": "NO_TRADE",
-                "strategy_type": paper_res.get("strategy_type"),
                 "reason": paper_res.get("reason"),
-                "thesis": paper_res.get("thesis"),
-                "confidence": paper_res.get("confidence"),
+                "live_books": paper_res.get("live_books") or [],
+                "closed_items": closed_items,
+                "ai_exit_advice": paper_res.get("ai_exit_advice"),
+                "ai_model_name": paper_res.get("ai_model_name"),
             }
     actual_lots = 1
     db_entered = False
@@ -680,12 +698,62 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
         "tfss": tfss,
         "timeframe": timeframe,
         "multileg": multileg_payload,
+        "quant_inputs": _build_quant_inputs(symbol, scan_context, intel, news_data),
         "positions": {},
         "global_risk": {},
         "options_insight": format_options_insight(scan_context, symbol),
         "ai_thesis": ai_thesis,
         "ai_model_name": ai_model_name,
         "exit_advice": exit_advice
+    }
+
+
+def _build_quant_inputs(symbol: str, scan_context: dict, intel: dict, news_data: dict | None) -> dict:
+    """Quant engine readings the LLM consumed as input for its structure choice.
+
+    These are analytical inputs only — they no longer represent a directional
+    trade signal, since MULTILEG owns the trade decision.
+    """
+    ctx = scan_context or {}
+    chart = ctx.get("chart_indicators") or {}
+    if not any(str(k).lower() in {"1h", "3h", "1d"} for k in chart.keys()):
+        target = str(symbol).upper().strip()
+        for key, value in chart.items():
+            if isinstance(value, dict) and str(key).upper().strip().startswith(target):
+                chart = value
+                break
+
+    option_rows = ctx.get("option_rows") or []
+    atm_strike = float(ctx.get("atm_strike") or 0.0)
+    atm_iv = 0.0
+    ivs: list[float] = []
+    for row in option_rows:
+        iv = float(row.get("iv") or 0.0)
+        if iv <= 0:
+            continue
+        ivs.append(iv)
+        if atm_strike and abs(float(row.get("strike") or 0.0) - atm_strike) < 0.01:
+            atm_iv = iv
+
+    return {
+        "oi_verdict": (intel or {}).get("verdict_label"),
+        "oi_confidence": (intel or {}).get("confidence", 0),
+        "pcr": ctx.get("pcr"),
+        "max_pain": ctx.get("max_pain"),
+        "support": ctx.get("support"),
+        "resistance": ctx.get("resistance"),
+        "ce_oi_change": ctx.get("ce_oi_change"),
+        "pe_oi_change": ctx.get("pe_oi_change"),
+        "atm_iv": atm_iv,
+        "iv_low": min(ivs) if ivs else 0.0,
+        "iv_high": max(ivs) if ivs else 0.0,
+        "regime": ctx.get("market_regime"),
+        "chart_1h": ((chart.get("1h") or {}).get("sentiment") or "NEUTRAL"),
+        "chart_3h": ((chart.get("3h") or {}).get("sentiment") or "NEUTRAL"),
+        "news_direction": (news_data or {}).get("current_news_direction"),
+        "news_count": (news_data or {}).get("count_24h"),
+        "ng_regime": ctx.get("ng_regime"),
+        "ng_dev_pct": ctx.get("ng_dev_pct"),
     }
 
 
@@ -763,6 +831,7 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                     log.info("[pipeline] %s | Successfully set MCX expiry day signal target to next expiry %s (monitoring current expiry %s)",
                              symbol, next_oc_data.get("expiry"), current_expiry_str)
                     target_signal_oc_data = next_oc_data
+                    packet["oc_data"] = next_oc_data
                     if "chart_indicators" not in target_signal_oc_data:
                         target_signal_oc_data["chart_indicators"] = current_expiry_oc_data.get("chart_indicators") or {}
                     for r in target_signal_oc_data["strikes"]:
@@ -814,6 +883,7 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
     scan_context["current_expiry"] = current_expiry_str
     scan_context["current_expiry_option_rows"] = list(current_expiry_oc_data.get("strikes") or [])
     scan_context["data_legitimacy"] = legitimacy.to_dict()
+    scan_context["is_0dte_cutoff"] = getattr(legitimacy, "is_0dte_cutoff", False)
 
     exp_str = scan_context.get("expiry") or current_expiry_str
     if exp_str:

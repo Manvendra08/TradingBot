@@ -6,19 +6,16 @@ Force-scan (--now flag) always bypasses the guard.
 Phase 2: Weekly ML training job added (Sunday 2 AM IST fallback).
 Event-driven triggers (20+ trades, edge health < 60) are wired in pipeline.py.
 """
-
 import logging
-import socket
 import subprocess
 import sys
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
 
 import pytz
-
-# Set global socket timeout to prevent indefinite hangs in third-party libraries (e.g. tvDatafeed, urllib)
-socket.setdefaulttimeout(15.0)
 
 from config.runtime_config import (
     get_scan_frequency_mcx,
@@ -31,6 +28,47 @@ from src.engine.pipeline import run_pipeline
 from src.models.schema import has_recent_scan_summary
 
 log = logging.getLogger(__name__)
+
+ROOT = Path(__file__).resolve().parents[2]
+SCRAPE_RUNNER = ROOT / "tools" / "scrape_dhan_naturalgas.py"
+
+IST = pytz.timezone("Asia/Kolkata")
+
+MAX_CATCHUP_INTERVALS = 3
+
+# Thread pool for running functions with timeout and cancellation support.
+# This replaces the old daemon-thread-based run_with_timeout which couldn't
+# actually stop hung functions.
+_WATCHDOG_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="watchdog-")
+
+
+def run_with_timeout(func, timeout, *args, **kwargs) -> bool:
+    """Run a function in a thread pool with timeout and cancellation support.
+    
+    Unlike the old daemon-thread version, this uses ThreadPoolExecutor which
+    supports cancellation via cancel_futures=True (Python 3.9+). When the
+    timeout expires, the future is cancelled and the worker thread can be
+    gracefully stopped if it checks for cancellation.
+    
+    Note: The function being run should periodically check for thread interruption
+    (e.g. by checking threading.current_thread().is_alive() or using a shared
+    Event) to actually stop when cancelled.
+    """
+    future = _WATCHDOG_EXECUTOR.submit(func, *args, **kwargs)
+    try:
+        future.result(timeout=timeout)
+        return True
+    except Exception as e:
+        # TimeoutError or other exception
+        log.error(
+            "Watchdog: function '%s' timed out after %ds or raised %s",
+            func.__name__,
+            timeout,
+            type(e).__name__,
+        )
+        # Attempt to cancel the future (Python 3.9+)
+        future.cancel()
+        return False
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRAPE_RUNNER = ROOT / "tools" / "scrape_dhan_naturalgas.py"
@@ -1277,11 +1315,11 @@ def start_scheduler(immediate: bool = False):
     _last_weather_fetch_times: dict[str, float] = {}  # hour_key → last_ts
 
     def _should_run_weather(now_ist) -> bool:
-        """Check if weather fetch should run (10:00, 16:00, 22:00 IST, once per hour)."""
+        """Check if weather fetch should run (once daily at 17:00 IST / 5 PM IST)."""
         from config.settings import WEATHER_SIGNAL_ENABLED
         if not WEATHER_SIGNAL_ENABLED:
             return False
-        target_hours = {10, 16, 22}
+        target_hours = {17}  # 5:00 PM IST
         h = now_ist.hour
         if h not in target_hours:
             return False
@@ -1366,7 +1404,7 @@ def start_scheduler(immediate: bool = False):
             # Skips weekends and market holidays automatically.
             if now_ist.weekday() < 5:  # Monday=0 … Friday=4
                 now_time_str = now_ist.strftime("%H:%M")
-                if now_time_str == "08:45" and _last_auto_login_date != current_date:
+                if "08:45" <= now_time_str <= "09:05" and _last_auto_login_date != current_date:
                     _last_auto_login_date = current_date
                     from config.runtime_config import is_broker_trade_enabled
                     if is_broker_trade_enabled():
@@ -1395,7 +1433,7 @@ def start_scheduler(immediate: bool = False):
             # ── Post-market: FII/DII Data Fetch at 19:15 IST (Mon-Fri) ──
             if now_ist.weekday() < 5:
                 now_time_str = now_ist.strftime("%H:%M")
-                if now_time_str == "19:15" and _last_fii_fetch_date != current_date:
+                if "19:15" <= now_time_str <= "20:00" and _last_fii_fetch_date != current_date:
                     _last_fii_fetch_date = current_date
                     log.info(
                         "[scheduler] Triggering FII/DII positioning fetch (19:15 IST)"
@@ -1586,6 +1624,9 @@ def start_scheduler(immediate: bool = False):
 
                 def _sync_kite_positions():
                     try:
+                        from config.runtime_config import is_broker_trade_enabled
+                        if not is_broker_trade_enabled():
+                            return
                         from src.engine.live_trading import sync_direct_kite_positions
 
                         sync_direct_kite_positions()

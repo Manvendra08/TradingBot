@@ -250,6 +250,7 @@ def evaluate_reversal(symbol_state: Any, market_state: Any, config: Any) -> Dict
     if not getattr(combined_state, 'within_caps', True):
         return {"action": "BLOCK", "reason": "REVERSAL_BLOCKED_COMBINED_CAP", "reversal_sequence_log": reversal_audit}
 
+    reversal_side = side_opposite(original_side)
     candidate = select_candidate(side=reversal_side, persisted_label=persisted.label,
                                  dte=getattr(market_state, 'dte', 0), 
                                  atr_state=getattr(market_state, 'atr_state', {}),

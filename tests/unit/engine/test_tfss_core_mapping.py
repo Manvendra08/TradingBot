@@ -112,11 +112,12 @@ class TestExecutionSideResolution(unittest.TestCase):
         from src.engine.trend_following_short_strangle import (
             normalize_core_verdict_to_tfss_intent, resolve_tfss_execution_side
         )
-        intent = normalize_core_verdict_to_tfss_intent("GO_LONG")
-        persisted = self._make_persisted(valid=False)
-        side = resolve_tfss_execution_side(intent, persisted)
-        self.assertIsInstance(side, dict)
-        self.assertEqual(side["action"], "BLOCK")
+        with patch("config.runtime_config.load_runtime_config", return_value={"enable_tfss_trade_blocked_rules": True}):
+            intent = normalize_core_verdict_to_tfss_intent("GO_LONG")
+            persisted = self._make_persisted(valid=False)
+            side = resolve_tfss_execution_side(intent, persisted)
+            self.assertIsInstance(side, dict)
+            self.assertEqual(side["action"], "BLOCK")
 
     def test_all_bullish_verdicts_cannot_produce_buy(self):
         """Verify no bullish verdict produces BUY side."""

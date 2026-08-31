@@ -58,3 +58,26 @@ class LLMMultiLegVerdict(BaseModel):
     book_level_exit_triggers: str = Field(description="Book-level exit conditions")
     adjustment_plan: str = Field(description="What to do if market moves against")
     model_name: Optional[str] = Field(default=None, description="Model used for this verdict")
+
+
+class LLMMultiLegAdjustment(BaseModel):
+    """Roll/repair instruction for one tested leg of an open book."""
+
+    close_strike: float = Field(default=0.0, description="Strike of the leg to close")
+    close_option_type: str = Field(default="", description="CE or PE of the leg to close")
+    new_strike: float = Field(default=0.0, description="Strike of the replacement leg")
+    new_option_type: str = Field(default="", description="CE or PE of the replacement leg")
+    new_side: str = Field(default="SELL", description="BUY or SELL for the replacement leg")
+    rationale: str = Field(default="", description="Why this roll improves the risk profile")
+
+
+class LLMMultiLegExit(BaseModel):
+    """Exit/adjustment decision for an open multi-leg book."""
+
+    action: str = Field(description="HOLD, ADJUST, or CLOSE")
+    reasoning: str = Field(description="1-3 sentence rationale citing P&L, delta, or DTE from the data")
+    urgency: str = Field(default="LOW", description="LOW, MEDIUM, or HIGH")
+    adjustment: Optional[LLMMultiLegAdjustment] = Field(
+        default=None, description="Required only when action=ADJUST; null otherwise"
+    )
+    model_name: Optional[str] = Field(default=None, description="Model used for this decision")

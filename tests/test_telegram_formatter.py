@@ -1,5 +1,5 @@
 import pytest
-from src.engine.telegram_formatter import (
+from tests.deprecated.telegram_formatter import (
     format_user_friendly_message,
     format_compact_message,
     format_detailed_message,

@@ -315,6 +315,11 @@ def step_ai_alignment(ctx: PipelineContext) -> StepResult:
 
 def step_tfss_handoff_core(ctx: PipelineContext) -> StepResult:
     from config.runtime_config import load_runtime_config
+    from src.engine.trend_following_short_strangle import (
+        normalize_core_verdict_to_tfss_intent,
+        compute_persisted_trend,
+        resolve_tfss_execution_side,
+    )
     rconf = load_runtime_config()
     tfss_enabled = bool(rconf.get("strategies", {}).get("TFSS", {}).get("enabled", False))
     if not tfss_enabled or ctx.symbol == "TEST":
@@ -565,18 +570,6 @@ def step_trend_alignment_core(ctx: PipelineContext) -> StepResult:
         # Priority 1.5: Contra trade (counter-trend with strong confirmation)
         if not passed and CONTRA_ENABLED:
             from src.engine.contra_trade import evaluate_contra_setup
-            regime_label = str(
-                ctx.scan_context.get("intel", {}).get("pcr_regime")
-                or ctx.scan_context.get("pcr_regime")
-                or ""
-            )
-            is_contra, contra_score, contra_reason, contra_checks = evaluate_contra_setup(
-                symbol=symbol,
-                verdict=verdict,
-                confidence=confidence,
-                broader_trend=broader_trend,
-                regime=regime_label,
-            )
             regime_label = str(
                 ctx.scan_context.get("intel", {}).get("pcr_regime")
                 or ctx.scan_context.get("pcr_regime")
@@ -864,8 +857,10 @@ def step_rule_timeframe(ctx: PipelineContext) -> StepResult:
     signal_key = f"{symbol}:TIMEFRAME:3H:{direction}:{bar_end_3h}"
     ctx.scan_context["_signal_key"] = signal_key
 
-    is_live = ctx.scan_context.get("is_live", False)
+    is_live = bool(ctx.scan_context.get("is_live", False))
     table = "live_trades" if is_live else "paper_trades"
+    if table not in ("live_trades", "paper_trades"):
+        table = "paper_trades"
 
     from src.models.schema import get_conn, get_open_timeframe_trades
     with get_conn() as conn:
@@ -1317,16 +1312,23 @@ def run_entry_pipeline(ctx: PipelineContext) -> PipelineContext:
             ctx.scan_context["_composite_score"] = round(composite_score, 2)
             ctx.scan_context["_composite_threshold"] = round(effective_threshold, 2)
 
-            # 4. Apply composite approval if composite_score >= effective_threshold and no floor breach
-            if not floor_breached and composite_score >= effective_threshold:
+            # 4. Apply composite approval for soft gates that meet their individual floors
+            if composite_score >= effective_threshold:
+                approved_any = False
                 for s in ctx.steps:
                     if s.name in SOFT_GATE_NAMES and not s.passed:
-                        s.passed = True
-                        s.reason = f"{s.reason} [Approved by Tiered Gates Composite: {composite_score:.1f} >= {effective_threshold:.1f}]"
-                log.info(
-                    "%s: [Tiered Gates] Composite score %.2f >= %.2f (conf=%d) — Soft gates approved!",
-                    ctx.symbol, composite_score, effective_threshold, confidence,
-                )
+                        fl_val = float(floors.get(s.name, 0.0))
+                        if fl_val <= 0.0 or float(s.score) >= fl_val:
+                            s.passed = True
+                            s.reason = f"{s.reason} [Approved by Tiered Gates Composite: {composite_score:.1f} >= {effective_threshold:.1f}]"
+                            approved_any = True
+                        else:
+                            s.reason = f"{s.reason} [Soft floor breached: {s.score:.1f} < {fl_val:.1f}]"
+                if approved_any:
+                    log.info(
+                        "%s: [Tiered Gates] Composite score %.2f >= %.2f (conf=%d) — Qualifying soft gates approved!",
+                        ctx.symbol, composite_score, effective_threshold, confidence,
+                    )
 
     return ctx
 

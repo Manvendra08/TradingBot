@@ -38,7 +38,7 @@ def _contracts(n: int = 42) -> list[dict]:
     return [{"Token": str(i + 1), "strike_val": 100 + i} for i in range(n)]
 
 
-def _ok_post(url, payload, token=None):
+def _ok_post(url, payload, token=None, *args, **kwargs):
     return {"stat": "Ok", "token": payload["token"], "lp": "10.5", "oi": "1200"}
 
 
@@ -80,7 +80,7 @@ def test_session_expired_degrades_to_dropped_strikes():
     # Alternate: odd tokens OK, even tokens expired.
     with patch(
         "src.fetchers.shoonya_fetcher._post_jdata",
-        side_effect=lambda url, payload, token=None: (
+        side_effect=lambda url, payload, token=None, *args, **kwargs: (
             real if int(payload["token"]) % 2 == 1 else expired
         ),
     ) as mock_post:
@@ -103,7 +103,7 @@ def test_no_token_aborts_fail_closed():
 def test_rotates_and_persists_fresh_token():
     f = _make_fetcher(access_token="old-token")
     # Response rotates to a new session token.
-    def rotated(url, payload, token=None):
+    def rotated(url, payload, token=None, *args, **kwargs):
         return {"stat": "Ok", "token": payload["token"], "lp": "9.0", "susertoken": "new-token"}
 
     with patch("src.fetchers.shoonya_fetcher._post_jdata", side_effect=rotated):

@@ -2,11 +2,21 @@
 import logging
 import logging.handlers
 import os
+import sys
 
 from config.settings import LOG_DIR, LOG_LEVEL, LOG_ROTATION, LOG_BACKUP_COUNT
+from src.utils.text_sanitizer import sanitize_mojibake
 
 
-class ColoredFormatter(logging.Formatter):
+class SanitizingFormatter(logging.Formatter):
+    """Logging formatter that cleans double-encoded UTF-8 / Mojibake from log records."""
+
+    def format(self, record):
+        res = super().format(record)
+        return sanitize_mojibake(res)
+
+
+class ColoredFormatter(SanitizingFormatter):
     """Custom logging formatter that adds ANSI color codes for terminal output."""
     CYAN = "\033[36m"
     GREEN = "\033[32m"
@@ -55,6 +65,18 @@ def configure_logging(name: str = "nsebot") -> None:
         return  # already configured
     root.setLevel(getattr(logging, LOG_LEVEL))
 
+    # Reconfigure stdout/stderr on Windows to UTF-8 to prevent console Mojibake
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+    if hasattr(sys.stderr, "reconfigure"):
+        try:
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
     ch = logging.StreamHandler()
     use_color = ch.stream.isatty() if hasattr(ch.stream, "isatty") else False
     
@@ -77,7 +99,7 @@ def configure_logging(name: str = "nsebot") -> None:
     ch.setFormatter(ch_fmt)
     root.addHandler(ch)
 
-    file_fmt = logging.Formatter(
+    file_fmt = SanitizingFormatter(
         "%(asctime)s | %(levelname)-8s | %(name)-25s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )

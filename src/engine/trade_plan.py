@@ -107,11 +107,7 @@ def calculate_buy_sl_target(
     # wide SL/target levels (200 pts = ~2% move). Percentage-based fallback
     # is safer for MCX commodities with large step sizes.
     from config.settings import MCX_SYMBOLS as _MCX_SYMS
-    is_mcx = False
-    if ctx and ctx.get("symbol"):
-        is_mcx = any(s in str(ctx.get("symbol")).upper() for s in _MCX_SYMS)
-    elif step >= 50 and underlying > 100 and underlying < 15000:
-        is_mcx = True  # Heuristic fallback excluding Nifty/Banknifty
+    is_mcx = bool(ctx and ctx.get("symbol") and any(s in str(ctx.get("symbol")).upper() for s in _MCX_SYMS))
 
 
     if option_type == "PE":
@@ -184,11 +180,7 @@ def calculate_sell_sl_target(
     """
     atr = get_atr(ctx, preferred_tf)
     from config.settings import MCX_SYMBOLS as _MCX_SYMS
-    is_mcx = False
-    if ctx and ctx.get("symbol"):
-        is_mcx = any(s in str(ctx.get("symbol")).upper() for s in _MCX_SYMS)
-    elif step >= 50 and underlying > 100 and underlying < 15000:
-        is_mcx = True
+    is_mcx = bool(ctx and ctx.get("symbol") and any(s in str(ctx.get("symbol")).upper() for s in _MCX_SYMS))
 
 
     if option_type == "PE":
@@ -269,6 +261,11 @@ def is_valid_option_premium(
         # Intrinsic Floor check for deep ITM options (protects against placeholder ticks like 0.05 on deep ITM)
         if intrinsic > 10.0 and ltp < 0.15 * intrinsic:
             return False
+        # OTM Extrinsic Ceiling: An OTM Call (strike >= spot) cannot have pure time value exceeding 8% of spot (or 1000 for index)
+        if strike >= underlying_price:
+            max_extrinsic = max(underlying_price * 0.08, 1000.0 if underlying_price > 20000 else underlying_price * 0.10)
+            if ltp > max_extrinsic:
+                return False
     elif opt == "PE":
         intrinsic = max(0.0, strike - underlying_price)
         # Absolute ceiling: Put premium cannot exceed strike or max(strike, spot)
@@ -277,6 +274,11 @@ def is_valid_option_premium(
         # Intrinsic Floor check for deep ITM options
         if intrinsic > 10.0 and ltp < 0.15 * intrinsic:
             return False
+        # OTM Extrinsic Ceiling: An OTM Put (strike <= spot) cannot have pure time value exceeding 8% of spot (or 1000 for index)
+        if strike <= underlying_price:
+            max_extrinsic = max(underlying_price * 0.08, 1000.0 if underlying_price > 20000 else underlying_price * 0.10)
+            if ltp > max_extrinsic:
+                return False
 
     return True
 
@@ -660,7 +662,7 @@ def select_candidate(side: str, persisted_label: str, dte: int, atr_state: dict,
             
         try:
             raw_d = row.get('delta')
-            if raw_d is not None and float(raw_d) > 0:
+            if raw_d is not None and abs(float(raw_d)) > 0:
                 delta = abs(float(raw_d))
             else:
                 # Estimate implied delta based on OTM distance if delta is missing

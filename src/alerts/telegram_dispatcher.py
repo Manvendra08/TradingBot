@@ -19,6 +19,7 @@ from telegram.error import TelegramError
 
 from config.settings import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 from src.utils.formatting import fmt_oi, fmt_pct, safe_num
+from src.utils.text_sanitizer import sanitize_mojibake
 
 log = logging.getLogger(__name__)
 
@@ -344,6 +345,8 @@ def _send_text_http_fallback(text: str, timeout_seconds: int = 15) -> bool:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return False
 
+    text = sanitize_mojibake(text)
+
     def _try_request(parse_mode: str = "Markdown") -> tuple[bool, str]:
         try:
             url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -506,6 +509,7 @@ def send_alert(alert: dict) -> bool:
 
 def send_text(text: str) -> bool:
     """Sends raw text to Telegram in background."""
+    text = sanitize_mojibake(text)
     tg_queued = False
 
     # Telegram
@@ -562,6 +566,7 @@ def send_text_and_return_id(text: str) -> int | None:
     """Send a message and return its message_id for later editing. Returns None on failure."""
     if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "YOUR_BOT_TOKEN":
         return None
+    text = sanitize_mojibake(text)
     _ensure_loop()
     try:
         async def _send_and_get_id():
@@ -602,6 +607,7 @@ def edit_message_text(message_id: int, text: str) -> bool:
     """Edit an existing Telegram message. Returns True on success."""
     if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "YOUR_BOT_TOKEN":
         return False
+    text = sanitize_mojibake(text)
     _ensure_loop()
     try:
         future = asyncio.run_coroutine_threadsafe(

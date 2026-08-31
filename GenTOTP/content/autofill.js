@@ -19,19 +19,23 @@ function isLoginPage(broker) {
   const b = (broker || "").toLowerCase();
 
   if (b.includes("zerodha")) {
-    // 1. Definite logged-in indicators in DOM (navbar, avatar, user ID, trading tabs)
+    // 1. If explicit 2FA container/field exists, it is definitely a login/2FA page!
     if (
-      document.querySelector(".user-nav") ||
+      document.querySelector("#totp, #pin, input[name='totp'], input[name='pin'], form.twofa-form, .twofa-form, .container-login, form.login-form, .login-box")
+    ) {
+      return true;
+    }
+
+    // 2. Definite logged-in indicators in DOM (trading navigation, order tabs, marketwatch)
+    if (
       document.querySelector(".app-nav") ||
-      document.querySelector(".avatar, #avatar") ||
-      document.querySelector("span.user-id") ||
-      document.querySelector('.header-right') ||
-      document.querySelector('a[href*="orders"], a[href*="positions"], a[href*="holdings"]')
+      document.querySelector(".marketwatch-sidebar") ||
+      document.querySelector('a[href*="/orders"], a[href*="/positions"], a[href*="/holdings"], a[href*="/funds"]')
     ) {
       return false;
     }
 
-    // 2. DO NOT run on logged-in dashboard/trading paths
+    // 3. DO NOT run on logged-in dashboard/trading paths
     const path = window.location.pathname.toLowerCase();
     if (
       path.includes("/dashboard") ||
@@ -46,17 +50,10 @@ function isLoginPage(broker) {
       return false;
     }
 
-    // 3. Must be on an actual login or 2FA container
-    const hasLoginContainer = !!(
-      document.querySelector(".container-login") ||
-      document.querySelector("form.twofa-form") ||
-      document.querySelector("form.login-form") ||
-      document.querySelector(".login-box")
-    );
     const bodyText = (document.body ? document.body.innerText || "" : "").toLowerCase();
-    const has2FAText = bodyText.includes("two-factor") || bodyText.includes("totp") || bodyText.includes("authenticator");
+    const has2FAText = bodyText.includes("two-factor") || bodyText.includes("totp") || bodyText.includes("authenticator") || bodyText.includes("app code");
 
-    return hasLoginContainer || has2FAText;
+    return has2FAText;
   }
 
   if (b.includes("shoonya") || b.includes("finvasia")) {
@@ -89,15 +86,40 @@ function isVisible(el) {
 
 // ─── Explicit Priority Selectors ─────────────────────────────────────────────
 const ZERODHA_SELECTORS = [
+  '#totp',
+  '#pin',
+  'input[name="totp"]',
+  'input[name="pin"]',
+  'input[name="twofa"]',
+  'input[name="2fa"]',
+  'input[id*="totp" i]',
+  'input[id*="pin" i]',
+  'input[id*="twofa" i]',
+  'input[id="twofa_value"]',
   '.twofa-form input[type="number"]',
   '.twofa-form input[type="text"]',
+  '.twofa-form input[type="password"]',
+  '.twofa-form input[type="tel"]',
   '.twofa-form input',
+  'form.twofa-form input',
+  'form.login-form input[type="number"]',
+  'form.login-form input[type="password"]',
+  'form.login-form input[type="tel"]',
   'input[type="number"][placeholder*="TOTP" i]',
-  'input[name="totp"]',
-  'input[id*="totp" i]',
+  'input[type="tel"][placeholder*="TOTP" i]',
   'input[placeholder*="TOTP" i]',
+  'input[placeholder*="App code" i]',
+  'input[placeholder*="Mobile App Code" i]',
   'input[placeholder*="Authenticator" i]',
   'input[placeholder*="2FA" i]',
+  'input[placeholder*="OTP" i]',
+  'input[placeholder*="code" i]',
+  'input[placeholder="••••••"]',
+  'input[autocomplete="one-time-code"]',
+  'input[type="number"][maxlength="6"]',
+  'input[type="text"][maxlength="6"]',
+  'input[type="password"][maxlength="6"]',
+  'input[type="tel"][maxlength="6"]',
 ];
 
 const SHOONYA_SELECTORS = [
@@ -134,8 +156,8 @@ function getShoonyaFlutterInput() {
 }
 
 // ─── TOTP Input Finder ───────────────────────────────────────────────────────
-function findInput(broker) {
-  if (!isLoginPage(broker)) return null;
+function findInput(broker, isManual = false) {
+  if (!isManual && !isLoginPage(broker)) return null;
 
   // For Shoonya, Flutter Web inputs are inside a Shadow DOM!
   if (broker === "shoonya") {
@@ -170,22 +192,39 @@ function findInput(broker) {
       el.getAttribute("aria-label") || "",
       el.getAttribute("autocomplete") || "",
     ].join(" ").toLowerCase();
-    if (/(totp|otp|2fa|twofa|one.?time|auth.*code|security.?code)/.test(sig)) return el;
+    if (/(totp|otp|2fa|twofa|one.?time|auth.*code|security.?code|app.?code)/.test(sig)) return el;
     if (el.getAttribute("autocomplete") === "one-time-code") return el;
   }
 
-  // 3. Structural heuristics ONLY on login pages
+  // 3. Label matching
+  const labels = Array.from(document.querySelectorAll("label"));
+  for (const lbl of labels) {
+    const txt = (lbl.innerText || "").toLowerCase();
+    if (/(totp|otp|2fa|twofa|authenticator|app code)/.test(txt)) {
+      const forId = lbl.getAttribute("for");
+      if (forId) {
+        const inp = document.getElementById(forId);
+        if (inp && isVisible(inp)) return inp;
+      }
+      const childInp = lbl.querySelector("input");
+      if (childInp && isVisible(childInp)) return childInp;
+      // Sibling input
+      const siblingInp = lbl.parentElement?.querySelector("input");
+      if (siblingInp && isVisible(siblingInp)) return siblingInp;
+    }
+  }
+
+  // 4. Structural heuristics ONLY on login pages
   const userInputs = allVisible.filter(el => {
     const t = (el.type || "").toLowerCase();
     return ["text","number","password","tel",""].includes(t);
   });
 
-  // Zerodha 2FA screen: exactly 1 input visible inside login/2FA container
-  if (broker === "zerodha" && userInputs.length === 1) {
-    const el = userInputs[0];
-    const sig = (el.name + el.id + el.placeholder).toLowerCase();
-    if (!/username|userid|user_id|password|passwd|search|filter/.test(sig)) {
-      if (el.closest(".container-login, .twofa-form, form.login-form, .login-box")) {
+  // Zerodha 2FA screen: exactly 1 input visible inside login/2FA container or on page
+  if (broker === "zerodha" && (userInputs.length === 1 || userInputs.length === 2)) {
+    for (const el of userInputs) {
+      const sig = (el.name + " " + el.id + " " + el.placeholder).toLowerCase();
+      if (!/username|userid|user_id|password|passwd|search|filter/.test(sig)) {
         return el;
       }
     }
@@ -285,7 +324,8 @@ function performFill(code, broker, autoSubmit, silent = false) {
     return true;
   }
 
-  const input = findInput(broker);
+  const isManual = !silent;
+  const input = findInput(broker, isManual);
   if (!input) {
     if (!silent) {
       showToast("❌ TOTP field not found on this page", "error");

@@ -62,21 +62,28 @@ def run_training():
     """
     global _trades_since_last_train
 
-    try:
-        from src.intelligence.ml_predictor import get_predictor, invalidate_predictor
-    except ImportError as e:
-        log.error("Cannot import ml_predictor: %s", e)
+    if not _retrain_lock.acquire(blocking=False):
+        log.info("ML training already in progress; skipping duplicate trigger.")
         return False
 
-    predictor = get_predictor()  # v2.2: Use singleton
-    success = predictor.train()
+    try:
+        try:
+            from src.intelligence.ml_predictor import get_predictor, invalidate_predictor
+        except ImportError as e:
+            log.error("Cannot import ml_predictor: %s", e)
+            return False
 
-    if success:
-        with _trades_since_last_train_lock:
-            _trades_since_last_train = 0
-        invalidate_predictor()  # v2.2: Force reload of new model on next use
-        log.info("ML model training completed successfully")
-    else:
-        log.warning("ML model training failed or skipped (AUC not improved)")
+        predictor = get_predictor()  # v2.2: Use singleton
+        success = predictor.train()
 
-    return success
+        if success:
+            with _trades_since_last_train_lock:
+                _trades_since_last_train = 0
+            invalidate_predictor()  # v2.2: Force reload of new model on next use
+            log.info("ML model training completed successfully")
+        else:
+            log.warning("ML model training failed or skipped (AUC not improved)")
+
+        return success
+    finally:
+        _retrain_lock.release()

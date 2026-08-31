@@ -18,7 +18,7 @@ def db_cleanup():
     from src.models.schema import get_conn
     import sqlite3
     with get_conn() as conn:
-        for table in ["scan_summaries", "alerts", "underlying_price", "paper_trades", "live_trades"]:
+        for table in ["scan_summaries", "anomaly_alerts", "alert_dedup", "underlying_price", "paper_trades", "live_trades", "option_chain_snapshots"]:
             try:
                 conn.execute(f"DELETE FROM {table}")
             except sqlite3.OperationalError:
@@ -35,7 +35,8 @@ class TestPipelineIntegration:
     """
 
     def _run_with_oc(self, oc_data: dict, symbol: str = "NIFTY"):
-        with patch("src.engine.pipeline.fetch_option_chain", return_value=oc_data):
+        with patch("src.fetchers.router.fetch_option_chain", return_value=oc_data), \
+             patch("src.engine.pipeline.fetch_option_chain", return_value=oc_data):
             from src.engine.pipeline import run_pipeline
 
             run_pipeline(symbols=[symbol])
@@ -57,18 +58,30 @@ class TestPipelineIntegration:
         assert row["price"] == pytest.approx(22000.0)
 
     def test_pipeline_detects_oi_spike_and_stores_alert(self, sample_oc_nifty):
-        from src.models.schema import get_alert_history, get_latest_snapshots_for_symbol
-
-        # First run — establishes baseline
-        self._run_with_oc(sample_oc_nifty, "NIFTY")
-
-        # Second run — inject a 40% OI spike on ATM CE
         import copy
+        from datetime import datetime, timedelta, timezone
+        from src.models.schema import get_alert_history, insert_snapshots
 
+        # First run: establish baseline 15m in past
+        past_time = (datetime.now(timezone.utc) - timedelta(minutes=15)).isoformat()
+        past_rows = [{
+            "fetched_at": past_time,
+            "symbol": "NIFTY",
+            "expiry": sample_oc_nifty["expiry"],
+            "strike": r["strike"],
+            "option_type": r["option_type"],
+            "ltp": r.get("ltp"),
+            "oi": r.get("oi"),
+            "volume": r.get("volume"),
+            "underlying_price": sample_oc_nifty["underlying_price"],
+        } for r in sample_oc_nifty["strikes"]]
+        insert_snapshots(past_rows)
+
+        # Second run — inject a high-conviction 80% OI spike on ATM CE
         oc2 = copy.deepcopy(sample_oc_nifty)
         for row in oc2["strikes"]:
             if row["strike"] == 22000.0 and row["option_type"] == "CE":
-                row["oi"] = int(row["oi"] * 1.40)  # +40%
+                row["oi"] = int(row["oi"] * 1.80)  # +80%
 
         self._run_with_oc(oc2, "NIFTY")
 
@@ -78,8 +91,8 @@ class TestPipelineIntegration:
 
     def test_pipeline_dedup_suppresses_repeat_alert(self, sample_oc_nifty):
         import copy
-
-        from src.models.schema import get_alert_history
+        from datetime import datetime, timedelta, timezone
+        from src.models.schema import get_alert_history, insert_snapshots
 
         def count_alerts():
             return len(
@@ -90,13 +103,26 @@ class TestPipelineIntegration:
                 ]
             )
 
-        # Run 1: baseline
-        self._run_with_oc(sample_oc_nifty, "NIFTY")
+        # Run 1: baseline 15m in past
+        past_time = (datetime.now(timezone.utc) - timedelta(minutes=15)).isoformat()
+        past_rows = [{
+            "fetched_at": past_time,
+            "symbol": "NIFTY",
+            "expiry": sample_oc_nifty["expiry"],
+            "strike": r["strike"],
+            "option_type": r["option_type"],
+            "ltp": r.get("ltp"),
+            "oi": r.get("oi"),
+            "volume": r.get("volume"),
+            "underlying_price": sample_oc_nifty["underlying_price"],
+        } for r in sample_oc_nifty["strikes"]]
+        insert_snapshots(past_rows)
+
         # Run 2: spike
         oc2 = copy.deepcopy(sample_oc_nifty)
         for row in oc2["strikes"]:
             if row["strike"] == 22000.0 and row["option_type"] == "CE":
-                row["oi"] = int(row["oi"] * 1.40)
+                row["oi"] = int(row["oi"] * 1.80)
         self._run_with_oc(oc2, "NIFTY")
         after_first_spike = count_alerts()
 

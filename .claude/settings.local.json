@@ -31,7 +31,13 @@
       "Bash(git -C /c/Users/manve/VibeProjects/NSEBOT add -A)",
       "Bash(git -C /c/Users/manve/VibeProjects/NSEBOT commit -m ' *)",
       "Bash(git -C /c/Users/manve/VibeProjects/NSEBOT push origin dev)",
-      "Bash(git -C /c/Users/manve/VibeProjects/NSEBOT diff src/engine/)"
+      "Bash(git -C /c/Users/manve/VibeProjects/NSEBOT diff src/engine/)",
+      "Bash(sqlite3 data/nsebot.db \"SELECT book_id, symbol, strategy_type, expiry, entry_underlying, net_premium, max_profit, max_loss, status FROM multi_leg_books WHERE status='OPEN';\")",
+      "Bash(sqlite3 data/nsebot.db \".tables\")",
+      "Bash(sqlite3 data/nsebot.db \"SELECT book_id, symbol, structure, expiry, entry_underlying, net_premium, max_profit, max_loss, status FROM multi_leg_trades WHERE status='OPEN';\")",
+      "Bash(sqlite3 data/nsebot.db \"SELECT trade_id, strike, option_type, side, entry_premium, expiry, lots FROM multi_leg_legs WHERE trade_id IN \\(SELECT trade_id FROM multi_leg_trades WHERE book_id IN \\('ML-BAN-6f47bb0b', 'ML-BAN-8b74cbce', 'ML-BAN-a34303f0'\\)\\);\")",
+      "Bash(sqlite3 data/nsebot.db \"PRAGMA table_info\\(multi_leg_legs\\);\")",
+      "Bash(sqlite3 data/nsebot.db \"SELECT l.trade_id, l.strike, l.option_type, l.side, l.entry_premium, l.lots, t.expiry FROM multi_leg_legs l JOIN multi_leg_trades t ON l.trade_id = t.id WHERE t.book_id IN \\('ML-BAN-6f47bb0b', 'ML-BAN-8b74cbce', 'ML-BAN-a34303f0'\\);\")"
     ]
   }
 }

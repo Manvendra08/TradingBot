@@ -6,8 +6,11 @@ using the core engine's data as raw material but reasoning beyond pure math.
 """
 from __future__ import annotations
 
+from datetime import datetime
 import logging
 from typing import Optional
+
+from config.settings import IST
 
 log = logging.getLogger(__name__)
 
@@ -35,14 +38,14 @@ def _format_full_option_chain(
 
     lines = []
     sorted_strikes = sorted(strikes.keys())
-    # Show strikes within a reasonable range of ATM (±20 strikes or all if fewer)
+    # Show strikes within a reasonable range of ATM (±10 strikes per AGENTS.md)
     atm_idx = 0
     for i, s in enumerate(sorted_strikes):
         if s >= atm_strike:
             atm_idx = i
             break
-    start = max(0, atm_idx - 15)
-    end = min(len(sorted_strikes), atm_idx + 15)
+    start = max(0, atm_idx - 10)
+    end = min(len(sorted_strikes), atm_idx + 10)
 
     lines.append(f"  {'Strike':>10}  {'CE LTP':>8}  {'CE OI':>10}  {'CE Δ':>6}  {'CE IV':>6}  │  {'PE LTP':>8}  {'PE OI':>10}  {'PE Δ':>6}  {'PE IV':>6}")
     lines.append(f"  {'─'*10}  {'─'*8}  {'─'*10}  {'─'*6}  {'─'*6}  │  {'─'*8}  {'─'*10}  {'─'*6}  {'─'*6}")
@@ -198,10 +201,6 @@ def _format_commodity_regime_intelligence(symbol: str, scan_context: dict) -> st
     lines = ["## SPECIALIZED COMMODITY & REGIME INTELLIGENCE"]
     
     if base_sym.startswith("NATURALGAS") or "ng_regime" in scan_context or "ng_dev_pct" in scan_context:
-        from datetime import datetime
-        import pytz
-        
-        IST = pytz.timezone("Asia/Kolkata")
         now_ist = datetime.now(IST)
         
         # 1. Parity State
@@ -217,16 +216,13 @@ def _format_commodity_regime_intelligence(symbol: str, scan_context: dict) -> st
             lines.append(f"- Parity Fair Value : ₹{ng_fv:.2f} (Henry Hub Spot parity)")
             lines.append(f"- Parity Deviation  : {ng_dev:+.2f}% ({parity_bias})")
             
-        # 2. EIA Inventory Schedule
+        # 2. EIA Inventory Schedule (Only active on Thursdays or near event)
         is_thu = now_ist.weekday() == 3
-        is_eia_window = is_thu and (18 <= now_ist.hour <= 22)
-        if is_eia_window:
-            eia_status = "ACTIVE TODAY ~8:00 PM IST (Extreme Gamma & Volatility Shock Window — Avoid Naked Straddles)"
-        elif is_thu:
-            eia_status = "TODAY ~8:00 PM IST (Pre-event positioning)"
-        else:
-            eia_status = "Thursdays ~8:00 PM IST (Normal theta session)"
-        lines.append(f"- EIA Inventory     : {eia_status}")
+        if is_thu:
+            if 18 <= now_ist.hour <= 22:
+                lines.append("- EIA Inventory     : ACTIVE TODAY ~8:00 PM IST (Extreme Gamma Shock Window — Avoid Naked Straddles)")
+            elif now_ist.hour >= 17:
+                lines.append("- EIA Inventory     : TODAY ~8:00 PM IST (Pre-event positioning)")
 
         # 3. Momentum Engine Status
         try:
@@ -243,12 +239,13 @@ def _format_commodity_regime_intelligence(symbol: str, scan_context: dict) -> st
             mom_status = "Momentum engine nominal"
         lines.append(f"- Momentum Engine   : {mom_status}")
 
-        # 4. Weather Context
-        weather_dir = scan_context.get("weather_direction", "neutral")
-        weather_z = float(scan_context.get("weather_z") or 0.0)
-        storm = scan_context.get("weather_gulf_storm", False)
-        if weather_dir != "neutral" or weather_z != 0.0 or storm:
-            lines.append(f"- Weather Factors   : Direction={weather_dir}, Z-Score={weather_z:+.2f}, Storm={'Active' if storm else 'Inactive'}")
+        # 4. Weather Context (Updated daily at 5 PM IST)
+        if now_ist.hour >= 17:
+            weather_dir = scan_context.get("weather_direction", "neutral")
+            weather_z = float(scan_context.get("weather_z") or 0.0)
+            storm = scan_context.get("weather_gulf_storm", False)
+            if weather_dir != "neutral" or weather_z != 0.0 or storm:
+                lines.append(f"- Weather Factors   : Direction={weather_dir}, Z-Score={weather_z:+.2f}, Storm={'Active' if storm else 'Inactive'}")
 
     return "\n" + "\n".join(lines) + "\n"
 
@@ -305,86 +302,61 @@ def build_multileg_prompt(
     regime = scan_context.get("market_regime", "unknown")
     commodity_intel = _format_commodity_regime_intelligence(symbol, scan_context)
 
-    prompt = f"""You are an expert options seller with 15+ years of experience in NSE and MCX derivatives. You sell premium consistently and profit from time decay and IV crush. You think in terms of probability, risk/reward, and portfolio-level risk — not just single-trade math.
+    prompt = f"""NSE/MCX options seller. Design a multi-leg premium strategy.
 
-## MARKET DATA — {symbol}
-Underlying: {underlying:.2f} | ATM: {atm_strike:.0f} | Expiry: {expiry} | DTE: {dte}
-Verdict: {verdict_label} | Confidence: {confidence}%
-PCR: {pcr:.2f} | Support: {support:.0f} | Resistance: {resistance:.0f} | Max Pain: {max_pain:.0f}
-Market Regime: {regime}
+{symbol} | ₹{underlying:.2f} | ATM {atm_strike:.0f} | {expiry} (DTE {dte})
+Verdict: {verdict_label} {confidence}% | PCR {pcr:.2f} | S={support:.0f} R={resistance:.0f} Pain={max_pain:.0f} | Regime: {regime}
 {commodity_intel}
-## OPTION CHAIN (all strikes)
+CHAIN (use only strikes with OI>0 and LTP>0):
 {_format_full_option_chain(option_rows, atm_strike, underlying)}
 
-## IV ANALYSIS
-{_format_iv_summary(option_rows, atm_strike)}
-
-## CHART DATA
-3H: O={float(ohlc_3h.get('open',0)):.0f} H={float(ohlc_3h.get('high',0)):.0f} L={float(ohlc_3h.get('low',0)):.0f} C={float(ohlc_3h.get('close',0)):.0f}
-1H: O={float(ohlc_1h.get('open',0)):.0f} H={float(ohlc_1h.get('high',0)):.0f} L={float(ohlc_1h.get('low',0)):.0f} C={float(ohlc_1h.get('close',0)):.0f}
+IV: {_format_iv_summary(option_rows, atm_strike)}
+Chart: 3H {float(ohlc_3h.get('open',0)):.0f}/{float(ohlc_3h.get('high',0)):.0f}/{float(ohlc_3h.get('low',0)):.0f}/{float(ohlc_3h.get('close',0)):.0f} | 1H {float(ohlc_1h.get('open',0)):.0f}/{float(ohlc_1h.get('high',0)):.0f}/{float(ohlc_1h.get('low',0)):.0f}/{float(ohlc_1h.get('close',0)):.0f}
 {news_section}
-## CURRENT OPEN BOOKS
-{_format_open_books(open_books)}
+Open: {_format_open_books(open_books)}
+History: {historical_perf or _format_historical_strategy_performance(symbol)}
 
-## HISTORICAL PERFORMANCE
-{historical_perf or _format_historical_strategy_performance(symbol)}
+TASK: Select best multi-leg strategy — or NO_TRADE. You are selling premium: your edge is IV overpricing realized movement plus theta. If that edge is absent, there is no strategy to pick.
 
-## YOUR TASK
+EDGE CHECKS (before choosing legs):
+1. Expected move ≈ ATM CE LTP + ATM PE LTP (straddle). Short strikes must sit OUTSIDE spot ± expected move — unless deliberately trading a straddle.
+2. IV must pay for the risk: if ATM IV is depressed and OTM credits are thin relative to strike width, skip naked shorts — defined-risk or NO_TRADE.
+3. Index weekly at DTE ≤ 1 → defined-risk ONLY (no naked strangle/straddle): gamma is unbounded into expiry.
+4. Max pain {max_pain:.0f} is a magnet into expiry — shorts straddling it benefit; shorts fighting it need wider strikes.
 
-Analyze the data above and select the BEST multi-leg options strategy.
-- For pure naked short strategies (SHORT_STRANGLE, SHORT_STRADDLE), all legs should be SELL.
-- For defined-risk strategies (IRON_CONDOR, BEAR_CALL_SPREAD, BULL_PUT_SPREAD, JADE_LIZARD), include BOTH SELL (short income leg) and BUY (long protective wing leg) to limit downside risk.
+Strategy Map:
+- Sideways → SHORT_STRADDLE (ATM) or SHORT_STRANGLE (OTM)
+- Rangebound+defined → IRON_CONDOR (wings 1-3 strikes beyond shorts)
+- Bearish+defined → BEAR_CALL_SPREAD | Bullish+defined → BULL_PUT_SPREAD
+- Bullish+high IV → JADE_LIZARD
+- Uncertain → IRON_CONDOR | No liquidity or no edge → NO_TRADE
 
-### Strategy Selection Guide:
-- **Calm / Rangebound / Sideways market** → SHORT_STRADDLE (sell ATM CE + ATM PE) or SHORT_STRANGLE (sell OTM CE + OTM PE for wider buffer).
-- **Rangebound market + defined risk** → IRON_CONDOR (sell inner OTM CE + PE, buy outer protective CE + PE)
-- **Trending / Directional market + defined risk** → BEAR_CALL_SPREAD for bearish (sell inner CE, buy outer CE) or BULL_PUT_SPREAD for bullish (sell inner PE, buy outer PE)
-- **Bullish bias + high IV** → JADE_LIZARD (sell OTM PE + sell OTM CE spread)
-- **Uncertain direction / Volatile** → IRON_CONDOR (collect from both sides with defined risk wings)
-- **Extremely thin liquidity or severe event risk** → Consider NO_TRADE
-
-### Commodity & Parity Tactical Rules (MCX NATURALGAS / CRUDEOIL):
-- **Parity Divergence (Deviation > +1.5%)**: MCX premium is inflated relative to Henry Hub fair value. Exploit downside re-pricing using a **BEAR_CALL_SPREAD** (sell OTM CE, buy further OTM CE) or selling upper CE in a strangle.
-- **Parity Divergence (Deviation < -1.5%)**: MCX is discounted relative to Henry Hub fair value. Exploit upside convergence using a **BULL_PUT_SPREAD** (sell OTM PE, buy further OTM PE) or selling lower PE.
-- **Parity Alignment (|Deviation| ≤ 1.0%)**: Market in fair-value equilibrium. Exploit theta decay with a **SHORT_STRANGLE** (sell OTM CE + sell OTM PE at key support/resistance) or **IRON_CONDOR**.
+MCX Parity (NATURALGAS/CRUDEOIL):
+- Deviation >+1.5%: inflated → BEAR_CALL_SPREAD or sell upper CE
+- Deviation <-1.5%: discounted → BULL_PUT_SPREAD or sell lower PE
+- |Deviation| ≤1.0%: fair value → SHORT_STRANGLE or IRON_CONDOR
 - **EIA Report Day / Window**: If EIA inventory release is active/imminent, avoid naked straddles; prefer defined-risk spreads or wider strangle strikes with safe deltas (Δ 0.10 - 0.15), or emit **NO_TRADE** if event risk is extreme.
 
 ### Important Constraints on Legs:
-- **SHORT_STRADDLE**: Exactly 2 SELL legs (1 ATM CE + 1 ATM PE). Never return 1 leg.
-- **SHORT_STRANGLE**: Exactly 2 SELL legs (1 OTM CE + 1 OTM PE). Never return 1 leg. Both CE and PE sides are strictly required.
-- **IRON_CONDOR**: Exactly 4 legs (2 inner SELL legs [1 CE + 1 PE] + 2 outer protective BUY legs [1 CE + 1 PE]).
-- **BEAR_CALL_SPREAD**: Exactly 2 CE legs (1 inner SELL CE + 1 outer protective BUY CE).
-- **BULL_PUT_SPREAD**: Exactly 2 PE legs (1 inner SELL PE + 1 outer protective BUY PE).
-- **NO_TRADE**: If no clean multi-leg structure fits, set strategy_type="NO_TRADE" and legs=[]. Never emit half-formed single-leg structures under multi-leg strategy names.
+Leg counts: STRADDLE=2 SELL, STRANGLE=2 SELL, CONDOR=4(2 SELL+2 BUY), SPREAD=2, NO_TRADE=legs[]
 
-### Strike Selection & Strict Liquidity Rules:
-- **LIQUIDITY REQUIREMENT**: ONLY select strikes that have active open interest (OI > 0) and positive premium (LTP > 0). NEVER select strikes marked `[NO LIQ]`, `0`, or `-`. Selecting an illiquid strike will cause immediate rejection by the risk engine.
-- **SHORT_STRANGLE**:
-  * OTM CE strike MUST be strictly ABOVE the underlying spot price ({underlying:.2f}).
-  * OTM PE strike MUST be strictly BELOW the underlying spot price ({underlying:.2f}).
-  * PE strike < underlying < CE strike. NEVER select In-The-Money (ITM) strikes for a strangle.
-  * Both CE and PE strikes MUST have active liquidity (OI > 0 and LTP > 0).
-- **SHORT_STRADDLE**: Both CE and PE MUST be at the ATM strike ({atm_strike:.0f}), and both MUST have active liquidity.
-- **SPREADS / CONDORS**: All sold and bought legs must have active liquidity (OI > 0 and LTP > 0).
-- If liquid strikes meeting the strategy requirements are not available, you MUST set strategy_type="NO_TRADE" and legs=[].
-- Sell strikes at or beyond support/resistance levels when available.
-- Use max pain as a magnet — strikes near max pain have highest probability of expiring worthless.
-- For spreads: width determines max loss — keep width reasonable.
-- Delta guidance: 0.15-0.30 for OTM sold strikes (70-85% probability of profit).
+Liquidity (CRITICAL): Only strikes with OI>0 AND LTP>0. Never use [NO LIQ] strikes.
+Strangle: CE strike > {underlying:.0f} (OTM) | PE strike < {underlying:.0f} (OTM). Never ITM.
+Straddle: Both CE+PE at ATM {atm_strike:.0f}.
+Condor/Spreads: all sold+bought legs liquid.
+→ No liquid strikes: strategy_type="NO_TRADE", legs=[]
 
-### Risk Management:
-- Max loss should be ≤ 3x net premium collected
-- Net delta should be close to 0 (market-neutral) unless strong directional conviction
-- Consider correlation between legs — don't create hidden directional bets
-- Set profit target at 30-50% of max profit (don't get greedy)
+Delta target: 0.15-0.30 for OTM sell legs | Max pain={max_pain:.0f} as magnet | S/R for strike anchors.
+
+Risk: Max loss ≤ 3x net premium | Net delta near 0 | Profit target 30-50% max | Don't over-leg.
 - Set time decay exit at DTE ≤ 3
 
-### Data Legitimacy & Input Validation:
-- Before selecting a strategy, verify that the provided spot price, option chain strikes, and DTE are coherent and liquid.
-- If option chain data is empty, missing, has 0 volume/OI across all strikes, or DTE is 0 without a viable theta decay window, you MUST set strategy_type="NO_TRADE" and legs=[] with an explicit explanation in entry_rationale and thesis. Never invent strikes or artificial premiums.
+ARITHMETIC (anti-hallucination — violations invalidate the plan):
+- Every leg premium MUST be the exact LTP printed in CHAIN for that strike. A leg whose strike or LTP is not in CHAIN is invalid → NO_TRADE.
+- net_premium = Σ(SELL LTPs) − Σ(BUY LTPs). max_profit, max_loss, breakevens must reconcile with net_premium and strike widths. Do not estimate any of these.
+- Empty/illiquid chain, incoherent spot vs strikes, or DTE 0 with no theta window → strategy_type="NO_TRADE", legs=[], explain in entry_rationale.
 
-### Output Format:
-Return a JSON object matching the LLMMultiLegVerdict schema. Think through each leg carefully with a specific rationale. Your thesis should explain the full setup narrative — why this strategy, why these strikes, what's the edge.
+Output: JSON per LLMMultiLegVerdict schema. Per-leg rationale specific to that strike; thesis = the setup narrative (why this strategy, these strikes, this edge).
 """
     return prompt
 
@@ -471,55 +443,49 @@ def build_multileg_exit_prompt(
     now_ist = datetime.now(IST)
     current_time_str = now_ist.strftime("%H:%M IST")
 
-    prompt = f"""You are managing an open multi-leg short options position on {symbol}.
+    max_adj_reached = adjustment_count >= 3
+    roll_targets_str = (
+        "Max adjustments (3/3) reached. No further adjustments allowed."
+        if max_adj_reached
+        else _format_roll_candidates(scan_context.get("option_rows") or [], underlying)
+    )
+    decision_options = "HOLD | CLOSE" if max_adj_reached else "HOLD | ADJUST | CLOSE"
+    adj_rule = (
+        f"- {adjustment_count}/3 adjustments done → MAX REACHED. You MUST choose HOLD or CLOSE. ADJUST is strictly disallowed."
+        if max_adj_reached
+        else f"- {adjustment_count}/3 adjustments done → CLOSE or HOLD (if max hit)"
+    )
 
-## POSITION
-Book ID: {book.get('book_id', 'N/A')}
-Strategy: {book.get('strategy_type', 'N/A')}
-Net Premium Collected: ₹{net_premium:.1f}
-Net P&L: ₹{total_pnl:.0f} ({profit_pct_of_max:+.0%} of max profit ₹{max_profit:.0f})
-Adjustments Done: {adjustment_count}
-DTE: {dte} | Current Time: {current_time_str} | Instrument Type: {'Weekly Index Option' if is_weekly else 'Commodity Option'}
+    prompt = f"""Managing multi-leg position: {symbol}
 
-## BOOK EXIT PLAN (set at entry — these are the authoritative thresholds)
-Profit target: {profit_target_pct:.0%} of max profit
-Stop loss: {stop_loss_pct:.0%} of net premium
-Time-decay exit rule: {'Exit after 1:00 PM IST on Expiry Day (DTE=0). DTE 1 or 2 is standard holding territory.' if is_weekly else f'Time-decay exit DTE: {time_decay_exit_dte}'}
+Book {book.get('book_id', 'N/A')} | {book.get('strategy_type', 'N/A')}
+Credit: ₹{net_premium:.1f} | P&L: ₹{total_pnl:.0f} ({profit_pct_of_max:+.0%} of max ₹{max_profit:.0f})
+Adjustments: {adjustment_count}/3 | DTE {dte} | {current_time_str} | {'Weekly' if is_weekly else 'Commodity'}
 
-## LEGS
+EXIT PLAN (authoritative):
+Profit: {profit_target_pct:.0%} max | Stop: {stop_loss_pct:.0%} credit | Time: {'Exit after 1PM IST on expiry day' if is_weekly else f'DTE {time_decay_exit_dte}'}
+
+LEGS:
 {chr(10).join(leg_lines)}
 
-## CURRENT MARKET
-Underlying: {underlying:.2f}
-Verdict: {intel.get('verdict_label', 'N/A')} | Confidence: {intel.get('confidence', 0)}%
+MARKET: ₹{underlying:.2f} | {intel.get('verdict_label', 'N/A')} {intel.get('confidence', 0)}%
 
-## LIQUID ROLL CANDIDATES (ADJUST must use a strike from this list — never invent one)
-{_format_roll_candidates(scan_context.get("option_rows") or [], underlying)}
+ROLL TARGETS:
+{roll_targets_str}
 
-## YOUR TASK
+DECISION: {decision_options}
 
-Decide: HOLD, ADJUST, or CLOSE the book.
+Rules (use EXIT PLAN above):
+- P&L ≥ profit target → CLOSE
+- P&L ≤ stop loss → CLOSE
+- DTE ≤ time exit → CLOSE (theta done, avoid pin)
+{adj_rule}
+- One side tested (delta spike) → {'CLOSE (max adjustments reached)' if max_adj_reached else 'ADJUST (roll OTM) if <3 adjustments, else CLOSE'}
+- Both sides tested → CLOSE (strangle broken)
 
-- **HOLD**: Position is within acceptable risk, time decay working in your favor
-- **ADJUST**: Roll a tested leg to a further OTM strike, or add/remove a leg to improve risk profile
-- **CLOSE**: Book profit (if target hit), cut loss (if stop hit), or exit due to changing conditions
+JSON:
+{{"decision":"{'HOLD|CLOSE' if max_adj_reached else 'HOLD|ADJUST|CLOSE'}","urgency":"LOW|MEDIUM|HIGH","reasoning":"why","target_legs":[{{"option_type":"CE|PE","strike":num}}],"adjustments":[{{"action":"ADD|CLOSE","option_type":"CE|PE","strike":num,"reason":"why"}}]}}
 
-Rules (use the BOOK EXIT PLAN values above — do not substitute your own thresholds):
-- If net P&L ≥ the profit target shown above → CLOSE.
-- If loss exceeds the stop loss shown above → CLOSE.
-- **Time Decay & Expiry Timing**:
-  * For weekly index options ({symbol}): DTE = 1, 2, or 3 is normal holding territory to harvest theta. Do NOT exit for time decay on DTE ≥ 1. Only exit for time decay on Expiry Day (DTE == 0) after 1:00 PM IST (13:00) to protect against 0-DTE gamma risk.
-  * For commodity options: If DTE ≤ the time-decay exit DTE ({time_decay_exit_dte}) → CLOSE.
-- If any leg delta > 0.50 → the market is testing that side heavily; prefer ADJUST (roll that leg further OTM) over CLOSE if the untested side is still safe.
-- Adjustments already done: {adjustment_count}. Hard cap is 3 per book — if {adjustment_count} ≥ 3, ADJUST is not available; choose HOLD or CLOSE.
-- Don't adjust just to avoid realizing a loss.
-
-Output (JSON matching the LLMMultiLegExit schema):
-- action: HOLD | ADJUST | CLOSE
-- reasoning: 1-3 sentences citing the actual P&L, delta, or DTE numbers shown above
-- urgency: LOW | MEDIUM | HIGH
-- adjustment: required ONLY when action=ADJUST — give close_strike, close_option_type,
-  new_strike, new_option_type, new_side, rationale. Set null for HOLD and CLOSE.
-  An ADJUST with no adjustment object will be discarded and treated as HOLD.
+Note: ADJUST requires adjustment object. Null for HOLD/CLOSE.
 """
     return prompt

@@ -12,6 +12,7 @@
   ],
 
   "host_permissions": [
+    "*://*.zerodha.com/*",
     "*://kite.zerodha.com/*",
     "*://shoonya.finvasia.com/*",
     "*://trade.shoonya.com/*"
@@ -42,6 +43,7 @@
   "content_scripts": [
     {
       "matches": [
+        "*://*.zerodha.com/*",
         "*://kite.zerodha.com/*",
         "*://shoonya.finvasia.com/*",
         "*://trade.shoonya.com/*"

@@ -4,7 +4,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # Load .env from project root (works whether you run from root or a subdirectory)
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
 
 from datetime import timezone, timedelta
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -433,8 +433,22 @@ def get_symbol_thresholds(symbol: str) -> dict:
     base = symbol.upper().split()[0]
     return SYMBOL_THRESHOLD_OVERRIDES.get(base, {})
 
+def _safe_int_env(key: str, default: int) -> int:
+    try:
+        return int(os.environ.get(key, str(default)))
+    except (ValueError, TypeError):
+        return default
+
+
+def _safe_float_env(key: str, default: float) -> float:
+    try:
+        return float(os.environ.get(key, str(default)))
+    except (ValueError, TypeError):
+        return default
+
+
 # Research mode: True = EXPERIMENTAL trades allowed; False = CORE only
-PAPER_RESEARCH_MODE = os.environ.get("PAPER_RESEARCH_MODE", "true").lower() == "true"
+PAPER_RESEARCH_MODE = os.environ.get("PAPER_RESEARCH_MODE", "false").lower() == "true"
 
 # Trade decision thresholds — CORE (high-quality setups)
 MIN_CONFIDENCE_CORE = 70
@@ -462,20 +476,20 @@ REVERSAL_MIN_CONFIDENCE = 75
 # but has enough confirming evidence (consecutive scans, PCR divergence) to justify
 # fading the trend.  These are inherently higher-risk than trend-continuation setups.
 CONTRA_ENABLED = os.environ.get("CONTRA_ENABLED", "true").lower() == "true"
-CONTRA_MIN_CONFIDENCE = int(os.environ.get("CONTRA_MIN_CONFIDENCE", "75"))
-CONTRA_CONFIRM_SCANS = int(os.environ.get("CONTRA_CONFIRM_SCANS", "2"))
-CONTRA_MAX_LOOKBACK = int(os.environ.get("CONTRA_MAX_LOOKBACK", "6"))
+CONTRA_MIN_CONFIDENCE = _safe_int_env("CONTRA_MIN_CONFIDENCE", 75)
+CONTRA_CONFIRM_SCANS = _safe_int_env("CONTRA_CONFIRM_SCANS", 2)
+CONTRA_MAX_LOOKBACK = _safe_int_env("CONTRA_MAX_LOOKBACK", 6)
 # Allowed regimes for contra trades. Empty set = allow all regimes.
 _contra_regimes_env = os.environ.get("CONTRA_ALLOWED_REGIMES", "TRENDING_UP,TRENDING_DOWN")
 CONTRA_ALLOWED_REGIMES: set[str] = {
     r.strip() for r in _contra_regimes_env.split(",") if r.strip()
 }
 CONTRA_REQUIRE_DIVERGENCE = os.environ.get("CONTRA_REQUIRE_DIVERGENCE", "false").lower() == "true"
-CONTRA_PCR_MOVE = float(os.environ.get("CONTRA_PCR_MOVE", "0.08"))
-CONTRA_MIN_SCORE = int(os.environ.get("CONTRA_MIN_SCORE", "45"))
-CONTRA_RISK_SCALE = float(os.environ.get("CONTRA_RISK_SCALE", "0.5"))
-CONTRA_SL_SCALE = float(os.environ.get("CONTRA_SL_SCALE", "0.75"))
-CONTRA_MAX_PER_DAY = int(os.environ.get("CONTRA_MAX_PER_DAY", "2"))
+CONTRA_PCR_MOVE = _safe_float_env("CONTRA_PCR_MOVE", 0.08)
+CONTRA_MIN_SCORE = _safe_int_env("CONTRA_MIN_SCORE", 45)
+CONTRA_RISK_SCALE = _safe_float_env("CONTRA_RISK_SCALE", 0.5)
+CONTRA_SL_SCALE = _safe_float_env("CONTRA_SL_SCALE", 0.75)
+CONTRA_MAX_PER_DAY = _safe_int_env("CONTRA_MAX_PER_DAY", 2)
 
 # Tiered Gates Architecture (Option A) — Composite Scoring Profiles
 TIERED_GATES_ENABLED = os.environ.get("TIERED_GATES_ENABLED", "true").lower() == "true"

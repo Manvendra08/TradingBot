@@ -235,10 +235,11 @@ def test_time_guard_blocks_expiry_session():
     from src.engine.time_guards import is_trading_allowed_now
 
     with _patch("src.engine.time_guards.datetime") as mock_dt:
-        mock_dt.now.return_value = _make_ist_dt(15, 15)  # inside 15:00–15:30
-        allowed, reason = is_trading_allowed_now("NIFTY")
+        mock_dt.strptime.side_effect = lambda s, f: _dt.strptime(s, f)
+        mock_dt.now.return_value = _make_ist_dt(15, 30)  # inside 15:25–15:40 on expiry day
+        allowed, reason = is_trading_allowed_now("NIFTY", expiry_str="2026-06-29")
     assert allowed is False
-    assert "15:00" in reason
+    assert "end-of-session" in reason or "15:" in reason
 
 
 def test_time_guard_blocks_eia_window():

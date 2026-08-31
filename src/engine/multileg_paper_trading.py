@@ -168,26 +168,24 @@ def _run_multileg_paper_strategy_inner(
         # Re-fetch open books in case monitoring closed a book
         open_books = get_open_books_for_symbol(symbol)
 
-    # ── 5. Check book limit & attempt new entry ──────────────────────────
-    from config.runtime_config import load_runtime_config
-    rconf = load_runtime_config()
-    max_books = rconf.get("max_concurrent_multileg_books_per_symbol", 3)
-
-    if len(open_books) < max_books:
-        new_res = _attempt_new_entry(
-            symbol,
-            scan_context,
-            digest_id,
-            intel,
-            ai_verdict,
-            ai_mode,
-            now_iso,
-            open_books=open_books,
-        )
-        return new_res if new_res else mon_res
-
-    log.info("[multileg-paper] %s: %d open books exist (max=%d) — skipping new entry attempt", symbol, len(open_books), max_books)
-    return mon_res or {"action": "HOLD", "reason": f"Max open multileg books ({max_books}) reached"}
+    # ── 5. Attempt new entry ─────────────────────────────────────────────
+    new_res = _attempt_new_entry(
+        symbol,
+        scan_context,
+        digest_id,
+        intel,
+        ai_verdict,
+        ai_mode,
+        now_iso,
+        open_books=open_books,
+    )
+    if new_res and isinstance(mon_res, dict):
+        # Preserve open-book state so the digest can show both the live book
+        # and this scan's new-entry decision.
+        new_res.setdefault("live_books", mon_res.get("live_books") or [])
+        new_res.setdefault("closed", mon_res.get("closed") or [])
+        new_res.setdefault("ai_exit_advice", mon_res.get("ai_exit_advice"))
+    return new_res if new_res else mon_res
 
 
 def _monitor_open_books(
@@ -217,6 +215,8 @@ def _monitor_open_books(
     )
 
     closed_actions = []
+    live_books: list[dict] = []
+    ai_advice_seen: dict | None = None
 
     for book in open_books:
         book_id = book.get("book_id", "")
@@ -415,55 +415,36 @@ def _monitor_open_books(
                 if advice and isinstance(advice, dict):
                     action = (advice.get("action") or "HOLD").upper()
                     reasoning = sanitize_mojibake(advice.get("reasoning", ""))
+                    ai_advice_seen = {
+                        "book_id": book_id,
+                        "action": action,
+                        "urgency": advice.get("urgency", "LOW"),
+                        "reasoning": reasoning,
+                    }
 
                     if action == "CLOSE":
+                        # AI exit advice is advisory only. Model output must never
+                        # bypass deterministic profit, stop-loss, or expiry gates.
                         log.info(
-                            "[multileg-paper] %s: book %s — AI recommends CLOSE: %s",
+                            "[multileg-paper] %s: book %s — AI recommends CLOSE (advisory only; no auto-exit): %s",
                             symbol,
                             book_id,
                             reasoning,
                         )
-                        curr_und = float((scan_context or {}).get("underlying") or entry_underlying)
-                        close_book(
-                            book_id, now_iso, "CLOSED",
-                            f"AI_EXIT: {reasoning[:200]}",
-                            total_pnl,
-                            curr_und,
-                        )
-                        for leg in legs:
-                            leg_id = leg.get("id")
-                            if leg_id:
-                                close_leg(leg_id, now_iso, 0.0, "BOOK_CLOSED_AI_EXIT")
-                        closed_actions.append({
-                            "action": "CLOSED",
-                            "book_id": book_id,
-                            "strategy_type": book.get("strategy_type") or book.get("structure"),
-                            "reason": f"AI exit advice: {reasoning[:100]}",
-                            "total_pnl": total_pnl,
-                            "legs": legs,
-                        })
-                        continue
-
-                    if action == "ADJUST":
-                        adjustment_details = advice.get("adjustment", {})
+                    elif action == "ADJUST":
+                        adjustment_details = advice.get("adjustment")
                         if adjustment_details and adjustment_count < 3:
+                            # Do not consume an adjustment slot: no broker/paper
+                            # order is placed by this advisory path.
                             log.info(
-                                "[multileg-paper] %s: book %s — AI recommends ADJUST: %s",
+                                "[multileg-paper] %s: book %s — AI recommends ADJUST (advisory only; no auto-adjust): %s",
                                 symbol,
                                 book_id,
                                 reasoning,
                             )
-                            increment_adjustment_count(book_id)
-                            closed_actions.append({
-                                "action": "ADJUSTED",
-                                "book_id": book_id,
-                                "reason": reasoning[:200],
-                                "details": adjustment_details,
-                            })
-                            continue
                         else:
                             log.info(
-                                "[multileg-paper] %s: book %s — ADJUST suggested but max adjustments (%d) reached",
+                                "[multileg-paper] %s: book %s — ADJUST advisory ignored; max adjustments (%d) reached or no details",
                                 symbol,
                                 book_id,
                                 adjustment_count,
@@ -475,10 +456,44 @@ def _monitor_open_books(
                     e,
                 )
 
+        max_profit_rupees = 0.0
+        try:
+            from config.settings import LOT_SIZES
+            _base = symbol.upper().split()[0] if symbol else ""
+            _lot = LOT_SIZES.get(symbol, LOT_SIZES.get(_base, 1))
+            _lots = max((int(l.get("lots") or 1) for l in legs), default=1)
+            max_profit_rupees = net_premium * _lot * _lots
+        except Exception:
+            pass
+
+        live_books.append({
+            "book_id": book_id,
+            "strategy_type": strategy_type,
+            "legs": legs,
+            "net_premium": net_premium,
+            "total_pnl": total_pnl,
+            "max_profit_rupees": max_profit_rupees,
+            "pnl_pct_of_max": (total_pnl / max_profit_rupees) if max_profit_rupees > 0 else 0.0,
+            "net_delta": float(book.get("net_delta") or 0.0),
+            "net_theta": float(book.get("net_theta") or 0.0),
+            "breakeven_lower": float(book.get("breakeven_lower") or 0.0),
+            "breakeven_upper": float(book.get("breakeven_upper") or 0.0),
+            "profit_target_pct": profit_target_pct,
+            "stop_loss_pct": stop_loss_pct,
+            "stop_loss_rupees": _get_stop_loss_threshold_rupees(book, legs, symbol),
+            "time_decay_exit_dte": time_decay_exit_dte,
+            "dte": _dte_from_expiry(expiry),
+            "adjustment_count": adjustment_count,
+            "opened_at": book.get("opened_at"),
+        })
+
     if closed_actions:
         return {
             "action": "MONITORED",
+            "decision_stage": "BOOK_MONITOR",
             "closed": closed_actions,
+            "live_books": live_books,
+            "ai_exit_advice": ai_advice_seen,
             "open_books_remaining": len(open_books) - len(
                 [a for a in closed_actions if a.get("action") == "CLOSED"]
             ),
@@ -492,7 +507,10 @@ def _monitor_open_books(
     )
     return {
         "action": "HOLD",
+        "decision_stage": "BOOK_MONITOR",
         "open_books": len(open_books),
+        "live_books": live_books,
+        "ai_exit_advice": ai_advice_seen,
         "reason": "No exit conditions met",
     }
 
@@ -507,15 +525,12 @@ def _attempt_new_entry(
     now_iso: str,
     open_books: list[dict],
 ) -> dict | None:
-    """Attempt to enter a new multi-leg book.
+    """Attempt to enter a new multi-leg book."""
+    legit = (scan_context or {}).get("data_legitimacy") or {}
+    if (isinstance(legit, dict) and legit.get("is_0dte_cutoff")) or (scan_context or {}).get("is_0dte_cutoff"):
+        log.info("[multileg-paper] %s: 0DTE entry cutoff reached — new entries prohibited", symbol)
+        return {"action": "BLOCKED_0DTE_CUTOFF", "reason": "0DTE entry cutoff reached — new entries prohibited"}
 
-    Flow:
-        1. Get LLM verdict (strategy type + legs)
-        2. Validate legs against strategy constraints
-        3. Compute Greeks, risk profile, margin
-        4. Check book conflicts and entry quality
-        5. Advisory mode: log only; full mode: insert trade
-    """
     from config.multileg_strategies import (
         ALLOWED_SYMBOLS,
         CONFLICTING_STRATEGIES,
@@ -550,10 +565,13 @@ def _attempt_new_entry(
         log.info("[multileg-paper] %s: LLM returned no-trade verdict (%s)", symbol, st_upper or "NO_LEGS")
         return {
             "action": "NO_TRADE",
+            "decision_stage": "LLM_STRUCTURE_SELECTION",
             "strategy_type": getattr(verdict, "strategy_type", "NO_TRADE"),
             "reason": f"LLM multileg verdict: {getattr(verdict, 'strategy_type', 'NO_TRADE')}",
+            "entry_rationale": getattr(verdict, "entry_rationale", ""),
             "thesis": getattr(verdict, "thesis", ""),
             "confidence": getattr(verdict, "confidence", 0),
+            "ai_model_name": getattr(verdict, "model_name", None),
         }
 
     # ── 5b. Validate legs ─────────────────────────────────────────────
@@ -649,6 +667,11 @@ def _attempt_new_entry(
             )
             return {
                 "action": "REJECTED",
+                "decision_stage": "LEG_VALIDATION",
+                "strategy_type": strategy_type,
+                "confidence": getattr(verdict, "confidence", 0),
+                "thesis": getattr(verdict, "thesis", ""),
+                "ai_model_name": getattr(verdict, "model_name", None),
                 "reason": f"Legs validation: {validation_msg}",
             }
 
@@ -665,6 +688,11 @@ def _attempt_new_entry(
         )
         return {
             "action": "REJECTED",
+            "decision_stage": "LEG_DATA_INTEGRITY",
+            "strategy_type": strategy_type,
+            "confidence": getattr(verdict, "confidence", 0),
+            "thesis": getattr(verdict, "thesis", ""),
+            "ai_model_name": getattr(verdict, "model_name", None),
             "reason": f"Leg data integrity rejected: {', '.join(binary_issues)}",
         }
 
@@ -727,6 +755,11 @@ def _attempt_new_entry(
                 )
                 return {
                     "action": "CONFLICT",
+                    "decision_stage": "BOOK_CONFLICT",
+                    "strategy_type": strategy_type,
+                    "confidence": getattr(verdict, "confidence", 0),
+                    "thesis": getattr(verdict, "thesis", ""),
+                    "ai_model_name": getattr(verdict, "model_name", None),
                     "reason": conflict_msg,
                 }
         except Exception as e:
@@ -768,6 +801,19 @@ def _attempt_new_entry(
         )
         return {
             "action": "REJECTED",
+            "decision_stage": "RISK_GATE_MARGIN",
+            "strategy_type": strategy_type,
+            "legs": legs,
+            "net_premium": net_premium,
+            "confidence": verdict.confidence,
+            "entry_quality": entry_quality,
+            "quality_reasons": quality_reasons,
+            "book_greeks": book_greeks,
+            "risk_profile": risk_profile,
+            "margin": combined_margin,
+            "margin_cap": MAX_BOOK_MARGIN,
+            "thesis": getattr(verdict, "thesis", ""),
+            "ai_model_name": getattr(verdict, "model_name", None),
             "reason": f"Margin ₹{combined_margin:,.0f} exceeds cap ₹{MAX_BOOK_MARGIN:,.0f}",
         }
 
@@ -782,6 +828,20 @@ def _attempt_new_entry(
         )
         return {
             "action": "REJECTED",
+            "decision_stage": "RISK_GATE_DELTA",
+            "strategy_type": strategy_type,
+            "legs": legs,
+            "net_premium": net_premium,
+            "confidence": verdict.confidence,
+            "entry_quality": entry_quality,
+            "quality_reasons": quality_reasons,
+            "book_greeks": book_greeks,
+            "risk_profile": risk_profile,
+            "margin": combined_margin,
+            "net_delta": net_delta,
+            "delta_cap": MAX_NET_DELTA,
+            "thesis": getattr(verdict, "thesis", ""),
+            "ai_model_name": getattr(verdict, "model_name", None),
             "reason": f"Net delta {net_delta:.2f} exceeds cap {MAX_NET_DELTA}",
         }
 
@@ -817,12 +877,26 @@ def _attempt_new_entry(
         )
         return {
             "action": "ADVISORY",
+            "decision_stage": "AI_MODE_ADVISORY",
             "strategy_type": strategy_type,
             "legs_count": len(legs),
+            "legs": legs,
             "net_premium": net_premium,
             "confidence": verdict.confidence,
             "entry_quality": entry_quality,
             "quality_reasons": quality_reasons,
+            "book_greeks": book_greeks,
+            "risk_profile": risk_profile,
+            "margin": combined_margin,
+            "entry_rationale": getattr(verdict, "entry_rationale", ""),
+            "thesis": getattr(verdict, "thesis", ""),
+            "exit_plan": {
+                "profit_target_pct": verdict.profit_target_pct,
+                "stop_loss_pct": verdict.stop_loss_pct,
+                "time_decay_exit_dte": verdict.time_decay_exit_dte,
+            },
+            "adjustment_plan": getattr(verdict, "adjustment_plan", ""),
+            "ai_model_name": getattr(verdict, "model_name", None),
             "reason": "Advisory mode — no trade inserted",
         }
 
@@ -910,6 +984,7 @@ def _attempt_new_entry(
             )
             return {
                 "action": "ENTERED",
+                "decision_stage": "EXECUTED",
                 "trade_id": inserted_id,
                 "book_id": book_id,
                 "strategy_type": strategy_type,
@@ -919,7 +994,18 @@ def _attempt_new_entry(
                 "confidence": verdict.confidence,
                 "entry_quality": entry_quality,
                 "quality_reasons": quality_reasons,
+                "book_greeks": book_greeks,
+                "risk_profile": risk_profile,
+                "margin": combined_margin,
+                "entry_rationale": entry_reason,
                 "thesis": verdict.thesis,
+                "exit_plan": {
+                    "profit_target_pct": verdict.profit_target_pct,
+                    "stop_loss_pct": verdict.stop_loss_pct,
+                    "time_decay_exit_dte": verdict.time_decay_exit_dte,
+                },
+                "adjustment_plan": getattr(verdict, "adjustment_plan", ""),
+                "ai_model_name": verdict.model_name,
             }
         else:
             log.error(

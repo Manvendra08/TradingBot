@@ -157,7 +157,10 @@ def _discover_refresh_tokens() -> List[Dict[str, Any]]:
             "project_id": os.environ.get("ANTIGRAVITY_PROJECT_ID") or "",
         })
 
-    db_path = os.path.expanduser(r"C:\Users\manve\.omniroute\storage.sqlite")
+    db_path = os.environ.get(
+        "OMNIROUTE_DB_PATH",
+        os.path.expanduser(os.path.join("~", ".omniroute", "storage.sqlite")),
+    )
     if os.path.exists(db_path):
         try:
             conn = sqlite3.connect(db_path)
@@ -334,6 +337,7 @@ class AntigravityClient:
         self.token_expires_at: float = 0.0
         self._creds = None
         self._project_cache: Dict[str, str] = {}
+        self._lock = threading.Lock()
         self.session = requests.Session()
         adapter = requests.adapters.HTTPAdapter(
             max_retries=Retry(total=1, backoff_factor=0.3,
@@ -411,28 +415,29 @@ class AntigravityClient:
         return None
 
     def get_valid_access_token(self) -> Optional[str]:
-        now = time.time()
-        if self.access_token and (self.token_expires_at - now) > _TOKEN_EXPIRY_BUFFER_SECS:
-            return self.access_token
-        if not self._creds and not self._init_credentials():
-            return None
-        if HAS_GOOGLE_AUTH and self._creds:
-            try:
-                request = google.auth.transport.requests.Request(session=self.session)
-                self._creds.refresh(request)
-                if self._creds.valid and self._creds.token:
-                    self.access_token = self._creds.token
+        with self._lock:
+            now = time.time()
+            if self.access_token and (self.token_expires_at - now) > _TOKEN_EXPIRY_BUFFER_SECS:
+                return self.access_token
+            if not self._creds and not self._init_credentials():
+                return None
+            if HAS_GOOGLE_AUTH and self._creds:
+                try:
+                    request = google.auth.transport.requests.Request(session=self.session)
+                    self._creds.refresh(request)
+                    if self._creds.valid and self._creds.token:
+                        self.access_token = self._creds.token
+                        self.token_expires_at = now + 3500
+                        return self.access_token
+                except Exception:
+                    pass
+            if self.refresh_token:
+                token = self._try_refresh_token(self.refresh_token)
+                if token:
+                    self.access_token = token
                     self.token_expires_at = now + 3500
-                    return self.access_token
-            except Exception:
-                pass
-        if self.refresh_token:
-            token = self._try_refresh_token(self.refresh_token)
-            if token:
-                self.access_token = token
-                self.token_expires_at = now + 3500
-                return token
-        return None
+                    return token
+            return None
 
     def _get_token_for_entry(self, entry: Dict[str, Any]) -> Optional[str]:
         """

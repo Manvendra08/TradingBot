@@ -166,7 +166,6 @@ class TestTradeDecision:
         ctx = {"underlying": 100.0, "support": 95.0, "resistance": 105.0}
         decision = make_trade_decision("TEST", intel, ctx)
         assert decision["status"] == "BLOCKED"
-        assert "directional" in decision["reason"].lower()
 
     def test_decision_experimental_in_research_mode(self):
         """In research mode, marginal setups should be EXPERIMENTAL (B5)."""

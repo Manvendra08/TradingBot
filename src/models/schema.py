@@ -435,7 +435,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 
 
 @contextlib.contextmanager
-def get_read_conn():
+def get_read_conn(*args, **kwargs):
     """Read-only context manager that does NOT commit on exit."""
     conn = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES, timeout=30.0)
     conn.row_factory = sqlite3.Row
@@ -446,7 +446,7 @@ def get_read_conn():
 
 
 @contextlib.contextmanager
-def get_conn(read_only: bool = False):
+def get_conn(read_only: bool = False, *args, **kwargs):
     max_attempts = 5
     conn = None
     for attempt in range(max_attempts):
@@ -616,7 +616,12 @@ _MIGRATIONS = [
 
 def init_db() -> None:
     """Create tables + run safe column migrations. Call on every startup."""
-    with get_conn() as conn:
+    conn = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES, timeout=60.0)
+    try:
+        conn.execute("PRAGMA busy_timeout = 60000")
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
+        conn.row_factory = sqlite3.Row
         conn.executescript(DDL)
         applied = {
             row["migration_id"]
@@ -630,6 +635,7 @@ def init_db() -> None:
                         "INSERT INTO schema_migrations (migration_id, applied_at) VALUES (?, ?)",
                         (migration_id, datetime.now(timezone.utc).isoformat()),
                     )
+                    conn.commit()
                 except sqlite3.OperationalError as e:
                     if "duplicate column" not in str(e).lower():
                         raise
@@ -649,8 +655,11 @@ def init_db() -> None:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_mll_status ON multi_leg_legs (status)"
             )
+            conn.commit()
         except sqlite3.OperationalError:
             pass
+    finally:
+        conn.close()
     log.info("DB initialised at %s", DB_PATH)
 
 
@@ -665,8 +674,13 @@ def insert_snapshots(rows: list[dict]) -> int:
             (:fetched_at, :symbol, :expiry, :strike, :option_type, :ltp, :ltp_change_pct, :oi,
              :oi_change_pct, :oi_change, :volume, :iv, :bid, :ask, :delta, :underlying_price, :fetcher_source)
     """
+    keys = (
+        "fetched_at", "symbol", "expiry", "strike", "option_type", "ltp", "ltp_change_pct", "oi",
+        "oi_change_pct", "oi_change", "volume", "iv", "bid", "ask", "delta", "underlying_price", "fetcher_source"
+    )
+    normalized_rows = [{k: r.get(k) for k in keys} for r in rows]
     with get_conn() as conn:
-        conn.executemany(sql, rows)
+        conn.executemany(sql, normalized_rows)
     return len(rows)
 
 
@@ -723,7 +737,7 @@ def get_previous_snapshot(
         return dict(row) if row else None
 
 
-def get_previous_underlying(symbol: str) -> dict | None:
+def get_previous_underlying(symbol: str, *args, **kwargs) -> dict | None:
     sql = """
         SELECT * FROM underlying_price
         WHERE symbol=?
@@ -735,7 +749,7 @@ def get_previous_underlying(symbol: str) -> dict | None:
         return dict(row) if row else None
 
 
-def get_previous_underlying_before(symbol: str, fetched_at: str) -> dict | None:
+def get_previous_underlying_before(symbol: str, fetched_at: str, *args, **kwargs) -> dict | None:
     from config.runtime_config import get_scan_frequency_mcx, get_scan_frequency_nse
     from config.symbol_classes import get_symbol_class
 
@@ -1198,8 +1212,8 @@ def get_scan_summary_n_scans_ago(symbol: str, n: int) -> dict | None:
         return dict(row) if row else None
 
 
-def get_recent_alerts_for_symbol(symbol: str, limit: int = 50) -> list[dict]:
-    # Flaw #8: Stale Alert Persistence Vulnerability
+def get_recent_scan_verdicts(symbol: str, limit: int = 50) -> list[dict]:
+    """Fetch recent scan verdict labels for a symbol from scan_summaries within the last 24h."""
     sql = """
         SELECT verdict_label FROM scan_summaries
         WHERE symbol = ?
@@ -1211,6 +1225,11 @@ def get_recent_alerts_for_symbol(symbol: str, limit: int = 50) -> list[dict]:
     with get_conn(read_only=True) as conn:
         rows = conn.execute(sql, (symbol, limit)).fetchall()
         return [dict(r) for r in rows]
+
+
+def get_recent_alerts_for_symbol(symbol: str, limit: int = 50) -> list[dict]:
+    """Compatibility alias for get_recent_scan_verdicts (used by trend_analysis)."""
+    return get_recent_scan_verdicts(symbol, limit)
 
 
 def insert_paper_trade(trade: dict) -> int:
@@ -2295,28 +2314,42 @@ def list_multi_leg_trades(status_filter: str | None = None) -> list[dict]:
                     lots = int(leg.get("lots") or leg.get("lot_size") or 1)
 
                     cmp = None
+                    und_price = 0.0
+                    und_row = conn.execute(
+                        "SELECT price FROM underlying_price WHERE symbol=? OR symbol=? ORDER BY fetched_at DESC LIMIT 1",
+                        (symbol, base_sym)
+                    ).fetchone()
+                    if und_row:
+                        und_price = float(und_row["price"] or 0.0)
+
                     if op_type in ("CE", "PE") and stk:
+                        from src.engine.trade_plan import is_valid_option_premium
                         if exp:
-                            # Strict expiry filter — prevents cross-expiry LTP collisions
-                            opt_row = conn.execute(
-                                "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND expiry=? AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
+                            opt_rows = conn.execute(
+                                "SELECT ltp, oi, volume FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND expiry=? AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 5",
                                 (symbol, base_sym, exp, float(stk), op_type)
-                            ).fetchone()
+                            ).fetchall()
                         else:
-                            opt_row = conn.execute(
-                                "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
+                            opt_rows = conn.execute(
+                                "SELECT ltp, oi, volume FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 5",
                                 (symbol, base_sym, float(stk), op_type)
-                            ).fetchone()
-                        if opt_row:
-                            cmp = float(opt_row["ltp"])
+                            ).fetchall()
+                        for opt_row in opt_rows:
+                            cand_ltp = float(opt_row["ltp"])
+                            if is_valid_option_premium(float(stk), op_type, cand_ltp, und_price):
+                                cmp = cand_ltp
+                                break
                     
                     if cmp is None:
-                        und_row = conn.execute(
-                            "SELECT price FROM underlying_price WHERE symbol=? OR symbol=? ORDER BY fetched_at DESC LIMIT 1",
-                            (symbol, base_sym)
-                        ).fetchone()
-                        if und_row:
-                            cmp = float(und_row["price"])
+                        # Delta-based price estimation from underlying movement (never set CMP = spot)
+                        entry_und = float(t.get("entry_underlying") or und_price or 0.0)
+                        if und_price > 0 and entry_und > 0 and entry_p > 0:
+                            und_move = und_price - entry_und
+                            delta = float(leg.get("delta") or 0.25)
+                            delta_sign = delta if op_type == "CE" else -abs(delta)
+                            cmp = max(0.05, round(entry_p + delta_sign * und_move, 2))
+                        else:
+                            cmp = entry_p
                             
                     leg["cmp"] = round(cmp, 2) if cmp is not None else entry_p
                     
@@ -2399,28 +2432,42 @@ def list_multi_leg_trades(status_filter: str | None = None) -> list[dict]:
                     l_size = int(l.get("lot_size") or lot_size)
 
                     cmp = None
+                    und_price = 0.0
+                    und_row = conn.execute(
+                        "SELECT price FROM underlying_price WHERE symbol=? OR symbol=? ORDER BY fetched_at DESC LIMIT 1",
+                        (symbol, base_sym)
+                    ).fetchone()
+                    if und_row:
+                        und_price = float(und_row["price"] or 0.0)
+
                     if op_type in ("CE", "PE") and stk:
+                        from src.engine.trade_plan import is_valid_option_premium
                         if exp:
-                            # Strict expiry filter — prevents cross-expiry LTP collisions
-                            opt_row = conn.execute(
-                                "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND expiry=? AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
+                            opt_rows = conn.execute(
+                                "SELECT ltp, oi, volume FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND expiry=? AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 5",
                                 (symbol, base_sym, exp, float(stk), op_type)
-                            ).fetchone()
+                            ).fetchall()
                         else:
-                            opt_row = conn.execute(
-                                "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
+                            opt_rows = conn.execute(
+                                "SELECT ltp, oi, volume FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 5",
                                 (symbol, base_sym, float(stk), op_type)
-                            ).fetchone()
-                        if opt_row:
-                            cmp = float(opt_row["ltp"])
+                            ).fetchall()
+                        for opt_row in opt_rows:
+                            cand_ltp = float(opt_row["ltp"])
+                            if is_valid_option_premium(float(stk), op_type, cand_ltp, und_price):
+                                cmp = cand_ltp
+                                break
 
                     if cmp is None:
-                        und_row = conn.execute(
-                            "SELECT price FROM underlying_price WHERE symbol=? OR symbol=? ORDER BY fetched_at DESC LIMIT 1",
-                            (symbol, base_sym)
-                        ).fetchone()
-                        if und_row:
-                            cmp = float(und_row["price"])
+                        # Delta-based price estimation from underlying movement (never set CMP = spot)
+                        entry_und = float(l.get("underlying_price") or und_price or 0.0)
+                        if und_price > 0 and entry_und > 0 and entry_p > 0:
+                            und_move = und_price - entry_und
+                            delta = float(l.get("delta") or 0.25)
+                            delta_sign = delta if op_type == "CE" else -abs(delta)
+                            cmp = max(0.05, round(entry_p + delta_sign * und_move, 2))
+                        else:
+                            cmp = entry_p
 
                     cmp_val = round(cmp, 2) if cmp is not None else entry_p
                     if cmp is not None:

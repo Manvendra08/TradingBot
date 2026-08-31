@@ -12,6 +12,7 @@ log = logging.getLogger("nsebot.symbol_resolver")
 
 # Local instrument cache for the day (TTL-based to avoid repeated SSL failures spamming)
 _INSTRUMENT_CACHE: dict = {}
+_TRADINGSYMBOL_INDEX: dict[str, dict] = {}
 _TSYM_EXPIRY_CACHE: dict = {}
 _INSTRUMENT_CACHE_TS = 0.0
 
@@ -23,6 +24,7 @@ _INSTRUMENT_CACHE_PATH = DATA_DIR / "instrument_cache.json"
 _TSYM_CACHE_PATH = DATA_DIR / "tsym_cache.json"
 
 _LOAD_FROM_DISK_LOCK = threading.Lock()
+_REFRESH_LOCK = threading.Lock()
 
 _REFRESH_IN_PROGRESS = False
 _REFRESH_IN_PROGRESS_TS = 0.0
@@ -90,6 +92,11 @@ def _load_cache_from_disk() -> bool:
                 restored[key] = val
 
             _INSTRUMENT_CACHE = restored
+            _TRADINGSYMBOL_INDEX = {
+                val.get("tradingsymbol"): val
+                for val in restored.values()
+                if val.get("tradingsymbol")
+            }
             _TSYM_EXPIRY_CACHE = data.get("tsym_cache", {})
             _INSTRUMENT_CACHE_TS = ts
 
@@ -130,19 +137,20 @@ def fetch_and_cache_instruments(
     Fetch and cache all instruments for NFO, BFO, and MCX.
     Must be failure-tolerant: on SSL/network issues, do not raise and do not poison the cache.
     """
-    global _INSTRUMENT_CACHE, _TSYM_EXPIRY_CACHE, _INSTRUMENT_CACHE_TS
+    global _INSTRUMENT_CACHE, _TRADINGSYMBOL_INDEX, _TSYM_EXPIRY_CACHE, _INSTRUMENT_CACHE_TS
     global _REFRESH_IN_PROGRESS, _REFRESH_IN_PROGRESS_TS
 
     # If disk cache is already fresh, skip the API fetch entirely
     if _instrument_cache_is_ready():
         return
 
-    # Guard against concurrent refresh storms
-    if _REFRESH_IN_PROGRESS and (time.time() - float(_REFRESH_IN_PROGRESS_TS)) < 60.0:
-        return
+    with _REFRESH_LOCK:
+        # Guard against concurrent refresh storms
+        if _REFRESH_IN_PROGRESS and (time.time() - float(_REFRESH_IN_PROGRESS_TS)) < 60.0:
+            return
 
-    _REFRESH_IN_PROGRESS = True
-    _REFRESH_IN_PROGRESS_TS = time.time()
+        _REFRESH_IN_PROGRESS = True
+        _REFRESH_IN_PROGRESS_TS = time.time()
     try:
         cache = {}
         tsym_expiry_cache = {}
@@ -219,6 +227,11 @@ def fetch_and_cache_instruments(
                         tsym_expiry_cache[str(tsym).upper()] = exp_str
 
                 _INSTRUMENT_CACHE = cache
+                _TRADINGSYMBOL_INDEX = {
+                    val.get("tradingsymbol"): val
+                    for val in cache.values()
+                    if val.get("tradingsymbol")
+                }
                 _TSYM_EXPIRY_CACHE = tsym_expiry_cache
                 _INSTRUMENT_CACHE_TS = time.time()
                 # Persist to disk so restarts don't re-fetch
@@ -385,10 +398,9 @@ def resolve_instrument(
         except Exception as e:
             log.warning("[resolver] Failed to auto-initialize cache: %s", e)
 
-    # 0. Check if symbol is already a full tradingsymbol (e.g. SENSEX2672376800PE)
-    for val in _INSTRUMENT_CACHE.values():
-        if val.get("tradingsymbol") == symbol:
-            return val
+    # 0. Check if symbol is already a full tradingsymbol (e.g. SENSEX2672376800PE) — O(1) index lookup
+    if symbol in _TRADINGSYMBOL_INDEX:
+        return _TRADINGSYMBOL_INDEX[symbol]
 
     # Extract base symbol if full tradingsymbol was passed as symbol
     base_sym = symbol
@@ -426,14 +438,24 @@ def resolve_instrument(
         # Sort by expiry string ascending
         future_matches.sort(key=lambda m: m[0][1])
         best_k, best_val = future_matches[0]
-        log.debug(
-            "[resolver] Resolved %s (%s, %g, %s) via cache search fallback (found expiry: %s)",
-            symbol,
-            expiry,
-            strike,
-            option_type,
-            best_k[1],
-        )
+        if expiry and best_k[1] != expiry:
+            log.warning(
+                "[resolver] Fallback selected different expiry (%s) than requested (%s) for %s strike %g %s",
+                best_k[1],
+                expiry,
+                symbol,
+                strike,
+                option_type,
+            )
+        else:
+            log.debug(
+                "[resolver] Resolved %s (%s, %g, %s) via cache search fallback (found expiry: %s)",
+                symbol,
+                expiry,
+                strike,
+                option_type,
+                best_k[1],
+            )
         return best_val
 
     now = time.time()

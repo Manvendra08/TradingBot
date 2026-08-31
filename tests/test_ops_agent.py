@@ -240,7 +240,12 @@ class TestPlaybooks:
             read_source="sqlite",
         )
         sm = StateMachine()
-        results = run_playbooks(snap, sm)
+        with patch("ops_agent._is_market_hours", return_value=True), \
+             patch("ops_agent.os.name", "posix"), \
+             patch("ops_agent._restart_nsebot", return_value=True), \
+             patch("ops_agent.time.sleep"), \
+             patch("ops_agent._read_heartbeat_age", return_value=5.0):
+            results = run_playbooks(snap, sm)
         # Should attempt restart (P01)
         assert any(r.action_taken == "restart_nsebot" for r in results)
 
@@ -259,7 +264,9 @@ class TestPlaybooks:
         sm.components["_restart_count"] = type(
             "C", (), {"consecutive_down": 2, "detail": ""}
         )()
-        results = run_playbooks(snap, sm)
+        with patch("ops_agent._is_market_hours", return_value=True), \
+             patch("ops_agent.os.name", "posix"):
+            results = run_playbooks(snap, sm)
         # Should NOT restart, should escalate P02
         assert not any(r.action_taken == "restart_nsebot" for r in results)
         assert any(r.action_taken == "P02_crash_loop" for r in results)
@@ -275,7 +282,8 @@ class TestPlaybooks:
             read_source="sqlite",
         )
         sm = StateMachine()
-        with patch("ops_agent._run_emergency_flat", return_value=True):
+        with patch("ops_agent._is_market_hours", return_value=True), \
+             patch("ops_agent._run_emergency_flat", return_value=True):
             results = run_playbooks(snap, sm)
         assert any(r.action_taken == "emergency_flat" for r in results)
 
@@ -391,7 +399,9 @@ class TestPlaybooks:
         original_level = ops_agent.ROLLOUT_LEVEL
         try:
             ops_agent.ROLLOUT_LEVEL = 0
-            results = run_playbooks(snap, sm)
+            with patch("ops_agent._is_market_hours", return_value=True), \
+                 patch("ops_agent.os.name", "posix"):
+                results = run_playbooks(snap, sm)
             # No actions in observe-only mode
             assert not any(r.action_taken for r in results)
         finally:

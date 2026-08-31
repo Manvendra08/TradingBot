@@ -5,22 +5,36 @@ from pathlib import Path
 from cryptography.fernet import Fernet
 from src.models.schema import get_broker_config, update_broker_config
 
+import threading
+
 log = logging.getLogger("nsebot.zerodha_auth")
 
 KEY_PATH = Path("data/.fernet_key")
+_FERNET_LOCK = threading.Lock()
+_FERNET_INSTANCE: Fernet | None = None
 
 def _get_fernet() -> Fernet:
-    if not KEY_PATH.exists():
-        if not KEY_PATH.parent.exists():
-            try:
-                KEY_PATH.parent.mkdir(exist_ok=True, parents=True)
-            except Exception as e:
-                log.warning("[zerodha_auth] Could not create parent directory %s: %s", KEY_PATH.parent, e)
-        key = Fernet.generate_key()
-        KEY_PATH.write_bytes(key)
-    else:
-        key = KEY_PATH.read_bytes()
-    return Fernet(key)
+    global _FERNET_INSTANCE
+    if _FERNET_INSTANCE is not None:
+        return _FERNET_INSTANCE
+
+    with _FERNET_LOCK:
+        if _FERNET_INSTANCE is not None:
+            return _FERNET_INSTANCE
+        if not KEY_PATH.exists():
+            if not KEY_PATH.parent.exists():
+                try:
+                    KEY_PATH.parent.mkdir(exist_ok=True, parents=True)
+                except Exception as e:
+                    log.warning("[zerodha_auth] Could not create parent directory %s: %s", KEY_PATH.parent, e)
+            key = Fernet.generate_key()
+            tmp_key_path = KEY_PATH.with_suffix(".tmp")
+            tmp_key_path.write_bytes(key)
+            tmp_key_path.replace(KEY_PATH)
+        else:
+            key = KEY_PATH.read_bytes()
+        _FERNET_INSTANCE = Fernet(key)
+        return _FERNET_INSTANCE
 
 def encrypt_secret(secret: str) -> str:
     if not secret:

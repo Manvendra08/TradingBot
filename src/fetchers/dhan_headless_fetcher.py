@@ -162,62 +162,65 @@ async def _intercept_option_chain_async(symbol: str) -> dict | None:
     intercept_event = asyncio.Event()
 
     async with async_playwright() as pw:
-        ctx = await pw.chromium.launch_persistent_context(
-            str(_PROFILE_DIR),
-            headless=True,
-            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-            viewport={"width": 1280, "height": 900},
-        )
-        page = ctx.pages[0] if ctx.pages else await ctx.new_page()
-
-        async def _on_response(response: Response):
-            nonlocal intercepted
-            if intercept_event.is_set():
-                return
-            url = response.url
-            if any(frag in url.lower() for frag in _OC_PATH_FRAGMENTS):
-                try:
-                    body = await response.json()
-                    intercepted = body
-                    intercept_event.set()
-                    log.info("[dhan_headless] intercepted: %s", url)
-                except Exception as exc:
-                    log.debug("[dhan_headless] json parse failed on %s: %s", url, exc)
-
-        page.on("response", _on_response)
-
+        ctx = None
         try:
-            log.info("[dhan_headless] navigating to Dhan option chain for %s", symbol)
-            await page.goto(_DHAN_OC_URL, wait_until="domcontentloaded", timeout=15_000)
+            ctx = await pw.chromium.launch_persistent_context(
+                str(_PROFILE_DIR),
+                headless=True,
+                args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1280, "height": 900},
+            )
+            page = ctx.pages[0] if ctx.pages else await ctx.new_page()
 
-            # Try to select the symbol from the UI if a dropdown is available
+            async def _on_response(response: Response):
+                nonlocal intercepted
+                if intercept_event.is_set():
+                    return
+                url = response.url
+                if any(frag in url.lower() for frag in _OC_PATH_FRAGMENTS):
+                    try:
+                        body = await response.json()
+                        intercepted = body
+                        intercept_event.set()
+                        log.info("[dhan_headless] intercepted: %s", url)
+                    except Exception as exc:
+                        log.debug("[dhan_headless] json parse failed on %s: %s", url, exc)
+
+            page.on("response", _on_response)
+
             try:
-                sym_input = await page.wait_for_selector(
-                    "input[placeholder*='symbol' i], input[placeholder*='Symbol' i], "
-                    ".symbol-selector input, #symbolSearch",
-                    timeout=5_000,
-                )
-                await sym_input.fill(symbol)
-                await page.keyboard.press("Enter")
-                await page.wait_for_timeout(2_000)
-            except Exception:
-                log.debug("[dhan_headless] no symbol selector found; using default loaded symbol")
+                log.info("[dhan_headless] navigating to Dhan option chain for %s", symbol)
+                await page.goto(_DHAN_OC_URL, wait_until="domcontentloaded", timeout=15_000)
 
-            # Wait for intercept or timeout
-            try:
-                await asyncio.wait_for(intercept_event.wait(), timeout=_INTERCEPT_TIMEOUT_MS / 1000)
-            except asyncio.TimeoutError:
-                log.warning("[dhan_headless] intercept timeout after %ds for %s", _INTERCEPT_TIMEOUT_MS // 1000, symbol)
+                # Try to select the symbol from the UI if a dropdown is available
+                try:
+                    sym_input = await page.wait_for_selector(
+                        "input[placeholder*='symbol' i], input[placeholder*='Symbol' i], "
+                        ".symbol-selector input, #symbolSearch",
+                        timeout=5_000,
+                    )
+                    await sym_input.fill(symbol)
+                    await page.keyboard.press("Enter")
+                    await page.wait_for_timeout(2_000)
+                except Exception:
+                    log.debug("[dhan_headless] no symbol selector found; using default loaded symbol")
 
-        except Exception as exc:
-            log.error("[dhan_headless] page navigation error: %s", exc)
+                # Wait for intercept or timeout
+                try:
+                    await asyncio.wait_for(intercept_event.wait(), timeout=_INTERCEPT_TIMEOUT_MS / 1000)
+                except asyncio.TimeoutError:
+                    log.warning("[dhan_headless] intercept timeout after %ds for %s", _INTERCEPT_TIMEOUT_MS // 1000, symbol)
+
+            except Exception as exc:
+                log.error("[dhan_headless] page navigation error: %s", exc)
         finally:
-            await ctx.close()
+            if ctx is not None:
+                await ctx.close()
 
     if not intercepted:
         return None

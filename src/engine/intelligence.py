@@ -174,7 +174,7 @@ def _bullish_price_oi(
         return "Short Covering", "🟡", "Weak Bullish — shorts exiting"
     if ce_chg > 0 and pe_chg <= 0:
         if pcr is not None and pcr <= 0.85:
-            pass
+            return "Call Writing", "🔴", "Bearish — resistance building / call writing dominant"
         else:
             return "Long Buildup", "🟢", "Bullish — fresh longs / call buying"
     if p_pct > 0.15 or (ce_chg == 0 and pe_chg == 0):

@@ -91,7 +91,8 @@ def _check_risk_limits_for_table(
     trades_table: str,
     label: str,
     setup_type: str | None = None,
-    candidate_leg: dict | None = None
+    candidate_leg: dict | None = None,
+    scan_context: dict | None = None,
 ) -> tuple[bool, str, str]:
     """
     Core risk-check logic, parameterised over the trades table name.
@@ -101,6 +102,12 @@ def _check_risk_limits_for_table(
     # P2-9: SQL injection guard — f-string table names must be allowlisted
     if trades_table not in ("paper_trades", "live_trades"):
         raise ValueError(f"Unexpected table: {trades_table}")
+
+    # 0a. Check 0DTE entry cutoff
+    if scan_context and isinstance(scan_context, dict):
+        legit = scan_context.get("data_legitimacy") or {}
+        if (isinstance(legit, dict) and legit.get("is_0dte_cutoff")) or scan_context.get("is_0dte_cutoff"):
+            return False, f"[{label}] {symbol}: 0DTE entry cutoff reached — new entries prohibited", "0DTE_CUTOFF"
 
     today_start = _ist_day_start_utc()
 
@@ -280,20 +287,34 @@ def _check_risk_limits_for_table(
     return True, "OK", "OK"
 
 
-def check_risk_limits(symbol: str, setup_type: str | None = None, candidate_leg: dict | None = None) -> tuple[bool, str]:
+def check_risk_limits(
+    symbol: str,
+    setup_type: str | None = None,
+    candidate_leg: dict | None = None,
+    scan_context: dict | None = None,
+) -> tuple[bool, str]:
     """
     Paper-trading risk check.  Queries paper_trades table.
     Return (allowed: bool, reason: str).
     """
-    allowed, reason, _ = _check_risk_limits_for_table(symbol, "paper_trades", "paper", setup_type=setup_type, candidate_leg=candidate_leg)
+    allowed, reason, _ = _check_risk_limits_for_table(
+        symbol, "paper_trades", "paper", setup_type=setup_type, candidate_leg=candidate_leg, scan_context=scan_context
+    )
     return allowed, reason
 
 
-def check_live_risk_limits(symbol: str, setup_type: str | None = None, candidate_leg: dict | None = None) -> tuple[bool, str]:
+def check_live_risk_limits(
+    symbol: str,
+    setup_type: str | None = None,
+    candidate_leg: dict | None = None,
+    scan_context: dict | None = None,
+) -> tuple[bool, str]:
     """
     Live-trading risk check.  Queries live_trades table.
     """
-    allowed, reason, _ = _check_risk_limits_for_table(symbol, "live_trades", "live", setup_type=setup_type, candidate_leg=candidate_leg)
+    allowed, reason, _ = _check_risk_limits_for_table(
+        symbol, "live_trades", "live", setup_type=setup_type, candidate_leg=candidate_leg, scan_context=scan_context
+    )
     return allowed, reason
 
 # --- TFSS Risk Helpers ---
@@ -403,7 +424,8 @@ def compute_combined_book(symbol: str, option_rows: list[dict] | None, table: st
     except Exception:
         TFSS_COMBINED_DELTA_CAP = 0.60
 
-    legs = get_open_tfss_legs(symbol, table=table)
+    sym_str = getattr(symbol, "symbol", symbol) if not isinstance(symbol, str) else symbol
+    legs = get_open_tfss_legs(sym_str, table=table)
     net_delta = 0.0
     leg_deltas = {}
     for leg in legs:

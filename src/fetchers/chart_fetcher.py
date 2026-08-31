@@ -1384,6 +1384,7 @@ def _fetch_yf(
             except Exception:
                 continue
 
+        payload: dict | None = None
         if bars:
             if tf.endswith("m"):
                 tf_mins = int(tf[:-1])

@@ -34,6 +34,8 @@ REGIME_RANGE         = "RANGE"
 REGIME_VOLATILE      = "VOLATILE"
 REGIME_NO_TRADE      = "NO_TRADE"
 
+REGIME_VOLATILE_MIN_RANGE_PCT = 3.0
+
 # Decay factor per step back in time.
 # weight[i] = DECAY^(n-1-i), i=0 oldest, i=n-1 newest.
 # DECAY=0.80 → newest weight=1.0, 9 steps back ≈ 0.134 (~7.4x difference).
@@ -169,7 +171,7 @@ def detect_market_regime(symbol: str) -> str:
                 )
                 return REGIME_TRENDING_DOWN
 
-    if price_range_pct > 3.0:
+    if price_range_pct > REGIME_VOLATILE_MIN_RANGE_PCT:
         return REGIME_VOLATILE
     # Explicit RANGE branch (#10): low-vol mid-sessions that previously fell
     # through to NO_TRADE are now classified as RANGE (regime_score=30).

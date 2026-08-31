@@ -204,10 +204,9 @@ def validate_market_data(
 
                 if now_ist >= cutoff_dt:
                     is_0dte_cutoff = True
-                    issues.append(
+                    warnings.append(
                         f"0DTE entry cutoff reached ({now_ist.strftime('%H:%M')} IST >= {cutoff_dt.strftime('%H:%M')} IST) — new entries prohibited"
                     )
-                    score -= 40
 
                 remaining_sec = max(6.0, (close_dt - now_ist).total_seconds())
                 remaining_min = remaining_sec / 60.0
@@ -262,7 +261,7 @@ def validate_market_data(
             warnings.append(f"Could not determine ATM strike: {e}")
 
         # Validate individual strikes & classify liquidity
-        liquid_count = 0
+        liquid_strikes: set[float] = set()
         corrupt_count = 0
         has_secondary_only_strikes = False
 
@@ -296,17 +295,17 @@ def validate_market_data(
 
             if is_ce_row:
                 if ce_tier != "illiquid":
-                    liquid_count += 1
+                    liquid_strikes.add(stk)
                 if ce_tier == "secondary":
                     has_secondary_only_strikes = True
             elif is_pe_row:
                 if pe_tier != "illiquid":
-                    liquid_count += 1
+                    liquid_strikes.add(stk)
                 if pe_tier == "secondary":
                     has_secondary_only_strikes = True
             else:
                 if ce_tier != "illiquid" or pe_tier != "illiquid":
-                    liquid_count += 1
+                    liquid_strikes.add(stk)
                 if ce_tier == "secondary" or pe_tier == "secondary":
                     has_secondary_only_strikes = True
 
@@ -333,6 +332,7 @@ def validate_market_data(
 
             cleaned_strikes.append(cleaned_row)
 
+        liquid_count = len(liquid_strikes)
         if liquid_count < 3:
             warnings.append(f"Very low liquidity: only {liquid_count} strikes have active depth/OI/quotes")
             score -= 20

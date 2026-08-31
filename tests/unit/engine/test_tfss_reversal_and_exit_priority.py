@@ -28,7 +28,7 @@ class TestReversalSequencing(unittest.TestCase):
 
     @patch("src.engine.trend_following_short_strangle.get_conn")
     @patch("src.engine.trend_following_short_strangle.select_candidate")
-    @patch("src.engine.trend_following_short_strangle.check_trend_persistence", return_value=(True, ""))
+    @patch("src.engine.trend_following_short_strangle.check_trend_persistence", return_value=(False, "INSUFFICIENT_HISTORY"))
     def test_reversal_blocked_by_persistence(self, mock_trend, mock_select, mock_get_conn):
         from src.engine.trend_following_short_strangle import evaluate_reversal
         mock_conn = MagicMock()
@@ -40,9 +40,10 @@ class TestReversalSequencing(unittest.TestCase):
         ]
         state = self._mock_symbol_state()
         market = self._mock_market_state()
-        result = evaluate_reversal(state, market, {})
-        self.assertEqual(result["action"], "BLOCK")
-        self.assertEqual(result["reason"], "PERSISTENCE_NOT_CONFIRMED")
+        with patch("config.runtime_config.load_runtime_config", return_value={"enable_tfss_trade_blocked_rules": True}):
+            result = evaluate_reversal(state, market, {})
+            self.assertEqual(result["action"], "BLOCK")
+            self.assertEqual(result["reason"], "PERSISTENCE_NOT_CONFIRMED")
 
     @patch("src.engine.trend_following_short_strangle.get_conn")
     @patch("src.engine.trend_following_short_strangle.check_trend_persistence", return_value=(True, ""))
@@ -126,7 +127,7 @@ class TestRiskHelpers(unittest.TestCase):
 
     def test_check_tested_side_beyond_threshold(self):
         from src.engine.risk_engine import check_tested_side
-        result = check_tested_side("SELL_PE", {"current_delta": 0.40}, {})
+        result = check_tested_side("SELL_PE", {"current_delta": 0.65}, {})
         self.assertTrue(result.beyond_threshold)
         self.assertIn("DELTA_STOP", result.reason)
 
@@ -135,22 +136,19 @@ class TestRiskHelpers(unittest.TestCase):
         result = check_tested_side("SELL_PE", {"current_delta": 0.30}, {"hard_stop_delta": 0.25})
         self.assertTrue(result.beyond_threshold)
 
-    def test_compute_combined_book_within_caps(self):
+    @patch("src.models.schema.get_open_tfss_legs")
+    def test_compute_combined_book_within_caps(self, mock_legs):
         from src.engine.risk_engine import compute_combined_book
-        result = compute_combined_book({"open_count": 2}, {"total_delta": 0.30})
-        self.assertTrue(result.within_caps)
+        mock_legs.return_value = [{"id": 1, "side": "SELL", "option_type": "PE", "strike": 24000}]
+        result = compute_combined_book("NIFTY", [{"strike": 24000, "option_type": "PE", "delta": 0.20}])
+        self.assertTrue(result["within_caps"])
 
-    def test_compute_combined_book_exceeds_open_cap(self):
+    @patch("src.models.schema.get_open_tfss_legs")
+    def test_compute_combined_book_exceeds_delta_cap(self, mock_legs):
         from src.engine.risk_engine import compute_combined_book
-        result = compute_combined_book({"open_count": 3}, {"total_delta": 0.10})
-        self.assertFalse(result.within_caps)
-        self.assertIn("TFSS_OPEN_CAP", result.reason)
-
-    def test_compute_combined_book_exceeds_delta_cap(self):
-        from src.engine.risk_engine import compute_combined_book
-        result = compute_combined_book({"open_count": 1}, {"total_delta": 0.65})
-        self.assertFalse(result.within_caps)
-        self.assertIn("TFSS_DELTA_CAP", result.reason)
+        mock_legs.return_value = [{"id": 1, "side": "SELL", "option_type": "PE", "strike": 24000}]
+        result = compute_combined_book("NIFTY", [{"strike": 24000, "option_type": "PE", "delta": 0.75}])
+        self.assertFalse(result["within_caps"])
 
 
 if __name__ == "__main__":

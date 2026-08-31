@@ -14,7 +14,10 @@ log = logging.getLogger(__name__)
 # Previously this set ssl._create_default_https_context = ssl._create_unverified_context
 # which disabled certificate verification for ALL HTTPS connections in the process,
 # creating a man-in-the-middle vulnerability. SSL verification is now controlled
-# per-session via ResilientTLSAdapter(ssl_verify=False) only where explicitly needed.
+# per-session via ResilientTLSAdapter(ssl_verify=True) by default.
+# Subclasses that absolutely MUST disable SSL verification (e.g. for internal
+# endpoints with self-signed certs) can set DISABLE_SSL_VERIFICATION = True
+# on their class. THIS IS A SECURITY RISK AND SHOULD BE AVOIDED.
 
 # Suppress insecure request warnings from urllib3 (only for sessions that opt out)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -22,17 +25,33 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 class BaseFetcher(abc.ABC):
     name: str = "base"
+    # Set to True ONLY if you MUST disable SSL verification (e.g. internal endpoints
+    # with self-signed certificates). THIS DISABLES CERTIFICATE VALIDATION AND IS
+    # A SECURITY RISK. Use only as a last resort for internal endpoints.
+    DISABLE_SSL_VERIFICATION = False
 
     def __init__(self):
         self.session = requests.Session()
         self.session.trust_env = False
-        self.session.verify = False
+        
+        # Determine SSL verification setting
+        ssl_verify = not getattr(self, "DISABLE_SSL_VERIFICATION", False)
+        self.session.verify = ssl_verify
+        
+        if not ssl_verify:
+            log.warning(
+                "[%s] SSL VERIFICATION DISABLED! This fetcher will NOT verify "
+                "TLS certificates. Use only for internal endpoints with self-signed "
+                "certificates. This is a SECURITY RISK.",
+                self.name
+            )
+        
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "en-US,en;q=0.9",
         })
-        adapter = ResilientTLSAdapter(max_retries=DEFAULT_RETRY, ssl_verify=False)
+        adapter = ResilientTLSAdapter(max_retries=DEFAULT_RETRY, ssl_verify=ssl_verify)
         self.session.mount("https://", adapter)
 
     def _get(self, url: str, params: dict = None, headers: dict = None) -> dict | None:

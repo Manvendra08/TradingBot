@@ -78,10 +78,31 @@ TypeError: get_previous_underlying() got an unexpected keyword argument 'read_on
   1. Removed `result.slice(0, 40)` truncation in [src/dashboard/ops.html](file:///c:/Users/manve/Downloads/NSEBOT/src/dashboard/ops.html#L596) and enabled clean multi-line word wrapping with hover tooltips (`title="${result}"`).
   2. Enforced `_is_market_hours()` gate before evaluating heartbeat staleness (`hb_stale`) in [ops_agent.py](file:///c:/Users/manve/Downloads/NSEBOT/ops_agent.py#L768) — suppresses off-market false alerts when scanners sleep.
 
-### F131: Heterogeneous Option Chain Normalization (`AttributeError: 'list' object has no attribute 'get'`) (P0-CRITICAL)
+### F131: Broker OFF Activity Isolation & `read_only` Keyword Argument Fix (P0-CRITICAL) (RESOLVED — do not re-diagnose)
+- **Status:** RESOLVED & VERIFIED. `get_previous_underlying` accepts `*args, **kwargs` in `schema.py`. Do NOT cite `read_only` keyword argument TypeError unless it appears verbatim in log lines.
+- **Issue**: When broker trading was OFF (e.g. `live_shadow_mode=True`), the pipeline and scheduler still executed Zerodha Kite client initialization, API health checks, and position syncs. When `sync_direct_kite_positions()` called `get_previous_underlying(base_sym, read_only=True)`, it threw `TypeError: get_previous_underlying() got an unexpected keyword argument 'read_only'`, crashing the pipeline.
+- **Fix**:
+  1. Updated `is_broker_trade_enabled()` in [config/runtime_config.py](file:///c:/Users/manve/VibeProjects/NSEBOT/config/runtime_config.py) to check `live_shadow_mode` — returns `False` whenever broker trading is OFF/Shadow mode.
+  2. Added `is_broker_trade_enabled()` short-circuit guards to `sync_direct_kite_positions()`, `_maybe_sync_positions()`, `_ensure_kite_health()`, and scheduler background threads to completely suppress broker-specific API calls when Broker is OFF.
+  3. Updated `get_read_conn()`, `get_conn()`, `get_previous_underlying()`, and `get_previous_underlying_before()` in [src/models/schema.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/models/schema.py) to accept `*args, **kwargs`, eliminating `read_only` parameter `TypeError` exceptions.
+
+### F140: LLM Multi-Leg Exit Premature Closure (P0-CRITICAL) (RESOLVED — do not re-diagnose)
+- **Status:** RESOLVED & VERIFIED. LLM exit/adjustment advice is advisory only; deterministic risk gates remain authoritative.
+- **Issue:** In `multileg_paper_trading.py` and `multileg_live_trading.py`, `ai_mode="full"` allowed an LLM `CLOSE` response to immediately close an open book, even when deterministic profit/stop/expiry conditions had not fired. A BANKNIFTY short strangle was closed after roughly one hour at a loss because the model interpreted a delta move as “strangle broken.” The same path could close live broker books.
+- **Fix:** AI `CLOSE` and `ADJUST` responses are now logged as advisory-only. They cannot close books, consume adjustment slots, or place orders. Only deterministic profit target, stop loss, expiry, and explicit validated execution paths can change position state.
+
+### F139: 0DTE Entry Cutoff Legitimacy Reclassification & Sentinel Severity Cap (P1-HIGH) (RESOLVED — do not re-diagnose)
+- **Status:** RESOLVED & VERIFIED.
+- **Issue 1:** 0DTE entry cutoff (15:15 IST / 23:15 MCX) previously caused `validate_market_data()` to report `is_legitimate=False`, aborting the entire scan context and skipping exit monitoring / square-off.
+- **Fix 1:** Reclassified 0DTE entry cutoff to a warning on `DataLegitimacyResult` (`is_legitimate=True`), setting `is_0dte_cutoff=True`. Wired into `risk_engine.py` and multi-leg entry modules to block NEW entries while allowing scan completion, exit monitoring, and square-off.
+- **Issue 2:** Sentinel diagnostic LLM escalated WARNING-level flags (e.g. `R4_SLOW_SCAN`) to `CRITICAL` severity and recommended `PAUSE_SYMBOL` based on resolved KB entries (`F131` `read_only` TypeError hallucination).
+- **Fix 2:** Added severity capping in `run_sentinel()` ensuring diagnostic severity cannot exceed max rule flag severity (caps `CRITICAL` to `WARNING` and `PAUSE_SYMBOL` to `ALERT_ONLY` when no `CRITICAL` rule flags are present). Marked `F131` explicitly RESOLVED in KB.
+
+### F134: Heterogeneous Option Chain Normalization (`AttributeError: 'list' object has no attribute 'get'`) (RESOLVED — do not re-diagnose)
+- **Status:** RESOLVED & VERIFIED. `_normalize_option_chain()` is in place in `multileg_strategy.py` and transparently handles both dict and list option-chain payloads. Do NOT cite this entry for new incidents unless a fresh `AttributeError: 'list' object has no attribute 'get'` traceback appears verbatim in the current RECENT LOG LINES.
 - **Symptom:** `AttributeError: 'list' object has no attribute 'get'` in multi-leg strategy runner (`src/engine/multileg_strategy.py`) during paper or live multi-leg trade evaluation.
 - **Root Cause:** `validate_legs()` and `build_execution_plan()` expected `option_chain` to be a `dict` keyed by `strike`, but callers in `multileg_paper_trading.py` and `multileg_live_trading.py` passed `option_rows` (a `list` of row dicts or list of contract dicts) from scan context.
-- **Self-Heal:** Added `_normalize_option_chain()` helper in [multileg_strategy.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/multileg_strategy.py) to dynamically convert list representations (both row dicts with `CE`/`PE` keys and individual contract dicts) into standard `dict[float, dict]` before leg validation and execution plan construction.
+- **Self-Heal:** Added `_normalize_option_chain()` helper in [multileg_strategy.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/multileg_strategy.py) to dynamically convert list representations (both row dicts with `CE`/`PE` keys and individual contract dicts) into standard `dict[float, dict]` before leg validation and execution plan construction. Unit test coverage in `tests/test_multileg_strategy.py`.
 
 ### F132: Multi-Leg Snapshot Expiry Resolution & Live PnL Distortion Fix (P0-CRITICAL)
 - **Symptom:** Multi-leg trade cards on dashboard displayed abnormal CMP spikes (e.g., ₹480–791 for OTM options vs entry prices of ₹30–120) and distorted PnL (-₹1,46,475).
@@ -96,7 +117,14 @@ TypeError: get_previous_underlying() got an unexpected keyword argument 'read_on
   3. Added `get_latest_option_snapshot` helper to `schema.py`.
   4. Implemented `_update_live_book_pnl()` in `multileg_live_trading.py`.
 
-### F6: Zero OI & Illiquid Option Chain Anomaly (P1-HIGH)
+### F133: Inverse Target/SL Premium Order (`R8_INVERSE_TARGET_SL`) (P1-HIGH)
+- **Symptom:** Rule `R8_INVERSE_TARGET_SL` flags trade plan with target premium <= entry premium or stop loss premium >= entry premium on an option BUY trade.
+- **Root Cause:**
+  1. Contradictory LLM raw output (e.g. LLM generated target premium < entry premium for BUY option).
+  2. Level sanitization mismatch where `_sanitize_llm_verdict` misidentified option direction (e.g., treating `GO_LONG` + `PE` as bullish on underlying instead of bearish).
+- **Fix / Self-Heal:** `_sanitize_llm_verdict` in `llm_enrichment.py` maps option direction correctly (`bullish = is_action_long if target_opt != 'PE' else not is_action_long`) so target premium always increases for option BUY trades. If R8 flags, Sentinel classifies as `ALERT_ONLY` if SL is underlying-level or `SKIP_TRADE` if target premium is truly inverse.
+
+### F135: Zero OI & Illiquid Option Chain Anomaly (P1-HIGH)
 - **Symptom:** >50% of strikes return `oi=0` and `volume=0`.
 - **Root Cause:** After-hours scan, illiquid contract, or provider API drop.
 - **Self-Heal:** Mark scan context as `LOW_CONFIDENCE` and downgrade signal confidence scores.
@@ -118,6 +146,7 @@ TypeError: get_previous_underlying() got an unexpected keyword argument 'read_on
   - **formatting:** OpenCode Zen -> OmniRouter (Antigravity) -> Bedrock Mantle -> GitHub Models -> Groq -> NVIDIA NIM -> OpenRouter (Qwen coder)
 - **OmniRouter group is Antigravity-only** (`antigravity/*` via port 20128, timeout 20s) — OpenCode free models were removed from it. No `claude/oc/*` models remain.
 - **Self-Heal:** 12-second provider timeout (OmniRouter group 20s). HTTP 500, empty content, or network exceptions trigger an automatic 10-minute cooldown (`_PROVIDER_COOLDOWN_UNTIL[key] = now + 600.0`), skipping failing providers instantly on subsequent ticks.
+- **OmniRouter read-timeout policy (2026-08-25 fix):** A single read timeout on one OmniRouter route (e.g. agent-backed `Claude/Antigravity` on large verdict prompts) cools down only that provider for 60s. The whole `omnirouter-primary`/`omnirouter-sentinel` group is cooled down 90s only after 2 consecutive route timeouts in one call, or immediately on host-level errors (connection refused/reset → 120s). This prevents one slow upstream route from benching all premium models behind the local proxy.
 
 ### F9: Alert Payload Execution Discrepancy Guard (P1-HIGH)
 - **Symptom:** Alert header reported `🟢 Entered` while the Signal section reported `Trade: ✗ Not entered` for setups blocked by Risk Engine or missing valid contracts.
@@ -166,22 +195,17 @@ TypeError: get_previous_underlying() got an unexpected keyword argument 'read_on
   3. Refactored futures contract resolution to sort by `exd` expiry date chronologically and pick the near-month contract.
   4. Removed orphaned dead code block after return line 1450.
 
-### F129: Shoonya ISP IP Rotation — Automated Headless Portal IP Updater (P1-HIGH)
+### F136: Shoonya ISP IP Rotation — Automated Headless Portal IP Updater (P1-HIGH)
 - **Symptom:** `[shoonya] GenAcsTok failed: {'stat': 'Not_Ok', 'emsg': 'Invalid Input : INVALID_IP', ...}` after a ~60s Playwright OAuth, recurring every time the ISP rotates the public IP (3–4 day DHCP leases).
 - **Root Cause:** Shoonya validates the request source IP at login (`GenAcsTok`). A rotating ISP public IP is not bound to the account, so login is rejected even though the OAuth web login succeeds.
 - **Self-Heal:** `src/fetchers/shoonya_ip_guard.py` runs a once-per-IST-day public-IP check (reusing `src/utils/ip_monitor.py` detection). On rotation, it immediately triggers `src/fetchers/shoonya_ip_updater.py` which launches headless Playwright, logs into Shoonya's portal (`https://api.shoonya.com/OAuthlogin/`), and automatically updates the `Primary IP Address` and `Backup IP Address` to the new public IP. If the update succeeds, the new baseline IP is saved, skip flag is cleared, and normal Shoonya fetching resumes without interruption. If the update fails, it falls back to setting `skip_date` and alerts via Telegram. Manual trigger available via `python main.py --update-shoonya-ip`. State: `data/shoonya_ip_state.json` (`baseline_ip`, `checked_date`, `skip_date`).
 
-### F131: Heterogeneous Option Chain Normalization (P0-CRITICAL)
-- **Symptom:** `AttributeError: 'list' object has no attribute 'get'` in `src.engine.multileg_strategy` when multi-leg trading runs on index option chains (`BANKNIFTY`, `SENSEX`).
-- **Root Cause:** Option chain data payloads passed to multi-leg strategy methods (`validate_legs`, `build_execution_plan`) varied between strike-keyed `dict[float, dict]` structures and raw `list[dict]` strike row / contract item lists.
-- **Fix:** Implemented `_normalize_option_chain()` helper in `src/engine/multileg_strategy.py` to transparently convert both `dict` and `list` payload formats into a unified strike-keyed dictionary before validating legs or building execution plans. Added unit test coverage in `tests/test_multileg_strategy.py`.
-
-### F132: OmniRouter HTTP Timeout Cap Truncation (P1-HIGH)
+### F137: OmniRouter HTTP Timeout Cap Truncation (P1-HIGH)
 - **Symptom:** LLM enrichment logs show `OmniRouter (antigravity/claude-sonnet-4-6) exception: JSON extract failed: Expecting ',' delimiter: line 19 column 6 (char 644)`.
 - **Root Cause:** In `src/engine/llm_enrichment.py`, provider HTTP requests enforced `timeout=min(remaining, provider.get("timeout", 12.0))`. The fallback default of `12.0` seconds truncated response generation mid-JSON for large schemas (e.g. `LLMMultiLegVerdict`) on OmniRouter models configured with 20s–30s provider timeouts.
 - **Fix:** Updated the timeout fallback in `_call_llm_api()` to default to `20.0` seconds (`provider.get("timeout", 20.0)`), allowing proxy-backed OmniRouter models (`antigravity/claude-sonnet-4-6`, `cx/gpt-5.5`) full timeout budget to complete complex structured JSON outputs without mid-stream truncation.
 
-### F133: Pre-Flight Data Legitimacy Gates & Theoretical Option Bounds (P0-CRITICAL)
+### F138: Pre-Flight Data Legitimacy Gates & Theoretical Option Bounds (P0-CRITICAL)
 - **Symptom:** Generic spike/gap scrubbing on option premiums dropped breakout moves and 0DTE surges, blinding the risk engine during stop-loss events. Flat 8% proximity pruned Natural Gas chains, 0DTE caused division-by-zero risks in Greeks, and soft scores risked partial multi-leg execution.
 - **Root Cause:** Inflexible single-tick heuristics and missing asset-class awareness in `data_validator.py` and `trade_plan.py`.
 - **Fix:**
@@ -191,6 +215,17 @@ TypeError: get_previous_underlying() got an unexpected keyword argument 'read_on
   4. Fractional time-to-expiry ($T > 0$) calculation with hard 0DTE new-entry cutoffs at 15:15 IST (NSE) and 23:15 IST (MCX).
   5. Implemented strict 100% binary data integrity validation (`validate_trade_leg_data`) for all target legs before multi-leg and single-leg order dispatch.
   6. Internal candle continuity validation and spot vs forming candle envelope comparison $[0.95L, 1.05H]$.
+
+### F139: R5 Option-Type Mismatch False-Positive & Sentinel Diagnostic Hallucination Guard (P1-HIGH)
+- **Symptom:** Scan Sentinel logged spurious `CRITICAL` incidents such as `BANKNIFTY: Sentinel Diagnosis: Multi-leg strategy runner hitting AttributeError when option chain returns list instead of dict structure` and `NATURALGAS: Option chain data returned as list instead of expected dictionary structure causing AttributeError in multileg strategy`, with `EVIDENCE: None` and no matching traceback in the logs.
+- **Root Cause:** Two compounding defects:
+  1. Rule `R5_OPTION_TYPE_MISMATCH` flagged `GO_SHORT + CE` and `GO_LONG + PE` as `CRITICAL` "unresolved hedge mapping". These are VALID short-premium constructions (sell call / sell put) used by MULTILEG/TFSS strategies, and `_sanitize_llm_verdict` in `llm_enrichment.py` explicitly documents all four action/instrument combos as valid. The rule assumed CORE buy-premium mapping only.
+  2. The diagnostic LLM, fed the full Knowledge Base, force-fit the resolved option-chain normalization entry (now F134) and hallucinated an `AttributeError` diagnosis with no supporting log evidence. Duplicate KB section IDs (two `F131`, two `F132`, two `F133`, two `F129`, two `F6`) made citation ambiguous and encouraged re-diagnosing already-fixed issues.
+- **Fix:**
+  1. Downgraded `R5_OPTION_TYPE_MISMATCH` from `CRITICAL` to `WARNING` in `scan_sentinel.py` and rewrote its detail to state that GO_SHORT+CE / GO_LONG+PE are valid short-premium constructions (review only if unexpected for a CORE buy-premium symbol).
+  2. Added an R5-specific guideline and an EVIDENCE REQUIREMENT to the `_run_ai_diagnostic()` prompt: R5 must never be diagnosed as F134/AttributeError/option-chain-structure; every diagnosis must quote a real log line; no error line → at most WARNING, never CRITICAL; RESOLVED/FIXED KB entries must not be re-diagnosed without a fresh matching traceback.
+  3. Deduplicated KB section IDs: option-chain normalization → `F134` (marked RESOLVED), Zero-OI anomaly → `F135`, Shoonya ISP IP rotation → `F136`, OmniRouter timeout cap → `F137`, Pre-flight data gates → `F138`. `F133` (Inverse Target/SL, referenced by the R8 guideline) is unchanged.
+- **Verification:** No real multileg `AttributeError` exists in `logs/main.log`; `_normalize_option_chain()` is in place and `validate_legs()`/`compute_book_greeks()` are safe. The only genuine `AttributeError` (ShoonyaFetcher `_increment_and_save_call_count`) was already fixed.
 
 ---
 

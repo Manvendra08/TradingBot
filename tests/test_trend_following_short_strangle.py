@@ -25,23 +25,33 @@ OLD_DTE_DELTA_BANDS = [
 import config.trend_following_short_strangle
 config.trend_following_short_strangle.DTE_DELTA_BANDS = OLD_DTE_DELTA_BANDS
 
-import config.runtime_config
-config.runtime_config.load_runtime_config = lambda: {
-    "enable_tfss_trade_blocked_rules": True,
-    "strategies": {
-        "TFSS": {
-            "enabled": True,
-            "params": {
-                "delta_entry_band": [0.10, 0.20],
-                "delta_hard_stop": 0.38,
-                "atr_trailing_window": 10,
-                "persistence_scans_required": 3,
-                "persistence_window": 5,
-                "scale_sequence": [0.5, 0.3, 0.2]
+@pytest.fixture(autouse=True)
+def mock_tfss_runtime_config():
+    tfss_cfg = {
+        "live_shadow_mode": True,
+        "live_capital_per_trade_inr": 20000,
+        "live_symbol_lots": {"NIFTY": 1, "BANKNIFTY": 1},
+        "paper_symbol_lots": {"NIFTY": 10, "BANKNIFTY": 10},
+        "scan_frequency_minutes": 15,
+        "scan_frequency_nse": 15,
+        "scan_frequency_mcx": 15,
+        "enable_tfss_trade_blocked_rules": True,
+        "strategies": {
+            "TFSS": {
+                "enabled": True,
+                "params": {
+                    "delta_entry_band": [0.10, 0.20],
+                    "delta_hard_stop": 0.38,
+                    "atr_trailing_window": 10,
+                    "persistence_scans_required": 3,
+                    "persistence_window": 5,
+                    "scale_sequence": [0.5, 0.3, 0.2]
+                }
             }
         }
     }
-}
+    with patch("config.runtime_config.load_runtime_config", return_value=tfss_cfg):
+        yield
 
 from src.models.schema import get_conn
 from src.engine.trend_following_short_strangle import (
@@ -216,7 +226,7 @@ def test_step_tfss_handoff_core(isolated_db):
     with get_conn() as conn:
         conn.execute("DELETE FROM scan_summaries")
 
-    with patch("config.runtime_config.load_runtime_config", return_value={"enable_tfss_trade_blocked_rules": True}):
+    with patch("config.runtime_config.load_runtime_config", return_value={"enable_tfss_trade_blocked_rules": True, "strategies": {"TFSS": {"enabled": True}}}):
         # Setup scan context to qualify
         scan_ctx = {
             "intel": {

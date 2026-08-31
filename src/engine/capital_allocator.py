@@ -1,8 +1,11 @@
+import concurrent.futures
 import logging
 from config.settings import LOT_SIZES
 from config.runtime_config import load_runtime_config
 
 log = logging.getLogger("nsebot.capital_allocator")
+
+_MARGIN_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="margin_calc")
 
 # Safety ceiling: auto-calculated lots will never exceed this value.
 # Prevents runaway sizing on deep-OTM / very-low-premium options where
@@ -73,10 +76,8 @@ def _fetch_broker_margin_requirement(
             "trigger_price": 0,
         }]
 
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future = executor.submit(kite.order_margins, orders)
-            result = future.result(timeout=_BROKER_MARGIN_API_TIMEOUT)
+        future = _MARGIN_EXECUTOR.submit(kite.order_margins, orders)
+        result = future.result(timeout=_BROKER_MARGIN_API_TIMEOUT)
 
         if result and isinstance(result, list) and len(result) > 0:
             margin_data = result[0]

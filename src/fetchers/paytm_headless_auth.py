@@ -37,89 +37,90 @@ def _get_paytm_jwt_headless(api_key: str, api_secret: str, email: str, password:
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
-            captured_urls: list[str] = []
-
-            # Block images/fonts for speed
-            def handle_route(route):
-                if route.request.resource_type in ("image", "font"):
-                    route.abort()
-                else:
-                    route.continue_()
-
-            page.route("**/*", handle_route)
-
-            # Capture URLs with request_token
-            page.on(
-                "request",
-                lambda r: captured_urls.append(r.url) if "request_token=" in r.url else None,
-            )
-            page.on(
-                "response",
-                lambda r: captured_urls.append(r.url) if "request_token=" in r.url else None,
-            )
-
-            # Navigate to OAuth URL
-            page.goto(authorize_url, wait_until="commit")
-            log.debug("[paytm_auth] Landed on: %s", page.url)
-
-            # Paytm Money login accepts phone-first, email, or generic text inputs.
-            # The selector covers all known variants of their OAuth page.
-            _INPUT_SELECTOR = (
-                'input[type="email"], '
-                'input[type="tel"], '
-                'input[type="text"], '
-                'input[name*="phone"], '
-                'input[name*="mobile"], '
-                'input[name*="email"], '
-                'input[placeholder*="phone" i], '
-                'input[placeholder*="mobile" i], '
-                'input[placeholder*="email" i]'
-            )
             try:
-                page.wait_for_selector(_INPUT_SELECTOR, state="visible", timeout=30000)
-            except Exception as sel_err:
-                # Dump page source for diagnosis and bail
-                try:
-                    html_snippet = page.content()[:2000]
-                except Exception:
-                    html_snippet = "<unavailable>"
-                log.error(
-                    "[paytm_auth] Login input not found after 30s. URL: %s\nPage HTML (first 2000 chars):\n%s",
-                    page.url, html_snippet,
+                page = browser.new_page()
+                captured_urls: list[str] = []
+
+                # Block images/fonts for speed
+                def handle_route(route):
+                    if route.request.resource_type in ("image", "font"):
+                        route.abort()
+                    else:
+                        route.continue_()
+
+                page.route("**/*", handle_route)
+
+                # Capture URLs with request_token
+                page.on(
+                    "request",
+                    lambda r: captured_urls.append(r.url) if "request_token=" in r.url else None,
                 )
+                page.on(
+                    "response",
+                    lambda r: captured_urls.append(r.url) if "request_token=" in r.url else None,
+                )
+
+                # Navigate to OAuth URL
+                page.goto(authorize_url, wait_until="commit")
+                log.debug("[paytm_auth] Landed on: %s", page.url)
+
+                # Paytm Money login accepts phone-first, email, or generic text inputs.
+                # The selector covers all known variants of their OAuth page.
+                _INPUT_SELECTOR = (
+                    'input[type="email"], '
+                    'input[type="tel"], '
+                    'input[type="text"], '
+                    'input[name*="phone"], '
+                    'input[name*="mobile"], '
+                    'input[name*="email"], '
+                    'input[placeholder*="phone" i], '
+                    'input[placeholder*="mobile" i], '
+                    'input[placeholder*="email" i]'
+                )
+                try:
+                    page.wait_for_selector(_INPUT_SELECTOR, state="visible", timeout=30000)
+                except Exception as sel_err:
+                    # Dump page source for diagnosis and bail
+                    try:
+                        html_snippet = page.content()[:2000]
+                    except Exception:
+                        html_snippet = "<unavailable>"
+                    log.error(
+                        "[paytm_auth] Login input not found after 30s. URL: %s\nPage HTML (first 2000 chars):\n%s",
+                        page.url, html_snippet,
+                    )
+                    return None
+
+                # Fill credentials — try email first, then tel/text (phone-first flow)
+                email_inputs = page.locator('input[type="email"]')
+                tel_inputs   = page.locator('input[type="tel"]')
+                if email_inputs.count() > 0:
+                    email_inputs.first.fill(email)
+                elif tel_inputs.count() > 0:
+                    # Phone-first flow: fill phone number (use email field value which
+                    # may be a phone number depending on user config)
+                    tel_inputs.first.fill(email)
+                else:
+                    page.locator('input[type="text"]').first.fill(email)
+
+                password_inputs = page.locator('input[type="password"]')
+                if password_inputs.count() > 0:
+                    password_inputs.first.fill(password)
+
+                # Click login button
+                try:
+                    login_button = page.locator('button:has-text("Login"), button:has-text("SIGN IN"), button:has-text("Sign In"), [type="submit"]')
+                    if login_button.count() > 0:
+                        login_button.first.click()
+                        # Wait for redirect
+                        page.wait_for_url("*request_token=*", timeout=45000)
+                except Exception as click_err:
+                    log.debug("[paytm_auth] Click/redirect error (may still have redirected): %s", click_err)
+
+                final_url = page.url
+                log.debug("[paytm_auth] Post-login URL: %s", final_url)
+            finally:
                 browser.close()
-                return None
-
-            # Fill credentials — try email first, then tel/text (phone-first flow)
-            email_inputs = page.locator('input[type="email"]')
-            tel_inputs   = page.locator('input[type="tel"]')
-            if email_inputs.count() > 0:
-                email_inputs.first.fill(email)
-            elif tel_inputs.count() > 0:
-                # Phone-first flow: fill phone number (use email field value which
-                # may be a phone number depending on user config)
-                tel_inputs.first.fill(email)
-            else:
-                page.locator('input[type="text"]').first.fill(email)
-
-            password_inputs = page.locator('input[type="password"]')
-            if password_inputs.count() > 0:
-                password_inputs.first.fill(password)
-
-            # Click login button
-            try:
-                login_button = page.locator('button:has-text("Login"), button:has-text("SIGN IN"), button:has-text("Sign In"), [type="submit"]')
-                if login_button.count() > 0:
-                    login_button.first.click()
-                    # Wait for redirect
-                    page.wait_for_url("*request_token=*", timeout=45000)
-            except Exception as click_err:
-                log.debug("[paytm_auth] Click/redirect error (may still have redirected): %s", click_err)
-
-            final_url = page.url
-            log.debug("[paytm_auth] Post-login URL: %s", final_url)
-            browser.close()
 
             # Extract request_token from URL candidates
             for candidate in [final_url] + captured_urls:

@@ -59,7 +59,7 @@ class GreeksCalculator:
 
         total_seconds = (expiry_datetime - now).total_seconds()
         if total_seconds <= 0:
-            return 1e-6  # Prevent division by zero close to expiry
+            return 0.0  # Expired: T=0, callers should handle expired options separately
             
         return total_seconds / (365 * 24 * 60 * 60)
 
@@ -78,6 +78,9 @@ class GreeksCalculator:
         between BSM and Black-76 based on exchange definition.
         """
         t = self.get_time_to_expiry(expiry_date, exchange)
+        if t <= 0 or underlying_price <= 0 or strike_price <= 0:
+            return {"iv": 0.0, "delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0}
+
         flag = "call" if option_type.lower() in ("ce", "call") else "put"
         
         # 1. Fallback IV Newton-Raphson Solver if IV is not supplied by stream
@@ -85,7 +88,7 @@ class GreeksCalculator:
             iv = self._solve_implied_vol(option_price, underlying_price, strike_price, t, flag, exchange)
 
         if iv <= 1e-4:
-            return {"iv": 0, "delta": 0, "gamma": 0, "theta": 0, "vega": 0}
+            return {"iv": 0.0, "delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0}
 
         # 2. Branch calculation engines based on asset category rules
         if exchange.upper() == "MCX":
@@ -95,6 +98,9 @@ class GreeksCalculator:
 
     def _calculate_bsm(self, S: float, K: float, T: float, sigma: float, flag: str) -> dict:
         """Black-Scholes-Merton Greek Engine for Index/Equity Spot."""
+        if S <= 0 or K <= 0 or T <= 0 or sigma <= 0:
+            return {"iv": 0.0, "delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0}
+
         sqrt_T = math.sqrt(T)
         d1 = (math.log(S / K) + (self.r + 0.5 * sigma ** 2) * T) / (sigma * sqrt_T)
         d2 = d1 - sigma * sqrt_T
@@ -110,18 +116,21 @@ class GreeksCalculator:
             theta = (- (S * n_d1 * sigma) / (2 * sqrt_T) + self.r * K * exp_rt * norm.cdf(-d2))
 
         gamma = n_d1 / (S * sigma * sqrt_T)
-        vega = S * sqrt_T * n_d1
+        vega = S * sqrt_T * n_d1  # Raw vega (not scaled)
 
         return {
             "iv": round(sigma * 100, 2),
             "delta": round(delta, 4),
             "gamma": round(gamma, 6),
             "theta": round(theta / 365, 2),
-            "vega": round(vega / 100, 2)
+            "vega": round(vega / 100, 2)  # Scale by 1/100 for display (per 1% vol change)
         }
 
     def _calculate_black76(self, F: float, K: float, T: float, sigma: float, flag: str) -> dict:
         """Black-76 Greek Engine for MCX Futures Contracts."""
+        if F <= 0 or K <= 0 or T <= 0 or sigma <= 0:
+            return {"iv": 0.0, "delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0}
+
         sqrt_T = math.sqrt(T)
         d1 = (math.log(F / K) + (0.5 * sigma ** 2) * T) / (sigma * sqrt_T)
         d2 = d1 - sigma * sqrt_T
@@ -151,27 +160,28 @@ class GreeksCalculator:
 
     def _solve_implied_vol(self, target_price: float, underlying: float, K: float, T: float, flag: str, exchange: str) -> float:
         """Robust internal numeric engine to derive IV without crashing external scripts."""
+        if target_price <= 0 or underlying <= 0 or K <= 0 or T <= 0:
+            return 0.0
+
         sigma = 0.20
+        exp_rt = math.exp(-self.r * T)
+        sqrt_T = math.sqrt(T)
+
         for _ in range(25):
+            d1 = (math.log(underlying / K) + (0.5 * sigma ** 2 if exchange.upper() == "MCX" else (self.r + 0.5 * sigma ** 2)) * T) / (sigma * sqrt_T)
+            d2 = d1 - sigma * sqrt_T
+            n_d1 = norm.pdf(d1)
+
             if exchange.upper() == "MCX":
-                res = self._calculate_black76(underlying, K, T, sigma, flag)
-                # Reverse engine back to raw analytical option price
-                exp_rt = math.exp(-self.r * T)
-                sqrt_T = math.sqrt(T)
-                d1 = (math.log(underlying / K) + (0.5 * sigma ** 2) * T) / (sigma * sqrt_T)
-                d2 = d1 - sigma * sqrt_T
                 current_price = exp_rt * (underlying * norm.cdf(d1) - K * norm.cdf(d2)) if flag == "call" else exp_rt * (K * norm.cdf(-d2) - underlying * norm.cdf(-d1))
+                vega = underlying * exp_rt * sqrt_T * n_d1
             else:
-                res = self._calculate_bsm(underlying, K, T, sigma, flag)
-                sqrt_T = math.sqrt(T)
-                d1 = (math.log(underlying / K) + (self.r + 0.5 * sigma ** 2) * T) / (sigma * sqrt_T)
-                d2 = d1 - sigma * sqrt_T
-                current_price = underlying * norm.cdf(d1) - K * math.exp(-self.r * T) * norm.cdf(d2) if flag == "call" else K * math.exp(-self.r * T) * norm.cdf(-d2) - underlying * norm.cdf(-d1)
+                current_price = underlying * norm.cdf(d1) - K * exp_rt * norm.cdf(d2) if flag == "call" else K * exp_rt * norm.cdf(-d2) - underlying * norm.cdf(-d1)
+                vega = underlying * sqrt_T * n_d1
 
             diff = current_price - target_price
             if abs(diff) < 1e-4:
                 return sigma
-            vega = res["vega"] * 100.0
             if vega > 1e-3:
                 sigma -= diff / vega
             else:

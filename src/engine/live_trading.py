@@ -2039,10 +2039,13 @@ def run_live_timeframe_strategy(
 
 
 def sync_direct_kite_positions() -> None:
-    from config.runtime_config import load_runtime_config
+    from config.runtime_config import is_broker_trade_enabled, load_runtime_config
+
+    if not is_broker_trade_enabled():
+        log.debug("[live_trading] Broker trade is disabled (Broker OFF) — skipping Kite position sync")
+        return
 
     config = load_runtime_config()
-    shadow_mode = config.get("live_shadow_mode", True)
     if not config.get("manage_direct_kite_positions", False):
         return
 

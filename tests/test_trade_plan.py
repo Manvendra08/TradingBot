@@ -193,9 +193,9 @@ class TestConvertUnderlyingSlToPremium:
         )
         # default delta = 0.20 (BUG-022)
         # sl = 200.0 + 0.20 * 200 = 240.0
-        # tgt = 200.0 - 0.20 * 200 = 160.0
+        # tgt = min(200.0 - 0.20 * 200, 200 * 0.65) = 130.0 (35% time decay target)
         assert sl == 240.0
-        assert tgt == 160.0
+        assert tgt == 130.0
 
     def test_buy_option_with_custom_delta(self):
         rows = [{"strike": 22000.0, "option_type": "CE", "delta": 0.6}]
@@ -220,4 +220,4 @@ class TestConvertUnderlyingSlToPremium:
             0.0, 0.0, 0.0, 200.0, "SELL", "CE"
         )
         assert sl == 300.0   # 200 * 1.50
-        assert tgt == 120.0  # 200 * 0.60
+        assert tgt == 130.0  # 200 * 0.65 (35% time decay)

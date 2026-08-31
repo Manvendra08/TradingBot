@@ -519,7 +519,7 @@ def test_timeframe_strategy_dead_trade_exit():
         assert len(trades) == 1
         trade = dict(trades[0])
         assert trade["status"] == "Dead Trade"
-        assert "Dead trade exit" in trade["reason"]
+        assert "Dead trade exit" in (trade.get("exit_reason") or trade.get("reason") or "")
 
 
 def test_timeframe_strategy_pyramiding():
@@ -683,7 +683,7 @@ def test_timeframe_strategy_exit_long_large_move_candle_only():
             "SELECT * FROM paper_trades WHERE symbol='NIFTY'"
         ).fetchone()
         assert trade["status"] == "TF-1H-Cross"
-        assert "Large reversal move" in trade["reason"]
+        assert "Large reversal move" in (trade["exit_reason"] or trade["reason"] or "")
 
 
 def test_timeframe_strategy_exit_long_small_move_with_oi():
@@ -764,7 +764,7 @@ def test_timeframe_strategy_exit_long_small_move_with_oi():
             "SELECT * FROM paper_trades WHERE symbol='NIFTY'"
         ).fetchone()
         assert trade["status"] == "TF-1H-Cross"
-        assert "Short OI bias" in trade["reason"]
+        assert "Short OI bias" in (trade["exit_reason"] or trade["reason"] or "")
 
 
 def test_timeframe_strategy_exit_long_small_move_no_oi():
@@ -1294,4 +1294,4 @@ def test_timeframe_strategy_llm_gate_d_reversal_exit():
     assert res is not None
     assert res["action"] == "CLOSED"
     assert res["trade"]["status"] == "LLM_REVERSAL"
-    assert "LLM sentiment reversal" in res["trade"]["reason"]
+    assert "LLM sentiment reversal" in (res["trade"].get("exit_reason") or res["trade"].get("reason") or res.get("reason") or "")

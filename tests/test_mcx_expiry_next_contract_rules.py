@@ -11,21 +11,20 @@ IST = pytz.timezone("Asia/Kolkata")
 class TestMCXExpiryNextContractRules:
     """Tests for MCX monthly expiry pre-fetch (<5 days) and expiry day (DTE=0) next-contract OI verdict swap."""
 
-    @patch("src.fetchers.router.fetch_option_chain")
+    @patch("src.engine.pipeline.fetch_option_chain")
     def test_mcx_prefetch_triggered_when_dte_less_than_5(self, mock_fetch):
-        today_str = datetime.now(IST).strftime("%Y-%m-%d")
-        exp_4d_str = "2026-07-27"  # 4 days away
-        next_exp_str = "2026-08-25"
+        from datetime import timedelta
+        today_dt = datetime.now(IST).date()
+        today_str = today_dt.strftime("%Y-%m-%d")
+        exp_4d_str = (today_dt + timedelta(days=4)).strftime("%Y-%m-%d")  # 4 days away
+        next_exp_str = (today_dt + timedelta(days=32)).strftime("%Y-%m-%d")
 
-        mock_oc = MagicMock()
-        mock_oc.ok = True
-        mock_oc.data = {
+        mock_fetch.return_value = {
             "underlying_price": 280.0,
             "expiry": exp_4d_str,
             "all_expiries": [exp_4d_str, next_exp_str],
-            "strikes": [{"strike": 280.0, "option_type": "CE", "ltp": 10.0}],
+            "strikes": [{"strike": 280.0 + i, "option_type": "CE", "ltp": 10.0} for i in range(5)],
         }
-        mock_fetch.return_value = mock_oc
 
         packet = _prefetch_symbol_data("NATURALGAS", today_str)
 
@@ -39,8 +38,10 @@ class TestMCXExpiryNextContractRules:
     def test_mcx_expiry_day_swaps_core_engine_verdict_to_next_expiry(
         self, mock_send, mock_gen_intel, mock_detect
     ):
-        today_str = datetime.now(IST).strftime("%Y-%m-%d")
-        next_exp_str = "2026-08-25"
+        from datetime import timedelta
+        today_dt = datetime.now(IST).date()
+        today_str = today_dt.strftime("%Y-%m-%d")
+        next_exp_str = (today_dt + timedelta(days=28)).strftime("%Y-%m-%d")
 
         mock_detect.return_value = ([], {"expiry": next_exp_str, "underlying": 280.0})
         mock_gen_intel.return_value = {"telegram_text": "OK", "verdict_label": "Short Buildup", "confidence": 80}
@@ -49,14 +50,14 @@ class TestMCXExpiryNextContractRules:
             "underlying_price": 280.0,
             "expiry": today_str,
             "all_expiries": [today_str, next_exp_str],
-            "strikes": [{"strike": 280.0, "option_type": "CE", "ltp": 1.0}],
+            "strikes": [{"strike": 280.0 + i, "option_type": "CE", "ltp": 1.0} for i in range(5)],
         }
 
         next_oc = {
             "underlying_price": 280.0,
             "expiry": next_exp_str,
             "all_expiries": [today_str, next_exp_str],
-            "strikes": [{"strike": 280.0, "option_type": "CE", "ltp": 15.0}],
+            "strikes": [{"strike": 280.0 + i, "option_type": "CE", "ltp": 15.0} for i in range(5)],
         }
 
         mock_future = MagicMock()

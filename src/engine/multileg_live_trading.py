@@ -41,8 +41,18 @@ def _dte_from_expiry(expiry: str) -> int:
 
 
 def _get_stop_loss_threshold_rupees(book: dict, legs: list[dict], symbol: str) -> float:
-    """Calculate the exact Stop Loss threshold in Rupees for a multi-leg book."""
+    """Calculate the exact Stop Loss threshold in Rupees for a multi-leg book.
+    
+    For defined-risk strategies (iron condor, spreads), use the max_loss value.
+    For undefined-risk strategies (short strangle/straddle), use the actual 
+    broker margin requirement (SPAN + exposure) as the stop loss threshold,
+    which represents the real capital at risk. Falls back to a multiple of 
+    net premium if the broker API is unavailable.
+    """
     from config.settings import LOT_SIZES
+    from src.engine.capital_allocator import _fetch_broker_margin_requirement
+    from config.settings import EXCHANGES
+    from src.engine.symbol_resolver import get_kite_exchange
 
     base_symbol = symbol.upper().split()[0] if symbol else symbol.upper()
     lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_symbol, 1))
@@ -57,11 +67,66 @@ def _get_stop_loss_threshold_rupees(book: dict, legs: list[dict], symbol: str) -
     is_defined_risk = strategy_type in ("IRON_CONDOR", "BEAR_CALL_SPREAD", "BULL_PUT_SPREAD")
 
     if is_defined_risk and max_loss_val > 0 and (underlying <= 0 or max_loss_val < underlying * 0.4):
+        # Defined risk strategies: use max_loss as the risk ceiling
         total_max_loss_rupees = max_loss_val * lot_size * total_lots * stop_loss_pct
     else:
-        # Undefined risk / short strangle / straddle / fallback:
-        # Cap loss at stop_loss_pct (default 1.5x = 150%) of net premium collected
-        total_max_loss_rupees = max(net_premium, 1.0) * lot_size * total_lots * stop_loss_pct
+        # Undefined risk strategies (short strangle/straddle): use actual broker margin
+        # as the stop loss threshold. This represents the real capital at risk.
+        total_margin = 0.0
+        margin_fetched = False
+        
+        try:
+            exchange = EXCHANGES.get(symbol, "NFO")
+            kite_exchange = get_kite_exchange(symbol)
+            
+            for leg in legs:
+                leg_side = (leg.get("side") or "").upper()
+                if leg_side != "SELL":
+                    continue  # Only SELL legs contribute to undefined risk
+                
+                leg_lots = int(leg.get("lots") or 1)
+                tradingsymbol = leg.get("tradingsymbol") or leg.get("tradingsymbol_kite")
+                strike = float(leg.get("strike") or 0)
+                option_type = leg.get("option_type") or ""
+                premium = float(leg.get("entry_premium") or leg.get("premium") or 0.0)
+                
+                if not tradingsymbol or premium <= 0:
+                    continue
+                    
+                # Fetch actual broker margin for this SELL leg
+                margin = _fetch_broker_margin_requirement(
+                    symbol=symbol,
+                    tradingsymbol=tradingsymbol,
+                    exchange=kite_exchange,
+                    transaction_type="SELL",
+                    quantity=leg_lots,
+                    premium=premium,
+                )
+                
+                if margin and margin > 0:
+                    total_margin += margin
+                    margin_fetched = True
+                else:
+                    # Fallback: use static multiplier for this leg
+                    total_margin += max(premium, 1.0) * lot_size * stop_loss_pct
+            
+            if margin_fetched and total_margin > 0:
+                total_max_loss_rupees = total_margin * stop_loss_pct
+            else:
+                # Fallback: use static multiplier of net premium
+                total_max_loss_rupees = max(net_premium, 1.0) * lot_size * total_lots * stop_loss_pct
+                log.warning(
+                    "[multileg-live] %s: broker margin API unavailable for undefined-risk book; "
+                    "falling back to %.1fx net premium (₹%.0f)",
+                    symbol, stop_loss_pct, total_max_loss_rupees
+                )
+        except Exception as e:
+            log.warning(
+                "[multileg-live] %s: error fetching broker margin for SL threshold: %s; "
+                "falling back to %.1fx net premium",
+                symbol, e, stop_loss_pct
+            )
+            total_max_loss_rupees = max(net_premium, 1.0) * lot_size * total_lots * stop_loss_pct
 
     return max(total_max_loss_rupees, 1.0)
 
@@ -182,25 +247,18 @@ def _run_multileg_live_strategy_inner(
         # Re-fetch open books in case monitoring closed a book
         open_books = get_open_books_for_symbol(symbol)
 
-    # ── 5. Check book limit & attempt new entry ──────────────────────────
-    rconf = load_runtime_config()
-    max_books = rconf.get("max_concurrent_multileg_books_per_symbol", 3)
-
-    if len(open_books) < max_books:
-        new_res = _attempt_new_live_entry(
-            symbol,
-            scan_context,
-            digest_id,
-            intel,
-            ai_verdict,
-            ai_mode,
-            now_iso,
-            open_books=open_books,
-        )
-        return new_res if new_res else mon_res
-
-    log.info("[multileg-live] %s: %d open books exist (max=%d) — skipping new entry attempt", symbol, len(open_books), max_books)
-    return mon_res or {"action": "HOLD", "reason": f"Max open multileg books ({max_books}) reached"}
+    # ── 5. Attempt new entry ─────────────────────────────────────────────
+    new_res = _attempt_new_live_entry(
+        symbol,
+        scan_context,
+        digest_id,
+        intel,
+        ai_verdict,
+        ai_mode,
+        now_iso,
+        open_books=open_books,
+    )
+    return new_res if new_res else mon_res
 
 
 # ── Open Book Monitoring (Live) ──────────────────────────────────────────────
@@ -403,46 +461,28 @@ def _monitor_open_books_live(
                     reasoning = advice.get("reasoning", "")
 
                     if action == "CLOSE":
+                        # AI exit advice is advisory only. Model output must never
+                        # bypass deterministic profit, stop-loss, or expiry gates.
                         log.info(
-                            "[multileg-live] %s: book %s — AI recommends CLOSE: %s",
+                            "[multileg-live] %s: book %s — AI recommends CLOSE (advisory only; no auto-exit): %s",
                             symbol,
                             book_id,
                             reasoning,
                         )
-                        _close_live_book(
-                            symbol, book_id, legs, now_iso,
-                            "CLOSED",
-                            f"AI_EXIT: {reasoning[:200]}",
-                            total_pnl,
-                        )
-                        closed_actions.append({
-                            "action": "CLOSED",
-                            "book_id": book_id,
-                            "reason": f"AI exit advice: {reasoning[:100]}",
-                            "total_pnl": total_pnl,
-                        })
-                        continue
-
-                    if action == "ADJUST":
-                        adjustment_details = advice.get("adjustment", {})
+                    elif action == "ADJUST":
+                        adjustment_details = advice.get("adjustment")
                         if adjustment_details and adjustment_count < 3:
+                            # Do not consume an adjustment slot: no broker order
+                            # is placed by this advisory path.
                             log.info(
-                                "[multileg-live] %s: book %s — AI recommends ADJUST: %s",
+                                "[multileg-live] %s: book %s — AI recommends ADJUST (advisory only; no auto-adjust): %s",
                                 symbol,
                                 book_id,
                                 reasoning,
                             )
-                            increment_adjustment_count(book_id)
-                            closed_actions.append({
-                                "action": "ADJUSTED",
-                                "book_id": book_id,
-                                "reason": reasoning[:200],
-                                "details": adjustment_details,
-                            })
-                            continue
                         else:
                             log.info(
-                                "[multileg-live] %s: book %s — ADJUST suggested but max adjustments (%d) reached",
+                                "[multileg-live] %s: book %s — ADJUST advisory ignored; max adjustments (%d) reached or no details",
                                 symbol,
                                 book_id,
                                 adjustment_count,
@@ -749,15 +789,12 @@ def _attempt_new_live_entry(
     now_iso: str,
     open_books: list[dict],
 ) -> dict | None:
-    """Attempt to enter a new multi-leg book via live Kite orders.
+    """Attempt to enter a new multi-leg book via live Kite orders."""
+    legit = (scan_context or {}).get("data_legitimacy") or {}
+    if (isinstance(legit, dict) and legit.get("is_0dte_cutoff")) or (scan_context or {}).get("is_0dte_cutoff"):
+        log.info("[multileg-live] %s: 0DTE entry cutoff reached — new entries prohibited", symbol)
+        return {"action": "BLOCKED_0DTE_CUTOFF", "reason": "0DTE entry cutoff reached — new entries prohibited"}
 
-    Flow:
-        1. Get LLM verdict (strategy type + legs)
-        2. Validate legs against strategy constraints
-        3. Compute Greeks, risk profile, margin
-        4. Check book conflicts and entry quality
-        5. Advisory mode: log only; full mode: place sequential Kite orders
-    """
     from config.multileg_strategies import (
         MAX_BOOK_MARGIN,
         MAX_NET_DELTA,

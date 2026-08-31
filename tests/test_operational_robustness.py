@@ -108,7 +108,7 @@ def test_dhan_resolver():
         res = get_dhan_security_id("NATURALGAS")
         assert res == 99999
         # Check cache
-        assert _CACHE[("NATURALGAS", None, None)] == 99999
+        assert _CACHE[("NATURALGAS", None, None)][0] == 99999
 
 
 def test_pnl_fallback_time_value():

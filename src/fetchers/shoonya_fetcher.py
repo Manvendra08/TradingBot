@@ -386,120 +386,128 @@ class ShoonyaFetcher(BaseFetcher):
         2. Fill: #lgnusrid, #lgnpwd (raw password), #lgnotp (TOTP), click LOGIN button
         3. Capture auth_code from post-login redirect URL
         """
-        try:
-            from playwright.sync_api import sync_playwright
-        except ImportError:
-            log.error(
-                "[shoonya] playwright not installed. Run: .venv\\Scripts\\pip install playwright && .venv\\Scripts\\playwright install chromium"
-            )
-            return None
+        import concurrent.futures
 
-        authorize_url = f"https://api.shoonya.com/OAuthlogin/authorize/oauth?client_id={self.vendor_code}"
-        log.info("[shoonya] Launching headless browser for OAuth login...")
-        auth_code: str | None = None
-
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-                captured_urls: list[str] = []
-
-                # Block only images and fonts to save bandwidth and speed up page load
-                def handle_route(route):
-                    req_type = route.request.resource_type
-                    if req_type in ("image", "font"):
-                        route.abort()
-                    else:
-                        route.continue_()
-
-                page.route("**/*", handle_route)
-
-                # Listen to requests and responses to capture code= even on failed page navigations (e.g. net::ERR_NAME_NOT_RESOLVED)
-                page.on(
-                    "request",
-                    lambda r: captured_urls.append(r.url) if "code=" in r.url else None,
+        def _worker() -> str | None:
+            try:
+                from playwright.sync_api import sync_playwright
+            except ImportError:
+                log.error(
+                    "[shoonya] playwright not installed. Run: .venv\\Scripts\\pip install playwright && .venv\\Scripts\\playwright install chromium"
                 )
-                page.on(
-                    "response",
-                    lambda r: captured_urls.append(r.url) if "code=" in r.url else None,
-                )
+                return None
 
-                try:
-                    # Step 1: Navigate — will redirect to /investor-entry-level/login
-                    page.goto(authorize_url, wait_until="commit", timeout=30000)
-                    log.debug("[shoonya] Landed on: %s", page.url)
+            authorize_url = f"https://api.shoonya.com/OAuthlogin/authorize/oauth?client_id={self.vendor_code}"
+            log.info("[shoonya] Launching headless browser for OAuth login...")
+            auth_code: str | None = None
 
-                    # Wait for React to render the login form (allow up to 30s for slow networks/9.5MB JS load)
-                    page.wait_for_selector("#lgnusrid", state="visible", timeout=30000)
+            try:
+                with sync_playwright() as p:
+                    browser = p.chromium.launch(headless=True)
+                    page = browser.new_page()
+                    captured_urls: list[str] = []
 
-                    # Generate fresh TOTP right before filling (avoids expiry during navigation)
-                    totp = pyotp.TOTP(self.totp_key).now()
+                    # Block only images and fonts to save bandwidth and speed up page load
+                    def handle_route(route):
+                        req_type = route.request.resource_type
+                        if req_type in ("image", "font"):
+                            route.abort()
+                        else:
+                            route.continue_()
 
-                    # Step 2: Fill credentials using confirmed field selectors
-                    page.locator("#lgnusrid").fill(self.user_id)
-                    page.locator("#lgnpwd").fill(self.password)
-                    page.locator("#lgnotp").fill(totp)
+                    page.route("**/*", handle_route)
 
-                    # Step 3: Click Login (wrap in try-except in case the redirect target domain does not resolve)
-                    try:
-                        page.locator("button:has-text('LOGIN')").click()
-                        # Step 4: Wait for redirect containing auth_code
-                        page.wait_for_url("*code=*", timeout=15000)
-                    except Exception as click_err:
-                        log.debug(
-                            "[shoonya] Browser encountered navigation or redirect error: %s",
-                            click_err,
-                        )
-                except Exception as page_exc:
-                    log.warning("[shoonya] Playwright OAuth login page interaction failed/timed out: %s", page_exc)
-                    try:
-                        import os
-                        os.makedirs("data", exist_ok=True)
-                        screenshot_path = "data/shoonya_login_error.png"
-                        page.screenshot(path=screenshot_path)
-                        log.debug("[shoonya] Saved login failure screenshot to %s", screenshot_path)
-                    except Exception as ss_err:
-                        log.debug("[shoonya] Could not save login failure screenshot: %s", ss_err)
-                    return None
-                finally:
-                    final_url = page.url
-                    body_text = ""
-                    try:
-                        body_text = page.locator("body").inner_text()
-                    except Exception:
-                        pass
-                    browser.close()
-
-                    if "blocked" in body_text.lower() or "unsuccessful login attempts" in body_text.lower():
-                        log.error(
-                            "[shoonya] ACCOUNT BLOCKED: Shoonya user '%s' is blocked by broker due to unsuccessful login attempts. Unblock via PAN + DOB on Shoonya portal: https://api.shoonya.com/OAuthlogin/investor-entry-level/login?api_key=%s",
-                            self.user_id,
-                            self.vendor_code,
-                        )
-                        self._login_failed_until = time.time() + 900
-                        return None
-
-                    log.debug("[shoonya] Post-login URL: %s", final_url)
-
-                # Extract auth_code from URL candidates (both final URL and any intermediate requests)
-                for candidate in [final_url] + captured_urls:
-                    m = re.search(r"[?&]code=([A-Za-z0-9_\-]+)", candidate)
-                    if m:
-                        auth_code = m.group(1)
-                        log.info("[shoonya] auth_code captured successfully")
-                        break
-
-                if not auth_code:
-                    log.error(
-                        "[shoonya] auth_code not found. Final URL: %s, Captured URLs: %s",
-                        final_url,
-                        captured_urls,
+                    # Listen to requests and responses to capture code= even on failed page navigations (e.g. net::ERR_NAME_NOT_RESOLVED)
+                    page.on(
+                        "request",
+                        lambda r: captured_urls.append(r.url) if "code=" in r.url else None,
+                    )
+                    page.on(
+                        "response",
+                        lambda r: captured_urls.append(r.url) if "code=" in r.url else None,
                     )
 
-        except Exception as exc:
-            log.exception("[shoonya] Playwright OAuth login failed: %s", exc)
+                    try:
+                        # Step 1: Navigate — will redirect to /investor-entry-level/login
+                        page.goto(authorize_url, wait_until="commit", timeout=30000)
+                        log.debug("[shoonya] Landed on: %s", page.url)
 
-        return auth_code
+                        # Wait for React to render the login form (allow up to 30s for slow networks/9.5MB JS load)
+                        page.wait_for_selector("#lgnusrid", state="visible", timeout=30000)
+
+                        # Generate fresh TOTP right before filling (avoids expiry during navigation)
+                        totp = pyotp.TOTP(self.totp_key).now()
+
+                        # Step 2: Fill credentials using confirmed field selectors
+                        page.locator("#lgnusrid").fill(self.user_id)
+                        page.locator("#lgnpwd").fill(self.password)
+                        page.locator("#lgnotp").fill(totp)
+
+                        # Step 3: Click Login (wrap in try-except in case the redirect target domain does not resolve)
+                        try:
+                            page.locator("button:has-text('LOGIN')").click()
+                            # Step 4: Wait for redirect containing auth_code
+                            page.wait_for_url("*code=*", timeout=15000)
+                        except Exception as click_err:
+                            log.debug(
+                                "[shoonya] Browser encountered navigation or redirect error: %s",
+                                click_err,
+                            )
+                    except Exception as page_exc:
+                        log.warning("[shoonya] Playwright OAuth login page interaction failed/timed out: %s", page_exc)
+                        try:
+                            import os
+                            os.makedirs("data", exist_ok=True)
+                            screenshot_path = "data/shoonya_login_error.png"
+                            page.screenshot(path=screenshot_path)
+                            log.debug("[shoonya] Saved login failure screenshot to %s", screenshot_path)
+                        except Exception as ss_err:
+                            log.debug("[shoonya] Could not save login failure screenshot: %s", ss_err)
+                        return None
+                    finally:
+                        final_url = page.url
+                        body_text = ""
+                        try:
+                            body_text = page.locator("body").inner_text()
+                        except Exception:
+                            pass
+                        browser.close()
+
+                        if "blocked" in body_text.lower() or "unsuccessful login attempts" in body_text.lower():
+                            log.error(
+                                "[shoonya] ACCOUNT BLOCKED: Shoonya user '%s' is blocked by broker due to unsuccessful login attempts. Unblock via PAN + DOB on Shoonya portal: https://api.shoonya.com/OAuthlogin/investor-entry-level/login?api_key=%s",
+                                self.user_id,
+                                self.vendor_code,
+                            )
+                            self._login_failed_until = time.time() + 900
+                            return None
+
+                        log.debug("[shoonya] Post-login URL: %s", final_url)
+
+                    # Extract auth_code from URL candidates (both final URL and any intermediate requests)
+                    for candidate in [final_url] + captured_urls:
+                        m = re.search(r"[?&]code=([A-Za-z0-9_\-]+)", candidate)
+                        if m:
+                            auth_code = m.group(1)
+                            log.info("[shoonya] auth_code captured successfully")
+                            break
+
+                    if not auth_code:
+                        log.error(
+                            "[shoonya] auth_code not found. Final URL: %s, Captured URLs: %s",
+                            final_url,
+                            captured_urls,
+                        )
+
+            except Exception as exc:
+                log.exception("[shoonya] Playwright OAuth login failed: %s", exc)
+
+            return auth_code
+
+        # Run Playwright in an isolated thread to decouple from asyncio loops in FastAPI/Uvicorn
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_worker)
+            return future.result()
 
     def _exchange_for_token(self, auth_code: str) -> str | None:
         """Exchange auth_code for access_token via GenAcsTok."""

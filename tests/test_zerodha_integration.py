@@ -39,6 +39,7 @@ def test_get_current_totp_with_secret():
 
 def test_runtime_config_io():
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+        f.write(b"{}")
         tmp_config_path = f.name
         
     try:

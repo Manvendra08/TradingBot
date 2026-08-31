@@ -865,7 +865,28 @@ def run_playbooks(snap: HealthSnapshot, sm: StateMachine) -> list[PlaybookResult
                 _escalate("P04", "Shoonya re-auth failed 3×. Trading PAUSED.", critical=True)
         else:
             # P04: Broker down (502/Timeout) → pause trading
+            # ONLY fire if the health stamp is recent (within last 5 minutes).
+            # Stale health stamps (from previous scans) should not trigger trading pause.
             is_broker_down = "502" in detail or "timeout" in detail
+            if is_broker_down:
+                # Verify freshness: parse timestamp from shoonya_state
+                try:
+                    ts_str = shoonya_state.timestamp  # ISO8601 UTC
+                    if ts_str:
+                        from datetime import datetime, timezone
+                        ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                        age_sec = (datetime.now(timezone.utc) - ts).total_seconds()
+                        if age_sec > 300:  # 5 minutes
+                            log.debug(
+                                "P04: Shoonya 502/timeout health stamp is stale (%d seconds old) — not escalating",
+                                age_sec,
+                            )
+                            is_broker_down = False
+                except Exception as e:
+                    log.warning("P04: Failed to parse health stamp timestamp: %s", e)
+                    # Fall back to assuming stale if parsing fails
+                    is_broker_down = False
+
             if is_broker_down:
                 _set_trading_paused()
                 results.append(PlaybookResult(action_taken="P04_broker_down", escalated=True, critical=True))

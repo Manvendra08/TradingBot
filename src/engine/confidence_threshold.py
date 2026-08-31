@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from pathlib import Path
 
@@ -138,24 +139,28 @@ def _write_derived(threshold, n) -> None:
     )
 
 
+_CACHE_LOCK = threading.Lock()
+
+
 def _cached_count() -> int:
-    now = time.time()
-    if now - _cache.get("count_ts", 0.0) > COUNT_CACHE_TTL or _cache.get("n", -1) < 0:
-        _cache["n"] = _count_history()
-        _cache["count_ts"] = now
-    return _cache["n"]
+    with _CACHE_LOCK:
+        now = time.time()
+        if now - _cache.get("count_ts", 0.0) > COUNT_CACHE_TTL or _cache.get("n", -1) < 0:
+            _cache["n"] = _count_history()
+            _cache["count_ts"] = now
+        return _cache["n"]
 
 
 def get_effective_min_confidence() -> float:
     """Return the confidence floor for ``build_paper_trade_plan``.
 
-    * Flag ``derive_min_confidence`` False AND ``< 50`` scored trades ->
+    * Flag ``derive_min_confidence`` False AND ``< 100`` scored trades ->
       hardcoded default.
-    * Flag False but ``>= 50`` scored trades -> **auto-promote**: the
+    * Flag False but ``>= 100`` scored trades -> **auto-promote**: the
       flag is flipped to ``True`` in ``runtime_config.json`` (persisted),
       then derivation runs. This lets the bot switch to data-driven gating
       automatically once enough history exists.
-    * Flag True but ``< 50`` scored trades -> default (avoid overfitting).
+    * Flag True but ``< 100`` scored trades -> default (avoid overfitting).
     * Otherwise derive the best qualifying threshold (cached, refreshed
       when trade count grows), falling back to default if none qualifies.
     """

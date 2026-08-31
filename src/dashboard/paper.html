@@ -3603,6 +3603,12 @@
                 renderTrades(sorted);
             }
 
+            const expandedTradeKeys = new Set();
+
+            function getTradeKey(t, idx) {
+                return t.id != null ? String(t.id) : (String(t.opened_at || "") + "_" + String(t.symbol || "") + "_" + idx);
+            }
+
             function renderTrades(rows) {
                 const tb = document.getElementById("trades-body");
                 if (!rows.length) {
@@ -3612,9 +3618,12 @@
                 }
                 tb.innerHTML = rows
                     .map(
-                        (t, idx) => `
+                        (t, idx) => {
+                            const key = getTradeKey(t, idx);
+                            const isExp = expandedTradeKeys.has(key);
+                            return `
     <tr>
-      <td style="text-align:center;cursor:pointer;color:var(--accent);" onclick="toggleTradeDetails(${idx})" title="Expand details">▶</td>
+      <td id="arrow-${idx}" style="text-align:center;cursor:pointer;color:var(--accent);user-select:none;font-size:12px;" onclick="toggleTradeDetails('${key}', ${idx})" title="${isExp ? 'Collapse details' : 'Expand details'}">${isExp ? '▼' : '▶'}</td>
       <td class="L t-mono">${fdtSplit(t.opened_at)}</td>
       <td class="L t-mono">${fdtSplit(t.closed_at)}</td>
       <td class="t-mono"><span class="b-dur">${t.duration_text || "—"}</span></td>
@@ -3635,7 +3644,7 @@
       <td class="${pc(t.pnl_points)} t-mono" style="font-size:10px;color:var(--text-dim)">${sign(t.pnl_points)}</td>
       <td class="L">${vtag(t.verdict_label || t.reason, t.verdict_explanation)}</td>
     </tr>
-    <tr id="details-${idx}" style="display:none;">
+    <tr id="details-${idx}" style="display:${isExp ? 'table-row' : 'none'};">
       <td colspan="17" style="padding:0;border:none;">
         <div style="background:var(--surface-2);padding:16px;border-top:1px solid var(--border);border-bottom:1px solid var(--border);text-align:left;white-space:normal;">
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;">
@@ -3725,16 +3734,28 @@
           </div>
         </div>
       </td>
-    </tr>`,
+    </tr>`;
+                        }
                     )
                     .join("");
             }
 
-            function toggleTradeDetails(idx) {
+            function toggleTradeDetails(tradeKey, idx) {
+                const keyStr = String(tradeKey);
+                const isExp = expandedTradeKeys.has(keyStr);
+                if (isExp) {
+                    expandedTradeKeys.delete(keyStr);
+                } else {
+                    expandedTradeKeys.add(keyStr);
+                }
                 const row = document.getElementById(`details-${idx}`);
+                const arrow = document.getElementById(`arrow-${idx}`);
                 if (row) {
-                    row.style.display =
-                        row.style.display === "none" ? "table-row" : "none";
+                    row.style.display = isExp ? "none" : "table-row";
+                }
+                if (arrow) {
+                    arrow.textContent = isExp ? "▶" : "▼";
+                    arrow.title = isExp ? "Expand details" : "Collapse details";
                 }
             }
 
@@ -4392,12 +4413,13 @@
                         const entryPrem = (leg.entry_premium !== undefined && leg.entry_premium !== null) ? leg.entry_premium : (leg.entry_price || 0);
                         const legCmp = leg.cmp !== undefined && leg.cmp !== null ? leg.cmp : entryPrem;
                         const symKey = (t.symbol || '').split(' ')[0].toUpperCase();
-                        const lotSize = (typeof LOT_SIZES !== 'undefined' && LOT_SIZES[symKey]) ? LOT_SIZES[symKey] : (symKey === 'BANKNIFTY' ? 30 : symKey === 'NIFTY' ? 75 : symKey === 'SENSEX' ? 20 : symKey === 'NATURALGAS' ? 1250 : 1);
+                        const lotSize = (typeof LOT_SIZES !== 'undefined' && LOT_SIZES[symKey]) ? LOT_SIZES[symKey] : (symKey === 'BANKNIFTY' ? 30 : symKey === 'NIFTY' ? 65 : symKey === 'SENSEX' ? 20 : symKey === 'NATURALGAS' ? 1250 : 1);
                         const legLots = Number(leg.lots || 1);
                         const calcPnl = side === "BUY" ? (legCmp - entryPrem) * legLots * lotSize : (entryPrem - legCmp) * legLots * lotSize;
                         const legPnl = (leg.pnl !== undefined && leg.pnl !== null) ? Number(leg.pnl) : calcPnl;
                         const legPnlClass = legPnl > 0 ? "pp" : legPnl < 0 ? "pn" : "pz";
-                        const legPnlStr = ` <span class="${legPnlClass}" style="font-weight:700;">(${legPnl > 0 ? '+' : legPnl < 0 ? '-' : ''}₹${Math.abs(Math.round(legPnl)).toLocaleString("en-IN")})</span>`;
+                        const legPnlSign = legPnl > 0 ? "+" : legPnl < 0 ? "-" : "";
+                        const legPnlStr = ` <span class="${legPnlClass}" style="font-weight:700;">(${legPnlSign}₹${Math.abs(Math.round(legPnl)).toLocaleString("en-IN")})</span>`;
                         
                         legsHtml += `
                             <div class="leg-pill ${sideClass}">
@@ -4422,7 +4444,7 @@
                 // Live P&L column
                 const pnlVal = Number(t.total_pnl || 0);
                 const pnlClass = pnlVal > 0 ? "pp" : pnlVal < 0 ? "pn" : "pz";
-                const pnlSign = pnlVal > 0 ? "+" : "";
+                const pnlSign = pnlVal > 0 ? "+" : pnlVal < 0 ? "-" : "";
                 const pnlFormatted = `${pnlSign}₹${Math.abs(pnlVal).toLocaleString("en-IN", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
 
                 // Format Entry/Exit Times
@@ -4484,7 +4506,7 @@
                         const groupTrades = sortTradesList(groupMap[sym]);
                         const symTotalPnl = groupTrades.reduce((acc, t) => acc + Number(t.total_pnl || 0), 0);
                         const symPnlClass = symTotalPnl > 0 ? "pp" : symTotalPnl < 0 ? "pn" : "pz";
-                        const symPnlSign = symTotalPnl > 0 ? "+" : "";
+                        const symPnlSign = symTotalPnl > 0 ? "+" : symTotalPnl < 0 ? "-" : "";
                         const symPnlStr = `${symPnlSign}₹${Math.abs(symTotalPnl).toLocaleString("en-IN", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
 
                         html += `
@@ -4561,7 +4583,7 @@
                     const totalPnlEl = document.getElementById("multi-leg-total-pnl-val");
                     const totalPnlWrap = document.getElementById("multi-leg-total-pnl-wrap");
                     if (totalPnlEl) {
-                        const sign = grandTotalPnl > 0 ? "+" : "";
+                        const sign = grandTotalPnl > 0 ? "+" : grandTotalPnl < 0 ? "-" : "";
                         totalPnlEl.textContent = `${sign}₹${Math.abs(grandTotalPnl).toLocaleString("en-IN", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
                         totalPnlEl.className = grandTotalPnl > 0 ? "pp" : grandTotalPnl < 0 ? "pn" : "pz";
                         if (totalPnlWrap) {

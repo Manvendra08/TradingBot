@@ -69,8 +69,14 @@ _IST = pytz.timezone("Asia/Kolkata")
 _OPENCODE_HOST = "opencode.ai"
 
 # Groq models that DO NOT support `response_format={"type":"json_object"}`.
-# Modern Groq models (gpt-oss-120b, gpt-oss-20b, qwen3.6-27b, compound) all support json_object.
-_GROQ_NO_JSON_MODELS = frozenset()
+# Passing json_object to these triggers a 400 formatting error.
+_GROQ_NO_JSON_MODELS = frozenset(
+    {
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
+        "qwen/qwen3.6-27b",
+    }
+)
 
 # Groq models that support `reasoning_format="parsed"`.
 # Passing `reasoning_format` to standard models (like compound, compound-mini)
@@ -460,7 +466,8 @@ _client = None
 def _get_client(api_key: str):
     global _client
     if _client is None:
-        _client = genai.Client(api_key=api_key)
+        http_options = types.HttpOptions(timeout=60.0) if (types and hasattr(types, "HttpOptions")) else None
+        _client = genai.Client(api_key=api_key, http_options=http_options) if http_options else genai.Client(api_key=api_key)
     return _client
 
 # ... (skipping unchanged code) ...
@@ -930,34 +937,27 @@ OI HISTORY:
 ENGINE: {_bias_str} | {_vl} | {_bias_rationale}
 
 ANALYSIS (ordered):
-1. OI pattern from Δ above
-2. Price confirms/contradicts? Near S/R/Pain?
-3. Pattern new or persistent? (history)
+1. OI pattern from Δ above — fresh positioning or unwinding?
+2. Price confirms/contradicts OI? Near S/R/Pain?
+3. Persistent across OI HISTORY, or one-scan noise?
 4. Entry timing: 3H ({_c3}) breakout only (ignore 1H {_c1} for entries)
 5. Macro catalyst? (EIA/RBI/OPEC/expiry)
-6. Confidence: Count [OI, price, news] agreement
+6. Confidence: count [OI, price, news] agreement
    3/3→80-95 | 2/3→60-75 | 1/3→35-55 | 0/3→NO_TRADE
 7. Action MUST match ENGINE ({_bias_str}). Downgrade to NO_TRADE OK, flip FORBIDDEN.
 
-OUTPUT (JSON, exact DATA values only):
-• action: GO_LONG|GO_SHORT|NO_TRADE (match ENGINE)
-• confidence: 0-100 from step 6
-• signal_chain: 3 lines ≤15 words each
-• instrument: "{symbol} <strike> CE/PE/FUT <expiry>"
-• entry_trigger: condition + level
-• entry_premium_range: exact LTP from Premiums (e.g. "4.5-5.5")
-• stop_loss: level ("Underlying 6875" or "Premium 95")
-• target_1, target_2: profit levels
-• risk_reward: "1:X.X"
-• thesis: 2-3 sentences ≤70 words WHY this edge exists (macro/S/R/PCR), NOT restating signal_chain
-• invalidation: kill condition (level or OI)
-• risk_rating: LOW|MEDIUM|HIGH (HIGH if Risk flags or chart conflict)
-• catalyst: event or "None"
+TRADE DISCIPLINE (long premium — theta works against you every hour):
+• DTE ≤ 1: enter only on a live 3H breakout with momentum; otherwise NO_TRADE (theta outruns edge)
+• Anchor targets to DATA levels: long → resistance/max-pain above, short → support/max-pain below. Never project a target past the nearest opposing level without stating why in thesis.
+• SL at the nearest DATA level that invalidates the setup — not an arbitrary %.
+• Compute risk_reward from YOUR OWN levels: (target_1 − entry) / (entry − stop_loss). It must reconcile arithmetically. Below 1:1.2 → NO_TRADE (thin edge is no edge).
+• NO_TRADE is a position. Take it when evidence is mixed (≤1/3 agree), the chosen strike shows "—" in Premiums, or data looks stale/contradictory. A missed trade costs nothing; a forced one costs real money.
 
-RULES:
-1. Use ONLY DATA levels, never invent
-2. NO_TRADE: fill signal_chain with reason, instrument/trigger with what would change view
-3. thesis explains confluence, NOT repeats verdict"""
+OUTPUT (JSON per schema; every number MUST appear in DATA or be arithmetic on DATA — never invent):
+• instrument: "{symbol} <strike> CE/PE/FUT <expiry>" — strike must exist in Premiums
+• entry_premium_range: exact LTP from Premiums (e.g. "4.5-5.5") — never estimate
+• NO_TRADE: signal_chain = why no edge, entry_trigger = what would change the view
+• thesis: WHY the edge exists (flow/S-R/catalyst confluence), NOT a verdict restatement"""
 
     return prompt
 
@@ -1120,6 +1120,73 @@ def _provider_cooldown_key(provider: dict) -> str:
     return f"{provider.get('env_key')}:{provider.get('model', '')}"
 
 
+# ── Host-level circuit breaker ───────────────────────────────────────────
+# A hung endpoint (accepts the TCP connection but never answers) read-times-out
+# on EVERY model behind it. Per-model and per-group cooldowns cannot contain
+# that: the pipeline walks each model in turn, burns a full read timeout on
+# each, and exhausts the call deadline before reaching any healthy provider on
+# a different host. Health is a property of the HOST, so track it there.
+#
+# Unlike the per-thread read-timeout tally (rate-limit quotas are per-symbol,
+# so one symbol's 429 must not cool the group for others), host health is
+# global: a dead host is dead for every symbol and every thread.
+_HOST_FAILURE_COUNTS: dict[str, int] = {}
+_HOST_COOLDOWN_UNTIL: dict[str, float] = {}
+_HOST_FAILURE_THRESHOLD = 2
+_HOST_COOLDOWN_SECONDS = 180.0
+
+
+def _provider_host(provider: dict) -> str:
+    """Netloc of a provider's endpoint, or '' for SDK providers with no URL."""
+    url = provider.get("url") or ""
+    if not url:
+        return ""
+    try:
+        from urllib.parse import urlparse
+
+        return (urlparse(url).netloc or "").lower()
+    except Exception:
+        return ""
+
+
+def _host_cooldown_remaining(provider: dict, now: float | None = None) -> float:
+    """Seconds left on this provider's host cooldown (0.0 if healthy)."""
+    host = _provider_host(provider)
+    if not host:
+        return 0.0
+    now = time.time() if now is None else now
+    with _cooldown_lock:
+        return max(0.0, _HOST_COOLDOWN_UNTIL.get(host, 0.0) - now)
+
+
+def _record_host_timeout(provider: dict, now: float) -> bool:
+    """Count a read timeout against the provider's host; trip the breaker at threshold.
+
+    Returns True if this call tripped the breaker.
+    """
+    host = _provider_host(provider)
+    if not host or "localhost" in host or "127.0.0.1" in host:
+        return False
+    with _cooldown_lock:
+        count = _HOST_FAILURE_COUNTS.get(host, 0) + 1
+        _HOST_FAILURE_COUNTS[host] = count
+        tripped = count >= _HOST_FAILURE_THRESHOLD
+        if tripped:
+            _HOST_COOLDOWN_UNTIL[host] = now + _HOST_COOLDOWN_SECONDS
+            _HOST_FAILURE_COUNTS[host] = 0
+    return tripped
+
+
+def _record_host_success(provider: dict) -> None:
+    """A response proves the host is alive — clear any accumulated failure state."""
+    host = _provider_host(provider)
+    if not host:
+        return
+    with _cooldown_lock:
+        _HOST_FAILURE_COUNTS.pop(host, None)
+        _HOST_COOLDOWN_UNTIL.pop(host, None)
+
+
 def _parse_retry_after_seconds(text: str) -> float | None:
     if not text:
         return None
@@ -1133,8 +1200,9 @@ def _parse_retry_after_seconds(text: str) -> float | None:
 
 
 def _register_provider_failure(
-    provider: dict, status_code: int, body: str, now: float
+    provider: dict, status_code: int, body: str, now: float | None = None
 ) -> None:
+    now = time.time()
     # Rebind log to a symbol-tagged adapter (symbol set by the calling _call_llm_api via
     # thread-local state). Tests that call this directly get a "?" placeholder.
     sym = getattr(_per_thread_state, "symbol", "?")
@@ -1192,38 +1260,69 @@ def _register_provider_failure(
         log.info("[llm] %s returned 400 upstream rejection — 60s cooldown", provider.get("name"))
         return
 
+    is_parse_error = any(
+        err in body_l
+        for err in (
+            "json extract failed",
+            "unexpected array",
+            "validation error",
+            "empty_content",
+            "null/whitespace content",
+            "html response",
+            "json decode error",
+        )
+    )
+    if is_parse_error:
+        # Format/parse error: 60s cooldown for specific provider instead of 10m
+        _PROVIDER_COOLDOWN_UNTIL[key] = now + 60.0
+        log.info("[llm] %s output format/parse failure — 60s cooldown", provider.get("name"))
+        return
+
     # Check for read timeout vs generic 500/connection error
     is_read_timeout = any(
         e in body_l
         for e in ("read timed out", "read timeout", "readtimeout")
     )
     if is_read_timeout:
-        # Read timeout: 60s cooldown for this provider
+        # Read timeout: 20s cooldown for this provider
         with _cooldown_lock:
-            _PROVIDER_COOLDOWN_UNTIL[key] = now + 60.0
+            _PROVIDER_COOLDOWN_UNTIL[key] = now + 20.0
+
+        # Host breaker first — a hung endpoint times out on every model behind
+        # it, so containment has to happen at the host, not the group. Without
+        # this the pipeline burns its whole deadline walking dead models on one
+        # host and never reaches healthy providers elsewhere.
+        if _record_host_timeout(provider, now):
+            log.warning(
+                "[llm] Host '%s' unresponsive (%d read timeouts) — cooling down host for %.0fs; "
+                "all providers on it are skipped until it recovers",
+                _provider_host(provider),
+                _HOST_FAILURE_THRESHOLD,
+                _HOST_COOLDOWN_SECONDS,
+            )
+
         if group_name:
-            # NOTE: omnirouter intentionally uses the 2-strike tally below, NOT an
-            # immediate group cooldown. Each OmniRouter model route fronts a different
-            # upstream (Combo/Antigravity/Free/CX/KR/TRK) behind the same local proxy,
-            # so one slow upstream route (e.g. agent-backed Claude/Antigravity on large
-            # prompts) must not bench the entire premium group for 90s. True proxy-down
-            # cases are still caught by the host-error branch (120s group cooldown) and
-            # by 2 consecutive route timeouts within one call.
             if "opencode" in group_name or "nvidia" in group_name:
                 with _cooldown_lock:
-                    _PROVIDER_COOLDOWN_UNTIL[group_name] = now + 90.0
-                log.warning("[llm] Read timeout in group '%s' — cooling down group for 90s to preserve pipeline deadline budget for fallbacks", group_name)
+                    _PROVIDER_COOLDOWN_UNTIL[group_name] = now + 30.0
+                log.warning("[llm] Read timeout in group '%s' — cooling down group for 30s to preserve pipeline deadline budget for fallbacks", group_name)
+            elif group_name == "omnirouter-primary":
+                # Do not cooldown entire group on a single model failure — allow progression to next combo
+                pass
             else:
                 # Per-thread tally: concurrent symbol enrichments must not share this count.
-                rt = getattr(_per_thread_state, "read_timeouts", {})
+                # setdefault (not getattr-with-default) so the tally actually persists on
+                # the thread — a bare default dict was discarded on every call and the
+                # count never reached the threshold.
+                rt = _per_thread_state.__dict__.setdefault("read_timeouts", {})
                 rt[group_name] = rt.get(group_name, 0) + 1
                 cnt = rt[group_name]
                 if cnt >= 2:
                     with _cooldown_lock:
-                        _PROVIDER_COOLDOWN_UNTIL[group_name] = now + 90.0
+                        _PROVIDER_COOLDOWN_UNTIL[group_name] = now + 20.0
                     rt[group_name] = 0
-                    log.warning("[llm] %d consecutive read timeouts in group '%s' — cooling down group for 90s to preserve pipeline deadline budget for fallbacks", cnt, group_name)
-        log.info("[llm] Read timeout on %s — 60s cooldown", provider.get("name"))
+                    log.warning("[llm] %d consecutive read timeouts in group '%s' — cooling down group for 20s to preserve pipeline deadline budget for fallbacks", cnt, group_name)
+        log.info("[llm] Read timeout on %s — 20s cooldown", provider.get("name"))
         return
 
     # Generic server error (500) or connection error — 10m cooldown
@@ -1232,9 +1331,9 @@ def _register_provider_failure(
     # True host-level errors: host unreachable / connection refused / connect timeout
     is_host_error = any(
         e in body_l
-        for e in ("httpconnectionpool", "connectionrefusederror", "connecttimedout", "connection reset", "host unreachable", "connection refused", "name or service not known")
+        for e in ("connectionrefusederror", "connecttimedout", "connection reset", "host unreachable", "connection refused", "name or service not known")
     )
-    if is_host_error and group_name:
+    if is_host_error and group_name and group_name != "omnirouter-primary":
         _PROVIDER_COOLDOWN_UNTIL[group_name] = now + 120.0
         log.info("[llm] Host/Endpoint connection error on %s — cooling down group '%s' for 120s", provider.get("name"), group_name)
 
@@ -1473,7 +1572,8 @@ def _call_llm_api(
         f"Respond with a valid JSON object populated with actual analysis values matching schema '{schema_name}'.\n"
         "Do NOT return the schema definition itself. Output ONLY the JSON object — no markdown fences, no prose before or after.\n"
         "Rules: Complete English only. No abbreviations (use 'underlying' not 'und', 'target' not 'tgt'). "
-        "Specific numbers required. No vague language. Use only values present in the prompt data — never invent a level, date, or figure.\n"
+        "Specific numbers required. No vague language. Use only values present in the prompt data — never invent a level, date, or figure. "
+        "Every derived number (risk_reward, breakevens, max_profit/max_loss, net_premium) must reconcile arithmetically with your own stated levels and the input premiums; if you cannot compute it from given data, choose NO_TRADE rather than estimate.\n"
         "DATA LEGITIMACY & INTEGRITY: Validate that the provided underlying spot, strikes, and DTE are coherent. "
         "If data is unpopulated, contradictory, or lacks liquidity across all strikes, you MUST set action='NO_TRADE' / strategy_type='NO_TRADE' "
         "and explain the data discrepancy in the thesis.\n"
@@ -1514,26 +1614,26 @@ def _call_llm_api(
     else:
         _omnirouter_url = _omnirouter_base
 
-    # OmniRouter primary group — Claude Combos, Antigravity, ChatGPT CX, KR & TRK models.
+    # OmniRouter primary group — Claude Combos, Antigravity, Claude Free, GPT 5.5 CX, GLM 5 KR & KR Haiku models.
     _omnirouter_group = {
         "model_group": "omnirouter-primary",
         "providers": [
-            {
-                "name": "OmniRouter (Claude/Antigravity)",
-                "env_key": "OMNIROUTER_API_KEY",
-                "url": _omnirouter_url,
-                "model": "Claude/Antigravity",
-                "model_group": "omnirouter-primary",
-                "timeout": 25,
-                "max_tokens_override": 4096,
-            },
             {
                 "name": "OmniRouter (Claude-Models Combo)",
                 "env_key": "OMNIROUTER_API_KEY",
                 "url": _omnirouter_url,
                 "model": "Claude-Models",
                 "model_group": "omnirouter-primary",
-                "timeout": 25,
+                "timeout": 60,
+                "max_tokens_override": 4096,
+            },
+            {
+                "name": "OmniRouter (Claude/Antigravity)",
+                "env_key": "OMNIROUTER_API_KEY",
+                "url": _omnirouter_url,
+                "model": "Claude/Antigravity",
+                "model_group": "omnirouter-primary",
+                "timeout": 60,
                 "max_tokens_override": 4096,
             },
             {
@@ -1542,7 +1642,7 @@ def _call_llm_api(
                 "url": _omnirouter_url,
                 "model": "claude/Free",
                 "model_group": "omnirouter-primary",
-                "timeout": 25,
+                "timeout": 60,
                 "max_tokens_override": 4096,
             },
             {
@@ -1551,16 +1651,7 @@ def _call_llm_api(
                 "url": _omnirouter_url,
                 "model": "cx/gpt-5.5",
                 "model_group": "omnirouter-primary",
-                "timeout": 25,
-                "max_tokens_override": 4096,
-            },
-            {
-                "name": "OmniRouter (Claude Haiku 4.5 KR)",
-                "env_key": "OMNIROUTER_API_KEY",
-                "url": _omnirouter_url,
-                "model": "kr/claude-haiku-4.5",
-                "model_group": "omnirouter-primary",
-                "timeout": 20,
+                "timeout": 60,
                 "max_tokens_override": 4096,
             },
             {
@@ -1569,25 +1660,16 @@ def _call_llm_api(
                 "url": _omnirouter_url,
                 "model": "kr/glm-5",
                 "model_group": "omnirouter-primary",
-                "timeout": 20,
+                "timeout": 60,
                 "max_tokens_override": 4096,
             },
             {
-                "name": "OmniRouter (DeepSeek 3.2 KR)",
+                "name": "OmniRouter (Claude Haiku 4.5 KR)",
                 "env_key": "OMNIROUTER_API_KEY",
                 "url": _omnirouter_url,
-                "model": "kr/deepseek-3.2",
+                "model": "kr/claude-haiku-4.5",
                 "model_group": "omnirouter-primary",
-                "timeout": 20,
-                "max_tokens_override": 4096,
-            },
-            {
-                "name": "OmniRouter (Qwen 3.8 Max Free TRK)",
-                "env_key": "OMNIROUTER_API_KEY",
-                "url": _omnirouter_url,
-                "model": "trk/qwen/qwen3.8-max-free",
-                "model_group": "omnirouter-primary",
-                "timeout": 15,
+                "timeout": 60,
                 "max_tokens_override": 4096,
             },
         ],
@@ -1603,7 +1685,7 @@ def _call_llm_api(
                 "url": _omnirouter_url,
                 "model": "Claude/Antigravity",
                 "model_group": "omnirouter-sentinel",
-                "timeout": 25,
+                "timeout": 60,
                 "max_tokens_override": 2048,
             },
             {
@@ -1612,7 +1694,7 @@ def _call_llm_api(
                 "url": _omnirouter_url,
                 "model": "Claude-Models",
                 "model_group": "omnirouter-sentinel",
-                "timeout": 25,
+                "timeout": 60,
                 "max_tokens_override": 2048,
             },
             {
@@ -1621,7 +1703,7 @@ def _call_llm_api(
                 "url": _omnirouter_url,
                 "model": "claude/Free",
                 "model_group": "omnirouter-sentinel",
-                "timeout": 25,
+                "timeout": 60,
                 "max_tokens_override": 2048,
             },
             {
@@ -1630,7 +1712,7 @@ def _call_llm_api(
                 "url": _omnirouter_url,
                 "model": "kr/claude-haiku-4.5",
                 "model_group": "omnirouter-sentinel",
-                "timeout": 20,
+                "timeout": 60,
                 "max_tokens_override": 2048,
             },
             {
@@ -1639,7 +1721,7 @@ def _call_llm_api(
                 "url": _omnirouter_url,
                 "model": "kr/glm-5",
                 "model_group": "omnirouter-sentinel",
-                "timeout": 20,
+                "timeout": 60,
                 "max_tokens_override": 2048,
             },
             {
@@ -1648,7 +1730,7 @@ def _call_llm_api(
                 "url": _omnirouter_url,
                 "model": "kr/deepseek-3.2",
                 "model_group": "omnirouter-sentinel",
-                "timeout": 20,
+                "timeout": 60,
                 "max_tokens_override": 2048,
             },
             {
@@ -1657,7 +1739,7 @@ def _call_llm_api(
                 "url": _omnirouter_url,
                 "model": "trk/qwen/qwen3.8-max-free",
                 "model_group": "omnirouter-sentinel",
-                "timeout": 15,
+                "timeout": 60,
                 "max_tokens_override": 2048,
             },
         ],
@@ -1811,13 +1893,6 @@ def _call_llm_api(
                     "model": "qwen/qwen3.6-27b",
                     "max_tokens_override": 1536,
                 },
-                {
-                    "name": "Groq (Compound)",
-                    "env_key": "GROQ_API_KEY",
-                    "url": "https://api.groq.com/openai/v1/chat/completions",
-                    "model": "groq/compound",
-                    "max_tokens_override": 1536,
-                },
             ],
         }
 
@@ -1902,13 +1977,6 @@ def _call_llm_api(
                     "model": "openai/gpt-oss-20b",
                     "max_tokens_override": 1024,
                 },
-                {
-                    "name": "Groq (Compound Mini)",
-                    "env_key": "GROQ_API_KEY",
-                    "url": "https://api.groq.com/openai/v1/chat/completions",
-                    "model": "groq/compound-mini",
-                    "max_tokens_override": 1024,
-                },
             ],
         }
         # OpenCode Zen formatting group
@@ -1983,13 +2051,6 @@ def _call_llm_api(
                     "env_key": "GROQ_API_KEY",
                     "url": "https://api.groq.com/openai/v1/chat/completions",
                     "model": "openai/gpt-oss-20b",
-                    "max_tokens_override": 1024,
-                },
-                {
-                    "name": "Groq (Compound Mini)",
-                    "env_key": "GROQ_API_KEY",
-                    "url": "https://api.groq.com/openai/v1/chat/completions",
-                    "model": "groq/compound-mini",
                     "max_tokens_override": 1024,
                 },
             ],
@@ -2075,6 +2136,81 @@ def _call_llm_api(
             _github_models_sentinel,
             _opencode_zen_sentinel,
         ]
+    elif purpose == "eia_analysis":
+        _groq_group_eia = {
+            "model_group": "groq-eia",
+            "providers": [
+                {
+                    "name": "Groq (Llama 3.3 70B)",
+                    "env_key": "GROQ_API_KEY",
+                    "url": "https://api.groq.com/openai/v1/chat/completions",
+                    "model": "llama-3.3-70b-versatile",
+                },
+                {
+                    "name": "Groq (Qwen 3.6 27B)",
+                    "env_key": "GROQ_API_KEY",
+                    "url": "https://api.groq.com/openai/v1/chat/completions",
+                    "model": "qwen/qwen3.6-27b",
+                },
+                {
+                    "name": "Groq (GPT-OSS 120B)",
+                    "env_key": "GROQ_API_KEY",
+                    "url": "https://api.groq.com/openai/v1/chat/completions",
+                    "model": "openai/gpt-oss-120b",
+                },
+            ],
+        }
+        _opencode_zen_eia = {
+            "model_group": "opencode-zen-eia",
+            "providers": [
+                {
+                    "name": "OpenCode Zen (Nemotron 3.5 Lightning Free)",
+                    "env_key": "OPENCODE_API_KEY",
+                    "url": "https://opencode.ai/zen/v1/chat/completions",
+                    "model": "nemotron-3.5-lightning-free",
+                    "timeout": 15,
+                },
+                {
+                    "name": "OpenCode Zen (Laguna S 2.1 Free)",
+                    "env_key": "OPENCODE_API_KEY",
+                    "url": "https://opencode.ai/zen/v1/chat/completions",
+                    "model": "laguna-s-2.1-free",
+                    "timeout": 15,
+                },
+                {
+                    "name": "OpenCode Zen (Nemotron 3 Ultra Free)",
+                    "env_key": "OPENCODE_API_KEY",
+                    "url": "https://opencode.ai/zen/v1/chat/completions",
+                    "model": "nemotron-3-ultra-free",
+                    "timeout": 15,
+                },
+            ],
+        }
+        _github_models_eia = {
+            "model_group": "github-models-eia",
+            "providers": [
+                {
+                    "name": "GitHub Models (GPT-4o-mini)",
+                    "env_key": "GITHUB_TOKEN",
+                    "url": "https://models.inference.ai.azure.com/chat/completions",
+                    "model": "gpt-4o-mini",
+                },
+                {
+                    "name": "GitHub Models (Llama 3.3 70B)",
+                    "env_key": "GITHUB_TOKEN",
+                    "url": "https://models.inference.ai.azure.com/chat/completions",
+                    "model": "Llama-3.3-70B-Instruct",
+                },
+            ],
+        }
+        # EIA Analysis Pipeline: OmniRouter (Primary) -> Groq -> OpenCode Zen -> GitHub Models -> Gemini
+        FREE_MODEL_PIPELINE = [
+            _omnirouter_group,
+            _groq_group_eia,
+            _opencode_zen_eia,
+            _github_models_eia,
+            _gemini_group,
+        ]
     else:  # live_verdict — symbol-aware routing
         _base = symbol.upper().strip().split()[0]
         _class = get_symbol_class(_base)
@@ -2089,35 +2225,28 @@ def _call_llm_api(
                     "env_key": "OPENCODE_API_KEY",
                     "url": "https://opencode.ai/zen/v1/chat/completions",
                     "model": "nemotron-3.5-lightning-free",
-                    "timeout": 6,
+                    "timeout": 15,
                 },
                 {
                     "name": "OpenCode Zen (Laguna S 2.1 Free)",
                     "env_key": "OPENCODE_API_KEY",
                     "url": "https://opencode.ai/zen/v1/chat/completions",
                     "model": "laguna-s-2.1-free",
-                    "timeout": 6,
+                    "timeout": 15,
                 },
                 {
                     "name": "OpenCode Zen (HY3 Free)",
                     "env_key": "OPENCODE_API_KEY",
                     "url": "https://opencode.ai/zen/v1/chat/completions",
                     "model": "hy3-free",
-                    "timeout": 6,
-                },
-                {
-                    "name": "OpenCode Zen (X-Preview-F Free)",
-                    "env_key": "OPENCODE_API_KEY",
-                    "url": "https://opencode.ai/zen/v1/chat/completions",
-                    "model": "x-preview-f-free",
-                    "timeout": 6,
+                    "timeout": 15,
                 },
                 {
                     "name": "OpenCode Zen (Nemotron 3 Ultra Free)",
                     "env_key": "OPENCODE_API_KEY",
                     "url": "https://opencode.ai/zen/v1/chat/completions",
                     "model": "nemotron-3-ultra-free",
-                    "timeout": 6,
+                    "timeout": 15,
                 },
             ],
         }
@@ -2173,28 +2302,35 @@ def _call_llm_api(
                     "env_key": "GROQ_API_KEY",
                     "url": "https://api.groq.com/openai/v1/chat/completions",
                     "model": "openai/gpt-oss-120b",
-                    "max_tokens_override": 1536,
+                    "max_tokens_override": 2048,
+                },
+                {
+                    "name": "Groq (Qwen 3.8 27B)",
+                    "env_key": "GROQ_API_KEY",
+                    "url": "https://api.groq.com/openai/v1/chat/completions",
+                    "model": "qwen/qwen3.8-27b",
+                    "max_tokens_override": 2048,
                 },
                 {
                     "name": "Groq (Qwen 3.6 27B)",
                     "env_key": "GROQ_API_KEY",
                     "url": "https://api.groq.com/openai/v1/chat/completions",
                     "model": "qwen/qwen3.6-27b",
-                    "max_tokens_override": 1536,
-                },
-                {
-                    "name": "Groq (Compound)",
-                    "env_key": "GROQ_API_KEY",
-                    "url": "https://api.groq.com/openai/v1/chat/completions",
-                    "model": "groq/compound",
-                    "max_tokens_override": 1536,
+                    "max_tokens_override": 2048,
                 },
                 {
                     "name": "Groq (GPT-OSS 20B)",
                     "env_key": "GROQ_API_KEY",
                     "url": "https://api.groq.com/openai/v1/chat/completions",
                     "model": "openai/gpt-oss-20b",
-                    "max_tokens_override": 1536,
+                    "max_tokens_override": 2048,
+                },
+                {
+                    "name": "Groq (Compound)",
+                    "env_key": "GROQ_API_KEY",
+                    "url": "https://api.groq.com/openai/v1/chat/completions",
+                    "model": "groq/compound",
+                    "max_tokens_override": 2048,
                 },
             ],
         }
@@ -2203,28 +2339,22 @@ def _call_llm_api(
             "model_group": "openrouter-free-pool",
             "providers": [
                 {
-                    "name": "OpenRouter (Llama 3.3 70B Free)",
+                    "name": "OpenRouter (Gemini 2.0 Flash Exp Free)",
                     "env_key": "OPENROUTER_API_KEY",
                     "url": "https://openrouter.ai/api/v1/chat/completions",
-                    "model": "meta-llama/llama-3.3-70b-instruct:free",
+                    "model": "google/gemini-2.0-flash-exp:free",
                 },
                 {
-                    "name": "OpenRouter (Qwen 3 32B Free)",
+                    "name": "OpenRouter (Llama 3.1 8B Free)",
                     "env_key": "OPENROUTER_API_KEY",
                     "url": "https://openrouter.ai/api/v1/chat/completions",
-                    "model": "qwen/qwen3-32b:free",
+                    "model": "meta-llama/llama-3.1-8b-instruct:free",
                 },
                 {
-                    "name": "OpenRouter (Llama 3.2 3B Free)",
+                    "name": "OpenRouter (Mistral Small 24B Free)",
                     "env_key": "OPENROUTER_API_KEY",
                     "url": "https://openrouter.ai/api/v1/chat/completions",
-                    "model": "meta-llama/llama-3.2-3b-instruct:free",
-                },
-                {
-                    "name": "OpenRouter (Nemotron 3 Super 120B Free)",
-                    "env_key": "OPENROUTER_API_KEY",
-                    "url": "https://openrouter.ai/api/v1/chat/completions",
-                    "model": "nvidia/nemotron-3-super-120b-a12b:free",
+                    "model": "mistralai/mistral-small-24b-instruct-2501:free",
                 },
             ],
         }
@@ -2445,11 +2575,12 @@ def _call_llm_api(
 
     for group in FREE_MODEL_PIPELINE:
         group_name = group.get("model_group")
-        if group_name and _PROVIDER_COOLDOWN_UNTIL.get(group_name, 0.0) > now:
+        now_group = time.time()
+        if group_name and _PROVIDER_COOLDOWN_UNTIL.get(group_name, 0.0) > now_group:
             log.info(
                 "[llm] Skipping group %s — endpoint/host cooldown active (%.0fs left)",
                 group_name,
-                _PROVIDER_COOLDOWN_UNTIL[group_name] - now,
+                _PROVIDER_COOLDOWN_UNTIL[group_name] - now_group,
             )
             continue
 
@@ -2488,17 +2619,30 @@ def _call_llm_api(
                 if not api_key:
                     continue
 
+            # Host breaker: skip every provider behind an endpoint that has
+            # proven unresponsive, in whatever group it appears. This is what
+            # keeps one hung host from eating the whole call deadline.
+            host_cd = _host_cooldown_remaining(provider, now_loop)
+            if host_cd > 0:
+                log.debug(
+                    "[llm] Skipping %s — host '%s' cooling down (%.0fs left)",
+                    provider.get("name"),
+                    _provider_host(provider),
+                    host_cd,
+                )
+                continue
+
             cooldown_key = _provider_cooldown_key(provider)
             cooldown_until = _PROVIDER_COOLDOWN_UNTIL.get(cooldown_key, 0.0)
             # Only apply key-wide cooldown if specifically set (e.g. 401/402/429 account level errors)
             if key_name not in ("OMNIROUTER_API_KEY", "ANTIGRAVITY_REFRESH_TOKEN"):
                 cooldown_until = max(cooldown_until, _PROVIDER_COOLDOWN_UNTIL.get(key_name, 0.0))
 
-            if cooldown_until > now:
+            if cooldown_until > now_loop:
                 log.debug(
                     "[llm] Skipping %s — cooldown %.0fs remaining",
                     provider.get("name"),
-                    cooldown_until - now,
+                    cooldown_until - now_loop,
                 )
                 continue
 
@@ -2524,7 +2668,10 @@ def _call_llm_api(
                             response_mime_type="application/json",
                             response_schema=schema,
                             temperature=0.2,
-                            http_options={"timeout": int(min(remaining, 12.0))},
+                            http_options={"timeout": int(min(remaining, 60.0) * 1000)},
+                            automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                                disable=True
+                            ),
                         ),
                     )
                     result = schema.model_validate_json(response.text)
@@ -2729,18 +2876,9 @@ def _call_llm_api(
                     "max_tokens": provider.get("max_tokens_override", max_tokens),
                     "stream": False,
                 }
-                # Groq reasoning models (gpt-oss-120b, qwen3.6-27b) require BOTH:
-                #   reasoning_format='parsed'  → puts thinking in reasoning_content, answer in content
-                #   response_format='json_object' → forces JSON output
-                # Using 'hidden' causes these models to return null content because they
-                # output their final answer inside the suppressed reasoning trace.
-                # Using 'parsed' + json_object keeps content populated with the JSON answer.
                 if "api.groq.com" in provider.get("url", ""):
                     if provider["model"] in _GROQ_REASONING_MODELS:
                         json_payload["reasoning_format"] = "parsed"
-                    # Some Groq models reject response_format=json_object with a 400
-                    # json_validate_failed — skip json_mode for those and let the tolerant
-                    # _extract_json() parser recover the JSON from the free-text answer.
                     if provider["model"] not in _GROQ_NO_JSON_MODELS:
                         json_payload["response_format"] = {"type": "json_object"}
                 else:
@@ -2750,20 +2888,30 @@ def _call_llm_api(
                     headers["X-Title"] = "NSEBOT Trading Engine"
                     json_payload["provider"] = {"allow_fallbacks": False}
 
-                default_timeout = provider.get("timeout", 20.0)
+                default_timeout = float(provider.get("timeout", 20.0))
+                call_timeout = min(remaining - 1.0, default_timeout)  # Never use all remaining
+                if call_timeout <= 0:
+                    log.warning(
+                        "[llm] Skipping %s — insufficient time (%.1fs left, need > %.1fs)",
+                        provider.get("name"),
+                        remaining,
+                        default_timeout,
+                    )
+                    continue
+
                 if _OPENCODE_HOST in provider["url"] and _httpx is not None:
                     resp = _opencode_post(
                         provider["url"],
                         headers,
                         json_payload,
-                        min(remaining, default_timeout),
+                        call_timeout,
                     )
                 else:
                     resp = session.post(
                         provider["url"],
                         headers=headers,
                         json=json_payload,
-                        timeout=min(remaining, default_timeout),
+                        timeout=call_timeout,
                     )
                 if resp.status_code == 200:
                     content_type = resp.headers.get("Content-Type", "")
@@ -2863,9 +3011,10 @@ def _call_llm_api(
                         provider["model"],
                     )
                     _CONSECUTIVE_FAILURES = 0
+                    _record_host_success(provider)
                     if group_name:
                         # Clear this call's read-timeout tally for the group on success.
-                        rt = getattr(_per_thread_state, "read_timeouts", {})
+                        rt = _per_thread_state.__dict__.setdefault("read_timeouts", {})
                         rt[group_name] = 0
                     return result
                 elif resp.status_code == 429:
@@ -2898,19 +3047,24 @@ def _call_llm_api(
                         retry_payload.pop("reasoning_format", None)
                     else:
                         retry_payload.pop("response_format", None)
+                    retry_timeout = min(remaining - 0.5, default_timeout)
+                    if retry_timeout <= 0:
+                        log.debug("[llm] Retry skipped — insufficient time remaining")
+                        break
+
                     if _OPENCODE_HOST in provider["url"] and _httpx is not None:
                         retry_resp = _opencode_post(
                             provider["url"],
                             headers,
                             retry_payload,
-                            min(remaining, default_timeout),
+                            retry_timeout,
                         )
                     else:
                         retry_resp = session.post(
                             provider["url"],
                             headers=headers,
                             json=retry_payload,
-                            timeout=min(remaining, default_timeout),
+                            timeout=retry_timeout,
                         )
                     if retry_resp.status_code == 200:
                         retry_content_type = retry_resp.headers.get("Content-Type", "")
@@ -2935,7 +3089,7 @@ def _call_llm_api(
                                 retry_resp.text,
                             )
                             _register_provider_failure(
-                                provider, 500, retry_resp.text, now
+                                provider, 500, f"json decode error: {retry_resp.text[:200]}", now
                             )
                             continue
                         if "choices" in retry_json and retry_json["choices"]:
@@ -2964,6 +3118,7 @@ def _call_llm_api(
                                     provider["model"],
                                     )
                                 _CONSECUTIVE_FAILURES = 0
+                                _record_host_success(provider)
                                 return result
                     # After retry, if still not 200, register the failure and skip this model.
                     # Do NOT re-try indefinitely — move to next model in pipeline.
@@ -3010,6 +3165,10 @@ def _call_llm_api(
         symbol,
         _CONSECUTIVE_FAILURES,
     )
+    # Invalidate cache for this symbol so stale data isn't served indefinitely
+    # when all providers fail. The next call will be forced to attempt a fresh
+    # LLM call (or return None if all providers still fail).
+    _VERDICT_CACHE.pop(symbol, None)
     return None
 
 
@@ -3172,17 +3331,23 @@ def _extract_json(raw: str) -> dict | list:
     # Candidate Group B: Outermost brace pair {...}
     first_brace = original_raw.find("{")
     last_brace = original_raw.rfind("}")
-    if first_brace != -1 and last_brace > first_brace:
-        brace_span = original_raw[first_brace : last_brace + 1].strip()
-        if brace_span not in candidates:
+    if first_brace != -1:
+        if last_brace > first_brace:
+            brace_span = original_raw[first_brace : last_brace + 1].strip()
+        else:
+            brace_span = original_raw[first_brace:].strip()
+        if brace_span and brace_span not in candidates:
             candidates.append(brace_span)
 
     # Candidate Group C: Outermost bracket pair [...]
     first_bracket = original_raw.find("[")
     last_bracket = original_raw.rfind("]")
-    if first_bracket != -1 and last_bracket > first_bracket:
-        bracket_span = original_raw[first_bracket : last_bracket + 1].strip()
-        if bracket_span not in candidates:
+    if first_bracket != -1:
+        if last_bracket > first_bracket:
+            bracket_span = original_raw[first_bracket : last_bracket + 1].strip()
+        else:
+            bracket_span = original_raw[first_bracket:].strip()
+        if bracket_span and bracket_span not in candidates:
             candidates.append(bracket_span)
 
     # Candidate Group D: Balanced brace blocks
@@ -3686,6 +3851,21 @@ def get_llm_verdict(
     scan_context["days_to_expiry"] = dte
 
     cached = _VERDICT_CACHE.get(symbol)
+    
+    # Hard maximum cache age: invalidate cache unconditionally after 2 hours
+    # regardless of price/premium movement. This prevents stale verdicts from
+    # being served indefinitely when all LLM providers fail.
+    MAX_CACHE_AGE_SECONDS = 7200.0  # 2 hours
+    if cached and (now - cached["timestamp"]) > MAX_CACHE_AGE_SECONDS:
+        log.warning(
+            "[llm] Cache for %s exceeded maximum age (%.1fs > %.1fs) — invalidating",
+            symbol,
+            now - cached["timestamp"],
+            MAX_CACHE_AGE_SECONDS,
+        )
+        _VERDICT_CACHE.pop(symbol, None)
+        cached = None
+
     if (
         not is_triggering
         and cached
@@ -3979,7 +4159,7 @@ def get_multileg_verdict(
         news_data=news_data,
     )
 
-    deadline = time.time() + 60.0
+    deadline = time.time() + 90.0
     try:
         result = _call_llm_api(
             symbol, prompt, LLMMultiLegVerdict, deadline=deadline, purpose="live_verdict"
@@ -4124,7 +4304,7 @@ def get_multileg_exit_advice(
         intel=intel,
     )
 
-    deadline = time.time() + 45.0
+    deadline = time.time() + 75.0
     try:
         result = _call_llm_api(
             symbol, prompt, LLMMultiLegExit, deadline=deadline, purpose="live_verdict"

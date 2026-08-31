@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import textwrap
 import uuid
 
 log = logging.getLogger(__name__)
@@ -12,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 
 from src.engine.intelligence import generate_intelligence
 from src.utils.formatting import fmt_oi as _shared_fmt_oi
+from src.utils.text_sanitizer import sanitize_mojibake
 
 IST = timezone(timedelta(hours=5, minutes=30))
 MAX_TELEGRAM_LEN = 3900
@@ -288,6 +290,16 @@ def _fmt_signed(value, digits: int = 2) -> str:
     except Exception:
         value = 0.0
     return f"{value:+.{digits}f}"
+
+
+def _val(v) -> str | None:
+    if v is None:
+        return None
+    s = str(v).strip()
+    if s.lower() in ("n/a", "none", "", "null"):
+        return None
+    return s
+
 
 
 def _fmt_oi(value) -> str:
@@ -708,16 +720,21 @@ def _format_paper_trade_status(status: dict | None) -> str:
 
 
 def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[str, str]:
-    """
-    Renders the TFSS + Timeframe digest in a mobile-friendly compact format.
-    Drops fixed-width box borders, collapses N/A fields, uses emoji section headers.
+    """Renders the Multi-Leg Options decision pipeline digest.
+
+    Flow reflects actual multi-leg decision making:
+      1. Header & Spot/Expiry
+      2. Quant Engine Inputs (OI flow, PCR, Pain, IV, Charts)
+      3. Strategy Selection (LLM choice + Leg Breakdown + Economics)
+      4. Risk Gates & Decision Stage (Entered / Rejected / Conflict / Advisory)
+      5. Open Books & Exit Plan (Profit target, SL threshold, Time decay)
+      6. AI Thesis & Market Context
     """
     import uuid
     import textwrap
     from datetime import datetime
 
     def _val(v) -> str | None:
-        """Return value if meaningful, else None (to skip rendering)."""
         if v is None:
             return None
         s = str(v).strip()
@@ -725,53 +742,39 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
             return None
         return s
 
-    def _join_list(lst: list) -> str | None:
-        items = [str(i) for i in (lst or []) if _val(str(i))]
-        return " · ".join(items) if items else None
-
-    header      = payload.get("header", {})
-    tfss        = payload.get("tfss", {})
-    timeframe   = payload.get("timeframe", {})
-    multileg    = payload.get("multileg") or tfss.get("multileg") or {}
-    positions   = payload.get("positions", {})
-    global_risk = payload.get("global_risk", {})
-    ai_thesis   = payload.get("ai_thesis", "")
+    header = payload.get("header", {})
+    multileg = payload.get("multileg") or {}
+    quant = payload.get("quant_inputs") or {}
+    ai_thesis = payload.get("ai_thesis", "")
     ai_model_name = payload.get("ai_model_name") or header.get("ai_model_name")
     exit_advice = payload.get("exit_advice")
 
-    sym   = _val(header.get("symbol")) or "?"
+    sym = _val(header.get("symbol")) or "?"
     stime = _val(header.get("scan_time")) or ""
     expiry = _val(header.get("expiry"))
-    dte    = header.get("dte")
-    spot   = header.get("underlying") if header.get("underlying") is not None else header.get("spot")
-    regime = _val(header.get("market_regime"))
-    conf   = header.get("confidence")
+    dte = header.get("dte")
+    spot = header.get("underlying") if header.get("underlying") is not None else header.get("spot")
+    conf = multileg.get("confidence") or header.get("confidence")
 
     lines: list[str] = []
     DIV = "───────────────"
 
-    # ── CONFIDENCE BAR ──
-    conf_bar = ""
-    if conf is not None:
-        filled = round(int(conf) / 10)
-        conf_bar = "▓" * filled + "░" * (10 - filled)
-
-    # Check execution status
     ml_action = str(multileg.get("action") or "").upper()
-    is_ml_entered = ml_action == "ENTERED"
-    
-    tfss_action  = _val(tfss.get("action"))
-    tfss_bias    = _val(tfss.get("tfss_bias"))
-    tfss_verdict = _val(tfss.get("core_origin_verdict"))
-    trade_ok     = tfss.get("trade_entered", False)
-    contract     = _val(tfss.get("contract"))
-    raw_header_entered = header.get("trade_entered", False)
-    
-    is_single_entered = bool(raw_header_entered and trade_ok and contract and str(tfss_action or "").upper() not in ("BLOCK", "NO_ACTION", "NONE", "N/A"))
-    is_entered = is_ml_entered or is_single_entered
+    is_entered = ml_action == "ENTERED"
+    is_advisory = ml_action == "ADVISORY"
+    is_rejected = ml_action == "REJECTED"
+    is_conflict = ml_action == "CONFLICT"
+    is_no_trade = ml_action in ("NO_TRADE", "NONE", "")
 
     # Header status badge
-    trade_status_str = "🟢 *ENTERED*" if is_entered else "⏸️ *NO TRADE*"
+    if is_entered:
+        trade_status_str = "🟢 *ENTERED*"
+    elif is_advisory:
+        trade_status_str = "🟡 *ADVISORY*"
+    elif is_rejected or is_conflict:
+        trade_status_str = "🔴 *REJECTED*"
+    else:
+        trade_status_str = "⏸️ *NO TRADE*"
 
     # Format expiry & DTE
     if expiry:
@@ -794,227 +797,216 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
         expiry_str = "🗓 Expiry N/A"
 
     dte_str = f"{dte} DTE" if (dte is not None and 0 <= dte <= 365) else "N/A DTE"
-    
+
     # Format spot
     if isinstance(spot, (int, float)) and spot > 0:
-        if spot >= 1000:
-            spot_str = f"₹{spot:,.0f}"
-        else:
-            spot_str = f"₹{spot:.2f}".replace('.00', '')
+        spot_str = f"₹{spot:,.0f}" if spot >= 1000 else f"₹{spot:.2f}".replace('.00', '')
     else:
         spot_str = f"₹{spot}" if spot not in (None, "", "N/A", 0, 0.0) else "N/A"
-        
+
     stime_clean = stime.replace(" IST", "").strip() if stime else ""
     time_str = f" · {stime_clean} IST" if stime_clean else ""
-    
-    # Header Line
+
     lines.append(f"📊 *{sym}*{time_str}  {trade_status_str}")
     lines.append(f"{expiry_str} · {dte_str} | Spot {spot_str}")
 
-    # ── SIGNAL BAR ──
+    # ── 1. QUANT ENGINE INPUTS (Raw Material) ──
     lines.append("")
     lines.append(DIV)
-    action_icon = "🟢" if is_entered else "🚫"
-    sig_line = f"{action_icon} *SIGNAL*"
-    if tfss_bias:
-        sig_line += f": {_esc(tfss_bias)}"
-    if tfss_verdict:
-        sig_line += f" · {_esc(tfss_verdict)}"
-    lines.append(sig_line)
-    if conf is not None:
-        lines.append(f"Confidence: {conf_bar} {conf}%")
+    lines.append("🧮 *QUANT ENGINE READINGS*")
 
-    # ── TRADE EXECUTION OR BLOCKER SECTION ──
-    if is_ml_entered:
-        # Multileg execution display
-        strat_type = str(multileg.get("strategy_type") or "MULTILEG").replace("_", " ").upper()
+    oi_v = _val(quant.get("oi_verdict")) or "Neutral"
+    oi_c = quant.get("oi_confidence", 0)
+    pcr_val = _val(quant.get("pcr")) or "N/A"
+    pain_val = _val(quant.get("max_pain")) or "N/A"
+    sup_val = _val(quant.get("support")) or "N/A"
+    res_val = _val(quant.get("resistance")) or "N/A"
+    lines.append(f"• OI Reading: `{oi_v}` ({oi_c}%) | PCR `{pcr_val}` | Pain `{pain_val}`")
+    lines.append(f"• Range: S `{sup_val}` / R `{res_val}`")
+
+    c1 = quant.get("chart_1h", "NEUTRAL")
+    c3 = quant.get("chart_3h", "NEUTRAL")
+    c1_mark = "🟢" if "BULL" in str(c1).upper() else ("🔴" if "BEAR" in str(c1).upper() else "⚪")
+    c3_mark = "🟢" if "BULL" in str(c3).upper() else ("🔴" if "BEAR" in str(c3).upper() else "⚪")
+    lines.append(f"• Trend: 3H {c3_mark} {c3} / 1H {c1_mark} {c1}")
+
+    atm_iv = quant.get("atm_iv", 0)
+    if atm_iv:
+        lines.append(f"• Volatility: ATM IV `{atm_iv:.1f}%` (Range `{quant.get('iv_low',0):.1f}%` - `{quant.get('iv_high',0):.1f}%`)")
+
+    ng_reg = quant.get("ng_regime")
+    if ng_reg:
+        ng_dev = quant.get("ng_dev_pct", 0)
+        lines.append(f"• Commodity Regime: `{ng_reg}` (Dev `{ng_dev:+.2f}%`)")
+
+    # ── 2. STRATEGY SELECTION & STRUCTURE ──
+    lines.append("")
+    lines.append(DIV)
+    strat_type = str(multileg.get("strategy_type") or "NO_TRADE").replace("_", " ").upper()
+    strat_icon_map = {
+        "BEAR CALL SPREAD": "🛡️",
+        "BULL PUT SPREAD": "🛡️",
+        "IRON CONDOR": "🦅",
+        "SHORT STRANGLE": "⚡",
+        "SHORT STRADDLE": "🎯",
+        "JADE LIZARD": "🦎",
+        "NO TRADE": "⏸️",
+    }
+    icon = strat_icon_map.get(strat_type, "📐")
+
+    conf_str = f" ({conf}% conviction)" if conf else ""
+    m_tag = f" [{ai_model_name}]" if ai_model_name else ""
+    lines.append(f"🧠 *LLM STRUCTURE CHOICE*{m_tag}")
+    lines.append(f"Strategy: {icon} *{_esc(strat_type)}*{conf_str}")
+
+    legs = multileg.get("legs") or []
+    if legs:
+        lines.append("Leg Breakdown:")
+        for leg in legs:
+            side = (leg.get("side") or "SELL").upper()
+            side_icon = "🔴" if side == "SELL" else "🟢"
+            opt_type = (leg.get("option_type") or "").upper()
+            strike_val = float(leg.get("strike") or 0.0)
+            prem_val = float(leg.get("entry_premium") or leg.get("premium") or 0.0)
+            delta_val = float(leg.get("delta") or 0.0)
+            strike_fmt = f"{strike_val:,.0f}" if strike_val >= 1000 else f"{strike_val:.2f}".rstrip('0').rstrip('.')
+            lines.append(f"  {side_icon} {side} {strike_fmt} {opt_type} @ ₹{prem_val:.2f} (Δ{delta_val:+.2f})")
+
+    # Structure Economics & Greeks
+    net_prem = float(multileg.get("net_premium") or 0.0)
+    greeks = multileg.get("book_greeks") or {}
+    rp = multileg.get("risk_profile") or {}
+    margin_val = float(multileg.get("margin") or 0.0)
+
+    econ_parts = []
+    if net_prem > 0:
+        econ_parts.append(f"Net Prem ₹{net_prem:.2f}")
+    if margin_val > 0:
+        econ_parts.append(f"Margin ₹{margin_val:,.0f}")
+    net_d = greeks.get("net_delta") or multileg.get("net_delta")
+    if net_d is not None:
+        econ_parts.append(f"Δ Net {float(net_d):+.2f}")
+    if econ_parts:
+        lines.append("Economics: " + " · ".join(econ_parts))
+
+    be_lower = rp.get("breakeven_lower")
+    be_upper = rp.get("breakeven_upper")
+    if be_lower and be_upper:
+        lines.append(f"Breakeven: ₹{be_lower:,.1f} — ₹{be_upper:,.1f}")
+
+    # ── 3. RISK ENGINE & DECISION STAGE ──
+    lines.append("")
+    lines.append(DIV)
+    stage = str(multileg.get("decision_stage") or "").upper()
+    reason = multileg.get("reason") or ""
+
+    if is_entered:
         book_id = multileg.get("book_id") or ""
-        legs = multileg.get("legs") or []
-        net_prem = float(multileg.get("net_premium") or 0.0)
-        rp = multileg.get("risk_profile") or {}
-        greeks = multileg.get("book_greeks") or {}
-        
-        strat_icon_map = {
-            "BEAR CALL SPREAD": "🛡️",
-            "BULL PUT SPREAD": "🛡️",
-            "IRON CONDOR": "🦅",
-            "SHORT STRANGLE": "⚡",
-            "LONG STRANGLE": "⚡",
-            "BEAR PUT SPREAD": "📉",
-            "BULL CALL SPREAD": "📈",
-        }
-        icon = strat_icon_map.get(strat_type, "🎯")
-        
-        lots = legs[0].get("lots", 1) if legs else 1
-        lots_str = f" · {lots} Lots" if lots else ""
-        lines.append(f"Trade: ✅ Entered · {icon} *{_esc(strat_type)}*")
+        lines.append(f"🛡️ *RISK ENGINE:* ✅ APPROVED & EXECUTED")
         if book_id:
-            lines.append(f"   Book: `{_esc(book_id)}`{lots_str}")
-        
-        # Legs breakdown
-        if legs:
-            for leg in legs:
-                side = (leg.get("side") or "SELL").upper()
-                side_icon = "🔴" if side == "SELL" else "🟢"
-                opt_type = (leg.get("option_type") or "").upper()
-                strike_val = float(leg.get("strike") or 0.0)
-                prem_val = float(leg.get("entry_premium") or leg.get("premium") or 0.0)
-                delta_val = float(leg.get("delta") or 0.0)
-                
-                strike_fmt = f"{strike_val:,.0f}" if strike_val >= 1000 else f"{strike_val:.2f}".rstrip('0').rstrip('.')
-                lines.append(f"   {side_icon} {side} {strike_fmt} {opt_type} @ ₹{prem_val:.2f} (Δ{delta_val:+.2f})")
-
-        # Financials / Greeks
-        fin_parts = []
-        if net_prem > 0:
-            fin_parts.append(f"Net: ₹{net_prem:.2f}/lot")
-        net_delta = greeks.get("net_delta")
-        if net_delta is not None:
-            fin_parts.append(f"Δ Net: {net_delta:+.2f}")
-        if fin_parts:
-            lines.append("   " + " · ".join(fin_parts))
-            
-        # Breakeven & Risk bounds
-        be_lower = rp.get("breakeven_lower")
-        be_upper = rp.get("breakeven_upper")
-        if be_lower and be_upper:
-            lines.append(f"   BE: ₹{be_lower:,.1f} — ₹{be_upper:,.1f}")
-        elif be_lower:
-            lines.append(f"   BE: ₹{be_lower:,.1f}")
-        elif be_upper:
-            lines.append(f"   BE: ₹{be_upper:,.1f}")
-
-    elif is_single_entered and contract:
-        # Legacy single-leg entered
-        lines.append(f"Trade: ✅ Entered · {_esc(contract)}")
-        parts = []
-        delta = tfss.get("delta")
-        prem  = tfss.get("premium")
-        qty   = tfss.get("qty")
-        tranche = tfss.get("tranche_index")
-        if delta is not None:
-            parts.append(f"Δ{delta}")
-        if prem is not None:
-            parts.append(f"₹{prem}")
-        if qty is not None or tranche is not None:
-            size_str = f"{qty} lots" if qty else ""
-            tr_str   = f"T{tranche}" if tranche else ""
-            combined = " · ".join(filter(None, [size_str, tr_str]))
-            if combined:
-                parts.append(combined)
-        if parts:
-            lines.append("   " + " · ".join(parts))
-        tfss_reason = _val(tfss.get("primary_reason"))
-        if tfss_reason and tfss_reason != "N/A" and "blocked" not in tfss_reason.lower():
-            lines.append(f"Reason: {_esc(tfss_reason)}")
+            lines.append(f"  Book ID: `{_esc(book_id)}`")
+    elif is_advisory:
+        lines.append(f"🛡️ *RISK ENGINE:* 🟡 PASSED (Advisory Mode)")
+        lines.append(f"  Note: Strategy logged only — live/paper auto-entry disabled by settings")
+    elif is_rejected or is_conflict:
+        lines.append(f"🛡️ *RISK ENGINE:* 🔴 REJECTED")
+        if stage:
+            lines.append(f"  Gate: `{_esc(stage)}`")
+        if reason:
+            lines.append(f"  Reason: {_esc(reason)}")
     else:
-        lines.append("Trade: ✗ Not entered")
-        
-        # Clean up blocker reason
-        tfss_blockers = [str(b) for b in (tfss.get("blockers") or []) if _val(str(b))]
-        tf_blockers   = [str(b) for b in (timeframe.get("blockers") or []) if _val(str(b))]
-        gr_blockers   = [str(b) for b in (global_risk.get("blockers") or []) if _val(str(b))]
-        all_blockers = list(dict.fromkeys(tfss_blockers + tf_blockers + gr_blockers))
-        
-        tfss_reason = _val(tfss.get("primary_reason")) or ""
-        
-        if all_blockers:
-            for b in all_blockers:
-                # Sanitize confusing internal phrases
-                b_clean = b
-                if "Trend allowed:" in b or "Trend persistent:" in b or "AI decision mode 'full'" in b:
-                    b_clean = "Waiting for clearer directional confirmation / Active risk cap"
-                elif "Marginal setup" in b:
-                    b_clean = "Awaiting clear directional confirmation / Sub-threshold conviction"
-                lines.append(f" ⚠ Blocked: {_esc(b_clean)}")
-        elif "Marginal setup" in tfss_reason:
-            lines.append(f" ⚠ Blocked: Awaiting clear directional confirmation / Sub-threshold conviction")
-        elif tfss_reason and tfss_reason != "N/A" and "allowed" not in tfss_reason.lower():
-            lines.append(f"Reason: {_esc(tfss_reason)}")
-        else:
-            lines.append("Reason: Setup did not meet execution criteria")
+        lines.append(f"🛡️ *RISK ENGINE:* ⏸️ SIDELINED")
+        if reason:
+            lines.append(f"  Reason: {_esc(reason)}")
 
-    exit_reduce  = _val(tfss.get("exit_reduce"))
-    existing_pos = _val(tfss.get("existing_position"))
-    if exit_reduce:
-        lines.append(f"Exit/Reduce: {_esc(exit_reduce)}")
-        if existing_pos:
-            lines.append(f"   Posn: {_esc(existing_pos)}")
+    eq_score = multileg.get("entry_quality")
+    eq_reasons = multileg.get("quality_reasons") or []
+    if eq_score is not None and eq_score > 0:
+        lines.append(f"  Quality Score: `{eq_score}/100`")
+        if eq_reasons:
+            lines.append(f"  Factors: {' · '.join(eq_reasons[:2])}")
 
-    # ── AI EXIT ADVICE / POSITION MONITOR ──
-    if exit_advice:
-        ea_action = exit_advice.get("action") if isinstance(exit_advice, dict) else getattr(exit_advice, "action", None)
-        if ea_action:
-            ea_urgency = exit_advice.get("urgency") if isinstance(exit_advice, dict) else getattr(exit_advice, "urgency", "")
-            ea_reasoning = exit_advice.get("reasoning") if isinstance(exit_advice, dict) else getattr(exit_advice, "reasoning", "")
-            ea_new_sl = exit_advice.get("new_sl_premium") if isinstance(exit_advice, dict) else getattr(exit_advice, "new_sl_premium", None)
-            
-            action_emoji = {"HOLD": "🔵", "TRAIL_SL": "🔄", "CLOSE_EARLY": "🔴", "EXTEND_TARGET": "🎯"}.get(str(ea_action).upper(), "⚙️")
-            lines.append(f"AI Position Monitor: {action_emoji} *{_esc(ea_action)}* (Urgency: {_esc(ea_urgency)})")
-            lines.append(f"   _{_esc(ea_reasoning)}_")
-            if ea_new_sl is not None:
-                lines.append(f"   New SL: `{ea_new_sl}`")
+    # Exit Plan (if entered/advisory)
+    exit_plan = multileg.get("exit_plan") or {}
+    pt_pct = exit_plan.get("profit_target_pct")
+    sl_pct = exit_plan.get("stop_loss_pct")
+    decay_dte = exit_plan.get("time_decay_exit_dte")
+    if pt_pct or sl_pct:
+        ep_parts = []
+        if pt_pct:
+            ep_parts.append(f"Target {float(pt_pct)*100:.0f}% max profit")
+        if sl_pct:
+            ep_parts.append(f"SL {float(sl_pct)*100:.0f}% credit")
+        if decay_dte is not None:
+            ep_parts.append(f"Exit DTE ≤ {decay_dte}")
+        lines.append("  Exit Plan: " + " · ".join(ep_parts))
 
-    # ── THESIS (AI) & MARKET MECHANICS ──
+    # ── 4. LIVE BOOK MONITORING & POSITION EXIT ADVICE ──
+    live_books = multileg.get("live_books") or []
+    closed_items = multileg.get("closed_items") or []
+    ai_exit = multileg.get("ai_exit_advice") or exit_advice
+
+    if live_books or closed_items or ai_exit:
+        lines.append("")
+        lines.append(DIV)
+        lines.append("📈 *ACTIVE MULTI-LEG BOOKS*")
+
+        if closed_items:
+            for c in closed_items:
+                c_id = c.get("book_id") or ""
+                c_st = str(c.get("strategy_type") or "").replace("_", " ").upper()
+                c_pnl = float(c.get("total_pnl") or 0.0)
+                c_re = c.get("reason") or "Closed"
+                pnl_icon = "🟢" if c_pnl >= 0 else "🔴"
+                lines.append(f"• Closed: `{c_id}` ({c_st}) | {pnl_icon} P&L ₹{c_pnl:,.0f} | {_esc(c_re)}")
+
+        for b in live_books:
+            b_id = b.get("book_id") or ""
+            b_st = str(b.get("strategy_type") or "").replace("_", " ").upper()
+            b_pnl = float(b.get("total_pnl") or 0.0)
+            b_prem = float(b.get("net_premium") or 0.0)
+            b_delta = float(b.get("net_delta") or 0.0)
+            pnl_icon = "🟢" if b_pnl >= 0 else "🔴"
+
+            lines.append(f"• Book: `{b_id}` · {b_st}")
+            lines.append(f"  Net Prem ₹{b_prem:.1f}/lot | {pnl_icon} Total P&L ₹{b_pnl:,.0f} | Δ Net {b_delta:+.2f}")
+
+            be_l = b.get("breakeven_lower")
+            be_u = b.get("breakeven_upper")
+            if be_l and be_u:
+                lines.append(f"  BE: ₹{be_l:,.1f} — ₹{be_u:,.1f}")
+
+            b_legs = b.get("legs") or []
+            for l in b_legs:
+                l_side = (l.get("side") or "SELL").upper()
+                l_type = (l.get("option_type") or "").upper()
+                l_strike = float(l.get("strike") or 0.0)
+                l_entry = float(l.get("entry_premium") or 0.0)
+                l_curr = float(l.get("current_premium") or l_entry)
+                s_icon = "🔴" if l_side == "SELL" else "🟢"
+                lines.append(f"    {s_icon} {l_side} {l_strike:.0f} {l_type} | Entry ₹{l_entry:.1f} → Current ₹{l_curr:.1f}")
+
+        if ai_exit:
+            ea_act = ai_exit.get("action") if isinstance(ai_exit, dict) else getattr(ai_exit, "action", None)
+            if ea_act:
+                ea_urg = ai_exit.get("urgency") if isinstance(ai_exit, dict) else getattr(ai_exit, "urgency", "LOW")
+                ea_rea = ai_exit.get("reasoning") if isinstance(ai_exit, dict) else getattr(ai_exit, "reasoning", "")
+                ea_emoji = {"HOLD": "🔵", "ADJUST": "🔄", "CLOSE": "🔴"}.get(str(ea_act).upper(), "⚙️")
+                lines.append(f"• AI Exit Advice: {ea_emoji} *{_esc(ea_act)}* (Urgency: {_esc(ea_urg)})")
+                if ea_rea:
+                    lines.append(f"  _{_esc(ea_rea)}_")
+
+    # ── 5. AI THESIS ──
     thesis_text = _val(ai_thesis)
     if thesis_text:
         lines.append("")
         lines.append(DIV)
-        model_str = f" · _{_esc(ai_model_name)}_" if ai_model_name else ""
-        lines.append(f"💡 *THESIS (AI)*{model_str}")
+        lines.append("💡 *THESIS & MARKET CONTEXT*")
         for raw_line in thesis_text.splitlines():
             if not raw_line.strip():
                 continue
             for chunk in textwrap.wrap(raw_line, width=38):
                 lines.append(_esc(chunk))
-
-    # ── TIMEFRAME STRATEGY (if active) ──
-    _tf_enabled = False
-    try:
-        from config.runtime_config import load_runtime_config
-        _strategies = load_runtime_config().get("strategies", {})
-        _tf_enabled = _strategies.get("TIMEFRAME", {}).get("enabled", False)
-    except Exception:
-        pass
-
-    tf_signal   = _val(timeframe.get("signal"))
-    tf_dir      = _val(timeframe.get("direction"))
-    tf_setup    = _val(timeframe.get("setup"))
-    tf_contract = _val(timeframe.get("contract"))
-    tf_reason   = _val(timeframe.get("primary_reason"))
-    tf_why      = _join_list(timeframe.get("why", []))
-
-    # Only show TIMEFRAME section if strategy is enabled
-    if _tf_enabled:
-        tf_icon = {"ENTER": "🟢", "HOLD": "🔵", "EXIT": "🔴",
-                   "BLOCK": "🚫", "NO_SIGNAL": "⏸️"}.get(str(tf_action or "").upper(), "⏸️")
-
-        lines.append("")
-        lines.append(DIV)
-        tf_line = f"{tf_icon} *TIMEFRAME STRATEGY*"
-        if tf_action and str(tf_action).upper() != "NO_SIGNAL":
-            tf_line += f": {_esc(tf_action)}"
-        if tf_dir:
-            tf_line += f" ({_esc(tf_dir)})"
-        lines.append(tf_line)
-        has_tf_data = any([tf_signal, tf_setup, tf_contract, tf_reason, tf_why, tf_blockers]) and str(tf_action or "").upper() != "NO_SIGNAL"
-        if has_tf_data:
-            status = tf_action or "ACTIVE"
-            lines.append(f"Status: {_esc(status)}")
-            if tf_signal:
-                lines.append(f"Signal: {_esc(tf_signal)}")
-            if tf_setup:
-                lines.append(f"Setup: {_esc(tf_setup)}")
-            if tf_contract:
-                lines.append(f"Contract: {_esc(tf_contract)}")
-            if tf_reason and tf_reason != tfss_reason:
-                lines.append(f"Reason: {_esc(tf_reason)}")
-            if tf_why and tf_why != tf_reason:
-                lines.append(f"Why: {_esc(tf_why)}")
-            for b in tf_blockers:
-                lines.append(f"  ⚠ {_esc(b)}")
-        else:
-            lines.append("Status: No active signal (3H breakout pending)")
 
     if digest_id is None:
         digest_id = str(uuid.uuid4())[:8]
@@ -1044,10 +1036,28 @@ def build_digest(
     template (build_enhanced_digest) have been merged into build_llm_consolidated_digest
     which handles all rendering paths including no-trade and trade states.
     """
-    if structured_payload:
-        return build_tfss_timeframe_digest(structured_payload, digest_id=digest_id)
+    if structured_payload and structured_payload.get("multileg"):
+        d_id, msg = build_tfss_timeframe_digest(structured_payload, digest_id=digest_id)
+        return d_id, sanitize_mojibake(msg)
 
-    return build_llm_consolidated_digest(
+    if _LEGACY_DIGEST:
+        d_id, msg = _build_digest_legacy(
+            symbol,
+            alerts,
+            fetched_at,
+            scan_context,
+            intelligence_text,
+            detected_count,
+            dedup_suppressed_count,
+            digest_id=digest_id,
+            paper_trade_status=paper_trade_status,
+            live_trade_status=live_trade_status,
+            llm_verdict=llm_verdict,
+            exit_advice=exit_advice,
+        )
+        return d_id, sanitize_mojibake(msg)
+
+    d_id, msg = build_llm_consolidated_digest(
         symbol,
         alerts,
         fetched_at,
@@ -1060,6 +1070,7 @@ def build_digest(
         llm_verdict,
         exit_advice=exit_advice,
     )
+    return d_id, sanitize_mojibake(msg)
 
 
 def _build_digest_legacy(
@@ -1920,101 +1931,7 @@ def build_enhanced_digest(
         else ctx.get("expiry")
     )
     exp_fmt, dte_lbl = _format_expiry_and_dte(expiry_val)
-    header_extra = (
-        f" (Exp: {exp_fmt} | {dte_lbl})"
-        if exp_fmt and dte_lbl
-        else (f" (Exp: {exp_fmt})" if exp_fmt else "")
-    )
-
-def _format_ai_verdict_section(llm_verdict) -> list[str]:
-    if not llm_verdict:
-        return []
-
-    # 1. Multileg verdict schema (LLMMultiLegVerdict)
-    stype = getattr(llm_verdict, "strategy_type", None)
-    if stype:
-        conf = getattr(llm_verdict, "confidence", 0)
-        m_name = getattr(llm_verdict, "model_name", None) or ""
-        m_tag = f" [{m_name}]" if m_name else ""
-
-        body = [f"🧠 *AI MULTILEG STRATEGY VERDICT*{m_tag}"]
-        body.append(f"🎯 *Strategy:* `{stype}` (Conviction: {conf}%)")
-
-        entry_rat = getattr(llm_verdict, "entry_rationale", None)
-        if entry_rat:
-            body.append(f"💡 *Thought Process:* {entry_rat}")
-
-        thesis = getattr(llm_verdict, "thesis", None)
-        if thesis:
-            body.append(f"📖 *Thesis:* {thesis}")
-
-        legs = getattr(llm_verdict, "legs", [])
-        if legs:
-            body.append("📐 *Book Legs:*")
-            for leg in legs:
-                side = getattr(leg, "side", "")
-                ot = getattr(leg, "option_type", "")
-                strike = getattr(leg, "strike", 0)
-                prem = getattr(leg, "premium", 0)
-                delta = getattr(leg, "delta", 0)
-                rat = getattr(leg, "rationale", "")
-                rat_str = f" — {rat}" if rat else ""
-                body.append(f"  • `{side}` `{strike}` `{ot}` @ ₹{prem:.2f} (Δ {delta:+.2f}){rat_str}")
-
-            net_prem = getattr(llm_verdict, "net_premium", 0)
-            max_prof = getattr(llm_verdict, "max_profit", 0)
-            max_l = getattr(llm_verdict, "max_loss", 0)
-            net_d = getattr(llm_verdict, "net_delta", 0)
-            be_u = getattr(llm_verdict, "breakeven_upper", 0)
-            be_l = getattr(llm_verdict, "breakeven_lower", 0)
-            body.append(f"💰 *Net Prem:* ₹{net_prem:.2f} | *Max Profit:* ₹{max_prof:.2f}")
-            body.append(f"🛡️ *Max Loss:* ₹{max_l:.2f} | *Net Delta:* {net_d:+.2f}")
-            if be_l > 0 or be_u > 0:
-                body.append(f"📈 *Breakevens:* {be_l:.1f} — {be_u:.1f}")
-
-        adj = getattr(llm_verdict, "adjustment_plan", None)
-        if adj:
-            body.append(f"⚠️ *Adjustment Plan:* {adj}")
-
-        return ["", "\n".join(body)]
-
-    # 2. Standard LLMTradeVerdict schema
-    action = getattr(llm_verdict, "action", None) or (llm_verdict.get("action") if isinstance(llm_verdict, dict) else "")
-    if action:
-        conf = getattr(llm_verdict, "confidence", 0) if not isinstance(llm_verdict, dict) else llm_verdict.get("confidence", 0)
-        m_name = getattr(llm_verdict, "model_name", None) or ""
-        m_tag = f" [{m_name}]" if m_name else ""
-        action_emoji = {"GO_LONG": "🟢", "GO_SHORT": "🔴", "NO_TRADE": "⚪"}.get(action, "❓")
-
-        body = [f"🧠 *AI TRADE VERDICT*{m_tag}"]
-        body.append(f"🎯 *Action:* {action_emoji} `{action}` (Confidence: {conf}%)")
-
-        inst = getattr(llm_verdict, "instrument", "") if not isinstance(llm_verdict, dict) else llm_verdict.get("instrument", "")
-        if inst:
-            body.append(f"📋 *Contract:* `{inst}`")
-
-        sc = getattr(llm_verdict, "signal_chain", "") if not isinstance(llm_verdict, dict) else llm_verdict.get("signal_chain", "")
-        if sc:
-            body.append(f"⛓️ *Signal Chain:*\n{sc}")
-
-        thesis = getattr(llm_verdict, "thesis", "") if not isinstance(llm_verdict, dict) else llm_verdict.get("thesis", "")
-        if thesis:
-            body.append(f"💡 *Thought Process:* {thesis}")
-
-        sl = getattr(llm_verdict, "stop_loss", "") if not isinstance(llm_verdict, dict) else llm_verdict.get("stop_loss", "")
-        t1 = getattr(llm_verdict, "target_1", "") if not isinstance(llm_verdict, dict) else llm_verdict.get("target_1", "")
-        t2 = getattr(llm_verdict, "target_2", "") if not isinstance(llm_verdict, dict) else llm_verdict.get("target_2", "")
-        if sl or t1 or t2:
-            body.append(f"🛑 *SL:* {sl} | 🎯 *T1:* {t1} | *T2:* {t2}")
-
-        inv = getattr(llm_verdict, "invalidation", "") if not isinstance(llm_verdict, dict) else llm_verdict.get("invalidation", "")
-        if inv:
-            body.append(f"⚠️ *Invalidation:* {inv}")
-
-        return ["", "\n".join(body)]
-
-    return []
-
+    px_label = _price_label(symbol)
 
     if not alerts:
         return build_digest(
@@ -2761,9 +2678,34 @@ def build_llm_consolidated_digest(
         if len(sorted_alerts) > 3:
             lines.append(f"  ...and {len(sorted_alerts)-3} more anomalies (🔴{high_cnt} 🟡{med_cnt} 🔵{low_cnt})")
     
-    # ── PLAN
+    # ── AI THESIS & PLAN
     strat = gv("strategy") or gv("instrument")
-    if strat and bias_upper not in ("NO_TRADE", "NEUTRAL"):
+    strat_upper = str(strat).upper().strip()
+
+    # Identify single-leg CORE trades which we treat strictly as background inputs now
+    # If the setup is CORE, or the strategy is a simple directional leg (CE/PE/CALL/PUT) without multi-leg terms.
+    is_single_leg_core = (
+        td_setup == "CORE"
+        or (
+            any(k in strat_upper for k in ("CE", "PE", "CALL", "PUT"))
+            and not any(k in strat_upper for k in ("SPREAD", "CONDOR", "STRANGLE", "STRADDLE", "LIZARD"))
+        )
+    )
+
+    # 1. Output AI THESIS & MARKET CONTEXT for ALL setups
+    llm_thesis = _val(gv("thesis")) or _val(gv("reasoning")) or _val(gv("entry_trigger"))
+    if llm_thesis and str(llm_thesis).strip():
+        lines.append("")
+        lines.append(DIVIDER)
+        lines.append("🧠 *AI THESIS & MARKET CONTEXT*")
+        for raw_line in str(llm_thesis).strip().splitlines():
+            if not raw_line.strip():
+                continue
+            for chunk in textwrap.wrap(raw_line, width=38):
+                lines.append(_esc(chunk))
+
+    # 2. Output PLAN block ONLY if it is NOT a single-leg directional CORE setup
+    if strat and bias_upper not in ("NO_TRADE", "NEUTRAL") and not is_single_leg_core:
         lines.append("")
         # Double check option type consistency in the digest plan against directional bias
         if is_bear and re.search(r"\bCE\b", strat, re.IGNORECASE):
@@ -2779,22 +2721,22 @@ def build_llm_consolidated_digest(
             else:
                 prefix = "BUY "
         lines.append(f"📋 *PLAN* — {prefix}{_esc(strat)}")
-        
+
         strike_sel = gv("strike_selection") or gv("entry_premium_range")
         if strike_sel:
             lines.append(f"  Entry   {_esc(strike_sel)}")
-            
+
         sl = gv("stop_loss")
         if sl:
             lines.append(f"  SL      {_esc(sl)}")
-            
+
         t1 = gv("target_1")
         t2 = gv("target_2")
         if t1 and t2:
             lines.append(f"  T1      {_esc(t1)} | T2 {_esc(t2)}")
         elif t1:
             lines.append(f"  T1      {_esc(t1)}")
-            
+
         rr = gv("risk_reward")
         risk_rate = gv("risk_rating")
         if rr:
@@ -2833,20 +2775,20 @@ def build_llm_consolidated_digest(
         elif risk_rate:
             lines.append(f"  Risk    {_esc(risk_rate)}")
 
-        # Position context: show if there's an existing open position
-        existing_position = None
-        if paper_trade_status and paper_trade_status.get("action") == "HELD":
-            existing_position = paper_trade_status.get("trade", {})
-        elif live_trade_status and live_trade_status.get("action") == "HELD":
-            existing_position = live_trade_status.get("trade", {})
-        if existing_position:
-            pos_opt = existing_position.get("option_type", "")
-            pos_strike = existing_position.get("strike")
-            pos_entry = existing_position.get("entry_premium")
-            pos_side = str(existing_position.get("side") or "BUY").upper()
-            pos_strike_str = f"{pos_strike:g}" if pos_strike is not None else "?"
-            pos_entry_str = f"₹{pos_entry:.1f}" if pos_entry is not None else "?"
-            lines.append(f"  📌 *Existing:* {pos_side} {pos_strike_str} {pos_opt} @ {pos_entry_str}")
+    # 3. Position context: show if there's an existing open position
+    existing_position = None
+    if paper_trade_status and paper_trade_status.get("action") == "HELD":
+        existing_position = paper_trade_status.get("trade", {})
+    elif live_trade_status and live_trade_status.get("action") == "HELD":
+        existing_position = live_trade_status.get("trade", {})
+    if existing_position:
+        pos_opt = existing_position.get("option_type", "")
+        pos_strike = existing_position.get("strike")
+        pos_entry = existing_position.get("entry_premium")
+        pos_side = str(existing_position.get("side") or "BUY").upper()
+        pos_strike_str = f"{pos_strike:g}" if pos_strike is not None else "?"
+        pos_entry_str = f"₹{pos_entry:.1f}" if pos_entry is not None else "?"
+        lines.append(f"  📌 *Existing:* {pos_side} {pos_strike_str} {pos_opt} @ {pos_entry_str}")
 
     # ── BLOCKED reason (human-readable)
     if bias_upper in ("NO_TRADE", "NEUTRAL") and td_status and td_status.startswith("BLOCKED"):

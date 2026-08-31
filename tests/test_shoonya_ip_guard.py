@@ -15,9 +15,14 @@ from src.fetchers import shoonya_ip_guard as guard
 
 @pytest.fixture(autouse=True)
 def _isolate_state(tmp_path, monkeypatch):
-    """Point the guard at a throwaway state file and pin the IST date."""
+    """Point the guard at a throwaway state file, pin the IST date, and mock portal updater."""
     monkeypatch.setattr(guard, "STATE_PATH", tmp_path / "shoonya_ip_state.json")
     monkeypatch.setattr(guard, "_today", lambda: "2026-08-10")
+    # Mock update_shoonya_portal_ip to fail by default so tests cover skip behavior without real Playwright execution
+    monkeypatch.setattr(
+        "src.fetchers.shoonya_ip_updater.update_shoonya_portal_ip",
+        lambda **kw: (False, "mocked portal update failure"),
+    )
     return tmp_path
 
 
@@ -69,7 +74,7 @@ def test_rotation_skips_alerts_and_adopts_new_baseline(tmp_path, monkeypatch):
     res = guard.run_daily_ip_check()
 
     assert res["skip"] is True
-    assert res["reason"] == "ip_changed"
+    assert res["reason"].startswith("ip_auto_update_failed")
     assert res["old_ip"] == "1.2.3.4"
     assert res["new_ip"] == "5.6.7.8"
     assert len(sent) == 1
@@ -184,7 +189,30 @@ def test_next_day_new_rotation_skips_again(tmp_path, monkeypatch):
     res = guard.run_daily_ip_check()
 
     assert res["skip"] is True
-    assert res["reason"] == "ip_changed"
+    assert res["reason"].startswith("ip_auto_update_failed")
     assert res["old_ip"] == "5.6.7.8"
     assert res["new_ip"] == "9.9.9.9"
     assert len(sent) == 1
+
+
+def test_rotation_successful_portal_update_resumes_fetching(tmp_path, monkeypatch):
+    _write_state(tmp_path, baseline_ip="1.2.3.4")
+    monkeypatch.setattr("src.utils.ip_monitor._fetch_public_ip", lambda **kw: "5.6.7.8")
+    monkeypatch.setattr(
+        "src.fetchers.shoonya_ip_updater.update_shoonya_portal_ip",
+        lambda **kw: (True, "success"),
+    )
+    sent = []
+    monkeypatch.setattr("src.alerts.telegram_dispatcher.send_text", lambda msg: sent.append(msg))
+
+    res = guard.run_daily_ip_check()
+
+    assert res["skip"] is False
+    assert res["reason"] == "ip_auto_updated"
+    assert res["old_ip"] == "1.2.3.4"
+    assert res["new_ip"] == "5.6.7.8"
+    assert len(sent) == 1
+    assert "Shoonya IP Auto-Updated" in sent[0]
+    state = json.loads((tmp_path / "shoonya_ip_state.json").read_text())
+    assert state["baseline_ip"] == "5.6.7.8"
+    assert state["skip_date"] is None

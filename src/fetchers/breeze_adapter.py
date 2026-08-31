@@ -7,7 +7,10 @@ import urllib.parse
 from datetime import datetime
 
 import pyotp
-from breeze_connect import BreezeConnect
+try:
+    from breeze_connect import BreezeConnect
+except ImportError:
+    BreezeConnect = None
 from playwright.sync_api import sync_playwright
 
 # Replace this import with your actual framework base class path if necessary
@@ -52,26 +55,28 @@ class BreezeAdapter(BaseFetcher):
             try:
                 with sync_playwright() as p:
                     browser = p.chromium.launch(headless=True)
-                    context = browser.new_context()
-                    page = context.new_page()
+                    try:
+                        context = browser.new_context()
+                        page = context.new_page()
 
-                    page.goto(login_url)
-                    page.wait_for_load_state("networkidle")
+                        page.goto(login_url)
+                        page.wait_for_load_state("networkidle")
 
-                    # Input authentication parameters into forms
-                    page.locator("input[name='txtUserId']").fill(self.user_id)
-                    page.locator("input[name='txtPassword']").fill(self.password)
-                    
-                    # Generate dynamic time-based MFA pin
-                    totp_pin = pyotp.TOTP(self.totp_secret).now()
-                    page.locator("input[name='txtOTP']").fill(totp_pin)
-                    
-                    # Submit and listen for standard loopback callback redirects
-                    with page.expect_navigation(timeout=15000):
-                        page.locator("input[type='submit']").click()
+                        # Input authentication parameters into forms
+                        page.locator("input[name='txtUserId']").fill(self.user_id)
+                        page.locator("input[name='txtPassword']").fill(self.password)
+                        
+                        # Generate dynamic time-based MFA pin
+                        totp_pin = pyotp.TOTP(self.totp_secret).now()
+                        page.locator("input[name='txtOTP']").fill(totp_pin)
+                        
+                        # Submit and listen for standard loopback callback redirects
+                        with page.expect_navigation(timeout=15000):
+                            page.locator("input[type='submit']").click()
 
-                    final_url = page.url
-                    browser.close()
+                        final_url = page.url
+                    finally:
+                        browser.close()
 
                 # Extract token from redirect URL string parameters
                 parsed_url = urllib.parse.urlparse(final_url)

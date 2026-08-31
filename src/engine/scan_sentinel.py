@@ -81,31 +81,37 @@ class ScanRunReport:
     status: str
 
 
+import threading
+
+_RUNS_FILE_LOCK = threading.Lock()
+
+
 def emit_scan_run_report(report: ScanRunReport):
     """Persists the ScanRunReport to the rolling latest runs file."""
-    lines = []
-    try:
-        if RUNS_FILE.exists():
-            with open(RUNS_FILE, "r", encoding="utf-8") as f:
-                for line in f:
-                    if line.strip():
-                        try:
-                            data = json.loads(line)
-                            if data.get("symbol") != report.symbol:
-                                lines.append(data)
-                        except Exception:
-                            pass
-    except Exception as e:
-        log.warning("Failed to read latest runs: %s", e)
+    with _RUNS_FILE_LOCK:
+        lines = []
+        try:
+            if RUNS_FILE.exists():
+                with open(RUNS_FILE, "r", encoding="utf-8") as f:
+                    for line in f:
+                        if line.strip():
+                            try:
+                                data = json.loads(line)
+                                if data.get("symbol") != report.symbol:
+                                    lines.append(data)
+                            except Exception:
+                                pass
+        except Exception as e:
+            log.warning("Failed to read latest runs: %s", e)
+            
+        lines.append(asdict(report))
         
-    lines.append(asdict(report))
-    
-    try:
-        with open(RUNS_FILE, "w", encoding="utf-8") as f:
-            for item in lines:
-                f.write(json.dumps(item) + "\n")
-    except Exception as e:
-        log.error("Failed to write latest run: %s", e)
+        try:
+            with open(RUNS_FILE, "w", encoding="utf-8") as f:
+                for item in lines:
+                    f.write(json.dumps(item) + "\n")
+        except Exception as e:
+            log.error("Failed to write latest run: %s", e)
 
 
 def report_from_dict(r: dict) -> ScanRunReport:
@@ -425,6 +431,14 @@ def run_sentinel(report_data: dict | ScanRunReport) -> ScanDiagnostic | None:
     try:
         diagnostic = _run_ai_diagnostic(report_dict, flags)
         if diagnostic:
+            # Enforce severity cap: LLM diagnostic severity cannot escalate beyond max rule flag severity
+            max_flag_severity = "CRITICAL" if any(f.severity == "CRITICAL" for f in flags) else "WARNING"
+            if max_flag_severity != "CRITICAL" and diagnostic.severity == "CRITICAL":
+                log.warning("%s: Capping LLM diagnostic severity from CRITICAL to WARNING (all rule flags were WARNING)", symbol)
+                diagnostic.severity = "WARNING"
+                if diagnostic.recommended_action == "PAUSE_SYMBOL":
+                    diagnostic.recommended_action = "ALERT_ONLY"
+
             log.warning("%s: Sentinel Diagnosis: %s | Severity: %s | Recommended Action: %s",
                         symbol, diagnostic.anomaly_summary, diagnostic.severity, diagnostic.recommended_action)
             
@@ -495,7 +509,12 @@ def _check_rules(r: dict) -> list[SentinelFlag]:
             detail=f"Symbol scan execution took {duration_ms/1000:.1f} seconds (limit 120s)"
         ))
 
-    # R5: Option type vs action mismatch
+    # R5: Option type vs action review (informational only)
+    # NOTE: GO_SHORT + CE (sell call) and GO_LONG + PE (sell put) are VALID short-premium
+    # constructions used by MULTILEG/TFSS strategies. `_sanitize_llm_verdict` documents all four
+    # action/instrument combos as valid, so these are NOT an unresolved hedge mapping. Downgraded
+    # from CRITICAL to WARNING to stop false-positive CRITICAL incidents; kept as an informational
+    # signal for review on CORE buy-premium symbols only.
     llm_action = r.get("llm_action")
     llm_instrument = r.get("llm_instrument")
     if llm_action and llm_instrument:
@@ -504,8 +523,12 @@ def _check_rules(r: dict) -> list[SentinelFlag]:
         if ("SHORT" in action and "CE" in instr) or ("LONG" in action and "PE" in instr):
             flags.append(SentinelFlag(
                 rule="R5_OPTION_TYPE_MISMATCH",
-                severity="CRITICAL",
-                detail=f"Post-sanitized trade is action={action} but instrument={instr} (unresolved hedge mapping)"
+                severity="WARNING",
+                detail=(
+                    f"action={action} with instrument={instr} — valid short-premium construction "
+                    f"(sell call / sell put) for MULTILEG/TFSS; review only if unexpected for a "
+                    f"CORE buy-premium symbol"
+                )
             ))
 
     # R6: Entry premium out of bounds
@@ -544,6 +567,12 @@ def _check_rules(r: dict) -> list[SentinelFlag]:
     llm_sl = r.get("llm_stop_loss")
     llm_action = r.get("llm_action")
     llm_instr = str(r.get("llm_instrument") or "").upper()
+    # Detect if SL is an underlying-level value (not a premium).
+    # SL within ±30% of underlying price is almost certainly underlying-level, not premium.
+    _sl_is_underlying_level = (
+        llm_sl is not None and underlying > 0
+        and abs(llm_sl - underlying) / underlying < 0.30
+    )
     if llm_prem and llm_action:
         action_str = str(llm_action).upper()
         # Directional options (GO_LONG, GO_SHORT, BUY_CE, BUY_PE, BUY) buy options -> Target premium > Entry premium
@@ -557,8 +586,8 @@ def _check_rules(r: dict) -> list[SentinelFlag]:
                     severity="CRITICAL",
                     detail=f"BUY option target premium (₹{llm_t1}) <= entry premium (₹{llm_prem})"
                 ))
-            # Only validate SL if it's an option premium (not underlying index spot level)
-            if llm_sl and llm_sl < 3000.0 and llm_sl >= llm_prem:
+            # Only validate SL if it's an option premium (not underlying-level spot level)
+            if llm_sl and not _sl_is_underlying_level and llm_sl >= llm_prem:
                 flags.append(SentinelFlag(
                     rule="R8_INVERSE_TARGET_SL",
                     severity="CRITICAL",
@@ -571,7 +600,7 @@ def _check_rules(r: dict) -> list[SentinelFlag]:
                     severity="CRITICAL",
                     detail=f"SELL option target premium (₹{llm_t1}) >= entry premium (₹{llm_prem})"
                 ))
-            if llm_sl and llm_sl < 3000.0 and llm_sl <= llm_prem:
+            if llm_sl and not _sl_is_underlying_level and llm_sl <= llm_prem:
                 flags.append(SentinelFlag(
                     rule="R8_INVERSE_TARGET_SL",
                     severity="CRITICAL",
@@ -670,15 +699,41 @@ RECENT RELEVANT LOG LINES:
 
 ---
 DIAGNOSTIC CRITERIA:
-1. Identify the probable failure mode (F1 to F6) from the Knowledge Base.
+1. Identify the probable failure mode from the Knowledge Base and cite it by its exact
+   section id (e.g. "F2", "F131"). If no documented mode fits, say "UNDOCUMENTED" —
+   do not force-fit an unrelated failure mode.
 2. Determine if the rule engine flagged a genuine issue or a harmless warning.
 3. Recommend a corrective self-healing action:
    - SKIP_TRADE: If target premiums are inflated, incorrect option mapping exists, or option chain is corrupt.
    - FORCE_RESCAN: If an intermittent fetcher failure/timeout occurred.
    - PAUSE_SYMBOL: If critical dependencies are permanently failing.
    - CLEAR_CACHE: If LLM caching got poisoned with bad levels.
-   - ALERT_ONLY: If the issue is informational (e.g. yfinance warnings).
+   - ALERT_ONLY: If the issue is informational (e.g. yfinance warnings, R8 false-positive on underlying-level SL).
 4. Outline the exact impact of leaving this issue unaddressed.
+
+IMPORTANT — RULE DIAGNOSIS GUIDELINES:
+- If R8_INVERSE_TARGET_SL is in TRIGGERED RULES, cite section "F133" from Knowledge Base.
+  If the SL value is close to the Underlying Spot Price (within ±30%), the SL is an UNDERLYING-LEVEL
+  stop loss (not an option premium) — classify as ALERT_ONLY, not SKIP_TRADE or PAUSE_SYMBOL.
+- If R5_OPTION_TYPE_MISMATCH is in TRIGGERED RULES: GO_SHORT + CE (sell call) and GO_LONG + PE
+  (sell put) are VALID short-premium constructions for MULTILEG/TFSS strategies. This is NOT an
+  option-chain structure error and NOT an AttributeError. Do NOT cite the resolved option-chain
+  normalization entry (F134) or claim "list instead of dict" / "AttributeError" / "option chain
+  structure" issues for R5. Diagnose it as an action/instrument mapping question only, and classify
+  as ALERT_ONLY unless the symbol is a CORE buy-premium symbol where the mapping is genuinely
+  unexpected.
+- EVIDENCE REQUIREMENT: Every diagnosis MUST be grounded in the actual RECENT RELEVANT LOG LINES
+  provided. Do NOT claim an exception (AttributeError, TypeError, NameError, etc.) unless the exact
+  traceback or error line appears verbatim in those log lines. If no error line is present, do not
+  invent one. Knowledge Base entries marked RESOLVED/FIXED describe past issues — do not re-diagnose
+  them as current failures without a fresh matching error in the log lines.
+- If read_only keyword argument or TypeError is cited, verify that F131 is marked RESOLVED.
+  get_previous_underlying accepts *args, **kwargs — do NOT cite F131 or read_only TypeError as an
+  active bug unless the exact traceback appears verbatim in the log lines.
+- Severity must be proportional to the evidence: no error line in the logs → at most WARNING, never
+  CRITICAL. CRITICAL requires a concrete error/traceback or a genuinely corrupt trade plan.
+- If Strikes > 0, option chain data IS present. Do NOT report "no option chain data" or "no populated option chain"
+  when Strikes > 0. Base your diagnosis strictly on the actual metadata and TRIGGERED RULES provided.
 """
 
     from src.engine.llm_enrichment import _call_llm_api

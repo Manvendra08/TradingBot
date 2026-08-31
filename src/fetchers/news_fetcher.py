@@ -427,19 +427,6 @@ def _fetch_icici_commentary() -> list[dict]:
                             "score": _news_sentiment_score(t),
                         }
                     )
-                    t = " ".join(t.split())
-                    title = t[:200] + "..." if len(t) > 200 else t
-                    if not any(r["title"] == title for r in rows):
-                        rows.append(
-                            {
-                                "title": title,
-                                "provider": "ICICIDirect",
-                                "published": int(time.time()),
-                                "published_at": datetime.now(timezone.utc).isoformat(),
-                                "url": url,
-                                "score": _news_sentiment_score(t),
-                            }
-                        )
     except Exception as e:
         log.info("ICICIDirect fetch failed (possibly blocked by WAF): %s", e)
     return rows
@@ -499,29 +486,20 @@ def _fetch_x_nginews() -> list[dict]:
 
 
 def _fetch_te_naturalgas() -> list[dict]:
-    """Fetch Natural Gas news from TradingEconomics using Playwright (async)."""
+    """Fetch Natural Gas news from TradingEconomics via fast HTTP request."""
     url = "https://tradingeconomics.com/commodity/natural-gas"
     rows = []
     cutoff = int(time.time()) - (2 * 86400)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
     try:
-        import asyncio
-        from playwright.async_api import async_playwright
+        res = requests.get(url, headers=headers, timeout=10)
+        if res.status_code != 200:
+            return rows
 
-        async def _fetch():
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
-                page = await browser.new_page(
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                )
-                await page.goto(url, timeout=45000)
-                await page.wait_for_timeout(2000)
-                content = await page.content()
-                await browser.close()
-                return content
-
-        content = asyncio.run(_fetch())
-
-        soup = BeautifulSoup(content, "html.parser")
+        soup = BeautifulSoup(res.text, "html.parser")
         items = soup.find_all("div", class_="te-stream-repeater")
         for item in items:
             a_tag = item.find("a")
@@ -558,7 +536,7 @@ def _fetch_te_naturalgas() -> list[dict]:
                 "score": _news_sentiment_score(title + " " + description),
             })
     except Exception as e:
-        log.warning("TE scraping failed: %s", e)
+        log.warning("[news_fetcher] TradingEconomics fetch failed: %s", e)
     return rows
 
 

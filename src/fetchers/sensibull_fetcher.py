@@ -174,6 +174,8 @@ class SensibullFetcher(BaseFetcher):
 
             ceg = ce.get("greeks_with_iv") or {}
             peg = pe.get("greeks_with_iv") or {}
+            ce_iv_raw = float(ceg.get("iv", 0) or 0)
+            pe_iv_raw = float(peg.get("iv", 0) or 0)
             pairs.append({
                 "ce_ltp": ce.get("last_price", 0) or 0,
                 "pe_ltp": pe.get("last_price", 0) or 0,
@@ -185,8 +187,8 @@ class SensibullFetcher(BaseFetcher):
                 "pe_gamma": peg.get("gamma", 0) or 0,
                 "ce_vega": ceg.get("vega", 0) or 0,
                 "pe_vega": peg.get("vega", 0) or 0,
-                "ce_iv": ceg.get("iv", 0) or 0,
-                "pe_iv": peg.get("iv", 0) or 0,
+                "ce_iv": ce_iv_raw * 100.0 if 0 < ce_iv_raw <= 2.0 else ce_iv_raw,
+                "pe_iv": pe_iv_raw * 100.0 if 0 < pe_iv_raw <= 2.0 else pe_iv_raw,
                 "ce_oi": ce.get("oi", 0) or 0,
                 "pe_oi": pe.get("oi", 0) or 0,
                 "ce_volume": ce.get("volume", 0) or 0,
@@ -226,6 +228,8 @@ class SensibullFetcher(BaseFetcher):
                     ce, pe = po, o
                 ceg2 = ce.get("greeks_with_iv") or {}
                 peg2 = pe.get("greeks_with_iv") or {}
+                ce_iv_raw = float(ceg2.get("iv", 0) or 0)
+                pe_iv_raw = float(peg2.get("iv", 0) or 0)
                 pairs.append({
                     "ce_ltp": ce.get("last_price", 0) or 0,
                     "pe_ltp": pe.get("last_price", 0) or 0,
@@ -237,8 +241,8 @@ class SensibullFetcher(BaseFetcher):
                     "pe_gamma": peg2.get("gamma", 0) or 0,
                     "ce_vega": ceg2.get("vega", 0) or 0,
                     "pe_vega": peg2.get("vega", 0) or 0,
-                    "ce_iv": ceg2.get("iv", 0) or 0,
-                    "pe_iv": peg2.get("iv", 0) or 0,
+                    "ce_iv": ce_iv_raw * 100.0 if 0 < ce_iv_raw <= 2.0 else ce_iv_raw,
+                    "pe_iv": pe_iv_raw * 100.0 if 0 < pe_iv_raw <= 2.0 else pe_iv_raw,
                     "ce_oi": ce.get("oi", 0) or 0,
                     "pe_oi": pe.get("oi", 0) or 0,
                     "ce_volume": ce.get("volume", 0) or 0,

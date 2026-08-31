@@ -1,12 +1,16 @@
 """
-Indian exchange trading holiday configuration for 2026.
+Indian exchange trading holiday configuration.
 Handles full and session-specific holiday calendars for NSE and MCX.
 
 TODO (L1): Implement dynamic holiday fetching from NSE/MCX APIs.
-Hardcoded dates will become stale after 2026, causing is_market_holiday() 
+Hardcoded dates will become stale after MAX_CONFIGURED_YEAR, causing is_market_holiday() 
 to incorrectly return False.
 """
 from datetime import datetime, date
+
+# Maximum year for which holiday data is configured.
+# Update this and the holiday sets when new year data becomes available.
+MAX_CONFIGURED_YEAR = 2026
 
 # 2026 NSE/BSE Trading Holidays (all day closed)
 NSE_HOLIDAYS_2026 = {
@@ -56,6 +60,30 @@ MCX_NEW_YEAR_HOLIDAY_2026 = {
 }
 
 
+import logging
+from datetime import time as dt_time
+
+log = logging.getLogger(__name__)
+_WARNED_YEARS = set()
+
+
+def _check_year_supported(d: date) -> bool:
+    """Check if the holiday calendar supports the given year.
+    Returns True if supported, False if year is beyond MAX_CONFIGURED_YEAR.
+    Logs a critical warning once per unsupported year."""
+    if d.year > MAX_CONFIGURED_YEAR:
+        if d.year not in _WARNED_YEARS:
+            _WARNED_YEARS.add(d.year)
+            log.critical(
+                "Holiday calendar only configured up to year %d. Date %s (year %d) encountered; "
+                "update config/holidays.py with holiday data for year %d. "
+                "Returning True (fail-closed) to prevent trading on unknown holidays.",
+                MAX_CONFIGURED_YEAR, d, d.year, d.year
+            )
+        return False
+    return True
+
+
 def is_market_holiday(symbol: str, dt: datetime) -> bool:
     """
     Check if the market is closed for a given symbol and datetime due to holiday.
@@ -64,6 +92,11 @@ def is_market_holiday(symbol: str, dt: datetime) -> bool:
     from config.symbol_classes import get_symbol_class
     
     d = dt.date()
+    
+    # Fail-closed: if year not supported, assume holiday to prevent trading
+    if not _check_year_supported(d):
+        return True
+    
     class_key = get_symbol_class(symbol)
     
     if class_key in ("NSE_INDEX", "BSE_INDEX"):
@@ -75,13 +108,11 @@ def is_market_holiday(symbol: str, dt: datetime) -> bool:
             return True
             
         if d in MCX_PARTIAL_HOLIDAYS_2026:
-            t = dt.strftime("%H:%M")
-            if t < "17:00":
+            if dt.time() < dt_time(17, 0):
                 return True
                 
         if d in MCX_NEW_YEAR_HOLIDAY_2026:
-            t = dt.strftime("%H:%M")
-            if t >= "17:00":
+            if dt.time() >= dt_time(17, 0):
                 return True
                 
     return False

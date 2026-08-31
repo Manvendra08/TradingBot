@@ -47,94 +47,90 @@ def backup_db_to_telegram() -> bool:
     mount_resilient_tls(session)
 
     # 1. Point-in-time online SQLite backup
-    tmp_dir = tempfile.TemporaryDirectory()
-    backup_db_path = Path(tmp_dir.name) / f"nsebot_prod_{now_str}.db"
-    log.info("Creating online SQLite backup at %s...", backup_db_path.name)
+    with tempfile.TemporaryDirectory() as tmp_dir_name:
+        tmp_dir = Path(tmp_dir_name)
+        backup_db_path = tmp_dir / f"nsebot_prod_{now_str}.db"
+        log.info("Creating online SQLite backup at %s...", backup_db_path.name)
 
-    stats = []
-    tables = []
-    try:
-        src_conn = sqlite3.connect(str(DB_PATH))
-        dst_conn = sqlite3.connect(str(backup_db_path))
-        src_conn.backup(dst_conn)
+        stats = []
+        tables = []
+        try:
+            src_conn = sqlite3.connect(str(DB_PATH))
+            dst_conn = sqlite3.connect(str(backup_db_path))
+            src_conn.backup(dst_conn)
 
-        # Collect table stats
-        c = dst_conn.cursor()
-        tables = [r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()]
-        for t in sorted(tables):
-            try:
-                cnt = c.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0]
-                stats.append((t, cnt))
-            except Exception:
-                pass
+            # Collect table stats
+            c = dst_conn.cursor()
+            tables = [r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()]
+            for t in sorted(tables):
+                try:
+                    cnt = c.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0]
+                    stats.append((t, cnt))
+                except Exception:
+                    pass
 
-        src_conn.close()
-        dst_conn.close()
-    except Exception as e:
-        log.error("SQLite backup failed: %s", e)
-        tmp_dir.cleanup()
-        return False
+            src_conn.close()
+            dst_conn.close()
+        except Exception as e:
+            log.error("SQLite backup failed: %s", e)
+            return False
 
-    raw_size = backup_db_path.stat().st_size
-    raw_size_mb = raw_size / (1024 * 1024)
-    log.info("Database snapshot size: %.2f MB across %d tables", raw_size_mb, len(tables))
+        raw_size = backup_db_path.stat().st_size
+        raw_size_mb = raw_size / (1024 * 1024)
+        log.info("Database snapshot size: %.2f MB across %d tables", raw_size_mb, len(tables))
 
-    # 2. Compress into ZIP
-    zip_path = Path(tmp_dir.name) / f"nsebot_prod_backup_{now_str}.zip"
-    log.info("Compressing snapshot to %s ...", zip_path.name)
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.write(backup_db_path, arcname=backup_db_path.name)
+        # 2. Compress into ZIP
+        zip_path = tmp_dir / f"nsebot_prod_backup_{now_str}.zip"
+        log.info("Compressing snapshot to %s ...", zip_path.name)
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.write(backup_db_path, arcname=backup_db_path.name)
 
-    zipped_size = zip_path.stat().st_size
-    zipped_size_mb = zipped_size / (1024 * 1024)
-    log.info("Compressed ZIP size: %.2f MB", zipped_size_mb)
+        zipped_size = zip_path.stat().st_size
+        zipped_size_mb = zipped_size / (1024 * 1024)
+        log.info("Compressed ZIP size: %.2f MB", zipped_size_mb)
 
-    # Format Telegram caption
-    top_tables = "\n".join([f"• `{t}`: {cnt:,}" for t, cnt in stats if cnt > 0][:10])
-    caption = (
-        f"🗄️ *NSEBOT Production Database Backup*\n"
-        f"📅 *Timestamp:* {now_human}\n"
-        f"📦 *Uncompressed:* {raw_size_mb:.2f} MB\n"
-        f"🗜️ *Compressed:* {zipped_size_mb:.2f} MB\n"
-        f"📊 *Tables:* {len(tables)}\n\n"
-        f"*Key Table Record Counts:*\n{top_tables}"
-    )
+        # Format Telegram caption
+        top_tables = "\n".join([f"• `{t}`: {cnt:,}" for t, cnt in stats if cnt > 0][:10])
+        caption = (
+            f"🗄️ *NSEBOT Production Database Backup*\n"
+            f"📅 *Timestamp:* {now_human}\n"
+            f"📦 *Uncompressed:* {raw_size_mb:.2f} MB\n"
+            f"🗜️ *Compressed:* {zipped_size_mb:.2f} MB\n"
+            f"📊 *Tables:* {len(tables)}\n\n"
+            f"*Key Table Record Counts:*\n{top_tables}"
+        )
 
-    # 3. Deliver via Telegram
-    if zipped_size < CHUNK_THRESHOLD:
-        log.info("Sending compressed backup to Telegram...")
-        res = _tg_send_file(zip_path, caption, session)
-        if res.get("ok"):
-            log.info("Production database backup pushed to Telegram successfully.")
-            tmp_dir.cleanup()
-            return True
-        log.error("Telegram backup API error: %s", res)
-        tmp_dir.cleanup()
-        return False
+        # 3. Deliver via Telegram
+        if zipped_size < CHUNK_THRESHOLD:
+            log.info("Sending compressed backup to Telegram...")
+            res = _tg_send_file(zip_path, caption, session)
+            if res.get("ok"):
+                log.info("Production database backup pushed to Telegram successfully.")
+                return True
+            log.error("Telegram backup API error: %s", res)
+            return False
 
-    # 4. Split into chunks if exceeds limit
-    log.warning("Zipped file (%.1f MB) exceeds Telegram single file limit — splitting into chunks.", zipped_size_mb)
-    part_num = 0
-    with open(zip_path, "rb") as src:
-        while True:
-            chunk = src.read(CHUNK_SIZE)
-            if not chunk:
-                break
-            part_num += 1
-            part_path = Path(tmp_dir.name) / f"{backup_db_path.stem}.zip.{part_num:03d}"
-            part_path.write_bytes(chunk)
-            part_caption = f"DB backup part {part_num} ({len(chunk) / (1024 * 1024):.1f} MB)"
-            res = _tg_send_file(part_path, part_caption, session)
-            if not res.get("ok"):
-                log.error("Failed to send chunk %d: %s", part_num, res)
-                _send_discord_notification(f"❌ Telegram backup failed — chunk {part_num} rejected: {res.get('description', 'unknown')}")
-                tmp_dir.cleanup()
-                return False
-            log.info("Sent chunk %d", part_num)
+        # 4. Split into chunks if exceeds limit
+        log.warning("Zipped file (%.1f MB) exceeds Telegram single file limit — splitting into chunks.", zipped_size_mb)
+        part_num = 0
+        with open(zip_path, "rb") as src:
+            while True:
+                chunk = src.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                part_num += 1
+                part_path = tmp_dir / f"{backup_db_path.stem}.zip.{part_num:03d}"
+                part_path.write_bytes(chunk)
+                part_caption = f"DB backup part {part_num} ({len(chunk) / (1024 * 1024):.1f} MB)"
+                res = _tg_send_file(part_path, part_caption, session)
+                if not res.get("ok"):
+                    log.error("Failed to send chunk %d: %s", part_num, res)
+                    _send_discord_notification(f"❌ Telegram backup failed — chunk {part_num} rejected: {res.get('description', 'unknown')}")
+                    return False
+                log.info("Sent chunk %d", part_num)
 
-    log.info("All %d chunks sent successfully.", part_num)
-    tmp_dir.cleanup()
-    return True
+        log.info("All %d chunks sent successfully.", part_num)
+        return True
 
 
 def _send_discord_notification(text: str):

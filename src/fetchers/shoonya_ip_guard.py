@@ -76,9 +76,13 @@ def _load_state() -> dict:
 def _save_state(state: dict) -> None:
     try:
         STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        tmp = STATE_PATH.with_name(STATE_PATH.name + ".tmp")
-        tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
-        tmp.replace(STATE_PATH)
+        data = json.dumps(state, indent=2)
+        try:
+            tmp = STATE_PATH.with_name(STATE_PATH.name + ".tmp")
+            tmp.write_text(data, encoding="utf-8")
+            tmp.replace(STATE_PATH)
+        except Exception:
+            STATE_PATH.write_text(data, encoding="utf-8")
     except Exception as exc:
         log.warning("[shoonya-ip] failed to write state %s: %s", STATE_PATH, exc)
 
@@ -108,8 +112,18 @@ def _send_alert(
         log.warning("[shoonya-ip] failed to send Telegram alert: %s", exc)
 
 
-def run_daily_ip_check() -> dict:
+def run_daily_ip_check(known_new_ip: str | None = None, force_rerun: bool = False) -> dict:
     """Once-per-IST-day public-IP check for the Shoonya guard.
+
+    Parameters
+    ----------
+    known_new_ip : str | None
+        If provided, skip IP detection and use this IP directly. Used when
+        the generic ip_monitor detects a mid-day change and we already know
+        the new IP.
+    force_rerun : bool
+        If True, ignore the daily cache and re-run the full check + update.
+        Used for mid-day IP changes detected by the generic ip_monitor.
 
     Returns a status dict:
       {"skip": bool, "old_ip": str|None, "new_ip": str|None, "reason": str}
@@ -119,13 +133,14 @@ def run_daily_ip_check() -> dict:
     - If update fails: sets skip True for today and alerts failure once.
     - Fail-open: returns skip False when IP detection fails.
     - Thread-safe; re-entrant calls on the same day return the cached decision
-      without re-fetching or re-alerting.
+      without re-fetching or re-alerting (unless force_rerun=True).
     """
     with _lock:
         state = _load_state()
         today = _today()
 
-        if state.get("checked_date") == today:
+        # Skip cache check only if force_rerun or we have a known new IP
+        if not force_rerun and not known_new_ip and state.get("checked_date") == today:
             # Already decided today — return the cached decision.
             return {
                 "skip": state.get("skip_date") == today,
@@ -134,16 +149,22 @@ def run_daily_ip_check() -> dict:
                 "reason": "cached",
             }
 
-        current_ip = ip_monitor._fetch_public_ip(
-            timeout=_FAST_IP_TIMEOUT_S,
-            max_providers=_FAST_IP_MAX_PROVIDERS,
-            retries=_FAST_IP_RETRIES,
-        )
-        if not current_ip:
-            log.warning(
-                "[shoonya-ip] could not determine public IP — fail-open (Shoonya not blocked)"
+        # Use known_new_ip if provided (from mid-day ip_monitor detection),
+        # otherwise do the fast detection
+        if known_new_ip:
+            current_ip = known_new_ip
+            log.info("[shoonya-ip] using known new IP from ip_monitor: %s", current_ip)
+        else:
+            current_ip = ip_monitor._fetch_public_ip(
+                timeout=_FAST_IP_TIMEOUT_S,
+                max_providers=_FAST_IP_MAX_PROVIDERS,
+                retries=_FAST_IP_RETRIES,
             )
-            return {"skip": False, "old_ip": None, "new_ip": None, "reason": "ip_detect_failed"}
+            if not current_ip:
+                log.warning(
+                    "[shoonya-ip] could not determine public IP — fail-open (Shoonya not blocked)"
+                )
+                return {"skip": False, "old_ip": None, "new_ip": None, "reason": "ip_detect_failed"}
 
         baseline = state.get("baseline_ip")
         if not baseline or not ip_monitor._is_valid_public_ipv4(str(baseline)):
