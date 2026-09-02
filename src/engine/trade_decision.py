@@ -174,7 +174,27 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None, su
         log.debug("Dry-run/preview decision: %s | %s | %s", status, setup_type, reason)
 
     plan = pipeline_ctx.scan_context.get("_pipeline_plan") or {}
-    
+
+    # Extract candidate greeks from pre-computed fields or dynamically from option_rows
+    option_type = plan.get("option_type")
+    strike = plan.get("strike")
+    delta = pipeline_ctx.scan_context.get("_candidate_delta")
+    theta = pipeline_ctx.scan_context.get("_candidate_theta")
+    vega = pipeline_ctx.scan_context.get("_candidate_vega")
+
+    if (delta is None or theta is None or vega is None) and option_type in ("CE", "PE") and strike is not None:
+        option_rows = pipeline_ctx.scan_context.get("option_rows") or []
+        for row in option_rows:
+            try:
+                row_strike = float(row.get("strike") or 0)
+                if abs(row_strike - float(strike)) < 0.01 and str(row.get("option_type", "")).upper() == option_type.upper():
+                    if delta is None: delta = row.get("delta")
+                    if theta is None: theta = row.get("theta")
+                    if vega is None: vega = row.get("vega")
+                    break
+            except (ValueError, TypeError):
+                continue
+
     return {
         "status": status,
         "setup_type": setup_type,
@@ -188,9 +208,11 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None, su
         "normalized_tfss_bias": pipeline_ctx.scan_context.get("_tfss_bias"),
         "action": plan.get("side"),
         "symbol": symbol,
-        "option_side": plan.get("option_type"),
-        "strike": plan.get("strike"),
-        "delta": pipeline_ctx.scan_context.get("_candidate_delta"),
+        "option_side": option_type,
+        "strike": strike,
+        "delta": delta,
+        "theta": theta,
+        "vega": vega,
         "premium": plan.get("premium"),
         "risk_metrics": pipeline_ctx.scan_context.get("_risk_metrics"),
         "eligible_triggers": pipeline_ctx.scan_context.get("_eligible_triggers", []),

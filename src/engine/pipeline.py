@@ -380,15 +380,16 @@ def _async_llm_enrich_and_edit(
         )
 
         _, digest_msg_v2 = build_digest(
-            symbol,
-            new_alerts,
-            scan_context,
-            intel,
+            symbol=symbol,
+            alerts=new_alerts,
+            fetched_at=fetched_at,
+            scan_context=scan_context,
             intelligence_text=intel_text_v2,
             paper_trade_status=None,
             live_trade_status=None,
             llm_verdict=llm_verdict,
             structured_payload=structured_payload,
+            digest_id=digest_id,
         )
 
         if edit_message_text(message_id, digest_msg_v2):
@@ -430,6 +431,10 @@ def _async_llm_enrich_and_edit(
                 "llm_stop_loss": _get_num_val(getattr(llm_verdict, "stop_loss", None)),
                 "trade_decision_status": (intel.get("trade_decision") or {}).get("status") if intel else None,
                 "trade_decision_reason": (intel.get("trade_decision") or {}).get("reason") if intel else None,
+                "lots": (intel.get("trade_decision") or {}).get("lots") or (intel.get("trade_decision") or {}).get("tranche_count", 1) if intel else 1,
+                "delta": (intel.get("trade_decision") or {}).get("delta") if intel else None,
+                "theta": (intel.get("trade_decision") or {}).get("theta") if intel else None,
+                "vega": (intel.get("trade_decision") or {}).get("vega") if intel else None,
                 "warnings": [w for w in (scan_context.get("warnings") or []) if w],
                 "errors": [e for e in (scan_context.get("errors") or []) if e],
                 "fetcher_errors": scan_context.get("fetcher_errors", []),
@@ -1103,10 +1108,10 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
         )
 
         digest_id, digest_msg = build_digest(
-            symbol,
-            new_alerts,
-            scan_context,
-            intel,
+            symbol=symbol,
+            alerts=new_alerts,
+            fetched_at=fetched_at,
+            scan_context=scan_context,
             intelligence_text=intel_text,
             paper_trade_status=None,
             live_trade_status=None,
@@ -1289,6 +1294,10 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                 "llm_stop_loss": _get_num_val(getattr(llm_verdict, "stop_loss", None)) if llm_verdict else None,
                 "trade_decision_status": (intel.get("trade_decision") or {}).get("status") if intel else None,
                 "trade_decision_reason": (intel.get("trade_decision") or {}).get("reason") if intel else None,
+                "lots": (intel.get("trade_decision") or {}).get("lots") or (intel.get("trade_decision") or {}).get("tranche_count", 1) if intel else 1,
+                "delta": (intel.get("trade_decision") or {}).get("delta") if intel else None,
+                "theta": (intel.get("trade_decision") or {}).get("theta") if intel else None,
+                "vega": (intel.get("trade_decision") or {}).get("vega") if intel else None,
                 "warnings": [w for w in (scan_context.get("warnings") or []) if w],
                 "errors": [e for e in (scan_context.get("errors") or []) if e],
                 "fetcher_errors": scan_context.get("fetcher_errors", []),

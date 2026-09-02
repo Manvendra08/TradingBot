@@ -30,6 +30,10 @@ def clean_report():
         "llm_stop_loss": 80.0,
         "trade_decision_status": "TRIGGERED",
         "trade_decision_reason": "AI Signal",
+        "llm_lots": 1,
+        "delta": -0.45,
+        "theta": -12.5,
+        "vega": 8.2,
         "warnings": [],
         "errors": [],
         "log_lines": ["Info message 1", "Info message 2"],
@@ -105,7 +109,7 @@ def test_run_sentinel_diagnostics(mock_persist, mock_llm, clean_report):
     )
     mock_llm.return_value = mock_diag
     
-    with patch("src.engine.scan_sentinel.SENTINEL_HEAL_ENABLED", True), \
+    with patch.dict("os.environ", {"SENTINEL_HEAL_ENABLED": "true"}), \
          patch("src.engine.scan_sentinel.stamp_health") as mock_stamp:
         diag = run_sentinel(clean_report)
         

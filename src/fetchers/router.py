@@ -536,22 +536,21 @@ def fetch_option_chain(symbol: str, expiry: str | None = None, required_strikes:
             p_fut = get_fetch_future(primary_src)
             f_fut = get_fetch_future(fallback_src)
 
-            p_data = get_fetch_data(primary_src, timeout_s=12.0)
-
-            # If primary succeeded and fallback is done, just grab fallback (0.1s).
-            # If primary failed (p_data is None), give fallback the remaining budget (up to 12.0s).
-            f_timeout = 0.1 if p_data is not None else 12.0
-            f_data = get_fetch_data(fallback_src, timeout_s=f_timeout)
+            # Wait for BOTH futures concurrently with full deadline to prefer single consolidated chain data
+            p_data = get_fetch_data(primary_src, timeout_s=20.0)
+            f_data = get_fetch_data(fallback_src, timeout_s=20.0)
 
             if p_data and f_data:
                 result_data = _merge_fetcher_results(p_data, f_data, symbol)
                 result_source = f"{primary_src}+{fallback_src}"
                 break
             elif p_data:
+                log.info("[router] %s | Consolidated DUALFETCH unavailable (fallback %s failed/timed out) — using primary %s", symbol, fallback_src, primary_src)
                 result_data = p_data
                 result_source = primary_src
                 break
             elif f_data:
+                log.info("[router] %s | Consolidated DUALFETCH unavailable (primary %s failed/timed out) — using fallback %s", symbol, primary_src, fallback_src)
                 result_data = f_data
                 result_source = fallback_src
                 break
@@ -560,7 +559,7 @@ def fetch_option_chain(symbol: str, expiry: str | None = None, required_strikes:
                 continue
         else:
             log.info("[router] %s | Single-source fetch: %s", symbol, primary_src)
-            s_data = get_fetch_data(primary_src, timeout_s=12.0)
+            s_data = get_fetch_data(primary_src, timeout_s=20.0)
             if s_data:
                 result_data = s_data
                 result_source = primary_src

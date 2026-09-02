@@ -58,16 +58,31 @@ class BoundedExecutor:
     thread_name_prefix: str = "pipeline-io"
 
     def __post_init__(self) -> None:
+        self._lock = threading.Lock()
         self._executor = ThreadPoolExecutor(
             max_workers=self.max_workers,
             thread_name_prefix=self.thread_name_prefix,
         )
 
     def submit(self, fn: Callable[..., T], /, *args, **kwargs) -> Future:
-        return self._executor.submit(fn, *args, **kwargs)
+        with self._lock:
+            if getattr(self._executor, "_shutdown", False):
+                self._executor = ThreadPoolExecutor(
+                    max_workers=self.max_workers,
+                    thread_name_prefix=self.thread_name_prefix,
+                )
+            try:
+                return self._executor.submit(fn, *args, **kwargs)
+            except RuntimeError:
+                self._executor = ThreadPoolExecutor(
+                    max_workers=self.max_workers,
+                    thread_name_prefix=self.thread_name_prefix,
+                )
+                return self._executor.submit(fn, *args, **kwargs)
 
     def shutdown(self, wait: bool = True) -> None:
-        self._executor.shutdown(wait=wait)
+        with self._lock:
+            self._executor.shutdown(wait=wait)
 
 
 single_flight_gate = SingleFlightGate()

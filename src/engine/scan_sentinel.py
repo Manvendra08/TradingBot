@@ -34,7 +34,18 @@ KB_FILE = SENTINEL_DIR / "KNOWLEDGE_BASE.md"
 SENTINEL_DIR.mkdir(parents=True, exist_ok=True)
 
 # Self-healing config
-SENTINEL_HEAL_ENABLED = os.environ.get("SENTINEL_HEAL_ENABLED", "false").lower() == "true"
+def is_sentinel_heal_enabled() -> bool:
+    """Returns True if self-healing actions should be executed upon anomaly diagnosis."""
+    try:
+        from config.runtime_config import load_runtime_config
+
+        cfg_val = load_runtime_config().get("sentinel_heal_enabled")
+        if cfg_val is not None:
+            return bool(cfg_val)
+    except Exception:
+        pass
+    return os.environ.get("SENTINEL_HEAL_ENABLED", "false").lower() == "true"
+
 
 # Report mode config
 SENTINEL_REPORT_MODES = ("anomalies", "full")
@@ -446,7 +457,7 @@ def run_sentinel(report_data: dict | ScanRunReport) -> ScanDiagnostic | None:
             _persist_sentinel_incident(symbol, flags, diagnostic)
             
             # 3. Self-healing execution
-            if SENTINEL_HEAL_ENABLED:
+            if is_sentinel_heal_enabled():
                 _execute_self_healing(symbol, diagnostic, report_dict)
             else:
                 log.info("%s: Self-healing disabled. Skipping action: %s", symbol, diagnostic.recommended_action)
@@ -502,11 +513,11 @@ def _check_rules(r: dict) -> list[SentinelFlag]:
 
     # R4: Scan duration anomaly
     duration_ms = int(r.get("scan_duration_ms") or 0)
-    if duration_ms > 120_000:
+    if duration_ms > 90_000:
         flags.append(SentinelFlag(
             rule="R4_SLOW_SCAN",
             severity="WARNING",
-            detail=f"Symbol scan execution took {duration_ms/1000:.1f} seconds (limit 120s)"
+            detail=f"Symbol scan execution took {duration_ms/1000:.1f} seconds (limit 90s)"
         ))
 
     # R5: Option type vs action review (informational only)
@@ -631,14 +642,14 @@ def _check_rules(r: dict) -> list[SentinelFlag]:
     if m_strike and underlying > 0 and "FUT" not in llm_instr.upper():
         strike_val = float(m_strike.group(1))
         dist_pct = abs(strike_val - underlying) / underlying
-        if dist_pct > 0.25:
+        if dist_pct > 0.40:
             flags.append(SentinelFlag(
                 rule="R11_EXTREME_STRIKE_DISTANCE",
-                severity="WARNING",
-                detail=f"Instrument strike {strike_val} is {dist_pct:.1%} away from underlying spot {underlying} (>25% safety limit)"
+                severity="INFO",
+                detail=f"Instrument strike {strike_val} is {dist_pct:.1%} away from underlying spot {underlying} (>40% safety limit)"
             ))
 
-    # R12: Zero OI Dominance
+    # R12: Zero OI Dominance (TODO: filter to ATM ±5 strikes only, not full chain)
     total_strikes = int(r.get("total_strikes") or 0)
     zero_oi = int(r.get("zero_oi_strikes") or 0)
     if total_strikes > 10:
@@ -649,6 +660,111 @@ def _check_rules(r: dict) -> list[SentinelFlag]:
                 severity="WARNING",
                 detail=f"{zero_oi_pct:.0%} of option chain strikes ({zero_oi}/{total_strikes}) have 0 Open Interest"
             ))
+
+    # R13: Cross-expiry strike mismatch
+    resolved_exp = r.get("resolved_expiry")
+    scan_exp = r.get("scan_expiry") or r.get("expiry")
+    if resolved_exp and scan_exp and resolved_exp != scan_exp:
+        flags.append(SentinelFlag(
+            rule="R13_CROSS_EXPIRY_STRIKE_MISMATCH",
+            severity="CRITICAL",
+            detail=f"Resolved instrument expiry {resolved_exp} != scan expiry {scan_exp}"
+        ))
+
+    # R14: Lot size zero or negative (Only applies when a trade is being entered or triggered)
+    td_status = str(r.get("trade_decision_status") or "").upper()
+    llm_act = str(r.get("llm_action") or "").upper()
+    has_trade_intent = (
+        td_status in ("ENTERED", "TRIGGERED", "LIVE_ENTERED", "OPEN")
+        or (llm_act in ("GO_LONG", "GO_SHORT", "BUY", "SELL", "ENTER") and td_status != "BLOCKED")
+    )
+    if has_trade_intent:
+        lots = r.get("llm_lots") or r.get("lots") or 0
+        if lots <= 0:
+            flags.append(SentinelFlag(
+                rule="R14_LOT_SIZE_ZERO_OR_NEGATIVE",
+                severity="CRITICAL",
+                detail=f"Computed lot size is {lots} — trade would have zero quantity"
+            ))
+
+    # R15: Margin exceeds available capital
+    margin = r.get("margin_req") or 0
+    capital = r.get("available_capital") or 0
+    if margin > 0 and capital > 0 and margin > capital * 2.0:
+        flags.append(SentinelFlag(
+            rule="R15_MARGIN_EXCEEDS_CAPITAL",
+            severity="CRITICAL",
+            detail=f"Required margin ₹{margin:,.0f} exceeds 2x available capital ₹{capital:,.0f}"
+        ))
+
+    # R16: Duplicate signal key (requires DB query — deferred to v2)
+    # signal_key = r.get("signal_key")
+    # if signal_key:
+    #     # TODO: Query DB for existing signal_key
+    #     pass
+
+    # R17: Confidence below 50% threshold
+    conf = r.get("llm_confidence") or 0
+    if 0 < conf < 50:
+        flags.append(SentinelFlag(
+            rule="R17_CONFIDENCE_BELOW_THRESHOLD",
+            severity="WARNING",
+            detail=f"LLM confidence {conf}% is below 50% (random threshold)"
+        ))
+
+    # R18: IV percentile missing or stale (Only validate if IV percentile timestamp is tracked)
+    iv_pct_ts = r.get("iv_percentile_timestamp")
+    if iv_pct_ts:
+        try:
+            from datetime import datetime, timezone
+            ts = datetime.fromisoformat(iv_pct_ts.replace("Z", "+00:00"))
+            age_days = (datetime.now(timezone.utc) - ts).days
+            if age_days > 7:
+                flags.append(SentinelFlag(
+                    rule="R18_IV_PERCENTILE_MISSING_OR_STALE",
+                    severity="WARNING",
+                    detail=f"IV percentile data {age_days} days stale (>7 days)"
+                ))
+        except Exception:
+            pass
+
+    # R19: MCX entry after 23:15 IST on expiry day
+    try:
+        from config.settings import IST, MCX_SYMBOLS
+        now_ist = datetime.now(IST)
+        is_mcx = symbol in MCX_SYMBOLS
+        dte = r.get("dte") or 999
+        if is_mcx and dte == 0 and now_ist.hour == 23 and now_ist.minute >= 15:
+            flags.append(SentinelFlag(
+                rule="R19_MCX_AFTER_CUTOFF_TIME",
+                severity="CRITICAL",
+                detail=f"MCX entry suggested at {now_ist.strftime('%H:%M')} IST on expiry day (cutoff: 23:15)"
+            ))
+    except Exception:
+        pass
+
+    # R20: Zero volume on selected strike (requires OC data — deferred to v2)
+    # selected_strike = r.get("llm_strike") or 0
+    # selected_ot = r.get("llm_option_type") or ""
+    # TODO: Extract volume from option chain data
+
+    # R21: Greeks calculation failed (all near zero for an active option trade)
+    llm_act = str(r.get("llm_action") or "").upper()
+    llm_instr = str(r.get("llm_instrument") or "").upper()
+    if llm_instr and llm_instr not in ("NONE", "N/A", "") and llm_act not in ("NO_TRADE", "NONE", ""):
+        delta = abs(r.get("delta") or 0)
+        theta = abs(r.get("theta") or 0)
+        vega = abs(r.get("vega") or 0)
+        if delta < 0.01 and theta < 0.01 and vega < 0.01:
+            flags.append(SentinelFlag(
+                rule="R21_GREEKS_CALCULATION_FAILED",
+                severity="WARNING",
+                detail="All greeks near zero — calculation may have failed"
+            ))
+
+    # R22: Broker session expired (requires health stamp query — deferred to v2)
+    # broker_health = get_health_stamp("shoonya_session")
+    # TODO: Query health_stamps table for broker session status
 
     return flags
 

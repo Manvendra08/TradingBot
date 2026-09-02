@@ -91,6 +91,11 @@ TypeError: get_previous_underlying() got an unexpected keyword argument 'read_on
 - **Issue:** In `multileg_paper_trading.py` and `multileg_live_trading.py`, `ai_mode="full"` allowed an LLM `CLOSE` response to immediately close an open book, even when deterministic profit/stop/expiry conditions had not fired. A BANKNIFTY short strangle was closed after roughly one hour at a loss because the model interpreted a delta move as “strangle broken.” The same path could close live broker books.
 - **Fix:** AI `CLOSE` and `ADJUST` responses are now logged as advisory-only. They cannot close books, consume adjustment slots, or place orders. Only deterministic profit target, stop loss, expiry, and explicit validated execution paths can change position state.
 
+### F141: Missing Greeks in Trade Decision / Sentinel Diagnostics (P1-HIGH) (RESOLVED)
+- **Status:** RESOLVED & VERIFIED. Option greeks (`delta`, `theta`, `vega`) are properly populated.
+- **Issue:** The Sentinel diagnostic rule `R21_GREEKS_CALCULATION_FAILED` fired warning for zero greeks on every blocked/triggered scan. The root cause was that `trade_decision.py` attempted to read unpopulated `_candidate_delta` fields from `scan_context`, resulting in missing `delta`, `theta`, and `vega` keys in the pipeline output fed to the sentinel reporting tools.
+- **Fix:** Populated `_candidate_delta`, `_candidate_theta`, and `_candidate_vega` directly during candidate selection in `decision_pipeline.py`. Added fallback explicit extraction loops in `trade_decision.py` that look up the chosen `(strike, option_type)` directly within the `option_rows` dataset. Sentinel metrics now accurately track valid option chain greeks without throwing false `R21` flags.
+
 ### F139: 0DTE Entry Cutoff Legitimacy Reclassification & Sentinel Severity Cap (P1-HIGH) (RESOLVED — do not re-diagnose)
 - **Status:** RESOLVED & VERIFIED.
 - **Issue 1:** 0DTE entry cutoff (15:15 IST / 23:15 MCX) previously caused `validate_market_data()` to report `is_legitimate=False`, aborting the entire scan context and skipping exit monitoring / square-off.
@@ -195,10 +200,10 @@ TypeError: get_previous_underlying() got an unexpected keyword argument 'read_on
   3. Refactored futures contract resolution to sort by `exd` expiry date chronologically and pick the near-month contract.
   4. Removed orphaned dead code block after return line 1450.
 
-### F136: Shoonya ISP IP Rotation — Automated Headless Portal IP Updater (P1-HIGH)
+### F136: Shoonya ISP IP Rotation — Automated Headless Portal IP Updater (P1-HIGH) (RESOLVED)
 - **Symptom:** `[shoonya] GenAcsTok failed: {'stat': 'Not_Ok', 'emsg': 'Invalid Input : INVALID_IP', ...}` after a ~60s Playwright OAuth, recurring every time the ISP rotates the public IP (3–4 day DHCP leases).
 - **Root Cause:** Shoonya validates the request source IP at login (`GenAcsTok`). A rotating ISP public IP is not bound to the account, so login is rejected even though the OAuth web login succeeds.
-- **Self-Heal:** `src/fetchers/shoonya_ip_guard.py` runs a once-per-IST-day public-IP check (reusing `src/utils/ip_monitor.py` detection). On rotation, it immediately triggers `src/fetchers/shoonya_ip_updater.py` which launches headless Playwright, logs into Shoonya's portal (`https://api.shoonya.com/OAuthlogin/`), and automatically updates the `Primary IP Address` and `Backup IP Address` to the new public IP. If the update succeeds, the new baseline IP is saved, skip flag is cleared, and normal Shoonya fetching resumes without interruption. If the update fails, it falls back to setting `skip_date` and alerts via Telegram. Manual trigger available via `python main.py --update-shoonya-ip`. State: `data/shoonya_ip_state.json` (`baseline_ip`, `checked_date`, `skip_date`).
+- **Self-Heal:** `src/fetchers/shoonya_ip_guard.py` runs an automatic public-IP check (reusing `src/utils/ip_monitor.py` detection). On rotation, it immediately triggers `src/fetchers/shoonya_ip_updater.py` which launches headless Playwright with a fixed viewport (1440x900), focuses the Flutter Web canvas input via exact coordinate click `(724, 165)`, sequences Tab navigation to fill Password and dynamic TOTP, clicks the orange Login button `(724, 340)`, and programmatically posts the new IP binding to `AppKeyStore`. The new baseline IP is saved, `skip_date` lock is cleared, and Shoonya fetches resume without manual intervention. State: `data/shoonya_ip_state.json` (`baseline_ip`, `checked_date`, `skip_date`).
 
 ### F137: OmniRouter HTTP Timeout Cap Truncation (P1-HIGH)
 - **Symptom:** LLM enrichment logs show `OmniRouter (antigravity/claude-sonnet-4-6) exception: JSON extract failed: Expecting ',' delimiter: line 19 column 6 (char 644)`.
@@ -226,6 +231,18 @@ TypeError: get_previous_underlying() got an unexpected keyword argument 'read_on
   2. Added an R5-specific guideline and an EVIDENCE REQUIREMENT to the `_run_ai_diagnostic()` prompt: R5 must never be diagnosed as F134/AttributeError/option-chain-structure; every diagnosis must quote a real log line; no error line → at most WARNING, never CRITICAL; RESOLVED/FIXED KB entries must not be re-diagnosed without a fresh matching traceback.
   3. Deduplicated KB section IDs: option-chain normalization → `F134` (marked RESOLVED), Zero-OI anomaly → `F135`, Shoonya ISP IP rotation → `F136`, OmniRouter timeout cap → `F137`, Pre-flight data gates → `F138`. `F133` (Inverse Target/SL, referenced by the R8 guideline) is unchanged.
 - **Verification:** No real multileg `AttributeError` exists in `logs/main.log`; `_normalize_option_chain()` is in place and `validate_legs()`/`compute_book_greeks()` are safe. The only genuine `AttributeError` (ShoonyaFetcher `_increment_and_save_call_count`) was already fixed.
+
+### F141: Sentinel False Positive Flagging on NO_TRADE Scans & Missing Optional IV (P1-HIGH)
+- **Symptom:** `WARNING/CRITICAL | nsebot.scan_sentinel | NATURALGAS/NIFTY/BANKNIFTY: Sentinel Diagnosis: scan flagged zero lot size and missing implied volatility percentile | Severity: CRITICAL | Recommended Action: SKIP_TRADE`
+- **Root Cause:**
+  1. Sentinel Rule `R14_LOT_SIZE_ZERO_OR_NEGATIVE` checked `lots <= 0` unconditionally on all scans. Because `lots` was omitted in `sentinel_report` and because `NO_TRADE` or `BLOCKED` scans naturally have 0 lots, R14 triggered a CRITICAL anomaly on every scan cycle.
+  2. Sentinel Rule `R18_IV_PERCENTILE_MISSING_OR_STALE` contained a blanket `elif r.get("symbol")` fallback that raised a WARNING whenever `iv_percentile_timestamp` was not provided, even for symbols/scans where historical IV percentile tracking was not configured.
+  3. Rule `R21_GREEKS_CALCULATION_FAILED` flagged `delta < 0.01` when `llm_action="NO_TRADE"`.
+- **Fix:**
+  1. Updated R14 in `scan_sentinel.py` to only validate lot size when active trade intent is present (`trade_decision_status in ("ENTERED", "TRIGGERED", "LIVE_ENTERED", "OPEN")` or `llm_action in ("GO_LONG", "GO_SHORT", "BUY", "SELL", "ENTER")` without `BLOCKED`).
+  2. Populated `lots`, `delta`, `theta`, `vega` in `sentinel_report` and `sentinel_report_v2` in `pipeline.py`.
+  3. Updated R18 to only validate IV percentile staleness if an IV percentile timestamp is tracked, eliminating the blanket missing IV warning.
+  4. Updated R21 to only validate Greeks on active option trades (`llm_action != "NO_TRADE"` and `llm_instrument` is an option).
 
 ---
 

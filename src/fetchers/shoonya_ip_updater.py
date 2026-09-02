@@ -118,15 +118,6 @@ def update_shoonya_portal_ip(
         context = browser.new_context(viewport={"width": 1440, "height": 900})
         page = context.new_page()
 
-        # Optimize resource loading — abort fonts and heavy images to speed up login
-        def handle_route(route):
-            if route.request.resource_type in ("font", "media"):
-                route.abort()
-            else:
-                route.continue_()
-
-        page.route("**/*", handle_route)
-
         try:
             # -----------------------------------------------------------------
             # Shoonya Trading Portal (trade.shoonya.com) Automated Update
@@ -134,25 +125,41 @@ def update_shoonya_portal_ip(
             portal_url = "https://trade.shoonya.com/#/"
             log.info("[shoonya-ip-updater] Navigating to %s ...", portal_url)
             page.goto(portal_url, wait_until="networkidle", timeout=int(timeout_s * 1000))
-            time.sleep(3.0)
+            time.sleep(3.5)
 
-            log.info("[shoonya-ip-updater] Submitting login credentials with dynamic TOTP...")
-            page.keyboard.type(user_id, delay=50)
+            log.info("[shoonya-ip-updater] Submitting login credentials on Flutter Canvas...")
+            # 1. Focus User ID by clicking center of User ID box (724, 165)
+            page.mouse.click(724, 165)
             time.sleep(0.3)
+            page.keyboard.press("Control+A")
+            page.keyboard.press("Backspace")
+            page.keyboard.type(user_id, delay=60)
+            time.sleep(0.3)
+
+            # 2. Tab to Password field
             page.keyboard.press("Tab")
             time.sleep(0.3)
-            page.keyboard.type(password, delay=50)
+            page.keyboard.press("Control+A")
+            page.keyboard.press("Backspace")
+            page.keyboard.type(password, delay=60)
             time.sleep(0.3)
+
+            # 3. Tab to OTP/TOTP field
             page.keyboard.press("Tab")
             time.sleep(0.3)
             totp_code = pyotp.TOTP(totp_key).now()
-            page.keyboard.type(totp_code, delay=50)
+            page.keyboard.press("Control+A")
+            page.keyboard.press("Backspace")
+            page.keyboard.type(totp_code, delay=60)
             time.sleep(0.3)
-            page.keyboard.press("Enter")
+
+            # 4. Click exact center of orange Login button (724, 340)
+            log.info("[shoonya-ip-updater] Clicking Login button (724, 340)...")
+            page.mouse.click(724, 340)
 
             # Wait for authenticated session to establish
             log.info("[shoonya-ip-updater] Authenticating session...")
-            time.sleep(5.0)
+            time.sleep(6.0)
 
             # Step 1: Retrieve App Key List
             app_keys_res = page.evaluate("""async (uid) => {

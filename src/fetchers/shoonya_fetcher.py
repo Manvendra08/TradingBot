@@ -1597,43 +1597,55 @@ class ShoonyaFetcher(BaseFetcher):
             # Handle standard NSE/BSE indices using GetOptionChain
             chain_tsym = underlying_tsym
 
-            # NFO: GetOptionChain is anchored to the futures contract's month.
-            # If a specific expiry was requested, re-anchor to the futures
-            # contract of that month so the chain contains the target expiry.
-            if option_exch == "NFO" and expiry and futures:
+            now_ist = datetime.now(IST)
+            today_ist = now_ist.date()
+
+            # NFO: Grouped option chain resolution for weekly and monthly expiries
+            if option_exch == "NFO":
                 try:
-                    exp_dt = datetime.strptime(expiry, "%Y-%m-%d")
-                    exp_key = f"{exp_dt.strftime('%y')}{exp_dt.strftime('%b').upper()}"  # e.g. "26SEP"
-                    matched_fut = next(
-                        (f for f in futures if exp_key in f.get("tsym", "").upper()),
-                        None,
-                    )
-                    if matched_fut and matched_fut.get("tsym"):
-                        chain_tsym = matched_fut["tsym"]
-                        log.info(
-                            "[shoonya] re-anchored NFO chain for expiry %s to %s",
-                            expiry,
-                            chain_tsym,
-                        )
-                    else:
-                        log.info(
-                            "[shoonya] no futures contract matching expiry %s (key %s) — chain may not contain it",
-                            expiry,
-                            exp_key,
-                        )
-                except Exception as e_anchor:
-                    log.warning(
-                        "[shoonya] failed to re-anchor chain for expiry %s: %s",
-                        expiry,
-                        e_anchor,
-                    )
+                    resolved_nfo_tsym = None
+                    if expiry:
+                        try:
+                            exp_dt = datetime.strptime(expiry, "%Y-%m-%d")
+                            prefix_weekly = f"{base}{exp_dt.strftime('%d%b%y').upper()}"
+                            log.info("[shoonya] Searching NFO for expiry-specific prefix %s...", prefix_weekly)
+                            res = self._search_scrip("NFO", prefix_weekly)
+                            if res and res.get("stat") == "Ok" and res.get("values"):
+                                for val in res["values"]:
+                                    tsym_opt = val.get("tsym", "")
+                                    if "CE" in tsym_opt or "PE" in tsym_opt or tsym_opt.startswith(prefix_weekly):
+                                        resolved_nfo_tsym = tsym_opt
+                                        log.info("[shoonya] Resolved NFO option symbol for expiry %s: %s", expiry, resolved_nfo_tsym)
+                                        break
+                        except Exception as exp_err:
+                            log.warning("[shoonya] failed to search NFO weekly prefix for expiry %s: %s", expiry, exp_err)
+
+                    if not resolved_nfo_tsym:
+                        # Find nearest active weekly expiry (check next 14 calendar days)
+                        from datetime import time as dt_time
+                        start_offset = 1 if now_ist.time() > dt_time(15, 30) else 0
+                        for d in range(start_offset, 15):
+                            c_date = today_ist + timedelta(days=d)
+                            prefix_cand = f"{base}{c_date.strftime('%d%b%y').upper()}"
+                            res = self._search_scrip("NFO", prefix_cand)
+                            if res and res.get("stat") == "Ok" and res.get("values"):
+                                for val in res["values"]:
+                                    tsym_opt = val.get("tsym", "")
+                                    if "CE" in tsym_opt or "PE" in tsym_opt or tsym_opt.startswith(prefix_cand):
+                                        resolved_nfo_tsym = tsym_opt
+                                        log.info("[shoonya] Resolved nearest active NFO weekly option symbol: %s", resolved_nfo_tsym)
+                                        break
+                            if resolved_nfo_tsym:
+                                break
+
+                    if resolved_nfo_tsym:
+                        chain_tsym = resolved_nfo_tsym
+                except Exception as ex_nfo:
+                    log.warning("[shoonya] failed to resolve NFO weekly option symbol: %s. Using default: %s", ex_nfo, chain_tsym)
 
             if option_exch == "BFO":
                 # SENSEX/BANKEX weekly options chain in Shoonya is not grouped under the monthly futures contract.
                 try:
-                    now_ist = datetime.now(IST)
-                    today_ist = now_ist.date()
-
                     resolved_weekly_tsym = None
 
                     # If a specific expiry is requested, generate its weekly prefix directly
@@ -1668,7 +1680,7 @@ class ShoonyaFetcher(BaseFetcher):
                         if cand_dt == today_ist and now_ist.time() > dt_time(15, 30):
                             cand_dt += timedelta(days=7)
 
-                        # Check next 3 Thursdays
+                        # Check next 3 Thursdays prioritizing weekly prefix over monthly prefix
                         candidates = [cand_dt, cand_dt + timedelta(days=7), cand_dt + timedelta(days=14)]
                         for c_date in candidates:
                             yy = c_date.strftime("%y")
@@ -1679,7 +1691,8 @@ class ShoonyaFetcher(BaseFetcher):
                             prefix_weekly = f"{base}{yy}{m_str}{dd}"
                             prefix_monthly = f"{base}{yy}{c_date.strftime('%b').upper()}"
 
-                            for prefix in (prefix_monthly, prefix_weekly):
+                            # Prioritize weekly prefix first so weekly contracts are not shadowed by monthly
+                            for prefix in (prefix_weekly, prefix_monthly):
                                 log.info("[shoonya] Searching BFO for prefix %s to resolve option chain...", prefix)
                                 res = self._search_scrip("BFO", prefix)
                                 if res and res.get("stat") == "Ok" and res.get("values"):

@@ -422,6 +422,20 @@ def step_entry_quality_core(ctx: PipelineContext) -> StepResult:
     ctx.scan_context["_entry_quality"] = entry_quality
     ctx.scan_context["_entry_reasons"] = entry_reasons
 
+    # Populate candidate greeks from option_rows for downstream reporting / sentinel
+    option_rows = ctx.scan_context.get("option_rows") or []
+    if strike is not None and option_rows and option_type in ("CE", "PE"):
+        for row in option_rows:
+            try:
+                row_strike = float(row.get("strike") or 0)
+                if abs(row_strike - float(strike)) < 0.01 and str(row.get("option_type") or "").upper() == option_type.upper():
+                    ctx.scan_context["_candidate_delta"] = row.get("delta")
+                    ctx.scan_context["_candidate_theta"] = row.get("theta")
+                    ctx.scan_context["_candidate_vega"] = row.get("vega")
+                    break
+            except (ValueError, TypeError):
+                continue
+
     # Flaw #5: Check against Core threshold instead of Experimental
     passed = entry_quality >= MIN_ENTRY_QUALITY_CORE
 

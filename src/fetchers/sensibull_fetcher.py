@@ -124,8 +124,16 @@ class SensibullFetcher(BaseFetcher):
         if expiry:
             target_expiry = expiry
         else:
-            today = datetime.now(IST).date().isoformat()
-            future = [e for e in all_expiries if e >= today]
+            now_ist = datetime.now(IST)
+            today = now_ist.date().isoformat()
+            from datetime import time as dt_time
+            is_post_close = now_ist.time() > dt_time(15, 30)
+
+            # If today is expiry day and market is closed, roll to next active future expiry
+            if is_post_close:
+                future = [e for e in all_expiries if e > today]
+            else:
+                future = [e for e in all_expiries if e >= today]
             target_expiry = future[0] if future else all_expiries[0]
 
         exp_data = per_expiry_data = per_expiry.get(target_expiry)

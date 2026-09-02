@@ -2834,21 +2834,54 @@ def build_llm_consolidated_digest(
         if ml_books:
             lines.append("")
             lines.append("📐 *MULTI-LEG BOOKS*")
+            
+            # Map current option premiums for live MTM P&L calculation
+            oc_strikes = (ctx or {}).get("option_rows") or ((ctx or {}).get("oc_data") or {}).get("strikes") or []
+            prem_map = {}
+            for row in oc_strikes:
+                k = (float(row.get("strike") or 0), str(row.get("option_type") or "").upper())
+                prem_map[k] = float(row.get("ltp") or row.get("premium") or 0.0)
+                
             for book in ml_books:
                 legs = book.get("legs", [])
-                strat = book.get("strategy_type", "N/A")
+                strat = str(book.get("strategy_type") or "N/A").replace("_", " ")
                 net_prem = float(book.get("net_premium") or 0)
-                total_pnl = float(book.get("total_pnl") or 0)
+                
+                # Compute live MTM P&L across all legs
+                calc_pnl = 0.0
+                has_live_pnl = False
+                for l in legs:
+                    side = str(l.get("side") or "").upper()
+                    opt = str(l.get("option_type") or "").upper()
+                    strike = float(l.get("strike") or 0)
+                    entry_prem = float(l.get("entry_premium") or 0)
+                    lots = int(l.get("lots") or 1)
+                    from config.settings import LOT_SIZES
+                    lot_size = LOT_SIZES.get(symbol.upper().split()[0], 1)
+                    
+                    curr_prem = prem_map.get((strike, opt))
+                    if curr_prem is not None and curr_prem > 0 and entry_prem > 0:
+                        has_live_pnl = True
+                        if side == "SELL":
+                            leg_pnl = (entry_prem - curr_prem) * lots * lot_size
+                        else:
+                            leg_pnl = (curr_prem - entry_prem) * lots * lot_size
+                        calc_pnl += leg_pnl
+
+                total_pnl = calc_pnl if has_live_pnl else float(book.get("total_pnl") or 0)
                 net_delta = float(book.get("net_delta") or 0)
                 pnl_emoji = "🟢" if total_pnl >= 0 else "🔴"
-                lines.append(f"  {strat} | Net Premium: ₹{net_prem:.0f} | {pnl_emoji} P&L: ₹{total_pnl:.0f}")
+                pnl_sign = "+" if total_pnl > 0 else ("-" if total_pnl < 0 else "")
+                lines.append(f"  {strat} | Net Prem: ₹{net_prem:.1f} | {pnl_emoji} P&L: {pnl_sign}₹{abs(total_pnl):,.0f}")
                 for l in legs:
                     side = l.get("side", "?")
                     opt = l.get("option_type", "?")
                     strike = float(l.get("strike") or 0)
                     prem = float(l.get("entry_premium") or 0)
                     delta = float(l.get("delta") or 0)
-                    lines.append(f"    {side} {opt} {strike:.0f} @ ₹{prem:.1f} (Δ={delta:.2f})")
+                    curr_p = prem_map.get((strike, str(opt).upper()))
+                    curr_str = f" (CMP ₹{curr_p:.1f})" if curr_p else ""
+                    lines.append(f"    {side} {opt} {strike:.0f} @ ₹{prem:.1f}{curr_str} (Δ={delta:.2f})")
                 lines.append(f"    Net Δ: {net_delta:.2f}")
     except Exception:
         pass

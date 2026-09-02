@@ -585,8 +585,6 @@ def _find_missed_intervals(class_key: str, current_interval_idx: int, interval_m
         with get_conn() as conn:
             data_exists = False
             for symbol in symbols:
-                if not _is_open_for(symbol):
-                    continue
                 row = conn.execute(
                     "SELECT 1 FROM scan_summaries WHERE symbol=? "
                     "AND fetched_at >= ? AND fetched_at < ? LIMIT 1",
@@ -633,39 +631,28 @@ def _startup_fill_missed(
     """Detect intervals 0..target_interval lacking scan_summaries data and
     backfill them (capped at MAX_CATCHUP_INTERVALS).
 
-    v3.1 FIX: shared by BOTH startup paths. Previously only the
-    ``--now`` (immediate) path gap-filled missed intervals; a plain
-    ``start_scheduler`` (default) just resumed at the current interval and
-    silently dropped everything missed while the bot was offline.
-
-    CAVEAT (see KNOWLEDGE_BASE F46): catch-up re-runs the LIVE
-    fetcher and stamps the snapshot with the interval's UTC window — it
-    does NOT retrieve historical option-chain/OI data (no historical
-    source is wired in). It reconciles the interval grid / bookkeeping,
-    not the past market state.
+    Shared by BOTH startup paths. If the scheduler is started after market hours,
+    it checks whether today was a trading day and catches up on any missed scans
+    before pausing for the closed market.
     """
     from datetime import timedelta, timezone
     from src.models.schema import get_conn
+    from config.holidays import is_market_holiday
 
     symbols = [s for s in WATCH_SYMBOLS if get_symbol_class(s) == class_key]
     if not symbols or target_interval < 0:
         return
 
-    # Off-market hours (default startup): no interval is scannable, so gap-filling
-    # past/closed intervals is pointless (each scan would just hit the market-closed
-    # guard). Skip tracking/catch-up entirely to save scan duration.
-    # The --now (immediate) path intentionally bypasses this to force a scan.
-    if not immediate_flag and not _market_currently_open(class_key):
-        log.info(
-            "[scheduler] %s: market closed — skipping startup gap-fill (no intervals to scan)",
-            class_key,
-        )
+    now_ist = datetime.now(IST)
+    _, _, days = MARKET_WINDOWS.get(class_key, ("09:15", "15:30", [0, 1, 2, 3, 4]))
+    if not immediate_flag and (now_ist.weekday() not in days or all(is_market_holiday(s, now_ist) for s in symbols)):
+        log.info("[scheduler] %s: weekend/holiday — skipping startup gap-fill", class_key)
         return
 
     missed_intervals = []
     for idx in range(target_interval + 1):
         interval_start_ist = market_open_time_ist + timedelta(minutes=idx * interval_min)
-        if not immediate_flag and not _interval_in_market(class_key, interval_start_ist):
+        if not _interval_in_market(class_key, interval_start_ist):
             continue
         interval_start_utc = interval_start_ist.astimezone(timezone.utc)
         interval_start_utc_str = interval_start_utc.isoformat()
@@ -674,8 +661,6 @@ def _startup_fill_missed(
         with get_conn() as conn:
             data_exists = False
             for symbol in symbols:
-                if not immediate_flag and not _is_open_for(symbol):
-                    continue
                 row = conn.execute(
                     "SELECT 1 FROM scan_summaries WHERE symbol=? "
                     "AND fetched_at >= ? AND fetched_at < ? LIMIT 1",
@@ -695,6 +680,8 @@ def _startup_fill_missed(
             )
             try:
                 _guarded_run(class_key, force=True)
+                if class_key == "MCX_COMMODITY":
+                    _run_dhan_naturalgas_scrape()
             except Exception as e:
                 log.error("[scheduler] %s: forced immediate scan failed: %s", class_key, e)
             return
@@ -709,7 +696,7 @@ def _startup_fill_missed(
     limit = MAX_CATCHUP_INTERVALS if immediate_flag else 1
     missed_intervals = missed_intervals[-limit:]
     log.info(
-        "[scheduler] %s: %d missed interval(s) at startup: %s",
+        "[scheduler] %s: %d missed interval(s) at startup: %s — running catch-up scan",
         class_key,
         len(missed_intervals),
         missed_intervals,
@@ -723,7 +710,9 @@ def _startup_fill_missed(
             interval_ts.strftime("%H:%M"),
         )
         try:
-            _guarded_run(class_key, force=immediate_flag)
+            _guarded_run(class_key, force=True)
+            if class_key == "MCX_COMMODITY":
+                _run_dhan_naturalgas_scrape()
         except Exception as e:
             log.error(
                 "[scheduler] %s: catch-up scan failed for interval %d: %s",
@@ -1278,19 +1267,30 @@ def start_scheduler(immediate: bool = False):
                     interval_min = get_scan_frequency_mcx()
                 else:
                     interval_min = get_scan_frequency_nse()
-                current_interval_idx = math.floor(delta_minutes / interval_min)
 
-                # v3.1 FIX: default startup now also gap-fills missed
-                # intervals (was --now only). Capped at MAX_CATCHUP_INTERVALS.
-                _startup_fill_missed(class_key, market_open_time, interval_min, current_interval_idx, False)
+                if now_ist >= market_close_time:
+                    total_market_minutes = (market_close_time - market_open_time).total_seconds() / 60.0
+                    target_interval = math.floor(total_market_minutes / interval_min) - 1
+                else:
+                    target_interval = math.floor(delta_minutes / interval_min)
+
+                _startup_fill_missed(class_key, market_open_time, interval_min, target_interval, False)
 
                 has_done_startup_scan[class_key] = True
-                last_scanned_interval[class_key] = current_interval_idx
-                log.info(
-                    "Bypassing immediate startup scan for %s. Next scan will trigger at interval index %d.",
-                    class_key,
-                    current_interval_idx + 1,
-                )
+                last_scanned_interval[class_key] = target_interval
+                if now_ist < market_close_time:
+                    log.info(
+                        "Bypassing immediate startup scan for %s. Next scan will trigger at interval index %d.",
+                        class_key,
+                        target_interval + 1,
+                    )
+                else:
+                    log.info(
+                        "[scheduler] %s: started post-market (close %s) — checked catch-up up to interval %d.",
+                        class_key,
+                        close_t,
+                        target_interval,
+                    )
 
     last_cmp_refresh = 0.0
     last_instrument_cache_refresh = (
