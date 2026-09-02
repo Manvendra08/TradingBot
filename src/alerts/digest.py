@@ -2595,8 +2595,17 @@ def build_llm_consolidated_digest(
     # ── PROVENANCE
     # Rule engine
     rule_status = td_status if td_status else "UNKNOWN"
-    if rule_status == "BLOCKED" and td.get("reason"):
-        lines.append(f"⚠️ Rule engine: BLOCKED ({_esc(td.get('reason'))})")
+    # Never emit a bare "BLOCKED" — the trader needs the why. Fall back to the
+    # pipeline's resolved blocker reason when trade_decision carries none.
+    _blk = td.get("reason")
+    if not _blk:
+        _tfss = ctx.get("tfss") or {}
+        _blockers = _tfss.get("blockers") or []
+        _blk = (_blockers[0] if _blockers else None) or _tfss.get("primary_reason")
+        if str(_blk).strip().upper() in ("N/A", "NONE", ""):
+            _blk = None
+    if rule_status == "BLOCKED" and _blk:
+        lines.append(f"⚠️ Rule engine: BLOCKED ({_esc(_blk)})")
     elif rule_status == "TRIGGERED":
         lines.append(f"✅ Rule engine: TRIGGERED ({_esc(td_setup)})")
     else:
@@ -2870,9 +2879,12 @@ def build_llm_consolidated_digest(
 
                 total_pnl = calc_pnl if has_live_pnl else float(book.get("total_pnl") or 0)
                 net_delta = float(book.get("net_delta") or 0)
-                pnl_emoji = "🟢" if total_pnl >= 0 else "🔴"
-                pnl_sign = "+" if total_pnl > 0 else ("-" if total_pnl < 0 else "")
-                lines.append(f"  {strat} | Net Prem: ₹{net_prem:.1f} | {pnl_emoji} P&L: {pnl_sign}₹{abs(total_pnl):,.0f}")
+                # Derive sign/emoji from the *displayed* (rounded) value so a sub-rupee
+                # loss never renders as "-₹0".
+                pnl_rounded = round(total_pnl)
+                pnl_emoji = "🟢" if pnl_rounded >= 0 else "🔴"
+                pnl_sign = "+" if pnl_rounded > 0 else ("-" if pnl_rounded < 0 else "")
+                lines.append(f"  {strat} | Net Prem: ₹{net_prem:.1f} | {pnl_emoji} P&L: {pnl_sign}₹{abs(pnl_rounded):,.0f}")
                 for l in legs:
                     side = l.get("side", "?")
                     opt = l.get("option_type", "?")

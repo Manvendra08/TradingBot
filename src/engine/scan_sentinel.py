@@ -435,7 +435,12 @@ def run_sentinel(report_data: dict | ScanRunReport) -> ScanDiagnostic | None:
 
     if not flags:
         return None
-        
+
+    # Skip AI diagnostic for R4_SLOW_SCAN alone (performance warning, not actionable)
+    if len(flags) == 1 and flags[0].rule == "R4_SLOW_SCAN":
+        log.info("%s: R4_SLOW_SCAN flagged — skipping diagnostic (ALERT_ONLY)", symbol)
+        return None
+
     log.info("%s: Scan Sentinel flagged %d suspect condition(s). Launching AI Diagnostic...", symbol, len(flags))
     
     # 2. Invoke LLM diagnostic

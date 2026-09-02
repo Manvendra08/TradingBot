@@ -583,14 +583,17 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
     if not trade_entered:
         if isinstance(paper_res, dict) and paper_res.get("reason"):
             blocker_reason = paper_res.get("reason")
-        elif llm_verdict and getattr(llm_verdict, "action", None) == "NO_TRADE":
-            blocker_reason = "AI Multi-Leg: Low conviction / Sidelined"
         elif td.get("reason"):
+            # Prefer the concrete rule-engine reason (e.g. "Confidence 58% below
+            # threshold 72%") over the generic AI NO_TRADE string — the specific
+            # gate that fired is what the trader needs to see.
             r_str = str(td.get("reason"))
             if "AI decision mode 'full'" in r_str or "Marginal setup" in r_str:
                 blocker_reason = "AI Multi-Leg: Awaiting clear directional confirmation"
             else:
                 blocker_reason = r_str
+        elif llm_verdict and getattr(llm_verdict, "action", None) == "NO_TRADE":
+            blocker_reason = "AI Multi-Leg: Low conviction / Sidelined"
 
     # TFSS vs TIMEFRAME routing
     tfss = {

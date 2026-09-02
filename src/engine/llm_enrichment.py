@@ -1508,10 +1508,10 @@ def _call_llm_api(
             curr_t = time.time()
             if _LAST_FREE_PROMPT_SYMBOL and _LAST_FREE_PROMPT_SYMBOL != symbol and _LAST_FREE_PROMPT_CALL_TIME > 0:
                 elapsed = curr_t - _LAST_FREE_PROMPT_CALL_TIME
-                if elapsed < 60.0:
-                    wait_s = 60.0 - elapsed
+                if elapsed < 20.0:
+                    wait_s = 20.0 - elapsed
                     log.info(
-                        "[llm-throttle] Pacing multi-leg prompt between %s and %s — waiting %.1fs (60s free-model symbol gap)",
+                        "[llm-throttle] Pacing multi-leg prompt between %s and %s — waiting %.1fs (20s free-model symbol gap)",
                         _LAST_FREE_PROMPT_SYMBOL,
                         symbol,
                         wait_s,
