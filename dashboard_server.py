@@ -1434,8 +1434,6 @@ def _enrich_open_trades_with_live_pnl(rows: list[dict]) -> None:
                 )
             if res:
                 cmp = res[0]["ltp"]
-            if res:
-                cmp = res[0]["ltp"]
 
         if cmp is not None and cmp > 0:
             if option_type == "FUT":
@@ -2123,7 +2121,7 @@ async def manual_close_paper_trade(trade_id: int = Query(...)):
                 "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND expiry=? AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
                 (symbol, base_sym, expiry, strike_val, option_type),
             )
-        if not res_opt:
+        else:
             res_opt = _q(
                 "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
                 (symbol, base_sym, strike_val, option_type),

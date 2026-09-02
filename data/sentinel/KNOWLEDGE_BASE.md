@@ -244,6 +244,11 @@ TypeError: get_previous_underlying() got an unexpected keyword argument 'read_on
   3. Updated R18 to only validate IV percentile staleness if an IV percentile timestamp is tracked, eliminating the blanket missing IV warning.
   4. Updated R21 to only validate Greeks on active option trades (`llm_action != "NO_TRADE"` and `llm_instrument` is an option).
 
+- **Incident F142: Cross-Expiry Option Snapshot CMP Fallback Fix (2026-09-02)**
+  - **Symptom:** SENSEX Iron Condor paper trade manual exit displayed wildly inflated entry/exit premiums and distorted P&L.
+  - **Root Cause:** In `dashboard_server.py` (`manual_close_paper_trade`), when an option chain snapshot was missing for the trade's exact expiry date, a secondary fallback query searched `option_chain_snapshots` without the `expiry=?` filter, picking up far-month options with much higher premiums.
+  - **Fix:** Restructured snapshot queries in `dashboard_server.py` to enforce exact `expiry=?` matching when trade `expiry` is specified. Fallback without `expiry=?` is restricted strictly to legacy trades where `expiry` is unknown/unspecified.
+
 ---
 
 ## 3. Scan Sentinel Safety Suite (Rules R1–R12)
