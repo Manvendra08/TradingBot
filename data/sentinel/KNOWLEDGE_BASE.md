@@ -96,6 +96,32 @@ TypeError: get_previous_underlying() got an unexpected keyword argument 'read_on
 - **Issue:** The Sentinel diagnostic rule `R21_GREEKS_CALCULATION_FAILED` fired warning for zero greeks on every blocked/triggered scan. The root cause was that `trade_decision.py` attempted to read unpopulated `_candidate_delta` fields from `scan_context`, resulting in missing `delta`, `theta`, and `vega` keys in the pipeline output fed to the sentinel reporting tools.
 - **Fix:** Populated `_candidate_delta`, `_candidate_theta`, and `_candidate_vega` directly during candidate selection in `decision_pipeline.py`. Added fallback explicit extraction loops in `trade_decision.py` that look up the chosen `(strike, option_type)` directly within the `option_rows` dataset. Sentinel metrics now accurately track valid option chain greeks without throwing false `R21` flags.
 
+### F142: Architecture & Pipeline Audit Remediation (P0/P1) (RESOLVED & VERIFIED)
+- **Status:** RESOLVED & VERIFIED across all 14 findings in pipeline, digest, and multileg engines.
+- **Fixes Applied:**
+  1. **Dead Code Cleanup (`src/alerts/digest.py`)**: Removed orphaned `_format_ai_verdict_section` call at line 2176.
+  2. **LLM Pacing Non-Blocking (`src/engine/pipeline.py`)**: Moved `time.sleep(1.5)` outside `_llm_pacing_lock` at line 322 so parallel threads sleep concurrently without serializing.
+  3. **AI Veto Reason Fidelity (`src/engine/pipeline.py`)**: Removed `blocker_reason` string substitution at line 611; preserves concrete AI veto reasons verbatim.
+  4. **Multi-Leg Leg MTM Persistence (`src/models/schema.py` & `src/engine/multileg_paper_trading.py`)**: Added `current_premium` column (`M110_add_mll_current_premium` migration) to `multi_leg_legs` table. MTM premium is now persisted to DB on every `_calc_multileg_pnl` tick instead of remaining in-memory only.
+  5. **TFSS Signal Section Restoration (`src/alerts/digest.py`)**: Restored missing TFSS signal line, confidence bar, timeframe section, and trade detail block in `build_tfss_timeframe_digest`.
+  6. **Compound `is_entered` Defense-in-Depth (`src/alerts/digest.py`)**: Restored compound entry check `(ml_action == "ENTERED" and header_trade_entered and not is_blocked_by_stage) or (ml_action == "ENTERED" and has_live_books)` as display safety net.
+  7. **DTE Type Coercion Safety (`src/alerts/digest.py`)**: Wrapped DTE validation in `try: int(dte)` before comparison; safely handles float/string/None DTE values.
+  8. **Multileg Fallback DB Query Guard (`src/engine/pipeline.py`)**: Guarded fallback `multi_leg_trades` DB query with `symbol in ALLOWED_SYMBOLS` check; skips wasteful queries for non-multileg symbols.
+
+### F143: Telegram Markdown Parse Error on Code Blocks (P1-HIGH) (RESOLVED)
+- **Status:** RESOLVED & VERIFIED.
+- **Issue:** Telegram alerts occasionally failed with `Can't parse entities: can't find end of the entity starting at byte offset XXX`. The root cause was the `_esc()` markdown escaping function applying `\_` inside inline code blocks `` `...` ``. Telegram's legacy Markdown parser treats the contents of backticks as verbatim and fails if a backslash character breaks the entity sequence or leaves an unclosed entity.
+- **Fix:** 
+  1. Updated `_esc()` to stop escaping backslashes directly which previously compounded Telegram markdown errors.
+  2. Implemented `_esc_code(text)` handler for text placed inside inline code blocks `` `{...}` ``. `_esc_code()` strips backticks inside the text to prevent breaking the code block bounds without applying unnecessary `\_` or `\*` escapes. Applied `_esc_code` across all Telegram multi-leg digest markdown code-blocks.
+  9. **IST Timestamp Precision (`src/engine/pipeline.py`)**: `_build_sentinel_report` converts UTC to actual IST (`+05:30`) via `pytz.timezone("Asia/Kolkata")`.
+  10. **Sentinel Report Deduplication (`src/engine/pipeline.py`)**: Extracted shared `_build_sentinel_report()` function, replacing duplicated inline dicts across pipeline call sites.
+  11. **`db_entered` In-Memory Preference & Fallback (`src/engine/pipeline.py`)**: Prefers `paper_res` in-memory evidence for `db_entered` status, then checks `digest_id`, then falls back to recent trade lookup (`opened_at > 5 min ago`).
+  12. **Redundant Guard Removal & HOLDING Badge (`src/alerts/digest.py`)**: Removed duplicate `and live_books` check in `build_multileg_digest_content`; fixed HOLDING badge display condition.
+  13. **Log Exception Debugging (`src/engine/pipeline.py`)**: Replaced bare `except Exception: pass` with `except Exception as exc: log.debug(...)` for silent failure observability.
+
+---
+
 ### F139: 0DTE Entry Cutoff Legitimacy Reclassification & Sentinel Severity Cap (P1-HIGH) (RESOLVED — do not re-diagnose)
 - **Status:** RESOLVED & VERIFIED.
 - **Issue 1:** 0DTE entry cutoff (15:15 IST / 23:15 MCX) previously caused `validate_market_data()` to report `is_legitimate=False`, aborting the entire scan context and skipping exit monitoring / square-off.
@@ -248,6 +274,32 @@ TypeError: get_previous_underlying() got an unexpected keyword argument 'read_on
   - **Symptom:** SENSEX Iron Condor paper trade manual exit displayed wildly inflated entry/exit premiums and distorted P&L.
   - **Root Cause:** In `dashboard_server.py` (`manual_close_paper_trade`), when an option chain snapshot was missing for the trade's exact expiry date, a secondary fallback query searched `option_chain_snapshots` without the `expiry=?` filter, picking up far-month options with much higher premiums.
   - **Fix:** Restructured snapshot queries in `dashboard_server.py` to enforce exact `expiry=?` matching when trade `expiry` is specified. Fallback without `expiry=?` is restricted strictly to legacy trades where `expiry` is unknown/unspecified.
+
+- **Incident F143: Architectural Audit Remediations & Telegram Open Multi-Leg Suppression (2026-09-03)**
+  - **Symptom:** Telegram alert digests printed 20+ open multi-leg positions during HOLDING / SIDELINED scans, creating massive text floods. Threading locks serialized during sleep pacing, MTM leg premiums failed to persist, UTC/IST timestamp offsets were mismatched, and DTE string comparisons threw silent TypeErrors.
+  - **Root Cause:**
+    1. `build_tfss_timeframe_digest` and `build_llm_consolidated_digest` in `src/alerts/digest.py` unconditionally iterated over all open multi-leg books.
+    2. `time.sleep()` in `pipeline.py` was inside `_llm_pacing_lock`, serializing worker threads during throttle delays.
+    3. `multi_leg_legs` DB schema lacked a `current_premium` column for MTM persistence.
+  - **Fix:**
+    1. Filtered `live_books` rendering in `digest.py` to target only the single active trade entered in the current cycle (`entered_book_id`) or closed items (`closed_items`), suppressing open book enumerations during HOLDING or SIDELINED states.
+    2. Moved `time.sleep()` outside `_llm_pacing_lock` in `pipeline.py`.
+    3. Executed `M110_add_mll_current_premium` schema migration and implemented `update_multi_leg_leg_current_premium()` persistence helper.
+    4. Coerced DTE to integer with type-safety checks and updated `_build_sentinel_report` to construct native offset-aware IST datetimes.
+
+- **Incident F144: P0/P1/P2 Prompt Audit & Scan Sentinel Severity Calibration (2026-09-03)**
+  - **Symptom:** AI prompts lacked explicit market-hours severity calibration, Indian timezone/currency discipline, event-window exit/adjustment gating, and detailed risk metric context (max drawdown, profit factor, win rates).
+  - **Root Cause:** Prompts across `llm_enrichment.py`, `multileg_llm_prompt.py`, `scan_sentinel.py` lacked explicit Indian market constraints, lot-size math context, IST/INR system-prompt anchors, and session duration checks.
+  - **Fix:**
+    1. Enforced IST/INR currency/timezone context in shared system prompt (`llm_enrichment.py`).
+    2. Enriched EOD strategy optimization prompt with max drawdown, win/loss averages, profit factor, DOW win rates, and symbol-level win rates.
+    3. Enhanced Scan Sentinel diagnostic prompt in `scan_sentinel.py` with gap minute calculations (`gap_minutes`), market-hours severity calibration (`is_market_hours`), and symbol session duration context (`session_hours`).
+    4. Updated Telegram Markdown V1 formatting helper `_esc_code()` in `digest.py` to prevent parse failures on backtick code blocks.
+
+- **Incident F145: Autonomous AI Exit Authority Enabled under Full AI Decision Mode (2026-09-03)**
+  - **Symptom:** Multi-leg paper and live trading logged AI `CLOSE` and `ADJUST` exit recommendations as advisory only (`(advisory only; no auto-exit)`), even when AI Decision Mode was set to `full` and AI Exit Advisor was enabled in dashboard configuration.
+  - **Root Cause:** In `multileg_paper_trading.py` and `multileg_live_trading.py`, AI exit recommendations were hardcoded to advisory-only logging without checking the `live_ai_exit_advisor_enabled` setting from `runtime_config`.
+  - **Fix:** Updated `multileg_paper_trading.py` and `multileg_live_trading.py` to check `live_ai_exit_advisor_enabled` when `ai_mode == "full"`. When enabled, AI `CLOSE` recommendations execute autonomous book square-offs (`close_leg` + `close_book` in paper mode, `_close_live_book` in live mode) and AI `ADJUST` recommendations increment adjustment counters. When disabled, recommendations remain advisory-only.
 
 ---
 

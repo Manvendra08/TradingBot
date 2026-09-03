@@ -118,14 +118,14 @@
         "NIFTY": true,
         "BANKNIFTY": true,
         "SENSEX": true,
-        "FINNIFTY": true,
+        "FINNIFTY": false,
         "NATURALGAS": true,
         "CRUDEOIL": false
       }
     },
     "NG_PARITY": {
       "enabled": true,
-      "ai_mode": "boost_only",
+      "ai_mode": "full",
       "symbols": {}
     }
   }

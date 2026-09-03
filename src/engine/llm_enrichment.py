@@ -873,6 +873,56 @@ def _build_deep_prompt(
         if high_impact:
             risk_flags.append(f"HIGH-IMPACT NEWS ACTIVE ({len(high_impact)} articles)")
 
+    # Get lot size and approximate margin per lot
+    base_sym = symbol.upper().split()[0] if symbol else ""
+    try:
+        from config.settings import LOT_SIZES
+        lot_size = int(LOT_SIZES.get(base_sym, 1))
+    except ImportError:
+        lot_size = 1
+
+    # Approximate margin per lot (rough SPAN+exposure for NSE indices / MCX commodities)
+    MARGIN_PER_LOT = {
+        "NIFTY": 120000, "BANKNIFTY": 180000, "FINNIFTY": 80000, "SENSEX": 150000,
+        "NATURALGAS": 90000, "CRUDEOIL": 140000, "GOLD": 200000, "SILVER": 110000,
+    }
+    margin_per_lot = MARGIN_PER_LOT.get(base_sym, 100000)
+
+    # Session phase
+    now_ist = datetime.now(_IST)
+    hour = now_ist.hour + now_ist.minute / 60
+    if hour < 9.15:
+        session_phase = "Pre-open (09:00-09:15)"
+    elif hour < 10:
+        session_phase = "Opening (09:15-10:00)"
+    elif hour < 13.5:
+        session_phase = "Midday (10:00-13:30)"
+    elif hour < 15.5:
+        session_phase = "Closing (13:30-15:30)"
+    else:
+        session_phase = "Post-close (15:30-16:00)"
+
+    # Event risk today
+    event_risk_today = "None"
+    is_thu = now_ist.weekday() == 3
+    is_wed = now_ist.weekday() == 2
+    is_fri = now_ist.weekday() == 4
+    if base_sym == "NATURALGAS" and is_thu:
+        event_risk_today = "EIA Thu 20:00 IST"
+    elif base_sym == "CRUDEOIL" and is_wed:
+        event_risk_today = "OPEC+ Wed ~16:00 IST"
+    elif is_fri:
+        event_risk_today = "US CPI/NFP Fri 20:30 IST"
+
+    # IV regime (if available in scan_context)
+    atm_iv = 0.0
+    option_rows = ctx.get("option_rows") or []
+    for row in option_rows:
+        iv = float(row.get("iv") or 0)
+        if iv > 0 and abs(float(row.get("strike") or 0) - float(ctx.get("atm_strike") or 0)) < 0.01:
+            atm_iv = iv
+            break
+
     prompt = f"""Options trader — structured trade plan.
 
 {symbol} | {datetime.now(_IST).strftime("%a %H:%M IST")} | Price: {ctx.get("underlying")} | ATM: {ctx.get("atm_strike")} | DTE: {dte}
@@ -887,6 +937,17 @@ DATA:
 {_format_option_premiums(ctx.get("option_rows"), ctx.get("atm_strike"))}
 • Alerts: {_summarize_alerts(alerts or [])}
 • Risk: {", ".join(risk_flags) or "None"}
+
+INDIA REGIME CONTEXT:
+• India VIX: {ctx.get("india_vix", "N/A")} (regime: LOW<12 | NORMAL 12-18 | ELEVATED 18-25 | FEAR>25)
+• {symbol} lot size: {lot_size} units/lot | Margin per lot ≈ ₹{margin_per_lot:,.0f}
+• Session micro: {session_phase}
+• Event risk today: {event_risk_today}
+• ATM IV: {atm_iv:.1f}%
+
+NEWS WEIGHTING:
+• Headlines from economic-policy sources (RBI, MoPNG, EIA) weight 3x vs. analyst commentary.
+• Recency: same-day news overrides stale directional bias. If last 2h news is neutral, treat as NO_NEWS not BULLISH/BEARISH.
 
 OI HISTORY:
 {_format_historical_oi(symbol)}
@@ -952,6 +1013,9 @@ TRADE DISCIPLINE (long premium — theta works against you every hour):
 • SL at the nearest DATA level that invalidates the setup — not an arbitrary %.
 • Compute risk_reward from YOUR OWN levels: (target_1 − entry) / (entry − stop_loss). It must reconcile arithmetically. Below 1:1.2 → NO_TRADE (thin edge is no edge).
 • NO_TRADE is a position. Take it when evidence is mixed (≤1/3 agree), the chosen strike shows "—" in Premiums, or data looks stale/contradictory. A missed trade costs nothing; a forced one costs real money.
+• NAKED SHORT BAN into events: DTE≤2 AND event_day={event_risk_today} → IRON_CONDOR (defined-risk) or NO_TRADE. No naked strangle/straddle.
+• Lot check: max_risk_per_lot = (entry − stop_loss) × {lot_size}. Max single-trade loss ≤ 1.5% of portfolio. NO_TRADE if math violates.
+• IV RANK gate: {atm_iv:.1f}% ATM IV. Below 25th percentile → NO_TRADE (no edge for sellers).
 
 OUTPUT (JSON per schema; every number MUST appear in DATA or be arithmetic on DATA — never invent):
 • instrument: "{symbol} <strike> CE/PE/FUT <expiry>" — strike must exist in Premiums
@@ -1050,6 +1114,57 @@ def _build_exit_prompt(
     sl_u = f"{open_trade.get('sl_underlying')}" if open_trade.get("sl_underlying") is not None else "—"
     tgt_u = f"{open_trade.get('target_underlying')}" if open_trade.get("target_underlying") is not None else "—"
 
+    # Liquidity/spread awareness - check bid/ask for the strike
+    option_rows = ctx.get("option_rows") or []
+    current_bid = 0.0
+    current_ask = 0.0
+    current_oi = 0
+    current_iv = 0.0
+    for row in option_rows:
+        if (abs(float(row.get("strike", 0)) - float(strike or 0)) < 0.01
+                and row.get("option_type") == opt):
+            current_bid = float(row.get("bid") or 0)
+            current_ask = float(row.get("ask") or 0)
+            current_oi = int(row.get("oi") or 0)
+            current_iv = float(row.get("iv") or 0)
+            break
+
+    # Estimate spread if bid/ask not available - use last traded price
+    ltp = float(open_trade.get("current_premium") or 0)
+    spread_pct = 0.0
+    if current_bid > 0 and current_ask > 0 and ltp > 0:
+        spread_pct = ((current_ask - current_bid) / ltp) * 100
+
+    # IV crush detection - compare current IV to 7-day avg (placeholder)
+    iv_7d_avg = ctx.get("iv_7d_avg", 0.0)
+    iv_regime = "normal"
+    if iv_7d_avg > 0 and current_iv > 0:
+        if current_iv < iv_7d_avg * 0.7:
+            iv_regime = "crushing"
+        elif current_iv > iv_7d_avg * 1.3:
+            iv_regime = "elevated"
+
+    # Next catalyst timing
+    next_catalyst = "None"
+    hours_to_event = 999
+    now_ist = datetime.now(_IST)
+    if base_sym == "NATURALGAS" and now_ist.weekday() == 3:
+        hours_to_event = 20 - now_ist.hour - now_ist.minute/60
+        next_catalyst = f"EIA Inventory {hours_to_event:.1f}h"
+    elif base_sym == "CRUDEOIL" and now_ist.weekday() == 2:
+        hours_to_event = 16 - now_ist.hour - now_ist.minute/60
+        next_catalyst = f"OPEC+ {hours_to_event:.1f}h"
+    elif now_ist.weekday() == 4:
+        hours_to_event = 20.5 - now_ist.hour - now_ist.minute/60
+        next_catalyst = f"US CPI/NFP {hours_to_event:.1f}h"
+
+    # Time-of-day exit filter
+    hour = now_ist.hour + now_ist.minute / 60
+    is_mcx = any(m in symbol.upper() for m in ["NATURALGAS","CRUDEOIL","GOLD","SILVER"])
+    nse_close_window = 15.0 <= hour <= 15.5  # 15:00-15:30 IST
+    mcx_close_window = 23.0 <= hour <= 23.5  # 23:00-23:30 IST
+    in_close_window = mcx_close_window if is_mcx else nse_close_window
+
     return f"""Trade exit decision for EXISTING position.
 
 TIME: {datetime.now(_IST).strftime("%a %H:%M IST")}
@@ -1067,6 +1182,20 @@ MARKET:
   OI Δ: CE {ctx.get("ce_oi_change",0):,} PE {ctx.get("pe_oi_change",0):,}
   Chart: {_format_chart_data(ctx.get("chart_indicators"))}
 NEWS: {_format_news(news_data)}
+
+EVENT WINDOW RISK:
+• {symbol} next catalyst: {next_catalyst} in {hours_to_event:.1f}h
+• IV status: {current_iv:.1f}% vs {iv_7d_avg:.1f}% 7d avg ({iv_regime})
+• Post-event behavior: IV typically {'collapses 20-40%' if hours_to_event <= 24 else 'stable'}
+• If holding into event with profit already locked: prefer CLOSE_EARLY over HOLD to avoid gamma/IV whipsaw.
+
+LIQUIDITY CHECK:
+• Current bid/ask: ₹{current_bid:.1f} / ₹{current_ask:.1f} | Spread: {spread_pct:.1f}% | OI: {current_oi:,}
+• If Bid/Ask spread > 15% of LTP or OI<100, assume exit at BID (not mid).
+• Do not propose TRAIL_SL if new SL premium is closer than Bid.
+
+TIME-OF-DAY RULE:
+• {'NSE expiry window 15:00-15:30 IST: only CLOSE or CLOSE_EARLY allowed.' if nse_close_window else 'MCX window 23:00-23:30 IST: only CLOSE or CLOSE_EARLY allowed.' if mcx_close_window else 'Outside close window: all actions permitted.'}
 
 ACTIONS for {pos_direction.split()[0]} position:
 • HOLD: Thesis intact, favorable/consolidating
@@ -1577,6 +1706,7 @@ def _call_llm_api(
         "DATA LEGITIMACY & INTEGRITY: Validate that the provided underlying spot, strikes, and DTE are coherent. "
         "If data is unpopulated, contradictory, or lacks liquidity across all strikes, you MUST set action='NO_TRADE' / strategy_type='NO_TRADE' "
         "and explain the data discrepancy in the thesis.\n"
+        "CONTEXT RULES: All times are IST (UTC+5:30). All monetary amounts are INR (₹). All prices and premiums are per-unit INR unless explicitly stated. Do not use USD, $, ET, UTC, or other timezones in reasoning or output.\n"
         f"Target Schema ({schema_name}):\n{schema_json}"
     )
 
@@ -4072,6 +4202,11 @@ def get_strategy_optimization_advice(
 
     # Token-saving compression: Sym|Side|Verdict|Conf|PnL|Status
     summary_lines = []
+    wins = []
+    losses = []
+    symbol_pnls = {}
+    dow_pnls = {0: [], 1: [], 2: [], 3: [], 4: []}  # Mon-Fri
+
     for t in trades:
         pnl = round(float(t.get("pnl_rupees") or 0))
         # Abbreviate status
@@ -4086,12 +4221,66 @@ def get_strategy_optimization_advice(
         line = f"{t.get('symbol')}|{t.get('side')}|{t.get('verdict_label')}|{t.get('confidence_score')}%|{pnl}|{stat}"
         summary_lines.append(line)
 
+        # Aggregate risk metrics
+        if pnl > 0:
+            wins.append(pnl)
+        elif pnl < 0:
+            losses.append(pnl)
+
+        # Symbol breakdown
+        sym = t.get("symbol", "UNKNOWN")
+        if sym not in symbol_pnls:
+            symbol_pnls[sym] = []
+        symbol_pnls[sym].append(pnl)
+
+        # Day of week (if opened_at available)
+        try:
+            from datetime import datetime as _dt
+            opened_str = str(t.get("opened_at") or "")
+            if opened_str:
+                dt = _dt.fromisoformat(opened_str.replace("Z", "+00:00"))
+                dow = dt.weekday()
+                if dow in dow_pnls:
+                    dow_pnls[dow].append(pnl)
+        except Exception:
+            pass
+
     trade_data = "\n".join(summary_lines)
+
+    # Calculate risk metrics
+    avg_win = round(sum(wins) / len(wins)) if wins else 0
+    avg_loss = round(sum(losses) / len(losses)) if losses else 0
+    profit_factor = round(sum(wins) / abs(sum(losses)), 2) if losses and sum(losses) != 0 else 0.0
+    max_dd = round(min(losses)) if losses else 0
+
+    # Day-of-week win rates
+    dow_names = ["Mon", "Tue", "Wed", "Thu", "Fri"]
+    dow_win_rates = {}
+    for dow, pnls in dow_pnls.items():
+        if pnls:
+            win_count = sum(1 for p in pnls if p > 0)
+            dow_win_rates[dow_names[dow]] = f"{win_count}/{len(pnls)} ({win_count*100//len(pnls)}%)"
+
+    # Symbol win rates
+    symbol_win_rates = {}
+    for sym, pnls in symbol_pnls.items():
+        if len(pnls) >= 3:
+            win_count = sum(1 for p in pnls if p > 0)
+            symbol_win_rates[sym] = f"{win_count}/{len(pnls)} ({win_count*100//len(pnls)}%)"
+
+    # MCX margin cap
+    mcx_symbols = [s for s in symbol_pnls.keys() if any(m in s.upper() for m in ["NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"])]
+    mcx_cap = 2 if mcx_symbols else 3
 
     prompt = f"""You are a Quantitative Strategy Optimizer. Review the following trade history summary to optimize the bot's risk and entry parameters.
 
 TRADE HISTORY (Symbol|Side|Verdict|Conf|PnL|Status) — {len(trades)} trades:
 {trade_data}
+
+RISK METRICS (add before tuning):
+• Max drawdown in period: ₹{max_dd:,} | Avg win: ₹{avg_win:,} | Avg loss: ₹{avg_loss:,} | Profit factor: {profit_factor}
+• Win rate by day-of-week: {dow_win_rates}
+• Win rate by symbol: {symbol_win_rates}
 
 TARGET PARAMETERS TO TUNE:
 - live_min_confidence_core (0-100): Entry threshold for safe trades.
@@ -4099,6 +4288,11 @@ TARGET PARAMETERS TO TUNE:
 - live_ai_decision_mode: 'advisory' (Human must confirm), 'boost_only' (AI promotes marginal setups), 'full' (AI can veto/approve).
 - live_ai_min_confidence_boost (0-100): Bar for AI promotion.
 - live_ai_min_confidence_veto (0-100): Bar for AI veto.
+
+CONSTRAINTS:
+• live_max_concurrent_positions effective cap: ₹600,000 combined margin.
+• For MCX (NATURALGAS/CRUDEOIL/GOLD/SILVER): max concurrent positions ≤ {mcx_cap} due to higher per-lot margin.
+• If profit_factor < 1.0: recommend reducing max_concurrent_positions by 1 before changing confidence thresholds.
 
 INSTRUCTIONS:
 1. Identify if specific symbols or verdicts (e.g. 'Short Covering') are consistently losing money — only if backed by ≥5 trades of that symbol/verdict in the data above. Fewer than 5 = insufficient sample, do not conclude a pattern.

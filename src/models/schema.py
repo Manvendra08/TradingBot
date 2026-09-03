@@ -497,6 +497,10 @@ def get_conn(read_only: bool = False, *args, **kwargs):
                 pass
 
 
+# Backward-compatible alias
+get_db_connection = get_conn
+
+
 _MIGRATIONS = [
     ("M001_add_ltp_change_pct", "ALTER TABLE option_chain_snapshots ADD COLUMN ltp_change_pct REAL"),
     ("M002_add_oi_change_pct", "ALTER TABLE option_chain_snapshots ADD COLUMN oi_change_pct REAL"),
@@ -611,6 +615,12 @@ _MIGRATIONS = [
     ("M107_add_live_tranche_index", "ALTER TABLE live_trades ADD COLUMN tranche_index INTEGER DEFAULT 0"),
     ("M108_add_ml_entry_reason", "ALTER TABLE multi_leg_trades ADD COLUMN entry_reason TEXT"),
     ("M109_add_ml_exit_reason", "ALTER TABLE multi_leg_trades ADD COLUMN exit_reason TEXT"),
+    # M110: live MTM premium per leg — written by _calc_multileg_pnl so the
+    # digest (and any DB-driven MTM display) can show current premium for open
+    # books. Was previously only set on in-memory dicts and never persisted,
+    # making `current_premium` a phantom field on the digest code path that
+    # reads from DB (get_open_books_for_symbol).
+    ("M110_add_mll_current_premium", "ALTER TABLE multi_leg_legs ADD COLUMN current_premium REAL"),
 ]
 
 
@@ -2568,6 +2578,22 @@ def update_multi_leg_leg_exit_premium(leg_id: int, exit_premium: float) -> None:
     sql = "UPDATE multi_leg_legs SET exit_premium=? WHERE id=?"
     with get_conn() as conn:
         conn.execute(sql, (exit_premium, leg_id))
+
+
+def update_multi_leg_leg_current_premium(leg_id: int, current_premium: float) -> None:
+    """Persist live MTM premium for an open leg.
+
+    Called by multileg_paper_trading._calc_multileg_pnl on every MTM pass so the
+    digest code path that reads legs from DB (via get_open_books_for_symbol) can
+    surface a real current_premium instead of silently falling back to entry.
+    Safe to call on closed legs too — the value will simply be ignored by
+    consumers that filter status='OPEN'.
+    """
+    if leg_id is None:
+        return
+    sql = "UPDATE multi_leg_legs SET current_premium=? WHERE id=?"
+    with get_conn() as conn:
+        conn.execute(sql, (current_premium, leg_id))
 
 
 def update_leg_exit(leg_id: int, exit_premium: float, closed_at: str, exit_reason: str) -> None:

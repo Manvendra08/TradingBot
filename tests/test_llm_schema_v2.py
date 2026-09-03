@@ -303,7 +303,7 @@ class TestDigestNewSchema:
         llm_verdict = {
             "action": "GO_LONG",
             "confidence": 78,
-            "instrument": "NIFTY 24500 CE 27Jun",
+            "instrument": "NIFTY 24500 CE / 24600 CE BULL CALL SPREAD 27Jun",
             "entry_trigger": "Underlying breaks above 24520",
             "entry_premium_range": "180-195",
             "stop_loss": "Premium 140",

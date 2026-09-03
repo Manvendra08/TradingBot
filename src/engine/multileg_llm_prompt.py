@@ -11,6 +11,7 @@ import logging
 from typing import Optional
 
 from config.settings import IST
+from config.multileg_strategies import MAX_BOOK_MARGIN, MAX_NET_DELTA
 
 log = logging.getLogger(__name__)
 
@@ -170,7 +171,7 @@ def _format_historical_strategy_performance(symbol: str) -> str:
 
 
 def _format_open_books(open_books: list[dict] | None) -> str:
-    """Format currently open multi-leg books."""
+    """Format currently open multi-leg books (verbose — used for exit/adjustment prompts)."""
     if not open_books:
         return "  No open multi-leg positions."
 
@@ -188,6 +189,32 @@ def _format_open_books(open_books: list[dict] | None) -> str:
             f"P&L: ₹{float(book.get('total_pnl') or 0):.0f}\n"
             + "\n".join(leg_strs)
         )
+    return "\n".join(lines)
+
+
+def _format_open_book_summary(open_books: list[dict] | None, margin_cap: float = 7500000.0, delta_cap: float = 0.60) -> str:
+    """Format compact open multi-leg books summary (used for entry prompts to avoid token bloat)."""
+    if not open_books:
+        return "  No open multi-leg positions."
+
+    book_count = len(open_books)
+    combined_delta = sum(float(b.get("net_delta") or 0) for b in open_books)
+    combined_margin = sum(
+        float(b.get("margin_req") or b.get("margin") or 0) for b in open_books
+    )
+    margin_headroom = max(0.0, margin_cap - combined_margin)
+    delta_headroom = max(0.0, delta_cap - abs(combined_delta))
+
+    lines = [
+        f"  Open books: {book_count}",
+        f"  Combined net delta: {combined_delta:+.2f} (cap {delta_cap:.2f}, headroom {delta_headroom:.2f})",
+        f"  Combined margin used: ₹{combined_margin:,.0f} / ₹{margin_cap:,.0f} (headroom ₹{margin_headroom:,.0f})",
+    ]
+    if margin_headroom < 50000:
+        lines.append("  MARGIN WARNING: headroom < ₹50k — new position requires full margin check")
+    if delta_headroom < 0.10:
+        lines.append("  DELTA WARNING: delta headroom < 0.10 — new position may breach cap")
+
     return "\n".join(lines)
 
 
@@ -302,6 +329,12 @@ def build_multileg_prompt(
     regime = scan_context.get("market_regime", "unknown")
     commodity_intel = _format_commodity_regime_intelligence(symbol, scan_context)
 
+    # Compact open books summary with margin/delta caps
+    open_summary = _format_open_book_summary(open_books, MAX_BOOK_MARGIN, MAX_NET_DELTA)
+
+    # F&O ban check (placeholder - actual check happens downstream but good to inform LLM)
+    # In practice, this would come from an API. For now, we'll let downstream validation handle it.
+
     prompt = f"""NSE/MCX options seller. Design a multi-leg premium strategy.
 
 {symbol} | ₹{underlying:.2f} | ATM {atm_strike:.0f} | {expiry} (DTE {dte})
@@ -313,8 +346,15 @@ CHAIN (use only strikes with OI>0 and LTP>0):
 IV: {_format_iv_summary(option_rows, atm_strike)}
 Chart: 3H {float(ohlc_3h.get('open',0)):.0f}/{float(ohlc_3h.get('high',0)):.0f}/{float(ohlc_3h.get('low',0)):.0f}/{float(ohlc_3h.get('close',0)):.0f} | 1H {float(ohlc_1h.get('open',0)):.0f}/{float(ohlc_1h.get('high',0)):.0f}/{float(ohlc_1h.get('low',0)):.0f}/{float(ohlc_1h.get('close',0)):.0f}
 {news_section}
-Open: {_format_open_books(open_books)}
+Open: {open_summary}
 History: {historical_perf or _format_historical_strategy_performance(symbol)}
+
+CONSTRAINTS (non-negotiable):
+• {symbol} F&O ban status: CHECK_DOWNSTREAM → if BANNED, strategy_type="NO_TRADE", legs=[]
+• Weekly vs Monthly expiry: {"Weekly" if dte <= 7 else "Monthly"}. Weekly → max 2 legs, tighter 15-20% profit target. Monthly → up to 4 legs, 30-50% target.
+• SEBI STT on sell side: ~0.05% on premium for equity options, ~0.125% for commodity. Factor into max_profit estimate if not already netted.
+• SPAN margin is dynamic. If estimated margin + existing ₹{sum(float(b.get("margin_req") or b.get("margin") or 0) for b in (open_books or [])):,.0f} > ₹{MAX_BOOK_MARGIN:,.0f} → NO_TRADE.
+• Combined delta headroom: {MAX_NET_DELTA - abs(sum(float(b.get("net_delta") or 0) for b in (open_books or []))):.2f} remaining.
 
 TASK: Select best multi-leg strategy — or NO_TRADE. You are selling premium: your edge is IV overpricing realized movement plus theta. If that edge is absent, there is no strategy to pick.
 
@@ -456,6 +496,42 @@ def build_multileg_exit_prompt(
         else f"- {adjustment_count}/3 adjustments done → CLOSE or HOLD (if max hit)"
     )
 
+    # Event proximity checks
+    event_within_4h = False
+    next_catalyst = ""
+    hours_to_event = 999
+    if symbol.upper().startswith("NATURALGAS"):
+        now_ist = datetime.now(IST)
+        # EIA is Thursday 20:00 IST
+        if now_ist.weekday() == 3:  # Thursday
+            eia_hour = 20
+            hours_to_event = (eia_hour - now_ist.hour) + (eia_hour == now_ist.hour and now_ist.minute > 0)
+            if 0 <= hours_to_event <= 4:
+                event_within_4h = True
+            next_catalyst = f"EIA Inventory {hours_to_event:.1f}h"
+    elif symbol.upper().startswith("CRUDEOIL"):
+        # OPEC+ meetings typically Wednesday
+        now_ist = datetime.now(IST)
+        if now_ist.weekday() == 2:  # Wednesday
+            hours_to_event = 16 - now_ist.hour  # approximate
+            if 0 <= hours_to_event <= 4:
+                event_within_4h = True
+            next_catalyst = f"OPEC+ {hours_to_event:.1f}h"
+        else:
+            next_catalyst = "None imminent"
+    else:
+        next_catalyst = "None imminent"
+
+    # Pin risk check for weekly expiry
+    is_expiry_today = (dte == 0)
+    pin_risk_high = False
+    if is_expiry_today and is_weekly:
+        for l in legs:
+            strike = float(l.get("strike", 0))
+            if abs(underlying - strike) / underlying <= 0.005:  # within 0.5%
+                pin_risk_high = True
+                break
+
     prompt = f"""Managing multi-leg position: {symbol}
 
 Book {book.get('book_id', 'N/A')} | {book.get('strategy_type', 'N/A')}
@@ -472,6 +548,12 @@ MARKET: ₹{underlying:.2f} | {intel.get('verdict_label', 'N/A')} {intel.get('co
 
 ROLL TARGETS:
 {roll_targets_str}
+
+EXIT DISCIPLINE (Indian context):
+• If profit_pct ≥ 50%: CLOSE is preferred. Only ADJUST if both legs delta < 0.10 AND DTE ≥ 5 AND no event in next 24h.
+• {symbol} pin risk: {'HIGH — expiry today, underlying near short strike' if pin_risk_high else 'normal'}.
+• {'Do NOT ADJUST within 4h of catalyst — close or hold only.' if event_within_4h else 'No event window restriction.'}
+• Weekly index (NIFTY/BANKNIFTY/SENSEX): if underlying within ±0.5% of ANY short strike on expiry day → CLOSE (pin risk).
 
 DECISION: {decision_options}
 

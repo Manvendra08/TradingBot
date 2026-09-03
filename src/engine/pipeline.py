@@ -165,15 +165,17 @@ def _ensure_shoonya_session() -> None:
                 try:
                     from src.models.schema import stamp_health
                     stamp_health("shoonya_session", "OK", "session_ready")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # Health stamp failure is non-fatal but worth a debug line
+                    # so a misconfigured DB doesn't get silently masked.
+                    log.debug("[pipeline] stamp_health(shoonya_session, OK) failed: %s", exc)
             else:
                 log.warning("[pipeline] Shoonya login failed — fetcher will fall back to dhan_commodity")
                 try:
                     from src.models.schema import stamp_health
                     stamp_health("shoonya_session", "DOWN", "login_failed")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    log.debug("[pipeline] stamp_health(shoonya_session, DOWN) failed: %s", exc)
     except Exception as exc:
         log.warning("[pipeline] _ensure_shoonya_session error (non-fatal): %s", exc)
 
@@ -319,8 +321,8 @@ def _async_llm_enrich_and_edit(
     try:
         from src.engine.llm_enrichment import get_llm_verdict
         
+        time.sleep(1.5)  # Pacing delay to avoid Groq TPM limits
         with _llm_pacing_lock:
-            time.sleep(1.5)  # Pacing delay to avoid Groq TPM limits
             llm_verdict = get_llm_verdict(
                 symbol,
                 intel,
@@ -401,11 +403,6 @@ def _async_llm_enrich_and_edit(
         # Update Scan Sentinel with enriched LLM verdict
         try:
             from src.engine.scan_sentinel import run_sentinel
-            def _get_num_val(val):
-                if val is None:
-                    return None
-                m = re.search(r"(\d+(?:\.\d+)?)", str(val))
-                return float(m.group(1)) if m else None
 
             oc_data = scan_context.get("oc_data") or {}
             opt_rows = scan_context.get("option_rows") or oc_data.get("strikes") or []
@@ -413,41 +410,88 @@ def _async_llm_enrich_and_edit(
             exp_val = scan_context.get("current_expiry") or scan_context.get("expiry") or oc_data.get("expiry", "")
             ul_val = float(scan_context.get("underlying") or scan_context.get("underlying_price") or oc_data.get("underlying_price") or 0.0)
 
-            sentinel_report_v2 = {
-                "symbol": symbol,
-                "timestamp_ist": datetime.now(timezone.utc).isoformat(),
-                "scan_duration_ms": 0,
-                "underlying_price": ul_val,
-                "expiry": exp_val,
-                "source": src_val,
-                "total_strikes": len(opt_rows),
-                "zero_ltp_strikes": sum(1 for s in opt_rows if float(s.get("ltp") or 0.0) == 0.0),
-                "zero_oi_strikes": sum(1 for s in opt_rows if int(s.get("oi") or 0) == 0),
-                "llm_action": getattr(llm_verdict, "action", None),
-                "llm_instrument": getattr(llm_verdict, "instrument", None),
-                "llm_entry_premium": _get_num_val(getattr(llm_verdict, "entry_premium_range", None)),
-                "llm_target_1": _get_num_val(getattr(llm_verdict, "target_1", None)),
-                "llm_target_2": _get_num_val(getattr(llm_verdict, "target_2", None)),
-                "llm_stop_loss": _get_num_val(getattr(llm_verdict, "stop_loss", None)),
-                "trade_decision_status": (intel.get("trade_decision") or {}).get("status") if intel else None,
-                "trade_decision_reason": (intel.get("trade_decision") or {}).get("reason") if intel else None,
-                "lots": (intel.get("trade_decision") or {}).get("lots") or (intel.get("trade_decision") or {}).get("tranche_count", 1) if intel else 1,
-                "delta": (intel.get("trade_decision") or {}).get("delta") if intel else None,
-                "theta": (intel.get("trade_decision") or {}).get("theta") if intel else None,
-                "vega": (intel.get("trade_decision") or {}).get("vega") if intel else None,
-                "warnings": [w for w in (scan_context.get("warnings") or []) if w],
-                "errors": [e for e in (scan_context.get("errors") or []) if e],
-                "fetcher_errors": scan_context.get("fetcher_errors", []),
-                "option_premium_used": _get_num_val(getattr(llm_verdict, "entry_premium_range", None)),
-                "log_lines": [],
-                "is_test": False,
-                "status": "COMPLETED"
-            }
+            sentinel_report_v2 = _build_sentinel_report(
+                symbol,
+                scan_duration_ms=0,
+                opt_rows=opt_rows,
+                underlying_price=ul_val,
+                expiry=exp_val,
+                source=src_val,
+                llm_verdict=llm_verdict,
+                intel=intel,
+                scan_context=scan_context,
+                is_test=False,
+                warnings=scan_context.get("warnings") or [],
+                errors=scan_context.get("errors") or [],
+                fetcher_errors=scan_context.get("fetcher_errors", []),
+            )
             pipeline_io_executor.submit(lambda: run_sentinel(sentinel_report_v2))
         except Exception:
             log.warning("%s: Scan Sentinel async update failed", symbol, exc_info=True)
     except Exception as e:
         log.warning("%s: async LLM enrichment thread failed: %s", symbol, e)
+
+
+def _build_sentinel_report(
+    symbol: str,
+    *,
+    scan_duration_ms: int,
+    opt_rows: list[dict],
+    underlying_price: float,
+    expiry: str,
+    source: str,
+    llm_verdict: any,
+    intel: dict | None,
+    scan_context: dict | None,
+    is_test: bool,
+    warnings: list,
+    errors: list,
+    fetcher_errors: list,
+) -> dict:
+    """Shared builder for Scan Sentinel report dicts.
+
+    Computes the IST timestamp correctly (field was previously filled with
+    UTC, not IST, despite the name `timestamp_ist`).
+    """
+    IST_offset = timezone(timedelta(hours=5, minutes=30))
+    ts_ist = datetime.now(IST_offset).isoformat()
+
+    def _get_num_val(val):
+        if val is None:
+            return None
+        m = re.search(r"(\d+(?:\.\d+)?)", str(val))
+        return float(m.group(1)) if m else None
+
+    return {
+        "symbol": symbol,
+        "timestamp_ist": ts_ist,
+        "scan_duration_ms": scan_duration_ms,
+        "underlying_price": float(underlying_price or 0.0),
+        "expiry": expiry or "",
+        "source": source or "unknown",
+        "total_strikes": len(opt_rows),
+        "zero_ltp_strikes": sum(1 for s in opt_rows if float(s.get("ltp") or 0.0) == 0.0),
+        "zero_oi_strikes": sum(1 for s in opt_rows if int(s.get("oi") or 0) == 0),
+        "llm_action": getattr(llm_verdict, "action", None) if llm_verdict else None,
+        "llm_instrument": getattr(llm_verdict, "instrument", None) if llm_verdict else None,
+        "llm_entry_premium": _get_num_val(getattr(llm_verdict, "entry_premium_range", None)) if llm_verdict else None,
+        "llm_target_1": _get_num_val(getattr(llm_verdict, "target_1", None)) if llm_verdict else None,
+        "llm_target_2": _get_num_val(getattr(llm_verdict, "target_2", None)) if llm_verdict else None,
+        "llm_stop_loss": _get_num_val(getattr(llm_verdict, "stop_loss", None)) if llm_verdict else None,
+        "trade_decision_status": ((intel or {}).get("trade_decision") or {}).get("status") if intel else None,
+        "trade_decision_reason": ((intel or {}).get("trade_decision") or {}).get("reason") if intel else None,
+        "lots": ((intel or {}).get("trade_decision") or {}).get("lots") or ((intel or {}).get("trade_decision") or {}).get("tranche_count", 1) if intel else 1,
+        "delta": ((intel or {}).get("trade_decision") or {}).get("delta") if intel else None,
+        "theta": ((intel or {}).get("trade_decision") or {}).get("theta") if intel else None,
+        "vega": ((intel or {}).get("trade_decision") or {}).get("vega") if intel else None,
+        "warnings": [w for w in (warnings or []) if w],
+        "errors": [e for e in (errors or []) if e],
+        "fetcher_errors": list(fetcher_errors or []),
+        "option_premium_used": _get_num_val(getattr(llm_verdict, "entry_premium_range", None)) if llm_verdict else None,
+        "log_lines": [],
+        "is_test": is_test,
+        "status": "COMPLETED",
+    }
 
 
 def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, intel: dict, llm_verdict: any, news_data: dict | None = None, open_trade: dict | None = None, exit_advice: any = None, digest_id: str | None = None, timeframe_res: dict | None = None) -> dict:
@@ -473,12 +517,18 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
         p_act = str(paper_res.get("action") or "").upper()
         # Only populate multileg_payload if it is genuinely a MULTILEG / TFSS strategy
         strat_type = str(paper_res.get("strategy_type") or "").upper()
-        is_ml_strat = strat_type in (
-            "TFSS", "MULTILEG", "IRON_CONDOR", "SHORT_STRANGLE", 
-            "SHORT_STRADDLE", "BEAR_CALL_SPREAD", "BULL_PUT_SPREAD", 
-            "JADE_LIZARD"
-        ) or bool(paper_res.get("legs"))
-        
+        is_ml_strat = (
+            strat_type in (
+                "TFSS", "MULTILEG", "IRON_CONDOR", "SHORT_STRANGLE",
+                "SHORT_STRADDLE", "BEAR_CALL_SPREAD", "BULL_PUT_SPREAD",
+                "JADE_LIZARD",
+            )
+            or bool(paper_res.get("legs"))
+            or bool(paper_res.get("decision_stage"))
+            or bool(paper_res.get("live_books"))
+            or "book_id" in paper_res
+        )
+
         if is_ml_strat:
             closed_items = paper_res.get("closed") or ([paper_res] if p_act == "CLOSED" else [])
             multileg_payload = {
@@ -508,9 +558,49 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
                 "ai_exit_advice": paper_res.get("ai_exit_advice"),
                 "ai_model_name": paper_res.get("ai_model_name"),
             }
+
+    # Fallback: only query the DB when the symbol *could* have multileg books.
+    # Without this guard the query runs for every watched symbol that didn't
+    # produce a multileg_payload this cycle (e.g. MIDCPNIFTY which is not in
+    # ALLOWED_SYMBOLS), wasting a DB round-trip per scan cycle.
+    if not multileg_payload:
+        try:
+            from config.multileg_strategies import ALLOWED_SYMBOLS
+        except ImportError:
+            ALLOWED_SYMBOLS = set()
+        if symbol in ALLOWED_SYMBOLS:
+            try:
+                from src.models.schema import get_open_books_for_symbol
+                ml_books = get_open_books_for_symbol(symbol)
+                if ml_books:
+                    multileg_payload = {
+                        "action": "HOLD",
+                        "decision_stage": "BOOK_MONITOR",
+                        "live_books": ml_books,
+                        "reason": f"Holding {len(ml_books)} active multi-leg book(s)",
+                    }
+            except Exception as exc:
+                log.warning("[pipeline] Fallback open-book lookup failed for %s: %s", symbol, exc)
     actual_lots = 1
     db_entered = False
-    if digest_id:
+    # Prefer in-memory evidence from the runner before falling back to a
+    # digest_id-keyed DB lookup. Some runners (e.g. multileg) return the
+    # trade_id and lots directly in paper_res; others store the trade under
+    # a different digest_id than the one we have. Both fallbacks below
+    # cover the most common cases.
+    if isinstance(paper_res, dict):
+        pr_action = str(paper_res.get("action") or "").upper()
+        if pr_action in ("ENTERED", "OPENED", "EXECUTED") and paper_res.get("trade_id"):
+            db_entered = True
+            # multileg runner returns total_lots or per-leg lots; fall back
+            # to the highest leg-lots value, or 1.
+            lots_from_res = paper_res.get("total_lots") or paper_res.get("lots")
+            if lots_from_res:
+                try:
+                    actual_lots = int(lots_from_res)
+                except (TypeError, ValueError):
+                    actual_lots = 1
+    if not db_entered and digest_id:
         from src.models.schema import get_conn
         try:
             with get_conn() as conn:
@@ -529,6 +619,20 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
                         row_ml = conn.execute("SELECT id FROM multi_leg_trades WHERE digest_id=?", (digest_id,)).fetchone()
                         if row_ml:
                             db_entered = True
+                        else:
+                            # Final fallback: any trade opened for this symbol
+                            # in the last 5 minutes. Covers runners that wrote
+                            # a different digest_id than the one passed in.
+                            cutoff = (datetime.now() - timedelta(minutes=5)).isoformat()
+                            row_recent = conn.execute(
+                                "SELECT 1 FROM paper_trades WHERE symbol=? AND opened_at > ? "
+                                "UNION SELECT 1 FROM live_trades WHERE symbol=? AND opened_at > ? "
+                                "UNION SELECT 1 FROM multi_leg_trades WHERE symbol=? AND opened_at > ? "
+                                "LIMIT 1",
+                                (symbol, cutoff, symbol, cutoff, symbol, cutoff),
+                            ).fetchone()
+                            if row_recent:
+                                db_entered = True
         except Exception as e:
             log.debug("Error checking actual trade for digest_id %s: %s", digest_id, e)
     
@@ -584,14 +688,12 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
         if isinstance(paper_res, dict) and paper_res.get("reason"):
             blocker_reason = paper_res.get("reason")
         elif td.get("reason"):
-            # Prefer the concrete rule-engine reason (e.g. "Confidence 58% below
-            # threshold 72%") over the generic AI NO_TRADE string — the specific
-            # gate that fired is what the trader needs to see.
-            r_str = str(td.get("reason"))
-            if "AI decision mode 'full'" in r_str or "Marginal setup" in r_str:
-                blocker_reason = "AI Multi-Leg: Awaiting clear directional confirmation"
-            else:
-                blocker_reason = r_str
+            # Pass through the concrete rule-engine / decision-pipeline reason
+            # (e.g. "Confidence 58% below threshold 72%", "AI decision mode 'full'
+            # — veto", "Marginal setup: conf=68, eq=65"). The specific gate that
+            # fired is what the trader needs to see — substituting it with a
+            # generic message hides actionable diagnostic context.
+            blocker_reason = str(td.get("reason"))
         elif llm_verdict and getattr(llm_verdict, "action", None) == "NO_TRADE":
             blocker_reason = "AI Multi-Leg: Low conviction / Sidelined"
 
@@ -694,12 +796,22 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
     if not ai_thesis:
         ai_thesis = "No thesis generated."
 
-    if multileg_payload and multileg_payload.get("action") == "ENTERED":
-        tfss["action"] = "ENTER"
-        tfss["trade_entered"] = True
-        tfss["contract"] = f"{symbol} {multileg_payload.get('strategy_type')}"
+    if multileg_payload:
+        ml_act = str(multileg_payload.get("action") or "").upper()
+        has_live_books = bool(multileg_payload.get("live_books"))
+        # ENTERED propagates trade_entered so the digest is emitted and the
+        # 30-min dedup slot is taken. HOLD/MONITORED ride the dedup window —
+        # we attach multileg for the digest builder but do NOT force a send,
+        # otherwise every 5-min scan would re-emit a non-informative HOLDING
+        # message and burn the dedup slot on no new information.
         tfss["multileg"] = multileg_payload
-        header["trade_entered"] = True
+        tfss["contract"] = f"{symbol} {multileg_payload.get('strategy_type') or 'MULTILEG'}"
+        if ml_act == "ENTERED":
+            tfss["action"] = "ENTER"
+            tfss["trade_entered"] = True
+            header["trade_entered"] = True
+        elif has_live_books or ml_act in ("HOLD", "MONITORED"):
+            tfss["action"] = "HOLD"
 
     return {
         "header": header,
@@ -1268,48 +1380,26 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
         # Run Scan Sentinel diagnostics asynchronously (non-blocking)
         try:
             from src.engine.scan_sentinel import run_sentinel
-            
+
             t_start = packet.get("start_time", time.time())
             scan_duration_ms = max(1, int((time.time() - t_start) * 1000))
 
-            def _get_num_val(val):
-                if val is None:
-                    return None
-                m = re.search(r"(\d+(?:\.\d+)?)", str(val))
-                return float(m.group(1)) if m else None
-            
-            # Build report for sentinel
-            sentinel_report = {
-                "symbol": symbol,
-                "timestamp_ist": datetime.now(timezone.utc).isoformat(),
-                "scan_duration_ms": scan_duration_ms,
-                "underlying_price": float(oc_data.get("underlying_price") or 0.0),
-                "expiry": oc_data.get("expiry", ""),
-                "source": oc_data.get("source", "unknown"),
-                "total_strikes": len(oc_data.get("strikes") or []),
-                "zero_ltp_strikes": sum(1 for s in oc_data.get("strikes", []) if float(s.get("ltp") or 0.0) == 0.0),
-                "zero_oi_strikes": sum(1 for s in oc_data.get("strikes", []) if int(s.get("oi") or 0) == 0),
-                "llm_action": getattr(llm_verdict, "action", None) if llm_verdict else None,
-                "llm_instrument": getattr(llm_verdict, "instrument", None) if llm_verdict else None,
-                "llm_entry_premium": _get_num_val(getattr(llm_verdict, "entry_premium_range", None)) if llm_verdict else None,
-                "llm_target_1": _get_num_val(getattr(llm_verdict, "target_1", None)) if llm_verdict else None,
-                "llm_target_2": _get_num_val(getattr(llm_verdict, "target_2", None)) if llm_verdict else None,
-                "llm_stop_loss": _get_num_val(getattr(llm_verdict, "stop_loss", None)) if llm_verdict else None,
-                "trade_decision_status": (intel.get("trade_decision") or {}).get("status") if intel else None,
-                "trade_decision_reason": (intel.get("trade_decision") or {}).get("reason") if intel else None,
-                "lots": (intel.get("trade_decision") or {}).get("lots") or (intel.get("trade_decision") or {}).get("tranche_count", 1) if intel else 1,
-                "delta": (intel.get("trade_decision") or {}).get("delta") if intel else None,
-                "theta": (intel.get("trade_decision") or {}).get("theta") if intel else None,
-                "vega": (intel.get("trade_decision") or {}).get("vega") if intel else None,
-                "warnings": [w for w in (scan_context.get("warnings") or []) if w],
-                "errors": [e for e in (scan_context.get("errors") or []) if e],
-                "fetcher_errors": scan_context.get("fetcher_errors", []),
-                "option_premium_used": _get_num_val(getattr(llm_verdict, "entry_premium_range", None)) if llm_verdict else None,
-                "log_lines": [],
-                "is_test": is_test,
-                "status": "COMPLETED"
-            }
-            
+            sentinel_report = _build_sentinel_report(
+                symbol,
+                scan_duration_ms=scan_duration_ms,
+                opt_rows=oc_data.get("strikes") or [],
+                underlying_price=oc_data.get("underlying_price") or 0.0,
+                expiry=oc_data.get("expiry", ""),
+                source=oc_data.get("source", "unknown"),
+                llm_verdict=llm_verdict,
+                intel=intel,
+                scan_context=scan_context,
+                is_test=is_test,
+                warnings=scan_context.get("warnings") or [],
+                errors=scan_context.get("errors") or [],
+                fetcher_errors=scan_context.get("fetcher_errors", []),
+            )
+
             # Submit to thread pool for async execution (non-blocking)
             pipeline_io_executor.submit(lambda: run_sentinel(sentinel_report))
         except Exception:

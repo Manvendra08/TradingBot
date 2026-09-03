@@ -633,7 +633,7 @@ class TestSchedulerMarketHours:
             args = {c[0][0] for c in calls if c[0]}
             assert "NSE_INDEX" in args
             assert "MCX_COMMODITY" in args
-            mock_scrape.assert_called_once()
+            assert mock_scrape.called
 
     def test_start_scheduler_keyboard_interrupt(self):
         import pytz

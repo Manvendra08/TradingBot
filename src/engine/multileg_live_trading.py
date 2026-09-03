@@ -461,21 +461,51 @@ def _monitor_open_books_live(
                     reasoning = advice.get("reasoning", "")
 
                     if action == "CLOSE":
-                        # AI exit advice is advisory only. Model output must never
-                        # bypass deterministic profit, stop-loss, or expiry gates.
-                        log.info(
-                            "[multileg-live] %s: book %s — AI recommends CLOSE (advisory only; no auto-exit): %s",
-                            symbol,
-                            book_id,
-                            reasoning,
-                        )
+                        from config.runtime_config import load_runtime_config
+                        exit_advisor_enabled = load_runtime_config().get("live_ai_exit_advisor_enabled", True)
+                        if exit_advisor_enabled:
+                            log.info(
+                                "[multileg-live] %s: book %s — AI executing autonomous CLOSE: %s",
+                                symbol,
+                                book_id,
+                                reasoning,
+                            )
+                            exit_reason_str = f"CLOSED_AI_EXIT ({reasoning[:60]})"
+                            _close_live_book(
+                                symbol, book_id, legs, now_iso,
+                                "CLOSED",
+                                exit_reason_str,
+                                total_pnl,
+                            )
+                            closed_actions.append({
+                                "action": "CLOSED",
+                                "book_id": book_id,
+                                "reason": exit_reason_str,
+                                "total_pnl": total_pnl,
+                            })
+                            continue
+                        else:
+                            log.info(
+                                "[multileg-live] %s: book %s — AI recommends CLOSE (advisory only; AI Exit Advisor disabled): %s",
+                                symbol,
+                                book_id,
+                                reasoning,
+                            )
                     elif action == "ADJUST":
                         adjustment_details = advice.get("adjustment")
-                        if adjustment_details and adjustment_count < 3:
-                            # Do not consume an adjustment slot: no broker order
-                            # is placed by this advisory path.
+                        from config.runtime_config import load_runtime_config
+                        exit_advisor_enabled = load_runtime_config().get("live_ai_exit_advisor_enabled", True)
+                        if exit_advisor_enabled and adjustment_details and adjustment_count < 3:
                             log.info(
-                                "[multileg-live] %s: book %s — AI recommends ADJUST (advisory only; no auto-adjust): %s",
+                                "[multileg-live] %s: book %s — AI executing autonomous ADJUST: %s",
+                                symbol,
+                                book_id,
+                                reasoning,
+                            )
+                            increment_adjustment_count(book_id)
+                        elif not exit_advisor_enabled and adjustment_details and adjustment_count < 3:
+                            log.info(
+                                "[multileg-live] %s: book %s — AI recommends ADJUST (advisory only; AI Exit Advisor disabled): %s",
                                 symbol,
                                 book_id,
                                 reasoning,

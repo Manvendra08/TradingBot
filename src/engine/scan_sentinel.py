@@ -789,6 +789,42 @@ def _run_ai_diagnostic(r: dict, flags: list[SentinelFlag]) -> ScanDiagnostic | N
     flags_summary = "\n".join([f"- [{f.rule}] {f.severity}: {f.detail}" for f in flags])
     recent_logs = "\n".join((r.get("log_lines") or [])[-20:])  # Last 20 log lines to keep prompt token-compact
     
+    # Determine market hours context for severity calibration
+    timestamp_ist = r.get('timestamp_ist', '')
+    is_market_hours = False
+    session_hours = 6.5  # default NSE
+    try:
+        # Parse timestamp to check if during market hours
+        from datetime import datetime as _dt
+        ts_dt = _dt.fromisoformat(timestamp_ist.replace('Z', '+00:00'))
+        hour = ts_dt.hour + ts_dt.minute / 60
+        if 'MCX' in symbol.upper() or any(m in symbol.upper() for m in ["NATURALGAS","CRUDEOIL","GOLD","SILVER"]):
+            session_hours = 23.5
+            # MCX trades 9:00-23:30 IST
+            is_market_hours = 9.0 <= hour <= 23.5
+        else:
+            # NSE trades 9:15-15:30 IST
+            is_market_hours = 9.25 <= hour <= 15.5
+    except Exception:
+        pass
+
+    gap_minutes = 0
+    try:
+        gap_sec = r.get("delta_prev_scan_seconds")
+        if gap_sec:
+            gap_minutes = float(gap_sec) / 60.0
+    except Exception:
+        pass
+
+    # Consecutive failures count
+    consecutive_failures = r.get('consecutive_failures', 0)
+
+    # F&O ban status check
+    fo_ban_status = r.get('fo_ban_status', 'UNKNOWN')
+
+    # Stale data threshold
+    stale_threshold_min = 5
+
     prompt = f"""You are the Scan Sentinel — an automated Agentic AI Operations Diagnostic Agent.
 Review the following flagged scan metadata and logs to produce a diagnostic thesis.
 
@@ -831,6 +867,12 @@ DIAGNOSTIC CRITERIA:
    - CLEAR_CACHE: If LLM caching got poisoned with bad levels.
    - ALERT_ONLY: If the issue is informational (e.g. yfinance warnings, R8 false-positive on underlying-level SL).
 4. Outline the exact impact of leaving this issue unaddressed.
+
+SEVERITY CALIBRATION:
+• {symbol} session: {session_hours}h/day. A {gap_minutes:.0f}-minute gap at {timestamp_ist} is {'NORMAL (off-hours)' if not is_market_hours else 'CRITICAL (live session)'}.
+• Consecutive scan failures: {consecutive_failures}/3 → {'PAUSE_SYMBOL' if consecutive_failures >= 3 else 'FORCE_RESCAN' if consecutive_failures >= 1 else 'monitor'}.
+• F&O ban-list check: {fo_ban_status} → if BANNED, this scan's NO_TRADE is expected behavior, not a fault.
+• Underlying price stale > {stale_threshold_min} min → CLEAR_CACHE (stale data poisoning).
 
 IMPORTANT — RULE DIAGNOSIS GUIDELINES:
 - If R8_INVERSE_TARGET_SL is in TRIGGERED RULES, cite section "F133" from Knowledge Base.

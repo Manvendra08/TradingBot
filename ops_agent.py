@@ -871,7 +871,7 @@ def run_playbooks(snap: HealthSnapshot, sm: StateMachine) -> list[PlaybookResult
             if is_broker_down:
                 # Verify freshness: parse timestamp from shoonya_state
                 try:
-                    ts_str = shoonya_state.timestamp  # ISO8601 UTC
+                    ts_str = getattr(shoonya_state, "timestamp", getattr(shoonya_state, "last_updated", None))  # ISO8601 UTC
                     if ts_str:
                         from datetime import datetime, timezone
                         ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
@@ -884,8 +884,11 @@ def run_playbooks(snap: HealthSnapshot, sm: StateMachine) -> list[PlaybookResult
                             is_broker_down = False
                 except Exception as e:
                     log.warning("P04: Failed to parse health stamp timestamp: %s", e)
-                    # Fall back to assuming stale if parsing fails
-                    is_broker_down = False
+                    # Fall back to assuming fresh if parsing fails when timestamp field is missing
+                    if isinstance(e, AttributeError):
+                        is_broker_down = True
+                    else:
+                        is_broker_down = False
 
             if is_broker_down:
                 _set_trading_paused()

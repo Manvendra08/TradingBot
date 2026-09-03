@@ -48,10 +48,19 @@ def _esc(text: any) -> str:
     if text is None:
         return ""
     s = str(text)
-    for char in ("\\", "_", "*", "`", "["):
+    # Only escape target formatting chars; don't pre-escape backslashes which breaks Telegram V1 parser
+    for char in ("_", "*", "`", "["):
         s = s.replace(char, f"\\{char}")
     return s
 
+
+def _esc_code(text: any) -> str:
+    """Safely prepares text to be enclosed within backticks for Telegram Markdown V1."""
+    if text is None:
+        return ""
+    # Telegram code blocks don't parse interior asterisks or underscores dynamically,
+    # but actual backticks will break the code block bounding.
+    return str(text).replace("`", "'")
 
 def _clean_text(text: str) -> str:
     out = str(text or "")
@@ -745,6 +754,8 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
     header = payload.get("header", {})
     multileg = payload.get("multileg") or {}
     quant = payload.get("quant_inputs") or {}
+    tfss = payload.get("tfss") or {}
+    tf_block = payload.get("timeframe") or {}
     ai_thesis = payload.get("ai_thesis", "")
     ai_model_name = payload.get("ai_model_name") or header.get("ai_model_name")
     exit_advice = payload.get("exit_advice")
@@ -760,15 +771,31 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
     DIV = "───────────────"
 
     ml_action = str(multileg.get("action") or "").upper()
-    is_entered = ml_action == "ENTERED"
+    has_live_books = bool(multileg.get("live_books"))
+    # Defense-in-depth: ml_action alone is not enough to declare ENTERED.
+    # The pipeline upstream checks trade_entered before setting ENTERED, but
+    # the display layer should also catch a contradictory state (e.g. action
+    # says ENTERED but decision_stage is REJECTED).
+    header_trade_entered = bool(header.get("trade_entered"))
+    ml_stage = str(multileg.get("decision_stage") or "").upper()
+    is_blocked_by_stage = ml_stage in ("REJECTED", "BLOCKED", "NO_ACTION")
+    is_entered = (
+        ml_action == "ENTERED"
+        and header_trade_entered
+        and not is_blocked_by_stage
+    ) or (ml_action == "ENTERED" and has_live_books)
+    # has_live_books is the ultimate ground truth — if DB has open legs, the
+    # trade was placed regardless of what any action string says.
+    is_holding = (ml_action in ("HOLD", "MONITORED") or (has_live_books and not is_entered)) and not is_entered
     is_advisory = ml_action == "ADVISORY"
     is_rejected = ml_action == "REJECTED"
     is_conflict = ml_action == "CONFLICT"
-    is_no_trade = ml_action in ("NO_TRADE", "NONE", "")
 
     # Header status badge
     if is_entered:
         trade_status_str = "🟢 *ENTERED*"
+    elif is_holding:
+        trade_status_str = "🔵 *HOLDING*"
     elif is_advisory:
         trade_status_str = "🟡 *ADVISORY*"
     elif is_rejected or is_conflict:
@@ -786,8 +813,18 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
             ist = timezone(timedelta(hours=5, minutes=30))
             today_dt = datetime.now(ist).date()
             calc_dte = (exp_dt - today_dt).days
-            if dte is None or dte > 365 or dte < 0:
+            # Coerce DTE to int — payload sources may emit strings ("15") or
+            # floats (15.0); comparing strings to ints raises TypeError which
+            # would otherwise be swallowed by the bare except below and skip
+            # validation entirely.
+            try:
+                dte_int = int(dte) if dte is not None else None
+            except (TypeError, ValueError):
+                dte_int = None
+            if dte_int is None or dte_int > 365 or dte_int < 0:
                 dte = calc_dte if 0 <= calc_dte <= 365 else None
+            else:
+                dte = dte_int
             if exp_dt.year > today_dt.year + 1 or calc_dte > 365:
                 exp_fmt = "N/A"
         except Exception:
@@ -855,7 +892,7 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
     icon = strat_icon_map.get(strat_type, "📐")
 
     conf_str = f" ({conf}% conviction)" if conf else ""
-    m_tag = f" [{ai_model_name}]" if ai_model_name else ""
+    m_tag = f" ({_esc(ai_model_name)})" if ai_model_name else ""
     lines.append(f"🧠 *LLM STRUCTURE CHOICE*{m_tag}")
     lines.append(f"Strategy: {icon} *{_esc(strat_type)}*{conf_str}")
 
@@ -904,14 +941,14 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
         book_id = multileg.get("book_id") or ""
         lines.append(f"🛡️ *RISK ENGINE:* ✅ APPROVED & EXECUTED")
         if book_id:
-            lines.append(f"  Book ID: `{_esc(book_id)}`")
+            lines.append(f"  Book ID: `{_esc_code(book_id)}`")
     elif is_advisory:
         lines.append(f"🛡️ *RISK ENGINE:* 🟡 PASSED (Advisory Mode)")
         lines.append(f"  Note: Strategy logged only — live/paper auto-entry disabled by settings")
     elif is_rejected or is_conflict:
         lines.append(f"🛡️ *RISK ENGINE:* 🔴 REJECTED")
         if stage:
-            lines.append(f"  Gate: `{_esc(stage)}`")
+            lines.append(f"  Gate: `{_esc_code(stage)}`")
         if reason:
             lines.append(f"  Reason: {_esc(reason)}")
     else:
@@ -924,7 +961,7 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
     if eq_score is not None and eq_score > 0:
         lines.append(f"  Quality Score: `{eq_score}/100`")
         if eq_reasons:
-            lines.append(f"  Factors: {' · '.join(eq_reasons[:2])}")
+            lines.append(f"  Factors: {' · '.join([_esc(r) for r in eq_reasons[:2]])}")
 
     # Exit Plan (if entered/advisory)
     exit_plan = multileg.get("exit_plan") or {}
@@ -941,15 +978,111 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
             ep_parts.append(f"Exit DTE ≤ {decay_dte}")
         lines.append("  Exit Plan: " + " · ".join(ep_parts))
 
+    # ── 3b. CORE SIGNAL & TIMEFRAME CONTEXT (TFSS) ──
+    # Restore the signal line, confidence bar, timeframe action, and trade
+    # detail that used to live in build_tfss_timeframe_digest before the
+    # multileg-only refactor. The data is still built upstream by
+    # _build_structured_payload (tfss/timeframe keys), so this just renders it.
+    if tfss or tf_block:
+        lines.append("")
+        lines.append(DIV)
+        lines.append("⚡ *CORE SIGNAL & TIMEFRAME*")
+
+        tfss_action = str(tfss.get("action") or "BLOCK").upper()
+        tfss_bias = str(tfss.get("tfss_bias") or tfss.get("core_origin_verdict") or "N/A").upper()
+        tfss_contract = tfss.get("contract")
+        tfss_trade_entered = bool(tfss.get("trade_entered"))
+        tfss_primary_reason = tfss.get("primary_reason") or tfss.get("reason") or "N/A"
+
+        # Action icon mapping
+        tfss_action_icons = {
+            "ENTER": "🟢 ENTER",
+            "ADD": "🟢 ADD",
+            "EXIT": "🔴 EXIT",
+            "REDUCE": "🟡 REDUCE",
+            "BLOCK": "⛔ BLOCK",
+            "HOLD": "🔵 HOLD",
+            "NO_ACTION": "⏸️ NO ACTION",
+            "NO_SIGNAL": "⚪ NO SIGNAL",
+        }
+        action_line = tfss_action_icons.get(tfss_action, f"⚙️ {tfss_action}")
+        lines.append(f"• Action: {action_line}")
+        if tfss_bias and tfss_bias not in ("N/A", "", "NONE"):
+            lines.append(f"• Bias: `{_esc_code(tfss_bias)}`")
+        if tfss_contract:
+            lines.append(f"• Contract: `{_esc_code(str(tfss_contract))}`")
+        # Confidence bar (use the multileg/engine conf as the source — same
+        # confidence flow that drove the trade decision).
+        if conf and int(conf) > 0:
+            try:
+                lines.append(f"• Confidence: {_bar(int(conf))}")
+            except Exception:
+                lines.append(f"• Confidence: {int(conf)}%")
+        if not tfss_trade_entered and tfss_primary_reason and tfss_primary_reason not in ("N/A", ""):
+            # Show the upstream blocker reason here too — the multileg section
+            # below will repeat it, but the signal-line context is where
+            # traders first look.
+            lines.append(f"• Blocker: _{_esc(str(tfss_primary_reason))}_")
+
+        # Trade detail (delta/premium/qty/tranche) — only when a trade is live
+        if tfss_trade_entered:
+            td_parts = []
+            tfss_delta = tfss.get("delta")
+            tfss_premium = tfss.get("premium")
+            tfss_qty = tfss.get("qty")
+            tfss_tranche = tfss.get("tranche_index")
+            if tfss_delta is not None and tfss_delta != "":
+                try:
+                    td_parts.append(f"Δ {float(tfss_delta):+.2f}")
+                except (TypeError, ValueError):
+                    pass
+            if tfss_premium is not None and tfss_premium != "":
+                try:
+                    td_parts.append(f"₹{float(tfss_premium):.2f}")
+                except (TypeError, ValueError):
+                    pass
+            if tfss_qty:
+                td_parts.append(f"Qty {tfss_qty}")
+            if tfss_tranche is not None and tfss_tranche != "":
+                td_parts.append(f"Tranche {tfss_tranche}")
+            if td_parts:
+                lines.append(f"• Trade: " + " · ".join(td_parts))
+
+        # Timeframe sub-section
+        tf_action = str(tf_block.get("action") or "NO_SIGNAL").upper()
+        if tf_block:
+            tf_signal = str(tf_block.get("signal") or "N/A")
+            tf_dir = str(tf_block.get("direction") or "N/A")
+            tf_setup = str(tf_block.get("setup") or "TIMEFRAME")
+            tf_contract = tf_block.get("contract") or "N/A"
+            tf_reason = tf_block.get("primary_reason") or "No active signal"
+            tf_icons = {
+                "ENTER": "🟢",
+                "EXIT": "🔴",
+                "BLOCK": "⛔",
+                "HOLD": "🔵",
+                "NO_SIGNAL": "⚪",
+            }
+            tf_icon = tf_icons.get(tf_action, "⚙️")
+            lines.append(f"• Timeframe ({_esc(tf_setup)}): {tf_icon} {tf_action}")
+            if tf_signal and tf_signal != "N/A":
+                lines.append(f"  Signal: `{_esc_code(tf_signal)}` · Dir: `{_esc_code(tf_dir)}`")
+            if tf_contract and tf_contract != "N/A":
+                lines.append(f"  Contract: `{_esc_code(str(tf_contract))}`")
+            if tf_action in ("BLOCK", "NO_SIGNAL") and tf_reason and tf_reason != "N/A":
+                lines.append(f"  Reason: _{_esc(str(tf_reason))}_")
+
     # ── 4. LIVE BOOK MONITORING & POSITION EXIT ADVICE ──
     live_books = multileg.get("live_books") or []
     closed_items = multileg.get("closed_items") or []
     ai_exit = multileg.get("ai_exit_advice") or exit_advice
 
-    if live_books or closed_items or ai_exit:
+    has_current_trade = is_entered or bool(closed_items)
+    should_show_books = has_current_trade or bool(ai_exit)
+    if should_show_books:
         lines.append("")
         lines.append(DIV)
-        lines.append("📈 *ACTIVE MULTI-LEG BOOKS*")
+        lines.append("📈 *MULTI-LEG TRADES*")
 
         if closed_items:
             for c in closed_items:
@@ -958,33 +1091,39 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
                 c_pnl = float(c.get("total_pnl") or 0.0)
                 c_re = c.get("reason") or "Closed"
                 pnl_icon = "🟢" if c_pnl >= 0 else "🔴"
-                lines.append(f"• Closed: `{c_id}` ({c_st}) | {pnl_icon} P&L ₹{c_pnl:,.0f} | {_esc(c_re)}")
+                lines.append(f"• Closed: `{_esc_code(c_id)}` ({c_st}) | {pnl_icon} P&L ₹{c_pnl:,.0f} | {_esc(c_re)}")
 
-        for b in live_books:
-            b_id = b.get("book_id") or ""
-            b_st = str(b.get("strategy_type") or "").replace("_", " ").upper()
-            b_pnl = float(b.get("total_pnl") or 0.0)
-            b_prem = float(b.get("net_premium") or 0.0)
-            b_delta = float(b.get("net_delta") or 0.0)
-            pnl_icon = "🟢" if b_pnl >= 0 else "🔴"
+        # Show full detail ONLY for the new entry in this cycle (is_entered).
+        # HOLDING alerts no longer enumerate the entire open book — only the
+        # current trade (new entry / exit) is reported.
+        if is_entered and live_books:
+            entered_book_id = multileg.get("book_id")
+            target_books = [b for b in live_books if b.get("book_id") == entered_book_id] if entered_book_id else [live_books[-1]]
+            for b in target_books:
+                b_id = b.get("book_id") or ""
+                b_st = str(b.get("strategy_type") or "").replace("_", " ").upper()
+                b_pnl = float(b.get("total_pnl") or 0.0)
+                b_prem = float(b.get("net_premium") or 0.0)
+                b_delta = float(b.get("net_delta") or 0.0)
+                pnl_icon = "🟢" if b_pnl >= 0 else "🔴"
 
-            lines.append(f"• Book: `{b_id}` · {b_st}")
-            lines.append(f"  Net Prem ₹{b_prem:.1f}/lot | {pnl_icon} Total P&L ₹{b_pnl:,.0f} | Δ Net {b_delta:+.2f}")
+                lines.append(f"• Book: `{_esc_code(b_id)}` · {b_st}")
+                lines.append(f"  Net Prem ₹{b_prem:.1f}/lot | {pnl_icon} Total P&L ₹{b_pnl:,.0f} | Δ Net {b_delta:+.2f}")
 
-            be_l = b.get("breakeven_lower")
-            be_u = b.get("breakeven_upper")
-            if be_l and be_u:
-                lines.append(f"  BE: ₹{be_l:,.1f} — ₹{be_u:,.1f}")
+                be_l = b.get("breakeven_lower")
+                be_u = b.get("breakeven_upper")
+                if be_l and be_u:
+                    lines.append(f"  BE: ₹{be_l:,.1f} — ₹{be_u:,.1f}")
 
-            b_legs = b.get("legs") or []
-            for l in b_legs:
-                l_side = (l.get("side") or "SELL").upper()
-                l_type = (l.get("option_type") or "").upper()
-                l_strike = float(l.get("strike") or 0.0)
-                l_entry = float(l.get("entry_premium") or 0.0)
-                l_curr = float(l.get("current_premium") or l_entry)
-                s_icon = "🔴" if l_side == "SELL" else "🟢"
-                lines.append(f"    {s_icon} {l_side} {l_strike:.0f} {l_type} | Entry ₹{l_entry:.1f} → Current ₹{l_curr:.1f}")
+                b_legs = b.get("legs") or []
+                for l in b_legs:
+                    l_side = (l.get("side") or "SELL").upper()
+                    l_type = (l.get("option_type") or "").upper()
+                    l_strike = float(l.get("strike") or 0.0)
+                    l_entry = float(l.get("entry_premium") or 0.0)
+                    l_curr = float(l.get("current_premium") or l_entry)
+                    s_icon = "🔴" if l_side == "SELL" else "🟢"
+                    lines.append(f"    {s_icon} {l_side} {l_strike:.0f} {l_type} | Entry ₹{l_entry:.1f} → Current ₹{l_curr:.1f}")
 
         if ai_exit:
             ea_act = ai_exit.get("action") if isinstance(ai_exit, dict) else getattr(ai_exit, "action", None)
@@ -2157,10 +2296,6 @@ def build_enhanced_digest(
 
     lines += sec("\U0001f4c8 *CONFIRMATION*", confirmation)
     lines += sec("\U0001f4a1 *BOTTOM LINE*", bottom_line)
-    if llm_verdict:
-        ai_sec = _format_ai_verdict_section(llm_verdict)
-        if ai_sec:
-            lines += ai_sec
     if paper_trade_status:
         lines += sec(
             "🤖 *PAPER TRADE STATUS*", _format_paper_trade_status(paper_trade_status)
@@ -2840,18 +2975,22 @@ def build_llm_consolidated_digest(
     try:
         from src.models.schema import get_open_books_for_symbol
         ml_books = get_open_books_for_symbol(symbol)
-        if ml_books:
+        is_trade_entered = bool((ctx or {}).get("is_entered") or (ctx or {}).get("trade_entered"))
+        closed_items = (ctx or {}).get("closed_items")
+        if ml_books and (is_trade_entered or closed_items):
             lines.append("")
             lines.append("📐 *MULTI-LEG BOOKS*")
-            
+
             # Map current option premiums for live MTM P&L calculation
             oc_strikes = (ctx or {}).get("option_rows") or ((ctx or {}).get("oc_data") or {}).get("strikes") or []
             prem_map = {}
             for row in oc_strikes:
                 k = (float(row.get("strike") or 0), str(row.get("option_type") or "").upper())
                 prem_map[k] = float(row.get("ltp") or row.get("premium") or 0.0)
-                
-            for book in ml_books:
+
+            entered_book_id = (ctx or {}).get("book_id")
+            target_books = [b for b in ml_books if b.get("book_id") == entered_book_id] if entered_book_id else ml_books[-1:]
+            for book in target_books:
                 legs = book.get("legs", [])
                 strat = str(book.get("strategy_type") or "N/A").replace("_", " ")
                 net_prem = float(book.get("net_premium") or 0)

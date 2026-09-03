@@ -423,21 +423,71 @@ def _monitor_open_books(
                     }
 
                     if action == "CLOSE":
-                        # AI exit advice is advisory only. Model output must never
-                        # bypass deterministic profit, stop-loss, or expiry gates.
-                        log.info(
-                            "[multileg-paper] %s: book %s — AI recommends CLOSE (advisory only; no auto-exit): %s",
-                            symbol,
-                            book_id,
-                            reasoning,
-                        )
+                        from config.runtime_config import load_runtime_config
+                        exit_advisor_enabled = load_runtime_config().get("live_ai_exit_advisor_enabled", True)
+                        if exit_advisor_enabled:
+                            log.info(
+                                "[multileg-paper] %s: book %s — AI executing autonomous CLOSE: %s",
+                                symbol,
+                                book_id,
+                                reasoning,
+                            )
+                            exit_reason_str = f"CLOSED_AI_EXIT ({reasoning[:60]})"
+                            from src.models.schema import get_latest_option_snapshot
+                            for leg in legs:
+                                leg_id = leg.get("id")
+                                if leg_id:
+                                    leg_strike = float(leg.get("strike") or 0.0)
+                                    leg_opt = leg.get("option_type", "CE")
+                                    snap = get_latest_option_snapshot(symbol, expiry, leg_strike, leg_opt)
+                                    exit_premium = float(snap.get("ltp") or 0.0) if snap else 0.0
+                                    if exit_premium <= 0:
+                                        current_underlying = float((scan_context or {}).get("underlying") or entry_underlying)
+                                        if leg_opt == "CE":
+                                            exit_premium = max(0.0, current_underlying - leg_strike)
+                                        else:
+                                            exit_premium = max(0.0, leg_strike - current_underlying)
+                                    close_leg(leg_id, now_iso, exit_premium, "BOOK_CLOSED_AI_EXIT")
+
+                            curr_und = float((scan_context or {}).get("underlying") or entry_underlying)
+                            close_book(
+                                book_id, now_iso, "CLOSED",
+                                exit_reason_str,
+                                total_pnl,
+                                curr_und,
+                            )
+                            closed_actions.append({
+                                "action": "CLOSED",
+                                "book_id": book_id,
+                                "strategy_type": book.get("strategy_type") or book.get("structure"),
+                                "reason": exit_reason_str,
+                                "total_pnl": total_pnl,
+                                "legs": legs,
+                            })
+                            continue
+                        else:
+                            log.info(
+                                "[multileg-paper] %s: book %s — AI recommends CLOSE (advisory only; AI Exit Advisor disabled): %s",
+                                symbol,
+                                book_id,
+                                reasoning,
+                            )
                     elif action == "ADJUST":
                         adjustment_details = advice.get("adjustment")
-                        if adjustment_details and adjustment_count < 3:
-                            # Do not consume an adjustment slot: no broker/paper
-                            # order is placed by this advisory path.
+                        from config.runtime_config import load_runtime_config
+                        exit_advisor_enabled = load_runtime_config().get("live_ai_exit_advisor_enabled", True)
+                        if exit_advisor_enabled and adjustment_details and adjustment_count < 3:
                             log.info(
-                                "[multileg-paper] %s: book %s — AI recommends ADJUST (advisory only; no auto-adjust): %s",
+                                "[multileg-paper] %s: book %s — AI executing autonomous ADJUST: %s",
+                                symbol,
+                                book_id,
+                                reasoning,
+                            )
+                            increment_adjustment_count(book_id)
+                            ai_advice_seen["action"] = "ADJUSTED"
+                        elif not exit_advisor_enabled and adjustment_details and adjustment_count < 3:
+                            log.info(
+                                "[multileg-paper] %s: book %s — AI recommends ADJUST (advisory only; AI Exit Advisor disabled): %s",
                                 symbol,
                                 book_id,
                                 reasoning,
@@ -1097,6 +1147,17 @@ def _calc_multileg_pnl(book: dict, legs: list[dict]) -> float:
                 current_premium = entry_premium
 
         leg["current_premium"] = current_premium
+
+        # Persist MTM to DB so digest reads (via get_open_books_for_symbol)
+        # can show live current_premium for open legs. Only when this leg came
+        # from DB (has an id) — synthetic in-memory legs have no row to update.
+        leg_id = leg.get("id")
+        if leg_id:
+            try:
+                from src.models.schema import update_multi_leg_leg_current_premium
+                update_multi_leg_leg_current_premium(int(leg_id), float(current_premium))
+            except Exception as e:
+                log.debug("[multileg-paper] %s: MTM persist failed for leg %s: %s", symbol, leg_id, e)
 
         if side == "SELL":
             pnl = (entry_premium - current_premium) * lots * lot_size
