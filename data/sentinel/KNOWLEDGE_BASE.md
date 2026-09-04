@@ -118,7 +118,21 @@ TypeError: get_previous_underlying() got an unexpected keyword argument 'read_on
   10. **Sentinel Report Deduplication (`src/engine/pipeline.py`)**: Extracted shared `_build_sentinel_report()` function, replacing duplicated inline dicts across pipeline call sites.
   11. **`db_entered` In-Memory Preference & Fallback (`src/engine/pipeline.py`)**: Prefers `paper_res` in-memory evidence for `db_entered` status, then checks `digest_id`, then falls back to recent trade lookup (`opened_at > 5 min ago`).
   12. **Redundant Guard Removal & HOLDING Badge (`src/alerts/digest.py`)**: Removed duplicate `and live_books` check in `build_multileg_digest_content`; fixed HOLDING badge display condition.
-  13. **Log Exception Debugging (`src/engine/pipeline.py`)**: Replaced bare `except Exception: pass` with `except Exception as exc: log.debug(...)` for silent failure observability.
+### F144: Multi-Leg Paper Trading Schema & Autonomous Adjustment Remediation (P0-CRITICAL) (RESOLVED)
+- **Status:** RESOLVED & VERIFIED.
+- **Issue:** 
+  1. AI exit advisor crashed with `cannot import name 'get_db_connection' from 'src.models.schema'`.
+  2. Fallback SQL queries in `multileg_paper_trading.py` and `multileg_live_trading.py` crashed with `no such table: paper_trades_multileg_book`.
+  3. When AI returned `action == "ADJUST"`, only the adjustment count was incremented without rolling the tested leg, keeping the book in a challenged state.
+  4. Multi-leg paper trades accumulated without book count limits, entering duplicate positions on every scan tick.
+  5. `list_multi_leg_trades()` calculated live CMP for closed trades, corrupting historical realized PnL.
+- **Fix:**
+  1. Added `get_db_connection = get_conn` backward compatibility alias in `src/models/schema.py`.
+  2. Replaced invalid table queries with `increment_adjustment_count(book_id)`.
+  3. Implemented `execute_multi_leg_adjustment()` in `src/models/schema.py` and wired full leg rolling into `_monitor_open_books()`.
+  4. Enforced strict 5 open books per symbol gate (`len(open_books) >= 5`) across `_run_multileg_paper_strategy_inner` and `_attempt_new_entry`.
+  5. Isolated live CMP/MTM recalculation strictly to `status == 'OPEN'` in `list_multi_leg_trades()`, preserving historical closed trade PnL.
+  6. Atomic `close_book(..., leg_exits=...)` ensuring book and leg closure consistency.
 
 ---
 
@@ -128,6 +142,16 @@ TypeError: get_previous_underlying() got an unexpected keyword argument 'read_on
 - **Fix 1:** Reclassified 0DTE entry cutoff to a warning on `DataLegitimacyResult` (`is_legitimate=True`), setting `is_0dte_cutoff=True`. Wired into `risk_engine.py` and multi-leg entry modules to block NEW entries while allowing scan completion, exit monitoring, and square-off.
 - **Issue 2:** Sentinel diagnostic LLM escalated WARNING-level flags (e.g. `R4_SLOW_SCAN`) to `CRITICAL` severity and recommended `PAUSE_SYMBOL` based on resolved KB entries (`F131` `read_only` TypeError hallucination).
 - **Fix 2:** Added severity capping in `run_sentinel()` ensuring diagnostic severity cannot exceed max rule flag severity (caps `CRITICAL` to `WARNING` and `PAUSE_SYMBOL` to `ALERT_ONLY` when no `CRITICAL` rule flags are present). Marked `F131` explicitly RESOLVED in KB.
+
+### F145: Multi-Leg Execution & Authorization Architecture (P0-CRITICAL) (RESOLVED)
+- **Status:** RESOLVED & VERIFIED across 6 implementation components.
+- **Root Cause & Fixes:**
+  1. **Centralized Execution Authorization Gate (`src/engine/broker_gate.py`)**: All live broker order placement calls must pass through `authorize_broker_execution()`, enforcing strict check gates across `shadow_mode`, `broker_trade_enabled`, `trading_paused`, and `symbol_whitelist`. Returns `(False, reason)` fail-closed.
+  2. **Fail-Closed Runtime Configuration Loader (`config/runtime_config.py`)**: Ensures missing or corrupt `runtime_config.json` fails closed (`live_shadow_mode=True`, `broker_trade_enabled=False`).
+  3. **Immutable Scan Context Snapshots (`src/models/scan_snapshot.py`)**: Freezes option chain rows, underlying price, and scan context metadata with SHA-256 hash digests to prevent data mutation during trade evaluation.
+  4. **Strict LLM Multi-Leg Execution Parser (`src/engine/execution_parser.py`)**: Enforces leg count (1–6), option types (`CE`/`PE`), leg actions (`BUY`/`SELL`), positive strikes, and ratios. Rejects malformed LLM proposals immediately.
+  5. **Multi-Leg Pre-Flight & Engine Alignment Validator (`src/engine/multileg_validator.py`)**: Prevents LLM direction flips (e.g. `GO_LONG` proposal on `BEARISH` engine verdict) and enforces margin (₹500,000) and delta caps (0.60).
+  6. **Atomic Leg State Machine & Rollback Reconciliation (`src/engine/multileg_live_trading.py`)**: Tracks leg execution states atomically and automatically issues market order rollbacks (`_rollback_placed_legs`) if any leg fails to execute/fill.
 
 ### F134: Heterogeneous Option Chain Normalization (`AttributeError: 'list' object has no attribute 'get'`) (RESOLVED — do not re-diagnose)
 - **Status:** RESOLVED & VERIFIED. `_normalize_option_chain()` is in place in `multileg_strategy.py` and transparently handles both dict and list option-chain payloads. Do NOT cite this entry for new incidents unless a fresh `AttributeError: 'list' object has no attribute 'get'` traceback appears verbatim in the current RECENT LOG LINES.
