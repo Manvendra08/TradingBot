@@ -43,6 +43,58 @@ _CACHED_MTIME: float = 0.0
 _CACHED_PATH: str | None = None
 
 
+def get_fail_closed_defaults(default_freq: int = 15) -> dict:
+    """Return strict fail-closed defaults for maximum safety when config is missing or corrupted."""
+    return {
+        "scan_frequency_minutes": default_freq,
+        "scan_frequency_nse": default_freq,
+        "scan_frequency_mcx": default_freq,
+        "live_shadow_mode": True,  # FORCE SHADOW MODE
+        "live_capital_per_trade_inr": 20000,
+        "live_max_capital_utilisation_pct": 80,
+        "live_max_concurrent_positions": 2,
+        "live_max_daily_loss_rupees": 200000,
+        "live_symbol_lots": default_symbol_lots(1),
+        "paper_symbol_lots": default_symbol_lots(10),
+        "paper_lots": 10,
+        "live_enabled_broker_symbols": [],  # BLOCK ALL SYMBOLS
+        "paper_enabled_symbols": [],  # BLOCK ALL SYMBOLS
+        "oi_spike_threshold_pct": 10.0,
+        "price_spike_threshold_pct": 2.0,
+        "dashboard_auth_enabled": False,
+        "live_ai_decision_mode": "advisory",  # ADVISORY ONLY
+        "live_ai_min_confidence_boost": 80,
+        "live_ai_min_confidence_veto": 85,
+        "live_ai_exit_advisor_enabled": False,  # DISABLE AI EXIT ADVISOR
+        "emp_boost_min_trades": 20,
+        "emp_boost_min_winrate": 0.60,
+        "ml_predictor_mode": "shadow",
+        "derive_min_confidence": False,
+        "llm_enrichment_async": True,
+        "llm_enrich_timeout_s": 120,
+        "autopsy_enabled": True,
+        "autopsy_time_ist": "23:45",
+        "manage_direct_kite_positions": False,
+        "direct_kite_initialization_mode": "fixed_pct",
+        "direct_kite_default_sl_pct": 75.0,
+        "direct_kite_default_tgt_pct": 60.0,
+        "live_broker_disabled": True,  # FORCE BROKER DISABLED
+        "trading_paused": True,  # FORCE TRADING PAUSED
+        "enable_tfss_trade_blocked_rules": False,
+        "enable_ng_parity_trades": False,  # BLOCK NG PARITY
+        "sentinel_report_mode": "anomalies",
+        "ops_agent_mode": "observe",
+        "tiered_gates_enabled": True,
+    }
+
+
+def validate_config_dict(config: dict) -> None:
+    """Validate runtime config types and enum values before saving."""
+    if "live_ai_decision_mode" in config:
+        if config["live_ai_decision_mode"] not in {"advisory", "boost_only", "full"}:
+            raise ValueError(f"Invalid live_ai_decision_mode: {config['live_ai_decision_mode']}")
+
+
 def load_runtime_config() -> dict:
     global _CACHED_CONFIG, _CACHED_MTIME, _CACHED_PATH
 
@@ -118,8 +170,10 @@ def load_runtime_config() -> dict:
         _CACHED_MTIME = current_mtime
         _CACHED_PATH = current_path_str
         return json.loads(json.dumps(defaults))
-    except Exception:
-        return defaults.copy()
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).error("Failed to load or parse %s, returning fail-closed defaults: %s", RUNTIME_CONFIG_PATH, exc)
+        return get_fail_closed_defaults(default_freq)
 
 
 import threading
@@ -129,6 +183,8 @@ _CONFIG_LOCK = threading.Lock()
 
 def save_runtime_config(config: dict) -> None:
     global _CACHED_CONFIG, _CACHED_MTIME, _CACHED_PATH
+
+    validate_config_dict(config)
 
     with _CONFIG_LOCK:
         if "scan_frequency_minutes" in config:
