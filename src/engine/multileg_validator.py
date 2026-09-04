@@ -30,6 +30,26 @@ def _estimate_margin(legs: list[dict], underlying: float) -> float:
     return margin
 
 
+from src.engine.verdict_sets import is_bullish as _is_bullish_canonical, is_bearish as _is_bearish_canonical
+
+
+def _check_engine_direction(engine_verdict: str) -> tuple[bool, bool]:
+    """Return (is_bullish, is_bearish) tuple respecting canonical verdict sets."""
+    v = str(engine_verdict or "").strip()
+    if _is_bullish_canonical(v):
+        return True, False
+    if _is_bearish_canonical(v):
+        return False, True
+    v_upper = v.upper()
+    if "SHORT COVERING" in v_upper:
+        return True, False
+    if "LONG UNWINDING" in v_upper:
+        return False, True
+    is_bull = "BULLISH" in v_upper or "LONG" in v_upper
+    is_bear = "BEARISH" in v_upper or "SHORT" in v_upper
+    return is_bull, is_bear
+
+
 def validate_multileg_trade(
     proposal: ParsedExecution,
     engine_verdict: str,
@@ -41,9 +61,7 @@ def validate_multileg_trade(
     if not proposal.is_valid:
         return ValidationResult(is_valid=False, rejection_reason=proposal.rejection_reason)
 
-    engine_verdict_upper = engine_verdict.upper()
-    is_bullish_engine = "BULLISH" in engine_verdict_upper or "LONG" in engine_verdict_upper
-    is_bearish_engine = "BEARISH" in engine_verdict_upper or "SHORT" in engine_verdict_upper
+    is_bullish_engine, is_bearish_engine = _check_engine_direction(engine_verdict)
 
     # Check direction conflict
     if is_bearish_engine and proposal.action == "GO_LONG":

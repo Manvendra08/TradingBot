@@ -5,7 +5,8 @@ import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Mapping
 
 
 @dataclass(frozen=True)
@@ -20,7 +21,7 @@ class ScanSnapshot:
     engine_confidence: int
     data_legitimacy_score: int
     option_rows_hash: str
-    option_rows: tuple[dict[str, Any], ...]
+    option_rows: tuple[Mapping[str, Any], ...]
     intel_snapshot: tuple[tuple[str, Any], ...]
 
     def to_dict(self) -> dict[str, Any]:
@@ -35,7 +36,7 @@ class ScanSnapshot:
             "engine_confidence": self.engine_confidence,
             "data_legitimacy_score": self.data_legitimacy_score,
             "option_rows_hash": self.option_rows_hash,
-            "option_rows": list(self.option_rows),
+            "option_rows": [dict(r) for r in self.option_rows],
             "intel": dict(self.intel_snapshot),
         }
 
@@ -70,7 +71,7 @@ def create_scan_snapshot(
     unique_suffix = uuid.uuid4().hex[:8]
     snap_id = f"snap_{symbol}_{now_iso[:10]}_{unique_suffix}"
 
-    rows_tuple = tuple(dict(r) for r in option_rows if isinstance(r, dict))
+    rows_tuple = tuple(MappingProxyType(dict(r)) for r in option_rows if isinstance(r, dict))
     intel_dict = intel or {}
     intel_tuple = tuple((k, v) for k, v in intel_dict.items() if isinstance(k, str))
 

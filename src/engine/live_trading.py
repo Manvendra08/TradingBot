@@ -553,7 +553,10 @@ def place_kite_order(
         ltp = None
         try:
             quote = kite.ltp(full_symbol)
-            ltp = quote.get(full_symbol, {}).get("last_price")
+            if isinstance(quote, dict):
+                instr_dict = quote.get(full_symbol)
+                if isinstance(instr_dict, dict) and "last_price" in instr_dict:
+                    ltp = float(instr_dict["last_price"])
         except Exception as qe:
             err_msg = str(qe)
             if "Insufficient permission" in err_msg:
@@ -567,8 +570,13 @@ def place_kite_order(
                     "Could not fetch LTP for %s before order: %s", full_symbol, qe
                 )
 
-        if not ltp or ltp <= 0:
-            ltp = expected_price
+        try:
+            exp_p = float(expected_price or 0.0)
+        except (ValueError, TypeError):
+            exp_p = 0.0
+
+        if ltp is None or ltp <= 0:
+            ltp = exp_p
 
         if ltp and ltp > 0:
             is_future = "FUT" in tradingsymbol.upper()
@@ -904,21 +912,22 @@ def _get_option_rows_for_expiry(current_ctx: dict, expiry: str | None) -> list[d
 def run_live_trading(
     symbol: str, scan_context: dict, digest_id: str, intel: dict, ai_verdict=None
 ) -> dict | None:
-    if not _is_market_open(symbol):
-        return {"action": "SKIPPED_MARKET_CLOSED", "reason": "Outside market hours"}
+    from src.engine.broker_gate import authorize_broker_execution
 
-    config = load_runtime_config()
-    shadow_mode = config.get("live_shadow_mode", True)
-    broker_disabled = config.get("live_broker_disabled", False)
-    if broker_disabled:
+    current_open_trade = get_open_live_trade(symbol)
+    op = "EXIT" if current_open_trade else "ENTRY"
+    auth = authorize_broker_execution(symbol, operation=op, scan_context=scan_context)
+    if not auth.is_authorized and not auth.is_shadow:
         log.debug(
-            "%s: live broker disabled via cockpit — skipping all order placement",
+            "%s: live broker execution unauthorized — %s",
             symbol,
+            auth.reason,
         )
         return {
             "action": "BLOCKED_BROKER_DISABLED",
-            "reason": "Broker trades turned off in Cockpit",
+            "reason": auth.reason,
         }
+    shadow_mode = auth.is_shadow
     kite = get_kite_client()
     if not kite and not shadow_mode:
         log.warning(
@@ -1263,6 +1272,7 @@ def run_live_trading(
         if shadow_mode
         else "Pending broker entry",
         "exit_mode": exit_mode,
+        "snapshot_id": ctx.get("snapshot_id"),
         # Phase 0: ML feature columns (captured at trade open time)
         **_build_ml_feature_snapshot(ctx, ai_verdict),
     }
@@ -1968,6 +1978,7 @@ def run_live_timeframe_strategy(
         "broker_status": broker_status,
         "broker_message": broker_message,
         "exit_mode": exit_mode,
+        "snapshot_id": ctx.get("snapshot_id"),
         # Phase 0: ML feature columns (captured at trade open time)
         **_build_ml_feature_snapshot(ctx, ai_verdict),
     }

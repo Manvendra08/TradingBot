@@ -16,6 +16,9 @@ def test_scan_snapshot_immutability():
     with pytest.raises(AttributeError):
         snap.underlying = 25000.0  # Frozen dataclass check
 
+    with pytest.raises(TypeError):
+        snap.option_rows[0]["ltp"] = 999.0  # MappingProxyType deep immutability check
+
 def test_scan_snapshot_option_rows_hash():
     snap1 = create_scan_snapshot("NIFTY", 24500.0, "2026-09-10", [{"strike": 24500, "ltp": 120.0}])
     snap2 = create_scan_snapshot("NIFTY", 24500.0, "2026-09-10", [{"strike": 24500, "ltp": 120.0}])

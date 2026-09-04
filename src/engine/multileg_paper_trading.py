@@ -58,7 +58,11 @@ def _get_stop_loss_threshold_rupees(book: dict, legs: list[dict], symbol: str) -
     is_defined_risk = strategy_type in ("IRON_CONDOR", "BEAR_CALL_SPREAD", "BULL_PUT_SPREAD")
 
     if is_defined_risk and max_loss_val > 0 and (underlying <= 0 or max_loss_val < underlying * 0.4):
-        total_max_loss_rupees = max_loss_val * lot_size * total_lots * stop_loss_pct
+        # Defined risk credit spread / iron condor: stop loss triggers at stop_loss_pct of credit collected,
+        # capped strictly at the physical max loss of the spread.
+        credit_sl = max(net_premium, 1.0) * lot_size * total_lots * stop_loss_pct
+        physical_max = max_loss_val * lot_size * total_lots
+        total_max_loss_rupees = min(credit_sl, physical_max)
     else:
         # Undefined risk / short strangle / straddle / fallback:
         # Cap loss at stop_loss_pct (default 1.5x = 150%) of net premium collected
@@ -168,7 +172,26 @@ def _run_multileg_paper_strategy_inner(
         # Re-fetch open books in case monitoring closed a book
         open_books = get_open_books_for_symbol(symbol)
 
-    # ── 5. Attempt new entry ─────────────────────────────────────────────
+    # ── 5. Gate: Max open books per symbol (cap = 5) ───────────────────
+    MAX_OPEN_BOOKS_PER_SYMBOL = 5
+    if open_books and len(open_books) >= MAX_OPEN_BOOKS_PER_SYMBOL:
+        log.info(
+            "[multileg-paper] %s: open books cap reached (%d >= %d) — skipping new entry",
+            symbol,
+            len(open_books),
+            MAX_OPEN_BOOKS_PER_SYMBOL,
+        )
+        if isinstance(mon_res, dict):
+            mon_res["new_entry_skipped"] = f"Max open books cap reached ({len(open_books)} >= {MAX_OPEN_BOOKS_PER_SYMBOL})"
+            return mon_res
+        return {
+            "action": "HOLD",
+            "decision_stage": "OPEN_BOOKS_CAP",
+            "reason": f"Max open books cap reached ({len(open_books)} >= {MAX_OPEN_BOOKS_PER_SYMBOL})",
+            "open_books": len(open_books),
+        }
+
+    # ── 6. Attempt new entry ─────────────────────────────────────────────
     new_res = _attempt_new_entry(
         symbol,
         scan_context,
@@ -224,7 +247,7 @@ def _monitor_open_books(
         strategy_type = book.get("strategy_type", "")
         net_premium = float(book.get("net_premium") or 0.0)
         legs = book.get("legs") or get_open_book_legs(trade_id)
-        total_pnl = _calc_multileg_pnl(book, legs)
+        total_pnl = _calc_multileg_pnl(book, legs, scan_context=scan_context)
         profit_target_pct = float(
             book.get("profit_target_pct") or DEFAULT_PROFIT_TARGET_PCT
         )
@@ -258,11 +281,9 @@ def _monitor_open_books(
         # ── Check exit conditions ──────────────────────────────────────
         # 4a. Profit target
         if net_premium > 0:
-            # BUG FIX: net_premium is per-lot; scale it by lot_size to match total_pnl units
             from config.settings import LOT_SIZES
             base_symbol = symbol.upper().split()[0] if symbol else symbol.upper()
             lot_size = LOT_SIZES.get(base_symbol, 1)
-            # Max lots across legs
             total_lots = max((int(leg.get("lots") or 1) for leg in legs), default=1)
             max_profit = net_premium * lot_size * total_lots  # Total premium collected for strategy
             profit_pct = total_pnl / max_profit if max_profit > 0 else 0.0
@@ -275,25 +296,22 @@ def _monitor_open_books(
                     profit_target_pct * 100,
                 )
                 curr_und = float((scan_context or {}).get("underlying") or entry_underlying)
+                leg_exits = [{"id": leg["id"], "exit_premium": float(leg.get("current_premium") or leg.get("entry_premium") or 0.0)} for leg in legs if leg.get("id")]
                 close_book(
                     book_id, now_iso, "CLOSED",
                     f"PROFIT_TARGET ({profit_pct*100:.0f}% of max)",
                     total_pnl,
                     curr_und,
+                    leg_exits=leg_exits,
                 )
-                for leg in legs:
-                    leg_id = leg.get("id")
-                    if leg_id:
-                        leg_exit_prem = float(leg.get("current_premium") or leg.get("entry_premium") or 0.0)
-                        close_leg(leg_id, now_iso, leg_exit_prem, "BOOK_CLOSED_PROFIT_TARGET")
                 closed_actions.append({
-                "action": "CLOSED",
-                "book_id": book_id,
-                "strategy_type": book.get("strategy_type") or book.get("structure"),
-                "reason": f"Profit target hit: {profit_pct*100:.0f}%",
-                "total_pnl": total_pnl,
-                "legs": legs,
-            })
+                    "action": "CLOSED",
+                    "book_id": book_id,
+                    "strategy_type": book.get("strategy_type") or book.get("structure"),
+                    "reason": f"Profit target hit: {profit_pct*100:.0f}%",
+                    "total_pnl": total_pnl,
+                    "legs": legs,
+                })
                 continue
 
         # 4b. Stop loss
@@ -307,17 +325,14 @@ def _monitor_open_books(
                 stop_loss_threshold_rupees,
             )
             curr_und = float((scan_context or {}).get("underlying") or entry_underlying)
+            leg_exits = [{"id": leg["id"], "exit_premium": float(leg.get("current_premium") or leg.get("entry_premium") or 0.0)} for leg in legs if leg.get("id")]
             close_book(
                 book_id, now_iso, "CLOSED",
                 f"STOP_LOSS (loss ₹{abs(total_pnl):.0f} > cap ₹{stop_loss_threshold_rupees:.0f})",
                 total_pnl,
                 curr_und,
+                leg_exits=leg_exits,
             )
-            for leg in legs:
-                leg_id = leg.get("id")
-                if leg_id:
-                    leg_exit_prem = float(leg.get("current_premium") or leg.get("entry_premium") or 0.0)
-                    close_leg(leg_id, now_iso, leg_exit_prem, "BOOK_CLOSED_STOP_LOSS")
             closed_actions.append({
                 "action": "CLOSED",
                 "book_id": book_id,
@@ -339,17 +354,15 @@ def _monitor_open_books(
             if is_mcx:
                 is_expiry_close = (now_ist.hour > 23 or (now_ist.hour == 23 and now_ist.minute >= 25))
             else:
-                is_expiry_close = (now_ist.hour > 15 or (now_ist.hour == 15 and now_ist.minute >= 25))
+                is_expiry_close = (now_ist.hour > 15 or (now_ist.hour == 15 and now_ist.minute >= 35))
                 is_expiry_after_1pm = (now_ist.hour >= 13)
 
         if is_weekly_index:
-            # Weekly index options (NIFTY, BANKNIFTY, SENSEX): DTE 1 or 2 is standard holding territory.
-            # Time decay exit occurs ONLY on expiry day after 1:00 PM IST (13:00) or at 15:25 close squareoff.
             should_exit_time_decay = (
                 (dte == 0 and is_expiry_after_1pm) or
                 (dte < 0)
             )
-            exit_reason_str = f"EXPIRY_SQUAREOFF (15:25 IST)" if (dte == 0 and is_expiry_close) else (
+            exit_reason_str = f"EXPIRY_SQUAREOFF (15:35 IST)" if (dte == 0 and is_expiry_close) else (
                 "EXPIRY_TIME_DECAY (DTE 0 after 13:00 IST)" if (dte == 0 and is_expiry_after_1pm) else f"EXPIRED (DTE {dte})"
             )
         else:
@@ -358,7 +371,7 @@ def _monitor_open_books(
                 (dte == 0 and is_expiry_close) or
                 (dte < 0)
             )
-            exit_reason_str = f"EXPIRY_SQUAREOFF ({'23:25' if is_mcx else '15:25'} IST)" if (dte == 0 and is_expiry_close) else f"TIME_DECAY (DTE {dte} < {time_decay_exit_dte})"
+            exit_reason_str = f"EXPIRY_SQUAREOFF ({'23:25' if is_mcx else '15:35'} IST)" if (dte == 0 and is_expiry_close) else f"TIME_DECAY (DTE {dte} < {time_decay_exit_dte})"
 
         if should_exit_time_decay:
             log.info(
@@ -368,24 +381,22 @@ def _monitor_open_books(
                 dte,
                 time_decay_exit_dte,
             )
-            # BUG FIX: Fetch live exit premiums from DB instead of hardcoding 0.0
             from src.models.schema import get_latest_option_snapshot
+            leg_exits = []
             for leg in legs:
                 leg_id = leg.get("id")
                 if leg_id:
                     leg_strike = float(leg.get("strike") or 0.0)
                     leg_opt = leg.get("option_type", "CE")
-                    # Fetch latest premium snapshot
                     snap = get_latest_option_snapshot(symbol, expiry, leg_strike, leg_opt)
                     exit_premium = float(snap.get("ltp") or 0.0) if snap else 0.0
                     if exit_premium <= 0:
-                        # Fallback to intrinsic value if no snapshot
                         current_underlying = float((scan_context or {}).get("underlying") or entry_underlying)
                         if leg_opt == "CE":
                             exit_premium = max(0.0, current_underlying - leg_strike)
                         else:
                             exit_premium = max(0.0, leg_strike - current_underlying)
-                    close_leg(leg_id, now_iso, exit_premium, "BOOK_CLOSED_TIME_DECAY")
+                    leg_exits.append({"id": leg_id, "exit_premium": exit_premium})
 
             curr_und = float((scan_context or {}).get("underlying") or entry_underlying)
             close_book(
@@ -393,6 +404,7 @@ def _monitor_open_books(
                 exit_reason_str,
                 total_pnl,
                 curr_und,
+                leg_exits=leg_exits,
             )
             closed_actions.append({
                 "action": "CLOSED",
@@ -434,6 +446,7 @@ def _monitor_open_books(
                             )
                             exit_reason_str = f"CLOSED_AI_EXIT ({reasoning[:60]})"
                             from src.models.schema import get_latest_option_snapshot
+                            leg_exits = []
                             for leg in legs:
                                 leg_id = leg.get("id")
                                 if leg_id:
@@ -447,7 +460,7 @@ def _monitor_open_books(
                                             exit_premium = max(0.0, current_underlying - leg_strike)
                                         else:
                                             exit_premium = max(0.0, leg_strike - current_underlying)
-                                    close_leg(leg_id, now_iso, exit_premium, "BOOK_CLOSED_AI_EXIT")
+                                    leg_exits.append({"id": leg_id, "exit_premium": exit_premium})
 
                             curr_und = float((scan_context or {}).get("underlying") or entry_underlying)
                             close_book(
@@ -455,6 +468,7 @@ def _monitor_open_books(
                                 exit_reason_str,
                                 total_pnl,
                                 curr_und,
+                                leg_exits=leg_exits,
                             )
                             closed_actions.append({
                                 "action": "CLOSED",
@@ -477,8 +491,86 @@ def _monitor_open_books(
                         from config.runtime_config import load_runtime_config
                         exit_advisor_enabled = load_runtime_config().get("live_ai_exit_advisor_enabled", True)
                         if exit_advisor_enabled and adjustment_details and adjustment_count < 3:
+                            close_strike = float(adjustment_details.get("close_strike") or 0.0)
+                            close_opt = str(adjustment_details.get("close_option_type") or "").upper().strip()
+                            new_strike = float(adjustment_details.get("new_strike") or 0.0)
+                            new_opt = str(adjustment_details.get("new_option_type") or close_opt).upper().strip()
+                            new_side = str(adjustment_details.get("new_side") or "SELL").upper().strip()
+                            adj_rationale = str(adjustment_details.get("rationale") or reasoning)
+
+                            # Locate leg to close
+                            target_leg = None
+                            for l in legs:
+                                if abs(float(l.get("strike") or 0.0) - close_strike) < 0.01 and str(l.get("option_type") or "").upper().strip() == close_opt:
+                                    target_leg = l
+                                    break
+                            if not target_leg and close_opt:
+                                same_opt_legs = [l for l in legs if str(l.get("option_type") or "").upper().strip() == close_opt]
+                                if len(same_opt_legs) == 1:
+                                    target_leg = same_opt_legs[0]
+
+                            if target_leg and new_strike > 0:
+                                close_exit_prem = float(target_leg.get("current_premium") or target_leg.get("entry_premium") or 0.0)
+                                from src.engine.trade_plan import get_option_premium
+                                new_prem = get_option_premium(
+                                    symbol=symbol,
+                                    expiry=expiry,
+                                    strike=new_strike,
+                                    option_type=new_opt,
+                                    option_rows=(scan_context or {}).get("option_rows") or [],
+                                    underlying_price=entry_underlying,
+                                ) or 0.0
+                                if new_prem <= 0:
+                                    for row in (scan_context or {}).get("option_rows") or []:
+                                        if abs(float(row.get("strike") or 0.0) - new_strike) < 0.01 and str(row.get("option_type") or "").upper().strip() == new_opt:
+                                            new_prem = float(row.get("ltp") or 0.0)
+                                            break
+
+                                if new_prem > 0:
+                                    target_lots = int(target_leg.get("lots") or 1)
+                                    from src.models.schema import execute_multi_leg_adjustment
+                                    new_leg_dict = {
+                                        "side": new_side,
+                                        "lots": target_lots,
+                                        "strike": new_strike,
+                                        "option_type": new_opt,
+                                        "entry_premium": new_prem,
+                                        "exit_premium": 0.0,
+                                        "delta": float(target_leg.get("delta") or 0.20),
+                                        "theta": 0.0,
+                                        "vega": 0.0,
+                                        "iv": 0.0,
+                                        "rationale": adj_rationale,
+                                        "status": "OPEN",
+                                        "closed_at": None,
+                                        "exit_reason": None,
+                                        "broker_order_id": None,
+                                    }
+                                    roll_ok = execute_multi_leg_adjustment(
+                                        book_id=book_id,
+                                        close_leg_id=int(target_leg["id"]),
+                                        exit_premium=close_exit_prem,
+                                        new_leg=new_leg_dict,
+                                    )
+                                    if roll_ok:
+                                        log.info(
+                                            "[multileg-paper] %s: book %s — AI executed autonomous ADJUST: rolled %s %.1f @ %.2f -> %s %.1f @ %.2f (adj #%d): %s",
+                                            symbol,
+                                            book_id,
+                                            close_opt,
+                                            close_strike,
+                                            close_exit_prem,
+                                            new_opt,
+                                            new_strike,
+                                            new_prem,
+                                            adjustment_count + 1,
+                                            reasoning,
+                                        )
+                                        ai_advice_seen["action"] = "ADJUSTED"
+                                        continue
+
                             log.info(
-                                "[multileg-paper] %s: book %s — AI executing autonomous ADJUST: %s",
+                                "[multileg-paper] %s: book %s — AI executing autonomous ADJUST: %s (target/premium resolution fallback)",
                                 symbol,
                                 book_id,
                                 reasoning,
@@ -581,6 +673,22 @@ def _attempt_new_entry(
         log.info("[multileg-paper] %s: 0DTE entry cutoff reached — new entries prohibited", symbol)
         return {"action": "BLOCKED_0DTE_CUTOFF", "reason": "0DTE entry cutoff reached — new entries prohibited"}
 
+    # ── Gate: Max open books per symbol (cap = 5) ─────────────────────
+    MAX_OPEN_BOOKS_PER_SYMBOL = 5
+    if open_books and len(open_books) >= MAX_OPEN_BOOKS_PER_SYMBOL:
+        log.info(
+            "[multileg-paper] %s: open books cap reached (%d >= %d) — new entries prohibited",
+            symbol,
+            len(open_books),
+            MAX_OPEN_BOOKS_PER_SYMBOL,
+        )
+        return {
+            "action": "BLOCKED_MAX_BOOKS",
+            "decision_stage": "OPEN_BOOKS_CAP",
+            "reason": f"Max open books cap reached ({len(open_books)} >= {MAX_OPEN_BOOKS_PER_SYMBOL})",
+            "open_books": len(open_books),
+        }
+
     from config.multileg_strategies import (
         ALLOWED_SYMBOLS,
         CONFLICTING_STRATEGIES,
@@ -611,17 +719,49 @@ def _attempt_new_entry(
         return None
 
     st_upper = str(getattr(verdict, "strategy_type", "")).upper().strip()
-    if st_upper in ("NONE", "NO_TRADE", "NO_SIGNAL", "SKIP", "N/A", "") or not getattr(verdict, "legs", None):
-        log.info("[multileg-paper] %s: LLM returned no-trade verdict (%s)", symbol, st_upper or "NO_LEGS")
+    entry_rationale = str(getattr(verdict, "entry_rationale", "") or "")
+    thesis = str(getattr(verdict, "thesis", "") or "")
+    confidence = int(getattr(verdict, "confidence", 0) or 0)
+    is_mcx = symbol in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER")
+    conf_floor = 72 if is_mcx else 70
+
+    combined_text = f"{entry_rationale} {thesis}".lower()
+    no_trade_phrases = (
+        "no trade should be taken",
+        "no valid edge to act on",
+        "data integrity failure",
+        "abandoned rather than forced",
+        "broken/stale pe chain",
+        "broken/stale ce chain",
+    )
+    has_no_trade_flag = any(phrase in combined_text for phrase in no_trade_phrases)
+
+    if st_upper in ("NONE", "NO_TRADE", "NO_SIGNAL", "SKIP", "N/A", "") or not getattr(verdict, "legs", None) or has_no_trade_flag:
+        reason_msg = "LLM explicitly indicated no trade / data integrity issue" if has_no_trade_flag else f"LLM multileg verdict: {getattr(verdict, 'strategy_type', 'NO_TRADE')}"
+        log.info("[multileg-paper] %s: LLM returned no-trade verdict (%s, flag=%s)", symbol, st_upper or "NO_LEGS", has_no_trade_flag)
         return {
             "action": "NO_TRADE",
             "decision_stage": "LLM_STRUCTURE_SELECTION",
             "strategy_type": getattr(verdict, "strategy_type", "NO_TRADE"),
-            "reason": f"LLM multileg verdict: {getattr(verdict, 'strategy_type', 'NO_TRADE')}",
-            "entry_rationale": getattr(verdict, "entry_rationale", ""),
-            "thesis": getattr(verdict, "thesis", ""),
-            "confidence": getattr(verdict, "confidence", 0),
+            "reason": reason_msg,
+            "entry_rationale": entry_rationale,
+            "thesis": thesis,
+            "confidence": confidence,
             "ai_model_name": getattr(verdict, "model_name", None),
+        }
+
+    if confidence < conf_floor:
+        log.info(
+            "[multileg-paper] %s: LLM confidence %d%% below floor %d%% — rejecting trade",
+            symbol, confidence, conf_floor
+        )
+        return {
+            "action": "REJECTED",
+            "decision_stage": "LLM_CONFIDENCE_GATE",
+            "strategy_type": st_upper,
+            "confidence": confidence,
+            "thesis": thesis,
+            "reason": f"LLM confidence {confidence}% below minimum {conf_floor}% floor",
         }
 
     # ── 5b. Validate legs ─────────────────────────────────────────────
@@ -675,15 +815,20 @@ def _attempt_new_entry(
         if live_prem is not None and live_prem > 0:
             leg["premium"] = float(live_prem)
             leg["entry_premium"] = float(live_prem)
+            log.info(
+                "[multileg-paper] %s: Authoritative premium for %s %s resolved from option chain api = %.2f",
+                symbol, leg_strike, leg_opt, live_prem
+            )
         else:
-            # Fallback to search directly in option_rows
-            for row in option_rows:
-                if abs(float(row.get("strike") or 0.0) - leg_strike) < 0.01 and str(row.get("option_type") or "").upper() == leg_opt:
-                    r_ltp = float(row.get("ltp") or 0.0)
-                    if r_ltp > 0:
-                        leg["premium"] = r_ltp
-                        leg["entry_premium"] = r_ltp
-                        break
+            msg = f"DATA_INTEGRITY_FAILURE: Unable to resolve valid authoritative market premium for leg [{leg_strike} {leg_opt}]."
+            log.error("[multileg-paper] %s: %s", symbol, msg)
+            return {
+                "action": "REJECTED",
+                "reason": msg,
+                "strategy_type": strategy_type,
+                "confidence": getattr(verdict, "confidence", 0),
+                "thesis": getattr(verdict, "thesis", ""),
+            }
 
     try:
         from src.engine.capital_allocator import calculate_trade_lots
@@ -695,8 +840,12 @@ def _attempt_new_entry(
             is_paper=True,
             setup_type="MULTILEG",
         )
+        base_lots = [int(l.get("lots") or 1) for l in legs]
+        min_lot = min(base_lots) if base_lots else 1
         for leg in legs:
-            leg["lots"] = dashboard_lots
+            # Preserve multi-leg relative ratios (e.g. 1:2 ratio spread or asymmetric structures)
+            orig_ratio = max(1, int(leg.get("lots") or 1) // max(1, min_lot))
+            leg["lots"] = dashboard_lots * orig_ratio
     except Exception as e:
         log.warning("[multileg-paper] %s: lot sizing failed, defaulting to 1 lot: %s", symbol, e)
         for leg in legs:
@@ -841,13 +990,20 @@ def _attempt_new_entry(
                 e,
             )
 
-    # ── 5f. Margin cap check ──────────────────────────────────────────
-    if combined_margin > MAX_BOOK_MARGIN:
+    # ── 5f. Margin cap check (book-level and combined open symbol margin) ──
+    open_books_symbol = open_books or get_open_books_for_symbol(symbol)
+    existing_symbol_margin = sum(float(b.get("margin_req") or 0.0) for b in open_books_symbol if b.get("status") == "OPEN")
+    total_margin_symbol = existing_symbol_margin + combined_margin
+
+    if combined_margin > MAX_BOOK_MARGIN or total_margin_symbol > (MAX_BOOK_MARGIN * 2):
+        cap_val = MAX_BOOK_MARGIN if combined_margin > MAX_BOOK_MARGIN else (MAX_BOOK_MARGIN * 2)
+        exceeded_val = combined_margin if combined_margin > MAX_BOOK_MARGIN else total_margin_symbol
         log.info(
-            "[multileg-paper] %s: combined margin ₹%.0f exceeds cap ₹%.0f",
+            "[multileg-paper] %s: margin ₹%.0f exceeds cap ₹%.0f (existing: ₹%.0f)",
             symbol,
-            combined_margin,
-            MAX_BOOK_MARGIN,
+            exceeded_val,
+            cap_val,
+            existing_symbol_margin,
         )
         return {
             "action": "REJECTED",
@@ -861,10 +1017,11 @@ def _attempt_new_entry(
             "book_greeks": book_greeks,
             "risk_profile": risk_profile,
             "margin": combined_margin,
-            "margin_cap": MAX_BOOK_MARGIN,
+            "total_symbol_margin": total_margin_symbol,
+            "margin_cap": cap_val,
             "thesis": getattr(verdict, "thesis", ""),
             "ai_model_name": getattr(verdict, "model_name", None),
-            "reason": f"Margin ₹{combined_margin:,.0f} exceeds cap ₹{MAX_BOOK_MARGIN:,.0f}",
+            "reason": f"Combined symbol margin ₹{total_margin_symbol:,.0f} exceeds cap ₹{cap_val:,.0f}",
         }
 
     # ── 5g. Net delta cap check ───────────────────────────────────────
@@ -997,22 +1154,30 @@ def _attempt_new_entry(
         "entry_quality_score": entry_quality,
         "digest_id": digest_id,
         "ai_model_name": verdict.model_name,
+        "snapshot_id": (scan_context or {}).get("snapshot_id"),
     }
 
+    per_leg_greeks = book_greeks.get("per_leg_greeks") or []
     leg_dicts = []
     for leg in legs:
+        l_strike = float(leg.get("strike") or 0.0)
+        l_opt = str(leg.get("option_type") or "").upper().strip()
+        matched_greek = next(
+            (g for g in per_leg_greeks if abs(float(g.get("strike") or 0.0) - l_strike) < 0.01 and str(g.get("type") or "").upper().strip() == l_opt),
+            {}
+        )
         leg_dicts.append({
             "trade_id": 0,  # Set by insert_multileg_trade_atomically
             "side": leg.get("side", "SELL"),
             "lots": int(leg.get("lots") or 1),
-            "strike": float(leg.get("strike") or 0.0),
-            "option_type": leg.get("option_type", ""),
-            "entry_premium": float(leg.get("premium") or 0.0),
+            "strike": l_strike,
+            "option_type": l_opt,
+            "entry_premium": float(leg.get("entry_premium") or leg.get("premium") or 0.0),
             "exit_premium": 0.0,
-            "delta": float(leg.get("delta") or 0.0),
-            "theta": 0.0,
-            "vega": 0.0,
-            "iv": 0.0,
+            "delta": float(matched_greek.get("delta") or leg.get("delta") or 0.0),
+            "theta": float(matched_greek.get("theta") or 0.0),
+            "vega": float(matched_greek.get("vega") or 0.0),
+            "iv": float(leg.get("iv") or 0.0),
             "rationale": leg.get("rationale", ""),
             "status": "OPEN",
             "closed_at": None,
@@ -1070,22 +1235,22 @@ def _attempt_new_entry(
         return None
 
 
-def _calc_multileg_pnl(book: dict, legs: list[dict]) -> float:
+def _calc_multileg_pnl(book: dict, legs: list[dict], scan_context: dict | None = None) -> float:
     """Calculate total PnL for a multi-leg options book.
 
     For short options (SELL): PnL = (entry_premium - current_premium) * lots * lot_size
-    summed across all legs.
+    summed across all open legs + realized PnL of previously closed legs in this book.
     """
     from config.settings import LOT_SIZES
-    from src.models.schema import get_read_conn
+    from src.models.schema import get_read_conn, update_multi_leg_trade_pnl
     from src.engine.trade_plan import is_valid_option_premium
 
-    scan_context = book.get("scan_context") or {}
-    option_rows = list((scan_context or {}).get("option_rows") or [])
+    sc = scan_context or book.get("scan_context") or {}
+    option_rows = list((sc or {}).get("option_rows") or [])
     symbol = book.get("symbol", "")
     base_sym = symbol.upper().split()[0] if symbol else ""
     lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_sym, 1))
-    underlying = float((scan_context or {}).get("underlying") or book.get("entry_underlying") or 0.0)
+    underlying = float((sc or {}).get("underlying") or book.get("entry_underlying") or 0.0)
 
     total_pnl = 0.0
     for leg in legs:
@@ -1131,8 +1296,6 @@ def _calc_multileg_pnl(book: dict, legs: list[dict]) -> float:
                                 current_premium = snap_ltp
             except Exception:
                 pass
-            except Exception:
-                pass
 
         if current_premium is None:
             # Estimate using delta movement rather than raw fallback
@@ -1165,5 +1328,35 @@ def _calc_multileg_pnl(book: dict, legs: list[dict]) -> float:
             pnl = (current_premium - entry_premium) * lots * lot_size
 
         total_pnl += pnl
+
+    # Include realized PnL of any closed/rolled legs for this book
+    trade_id = book.get("id")
+    if trade_id:
+        try:
+            with get_read_conn() as conn:
+                closed_legs = conn.execute(
+                    "SELECT * FROM multi_leg_legs WHERE trade_id=? AND status='CLOSED'",
+                    (trade_id,)
+                ).fetchall()
+                for cl in closed_legs:
+                    cl_side = (cl["side"] or "SELL").upper()
+                    cl_entry = float(cl["entry_premium"] or 0.0)
+                    cl_exit = float(cl["exit_premium"] or 0.0)
+                    cl_lots = int(cl["lots"] or 1)
+                    if cl_side == "SELL":
+                        cl_pnl = (cl_entry - cl_exit) * cl_lots * lot_size
+                    else:
+                        cl_pnl = (cl_exit - cl_entry) * cl_lots * lot_size
+                    total_pnl += cl_pnl
+        except Exception as e:
+            log.debug("[multileg-paper] %s: Error reading closed legs for trade %s: %s", symbol, trade_id, e)
+
+    # Persist live book MTM PnL to multi_leg_trades
+    book_id = book.get("book_id")
+    if book_id:
+        try:
+            update_multi_leg_trade_pnl(book_id, round(total_pnl, 2))
+        except Exception:
+            pass
 
     return total_pnl

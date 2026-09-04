@@ -24,6 +24,11 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from config.settings import IST
+from src.engine.live_trading import confirm_order_fill
+from src.engine.symbol_resolver import resolve_instrument
+
+# Backwards compatibility alias for reconciler tests
+resolve_option_contract = resolve_instrument
 
 log = logging.getLogger(__name__)
 
@@ -177,22 +182,7 @@ def _run_multileg_live_strategy_inner(
     ai_verdict=None,
 ) -> dict | None:
     """Inner implementation — isolated so the outer wrapper can catch all errors."""
-    # ── 1. Centralized Broker Authorization Gate ──────────────────────
-    from src.engine.broker_gate import authorize_broker_execution
-
-    auth = authorize_broker_execution(symbol, operation="ENTRY", scan_context=scan_context)
-    if not auth.is_authorized:
-        log.debug(
-            "[multileg-live] %s: broker authorization gate failed — %s",
-            symbol,
-            auth.reason,
-        )
-        return {
-            "action": "SKIPPED_BROKER_DISABLED",
-            "reason": auth.reason,
-        }
-
-    # ── 2. Basic validation ────────────────────────────────────────────
+    # ── 1. Basic validation ────────────────────────────────────────────
     from config.multileg_strategies import ALLOWED_SYMBOLS
 
     if symbol not in ALLOWED_SYMBOLS:
@@ -540,30 +530,33 @@ def _monitor_open_books_live(
 
 
 def _update_live_book_pnl(
-    symbol: str,
-    book: dict,
-    legs: list[dict],
-    scan_context: dict,
+    symbol: str, book: dict, legs: list[dict], scan_context: dict
 ) -> float:
-    """Update book PnL using current option premiums from scan context or DB snapshot.
-
-    For short options: PnL = (entry_premium - current_premium) * lots * lot_size
-    summed across all legs.
-    """
+    """Calculate and return updated total PnL for a live multi-leg book."""
     from config.settings import LOT_SIZES
     from src.models.schema import get_read_conn
+    from src.engine.trade_plan import is_valid_option_premium
 
-    option_rows = list((scan_context or {}).get("option_rows") or [])
     base_sym = symbol.upper().split()[0] if symbol else ""
     lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_sym, 1))
+    book_expiry = str(book.get("expiry") or "").strip()
+    underlying = float(
+        (scan_context or {}).get("underlying")
+        or book.get("entry_underlying")
+        or 0.0
+    )
+    option_rows = list((scan_context or {}).get("option_rows") or [])
 
     total_pnl = 0.0
     for leg in legs:
         strike = float(leg.get("strike") or 0.0)
         option_type = (leg.get("option_type") or "").upper()
-        entry_premium = float(leg.get("entry_premium") or 0.0)
+        entry_premium = float(
+            leg.get("entry_premium") or leg.get("premium") or 0.0
+        )
         lots = int(leg.get("lots") or 1)
         side = (leg.get("side") or "SELL").upper()
+        leg_expiry = str(leg.get("expiry") or book_expiry or "").strip()
 
         current_premium = None
         for row in option_rows:
@@ -572,23 +565,54 @@ def _update_live_book_pnl(
             if abs(row_strike - strike) < 0.01 and row_type == option_type:
                 ltp = float(row.get("ltp") or row.get("premium") or 0.0)
                 if ltp > 0:
-                    current_premium = ltp
-                    break
+                    if underlying > 0 and not is_valid_option_premium(
+                        strike, option_type, ltp, underlying
+                    ):
+                        log.warning(
+                            "[multileg-live] %s: rejected corrupted scan row LTP %.2f for %s %.0f",
+                            symbol,
+                            ltp,
+                            option_type,
+                            strike,
+                        )
+                    else:
+                        current_premium = ltp
+                        break
 
         if current_premium is None:
             try:
                 with get_read_conn() as conn:
-                    opt_row = conn.execute(
-                        "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND expiry=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
-                        (symbol, base_sym, strike, option_type, leg.get("expiry", ""))
-                    ).fetchone()
+                    if leg_expiry:
+                        opt_row = conn.execute(
+                            "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND expiry=? AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
+                            (symbol, base_sym, leg_expiry, strike, option_type),
+                        ).fetchone()
+                    else:
+                        opt_row = conn.execute(
+                            "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
+                            (symbol, base_sym, strike, option_type),
+                        ).fetchone()
                     if opt_row:
-                        current_premium = float(opt_row["ltp"])
+                        snap_ltp = float(opt_row["ltp"])
+                        if underlying > 0 and not is_valid_option_premium(
+                            strike, option_type, snap_ltp, underlying
+                        ):
+                            log.warning(
+                                "[multileg-live] %s: rejected corrupted snapshot LTP %.2f for %s %.0f",
+                                symbol,
+                                snap_ltp,
+                                option_type,
+                                strike,
+                            )
+                        else:
+                            current_premium = snap_ltp
             except Exception:
                 pass
 
         if current_premium is None:
             current_premium = entry_premium
+
+        leg["current_premium"] = current_premium
 
         if side == "SELL":
             pnl = (entry_premium - current_premium) * lots * lot_size
@@ -826,21 +850,37 @@ def _attempt_new_live_entry(
     )
     from src.models.schema import get_open_books_for_symbol, insert_multileg_trade_atomically
 
-    # ── 5a. LLM verdict ───────────────────────────────────────────────
-    from src.engine.llm_enrichment import get_multileg_verdict
+    # ── Broker Authorization Gate ──────────────────────────────────────
+    from src.engine.broker_gate import authorize_broker_execution
+    auth = authorize_broker_execution(symbol, operation="ENTRY", scan_context=scan_context)
+    if not auth.is_authorized:
+        log.debug("[multileg-live] %s: broker authorization gate failed for new entry — %s", symbol, auth.reason)
+        return {
+            "action": "SKIPPED_BROKER_DISABLED",
+            "reason": auth.reason,
+        }
 
-    try:
-        verdict = get_multileg_verdict(
-            symbol=symbol,
-            intel=intel,
-            scan_context=scan_context,
-            alerts=intel.get("alerts") if isinstance(intel, dict) else None,
-            news_data=intel.get("news_data") if isinstance(intel, dict) else None,
-            open_books=open_books or get_open_books_for_symbol(symbol),
-        )
-    except Exception as e:
-        log.error("[multileg-live] %s: LLM verdict call failed: %s", symbol, e)
-        return None
+    # ── 5a. LLM verdict ───────────────────────────────────────────────
+    verdict = ai_verdict if (ai_verdict is not None and getattr(ai_verdict, "strategy_type", None)) else None
+    if verdict is None and isinstance(intel, dict) and intel.get("multileg_verdict"):
+        verdict = intel.get("multileg_verdict")
+
+    if verdict is None:
+        from src.engine.llm_enrichment import get_multileg_verdict
+        try:
+            verdict = get_multileg_verdict(
+                symbol=symbol,
+                intel=intel,
+                scan_context=scan_context,
+                alerts=intel.get("alerts") if isinstance(intel, dict) else None,
+                news_data=intel.get("news_data") if isinstance(intel, dict) else None,
+                open_books=open_books or get_open_books_for_symbol(symbol),
+            )
+            if isinstance(intel, dict) and verdict is not None:
+                intel["multileg_verdict"] = verdict
+        except Exception as e:
+            log.error("[multileg-live] %s: LLM verdict call failed: %s", symbol, e)
+            return None
 
     if verdict is None:
         log.debug("[multileg-live] %s: LLM returned no verdict", symbol)
@@ -1396,6 +1436,7 @@ def _attempt_new_live_entry(
         "entry_quality_score": entry_quality,
         "digest_id": digest_id,
         "ai_model_name": verdict.model_name,
+        "snapshot_id": (scan_context or {}).get("snapshot_id"),
     }
 
     try:
@@ -1515,7 +1556,7 @@ def _rollback_placed_legs(
 
         try:
             leg_expiry = leg.get("expiry", "")
-            resolved = resolve_instrument(
+            resolved = resolve_option_contract(
                 symbol=symbol, expiry=leg_expiry, strike=strike, option_type=option_type
             )
             if not resolved or not resolved.get("tradingsymbol"):
@@ -1566,64 +1607,28 @@ def _rollback_placed_legs(
                 "strike": strike, "option_type": option_type, "status": "ORDER_FAILED", "error": str(e)
             })
 
-    # Verify rollback order fills (poll for up to 30 seconds)
+    # Verify rollback order fills via confirm_order_fill
     filled_count = 0
     failed_count = len([r for r in rollback_results if r["status"] in ("RESOLVE_FAILED", "ORDER_FAILED")])
     pending_count = 0
-    
+
     if rollback_order_ids and kite:
         try:
-            import time
-            max_wait = 30  # seconds
-            check_interval = 3  # seconds
-            elapsed = 0
-            
-            while elapsed < max_wait:
-                all_completed = True
-                for rb_order in rollback_order_ids:
-                    if "filled" in rb_order:
-                        continue
-                    
-                    try:
-                        order_info = kite.order_history(rb_order["order_id"])
-                        if order_info:
-                            # Check if order is COMPLETE (filled) or REJECTED/CANCELLED
-                            latest_state = order_info[-1] if isinstance(order_info, list) else order_info
-                            status = latest_state.get("status", "")
-                            
-                            if status == "COMPLETE":
-                                rb_order["filled"] = True
-                                filled_count += 1
-                            elif status in ("REJECTED", "CANCELLED"):
-                                rb_order["filled"] = False
-                                failed_count += 1
-                                log.error(
-                                    "[multileg-live] %s: CRITICAL — rollback order %s was %s for %s %s!",
-                                    symbol, rb_order["order_id"], status,
-                                    rb_order["strike"], rb_order["option_type"]
-                                )
-                            else:
-                                all_completed = False
-                    except Exception as e:
-                        log.warning(
-                            "[multileg-live] %s: could not check rollback order %s status: %s",
-                            symbol, rb_order["order_id"], e
-                        )
-                        all_completed = False
-                
-                if all_completed:
-                    break
-                
-                time.sleep(check_interval)
-                elapsed += check_interval
-            
-            # Count any still-pending orders
-            pending_count = len([r for r in rollback_order_ids if "filled" not in r])
-            if pending_count > 0:
-                log.error(
-                    "[multileg-live] %s: WARNING — %d rollback orders still pending after %ds!",
-                    symbol, pending_count, max_wait
-                )
+            for rb_order in rollback_order_ids:
+                status, msg = confirm_order_fill(kite, rb_order["order_id"], shadow_mode=False)
+                if status == "COMPLETE":
+                    rb_order["filled"] = True
+                    filled_count += 1
+                elif status in ("REJECTED", "CANCELLED"):
+                    rb_order["filled"] = False
+                    failed_count += 1
+                    log.error(
+                        "[multileg-live] %s: CRITICAL — rollback order %s was %s for %s %s: %s",
+                        symbol, rb_order["order_id"], status,
+                        rb_order["strike"], rb_order["option_type"], msg
+                    )
+                else:
+                    pending_count += 1
         except Exception as e:
             log.error(
                 "[multileg-live] %s: could not verify rollback order fills: %s",
@@ -1651,96 +1656,3 @@ def _rollback_placed_legs(
     return summary
 
 
-def _update_live_book_pnl(
-    symbol: str, book: dict, legs: list[dict], scan_context: dict
-) -> float:
-    """Calculate and return updated total PnL for a live multi-leg book."""
-    from config.settings import LOT_SIZES
-    from src.models.schema import get_read_conn
-    from src.engine.trade_plan import is_valid_option_premium
-
-    base_sym = symbol.upper().split()[0] if symbol else ""
-    lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_sym, 1))
-    book_expiry = str(book.get("expiry") or "").strip()
-    underlying = float(
-        (scan_context or {}).get("underlying")
-        or book.get("entry_underlying")
-        or 0.0
-    )
-    option_rows = list((scan_context or {}).get("option_rows") or [])
-
-    total_pnl = 0.0
-    for leg in legs:
-        strike = float(leg.get("strike") or 0.0)
-        option_type = (leg.get("option_type") or "").upper()
-        entry_premium = float(
-            leg.get("entry_premium") or leg.get("premium") or 0.0
-        )
-        lots = int(leg.get("lots") or 1)
-        side = (leg.get("side") or "SELL").upper()
-        leg_expiry = str(leg.get("expiry") or book_expiry or "").strip()
-
-        current_premium = None
-        for row in option_rows:
-            row_strike = float(row.get("strike") or 0.0)
-            row_type = (row.get("option_type") or "").upper()
-            if abs(row_strike - strike) < 0.01 and row_type == option_type:
-                ltp = float(row.get("ltp") or row.get("premium") or 0.0)
-                if ltp > 0:
-                    if underlying > 0 and not is_valid_option_premium(
-                        strike, option_type, ltp, underlying
-                    ):
-                        log.warning(
-                            "[multileg-live] %s: rejected corrupted scan row LTP %.2f for %s %.0f",
-                            symbol,
-                            ltp,
-                            option_type,
-                            strike,
-                        )
-                    else:
-                        current_premium = ltp
-                        break
-
-        if current_premium is None:
-            try:
-                with get_read_conn() as conn:
-                    if leg_expiry:
-                        opt_row = conn.execute(
-                            "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND expiry=? AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
-                            (symbol, base_sym, leg_expiry, strike, option_type),
-                        ).fetchone()
-                    else:
-                        opt_row = conn.execute(
-                            "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
-                            (symbol, base_sym, strike, option_type),
-                        ).fetchone()
-                    if opt_row:
-                        snap_ltp = float(opt_row["ltp"])
-                        if underlying > 0 and not is_valid_option_premium(
-                            strike, option_type, snap_ltp, underlying
-                        ):
-                            log.warning(
-                                "[multileg-live] %s: rejected corrupted snapshot LTP %.2f for %s %.0f",
-                                symbol,
-                                snap_ltp,
-                                option_type,
-                                strike,
-                            )
-                        else:
-                            current_premium = snap_ltp
-            except Exception:
-                pass
-
-        if current_premium is None:
-            current_premium = entry_premium
-
-        leg["current_premium"] = current_premium
-
-        if side == "SELL":
-            pnl = (entry_premium - current_premium) * lots * lot_size
-        else:
-            pnl = (current_premium - entry_premium) * lots * lot_size
-
-        total_pnl += pnl
-
-    return total_pnl

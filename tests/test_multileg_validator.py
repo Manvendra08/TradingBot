@@ -44,3 +44,23 @@ def test_validate_multileg_valid():
     result = validate_multileg_trade(proposal, engine_verdict="BEARISH", underlying=24400.0)
     assert result.is_valid is True
     assert result.rejection_reason == ""
+
+def test_validate_multileg_canonical_verdicts():
+    proposal_long = ParsedExecution(
+        is_valid=True,
+        strategy="BULL_PUT_SPREAD",
+        action="GO_LONG",
+        legs=[
+            {"action": "SELL", "strike": 24500, "option_type": "PE", "entry_premium": 100.0, "ratio": 1},
+            {"action": "BUY", "strike": 24300, "option_type": "PE", "entry_premium": 30.0, "ratio": 1}
+        ]
+    )
+    # Short Covering is canonical BULLISH — GO_LONG is aligned, so valid
+    res_sc = validate_multileg_trade(proposal_long, engine_verdict="Short Covering", underlying=24600.0)
+    assert res_sc.is_valid is True
+
+    # Short Buildup is canonical BEARISH — GO_LONG should conflict
+    res_sb = validate_multileg_trade(proposal_long, engine_verdict="Short Buildup", underlying=24600.0)
+    assert res_sb.is_valid is False
+    assert "Direction conflict" in res_sb.rejection_reason
+

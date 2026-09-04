@@ -20,12 +20,23 @@ class ParsedExecution:
     max_risk: float = 0.0
 
 
-def parse_llm_execution(raw_response: dict[str, Any] | None, underlying: float = 0.0) -> ParsedExecution:
-    """Parse and strictly validate raw LLM response dict for execution proposal."""
+def parse_llm_execution(raw_response: dict[str, Any] | str | None, underlying: float = 0.0) -> ParsedExecution:
+    """Parse and strictly validate raw LLM response dict or JSON string for execution proposal."""
+    if isinstance(raw_response, str):
+        try:
+            from src.engine.llm_enrichment import _extract_json
+            extracted = _extract_json(raw_response)
+            if isinstance(extracted, dict):
+                raw_response = extracted
+            else:
+                return ParsedExecution(is_valid=False, rejection_reason="Invalid response format: payload did not extract to a dict")
+        except Exception as exc:
+            return ParsedExecution(is_valid=False, rejection_reason=f"Failed to parse response JSON: {exc}")
+
     if not isinstance(raw_response, dict):
         return ParsedExecution(is_valid=False, rejection_reason="Invalid response format: payload is not a dict")
 
-    strategy = str(raw_response.get("strategy") or raw_response.get("proposed_strategy") or "").upper()
+    strategy = str(raw_response.get("strategy") or raw_response.get("proposed_strategy") or raw_response.get("strategy_type") or "").upper()
     action = str(raw_response.get("action") or "").upper()
     raw_legs = raw_response.get("legs")
 
@@ -48,20 +59,20 @@ def parse_llm_execution(raw_response: dict[str, Any] | None, underlying: float =
                 action=action,
             )
 
-        leg_action = str(leg.get("action") or "").upper()
+        leg_action = str(leg.get("action") or leg.get("side") or "").upper()
         if leg_action not in {"BUY", "SELL"}:
             return ParsedExecution(
                 is_valid=False,
-                rejection_reason=f"Invalid leg action for leg #{i}: {leg.get('action')}",
+                rejection_reason=f"Invalid leg action for leg #{i}: {leg.get('action') or leg.get('side')}",
                 strategy=strategy,
                 action=action,
             )
 
-        option_type = str(leg.get("option_type") or "").upper()
+        option_type = str(leg.get("option_type") or leg.get("type") or "").upper()
         if option_type not in {"CE", "PE"}:
             return ParsedExecution(
                 is_valid=False,
-                rejection_reason=f"Invalid option type for leg #{i}: {leg.get('option_type')}",
+                rejection_reason=f"Invalid option type for leg #{i}: {leg.get('option_type') or leg.get('type')}",
                 strategy=strategy,
                 action=action,
             )

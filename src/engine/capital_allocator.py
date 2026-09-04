@@ -34,6 +34,7 @@ def _broker_mode_enabled(config: dict) -> bool:
     return not bool(config.get("live_broker_disabled", False))
 
 
+
 def _fetch_broker_margin_requirement(
     symbol: str,
     tradingsymbol: str,

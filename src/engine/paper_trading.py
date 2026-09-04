@@ -714,6 +714,7 @@ def execute_paper_trade(
         "signal_key": signal_key,
         "pyramid_level": plan.get("pyramid_level", 1),
         "max_favorable_r": 0.0,
+        "snapshot_id": ctx.get("snapshot_id"),
         # Phase 0: ML feature columns (captured at trade open time)
         **ml_features,
     }
@@ -1901,6 +1902,7 @@ def run_timeframe_strategy(
         "signal_key": signal_key,
         "pyramid_level": pyramid_level,
         "max_favorable_r": 0.0,
+        "snapshot_id": ctx.get("snapshot_id"),
         # Phase 0: ML feature columns (captured at trade open time)
         **ml_features,
     }

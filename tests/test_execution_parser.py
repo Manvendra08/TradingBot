@@ -52,3 +52,23 @@ def test_parse_llm_execution_invalid_action():
     result = parse_llm_execution(raw_response, underlying=24400.0)
     assert result.is_valid is False
     assert "Invalid leg action" in result.rejection_reason
+
+def test_parse_llm_execution_string_input():
+    raw_str = """
+    ```json
+    {
+        "strategy": "BEAR_CALL_SPREAD",
+        "action": "GO_SHORT",
+        "legs": [
+            {"side": "SELL", "strike": 24500, "type": "CE", "entry_premium": 150.0},
+            {"side": "BUY", "strike": 24700, "type": "CE", "entry_premium": 50.0}
+        ]
+    }
+    ```
+    """
+    result = parse_llm_execution(raw_str, underlying=24400.0)
+    assert result.is_valid is True
+    assert len(result.legs) == 2
+    assert result.legs[0]["action"] == "SELL"
+    assert result.legs[0]["option_type"] == "CE"
+

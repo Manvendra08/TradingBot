@@ -19,3 +19,19 @@ def test_save_runtime_config_validates_types(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError, match="live_ai_decision_mode"):
         save_runtime_config({"live_ai_decision_mode": "invalid_mode"})
+
+    with pytest.raises(TypeError, match="must be a boolean"):
+        save_runtime_config({"live_broker_disabled": "not_a_bool"})
+
+
+def test_load_runtime_config_missing_file_returns_fail_closed_defaults(tmp_path, monkeypatch):
+    missing_file = tmp_path / "non_existent_config.json"
+    monkeypatch.setattr("config.runtime_config.RUNTIME_CONFIG_PATH", missing_file)
+
+    cfg = load_runtime_config()
+    assert cfg["live_shadow_mode"] is True
+    assert cfg["live_broker_disabled"] is True
+    assert cfg["trading_paused"] is True
+    assert cfg["live_enabled_broker_symbols"] == []
+    assert cfg["paper_enabled_symbols"] == []
+

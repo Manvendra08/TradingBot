@@ -90,9 +90,17 @@ def get_fail_closed_defaults(default_freq: int = 15) -> dict:
 
 def validate_config_dict(config: dict) -> None:
     """Validate runtime config types and enum values before saving."""
+    if not isinstance(config, dict):
+        raise TypeError("Runtime config must be a dict")
     if "live_ai_decision_mode" in config:
         if config["live_ai_decision_mode"] not in {"advisory", "boost_only", "full"}:
             raise ValueError(f"Invalid live_ai_decision_mode: {config['live_ai_decision_mode']}")
+    for bool_key in ("live_shadow_mode", "live_broker_disabled", "trading_paused", "live_ai_exit_advisor_enabled"):
+        if bool_key in config and not isinstance(config[bool_key], bool):
+            raise TypeError(f"Config field '{bool_key}' must be a boolean, got {type(config[bool_key]).__name__}")
+    for list_key in ("live_enabled_broker_symbols", "paper_enabled_symbols"):
+        if list_key in config and not isinstance(config[list_key], (list, tuple)):
+            raise TypeError(f"Config field '{list_key}' must be a list, got {type(config[list_key]).__name__}")
 
 
 def load_runtime_config() -> dict:
@@ -142,9 +150,11 @@ def load_runtime_config() -> dict:
     }
 
     if not RUNTIME_CONFIG_PATH.exists():
+        import logging
+        logging.getLogger(__name__).warning("Runtime config %s not found; returning fail-closed defaults.", RUNTIME_CONFIG_PATH)
         _CACHED_CONFIG = None
         _CACHED_PATH = None
-        return defaults.copy()
+        return get_fail_closed_defaults(default_freq)
 
     try:
         current_path_str = str(RUNTIME_CONFIG_PATH)

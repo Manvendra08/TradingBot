@@ -103,6 +103,7 @@ def run_ng_parity_strategy(
     
     # Link lots to number defined in Setting cockpit (runtime_config.json)
     from src.engine.capital_allocator import calculate_trade_lots
+
     is_broker_mode = not bool(config.get("live_broker_disabled", False))
     lots = calculate_trade_lots(
         "NATURALGAS",

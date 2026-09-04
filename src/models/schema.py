@@ -144,7 +144,8 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     regime_score        INTEGER,
     entry_dev_pct       REAL,
     leg_group_id        TEXT,
-    tranche_index       INTEGER DEFAULT 0
+    tranche_index       INTEGER DEFAULT 0,
+    snapshot_id         TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_paper_symbol_status
@@ -235,7 +236,8 @@ CREATE TABLE IF NOT EXISTS live_trades (
     entry_quality_score INTEGER,
     trend_alignment_score INTEGER,
     regime_score        INTEGER,
-    entry_dev_pct       REAL
+    entry_dev_pct       REAL,
+    snapshot_id         TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_live_symbol_status
@@ -361,7 +363,8 @@ CREATE TABLE IF NOT EXISTS multi_leg_trades (
     closed_at TEXT,
     status TEXT DEFAULT 'OPEN',
     reason TEXT,
-    profit_factor REAL
+    profit_factor REAL,
+    snapshot_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS multi_leg_legs (
@@ -621,6 +624,10 @@ _MIGRATIONS = [
     # making `current_premium` a phantom field on the digest code path that
     # reads from DB (get_open_books_for_symbol).
     ("M110_add_mll_current_premium", "ALTER TABLE multi_leg_legs ADD COLUMN current_premium REAL"),
+    # M111-M113: frozen scan snapshot ID linkage for trade context provenance
+    ("M111_add_snapshot_id_to_paper_trades", "ALTER TABLE paper_trades ADD COLUMN snapshot_id TEXT"),
+    ("M112_add_snapshot_id_to_live_trades", "ALTER TABLE live_trades ADD COLUMN snapshot_id TEXT"),
+    ("M113_add_snapshot_id_to_ml_trades", "ALTER TABLE multi_leg_trades ADD COLUMN snapshot_id TEXT"),
 ]
 
 
@@ -1263,7 +1270,7 @@ def insert_paper_trade(trade: dict) -> int:
              signal_key, pyramid_level, max_favorable_r,
              price_change_pct, pcr, ce_oi_change, pe_oi_change, underlying,
              support, resistance, max_pain, days_to_expiry, chart_conflict,
-             rsi_1h, rsi_3h, regime, entry_dev_pct, leg_group_id, tranche_index)
+              rsi_1h, rsi_3h, regime, entry_dev_pct, leg_group_id, tranche_index, snapshot_id)
         VALUES
             (:opened_at, :symbol, :expiry, :verdict_label, :side, :option_type, :strike, :entry_underlying,
              :entry_premium, :sl_underlying, :sl_premium, :target_underlying, :target_premium,
@@ -1273,7 +1280,7 @@ def insert_paper_trade(trade: dict) -> int:
              :signal_key, :pyramid_level, :max_favorable_r,
              :price_change_pct, :pcr, :ce_oi_change, :pe_oi_change, :underlying,
              :support, :resistance, :max_pain, :days_to_expiry, :chart_conflict,
-             :rsi_1h, :rsi_3h, :regime, :entry_dev_pct, :leg_group_id, :tranche_index)
+             :rsi_1h, :rsi_3h, :regime, :entry_dev_pct, :leg_group_id, :tranche_index, :snapshot_id)
         RETURNING id
     """
     row_data = {
@@ -1290,6 +1297,7 @@ def insert_paper_trade(trade: dict) -> int:
         "max_favorable_r": trade.get("max_favorable_r", 0.0),
         "leg_group_id": trade.get("leg_group_id"),
         "tranche_index": trade.get("tranche_index", 0),
+        "snapshot_id": trade.get("snapshot_id"),
         "lot_size": trade["lot_size"]
         if "lot_size" in trade
         else LOT_SIZES.get(trade.get("symbol", "").upper(), 1),
@@ -1710,7 +1718,7 @@ def insert_live_trade(trade: dict, conn: sqlite3.Connection | None = None) -> in
              broker_order_id, gtt_order_id, broker_status, broker_message, exit_mode,
              price_change_pct, pcr, ce_oi_change, pe_oi_change, underlying,
              support, resistance, max_pain, days_to_expiry, chart_conflict,
-             rsi_1h, rsi_3h, regime, entry_dev_pct)
+              rsi_1h, rsi_3h, regime, entry_dev_pct, snapshot_id)
         VALUES
             (:opened_at, :symbol, :expiry, :verdict_label, :side, :option_type, :strike, :entry_underlying,
              :entry_premium, :sl_underlying, :sl_premium, :target_underlying, :target_premium,
@@ -1721,7 +1729,7 @@ def insert_live_trade(trade: dict, conn: sqlite3.Connection | None = None) -> in
              :broker_order_id, :gtt_order_id, :broker_status, :broker_message, :exit_mode,
              :price_change_pct, :pcr, :ce_oi_change, :pe_oi_change, :underlying,
              :support, :resistance, :max_pain, :days_to_expiry, :chart_conflict,
-             :rsi_1h, :rsi_3h, :regime, :entry_dev_pct)
+             :rsi_1h, :rsi_3h, :regime, :entry_dev_pct, :snapshot_id)
         RETURNING id
     """
     row_data = {
@@ -1741,6 +1749,7 @@ def insert_live_trade(trade: dict, conn: sqlite3.Connection | None = None) -> in
         "broker_status": trade.get("broker_status", "OPEN"),
         "broker_message": trade.get("broker_message"),
         "exit_mode": trade.get("exit_mode"),
+        "snapshot_id": trade.get("snapshot_id"),
         # Phase 0: ML feature columns (captured at trade open time)
         "price_change_pct": trade.get("price_change_pct"),
         "pcr": trade.get("pcr"),
@@ -2194,6 +2203,8 @@ def insert_multileg_trade_atomically(trade: dict, legs: list[dict]) -> int:
         trade["entry_reason"] = trade.get("reason", "")
     if "exit_reason" not in trade:
         trade["exit_reason"] = None
+    if "snapshot_id" not in trade:
+        trade["snapshot_id"] = None
     with get_conn() as conn:
         trade_sql = """
             INSERT INTO multi_leg_trades
@@ -2203,7 +2214,7 @@ def insert_multileg_trade_atomically(trade: dict, legs: list[dict]) -> int:
                  net_delta, net_theta, net_vega, max_profit, max_loss,
                  breakeven_upper, breakeven_lower, profit_target_pct, stop_loss_pct,
                  time_decay_exit_dte, adjustment_count, confidence_score,
-                 entry_quality_score, digest_id, ai_model_name)
+                 entry_quality_score, digest_id, ai_model_name, snapshot_id)
             VALUES
                 (:trade_ref, :symbol, :structure, :net_premium, :margin_req, :total_pnl,
                  :opened_at, :closed_at, :status, :reason, :entry_reason, :exit_reason, :profit_factor,
@@ -2211,7 +2222,7 @@ def insert_multileg_trade_atomically(trade: dict, legs: list[dict]) -> int:
                  :net_delta, :net_theta, :net_vega, :max_profit, :max_loss,
                  :breakeven_upper, :breakeven_lower, :profit_target_pct, :stop_loss_pct,
                  :time_decay_exit_dte, :adjustment_count, :confidence_score,
-                 :entry_quality_score, :digest_id, :ai_model_name)
+                 :entry_quality_score, :digest_id, :ai_model_name, :snapshot_id)
             RETURNING id
         """
         row = conn.execute(trade_sql, trade).fetchone()
@@ -2250,8 +2261,9 @@ def close_book(
     reason: str,
     total_pnl: float,
     exit_underlying: float | None = None,
+    leg_exits: list[dict] | None = None,
 ) -> None:
-    """Close all legs in a book and update the trade record."""
+    """Close all legs in a book and update the trade record in a single atomic WAL transaction."""
     with get_conn() as conn:
         trade = conn.execute(
             "SELECT id, reason, entry_reason FROM multi_leg_trades WHERE book_id=? AND status='OPEN'", (book_id,)
@@ -2270,6 +2282,15 @@ def close_book(
                 "UPDATE multi_leg_trades SET closed_at=?, status=?, reason=?, exit_reason=?, entry_reason=?, total_pnl=? WHERE id=?",
                 (closed_at, status, reason, reason, orig_entry_reason, total_pnl, trade_id),
             )
+        if leg_exits:
+            for le in leg_exits:
+                lid = le.get("id")
+                ep = float(le.get("exit_premium") or 0.0)
+                conn.execute(
+                    "UPDATE multi_leg_legs SET status='CLOSED', closed_at=?, exit_premium=?, exit_reason=? WHERE id=?",
+                    (closed_at, ep, reason, lid),
+                )
+        # Close any remaining open legs that were not in leg_exits
         conn.execute(
             "UPDATE multi_leg_legs SET status='CLOSED', closed_at=?, exit_reason=? WHERE trade_id=? AND status='OPEN'",
             (closed_at, reason, trade_id),
@@ -2281,6 +2302,74 @@ def close_leg(leg_id: int, closed_at: str, exit_premium: float, exit_reason: str
     sql = "UPDATE multi_leg_legs SET status='CLOSED', closed_at=?, exit_premium=?, exit_reason=? WHERE id=?"
     with get_conn() as conn:
         conn.execute(sql, (closed_at, exit_premium, exit_reason, leg_id))
+
+
+def update_multi_leg_trade_pnl(book_id: str, total_pnl: float) -> None:
+    """Update MTM total_pnl for an open multi-leg book in multi_leg_trades."""
+    sql = "UPDATE multi_leg_trades SET total_pnl=? WHERE book_id=? AND status='OPEN'"
+    with get_conn() as conn:
+        conn.execute(sql, (round(float(total_pnl), 2), book_id))
+
+
+def execute_multi_leg_adjustment(
+    book_id: str,
+    close_leg_id: int,
+    exit_premium: float,
+    new_leg: dict,
+    new_net_premium: float | None = None,
+) -> bool:
+    """Atomically roll/adjust a leg in a multi-leg book in a single WAL transaction."""
+    from datetime import datetime, timezone
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with get_conn() as conn:
+        trade = conn.execute(
+            "SELECT id, net_premium FROM multi_leg_trades WHERE book_id=? AND status='OPEN'",
+            (book_id,)
+        ).fetchone()
+        if not trade:
+            return False
+        trade_id = int(trade["id"])
+
+        # 1. Close tested leg
+        conn.execute(
+            "UPDATE multi_leg_legs SET status='CLOSED', closed_at=?, exit_premium=?, exit_reason=? WHERE id=? AND trade_id=?",
+            (now_iso, float(exit_premium), f"AI_ADJUST_ROLL_TO_{new_leg.get('strike')}_{new_leg.get('option_type')}", close_leg_id, trade_id)
+        )
+
+        # 2. Insert new replacement leg
+        new_leg_dict = dict(new_leg)
+        new_leg_dict["trade_id"] = trade_id
+        new_leg_dict.setdefault("exit_premium", 0.0)
+        new_leg_dict.setdefault("theta", 0.0)
+        new_leg_dict.setdefault("vega", 0.0)
+        new_leg_dict.setdefault("iv", 0.0)
+        new_leg_dict.setdefault("status", "OPEN")
+        new_leg_dict.setdefault("closed_at", None)
+        new_leg_dict.setdefault("exit_reason", None)
+        new_leg_dict.setdefault("broker_order_id", None)
+
+        leg_sql = """
+            INSERT INTO multi_leg_legs
+                (trade_id, side, lots, strike, option_type, entry_premium, exit_premium,
+                 delta, theta, vega, iv, rationale, status, closed_at, exit_reason, broker_order_id)
+            VALUES
+                (:trade_id, :side, :lots, :strike, :option_type, :entry_premium, :exit_premium,
+                 :delta, :theta, :vega, :iv, :rationale, :status, :closed_at, :exit_reason, :broker_order_id)
+        """
+        conn.execute(leg_sql, new_leg_dict)
+
+        # 3. Update book adjustment_count and net_premium if supplied
+        if new_net_premium is not None:
+            conn.execute(
+                "UPDATE multi_leg_trades SET adjustment_count = adjustment_count + 1, net_premium=? WHERE id=?",
+                (round(float(new_net_premium), 2), trade_id)
+            )
+        else:
+            conn.execute(
+                "UPDATE multi_leg_trades SET adjustment_count = adjustment_count + 1 WHERE id=?",
+                (trade_id,)
+            )
+        return True
 
 
 def list_multi_leg_trades(status_filter: str | None = None) -> list[dict]:
@@ -2312,6 +2401,7 @@ def list_multi_leg_trades(status_filter: str | None = None) -> list[dict]:
                 base_sym = symbol.upper().split()[0] if symbol else ""
                 lot_size = LOT_SIZES.get(base_sym, 1)
                 
+                is_open = (t.get("status") == "OPEN")
                 live_book_pnl = 0.0
                 has_live_pnl = False
                 
@@ -2322,6 +2412,15 @@ def list_multi_leg_trades(status_filter: str | None = None) -> list[dict]:
                     side = (leg.get("side") or "SELL").upper()
                     entry_p = float(leg.get("entry_premium") or leg.get("entry_price") or 0.0)
                     lots = int(leg.get("lots") or leg.get("lot_size") or 1)
+
+                    if not is_open:
+                        cmp = float(leg.get("exit_premium") or leg.get("current_premium") or entry_p)
+                        leg["cmp"] = round(cmp, 2)
+                        if side == "SELL":
+                            leg["pnl"] = round((entry_p - cmp) * lots * lot_size, 2)
+                        else:
+                            leg["pnl"] = round((cmp - entry_p) * lots * lot_size, 2)
+                        continue
 
                     cmp = None
                     und_price = 0.0
@@ -2378,7 +2477,7 @@ def list_multi_leg_trades(status_filter: str | None = None) -> list[dict]:
                     buy_entry_sum = sum(float(l.get("entry_premium") or l.get("entry_price") or 0.0) for l in legs if (l.get("side") or "SELL").upper() == "BUY")
                     t["net_premium"] = round(sell_entry_sum - buy_entry_sum, 2)
 
-                if has_live_pnl:
+                if is_open and has_live_pnl:
                     t["total_pnl"] = round(live_book_pnl, 2)
                     sell_cmp_sum = sum(float(l.get("cmp") or l.get("entry_premium") or 0.0) for l in legs if (l.get("side") or "SELL").upper() == "SELL")
                     buy_cmp_sum = sum(float(l.get("cmp") or l.get("entry_premium") or 0.0) for l in legs if (l.get("side") or "SELL").upper() == "BUY")

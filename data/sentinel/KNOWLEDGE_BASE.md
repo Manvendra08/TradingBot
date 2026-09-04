@@ -1,11 +1,4 @@
-2026-07-29 13:55:42 | ERROR    | src.engine.pipeline       | Direct Kite position synchronization failed
-Traceback (most recent call last):
-  File "C:\Users\manve\Downloads\NSEBOT\src\engine\pipeline.py", line 84, in _maybe_sync_positions
-    sync_direct_kite_positions()
-  File "C:\Users\manve\Downloads\NSEBOT\src\engine\live_trading.py", line 2238, in sync_direct_kite_positions
-    prev_und = get_previous_underlying(base_sym, read_only=True)
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-TypeError: get_previous_underlying() got an unexpected keyword argument 'read_only'# NSEBOT Architecture — Scan Sentinel Knowledge Base
+# NSEBOT Architecture — Scan Sentinel Knowledge Base
 
 ## 1. Core Pipeline Flow
 1. **Option Chain Fetching (`src.fetchers.router`)**: Cascading dual-source parallel fetch (`Sensibull` / `Shoonya` / `Dhan` / `Paytm` / `NSE`). Returns immediately on primary success (12s deadline) or falls back to completed sources.
@@ -324,6 +317,19 @@ TypeError: get_previous_underlying() got an unexpected keyword argument 'read_on
   - **Symptom:** Multi-leg paper and live trading logged AI `CLOSE` and `ADJUST` exit recommendations as advisory only (`(advisory only; no auto-exit)`), even when AI Decision Mode was set to `full` and AI Exit Advisor was enabled in dashboard configuration.
   - **Root Cause:** In `multileg_paper_trading.py` and `multileg_live_trading.py`, AI exit recommendations were hardcoded to advisory-only logging without checking the `live_ai_exit_advisor_enabled` setting from `runtime_config`.
   - **Fix:** Updated `multileg_paper_trading.py` and `multileg_live_trading.py` to check `live_ai_exit_advisor_enabled` when `ai_mode == "full"`. When enabled, AI `CLOSE` recommendations execute autonomous book square-offs (`close_leg` + `close_book` in paper mode, `_close_live_book` in live mode) and AI `ADJUST` recommendations increment adjustment counters. When disabled, recommendations remain advisory-only.
+
+- **Incident F146: Multi-Leg Execution Hardening, Fail-Closed Broker Gate, and Snapshot Provenance (2026-09-04/05)**
+  - **Symptom:** Potential execution and monitoring flaws in multi-leg live/paper trading: missing runtime config file caused fail-open configuration load; broker authorization gate evaluated tuple return truthiness incorrectly and ran prematurely before exit monitoring; paper trading lot calculations failed in shadow mode; LLM execution parser failed on markdown-fenced strings; multileg validator misclassified canonical "Short Covering" as bearish; mutable scan snapshots; and trade tables lacked snapshot provenance tracking.
+  - **Root Cause:** Incomplete edge-case handling across `runtime_config.py`, `broker_gate.py`, `capital_allocator.py`, `multileg_live_trading.py`, `execution_parser.py`, `multileg_validator.py`, and SQLite schema migrations.
+  - **Fix:**
+    1. Enforced strict `get_fail_closed_defaults()` whenever runtime config file is missing or corrupted.
+    2. Fixed `_is_market_open` to safely pass `symbol` to `is_trading_allowed_now(symbol)` and unpack the boolean status.
+    3. Isolated broker authorization checks strictly to live broker order paths, preserving paper trade sizing and off-hours testing.
+    4. Relocated broker entry authorization gate inside `_attempt_new_live_entry` so `_monitor_open_books_live` always tracks MTM PnL and processes exits. Reused cached `intel["multileg_verdict"]` to prevent duplicate LLM calls, and hooked `confirm_order_fill` for atomic rollback verification.
+    5. Integrated tolerant JSON extraction and field aliasing (`action`/`side`, `option_type`/`type`) in `parse_llm_execution`.
+    6. Aligned `_check_engine_direction` in `multileg_validator.py` with canonical `src.engine.verdict_sets` (`is_bullish`, `is_bearish`), fixing "Short Covering" classification.
+    7. Encapsulated `option_rows` in `ScanSnapshot` with `types.MappingProxyType` for deep immutability.
+    8. Executed migrations `M111_add_snapshot_id_to_paper_trades`, `M112_add_snapshot_id_to_live_trades`, and `M113_add_snapshot_id_to_ml_trades` to persist `snapshot_id` provenance across all trade records.
 
 ---
 
