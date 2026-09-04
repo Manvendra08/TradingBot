@@ -32,6 +32,12 @@
 - Vendored `src/tvdatafeed/` deleted — use pip-installed package
 - Dependencies trimmed: ~877 MB of unused packages removed (scipy, pandas, Twisted, numba, etc.)
 - `APScheduler` and `dhanhq` removed from requirements.txt (unused)
+- Multi-leg execution engine: [multileg_live_trading.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/engine/multileg_live_trading.py) & [multileg_paper_trading.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/engine/multileg_paper_trading.py) supporting Iron Condor, Strangles, Straddles, Spreads, and Jade Lizards
+- Centralized Fail-Closed Broker Gate: [broker_gate.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/engine/broker_gate.py) gates all live Kite orders (shadow mode, broker disabled, trading paused, market hours) while decoupling paper lot sizing
+- Fail-Closed Runtime Config: [runtime_config.py](file:///c:/Users/manve/VibeProjects/NSEBOT/config/runtime_config.py) provides safe fallback defaults and atomic file persistence
+- Immutable Scan Snapshots: [scan_snapshot.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/models/scan_snapshot.py) with SHA-256 data hashing and `MappingProxyType` immutability; `snapshot_id` provenance tracked in `paper_trades`, `live_trades`, and `multi_leg_trades`
+- Strict LLM Execution Parser & Validator: [execution_parser.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/engine/execution_parser.py) and [multileg_validator.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/engine/multileg_validator.py) enforce 1-6 legs, strike bounds, and alignment with canonical engine verdicts
+- Sequential Leg Fills & Atomic Rollback: Live orders verify fills with `confirm_order_fill()`; on partial failure, `_rollback_placed_legs()` flattens open positions immediately
 
 ## Timeframe Role Separation (strict — do not cross-use)
 
@@ -45,12 +51,12 @@
 - LLM enrichment is **engine-aligned**: OI engine decides direction; LLM provides execution detail only
 - **NSE/BSE Primary LLM Chain:** OmniRouter (Claude-Models Combo → Claude/Antigravity → claude/Free → GPT 5.5 CX → KR Models) → GitHub Models → Groq → OpenCode Zen → NVIDIA NIM → Bedrock → OpenRouter → Gemini.
 - **MCX Primary LLM Chain:** OmniRouter (Claude-Models Combo → Claude/Antigravity → claude/Free → GPT 5.5 CX → KR Models) → GitHub Models → Groq → OpenCode Zen → AnyAPI Free → Bedrock Mantle → NVIDIA NIM → Bedrock → OpenRouter → Gemini → SambaNova.
-- Entry advisor is skipped when a position is already open; only exit advisor runs
+- Multi-Leg entry advisor is skipped when open books for the symbol >= 5; exit advisor monitors existing open books
 - Chart conflict (1H vs 3H): NO penalty for OI-based trades; a 1H opposing a completed 3H = entry timing signal
 - MCX confidence floor: 72% for NATURALGAS/CRUDEOIL/GOLD/SILVER (vs 70% NSE)
 - JSON parse hardening: `_extract_json()` handles fences, prose wrappers, control chars — eliminates per-cycle OpenRouter parse failures
 - HOLDING alerts now show position age (`entered 47m ago`) to disambiguate from new signals
-- **AI Exit Advice is Advisory Only:** Auto-exits (`CLOSED_AI_EXIT`) from AI exit advice are disabled; high-urgency exit suggestions are purely logged as advisory recommendations.
+- **AI Exit Auto-Exits are Enabled:** Autonomous AI exits (`CLOSED_AI_EXIT`) and AI leg adjustments (`ADJUST`) are fully enabled when `live_ai_exit_advisor_enabled` is true (default in `runtime_config.json`).
 - **TFSS Multi-Leg Strangle Book (v4.0):** Active TFSS strangles are grouped via `leg_group_id` (`{symbol}:{today_date}:TFSS`). Supports up to 6 open legs (3 per side) per symbol-day. Tranche scale-down (`ENABLE_TFSS_TRANCHE_SCALING = False`) is disabled per requirement so every trade places at 100% full base size in market direction (Bullish → Sell PE, Bearish → Sell CE). Risk Engine checks combined margin (cap ₹600k), combined net delta (cap 0.60), and max tranches (6) before allowing new entries. Exit logic & `EXIT_PRIORITY_MAP` remain fully active (Delta-stop exits close the tested side selectively, leaving the opposite side active).
 
 ## Token Efficiency
@@ -106,11 +112,12 @@ Follow below instructions before starting work:
 
 ## Key Architectural Decisions (NSEBOT)
 
-- **Schema Migrations:** Managed inside `_MIGRATIONS` in [schema.py](file:///c:/Users/manve/Downloads/NSEBOT/src/models/schema.py). SQLite uses WAL (Write-Ahead Logging) mode with `timeout=30.0` to safely handle concurrent, multi-threaded engine and dashboard server writes.
-- **Strategy Routing & Models:** Plumbed dynamically via [strategy_registry.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/strategy_registry.py). Custom session overrides redirect `NATURALGAS` to specialized strategies (`NG_PARITY`, `NG_EVENT`, `NG_MOMENTUM`) based on time/regime rather than standard `CORE` logic.
-- **TFSS Option Execution:** The Trend-Following Strangle System (TFSS) acts as the execution layer for `CORE` signals (sells PE for bullish, CE for bearish). Groups multi-leg strangles via `leg_group_id` (`{symbol}:{date}:TFSS`), caps tranches at 6 per symbol-day, and limits combined net delta to `0.60`.
+- **Schema Migrations:** Managed inside `_MIGRATIONS` in [schema.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/models/schema.py) up to M113 (`M111_add_snapshot_id_to_paper_trades`, `M112_add_snapshot_id_to_live_trades`, `M113_add_snapshot_id_to_ml_trades`). SQLite uses WAL (Write-Ahead Logging) mode with `timeout=60.0` to safely handle concurrent, multi-threaded engine and dashboard server writes.
+- **Fail-Closed Broker Invariants:** All live Kite order actions are strictly authorized via [broker_gate.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/engine/broker_gate.py) (`authorize_broker_execution`). Paper trading calculations remain completely decoupled from broker gate states.
+- **Strategy Routing & Models:** Plumbed dynamically via [strategy_registry.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/engine/strategy_registry.py). Custom session overrides redirect `NATURALGAS` to specialized strategies (`NG_PARITY`, `NG_EVENT`, `NG_MOMENTUM`) based on time/regime rather than standard `CORE` logic.
+- **Multi-Leg & TFSS Option Execution:** Multi-leg strategies (Iron Condors, Spreads, Straddles, Strangles) and TFSS are executed with strict leg validation, margin checks, net delta caps (`0.60`), and atomic database operations (`insert_multileg_trade_atomically`, `close_book`, `execute_multi_leg_adjustment`). Live execution features sequential Kite fills and automatic rollback (`_rollback_placed_legs`).
 - **Exit Logic Precedents:**
-  1. *AI Exit Advice:* Strictly **advisory-only** (auto-exits are disabled; high-urgency suggestions are logged only to prevent false liquidations).
+  1. *AI Exit Auto-Exits:* Fully enabled under `live_ai_exit_advisor_enabled`. When AI recommends `CLOSE`, book closes atomically with live LTPs; when `ADJUST`, challenged leg is rolled atomically with realized P&L tracking.
   2. *Mechanical Exits:* Checked continuously on every scan tick (based on SL/Target premium thresholds, trailing stops, or time-of-day guards).
-  3. *Friday Exits:* Mandatory square-off is executed between 15:25–15:30 IST (23:25–23:30 MCX) to avoid weekend gap risks.
+  3. *Friday Exits:* Mandatory square-off is executed between 15:35–15:40 IST (NSE F&O close; 23:25–23:30 MCX) to avoid weekend gap risks.
   4. *Daily Loss Cap:* Natural Gas blocks new entries for the day after 5 SL hits (query checks count of `CLOSED_SL` or `SL_HIT`).

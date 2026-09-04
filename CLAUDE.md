@@ -29,19 +29,54 @@ It:
 
 ## LLM Provider Stack
 
-Purpose-based routing — three separate pipelines, not one shared stack:
+Purpose-based routing — five separate pipelines (`live_verdict`, `eod_review`, `formatting`, `sentinel_diagnostic`, `eia_analysis`), not one shared stack. Source: `src/engine/llm_enrichment.py` `FREE_MODEL_PIPELINE` assembly.
 
-- **`live_verdict`** (per-scan trade verdict/exit advice) — symbol-aware, OpenCode Zen always primary: MCX (NATURALGAS/CRUDEOIL/GOLD/SILVER) routes OpenCode Zen → OmniRouter (Antigravity) → Groq → GitHub Models → AnyAPI Free → Bedrock Mantle → NVIDIA NIM → Bedrock → OpenRouter → Gemini → SambaNova. NSE indices route OpenCode Zen → OmniRouter (Antigravity) → Groq → GitHub Models → NVIDIA NIM → Bedrock → OpenRouter → Gemini.
-- **`eod_review`** (strategy optimization, end of day) — OpenCode Zen EOD → OmniRouter (Antigravity) → Groq → GitHub Models → Bedrock Mantle → NVIDIA NIM → OpenRouter Nemotron.
-- **`formatting`** — OpenCode Zen → OmniRouter (Antigravity) → Bedrock Mantle → GitHub Models → Groq → NVIDIA NIM → OpenRouter Qwen 3/2.5 Coder variants.
-- **OmniRouter group = Antigravity only** (`antigravity/*` on localhost:20128, `timeout: 20`). OpenCode free models (`claude/oc/*`) removed from it — OpenCode is the primary provider, OmniRouter second.
+**OmniRouter group** (all-purpose, primary in 4/5 pipelines) — local proxy on `localhost:20128` (`OMNIROUTER_BASE_URL`), `timeout: 60s`, `max_tokens_override: 4096` (live) / `2048` (sentinel). Six models:
+- `Claude-Models` (combo)
+- `Claude/Antigravity` (Antigravity direct)
+- `claude/Free`
+- `cx/gpt-5.5` (GPT 5.5 CX)
+- `kr/glm-5` (GLM 5 KR)
+- `kr/claude-haiku-4.5` (Claude Haiku 4.5 KR)
+
+**OmniRouter Sentinel group** (`sentinel_diagnostic` only) — same primary six plus two sentinel-exclusive: `kr/deepseek-3.2` (DeepSeek 3.2 KR), `trk/qwen/qwen3.8-max-free` (Qwen 3.8 Max Free TRK).
+
+### Pipeline order (top-to-bottom = first-to-last try)
+
+- **`live_verdict`** (per-scan trade verdict/exit advice) — symbol-aware:
+  - **MCX** (NATURALGAS/CRUDEOIL/GOLD/SILVER): OmniRouter → GitHub Models → Groq → Gemini SDK → OpenCode Zen → AnyAPI Free → Bedrock Mantle → NVIDIA NIM → Bedrock SDK → OpenRouter (GPT-OSS 120B Free) → OpenRouter (free pool) → SambaNova
+  - **NSE/BSE indices** (NIFTY/BANKNIFTY/SENSEX/FINNIFTY): OmniRouter → GitHub Models → Groq → Gemini SDK → OpenCode Zen → NVIDIA NIM → Bedrock SDK → OpenRouter (free pool)
+- **`eod_review`** (strategy optimization, end of day): OmniRouter → GitHub Models (EOD) → Groq (EOD) → Gemini SDK → OpenCode Zen (EOD) → Bedrock Mantle → NVIDIA NIM (EOD) → OpenRouter (Nemotron 70B Free)
+- **`formatting`**: OmniRouter → GitHub Models (formatting) → Groq (formatting) → Gemini SDK → OpenCode Zen (formatting) → Bedrock Mantle
+- **`sentinel_diagnostic`** (Scan Sentinel agent): OmniRouter Sentinel → Groq (sentinel) → Gemini SDK (sentinel) → GitHub Models (sentinel) → OpenCode Zen (sentinel)
+- **`eia_analysis`**: OmniRouter → Groq (EIA) → OpenCode Zen (EIA) → GitHub Models (EIA) → Gemini SDK
+
+### Provider model rosters
+
+- **OpenCode Zen (free)** — `nemotron-3.5-lightning-free`, `laguna-s-2.1-free`, `hy3-free`, `x-preview-f-free` (EOD/formatting/sentinel only), `nemotron-3-ultra-free`. `timeout: 15s` (live) / `20-25s` (EOD) / `6s` (formatting/sentinel).
+- **Groq** — `openai/gpt-oss-120b`, `qwen/qwen3.8-27b` (live only), `qwen/qwen3.6-27b`, `openai/gpt-oss-20b`, `groq/compound` (live only), `llama-3.3-70b-versatile` (EIA only). `max_tokens_override: 1024-2048` per group.
+- **GitHub Models** — `gpt-4o-mini`, `Llama-3.3-70B-Instruct`. Token source: `GITHUB_TOKEN` env or `gh auth token` subprocess fallback.
+- **Gemini SDK** — `gemini-2.5-flash`, `gemini-2.0-flash`. Requires `google-genai` package.
+- **NVIDIA NIM** (live + EOD) — `nvidia/nemotron-3-super-120b-a12b`, `deepseek-ai/deepseek-v4-flash-0731`, `meta/llama-3.3-70b-instruct`, `minimaxai/minimax-m2.7`, `nvidia/nemotron-3-ultra-550b-a55b`. `timeout: 8s`.
+- **Bedrock SDK** (live only, NSE/MCX) — `zai.glm-5`, `zai.glm-4.7-flash`, `minimax.minimax-m2.5`, `minimax.minimax-m2`, `nvidia.nemotron-super-3-120b`, `nvidia.nemotron-nano-12b-v2`, `qwen.qwen3-32b-v1:0`, `meta.llama3-3-70b-instruct-v1:0`, `mistral.mistral-7b-instruct-v0:2`.
+- **Bedrock Mantle** (EOD/formatting/MCX) — `zai.glm-5`, `deepseek.v3.2`, `deepseek.v3.1`, `qwen.qwen3-235b-a22b-2507`, `qwen.qwen3-coder-480b-a35b-instruct`, `qwen.qwen3-32b`, `mistral.mistral-large-3-675b-instruct`.
+- **AnyAPI Free (MCX only)** — `nvidia/nemotron-3-ultra-550b-a55b:free`, `google/gemma-4-26b-a4b-it:free`, `nvidia/nemotron-3-nano-30b-a3b:free`, `poolside/laguna-m.1:free`, `nvidia/nemotron-nano-12b-v2-vl:free`. `timeout: 15s`.
+- **OpenRouter (live MCX+NSE)** — `google/gemini-2.0-flash-exp:free`, `meta-llama/llama-3.1-8b-instruct:free`, `mistralai/mistral-small-24b-instruct-2501:free`, plus GPT-OSS 120B Free (MCX only).
+- **SambaNova (MCX only, last resort)** — `DeepSeek-V3.1`, `gpt-oss-120b` (`max_tokens_override: 4096`), `Meta-Llama-3.3-70B-Instruct`.
+
+### Cross-cutting pipeline behavior
 - Per-purpose `max_tokens` via `LLM_MAX_TOKENS_LIVE` / `_EOD` / `_FORMATTING` in `config/settings.py`.
 - Default timeout: 12s per provider attempt (hard cap so ≥2 models fit in the 75s per-call budget)
 - JSON parsing is tolerant: strips markdown fences, grabs `{...}` from prose, removes control chars
 - Array-wrapped JSON responses are automatically unwrapped
 - Per-symbol verdict cache with DTE-aware TTL (5 min at expiry, 10 min ≤3 DTE, 30 min otherwise) + price/premium-move invalidation
 - Circuit breaker: pauses all LLM calls for 5 min after 3 consecutive total failures
+- Host-level breaker: 2 read timeouts on the same host = 180s host cooldown (skips every provider on that host, all groups)
+- Per-group read-timeout tally is **per-thread** (`threading.local`) — concurrent symbol enrichments don't share cooldown counters
+- Provider-level cooldowns: 402 → 24h, 429 → 30s-3600s (TPD/Antigravity adjusted), 413/502/503/504 → 60s, 400 → 60s, parse error → 60s, read timeout → 20s + host breaker, generic 500 → 10m
 - System prompt explicitly forbids inventing values ("never invent a level, date, or figure") and requires JSON-only output with no markdown fences
+- `OMNIROUTER_API_KEY`/`OPENCODE_API_KEY`/`ANTIGRAVITY_REFRESH_TOKEN` default to a sentinel string when unset (treated as configured but will fail at request — never silently skip)
+- News headlines are sanitized via `_sanitize_news_text()` (strips control chars + 9 prompt-injection patterns) before reaching the prompt
 
 ## LLM Schema (v3.0 — Engine-Aligned)
 
@@ -110,10 +145,13 @@ Three strategies, each independently enable/disable-able globally and per-symbol
 ## Live Trading
 
 - **Timeframe strategy:** Fully implemented (not a stub) — 3H breakout entries, 1H crossover exits
+- **Centralized Broker Authorization Gate:** All live Kite order executions (entry, exit, adjustment, reconciliation) are strictly gated through `src/engine/broker_gate.py` (`authorize_broker_execution`), enforcing fail-closed guardrails (shadow mode, broker disabled, trading paused, market open hours)
 - **Position sync:** `sync_direct_kite_positions()` runs every 5 min + on every scan cycle
 - **Exit monitoring:** `_check_live_exits()` runs every 2 min for premium-poll trades
 - **SL/Target unified:** Same ATR-based calculation as paper via `trade_plan.py`
-- **AI Exit Advice is advisory only:** Auto-exits (`CLOSED_AI_EXIT`) are disabled; high-urgency AI exit recommendations are purely logged and do not execute trades.
+- **AI Exit Auto-Exits are Enabled:** Autonomous AI exits (`CLOSED_AI_EXIT`) and leg adjustments (`ADJUST`) are fully enabled when `live_ai_exit_advisor_enabled` is true in `runtime_config.json`
+- **Multi-Leg Sequential Execution & Atomic Rollback:** Places orders sequentially, confirms order status via `confirm_order_fill()`, and automatically rolls back placed legs with opposite market orders via `_rollback_placed_legs()` upon partial fill failure
+- **Snapshot Provenance:** Live trades capture immutable `snapshot_id` referencing the exact scan state at execution time
 
 ## Current behavior
 
@@ -174,7 +212,12 @@ Three strategies, each independently enable/disable-able globally and per-symbol
 - `src/engine/verdict_sets.py` — single source of truth for OI + LLM verdict vocabularies (both sets unified)
 - `src/alerts/digest.py` — Telegram builder; HOLDING line shows position age; 1H/3H diverge = entry timing note
 - `src/alerts/telegram_dispatcher.py` — Telegram delivery and retries
-- `src/models/schema.py` — SQLite tables and helpers (transaction costs applied)
+- `src/engine/broker_gate.py` — Centralized fail-closed broker authorization gate (`authorize_broker_execution`)
+- `src/engine/execution_parser.py` — Strict LLM multi-leg proposal parser (`parse_llm_execution`)
+- `src/engine/multileg_validator.py` — Pre-flight engine alignment and risk validator (`validate_multileg_trade`)
+- `src/models/scan_snapshot.py` — Frozen immutable scan context snapshots & SHA-256 data hashing
+- `config/runtime_config.py` — Fail-closed runtime configuration loader with atomic file persistence
+- `src/models/schema.py` — SQLite tables, migrations (M101–M113), and helpers (transaction costs applied)
 - `src/scheduler/job_runner.py` — scheduler loop, live exit monitoring, position sync timer
 - `dashboard_server.py` — FastAPI dashboard API and pages
 - `config/settings.py` — `MCX_MIN_CONFIDENCE=72`, `MCX_SYMBOLS` (NOTE: `AI_DECISION_MODE` here is legacy/unused; live mode = `live_ai_decision_mode` in runtime_config.json, currently `full`)
@@ -185,6 +228,11 @@ Three strategies, each independently enable/disable-able globally and per-symbol
 Run all tests: `pytest tests/ -v`
 
 Key test files:
+- `tests/test_broker_gate.py` - centralized broker authorization gate tests
+- `tests/test_runtime_config_failclosed.py` - fail-closed configuration fallback tests
+- `tests/test_scan_snapshot.py` - immutable snapshot integrity and hashing tests
+- `tests/test_execution_parser.py` - strict LLM proposal parsing and aliasing tests
+- `tests/test_multileg_validator.py` - canonical verdict direction and margin limit tests
 - `tests/test_trade_plan.py` - unified trade plan module (C4)
 - `tests/test_llm_schema_v2.py` - new LLM schema, historical OI, action→bias mapping
 - `tests/test_audit_fixes.py` - C1, C3, C5, H1, H4, M1-M5 regression tests
@@ -219,5 +267,11 @@ Key test files:
 - **Help text:** `main.py --dashboard` now shows FastAPI command, not Streamlit.
 - **Legend cleanup:** `docs/README.md` dashboard command updated.
 - **TFSS Multi-Leg Strangle Book:** Added `leg_group_id` and `tranche_index` fields to `paper_trades` table schema. Implemented book-level risk limits (max 6 tranches, total margin <= ₹600k, net delta <= 0.60), tranche scaling (`50% -> 30% -> 20%`), and selective tested-side exits based on `HARD_STOP_DELTA (0.35)` and `EXIT_PRIORITY_MAP`.
-- **Advisory-Only AI Exit:** Disabled automatic trade executions (`CLOSED_AI_EXIT`) triggered by AI exit advice. Recommendations are now logged as advisory only.
+- **Autonomous AI Exits & Adjustments Enabled:** Autonomous multi-leg exits (`CLOSED_AI_EXIT`) and adjustments (`ADJUST`) are fully enabled when `live_ai_exit_advisor_enabled` is true (default in `runtime_config.json`).
 - **Dashboard Broker Console Settings Fix:** Resolved `SyntaxError: Unexpected token 'I'` when updating Shadow Mode from the dashboard by using write-enabled connection `get_conn()` instead of read-only `_db()`.
+- **Centralized Fail-Closed Broker Gate:** Built `src/engine/broker_gate.py` to authorize live Kite orders fail-closed (shadow mode, broker disabled, trading paused, market open hours) while decoupling paper lot sizing.
+- **Fail-Closed Runtime Configuration:** Hardened `config/runtime_config.py` with `get_fail_closed_defaults()`, schema validation (`validate_config_dict`), and atomic PID/thread-safe file persistence.
+- **Frozen Immutable Scan Snapshots:** Built `src/models/scan_snapshot.py` (`ScanSnapshot`) with `MappingProxyType` deep immutability and SHA-256 data hashing.
+- **Database Schema Provenance (M111–M113):** Added SQLite migrations `M111_add_snapshot_id_to_paper_trades`, `M112_add_snapshot_id_to_live_trades`, and `M113_add_snapshot_id_to_ml_trades` to trace trades back to exact scan snapshots.
+- **Strict LLM Execution Parser & Multi-Leg Validator:** Built `src/engine/execution_parser.py` (1–6 legs, ratios, strike bounds, markdown fence stripping) and `src/engine/multileg_validator.py` (margin cap, canonical verdict alignment ensuring "Short Covering" is bullish).
+- **Sequential Leg Execution & Atomic Rollback:** Hardened `src/engine/multileg_live_trading.py` with sequential order placement, fill confirmation via `confirm_order_fill()`, and automatic opposite-side rollback via `_rollback_placed_legs()`.
