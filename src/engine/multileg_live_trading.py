@@ -67,8 +67,10 @@ def _get_stop_loss_threshold_rupees(book: dict, legs: list[dict], symbol: str) -
     is_defined_risk = strategy_type in ("IRON_CONDOR", "BEAR_CALL_SPREAD", "BULL_PUT_SPREAD")
 
     if is_defined_risk and max_loss_val > 0 and (underlying <= 0 or max_loss_val < underlying * 0.4):
-        # Defined risk strategies: use max_loss as the risk ceiling
-        total_max_loss_rupees = max_loss_val * lot_size * total_lots * stop_loss_pct
+        # Defined risk strategies: stop loss triggers at stop_loss_pct of credit collected, capped at max physical loss
+        credit_sl = max(net_premium, 1.0) * lot_size * total_lots * stop_loss_pct
+        physical_max = max_loss_val * lot_size * total_lots
+        total_max_loss_rupees = min(credit_sl, physical_max)
     else:
         # Undefined risk strategies (short strangle/straddle): use actual broker margin
         # as the stop loss threshold. This represents the real capital at risk.
@@ -175,27 +177,19 @@ def _run_multileg_live_strategy_inner(
     ai_verdict=None,
 ) -> dict | None:
     """Inner implementation — isolated so the outer wrapper can catch all errors."""
-    # ── 1. Market hours guard ──────────────────────────────────────────
-    from src.engine.paper_trading import _is_market_open
+    # ── 1. Centralized Broker Authorization Gate ──────────────────────
+    from src.engine.broker_gate import authorize_broker_execution
 
-    if not _is_market_open(symbol):
+    auth = authorize_broker_execution(symbol, operation="ENTRY", scan_context=scan_context)
+    if not auth.is_authorized:
         log.debug(
-            "[multileg-live] %s: skipped — outside market hours", symbol
-        )
-        return {"action": "SKIPPED_MARKET_CLOSED", "reason": "Outside market hours"}
-
-    # ── 1b. Broker disabled guard ─────────────────────────────────────
-    from config.runtime_config import load_runtime_config
-
-    _rt_cfg = load_runtime_config()
-    if _rt_cfg.get("live_broker_disabled", False):
-        log.debug(
-            "[multileg-live] %s: live broker disabled via cockpit — skipping",
+            "[multileg-live] %s: broker authorization gate failed — %s",
             symbol,
+            auth.reason,
         )
         return {
             "action": "SKIPPED_BROKER_DISABLED",
-            "reason": "Broker trades turned off in Cockpit",
+            "reason": auth.reason,
         }
 
     # ── 2. Basic validation ────────────────────────────────────────────
@@ -405,17 +399,17 @@ def _monitor_open_books_live(
             if is_mcx:
                 is_expiry_close = (now_ist.hour > 23 or (now_ist.hour == 23 and now_ist.minute >= 25))
             else:
-                is_expiry_close = (now_ist.hour > 15 or (now_ist.hour == 15 and now_ist.minute >= 25))
+                is_expiry_close = (now_ist.hour > 15 or (now_ist.hour == 15 and now_ist.minute >= 35))
                 is_expiry_after_1pm = (now_ist.hour >= 13)
 
         if is_weekly_index:
             # Weekly index options (NIFTY, BANKNIFTY, SENSEX): DTE 1 or 2 is standard holding territory.
-            # Time decay exit occurs ONLY on expiry day after 1:00 PM IST (13:00) or at 15:25 close squareoff.
+            # Time decay exit occurs ONLY on expiry day after 1:00 PM IST (13:00) or at 15:35 close squareoff.
             should_exit_time_decay = (
                 (dte == 0 and is_expiry_after_1pm) or
                 (dte < 0)
             )
-            exit_reason_str = f"EXPIRY_SQUAREOFF (15:25 IST)" if (dte == 0 and is_expiry_close) else (
+            exit_reason_str = f"EXPIRY_SQUAREOFF (15:35 IST)" if (dte == 0 and is_expiry_close) else (
                 "EXPIRY_TIME_DECAY (DTE 0 after 13:00 IST)" if (dte == 0 and is_expiry_after_1pm) else f"EXPIRED (DTE {dte})"
             )
         else:
@@ -424,7 +418,7 @@ def _monitor_open_books_live(
                 (dte == 0 and is_expiry_close) or
                 (dte < 0)
             )
-            exit_reason_str = f"EXPIRY_SQUAREOFF ({'23:25' if is_mcx else '15:25'} IST)" if (dte == 0 and is_expiry_close) else f"TIME_DECAY (DTE {dte} < {time_decay_exit_dte})"
+            exit_reason_str = f"EXPIRY_SQUAREOFF ({'23:25' if is_mcx else '15:35'} IST)" if (dte == 0 and is_expiry_close) else f"TIME_DECAY (DTE {dte} < {time_decay_exit_dte})"
 
         if should_exit_time_decay:
             log.info(
@@ -624,13 +618,13 @@ def _close_live_book(
     """
     from src.models.schema import close_book, close_leg
 
-    # ── Check if broker is disabled ────────────────────────────────────
-    from config.runtime_config import load_runtime_config
-    broker_disabled = load_runtime_config().get("live_broker_disabled", False)
+    # ── Centralized Broker Authorization Gate ──────────────────────
+    from src.engine.broker_gate import authorize_broker_execution
+    auth = authorize_broker_execution(symbol, operation="EXIT")
 
     # ── Attempt broker square-off for each leg ─────────────────────────
     kite = None
-    if not broker_disabled:
+    if auth.is_authorized:
         try:
             from src.engine.live_trading import get_kite_client
             kite = get_kite_client()
@@ -642,8 +636,9 @@ def _close_live_book(
             )
     else:
         log.info(
-            "[multileg-live] %s: broker disabled — closing book %s in DB only (no order placement)",
+            "[multileg-live] %s: broker execution unauthorized (%s) — closing book %s in DB only (no order placement)",
             symbol,
+            auth.reason,
             book_id,
         )
 
@@ -852,14 +847,45 @@ def _attempt_new_live_entry(
         return None
 
     st_upper = str(getattr(verdict, "strategy_type", "")).upper().strip()
-    if st_upper in ("NONE", "NO_TRADE", "NO_SIGNAL", "SKIP", "N/A", "") or not getattr(verdict, "legs", None):
-        log.info("[multileg-live] %s: LLM returned no-trade verdict (%s)", symbol, st_upper or "NO_LEGS")
+    entry_rationale = str(getattr(verdict, "entry_rationale", "") or "")
+    thesis = str(getattr(verdict, "thesis", "") or "")
+    confidence = int(getattr(verdict, "confidence", 0) or 0)
+    is_mcx = symbol in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER")
+    conf_floor = 72 if is_mcx else 70
+
+    combined_text = f"{entry_rationale} {thesis}".lower()
+    no_trade_phrases = (
+        "no trade should be taken",
+        "no valid edge to act on",
+        "data integrity failure",
+        "abandoned rather than forced",
+        "broken/stale pe chain",
+        "broken/stale ce chain",
+    )
+    has_no_trade_flag = any(phrase in combined_text for phrase in no_trade_phrases)
+
+    if st_upper in ("NONE", "NO_TRADE", "NO_SIGNAL", "SKIP", "N/A", "") or not getattr(verdict, "legs", None) or has_no_trade_flag:
+        reason_msg = "LLM explicitly indicated no trade / data integrity issue" if has_no_trade_flag else f"LLM multileg verdict: {getattr(verdict, 'strategy_type', 'NO_TRADE')}"
+        log.info("[multileg-live] %s: LLM returned no-trade verdict (%s, flag=%s)", symbol, st_upper or "NO_LEGS", has_no_trade_flag)
         return {
             "action": "NO_TRADE",
             "strategy_type": getattr(verdict, "strategy_type", "NO_TRADE"),
-            "reason": f"LLM multileg verdict: {getattr(verdict, 'strategy_type', 'NO_TRADE')}",
-            "thesis": getattr(verdict, "thesis", ""),
-            "confidence": getattr(verdict, "confidence", 0),
+            "reason": reason_msg,
+            "thesis": thesis,
+            "confidence": confidence,
+        }
+
+    if confidence < conf_floor:
+        log.info(
+            "[multileg-live] %s: LLM confidence %d%% below floor %d%% — rejecting trade",
+            symbol, confidence, conf_floor
+        )
+        return {
+            "action": "REJECTED",
+            "strategy_type": st_upper,
+            "confidence": confidence,
+            "thesis": thesis,
+            "reason": f"LLM confidence {confidence}% below minimum {conf_floor}% floor",
         }
 
     # ── 5b. Validate legs ─────────────────────────────────────────────
@@ -912,15 +938,20 @@ def _attempt_new_live_entry(
         if live_prem is not None and live_prem > 0:
             leg["premium"] = float(live_prem)
             leg["entry_premium"] = float(live_prem)
+            log.info(
+                "[multileg-live] %s: Authoritative premium for %s %s resolved from option chain api = %.2f",
+                symbol, leg_strike, leg_opt, live_prem
+            )
         else:
-            # Fallback to search directly in option_rows
-            for row in option_rows:
-                if abs(float(row.get("strike") or 0.0) - leg_strike) < 0.01 and str(row.get("option_type") or "").upper() == leg_opt:
-                    r_ltp = float(row.get("ltp") or 0.0)
-                    if r_ltp > 0:
-                        leg["premium"] = r_ltp
-                        leg["entry_premium"] = r_ltp
-                        break
+            msg = f"DATA_INTEGRITY_FAILURE: Unable to resolve valid authoritative market premium for leg [{leg_strike} {leg_opt}]."
+            log.error("[multileg-live] %s: %s", symbol, msg)
+            return {
+                "action": "REJECTED",
+                "reason": msg,
+                "strategy_type": strategy_type,
+                "confidence": getattr(verdict, "confidence", 0),
+                "thesis": getattr(verdict, "thesis", ""),
+            }
 
     try:
         from src.engine.capital_allocator import calculate_trade_lots
