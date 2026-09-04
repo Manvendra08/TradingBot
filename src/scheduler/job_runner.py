@@ -1,6 +1,6 @@
 """
 Scheduler loop — runs pipeline on runtime-configured interval.
-Per-symbol market-hours guard: NSE 09:15–15:30, MCX 09:00–23:30.
+Per-symbol market-hours guard: NSE 09:15–15:30 (equity) / 15:40 (F&O), MCX 09:00–23:30.
 Force-scan (--now flag) always bypasses the guard.
 
 Phase 2: Weekly ML training job added (Sunday 2 AM IST fallback).
@@ -79,7 +79,7 @@ MAX_CATCHUP_INTERVALS = 3
 
 def _get_scan_window_times(class_key: str, now_ist: datetime) -> tuple[datetime, datetime, str, str]:
     """Return (scan_open_time, scan_close_time, open_t_str, close_t_str) for class_key.
-    NSE and BSE scan window: 09:15 AM IST to 15:30 IST.
+    NSE and BSE scan window: 09:15 AM IST to 15:30 IST (equity); NSE F&O extended to 15:40 IST.
     MCX scan window: 09:00 AM IST to 23:30 IST.
     """
     open_t_str, close_t_str, _ = MARKET_WINDOWS.get(class_key, ("09:15", "15:30", [0, 1, 2, 3, 4]))

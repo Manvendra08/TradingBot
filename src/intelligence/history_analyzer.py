@@ -311,7 +311,7 @@ class TradeHistoryAnalyzer:
                             WHEN total_min >= 630  AND total_min < 720  THEN 'Mid-Morning (10:30-12:00)'
                             WHEN total_min >= 720  AND total_min < 840  THEN 'Post-Lunch (12:00-14:00)'
                             WHEN total_min >= 840  AND total_min < 900  THEN 'Afternoon (14:00-15:00)'
-                            WHEN total_min >= 900  AND total_min < 930  THEN 'Closing (15:00-15:30)'
+                            WHEN total_min >= 900  AND total_min < 940  THEN 'Closing (15:00-15:40)'
                             ELSE NULL
                         END as session
                     FROM (
@@ -344,7 +344,7 @@ class TradeHistoryAnalyzer:
                             WHEN total_min >= 630  AND total_min < 720  THEN 'Mid-Morning (10:30-12:00)'
                             WHEN total_min >= 720  AND total_min < 840  THEN 'Post-Lunch (12:00-14:00)'
                             WHEN total_min >= 840  AND total_min < 900  THEN 'Afternoon (14:00-15:00)'
-                            WHEN total_min >= 900  AND total_min < 930  THEN 'Closing (15:00-15:30)'
+                            WHEN total_min >= 900  AND total_min < 940  THEN 'Closing (15:00-15:40)'
                             ELSE NULL
                         END as session
                     FROM (
@@ -368,7 +368,7 @@ class TradeHistoryAnalyzer:
             "Mid-Morning (10:30-12:00)",
             "Post-Lunch (12:00-14:00)",
             "Afternoon (14:00-15:00)",
-            "Closing (15:00-15:30)",
+            "Closing (15:00-15:40)",
         ]
 
         insights = []

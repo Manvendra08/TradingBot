@@ -14,7 +14,7 @@ Index F&O (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX):
   - No 15:00–15:30 expiry guard (trades until CAS close at 15:40)
 
 F&O Stocks:
-  - Continuous trading stops 15:15, then CAS until 15:30
+  - Continuous trading stops 15:15, then CAS until 15:40 (per SEBI F&O hours extension)
 
 Other stocks:
   - Close 15:30 IST
@@ -88,7 +88,7 @@ def is_trading_allowed_now(symbol: str, expiry_str: str | None = None) -> tuple[
 
         # ── Window 2: Expiry end-of-session guard ────────────────────────────
         # For index F&O (trade until 15:40), only block last 15 min before CAS close
-        # For F&O stocks (continuous until 15:15, then CAS), block 15:15–15:30
+        # For F&O stocks (continuous until 15:15, then CAS until 15:40), block 15:15–15:40
         # For other NSE stocks (close 15:30), block 15:15–15:30
         if not is_mcx and expiry_str:
             try:
@@ -99,9 +99,12 @@ def is_trading_allowed_now(symbol: str, expiry_str: str | None = None) -> tuple[
                         if (h, m) >= (15, 25) and (h, m) < (15, 40):
                             return False, f"Index F&O expiry end-of-session window (15:25–15:40 IST) for expiry {expiry_str}"
                     else:
-                        # F&O stocks & other NSE: continuous stops 15:15, CAS 15:15–15:30
-                        if (h, m) >= (15, 15) and (h, m) <= (15, 30):
-                            return False, f"Expiry end-of-session window (15:15–15:30 IST) for expiry {expiry_str}"
+                        # F&O stocks: continuous stops 15:15, CAS 15:15–15:40
+                        # Other NSE stocks: close 15:30, block 15:15–15:30
+                        # (No clean symbol-level distinction here; treat F&O stocks as
+                        #  the dominant path and keep the wider 15:15–15:40 window.)
+                        if (h, m) >= (15, 15) and (h, m) <= (15, 40):
+                            return False, f"F&O expiry end-of-session window (15:15–15:40 IST) for expiry {expiry_str}"
             except Exception:
                 pass
 

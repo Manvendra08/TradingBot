@@ -121,6 +121,28 @@ def purge_all(conn):
         checkpoint_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
 
+def quarantine_corrupt_trades(conn):
+    """
+    Quarantines historical multi-leg trades that have corrupt or impossible entry premiums
+    (e.g., SENSEX trades 66, 81, 88 from 2026-09-03).
+    """
+    target_ids = (66, 81, 88)
+    cur = conn.execute(
+        """
+        UPDATE multi_leg_trades
+        SET status = 'QUARANTINED',
+            total_pnl = 0.0,
+            net_premium = 0.0,
+            reason = 'QUARANTINED_DATA_FEED_ERROR',
+            exit_reason = 'QUARANTINED (incoherent data feed)'
+        WHERE id IN (?, ?, ?)
+        """,
+        target_ids,
+    )
+    conn.commit()
+    print(f"  Quarantined {cur.rowcount} corrupt multi-leg trades (IDs: {target_ids})")
+
+
 def vacuum(conn):
     print("  Running VACUUM ...")
     conn.execute("VACUUM")
@@ -164,6 +186,8 @@ def main():
                         help="Delete all runtime data rows from the DB")
     parser.add_argument("--vacuum", action="store_true",
                         help="VACUUM the database to reclaim disk space")
+    parser.add_argument("--quarantine", action="store_true",
+                        help="Quarantine known corrupt historical trades (66, 81, 88)")
     args = parser.parse_args()
 
     if not DB_PATH.exists():
@@ -189,6 +213,10 @@ def main():
         print(f"\n-- Pruning rows older than {args.prune} days --")
         prune(conn, args.prune)
         stats(conn)
+
+    if args.quarantine:
+        print("\n-- Quarantining corrupt trades --")
+        quarantine_corrupt_trades(conn)
 
     if args.vacuum:
         print("\n-- Vacuum --")

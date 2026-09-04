@@ -38,6 +38,9 @@ _COMMODITY_SYMBOLS = {
     "NATURALGAS", "CRUDEOIL", "GOLD", "GOLDM", "SILVER", "SILVERM"
 }
 
+# NSE F&O (index) — close extended to 15:40 IST per SEBI (effective Aug 2026).
+_NSE_FNO_SYMBOLS = {"NIFTY", "BANKNIFTY", "SENSEX", "FINNIFTY", "MIDCPNIFTY"}
+
 
 @dataclass
 class DataLegitimacyResult:
@@ -121,6 +124,7 @@ def validate_market_data(
     """
     sym_base = symbol.upper().strip().split()[0]
     is_commodity = sym_base in _COMMODITY_SYMBOLS
+    is_nse_fno = sym_base in _NSE_FNO_SYMBOLS
     issues: list[str] = []
     warnings: list[str] = []
     score = 100
@@ -179,11 +183,21 @@ def validate_market_data(
     today_date = now_ist.date()
 
     # Define market hours per asset class
-    # NSE/BSE: 09:15 to 15:30 (375 minutes). Cut-off on expiry: 15:15 IST
+    # NSE F&O (index): 09:15 to 15:40 (385 minutes). Cut-off on expiry: 15:25 IST
+    # NSE/BSE equity: 09:15 to 15:30 (375 minutes). Cut-off on expiry: 15:15 IST
     # MCX: 09:00 to 23:30 (870 minutes). Cut-off on expiry: 23:15 IST
-    market_close_time = time(23, 30) if is_commodity else time(15, 30)
-    entry_cutoff_time = time(23, 15) if is_commodity else time(15, 15)
-    trading_day_minutes = 870.0 if is_commodity else 375.0
+    if is_commodity:
+        market_close_time = time(23, 30)
+        entry_cutoff_time = time(23, 15)
+        trading_day_minutes = 870.0
+    elif is_nse_fno:
+        market_close_time = time(15, 40)
+        entry_cutoff_time = time(15, 25)
+        trading_day_minutes = 385.0
+    else:
+        market_close_time = time(15, 30)
+        entry_cutoff_time = time(15, 15)
+        trading_day_minutes = 375.0
 
     if not expiry_str:
         warnings.append("No expiry date provided in option chain")
@@ -481,10 +495,6 @@ def validate_trade_leg_data(
                 vol = float(row.get("pe_volume") or row.get("put_volume") or (row.get("volume") if row_opt in ("PE", "PUT", "") else 0.0) or 0.0)
                 bid = float(row.get("pe_bid") or row.get("put_bid") or (row.get("bid") if row_opt in ("PE", "PUT", "") else 0.0) or 0.0)
                 ask = float(row.get("pe_ask") or row.get("put_ask") or (row.get("ask") if row_opt in ("PE", "PUT", "") else 0.0) or 0.0)
-
-            # Fallback to leg premium if row ltp is 0 but leg specifies entry premium
-            if ltp <= 0:
-                ltp = float(leg.get("entry_premium") or leg.get("premium") or 0.0)
 
             if ltp <= 0:
                 issues.append(f"Leg #{idx} ({target_strike} {target_opt_norm}): LTP is zero or missing")

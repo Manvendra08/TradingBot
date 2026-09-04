@@ -978,99 +978,13 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
             ep_parts.append(f"Exit DTE ≤ {decay_dte}")
         lines.append("  Exit Plan: " + " · ".join(ep_parts))
 
-    # ── 3b. CORE SIGNAL & TIMEFRAME CONTEXT (TFSS) ──
-    # Restore the signal line, confidence bar, timeframe action, and trade
-    # detail that used to live in build_tfss_timeframe_digest before the
-    # multileg-only refactor. The data is still built upstream by
-    # _build_structured_payload (tfss/timeframe keys), so this just renders it.
-    if tfss or tf_block:
-        lines.append("")
-        lines.append(DIV)
-        lines.append("⚡ *CORE SIGNAL & TIMEFRAME*")
-
-        tfss_action = str(tfss.get("action") or "BLOCK").upper()
-        tfss_bias = str(tfss.get("tfss_bias") or tfss.get("core_origin_verdict") or "N/A").upper()
-        tfss_contract = tfss.get("contract")
-        tfss_trade_entered = bool(tfss.get("trade_entered"))
-        tfss_primary_reason = tfss.get("primary_reason") or tfss.get("reason") or "N/A"
-
-        # Action icon mapping
-        tfss_action_icons = {
-            "ENTER": "🟢 ENTER",
-            "ADD": "🟢 ADD",
-            "EXIT": "🔴 EXIT",
-            "REDUCE": "🟡 REDUCE",
-            "BLOCK": "⛔ BLOCK",
-            "HOLD": "🔵 HOLD",
-            "NO_ACTION": "⏸️ NO ACTION",
-            "NO_SIGNAL": "⚪ NO SIGNAL",
-        }
-        action_line = tfss_action_icons.get(tfss_action, f"⚙️ {tfss_action}")
-        lines.append(f"• Action: {action_line}")
-        if tfss_bias and tfss_bias not in ("N/A", "", "NONE"):
-            lines.append(f"• Bias: `{_esc_code(tfss_bias)}`")
-        if tfss_contract:
-            lines.append(f"• Contract: `{_esc_code(str(tfss_contract))}`")
-        # Confidence bar (use the multileg/engine conf as the source — same
-        # confidence flow that drove the trade decision).
-        if conf and int(conf) > 0:
-            try:
-                lines.append(f"• Confidence: {_bar(int(conf))}")
-            except Exception:
-                lines.append(f"• Confidence: {int(conf)}%")
-        if not tfss_trade_entered and tfss_primary_reason and tfss_primary_reason not in ("N/A", ""):
-            # Show the upstream blocker reason here too — the multileg section
-            # below will repeat it, but the signal-line context is where
-            # traders first look.
-            lines.append(f"• Blocker: _{_esc(str(tfss_primary_reason))}_")
-
-        # Trade detail (delta/premium/qty/tranche) — only when a trade is live
-        if tfss_trade_entered:
-            td_parts = []
-            tfss_delta = tfss.get("delta")
-            tfss_premium = tfss.get("premium")
-            tfss_qty = tfss.get("qty")
-            tfss_tranche = tfss.get("tranche_index")
-            if tfss_delta is not None and tfss_delta != "":
-                try:
-                    td_parts.append(f"Δ {float(tfss_delta):+.2f}")
-                except (TypeError, ValueError):
-                    pass
-            if tfss_premium is not None and tfss_premium != "":
-                try:
-                    td_parts.append(f"₹{float(tfss_premium):.2f}")
-                except (TypeError, ValueError):
-                    pass
-            if tfss_qty:
-                td_parts.append(f"Qty {tfss_qty}")
-            if tfss_tranche is not None and tfss_tranche != "":
-                td_parts.append(f"Tranche {tfss_tranche}")
-            if td_parts:
-                lines.append(f"• Trade: " + " · ".join(td_parts))
-
-        # Timeframe sub-section
-        tf_action = str(tf_block.get("action") or "NO_SIGNAL").upper()
-        if tf_block:
-            tf_signal = str(tf_block.get("signal") or "N/A")
-            tf_dir = str(tf_block.get("direction") or "N/A")
-            tf_setup = str(tf_block.get("setup") or "TIMEFRAME")
-            tf_contract = tf_block.get("contract") or "N/A"
-            tf_reason = tf_block.get("primary_reason") or "No active signal"
-            tf_icons = {
-                "ENTER": "🟢",
-                "EXIT": "🔴",
-                "BLOCK": "⛔",
-                "HOLD": "🔵",
-                "NO_SIGNAL": "⚪",
-            }
-            tf_icon = tf_icons.get(tf_action, "⚙️")
-            lines.append(f"• Timeframe ({_esc(tf_setup)}): {tf_icon} {tf_action}")
-            if tf_signal and tf_signal != "N/A":
-                lines.append(f"  Signal: `{_esc_code(tf_signal)}` · Dir: `{_esc_code(tf_dir)}`")
-            if tf_contract and tf_contract != "N/A":
-                lines.append(f"  Contract: `{_esc_code(str(tf_contract))}`")
-            if tf_action in ("BLOCK", "NO_SIGNAL") and tf_reason and tf_reason != "N/A":
-                lines.append(f"  Reason: _{_esc(str(tf_reason))}_")
+    # ── 3b. CORE SIGNAL & TIMEFRAME CONTEXT (TFSS) — REMOVED ──
+    # Section removed per user request: the ⚡ *CORE SIGNAL & TIMEFRAME* block
+    # is no longer emitted. The multileg-only refactor upstream already
+    # surfaces the relevant trade state; the duplicate signal line was noise.
+    # `tfss` and `tf_block` locals are intentionally left in scope (cheap
+    # payload reads) but unused — they remain sourced from the payload for
+    # any future re-introduction without changing the function signature.
 
     # ── 4. LIVE BOOK MONITORING & POSITION EXIT ADVICE ──
     live_books = multileg.get("live_books") or []
@@ -2361,68 +2275,32 @@ def _to_caveman(text: str) -> str:
     if not text:
         return ""
     reps = {
-        r"\bthe\b": "",
-        r"\ba\b": "",
-        r"\ban\b": "",
+        # Filler qualifiers — safe to strip
         r"\bjust\b": "",
         r"\breally\b": "",
         r"\bbasically\b": "",
         r"\bactually\b": "",
         r"\bsimply\b": "",
         r"\bplease\b": "",
-        r"\bshould\b": "",
+        r"\bvery\b": "",
+        # Auxiliary verbs — safe to strip for brevity
         r"\bwould\b": "",
         r"\bcould\b": "",
-        r"\bvery\b": "",
-        r"\bwill\b": "",
-        r"\bis\b": "",
-        r"\bare\b": "",
-        r"\bwas\b": "",
-        r"\bwere\b": "",
-        r"\bbe\b": "",
+        r"\bshould\b": "",
         r"\bbeen\b": "",
-        r"\bhave\b": "",
-        r"\bhas\b": "",
-        r"\bhad\b": "",
-        r"\bwith\b": "",
-        r"\bfor\b": "",
-        r"\bfrom\b": "",
-        r"\bby\b": "",
-        r"\bat\b": "",
-        r"\bon\b": "",
-        r"\bof\b": "",
-        r"\bto\b": "",
-        r"\band\b": "",
-        r"\bbut\b": "",
-        r"\bthat\b": "",
-        r"\bthis\b": "",
-        r"\bthese\b": "",
-        r"\bthose\b": "",
-        r"\bbecause\b": "",
-        r"\bsince\b": "",
-        r"\btherefore\b": "",
-        r"\bthus\b": "",
-        r"\bhence\b": "",
-        r"\bso\b": "",
+        # Domain abbreviations — always safe
         r"\bdatabase\b": "DB",
         r"\bauthentication\b": "auth",
         r"\bconfiguration\b": "config",
-        r"\brequest\b": "req",
-        r"\bresponse\b": "res",
-        r"\bfunction\b": "fn",
-        r"\bimplementation\b": "impl",
-        r"\bstrategy\b": "strat",
         r"\bstop loss\b": "SL",
         r"\bstop-loss\b": "SL",
         r"\bconfidence\b": "conf",
         r"\bunderlying\b": "und",
-        r"\bsetup\b": "stp",
         r"\bsupport\b": "supp",
-        r"\bresistance\b": "res",
         r"\btarget\b": "tgt",
+        # Flow arrows
         r"\bleads to\b": "→",
         r"\bresults in\b": "→",
-        r"\bthen\b": "→",
         r"\bgoes to\b": "→",
     }
     out = text
@@ -2547,11 +2425,14 @@ def _bot_action_block(
             live_pnl = trade.get("live_pnl_rupees")
             cmp = trade.get("current_price") or trade.get("live_price")
             pnl_part = (
-                f" | Live PnL: {'+' if (live_pnl or 0) >= 0 else ''}₹{(live_pnl or 0):.0f}"
+                f" | PnL: {'+' if (live_pnl or 0) >= 0 else ''}₹{(live_pnl or 0):.0f}"
                 if live_pnl is not None
                 else ""
             )
             cmp_part = f" | CMP {cmp:.1f}" if cmp is not None else ""
+            # Show SL and target so traders can quickly check proximity without scrolling back
+            sl_part = f" | SL {sl:.1f}" if sl is not None else ""
+            tgt_part = f" | T {tgt:.1f}" if tgt is not None else ""
             # E2: Show position age so a stale held position isn't read as a new signal
             age_part = ""
             try:
@@ -2563,13 +2444,13 @@ def _bot_action_block(
                     opened_dt = _dt.fromisoformat(str(opened_at).replace("Z", "+00:00"))
                     age_min = int((_dt.now(_tz.utc) - opened_dt).total_seconds() / 60)
                     if age_min < 60:
-                        age_part = f" | entered {age_min}m ago"
+                        age_part = f" | {age_min}m"
                     else:
-                        age_part = f" | entered {age_min // 60}h {age_min % 60}m ago"
+                        age_part = f" | {age_min // 60}h{age_min % 60}m"
             except Exception:
                 pass
             return (
-                f"📊 {label_esc} HOLDING: {side_esc} {instrument_esc}{cmp_part}{pnl_part}{age_part}"
+                f"📊 {label_esc} HOLDING: {side_esc} {instrument_esc}{cmp_part}{sl_part}{tgt_part}{pnl_part}{age_part}"
             )
         elif action == "HELD_PENDING":
             return f"⏳ {label_esc} PENDING: {side_esc} {instrument_esc} (Waiting for fill)"
@@ -2710,21 +2591,20 @@ def build_llm_consolidated_digest(
     lines.append(f"{expiry_str} · {dte_str} | Spot {spot_str}")
     lines.append(f"_{verdict_label}_")
     
-    # DTE warning for low expiry proximity
+    # DTE warning — reuse dte_lbl already computed above; avoid re-parsing expiry date
     try:
-        exp_val = ctx.get("expiry") or ctx.get("futures_expiry")
-        if exp_val:
-            from datetime import datetime as _dt
-            exp_dt = _dt.strptime(str(exp_val).split(" ")[0], "%Y-%m-%d").date()
-            today_dt = datetime.now(IST).date()
-            dte = (exp_dt - today_dt).days
-            if dte <= 0:
-                lines.append(f"⚠️ *EXPIRY TODAY* — strictly intraday, close positions before settlement")
-            elif dte <= 2:
-                lines.append(f"⚠️ *LOW DTE ({dte}d)* — prefer closer strikes or hedged structures")
+        import re as _re
+        _dte_match = _re.search(r"(\d+)\s*d", dte_lbl or "")
+        _dte_val = int(_dte_match.group(1)) if _dte_match else None
+        if _dte_val is not None:
+            if _dte_val <= 0:
+                lines.append("⚠️ *EXPIRY TODAY* — strictly intraday, close positions before settlement")
+            elif _dte_val <= 2:
+                lines.append(f"⚠️ *LOW DTE ({_dte_val}d)* — prefer closer strikes or hedged structures")
     except Exception:
         pass
-    
+
+
     lines.append(DIVIDER)
     
     # ── PROVENANCE
@@ -2787,9 +2667,22 @@ def build_llm_consolidated_digest(
             reasoning = first_sent
         else:
             reasoning = reasoning[:247].rsplit(" ", 1)[0] + "..."
-    lines.append(f"*VERDICT*  {_esc(reasoning)} (OI conf {verdict_conf})")
-    lines.append(f"  CE OI Δ {_fmt_oi(ce_net)} vs PE Δ {_fmt_oi(pe_net)} → {oi_text}")
-    
+    # Determine confidence source label
+    conf_source = "(engine)" if engine_conf else "(AI)"
+    lines.append(f"*VERDICT*  {_esc(reasoning)} {conf_source} conf {verdict_conf}")
+
+    # Render signal_chain if available — it is a 3-line OI/Price/Chart evidence chain
+    # produced by the LLM. Display it verbatim so traders see the exact reasoning.
+    sc = str(gv("signal_chain") or "").strip()
+    if sc and sc not in ("", "None"):
+        for sc_line in sc.splitlines():
+            sc_line = sc_line.strip()
+            if sc_line:
+                lines.append(f"  {_esc(sc_line)}")
+    else:
+        # Fallback: synthesise from raw OI/price/chart data
+        lines.append(f"  CE OI Δ {_fmt_oi(ce_net)} vs PE Δ {_fmt_oi(pe_net)} → {oi_text}")
+
     # Price
     spot_val = _fmt_val(ctx.get("underlying"), symbol)
     pcp = ctx.get("price_change_pct", 0.0)
@@ -2798,16 +2691,22 @@ def build_llm_consolidated_digest(
     except:
         d_spot = 0.0
     pct_digits = 3 if abs(d_spot) < 0.01 and d_spot != 0 else 2
-    
+
     mp_val = _fmt_val(ctx.get("max_pain"), symbol)
-    lines.append(f"  Price {spot_val} ({_fmt_signed(d_spot, pct_digits)}%) drifting to Max Pain {mp_val}")
-    
+    if not sc:
+        lines.append(f"  Price {spot_val} ({_fmt_signed(d_spot, pct_digits)}%) drifting to Max Pain {mp_val}")
+
     # Chart & PCR
     chart_payload = _chart_payload_for_symbol(ctx, symbol)
     c1 = chart_payload.get("1h", {}).get("sentiment", "NEUTRAL").upper()
     c3 = chart_payload.get("3h", {}).get("sentiment", "NEUTRAL").upper()
     pcr_val = _fmt_num(ctx.get("pcr"), 2)
-    lines.append(f"  Chart 3H {_arrow_candle(c3)} / 1H {_arrow_candle(c1)} | PCR {pcr_val}")
+    if not sc:
+        lines.append(f"  Chart 3H {_arrow_candle(c3)} / 1H {_arrow_candle(c1)} | PCR {pcr_val}")
+    else:
+        # Still show PCR & max pain as compact footer when signal_chain covers the rest
+        lines.append(f"  Price {spot_val} ({_fmt_signed(d_spot, pct_digits)}%) → MP {mp_val} | PCR {pcr_val} | 3H {_arrow_candle(c3)} 1H {_arrow_candle(c1)}")
+
     
     # Noise/Anomalies summary (top 3 + count)
     high_cnt = sum(1 for a in alerts if a.get("severity") == "HIGH")
@@ -2949,6 +2848,16 @@ def build_llm_consolidated_digest(
             lines.append("")
             lines.append(f"🚫 *BLOCKED:* {_esc(readable)}")
 
+    # ── Entry trigger / invalidation (most useful for NO_TRADE — tells trader what to watch)
+    entry_trigger = _val(gv("entry_trigger"))
+    invalidation = _val(gv("stop_loss")) or _val(gv("invalidation"))
+    if bias_upper in ("NO_TRADE", "NEUTRAL") and entry_trigger and str(entry_trigger).strip():
+        lines.append("")
+        lines.append(f"💡 *Watch for:* {_esc(str(entry_trigger).strip()[:180])}")
+    if invalidation and str(invalidation).strip() and bias_upper not in ("NO_TRADE", "NEUTRAL"):
+        lines.append(f"🚫 *Invalidated if:* {_esc(str(invalidation).strip()[:120])}")
+
+
     # ── Exit advice block
     exit_adv = gv("exit_advice")
     if exit_advice or exit_adv:
@@ -2962,7 +2871,7 @@ def build_llm_consolidated_digest(
             ea_reasoning = exit_advice.get("reasoning") if isinstance(exit_advice, dict) else getattr(exit_advice, "reasoning", "")
             ea_new_sl = exit_advice.get("new_sl_premium") if isinstance(exit_advice, dict) else getattr(exit_advice, "new_sl_premium", None)
             
-            action_emoji = {"HOLD": "⚪", "TRAIL_SL": "🟡", "CLOSE_EARLY": "🔴", "EXTEND_TARGET": "🔵"}.get(ea_action, "⚪")
+            action_emoji = {"HOLD": "⚪", "TRAIL_SL": "🟡", "CLOSE": "🔴", "CLOSE_EARLY": "🔴", "EXTEND_TARGET": "🔵"}.get(ea_action, "⚪")
             urgency_badge = {"LOW": "🟢 LOW", "MEDIUM": "🟡 MED", "HIGH": "🔴 HIGH"}.get(str(ea_urgency).upper(), str(ea_urgency))
             lines.append(f"{action_emoji} *AI EXIT: {_esc(ea_action)}* | Urgency: {_esc(urgency_badge)}")
             lines.append(f"  _{_esc(ea_reasoning)}_")

@@ -60,8 +60,10 @@ def _is_market_hours() -> bool:
     hour = now.hour
     minute = now.minute
     time_val = hour * 100 + minute
-    # NSE: 09:15-15:30, MCX: 09:00-23:30
-    nse_open = 915 <= time_val <= 1530
+    # NSE equity: 09:15-15:30; NSE F&O extended to 15:40 (SEBI). Use 15:40 as
+    # the upper bound so callers that pass F&O symbols still report in-market.
+    # MCX: 09:00-23:30
+    nse_open = 915 <= time_val <= 1540
     mcx_open = 900 <= time_val <= 2330
     return nse_open or mcx_open
 

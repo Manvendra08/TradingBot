@@ -56,8 +56,7 @@ def _get_stop_loss_threshold_rupees(book: dict, legs: list[dict], symbol: str) -
     """
     from config.settings import LOT_SIZES
     from src.engine.capital_allocator import _fetch_broker_margin_requirement
-    from config.settings import EXCHANGES
-    from src.engine.symbol_resolver import get_kite_exchange
+    from config.symbol_classes import get_kite_exchange
 
     base_symbol = symbol.upper().split()[0] if symbol else symbol.upper()
     lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_symbol, 1))
@@ -83,7 +82,6 @@ def _get_stop_loss_threshold_rupees(book: dict, legs: list[dict], symbol: str) -
         margin_fetched = False
         
         try:
-            exchange = EXCHANGES.get(symbol, "NFO")
             kite_exchange = get_kite_exchange(symbol)
             
             for leg in legs:
@@ -100,13 +98,13 @@ def _get_stop_loss_threshold_rupees(book: dict, legs: list[dict], symbol: str) -
                 if not tradingsymbol or premium <= 0:
                     continue
                     
-                # Fetch actual broker margin for this SELL leg
+                # Fetch actual broker margin for this SELL leg (requires actual units = lots * lot_size)
                 margin = _fetch_broker_margin_requirement(
                     symbol=symbol,
                     tradingsymbol=tradingsymbol,
                     exchange=kite_exchange,
                     transaction_type="SELL",
-                    quantity=leg_lots,
+                    quantity=leg_lots * lot_size,
                     premium=premium,
                 )
                 

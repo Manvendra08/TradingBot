@@ -144,7 +144,7 @@ _EMOJI = {
     "MAX_PAIN_SHIFT": "🎯",
     "OI_WALL_SHIFT": "🧱",
     "VOLUME_AGGRESSION": "💥",
-    "OTM_UNUSUAL": "🎪",
+    "OTM_UNUSUAL": "🔭",
 }
 
 _INTERPRETATIONS = {

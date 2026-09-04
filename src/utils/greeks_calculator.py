@@ -33,8 +33,8 @@ class GreeksCalculator:
 
     def get_time_to_expiry(self, expiry_date_str: str, exchange: str = "NFO") -> float:
         """
-        Calculates exact fractional years remaining. Maps expiry to official 
-        closing bells (NSE/BFO: 15:30, MCX: 23:30).
+        Calculates exact fractional years remaining. Maps expiry to official
+        closing bells (NSE F&O: 15:40, MCX: 23:30).
         """
         now = datetime.now(self.tz)
         

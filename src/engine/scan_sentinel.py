@@ -803,8 +803,14 @@ def _run_ai_diagnostic(r: dict, flags: list[SentinelFlag]) -> ScanDiagnostic | N
             # MCX trades 9:00-23:30 IST
             is_market_hours = 9.0 <= hour <= 23.5
         else:
-            # NSE trades 9:15-15:30 IST
-            is_market_hours = 9.25 <= hour <= 15.5
+            # NSE F&O (NIFTY/BANKNIFTY/SENSEX/FINNIFTY) extended to 15:40 IST (SEBI)
+            sym_root = symbol.upper().split()[0]
+            is_nse_fno = sym_root in ("NIFTY", "BANKNIFTY", "SENSEX", "FINNIFTY", "MIDCPNIFTY")
+            if is_nse_fno:
+                is_market_hours = 9.25 <= hour <= 15.65  # 09:15-15:40 IST
+            else:
+                # NSE equity 9:15-15:30 IST
+                is_market_hours = 9.25 <= hour <= 15.5
     except Exception:
         pass
 

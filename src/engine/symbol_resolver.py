@@ -7,6 +7,7 @@ import time
 from datetime import datetime
 
 from config.settings import DATA_DIR
+from config.symbol_classes import get_kite_exchange
 
 log = logging.getLogger("nsebot.symbol_resolver")
 

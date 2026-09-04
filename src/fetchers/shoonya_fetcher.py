@@ -1623,7 +1623,8 @@ class ShoonyaFetcher(BaseFetcher):
                     if not resolved_nfo_tsym:
                         # Find nearest active weekly expiry (check next 14 calendar days)
                         from datetime import time as dt_time
-                        start_offset = 1 if now_ist.time() > dt_time(15, 30) else 0
+                        # NFO closes 15:40 IST (SEBI extension); use as the "roll forward" cutoff
+                        start_offset = 1 if now_ist.time() > dt_time(15, 40) else 0
                         for d in range(start_offset, 15):
                             c_date = today_ist + timedelta(days=d)
                             prefix_cand = f"{base}{c_date.strftime('%d%b%y').upper()}"
@@ -1675,9 +1676,9 @@ class ShoonyaFetcher(BaseFetcher):
                         while cand_dt.weekday() != 3:  # 3 is Thursday
                             cand_dt += timedelta(days=1)
 
-                        # If today is Thursday and past 15:30 IST, roll to next Thursday
+                        # If today is Thursday and past 15:40 IST (NFO close), roll to next Thursday
                         from datetime import time as dt_time
-                        if cand_dt == today_ist and now_ist.time() > dt_time(15, 30):
+                        if cand_dt == today_ist and now_ist.time() > dt_time(15, 40):
                             cand_dt += timedelta(days=7)
 
                         # Check next 3 Thursdays prioritizing weekly prefix over monthly prefix

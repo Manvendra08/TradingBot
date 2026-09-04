@@ -42,6 +42,10 @@ import pytz
 from pydantic import BaseModel, Field
 
 from config.symbol_classes import get_symbol_class
+from src.engine.skill_loader import (
+    get_reality_check_guardrails,
+    get_investment_research_guidance,
+)
 from src.utils.text_sanitizer import sanitize_mojibake
 
 try:
@@ -569,11 +573,14 @@ def _format_chart_data(chart_indicators: dict | None) -> str:
         d = ci.get(tf)
         if not d:
             continue
-        o = d.get("ohlc", {})
+        o = d.get("ohlc", {}) or {}
         s = d.get("sentiment", "?")
-        lines.append(f"  {tf.upper()}: {o.get('open'):.0f}/{o.get('high'):.0f}/{o.get('low'):.0f}/{o.get('close'):.0f} {s}")
+        if o and all(o.get(k) is not None for k in ("open", "high", "low", "close")):
+            lines.append(f"  {tf.upper()}: {o.get('open'):.0f}/{o.get('high'):.0f}/{o.get('low'):.0f}/{o.get('close'):.0f} {s}")
+        else:
+            lines.append(f"  {tf.upper()}: {s}")
         p = d.get("prev_ohlc") or d.get("last_closed_ohlc")
-        if p:
+        if p and all(p.get(k) is not None for k in ("open", "high", "low", "close")):
             lines.append(f"  {tf.upper()} Prev: {p.get('open'):.0f}/{p.get('high'):.0f}/{p.get('low'):.0f}/{p.get('close'):.0f}")
     return "\n".join(lines) if lines else "No chart data"
 
@@ -945,9 +952,10 @@ INDIA REGIME CONTEXT:
 • Event risk today: {event_risk_today}
 • ATM IV: {atm_iv:.1f}%
 
-NEWS WEIGHTING:
+NEWS & MACRO WEIGHTING:
 • Headlines from economic-policy sources (RBI, MoPNG, EIA) weight 3x vs. analyst commentary.
 • Recency: same-day news overrides stale directional bias. If last 2h news is neutral, treat as NO_NEWS not BULLISH/BEARISH.
+{get_investment_research_guidance()}
 
 OI HISTORY:
 {_format_historical_oi(symbol)}
@@ -1008,6 +1016,7 @@ ANALYSIS (ordered):
 7. Action MUST match ENGINE ({_bias_str}). Downgrade to NO_TRADE OK, flip FORBIDDEN.
 
 TRADE DISCIPLINE (long premium — theta works against you every hour):
+{get_reality_check_guardrails()}
 • DTE ≤ 1: enter only on a live 3H breakout with momentum; otherwise NO_TRADE (theta outruns edge)
 • Anchor targets to DATA levels: long → resistance/max-pain above, short → support/max-pain below. Never project a target past the nearest opposing level without stating why in thesis.
 • SL at the nearest DATA level that invalidates the setup — not an arbitrary %.
@@ -1145,6 +1154,7 @@ def _build_exit_prompt(
             iv_regime = "elevated"
 
     # Next catalyst timing
+    base_sym = symbol.upper().split()[0] if symbol else ""
     next_catalyst = "None"
     hours_to_event = 999
     now_ist = datetime.now(_IST)
@@ -1161,7 +1171,12 @@ def _build_exit_prompt(
     # Time-of-day exit filter
     hour = now_ist.hour + now_ist.minute / 60
     is_mcx = any(m in symbol.upper() for m in ["NATURALGAS","CRUDEOIL","GOLD","SILVER"])
-    nse_close_window = 15.0 <= hour <= 15.5  # 15:00-15:30 IST
+    # NSE F&O close at 15:40 IST (previously 15:30); equity still 15:30
+    is_fo = symbol.upper() in ("NIFTY","BANKNIFTY","SENSEX","FINNIFTY","NATURALGAS","CRUDEOIL")
+    if is_fo and not is_mcx:
+        nse_close_window = 15.0 <= hour <= 15.65  # 15:00-15:40 IST
+    else:
+        nse_close_window = 15.0 <= hour <= 15.5  # 15:00-15:30 IST (equity/old behavior)
     mcx_close_window = 23.0 <= hour <= 23.5  # 23:00-23:30 IST
     in_close_window = mcx_close_window if is_mcx else nse_close_window
 
@@ -1196,6 +1211,10 @@ LIQUIDITY CHECK:
 
 TIME-OF-DAY RULE:
 • {'NSE expiry window 15:00-15:30 IST: only CLOSE or CLOSE_EARLY allowed.' if nse_close_window else 'MCX window 23:00-23:30 IST: only CLOSE or CLOSE_EARLY allowed.' if mcx_close_window else 'Outside close window: all actions permitted.'}
+
+DISCIPLINE & CAPITAL PRESERVATION (agency-reality-checker):
+- Protect open gains: If position reached >50% of target and underlying momentum stalls at S/R, TRAIL_SL immediately.
+- Never hold and hope: If data invalidates the initial premise, select CLOSE_EARLY without waiting for full SL hit.
 
 ACTIONS for {pos_direction.split()[0]} position:
 • HOLD: Thesis intact, favorable/consolidating

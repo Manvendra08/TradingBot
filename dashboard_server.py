@@ -1535,7 +1535,7 @@ async def get_paper_trades(symbol: str = "", status: str = "", limit: int = 300)
     rows = _q(sql, all_params)
 
     # Also aggregate multi_leg_trades
-    clauses_ml = []
+    clauses_ml = ["status != 'QUARANTINED'"]
     params_ml: list = []
     if symbol:
         clauses_ml.append("symbol=?")
@@ -1765,7 +1765,7 @@ async def get_paper_summary(symbol: str = ""):
 
     pt_rows = _q(f"SELECT * FROM paper_trades {where_pt}", tuple(params_pt))
 
-    clauses_ml = []
+    clauses_ml = ["status != 'QUARANTINED'"]
     params_ml: list = []
     if symbol:
         clauses_ml.append("symbol=?")
@@ -2216,7 +2216,7 @@ async def get_paper_equity(symbol: str = ""):
         tuple(params),
     )
 
-    clauses_ml = ["status != 'OPEN' AND closed_at IS NOT NULL"]
+    clauses_ml = ["status != 'OPEN' AND status != 'QUARANTINED' AND closed_at IS NOT NULL"]
     params_ml: list = []
     if symbol:
         clauses_ml.append("symbol=?")

@@ -93,11 +93,16 @@ def _call_llm_autopsy(trade: dict, shadow: dict | None) -> dict:
     """Call LLM for single trade autopsy analysis."""
     try:
         from src.engine.llm_enrichment import LLMTradeAutopsy, _call_llm_api
+        from src.engine.skill_loader import get_autopsy_analyst_guidance
     except ImportError:
         return {"reasons_held": None, "primary_failure": "LLM unavailable", "note": ""}
 
     symbol = trade.get("symbol", "UNKNOWN")
+    autopsy_guidance = get_autopsy_analyst_guidance()
     prompt = f"""Analyze this closed trade and determine if the decision logic held up.
+
+ANALYSIS FRAMEWORK:
+{autopsy_guidance}
 
 TRADE:
 - Symbol: {symbol}
@@ -176,8 +181,10 @@ def _call_llm_autopsy_batch(trades_with_shadows: list[tuple[dict, dict | None]])
                 f"Shadow: {shadow_str}"
             )
         
+        guidance = get_autopsy_analyst_guidance()
         prompt = (
             f"Analyze these {len(batch)} closed trades. For each, determine if the decision logic held up.\n\n"
+            f"ANALYSIS FRAMEWORK:\n{guidance}\n\n"
             + "\n".join(trade_summaries)
             + '\n\nRespond with a JSON object populated with "autopsies" list of objects, one per trade:\n'
               '{"autopsies": [{"reasons_held": bool, "primary_failure": "string or null", "note": "3 sentences max"}]}'
