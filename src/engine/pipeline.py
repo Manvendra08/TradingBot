@@ -1123,6 +1123,24 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
         except Exception:
             log.debug("%s: ML prediction failed gracefully", symbol)
 
+    try:
+        from src.models.scan_snapshot import create_scan_snapshot
+        snapshot = create_scan_snapshot(
+            symbol=symbol,
+            underlying=float(scan_context.get("underlying", 0.0)),
+            expiry=str(scan_context.get("expiry") or current_expiry_str or ""),
+            option_rows=scan_context.get("option_rows", []),
+            engine_verdict=str((intel or {}).get("verdict_label", "NEUTRAL")),
+            engine_confidence=int((intel or {}).get("confidence", 0)),
+            atm_strike=float(scan_context.get("atm_strike", 0.0)),
+            data_legitimacy_score=int(legitimacy.score if hasattr(legitimacy, "score") else 100),
+            intel=intel or {},
+        )
+        scan_context["snapshot_id"] = snapshot.snapshot_id
+        scan_context["_snapshot"] = snapshot
+    except Exception:
+        log.exception("%s: Failed to create scan snapshot", symbol)
+
     from config.runtime_config import load_runtime_config
     rconf = load_runtime_config()
     llm_async = rconf.get("llm_enrichment_async", True)
