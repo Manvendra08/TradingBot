@@ -1832,8 +1832,22 @@ class ShoonyaFetcher(BaseFetcher):
             # on a single NSE index fetch.  Now we extract these fields directly from the
             # chain response, eliminating 42 redundant API calls per NSE symbol.
             #
-            # If any item is missing critical fields, we fall back to _get_quotes()
-            # for that specific strike only (not all 42).
+            # If any item is missing critical fields, fetch them via parallel _bulk_get_quotes()
+            # rather than making serial HTTP calls per strike.
+            missing_items = [
+                s for s in target_scrips
+                if s.get("optt") in ("CE", "PE")
+                and (s.get("lp") is None or s.get("oi") is None)
+                and s.get("token")
+            ]
+            fetched_quotes: dict[str, dict] = {}
+            if missing_items:
+                log.debug(
+                    "[shoonya] %s: %d/%d strikes missing lp/oi — fetching via parallel bulk quotes",
+                    base, len(missing_items), len(target_scrips)
+                )
+                fetched_quotes = self._bulk_get_quotes(option_exch, missing_items)
+
             strikes = []
             for item in target_scrips:
                 ot = item.get("optt")
@@ -1845,7 +1859,7 @@ class ShoonyaFetcher(BaseFetcher):
                 except (ValueError, TypeError):
                     continue
 
-                # Determine data source: GetOptionChain item first, fall back to GetQuotes
+                # Determine data source: GetOptionChain item first, fall back to bulk GetQuotes
                 # if LTP or OI is missing.
                 data = item
                 ltp_raw = item.get("lp")
@@ -1853,7 +1867,7 @@ class ShoonyaFetcher(BaseFetcher):
                 if ltp_raw is None or oi_raw is None:
                     token = item.get("token")
                     if token:
-                        q = self._get_quotes(option_exch, token)
+                        q = fetched_quotes.get(str(token)) or self._get_quotes(option_exch, token)
                         if q and q.get("stat") == "Ok":
                             q_tok = str(q.get("token") or "")
                             q_tsym = str(q.get("tsym") or "")
@@ -1865,8 +1879,8 @@ class ShoonyaFetcher(BaseFetcher):
                             ):
                                 data = q
                             else:
-                                log.warning(
-                                    "[shoonya] %s: Discarding mismatched/index quote for token %s (got token %s, tsym %s)",
+                                log.debug(
+                                    "[shoonya] %s: Discarding inactive/index quote for token %s (got token %s, tsym %s)",
                                     base, token, q_tok, q_tsym
                                 )
 
