@@ -60,6 +60,11 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+def _is_option_tsym(tsym: str) -> bool:
+    """Return True if trading symbol matches option pattern (NFO C/P, BFO/MCX CE/PE)."""
+    return bool(re.search(r"[CP](?:E)?\d+|\d+[CP](?:E)?", tsym))
+
+
 _SHOONYA_HTTP_SESSION = None
 
 
@@ -1613,7 +1618,7 @@ class ShoonyaFetcher(BaseFetcher):
                             if res and res.get("stat") == "Ok" and res.get("values"):
                                 for val in res["values"]:
                                     tsym_opt = val.get("tsym", "")
-                                    if "CE" in tsym_opt or "PE" in tsym_opt or tsym_opt.startswith(prefix_weekly):
+                                    if _is_option_tsym(tsym_opt) or tsym_opt.startswith(prefix_weekly):
                                         resolved_nfo_tsym = tsym_opt
                                         log.info("[shoonya] Resolved NFO option symbol for expiry %s: %s", expiry, resolved_nfo_tsym)
                                         break
@@ -1632,7 +1637,7 @@ class ShoonyaFetcher(BaseFetcher):
                             if res and res.get("stat") == "Ok" and res.get("values"):
                                 for val in res["values"]:
                                     tsym_opt = val.get("tsym", "")
-                                    if "CE" in tsym_opt or "PE" in tsym_opt or tsym_opt.startswith(prefix_cand):
+                                    if _is_option_tsym(tsym_opt) or tsym_opt.startswith(prefix_cand):
                                         resolved_nfo_tsym = tsym_opt
                                         log.info("[shoonya] Resolved nearest active NFO weekly option symbol: %s", resolved_nfo_tsym)
                                         break
@@ -1663,7 +1668,7 @@ class ShoonyaFetcher(BaseFetcher):
                             if res and res.get("stat") == "Ok" and res.get("values"):
                                 for val in res["values"]:
                                     tsym_opt = val.get("tsym", "")
-                                    if "CE" in tsym_opt or "PE" in tsym_opt:
+                                    if _is_option_tsym(tsym_opt):
                                         resolved_weekly_tsym = tsym_opt
                                         log.info("[shoonya] Resolved BFO option symbol for expiry %s: %s", expiry, resolved_weekly_tsym)
                                         break
@@ -1699,7 +1704,7 @@ class ShoonyaFetcher(BaseFetcher):
                                 if res and res.get("stat") == "Ok" and res.get("values"):
                                     for val in res["values"]:
                                         tsym_opt = val.get("tsym", "")
-                                        if "CE" in tsym_opt or "PE" in tsym_opt:
+                                        if _is_option_tsym(tsym_opt):
                                             resolved_weekly_tsym = tsym_opt
                                             log.info("[shoonya] Resolved BFO option symbol: %s", resolved_weekly_tsym)
                                             break
@@ -1850,7 +1855,20 @@ class ShoonyaFetcher(BaseFetcher):
                     if token:
                         q = self._get_quotes(option_exch, token)
                         if q and q.get("stat") == "Ok":
-                            data = q
+                            q_tok = str(q.get("token") or "")
+                            q_tsym = str(q.get("tsym") or "")
+                            # Prevent Shoonya from leaking index quote (e.g. token 1 / SENSEX / NIFTY spot) into option leg
+                            if (
+                                q_tok == str(token)
+                                and q_tsym not in (base, "SENSEX", "NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "Nifty 50", "Nifty Bank")
+                                and _is_option_tsym(q_tsym)
+                            ):
+                                data = q
+                            else:
+                                log.warning(
+                                    "[shoonya] %s: Discarding mismatched/index quote for token %s (got token %s, tsym %s)",
+                                    base, token, q_tok, q_tsym
+                                )
 
                 def _fq(key, _src=data):
                     try:

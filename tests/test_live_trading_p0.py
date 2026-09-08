@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 import pytest
 from src.engine import llm_enrichment as llm_mod
+from src.engine.broker_gate import ExecutionAuthorization
 
 
 @pytest.fixture(autouse=True)
@@ -316,6 +317,17 @@ def test_live_entry_blocks_fallback_symbol_before_broker_order():
     }
 
     with (
+        patch(
+            "src.engine.broker_gate.authorize_broker_execution",
+            return_value=ExecutionAuthorization(
+                is_authorized=True,
+                is_shadow=False,
+                reason="authorized",
+                symbol="BANKNIFTY",
+                operation="ENTRY",
+                config_snapshot={},
+            ),
+        ),
         patch("src.engine.live_trading._is_market_open", return_value=True),
         patch(
             "src.engine.live_trading.load_runtime_config",

@@ -15,6 +15,7 @@ The AI receives the full scan context including:
   - Historical scan trend
 """
 
+import copy
 import json
 import logging
 log = logging.getLogger("nsebot.llm_enrichment")
@@ -96,10 +97,10 @@ _GROQ_REASONING_MODELS = frozenset(
 
 
 def _opencode_post(url, headers, json_payload, timeout):
-    """POST to opencode.ai using httpx (requests/urllib3 fails TLS against Cloudflare)."""
+    """POST to opencode.ai using httpx with standard TLS verification."""
     if _httpx is None:
         raise ImportError("httpx required for opencode.ai endpoints")
-    resp = _httpx.post(url, headers=headers, json=json_payload, timeout=timeout, verify=False)
+    resp = _httpx.post(url, headers=headers, json=json_payload, timeout=timeout)
     # Return a requests-like object for the caller
     class _Resp:
         pass
@@ -1013,18 +1014,16 @@ ANALYSIS (ordered):
 5. Macro catalyst? (EIA/RBI/OPEC/expiry)
 6. Confidence: count [OI, price, news] agreement
    3/3→80-95 | 2/3→60-75 | 1/3→35-55 | 0/3→NO_TRADE
-7. Action MUST match ENGINE ({_bias_str}). Downgrade to NO_TRADE OK, flip FORBIDDEN.
+7. Engine Alignment: The quantitative OI engine decides direction ({_bias_str} with {intel.get('confidence', 0)}% confidence). Your role is execution detail (levels, target, stop loss). Do NOT override a triggered engine trade to NO_TRADE based on subjective chart doubt or routine theta decay; reserve NO_TRADE strictly for missing strike liquidity, invalid quotes, or hard data integrity failures.
 
-TRADE DISCIPLINE (long premium — theta works against you every hour):
+TRADE DISCIPLINE:
 {get_reality_check_guardrails()}
-• DTE ≤ 1: enter only on a live 3H breakout with momentum; otherwise NO_TRADE (theta outruns edge)
-• Anchor targets to DATA levels: long → resistance/max-pain above, short → support/max-pain below. Never project a target past the nearest opposing level without stating why in thesis.
+• Anchor targets to DATA levels: long/bullish → resistance/max-pain above, short/bearish → support/max-pain below. Never project a target past the nearest opposing level without stating why in thesis.
 • SL at the nearest DATA level that invalidates the setup — not an arbitrary %.
-• Compute risk_reward from YOUR OWN levels: (target_1 − entry) / (entry − stop_loss). It must reconcile arithmetically. Below 1:1.2 → NO_TRADE (thin edge is no edge).
-• NO_TRADE is a position. Take it when evidence is mixed (≤1/3 agree), the chosen strike shows "—" in Premiums, or data looks stale/contradictory. A missed trade costs nothing; a forced one costs real money.
-• NAKED SHORT BAN into events: DTE≤2 AND event_day={event_risk_today} → IRON_CONDOR (defined-risk) or NO_TRADE. No naked strangle/straddle.
-• Lot check: max_risk_per_lot = (entry − stop_loss) × {lot_size}. Max single-trade loss ≤ 1.5% of portfolio. NO_TRADE if math violates.
-• IV RANK gate: {atm_iv:.1f}% ATM IV. Below 25th percentile → NO_TRADE (no edge for sellers).
+• Compute risk_reward from YOUR OWN levels: (target_1 − entry) / (entry − stop_loss). It must reconcile arithmetically. Below 1:1.2 → adjust targets or stops to align with market structure.
+• Reserve NO_TRADE strictly for cases where evidence is completely contradictory (0/3 agree), chosen strike shows "—" or zero bid in Premiums, or option chain data is corrupt. A valid quantitative signal with liquid strikes must be structured and executed.
+• NAKED SHORT BAN into events: DTE≤2 AND event_day={event_risk_today} → defined-risk spread / IRON_CONDOR or NO_TRADE. No naked short strangle/straddle.
+• Lot check: max_risk_per_lot = (entry − stop_loss) × {lot_size}. Max single-trade loss ≤ 1.5% of portfolio.
 
 OUTPUT (JSON per schema; every number MUST appear in DATA or be arithmetic on DATA — never invent):
 • instrument: "{symbol} <strike> CE/PE/FUT <expiry>" — strike must exist in Premiums
@@ -1350,7 +1349,8 @@ def _parse_retry_after_seconds(text: str) -> float | None:
 def _register_provider_failure(
     provider: dict, status_code: int, body: str, now: float | None = None
 ) -> None:
-    now = time.time()
+    if now is None:
+        now = time.time()
     # Rebind log to a symbol-tagged adapter (symbol set by the calling _call_llm_api via
     # thread-local state). Tests that call this directly get a "?" placeholder.
     sym = getattr(_per_thread_state, "symbol", "?")
@@ -1361,9 +1361,10 @@ def _register_provider_failure(
     group_name = provider.get("model_group")
 
     if status_code == 402:
-        _PROVIDER_COOLDOWN_UNTIL[key] = now + 86400.0
-        if env_key:
-            _PROVIDER_COOLDOWN_UNTIL[env_key] = now + 86400.0
+        with _cooldown_lock:
+            _PROVIDER_COOLDOWN_UNTIL[key] = now + 86400.0
+            if env_key:
+                _PROVIDER_COOLDOWN_UNTIL[env_key] = now + 86400.0
         log.info("[llm] %s credit exhausted — 24h cooldown", provider.get("name"))
         return
 
@@ -1376,35 +1377,38 @@ def _register_provider_failure(
         retry = _parse_retry_after_seconds(body) or default_retry
         if "tokens per day" in body_l or "tpd" in body_l:
             retry = max(retry, 3600.0)
-        _PROVIDER_COOLDOWN_UNTIL[key] = now + retry
-        # Don't propagate key-wide cooldown for multi-model providers where
-        # 429s are per-model quotas (e.g. OpenCode, Groq, OpenRouter, AnyAPI, Antigravity)
-        _PER_MODEL_PROVIDERS = (
-            "ANTIGRAVITY_REFRESH_TOKEN",
-            "OPENCODE_API_KEY",
-            "GROQ_API_KEY",
-            "OPENROUTER_API_KEY",
-            "ANY_API_KEY",
-            "NVIDIA_API_KEY",
-        )
-        if env_key and env_key not in _PER_MODEL_PROVIDERS:
-            _PROVIDER_COOLDOWN_UNTIL[env_key] = now + retry
+        with _cooldown_lock:
+            _PROVIDER_COOLDOWN_UNTIL[key] = now + retry
+            # Don't propagate key-wide cooldown for multi-model providers where
+            # 429s are per-model quotas (e.g. OpenCode, Groq, OpenRouter, AnyAPI, Antigravity)
+            _PER_MODEL_PROVIDERS = (
+                "ANTIGRAVITY_REFRESH_TOKEN",
+                "OPENCODE_API_KEY",
+                "GROQ_API_KEY",
+                "OPENROUTER_API_KEY",
+                "ANY_API_KEY",
+                "NVIDIA_API_KEY",
+            )
+            if env_key and env_key not in _PER_MODEL_PROVIDERS:
+                _PROVIDER_COOLDOWN_UNTIL[env_key] = now + retry
         log.info("[llm] %s rate-limited — cooldown %.0fs", provider.get("name"), retry)
         return
 
     if status_code in (413, 502, 503, 504):
         # Transient upstream overload, gateway error, or TPM limit — 60s cooldown for specific model
-        _PROVIDER_COOLDOWN_UNTIL[key] = now + 60.0
-        if group_name and "opencode" in group_name:
-            with _cooldown_lock:
+        with _cooldown_lock:
+            _PROVIDER_COOLDOWN_UNTIL[key] = now + 60.0
+            if group_name and "opencode" in group_name:
                 _PROVIDER_COOLDOWN_UNTIL[group_name] = now + 90.0
+        if group_name and "opencode" in group_name:
             log.warning("[llm] Group '%s' returned %d unavailable — cooling down group for 90s to preserve pipeline budget", group_name, status_code)
         log.info("[llm] %s transient error / TPM limit (status=%d) — 60s cooldown", provider.get("name"), status_code)
         return
 
     if status_code == 400:
         # Upstream rejection / bad request — 60s cooldown for specific provider only
-        _PROVIDER_COOLDOWN_UNTIL[key] = now + 60.0
+        with _cooldown_lock:
+            _PROVIDER_COOLDOWN_UNTIL[key] = now + 60.0
         log.info("[llm] %s returned 400 upstream rejection — 60s cooldown", provider.get("name"))
         return
 
@@ -1422,7 +1426,8 @@ def _register_provider_failure(
     )
     if is_parse_error:
         # Format/parse error: 60s cooldown for specific provider instead of 10m
-        _PROVIDER_COOLDOWN_UNTIL[key] = now + 60.0
+        with _cooldown_lock:
+            _PROVIDER_COOLDOWN_UNTIL[key] = now + 60.0
         log.info("[llm] %s output format/parse failure — 60s cooldown", provider.get("name"))
         return
 
@@ -1474,7 +1479,8 @@ def _register_provider_failure(
         return
 
     # Generic server error (500) or connection error — 10m cooldown
-    _PROVIDER_COOLDOWN_UNTIL[key] = now + 600.0
+    with _cooldown_lock:
+        _PROVIDER_COOLDOWN_UNTIL[key] = now + 600.0
 
     # True host-level errors: host unreachable / connection refused / connect timeout
     is_host_error = any(
@@ -1482,7 +1488,8 @@ def _register_provider_failure(
         for e in ("connectionrefusederror", "connecttimedout", "connection reset", "host unreachable", "connection refused", "name or service not known")
     )
     if is_host_error and group_name and group_name != "omnirouter-primary":
-        _PROVIDER_COOLDOWN_UNTIL[group_name] = now + 120.0
+        with _cooldown_lock:
+            _PROVIDER_COOLDOWN_UNTIL[group_name] = now + 120.0
         log.info("[llm] Host/Endpoint connection error on %s — cooling down group '%s' for 120s", provider.get("name"), group_name)
 
     log.info("[llm] %s failed (status=%d, err=%.50s) — 10m cooldown", provider.get("name"), status_code, body_l)
@@ -1606,7 +1613,7 @@ def _normalize_parsed_schema(parsed: dict, schema) -> dict:
     return parsed
 
 
-def _call_llm_api(
+def call_llm_api(
     symbol: str,
     prompt: str,
     response_schema=None,
@@ -1650,25 +1657,30 @@ def _call_llm_api(
         return None
 
     # When multiple symbols scan sequentially (e.g. NIFTY -> BANKNIFTY -> SENSEX),
-    # enforce a 60-second gap between symbols to protect free model TPM quotas (e.g. Groq 8k TPM).
+    # enforce a 20-second gap between symbols to protect free model TPM quotas (e.g. Groq 8k TPM).
     if symbol and purpose in ("live_verdict", "formatting", "strategy_optimization"):
+        wait_s = 0.0
+        prev_sym = None
         with _FREE_MODEL_SYMBOL_PACING_LOCK:
             curr_t = time.time()
             if _LAST_FREE_PROMPT_SYMBOL and _LAST_FREE_PROMPT_SYMBOL != symbol and _LAST_FREE_PROMPT_CALL_TIME > 0:
                 elapsed = curr_t - _LAST_FREE_PROMPT_CALL_TIME
                 if elapsed < 20.0:
                     wait_s = 20.0 - elapsed
-                    log.info(
-                        "[llm-throttle] Pacing multi-leg prompt between %s and %s — waiting %.1fs (20s free-model symbol gap)",
-                        _LAST_FREE_PROMPT_SYMBOL,
-                        symbol,
-                        wait_s,
-                    )
-                    time.sleep(wait_s)
-                    if deadline:
-                        deadline += wait_s
-            _LAST_FREE_PROMPT_CALL_TIME = time.time()
+                    prev_sym = _LAST_FREE_PROMPT_SYMBOL
+            _LAST_FREE_PROMPT_CALL_TIME = curr_t + wait_s
             _LAST_FREE_PROMPT_SYMBOL = symbol
+
+        if wait_s > 0:
+            log.info(
+                "[llm-throttle] Pacing multi-leg prompt between %s and %s — waiting %.1fs (20s free-model symbol gap)",
+                prev_sym or "previous symbol",
+                symbol,
+                wait_s,
+            )
+            time.sleep(wait_s)
+            if deadline:
+                deadline += wait_s
 
     now = time.time()
 
@@ -3159,7 +3171,8 @@ def _call_llm_api(
                         provider.get("name") or provider["model"],
                         provider["model"],
                     )
-                    _CONSECUTIVE_FAILURES = 0
+                    with _cooldown_lock:
+                        _CONSECUTIVE_FAILURES = 0
                     _record_host_success(provider)
                     if group_name:
                         # Clear this call's read-timeout tally for the group on success.
@@ -3266,7 +3279,8 @@ def _call_llm_api(
                                     provider.get("name") or provider["model"],
                                     provider["model"],
                                     )
-                                _CONSECUTIVE_FAILURES = 0
+                                with _cooldown_lock:
+                                    _CONSECUTIVE_FAILURES = 0
                                 _record_host_success(provider)
                                 return result
                     # After retry, if still not 200, register the failure and skip this model.
@@ -3300,25 +3314,29 @@ def _call_llm_api(
                 _register_provider_failure(provider, 500, str(ex), now)
 
     # Track consecutive failures and activate circuit breaker
-    _CONSECUTIVE_FAILURES += 1
-    if _CONSECUTIVE_FAILURES >= _CIRCUIT_BREAKER_THRESHOLD:
-        _CIRCUIT_OPEN_UNTIL = now + _CIRCUIT_BREAKER_COOLDOWN
-        log.error(
-            "[llm] Circuit breaker ACTIVATED after %d failures. Pausing LLM calls for %.0fs.",
-            _CONSECUTIVE_FAILURES,
-            _CIRCUIT_BREAKER_COOLDOWN,
-        )
+    with _cooldown_lock:
+        _CONSECUTIVE_FAILURES += 1
+        curr_failures = _CONSECUTIVE_FAILURES
+        if _CONSECUTIVE_FAILURES >= _CIRCUIT_BREAKER_THRESHOLD:
+            _CIRCUIT_OPEN_UNTIL = now + _CIRCUIT_BREAKER_COOLDOWN
+            log.error(
+                "[llm] Circuit breaker ACTIVATED after %d failures. Pausing LLM calls for %.0fs.",
+                _CONSECUTIVE_FAILURES,
+                _CIRCUIT_BREAKER_COOLDOWN,
+            )
+        # Invalidate cache for this symbol so stale data isn't served indefinitely
+        _VERDICT_CACHE.pop(symbol, None)
 
     log.warning(
         "[llm] All LLM providers exhausted for %s (failures: %d)",
         symbol,
-        _CONSECUTIVE_FAILURES,
+        curr_failures,
     )
-    # Invalidate cache for this symbol so stale data isn't served indefinitely
-    # when all providers fail. The next call will be forced to attempt a fresh
-    # LLM call (or return None if all providers still fail).
-    _VERDICT_CACHE.pop(symbol, None)
     return None
+
+
+# Backward-compatibility alias for internal and test callers
+_call_llm_api = call_llm_api
 
 
 # ── Public API ───────────────────────────────────────────────────────────
@@ -3957,17 +3975,6 @@ def get_llm_verdict(
     Executes with a 30-second timeout to prevent pipeline stalls.
     Supports in-memory caching to save tokens and prevent 429 quota exhaustion.
     """
-    has_keys = (
-        os.environ.get("OMNIROUTER_API_KEY")
-        or os.environ.get("OPENCODE_API_KEY")
-        or os.environ.get("OPENROUTER_API_KEY")
-        or os.environ.get("GROQ_API_KEY")
-        or os.environ.get("GEMINI_API_KEY")
-        or os.environ.get("GITHUB_TOKEN")
-        or os.environ.get("AWS_ACCESS_KEY_ID")
-        or True  # Default local OmniRouter proxy http://localhost:20128/v1 fallback
-    )
-
     # Check cache first
     now = time.time()
     deadline = now + 90.0  # 90-second budget for the entire call
@@ -4147,16 +4154,6 @@ def get_exit_advice(
     Returns dynamic SL/target adjustment recommendations.
     Supports in-memory caching to save tokens and prevent 429 quota exhaustion.
     """
-    has_keys = (
-        os.environ.get("OMNIROUTER_API_KEY")
-        or os.environ.get("OPENCODE_API_KEY")
-        or os.environ.get("OPENROUTER_API_KEY")
-        or os.environ.get("GROQ_API_KEY")
-        or os.environ.get("GEMINI_API_KEY")
-        or os.environ.get("GITHUB_TOKEN")
-        or True  # Default local OmniRouter proxy http://localhost:20128/v1 fallback
-    )
-
     # Check cache first
     now = time.time()
     deadline = now + 90.0  # 90-second budget for the entire call
@@ -4380,77 +4377,83 @@ def get_multileg_verdict(
         if result:
             base_sym = symbol.upper().split()[0] if symbol else ""
             is_mcx = symbol.upper() in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER") or base_sym in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER")
-            if is_mcx and result.strategy_type == "IRON_CONDOR":
-                log.info("[llm-multileg] %s: Iron Condor is disabled for MCX symbols — auto-reclassifying to SHORT_STRANGLE", symbol)
-                result.strategy_type = "SHORT_STRANGLE"
-                sell_legs = [l for l in result.legs if getattr(l, "side", "").upper() == "SELL"]
-                if len(sell_legs) >= 2:
-                    result.legs = sell_legs[:2]
-                else:
-                    result.legs = result.legs[:2]
-                for leg in result.legs:
-                    leg.side = "SELL"
+            strat = result.strategy_type
+            legs = [l.model_copy() if hasattr(l, "model_copy") else copy.deepcopy(l) for l in result.legs]
 
-            st_upper = str(getattr(result, "strategy_type", "")).upper().strip()
+            if is_mcx and strat == "IRON_CONDOR":
+                log.info("[llm-multileg] %s: Iron Condor is disabled for MCX symbols — auto-reclassifying to SHORT_STRANGLE", symbol)
+                strat = "SHORT_STRANGLE"
+                sell_legs = [l for l in legs if getattr(l, "side", "").upper() == "SELL"]
+                legs = (sell_legs[:2] if len(sell_legs) >= 2 else legs[:2])
+                legs = [
+                    l.model_copy(update={"side": "SELL"}) if hasattr(l, "model_copy") else (setattr(l, "side", "SELL") or l)
+                    for l in legs
+                ]
+
+            st_upper = str(strat or "").upper().strip()
             if st_upper in ("NO_TRADE", "NONE", "", "NULL"):
-                result.strategy_type = "NO_TRADE"
-                result.legs = []
+                strat = "NO_TRADE"
+                legs = []
             else:
                 # Validate legs count matches updated strategy constraints
                 from config.multileg_strategies import STRATEGY_CONSTRAINTS
-                constraints = STRATEGY_CONSTRAINTS.get(result.strategy_type, {})
+                constraints = STRATEGY_CONSTRAINTS.get(strat, {})
                 min_legs = constraints.get("min_legs", 2)
                 max_legs = constraints.get("max_legs", 6)
 
-                if len(result.legs) < min_legs:
+                if len(legs) < min_legs:
                     # If LLM returned 2 legs for IRON_CONDOR (common LLM mistake for strangle), auto-reclassify to SHORT_STRANGLE
-                    if result.strategy_type == "IRON_CONDOR" and len(result.legs) == 2:
+                    if strat == "IRON_CONDOR" and len(legs) == 2:
                         log.info(
                             "[llm-multileg] %s: Reclassifying 2-leg IRON_CONDOR to SHORT_STRANGLE",
                             symbol,
                         )
-                        result.strategy_type = "SHORT_STRANGLE"
+                        strat = "SHORT_STRANGLE"
                         constraints = STRATEGY_CONSTRAINTS.get("SHORT_STRANGLE", {})
                         min_legs = constraints.get("min_legs", 2)
                         max_legs = constraints.get("max_legs", 2)
                     else:
                         log.warning(
                             "[llm-multileg] %s: %s requires %d+ legs, got %d — invalid verdict, defaulting to NO_TRADE",
-                            symbol, result.strategy_type, min_legs, len(result.legs),
+                            symbol, strat, min_legs, len(legs),
                         )
-                        result.strategy_type = "NO_TRADE"
-                        result.legs = []
-                elif len(result.legs) > max_legs:
+                        strat = "NO_TRADE"
+                        legs = []
+                elif len(legs) > max_legs:
                     log.warning(
                         "[llm-multileg] %s: %s allows max %d legs, got %d — truncating",
-                        symbol, result.strategy_type, max_legs, len(result.legs),
+                        symbol, strat, max_legs, len(legs),
                     )
-                    result.legs = result.legs[:max_legs]
+                    legs = legs[:max_legs]
 
                 # For Strangles & Straddles, ensure both CE and PE are present
-                if result.strategy_type in ("SHORT_STRANGLE", "SHORT_STRADDLE", "LONG_STRANGLE", "LONG_STRADDLE") and len(result.legs) == 2:
-                    opt_types = {str(getattr(l, "option_type", "")).upper() for l in result.legs}
+                if strat in ("SHORT_STRANGLE", "SHORT_STRADDLE", "LONG_STRANGLE", "LONG_STRADDLE") and len(legs) == 2:
+                    opt_types = {str(getattr(l, "option_type", "")).upper() for l in legs}
                     if opt_types != {"CE", "PE"}:
                         log.warning(
                             "[llm-multileg] %s: %s requires 1 CE and 1 PE leg, got %s — invalid, defaulting to NO_TRADE",
-                            symbol, result.strategy_type, opt_types,
+                            symbol, strat, opt_types,
                         )
-                        result.strategy_type = "NO_TRADE"
-                        result.legs = []
+                        strat = "NO_TRADE"
+                        legs = []
 
                 # Ensure legs observe strategy constraints (all_sell check)
                 all_sell_required = constraints.get("all_sell", False)
-                for leg in result.legs:
-                    if all_sell_required:
-                        leg.side = "SELL"
-                    elif not getattr(leg, "side", None) or leg.side.upper() not in ("BUY", "SELL"):
-                        leg.side = "SELL"  # default fallback if unspecified
+                updated_legs = []
+                for leg in legs:
+                    side = "SELL" if all_sell_required or not getattr(leg, "side", None) or leg.side.upper() not in ("BUY", "SELL") else leg.side
+                    if hasattr(leg, "model_copy"):
+                        updated_legs.append(leg.model_copy(update={"side": side}))
+                    else:
+                        leg.side = side
+                        updated_legs.append(leg)
+                legs = updated_legs
 
                 # Validate that all legs exist with valid liquidity in option_rows
                 option_rows = scan_context.get("option_rows") or []
-                if option_rows and result.legs and result.strategy_type != "NO_TRADE":
+                if option_rows and legs and strat != "NO_TRADE":
                     illiquid_issues = []
-                    for leg_idx, leg in enumerate(result.legs, 1):
+                    for leg_idx, leg in enumerate(legs, 1):
                         tgt_strike = float(getattr(leg, "strike", 0) or 0)
                         tgt_type = str(getattr(leg, "option_type", "")).upper()
                         matched_row = None
@@ -4476,8 +4479,14 @@ def get_multileg_verdict(
                             "[llm-multileg] %s: Multi-leg verdict contains illiquid legs %s — discarding to NO_TRADE",
                             symbol, illiquid_issues,
                         )
-                        result.strategy_type = "NO_TRADE"
-                        result.legs = []
+                        strat = "NO_TRADE"
+                        legs = []
+
+            if hasattr(result, "model_copy"):
+                result = result.model_copy(update={"strategy_type": strat, "legs": legs})
+            else:
+                result.strategy_type = strat
+                result.legs = legs
 
             log.info(
                 "[llm-multileg] %s: %s with %d legs, net premium ₹%.1f, confidence %d%%",

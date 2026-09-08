@@ -302,6 +302,8 @@ def build_multileg_prompt(
     resistance = float(scan_context.get("resistance") or 0)
     max_pain = float(scan_context.get("max_pain") or 0)
     pcr = float(scan_context.get("pcr") or 0)
+    is_mcx = symbol.upper() in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER")
+    conf_floor = 72 if is_mcx else 70
 
     # Chart data
     chart = scan_context.get("chart_indicators") or {}
@@ -391,6 +393,13 @@ Delta target: 0.15-0.30 for OTM sell legs | Max pain={max_pain:.0f} as magnet | 
 Risk: Max loss ≤ 3x net premium | Net delta near 0 | Profit target 30-50% max | Don't over-leg.
 - Set time decay exit at DTE ≤ 3
 
+CONFIDENCE CALIBRATION & ENGINE ALIGNMENT (0-100):
+- Execution confidence floor is {conf_floor}%. Any proposed strategy with confidence below {conf_floor}% will abort execution.
+- Baseline: Anchor your confidence to the underlying ENGINE conviction ({confidence}%).
+- When the engine confidence is high (≥70%) and you identify liquid strikes with viable net premium and safe delta: output confidence ≥ 70% (typically 75-95% commensurate with setup quality).
+- If the option chain has poor liquidity, wide bid-ask spreads, or negative risk-reward, downgrade confidence below {conf_floor}% or set strategy_type="NO_TRADE" and legs=[].
+- If you genuinely see extreme event risk, data corruption, or lack of premium edge, explicitly set strategy_type="NO_TRADE" with confidence=0 and explain in entry_rationale and thesis.
+
 ARITHMETIC (anti-hallucination — violations invalidate the plan):
 - Every leg premium MUST be the exact LTP printed in CHAIN for that strike. A leg whose strike or LTP is not in CHAIN is invalid → NO_TRADE.
 - net_premium = Σ(SELL LTPs) − Σ(BUY LTPs). max_profit, max_loss, breakevens must reconcile with net_premium and strike widths. Do not estimate any of these.
@@ -452,20 +461,42 @@ def build_multileg_exit_prompt(
         lot_size = 1
 
     leg_lines = []
+    from src.engine.trade_plan import is_valid_option_premium
     for l in legs:
         current_premium = 0.0
+        strike_val = float(l.get("strike", 0))
+        opt_type_val = str(l.get("option_type") or "").upper()
+        entry_prem_val = float(l.get("entry_premium") or 0.0)
+
         # Look up current premium from option_rows
+        found_ltp = None
         for row in scan_context.get("option_rows", []):
-            if (abs(float(row.get("strike", 0)) - float(l["strike"])) < 0.01
-                    and row.get("option_type") == l["option_type"]):
-                current_premium = float(row.get("ltp") or 0)
+            if (abs(float(row.get("strike", 0)) - strike_val) < 0.01
+                    and str(row.get("option_type") or "").upper() == opt_type_val):
+                ltp_val = float(row.get("ltp") or 0)
+                if ltp_val > 0 and (underlying <= 0 or is_valid_option_premium(strike_val, opt_type_val, ltp_val, underlying)):
+                    found_ltp = ltp_val
                 break
+
+        if found_ltp is not None:
+            current_premium = found_ltp
+        else:
+            # Fallback to delta-based estimate aligned with _calc_multileg_pnl()
+            if underlying > 0 and book.get("entry_underlying"):
+                entry_und = float(book.get("entry_underlying") or underlying)
+                und_move = underlying - entry_und
+                delta = float(l.get("delta") or 0.25)
+                delta_sign = delta if opt_type_val == "CE" else -abs(delta)
+                current_premium = max(0.05, entry_prem_val + delta_sign * und_move)
+            else:
+                current_premium = float(l.get("current_premium") or entry_prem_val or 0.05)
+
         # Short legs profit as premium decays; long (BUY) legs profit as premium rises.
         direction = 1 if str(l.get("side") or "SELL").upper() == "SELL" else -1
-        pnl = direction * (float(l["entry_premium"]) - current_premium) * int(l.get("lots", 1)) * lot_size
+        pnl = direction * (entry_prem_val - current_premium) * int(l.get("lots", 1)) * lot_size
         leg_lines.append(
-            f"  {l['side']} {l['option_type']} {l['strike']:.0f} | "
-            f"Entry: ₹{float(l['entry_premium']):.1f} | "
+            f"  {l['side']} {l['option_type']} {strike_val:.0f} | "
+            f"Entry: ₹{entry_prem_val:.1f} | "
             f"Current: ₹{current_premium:.1f} | "
             f"P&L: ₹{pnl:.0f} | Δ={float(l.get('delta',0)):.2f}"
         )

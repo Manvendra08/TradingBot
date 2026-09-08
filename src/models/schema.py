@@ -2290,9 +2290,15 @@ def close_book(
                     "UPDATE multi_leg_legs SET status='CLOSED', closed_at=?, exit_premium=?, exit_reason=? WHERE id=?",
                     (closed_at, ep, reason, lid),
                 )
-        # Close any remaining open legs that were not in leg_exits
+        # Close any remaining open legs that were not in leg_exits, ensuring exit_premium is never null or zero
         conn.execute(
-            "UPDATE multi_leg_legs SET status='CLOSED', closed_at=?, exit_reason=? WHERE trade_id=? AND status='OPEN'",
+            """
+            UPDATE multi_leg_legs 
+            SET status='CLOSED', closed_at=?, 
+                exit_premium=COALESCE(NULLIF(current_premium, 0.0), NULLIF(entry_premium, 0.0), 0.05),
+                exit_reason=? 
+            WHERE trade_id=? AND status='OPEN'
+            """,
             (closed_at, reason, trade_id),
         )
 

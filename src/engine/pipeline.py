@@ -647,7 +647,7 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
     if not db_entered:
         actual_lots = base_lots * td.get("tranche_count", 1) if td.get("tranche_count") else base_lots
 
-    exp_val = scan_context.get("expiry")
+    exp_val = scan_context.get("expiry") or scan_context.get("expiry_date")
     dte_val = scan_context.get("dte")
     if dte_val is None and exp_val:
         try:
@@ -668,13 +668,15 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
             llm_verdict.get("confidence") if isinstance(llm_verdict, dict) else None
         )
 
+    spot_val = scan_context.get("underlying") or scan_context.get("underlying_price") or 0.0
+
     header = {
         "symbol": symbol,
         "scan_time": ts,
         "expiry": exp_val,
         "dte": dte_val,
-        "underlying": scan_context.get("underlying"),
-        "spot": scan_context.get("underlying") or 0.0,
+        "underlying": spot_val,
+        "spot": spot_val,
         "market_regime": scan_context.get("market_regime") or "UNKNOWN",
         "confidence": llm_conf or (intel or {}).get("confidence", 0),
         "trade_entered": trade_entered,
@@ -795,6 +797,24 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
         ai_thesis += ("\n\n" if ai_thesis else "") + insight
     if not ai_thesis:
         ai_thesis = "No thesis generated."
+
+    if not multileg_payload:
+        strat_choice = "NO_TRADE"
+        conf_val = None
+        if llm_verdict:
+            strat_choice = getattr(llm_verdict, "strategy_type", None) or getattr(llm_verdict, "strategy", None) or "NO_TRADE"
+            conf_val = getattr(llm_verdict, "confidence", None)
+        multileg_payload = {
+            "action": "NONE",
+            "decision_stage": "RISK_GATE" if blocker_reason else "LLM_STRUCTURE_SELECTION",
+            "strategy_type": strat_choice,
+            "reason": blocker_reason or "No valid edge / Sidelined",
+            "confidence": conf_val or (intel or {}).get("confidence", 0),
+            "thesis": getattr(llm_verdict, "thesis", "") if llm_verdict else "",
+            "ai_model_name": getattr(llm_verdict, "model_name", None) if llm_verdict else None,
+            "live_books": [],
+            "closed_items": [],
+        }
 
     if multileg_payload:
         ml_act = str(multileg_payload.get("action") or "").upper()

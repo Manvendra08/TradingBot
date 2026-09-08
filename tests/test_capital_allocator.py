@@ -28,6 +28,7 @@ from src.engine.capital_allocator import calculate_trade_lots
         (
             {
                 "live_broker_disabled": False,
+                "live_shadow_mode": False,
                 "live_symbol_lots": {"SENSEX": 7},
                 "paper_symbol_lots": {"SENSEX": 2},
                 "paper_lots": 10,
@@ -38,6 +39,7 @@ from src.engine.capital_allocator import calculate_trade_lots
         (
             {
                 "live_broker_disabled": False,
+                "live_shadow_mode": False,
                 "live_symbol_lots": {"NIFTY": 4},
                 "paper_symbol_lots": {"NIFTY": 2},
             },

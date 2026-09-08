@@ -77,61 +77,67 @@ def _get_stop_loss_threshold_rupees(book: dict, legs: list[dict], symbol: str) -
         total_max_loss_rupees = min(credit_sl, physical_max)
     else:
         # Undefined risk strategies (short strangle/straddle): use actual broker margin
-        # as the stop loss threshold. This represents the real capital at risk.
-        total_margin = 0.0
-        margin_fetched = False
-        
-        try:
-            kite_exchange = get_kite_exchange(symbol)
-            
-            for leg in legs:
-                leg_side = (leg.get("side") or "").upper()
-                if leg_side != "SELL":
-                    continue  # Only SELL legs contribute to undefined risk
-                
-                leg_lots = int(leg.get("lots") or 1)
-                tradingsymbol = leg.get("tradingsymbol") or leg.get("tradingsymbol_kite")
-                strike = float(leg.get("strike") or 0)
-                option_type = leg.get("option_type") or ""
-                premium = float(leg.get("entry_premium") or leg.get("premium") or 0.0)
-                
-                if not tradingsymbol or premium <= 0:
-                    continue
-                    
-                # Fetch actual broker margin for this SELL leg (requires actual units = lots * lot_size)
-                margin = _fetch_broker_margin_requirement(
-                    symbol=symbol,
-                    tradingsymbol=tradingsymbol,
-                    exchange=kite_exchange,
-                    transaction_type="SELL",
-                    quantity=leg_lots * lot_size,
-                    premium=premium,
-                )
-                
-                if margin and margin > 0:
-                    total_margin += margin
-                    margin_fetched = True
-                else:
-                    # Fallback: use static multiplier for this leg
-                    total_margin += max(premium, 1.0) * lot_size * stop_loss_pct
-            
-            if margin_fetched and total_margin > 0:
-                total_max_loss_rupees = total_margin * stop_loss_pct
-            else:
-                # Fallback: use static multiplier of net premium
-                total_max_loss_rupees = max(net_premium, 1.0) * lot_size * total_lots * stop_loss_pct
-                log.warning(
-                    "[multileg-live] %s: broker margin API unavailable for undefined-risk book; "
-                    "falling back to %.1fx net premium (₹%.0f)",
-                    symbol, stop_loss_pct, total_max_loss_rupees
-                )
-        except Exception as e:
-            log.warning(
-                "[multileg-live] %s: error fetching broker margin for SL threshold: %s; "
-                "falling back to %.1fx net premium",
-                symbol, e, stop_loss_pct
-            )
+        # as the stop loss threshold only when live broker trading is active.
+        from config.runtime_config import is_broker_trade_enabled
+        if not is_broker_trade_enabled():
+            # Broker trade is turned off (shadow mode, disabled, or paused) —
+            # compute SL directly from net premium without contacting broker API
             total_max_loss_rupees = max(net_premium, 1.0) * lot_size * total_lots * stop_loss_pct
+        else:
+            total_margin = 0.0
+            margin_fetched = False
+            
+            try:
+                kite_exchange = get_kite_exchange(symbol)
+                
+                for leg in legs:
+                    leg_side = (leg.get("side") or "").upper()
+                    if leg_side != "SELL":
+                        continue  # Only SELL legs contribute to undefined risk
+                    
+                    leg_lots = int(leg.get("lots") or 1)
+                    tradingsymbol = leg.get("tradingsymbol") or leg.get("tradingsymbol_kite")
+                    strike = float(leg.get("strike") or 0)
+                    option_type = leg.get("option_type") or ""
+                    premium = float(leg.get("entry_premium") or leg.get("premium") or 0.0)
+                    
+                    if not tradingsymbol or premium <= 0:
+                        continue
+                        
+                    # Fetch actual broker margin for this SELL leg (requires actual units = lots * lot_size)
+                    margin = _fetch_broker_margin_requirement(
+                        symbol=symbol,
+                        tradingsymbol=tradingsymbol,
+                        exchange=kite_exchange,
+                        transaction_type="SELL",
+                        quantity=leg_lots * lot_size,
+                        premium=premium,
+                    )
+                    
+                    if margin and margin > 0:
+                        total_margin += margin
+                        margin_fetched = True
+                    else:
+                        # Fallback: use static multiplier for this leg
+                        total_margin += max(premium, 1.0) * lot_size * stop_loss_pct
+                
+                if margin_fetched and total_margin > 0:
+                    total_max_loss_rupees = total_margin * stop_loss_pct
+                else:
+                    # Fallback: use static multiplier of net premium
+                    total_max_loss_rupees = max(net_premium, 1.0) * lot_size * total_lots * stop_loss_pct
+                    log.debug(
+                        "[multileg-live] %s: broker margin API unavailable for undefined-risk book; "
+                        "falling back to %.1fx net premium (₹%.0f)",
+                        symbol, stop_loss_pct, total_max_loss_rupees
+                    )
+            except Exception as e:
+                log.debug(
+                    "[multileg-live] %s: error fetching broker margin for SL threshold: %s; "
+                    "falling back to %.1fx net premium",
+                    symbol, e, stop_loss_pct
+                )
+                total_max_loss_rupees = max(net_premium, 1.0) * lot_size * total_lots * stop_loss_pct
 
     return max(total_max_loss_rupees, 1.0)
 
@@ -887,9 +893,18 @@ def _attempt_new_live_entry(
     st_upper = str(getattr(verdict, "strategy_type", "")).upper().strip()
     entry_rationale = str(getattr(verdict, "entry_rationale", "") or "")
     thesis = str(getattr(verdict, "thesis", "") or "")
-    confidence = int(getattr(verdict, "confidence", 0) or 0)
+    engine_conf = int((intel or {}).get("confidence") or (scan_context or {}).get("engine_confidence") or 0)
+    llm_conf = int(getattr(verdict, "confidence", 0) or 0)
     is_mcx = symbol in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER")
     conf_floor = 72 if is_mcx else 70
+
+    # Engine-aligned confidence: if engine conviction is high (>= conf_floor),
+    # blend 60% engine conviction + 40% LLM structural confidence to prevent
+    # conservative LLM probability estimates from falsely vetoing high-conviction trades.
+    if engine_conf >= conf_floor and llm_conf > 0:
+        effective_confidence = max(llm_conf, int(round(0.6 * engine_conf + 0.4 * llm_conf)))
+    else:
+        effective_confidence = llm_conf
 
     combined_text = f"{entry_rationale} {thesis}".lower()
     no_trade_phrases = (
@@ -907,23 +922,27 @@ def _attempt_new_live_entry(
         log.info("[multileg-live] %s: LLM returned no-trade verdict (%s, flag=%s)", symbol, st_upper or "NO_LEGS", has_no_trade_flag)
         return {
             "action": "NO_TRADE",
+            "decision_stage": "LLM_STRUCTURE_SELECTION",
             "strategy_type": getattr(verdict, "strategy_type", "NO_TRADE"),
             "reason": reason_msg,
+            "entry_rationale": entry_rationale,
             "thesis": thesis,
-            "confidence": confidence,
+            "confidence": effective_confidence,
+            "ai_model_name": getattr(verdict, "model_name", None),
         }
 
-    if confidence < conf_floor:
+    if effective_confidence < conf_floor:
         log.info(
-            "[multileg-live] %s: LLM confidence %d%% below floor %d%% — rejecting trade",
-            symbol, confidence, conf_floor
+            "[multileg-live] %s: Effective confidence %d%% (LLM %d%%, Engine %d%%) below floor %d%% — rejecting trade",
+            symbol, effective_confidence, llm_conf, engine_conf, conf_floor
         )
         return {
             "action": "REJECTED",
+            "decision_stage": "LLM_CONFIDENCE_GATE",
             "strategy_type": st_upper,
-            "confidence": confidence,
+            "confidence": effective_confidence,
             "thesis": thesis,
-            "reason": f"LLM confidence {confidence}% below minimum {conf_floor}% floor",
+            "reason": f"Effective confidence {effective_confidence}% below minimum {conf_floor}% floor (LLM={llm_conf}%, Engine={engine_conf}%)",
         }
 
     # ── 5b. Validate legs ─────────────────────────────────────────────
@@ -1430,7 +1449,7 @@ def _attempt_new_live_entry(
         "stop_loss_pct": verdict.stop_loss_pct,
         "time_decay_exit_dte": verdict.time_decay_exit_dte,
         "adjustment_count": 0,
-        "confidence_score": verdict.confidence,
+        "confidence_score": effective_confidence,
         "entry_quality_score": entry_quality,
         "digest_id": digest_id,
         "ai_model_name": verdict.model_name,
@@ -1461,7 +1480,7 @@ def _attempt_new_live_entry(
                 send_text(
                     f"🤖 **[MULTILEG LIVE]** `{symbol}` {strategy_type}\n"
                     f"Legs: {legs_summary}\n"
-                    f"Net Premium: ₹{net_premium:.1f} | Confidence: {verdict.confidence}%\n"
+                    f"Net Premium: ₹{net_premium:.1f} | Confidence: {effective_confidence}%\n"
                     f"Book: `{book_id}`"
                 )
             except Exception as e:
@@ -1478,7 +1497,7 @@ def _attempt_new_live_entry(
                 "strategy_type": strategy_type,
                 "legs_count": len(placed_legs),
                 "net_premium": net_premium,
-                "confidence": verdict.confidence,
+                "confidence": effective_confidence,
                 "entry_quality": entry_quality,
                 "quality_reasons": quality_reasons,
                 "thesis": verdict.thesis,

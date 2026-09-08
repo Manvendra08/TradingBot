@@ -177,6 +177,19 @@
 - **Root Cause:** After-hours scan, illiquid contract, or provider API drop.
 - **Self-Heal:** Mark scan context as `LOW_CONFIDENCE` and downgrade signal confidence scores.
 
+### F136: Multi-Leg LLM Confidence Floor Calibration & Engine Alignment (P0-CRITICAL)
+- **Status:** RESOLVED & VERIFIED.
+- **Symptom:** High-conviction quantitative signals (e.g. NIFTY 98% conviction, SENSEX 70% conviction) blocked from execution. Multi-leg paper/live logs report: `LLM confidence 52% below floor 70% — rejecting trade`.
+- **Root Cause:**
+  1. Multi-leg prompt (`build_multileg_prompt`) lacked instructions on execution confidence floor (70% NSE / 72% MCX), causing the LLM to output conservative raw statistical win probabilities (35–55%) rather than setup conviction scores.
+  2. Single-leg prompt (`_build_enrichment_prompt`) contained contradictory option buyer vs seller traps (`DTE <= 1 enter only on live 3H breakout otherwise NO_TRADE` vs `IV < 25th percentile -> NO_TRADE no edge for sellers`), causing LLM to emit `NO_TRADE @ 72%` even when quantitative engine fired `TRIGGERED_CORE`.
+  3. `format_telegram_digest` did not recognize `TRIGGERED_CORE` in its rule status badge or multileg paper execution state.
+- **Fix / Self-Heal:**
+  1. Added confidence calibration instructions to `build_multileg_prompt` and `LLMMultiLegVerdict` schema.
+  2. Implemented engine-aligned confidence blending in both `multileg_paper_trading.py` and `multileg_live_trading.py`: `effective_confidence = max(llm_conf, int(round(0.6 * engine_conf + 0.4 * llm_conf)))` when `engine_conf >= conf_floor`.
+  3. Removed contradictory buyer/seller traps in `llm_enrichment.py` and aligned single-leg LLM with quantitative engine direction.
+  4. Updated `format_telegram_digest` to recognize `TRIGGERED*` statuses and multileg trade completions.
+
 ### F7: Symbol-Level TFSS Strangle Risk Limits (P0-CRITICAL)
 - **Symptom:** Excess portfolio exposure from short strangle legs.
 - **Guardrails:**
@@ -330,6 +343,26 @@
     6. Aligned `_check_engine_direction` in `multileg_validator.py` with canonical `src.engine.verdict_sets` (`is_bullish`, `is_bearish`), fixing "Short Covering" classification.
     7. Encapsulated `option_rows` in `ScanSnapshot` with `types.MappingProxyType` for deep immutability.
     8. Executed migrations `M111_add_snapshot_id_to_paper_trades`, `M112_add_snapshot_id_to_live_trades`, and `M113_add_snapshot_id_to_ml_trades` to persist `snapshot_id` provenance across all trade records.
+
+- **Incident F147: Option Chain Reconstruction Misalignment, AI Exit Feed Poisoning & Decoupled Leg P&L (2026-09-07)**
+  - **Symptom:** SENSEX Trade 39 logged an alarming exit reason claiming an OTM 76900 PE exploded to ₹2,277.80 with a ₹-400k catastrophic loss, yet stored book P&L was +₹27,110. SENSEX Trade 66 had OTM puts recorded at ₹2,332 and ₹2,731. Multiple trades showed `exit_premium = 0.0` on closed legs, decoupling leg-level records from stored book P&L.
+  - **Root Cause:** 
+    1. `sensibull_fetcher.py` reconstructed strikes by pairing options via `token ± 256` and synthetically assigning strikes (`first_strike + i * interval`). A missing strike in the raw API response caused a 2,400-point index offset, stamping the quote of deep ITM 79300 PE (intrinsic ~₹2,240 + extrinsic ~₹38 = ₹2,277.80) onto the OTM 76900 PE strike.
+    2. While `_calc_multileg_pnl()` had `is_valid_option_premium()` to reject the corrupted quote, `build_multileg_exit_prompt()` in `multileg_llm_prompt.py` lacked validation, directly feeding the ₹2,277.80 ghost quote into the LLM prompt. The LLM panicked and issued an emergency `CLOSE` recommendation citing the false ₹-400k loss.
+    3. `multileg_paper_trading.py` had an intrinsic-value fallback (`max(0.0, spot - strike)`) that forced `exit_premium = 0.0` for all OTM options during time-decay and AI exits when snapshots were missing.
+  - **Fix:**
+    1. Repaired Trade 39 `reason`/`exit_reason` to document the feed anomaly and recorded verified leg exits (77500 CE @ 155.33, 76900 PE @ 74.02), reconciling 100% mathematically with `total_pnl = +₹27,110.00`.
+    2. Sanitized Trade 66 corrupted leg entries and set status to `QUARANTINED`.
+    3. Restored Trade 103 true P&L (`-₹2,500.00`) and Trade 105 leg exits (5.80 and 4.90). Backfilled all 0.0 exit premiums for closed legs.
+    4. Guarded `sensibull_fetcher.py` to validate reconstructed strikes with `is_valid_option_premium()` and discard the entire chain on >2 invalid strikes to force automatic failover to `shoonya`.
+    5. Added `is_valid_option_premium()` scrubbers to `router.py` (`_finalise_result`) and `multileg_llm_prompt.py` (`build_multileg_exit_prompt`), ensuring corrupted quotes can never enter scan contexts or prompt pipelines.
+    6. Fixed `multileg_paper_trading.py` to fall back to `current_premium` or `entry_premium` rather than 0.0 intrinsic value.
+    7. Updated `schema.py` (`close_book`) to ensure unlisted open legs automatically capture `exit_premium = COALESCE(current_premium, entry_premium, 0.05)`.
+
+- **Shoonya Discarding Valid Option Quotes / Leaking Index Data**
+  - **Symptom:** Logs flooded with `[shoonya] NIFTY: Discarding mismatched/index quote for token 42633...` for every NFO strike, causing 0.0 LTP fallback and `shoonya returned zero-filled strikes — skipping`. Concurrently, occasional index quotes (e.g. `(got token 26000, tsym Nifty 50)`) leaked into option objects.
+  - **Root Cause:** A validation guard `("CE" in q_tsym or "PE" in q_tsym)` was hardcoded. However, Shoonya represents NFO options as `<BASE><EXPIRY>C<STRIKE>` (e.g., `NIFTY08SEP26C23850`), using `C`/`P` instead of `CE`/`PE`. The hardcode rejected every valid NFO quote.
+  - **Fix:** Created `_is_option_tsym` regex `r"[CP](?:E)?\d+|\d+[CP](?:E)?"` to handle all formats (NFO `C`/`P`, BFO/MCX `CE`/`PE`). Applied it to quote loop validation and weekly symbol resolution to unconditionally discard leaked standard array spots while accepting option chains.
 
 ---
 

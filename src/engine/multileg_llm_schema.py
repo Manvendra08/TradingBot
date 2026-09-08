@@ -42,7 +42,9 @@ class LLMMultiLegVerdict(BaseModel):
     breakeven_upper: float = Field(description="Upper breakeven point")
     breakeven_lower: float = Field(description="Lower breakeven point")
     entry_rationale: str = Field(description="Why this strategy in this market condition")
-    confidence: int = Field(description="Confidence 0-100")
+    confidence: int = Field(
+        description="Execution confidence (0-100). Minimum 70% (72% for MCX) required to enter. Anchor to engine conviction and strike liquidity."
+    )
     thesis: str = Field(description="Rich narrative explaining the setup and reasoning")
     # Exit plan
     profit_target_pct: float = Field(

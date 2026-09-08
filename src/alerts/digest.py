@@ -1089,7 +1089,7 @@ def build_digest(
     template (build_enhanced_digest) have been merged into build_llm_consolidated_digest
     which handles all rendering paths including no-trade and trade states.
     """
-    if structured_payload and structured_payload.get("multileg"):
+    if structured_payload:
         d_id, msg = build_tfss_timeframe_digest(structured_payload, digest_id=digest_id)
         return d_id, sanitize_mojibake(msg)
 
@@ -2571,7 +2571,19 @@ def build_llm_consolidated_digest(
     lines: list[str] = []
     
     td_act = str(td.get("action") or "").upper()
-    if td_status in ["ENTERED", "OPEN", "TRIGGERED", "LIVE_ENTERED"] and td_act not in ["BLOCK", "NO_ACTION"]:
+    is_entered = False
+    if paper_trade_status and isinstance(paper_trade_status, dict):
+        p_act = str(paper_trade_status.get("action") or "").upper()
+        if p_act in ["ENTERED", "OPEN", "INSERTED", "ENTERED_LIVE"]:
+            is_entered = True
+    if live_trade_status and isinstance(live_trade_status, dict):
+        l_act = str(live_trade_status.get("action") or "").upper()
+        if l_act in ["ENTERED", "OPEN", "INSERTED", "ENTERED_LIVE"]:
+            is_entered = True
+    if not is_entered and (td_status in ["ENTERED", "OPEN", "TRIGGERED", "LIVE_ENTERED"] or td_status.startswith("TRIGGERED")) and td_act not in ["BLOCK", "NO_ACTION"]:
+        is_entered = True
+
+    if is_entered:
         status_text = "🟢 Entered"
     else:
         status_text = "✗ Not entered"
@@ -2621,8 +2633,8 @@ def build_llm_consolidated_digest(
             _blk = None
     if rule_status == "BLOCKED" and _blk:
         lines.append(f"⚠️ Rule engine: BLOCKED ({_esc(_blk)})")
-    elif rule_status == "TRIGGERED":
-        lines.append(f"✅ Rule engine: TRIGGERED ({_esc(td_setup)})")
+    elif rule_status.startswith("TRIGGERED"):
+        lines.append(f"✅ Rule engine: TRIGGERED ({_esc(td_setup or rule_status)})")
     else:
         lines.append(f"⚠️ Rule engine: {_esc(rule_status)}")
     

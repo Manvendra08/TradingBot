@@ -2,6 +2,14 @@
 
 Guidance for Claude Code in this repo.
 
+## Strict Graft Rule
+
+- **ALWAYS use Graft wherever applicable**:
+  - Symbol & Architecture Lookup: use `graft ask "<query>"`, `graft callers <symbol>`, or `graft skeleton <file>` for instant symbol, method, and architecture lookups instead of broad greps or reading whole files.
+  - Large Codebase Exploration: run `graft build` if the AST index needs generating or refreshing ($0, local AST).
+  - Blast Radius & Caller Verification: before editing or removing shared APIs, functions, or schemas, use `graft callers <symbol>` to verify all downstream consumers.
+  - Report Graft token savings and percentage at the end of turns (e.g. `🌱 graft saved ~N tokens (X%) this turn`).
+
 ## Project
 
 NSEBOT is a local NSE option-chain monitor, signal engine, Telegram digest bot, dashboard app, paper-trading tracker, and live trading executor.

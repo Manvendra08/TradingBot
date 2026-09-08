@@ -262,6 +262,26 @@ def _finalise_result(result: dict, source: str, symbol: str, priority: list[str]
     _filter_atm_strikes(result, required_strikes)
     underlying = result.get("underlying_price")
     expiry_val = result.get("expiry", "")
+
+    # Sanitize strikes: drop quotes that fail boundary integrity (e.g. SENSEX OTM Put at ₹2,277)
+    if underlying and underlying > 0:
+        from src.engine.trade_plan import is_valid_option_premium
+        raw_strikes = result.get("strikes", [])
+        sanitized_strikes = []
+        for s in raw_strikes:
+            stk = float(s.get("strike") or 0.0)
+            ot = str(s.get("option_type") or "").upper()
+            ltp = s.get("ltp")
+            if ltp is not None and ltp > 0:
+                if not is_valid_option_premium(stk, ot, float(ltp), float(underlying)):
+                    log.warning(
+                        "[router] %s: Scrubbed corrupted option quote %.0f %s LTP=%.2f (spot=%.2f)",
+                        symbol, stk, ot, float(ltp), float(underlying)
+                    )
+                    continue
+            sanitized_strikes.append(s)
+        result["strikes"] = sanitized_strikes
+
     strikes = result.get("strikes", [])
     total_strikes = len(strikes)
     from_source = sum(1 for s in strikes if _strike_has_greeks(s))

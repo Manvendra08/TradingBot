@@ -30,9 +30,11 @@ v3.0 FIXES:
 - Model version uses UTC ISO timestamp (not naive local)
 """
 
+import concurrent.futures
 import json
 import logging
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -40,6 +42,11 @@ from pathlib import Path
 import numpy as np
 
 log = logging.getLogger(__name__)
+
+# Non-blocking executor for asynchronous shadow prediction writes
+_SHADOW_WRITE_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="ml_shadow_writer"
+)
 
 # ── ML dependencies (optional — graceful degradation) ──────────────────────
 try:
@@ -161,6 +168,8 @@ class TradeSuccessPredictor:
         self.training_samples = 0
         self.current_auc = 0.0
         self._shap_explainer = None  # v2.1: Cached SHAP explainer
+        self._shap_lock = threading.Lock()
+        self._mode_cache: tuple[float, bool] = (0.0, True)  # (timestamp, is_shadow)
         self._needs_retrain = False  # v3.0: Set when stale model discarded
         self._force_shadow = False   # ADR-007: True if AUC/samples below threshold
         self._load_model()
@@ -236,18 +245,20 @@ class TradeSuccessPredictor:
         self._shap_explainer = None
 
     def _get_shap_explainer(self) -> "shap.TreeExplainer | None":
-        """v2.1: Lazy-init cached SHAP explainer."""
+        """v2.1: Lazy-init cached SHAP explainer with thread safety."""
         if self._shap_explainer is None and self.model is not None:
-            try:
-                self._shap_explainer = shap.TreeExplainer(self.model)
-            except Exception as e:
-                log.warning("SHAP TreeExplainer lazy init failed: %s", e)
-                self._shap_explainer = None
+            with self._shap_lock:
+                if self._shap_explainer is None and self.model is not None:
+                    try:
+                        self._shap_explainer = shap.TreeExplainer(self.model)
+                    except Exception as e:
+                        log.warning("SHAP TreeExplainer lazy init failed: %s", e)
+                        self._shap_explainer = None
         return self._shap_explainer
 
     def predict(self, trade_context: dict) -> "MLPrediction | None":
         """Predict success probability for a trade."""
-        if self.model is None:
+        if self.model is None or self.training_samples < MIN_TRADES_FOR_PREDICTION:
             return None
 
         features = self._extract_features(trade_context)
@@ -282,7 +293,7 @@ class TradeSuccessPredictor:
                     (FEATURE_ORDER[i], float(shap_values[i])) for i in top_indices
                 ]
             except Exception as e:
-                log.debug("SHAP explanation failed: %s", e)
+                log.warning("SHAP explanation failed: %s", e)
                 top_factors = []
 
         # v3.0 FIX: Confidence level blends TWO signals, not just sample count.
@@ -303,54 +314,67 @@ class TradeSuccessPredictor:
             training_samples=self.training_samples,
         )
 
-        # ADR-007 §3 A2: Write to shadow_predictions if in shadow mode
+        # ADR-007 §3 A2: Write to shadow_predictions asynchronously if in shadow mode
         self._write_shadow_prediction(prediction, trade_context, features)
 
         return prediction
 
     def _is_shadow_mode(self) -> bool:
-        """ADR-007 §3 A2: Check if ML predictor is in shadow mode."""
+        """ADR-007 §3 A2: Check if ML predictor is in shadow mode (cached with 30s TTL)."""
         if self._force_shadow:
             return True
+        now = time.time()
+        last_t, cached_mode = self._mode_cache
+        if now - last_t < 30.0:
+            return cached_mode
         try:
             from config.runtime_config import load_runtime_config
             rconf = load_runtime_config()
             mode = rconf.get("ml_predictor_mode", "shadow")
-            return mode == "shadow"
+            is_shadow = (mode == "shadow")
+            self._mode_cache = (now, is_shadow)
+            return is_shadow
         except Exception:
             return True  # Default to shadow on error
 
     def _write_shadow_prediction(
         self, prediction: "MLPrediction", trade_context: dict, features: dict
     ) -> None:
-        """ADR-007 §3 A2: Write prediction to shadow_predictions table in shadow mode."""
+        """ADR-007 §3 A2: Write prediction to shadow_predictions asynchronously in background."""
         if not self._is_shadow_mode():
             return
+
+        def _do_write():
+            try:
+                from datetime import datetime, timezone
+                from src.models.schema import get_conn
+
+                now_iso = datetime.now(timezone.utc).isoformat()
+                symbol = trade_context.get("symbol", "")
+                features_json = json.dumps(features, default=str)
+
+                with get_conn() as conn:
+                    conn.execute(
+                        """
+                        INSERT INTO shadow_predictions
+                        (ts, symbol, model_version, p_success, features_json, decision_id, outcome)
+                        VALUES (?, ?, ?, ?, ?, NULL, NULL)
+                        """,
+                        (
+                            now_iso,
+                            symbol,
+                            prediction.model_version,
+                            prediction.success_probability,
+                            features_json,
+                        ),
+                    )
+            except Exception as e:
+                log.debug("Failed to write shadow prediction asynchronously: %s", e)
+
         try:
-            from datetime import datetime, timezone
-            from src.models.schema import get_conn
-
-            now_iso = datetime.now(timezone.utc).isoformat()
-            symbol = trade_context.get("symbol", "")
-            features_json = json.dumps(features, default=str)
-
-            with get_conn() as conn:
-                conn.execute(
-                    """
-                    INSERT INTO shadow_predictions
-                    (ts, symbol, model_version, p_success, features_json, decision_id, outcome)
-                    VALUES (?, ?, ?, ?, ?, NULL, NULL)
-                    """,
-                    (
-                        now_iso,
-                        symbol,
-                        prediction.model_version,
-                        prediction.success_probability,
-                        features_json,
-                    ),
-                )
+            _SHADOW_WRITE_EXECUTOR.submit(_do_write)
         except Exception as e:
-            log.debug("Failed to write shadow prediction: %s", e)
+            log.debug("Failed to schedule shadow prediction write: %s", e)
 
     def _extract_features(self, ctx: dict) -> "dict | None":
         """
@@ -446,13 +470,17 @@ class TradeSuccessPredictor:
             return None
 
     def _calc_distance_pct(self, underlying, level) -> float:
-        """Calculate percentage distance to a level."""
-        if not underlying or not level:
-            return 0.0
+        """Calculate percentage distance to a level. Returns -1.0 when level is unavailable."""
+        if underlying is None or level is None:
+            return -1.0
         try:
-            return abs(float(underlying) - float(level)) / float(underlying) * 100
+            u = float(underlying)
+            l = float(level)
+            if u <= 0 or l <= 0:
+                return -1.0
+            return abs(u - l) / u * 100.0
         except (TypeError, ValueError, ZeroDivisionError):
-            return 0.0
+            return -1.0
 
     def train(self) -> bool:
         """
@@ -666,8 +694,9 @@ class TradeSuccessPredictor:
         MODEL_DIR.mkdir(parents=True, exist_ok=True)
         self.model = new_model
         self.feature_names = list(FEATURE_ORDER)
-        # v3.0 FIX: UTC ISO timestamp (not naive local)
-        self.model_version = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%SZ")
+        # Versioning timestamp standardized to IST for system-wide consistency
+        now_ist = datetime.now(timezone.utc) + IST_OFFSET
+        self.model_version = now_ist.strftime("%Y%m%d_%H%M%S_IST")
         self.training_samples = len(X)
         self.current_auc = new_auc
 

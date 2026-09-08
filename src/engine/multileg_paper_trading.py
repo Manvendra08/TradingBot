@@ -382,20 +382,23 @@ def _monitor_open_books(
                 time_decay_exit_dte,
             )
             from src.models.schema import get_latest_option_snapshot
+            from src.engine.trade_plan import is_valid_option_premium
             leg_exits = []
+            current_underlying = float((scan_context or {}).get("underlying") or entry_underlying)
             for leg in legs:
                 leg_id = leg.get("id")
                 if leg_id:
                     leg_strike = float(leg.get("strike") or 0.0)
                     leg_opt = leg.get("option_type", "CE")
                     snap = get_latest_option_snapshot(symbol, expiry, leg_strike, leg_opt)
-                    exit_premium = float(snap.get("ltp") or 0.0) if snap else 0.0
-                    if exit_premium <= 0:
-                        current_underlying = float((scan_context or {}).get("underlying") or entry_underlying)
-                        if leg_opt == "CE":
-                            exit_premium = max(0.0, current_underlying - leg_strike)
-                        else:
-                            exit_premium = max(0.0, leg_strike - current_underlying)
+                    snap_ltp = float(snap.get("ltp") or 0.0) if snap else 0.0
+                    curr_prem = float(leg.get("current_premium") or leg.get("entry_premium") or 0.0)
+                    if snap_ltp > 0 and (current_underlying <= 0 or is_valid_option_premium(leg_strike, leg_opt, snap_ltp, current_underlying)):
+                        exit_premium = snap_ltp
+                    elif curr_prem > 0 and (current_underlying <= 0 or is_valid_option_premium(leg_strike, leg_opt, curr_prem, current_underlying)):
+                        exit_premium = curr_prem
+                    else:
+                        exit_premium = float(leg.get("entry_premium") or 0.05)
                     leg_exits.append({"id": leg_id, "exit_premium": exit_premium})
 
             curr_und = float((scan_context or {}).get("underlying") or entry_underlying)
@@ -446,20 +449,23 @@ def _monitor_open_books(
                             )
                             exit_reason_str = f"CLOSED_AI_EXIT ({reasoning[:60]})"
                             from src.models.schema import get_latest_option_snapshot
+                            from src.engine.trade_plan import is_valid_option_premium
                             leg_exits = []
+                            current_underlying = float((scan_context or {}).get("underlying") or entry_underlying)
                             for leg in legs:
                                 leg_id = leg.get("id")
                                 if leg_id:
                                     leg_strike = float(leg.get("strike") or 0.0)
                                     leg_opt = leg.get("option_type", "CE")
                                     snap = get_latest_option_snapshot(symbol, expiry, leg_strike, leg_opt)
-                                    exit_premium = float(snap.get("ltp") or 0.0) if snap else 0.0
-                                    if exit_premium <= 0:
-                                        current_underlying = float((scan_context or {}).get("underlying") or entry_underlying)
-                                        if leg_opt == "CE":
-                                            exit_premium = max(0.0, current_underlying - leg_strike)
-                                        else:
-                                            exit_premium = max(0.0, leg_strike - current_underlying)
+                                    snap_ltp = float(snap.get("ltp") or 0.0) if snap else 0.0
+                                    curr_prem = float(leg.get("current_premium") or leg.get("entry_premium") or 0.0)
+                                    if snap_ltp > 0 and (current_underlying <= 0 or is_valid_option_premium(leg_strike, leg_opt, snap_ltp, current_underlying)):
+                                        exit_premium = snap_ltp
+                                    elif curr_prem > 0 and (current_underlying <= 0 or is_valid_option_premium(leg_strike, leg_opt, curr_prem, current_underlying)):
+                                        exit_premium = curr_prem
+                                    else:
+                                        exit_premium = float(leg.get("entry_premium") or 0.05)
                                     leg_exits.append({"id": leg_id, "exit_premium": exit_premium})
 
                             curr_und = float((scan_context or {}).get("underlying") or entry_underlying)
@@ -701,18 +707,25 @@ def _attempt_new_entry(
     # ── 5a. LLM verdict ───────────────────────────────────────────────
     from src.engine.llm_enrichment import get_multileg_verdict
 
-    try:
-        verdict = get_multileg_verdict(
-            symbol=symbol,
-            intel=intel,
-            scan_context=scan_context,
-            alerts=intel.get("alerts") if isinstance(intel, dict) else None,
-            news_data=intel.get("news_data") if isinstance(intel, dict) else None,
-            open_books=open_books or get_open_books_for_symbol(symbol),
-        )
-    except Exception as e:
-        log.error("[multileg-paper] %s: LLM verdict call failed: %s", symbol, e)
-        return None
+    verdict = ai_verdict if (ai_verdict is not None and getattr(ai_verdict, "strategy_type", None)) else None
+    if verdict is None and isinstance(intel, dict) and intel.get("multileg_verdict"):
+        verdict = intel.get("multileg_verdict")
+
+    if verdict is None:
+        try:
+            verdict = get_multileg_verdict(
+                symbol=symbol,
+                intel=intel,
+                scan_context=scan_context,
+                alerts=intel.get("alerts") if isinstance(intel, dict) else None,
+                news_data=intel.get("news_data") if isinstance(intel, dict) else None,
+                open_books=open_books or get_open_books_for_symbol(symbol),
+            )
+            if isinstance(intel, dict) and verdict is not None:
+                intel["multileg_verdict"] = verdict
+        except Exception as e:
+            log.error("[multileg-paper] %s: LLM verdict call failed: %s", symbol, e)
+            return None
 
     if verdict is None:
         log.debug("[multileg-paper] %s: LLM returned no verdict", symbol)
@@ -721,9 +734,18 @@ def _attempt_new_entry(
     st_upper = str(getattr(verdict, "strategy_type", "")).upper().strip()
     entry_rationale = str(getattr(verdict, "entry_rationale", "") or "")
     thesis = str(getattr(verdict, "thesis", "") or "")
-    confidence = int(getattr(verdict, "confidence", 0) or 0)
+    engine_conf = int((intel or {}).get("confidence") or (scan_context or {}).get("engine_confidence") or 0)
+    llm_conf = int(getattr(verdict, "confidence", 0) or 0)
     is_mcx = symbol in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER")
     conf_floor = 72 if is_mcx else 70
+
+    # Engine-aligned confidence: if engine conviction is high (>= conf_floor),
+    # blend 60% engine conviction + 40% LLM structural confidence to prevent
+    # conservative LLM probability estimates from falsely vetoing high-conviction trades.
+    if engine_conf >= conf_floor and llm_conf > 0:
+        effective_confidence = max(llm_conf, int(round(0.6 * engine_conf + 0.4 * llm_conf)))
+    else:
+        effective_confidence = llm_conf
 
     combined_text = f"{entry_rationale} {thesis}".lower()
     no_trade_phrases = (
@@ -746,22 +768,22 @@ def _attempt_new_entry(
             "reason": reason_msg,
             "entry_rationale": entry_rationale,
             "thesis": thesis,
-            "confidence": confidence,
+            "confidence": effective_confidence,
             "ai_model_name": getattr(verdict, "model_name", None),
         }
 
-    if confidence < conf_floor:
+    if effective_confidence < conf_floor:
         log.info(
-            "[multileg-paper] %s: LLM confidence %d%% below floor %d%% — rejecting trade",
-            symbol, confidence, conf_floor
+            "[multileg-paper] %s: Effective confidence %d%% (LLM %d%%, Engine %d%%) below floor %d%% — rejecting trade",
+            symbol, effective_confidence, llm_conf, engine_conf, conf_floor
         )
         return {
             "action": "REJECTED",
             "decision_stage": "LLM_CONFIDENCE_GATE",
             "strategy_type": st_upper,
-            "confidence": confidence,
+            "confidence": effective_confidence,
             "thesis": thesis,
-            "reason": f"LLM confidence {confidence}% below minimum {conf_floor}% floor",
+            "reason": f"Effective confidence {effective_confidence}% below minimum {conf_floor}% floor (LLM={llm_conf}%, Engine={engine_conf}%)",
         }
 
     # ── 5b. Validate legs ─────────────────────────────────────────────
@@ -1150,7 +1172,7 @@ def _attempt_new_entry(
         "stop_loss_pct": verdict.stop_loss_pct,
         "time_decay_exit_dte": verdict.time_decay_exit_dte,
         "adjustment_count": 0,
-        "confidence_score": verdict.confidence,
+        "confidence_score": effective_confidence,
         "entry_quality_score": entry_quality,
         "digest_id": digest_id,
         "ai_model_name": verdict.model_name,
@@ -1206,7 +1228,7 @@ def _attempt_new_entry(
                 "legs_count": len(leg_dicts),
                 "legs": leg_dicts,
                 "net_premium": net_premium,
-                "confidence": verdict.confidence,
+                "confidence": effective_confidence,
                 "entry_quality": entry_quality,
                 "quality_reasons": quality_reasons,
                 "book_greeks": book_greeks,

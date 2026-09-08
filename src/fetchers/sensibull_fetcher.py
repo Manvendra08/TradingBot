@@ -154,56 +154,61 @@ class SensibullFetcher(BaseFetcher):
         used = set()
         pairs = []
 
-        # Phase 1: pair by token ±256, verify with delta
-        for o in opts:
-            t = o["token"]
-            if t in used:
-                continue
-            partner = None
-            for delta in (256, -256):
-                pt = t + delta
-                if pt in token_map and pt not in used:
-                    partner = token_map[pt]
-                    break
-            if not partner:
-                continue
+        # Phase 1: pair by token ±256, verify with opposite delta signs (NSE indices only; BSE SENSEX uses distinct token blocks)
+        if sym != "SENSEX":
+            for o in opts:
+                t = o["token"]
+                if t in used:
+                    continue
+                partner = None
+                for delta in (256, -256):
+                    pt = t + delta
+                    if pt in token_map and pt not in used:
+                        partner = token_map[pt]
+                        break
+                if not partner:
+                    continue
 
-            g1 = o.get("greeks_with_iv") or {}
-            g2 = partner.get("greeks_with_iv") or {}
-            d1, d2 = g1.get("delta", 0) or 0, g2.get("delta", 0) or 0
+                g1 = o.get("greeks_with_iv") or {}
+                g2 = partner.get("greeks_with_iv") or {}
+                d1, d2 = g1.get("delta", 0) or 0, g2.get("delta", 0) or 0
 
-            if d1 >= d2:
-                ce, pe = o, partner
-            else:
-                ce, pe = partner, o
+                # Must have opposite delta signs (one Call and one Put)
+                if not ((d1 > 0 and d2 < 0) or (d1 < 0 and d2 > 0)):
+                    continue
 
-            used.add(t)
-            used.add(partner["token"])
+                if d1 >= d2:
+                    ce, pe = o, partner
+                else:
+                    ce, pe = partner, o
 
-            ceg = ce.get("greeks_with_iv") or {}
-            peg = pe.get("greeks_with_iv") or {}
-            ce_iv_raw = float(ceg.get("iv", 0) or 0)
-            pe_iv_raw = float(peg.get("iv", 0) or 0)
-            pairs.append({
-                "ce_ltp": ce.get("last_price", 0) or 0,
-                "pe_ltp": pe.get("last_price", 0) or 0,
-                "ce_delta": ceg.get("delta", 0) or 0,
-                "pe_delta": peg.get("delta", 0) or 0,
-                "ce_theta": ceg.get("theta", 0) or 0,
-                "pe_theta": peg.get("theta", 0) or 0,
-                "ce_gamma": ceg.get("gamma", 0) or 0,
-                "pe_gamma": peg.get("gamma", 0) or 0,
-                "ce_vega": ceg.get("vega", 0) or 0,
-                "pe_vega": peg.get("vega", 0) or 0,
-                "ce_iv": ce_iv_raw * 100.0 if 0 < ce_iv_raw <= 2.0 else ce_iv_raw,
-                "pe_iv": pe_iv_raw * 100.0 if 0 < pe_iv_raw <= 2.0 else pe_iv_raw,
-                "ce_oi": ce.get("oi", 0) or 0,
-                "pe_oi": pe.get("oi", 0) or 0,
-                "ce_volume": ce.get("volume", 0) or 0,
-                "pe_volume": pe.get("volume", 0) or 0,
-            })
+                used.add(t)
+                used.add(partner["token"])
 
-        # Phase 2: theta + opposite delta fallback for remaining
+                ceg = ce.get("greeks_with_iv") or {}
+                peg = pe.get("greeks_with_iv") or {}
+                ce_iv_raw = float(ceg.get("iv", 0) or 0)
+                pe_iv_raw = float(peg.get("iv", 0) or 0)
+                pairs.append({
+                    "ce_ltp": ce.get("last_price", 0) or 0,
+                    "pe_ltp": pe.get("last_price", 0) or 0,
+                    "ce_delta": ceg.get("delta", 0) or 0,
+                    "pe_delta": peg.get("delta", 0) or 0,
+                    "ce_theta": ceg.get("theta", 0) or 0,
+                    "pe_theta": peg.get("theta", 0) or 0,
+                    "ce_gamma": ceg.get("gamma", 0) or 0,
+                    "pe_gamma": peg.get("gamma", 0) or 0,
+                    "ce_vega": ceg.get("vega", 0) or 0,
+                    "pe_vega": peg.get("vega", 0) or 0,
+                    "ce_iv": ce_iv_raw * 100.0 if 0 < ce_iv_raw <= 2.0 else ce_iv_raw,
+                    "pe_iv": pe_iv_raw * 100.0 if 0 < pe_iv_raw <= 2.0 else pe_iv_raw,
+                    "ce_oi": ce.get("oi", 0) or 0,
+                    "pe_oi": pe.get("oi", 0) or 0,
+                    "ce_volume": ce.get("volume", 0) or 0,
+                    "pe_volume": pe.get("volume", 0) or 0,
+                })
+
+        # Phase 2: theta + vega matching with opposite delta for remaining (handles BSE SENSEX and unlinked NSE options)
         remaining = [o for o in opts if o["token"] not in used]
         for o in remaining:
             t = o["token"]
@@ -212,24 +217,28 @@ class SensibullFetcher(BaseFetcher):
             g = o.get("greeks_with_iv") or {}
             theta = g.get("theta")
             delta = g.get("delta", 0) or 0
+            vega = g.get("vega")
             if theta is None:
                 used.add(t)
                 continue
             best = None
-            best_match = None
             for pt, po in token_map.items():
                 if pt in used or pt == t:
                     continue
                 pg = po.get("greeks_with_iv") or {}
                 ptheta = pg.get("theta")
                 pdelta = pg.get("delta", 0) or 0
-                if ptheta == theta and (delta >= 0) != (pdelta >= 0):
+                pvega = pg.get("vega")
+                if (
+                    ptheta is not None
+                    and abs(ptheta - theta) < 0.01
+                    and ((delta > 0 and pdelta < 0) or (delta < 0 and pdelta > 0))
+                    and (vega is None or pvega is None or abs(pvega - vega) < 0.05)
+                ):
                     best = (pt, po)
                     break
             if best:
                 pt, po = best
-                pg = po.get("greeks_with_iv") or {}
-                pdelta = pg.get("delta", 0) or 0
                 if delta >= 0:
                     ce, pe = o, po
                 else:
@@ -282,9 +291,23 @@ class SensibullFetcher(BaseFetcher):
         first_strike = round(atm_strike_num - atm_pair_idx * interval)
 
         # Build normalized strikes list
+        from src.engine.trade_plan import is_valid_option_premium
         strikes_out = []
+        corrupted_strike_count = 0
+        validation_spot = float(atm_strike_num) if (atm_strike_num and abs(atm_strike_num - underlying) > interval) else float(underlying)
         for i, p in enumerate(pairs):
             strike_price = round(first_strike + i * interval)
+            ce_valid = is_valid_option_premium(strike_price, "CE", p["ce_ltp"], validation_spot)
+            pe_valid = is_valid_option_premium(strike_price, "PE", p["pe_ltp"], validation_spot)
+
+            if not ce_valid or not pe_valid:
+                corrupted_strike_count += 1
+                log.warning(
+                    "[sensibull] %s: Reconstructed strike %.0f failed validity (CE LTP=%.2f valid=%s, PE LTP=%.2f valid=%s, spot=%.2f)",
+                    sym, strike_price, p["ce_ltp"], ce_valid, p["pe_ltp"], pe_valid, validation_spot
+                )
+                continue
+
             strikes_out.append({
                 "strike": float(strike_price),
                 "option_type": "CE",
@@ -309,6 +332,13 @@ class SensibullFetcher(BaseFetcher):
                 "gamma": p["pe_gamma"],
                 "vega": p["pe_vega"],
             })
+
+        if corrupted_strike_count > 2:
+            log.warning(
+                "[sensibull] %s: Discarding entire option chain (%d strikes corrupted/misaligned against spot %.2f) — falling back to secondary fetcher",
+                sym, corrupted_strike_count, underlying
+            )
+            return None
 
         if not strikes_out:
             log.warning("[sensibull] no strikes in normalized output for %s", sym)

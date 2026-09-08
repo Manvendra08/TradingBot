@@ -116,3 +116,7 @@ test_*.txt
 
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /graft/
+
+# YouTube Generator Output
+Social Channels/YouTube/output/
+Social Channels/YouTube/pipeline.log

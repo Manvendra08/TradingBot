@@ -30,8 +30,14 @@ def _base_symbol(symbol: str) -> str:
 
 
 def _broker_mode_enabled(config: dict) -> bool:
-    """Broker mode is on when order placement is not fully blocked."""
-    return not bool(config.get("live_broker_disabled", False))
+    """Broker mode is on only when live broker trading is active (not shadow, not disabled, not paused)."""
+    if config.get("live_shadow_mode", True):
+        return False
+    if config.get("live_broker_disabled", False):
+        return False
+    if config.get("trading_paused", False):
+        return False
+    return True
 
 
 
@@ -57,7 +63,11 @@ def _fetch_broker_margin_requirement(
     if transaction_type.upper() != "SELL":
         log.debug("%s: BUY leg — skipping broker margin API", symbol)
         return None
- 
+
+    from config.runtime_config import is_broker_trade_enabled
+    if not is_broker_trade_enabled():
+        return None
+
     try:
         from src.engine.live_trading import get_kite_client
         kite = get_kite_client()
@@ -135,27 +145,28 @@ def _calculate_live_lots(
     max_auto_lots = int(config.get("live_max_auto_lots") or _DEFAULT_MAX_AUTO_LOTS)
 
     if side.upper() == "SELL":
-        # BUG-H01 FIX: Try broker margin API first for actual SPAN+exposure margin.
-        # Falls back to static multiplier if API is unavailable or times out.
+        # Try broker margin API first for actual SPAN+exposure margin only if broker trading is active.
+        # Falls back to static multiplier if broker mode is off, unavailable, or times out.
         broker_margin = None
-        try:
-            from src.engine.symbol_resolver import resolve_instrument
-            expiry = config.get("_current_expiry")  # Set by caller if available
-            if expiry:
-                resolved_type = option_type if option_type in ("CE", "PE") else "FUT"
-                resolved_strike = float(strike or 0.0)
-                resolved = resolve_instrument(base, expiry, resolved_strike, resolved_type)
-                if resolved and resolved.get("tradingsymbol"):
-                    broker_margin = _fetch_broker_margin_requirement(
-                        symbol=base,
-                        tradingsymbol=resolved["tradingsymbol"],
-                        exchange=resolved.get("exchange", "NFO"),
-                        transaction_type="SELL",
-                        quantity=instrument_lot_size,
-                        premium=entry_premium,
-                    )
-        except Exception as e:
-            log.debug("%s: broker margin lookup failed: %s", base, e)
+        if _broker_mode_enabled(config):
+            try:
+                from src.engine.symbol_resolver import resolve_instrument
+                expiry = config.get("_current_expiry")  # Set by caller if available
+                if expiry:
+                    resolved_type = option_type if option_type in ("CE", "PE") else "FUT"
+                    resolved_strike = float(strike or 0.0)
+                    resolved = resolve_instrument(base, expiry, resolved_strike, resolved_type)
+                    if resolved and resolved.get("tradingsymbol"):
+                        broker_margin = _fetch_broker_margin_requirement(
+                            symbol=base,
+                            tradingsymbol=resolved["tradingsymbol"],
+                            exchange=resolved.get("exchange", "NFO"),
+                            transaction_type="SELL",
+                            quantity=instrument_lot_size,
+                            premium=entry_premium,
+                        )
+            except Exception as e:
+                log.debug("%s: broker margin lookup failed: %s", base, e)
 
         if broker_margin and broker_margin > 0:
             effective_cost_per_lot = broker_margin
