@@ -6,18 +6,26 @@ widen, gamma risk explodes, or scheduled macro events distort OI signals.
 
 Guarded windows
 ---------------
+F&O Pre-Open Auction (09:00–09:15 IST):
+  - 09:00–09:08 IST: Order entry, modification, and cancellation window (random close ~09:07–09:08).
+  - 09:08–09:12 IST: Order matching & opening price discovery.
+  - 09:12–09:15 IST: Buffer period before normal continuous trading.
+
 All symbols:
   - 09:15–09:30 IST  Opening auction noise — bid/ask spreads 3-5× normal.
 
-Index F&O (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX):
-  - Trade until 15:40 IST (effective Aug 3, 2026 per NSE circular)
-  - No 15:00–15:30 expiry guard (trades until CAS close at 15:40)
 
-F&O Stocks:
-  - Continuous trading stops 15:15, then CAS until 15:40 (per SEBI F&O hours extension)
+Index F&O (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX) & Stock F&O:
+  - 15:15 IST: Continuous regular trading for F&O-eligible stocks in the cash market ends.
+  - 15:15–15:20 IST: CAS Transition period — orders frozen, reference prices published, out-of-bound orders canceled.
+  - 15:20–15:25 IST: CAS Order Entry Session 1 — both market and limit orders permitted.
+  - 15:25–15:30 IST: CAS Order Entry Session 2 — limit orders only; closes randomly between 15:28 and 15:30.
+  - 15:30–15:35 IST: CAS Order matching at single equilibrium price (declared as official cash closing price).
+  - 15:40 IST: Derivative F&O contracts continue trading until 15:40 IST (+10 min past old 15:30 close for hedging/adjustments).
 
-Other stocks:
-  - Close 15:30 IST
+Non-F&O Stocks:
+  - Unaffected by CAS; continuous normal trading continues until 15:30 IST.
+
 
 NATURALGAS / NATGAS:
   - Thursday 19:45–20:15 IST  EIA Weekly Natural Gas Storage Report (±15 min).

@@ -8,6 +8,10 @@ produce a meaningless model.
 
 Called before every training attempt. Returns False when feature coverage
 is below the threshold (default 90%), causing training to skip.
+
+v4.0: Unified 3-table check (paper_trades + live_trades + multi_leg_trades).
+Multi-leg trades supply confidence_score via their own column and pcr via
+scan_summaries JOIN, so coverage proxy is confidence_score IS NOT NULL.
 """
 import logging
 
@@ -16,14 +20,21 @@ log = logging.getLogger(__name__)
 
 def assert_feature_coverage(min_pct: float = 0.90) -> bool:
     """
-    Validate that closed paper trades have sufficient ML feature data.
+    Validate that closed trades (across all 3 tables) have sufficient ML
+    feature data to allow training.
 
-    Returns True when feature coverage >= min_pct, allowing training to proceed.
-    Returns False when coverage is below threshold, blocking training.
+    v4.0: Queries the unified UNION ALL dataset:
+      - paper_trades  — full inline features (pcr, rsi_1h, price_change_pct)
+      - live_trades   — same schema as paper_trades
+      - multi_leg_trades — confidence_score inline; pcr via scan_summaries JOIN
+
+    Coverage proxy for multi-leg trades: confidence_score IS NOT NULL.
+    For paper/live: original pcr IS NOT NULL gate.
+
+    Returns True when coverage >= min_pct across the unified dataset.
 
     Args:
-        min_pct: Minimum fraction of closed trades with non-NULL features.
-                 Default 0.90 (90%).
+        min_pct: Minimum fraction with non-NULL key feature. Default 0.90.
 
     Returns:
         True if coverage is sufficient, False otherwise.
@@ -35,13 +46,22 @@ def assert_feature_coverage(min_pct: float = 0.90) -> bool:
             row = conn.execute("""
                 SELECT
                     COUNT(*) AS total,
-                    SUM(CASE WHEN pcr IS NOT NULL
-                              AND rsi_1h IS NOT NULL
-                              AND price_change_pct IS NOT NULL
-                         THEN 1 ELSE 0 END) AS with_features
-                FROM paper_trades
-                WHERE status != 'OPEN'
-                  AND closed_at IS NOT NULL
+                    SUM(CASE WHEN has_feature = 1 THEN 1 ELSE 0 END) AS with_features
+                FROM (
+                    SELECT CASE WHEN pcr IS NOT NULL THEN 1 ELSE 0 END AS has_feature
+                    FROM paper_trades
+                    WHERE status != 'OPEN' AND closed_at IS NOT NULL
+                    UNION ALL
+                    SELECT CASE WHEN pcr IS NOT NULL THEN 1 ELSE 0 END AS has_feature
+                    FROM live_trades
+                    WHERE status != 'OPEN' AND closed_at IS NOT NULL
+                    UNION ALL
+                    SELECT CASE WHEN m.confidence_score IS NOT NULL THEN 1 ELSE 0 END AS has_feature
+                    FROM multi_leg_trades m
+                    WHERE m.status != 'OPEN'
+                      AND m.closed_at IS NOT NULL
+                      AND m.total_pnl IS NOT NULL
+                )
             """).fetchone()
 
             total = row["total"] if row else 0
@@ -73,3 +93,4 @@ def assert_feature_coverage(min_pct: float = 0.90) -> bool:
     except Exception as e:
         log.error("Feature coverage check failed: %s", e)
         return False
+

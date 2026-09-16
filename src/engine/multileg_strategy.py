@@ -179,6 +179,53 @@ def validate_legs(
                 f"Leg {i} premium {premium:.2f} exceeds 50% of underlying ({underlying:.2f})"
             )
 
+    # 6. Defined-risk wing width and insurance cost validation
+    if strategy_type in ("IRON_CONDOR", "BEAR_CALL_SPREAD", "BULL_PUT_SPREAD"):
+        from config.multileg_strategies import (
+            MIN_WING_WIDTH_PCT,
+            MIN_WING_WIDTH_POINTS,
+            MAX_HEDGE_COST_RATIO,
+        )
+
+        sym_key = symbol.upper().split()[0] if symbol else "DEFAULT"
+        min_width_pts = MIN_WING_WIDTH_POINTS.get(sym_key, MIN_WING_WIDTH_POINTS.get("DEFAULT", 50.0))
+        min_width_pct = MIN_WING_WIDTH_PCT.get(sym_key, MIN_WING_WIDTH_PCT.get("DEFAULT", 0.005))
+        effective_min_width = max(min_width_pts, underlying * min_width_pct) if underlying > 0 else min_width_pts
+
+        ce_sell = [float(l["strike"]) for l in legs if (l.get("option_type") or "").upper() == "CE" and (l.get("side") or "").upper() == "SELL"]
+        ce_buy = [float(l["strike"]) for l in legs if (l.get("option_type") or "").upper() == "CE" and (l.get("side") or "").upper() == "BUY"]
+        pe_sell = [float(l["strike"]) for l in legs if (l.get("option_type") or "").upper() == "PE" and (l.get("side") or "").upper() == "SELL"]
+        pe_buy = [float(l["strike"]) for l in legs if (l.get("option_type") or "").upper() == "PE" and (l.get("side") or "").upper() == "BUY"]
+
+        # Check call wing width
+        if ce_sell and ce_buy:
+            call_width = max(ce_buy) - min(ce_sell)
+            if call_width < effective_min_width:
+                return False, (
+                    f"Call wing width {call_width:.0f} pts is too narrow for {symbol} "
+                    f"(minimum required: {effective_min_width:.0f} pts). Buy wing is too close to sell leg."
+                )
+
+        # Check put wing width
+        if pe_sell and pe_buy:
+            put_width = max(pe_sell) - min(pe_buy)
+            if put_width < effective_min_width:
+                return False, (
+                    f"Put wing width {put_width:.0f} pts is too narrow for {symbol} "
+                    f"(minimum required: {effective_min_width:.0f} pts). Buy wing is too close to sell leg."
+                )
+
+        # Check hedge cost drag: bought wings should not consume excessive premium
+        gross_credit = sum(float(l.get("premium") or 0.0) for l in legs if (l.get("side") or "").upper() == "SELL")
+        hedge_debit = sum(float(l.get("premium") or 0.0) for l in legs if (l.get("side") or "").upper() == "BUY")
+        if gross_credit > 0 and hedge_debit > 0:
+            hedge_ratio = hedge_debit / gross_credit
+            if hedge_ratio > MAX_HEDGE_COST_RATIO:
+                return False, (
+                    f"Insurance drag too high: Hedge wings cost ₹{hedge_debit:.2f} ({hedge_ratio*100:.1f}% of gross credit ₹{gross_credit:.2f}), "
+                    f"exceeding max {MAX_HEDGE_COST_RATIO*100:.0f}%. Move buy wings further OTM for viable profit."
+                )
+
     return True, ""
 
 
@@ -538,6 +585,16 @@ def score_entry_quality(
         deduction = 15
         score -= deduction
         reasons.append(f"Unfavorable loss profile — max loss {max_loss:.0f} > 5x max profit {max_profit:.0f}")
+
+    # 7. Deduct for high insurance drag on defined risk spreads
+    gross_cred = sum(float(l.get("premium") or 0.0) for l in legs if (l.get("side") or "").upper() == "SELL")
+    hedge_deb = sum(float(l.get("premium") or 0.0) for l in legs if (l.get("side") or "").upper() == "BUY")
+    if gross_cred > 0 and hedge_deb > 0:
+        h_ratio = hedge_deb / gross_cred
+        if h_ratio > 0.50:
+            deduction = int(round((h_ratio - 0.50) * 40))
+            score -= deduction
+            reasons.append(f"High insurance drag ({h_ratio*100:.0f}% of gross credit paid for wings, -{deduction} pts)")
 
     score = max(0, min(100, score))
 

@@ -617,3 +617,39 @@ def edit_message_text(message_id: int, text: str) -> bool:
     except Exception as exc:
         log.warning("Telegram edit_message_text failed: %s | type: %s", exc, type(exc).__name__)
         return False
+
+
+def send_document(document_path: str, caption: str = "", filename: str | None = None) -> int | None:
+    """Synchronously send a document (PDF, file) to Telegram and return message_id. Returns None on failure."""
+    if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "YOUR_BOT_TOKEN":
+        return None
+    from pathlib import Path
+    doc_path = Path(document_path)
+    if not doc_path.exists():
+        log.warning("Telegram send_document failed: file not found at %s", document_path)
+        return None
+
+    caption = sanitize_mojibake(caption)
+    _ensure_loop()
+    try:
+        async def _send_doc_async():
+            bot = _get_tg_bot()
+            with open(doc_path, "rb") as f:
+                msg = await asyncio.wait_for(
+                    bot.send_document(
+                        chat_id=TELEGRAM_CHAT_ID,
+                        document=f,
+                        filename=filename or doc_path.name,
+                        caption=caption[:1024] if caption else None,
+                        parse_mode="Markdown" if caption else None,
+                    ),
+                    timeout=30.0,
+                )
+                return msg.message_id
+
+        future = asyncio.run_coroutine_threadsafe(_send_doc_async(), _loop)
+        return future.result(timeout=35.0)
+    except Exception as exc:
+        log.warning("Telegram send_document failed: %s | type: %s", exc, type(exc).__name__)
+        return None
+

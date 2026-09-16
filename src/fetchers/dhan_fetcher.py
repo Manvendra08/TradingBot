@@ -213,7 +213,7 @@ class DhanFetcher(BaseFetcher):
         strikes = _normalise_scanx_oc(oc_data)
         if not strikes and segment == "MCX_COMM":
             seconds_per_day = 86400
-            for days_before in [2, 3, 4, 1, 0, 5, 6, 7]:
+            for days_before in [2, 3, 4, 1, 0, 5, 6, 7, 8, 9, 10]:
                 test_expj = target_expj - (days_before * seconds_per_day)
                 try:
                     r_test = self.session.post(

@@ -100,6 +100,11 @@ Examples:
         action="store_true",
         help="Headlessly login to Shoonya portal and update Primary & Backup IP address to current public IP",
     )
+    parser.add_argument(
+        "--eod-report",
+        action="store_true",
+        help="Trigger one-shot Market Close EOD Macro Report generation using Firecrawl + DB summaries",
+    )
     args = parser.parse_args()
 
     configure_logging("bridge" if args.bridge else "main")
@@ -117,6 +122,14 @@ Examples:
         log.info("Triggering headless Shoonya IP update to current public IP...")
         success, msg = update_shoonya_portal_ip()
         print(f"\nShoonya IP Update: {'SUCCESS' if success else 'FAILED'} — {msg}\n")
+        return
+
+    if args.eod_report:
+        from src.engine.eod_report_generator import generate_eod_macro_report
+
+        log.info("Triggering one-shot EOD Macro Report generation...")
+        path = generate_eod_macro_report()
+        print(f"\nEOD Report generated at: {path}\n")
         return
 
     if args.dashboard:

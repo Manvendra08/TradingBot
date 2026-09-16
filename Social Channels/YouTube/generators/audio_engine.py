@@ -59,6 +59,33 @@ class AudioEngine:
             log.warning(f"edge-tts failed ({exc}). Triggering local pyttsx3 fallback.")
             return self._fallback_sapi(text, audio_path, srt_path)
 
+    async def synthesize_segment(self, text: str, audio_path: Path) -> float:
+        """Synthesizes an audio segment and returns its exact duration in seconds."""
+        audio_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            communicate = edge_tts.Communicate(text, self.voice, rate=self.rate)
+            with open(audio_path, "wb") as f:
+                async for chunk in communicate.stream():
+                    if chunk["type"] == "audio":
+                        f.write(chunk["data"])
+        except Exception as exc:
+            log.warning(f"edge-tts segment failed ({exc}). Using pyttsx3 fallback.")
+            import pyttsx3
+            engine = pyttsx3.init()
+            engine.setProperty("rate", 206)
+            engine.save_to_file(text, str(audio_path))
+            engine.runAndWait()
+
+        # Measure duration via ffmpeg
+        try:
+            import subprocess, re
+            from compositors.video_assembler import VideoAssembler
+            assembler = VideoAssembler()
+            dur = assembler._get_media_duration(audio_path.parent, audio_path.name)
+            return max(3.0, dur)
+        except Exception:
+            return max(3.0, len(text.split()) / 2.8)
+
     def _fallback_sapi(self, text: str, audio_path: Path, srt_path: Path) -> bool:
         """Emergency Fallback: Windows SAPI via pyttsx3 at ~1.25x speed (206 wpm)."""
         try:

@@ -497,6 +497,10 @@ class TradeSuccessPredictor:
         - Stratified train_test_split (stratify=y)
         - Stratified K-fold CV for deploy gate (holdout too noisy at n~30)
         - Model version uses UTC ISO timestamp
+
+        v4.0 FIXES:
+        - multi_leg_trades included via scan_summaries JOIN for OI/PCR features
+        - Unified 3-way UNION ALL: paper + live + multi_leg
         """
         if not ML_AVAILABLE:
             log.warning("ML libraries not available. Training skipped.")
@@ -511,7 +515,8 @@ class TradeSuccessPredictor:
 
         from src.models.schema import get_conn
 
-        # v2.0 FIX: Fetch from BOTH paper_trades and live_trades (v3.0: explicit columns to guard UNION ALL)
+        # v4.0 FIX: 3-way UNION ALL: paper_trades + live_trades + multi_leg_trades
+        # multi_leg_trades is joined with scan_summaries to supply OI/PCR features.
         with get_conn() as conn:
             trades = conn.execute("""
                 SELECT opened_at, closed_at, symbol, verdict_label, option_type, strike,
@@ -543,7 +548,37 @@ class TradeSuccessPredictor:
                 WHERE status != 'OPEN'
                   AND closed_at IS NOT NULL
                   AND pnl_rupees IS NOT NULL
+                UNION ALL
+                SELECT m.opened_at, m.closed_at, m.symbol,
+                       COALESCE(s.verdict_label, m.strategy_type, m.structure) AS verdict_label,
+                       m.structure AS option_type, NULL AS strike,
+                       COALESCE(m.entry_underlying, s.underlying) AS entry_underlying,
+                       m.exit_underlying, NULL AS sl_underlying, NULL AS target_underlying,
+                       NULL AS pnl_points, m.total_pnl AS pnl_rupees,
+                       m.status, m.reason, m.digest_id, m.net_premium AS entry_premium,
+                       NULL AS exit_premium, NULL AS sl_premium, NULL AS target_premium,
+                       1 AS lots, m.status AS trade_status,
+                       COALESCE(m.strategy_type, m.structure) AS setup_type,
+                       m.entry_reason AS decision_reason,
+                       COALESCE(m.confidence_score, s.confidence, 50) AS confidence_score,
+                       COALESCE(m.entry_quality_score, 50) AS entry_quality_score,
+                       50 AS trend_alignment_score, 50 AS regime_score,
+                       m.book_id AS signal_key, 0 AS pyramid_level,
+                       NULL AS max_favorable_r, 'NEUTRAL' AS side,
+                       m.expiry, NULL AS price_change_pct,
+                       s.pcr, s.ce_oi_change, s.pe_oi_change,
+                       COALESCE(s.underlying, m.entry_underlying) AS underlying,
+                       s.support, s.resistance, s.max_pain,
+                       COALESCE(m.time_decay_exit_dte, 7) AS days_to_expiry,
+                       0 AS chart_conflict, 50.0 AS rsi_1h, 50.0 AS rsi_3h,
+                       s.market_regime AS regime, 'multileg' AS source
+                FROM multi_leg_trades m
+                LEFT JOIN scan_summaries s ON m.digest_id = s.digest_id
+                WHERE m.status != 'OPEN'
+                  AND m.closed_at IS NOT NULL
+                  AND m.total_pnl IS NOT NULL
             """).fetchall()
+
 
         if len(trades) < MIN_TRADES_FOR_TRAINING:
             log.info(

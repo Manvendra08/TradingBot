@@ -6,6 +6,7 @@ Pulls calendar data from the Forex Factory calendar JSON feed.
 import logging
 import requests
 import re
+import time
 from datetime import datetime, timezone
 from src.models.schema import get_conn
 
@@ -15,6 +16,11 @@ FF_CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 }
+
+_EIA_CACHE: dict | None = None
+_EIA_CACHE_TIME: float = 0.0
+_EIA_CACHE_TTL_SEC: float = 60.0  # 60s TTL avoids back-to-back burst requests / 429
+
 
 def parse_bcf_value(val_str: str | None) -> float | None:
     """Helper to parse value strings like '87B', '-12B' to float numbers."""
@@ -30,17 +36,28 @@ def parse_bcf_value(val_str: str | None) -> float | None:
             pass
     return None
 
-def fetch_eia_weekly_data() -> dict | None:
+
+def fetch_eia_weekly_data(force_refresh: bool = False) -> dict | None:
     """
     Fetch the EIA Natural Gas Storage event from the Forex Factory JSON feed.
+    Caches parsed result for 60s to prevent burst rate-limiting (429).
     Returns parsed dict or None on failure/missing event.
     """
+    global _EIA_CACHE, _EIA_CACHE_TIME
+    now = time.time()
+    if not force_refresh and _EIA_CACHE is not None and (now - _EIA_CACHE_TIME) < _EIA_CACHE_TTL_SEC:
+        log.debug("Returning cached EIA weekly data (age=%.1fs)", now - _EIA_CACHE_TIME)
+        return _EIA_CACHE
+
     try:
         log.info("Fetching economic calendar from Forex Factory JSON feed...")
         r = requests.get(FF_CALENDAR_URL, headers=HEADERS, timeout=10)
+        if r.status_code == 429:
+            log.warning("Forex Factory calendar feed returned status code 429 (rate-limited) — falling back to cache/DB")
+            return _EIA_CACHE
         if r.status_code != 200:
             log.warning("Forex Factory calendar feed returned status code: %d", r.status_code)
-            return None
+            return _EIA_CACHE
         
         events = r.json()
         for item in events:
@@ -70,6 +87,8 @@ def fetch_eia_weekly_data() -> dict | None:
                     "fetched_at": datetime.now(timezone.utc).isoformat(),
                     "source": "forexfactory"
                 }
+                _EIA_CACHE = result
+                _EIA_CACHE_TIME = time.time()
                 log.info("Successfully fetched EIA weekly data for %s: forecast=%s, actual=%s", 
                          report_date, forecast_val, actual_val)
                 return result

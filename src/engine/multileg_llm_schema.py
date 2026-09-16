@@ -33,12 +33,12 @@ class LLMMultiLegVerdict(BaseModel):
         description="IRON_CONDOR | SHORT_STRANGLE | SHORT_STRADDLE | BEAR_CALL_SPREAD | BULL_PUT_SPREAD | JADE_LIZARD | CUSTOM"
     )
     legs: List[LLMLeg] = Field(description="List of legs (BUY or SELL)")
-    net_premium: float = Field(description="Total premium collected across all legs")
+    net_premium: float = Field(description="Total premium collected across all legs in points (e.g. 25.5)")
     net_delta: float = Field(description="Combined book delta")
     net_theta: float = Field(description="Combined book theta (daily decay)")
     net_vega: float = Field(description="Combined book vega")
-    max_profit: float = Field(description="Maximum profit (net premium collected)")
-    max_loss: float = Field(description="Maximum possible loss")
+    max_profit: float = Field(description="Maximum profit in points per unit (net premium collected, e.g. 25.5)")
+    max_loss: float = Field(description="Maximum possible loss in points per unit (e.g. 74.5 for 100-wide spread with 25.5 credit)")
     breakeven_upper: float = Field(description="Upper breakeven point")
     breakeven_lower: float = Field(description="Lower breakeven point")
     entry_rationale: str = Field(description="Why this strategy in this market condition")
@@ -51,7 +51,7 @@ class LLMMultiLegVerdict(BaseModel):
         description="Close book when profit reaches X% of max profit (e.g. 0.50 = 50%)"
     )
     stop_loss_pct: float = Field(
-        description="Close book when loss reaches X% of max loss (e.g. 2.0 = 200%)"
+        description="Close book when loss reaches X% of net premium or max loss (e.g. 1.50 = 150% of credit collected)"
     )
     time_decay_exit_dte: int = Field(
         description="Close remaining legs when DTE drops below this value"
@@ -59,6 +59,20 @@ class LLMMultiLegVerdict(BaseModel):
     per_leg_exit_triggers: str = Field(description="Per-leg exit conditions")
     book_level_exit_triggers: str = Field(description="Book-level exit conditions")
     adjustment_plan: str = Field(description="What to do if market moves against")
+    reasoning_chain: Optional[str] = Field(
+        default=None,
+        description=(
+            "Mandatory 4-step pre-verdict audit:\n"
+            "Step 1 (OI Flow): Confirm PE/CE changes against writer ground truth (PE+ = Bullish floor, CE+ = Bearish ceiling).\n"
+            "Step 2 (Key Levels): Verify spot vs Support, Resistance, and Max Pain magnet.\n"
+            "Step 3 (Catalyst & Expiry): Confirm DTE, event proximity (e.g. EIA/policy), and pin risk.\n"
+            "Step 4 (Adversarial Invalidation): State the exact market condition that proves this trade wrong."
+        ),
+    )
+    structural_invalidation_spot: Optional[float] = Field(
+        default=None,
+        description="Exact underlying spot price level that invalidates the trade structure (e.g. 23650.0)"
+    )
     model_name: Optional[str] = Field(default=None, description="Model used for this verdict")
 
 

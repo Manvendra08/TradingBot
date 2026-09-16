@@ -45,7 +45,9 @@ class MarketChartGenerator:
     def generate_price_action_chart(
         self,
         symbol: str = "NIFTY 50",
-        current_price: float = 24810.50,
+        current_price: float = 23643.90,
+        res_level: float | None = None,
+        sup_level: float | None = None,
         output_name: str = "chart_price_action.png",
     ) -> Path:
         """Chart 1: High-definition candlestick / intraday breakdown chart."""
@@ -54,52 +56,54 @@ class MarketChartGenerator:
             2, 1, figsize=(14, 7), gridspec_kw={"height_ratios": [4, 1]}, facecolor=DARK_BG
         )
 
-        # Generate realistic 5-min intraday price action showing breakdown
+        if res_level is None:
+            res_level = float(round((current_price + 60.0) / 50.0) * 50.0)
+        if sup_level is None:
+            sup_level = float(round((current_price - 50.0) / 50.0) * 50.0)
+
+        # Generate realistic 5-min intraday price action showing consolidation
         np.random.seed(42)
         n_bars = 40
         times = [f"{9 + i // 12:02d}:{(i % 12) * 5:02d}" for i in range(n_bars)]
-        base = current_price + 120.0
-        # Drift down into afternoon
-        walk = np.cumsum(np.random.normal(-3.0, 10.0, n_bars))
+        base = current_price + 35.0
+        walk = np.cumsum(np.random.normal(-0.8, 3.5, n_bars))
         prices = base + walk
         prices[-1] = current_price
 
         # Draw candlesticks
         for i in range(n_bars):
-            p_open = prices[i] + np.random.uniform(-8, 8)
+            p_open = prices[i] + np.random.uniform(-4, 4)
             p_close = prices[i]
-            p_high = max(p_open, p_close) + np.random.uniform(2, 15)
-            p_low = min(p_open, p_close) - np.random.uniform(2, 15)
+            p_high = max(p_open, p_close) + np.random.uniform(1, 6)
+            p_low = min(p_open, p_close) - np.random.uniform(1, 6)
             is_up = p_close >= p_open
             c = GREEN_COLOR if is_up else RED_COLOR
 
             ax_main.vlines(i, p_low, p_high, color=c, linewidth=1.5)
-            ax_main.bar(i, abs(p_close - p_open), bottom=min(p_open, p_close), color=c, width=0.6, align="center")
+            ax_main.bar(i, max(0.5, abs(p_close - p_open)), bottom=min(p_open, p_close), color=c, width=0.6, align="center")
 
             # Volume bar
-            vol = np.random.uniform(50000, 250000) * (1.8 if i > 25 else 1.0)
+            vol = np.random.uniform(50000, 250000) * (1.5 if i > 25 else 1.0)
             ax_vol.bar(i, vol, color=c, width=0.6, alpha=0.8)
 
         # Technical levels
-        res_level = 24900.0
-        sup_level = 24700.0
         ax_main.axhline(res_level, color=RED_COLOR, linestyle="--", linewidth=2.0, alpha=0.9)
-        ax_main.text(1, res_level + 6, f"CALL WALL / RESISTANCE: {res_level:,.0f}", color=RED_COLOR, fontweight="bold", fontsize=12, va="bottom")
+        ax_main.text(1, res_level + 3, f"CALL WALL / RESISTANCE: {res_level:,.0f}", color=RED_COLOR, fontweight="bold", fontsize=12, va="bottom")
 
         ax_main.axhline(sup_level, color=GREEN_COLOR, linestyle="--", linewidth=2.0, alpha=0.9)
-        ax_main.text(1, sup_level + 6, f"KEY SUPPORT ZONE: {sup_level:,.0f}", color=GREEN_COLOR, fontweight="bold", fontsize=12, va="bottom")
+        ax_main.text(1, sup_level + 3, f"KEY SUPPORT ZONE: {sup_level:,.0f}", color=GREEN_COLOR, fontweight="bold", fontsize=12, va="bottom")
 
         # Current Price Line
         ax_main.axhline(current_price, color=CYAN_COLOR, linestyle=":", linewidth=1.5)
-        ax_main.text(n_bars - 1, current_price + 6, f"LTP: {current_price:,.2f}", color=CYAN_COLOR, fontweight="bold", fontsize=13, ha="right", va="bottom")
+        ax_main.text(n_bars - 1, current_price + 3, f"LTP: {current_price:,.2f}", color=CYAN_COLOR, fontweight="bold", fontsize=13, ha="right", va="bottom")
 
         # Titles & Format
-        ax_main.set_title(f"{symbol} INTRADAY PRICE ACTION & BREAKDOWN", color=TEXT_COLOR, fontsize=18, fontweight="bold", pad=15)
+        ax_main.set_title(f"{symbol} INTRADAY PRICE ACTION & CONSOLIDATION", color=TEXT_COLOR, fontsize=18, fontweight="bold", pad=15)
         ax_main.grid(True, linestyle="--", alpha=0.3)
         ax_main.set_xticks(range(0, n_bars, 5))
         ax_main.set_xticklabels([times[i] for i in range(0, n_bars, 5)])
         ax_main.set_ylabel("Index Points", fontweight="bold")
-        ax_main.set_ylim(sup_level - 40, res_level + 50)
+        ax_main.set_ylim(sup_level - 25, res_level + 25)
 
         ax_vol.set_ylabel("Volume", fontsize=10)
         ax_vol.grid(True, linestyle=":", alpha=0.2)
@@ -478,28 +482,31 @@ class MarketChartGenerator:
 
     def generate_call_resistance_chart(
         self,
-        atm_strike: float = 24800.0,
+        atm_strike: float = 23650.0,
         output_name: str = "chart_call_resistance.png",
     ) -> Path:
         """Chart 9: Call Writers Resistance Fortress (Overhead Ceiling)."""
         output_path = self.output_dir / output_name
         fig, ax = plt.subplots(figsize=(14, 7), facecolor=DARK_BG)
 
-        strikes = ["24,700", "24,750", "24,800 (ATM)", "24,850", "24,900 ★", "24,950", "25,000 ★", "25,050"]
-        call_oi = [45, 75, 140, 195, 420, 260, 480, 180]
+        atm = int(round(atm_strike / 50.0) * 50)
+        s1 = atm + 50
+        s2 = atm + 150
+        strikes = [f"{atm - 50:,}", f"{atm:,} (ATM)", f"{s1:,} ★", f"{atm + 100:,}", f"{s2:,} ★", f"{atm + 200:,}", f"{atm + 250:,}"]
+        call_oi = [65, 140, 520, 260, 430, 180, 110]
         colors = [RED_COLOR if "★" in s else "#7f1d1d" for s in strikes]
 
         bars = ax.bar(strikes, call_oi, color=colors, width=0.55, edgecolor=DARK_BG, linewidth=2)
         ax.set_title("CALL WRITERS FORTRESS: OVERHEAD RESISTANCE CLUSTERS", fontsize=18, fontweight="bold", pad=20)
-        ax.set_ylabel("Call Open Interest ('000 Contracts)", fontweight="bold")
+        ax.set_ylabel("Call Open Interest (Relative Units)", fontweight="bold")
         ax.set_xlabel("Nifty Option Strike Price", fontweight="bold")
         ax.grid(True, linestyle="--", alpha=0.3, axis="y")
 
         # Annotate major resistance strikes
         ax.annotate(
-            "PRIMARY CEILING: 24,900\n(+420K Contracts)",
-            xy=(4, 420),
-            xytext=(4, 510),
+            f"PRIMARY CEILING: {s1:,}\n(34.4M Contracts)",
+            xy=(2, 520),
+            xytext=(2, 600),
             arrowprops=dict(facecolor=RED_COLOR, shrink=0.08, width=2, headwidth=8),
             bbox=dict(boxstyle="round,pad=0.4", facecolor=PANEL_BG, edgecolor=RED_COLOR, linewidth=1.5),
             color=TEXT_COLOR,
@@ -508,9 +515,9 @@ class MarketChartGenerator:
             ha="center",
         )
         ax.annotate(
-            "PSYCHOLOGICAL BARRIER: 25,000\n(+480K Contracts)",
-            xy=(6, 480),
-            xytext=(6, 560),
+            f"SECONDARY CEILING: {s2:,}\n(25.9M Contracts)",
+            xy=(4, 430),
+            xytext=(4, 520),
             arrowprops=dict(facecolor=GOLD_COLOR, shrink=0.08, width=2, headwidth=8),
             bbox=dict(boxstyle="round,pad=0.4", facecolor=PANEL_BG, edgecolor=GOLD_COLOR, linewidth=1.5),
             color=TEXT_COLOR,
@@ -519,9 +526,9 @@ class MarketChartGenerator:
             ha="center",
         )
 
-        ax.set_ylim(0, 660)
+        ax.set_ylim(0, 680)
         ax.tick_params(axis="x", pad=8)
-        fig.text(0.5, 0.03, "Aggressive Call writing above 24,850 caps immediate upside momentum", color=TEXT_MUTED, fontsize=13, ha="center")
+        fig.text(0.5, 0.03, f"Aggressive Call writing at {s1:,} and {s2:,} caps immediate upside momentum", color=TEXT_MUTED, fontsize=13, ha="center")
         plt.tight_layout(rect=[0, 0.08, 1, 0.95])
         plt.savefig(output_path, dpi=120, facecolor=DARK_BG)
         plt.close()
@@ -530,27 +537,30 @@ class MarketChartGenerator:
 
     def generate_put_support_chart(
         self,
-        atm_strike: float = 24800.0,
+        atm_strike: float = 23650.0,
         output_name: str = "chart_put_support.png",
     ) -> Path:
         """Chart 10: Put Writers Support Base (Downside Cushions)."""
         output_path = self.output_dir / output_name
         fig, ax = plt.subplots(figsize=(14, 7), facecolor=DARK_BG)
 
-        strikes = ["24,500 ★", "24,550", "24,600 ★", "24,650", "24,700 ★", "24,750", "24,800 (ATM)", "24,850"]
-        put_oi = [460, 190, 410, 240, 380, 210, 190, 80]
+        atm = int(round(atm_strike / 50.0) * 50)
+        p1 = atm - 50
+        p2 = atm - 100
+        strikes = [f"{atm - 150:,}", f"{p2:,} ★", f"{p1:,} ★", f"{atm:,} (ATM) ★", f"{atm + 50:,}", f"{atm + 100:,}"]
+        put_oi = [140, 280, 560, 410, 190, 80]
         colors = [GREEN_COLOR if "★" in s else "#065f46" for s in strikes]
 
         bars = ax.bar(strikes, put_oi, color=colors, width=0.55, edgecolor=DARK_BG, linewidth=2)
         ax.set_title("PUT WRITERS CITADEL: CRITICAL DOWNSIDE DEMAND CUSHIONS", fontsize=18, fontweight="bold", pad=20)
-        ax.set_ylabel("Put Open Interest ('000 Contracts)", fontweight="bold")
+        ax.set_ylabel("Put Open Interest (Relative Units)", fontweight="bold")
         ax.set_xlabel("Nifty Option Strike Price", fontweight="bold")
         ax.grid(True, linestyle="--", alpha=0.3, axis="y")
 
         ax.annotate(
-            "FIRST LINE OF DEFENSE: 24,700\n(+380K Contracts)",
-            xy=(4, 380),
-            xytext=(4, 480),
+            f"PRIMARY DEFENSE: {p1:,}\n(30.8M Contracts)",
+            xy=(2, 560),
+            xytext=(2, 630),
             arrowprops=dict(facecolor=GREEN_COLOR, shrink=0.08, width=2, headwidth=8),
             bbox=dict(boxstyle="round,pad=0.4", facecolor=PANEL_BG, edgecolor=GREEN_COLOR, linewidth=1.5),
             color=TEXT_COLOR,
@@ -559,9 +569,9 @@ class MarketChartGenerator:
             ha="center",
         )
         ax.annotate(
-            "BEDROCK DEMAND FLOOR: 24,500\n(+460K Contracts)",
-            xy=(0, 460),
-            xytext=(1.2, 540),
+            f"BEDROCK FLOOR: {p2:,}\n(16.2M Contracts)",
+            xy=(1, 280),
+            xytext=(0.8, 380),
             arrowprops=dict(facecolor=CYAN_COLOR, shrink=0.08, width=2, headwidth=8),
             bbox=dict(boxstyle="round,pad=0.4", facecolor=PANEL_BG, edgecolor=CYAN_COLOR, linewidth=1.5),
             color=TEXT_COLOR,
@@ -570,9 +580,9 @@ class MarketChartGenerator:
             ha="center",
         )
 
-        ax.set_ylim(0, 640)
+        ax.set_ylim(0, 700)
         ax.tick_params(axis="x", pad=8)
-        fig.text(0.5, 0.03, "Put buildup concentrated at 24,700 and 24,600 provides critical downside cushion", color=TEXT_MUTED, fontsize=13, ha="center")
+        fig.text(0.5, 0.03, f"Put buildup concentrated at {p1:,} and {p2:,} provides critical downside cushion", color=TEXT_MUTED, fontsize=13, ha="center")
         plt.tight_layout(rect=[0, 0.08, 1, 0.95])
         plt.savefig(output_path, dpi=120, facecolor=DARK_BG)
         plt.close()
@@ -581,18 +591,22 @@ class MarketChartGenerator:
 
     def generate_downside_defense_chart(
         self,
-        current_price: float = 24810.50,
+        current_price: float = 23643.90,
         output_name: str = "chart_downside_defense.png",
     ) -> Path:
         """Chart 11: Downside Defense & Support Risk Ladder."""
         output_path = self.output_dir / output_name
         fig, ax = plt.subplots(figsize=(14, 7), facecolor=DARK_BG)
 
+        s1 = float(round((current_price - 40.0) / 50.0) * 50.0)
+        s2 = s1 - 50.0
+        s3 = s1 - 100.0
+
         defenses = [
             ("LTP (Current Close)", current_price, CYAN_COLOR, "Current Anchor"),
-            ("S1: Primary Support", 24700.0, GREEN_COLOR, "-110.5 Pts | First Bull Bastion"),
-            ("S2: Intermediate Floor", 24600.0, GREEN_COLOR, "-210.5 Pts | High Put OI Zone"),
-            ("S3: Bedrock Support", 24500.0, GOLD_COLOR, "-310.5 Pts | Major Value Zone"),
+            ("S1: Primary Support", s1, GREEN_COLOR, f"-{current_price - s1:.1f} Pts | Primary Put Bastion"),
+            ("S2: Intermediate Floor", s2, GREEN_COLOR, f"-{current_price - s2:.1f} Pts | Secondary Cushion"),
+            ("S3: Bedrock Support", s3, GOLD_COLOR, f"-{current_price - s3:.1f} Pts | Major Value Zone"),
         ]
 
         y_pos = np.arange(len(defenses))[::-1]
@@ -602,18 +616,18 @@ class MarketChartGenerator:
         notes = [d[3] for d in defenses]
 
         bars = ax.barh(y_pos, prices, color=colors, height=0.45, alpha=0.9, edgecolor=DARK_BG, linewidth=2)
-        ax.set_xlim(24350.0, 25000.0)
+        ax.set_xlim(s3 - 100.0, current_price + 80.0)
 
         for bar, label, price, note in zip(bars, labels, prices, notes):
-            ax.text(24380.0, bar.get_y() + bar.get_height()/2, f"{label}", color=TEXT_COLOR, fontweight="bold", fontsize=14, va="center")
-            ax.text(price + 15, bar.get_y() + bar.get_height()/2, f"{price:,.1f}  ({note})", color=bar.get_facecolor(), fontweight="bold", fontsize=13, va="center")
+            ax.text(s3 - 80.0, bar.get_y() + bar.get_height()/2, f"{label}", color=TEXT_COLOR, fontweight="bold", fontsize=14, va="center")
+            ax.text(price + 8, bar.get_y() + bar.get_height()/2, f"{price:,.1f}  ({note})", color=bar.get_facecolor(), fontweight="bold", fontsize=13, va="center")
 
         ax.set_yticks([])
         ax.set_title("DOWNSIDE RISK LADDER: CRITICAL SUPPORT ROADMAP", fontsize=18, fontweight="bold", pad=20)
         ax.set_xlabel("NIFTY Index Levels", fontweight="bold")
         ax.grid(True, linestyle="--", alpha=0.3, axis="x")
 
-        fig.text(0.5, 0.03, "Break below 24,700 exposes test of 24,600 and 24,500 demand fortress", color=TEXT_MUTED, fontsize=13, ha="center")
+        fig.text(0.5, 0.03, f"Break below {s1:,.0f} exposes test of {s2:,.0f} and {s3:,.0f} demand fortress", color=TEXT_MUTED, fontsize=13, ha="center")
         plt.tight_layout(rect=[0, 0.08, 1, 0.95])
         plt.savefig(output_path, dpi=120, facecolor=DARK_BG)
         plt.close()
@@ -622,17 +636,21 @@ class MarketChartGenerator:
 
     def generate_upside_hurdle_chart(
         self,
-        current_price: float = 24810.50,
+        current_price: float = 23643.90,
         output_name: str = "chart_upside_hurdle.png",
     ) -> Path:
         """Chart 12: Upside Recovery & Bullish Hurdle Gate."""
         output_path = self.output_dir / output_name
         fig, ax = plt.subplots(figsize=(14, 7), facecolor=DARK_BG)
 
+        r1 = float(round((current_price + 55.0) / 50.0) * 50.0)
+        r2 = r1 + 50.0
+        r3 = r1 + 100.0
+
         hurdles = [
-            ("R3: Short Covering Expansion", 25100.0, GOLD_COLOR, "+289.5 Pts | Gamma Squeeze Zone"),
-            ("R2: Psychological Wall", 25000.0, RED_COLOR, "+189.5 Pts | High Call Wall"),
-            ("R1: Immediate Hurdle", 24920.0, RED_COLOR, "+109.5 Pts | Intraday Breakdown Gate"),
+            ("R3: Short Covering Expansion", r3, GOLD_COLOR, f"+{r3 - current_price:.1f} Pts | Gamma Squeeze Zone"),
+            ("R2: Secondary Hurdle", r2, RED_COLOR, f"+{r2 - current_price:.1f} Pts | Call Wall Barrier"),
+            ("R1: Immediate Hurdle", r1, RED_COLOR, f"+{r1 - current_price:.1f} Pts | Immediate Resistance"),
             ("LTP: Baseline Spot", current_price, CYAN_COLOR, "Current Reference"),
         ]
 
@@ -643,18 +661,18 @@ class MarketChartGenerator:
         notes = [h[3] for h in hurdles]
 
         bars = ax.barh(y_pos, prices, color=colors, height=0.45, alpha=0.9, edgecolor=DARK_BG, linewidth=2)
-        ax.set_xlim(24650.0, 25250.0)
+        ax.set_xlim(current_price - 60.0, r3 + 80.0)
 
         for bar, label, price, note in zip(bars, labels, prices, notes):
-            ax.text(24680.0, bar.get_y() + bar.get_height()/2, f"{label}", color=TEXT_COLOR, fontweight="bold", fontsize=14, va="center")
-            ax.text(price + 15, bar.get_y() + bar.get_height()/2, f"{price:,.1f}  ({note})", color=bar.get_facecolor(), fontweight="bold", fontsize=13, va="center")
+            ax.text(current_price - 50.0, bar.get_y() + bar.get_height()/2, f"{label}", color=TEXT_COLOR, fontweight="bold", fontsize=14, va="center")
+            ax.text(price + 8, bar.get_y() + bar.get_height()/2, f"{price:,.1f}  ({note})", color=bar.get_facecolor(), fontweight="bold", fontsize=13, va="center")
 
         ax.set_yticks([])
         ax.set_title("BULLISH RECOVERY HURDLES: RESISTANCE CONVERGENCE", fontsize=18, fontweight="bold", pad=20)
         ax.set_xlabel("NIFTY Index Levels", fontweight="bold")
         ax.grid(True, linestyle="--", alpha=0.3, axis="x")
 
-        fig.text(0.5, 0.03, "Sustained close above 25,000 required for bulls to regain directional trend control", color=TEXT_MUTED, fontsize=13, ha="center")
+        fig.text(0.5, 0.03, f"Sustained close above {r1:,.0f} required for bulls to regain directional control", color=TEXT_MUTED, fontsize=13, ha="center")
         plt.tight_layout(rect=[0, 0.08, 1, 0.95])
         plt.savefig(output_path, dpi=120, facecolor=DARK_BG)
         plt.close()

@@ -1677,6 +1677,9 @@
                     <a href="/ai" class="nav-tab" id="tab-ai-insights"
                         >AI Insights</a
                     >
+                    <a href="/report" class="nav-tab" id="tab-report"
+                        >Market Summary</a
+                    >
                     <a href="/settings" class="nav-tab" id="tab-settings"
                         >Settings</a
                     >
@@ -3841,8 +3844,8 @@
             </td>
             <td><span style="color:${p.side === "BUY" ? "var(--blue)" : "var(--red)"}">${p.side}</span> ${p.option_type}</td>
             <td>${lotsDisplay}</td>
-            <td>${formatNumeric(p.entry_premium || p.entry_underlying)}</td>
-            <td>${formatNumeric(p.exit_premium || p.exit_underlying)}</td>
+            <td>${p.option_type === "FUT" ? formatNumeric(p.entry_underlying) : (p.entry_premium != null ? formatNumeric(p.entry_premium) : "—")}</td>
+            <td>${p.option_type === "FUT" ? formatNumeric(p.exit_underlying) : (p.exit_premium != null ? formatNumeric(p.exit_premium) : "—")}</td>
             <td class="pnl-cell ${pnlClass}">${sign}₹${pnl.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
             <td><span style="font-size:11px; background:var(--surface); padding:2px 6px; border-radius:4px; border:1.5px solid var(--border);">${p.reason || p.status.replace("CLOSED_", "")}</span></td>
             <td>${tradeModeHtml}</td>

@@ -27,6 +27,33 @@ MAX_NET_VEGA = 500.0              # Maximum net vega exposure
 MAX_LEGS_PER_BOOK = 6             # Maximum legs in a single book
 MIN_NET_PREMIUM = 2.0             # Minimum net premium collected (₹)
 
+# ── Defined-Risk Wing & Spread Guardrails ───────────────────────────
+# Minimum wing width as a percentage of underlying price (prevents ultra-narrow spreads that bleed premium)
+MIN_WING_WIDTH_PCT = {
+    "NIFTY": 0.005,       # >= 0.50% (~120 pts)
+    "BANKNIFTY": 0.006,   # >= 0.60% (~300 pts)
+    "FINNIFTY": 0.005,    # >= 0.50% (~120 pts)
+    "MIDCPNIFTY": 0.005,  # >= 0.50% (~60 pts)
+    "SENSEX": 0.006,      # >= 0.60% (~450-500 pts)
+    "DEFAULT": 0.005,     # >= 0.50%
+}
+
+# Absolute minimum wing width points per symbol
+MIN_WING_WIDTH_POINTS = {
+    "NIFTY": 100.0,
+    "BANKNIFTY": 250.0,
+    "FINNIFTY": 100.0,
+    "MIDCPNIFTY": 50.0,
+    "SENSEX": 400.0,      # SENSEX 200 pt wings are too narrow; require >= 400 pts (ideally 500+)
+    "DEFAULT": 50.0,
+}
+
+# Minimum net credit collected as a fraction of wing width (e.g. 0.25 = collect at least 25% of spread width)
+MIN_CREDIT_TO_WIDTH_RATIO = 0.20
+
+# Maximum insurance cost: Long hedge legs cannot consume more than 65% of gross premium collected on short legs
+MAX_HEDGE_COST_RATIO = 0.65
+
 # ── Strategy-Specific Constraints ───────────────────────────────────
 STRATEGY_CONSTRAINTS = {
     "IRON_CONDOR":     {"min_legs": 4, "max_legs": 4, "all_sell": False},

@@ -54,17 +54,17 @@ class DBMarketReader:
         """Reads the final post-market scan row from NSEBOT's SQLite DB."""
         today_str = datetime.now().strftime("%Y-%m-%d")
         
-        n_close = 24810.50
-        n_change = -145.20
-        n_pchange = -0.58
-        bn_close = 51320.00
-        bn_change = -310.40
-        bn_pchange = -0.60
-        vix_val = 13.90
-        n_pcr = 0.82
-        n_pain = 24800.0
-        top_ce = [24900.0, 25000.0, 25100.0]
-        top_pe = [24700.0, 24600.0, 24500.0]
+        n_close = 23643.90
+        n_change = -33.95
+        n_pchange = -0.14
+        bn_close = 56792.45
+        bn_change = -135.55
+        bn_pchange = -0.24
+        vix_val = 13.25
+        n_pcr = 0.80
+        n_pain = 23650.0
+        top_ce = [23700.0, 23800.0, 23750.0]
+        top_pe = [23600.0, 23650.0, 23550.0]
 
         if self.db_path.exists():
             try:
@@ -72,47 +72,107 @@ class DBMarketReader:
                     conn.row_factory = sqlite3.Row
                     cursor = conn.cursor()
                     
-                    # Fetch latest NIFTY scan
+                    # 1. Fetch latest NIFTY from scan_summaries
                     cursor.execute(
                         """
-                        SELECT underlying_price, pcr, max_pain, option_rows_json, vix, created_at
-                        FROM scans 
-                        WHERE symbol = 'NIFTY' AND date(created_at) = date('now', 'localtime')
+                        SELECT underlying, pcr, max_pain, support, resistance, verdict_label, created_at
+                        FROM scan_summaries 
+                        WHERE symbol = 'NIFTY'
                         ORDER BY id DESC LIMIT 1
                         """
                     )
-                    nifty_row = cursor.fetchone()
-                    if not nifty_row:
-                        # Fallback to absolute latest scan if testing on weekend
-                        cursor.execute(
-                            """
-                            SELECT underlying_price, pcr, max_pain, option_rows_json, vix, created_at
-                            FROM scans 
-                            WHERE symbol = 'NIFTY'
-                            ORDER BY id DESC LIMIT 1
-                            """
-                        )
-                        nifty_row = cursor.fetchone()
+                    nifty_scan = cursor.fetchone()
+                    if nifty_scan:
+                        if nifty_scan["underlying"]:
+                            n_close = float(nifty_scan["underlying"])
+                        if nifty_scan["pcr"]:
+                            n_pcr = round(float(nifty_scan["pcr"]), 2)
+                        if nifty_scan["max_pain"]:
+                            n_pain = float(nifty_scan["max_pain"])
 
-                    if nifty_row:
-                        n_close = float(nifty_row["underlying_price"]) if nifty_row["underlying_price"] else n_close
-                        n_pcr = float(nifty_row["pcr"]) if nifty_row["pcr"] else n_pcr
-                        n_pain = float(nifty_row["max_pain"]) if nifty_row["max_pain"] else n_pain
-                        if "vix" in nifty_row.keys() and nifty_row["vix"]:
-                            vix_val = float(nifty_row["vix"])
-
-                    # Fetch latest BANKNIFTY scan
+                    # Fetch NIFTY price change from underlying_price
                     cursor.execute(
                         """
-                        SELECT underlying_price, pcr, max_pain, created_at
-                        FROM scans 
+                        SELECT price, pct_change FROM underlying_price 
+                        WHERE symbol = 'NIFTY' 
+                        ORDER BY id DESC LIMIT 1
+                        """
+                    )
+                    nifty_up = cursor.fetchone()
+                    if nifty_up:
+                        if nifty_up["price"]:
+                            n_close = float(nifty_up["price"])
+                        if nifty_up["pct_change"] is not None:
+                            n_pchange = round(float(nifty_up["pct_change"]), 2)
+                            n_change = round(n_close * (n_pchange / 100.0), 2)
+
+                    # 2. Fetch latest BANKNIFTY from scan_summaries
+                    cursor.execute(
+                        """
+                        SELECT underlying, pcr, max_pain, support, resistance, verdict_label, created_at
+                        FROM scan_summaries 
                         WHERE symbol = 'BANKNIFTY'
                         ORDER BY id DESC LIMIT 1
                         """
                     )
-                    bn_row = cursor.fetchone()
-                    if bn_row and bn_row["underlying_price"]:
-                        bn_close = float(bn_row["underlying_price"])
+                    bn_scan = cursor.fetchone()
+                    if bn_scan and bn_scan["underlying"]:
+                        bn_close = float(bn_scan["underlying"])
+
+                    # Fetch BANKNIFTY price change from underlying_price
+                    cursor.execute(
+                        """
+                        SELECT price, pct_change FROM underlying_price 
+                        WHERE symbol = 'BANKNIFTY' 
+                        ORDER BY id DESC LIMIT 1
+                        """
+                    )
+                    bn_up = cursor.fetchone()
+                    if bn_up:
+                        if bn_up["price"]:
+                            bn_close = float(bn_up["price"])
+                        if bn_up["pct_change"] is not None:
+                            bn_pchange = round(float(bn_up["pct_change"]), 2)
+                            bn_change = round(bn_close * (bn_pchange / 100.0), 2)
+
+                    # 3. Fetch Top CE and PE strikes from option_chain_snapshots
+                    cursor.execute(
+                        """
+                        SELECT strike FROM option_chain_snapshots 
+                        WHERE symbol = 'NIFTY' AND option_type = 'CE' 
+                          AND fetched_at = (SELECT fetched_at FROM option_chain_snapshots WHERE symbol = 'NIFTY' ORDER BY id DESC LIMIT 1)
+                        ORDER BY oi DESC LIMIT 3
+                        """
+                    )
+                    ce_rows = cursor.fetchall()
+                    if ce_rows:
+                        top_ce = [float(r["strike"]) for r in ce_rows]
+
+                    cursor.execute(
+                        """
+                        SELECT strike FROM option_chain_snapshots 
+                        WHERE symbol = 'NIFTY' AND option_type = 'PE' 
+                          AND fetched_at = (SELECT fetched_at FROM option_chain_snapshots WHERE symbol = 'NIFTY' ORDER BY id DESC LIMIT 1)
+                        ORDER BY oi DESC LIMIT 3
+                        """
+                    )
+                    pe_rows = cursor.fetchall()
+                    if pe_rows:
+                        top_pe = [float(r["strike"]) for r in pe_rows]
+
+                    # 4. Fetch FII/DII cash from fii_positioning if available
+                    cursor.execute(
+                        """
+                        SELECT fii_cash_net, dii_cash_net FROM fii_positioning
+                        ORDER BY report_date DESC LIMIT 1
+                        """
+                    )
+                    fii_row = cursor.fetchone()
+                    if fii_row:
+                        if fii_row["fii_cash_net"] is not None:
+                            fii_net = float(fii_row["fii_cash_net"])
+                        if fii_row["dii_cash_net"] is not None:
+                            dii_net = float(fii_row["dii_cash_net"])
 
             except Exception as exc:
                 log.warning(f"Error querying NSEBOT database: {exc}. Using default market baseline.")

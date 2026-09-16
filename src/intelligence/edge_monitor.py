@@ -121,6 +121,19 @@ class EdgeDecayMonitor:
         recent_cutoff = (now_utc - timedelta(days=self.rolling_window_days)).isoformat()
         hist_start = (now_utc - timedelta(days=self.historical_window_days)).isoformat()
 
+        trades_source = """
+            (
+                SELECT symbol, verdict_label, pnl_rupees, closed_at, status FROM paper_trades
+                UNION ALL
+                SELECT m.symbol, COALESCE(s.verdict_label, m.strategy_type, m.structure) as verdict_label,
+                       m.total_pnl as pnl_rupees, m.closed_at, m.status
+                FROM multi_leg_trades m
+                LEFT JOIN scan_summaries s ON m.digest_id = s.digest_id
+                UNION ALL
+                SELECT symbol, verdict_label, pnl_rupees, closed_at, status FROM live_trades
+            )
+        """
+
         with get_conn() as conn:
             # Recent window (last 30 days)
             recent = conn.execute(
@@ -130,7 +143,7 @@ class EdgeDecayMonitor:
                     SUM(CASE WHEN pnl_rupees > 0 THEN 1 ELSE 0 END) as wins,
                     SUM(pnl_rupees) as total_pnl,
                     AVG(pnl_rupees) as avg_pnl
-                FROM paper_trades
+                FROM {trades_source}
                 WHERE {where_clause} AND closed_at >= ?
             """,
                 params + [recent_cutoff],
@@ -144,7 +157,7 @@ class EdgeDecayMonitor:
                     SUM(CASE WHEN pnl_rupees > 0 THEN 1 ELSE 0 END) as wins,
                     SUM(pnl_rupees) as total_pnl,
                     AVG(pnl_rupees) as avg_pnl
-                FROM paper_trades
+                FROM {trades_source}
                 WHERE {where_clause} AND closed_at >= ? AND closed_at < ?
             """,
                 params + [hist_start, recent_cutoff],
@@ -252,18 +265,31 @@ class EdgeDecayMonitor:
         now_utc = datetime.now(timezone.utc)
         recent_cutoff = (now_utc - timedelta(days=self.rolling_window_days)).isoformat()
 
+        trades_source = """
+            (
+                SELECT symbol, verdict_label, pnl_rupees, closed_at, status FROM paper_trades
+                UNION ALL
+                SELECT m.symbol, COALESCE(s.verdict_label, m.strategy_type, m.structure) as verdict_label,
+                       m.total_pnl as pnl_rupees, m.closed_at, m.status
+                FROM multi_leg_trades m
+                LEFT JOIN scan_summaries s ON m.digest_id = s.digest_id
+                UNION ALL
+                SELECT symbol, verdict_label, pnl_rupees, closed_at, status FROM live_trades
+            )
+        """
+
         # Single GROUP BY query — fetches all strategy metrics at once
         with get_conn() as conn:
             if symbol:
                 rows = conn.execute(
-                    """
+                    f"""
                     SELECT
                         symbol,
                         verdict_label,
                         COUNT(*) as count,
                         SUM(CASE WHEN pnl_rupees > 0 THEN 1 ELSE 0 END) as wins,
                         AVG(pnl_rupees) as avg_pnl
-                    FROM paper_trades
+                    FROM {trades_source}
                     WHERE status != 'OPEN'
                       AND closed_at IS NOT NULL
                       AND closed_at >= ?
@@ -275,14 +301,14 @@ class EdgeDecayMonitor:
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    """
+                    f"""
                     SELECT
                         symbol,
                         verdict_label,
                         COUNT(*) as count,
                         SUM(CASE WHEN pnl_rupees > 0 THEN 1 ELSE 0 END) as wins,
                         AVG(pnl_rupees) as avg_pnl
-                    FROM paper_trades
+                    FROM {trades_source}
                     WHERE status != 'OPEN'
                       AND closed_at IS NOT NULL
                       AND closed_at >= ?

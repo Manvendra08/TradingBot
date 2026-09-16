@@ -64,3 +64,25 @@ def test_validate_multileg_canonical_verdicts():
     assert res_sb.is_valid is False
     assert "Direction conflict" in res_sb.rejection_reason
 
+def test_validate_multileg_symbol_specific_margin():
+    # SENSEX at 75,000 spot: lot size is 20 (not 75).
+    # Margin for 1 leg sell ratio 1: 75000 * 1 * 20 * 0.15 = 225,000 <= 500,000 (valid!)
+    proposal_sensex = ParsedExecution(
+        is_valid=True,
+        strategy="BEAR_CALL_SPREAD",
+        action="GO_SHORT",
+        legs=[
+            {"action": "SELL", "strike": 75500, "option_type": "CE", "entry_premium": 100.0, "ratio": 1},
+            {"action": "BUY", "strike": 76000, "option_type": "CE", "entry_premium": 30.0, "ratio": 1}
+        ]
+    )
+    res = validate_multileg_trade(
+        proposal_sensex,
+        engine_verdict="BEARISH",
+        underlying=75000.0,
+        max_margin_inr=500000.0,
+        symbol="SENSEX"
+    )
+    assert res.is_valid is True
+
+

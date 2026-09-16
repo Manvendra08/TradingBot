@@ -198,6 +198,7 @@ class VisualCardEngine:
         output_path: Path,
         background_chart_path: Path | None = None,
         anchor_image_path: Path | None = None,
+        key_support: str = "23,600 PIVOT",
     ) -> Path:
         """
         Generates a broadcast-grade 1280x720 YouTube thumbnail:
@@ -279,7 +280,7 @@ class VisualCardEngine:
         # 8. Support Level Callout Pill
         draw.rounded_rectangle([45, 390, 680, 485], radius=12, fill=(15, 23, 42), outline=(30, 41, 59), width=2)
         draw.text((68, 405), "CRITICAL WATCHPOINT FOR TOMORROW", font=self._get_font(13, bold=False), fill=(148, 163, 184))
-        draw.text((68, 430), "KEY SUPPORT: 24,700 PIVOT", font=self._get_font(26, bold=True), fill=(16, 185, 129))
+        draw.text((68, 430), f"KEY SUPPORT: {key_support}", font=self._get_font(26, bold=True), fill=(16, 185, 129))
 
         # 9. Action CTA Banner at Bottom
         draw.rounded_rectangle([45, 520, 1235, 645], radius=14, fill=(15, 23, 42), outline=(0, 229, 255), width=2)

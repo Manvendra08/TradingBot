@@ -200,6 +200,20 @@ class LLMTradeVerdict(BaseModel):
     catalyst: str = Field(
         description="Upcoming event that could accelerate or invalidate: 'EIA report Thursday 8:00PM IST' or 'No major catalyst'"
     )
+    reasoning_chain: str | None = Field(
+        default=None,
+        description=(
+            "Mandatory 4-step pre-verdict audit:\n"
+            "Step 1 (OI Flow): Reconcile CE/PE OI changes with writer rules (PE+ = Support, CE+ = Resistance).\n"
+            "Step 2 (Levels): Reconcile spot with S/R and Max Pain magnet.\n"
+            "Step 3 (Event Risk): Check catalyst timing and DTE.\n"
+            "Step 4 (Adversarial Invalidation): State what market condition proves this trade wrong."
+        ),
+    )
+    structural_invalidation_spot: float | None = Field(
+        default=None,
+        description="Exact underlying spot price level where thesis is invalidated (e.g. 23450.0)"
+    )
     model_name: str | None = Field(
         default=None,
         description="Name of the LLM provider/model that generated this verdict",
@@ -797,47 +811,55 @@ def _format_historical_oi(symbol: str) -> str:
             f"  PCR Trend: {pcr_dir} ({pcr_oldest:.2f} \u2192 {pcr_newest:.2f})"
         )
 
-    if len(oi_net) >= 3:
-        recent_net = sum(oi_net[:3])
-        prior_net = sum(oi_net[3:6]) if len(oi_net) >= 6 else 0
-        if recent_net > 0 and recent_net > prior_net:
-            oi_dir = "accelerating buildup"
-        elif recent_net > 0:
-            oi_dir = "decelerating buildup"
-        elif recent_net < 0 and recent_net < prior_net:
-            oi_dir = "accelerating unwinding"
-        elif recent_net < 0:
-            oi_dir = "decelerating unwinding"
-        else:
-            oi_dir = "flat"
-        lines.append(
-            f"  OI Trend: {oi_dir} (recent 3: {recent_net:+,} vs prior 3: {prior_net:+,})"
-        )
+    # ── Multi-Scan Options Flow & Trend ──
+    ce_net_total = sum(int(r["ce_oi_change"] or 0) for r in rows)
+    pe_net_total = sum(int(r["pe_oi_change"] or 0) for r in rows)
 
-    # ── Price impact analysis (Fix 3) ────────────────────────────────────
-    if len(price_vals) >= 3 and len(oi_net) >= 3:
+    if pe_net_total > 0 and ce_net_total <= 0:
+        oi_flow_summary = "Bullish Accumulation (Put Writing + Call Unwinding/Covering)"
+    elif pe_net_total > 0 and pe_net_total > ce_net_total * 1.3:
+        oi_flow_summary = f"Bullish Bias (Put Writing +{pe_net_total:,} outpaces Call Writing +{ce_net_total:,})"
+    elif ce_net_total > 0 and pe_net_total <= 0:
+        oi_flow_summary = "Bearish Distribution (Call Writing + Put Unwinding)"
+    elif ce_net_total > 0 and ce_net_total > pe_net_total * 1.3:
+        oi_flow_summary = f"Bearish Bias (Call Writing +{ce_net_total:,} outpaces Put Writing +{pe_net_total:,})"
+    elif ce_net_total < 0 and pe_net_total < 0:
+        oi_flow_summary = "Neutral (Two-sided unwinding / position squaring)"
+    else:
+        oi_flow_summary = "Neutral / Rangebound (Balanced two-sided writing)"
+
+    lines.append(
+        f"  Multi-Scan Options Flow: {oi_flow_summary} (Cumulative CE: {ce_net_total:+,} | PE: {pe_net_total:+,} over {len(rows)} scans)"
+    )
+
+    # ── Price impact analysis (Options-Aware) ──
+    if len(price_vals) >= 3:
         price_newest = price_vals[0]
         price_oldest = price_vals[-1]
         price_chg = price_newest - price_oldest
         price_pct = (price_chg / price_oldest) * 100 if price_oldest > 0 else 0.0
-        net_oi_5 = sum(oi_net[:5])
 
-        if net_oi_5 > 0 and price_pct > 0.1:
-            impact = "OI building + price rising = Long buildup confirmed"
-        elif net_oi_5 > 0 and price_pct < -0.1:
-            impact = "OI building + price falling = Short buildup confirmed"
-        elif net_oi_5 < 0 and price_pct > 0.1:
-            impact = "OI unwinding + price rising = Short covering"
-        elif net_oi_5 < 0 and price_pct < -0.1:
-            impact = "OI unwinding + price falling = Long liquidation"
-        elif abs(price_pct) <= 0.1 and abs(net_oi_5) > 0:
-            impact = "OI moving but price flat = Consolidation / trap risk"
+        if pe_net_total > ce_net_total and pe_net_total > 0:
+            if price_pct > 0.05:
+                impact = "Bullish Expansion: Price rising with Put Writing support floor"
+            elif price_pct < -0.05:
+                impact = "Dip Absorption: Price dipped but Put Writing dominant (Institutional support floor / dip buying)"
+            else:
+                impact = "Support Building: Price consolidating as Put Writers build floor"
+        elif ce_net_total > pe_net_total and ce_net_total > 0:
+            if price_pct < -0.05:
+                impact = "Bearish Expansion: Price falling with Call Writing resistance ceiling"
+            elif price_pct > 0.05:
+                impact = "Bearish Resistance: Price rallying into heavy Call Writing (fade rally)"
+            else:
+                impact = "Resistance Building: Price consolidating under Call Writers' ceiling"
+        elif ce_net_total < 0 and pe_net_total < 0:
+            impact = "Liquidation / Squaring: Both sides unwinding positions"
         else:
-            impact = "Mixed signals \u2014 price and OI not aligned"
+            impact = "Consolidation / Balanced Range: Options flow neutral"
 
         lines.append(
-            f"  Price Impact: {impact} (\u0394{price_pct:+.2f}% over {len(rows)} scans, "
-            f"net OI: {net_oi_5:+,})"
+            f"  Price Impact: {impact} (Δ{price_pct:+.2f}% over {len(rows)} scans)"
         )
 
     # ── Verdict persistence ──────────────────────────────────────────────
@@ -899,16 +921,32 @@ def _build_deep_prompt(
     # Session phase
     now_ist = datetime.now(_IST)
     hour = now_ist.hour + now_ist.minute / 60
-    if hour < 9.15:
-        session_phase = "Pre-open (09:00-09:15)"
-    elif hour < 10:
+    if hour < 9.0:
+        session_phase = "Pre-market (<09:00)"
+    elif hour < 9.1333:  # 09:08 IST
+        session_phase = "Pre-open Order Entry (09:00-09:08) [Random close ~09:07-09:08]"
+    elif hour < 9.20:    # 09:12 IST
+        session_phase = "Pre-open Order Matching & Price Discovery (09:08-09:12)"
+    elif hour < 9.25:    # 09:15 IST
+        session_phase = "Pre-open Buffer Period (09:12-09:15)"
+    elif hour < 10.0:
         session_phase = "Opening (09:15-10:00)"
     elif hour < 13.5:
         session_phase = "Midday (10:00-13:30)"
+    elif hour < 15.25:
+        session_phase = "Closing Regular (13:30-15:15)"
+    elif hour < 15.417:
+        session_phase = "CAS Transition & Order Entry 1 (15:15-15:25) [F&O cash closed]"
     elif hour < 15.5:
-        session_phase = "Closing (13:30-15:30)"
+        session_phase = "CAS Order Entry 2 (15:25-15:30) [Limit orders only]"
+    elif hour < 15.583:
+        session_phase = "CAS Equilibrium Matching (15:30-15:35) [Cash discovery]"
+    elif hour < 15.667:
+        session_phase = "F&O Extended Trading & Hedging (15:35-15:40) [Derivatives active]"
     else:
-        session_phase = "Post-close (15:30-16:00)"
+        session_phase = "Post-close (15:40+)"
+
+
 
     # Event risk today
     event_risk_today = "None"
@@ -931,6 +969,19 @@ def _build_deep_prompt(
             atm_iv = iv
             break
 
+    ce_oi_chg = int(ctx.get("ce_oi_change") or 0)
+    pe_oi_chg = int(ctx.get("pe_oi_change") or 0)
+    if pe_oi_chg > 0 and ce_oi_chg < 0:
+        oi_flow_gt = "BULLISH (PE buildup / put writing + CE unwinding / call short-covering)"
+    elif ce_oi_chg > 0 and pe_oi_chg < 0:
+        oi_flow_gt = "BEARISH (CE buildup / call writing + PE unwinding / put exit)"
+    elif ce_oi_chg > 0 and pe_oi_chg > 0:
+        oi_flow_gt = "NEUTRAL (Both CE & PE building; rangebound / standoff)"
+    elif ce_oi_chg < 0 and pe_oi_chg < 0:
+        oi_flow_gt = "NEUTRAL (Both CE & PE unwinding; squaring off)"
+    else:
+        oi_flow_gt = "MIXED"
+
     prompt = f"""Options trader — structured trade plan.
 
 {symbol} | {datetime.now(_IST).strftime("%a %H:%M IST")} | Price: {ctx.get("underlying")} | ATM: {ctx.get("atm_strike")} | DTE: {dte}
@@ -938,7 +989,7 @@ def _build_deep_prompt(
 DATA:
 • Verdict: {intel.get("verdict_label")} @ {intel.get("confidence", 0)}% | {intel.get("trend", "N/A")}
 • Levels: S={ctx.get("support")} R={ctx.get("resistance")} Pain={ctx.get("max_pain")} PCR={ctx.get("pcr")}
-• OI Δ: CE {ctx.get("ce_oi_change", 0):+,} PE {ctx.get("pe_oi_change", 0):+,}
+• OI Δ: CE {ce_oi_chg:+,} | PE {pe_oi_chg:+,} → Flow: {oi_flow_gt}
 • Price Δ: {ctx.get("price_change_pct", "N/A")}% ({ctx.get("price_change_points", "N/A")} pts)
 • Chart: {_format_chart_data(ctx.get("chart_indicators"))}
 • Premiums (ATM ± 3, use exact LTP):
@@ -946,12 +997,36 @@ DATA:
 • Alerts: {_summarize_alerts(alerts or [])}
 • Risk: {", ".join(risk_flags) or "None"}
 
+OPTIONS WRITER GROUND TRUTH (MANDATORY — NEVER INVERT):
+• PE Buildup (Positive PE OI change) = PUT WRITING / PUT SELLING by institutions establishing support floor → BULLISH. NEVER interpret PE buildup as bearish short positioning!
+• CE Unwinding (Negative CE OI change) = CALL SHORT-COVERING / call writers exiting upside risk → BULLISH.
+• CE Buildup (Positive CE OI change) = CALL WRITING / CALL SELLING establishing overhead resistance ceiling → BEARISH.
+• PE Unwinding (Negative PE OI change) = PUT UNWINDING / support crumbling → BEARISH.
+• PCR = Total PE OI / Total CE OI. Rising PCR (e.g. 0.80 → 1.10) reflects heavier Put writing than Call writing → BULLISH accumulation. Lowering PCR (e.g. 1.20 → 0.60) reflects Put unwinding or heavy Call writing → BEARISH.
+• In your thesis, ALWAYS adhere to these mathematical facts.
+
 INDIA REGIME CONTEXT:
 • India VIX: {ctx.get("india_vix", "N/A")} (regime: LOW<12 | NORMAL 12-18 | ELEVATED 18-25 | FEAR>25)
 • {symbol} lot size: {lot_size} units/lot | Margin per lot ≈ ₹{margin_per_lot:,.0f}
 • Session micro: {session_phase}
 • Event risk today: {event_risk_today}
 • ATM IV: {atm_iv:.1f}%
+
+PRICE DISCOVERY & MARKET TIMING RULES (MANDATORY):
+• F&O Pre-Open Session (09:00–09:15 IST): Call auction for eligible index & single-stock futures.
+  - 09:00–09:08 IST: Order entry, modification, cancellation (random close ~09:07–09:08).
+  - 09:08–09:12 IST: Order matching & equilibrium opening price determination.
+  - 09:12–09:15 IST: Buffer period before 09:15 continuous market open.
+• Closing & CAS Session (15:15–15:40 IST):
+  - 15:15 IST: Continuous regular trading for F&O-eligible stocks in the cash market ends (instead of 3:30 PM).
+  - 15:15–15:20 IST: Transition period — orders frozen, reference prices published, out-of-bound pending orders canceled.
+  - 15:20–15:25 IST: Order Entry Session 1 — both market and limit orders permitted.
+  - 15:25–15:30 IST: Order Entry Session 2 — only limit orders allowed, closing randomly between 15:28 and 15:30.
+  - 15:30–15:35 IST: Order matching occurs at single equilibrium price (official cash closing price declared).
+  - 15:40 IST: Derivative F&O contracts continue trading until 15:40 IST (+10 min past old 15:30 close to hedge or adjust positions).
+• Non-F&O Stocks: Unaffected by CAS; continuous normal trading continues until 15:30 IST.
+
+
 
 NEWS & MACRO WEIGHTING:
 • Headlines from economic-policy sources (RBI, MoPNG, EIA) weight 3x vs. analyst commentary.
@@ -993,6 +1068,22 @@ OI HISTORY:
         "BULLISH" if _is_bull(_vl) else ("BEARISH" if _is_bear(_vl) else "NO_TRADE")
     )
     _bias_rationale = intel.get("verdict_desc") or intel.get("trend") or ""
+
+    if _bias_str == "BEARISH":
+        _direction_rule = (
+            "• MANDATORY DIRECTION CONSTRAINT: Engine is BEARISH. Allowed action: 'GO_SHORT' or 'NO_TRADE'. "
+            "Outputting 'GO_LONG' is STRICTLY FORBIDDEN and will be rejected."
+        )
+    elif _bias_str == "BULLISH":
+        _direction_rule = (
+            "• MANDATORY DIRECTION CONSTRAINT: Engine is BULLISH. Allowed action: 'GO_LONG' or 'NO_TRADE'. "
+            "Outputting 'GO_SHORT' is STRICTLY FORBIDDEN and will be rejected."
+        )
+    else:
+        _direction_rule = (
+            "• MANDATORY DIRECTION CONSTRAINT: Engine has no directional bias. Action MUST be 'NO_TRADE'."
+        )
+
     # Unwrap chart_indicators: may be {"NATURALGAS": {"1h": ..., "3h": ...}} or {"1h": ..., "3h": ...}
     _chart_raw = ctx.get("chart_indicators") or {}
     if isinstance(_chart_raw, dict):
@@ -1005,6 +1096,7 @@ OI HISTORY:
 
     prompt += f"""
 ENGINE: {_bias_str} | {_vl} | {_bias_rationale}
+{_direction_rule}
 
 ANALYSIS (ordered):
 1. OI pattern from Δ above — fresh positioning or unwinding?
@@ -1014,20 +1106,25 @@ ANALYSIS (ordered):
 5. Macro catalyst? (EIA/RBI/OPEC/expiry)
 6. Confidence: count [OI, price, news] agreement
    3/3→80-95 | 2/3→60-75 | 1/3→35-55 | 0/3→NO_TRADE
-7. Engine Alignment: The quantitative OI engine decides direction ({_bias_str} with {intel.get('confidence', 0)}% confidence). Your role is execution detail (levels, target, stop loss). Do NOT override a triggered engine trade to NO_TRADE based on subjective chart doubt or routine theta decay; reserve NO_TRADE strictly for missing strike liquidity, invalid quotes, or hard data integrity failures.
+7. Engine Alignment: The quantitative OI engine decides direction ({_bias_str} with {intel.get('confidence', 0)}% confidence). Your role is execution detail (levels, target, stop loss). Do NOT override a triggered engine trade to NO_TRADE based on subjective chart doubt or routine theta decay; reserve NO_TRADE strictly for missing strike liquidity, invalid quotes, or hard data integrity failures. Under NO circumstances may you flip direction against the engine!
 
 TRADE DISCIPLINE:
 {get_reality_check_guardrails()}
 • Anchor targets to DATA levels: long/bullish → resistance/max-pain above, short/bearish → support/max-pain below. Never project a target past the nearest opposing level without stating why in thesis.
 • SL at the nearest DATA level that invalidates the setup — not an arbitrary %.
-• Compute risk_reward from YOUR OWN levels: (target_1 − entry) / (entry − stop_loss). It must reconcile arithmetically. Below 1:1.2 → adjust targets or stops to align with market structure.
+• Compute risk_reward from YOUR OWN levels: For BUY options / long trades: (target_1 − entry) / (entry − stop_loss). For SELL options: (entry − target_1) / (stop_loss − entry). Below 1:1.2 → adjust targets or stops to align with market structure.
 • Reserve NO_TRADE strictly for cases where evidence is completely contradictory (0/3 agree), chosen strike shows "—" or zero bid in Premiums, or option chain data is corrupt. A valid quantitative signal with liquid strikes must be structured and executed.
 • NAKED SHORT BAN into events: DTE≤2 AND event_day={event_risk_today} → defined-risk spread / IRON_CONDOR or NO_TRADE. No naked short strangle/straddle.
-• Lot check: max_risk_per_lot = (entry − stop_loss) × {lot_size}. Max single-trade loss ≤ 1.5% of portfolio.
+• Lot check: max_risk_per_lot = abs(entry − stop_loss) × {lot_size}. Max single-trade loss ≤ 1.5% of portfolio.
 
 OUTPUT (JSON per schema; every number MUST appear in DATA or be arithmetic on DATA — never invent):
+• action: Allowed values are {"GO_SHORT", "NO_TRADE"} (if ENGINE is BEARISH) or {"GO_LONG", "NO_TRADE"} (if ENGINE is BULLISH). NEVER oppose the ENGINE direction.
 • instrument: "{symbol} <strike> CE/PE/FUT <expiry>" — strike must exist in Premiums
+• stop_loss: Option premium stop-loss level (for options, e.g. 45.0) or spot level (for FUT) — NEVER output underlying index spot (e.g. 24500) for option contracts
+• target_1, target_2: Option premium target levels (for options, e.g. 90.0) or spot level (for FUT) — NEVER output underlying index spot for option contracts
 • entry_premium_range: exact LTP from Premiums (e.g. "4.5-5.5") — never estimate
+• reasoning_chain: 4-step pre-verdict audit (1. OI Flow vs writer rules | 2. S/R and Max Pain | 3. DTE & Catalysts | 4. Invalidation)
+• structural_invalidation_spot: Exact underlying spot price level where thesis is invalidated (numerical float, e.g. 23450.0)
 • NO_TRADE: signal_chain = why no edge, entry_trigger = what would change the view
 • thesis: WHY the edge exists (flow/S-R/catalyst confluence), NOT a verdict restatement"""
 
@@ -1158,14 +1255,26 @@ def _build_exit_prompt(
     hours_to_event = 999
     now_ist = datetime.now(_IST)
     if base_sym == "NATURALGAS" and now_ist.weekday() == 3:
-        hours_to_event = 20 - now_ist.hour - now_ist.minute/60
-        next_catalyst = f"EIA Inventory {hours_to_event:.1f}h"
+        h_diff = 20 - now_ist.hour - now_ist.minute/60
+        if h_diff >= 0:
+            hours_to_event = h_diff
+            next_catalyst = f"EIA Inventory {hours_to_event:.1f}h"
+        else:
+            next_catalyst = "EIA Inventory released today (passed)"
     elif base_sym == "CRUDEOIL" and now_ist.weekday() == 2:
-        hours_to_event = 16 - now_ist.hour - now_ist.minute/60
-        next_catalyst = f"OPEC+ {hours_to_event:.1f}h"
+        h_diff = 16 - now_ist.hour - now_ist.minute/60
+        if h_diff >= 0:
+            hours_to_event = h_diff
+            next_catalyst = f"OPEC+ {hours_to_event:.1f}h"
+        else:
+            next_catalyst = "OPEC+ released today (passed)"
     elif now_ist.weekday() == 4:
-        hours_to_event = 20.5 - now_ist.hour - now_ist.minute/60
-        next_catalyst = f"US CPI/NFP {hours_to_event:.1f}h"
+        h_diff = 20.5 - now_ist.hour - now_ist.minute/60
+        if h_diff >= 0:
+            hours_to_event = h_diff
+            next_catalyst = f"US CPI/NFP {hours_to_event:.1f}h"
+        else:
+            next_catalyst = "US CPI/NFP released today (passed)"
 
     # Time-of-day exit filter
     hour = now_ist.hour + now_ist.minute / 60
@@ -1178,6 +1287,21 @@ def _build_exit_prompt(
         nse_close_window = 15.0 <= hour <= 15.5  # 15:00-15:30 IST (equity/old behavior)
     mcx_close_window = 23.0 <= hour <= 23.5  # 23:00-23:30 IST
     in_close_window = mcx_close_window if is_mcx else nse_close_window
+
+    ce_chg = int(ctx.get("ce_oi_change") or 0)
+    pe_chg = int(ctx.get("pe_oi_change") or 0)
+    if pe_chg > 0 and ce_chg < 0:
+        oi_flow_gt = "BULLISH (PE put writing support + CE call unwinding)"
+    elif pe_chg > 0 and pe_chg > ce_chg:
+        oi_flow_gt = f"BULLISH (PE writing +{pe_chg:,} outpaces CE writing +{ce_chg:,})"
+    elif ce_chg > 0 and pe_chg < 0:
+        oi_flow_gt = "BEARISH (CE call writing resistance + PE put unwinding)"
+    elif ce_chg > 0 and ce_chg > pe_chg:
+        oi_flow_gt = f"BEARISH (CE writing +{ce_chg:,} outpaces PE writing +{pe_chg:,})"
+    elif ce_chg < 0 and pe_chg < 0:
+        oi_flow_gt = "NEUTRAL (Two-sided unwinding / squaring)"
+    else:
+        oi_flow_gt = "BALANCED / NEUTRAL"
 
     return f"""Trade exit decision for EXISTING position.
 
@@ -1193,7 +1317,8 @@ POSITION:
 MARKET:
   Und {ctx.get("underlying")} | Chg {ctx.get("price_change_points",0)}pts ({ctx.get("price_change_pct","N/A")}%)
   PCR {ctx.get("pcr")} | S/R {ctx.get("support")}/{ctx.get("resistance")}
-  OI Δ: CE {ctx.get("ce_oi_change",0):,} PE {ctx.get("pe_oi_change",0):,}
+  OI Δ: CE {ce_chg:+,} | PE {pe_chg:+,} → Flow: {oi_flow_gt}
+  (Ground Truth: PE buildup = Bullish Support; CE buildup = Bearish Resistance)
   Chart: {_format_chart_data(ctx.get("chart_indicators"))}
 NEWS: {_format_news(news_data)}
 
@@ -1208,8 +1333,12 @@ LIQUIDITY CHECK:
 • If Bid/Ask spread > 15% of LTP or OI<100, assume exit at BID (not mid).
 • Do not propose TRAIL_SL if new SL premium is closer than Bid.
 
-TIME-OF-DAY RULE:
-• {'NSE expiry window 15:00-15:30 IST: only CLOSE or CLOSE_EARLY allowed.' if nse_close_window else 'MCX window 23:00-23:30 IST: only CLOSE or CLOSE_EARLY allowed.' if mcx_close_window else 'Outside close window: all actions permitted.'}
+TIME-OF-DAY & PRICE DISCOVERY RULES:
+• 15:15 IST: Continuous regular trading for F&O-eligible stocks in cash market ends (CAS runs 15:15–15:35).
+• 15:40 IST: Derivative F&O contracts trade until 15:40 IST (use 15:30–15:40 window for hedging/adjustments).
+• Non-F&O stocks trade continuously until 15:30 IST.
+• {'NSE expiry window 15:00-15:40 IST: only CLOSE_EARLY allowed.' if (dte == 0 and nse_close_window) else 'MCX expiry window 23:00-23:30 IST: only CLOSE_EARLY allowed.' if (dte == 0 and mcx_close_window) else 'Outside close window (or non-expiry day): all actions permitted.'}
+
 
 DISCIPLINE & CAPITAL PRESERVATION (agency-reality-checker):
 - Protect open gains: If position reached >50% of target and underlying momentum stalls at S/R, TRAIL_SL immediately.
@@ -1222,7 +1351,7 @@ ACTIONS for {pos_direction.split()[0]} position:
 • EXTEND_TARGET: Strong momentum — raise target (new_target_premium)
 
 EXPIRY RULES (CRITICAL):
-- <60 min to expiry → CLOSE_EARLY/CLOSE (avoid settlement penalties)
+- <60 min to expiry → CLOSE_EARLY (avoid settlement penalties)
 - State remaining minutes in reasoning
 
 URGENCY: HIGH only for sharp adverse move, SL breach, or <30 min to expiry.
@@ -1737,6 +1866,14 @@ def call_llm_api(
         "DATA LEGITIMACY & INTEGRITY: Validate that the provided underlying spot, strikes, and DTE are coherent. "
         "If data is unpopulated, contradictory, or lacks liquidity across all strikes, you MUST set action='NO_TRADE' / strategy_type='NO_TRADE' "
         "and explain the data discrepancy in the thesis.\n"
+        "MARKET MECHANICS (NSE/BSE/MCX DERIVATIVES — WRITER GROUND TRUTH):\n"
+        "In Indian options markets, institutional OI represents options writing/selling. "
+        "1. PE OI addition (+PE ΔOI) = Put Writing = BULLISH support floor. "
+        "2. CE OI addition (+CE ΔOI) = Call Writing = BEARISH resistance ceiling. "
+        "3. PE OI unwinding (-PE ΔOI) = Put closure = BEARISH support breakdown. "
+        "4. CE OI unwinding (-CE ΔOI) = Call short covering = BULLISH resistance clearance. "
+        "5. Rising PCR (or >1.0) = BULLISH accumulation / put addition; Falling PCR (or <1.0) = BEARISH distribution / call addition. "
+        "NEVER describe PE buildup as bearish institutional short positioning, and NEVER claim a rising PCR is bearish.\n"
         "CONTEXT RULES: All times are IST (UTC+5:30). All monetary amounts are INR (₹). All prices and premiums are per-unit INR unless explicitly stated. Do not use USD, $, ET, UTC, or other timezones in reasoning or output.\n"
         f"Target Schema ({schema_name}):\n{schema_json}"
     )
@@ -1759,11 +1896,19 @@ def call_llm_api(
 
     # Resolve routing classification
     if purpose is None:
-        if schema == LLMStrategyOptimization:
+        schema_name = getattr(schema, "__name__", "")
+        if schema == LLMStrategyOptimization or schema_name == "LLMStrategyOptimization":
             purpose = "eod_review"
-        elif schema in (LLMTradeVerdict, LLMExitAdvice):
+        elif schema in (LLMTradeVerdict, LLMExitAdvice) or schema_name in (
+            "LLMTradeVerdict",
+            "LLMExitAdvice",
+            "LLMMultiLegVerdict",
+            "LLMMultiLegExit",
+        ):
             purpose = "live_verdict"
-        elif getattr(schema, "__name__", "") == "ScanDiagnostic":
+        elif schema_name == "EIAAnalysisVerdict":
+            purpose = "eia_analysis"
+        elif schema_name == "ScanDiagnostic":
             purpose = "sentinel_diagnostic"
         else:
             purpose = "formatting"
@@ -2057,8 +2202,16 @@ def call_llm_api(
             ],
         }
 
+        _omnirouter_eod_group = {
+            "model_group": "omnirouter-eod",
+            "providers": [
+                p for p in _omnirouter_group["providers"]
+                if p.get("model") != "Claude-Models"
+            ],
+        }
+
         FREE_MODEL_PIPELINE = [
-            _omnirouter_group,
+            _omnirouter_eod_group,
             _github_models_eod,
             _groq_group_eod,
             _gemini_group,
@@ -3026,6 +3179,9 @@ def call_llm_api(
                     "Content-Type": "application/json",
                     "Connection": "close",
                 }
+                if provider.get("name", "").startswith("OmniRouter") or "20128" in provider.get("url", ""):
+                    # Prevent OmniRoute Caveman/RTK from stripping numerical strike tables
+                    headers["x-omniroute-compression"] = "off"
 
                 json_payload = {
                     "model": provider["model"],
@@ -3557,6 +3713,31 @@ def _extract_json(raw: str) -> dict | list:
         if parsed is not None:
             return _sanitize_parsed_strings(parsed)
 
+    # Fallback: bare action keyword (model returned "NO_TRADE" without JSON wrapper)
+    upper_raw = original_raw.strip().upper()
+    if upper_raw in ("NO_TRADE", "GO_LONG", "GO_SHORT"):
+        return _sanitize_parsed_strings({"action": upper_raw, "confidence": 50})
+
+    # Fallback: if we find a fenced block that looks like an exit plan, map to a default NO_TRADE verdict
+    # This handles cases where the model outputs markdown with an exit plan instead of JSON.
+    if "```" in original_raw:
+        # Extract the content of the first fenced block (we already tried to parse it as JSON and failed)
+        # We'll look for a block that contains "EXIT PLAN" and "Profit:"
+        fenced_content_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", original_raw, flags=re.IGNORECASE)
+        if fenced_content_match:
+            fenced_content = fenced_content_match.group(1).strip()
+            if "EXIT PLAN" in fenced_content and "Profit:" in fenced_content and "Stop:" in fenced_content and "Time:" in fenced_content:
+                # Try to extract the numbers
+                profit_match = re.search(r"Profit:\s*(\d+)%", fenced_content)
+                stop_match = re.search(r"Stop:\s*(\d+)%", fenced_content)
+                time_match = re.search(r"Time:\s*([^\n]+)", fenced_content)
+                profit_pct = int(profit_match.group(1)) if profit_match else 50
+                stop_pct = int(stop_match.group(1)) if stop_match else 150
+                time_str = time_match.group(1).strip() if time_match else "Hold to expiry"
+                # We don't have a schema to map to, so we return a generic NO_TRADE with confidence 50
+                # The caller will have to handle the missing fields, but at least we avoid the exception.
+                return _sanitize_parsed_strings({"action": "NO_TRADE", "confidence": 50})
+
     raise ValueError(f"JSON extract failed | Raw: {original_raw[:200]}")
 
 
@@ -3754,6 +3935,7 @@ def _enforce_engine_alignment(
         )
         update = {
             "action": "NO_TRADE",
+            "instrument": "",
             "risk_rating": "HIGH",
             "thesis": override_reason,
         }
@@ -4476,7 +4658,7 @@ def get_multileg_verdict(
 
                     if illiquid_issues:
                         log.warning(
-                            "[llm-multileg] %s: Multi-leg verdict contains illiquid legs %s — discarding to NO_TRADE",
+                            "[llm-multileg] %s: Multi-leg verdict contains unavailable/invalid legs %s — discarding to NO_TRADE",
                             symbol, illiquid_issues,
                         )
                         strat = "NO_TRADE"
@@ -4515,19 +4697,19 @@ def get_multileg_exit_advice(
     if DISABLE_LLM_ENRICHMENT:
         return None
 
-    from src.engine.multileg_llm_prompt import build_multileg_exit_prompt
-    from src.engine.multileg_llm_schema import LLMMultiLegExit
-
-    prompt = build_multileg_exit_prompt(
-        symbol=symbol,
-        book=book,
-        legs=legs,
-        scan_context=scan_context,
-        intel=intel,
-    )
-
-    deadline = time.time() + 75.0
     try:
+        from src.engine.multileg_llm_prompt import build_multileg_exit_prompt
+        from src.engine.multileg_llm_schema import LLMMultiLegExit
+
+        prompt = build_multileg_exit_prompt(
+            symbol=symbol,
+            book=book,
+            legs=legs,
+            scan_context=scan_context,
+            intel=intel,
+        )
+
+        deadline = time.time() + 75.0
         result = _call_llm_api(
             symbol, prompt, LLMMultiLegExit, deadline=deadline, purpose="live_verdict"
         )

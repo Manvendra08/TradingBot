@@ -108,6 +108,27 @@ def analyze_eia_report():
         ce_oi_chg = oi_data.get("ce_oi_change", "N/A")
         pe_oi_chg = oi_data.get("pe_oi_change", "N/A")
 
+        ce_val = 0
+        pe_val = 0
+        try:
+            ce_val = int(ce_oi_chg) if ce_oi_chg not in ("N/A", None) else 0
+            pe_val = int(pe_oi_chg) if pe_oi_chg not in ("N/A", None) else 0
+        except (ValueError, TypeError):
+            pass
+
+        if pe_val > 0 and ce_val < 0:
+            oi_sentiment = "BULLISH (PE put writing support + CE call unwinding)"
+        elif pe_val > 0 and pe_val > ce_val:
+            oi_sentiment = f"BULLISH BIAS (PE put writing +{pe_val:,} dominates CE writing +{ce_val:,})"
+        elif ce_val > 0 and pe_val < 0:
+            oi_sentiment = "BEARISH (CE call writing resistance + PE put unwinding)"
+        elif ce_val > 0 and ce_val > pe_val:
+            oi_sentiment = f"BEARISH BIAS (CE call writing +{ce_val:,} dominates PE writing +{pe_val:,})"
+        elif ce_val < 0 and pe_val < 0:
+            oi_sentiment = "NEUTRAL (Two-sided unwinding / squaring)"
+        else:
+            oi_sentiment = "NEUTRAL / BALANCED"
+
         prompt = f"""You are an expert commodities trader analyzing the US Natural Gas EIA storage report.
 
 REPORT DATA:
@@ -118,14 +139,15 @@ REPORT DATA:
 - Surprise (Actual - Forecast): {data.get('surprise')}
 
 CONTEXT (MCX NATURALGAS):
-- Current Underlying Price: {underlying}
+- Current Underlying Price: ₹{underlying}
 - PCR: {pcr}
 - CE OI Change: {ce_oi_chg}
 - PE OI Change: {pe_oi_chg}
+- Options Flow Ground Truth: {oi_sentiment}
 
 RULES:
 1. Compare Actual vs Forecast. A draw (or smaller build) than forecast is BULLISH. A larger build than forecast is BEARISH.
-2. Contextualize with the recent OI changes. Do the options markets agree with the EIA data?
+2. Contextualize with options OI flow: Options OI is WRITER-CENTRIC. Positive PE change = Put Writing (Bullish support); Positive CE change = Call Writing (Bearish resistance). Rising PCR = Bullish accumulation.
 3. Provide a clear, actionable summary of the sentiment and expected price impact on MCX Natural Gas.
 4. Format markdown_telegram_message with emojis, bold headers, and concise bullet points.
 """

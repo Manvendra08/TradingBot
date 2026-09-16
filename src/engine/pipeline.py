@@ -462,6 +462,35 @@ def _build_sentinel_report(
         m = re.search(r"(\d+(?:\.\d+)?)", str(val))
         return float(m.group(1)) if m else None
 
+    td = (intel or {}).get("trade_decision") or {}
+    delta = td.get("delta")
+    theta = td.get("theta")
+    vega = td.get("vega")
+
+    # Fallback: if trade_decision lacks Greeks (e.g. blocked scan or candidate from LLM),
+    # extract Greeks directly from opt_rows matching llm_instrument
+    if (delta is None or theta is None or vega is None) and llm_verdict:
+        instr = str(getattr(llm_verdict, "instrument", "") or "")
+        m = re.search(r"(\d+(?:\.\d+)?)\s*(CE|PE)", instr, re.IGNORECASE)
+        if m:
+            try:
+                target_strike = float(m.group(1))
+                target_ot = m.group(2).upper()
+                for row in (opt_rows or []):
+                    if (
+                        abs(float(row.get("strike") or 0) - target_strike) < 0.01
+                        and str(row.get("option_type") or "").upper() == target_ot
+                    ):
+                        if delta is None:
+                            delta = row.get("delta")
+                        if theta is None:
+                            theta = row.get("theta")
+                        if vega is None:
+                            vega = row.get("vega")
+                        break
+            except (ValueError, TypeError):
+                pass
+
     return {
         "symbol": symbol,
         "timestamp_ist": ts_ist,
@@ -478,12 +507,12 @@ def _build_sentinel_report(
         "llm_target_1": _get_num_val(getattr(llm_verdict, "target_1", None)) if llm_verdict else None,
         "llm_target_2": _get_num_val(getattr(llm_verdict, "target_2", None)) if llm_verdict else None,
         "llm_stop_loss": _get_num_val(getattr(llm_verdict, "stop_loss", None)) if llm_verdict else None,
-        "trade_decision_status": ((intel or {}).get("trade_decision") or {}).get("status") if intel else None,
-        "trade_decision_reason": ((intel or {}).get("trade_decision") or {}).get("reason") if intel else None,
-        "lots": ((intel or {}).get("trade_decision") or {}).get("lots") or ((intel or {}).get("trade_decision") or {}).get("tranche_count", 1) if intel else 1,
-        "delta": ((intel or {}).get("trade_decision") or {}).get("delta") if intel else None,
-        "theta": ((intel or {}).get("trade_decision") or {}).get("theta") if intel else None,
-        "vega": ((intel or {}).get("trade_decision") or {}).get("vega") if intel else None,
+        "trade_decision_status": td.get("status") if td else None,
+        "trade_decision_reason": td.get("reason") if td else None,
+        "lots": td.get("lots") or td.get("tranche_count", 1) if td else 1,
+        "delta": delta,
+        "theta": theta,
+        "vega": vega,
         "warnings": [w for w in (warnings or []) if w],
         "errors": [e for e in (errors or []) if e],
         "fetcher_errors": list(fetcher_errors or []),
@@ -1212,6 +1241,28 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
     import uuid
     scan_digest_id = str(uuid.uuid4())[:8]
 
+    # Pre-fetch multi-leg verdict for MULTILEG strategy symbols to avoid
+    # single-leg/multi-leg schema mismatch and ensure the LLM verdict
+    # is available when the runner executes.
+    multileg_verdict = None
+    if not is_test:
+        try:
+            from src.engine.strategy_registry import active_strategies_for
+            if "MULTILEG" in active_strategies_for(symbol):
+                from src.engine.llm_enrichment import get_multileg_verdict
+                multileg_verdict = get_multileg_verdict(
+                    symbol=symbol,
+                    intel=intel,
+                    scan_context=scan_context,
+                    alerts=new_alerts,
+                    news_data=news_data,
+                    open_books=None,  # will be fetched inside if needed
+                )
+                if multileg_verdict and isinstance(intel, dict):
+                    intel["multileg_verdict"] = multileg_verdict
+        except Exception:
+            log.exception("%s: Multi-leg pre-fetch failed gracefully", symbol)
+
     with serialized_commit_gate.section(f"commit:{symbol}"):
         timeframe_res = None
         if not is_test:
@@ -1224,7 +1275,9 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                     runner = get_runner(sid)
                     if runner is None:
                         continue
-                    res = runner(symbol, scan_context, scan_digest_id, intel, ai_verdict=llm_verdict)
+                    # Pass multi-leg verdict for MULTILEG; single-leg for others
+                    ai_verdict_for_runner = multileg_verdict if sid == "MULTILEG" else llm_verdict
+                    res = runner(symbol, scan_context, scan_digest_id, intel, ai_verdict=ai_verdict_for_runner)
                     if sid == "TIMEFRAME":
                         timeframe_res = res
                     else:

@@ -18,6 +18,7 @@ Flow:
 from __future__ import annotations
 
 import logging
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -296,6 +297,8 @@ def _monitor_open_books_live(
             book.get("time_decay_exit_dte") or DEFAULT_TIME_DECAY_EXIT_DTE
         )
         expiry = book.get("expiry", "")
+        entry_underlying = float(book.get("entry_underlying") or 0.0)
+        curr_und = float((scan_context or {}).get("underlying") or entry_underlying)
         max_loss = float(book.get("max_loss") or 0.0)
         adjustment_count = int(book.get("adjustment_count") or 0)
         legs = book.get("legs") or get_open_book_legs(trade_id)
@@ -317,7 +320,7 @@ def _monitor_open_books_live(
                 book_id,
             )
             close_book(
-                book_id, now_iso, "CLOSED", "NO_OPEN_LEGS", total_pnl
+                book_id, now_iso, "CLOSED", "NO_OPEN_LEGS", total_pnl, curr_und
             )
             closed_actions.append({
                 "action": "CLOSED",
@@ -349,6 +352,7 @@ def _monitor_open_books_live(
                     "CLOSED",
                     f"PROFIT_TARGET ({profit_pct*100:.0f}% of max)",
                     total_pnl,
+                    exit_underlying=curr_und,
                 )
                 closed_actions.append({
                     "action": "CLOSED",
@@ -373,6 +377,7 @@ def _monitor_open_books_live(
                 "CLOSED",
                 f"STOP_LOSS (loss ₹{abs(total_pnl):.0f} > cap ₹{stop_loss_threshold_rupees:.0f})",
                 total_pnl,
+                exit_underlying=curr_und,
             )
             closed_actions.append({
                 "action": "CLOSED",
@@ -427,6 +432,7 @@ def _monitor_open_books_live(
                 "CLOSED",
                 exit_reason_str,
                 total_pnl,
+                exit_underlying=curr_und,
             )
             closed_actions.append({
                 "action": "CLOSED",
@@ -436,7 +442,49 @@ def _monitor_open_books_live(
             })
             continue
 
-        # 4d. AI exit advice (full mode only)
+        # 4d. Structural Invalidation exit (spot breached thesis invalidation level)
+        inval_match = re.search(r"Invalidation:\s*(?:Spot\s*)?([0-9.]+)", str(book.get("entry_reason") or book.get("reason") or ""))
+        if inval_match:
+            try:
+                inval_spot = float(inval_match.group(1))
+                strat_upper = str(strategy_type or "").upper()
+                is_bull_strat = "BULL" in strat_upper or strat_upper in ("LONG_CALL", "SHORT_PUT")
+                is_bear_strat = "BEAR" in strat_upper or strat_upper in ("LONG_PUT", "SHORT_CALL")
+
+                is_invalidated = False
+                if is_bull_strat and curr_und < inval_spot:
+                    is_invalidated = True
+                elif is_bear_strat and curr_und > inval_spot:
+                    is_invalidated = True
+                elif not is_bull_strat and not is_bear_strat and entry_underlying > 0:
+                    if inval_spot < entry_underlying and curr_und < inval_spot:
+                        is_invalidated = True
+                    elif inval_spot > entry_underlying and curr_und > inval_spot:
+                        is_invalidated = True
+
+                if is_invalidated:
+                    log.info(
+                        "[multileg-live] %s: book %s hit structural invalidation — spot %.2f breached level %.2f",
+                        symbol, book_id, curr_und, inval_spot,
+                    )
+                    _close_live_book(
+                        symbol, book_id, legs, now_iso,
+                        "CLOSED",
+                        f"STRUCTURAL_INVALIDATION (spot {curr_und:.1f} breached level {inval_spot:.1f})",
+                        total_pnl,
+                        exit_underlying=curr_und,
+                    )
+                    closed_actions.append({
+                        "action": "CLOSED",
+                        "book_id": book_id,
+                        "reason": f"Structural invalidation hit: spot {curr_und:.1f} breached {inval_spot:.1f}",
+                        "total_pnl": total_pnl,
+                    })
+                    continue
+            except Exception as _ie:
+                log.debug("[multileg-live] Invalidation check error: %s", _ie)
+
+        # 4e. AI exit advice (full mode only)
         if ai_mode == "full":
             try:
                 from src.engine.llm_enrichment import get_multileg_exit_advice
@@ -452,6 +500,19 @@ def _monitor_open_books_live(
                         from config.runtime_config import load_runtime_config
                         exit_advisor_enabled = load_runtime_config().get("live_ai_exit_advisor_enabled", True)
                         if exit_advisor_enabled:
+                            # 0DTE Safety Guard: For weekly index options on expiry day (DTE 0) before 13:00 IST,
+                            # do NOT autonomously close if P&L >= 0 (e.g. early morning time/pin-risk hallucinations).
+                            if is_weekly_index and dte == 0 and now_ist.hour < 13 and total_pnl >= 0:
+                                log.info(
+                                    "[multileg-live] %s: book %s — Suppressed premature 0DTE morning AI close (%s IST, PnL=₹%.0f): %s",
+                                    symbol,
+                                    book_id,
+                                    now_ist.strftime("%H:%M"),
+                                    total_pnl,
+                                    reasoning,
+                                )
+                                continue
+
                             log.info(
                                 "[multileg-live] %s: book %s — AI executing autonomous CLOSE: %s",
                                 symbol,
@@ -464,6 +525,7 @@ def _monitor_open_books_live(
                                 "CLOSED",
                                 exit_reason_str,
                                 total_pnl,
+                                exit_underlying=curr_und,
                             )
                             closed_actions.append({
                                 "action": "CLOSED",
@@ -636,6 +698,7 @@ def _close_live_book(
     status: str,
     reason: str,
     total_pnl: float,
+    exit_underlying: float | None = None,
 ) -> None:
     """Close a live book — squaring off all open legs via Kite orders.
 
@@ -676,6 +739,7 @@ def _close_live_book(
     base_sym = symbol.upper().split()[0] if symbol else ""
     
     exit_results = []
+    leg_exits = []
     for leg in legs:
         leg_id = leg.get("id")
         broker_order_id = leg.get("broker_order_id")
@@ -764,43 +828,9 @@ def _close_live_book(
 
         # Close leg in DB with actual exit premium from current market
         try:
-            # Get current premium for accurate PnL tracking
-            exit_premium = 0.0
-            if kite and resolved:
-                try:
-                    # Attempt to fetch current LTP from broker quote
-                    exchange = resolved.get("exchange", "NFO")
-                    tradingsymbol = resolved["tradingsymbol"]
-                    quote_key = f"{exchange}:{tradingsymbol}"
-                    quote_data = kite.quote(quote_key)
-                    if quote_data and isinstance(quote_data, dict):
-                        instr_quote = quote_data.get(quote_key, {})
-                        if isinstance(instr_quote, dict):
-                            last_price = instr_quote.get("last_price", 0)
-                            if last_price and float(last_price) > 0:
-                                exit_premium = float(last_price)
-                except Exception as ltp_err:
-                    log.warning(
-                        "[multileg-live] %s: could not fetch exit LTP for leg %d, using fallback: %s",
-                        symbol, leg_id, ltp_err
-                    )
-            
-            # Fallback: try DB snapshot with expiry filter
-            if exit_premium <= 0:
-                try:
-                    from src.models.schema import get_read_conn
-                    leg_expiry = leg.get("expiry", "")
-                    with get_read_conn() as conn:
-                        opt_row = conn.execute(
-                            "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND expiry=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
-                            (symbol, base_sym, strike, option_type, leg_expiry)
-                        ).fetchone()
-                        if opt_row:
-                            exit_premium = float(opt_row["ltp"])
-                except Exception:
-                    pass
-            
-            close_leg(leg_id, closed_at, exit_premium, reason)
+            leg_exit_premium = leg.get("current_premium") or leg.get("entry_premium")
+            close_leg(leg_id, closed_at, leg_exit_premium, reason)
+            leg_exits.append({"id": leg_id, "exit_premium": leg_exit_premium})
         except Exception as e:
             log.error(
                 "[multileg-live] %s: failed to close leg %d in DB: %s",
@@ -811,7 +841,11 @@ def _close_live_book(
 
     # ── Close the book record ──────────────────────────────────────────
     try:
-        close_book(book_id, closed_at, status, reason, total_pnl)
+        close_book(
+            book_id, closed_at, status, reason, total_pnl,
+            exit_underlying=exit_underlying,
+            leg_exits=leg_exits,
+        )
         log.info(
             "[multileg-live] %s: book %s closed — %s, PnL ₹%.1f, %d legs exited via broker",
             symbol,
@@ -1415,6 +1449,8 @@ def _attempt_new_live_entry(
         or getattr(verdict, "thesis", None)
         or f"{strategy_type} setup for {symbol} ({len(placed_legs)} legs, net prem ₹{net_premium:.2f})"
     )
+    if getattr(verdict, "structural_invalidation_spot", None):
+        entry_reason = f"{entry_reason} | Invalidation: Spot {verdict.structural_invalidation_spot}"
     if not entry_reason:
         leg_rats = [l.get("rationale") for l in placed_legs if l.get("rationale")]
         entry_reason = "; ".join(leg_rats) if leg_rats else f"{strategy_type} entry"

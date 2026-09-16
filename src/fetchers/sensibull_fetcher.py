@@ -313,8 +313,11 @@ class SensibullFetcher(BaseFetcher):
                 "option_type": "CE",
                 "ltp": p["ce_ltp"],
                 "oi": p["ce_oi"],
+                "oi_change": int(p.get("ce_oi_change", 0) or 0),
                 "volume": p["ce_volume"],
                 "iv": p["ce_iv"],
+                "bid": float(p.get("ce_bid", 0.0) or 0.0),
+                "ask": float(p.get("ce_ask", 0.0) or 0.0),
                 "delta": p["ce_delta"],
                 "theta": p["ce_theta"],
                 "gamma": p["ce_gamma"],
@@ -325,8 +328,11 @@ class SensibullFetcher(BaseFetcher):
                 "option_type": "PE",
                 "ltp": p["pe_ltp"],
                 "oi": p["pe_oi"],
+                "oi_change": int(p.get("pe_oi_change", 0) or 0),
                 "volume": p["pe_volume"],
                 "iv": p["pe_iv"],
+                "bid": float(p.get("pe_bid", 0.0) or 0.0),
+                "ask": float(p.get("pe_ask", 0.0) or 0.0),
                 "delta": p["pe_delta"],
                 "theta": p["pe_theta"],
                 "gamma": p["pe_gamma"],
@@ -355,6 +361,7 @@ class SensibullFetcher(BaseFetcher):
             "underlying_price": float(underlying),
             "expiry": str(target_expiry),
             "strikes": strikes_out,
+            "source": self.name,
         }
 
         # Add all available expiries

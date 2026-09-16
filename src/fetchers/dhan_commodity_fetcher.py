@@ -845,8 +845,8 @@ class DhanCommodityFetcher(BaseFetcher):
                         if not strikes:
                             fut_exp = expjs_list[0]
                             seconds_per_day = 86400
-                            # MCX options expire 2-4 days before futures; check 2d & 3d offsets first
-                            for days_before in [2, 3, 4, 1, 0, 5, 6, 7]:
+                            # MCX options expire 2-4 days before futures; check offsets with holiday tolerance
+                            for days_before in [2, 3, 4, 1, 0, 5, 6, 7, 8, 9, 10]:
                                 test_exp = fut_exp - (days_before * seconds_per_day)
                                 payload_oc = {"Data": {"Seg": 5, "Sid": int(secid), "Exp": test_exp}}
                                 try:

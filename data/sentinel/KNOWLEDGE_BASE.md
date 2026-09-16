@@ -8,6 +8,7 @@
 5. **Risk Engine Guardrails (`src.engine.risk_engine`)**: Evaluates capital limits, max open trades, and symbol-level TFSS combined net delta cap (0.60).
 6. **Persistence & Position Tracking (`src.models.schema`)**: WAL-mode SQLite database with `BEGIN IMMEDIATE` transaction locks and lock retries.
 7. **Structured Alerting (`src.alerts.digest`)**: Formats Telegram alerts verified strictly against committed database trades (`paper_trades`/`live_trades`).
+8. **Scheduler (`src.scheduler.job_runner.start_scheduler`)**: Main loop ticks every 10s, dispatches interval-driven scans per market class. **Mandatory final scan** at market close (15:38 IST NSE/BSE, 23:30 IST MCX) via `_maybe_market_close_scan()`, guaranteed to run regardless of configured scan frequency, scheduled 2 minutes before exchange close to allow order execution for adjustments. Uses per-class/date dedup tracker (`_last_market_close_scan_tracker`) to prevent duplicate scans within the same trading session.
 
 ---
 
@@ -86,8 +87,13 @@
 
 ### F141: Missing Greeks in Trade Decision / Sentinel Diagnostics (P1-HIGH) (RESOLVED)
 - **Status:** RESOLVED & VERIFIED. Option greeks (`delta`, `theta`, `vega`) are properly populated.
-- **Issue:** The Sentinel diagnostic rule `R21_GREEKS_CALCULATION_FAILED` fired warning for zero greeks on every blocked/triggered scan. The root cause was that `trade_decision.py` attempted to read unpopulated `_candidate_delta` fields from `scan_context`, resulting in missing `delta`, `theta`, and `vega` keys in the pipeline output fed to the sentinel reporting tools.
-- **Fix:** Populated `_candidate_delta`, `_candidate_theta`, and `_candidate_vega` directly during candidate selection in `decision_pipeline.py`. Added fallback explicit extraction loops in `trade_decision.py` that look up the chosen `(strike, option_type)` directly within the `option_rows` dataset. Sentinel metrics now accurately track valid option chain greeks without throwing false `R21` flags.
+- **Issue:** The Sentinel diagnostic rule `R21_GREEKS_CALCULATION_FAILED` fired warning for zero greeks on every blocked/triggered scan. The root causes were: (1) `trade_decision.py` attempted to read unpopulated `_candidate_delta` fields from `scan_context`, and (2) when a trade plan was `BLOCKED` (e.g. 0DTE cutoff/market close), `trade_decision` returned `None` for Greeks, causing R21 to falsely flag near-zero Greeks on a trade that never executed.
+- **Fix:** 
+  1. Populated `_candidate_delta`, `_candidate_theta`, and `_candidate_vega` directly during candidate selection in `decision_pipeline.py` with fallback lookup in `trade_decision.py`.
+  2. `_build_sentinel_report` in `src/engine/pipeline.py` extracts `delta`, `theta`, and `vega` directly from `opt_rows` using `llm_instrument` if `trade_decision` returns `None`.
+  3. Rule `R21` in `src/engine/scan_sentinel.py` explicitly skips evaluation when `trade_decision_status == "BLOCKED"`.
+  4. `_enforce_engine_alignment` in `src/engine/llm_enrichment.py` clears `instrument` when an illegal direction flip is forced to `NO_TRADE`.
+
 
 ### F142: Architecture & Pipeline Audit Remediation (P0/P1) (RESOLVED & VERIFIED)
 - **Status:** RESOLVED & VERIFIED across all 14 findings in pipeline, digest, and multileg engines.
@@ -217,6 +223,20 @@
 - **Self-Heal:** 
   1. Updated `pipeline.py` to enforce `trade_entered = False` whenever `trade_decision` action is `BLOCK`/`NO_ACTION` or strike is missing (unless DB/paper trade is active).
   2. Updated `digest.py` (`_format_alert_body`, `format_compact_digest`, `format_experimental_digest`) so header status (`trade_status_str`) requires `is_entered` (`trade_entered == True`, valid contract, and non-`BLOCK` action), guaranteeing 100% truthfulness between header and signal body.
+
+### F146: Multi-Leg & Single-Leg LLM Prompt Discrepancy & Unit Remediation (P0-CRITICAL) (RESOLVED)
+- **Status:** RESOLVED & VERIFIED across 7 prompt engineering and validation components.
+- **Symptom:** Multi-leg and single-leg paper trades closed prematurely after ~1 hour with small PnL (+₹625, +₹40, -₹1,170). The LLM exit advisor hallucinated astronomical profit/loss percentages (+7102% or -37313%), and afternoon scans (15:00–15:40 IST) forced liquidations on non-expiry days. SENSEX multi-leg trades were also rejected during pre-flight validation.
+- **Root Causes & Fixes:**
+  1. **Points vs Rupees Unit Mismatch (`multileg_llm_prompt.py`)**: `build_multileg_exit_prompt` divided `total_pnl` (Rupees) directly by `max_profit` (Points), causing a ₹625 profit on a 9-point credit to be interpreted by the LLM as +6944% of max profit, prompting an immediate panic liquidation. Fixed by normalizing `max_profit_rupees = max(max_profit_points * lot_size * total_lots, 1.0)` and displaying `Credit: ₹{net_premium_rupees}`.
+  2. **15:00 Expiry Window False Trigger (`llm_enrichment.py`)**: `_build_exit_prompt` injected `"NSE expiry window 15:00-15:30 IST: only CLOSE or CLOSE_EARLY allowed"` between 15:00 and 15:40 IST on *all* weekdays without checking `dte == 0`. Fixed by gating the prompt rule strictly behind `(dte == 0 and nse_close_window)`.
+  3. **Weekly Time Decay Exit False Trigger (`multileg_llm_prompt.py`)**: `build_multileg_exit_prompt` unconditionally output `"Time: Exit after 1PM IST on expiry day"` for weekly indices even when `dte > 0`. On afternoon scans (e.g. 15:16 IST), the LLM read time > 13:00 and triggered rule `- DTE <= time exit -> CLOSE`. Fixed by stating `"Hold to expiry day (DTE {dte} > 0)"` when `dte > 0`.
+  4. **Weekly 2-Leg vs Iron Condor 4-Leg Contradiction (`multileg_llm_prompt.py`)**: `build_multileg_prompt` instructed `Weekly -> max 2 legs` while recommending `IRON_CONDOR` (which requires 4 legs) for defined-risk at DTE ≤ 1. Fixed by clarifying `Weekly -> 2 legs for strangles/straddles/spreads (or 4 legs for defined-risk IRON_CONDOR)`.
+  5. **Symbol-Aware Margin Estimation (`multileg_validator.py`)**: `_estimate_margin` hardcoded a 75 lot size for all symbols, causing SENSEX (spot ~75,000, lot size 20) to estimate ₹843,750 per leg and exceed the ₹500,000 margin limit. Fixed by making `_estimate_margin` and `validate_multileg_trade` resolve real lot sizes from `config.settings.LOT_SIZES`.
+  6. **Target & SL Unit Ambiguity (`llm_enrichment.py`)**: `_build_deep_prompt` did not specify whether `stop_loss` and `target_1` were option premiums or underlying spot levels, causing models to output spot index values (e.g. 24,650) for option contracts. Clarified that option contracts must output option premiums, never underlying spot.
+  7. **Direction-Aware R:R Formula (`llm_enrichment.py`)**: Replaced the single long formula `(target_1 - entry) / (entry - stop_loss)` with explicit formulas for BUY options vs SELL options so short-side calculations reconcile arithmetically.
+  8. **Multi-Leg Schema Unit Clarifications (`multileg_llm_schema.py`)**: Annotated `net_premium`, `max_profit`, and `max_loss` in `LLMMultiLegVerdict` to explicitly indicate points per unit.
+
 
 ### F10: Friday Mandatory Exit Window (P0-CRITICAL)
 - **Symptom:** Open position carried over the weekend exposing account to gap risk.
@@ -362,7 +382,14 @@
 - **Shoonya Discarding Valid Option Quotes / Leaking Index Data**
   - **Symptom:** Logs flooded with `[shoonya] NIFTY: Discarding mismatched/index quote for token 42633...` for every NFO strike, causing 0.0 LTP fallback and `shoonya returned zero-filled strikes — skipping`. Concurrently, occasional index quotes (e.g. `(got token 26000, tsym Nifty 50)`) leaked into option objects.
   - **Root Cause:** A validation guard `("CE" in q_tsym or "PE" in q_tsym)` was hardcoded. However, Shoonya represents NFO options as `<BASE><EXPIRY>C<STRIKE>` (e.g., `NIFTY08SEP26C23850`), using `C`/`P` instead of `CE`/`PE`. The hardcode rejected every valid NFO quote.
-  - **Fix:** Created `_is_option_tsym` regex `r"[CP](?:E)?\d+|\d+[CP](?:E)?"` to handle all formats (NFO `C`/`P`, BFO/MCX `CE`/`PE`). Applied it to quote loop validation and weekly symbol resolution to unconditionally discard leaked standard array spots while accepting option chains.
+- **Incident F148: Trade Price & P&L Accounting Integrity & Multi-Leg Audit Gaps (2026-09-11)**
+  - **Symptom:** Multi-leg trades (`insert_multileg_trade_atomically`, `close_book`, `execute_multi_leg_adjustment`) completely bypassed post-persistence accounting audits. Corrupted trade entries could be written into SQLite before validation. Furthermore, during multi-leg book close with adjustments, `close_book` calculated `computed_pnl` solely from current `leg_exits`, omitting realized P&L of previously rolled/closed legs.
+  - **Root Cause:** `trade_audit.py` only monitored single-leg `paper_trades` and `live_trades`. No pre-persistence data sanitization existed before committing to SQLite, and `close_book` lacked full lifecycle multi-leg accounting reconciliation.
+  - **Fix:**
+    1. Implemented in-memory pre-persistence validators (`validate_trade_entry_data`, `validate_multileg_entry_data`, `validate_trade_close_data`, `validate_multileg_close_data`) in `src/engine/trade_audit.py` to block corrupt inputs before SQLite insertion.
+    2. Added `audit_multileg_entry`, `audit_multileg_close`, and `audit_multileg_adjustment` with deduplicated Telegram alerting (`alert_dedup`) to verify net premium and total P&L reconciliation against leg math.
+    3. Updated `schema.py` (`close_book`) to include realized P&L from both current `leg_exits` and previously closed/rolled legs for full lifecycle accuracy.
+    4. Enhanced `multileg_paper_trading.py` (`_build_real_leg_exits`) with delta-based exit estimation when direct option snapshots are missing, preventing artificial 0-PnL leg exits.
 
 ---
 
@@ -379,3 +406,29 @@
 10. **R10 (Friday Square-off):** Ensures Friday exit triggers execute before weekend close.
 11. **R11 (Cooldown Enforcement):** Verifies failing LLM and fetcher cooldown timers.
 12. **R12 (Order Execution Integrity):** Confirms tick size, lot sizing, and slippage calculations.
+
+---
+
+## 4. Price Discovery Rules & Timings (Pre-Open Auction & CAS Closing)
+
+### A. F&O Pre-Open Session (09:00 AM – 09:15 AM IST)
+Pre-open session uses a call auction mechanism to discover a single equilibrium opening price for eligible index and single-stock futures:
+- **09:00 AM – 09:08 AM IST**: Order entry, modification, and cancellation window (with random closure during final minute, ~09:07–09:08 AM).
+- **09:08 AM – 09:12 AM IST**: Order matching and opening price determination.
+- **09:12 AM – 09:15 AM IST**: Buffer period before continuous market trading begins at 09:15 AM.
+
+### B. Cash & F&O Closing / Call Auction Session (CAS) (03:15 PM – 03:40 PM IST)
+- **3:15 PM IST**: Continuous regular trading for F&O-eligible stocks in the cash market ends (instead of 3:30 PM).
+- **3:15 PM – 3:20 PM IST**: Transition period where orders are frozen, reference prices are published, and non-equilibrium/out-of-bound pending orders are canceled.
+- **3:20 PM – 3:25 PM IST**: Order Entry Session 1 where both market and limit orders are permitted.
+- **3:25 PM – 3:30 PM IST**: Order Entry Session 2 where only limit orders are allowed, closing randomly between 3:28 PM and 3:30 PM.
+- **3:30 PM – 3:35 PM IST**: Order matching occurs at a single equilibrium price (where maximum volume of shares trades), declared as the official cash closing price.
+- **3:40 PM IST**: Derivative F&O contracts continue trading until this time, providing traders/bot an extra 10 minutes past the old market close (15:30) to hedge or adjust positions.
+- **Non-F&O Stocks**: Unaffected by CAS; they continue normal continuous trading until 3:30 PM IST.
+- **Sentinel Impact**:
+  1. Opening auction quotes settle at 09:12 IST; opening gap calculations and tick checks run safely after 09:15 continuous open.
+  2. Cash F&O stock price updates freeze during 15:15–15:35 CAS transition and matching phases; official closing price appears at 15:35.
+  3. Derivative F&O contracts (options, futures) continue real-time price updates and execution until 15:40 IST.
+  4. Exit advisors and risk gates utilize the 15:30–15:40 window for strategic hedging, leg roll adjustments, or square-off.
+
+

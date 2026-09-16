@@ -181,7 +181,7 @@ class TestFormatHistoricalOi:
 
         assert "Last 5 scans" in result
         assert "PCR Trend:" in result
-        assert "OI Trend:" in result
+        assert "Multi-Scan Options Flow:" in result
         assert "Price Impact:" in result
 
     def test_db_exception_returns_graceful_message(self):

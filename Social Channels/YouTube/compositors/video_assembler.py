@@ -149,33 +149,23 @@ class VideoAssembler:
         out_path = work_dir / clip_name
         frames = max(24, int(round(duration * 24)))
 
-        # Diverse camera motions across scenes:
-        if motion_index % 4 == 0:
-            # Subtle Push-In: 1.00 -> 1.07 centered
-            dz = 0.07 / frames
+        # Gentle boundary-safe Ken Burns zoom: subtle 1.00 -> 1.025 or 1.025 -> 1.00 centered.
+        # Absolutely NO horizontal/vertical panning offsets that can push borders out of frame.
+        if motion_index % 2 == 0:
+            # Subtle push-in centered
+            dz = 0.025 / frames
             vf = (
-                f"zoompan=z='min(zoom+{dz:.6f},1.07)':d={frames}:"
-                f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1920x1080:fps=24"
-            )
-        elif motion_index % 4 == 1:
-            # Horizontal Pan across institutional flows
-            vf = (
-                f"zoompan=z='1.05':d={frames}:"
-                f"x='(iw-iw/zoom)*(on/{frames})':y='ih/2-(ih/zoom/2)':s=1920x1080:fps=24"
-            )
-        elif motion_index % 4 == 2:
-            # Push-In on the right-hand strikes
-            dz = 0.08 / frames
-            vf = (
-                f"zoompan=z='min(zoom+{dz:.6f},1.08)':d={frames}:"
-                f"x='iw*0.55-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1920x1080:fps=24"
+                f"scale=3840:2160:flags=lanczos,"
+                f"zoompan=z='min(zoom+{dz:.6f},1.025)':d={frames}:"
+                f"x='trunc((iw-iw/zoom)/2)':y='trunc((ih-ih/zoom)/2)':s=1920x1080:fps=24"
             )
         else:
-            # Subtle Pull-Out: 1.07 -> 1.00 for tomorrow's roadmap
-            dz = 0.07 / frames
+            # Subtle pull-out centered
+            dz = 0.025 / frames
             vf = (
-                f"zoompan=z='if(lte(on,1),1.07,max(1.0,zoom-{dz:.6f}))':d={frames}:"
-                f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1920x1080:fps=24"
+                f"scale=3840:2160:flags=lanczos,"
+                f"zoompan=z='if(lte(on,1),1.025,max(1.0,zoom-{dz:.6f}))':d={frames}:"
+                f"x='trunc((iw-iw/zoom)/2)':y='trunc((ih-ih/zoom)/2)':s=1920x1080:fps=24"
             )
 
         cmd = [
@@ -286,9 +276,39 @@ class VideoAssembler:
         anchor_image_path: Path,
         duration: float = 8.0,
         output_name: str = "clip_anchor_norm.mp4",
+        audio_path: Path | None = None,
     ) -> tuple[Path, float]:
-        """Renders an anchor video clip with subtle Ken Burns push-in from the high-res studio portrait."""
+        """Renders an anchor video clip with GPU-accelerated DirectML lip-sync or Ken Burns fallback."""
         out_path = work_dir / output_name
+
+        # 1. Attempt DirectML Talking-Head Lip-Sync if audio is provided
+        if audio_path and audio_path.exists():
+            try:
+                from generators.directml_talking_head import DirectMLTalkingHead
+                log.info("Generating realistic DirectML talking-head anchor video...")
+                talking_engine = DirectMLTalkingHead(use_gpu=True)
+                raw_talk_clip = work_dir / "raw_talking_anchor.mp4"
+                talking_engine.generate(
+                    image_path=str(anchor_image_path),
+                    audio_path=str(audio_path),
+                    output_path=str(raw_talk_clip),
+                    max_duration=duration,
+                    batch_size=8,
+                )
+                if raw_talk_clip.exists():
+                    log.info("Normalizing DirectML talking-head clip with broadcast overlay...")
+                    norm_path, actual_dur = self._normalize_anchor_clip(
+                        work_dir, raw_talk_clip.name, output_name=output_name
+                    )
+                    try:
+                        raw_talk_clip.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    return norm_path, actual_dur
+            except Exception as exc:
+                log.warning(f"DirectML talking head failed ({exc}). Falling back to Ken Burns motion.")
+
+        # 2. Fallback: Ken Burns motion zoompan
         d_frames = int(duration * 24)
         vf = (
             f"scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,fps=24,"
@@ -328,6 +348,7 @@ class VideoAssembler:
         output_name: str = "final_output.mp4",
         metrics: dict | None = None,
         anchor_video_name: str | None = None,
+        card_durations: list[float] | None = None,
     ) -> Path:
         """
         Full broadcast assembly pipeline:
@@ -355,78 +376,29 @@ class VideoAssembler:
         total_audio_dur = self._get_media_duration(work_dir, audio_name)
         log.info(f"Master voiceover duration: {total_audio_dur:.2f}s")
 
-        # 2. Check for AI Anchor video clip or user anchor portrait
-        anchor_clip_name = anchor_video_name
-        anchor_image_file = None
-
-        # Priority 1: Explicitly specified anchor video
-        if not anchor_clip_name:
-            for f in work_dir.glob("anchor_user*.mp4"):
-                anchor_clip_name = f.name
-                break
-
-        # Priority 2: User Anchor Studio Image (assets/anchor or work_dir)
-        if not anchor_clip_name:
-            candidates = [
-                work_dir / "anchor_studio.jpg",
-                work_dir / "anchor_intro.jpg",
-                Path(__file__).resolve().parents[1] / "assets" / "anchor" / "anchor_lead_primary.jpg",
-            ]
-            for cand in candidates:
-                if cand.exists():
-                    anchor_image_file = cand
-                    break
-
-        # Priority 3: Fallback generic anchor video (only if no user image exists)
-        if not anchor_clip_name and not anchor_image_file:
-            for f in work_dir.glob("anchor*.mp4"):
-                anchor_clip_name = f.name
-                break
-            if not anchor_clip_name:
-                for f in work_dir.glob("Generated Video*.mp4"):
-                    anchor_clip_name = f.name
-                    break
-
+        # 2. Render sequence of cards (Anchor completely removed)
         anchor_duration = 0.0
         clip_entries: list[str] = []
 
-        if anchor_clip_name and (work_dir / anchor_clip_name).exists():
-            log.info(f"Detected AI Anchor hook video: {anchor_clip_name}")
-            try:
-                _, anchor_duration = self._normalize_anchor_clip(
-                    work_dir, anchor_clip_name, "clip_anchor_norm.mp4"
-                )
-                clip_entries.append("clip_anchor_norm.mp4")
-                log.info(f"Normalized anchor video duration: {anchor_duration:.2f}s")
-            except Exception as e:
-                log.warning(f"Could not normalize anchor video ({e}), continuing with charts only.")
-                anchor_duration = 0.0
-        elif anchor_image_file:
-            log.info(f"Rendering Anchor Hook video from user anchor portrait: {anchor_image_file}")
-            try:
-                hook_dur = min(8.0, total_audio_dur * 0.15)
-                _, anchor_duration = self._render_anchor_image_clip(
-                    work_dir, anchor_image_file, duration=hook_dur, output_name="clip_anchor_norm.mp4"
-                )
-                clip_entries.append("clip_anchor_norm.mp4")
-                log.info(f"Rendered user anchor hook video: {anchor_duration:.2f}s")
-            except Exception as e:
-                log.warning(f"Could not render anchor image clip ({e}), continuing with charts only.")
-                anchor_duration = 0.0
-
-        # 3. Calculate remaining time for scene cards
-        remaining_time = max(10.0, total_audio_dur - anchor_duration)
+        # 3. Calculate time allocation across cards
+        remaining_time = max(10.0, total_audio_dur)
         card_count = max(1, len(card_image_names))
-        dur_per_card = remaining_time / card_count
-        log.info(f"Rendering {card_count} scene cards with dynamic Ken Burns motion ({dur_per_card:.2f}s each)...")
+
+        if card_durations and len(card_durations) == card_count:
+            log.info(f"Using exact per-card durations for {card_count} cards (Total: {sum(card_durations):.2f}s)...")
+            durations = card_durations
+        else:
+            dur_per_card = remaining_time / card_count
+            log.info(f"Rendering {card_count} broadcast cards ({dur_per_card:.2f}s each)...")
+            durations = [dur_per_card] * card_count
 
         # 4. Render Ken Burns clips for each card
-        for idx, card in enumerate(card_image_names):
+        for idx, (card, card_dur) in enumerate(zip(card_image_names, durations)):
             clip_name = f"clip_motion_scene_{idx + 1}.mp4"
             self._render_ken_burns_clip(
                 work_dir=work_dir,
                 card_image=card,
-                duration=dur_per_card,
+                duration=card_dur,
                 clip_name=clip_name,
                 motion_index=idx,
             )

@@ -32,7 +32,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from config.settings import DB_PATH
+from config.settings import DB_PATH, LOT_SIZES
 
 log = logging.getLogger(__name__)
 
@@ -1338,9 +1338,25 @@ def insert_paper_trade(trade: dict) -> int:
             )
         },
     }
+    from src.engine.trade_audit import validate_trade_entry_data, _alert
+
+    is_valid, rej_reason, issues = validate_trade_entry_data(row_data)
+    if not is_valid:
+        log.error("insert_paper_trade: rejected invalid trade data: %s (%s)", rej_reason, issues)
+        _alert("paper_trades:PRE_REJECT", 0, {"reason": rej_reason, **issues})
+        return 0
+
     with get_conn() as conn:
         row = conn.execute(sql, row_data).fetchone()
-        return int(row["id"]) if row else 0
+    trade_id = int(row["id"]) if row else 0
+    if trade_id:
+        try:
+            from src.engine.trade_audit import audit_trade_entry
+
+            audit_trade_entry("paper_trades", trade_id)
+        except Exception:
+            log.exception("insert_paper_trade: accounting audit failed for trade %s", trade_id)
+    return trade_id
 
 
 def insert_scan_summary(summary: dict, is_fallback: bool = False) -> None:
@@ -1472,6 +1488,12 @@ def close_paper_trade(
 ) -> None:
     """Close a paper trade and calculate net P&L (post transaction costs)."""
     from config.settings import LOT_SIZES
+    from src.engine.trade_audit import validate_trade_close_data
+
+    is_valid, rej_reason = validate_trade_close_data("paper_trades", trade_id, exit_underlying, exit_premium)
+    if not is_valid:
+        log.error("close_paper_trade: pre-close validation failed for trade %s: %s", trade_id, rej_reason)
+        return
 
     with get_conn() as conn:
         row = conn.execute(
@@ -1626,6 +1648,13 @@ def close_paper_trade(
             ),
         )
 
+    try:
+        from src.engine.trade_audit import audit_trade_close
+
+        audit_trade_close("paper_trades", trade_id)
+    except Exception:
+        log.exception("close_paper_trade: accounting audit failed for trade %s", trade_id)
+
     # Phase 1: Invalidate pattern cache after trade close
     try:
         from src.engine.paper_trading import _invalidate_pattern_cache
@@ -1711,7 +1740,7 @@ def insert_live_trade(trade: dict, conn: sqlite3.Connection | None = None) -> in
         {verb} INTO live_trades
             (opened_at, symbol, expiry, verdict_label, side, option_type, strike, entry_underlying,
              entry_premium, sl_underlying, sl_premium, target_underlying, target_premium,
-             lots, status, reason, digest_id,
+             lots, lot_size, status, reason, digest_id,
              trade_status, setup_type, decision_reason,
              confidence_score, entry_quality_score, trend_alignment_score, regime_score,
              signal_key, pyramid_level, max_favorable_r,
@@ -1722,7 +1751,7 @@ def insert_live_trade(trade: dict, conn: sqlite3.Connection | None = None) -> in
         VALUES
             (:opened_at, :symbol, :expiry, :verdict_label, :side, :option_type, :strike, :entry_underlying,
              :entry_premium, :sl_underlying, :sl_premium, :target_underlying, :target_premium,
-             :lots, :status, :reason, :digest_id,
+             :lots, :lot_size, :status, :reason, :digest_id,
              :trade_status, :setup_type, :decision_reason,
              :confidence_score, :entry_quality_score, :trend_alignment_score, :regime_score,
              :signal_key, :pyramid_level, :max_favorable_r,
@@ -1750,6 +1779,9 @@ def insert_live_trade(trade: dict, conn: sqlite3.Connection | None = None) -> in
         "broker_message": trade.get("broker_message"),
         "exit_mode": trade.get("exit_mode"),
         "snapshot_id": trade.get("snapshot_id"),
+        "lot_size": trade.get("lot_size")
+        if trade.get("lot_size") is not None
+        else LOT_SIZES.get(trade.get("symbol", "").upper().split()[0], 1),
         # Phase 0: ML feature columns (captured at trade open time)
         "price_change_pct": trade.get("price_change_pct"),
         "pcr": trade.get("pcr"),
@@ -1787,12 +1819,32 @@ def insert_live_trade(trade: dict, conn: sqlite3.Connection | None = None) -> in
             )
         },
     }
+    from src.engine.trade_audit import validate_trade_entry_data, audit_trade_entry, _alert
+
+    is_valid, rej_reason, issues = validate_trade_entry_data(row_data)
+    if not is_valid:
+        log.error("insert_live_trade: rejected invalid trade data: %s (%s)", rej_reason, issues)
+        _alert("live_trades:PRE_REJECT", 0, {"reason": rej_reason, **issues})
+        return 0
+
     if conn is not None:
         row = conn.execute(sql, row_data).fetchone()
-        return int(row["id"]) if row else 0
+        trade_id = int(row["id"]) if row else 0
+        if trade_id:
+            try:
+                audit_trade_entry("live_trades", trade_id)
+            except Exception:
+                log.exception("insert_live_trade: accounting audit failed for trade %s", trade_id)
+        return trade_id
     with get_conn() as conn:
         row = conn.execute(sql, row_data).fetchone()
-        return int(row["id"]) if row else 0
+    trade_id = int(row["id"]) if row else 0
+    if trade_id:
+        try:
+            audit_trade_entry("live_trades", trade_id)
+        except Exception:
+            log.exception("insert_live_trade: accounting audit failed for trade %s", trade_id)
+    return trade_id
 
 
 def update_live_trade_entry(
@@ -1849,6 +1901,12 @@ def close_live_trade(
 ) -> None:
     """Close a live trade and calculate net P&L (post transaction costs)."""
     from config.settings import LOT_SIZES
+    from src.engine.trade_audit import validate_trade_close_data
+
+    is_valid, rej_reason = validate_trade_close_data("live_trades", trade_id, exit_underlying, exit_premium)
+    if not is_valid:
+        log.error("close_live_trade: pre-close validation failed for trade %s: %s", trade_id, rej_reason)
+        return
 
     with get_conn() as conn:
         # BUG-H04 FIX: Also select lot_size from the database for accurate PnL
@@ -1986,6 +2044,13 @@ def close_live_trade(
                 trade_id,
             ),
         )
+
+    try:
+        from src.engine.trade_audit import audit_trade_close
+
+        audit_trade_close("live_trades", trade_id)
+    except Exception:
+        log.exception("close_live_trade: accounting audit failed for trade %s", trade_id)
 
 
 def list_live_trades(symbol: str | None = None, limit: int = 300) -> list[dict]:
@@ -2198,6 +2263,14 @@ def insert_multi_leg_leg(leg: dict) -> int:
 
 def insert_multileg_trade_atomically(trade: dict, legs: list[dict]) -> int:
     """Atomic insert of a multi-leg trade + all legs. All-or-nothing."""
+    from src.engine.trade_audit import validate_multileg_entry_data, audit_multileg_entry, _alert
+
+    is_valid, rej_reason, issues = validate_multileg_entry_data(trade, legs)
+    if not is_valid:
+        log.error("insert_multileg_trade_atomically: rejected invalid multileg data: %s (%s)", rej_reason, issues)
+        _alert("multi_leg_trades:PRE_REJECT", 0, {"reason": rej_reason, **issues})
+        return 0
+
     trade = dict(trade)
     if "entry_reason" not in trade or not trade.get("entry_reason"):
         trade["entry_reason"] = trade.get("reason", "")
@@ -2240,7 +2313,13 @@ def insert_multileg_trade_atomically(trade: dict, legs: list[dict]) -> int:
         for leg in legs:
             leg["trade_id"] = trade_id
             conn.execute(leg_sql, leg)
-        return trade_id
+
+    if trade_id:
+        try:
+            audit_multileg_entry(trade_id)
+        except Exception:
+            log.exception("insert_multileg_trade_atomically: accounting audit failed for trade %s", trade_id)
+    return trade_id
 
 
 def close_multi_leg_trade(
@@ -2253,54 +2332,121 @@ def close_multi_leg_trade(
         sql = "UPDATE multi_leg_trades SET closed_at=?, status=?, reason=?, exit_reason=?, entry_reason=?, total_pnl=? WHERE id=?"
         conn.execute(sql, (closed_at, status, reason, reason, orig_entry_reason, total_pnl, trade_id))
 
+    try:
+        from src.engine.trade_audit import audit_multileg_close
+
+        audit_multileg_close(trade_id)
+    except Exception:
+        log.exception("close_multi_leg_trade: accounting audit failed for trade %s", trade_id)
+
 
 def close_book(
     book_id: str,
     closed_at: str,
     status: str,
     reason: str,
-    total_pnl: float,
+    total_pnl: float | None = None,
     exit_underlying: float | None = None,
     leg_exits: list[dict] | None = None,
 ) -> None:
     """Close all legs in a book and update the trade record in a single atomic WAL transaction."""
+    from src.engine.trade_audit import validate_multileg_close_data
+
+    is_valid, rej_reason = validate_multileg_close_data(book_id, exit_underlying, leg_exits)
+    if not is_valid:
+        log.error("close_book: pre-close validation failed for book %s: %s", book_id, rej_reason)
+        return
+
+    trade_id = None
     with get_conn() as conn:
         trade = conn.execute(
-            "SELECT id, reason, entry_reason FROM multi_leg_trades WHERE book_id=? AND status='OPEN'", (book_id,)
+            "SELECT id, reason, entry_reason, net_premium FROM multi_leg_trades WHERE book_id=? AND status='OPEN'",
+            (book_id,),
         ).fetchone()
         if not trade:
             return
         trade_id = int(trade["id"])
         orig_entry_reason = trade["entry_reason"] or trade["reason"] or ""
-        if exit_underlying is not None:
-            conn.execute(
-                "UPDATE multi_leg_trades SET closed_at=?, status=?, reason=?, exit_reason=?, entry_reason=?, total_pnl=?, exit_underlying=? WHERE id=?",
-                (closed_at, status, reason, reason, orig_entry_reason, total_pnl, float(exit_underlying), trade_id),
-            )
-        else:
-            conn.execute(
-                "UPDATE multi_leg_trades SET closed_at=?, status=?, reason=?, exit_reason=?, entry_reason=?, total_pnl=? WHERE id=?",
-                (closed_at, status, reason, reason, orig_entry_reason, total_pnl, trade_id),
-            )
+        stored_net_premium = float(trade["net_premium"] or 0.0)
+
+        # Recompute realized P&L from actual leg exits whenever possible.
+        # This makes stored total_pnl match leg math instead of an arbitrary
+        # caller-supplied snapshot.
+        computed_pnl = None
+        if leg_exits:
+            legs = conn.execute(
+                "SELECT id, side, lots, strike, option_type, entry_premium, exit_premium, status FROM multi_leg_legs WHERE trade_id=?",
+                (trade_id,),
+            ).fetchall()
+            legs_by_id = {int(l["id"]): dict(l) for l in legs}
+            symbol_row = conn.execute(
+                "SELECT symbol FROM multi_leg_trades WHERE id=?", (trade_id,)
+            ).fetchone()
+            symbol = (symbol_row["symbol"] if symbol_row else "") or ""
+            base_sym = symbol.upper().split()[0] if symbol else ""
+            lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_sym, 1))
+            computed_pnl = 0.0
+            closed_exit_ids = set()
+            for le in leg_exits:
+                lid = int(le.get("id") or 0)
+                ep = float(le.get("exit_premium") or 0.0)
+                if lid not in legs_by_id:
+                    continue
+                closed_exit_ids.add(lid)
+                l = legs_by_id[lid]
+                side = (l.get("side") or "SELL").upper()
+                entry_premium = float(l.get("entry_premium") or 0.0)
+                lots = int(l.get("lots") or 1)
+                leg_pnl = (entry_premium - ep) if side == "SELL" else (ep - entry_premium)
+                computed_pnl += leg_pnl * lot_size * lots
+
+            # Include realized P&L of any previously closed/rolled legs in this book
+            for lid, l in legs_by_id.items():
+                if lid not in closed_exit_ids and str(l.get("status") or "").upper() == "CLOSED":
+                    side = (l.get("side") or "SELL").upper()
+                    entry_premium = float(l.get("entry_premium") or 0.0)
+                    ep = float(l.get("exit_premium") or 0.0)
+                    lots = int(l.get("lots") or 1)
+                    leg_pnl = (entry_premium - ep) if side == "SELL" else (ep - entry_premium)
+                    computed_pnl += leg_pnl * lot_size * lots
+
+        # Prefer caller-supplied total_pnl only when it came from a trusted
+        # realized-close path; otherwise use recomputed leg math.
+        book_pnl = total_pnl if (total_pnl is not None and computed_pnl is None) else (computed_pnl or total_pnl or 0.0)
+
+        trade_sql = (
+            "UPDATE multi_leg_trades SET closed_at=?, status=?, reason=?, exit_reason=?, "
+            "entry_reason=?, total_pnl=?, exit_underlying=? WHERE id=?"
+        )
+        conn.execute(
+            trade_sql,
+            (closed_at, status, reason, reason, orig_entry_reason, round(float(book_pnl), 2), float(exit_underlying) if exit_underlying is not None else None, trade_id),
+        )
         if leg_exits:
             for le in leg_exits:
                 lid = le.get("id")
                 ep = float(le.get("exit_premium") or 0.0)
+                if lid is None:
+                    continue
                 conn.execute(
                     "UPDATE multi_leg_legs SET status='CLOSED', closed_at=?, exit_premium=?, exit_reason=? WHERE id=?",
-                    (closed_at, ep, reason, lid),
+                    (closed_at, ep, reason, int(lid)),
                 )
-        # Close any remaining open legs that were not in leg_exits, ensuring exit_premium is never null or zero
-        conn.execute(
-            """
-            UPDATE multi_leg_legs 
-            SET status='CLOSED', closed_at=?, 
-                exit_premium=COALESCE(NULLIF(current_premium, 0.0), NULLIF(entry_premium, 0.0), 0.05),
-                exit_reason=? 
-            WHERE trade_id=? AND status='OPEN'
-            """,
-            (closed_at, reason, trade_id),
-        )
+        else:
+            # Without explicit leg exits, mark legs closed but do NOT invent
+            # synthetic exit premiums. Auditors should see the raw data gap.
+            conn.execute(
+                "UPDATE multi_leg_legs SET status='CLOSED', closed_at=?, exit_reason=? WHERE trade_id=? AND status='OPEN'",
+                (closed_at, reason, trade_id),
+            )
+
+    if trade_id:
+        try:
+            from src.engine.trade_audit import audit_multileg_close
+
+            audit_multileg_close(trade_id)
+        except Exception:
+            log.exception("close_book: accounting audit failed for trade %s", trade_id)
 
 
 def close_leg(leg_id: int, closed_at: str, exit_premium: float, exit_reason: str) -> None:
@@ -2326,7 +2472,17 @@ def execute_multi_leg_adjustment(
 ) -> bool:
     """Atomically roll/adjust a leg in a multi-leg book in a single WAL transaction."""
     from datetime import datetime, timezone
+
+    if float(exit_premium) < 0:
+        log.error("execute_multi_leg_adjustment: negative exit_premium %.2f for book %s", exit_premium, book_id)
+        return False
+    if float(new_leg.get("entry_premium") or 0) <= 0 or float(new_leg.get("strike") or 0) <= 0:
+        log.error("execute_multi_leg_adjustment: invalid new_leg parameters for book %s: %s", book_id, new_leg)
+        return False
+
     now_iso = datetime.now(timezone.utc).isoformat()
+    trade_id = None
+    new_leg_dict = dict(new_leg)
     with get_conn() as conn:
         trade = conn.execute(
             "SELECT id, net_premium FROM multi_leg_trades WHERE book_id=? AND status='OPEN'",
@@ -2343,7 +2499,6 @@ def execute_multi_leg_adjustment(
         )
 
         # 2. Insert new replacement leg
-        new_leg_dict = dict(new_leg)
         new_leg_dict["trade_id"] = trade_id
         new_leg_dict.setdefault("exit_premium", 0.0)
         new_leg_dict.setdefault("theta", 0.0)
@@ -2375,7 +2530,15 @@ def execute_multi_leg_adjustment(
                 "UPDATE multi_leg_trades SET adjustment_count = adjustment_count + 1 WHERE id=?",
                 (trade_id,)
             )
-        return True
+
+    if trade_id:
+        try:
+            from src.engine.trade_audit import audit_multileg_adjustment
+
+            audit_multileg_adjustment(trade_id, close_leg_id, new_leg_dict)
+        except Exception:
+            log.exception("execute_multi_leg_adjustment: audit failed for trade %s", trade_id)
+    return True
 
 
 def list_multi_leg_trades(status_filter: str | None = None) -> list[dict]:

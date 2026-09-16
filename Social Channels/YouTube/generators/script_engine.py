@@ -46,56 +46,65 @@ class ScriptEngine:
         self.gemini_key = os.environ.get("GEMINI_API_KEY") or root_gemini_key
 
     def _build_prompt(self, metrics: Any) -> str:
+        ce_res = metrics.top_ce_oi_strikes[0] if getattr(metrics, "top_ce_oi_strikes", None) else 23700.0
+        pe_sup = metrics.top_pe_oi_strikes[0] if getattr(metrics, "top_pe_oi_strikes", None) else 23600.0
         return f"""
 You are an expert Indian stock market derivatives trader and lead YouTube financial director.
 Review today's finalized market closing figures:
 • NIFTY 50: {metrics.nifty_close:.2f} ({metrics.nifty_change:+.2f}, {metrics.nifty_pchange:+.2f}%)
-• BANK NIFTY: {metrics.banknifty_close:.2f} ({metrics.banknifty_change:+.2f})
+• BANK NIFTY: {metrics.banknifty_close:.2f} ({metrics.banknifty_change:+.2f}, {metrics.banknifty_pchange:+.2f}%)
 • INDIA VIX: {metrics.vix:.2f}
 • FII Net Cash: ₹{metrics.fii_net_cash:+.2f} Cr | DII Net Cash: ₹{metrics.dii_net_cash:+.2f} Cr
 • Put-Call Ratio (PCR): {metrics.nifty_pcr:.2f} | Max Pain: {metrics.nifty_max_pain:.0f}
 • Resistance Strikes (Heavy CE Writing): {metrics.top_ce_oi_strikes}
 • Support Strikes (Heavy PE Writing): {metrics.top_pe_oi_strikes}
 
-Write a high-retention 4-minute YouTube script divided into exactly 4 scenes:
-Scene 1: THE HOOK (0:00 - 0:25) - High-tension opening. Highlight the single biggest trap that caught traders off guard.
-Scene 2: INSTITUTIONAL FLOWS (0:25 - 1:30) - FII selling/buying pressure, sector rotation, and VIX volatility signals.
-Scene 3: DERIVATIVE BATTLEGROUND (1:30 - 2:45) - Put-Call Ratio (PCR) shift and call writers vs put writers positioning.
-Scene 4: TOMORROW'S WATCH OUT LEVELS (2:45 - 3:45) - Precise support/resistance levels to defend and macro triggers.
+Write a tight, high-retention 1.5 to 2-minute YouTube script (target 200-240 spoken words total across all scenes).
+CRITICAL RULES:
+1. Provide REAL, ACTIONABLE DERIVATIVE INSIGHTS (gamma exposure, pin-risk at max pain, institutional absorption, smart money divergence). No generic filler, no robotic clichés.
+2. DO NOT REPEAT metrics or phrases across scenes. Each scene delivers distinct, fresh quantitative insight.
+3. Keep spoken sentences natural, punchy, and conversational for an elite Indian derivatives trader audience.
+4. Strictly use today's actual numbers: Nifty {metrics.nifty_close:,.2f}, Max Pain {metrics.nifty_max_pain:,.0f}, FII ₹{metrics.fii_net_cash:+.1f} Cr, DII ₹{metrics.dii_net_cash:+.1f} Cr, PCR {metrics.nifty_pcr:.2f}, Call Wall {ce_res:,.0f}, Put Floor {pe_sup:,.0f}.
+
+Divide into exactly 4 scenes:
+Scene 1: THE HOOK & CONSOLIDATION (0:00 - 0:25) - Context of today's price action at {metrics.nifty_close:,.2f} ({metrics.nifty_change:+.2f} pts), and why Max Pain at {metrics.nifty_max_pain:,.0f} acted as the exact gravitational pin.
+Scene 2: INSTITUTIONAL FLOWS (0:25 - 0:50) - Real cash vs derivatives divergence. FII Net Cash ({metrics.fii_net_cash:+.1f} Cr) vs DII absorption (+{metrics.dii_net_cash:+.1f} Cr). Why domestic liquidity cushioned the market.
+Scene 3: DERIVATIVE BATTLEGROUND (0:50 - 1:20) - PCR {metrics.nifty_pcr:.2f} analysis, the {ce_res:,.0f} call wall defense, and put writing floor at {pe_sup:,.0f}.
+Scene 4: TOMORROW'S ROADMAP (1:20 - 1:50) - Precise trade levels to defend ({pe_sup:,.0f} support), downside risk below this floor, and {ce_res:,.0f} upside recovery hurdle.
 
 Output MUST be strictly valid JSON adhering to this exact schema:
 {{
-  "video_title": "High CTR Title under 90 chars (e.g. NIFTY Trapped Bulls! FIIs Sell Heavy | Next Key Levels)",
-  "thumbnail_hook": "3-word bold punchline (e.g. 24,800 TRAP!)",
+  "video_title": "High CTR Title under 90 chars (e.g. NIFTY Pins 23650 Max Pain! DIIs Absorb Selling | Next Trade Levels)",
+  "thumbnail_hook": "3-word bold punchline (e.g. 23,650 PIN!)",
   "description_summary": "Comprehensive SEO description covering today's analysis and key levels.",
-  "chapters": ["00:00 The Trap", "00:25 FII/DII Footprint", "01:30 Options OI & PCR", "02:45 Key Levels for Tomorrow"],
+  "chapters": ["00:00 The Trap & Pin", "00:25 FII/DII Footprint", "00:50 Options OI & PCR", "01:20 Key Levels for Tomorrow"],
   "scenes": [
     {{
       "scene_id": 1,
-      "segment_title": "THE TRAP",
-      "headline_text": "NIFTY DROPS 145 POINTS",
-      "metric_highlight": "PCR: 0.82 | VIX: 13.9",
+      "segment_title": "THE TRAP & PIN",
+      "headline_text": "NIFTY PINS 23,650 MAX PAIN",
+      "metric_highlight": "Close: {metrics.nifty_close:,.2f} | Pain: {metrics.nifty_max_pain:,.0f}",
       "spoken_text": "Spoken sentence without filler..."
     }},
     {{
       "scene_id": 2,
       "segment_title": "INSTITUTIONAL FLOWS",
-      "headline_text": "FIIS DUMP ₹1,850 CR",
-      "metric_highlight": "DII Net: +₹1,420 Cr",
+      "headline_text": "DIIS BUY ₹{int(metrics.dii_net_cash)} CR CASH",
+      "metric_highlight": "DII: +₹{int(metrics.dii_net_cash)} Cr | FII: ₹{int(metrics.fii_net_cash)} Cr",
       "spoken_text": "Spoken sentence..."
     }},
     {{
       "scene_id": 3,
       "segment_title": "DERIVATIVES BATTLEGROUND",
-      "headline_text": "CALL WRITERS DOMINATE 24,900",
-      "metric_highlight": "Max Pain: 24,800 | PCR: 0.82",
+      "headline_text": "{int(ce_res)} CALL WALL DEFENSE",
+      "metric_highlight": "PCR: {metrics.nifty_pcr:.2f} | CE Wall: {int(ce_res)}",
       "spoken_text": "Spoken sentence..."
     }},
     {{
       "scene_id": 4,
       "segment_title": "TOMORROW'S WATCH OUT",
-      "headline_text": "DEFEND 24,700 SUPPORT",
-      "metric_highlight": "Resistance: 24,900 - 25,000",
+      "headline_text": "DEFEND {int(pe_sup)} SUPPORT",
+      "metric_highlight": "Resistance: {int(ce_res)} | Support: {int(pe_sup)}",
       "spoken_text": "Spoken sentence..."
     }}
   ],
@@ -122,7 +131,7 @@ Output MUST be strictly valid JSON adhering to this exact schema:
                 url,
                 json=payload,
                 headers={"Authorization": f"Bearer {self.omnirouter_key}", "Content-Type": "application/json"},
-                timeout=45,
+                timeout=5,
             )
             if res.status_code == 200:
                 data = res.json()
@@ -137,19 +146,25 @@ Output MUST be strictly valid JSON adhering to this exact schema:
     def _call_gemini(self, prompt: str) -> str:
         if not self.gemini_key:
             raise ValueError("Neither OMNIROUTER_API_KEY nor GEMINI_API_KEY is configured.")
-        log.info("Calling Gemini 2.5 Flash as LLM provider...")
         from google import genai
         from google.genai import types
         client = genai.Client(api_key=self.gemini_key)
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.2,
-                response_mime_type="application/json",
-            ),
-        )
-        return response.text or "{}"
+        for model_name in ["gemini-2.5-flash", "gemini-2.5-flash-lite"]:
+            try:
+                log.info(f"Calling Gemini ({model_name}) as LLM provider...")
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        temperature=0.2,
+                        response_mime_type="application/json",
+                    ),
+                )
+                if response.text and response.text.strip():
+                    return response.text
+            except Exception as e:
+                log.warning(f"Gemini model {model_name} failed: {e}. Trying fallback...")
+        return "{}"
 
     def generate_script(self, metrics: Any) -> YouTubeScriptModel:
         prompt = self._build_prompt(metrics)
@@ -162,7 +177,7 @@ Output MUST be strictly valid JSON adhering to this exact schema:
             data["spoken_sebi_disclaimer"] = SEBI_MANDATORY_DISCLAIMER
             return YouTubeScriptModel.model_validate(data)
         except Exception as exc:
-            log.error(f"Pydantic validation failed: {exc}. Retrying once with Gemini Flash...")
+            log.error(f"Pydantic validation failed: {exc}. Retrying once with Gemini...")
             raw_json = self._call_gemini(prompt)
             data = json.loads(raw_json)
             data["spoken_sebi_disclaimer"] = SEBI_MANDATORY_DISCLAIMER

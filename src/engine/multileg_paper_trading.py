@@ -14,6 +14,7 @@ Flow:
 from __future__ import annotations
 
 import logging
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -296,7 +297,7 @@ def _monitor_open_books(
                     profit_target_pct * 100,
                 )
                 curr_und = float((scan_context or {}).get("underlying") or entry_underlying)
-                leg_exits = [{"id": leg["id"], "exit_premium": float(leg.get("current_premium") or leg.get("entry_premium") or 0.0)} for leg in legs if leg.get("id")]
+                leg_exits = _build_real_leg_exits(symbol, expiry, legs, scan_context, book)
                 close_book(
                     book_id, now_iso, "CLOSED",
                     f"PROFIT_TARGET ({profit_pct*100:.0f}% of max)",
@@ -325,7 +326,7 @@ def _monitor_open_books(
                 stop_loss_threshold_rupees,
             )
             curr_und = float((scan_context or {}).get("underlying") or entry_underlying)
-            leg_exits = [{"id": leg["id"], "exit_premium": float(leg.get("current_premium") or leg.get("entry_premium") or 0.0)} for leg in legs if leg.get("id")]
+            leg_exits = _build_real_leg_exits(symbol, expiry, legs, scan_context, book)
             close_book(
                 book_id, now_iso, "CLOSED",
                 f"STOP_LOSS (loss ₹{abs(total_pnl):.0f} > cap ₹{stop_loss_threshold_rupees:.0f})",
@@ -381,25 +382,8 @@ def _monitor_open_books(
                 dte,
                 time_decay_exit_dte,
             )
-            from src.models.schema import get_latest_option_snapshot
-            from src.engine.trade_plan import is_valid_option_premium
-            leg_exits = []
-            current_underlying = float((scan_context or {}).get("underlying") or entry_underlying)
-            for leg in legs:
-                leg_id = leg.get("id")
-                if leg_id:
-                    leg_strike = float(leg.get("strike") or 0.0)
-                    leg_opt = leg.get("option_type", "CE")
-                    snap = get_latest_option_snapshot(symbol, expiry, leg_strike, leg_opt)
-                    snap_ltp = float(snap.get("ltp") or 0.0) if snap else 0.0
-                    curr_prem = float(leg.get("current_premium") or leg.get("entry_premium") or 0.0)
-                    if snap_ltp > 0 and (current_underlying <= 0 or is_valid_option_premium(leg_strike, leg_opt, snap_ltp, current_underlying)):
-                        exit_premium = snap_ltp
-                    elif curr_prem > 0 and (current_underlying <= 0 or is_valid_option_premium(leg_strike, leg_opt, curr_prem, current_underlying)):
-                        exit_premium = curr_prem
-                    else:
-                        exit_premium = float(leg.get("entry_premium") or 0.05)
-                    leg_exits.append({"id": leg_id, "exit_premium": exit_premium})
+            curr_und = float((scan_context or {}).get("underlying") or entry_underlying)
+            leg_exits = _build_real_leg_exits(symbol, expiry, legs, scan_context, book)
 
             curr_und = float((scan_context or {}).get("underlying") or entry_underlying)
             close_book(
@@ -419,7 +403,53 @@ def _monitor_open_books(
             })
             continue
 
-        # 4d. AI exit advice (full mode only)
+        # 4d. Structural Invalidation exit (spot breached thesis invalidation level)
+        inval_match = re.search(r"Invalidation:\s*(?:Spot\s*)?([0-9.]+)", str(book.get("entry_reason") or book.get("reason") or ""))
+        if inval_match:
+            try:
+                inval_spot = float(inval_match.group(1))
+                curr_und = float((scan_context or {}).get("underlying") or entry_underlying)
+                strat_upper = str(strategy_type or "").upper()
+                is_bull_strat = "BULL" in strat_upper or strat_upper in ("LONG_CALL", "SHORT_PUT")
+                is_bear_strat = "BEAR" in strat_upper or strat_upper in ("LONG_PUT", "SHORT_CALL")
+
+                is_invalidated = False
+                if is_bull_strat and curr_und < inval_spot:
+                    is_invalidated = True
+                elif is_bear_strat and curr_und > inval_spot:
+                    is_invalidated = True
+                elif not is_bull_strat and not is_bear_strat and entry_underlying > 0:
+                    if inval_spot < entry_underlying and curr_und < inval_spot:
+                        is_invalidated = True
+                    elif inval_spot > entry_underlying and curr_und > inval_spot:
+                        is_invalidated = True
+
+                if is_invalidated:
+                    log.info(
+                        "[multileg-paper] %s: book %s hit structural invalidation — spot %.2f breached level %.2f",
+                        symbol, book_id, curr_und, inval_spot,
+                    )
+                    leg_exits = _build_real_leg_exits(symbol, expiry, legs, scan_context, book)
+                    close_book(
+                        book_id, now_iso, "CLOSED",
+                        f"STRUCTURAL_INVALIDATION (spot {curr_und:.1f} breached level {inval_spot:.1f})",
+                        total_pnl,
+                        curr_und,
+                        leg_exits=leg_exits,
+                    )
+                    closed_actions.append({
+                        "action": "CLOSED",
+                        "book_id": book_id,
+                        "strategy_type": book.get("strategy_type") or book.get("structure"),
+                        "reason": f"Structural invalidation hit: spot {curr_und:.1f} breached {inval_spot:.1f}",
+                        "total_pnl": total_pnl,
+                        "legs": legs,
+                    })
+                    continue
+            except Exception as _ie:
+                log.debug("[multileg-paper] Invalidation check error: %s", _ie)
+
+        # 4e. AI exit advice (full mode only)
         if ai_mode == "full":
             try:
                 from src.engine.llm_enrichment import get_multileg_exit_advice
@@ -441,6 +471,19 @@ def _monitor_open_books(
                         from config.runtime_config import load_runtime_config
                         exit_advisor_enabled = load_runtime_config().get("live_ai_exit_advisor_enabled", True)
                         if exit_advisor_enabled:
+                            # 0DTE Safety Guard: For weekly index options on expiry day (DTE 0) before 13:00 IST,
+                            # do NOT autonomously close if P&L >= 0 (e.g. early morning time/pin-risk hallucinations).
+                            if is_weekly_index and dte == 0 and now_ist.hour < 13 and total_pnl >= 0:
+                                log.info(
+                                    "[multileg-paper] %s: book %s — Suppressed premature 0DTE morning AI close (%s IST, PnL=₹%.0f): %s",
+                                    symbol,
+                                    book_id,
+                                    now_ist.strftime("%H:%M"),
+                                    total_pnl,
+                                    reasoning,
+                                )
+                                continue
+
                             log.info(
                                 "[multileg-paper] %s: book %s — AI executing autonomous CLOSE: %s",
                                 symbol,
@@ -448,27 +491,8 @@ def _monitor_open_books(
                                 reasoning,
                             )
                             exit_reason_str = f"CLOSED_AI_EXIT ({reasoning[:60]})"
-                            from src.models.schema import get_latest_option_snapshot
-                            from src.engine.trade_plan import is_valid_option_premium
-                            leg_exits = []
-                            current_underlying = float((scan_context or {}).get("underlying") or entry_underlying)
-                            for leg in legs:
-                                leg_id = leg.get("id")
-                                if leg_id:
-                                    leg_strike = float(leg.get("strike") or 0.0)
-                                    leg_opt = leg.get("option_type", "CE")
-                                    snap = get_latest_option_snapshot(symbol, expiry, leg_strike, leg_opt)
-                                    snap_ltp = float(snap.get("ltp") or 0.0) if snap else 0.0
-                                    curr_prem = float(leg.get("current_premium") or leg.get("entry_premium") or 0.0)
-                                    if snap_ltp > 0 and (current_underlying <= 0 or is_valid_option_premium(leg_strike, leg_opt, snap_ltp, current_underlying)):
-                                        exit_premium = snap_ltp
-                                    elif curr_prem > 0 and (current_underlying <= 0 or is_valid_option_premium(leg_strike, leg_opt, curr_prem, current_underlying)):
-                                        exit_premium = curr_prem
-                                    else:
-                                        exit_premium = float(leg.get("entry_premium") or 0.05)
-                                    leg_exits.append({"id": leg_id, "exit_premium": exit_premium})
-
                             curr_und = float((scan_context or {}).get("underlying") or entry_underlying)
+                            leg_exits = _build_real_leg_exits(symbol, expiry, legs, scan_context, book)
                             close_book(
                                 book_id, now_iso, "CLOSED",
                                 exit_reason_str,
@@ -921,7 +945,7 @@ def _attempt_new_entry(
     expiry = (scan_context or {}).get("expiry", "")
     underlying = float((scan_context or {}).get("underlying") or 0.0)
     option_rows = list((scan_context or {}).get("option_rows") or [])
-    
+
     # Calculate net_premium from legs to protect against LLM returning 0.0
     sell_prem_sum = sum(float(l.get("entry_premium") or l.get("premium") or 0.0) for l in legs if (l.get("side") or "SELL").upper() == "SELL")
     buy_prem_sum = sum(float(l.get("entry_premium") or l.get("premium") or 0.0) for l in legs if (l.get("side") or "SELL").upper() == "BUY")
@@ -1138,6 +1162,8 @@ def _attempt_new_entry(
         or getattr(verdict, "thesis", None)
         or f"{strategy_type} setup for {symbol} ({len(legs)} legs, net prem ₹{net_premium:.2f})"
     )
+    if getattr(verdict, "structural_invalidation_spot", None):
+        entry_reason = f"{entry_reason} | Invalidation: Spot {verdict.structural_invalidation_spot}"
     if not entry_reason:
         leg_rats = [l.get("rationale") for l in legs if l.get("rationale")]
         entry_reason = "; ".join(leg_rats) if leg_rats else f"{strategy_type} entry"
@@ -1382,3 +1408,55 @@ def _calc_multileg_pnl(book: dict, legs: list[dict], scan_context: dict | None =
             pass
 
     return total_pnl
+
+
+def _build_real_leg_exits(
+    symbol: str,
+    expiry: str,
+    legs: list[dict],
+    scan_context: dict | None = None,
+    book: dict | None = None,
+) -> list[dict]:
+    """Build leg exits from real prices only.
+
+    Preference order:
+    1) latest option snapshot LTP
+    2) in-memory current_premium / DB current_premium
+    3) valid fallback estimate from underlying move
+
+    If no valid price is available, that leg is skipped instead of inventing
+    a synthetic exit premium.
+    """
+    from src.models.schema import get_latest_option_snapshot
+    from src.engine.trade_plan import is_valid_option_premium
+
+    sc = scan_context or book or {}
+    current_underlying = float((sc or {}).get("underlying") or book.get("entry_underlying") or 0.0)
+    leg_exits: list[dict] = []
+    for leg in legs:
+        leg_id = leg.get("id")
+        if not leg_id:
+            continue
+        leg_strike = float(leg.get("strike") or 0.0)
+        leg_opt = leg.get("option_type", "CE")
+        snap = get_latest_option_snapshot(symbol, expiry, leg_strike, leg_opt)
+        snap_ltp = float(snap.get("ltp") or 0.0) if snap else 0.0
+        entry_prem = float(leg.get("entry_premium") or 0.0)
+        curr_prem = float(leg.get("current_premium") or 0.0)
+
+        if snap_ltp > 0 and (current_underlying <= 0 or is_valid_option_premium(leg_strike, leg_opt, snap_ltp, current_underlying)):
+            exit_premium = snap_ltp
+        elif curr_prem > 0 and (current_underlying <= 0 or is_valid_option_premium(leg_strike, leg_opt, curr_prem, current_underlying)):
+            exit_premium = curr_prem
+        elif current_underlying > 0 and book and book.get("entry_underlying"):
+            entry_und = float(book.get("entry_underlying") or current_underlying)
+            und_move = current_underlying - entry_und
+            delta = float(leg.get("delta") or 0.25)
+            delta_sign = delta if leg_opt == "CE" else -abs(delta)
+            exit_premium = max(0.05, round(entry_prem + delta_sign * und_move, 2))
+        elif entry_prem > 0:
+            exit_premium = entry_prem
+        else:
+            continue
+        leg_exits.append({"id": leg_id, "exit_premium": exit_premium})
+    return leg_exits

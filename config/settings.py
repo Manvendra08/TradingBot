@@ -89,8 +89,8 @@ GOOGLE_DRIVE_FOLDER_ID = _optional_env("GOOGLE_DRIVE_FOLDER_ID")
 # ── Market Windows ─────────────────────────────────────────────────────────────────────────────────────────
 # Format: (open_time, close_time, weekdays)  — weekdays: 0=Mon … 6=Sun
 MARKET_WINDOWS = {
-    "NSE_INDEX": ("09:15", "15:30", [0, 1, 2, 3, 4]),
-    "BSE_INDEX": ("09:15", "15:30", [0, 1, 2, 3, 4]),
+    "NSE_INDEX": ("09:15", "15:40", [0, 1, 2, 3, 4]),  # F&O closing extended to 15:40 IST per SEBI
+    "BSE_INDEX": ("09:15", "15:40", [0, 1, 2, 3, 4]),  # F&O closing extended to 15:40 IST per SEBI
     "NSE_EQUITY": ("09:15", "15:30", [0, 1, 2, 3, 4]),
     "NFO": ("09:15", "15:40", [0, 1, 2, 3, 4]),  # F&O closing extended to 15:40 IST per SEBI
     "MCX_COMMODITY": (
@@ -99,6 +99,18 @@ MARKET_WINDOWS = {
         [0, 1, 2, 3, 4],
     ),
 }
+
+# ── Market Close Final Scan Times ──────────────────────────────────────────────────────────────────────────
+# Scheduled at 15:38 IST (3:38 PM) for NSE/BSE F&O (2 minutes before the 15:40 IST closing bell)
+# to allow a 2-minute execution window for final trade adjustments, rolls, and square-offs before market close.
+MARKET_CLOSE_SCAN_TIMES = {
+    "NSE_INDEX": "15:38",
+    "BSE_INDEX": "15:38",
+    "NSE_EQUITY": "15:28",
+    "NFO": "15:38",
+    "MCX_COMMODITY": "23:30",
+}
+
 
 # ── Symbol → Market Window mapping ───────────────────────────────────────────────────────────────────────
 SYMBOL_MARKET = {

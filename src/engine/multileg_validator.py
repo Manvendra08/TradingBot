@@ -16,17 +16,16 @@ class ValidationResult:
             self.warnings = []
 
 
-def _estimate_margin(legs: list[dict], underlying: float) -> float:
-    """Rough estimation of margin requirement."""
-    # Simplified estimation logic for testing purposes
-    # In reality, this would use a more complex margin calculation
+def _estimate_margin(legs: list[dict], underlying: float, symbol: str = "NIFTY") -> float:
+    """Rough estimation of margin requirement based on symbol lot size."""
+    from config.settings import LOT_SIZES
+    base = symbol.upper().split()[0] if symbol else "NIFTY"
+    lot_size = LOT_SIZES.get(base, LOT_SIZES.get(symbol, 75))
     margin = 0.0
     for leg in legs:
         if leg.get("action") == "SELL":
-            # Roughly assuming naked sell requires margin of underlying * LOT_SIZE * 0.15
-            # Simplified for test demonstration.
             ratio = leg.get("ratio", 1)
-            margin += (underlying * ratio * 75 * 0.15) # Assume lot size 75 for NIFTY
+            margin += (underlying * ratio * lot_size * 0.15)
     return margin
 
 
@@ -55,7 +54,8 @@ def validate_multileg_trade(
     engine_verdict: str,
     underlying: float,
     max_margin_inr: float = 500000.0,
-    max_net_delta: float = 0.60
+    max_net_delta: float = 0.60,
+    symbol: str = "NIFTY",
 ) -> ValidationResult:
     """Validate multileg proposal against engine verdict and risk limits."""
     if not proposal.is_valid:
@@ -83,11 +83,59 @@ def validate_multileg_trade(
         )
 
     # Approximate margin check
-    estimated_margin = _estimate_margin(proposal.legs, underlying)
+    estimated_margin = _estimate_margin(proposal.legs, underlying, symbol=symbol)
     if estimated_margin > max_margin_inr:
         return ValidationResult(
             is_valid=False,
             rejection_reason=f"Margin requirement exceeded: Estimated margin ₹{estimated_margin:.2f} > max ₹{max_margin_inr:.2f}."
         )
+
+    # Net delta cap check
+    net_delta = 0.0
+    has_delta = False
+    for leg in proposal.legs:
+        if "delta" in leg and leg["delta"] is not None:
+            has_delta = True
+            leg_delta = float(leg["delta"])
+            action = str(leg.get("action") or leg.get("side") or "SELL").upper()
+            ratio = float(leg.get("ratio") or 1)
+            sign = -1.0 if action == "SELL" else 1.0
+            net_delta += sign * leg_delta * ratio
+
+    if has_delta and abs(net_delta) > max_net_delta:
+        return ValidationResult(
+            is_valid=False,
+            rejection_reason=f"Risk limit exceeded: Proposal net delta {net_delta:+.2f} exceeds cap ±{max_net_delta:.2f}."
+        )
+
+    # Defined-risk wing width check
+    strategy_type = getattr(proposal, "strategy_type", None) or getattr(proposal, "structure", None) or ""
+    if str(strategy_type).upper() in ("IRON_CONDOR", "BEAR_CALL_SPREAD", "BULL_PUT_SPREAD"):
+        from config.multileg_strategies import MIN_WING_WIDTH_PCT, MIN_WING_WIDTH_POINTS
+        sym_key = symbol.upper().split()[0] if symbol else "DEFAULT"
+        min_width_pts = MIN_WING_WIDTH_POINTS.get(sym_key, MIN_WING_WIDTH_POINTS.get("DEFAULT", 50.0))
+        min_width_pct = MIN_WING_WIDTH_PCT.get(sym_key, MIN_WING_WIDTH_PCT.get("DEFAULT", 0.005))
+        effective_min_width = max(min_width_pts, underlying * min_width_pct) if underlying > 0 else min_width_pts
+
+        ce_sell = [float(l["strike"]) for l in proposal.legs if str(l.get("option_type") or "").upper() == "CE" and str(l.get("action") or l.get("side") or "").upper() == "SELL" and "strike" in l]
+        ce_buy = [float(l["strike"]) for l in proposal.legs if str(l.get("option_type") or "").upper() == "CE" and str(l.get("action") or l.get("side") or "").upper() == "BUY" and "strike" in l]
+        pe_sell = [float(l["strike"]) for l in proposal.legs if str(l.get("option_type") or "").upper() == "PE" and str(l.get("action") or l.get("side") or "").upper() == "SELL" and "strike" in l]
+        pe_buy = [float(l["strike"]) for l in proposal.legs if str(l.get("option_type") or "").upper() == "PE" and str(l.get("action") or l.get("side") or "").upper() == "BUY" and "strike" in l]
+
+        if ce_sell and ce_buy:
+            call_width = max(ce_buy) - min(ce_sell)
+            if call_width < effective_min_width:
+                return ValidationResult(
+                    is_valid=False,
+                    rejection_reason=f"Call wing width {call_width:.0f} pts is too narrow for {symbol} (min required: {effective_min_width:.0f} pts). Buy leg is too close."
+                )
+
+        if pe_sell and pe_buy:
+            put_width = max(pe_sell) - min(pe_buy)
+            if put_width < effective_min_width:
+                return ValidationResult(
+                    is_valid=False,
+                    rejection_reason=f"Put wing width {put_width:.0f} pts is too narrow for {symbol} (min required: {effective_min_width:.0f} pts). Buy leg is too close."
+                )
 
     return ValidationResult(is_valid=True)

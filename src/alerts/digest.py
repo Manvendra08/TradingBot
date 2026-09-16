@@ -772,6 +772,20 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
 
     ml_action = str(multileg.get("action") or "").upper()
     has_live_books = bool(multileg.get("live_books"))
+    has_legs = bool(multileg.get("legs"))
+    raw_strat = str(multileg.get("strategy_type") or "")
+    is_real_strategy = raw_strat and raw_strat.upper() not in ("", "NO_TRADE", "NONE")
+    # Genuine multi-leg activity this cycle. The pipeline synthesizes a
+    # NO_TRADE / action=NONE fallback multileg payload for EVERY symbol even
+    # when the MULTILEG LLM never proposed anything — without this guard the
+    # digest would paint every symbol as "⏸️ NO TRADE" on every scan.
+    has_ml_activity = (
+        has_legs
+        or has_live_books
+        or is_real_strategy
+        or bool(multileg.get("closed_items"))
+        or ml_action in ("ENTERED", "HOLD", "MONITORED", "ADVISORY", "REJECTED", "CONFLICT", "CLOSED")
+    )
     # Defense-in-depth: ml_action alone is not enough to declare ENTERED.
     # The pipeline upstream checks trade_entered before setting ENTERED, but
     # the display layer should also catch a contradictory state (e.g. action
@@ -779,14 +793,23 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
     header_trade_entered = bool(header.get("trade_entered"))
     ml_stage = str(multileg.get("decision_stage") or "").upper()
     is_blocked_by_stage = ml_stage in ("REJECTED", "BLOCKED", "NO_ACTION")
+    # header.trade_entered is set by the pipeline for entries from ANY
+    # strategy (CORE/TIMEFRAME/MULTILEG) — honor it even when the multileg
+    # action string is the synthesized "NONE".
     is_entered = (
-        ml_action == "ENTERED"
-        and header_trade_entered
-        and not is_blocked_by_stage
-    ) or (ml_action == "ENTERED" and has_live_books)
+        (header_trade_entered and not is_blocked_by_stage)
+        or (ml_action == "ENTERED" and has_live_books)
+    )
+    # A cycle where a multi-leg book was closed or adjusted (P&L reported)
+    # should be flagged as an EXIT / CLOSED event first.
+    is_closed_cycle = bool(multileg.get("closed_items")) and not is_entered
     # has_live_books is the ultimate ground truth — if DB has open legs, the
     # trade was placed regardless of what any action string says.
-    is_holding = (ml_action in ("HOLD", "MONITORED") or (has_live_books and not is_entered)) and not is_entered
+    is_holding = (
+        (ml_action in ("HOLD", "MONITORED") or (has_live_books and not is_entered))
+        and not is_entered
+        and not is_closed_cycle
+    )
     is_advisory = ml_action == "ADVISORY"
     is_rejected = ml_action == "REJECTED"
     is_conflict = ml_action == "CONFLICT"
@@ -794,14 +817,20 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
     # Header status badge
     if is_entered:
         trade_status_str = "🟢 *ENTERED*"
+    elif is_closed_cycle:
+        trade_status_str = "🔴 *EXITED*"
     elif is_holding:
         trade_status_str = "🔵 *HOLDING*"
     elif is_advisory:
         trade_status_str = "🟡 *ADVISORY*"
     elif is_rejected or is_conflict:
         trade_status_str = "🔴 *REJECTED*"
-    else:
+    elif has_ml_activity:
         trade_status_str = "⏸️ *NO TRADE*"
+    else:
+        # No genuine multi-leg activity this cycle (MULTILEG LLM proposed
+        # nothing and no multi-leg book exists) — do not spam "NO TRADE".
+        trade_status_str = ""
 
     # Format expiry & DTE
     if expiry:
@@ -844,7 +873,8 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
     stime_clean = stime.replace(" IST", "").strip() if stime else ""
     time_str = f" · {stime_clean} IST" if stime_clean else ""
 
-    lines.append(f"📊 *{sym}*{time_str}  {trade_status_str}")
+    status_suffix = f"  {trade_status_str}" if trade_status_str else ""
+    lines.append(f"📊 *{sym}*{time_str}{status_suffix}")
     lines.append(f"{expiry_str} · {dte_str} | Spot {spot_str}")
 
     # ── 1. QUANT ENGINE INPUTS (Raw Material) ──
@@ -877,106 +907,130 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
         lines.append(f"• Commodity Regime: `{ng_reg}` (Dev `{ng_dev:+.2f}%`)")
 
     # ── 2. STRATEGY SELECTION & STRUCTURE ──
-    lines.append("")
-    lines.append(DIV)
-    strat_type = str(multileg.get("strategy_type") or "NO_TRADE").replace("_", " ").upper()
-    strat_icon_map = {
-        "BEAR CALL SPREAD": "🛡️",
-        "BULL PUT SPREAD": "🛡️",
-        "IRON CONDOR": "🦅",
-        "SHORT STRANGLE": "⚡",
-        "SHORT STRADDLE": "🎯",
-        "JADE LIZARD": "🦎",
-        "NO TRADE": "⏸️",
-    }
-    icon = strat_icon_map.get(strat_type, "📐")
+    # Only show LLM STRUCTURE CHOICE when a structure was actually chosen this
+    # cycle. The pipeline synthesizes a NO_TRADE fallback payload for every
+    # symbol every cycle — rendering it would spam "Strategy: ⏸️ NO TRADE" on
+    # every digest. HOLD/BOOK_MONITOR cycles with no new structure also skip.
+    if has_ml_activity and (is_real_strategy or has_legs):
+        lines.append("")
+        lines.append(DIV)
+        strat_type = raw_strat.replace("_", " ").upper() if raw_strat else "NO TRADE"
+        strat_icon_map = {
+            "BEAR CALL SPREAD": "🛡️",
+            "BULL PUT SPREAD": "🛡️",
+            "IRON CONDOR": "🦅",
+            "SHORT STRANGLE": "⚡",
+            "SHORT STRADDLE": "🎯",
+            "JADE LIZARD": "🦎",
+            "NO TRADE": "⏸️",
+        }
+        icon = strat_icon_map.get(strat_type, "📐")
 
-    conf_str = f" ({conf}% conviction)" if conf else ""
-    m_tag = f" ({_esc(ai_model_name)})" if ai_model_name else ""
-    lines.append(f"🧠 *LLM STRUCTURE CHOICE*{m_tag}")
-    lines.append(f"Strategy: {icon} *{_esc(strat_type)}*{conf_str}")
+        conf_str = f" ({conf}% conviction)" if conf else ""
+        m_tag = f" ({_esc(ai_model_name)})" if ai_model_name else ""
+        lines.append(f"🧠 *LLM STRUCTURE CHOICE*{m_tag}")
+        lines.append(f"Strategy: {icon} *{_esc(strat_type)}*{conf_str}")
 
-    legs = multileg.get("legs") or []
-    if legs:
-        lines.append("Leg Breakdown:")
-        for leg in legs:
-            side = (leg.get("side") or "SELL").upper()
-            side_icon = "🔴" if side == "SELL" else "🟢"
-            opt_type = (leg.get("option_type") or "").upper()
-            strike_val = float(leg.get("strike") or 0.0)
-            prem_val = float(leg.get("entry_premium") or leg.get("premium") or 0.0)
-            delta_val = float(leg.get("delta") or 0.0)
-            strike_fmt = f"{strike_val:,.0f}" if strike_val >= 1000 else f"{strike_val:.2f}".rstrip('0').rstrip('.')
-            lines.append(f"  {side_icon} {side} {strike_fmt} {opt_type} @ ₹{prem_val:.2f} (Δ{delta_val:+.2f})")
+        legs = multileg.get("legs") or []
+        if legs:
+            lines.append("Leg Breakdown:")
+            for leg in legs:
+                side = (leg.get("side") or "SELL").upper()
+                side_icon = "🔴" if side == "SELL" else "🟢"
+                opt_type = (leg.get("option_type") or "").upper()
+                strike_val = float(leg.get("strike") or 0.0)
+                prem_val = float(leg.get("entry_premium") or leg.get("premium") or 0.0)
+                delta_val = float(leg.get("delta") or 0.0)
+                strike_fmt = f"{strike_val:,.0f}" if strike_val >= 1000 else f"{strike_val:.2f}".rstrip('0').rstrip('.')
+                lines.append(f"  {side_icon} {side} {strike_fmt} {opt_type} @ ₹{prem_val:.2f} (Δ{delta_val:+.2f})")
 
-    # Structure Economics & Greeks
-    net_prem = float(multileg.get("net_premium") or 0.0)
-    greeks = multileg.get("book_greeks") or {}
-    rp = multileg.get("risk_profile") or {}
-    margin_val = float(multileg.get("margin") or 0.0)
+        # Structure Economics & Greeks
+        net_prem = float(multileg.get("net_premium") or 0.0)
+        greeks = multileg.get("book_greeks") or {}
+        rp = multileg.get("risk_profile") or {}
+        margin_val = float(multileg.get("margin") or 0.0)
 
-    econ_parts = []
-    if net_prem > 0:
-        econ_parts.append(f"Net Prem ₹{net_prem:.2f}")
-    if margin_val > 0:
-        econ_parts.append(f"Margin ₹{margin_val:,.0f}")
-    net_d = greeks.get("net_delta") or multileg.get("net_delta")
-    if net_d is not None:
-        econ_parts.append(f"Δ Net {float(net_d):+.2f}")
-    if econ_parts:
-        lines.append("Economics: " + " · ".join(econ_parts))
+        econ_parts = []
+        if net_prem > 0:
+            econ_parts.append(f"Net Prem ₹{net_prem:.2f}")
+        if margin_val > 0:
+            econ_parts.append(f"Margin ₹{margin_val:,.0f}")
+        net_d = greeks.get("net_delta") or multileg.get("net_delta")
+        if net_d is not None:
+            econ_parts.append(f"Δ Net {float(net_d):+.2f}")
+        if econ_parts:
+            lines.append("Economics: " + " · ".join(econ_parts))
 
-    be_lower = rp.get("breakeven_lower")
-    be_upper = rp.get("breakeven_upper")
-    if be_lower and be_upper:
-        lines.append(f"Breakeven: ₹{be_lower:,.1f} — ₹{be_upper:,.1f}")
+        be_lower = rp.get("breakeven_lower")
+        be_upper = rp.get("breakeven_upper")
+        if be_lower and be_upper:
+            lines.append(f"Breakeven: ₹{be_lower:,.1f} — ₹{be_upper:,.1f}")
 
     # ── 3. RISK ENGINE & DECISION STAGE ──
-    lines.append("")
-    lines.append(DIV)
-    stage = str(multileg.get("decision_stage") or "").upper()
-    reason = multileg.get("reason") or ""
+    # Gated on genuine multi-leg activity like section 2 — a synthesized
+    # fallback payload (action NONE / NO_TRADE) would otherwise render a
+    # misleading "⏸️ NO SIGNAL PROPOSED" block on every symbol, every cycle.
+    if has_ml_activity:
+        lines.append("")
+        lines.append(DIV)
+        stage = str(multileg.get("decision_stage") or "").upper()
+        reason = multileg.get("reason") or ""
 
-    if is_entered:
-        book_id = multileg.get("book_id") or ""
-        lines.append(f"🛡️ *RISK ENGINE:* ✅ APPROVED & EXECUTED")
-        if book_id:
-            lines.append(f"  Book ID: `{_esc_code(book_id)}`")
-    elif is_advisory:
-        lines.append(f"🛡️ *RISK ENGINE:* 🟡 PASSED (Advisory Mode)")
-        lines.append(f"  Note: Strategy logged only — live/paper auto-entry disabled by settings")
-    elif is_rejected or is_conflict:
-        lines.append(f"🛡️ *RISK ENGINE:* 🔴 REJECTED")
-        if stage:
-            lines.append(f"  Gate: `{_esc_code(stage)}`")
-        if reason:
-            lines.append(f"  Reason: {_esc(reason)}")
-    else:
-        lines.append(f"🛡️ *RISK ENGINE:* ⏸️ SIDELINED")
-        if reason:
-            lines.append(f"  Reason: {_esc(reason)}")
+        # Explicit NO_TRADE from LLM structure selection (no signal proposed)
+        is_no_signal = ml_action in ("NO_TRADE", "NONE", "")
 
-    eq_score = multileg.get("entry_quality")
-    eq_reasons = multileg.get("quality_reasons") or []
-    if eq_score is not None and eq_score > 0:
-        lines.append(f"  Quality Score: `{eq_score}/100`")
-        if eq_reasons:
-            lines.append(f"  Factors: {' · '.join([_esc(r) for r in eq_reasons[:2]])}")
+        if is_entered:
+            book_id = multileg.get("book_id") or ""
+            lines.append(f"🛡️ *RISK ENGINE:* ✅ APPROVED & EXECUTED")
+            if book_id:
+                lines.append(f"  Book ID: `{_esc_code(book_id)}`")
+        elif is_advisory:
+            lines.append(f"🛡️ *RISK ENGINE:* 🟡 PASSED (Advisory Mode)")
+            lines.append(f"  Note: Strategy logged only — live/paper auto-entry disabled by settings")
+        elif is_rejected or is_conflict:
+            lines.append(f"🛡️ *RISK ENGINE:* 🔴 REJECTED")
+            if stage:
+                lines.append(f"  Gate: `{_esc_code(stage)}`")
+            if reason:
+                lines.append(f"  Reason: {_esc(reason)}")
+        elif is_no_signal:
+            lines.append(f"🛡️ *RISK ENGINE:* ⏸️ NO SIGNAL PROPOSED")
+            if stage:
+                lines.append(f"  Stage: `{_esc_code(stage)}`")
+            if reason:
+                lines.append(f"  Reason: {_esc(reason)}")
+        elif is_holding:
+            lines.append(f"🛡️ *RISK ENGINE:* 🔵 HOLDING — Monitoring open book(s)")
+            if stage:
+                lines.append(f"  Stage: `{_esc_code(stage)}`")
+            if reason:
+                lines.append(f"  Reason: {_esc(reason)}")
+        else:
+            lines.append(f"🛡️ *RISK ENGINE:* ⏸️ SIDELINED")
+            if reason:
+                lines.append(f"  Reason: {_esc(reason)}")
 
-    # Exit Plan (if entered/advisory)
-    exit_plan = multileg.get("exit_plan") or {}
-    pt_pct = exit_plan.get("profit_target_pct")
-    sl_pct = exit_plan.get("stop_loss_pct")
-    decay_dte = exit_plan.get("time_decay_exit_dte")
-    if pt_pct or sl_pct:
-        ep_parts = []
-        if pt_pct:
-            ep_parts.append(f"Target {float(pt_pct)*100:.0f}% max profit")
-        if sl_pct:
-            ep_parts.append(f"SL {float(sl_pct)*100:.0f}% credit")
-        if decay_dte is not None:
-            ep_parts.append(f"Exit DTE ≤ {decay_dte}")
-        lines.append("  Exit Plan: " + " · ".join(ep_parts))
+        eq_score = multileg.get("entry_quality")
+        eq_reasons = multileg.get("quality_reasons") or []
+        if eq_score is not None and eq_score > 0:
+            lines.append(f"  Quality Score: `{eq_score}/100`")
+            if eq_reasons:
+                lines.append(f"  Factors: {' · '.join([_esc(r) for r in eq_reasons[:2]])}")
+
+        # Exit Plan (if entered/advisory)
+        exit_plan = multileg.get("exit_plan") or {}
+        pt_pct = exit_plan.get("profit_target_pct")
+        sl_pct = exit_plan.get("stop_loss_pct")
+        decay_dte = exit_plan.get("time_decay_exit_dte")
+        if pt_pct or sl_pct:
+            ep_parts = []
+            if pt_pct:
+                ep_parts.append(f"Target {float(pt_pct)*100:.0f}% max profit")
+            if sl_pct:
+                ep_parts.append(f"SL {float(sl_pct)*100:.0f}% credit")
+            if decay_dte is not None:
+                ep_parts.append(f"Exit DTE ≤ {decay_dte}")
+            lines.append("  Exit Plan: " + " · ".join(ep_parts))
 
     # ── 3b. CORE SIGNAL & TIMEFRAME CONTEXT (TFSS) — REMOVED ──
     # Section removed per user request: the ⚡ *CORE SIGNAL & TIMEFRAME* block
@@ -992,7 +1046,15 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
     ai_exit = multileg.get("ai_exit_advice") or exit_advice
 
     has_current_trade = is_entered or bool(closed_items)
-    should_show_books = has_current_trade or bool(ai_exit)
+    # Gate on genuine multi-leg activity: an ENTERED badge driven purely by
+    # header.trade_entered (e.g. a CORE execution) must not render an empty
+    # "MULTI-LEG TRADES" block. Also require at least one visible detail so
+    # the section header never renders empty.
+    should_show_books = (
+        has_ml_activity
+        and (has_current_trade or bool(ai_exit))
+        and (bool(closed_items) or (is_entered and bool(live_books)) or bool(ai_exit))
+    )
     if should_show_books:
         lines.append("")
         lines.append(DIV)
@@ -1012,7 +1074,8 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
         # current trade (new entry / exit) is reported.
         if is_entered and live_books:
             entered_book_id = multileg.get("book_id")
-            target_books = [b for b in live_books if b.get("book_id") == entered_book_id] if entered_book_id else [live_books[-1]]
+            # live_books from DB is ordered by opened_at DESC, so live_books[0] is the newest book
+            target_books = [b for b in live_books if b.get("book_id") == entered_book_id] if entered_book_id else [live_books[0]]
             for b in target_books:
                 b_id = b.get("book_id") or ""
                 b_st = str(b.get("strategy_type") or "").replace("_", " ").upper()

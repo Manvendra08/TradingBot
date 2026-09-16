@@ -299,7 +299,7 @@ def read_health() -> HealthSnapshot:
 
     # 1. Heartbeat file
     snap.heartbeat_age_s = _read_heartbeat_age()
-    snap.heartbeat_ok = snap.heartbeat_age_s is not None and snap.heartbeat_age_s < 120
+    snap.heartbeat_ok = snap.heartbeat_age_s is not None and snap.heartbeat_age_s < 180
 
     # 2. Try dashboard /health endpoint
     dash_data = _read_health_via_dashboard()
@@ -309,7 +309,7 @@ def read_health() -> HealthSnapshot:
         hb_age = dash_data.get("heartbeat_age_s")
         if hb_age is not None:
             snap.heartbeat_age_s = hb_age
-            snap.heartbeat_ok = hb_age < 120
+            snap.heartbeat_ok = hb_age < 180
         snap.dashboard_up = True
         snap.read_source = "dashboard"
         return snap
@@ -486,14 +486,25 @@ def _send_fallback(text: str) -> bool:
         return False
 
 
+# Anti-flapping and repeated escalation throttling
+_playbook_last_escalated: dict[str, float] = {}
+_PLAYBOOK_COOLDOWN_SEC = 1800  # 30-minute cooldown for repeated non-critical alerts
+
+
 def _escalate(playbook_id: str, message: str, critical: bool = False) -> None:
     """Send escalation via Discord + fallback for CRITICAL."""
-    global _critical_last_sent
+    global _critical_last_sent, _playbook_last_escalated
     
     with _state_lock:
         if _is_playbook_active(playbook_id):
             log.debug("Playbook %s already active and unacked. Skipping redundant escalation.", playbook_id)
             return
+        last_sent = _playbook_last_escalated.get(playbook_id, 0.0)
+        # Suppress repeated alerts for non-critical playbooks if sent within cooldown window
+        if not critical and (time.time() - last_sent < _PLAYBOOK_COOLDOWN_SEC):
+            log.info("Playbook %s escalated recently (%.0fs ago). Suppressing redundant alert.", playbook_id, time.time() - last_sent)
+            return
+        _playbook_last_escalated[playbook_id] = time.time()
     
     # Log new incident to local DB
     try:
@@ -778,7 +789,7 @@ def run_playbooks(snap: HealthSnapshot, sm: StateMachine) -> list[PlaybookResult
 
     # ── P01 & P02: Bot dead (heartbeat stale) — ONLY evaluated during active market hours ──
     market_open = _is_market_hours()
-    hb_stale = market_open and (not snap.heartbeat_ok) and (snap.heartbeat_age_s is None or snap.heartbeat_age_s > 180)
+    hb_stale = market_open and (not snap.heartbeat_ok) and (snap.heartbeat_age_s is None or snap.heartbeat_age_s > 240)
     if hb_stale and open_pos == 0:
         restart_count = sm._get("_restart_count").consecutive_down
         # Track first restart timestamp for 30-min window
@@ -790,12 +801,12 @@ def run_playbooks(snap: HealthSnapshot, sm: StateMachine) -> list[PlaybookResult
             restart_count = 0
             sm._get("_restart_count").consecutive_down = 0
         if restart_count < 2:
+            sm._get("_restart_count").consecutive_down += 1
             if os.name == "nt":
                 # On Windows, systemctl auto-restart is not applicable.
                 _escalate("P01", "Bot scheduler heartbeat stale (manual restart/check required if process stopped).", critical=False)
                 results.append(PlaybookResult(action_taken="windows_notify_only"))
             elif ROLLOUT_LEVEL >= 1:
-                sm._get("_restart_count").consecutive_down += 1
                 ok = _restart_nsebot()
                 result = PlaybookResult(action_taken="restart_nsebot")
                 if ok:

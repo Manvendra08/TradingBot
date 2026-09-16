@@ -192,13 +192,17 @@ def _bearish_price_oi(
         if ce_chg > 0 and pe_chg > ce_chg * 1.5:
             contra = True
         elif ce_chg <= 0:
-            has_spike = any(
-                a.get("severity") == "HIGH"
-                and a.get("alert_type") in ("OI_SPIKE", "BUILDUP_CLASSIFY", "OTM_UNUSUAL")
-                and a.get("option_type") == "PE" for a in alerts
-            )
-            if (pcr is not None and pcr >= 1.25) or has_spike:
+            # PE writing with CE unwinding represents institutional support floor
+            if pcr is None or pcr >= 0.85:
                 contra = True
+            else:
+                has_spike = any(
+                    a.get("severity") == "HIGH"
+                    and a.get("alert_type") in ("OI_SPIKE", "BUILDUP_CLASSIFY", "OTM_UNUSUAL")
+                    and a.get("option_type") == "PE" for a in alerts
+                )
+                if has_spike:
+                    contra = True
         if contra:
             return "Put Writing", "🟢", "Bullish — support building / put writing dominant despite price dip"
     if ce_chg > 0 and (pe_chg <= 0 or abs_ce > abs_pe * 2):
@@ -206,10 +210,9 @@ def _bearish_price_oi(
     if pe_chg < 0 and (ce_chg >= 0 or abs_pe > abs_ce * 2):
         return "Long Unwinding", "🟠", "Weak Bearish — longs exiting"
     if pe_chg > 0 and ce_chg <= 0:
-        if pcr is not None and pcr >= 1.25:
-            pass
-        else:
-            return "Short Buildup", "🔴", "Bearish — fresh shorts / put buying"
+        if pcr is not None and pcr < 0.85:
+            return "Short Buildup", "🔴", "Bearish — fresh shorts / put buying (depressed PCR)"
+        return "Put Writing", "🟢", "Bullish — support building / put writing dominant despite price dip"
     if pe_chg > 0 and ce_chg > 0 and abs_pe > abs_ce * 3:
         return "Put Writing", "🟢", "Cautious Bullish — PE-heavy buildup despite price dip"
     if pcr is not None:

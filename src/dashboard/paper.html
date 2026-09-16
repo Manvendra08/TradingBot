@@ -8,7 +8,7 @@
 
         <!-- ── Inlined theme variables (theme.css not served as static) ── -->
         <style>
-            @import url("https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@400;500;600&display=swap");
+            @import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Space+Mono:wght@400;700&family=DM+Sans:wght@400;500;600;700&display=swap");
             :root {
                 --bg: #0a0c0f;
                 --surface: #111418;
@@ -22,22 +22,22 @@
                 --text: #e2e8f0;
                 --text-dim: #94a3b8;
                 --muted: #4a5568;
-                --mono: "Space Mono", monospace;
-                --sans: "DM Sans", sans-serif;
+                --mono: "JetBrains Mono", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+                --sans: "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             }
             [data-theme="light"] {
                 --bg: #f8fafc;
                 --surface: #ffffff;
                 --surface-2: #f1f5f9;
                 --border: #cbd5e1;
-                --accent: #0891b2;
-                --red: #dc2626;
-                --green: #059669;
-                --yellow: #d97706;
-                --blue: #0284c7;
+                --accent: #0284c7;
+                --red: #b91c1c;
+                --green: #047857;
+                --yellow: #b45309;
+                --blue: #1d4ed8;
                 --text: #0f172a;
                 --text-dim: #475569;
-                --muted: #78716c;
+                --muted: #64748b;
             }
             html,
             body {
@@ -135,23 +135,23 @@
 
             [data-theme="light"] {
                 --purple: #7c3aed;
-                --cyan: #0891b2;
-                --orange: #ea580c;
-                --pink: #db2777;
-                --indigo: #4338ca;
+                --cyan: #0e7490;
+                --orange: #c2410c;
+                --pink: #be185d;
+                --indigo: #3730a3;
                 --surface-3: #e2e8f0;
 
                 --grad-profit: linear-gradient(
                     135deg,
-                    #059669 0%,
-                    #0891b2 100%
+                    #047857 0%,
+                    #0284c7 100%
                 );
-                --grad-loss: linear-gradient(135deg, #dc2626 0%, #ea580c 100%);
-                --grad-win: linear-gradient(135deg, #7c3aed 0%, #4338ca 100%);
+                --grad-loss: linear-gradient(135deg, #b91c1c 0%, #c2410c 100%);
+                --grad-win: linear-gradient(135deg, #7c3aed 0%, #3730a3 100%);
                 --grad-card: linear-gradient(145deg, #ffffff 0%, #f8fafc 100%);
 
-                --glow-green: 0 4px 20px rgba(5, 150, 105, 0.15);
-                --glow-blue: 0 4px 20px rgba(8, 145, 178, 0.15);
+                --glow-green: 0 4px 20px rgba(4, 120, 87, 0.15);
+                --glow-blue: 0 4px 20px rgba(2, 132, 199, 0.15);
                 --glow-purple: 0 4px 20px rgba(124, 58, 237, 0.12);
             }
 
@@ -203,12 +203,13 @@
                 scrollbar-width: none;
             }
             .ticker-bar::-webkit-scrollbar { display: none; }
-            :not([data-theme="light"]) .ticker-bar {
-                background: rgba(17, 20, 24, 0.96);
+            :root:not([data-theme="light"]) .ticker-bar {
+                background: rgba(13, 16, 20, 0.98);
                 box-shadow: 0 1px 0 rgba(0, 229, 160, 0.05);
             }
             [data-theme="light"] .ticker-bar {
-                background: rgba(241, 245, 249, 0.97);
+                background: #f1f5f9;
+                border-bottom: 1px solid #e2e8f0;
             }
             .ticker-chip {
                 display: inline-flex;
@@ -226,8 +227,9 @@
             }
             .ticker-chip:hover { border-color: var(--accent); }
             [data-theme="light"] .ticker-chip {
-                background: #fff;
+                background: #ffffff;
                 border-color: #cbd5e1;
+                box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
             }
             .ticker-sym {
                 font-size: 10px;
@@ -249,12 +251,12 @@
             .app-header {
                 display: flex !important;
                 flex-direction: column !important;
-                padding: 8px 24px !important;
+                padding: 10px 24px !important;
                 gap: 8px !important;
                 background: var(--surface) !important;
                 border-bottom: 1px solid var(--border) !important;
                 position: sticky !important;
-                top: 31px !important;
+                top: 36px !important;
                 z-index: 200 !important;
                 backdrop-filter: blur(12px);
                 -webkit-backdrop-filter: blur(12px);
@@ -271,16 +273,19 @@
                 align-items: center !important;
                 justify-content: space-between !important;
                 width: 100% !important;
+                flex-wrap: wrap !important;
+                gap: 8px !important;
             }
-            :not([data-theme="light"]) .app-header {
-                background: rgba(17, 20, 24, 0.92) !important;
+            :root:not([data-theme="light"]) .app-header {
+                background: rgba(17, 20, 24, 0.94) !important;
                 box-shadow:
                     0 1px 0 rgba(0, 229, 160, 0.06),
                     0 4px 20px rgba(0, 0, 0, 0.4) !important;
             }
             [data-theme="light"] .app-header {
-                background: rgba(255, 255, 255, 0.95) !important;
-                box-shadow: 0 1px 12px rgba(15, 23, 42, 0.08) !important;
+                background: #ffffff !important;
+                border-bottom: 1px solid #e2e8f0 !important;
+                box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05) !important;
             }
             /* StockMinded Multi-Leg Options UI */
             .multileg-table {
@@ -343,6 +348,27 @@
                 border: 1px solid rgba(147, 197, 253, 0.35);
                 color: #2563eb;
             }
+            .leg-pill.closed {
+                opacity: 0.55;
+                filter: grayscale(0.2);
+                border-style: dashed;
+                background: rgba(148, 163, 184, 0.08) !important;
+                border-color: rgba(148, 163, 184, 0.25) !important;
+                color: var(--text-dim, #94a3b8) !important;
+            }
+            .leg-pill.closed .leg-strike-text {
+                text-decoration: line-through;
+            }
+            .badge-rolled {
+                background: #64748b;
+                color: #ffffff;
+                font-weight: 800;
+                font-size: 9px;
+                padding: 1px 5px;
+                border-radius: 3px;
+                letter-spacing: 0.4px;
+                text-transform: uppercase;
+            }
             .badge-pe {
                 background: #f59e0b;
                 color: #ffffff;
@@ -380,8 +406,9 @@
                 margin-bottom: 20px;
                 border-radius: 10px;
                 border: 1px solid var(--border);
-                overflow: hidden;
+                overflow-x: auto;
                 background: rgba(255, 255, 255, 0.015);
+                min-width: 0;
             }
             .multileg-group-header {
                 display: flex;
@@ -450,7 +477,11 @@
                 border-radius: 8px !important;
                 padding: 3px !important;
                 gap: 2px !important;
+                overflow-x: auto !important;
+                max-width: 100% !important;
+                scrollbar-width: none !important;
             }
+            .header-nav::-webkit-scrollbar { display: none; }
             .nav-tab {
                 color: var(--text-dim) !important;
                 text-decoration: none !important;
@@ -508,11 +539,20 @@
                 display: flex !important;
                 align-items: center !important;
                 gap: 16px !important;
-                padding: 8px 24px !important;
+                padding: 10px 24px !important;
                 background: var(--surface-2) !important;
                 border-bottom: 1px solid var(--border) !important;
                 font-family: var(--mono) !important;
                 font-size: 12px !important;
+            }
+            [data-theme="light"] .sub-header {
+                background: #f8fafc !important;
+                border-bottom: 1px solid #cbd5e1 !important;
+                box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.02) !important;
+            }
+            :root:not([data-theme="light"]) .sub-header {
+                background: #12151b !important;
+                border-bottom: 1px solid #1e2530 !important;
             }
             .sub-header .controls-group {
                 display: flex !important;
@@ -521,11 +561,17 @@
             }
             .sub-header label,
             .sub-header .hdr-label {
-                font-size: 9px !important;
+                font-size: 10px !important;
                 color: var(--text-dim) !important;
-                font-weight: 600 !important;
-                letter-spacing: 0.5px !important;
+                font-weight: 700 !important;
+                letter-spacing: 0.8px !important;
                 text-transform: uppercase !important;
+            }
+            [data-theme="light"] .sub-header select {
+                background: #ffffff !important;
+                border: 1px solid #cbd5e1 !important;
+                color: #0f172a !important;
+                box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04) !important;
             }
             .sub-header .spacer {
                 flex: 1 !important;
@@ -675,10 +721,10 @@
                 font-size: 10px;
                 white-space: nowrap;
             }
-            :not([data-theme="light"]) #last {
+            :root:not([data-theme="light"]) #last {
                 color: #94a3b8;
             }
-            :not([data-theme="light"]) .hdr-label {
+            :root:not([data-theme="light"]) .hdr-label {
                 color: #94a3b8;
             }
 
@@ -709,6 +755,7 @@
                 gap: 20px;
                 max-width: 1920px;
                 margin: 0 auto;
+                min-width: 0;
             }
 
             /* ════════════════════════════════════════════
@@ -716,14 +763,14 @@
 ════════════════════════════════════════════ */
             .kpis {
                 display: grid;
-                grid-template-columns: repeat(auto-fill, minmax(175px, 1fr));
-                gap: 14px;
+                grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+                gap: 16px;
             }
             /* KPI trend arrow badge */
             .kpi-arrow {
-                font-size: 13px;
-                font-weight: 900;
-                margin-left: 4px;
+                font-size: 12px;
+                font-weight: 800;
+                margin-left: 6px;
                 vertical-align: middle;
                 display: inline-block;
                 line-height: 1;
@@ -738,7 +785,11 @@
                 background: var(--grad-card) !important;
                 border: 1px solid var(--border) !important;
                 border-radius: var(--radius-card) !important;
-                padding: 18px 16px !important;
+                padding: 16px 18px 14px 18px !important;
+                min-height: 116px;
+                display: flex !important;
+                flex-direction: column !important;
+                justify-content: flex-start !important;
                 transition:
                     transform 0.2s,
                     box-shadow 0.2s !important;
@@ -751,11 +802,13 @@
             }
 
             [data-theme="light"] .kpi {
-                background: #fff !important;
-                box-shadow: 0 1px 4px rgba(15, 23, 42, 0.08) !important;
+                background: #ffffff !important;
+                border: 1px solid #cbd5e1 !important;
+                box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05), 0 4px 12px rgba(15, 23, 42, 0.03) !important;
             }
             [data-theme="light"] .kpi:hover {
-                box-shadow: 0 8px 20px rgba(15, 23, 42, 0.14) !important;
+                box-shadow: 0 8px 20px rgba(15, 23, 42, 0.1) !important;
+                border-color: #94a3b8 !important;
             }
 
             /* Coloured top bar */
@@ -789,42 +842,54 @@
 
             /* Text inside KPIs — must all have explicit colors */
             .kpi .lbl {
-                font-size: 9px;
+                font-size: 10px;
                 text-transform: uppercase;
-                letter-spacing: 1.6px;
+                letter-spacing: 1.2px;
                 color: var(--text-dim) !important;
-                margin-bottom: 12px;
+                margin-bottom: 8px;
                 font-weight: 700;
+                line-height: 1.3;
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                width: 100%;
             }
             .kpi .val {
                 font-family: var(--mono);
-                font-size: 26px;
+                font-size: 23px;
                 font-weight: 700;
-                line-height: 1;
+                line-height: 1.25;
+                margin: 2px 0 6px 0;
                 color: var(--text) !important;
+                display: inline-flex;
+                align-items: baseline;
+                gap: 1px;
+                white-space: nowrap;
+                word-break: keep-all;
+                font-variant-numeric: tabular-nums;
             }
             .kpi .sub {
-                font-size: 10px;
+                font-size: 10.5px;
                 color: var(--text-dim) !important;
-                margin-top: 8px;
+                margin-top: auto;
                 font-family: var(--mono);
+                line-height: 1.3;
             }
 
             /* Ensure text is visible in dark theme */
-            :not([data-theme="light"]) .kpi .val {
+            :root:not([data-theme="light"]) .kpi .val {
                 color: #e2e8f0 !important;
             }
-            :not([data-theme="light"]) .kpi .lbl,
-            :not([data-theme="light"]) .kpi .sub {
+            :root:not([data-theme="light"]) .kpi .lbl,
+            :root:not([data-theme="light"]) .kpi .sub {
                 color: #94a3b8 !important;
             }
             .kpi-icon {
                 position: absolute;
-                right: 12px;
-                top: 50%;
-                transform: translateY(-50%);
-                font-size: 32px;
-                opacity: 0.07;
+                right: 14px;
+                top: 14px;
+                font-size: 22px;
+                opacity: 0.1;
                 pointer-events: none;
             }
 
@@ -848,23 +913,43 @@
                 color: var(--orange) !important;
             }
 
+            /* Light theme color accessibility overrides */
+            [data-theme="light"] .good {
+                color: #047857 !important;
+            }
+            [data-theme="light"] .bad {
+                color: #b91c1c !important;
+            }
+            [data-theme="light"] .warn {
+                color: #b45309 !important;
+            }
+            [data-theme="light"] .info {
+                color: #1e40af !important;
+            }
+            [data-theme="light"] .cyan {
+                color: #0e7490 !important;
+            }
+            [data-theme="light"] .orng {
+                color: #c2410c !important;
+            }
+
             /* Ensure colors are visible in dark theme */
-            :not([data-theme="light"]) .good {
+            :root:not([data-theme="light"]) .good {
                 color: #00e5a0 !important;
             }
-            :not([data-theme="light"]) .bad {
+            :root:not([data-theme="light"]) .bad {
                 color: #ff4d6d !important;
             }
-            :not([data-theme="light"]) .warn {
+            :root:not([data-theme="light"]) .warn {
                 color: #ffd666 !important;
             }
-            :not([data-theme="light"]) .info {
+            :root:not([data-theme="light"]) .info {
                 color: #818cf8 !important;
             }
-            :not([data-theme="light"]) .cyan {
+            :root:not([data-theme="light"]) .cyan {
                 color: #22d3ee !important;
             }
-            :not([data-theme="light"]) .orng {
+            :root:not([data-theme="light"]) .orng {
                 color: #fb923c !important;
             }
 
@@ -882,16 +967,29 @@
                 color: var(--indigo) !important;
             }
 
-            :not([data-theme="light"]) .kpi .val.good {
+            [data-theme="light"] .kpi .val.good {
+                color: #047857 !important;
+            }
+            [data-theme="light"] .kpi .val.bad {
+                color: #b91c1c !important;
+            }
+            [data-theme="light"] .kpi .val.warn {
+                color: #b45309 !important;
+            }
+            [data-theme="light"] .kpi .val.info {
+                color: #1e40af !important;
+            }
+
+            :root:not([data-theme="light"]) .kpi .val.good {
                 color: #00e5a0 !important;
             }
-            :not([data-theme="light"]) .kpi .val.bad {
+            :root:not([data-theme="light"]) .kpi .val.bad {
                 color: #ff4d6d !important;
             }
-            :not([data-theme="light"]) .kpi .val.warn {
+            :root:not([data-theme="light"]) .kpi .val.warn {
                 color: #ffd666 !important;
             }
-            :not([data-theme="light"]) .kpi .val.info {
+            :root:not([data-theme="light"]) .kpi .val.info {
                 color: #818cf8 !important;
             }
 
@@ -905,16 +1003,18 @@
                 padding: 20px !important;
                 box-shadow: 0 2px 8px rgba(0,0,0,0.18), 0 1px 0 rgba(255,255,255,0.02) !important;
                 transition: box-shadow 0.2s;
+                min-width: 0;
             }
             .card:hover {
                 box-shadow: 0 4px 20px rgba(0,0,0,0.28), 0 1px 0 rgba(0,229,160,0.04) !important;
             }
             [data-theme="light"] .card {
-                background: #fff !important;
-                box-shadow: 0 1px 4px rgba(15, 23, 42, 0.07), 0 4px 16px rgba(15,23,42,0.05) !important;
+                background: #ffffff !important;
+                border: 1px solid #cbd5e1 !important;
+                box-shadow: 0 1px 4px rgba(15, 23, 42, 0.05), 0 4px 16px rgba(15, 23, 42, 0.04) !important;
             }
             [data-theme="light"] .card:hover {
-                box-shadow: 0 4px 20px rgba(15,23,42,0.12) !important;
+                box-shadow: 0 4px 20px rgba(15, 23, 42, 0.08) !important;
             }
 
             .card-title {
@@ -940,7 +1040,7 @@
             .collapsible-title:hover {
                 color: var(--accent) !important;
             }
-            :not([data-theme="light"]) .collapsible-title:hover {
+            :root:not([data-theme="light"]) .collapsible-title:hover {
                 color: #00e5a0 !important;
             }
             .toggle-chevron {
@@ -965,7 +1065,7 @@
             }
 
             /* Ensure card titles are visible */
-            :not([data-theme="light"]) .card-title {
+            :root:not([data-theme="light"]) .card-title {
                 color: #94a3b8;
             }
             .card-title-bar {
@@ -989,6 +1089,7 @@
                 display: grid;
                 grid-template-columns: 1fr 1fr;
                 gap: 20px;
+                min-width: 0;
             }
             @media (max-width: 1200px) {
                 .grid2 {
@@ -1009,16 +1110,19 @@
                 background: var(--surface-2) !important;
                 border: 1px solid var(--border) !important;
                 border-radius: 10px !important;
-                padding: 14px !important;
+                padding: 14px 16px !important;
                 position: relative;
                 overflow: hidden;
+                box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(255, 255, 255, 0.02) !important;
                 transition:
                     box-shadow 0.2s,
-                    transform 0.2s;
+                    transform 0.2s,
+                    border-color 0.2s;
             }
             .sym-card:hover {
-                transform: translateY(-1px);
-                box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15) !important;
+                transform: translateY(-2px);
+                box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3) !important;
+                border-color: var(--accent) !important;
             }
 
             .sym-card::before {
@@ -1046,8 +1150,13 @@
             }
 
             [data-theme="light"] .sym-card {
-                background: #f8fafc !important;
-                border-color: #e2e8f0 !important;
+                background: #ffffff !important;
+                border: 1px solid #cbd5e1 !important;
+                box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06), 0 4px 12px rgba(15, 23, 42, 0.04) !important;
+            }
+            [data-theme="light"] .sym-card:hover {
+                border-color: #94a3b8 !important;
+                box-shadow: 0 6px 18px rgba(15, 23, 42, 0.1) !important;
             }
 
             .sym-name {
@@ -1079,13 +1188,13 @@
             }
 
             /* Ensure symbol card text is visible */
-            :not([data-theme="light"]) .sym-name {
+            :root:not([data-theme="light"]) .sym-name {
                 color: #00e5a0;
             }
-            :not([data-theme="light"]) .sym-lbl {
+            :root:not([data-theme="light"]) .sym-lbl {
                 color: #94a3b8;
             }
-            :not([data-theme="light"]) .sym-val {
+            :root:not([data-theme="light"]) .sym-val {
                 color: #e2e8f0;
             }
 
@@ -1149,10 +1258,10 @@
             }
 
             /* Ensure metric text is visible */
-            :not([data-theme="light"]) .metric-box .m-lbl {
+            :root:not([data-theme="light"]) .metric-box .m-lbl {
                 color: #94a3b8;
             }
-            :not([data-theme="light"]) .metric-box .m-val {
+            :root:not([data-theme="light"]) .metric-box .m-val {
                 color: #e2e8f0;
             }
 
@@ -1245,16 +1354,16 @@
             }
 
             /* Ensure distribution text is visible */
-            :not([data-theme="light"]) .dist-label-row {
+            :root:not([data-theme="light"]) .dist-label-row {
                 color: #94a3b8;
             }
-            :not([data-theme="light"]) .dist-cell-lbl {
+            :root:not([data-theme="light"]) .dist-cell-lbl {
                 color: #94a3b8;
             }
-            :not([data-theme="light"]) .dist-cell-val {
+            :root:not([data-theme="light"]) .dist-cell-val {
                 color: #e2e8f0;
             }
-            :not([data-theme="light"]) .dist-cell-pct {
+            :root:not([data-theme="light"]) .dist-cell-pct {
                 color: #94a3b8;
             }
 
@@ -1362,12 +1471,12 @@
             }
 
             /* Dark theme: ensure th text is readable */
-            :not([data-theme="light"]) th {
+            :root:not([data-theme="light"]) th {
                 color: #94a3b8 !important;
                 background: #1e2530 !important;
                 border-bottom-color: #2d3748 !important;
             }
-            :not([data-theme="light"]) th:hover {
+            :root:not([data-theme="light"]) th:hover {
                 background: #252d3d !important;
             }
 
@@ -1381,7 +1490,7 @@
             }
 
             /* Dark theme: ensure td text is readable */
-            :not([data-theme="light"]) td {
+            :root:not([data-theme="light"]) td {
                 color: #e2e8f0 !important;
                 border-bottom-color: #1e2530 !important;
             }
@@ -1422,13 +1531,13 @@
                 color: var(--text-dim);
             }
 
-            :not([data-theme="light"]) .pp {
+            :root:not([data-theme="light"]) .pp {
                 color: #00e5a0 !important;
             }
-            :not([data-theme="light"]) .pn {
+            :root:not([data-theme="light"]) .pn {
                 color: #ff4d6d !important;
             }
-            :not([data-theme="light"]) .pz {
+            :root:not([data-theme="light"]) .pz {
                 color: #94a3b8 !important;
             }
 
@@ -1492,11 +1601,11 @@
                 vertical-align: middle;
             }
 
-            :not([data-theme="light"]) .b-dur {
+            :root:not([data-theme="light"]) .b-dur {
                 color: #94a3b8;
                 background: #1e2530;
             }
-            :not([data-theme="light"]) .lot-chip {
+            :root:not([data-theme="light"]) .lot-chip {
                 color: #94a3b8;
                 background: #1e2530;
             }
@@ -1526,16 +1635,16 @@
                 color: var(--indigo);
             }
 
-            :not([data-theme="light"]) .b-open {
+            :root:not([data-theme="light"]) .b-open {
                 color: #ffd166 !important;
             }
-            :not([data-theme="light"]) .b-win {
+            :root:not([data-theme="light"]) .b-win {
                 color: #00e5a0 !important;
             }
-            :not([data-theme="light"]) .b-loss {
+            :root:not([data-theme="light"]) .b-loss {
                 color: #ff4d6d !important;
             }
-            :not([data-theme="light"]) .b-manual {
+            :root:not([data-theme="light"]) .b-manual {
                 color: #818cf8 !important;
             }
 
@@ -1613,16 +1722,16 @@
             }
 
             /* Ensure verdict is visible in dark theme */
-            :not([data-theme="light"]) .verdict-label {
+            :root:not([data-theme="light"]) .verdict-label {
                 color: #e2e8f0;
             }
 
-            :not([data-theme="light"]) .verdict-display {
+            :root:not([data-theme="light"]) .verdict-display {
                 background: #1e2530;
                 border-color: #2d3748;
             }
 
-            :not([data-theme="light"]) .verdict-display:hover {
+            :root:not([data-theme="light"]) .verdict-display:hover {
                 background: #2d3748;
                 border-color: #00e5a0;
             }
@@ -1704,16 +1813,16 @@
             }
 
             /* Ensure tooltip text is visible */
-            :not([data-theme="light"]) .vt-bias {
+            :root:not([data-theme="light"]) .vt-bias {
                 color: #94a3b8;
             }
-            :not([data-theme="light"]) .vt-strategy {
+            :root:not([data-theme="light"]) .vt-strategy {
                 color: #00e5a0;
             }
-            :not([data-theme="light"]) .vt-desc {
+            :root:not([data-theme="light"]) .vt-desc {
                 color: #e2e8f0;
             }
-            :not([data-theme="light"]) .vt-action {
+            :root:not([data-theme="light"]) .vt-action {
                 color: #cbd5e1;
                 background: #1e2530;
                 border-left-color: #00e5a0;
@@ -1742,7 +1851,7 @@
             }
 
             /* Ensure empty state is visible */
-            :not([data-theme="light"]) .empty-state {
+            :root:not([data-theme="light"]) .empty-state {
                 color: #94a3b8;
             }
 
@@ -2065,11 +2174,24 @@
 
             /* KPI Cards */
             [data-theme="light"] .kpi {
-                background: #fff !important;
-                border-color: #e2e8f0 !important;
+                background: #ffffff !important;
+                border-color: #cbd5e1 !important;
+                box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05), 0 4px 12px rgba(15, 23, 42, 0.03) !important;
             }
             [data-theme="light"] .kpi .val {
-                color: #0f172a !important;
+                color: #0f172a;
+            }
+            [data-theme="light"] .kpi .val.good {
+                color: #047857 !important;
+            }
+            [data-theme="light"] .kpi .val.bad {
+                color: #b91c1c !important;
+            }
+            [data-theme="light"] .kpi .val.warn {
+                color: #b45309 !important;
+            }
+            [data-theme="light"] .kpi .val.info {
+                color: #1e40af !important;
             }
             [data-theme="light"] .kpi .lbl {
                 color: #475569 !important;
@@ -2080,8 +2202,9 @@
 
             /* Cards & Sections */
             [data-theme="light"] .card {
-                background: #fff !important;
-                border-color: #e2e8f0 !important;
+                background: #ffffff !important;
+                border-color: #cbd5e1 !important;
+                box-shadow: 0 1px 4px rgba(15, 23, 42, 0.05), 0 4px 16px rgba(15, 23, 42, 0.04) !important;
             }
             [data-theme="light"] .card-title {
                 color: #475569 !important;
@@ -2089,11 +2212,12 @@
 
             /* Symbol Cards */
             [data-theme="light"] .sym-card {
-                background: #f8fafc !important;
-                border-color: #e2e8f0 !important;
+                background: #ffffff !important;
+                border-color: #cbd5e1 !important;
+                box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06), 0 4px 12px rgba(15, 23, 42, 0.04) !important;
             }
             [data-theme="light"] .sym-name {
-                color: #0891b2 !important;
+                color: #0284c7 !important;
             }
             [data-theme="light"] .sym-lbl {
                 color: #64748b !important;
@@ -2189,13 +2313,13 @@
 
             /* P&L Colors */
             [data-theme="light"] .pp {
-                color: #059669 !important;
+                color: #047857 !important;
             }
             [data-theme="light"] .pn {
-                color: #dc2626 !important;
+                color: #b91c1c !important;
             }
             [data-theme="light"] .pz {
-                color: #94a3b8 !important;
+                color: #64748b !important;
             }
 
             /* Verdict Display */
@@ -2495,6 +2619,7 @@
                     <a href="/paper" class="nav-tab active" id="tab-paper">Paper Trades</a>
                     <a href="/broker" class="nav-tab" id="tab-broker">Broker Console</a>
                     <a href="/ai" class="nav-tab" id="tab-ai-insights">AI Insights</a>
+                    <a href="/report" class="nav-tab" id="tab-report">Market Summary</a>
                     <a href="/settings" class="nav-tab" id="tab-settings">Settings</a>
                     <a href="/ops" class="nav-tab" id="tab-ops">Ops Monitor</a>
                 </div>
@@ -2516,6 +2641,7 @@
                 <select id="status">
                     <option value="">ALL</option>
                     <option value="OPEN">OPEN</option>
+                    <option value="CLOSED">CLOSED</option>
                     <option value="CLOSED_TARGET">TARGET HIT</option>
                     <option value="CLOSED_SL">STOP LOSS</option>
                     <option value="CLOSED_MANUAL">MANUAL</option>
@@ -2544,7 +2670,7 @@
                     <div class="kpi-icon">🎯</div>
                 </div>
                 <div class="kpi kpi-pnl">
-                    <div class="lbl">Total P&amp;L (₹) <span id="k-pnl-arrow" class="kpi-arrow flat">—</span></div>
+                    <div class="lbl">Total P&amp;L <span id="k-pnl-arrow" class="kpi-arrow flat">—</span></div>
                     <div class="val" id="k-pnl">—</div>
                     <div class="sub">closed trades</div>
                     <div class="kpi-icon">💰</div>
@@ -2786,7 +2912,19 @@
                         <div class="card-title-bar purple"></div>
                         Trade History
                     </div>
-                    <div style="display: flex; gap: 8px; align-items: center">
+                    <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                        <div id="trades-pagination-ctrls" style="display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 11px; margin-right: 4px;">
+                            <span id="trades-page-info" style="color: var(--text-dim);">—</span>
+                            <button class="btn" id="btn-page-prev" onclick="changeTradesPage(-1)" style="padding: 3px 8px;">◀</button>
+                            <span id="trades-page-num" style="font-weight: 700; min-width: 32px; text-align: center;">1 / 1</span>
+                            <button class="btn" id="btn-page-next" onclick="changeTradesPage(1)" style="padding: 3px 8px;">▶</button>
+                            <select id="trades-page-size" onchange="changeTradesPageSize(this.value)" style="padding: 3px 6px; font-size: 11px;">
+                                <option value="25" selected>25 / page</option>
+                                <option value="50">50 / page</option>
+                                <option value="100">100 / page</option>
+                                <option value="1000">All</option>
+                            </select>
+                        </div>
                         <button
                             class="btn"
                             onclick="toggleTradeFilters()"
@@ -3207,17 +3345,13 @@
                 return `<span class="badge">${s || "—"}</span>`;
             }
             function entryPrice(t) {
-                if (t.option_type === "FUT") return fp(t.entry_underlying);
-                return t.entry_premium
-                    ? fp(t.entry_premium)
-                    : fp(t.entry_underlying);
+                if (t.option_type === "FUT") return t.entry_underlying != null ? fp(t.entry_underlying) : "—";
+                return t.entry_premium != null ? fp(t.entry_premium) : "—";
             }
             function exitPrice(t) {
                 if (t.status === "OPEN") return "—";
-                if (t.option_type === "FUT") return fp(t.exit_underlying);
-                return t.exit_premium
-                    ? fp(t.exit_premium)
-                    : fp(t.exit_underlying);
+                if (t.option_type === "FUT") return t.exit_underlying != null ? fp(t.exit_underlying) : "—";
+                return t.exit_premium != null ? fp(t.exit_premium) : "—";
             }
             function slPrice(t) {
                 if (t.option_type === "MULTILEG") return t.sl_premium ? fp(t.sl_premium) : "—";
@@ -3603,22 +3737,63 @@
                 renderTrades(sorted);
             }
 
+            let tradesPage = 1;
+            let tradesPageSize = 25;
+            let currentTradeRows = [];
+
+            function changeTradesPage(delta) {
+                const totalPages = Math.max(1, Math.ceil((currentTradeRows.length || 1) / tradesPageSize));
+                const newPage = tradesPage + delta;
+                if (newPage >= 1 && newPage <= totalPages) {
+                    tradesPage = newPage;
+                    renderTrades(currentTradeRows, false);
+                }
+            }
+
+            function changeTradesPageSize(val) {
+                tradesPageSize = parseInt(val, 10) || 25;
+                tradesPage = 1;
+                renderTrades(currentTradeRows, false);
+            }
+
             const expandedTradeKeys = new Set();
 
             function getTradeKey(t, idx) {
                 return t.id != null ? String(t.id) : (String(t.opened_at || "") + "_" + String(t.symbol || "") + "_" + idx);
             }
 
-            function renderTrades(rows) {
+            function renderTrades(rows, resetPage = false) {
+                currentTradeRows = rows || [];
+                if (resetPage) tradesPage = 1;
+                const total = currentTradeRows.length;
+                const totalPages = Math.max(1, Math.ceil(total / tradesPageSize));
+                if (tradesPage > totalPages) tradesPage = totalPages;
+                if (tradesPage < 1) tradesPage = 1;
+
+                const startIdx = total === 0 ? 0 : (tradesPage - 1) * tradesPageSize;
+                const endIdx = Math.min(startIdx + tradesPageSize, total);
+                const pageRows = currentTradeRows.slice(startIdx, endIdx);
+
+                const infoEl = document.getElementById("trades-page-info");
+                const numEl = document.getElementById("trades-page-num");
+                const prevBtn = document.getElementById("btn-page-prev");
+                const nextBtn = document.getElementById("btn-page-next");
+
+                if (infoEl) infoEl.textContent = total > 0 ? `${startIdx + 1}–${endIdx} of ${total}` : "0 of 0";
+                if (numEl) numEl.textContent = `${tradesPage} / ${totalPages}`;
+                if (prevBtn) prevBtn.disabled = tradesPage <= 1;
+                if (nextBtn) nextBtn.disabled = tradesPage >= totalPages;
+
                 const tb = document.getElementById("trades-body");
-                if (!rows.length) {
+                if (!pageRows.length) {
                     tb.innerHTML =
                         '<tr><td colspan="18"><div class="empty-state"><div class="empty-icon">📭</div>No trades found</div></td></tr>';
                     return;
                 }
-                tb.innerHTML = rows
+                tb.innerHTML = pageRows
                     .map(
-                        (t, idx) => {
+                        (t, pIdx) => {
+                            const idx = startIdx + pIdx;
                             const key = getTradeKey(t, idx);
                             const isExp = expandedTradeKeys.has(key);
                             return `
@@ -3651,16 +3826,16 @@
             <div>
               <div style="font-size:9px;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);font-weight:700;margin-bottom:6px;">Entry Details</div>
               <div style="font-size:12px;color:var(--text);font-family:var(--mono);">
-                <div>Underlying: ${fp(t.entry_underlying)}</div>
-                ${t.entry_premium ? `<div>Premium: ${fp(t.entry_premium)}</div>` : ""}
+                <div>Underlying: ${t.entry_underlying != null ? fp(t.entry_underlying) : "—"}</div>
+                ${t.entry_premium != null ? `<div>Premium: ${fp(t.entry_premium)}</div>` : ""}
                 <div>Time: ${fdt(t.opened_at)}</div>
               </div>
             </div>
             <div>
               <div style="font-size:9px;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);font-weight:700;margin-bottom:6px;">Exit Details</div>
               <div style="font-size:12px;color:var(--text);font-family:var(--mono);">
-                <div>Underlying: ${fp(t.exit_underlying)}</div>
-                ${t.exit_premium ? `<div>Premium: ${fp(t.exit_premium)}</div>` : ""}
+                <div>Underlying: ${t.exit_underlying != null ? fp(t.exit_underlying) : "—"}</div>
+                ${t.exit_premium != null ? `<div>Premium: ${fp(t.exit_premium)}</div>` : ""}
                 <div>Time: ${fdt(t.closed_at)}</div>
               </div>
             </div>
@@ -4325,8 +4500,10 @@
             function getEffectiveNetPrem(t) {
                 let netPremVal = Number(t.net_premium || 0);
                 if (netPremVal <= 0 && t.legs && t.legs.length) {
-                    const sellSum = t.legs.filter(l => (l.side || "SELL").toUpperCase() === "SELL").reduce((acc, l) => acc + Number(l.entry_premium ?? l.entry_price ?? 0), 0);
-                    const buySum = t.legs.filter(l => (l.side || "SELL").toUpperCase() === "BUY").reduce((acc, l) => acc + Number(l.entry_premium ?? l.entry_price ?? 0), 0);
+                    const activeLegs = t.legs.filter(l => (l.status || "OPEN").toUpperCase() !== "CLOSED");
+                    const legsToUse = activeLegs.length ? activeLegs : t.legs;
+                    const sellSum = legsToUse.filter(l => (l.side || "SELL").toUpperCase() === "SELL").reduce((acc, l) => acc + Number(l.entry_premium ?? l.entry_price ?? 0), 0);
+                    const buySum = legsToUse.filter(l => (l.side || "SELL").toUpperCase() === "BUY").reduce((acc, l) => acc + Number(l.entry_premium ?? l.entry_price ?? 0), 0);
                     netPremVal = Math.max(0, sellSum - buySum);
                 }
                 return netPremVal;
@@ -4389,7 +4566,7 @@
                             <th class="multileg-sortable" onclick="sortMultiLeg('pnl')">P&amp;L ${getSortIcon('pnl')}</th>
                             <th class="multileg-sortable" onclick="sortMultiLeg('opened_at')">Entry / Exit Time ${getSortIcon('opened_at')}</th>
                             <th class="multileg-sortable" onclick="sortMultiLeg('status')">Status ${getSortIcon('status')}</th>
-                            <th style="text-align: right;">Action / Exit Reason</th>
+                            <th style="text-align: right;">Action</th>
                         </tr>
                     </thead>
                 `;
@@ -4405,13 +4582,18 @@
                 let legsHtml = `<div class="leg-stack">`;
                 if (t.legs && t.legs.length) {
                     for (const leg of t.legs) {
+                        const isClosed = (leg.status || "OPEN").toUpperCase() === "CLOSED";
                         const side = (leg.side || "SELL").toUpperCase();
-                        const sideClass = side === "BUY" ? "buy" : "sell";
+                        const sideClass = isClosed ? "closed" : (side === "BUY" ? "buy" : "sell");
                         const optType = (leg.option_type || "CE").toUpperCase();
                         const optBadge = optType === "CE" ? `<span class="badge-ce">CE</span>` : `<span class="badge-pe">PE</span>`;
+                        const statusBadge = isClosed ? `<span class="badge-rolled" title="${leg.exit_reason || 'Rolled leg'}">ROLLED</span>` : "";
                         const lotsStr = leg.lots ? `${leg.lots}x ` : "";
                         const entryPrem = (leg.entry_premium !== undefined && leg.entry_premium !== null) ? leg.entry_premium : (leg.entry_price || 0);
-                        const legCmp = leg.cmp !== undefined && leg.cmp !== null ? leg.cmp : entryPrem;
+                        const legExitPrem = (leg.exit_premium !== undefined && leg.exit_premium !== null && Number(leg.exit_premium) > 0) ? leg.exit_premium : null;
+                        const legCmp = isClosed 
+                            ? (legExitPrem !== null ? legExitPrem : entryPrem)
+                            : (leg.cmp !== undefined && leg.cmp !== null ? leg.cmp : entryPrem);
                         const symKey = (t.symbol || '').split(' ')[0].toUpperCase();
                         const lotSize = (typeof LOT_SIZES !== 'undefined' && LOT_SIZES[symKey]) ? LOT_SIZES[symKey] : (symKey === 'BANKNIFTY' ? 30 : symKey === 'NIFTY' ? 65 : symKey === 'SENSEX' ? 20 : symKey === 'NATURALGAS' ? 1250 : 1);
                         const legLots = Number(leg.lots || 1);
@@ -4420,12 +4602,14 @@
                         const legPnlClass = legPnl > 0 ? "pp" : legPnl < 0 ? "pn" : "pz";
                         const legPnlSign = legPnl > 0 ? "+" : legPnl < 0 ? "-" : "";
                         const legPnlStr = ` <span class="${legPnlClass}" style="font-weight:700;">(${legPnlSign}₹${Math.abs(Math.round(legPnl)).toLocaleString("en-IN")})</span>`;
+                        const cmpLabel = isClosed ? `Exit: ${legCmp}` : `CMP: ${legCmp}`;
                         
                         legsHtml += `
                             <div class="leg-pill ${sideClass}">
-                                <span>${side} ${lotsStr}<strong>${leg.strike}</strong></span>
+                                <span class="leg-strike-text">${side} ${lotsStr}<strong>${leg.strike}</strong></span>
                                 ${optBadge}
-                                <span style="margin-left: auto; font-weight: 500;">@ ${entryPrem} <span class="dim">(CMP: ${legCmp})</span>${legPnlStr}</span>
+                                ${statusBadge}
+                                <span style="margin-left: auto; font-weight: 500;">@ ${entryPrem} <span class="dim">(${cmpLabel})</span>${legPnlStr}</span>
                             </div>
                         `;
                     }

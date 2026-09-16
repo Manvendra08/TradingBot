@@ -130,7 +130,8 @@ def get_autopsy_analyst_guidance() -> str:
     fallback_rules = """• FINANCIAL POST-MORTEM FRAMEWORK:
   - Classify trade outcome: Was it an execution failure, thesis invalidation, or normal statistical loss?
   - Differentiate between bad luck (exogenous gap/shock) and bad process (chasing into resistance, late entry).
-  - Quantify whether the stop-loss was respected or if slippage/theta decay degraded the edge."""
+  - Quantify whether the stop-loss was respected or if slippage/theta decay degraded the edge.
+  - Writer Ground Truth: PE OI increase = Put Writing (Bullish support), CE OI increase = Call Writing (Bearish resistance). Never attribute losses to inverted PE/CE reading."""
 
     if not skill_text:
         return fallback_rules
@@ -138,4 +139,5 @@ def get_autopsy_analyst_guidance() -> str:
     return f"""• FINANCIAL POST-MORTEM FRAMEWORK (agency-financial-analyst):
   - Objectively isolate whether the loss was structural (engine thesis failure) vs tactical (theta decay / slippage).
   - Assess if trade was opened too close to an invalidation level or held past its logical expiry.
+  - Writer Ground Truth: PE OI increase = Put Writing (Bullish support), CE OI increase = Call Writing (Bearish resistance). Never attribute losses to inverted PE/CE reading.
   - Note actionable adjustments to strike selection or confidence threshold."""

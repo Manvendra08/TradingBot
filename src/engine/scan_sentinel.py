@@ -527,16 +527,22 @@ def _check_rules(r: dict) -> list[SentinelFlag]:
 
     # R5: Option type vs action review (informational only)
     # NOTE: GO_SHORT + CE (sell call) and GO_LONG + PE (sell put) are VALID short-premium
-    # constructions used by MULTILEG/TFSS strategies. `_sanitize_llm_verdict` documents all four
-    # action/instrument combos as valid, so these are NOT an unresolved hedge mapping. Downgraded
-    # from CRITICAL to WARNING to stop false-positive CRITICAL incidents; kept as an informational
-    # signal for review on CORE buy-premium symbols only.
+    # constructions used by MULTILEG/TFSS strategies. These are NOT an unresolved hedge mapping.
+    # Exclude index futures (NIFTY, BANKNIFTY, SENSEX, FINNIFTY, MIDCPNIFTY) since TFSS v4
+    # explicitly maps CORE bearish signals to short-premium legs on these symbols. Flag only
+    # unexpected mismatches on non-index symbols for CORE buy-premium strategies.
     llm_action = r.get("llm_action")
     llm_instrument = r.get("llm_instrument")
     if llm_action and llm_instrument:
         action = str(llm_action).upper()
         instr = str(llm_instrument).upper()
-        if ("SHORT" in action and "CE" in instr) or ("LONG" in action and "PE" in instr):
+        # Skip index futures — short-premium is legitimate for TFSS/CORE on these symbols
+        is_index_future = any(idx in instr for idx in (
+            "NIFTY", "BANKNIFTY", "SENSEX", "FINNIFTY", "MIDCPNIFTY"
+        ))
+        if not is_index_future and (
+            ("SHORT" in action and "CE" in instr) or ("LONG" in action and "PE" in instr)
+        ):
             flags.append(SentinelFlag(
                 rule="R5_OPTION_TYPE_MISMATCH",
                 severity="WARNING",
@@ -756,7 +762,13 @@ def _check_rules(r: dict) -> list[SentinelFlag]:
     # R21: Greeks calculation failed (all near zero for an active option trade)
     llm_act = str(r.get("llm_action") or "").upper()
     llm_instr = str(r.get("llm_instrument") or "").upper()
-    if llm_instr and llm_instr not in ("NONE", "N/A", "") and llm_act not in ("NO_TRADE", "NONE", ""):
+    td_status = str(r.get("trade_decision_status") or "").upper()
+    if (
+        llm_instr
+        and llm_instr not in ("NONE", "N/A", "")
+        and llm_act not in ("NO_TRADE", "NONE", "")
+        and td_status != "BLOCKED"
+    ):
         delta = abs(r.get("delta") or 0)
         theta = abs(r.get("theta") or 0)
         vega = abs(r.get("vega") or 0)

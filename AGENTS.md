@@ -1,5 +1,5 @@
 # Agent Rules
-
+- **ALWAYS use Skills and MCPs by default wherever applicable**
 ## Strict Graft Rule
 
 - **ALWAYS use Graft wherever applicable**:
@@ -7,6 +7,7 @@
   - Large Codebase Exploration: run `graft build` if the AST index needs generating or refreshing ($0, local AST).
   - Blast Radius & Caller Verification: before editing or removing shared APIs, functions, or schemas, use `graft callers <symbol>` to verify all downstream consumers.
   - Report Graft token savings and percentage at the end of turns (e.g. `🌱 graft saved ~N tokens (X%) this turn`).
+  - Report Ponytail token savings (anti-bloat, minimal diffs, zero filler) at the end of turns (e.g. `✂️ ponytail saved ~M tokens (Y%) this turn`).
 
 ## Response Style
 
@@ -52,6 +53,28 @@
 - **3H candles**: entry timing ONLY — breakout/breakdown confirmation combined with OI buildup classification. Never used for trend/signal generation.
 - **1H candles**: exit timing ONLY — strategy-level exit trigger. Never used for entries, trend, or signal generation.
 - 3H and 1H are **NOT** cross-checked against each other. They serve independent, non-overlapping functions.
+
+## New Price Discovery Rules & Timings (SEBI/NSE Mandate)
+
+All bot decision paths, time guards, and LLM reasoning engines MUST adhere strictly to these timings and rules:
+
+### F&O Pre-Open Session (09:00 AM – 09:15 AM IST)
+Pre-open session uses a call auction mechanism to discover a single equilibrium opening price for eligible index and single-stock futures:
+- **09:00 AM – 09:08 AM IST**: Order entry, modification, and cancellation window (with random closure during the final minute, around 09:07–09:08 AM).
+- **09:08 AM – 09:12 AM IST**: Order matching and opening price determination.
+- **09:12 AM – 09:15 AM IST**: Buffer period before continuous market trading begins at 09:15 AM.
+
+### Cash & F&O Closing / Call Auction Session (CAS) (03:15 PM – 03:40 PM IST)
+- **3:15 PM IST**: Continuous regular trading for F&O-eligible stocks in the cash market ends (instead of 3:30 PM).
+- **3:15 PM – 3:20 PM IST**: Transition period — orders are frozen, reference prices are published, and non-equilibrium/out-of-bound pending orders are automatically canceled.
+- **3:20 PM – 3:25 PM IST**: Order Entry Session 1 — both market and limit orders are permitted.
+- **3:25 PM – 3:30 PM IST**: Order Entry Session 2 — only limit orders are allowed; closes randomly between 3:28 PM and 3:30 PM.
+- **3:30 PM – 3:35 PM IST**: Order matching occurs at a single equilibrium price (where maximum share volume trades), declared as the official cash closing price.
+- **3:40 PM IST**: Derivative F&O contracts continue trading until this time, providing traders/bot an extra 10 minutes past the old market close (15:30) to hedge or adjust positions.
+- **Non-F&O Stocks**: Completely unaffected by CAS; continuous normal trading continues until 3:30 PM IST.
+- **Mandatory Friday Exits**: Handled between 15:35–15:40 IST for NSE F&O (23:25–23:30 MCX) to square off weekend gap risk before derivatives halt.
+
+
 
 ## AI / LLM state (v3.0)
 

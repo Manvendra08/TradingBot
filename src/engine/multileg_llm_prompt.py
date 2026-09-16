@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import logging
+import re
 from typing import Optional
 
 from config.settings import IST
@@ -337,10 +338,50 @@ def build_multileg_prompt(
     # F&O ban check (placeholder - actual check happens downstream but good to inform LLM)
     # In practice, this would come from an API. For now, we'll let downstream validation handle it.
 
+    ce_oi_chg = int(scan_context.get("ce_oi_change") or 0)
+    pe_oi_chg = int(scan_context.get("pe_oi_change") or 0)
+    px_chg_pts = scan_context.get("price_change_points", "N/A")
+    px_chg_pct = scan_context.get("price_change_pct", "N/A")
+
+    # Determine canonical OI flow ground truth from options writers' perspective
+    if pe_oi_chg > 0 and ce_oi_chg < 0:
+        oi_flow_ground_truth = "BULLISH (PE buildup / put writing + CE unwinding / call short-covering)"
+    elif ce_oi_chg > 0 and pe_oi_chg < 0:
+        oi_flow_ground_truth = "BEARISH (CE buildup / call writing + PE unwinding / put exit)"
+    elif pe_oi_chg > 0 and ce_oi_chg > 0:
+        if pe_oi_chg > ce_oi_chg * 1.5:
+            oi_flow_ground_truth = f"BULLISH BIAS (PE writing +{pe_oi_chg:,} heavily outpaces CE writing +{ce_oi_chg:,})"
+        elif ce_oi_chg > pe_oi_chg * 1.5:
+            oi_flow_ground_truth = f"BEARISH BIAS (CE writing +{ce_oi_chg:,} heavily outpaces PE writing +{pe_oi_chg:,})"
+        else:
+            oi_flow_ground_truth = "NEUTRAL / STRANGLE SETUP (Both CE & PE building in balance; support & resistance narrowing)"
+    elif ce_oi_chg < 0 and pe_oi_chg < 0:
+        oi_flow_ground_truth = "NEUTRAL / SQUARING OFF (Both CE & PE unwinding; position liquidation)"
+    elif pe_oi_chg > 0 and ce_oi_chg == 0:
+        oi_flow_ground_truth = "BULLISH (Fresh PE put writing / support floor)"
+    elif ce_oi_chg > 0 and pe_oi_chg == 0:
+        oi_flow_ground_truth = "BEARISH (Fresh CE call writing / resistance ceiling)"
+    elif pe_oi_chg < 0 and ce_oi_chg == 0:
+        oi_flow_ground_truth = "BEARISH (PE unwinding / support loss)"
+    elif ce_oi_chg < 0 and pe_oi_chg == 0:
+        oi_flow_ground_truth = "BULLISH (CE unwinding / short covering)"
+    else:
+        oi_flow_ground_truth = "MIXED / CONSOLIDATION"
+
     prompt = f"""NSE/MCX options seller. Design a multi-leg premium strategy.
 
 {symbol} | ₹{underlying:.2f} | ATM {atm_strike:.0f} | {expiry} (DTE {dte})
 Verdict: {verdict_label} {confidence}% | PCR {pcr:.2f} | S={support:.0f} R={resistance:.0f} Pain={max_pain:.0f} | Regime: {regime}
+OI Flow: CE Δ {ce_oi_chg:+,} | PE Δ {pe_oi_chg:+,} → {oi_flow_ground_truth}
+Price Move: {px_chg_pts} pts ({px_chg_pct}%)
+
+OPTIONS MARKET MECHANICS (MANDATORY WRITER GROUND TRUTH — NEVER INVERT):
+• PE Buildup (Positive PE OI change) = PUT WRITING / PUT SELLING by institutions establishing support floor → BULLISH. NEVER interpret PE buildup as bearish short positioning!
+• CE Unwinding (Negative CE OI change) = CALL SHORT-COVERING / call writers exiting upside risk → BULLISH.
+• CE Buildup (Positive CE OI change) = CALL WRITING / CALL SELLING establishing overhead resistance ceiling → BEARISH.
+• PE Unwinding (Negative PE OI change) = PUT UNWINDING / support crumbling → BEARISH.
+• PCR = Total PE OI / Total CE OI. Rising PCR (e.g. 0.80 → 1.10) reflects heavier Put writing than Call writing → BULLISH accumulation. Lowering PCR (e.g. 1.20 → 0.60) reflects Put unwinding or heavy Call writing → BEARISH.
+• In your thesis and rationale, ALWAYS adhere to these mathematical facts.
 {commodity_intel}
 CHAIN (use only strikes with OI>0 and LTP>0):
 {_format_full_option_chain(option_rows, atm_strike, underlying)}
@@ -352,32 +393,35 @@ Open: {open_summary}
 History: {historical_perf or _format_historical_strategy_performance(symbol)}
 
 CONSTRAINTS (non-negotiable):
+• Price Discovery & Timings: 09:00–09:15 F&O Pre-open call auction (09:00-09:08 entry, 09:08-09:12 matching, 09:12-09:15 buffer) | 15:15 cash continuous close for F&O stocks | 15:15–15:35 CAS price discovery | 15:40 derivative F&O close (extra 10 min window past 15:30 to hedge/adjust). Non-F&O cash trades to 15:30.
+
 • {symbol} F&O ban status: CHECK_DOWNSTREAM → if BANNED, strategy_type="NO_TRADE", legs=[]
-• Weekly vs Monthly expiry: {"Weekly" if dte <= 7 else "Monthly"}. Weekly → max 2 legs, tighter 15-20% profit target. Monthly → up to 4 legs, 30-50% target.
+• Weekly vs Monthly expiry: {"Weekly" if dte <= 7 else "Monthly"}. Weekly → 2 legs for strangles/straddles/spreads (or 4 legs for defined-risk IRON_CONDOR), tighter 15-20% profit target. Monthly → up to 4 legs, 30-50% target.
 • SEBI STT on sell side: ~0.05% on premium for equity options, ~0.125% for commodity. Factor into max_profit estimate if not already netted.
 • SPAN margin is dynamic. If estimated margin + existing ₹{sum(float(b.get("margin_req") or b.get("margin") or 0) for b in (open_books or [])):,.0f} > ₹{MAX_BOOK_MARGIN:,.0f} → NO_TRADE.
 • Combined delta headroom: {MAX_NET_DELTA - abs(sum(float(b.get("net_delta") or 0) for b in (open_books or []))):.2f} remaining.
+
 
 TASK: Select best multi-leg strategy — or NO_TRADE. You are selling premium: your edge is IV overpricing realized movement plus theta. If that edge is absent, there is no strategy to pick.
 
 EDGE CHECKS (before choosing legs):
 1. Expected move ≈ ATM CE LTP + ATM PE LTP (straddle). Short strikes must sit OUTSIDE spot ± expected move — unless deliberately trading a straddle.
-2. IV must pay for the risk: if ATM IV is depressed and OTM credits are thin relative to strike width, skip naked shorts — defined-risk or NO_TRADE.
+2. IV must pay for the risk: if ATM IV is depressed and OTM credits are thin relative to strike width, prefer defined-risk spreads (IRON_CONDOR, BEAR_CALL_SPREAD, BULL_PUT_SPREAD) over naked shorts.
 3. Index weekly at DTE ≤ 1 → defined-risk ONLY (no naked strangle/straddle): gamma is unbounded into expiry.
 4. Max pain {max_pain:.0f} is a magnet into expiry — shorts straddling it benefit; shorts fighting it need wider strikes.
 
 Strategy Map:
 - Sideways → SHORT_STRADDLE (ATM) or SHORT_STRANGLE (OTM)
-- Rangebound+defined → IRON_CONDOR (wings 1-3 strikes beyond shorts)
-- Bearish+defined → BEAR_CALL_SPREAD | Bullish+defined → BULL_PUT_SPREAD
+- Rangebound+defined → IRON_CONDOR (Wings MUST be sufficiently wide to avoid insurance drag: NIFTY ≥100-200 pts, BANKNIFTY ≥300-500 pts, SENSEX ≥400-800 pts. Never pick buy wings adjacent or too close to sell legs!)
+- Bearish+defined → BEAR_CALL_SPREAD | Bullish+defined → BULL_PUT_SPREAD (spread width ≥ 0.5% of spot)
 - Bullish+high IV → JADE_LIZARD
-- Uncertain → IRON_CONDOR | No liquidity or no edge → NO_TRADE
+- Uncertain → IRON_CONDOR (preferred over NO_TRADE if any liquid strikes exist)
 
 MCX Parity (NATURALGAS/CRUDEOIL):
 - Deviation >+1.5%: inflated → BEAR_CALL_SPREAD or sell upper CE
 - Deviation <-1.5%: discounted → BULL_PUT_SPREAD or sell lower PE
 - |Deviation| ≤1.0%: fair value → SHORT_STRANGLE or IRON_CONDOR
-- **EIA Report Day / Window**: If EIA inventory release is active/imminent, avoid naked straddles; prefer defined-risk spreads or wider strangle strikes with safe deltas (Δ 0.10 - 0.15), or emit **NO_TRADE** if event risk is extreme.
+- **EIA Report Day / Window**: If EIA inventory release is active/imminent, avoid naked straddles; prefer defined-risk spreads or wider strangle strikes with safe deltas (Δ 0.10 - 0.15). Only emit **NO_TRADE** if event risk is extreme AND no defined-risk alternative fits margin/delta caps.
 
 ### Important Constraints on Legs:
 Leg counts: STRADDLE=2 SELL, STRANGLE=2 SELL, CONDOR=4(2 SELL+2 BUY), SPREAD=2, NO_TRADE=legs[]
@@ -386,12 +430,16 @@ Liquidity (CRITICAL): Only strikes with OI>0 AND LTP>0. Never use [NO LIQ] strik
 Strangle: CE strike > {underlying:.0f} (OTM) | PE strike < {underlying:.0f} (OTM). Never ITM.
 Straddle: Both CE+PE at ATM {atm_strike:.0f}.
 Condor/Spreads: all sold+bought legs liquid.
-→ No liquid strikes: strategy_type="NO_TRADE", legs=[]
+→ Wing Width & Insurance Guardrail (CRITICAL):
+  * For IRON_CONDOR and defined-risk spreads: DO NOT place buy hedge legs too close to short legs.
+  * Minimum wing width (buy strike minus sell strike): NIFTY ≥100 pts, BANKNIFTY ≥250 pts, SENSEX ≥400 pts (ideally 500–800 pts).
+  * Max Hedge Cost: Total debit spent on BUY wings MUST NOT exceed 65% of gross credit collected from SELL legs (collect ≥35% net premium). Placing wings only 1 strike away consumes 75-80% of premium, resulting in unviable trades!
+→ If NO liquid strikes for chosen strategy, fall back to IRON_CONDOR with liquid strikes if possible; only NO_TRADE if NO liquid strikes exist across the entire chain.
 
 Delta target: 0.15-0.30 for OTM sell legs | Max pain={max_pain:.0f} as magnet | S/R for strike anchors.
 
 Risk: Max loss ≤ 3x net premium | Net delta near 0 | Profit target 30-50% max | Don't over-leg.
-- Set time decay exit at DTE ≤ 3
+- Set time decay exit DTE: 0 for weekly index options (hold to expiry day); DTE ≤ 2 for monthly/commodity options.
 
 CONFIDENCE CALIBRATION & ENGINE ALIGNMENT (0-100):
 - Execution confidence floor is {conf_floor}%. Any proposed strategy with confidence below {conf_floor}% will abort execution.
@@ -405,7 +453,14 @@ ARITHMETIC (anti-hallucination — violations invalidate the plan):
 - net_premium = Σ(SELL LTPs) − Σ(BUY LTPs). max_profit, max_loss, breakevens must reconcile with net_premium and strike widths. Do not estimate any of these.
 - Empty/illiquid chain, incoherent spot vs strikes, or DTE 0 with no theta window → strategy_type="NO_TRADE", legs=[], explain in entry_rationale.
 
-Output: JSON per LLMMultiLegVerdict schema. Per-leg rationale specific to that strike; thesis = the setup narrative (why this strategy, these strikes, this edge).
+PRE-VERDICT REASONING AUDIT (MANDATORY — POPULATE `reasoning_chain` FIRST):
+Execute this 4-step verification sequence before finalizing strategy and legs:
+1. OI Flow Audit: Confirm PE and CE OI change against writer rules (PE+ = Put Writing support, CE+ = Call Writing resistance). Does flow justify this trade?
+2. Level Audit: Verify spot relative to S/R anchors and Max Pain ({max_pain:.0f}). Ensure short strikes sit safely outside expected move.
+3. Catalyst & Expiry Audit: Check DTE ({dte}) and event risks (EIA, OPEC, pin risk).
+4. Adversarial Invalidation: Define `structural_invalidation_spot` (the exact spot level that proves this setup wrong).
+
+Output: JSON per LLMMultiLegVerdict schema including reasoning_chain and structural_invalidation_spot. Per-leg rationale specific to that strike; thesis = the setup narrative (why this strategy, these strikes, this edge).
 """
     return prompt
 
@@ -504,11 +559,16 @@ def build_multileg_exit_prompt(
     total_pnl = float(book.get("total_pnl") or 0)
     net_premium = float(book.get("net_premium") or 0)
     adjustment_count = int(book.get("adjustment_count") or 0)
-    max_profit = float(book.get("max_profit") or net_premium)
+
+    # Calculate physical max profit in rupees for accurate percentage logic
+    _pt_lots = max((int(l.get("lots") or 1) for l in legs), default=1)
+    max_profit_points = float(book.get("max_profit") or net_premium)
+    max_profit_rupees = max(max_profit_points * lot_size * _pt_lots, 1.0)
+
     profit_target_pct = float(book.get("profit_target_pct") or 0.5)
     stop_loss_pct = float(book.get("stop_loss_pct") or 1.5)
     time_decay_exit_dte = int(book.get("time_decay_exit_dte") or 0)
-    profit_pct_of_max = (total_pnl / max_profit) if max_profit > 0 else 0.0
+    profit_pct_of_max = total_pnl / max_profit_rupees
 
     is_weekly = symbol in ("NIFTY", "BANKNIFTY", "SENSEX")
     now_ist = datetime.now(IST)
@@ -553,45 +613,74 @@ def build_multileg_exit_prompt(
     else:
         next_catalyst = "None imminent"
 
-    # Pin risk check for weekly expiry
+    # Pin risk check for weekly expiry (only late afternoon after 14:00 IST when spot is within 0.15% of short strike)
     is_expiry_today = (dte == 0)
     pin_risk_high = False
-    if is_expiry_today and is_weekly:
+    if is_expiry_today and is_weekly and now_ist.hour >= 14:
         for l in legs:
             strike = float(l.get("strike", 0))
-            if abs(underlying - strike) / underlying <= 0.005:  # within 0.5%
+            if abs(underlying - strike) / underlying <= 0.0015:  # within 0.15%
                 pin_risk_high = True
                 break
+
+    ce_chg = int(scan_context.get("ce_oi_change") or 0)
+    pe_chg = int(scan_context.get("pe_oi_change") or 0)
+    if ce_chg != 0 or pe_chg != 0:
+        if pe_chg > 0 and ce_chg < 0:
+            oi_flow_desc = "BULLISH (PE put writing support + CE short-covering)"
+        elif pe_chg > 0 and pe_chg > ce_chg:
+            oi_flow_desc = f"BULLISH (PE writing +{pe_chg:,} > CE writing +{ce_chg:,})"
+        elif ce_chg > 0 and pe_chg < 0:
+            oi_flow_desc = "BEARISH (CE call writing resistance + PE support breakdown)"
+        elif ce_chg > 0 and ce_chg > pe_chg:
+            oi_flow_desc = f"BEARISH (CE writing +{ce_chg:,} > PE writing +{pe_chg:,})"
+        elif ce_chg < 0 and pe_chg < 0:
+            oi_flow_desc = "UNWINDING (Both sides closing positions)"
+        else:
+            oi_flow_desc = "BALANCED"
+        oi_flow_str = f" | OI Flow: {oi_flow_desc} (PE+ = Support, CE+ = Resistance)"
+    else:
+        oi_flow_str = ""
+
+    inval_str = ""
+    entry_desc = str(book.get("entry_reason") or book.get("reason") or "")
+    inval_m = re.search(r"Invalidation:\s*(?:Spot\s*)?([0-9.]+)", entry_desc)
+    if inval_m:
+        inval_level = float(inval_m.group(1))
+        inval_str = f" | Invalidation Level: ₹{inval_level:.1f}"
 
     prompt = f"""Managing multi-leg position: {symbol}
 
 Book {book.get('book_id', 'N/A')} | {book.get('strategy_type', 'N/A')}
-Credit: ₹{net_premium:.1f} | P&L: ₹{total_pnl:.0f} ({profit_pct_of_max:+.0%} of max ₹{max_profit:.0f})
+Credit: ₹{net_premium * lot_size * _pt_lots:,.0f} | P&L: ₹{total_pnl:.0f} ({profit_pct_of_max:+.0%} of max ₹{max_profit_rupees:,.0f})
 Adjustments: {adjustment_count}/3 | DTE {dte} | {current_time_str} | {'Weekly' if is_weekly else 'Commodity'}
 
 EXIT PLAN (authoritative):
-Profit: {profit_target_pct:.0%} max | Stop: {stop_loss_pct:.0%} credit | Time: {'Exit after 1PM IST on expiry day' if is_weekly else f'DTE {time_decay_exit_dte}'}
+Profit: {profit_target_pct:.0%} max | Stop: {stop_loss_pct:.0%} credit | Time: {('EXPIRY TODAY: Exit after 13:00 IST' if dte == 0 else f'Hold to expiry day (DTE {dte} > 0)') if is_weekly else f'DTE {time_decay_exit_dte}'}{inval_str}
 
 LEGS:
 {chr(10).join(leg_lines)}
 
-MARKET: ₹{underlying:.2f} | {intel.get('verdict_label', 'N/A')} {intel.get('confidence', 0)}%
+MARKET: ₹{underlying:.2f} | {intel.get('verdict_label', 'N/A')} {intel.get('confidence', 0)}%{oi_flow_str}
 
 ROLL TARGETS:
 {roll_targets_str}
 
 EXIT DISCIPLINE (Indian context):
+• Price Discovery Timings: 15:15 cash continuous trading ends for F&O stocks; CAS runs 15:15–15:35; derivatives trade until 15:40 IST (use 15:30–15:40 for hedging/adjustments).
 • If profit_pct ≥ 50%: CLOSE is preferred. Only ADJUST if both legs delta < 0.10 AND DTE ≥ 5 AND no event in next 24h.
-• {symbol} pin risk: {'HIGH — expiry today, underlying near short strike' if pin_risk_high else 'normal'}.
+• {symbol} pin risk: {'HIGH — expiry day after 14:00 IST and spot within 0.15% of short strike' if pin_risk_high else 'normal (early session / safe distance)'}.
 • {'Do NOT ADJUST within 4h of catalyst — close or hold only.' if event_within_4h else 'No event window restriction.'}
-• Weekly index (NIFTY/BANKNIFTY/SENSEX): if underlying within ±0.5% of ANY short strike on expiry day → CLOSE (pin risk).
+• Weekly index (NIFTY/BANKNIFTY/SENSEX): On expiry day (DTE 0) BEFORE 13:00 IST, do NOT close for time decay or pin risk unless profit target, stop loss, or structural invalidation is breached. Pin risk exits apply only after 14:00 IST when spot is within 0.15% of a short strike.
+
 
 DECISION: {decision_options}
 
 Rules (use EXIT PLAN above):
 - P&L ≥ profit target → CLOSE
 - P&L ≤ stop loss → CLOSE
-- DTE ≤ time exit → CLOSE (theta done, avoid pin)
+- Invalidation level breached by underlying → CLOSE immediately (thesis invalidated)
+- Time decay exit: close ONLY if DTE ≤ time exit or on weekly expiry day after 13:00 IST (never close for time on DTE > 0)
 {adj_rule}
 - One side tested (delta spike) → {'CLOSE (max adjustments reached)' if max_adj_reached else 'ADJUST (roll OTM) if <3 adjustments, else CLOSE'}
 - Both sides tested → CLOSE (strangle broken)

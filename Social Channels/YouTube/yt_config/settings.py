@@ -16,7 +16,7 @@ FONTS_DIR = ASSETS_DIR / "fonts"
 MUSIC_DIR = ASSETS_DIR / "music"
 TEMPLATES_DIR = ASSETS_DIR / "templates"
 
-NSEBOT_DB_PATH = PROJECT_ROOT / "data" / "trading_bot.db"
+NSEBOT_DB_PATH = PROJECT_ROOT / "data" / "nsebot.db"
 YOUTUBE_TOKEN_PATH = BASE_DIR / "config" / "youtube_token.json"
 CLIENT_SECRETS_PATH = BASE_DIR / "config" / "client_secrets.json"
 

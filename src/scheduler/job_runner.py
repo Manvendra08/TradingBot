@@ -36,46 +36,38 @@ IST = pytz.timezone("Asia/Kolkata")
 
 MAX_CATCHUP_INTERVALS = 3
 
-# Thread pool for running functions with timeout and cancellation support.
-# This replaces the old daemon-thread-based run_with_timeout which couldn't
-# actually stop hung functions.
-_WATCHDOG_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="watchdog-")
-
-
-def run_with_timeout(func, timeout, *args, **kwargs) -> bool:
-    """Run a function in a thread pool with timeout and cancellation support.
-    
-    Unlike the old daemon-thread version, this uses ThreadPoolExecutor which
-    supports cancellation via cancel_futures=True (Python 3.9+). When the
-    timeout expires, the future is cancelled and the worker thread can be
-    gracefully stopped if it checks for cancellation.
-    
-    Note: The function being run should periodically check for thread interruption
-    (e.g. by checking threading.current_thread().is_alive() or using a shared
-    Event) to actually stop when cancelled.
-    """
-    future = _WATCHDOG_EXECUTOR.submit(func, *args, **kwargs)
+def touch_heartbeat(detail: str = "running") -> None:
+    """Touch the heartbeat file and update scheduler health state."""
     try:
-        future.result(timeout=timeout)
-        return True
-    except Exception as e:
-        # TimeoutError or other exception
-        log.error(
-            "Watchdog: function '%s' timed out after %ds or raised %s",
-            func.__name__,
-            timeout,
-            type(e).__name__,
-        )
-        # Attempt to cancel the future (Python 3.9+)
-        future.cancel()
-        return False
+        import tempfile
+        from pathlib import Path as _P
+        _hb = _P(tempfile.gettempdir()) / "nsebot.heartbeat"
+        _hb.write_text(str(int(time.time())))
+        from src.models.schema import stamp_health
+        stamp_health("scheduler_loop", "OK", detail)
+    except Exception:
+        pass
 
-ROOT = Path(__file__).resolve().parents[2]
-SCRAPE_RUNNER = ROOT / "tools" / "scrape_dhan_naturalgas.py"
 
-IST = pytz.timezone("Asia/Kolkata")
+def run_with_timeout(func, timeout: int = 600, *args, **kwargs) -> bool:
+    """Run a function in a worker thread with timeout watchdog while keeping heartbeat fresh."""
+    t = threading.Thread(target=func, args=args, kwargs=kwargs, daemon=True)
+    t.start()
+    start_ts = time.time()
+    func_name = getattr(func, "__name__", "task")
+    while t.is_alive():
+        t.join(timeout=10.0)
+        elapsed = int(time.time() - start_ts)
+        touch_heartbeat(f"executing {func_name} ({elapsed}s)")
+        if time.time() - start_ts >= timeout:
+            log.error(
+                "Watchdog: function '%s' timed out after %ds and might be hung",
+                func_name,
+                timeout,
+            )
+            return False
+    return True
 
-MAX_CATCHUP_INTERVALS = 3
 
 def _get_scan_window_times(class_key: str, now_ist: datetime) -> tuple[datetime, datetime, str, str]:
     """Return (scan_open_time, scan_close_time, open_t_str, close_t_str) for class_key.
@@ -766,6 +758,70 @@ def _run_dhan_naturalgas_scrape():
         log.warning("Dhan scrape runner error: %s", exc)
 
 
+def _maybe_market_close_scan(
+    now_ist: datetime,
+    immediate: bool,
+    close_tracker: set[tuple[str, str]],
+    current_date: str,
+) -> list[str]:
+    """Run mandatory market-close scan if current time falls within close window.
+
+    Triggers exactly once per (class_key, date) using the provided tracker set.
+    Returns list of class_keys for which a scan was triggered.
+    """
+    triggered: list[str] = []
+
+    for class_key in MARKET_WINDOWS:
+        open_t, close_t, days = MARKET_WINDOWS[class_key]
+        class_symbols = [
+            s for s in WATCH_SYMBOLS if get_symbol_class(s) == class_key
+        ]
+        if not class_symbols:
+            continue
+        from config.holidays import is_market_holiday
+
+        if not immediate and (
+            now_ist.weekday() not in days
+            or all(is_market_holiday(s, now_ist) for s in class_symbols)
+        ):
+            continue
+
+        from config.settings import MARKET_CLOSE_SCAN_TIMES
+        final_scan_t = MARKET_CLOSE_SCAN_TIMES.get(class_key, close_t)
+        scan_h, scan_m = map(int, final_scan_t.split(":"))
+        scan_dt = datetime.combine(now_ist.date(), dt_time(scan_h, scan_m))
+        scan_dt = IST.localize(scan_dt)
+
+        if scan_dt <= now_ist <= scan_dt + timedelta(minutes=10):
+            tracker_key = (class_key, current_date)
+            if tracker_key not in close_tracker:
+                close_tracker.add(tracker_key)
+                log.info(
+                    "[scheduler] %s: Triggering MANDATORY daily "
+                    "market-close scan at %s IST (date: %s, exchange close: %s IST)",
+                    class_key,
+                    final_scan_t,
+                    current_date,
+                    close_t,
+                )
+                try:
+                    def run_market_close(ck=class_key):
+                        _guarded_run(ck, force=True)
+                        if ck == "MCX_COMMODITY":
+                            _run_dhan_naturalgas_scrape()
+
+                    run_with_timeout(run_market_close, timeout=600)
+                    triggered.append(class_key)
+                except Exception as exc:
+                    log.error(
+                        "[scheduler] Market-close scan failed for %s: %s",
+                        class_key,
+                        exc,
+                    )
+
+    return triggered
+
+
 def _check_live_exits(symbol: str, underlying: float, strikes: list[dict]) -> None:
     """
     H4 fix: Check open live trades for SL/Target hits using freshly fetched
@@ -1037,24 +1093,6 @@ def _update_live_cmps() -> None:
             )
 
 
-import threading
-
-
-def run_with_timeout(func, timeout, *args, **kwargs) -> bool:
-    """Run a function in a daemon thread with a timeout watchdog."""
-    t = threading.Thread(target=func, args=args, kwargs=kwargs, daemon=True)
-    t.start()
-    t.join(timeout)
-    if t.is_alive():
-        log.error(
-            "Watchdog: function '%s' timed out after %ds and might be hung",
-            func.__name__,
-            timeout,
-        )
-        return False
-    return True
-
-
 def start_scheduler(immediate: bool = False):
     from src.models.schema import delete_expired_contracts
 
@@ -1066,6 +1104,20 @@ def start_scheduler(immediate: bool = False):
         get_scan_frequency_mcx(),
         WATCH_SYMBOLS,
     )
+    # Touch heartbeat immediately on startup
+    touch_heartbeat("scheduler_starting")
+
+    # Start background daemon to keep heartbeat fresh even during long idle/scan cycles
+    def _heartbeat_daemon():
+        while True:
+            try:
+                touch_heartbeat("scheduler_alive")
+            except Exception:
+                pass
+            time.sleep(30)
+
+    threading.Thread(target=_heartbeat_daemon, daemon=True, name="scheduler-heartbeat").start()
+
     # Run a cleanup of expired data on startup
     delete_expired_contracts()
 
@@ -1085,6 +1137,7 @@ def start_scheduler(immediate: bool = False):
     _last_backup_date = None
     _last_fii_fetch_date = None
     _last_autopsy_date = None
+    _last_eod_report_date = None
 
     # ── Instrument cache warm-up at scheduler start ────────────────────────
     cache_warmed_event = threading.Event()
@@ -1305,6 +1358,7 @@ def start_scheduler(immediate: bool = False):
     _last_friday_nse_exit_date = None
     _last_friday_mcx_exit_date = None
     _last_expiry_exit_tracker: set[tuple[str, str, str]] = set()
+    _last_market_close_scan_tracker: set[tuple[str, str]] = set()
     _last_auto_login_date = None
     _last_fii_fetch_date = None
     _last_weights_refresh_date = None
@@ -1343,6 +1397,7 @@ def start_scheduler(immediate: bool = False):
                 has_done_startup_scan.clear()
                 has_logged_closed_pre_open.clear()
                 has_logged_closed_post_close.clear()
+                _last_eod_report_date = None
 
                 # Daily re-auth: refresh Shoonya token & Kite login if needed
                 def _daily_reauth():
@@ -1433,6 +1488,22 @@ def start_scheduler(immediate: bool = False):
             # ── Post-market: FII/DII Data Fetch at 19:15 IST (Mon-Fri) ──
             if now_ist.weekday() < 5:
                 now_time_str = now_ist.strftime("%H:%M")
+                if "16:00" <= now_time_str <= "16:15" and _last_eod_report_date != current_date:
+                    _last_eod_report_date = current_date
+                    log.info(
+                        "[scheduler] Triggering EOD Macro Report generation (16:00 IST / 4:00 PM)"
+                    )
+                    try:
+                        from src.engine.eod_report_generator import generate_eod_macro_report
+
+                        threading.Thread(
+                            target=generate_eod_macro_report,
+                            daemon=True,
+                            name="eod-report-generator",
+                        ).start()
+                    except Exception as exc:
+                        log.error("[scheduler] EOD Macro Report generator exception: %s", exc)
+
                 if "19:15" <= now_time_str <= "20:00" and _last_fii_fetch_date != current_date:
                     _last_fii_fetch_date = current_date
                     log.info(
@@ -1494,6 +1565,16 @@ def start_scheduler(immediate: bool = False):
                                 class_key,
                                 e,
                             )
+
+            # Mandatory Daily Market-Close Final Scan (15:38 IST for NSE/BSE, 23:30 IST for MCX)
+            # Guaranteed to run regardless of configured scan frequency (5m, 15m, 30m, 1H).
+            # Scheduled 2 minutes before exchange close to allow an order execution window for adjustments.
+            _maybe_market_close_scan(
+                now_ist=now_ist,
+                immediate=immediate,
+                close_tracker=_last_market_close_scan_tracker,
+                current_date=str(current_date),
+            )
 
             # 1. Full Scan Loop per market class
             import math
@@ -1872,12 +1953,8 @@ def start_scheduler(immediate: bool = False):
 
             # ── OPS Agent: heartbeat + health stamps ────────────────────────
             try:
-                import tempfile
-                from pathlib import Path as _P
-                _hb = _P(tempfile.gettempdir()) / "nsebot.heartbeat"
-                _hb.write_text(str(int(time.time())))
+                touch_heartbeat(f"interval_idx={current_interval_idx if 'current_interval_idx' in dir() else '?'}")
                 from src.models.schema import stamp_health, stamp_open_positions
-                stamp_health("scheduler_loop", "OK", f"interval_idx={current_interval_idx if 'current_interval_idx' in dir() else '?'}")
                 stamp_health("db_write", "OK", "commit succeeded")
                 stamp_open_positions()
                 # Auto-heal transient telegram_send errors if idle > 30m without new failures

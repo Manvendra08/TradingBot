@@ -34,7 +34,8 @@
         body { background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 14px; min-height: 100vh; }
 
         /* ── Header (exact match with other pages) ── */
-        .app-header { display: flex; flex-direction: column; padding: 10px 24px; gap: 10px; background: var(--surface); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 100; }
+        .app-header { display: flex; flex-direction: column; padding: 10px 24px; gap: 10px; background: var(--surface); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 100; height: auto !important; }
+
         .header-top-row { display: flex; align-items: center; justify-content: space-between; width: 100%; }
         .header-bottom-row { display: flex; align-items: center; justify-content: space-between; width: 100%; }
         .logo-stack { display: flex; flex-direction: column; }
@@ -211,6 +212,7 @@
             <a href="/paper" class="nav-tab" id="tab-paper">Paper Trades</a>
             <a href="/broker" class="nav-tab" id="tab-broker">Broker Console</a>
             <a href="#" class="nav-tab" id="tab-ai-insights" data-tab="ai-insights">AI Insights</a>
+            <a href="/report" class="nav-tab" id="tab-report">Market Summary</a>
             <a href="/ops" class="nav-tab active" id="tab-ops">Ops Monitor</a>
             <a href="/settings" class="nav-tab" id="tab-settings">Settings</a>
         </div>
@@ -472,8 +474,8 @@ function deriveStatus(row, meta) {
                 // MCX: 09:00 to 23:30
                 if (timeVal < 900 || timeVal > 2330) isClosed = true;
             } else {
-                // NSE/BSE: 09:15 to 15:30
-                if (timeVal < 915 || timeVal > 1530) isClosed = true;
+                // NSE/BSE (Index F&O): 09:15 to 15:40
+                if (timeVal < 915 || timeVal > 1540) isClosed = true;
             }
         } else {
             // General system components: active if any market is open (09:00 to 23:30)

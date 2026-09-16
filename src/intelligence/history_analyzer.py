@@ -71,14 +71,30 @@ def get_analyzer() -> "TradeHistoryAnalyzer":
     return _analyzer
 
 
+UNIFIED_TRADES_SQL = """
+    (
+        SELECT symbol, verdict_label, pnl_rupees, confidence_score, opened_at, closed_at, status, regime
+        FROM paper_trades
+        UNION ALL
+        SELECT m.symbol,
+               COALESCE(s.verdict_label, m.strategy_type, m.structure) as verdict_label,
+               m.total_pnl as pnl_rupees,
+               COALESCE(m.confidence_score, s.confidence, 50) as confidence_score,
+               m.opened_at, m.closed_at, m.status,
+               COALESCE(s.market_regime, 'NEUTRAL') as regime
+        FROM multi_leg_trades m
+        LEFT JOIN scan_summaries s ON m.digest_id = s.digest_id
+        UNION ALL
+        SELECT symbol, verdict_label, pnl_rupees, confidence_score, opened_at, closed_at, status, regime
+        FROM live_trades
+    )
+"""
+
+
 class TradeHistoryAnalyzer:
     """Analyzes closed trades to find patterns."""
 
-    MIN_PATTERN_TRADES = 10  # v2.0: raised from 3 -- 3 trades is noise.
-    # v3.0: SINGLE SOURCE OF TRUTH. Used by both the
-    # HAVING clause AND _generate_recommendation, so a
-    # pattern can never surface yet be labelled
-    # "insufficient" (the old min_trades=30 conflict).
+    MIN_PATTERN_TRADES = 5  # Statistical baseline across active trades
     CACHE_TTL_SECONDS = 300  # v2.2: 5-minute cache TTL
 
     def __init__(self):
@@ -228,7 +244,7 @@ class TradeHistoryAnalyzer:
 
         with get_conn() as conn:
             if symbol:
-                rows = conn.execute("""
+                rows = conn.execute(f"""
                     SELECT
                         symbol,
                         verdict_label,
@@ -236,7 +252,7 @@ class TradeHistoryAnalyzer:
                         AVG(CASE WHEN pnl_rupees > 0 THEN 1.0 ELSE 0.0 END) as win_rate,
                         AVG(pnl_rupees) as avg_pnl,
                         AVG(confidence_score) as avg_confidence
-                    FROM paper_trades
+                    FROM {UNIFIED_TRADES_SQL}
                     WHERE status != 'OPEN'
                       AND closed_at IS NOT NULL
                       AND symbol = ?
@@ -244,7 +260,7 @@ class TradeHistoryAnalyzer:
                     HAVING COUNT(*) >= ?
                 """, (symbol, self.MIN_PATTERN_TRADES)).fetchall()
             else:
-                rows = conn.execute("""
+                rows = conn.execute(f"""
                     SELECT
                         symbol,
                         verdict_label,
@@ -252,7 +268,7 @@ class TradeHistoryAnalyzer:
                         AVG(CASE WHEN pnl_rupees > 0 THEN 1.0 ELSE 0.0 END) as win_rate,
                         AVG(pnl_rupees) as avg_pnl,
                         AVG(confidence_score) as avg_confidence
-                    FROM paper_trades
+                    FROM {UNIFIED_TRADES_SQL}
                     WHERE status != 'OPEN'
                       AND closed_at IS NOT NULL
                     GROUP BY symbol, verdict_label
@@ -297,7 +313,7 @@ class TradeHistoryAnalyzer:
         from src.models.schema import get_conn
 
         if symbol:
-            query = """
+            query = f"""
                 SELECT
                     session,
                     COUNT(*) as count,
@@ -312,6 +328,7 @@ class TradeHistoryAnalyzer:
                             WHEN total_min >= 720  AND total_min < 840  THEN 'Post-Lunch (12:00-14:00)'
                             WHEN total_min >= 840  AND total_min < 900  THEN 'Afternoon (14:00-15:00)'
                             WHEN total_min >= 900  AND total_min < 940  THEN 'Closing (15:00-15:40)'
+                            WHEN total_min >= 940  AND total_min < 1410 THEN 'Evening/MCX (15:40-23:30)'
                             ELSE NULL
                         END as session
                     FROM (
@@ -319,7 +336,7 @@ class TradeHistoryAnalyzer:
                             pnl_rupees,
                             CAST(strftime('%H', datetime(opened_at, '+5 hours', '+30 minutes')) AS INTEGER) * 60
                             + CAST(strftime('%M', datetime(opened_at, '+5 hours', '+30 minutes')) AS INTEGER) as total_min
-                        FROM paper_trades
+                        FROM {UNIFIED_TRADES_SQL}
                         WHERE status != 'OPEN'
                           AND closed_at IS NOT NULL
                           AND symbol = ?
@@ -330,7 +347,7 @@ class TradeHistoryAnalyzer:
                 HAVING COUNT(*) >= ?
             """
         else:
-            query = """
+            query = f"""
                 SELECT
                     session,
                     COUNT(*) as count,
@@ -345,6 +362,7 @@ class TradeHistoryAnalyzer:
                             WHEN total_min >= 720  AND total_min < 840  THEN 'Post-Lunch (12:00-14:00)'
                             WHEN total_min >= 840  AND total_min < 900  THEN 'Afternoon (14:00-15:00)'
                             WHEN total_min >= 900  AND total_min < 940  THEN 'Closing (15:00-15:40)'
+                            WHEN total_min >= 940  AND total_min < 1410 THEN 'Evening/MCX (15:40-23:30)'
                             ELSE NULL
                         END as session
                     FROM (
@@ -352,7 +370,7 @@ class TradeHistoryAnalyzer:
                             pnl_rupees,
                             CAST(strftime('%H', datetime(opened_at, '+5 hours', '+30 minutes')) AS INTEGER) * 60
                             + CAST(strftime('%M', datetime(opened_at, '+5 hours', '+30 minutes')) AS INTEGER) as total_min
-                        FROM paper_trades
+                        FROM {UNIFIED_TRADES_SQL}
                         WHERE status != 'OPEN'
                           AND closed_at IS NOT NULL
                     )
@@ -369,6 +387,7 @@ class TradeHistoryAnalyzer:
             "Post-Lunch (12:00-14:00)",
             "Afternoon (14:00-15:00)",
             "Closing (15:00-15:40)",
+            "Evening/MCX (15:40-23:30)",
         ]
 
         insights = []
@@ -417,12 +436,12 @@ class TradeHistoryAnalyzer:
             for range_name, min_conf, max_conf in confidence_ranges:
                 if symbol:
                     row = conn.execute(
-                        """
+                        f"""
                         SELECT
                             COUNT(*) as count,
                             AVG(CASE WHEN pnl_rupees > 0 THEN 1.0 ELSE 0.0 END) as win_rate,
                             AVG(pnl_rupees) as avg_pnl
-                        FROM paper_trades
+                        FROM {UNIFIED_TRADES_SQL}
                         WHERE status != 'OPEN'
                           AND closed_at IS NOT NULL
                           AND confidence_score >= ? AND confidence_score < ?
@@ -432,12 +451,12 @@ class TradeHistoryAnalyzer:
                     ).fetchone()
                 else:
                     row = conn.execute(
-                        """
+                        f"""
                         SELECT
                             COUNT(*) as count,
                             AVG(CASE WHEN pnl_rupees > 0 THEN 1.0 ELSE 0.0 END) as win_rate,
                             AVG(pnl_rupees) as avg_pnl
-                        FROM paper_trades
+                        FROM {UNIFIED_TRADES_SQL}
                         WHERE status != 'OPEN'
                           AND closed_at IS NOT NULL
                           AND confidence_score >= ? AND confidence_score < ?
@@ -469,13 +488,13 @@ class TradeHistoryAnalyzer:
         with get_conn() as conn:
             if symbol:
                 rows = conn.execute(
-                    """
+                    f"""
                     SELECT
                         verdict_label,
                         COUNT(*) as count,
                         AVG(CASE WHEN pnl_rupees > 0 THEN 1.0 ELSE 0.0 END) as win_rate,
                         AVG(pnl_rupees) as avg_pnl
-                    FROM paper_trades
+                    FROM {UNIFIED_TRADES_SQL}
                     WHERE status != 'OPEN'
                       AND closed_at IS NOT NULL
                       AND symbol = ?
@@ -486,13 +505,13 @@ class TradeHistoryAnalyzer:
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    """
+                    f"""
                     SELECT
                         verdict_label,
                         COUNT(*) as count,
                         AVG(CASE WHEN pnl_rupees > 0 THEN 1.0 ELSE 0.0 END) as win_rate,
                         AVG(pnl_rupees) as avg_pnl
-                    FROM paper_trades
+                    FROM {UNIFIED_TRADES_SQL}
                     WHERE status != 'OPEN'
                       AND closed_at IS NOT NULL
                     GROUP BY verdict_label
@@ -526,13 +545,13 @@ class TradeHistoryAnalyzer:
         with get_conn() as conn:
             if symbol:
                 rows = conn.execute(
-                    """
+                    f"""
                     SELECT
                         regime,
                         COUNT(*) as count,
                         AVG(CASE WHEN pnl_rupees > 0 THEN 1.0 ELSE 0.0 END) as win_rate,
                         AVG(pnl_rupees) as avg_pnl
-                    FROM paper_trades
+                    FROM {UNIFIED_TRADES_SQL}
                     WHERE status != 'OPEN'
                       AND closed_at IS NOT NULL
                       AND regime IS NOT NULL
@@ -544,13 +563,13 @@ class TradeHistoryAnalyzer:
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    """
+                    f"""
                     SELECT
                         regime,
                         COUNT(*) as count,
                         AVG(CASE WHEN pnl_rupees > 0 THEN 1.0 ELSE 0.0 END) as win_rate,
                         AVG(pnl_rupees) as avg_pnl
-                    FROM paper_trades
+                    FROM {UNIFIED_TRADES_SQL}
                     WHERE status != 'OPEN'
                       AND closed_at IS NOT NULL
                       AND regime IS NOT NULL
@@ -623,48 +642,114 @@ class TradeHistoryAnalyzer:
         )
 
         with get_conn() as conn:
-            # v3.0 FIX: The old query compared strftime('%H') (zero-padded
-            # text like "09") against str(ist_hour-1) ("8"). Lexically
-            # "09" >= "8" is FALSE, so the entire 09:00-15:00 IST session was
-            # silently dropped. Cast BOTH sides to INTEGER so the comparison
-            # is numeric, not lexicographic.
-            similar_trades = conn.execute(
-                """
-                SELECT
-                    COUNT(*) as total,
-                    SUM(CASE WHEN pnl_rupees > 0 THEN 1 ELSE 0 END) as wins,
-                    AVG(pnl_rupees) as avg_pnl,
-                    AVG(CASE WHEN pnl_rupees > 0 THEN pnl_rupees ELSE 0 END) as avg_win,
-                    AVG(CASE WHEN pnl_rupees <= 0 THEN pnl_rupees ELSE 0 END) as avg_loss
-                FROM paper_trades
-                WHERE status != 'OPEN'
-                  AND symbol = ?
-                  AND verdict_label = ?
-                  AND confidence_score BETWEEN ? AND ?
-                  AND CAST(strftime('%H', datetime(opened_at, '+5 hours', '+30 minutes')) AS INTEGER)
-                      BETWEEN ? AND ?
-            """,
-                (
-                    symbol,
-                    verdict,
-                    max(0, confidence - 20),
-                    min(100, confidence + 20),
-                    max(0, ist_hour - 1),
-                    min(23, ist_hour + 1),  # v3.0: ints, not str()
-                ),
-            ).fetchone()
+            # Flexible verdict matching expression
+            v_match = "(UPPER(REPLACE(verdict_label, ' ', '_')) = UPPER(REPLACE(?, ' ', '_')) OR UPPER(verdict_label) = UPPER(?))"
+
+            similar_trades = None
+            note = ""
+
+            if verdict:
+                # Tier 1: symbol + verdict + confidence (+/-20) + time (+/-1h)
+                similar_trades = conn.execute(
+                    f"""
+                    SELECT
+                        COUNT(*) as total,
+                        SUM(CASE WHEN pnl_rupees > 0 THEN 1 ELSE 0 END) as wins,
+                        AVG(pnl_rupees) as avg_pnl,
+                        AVG(CASE WHEN pnl_rupees > 0 THEN pnl_rupees ELSE 0 END) as avg_win,
+                        AVG(CASE WHEN pnl_rupees <= 0 THEN pnl_rupees ELSE 0 END) as avg_loss
+                    FROM {UNIFIED_TRADES_SQL}
+                    WHERE status != 'OPEN'
+                      AND symbol = ?
+                      AND {v_match}
+                      AND confidence_score BETWEEN ? AND ?
+                      AND CAST(strftime('%H', datetime(opened_at, '+5 hours', '+30 minutes')) AS INTEGER)
+                          BETWEEN ? AND ?
+                """,
+                    (
+                        symbol, verdict, verdict,
+                        max(0, confidence - 20), min(100, confidence + 20),
+                        max(0, ist_hour - 1), min(23, ist_hour + 1),
+                    ),
+                ).fetchone()
+
+                if similar_trades and similar_trades["total"] > 0:
+                    note = f"Based on {similar_trades['total']} similar trades (+/-20 confidence band, +/-1h time)"
+
+                # Tier 2 fallback: symbol + verdict + confidence (+/-25, any hour)
+                if not similar_trades or similar_trades["total"] == 0:
+                    similar_trades = conn.execute(
+                        f"""
+                        SELECT
+                            COUNT(*) as total,
+                            SUM(CASE WHEN pnl_rupees > 0 THEN 1 ELSE 0 END) as wins,
+                            AVG(pnl_rupees) as avg_pnl,
+                            AVG(CASE WHEN pnl_rupees > 0 THEN pnl_rupees ELSE 0 END) as avg_win,
+                            AVG(CASE WHEN pnl_rupees <= 0 THEN pnl_rupees ELSE 0 END) as avg_loss
+                        FROM {UNIFIED_TRADES_SQL}
+                        WHERE status != 'OPEN'
+                          AND symbol = ?
+                          AND {v_match}
+                          AND confidence_score BETWEEN ? AND ?
+                    """,
+                        (
+                            symbol, verdict, verdict,
+                            max(0, confidence - 25), min(100, confidence + 25),
+                        ),
+                    ).fetchone()
+                    if similar_trades and similar_trades["total"] > 0:
+                        note = f"Based on {similar_trades['total']} trades for {symbol} ({verdict}) (+/-25 confidence band)"
+
+                # Tier 3 fallback: symbol + verdict (all hours/confidences)
+                if not similar_trades or similar_trades["total"] == 0:
+                    similar_trades = conn.execute(
+                        f"""
+                        SELECT
+                            COUNT(*) as total,
+                            SUM(CASE WHEN pnl_rupees > 0 THEN 1 ELSE 0 END) as wins,
+                            AVG(pnl_rupees) as avg_pnl,
+                            AVG(CASE WHEN pnl_rupees > 0 THEN pnl_rupees ELSE 0 END) as avg_win,
+                            AVG(CASE WHEN pnl_rupees <= 0 THEN pnl_rupees ELSE 0 END) as avg_loss
+                        FROM {UNIFIED_TRADES_SQL}
+                        WHERE status != 'OPEN'
+                          AND symbol = ?
+                          AND {v_match}
+                    """,
+                        (symbol, verdict, verdict),
+                    ).fetchone()
+                    if similar_trades and similar_trades["total"] > 0:
+                        note = f"Based on all {similar_trades['total']} historical trades for {symbol} ({verdict})"
+
+            # Tier 4 fallback: all historical trades for symbol
+            if not similar_trades or similar_trades["total"] == 0:
+                similar_trades = conn.execute(
+                    f"""
+                    SELECT
+                        COUNT(*) as total,
+                        SUM(CASE WHEN pnl_rupees > 0 THEN 1 ELSE 0 END) as wins,
+                        AVG(pnl_rupees) as avg_pnl,
+                        AVG(CASE WHEN pnl_rupees > 0 THEN pnl_rupees ELSE 0 END) as avg_win,
+                        AVG(CASE WHEN pnl_rupees <= 0 THEN pnl_rupees ELSE 0 END) as avg_loss
+                    FROM {UNIFIED_TRADES_SQL}
+                    WHERE status != 'OPEN'
+                      AND symbol = ?
+                """,
+                    (symbol,),
+                ).fetchone()
+                if similar_trades and similar_trades["total"] > 0:
+                    note = f"Based on all {similar_trades['total']} historical trades for {symbol}"
 
         if not similar_trades or similar_trades["total"] == 0:
             return {"match_found": False, "message": "No similar historical trades"}
 
-        win_rate = similar_trades["wins"] / similar_trades["total"]
+        win_rate = (similar_trades["wins"] or 0) / similar_trades["total"]
 
         return {
             "match_found": True,
             "similar_trades": similar_trades["total"],
             "historical_win_rate": win_rate,
-            "avg_pnl": similar_trades["avg_pnl"],
-            "avg_win": similar_trades["avg_win"],
-            "avg_loss": similar_trades["avg_loss"],
-            "confidence_note": f"Based on {similar_trades['total']} similar trades (+/-20 confidence band)",
+            "avg_pnl": similar_trades["avg_pnl"] or 0,
+            "avg_win": similar_trades["avg_win"] or 0,
+            "avg_loss": similar_trades["avg_loss"] or 0,
+            "confidence_note": note,
         }

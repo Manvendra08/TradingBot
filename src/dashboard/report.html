@@ -1,0 +1,1772 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SteadyAlpha — Executive Derivatives Intelligence Report</title>
+    <link rel="stylesheet" href="/static/theme.css">
+    <script src="/static/theme.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;800&family=DM+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Space+Mono:wght@400;700&display=swap');
+
+        :root {
+            --bg: #0a0c0f;
+            --surface: #111418;
+            --surface-2: #181d24;
+            --surface-3: #202630;
+            --border: #1e2530;
+            --border-subtle: #263040;
+            --accent: #10b981;
+            --red: #fb7185;
+            --green: #34d399;
+            --yellow: #ffd166;
+            --blue: #38bdf8;
+            --muted: #4a5568;
+            --text: #e2e8f0;
+            --text-dim: #7a8796;
+            --text-muted: #94a3b8;
+            --mono: 'Space Mono', monospace;
+            --sans: 'DM Sans', -apple-system, sans-serif;
+            --serif: 'Cinzel', Georgia, serif;
+        }
+
+        [data-theme="light"] {
+            --bg: #f8fafc;
+            --surface: #ffffff;
+            --surface-2: #f1f5f9;
+            --surface-3: #e2e8f0;
+            --border: #cbd5e1;
+            --border-subtle: #e2e8f0;
+            --accent: #0284c7;
+            --red: #dc2626;
+            --green: #059669;
+            --yellow: #d97706;
+            --blue: #0284c7;
+            --muted: #78716c;
+            --text: #0f172a;
+            --text-dim: #475569;
+            --text-muted: #64748b;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html {
+            font-size: 16px;
+        }
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: var(--sans);
+            font-size: 16px;
+            line-height: 1.55;
+            min-height: 100vh;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* ── Header ── */
+        .app-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 24px;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            height: auto !important;
+            min-height: 56px;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        .brand-badge {
+            display: flex;
+            flex-direction: column;
+        }
+        .firm-brand {
+            font-family: var(--serif);
+            font-size: 17px;
+            font-weight: 700;
+            color: var(--text);
+            letter-spacing: 0.5px;
+            line-height: 1.1;
+        }
+        .practice-group {
+            font-family: var(--sans);
+            font-size: 8.5px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1.2px;
+            color: var(--accent);
+        }
+
+        /* Nav Tabs in Main Header */
+        .header-nav {
+            display: flex;
+            background: rgba(0, 0, 0, 0.15);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 2px;
+            gap: 2px;
+        }
+        .nav-tab {
+            color: var(--text-dim);
+            text-decoration: none;
+            padding: 5px 13px;
+            font-size: 12px;
+            font-weight: 600;
+            border-radius: 6px;
+            transition: all 0.2s ease;
+            border: 1px solid transparent;
+            font-family: var(--sans);
+        }
+        .nav-tab:hover {
+            color: var(--text);
+            background: rgba(255, 255, 255, 0.03);
+        }
+        .nav-tab.active {
+            color: var(--accent);
+            background: var(--surface-2);
+            border-color: var(--border);
+        }
+        [data-theme="light"] .header-nav { background: rgba(0, 0, 0, 0.03); }
+        [data-theme="light"] .nav-tab.active { background: #ffffff; border-color: #cbd5e1; }
+
+        /* Live Sync Pill */
+        .live-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: rgba(0, 229, 160, 0.08);
+            border: 1px solid rgba(0, 229, 160, 0.25);
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-family: var(--mono);
+            font-size: 10.5px;
+            font-weight: 600;
+            color: var(--accent);
+            font-variant-numeric: tabular-nums;
+        }
+        [data-theme="light"] .live-pill {
+            background: rgba(2, 132, 199, 0.08);
+            border-color: rgba(2, 132, 199, 0.25);
+            color: var(--accent);
+        }
+        .live-dot {
+            width: 7px;
+            height: 7px;
+            background: var(--accent);
+            border-radius: 50%;
+            display: inline-block;
+        }
+        .live-dot.pulse {
+            animation: livePulse 2s infinite;
+        }
+        @keyframes livePulse {
+            0% { transform: scale(0.9); box-shadow: 0 0 0 0 rgba(0, 229, 160, 0.7); }
+            70% { transform: scale(1.1); box-shadow: 0 0 0 6px rgba(0, 229, 160, 0); }
+            100% { transform: scale(0.9); box-shadow: 0 0 0 0 rgba(0, 229, 160, 0); }
+        }
+        .live-sep { color: var(--border); font-size: 10px; }
+        .live-timestamp { color: var(--text); font-weight: 700; }
+
+        /* Header Right Controls */
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .ctrl-group {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-family: var(--sans);
+            font-size: 11.5px;
+            color: var(--text-dim);
+        }
+        .ctrl-select {
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 4px 6px;
+            border-radius: 6px;
+            font-family: var(--mono);
+            font-size: 11px;
+            cursor: pointer;
+            outline: none;
+        }
+        .btn-action {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 5px 11px;
+            font-size: 11.5px;
+            font-weight: 600;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            text-decoration: none;
+            font-family: var(--sans);
+        }
+        .btn-action:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+            background: rgba(0, 229, 160, 0.05);
+        }
+
+        /* Ghost Button for Executive PDF */
+        .btn-ghost-action {
+            background: transparent;
+            color: var(--text);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            font-weight: 600;
+        }
+        [data-theme="light"] .btn-ghost-action {
+            border-color: rgba(0, 0, 0, 0.2);
+            color: var(--text);
+        }
+        .btn-ghost-action:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+            background: rgba(0, 229, 160, 0.06);
+            transform: translateY(-1px);
+        }
+
+        .freshness-pill {
+            font-family: var(--mono);
+            font-size: 10.5px;
+            color: var(--text-dim);
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            padding: 3px 7px;
+            border-radius: 4px;
+            font-variant-numeric: tabular-nums;
+        }
+
+        /* ── Main Content Container ── */
+        .report-wrapper {
+            max-width: 1520px;
+            margin: 0 auto;
+            padding: 20px 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        /* ── Memorandum Banner ── */
+        .memorandum-header {
+            background: var(--surface);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 8px;
+            padding: 16px 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            position: relative;
+            overflow: hidden;
+        }
+        [data-theme="light"] .memorandum-header {
+            border-color: rgba(0, 0, 0, 0.08);
+        }
+        .memorandum-header::before {
+            content: "";
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 4px;
+            background: var(--accent);
+        }
+        .memo-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        .memo-title-block {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .memo-category {
+            font-family: var(--mono);
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: var(--accent);
+        }
+        .memo-title {
+            font-family: var(--serif);
+            font-size: 21px;
+            font-weight: 700;
+            color: var(--text);
+            letter-spacing: -0.3px;
+        }
+        .memo-subtitle {
+            font-size: 12px;
+            color: var(--text-dim);
+        }
+        .memo-meta-badges {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .memo-tag {
+            font-family: var(--mono);
+            font-size: 10.5px;
+            padding: 3px 8px;
+            border-radius: 4px;
+            background: var(--surface-2);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            color: var(--text);
+            font-variant-numeric: tabular-nums;
+        }
+        [data-theme="light"] .memo-tag {
+            border-color: rgba(0, 0, 0, 0.08);
+        }
+        .memo-tag.highlight {
+            border-color: rgba(0, 229, 160, 0.4);
+            color: var(--accent);
+            background: rgba(0, 229, 160, 0.05);
+        }
+
+        /* ── Standardized KPI Cards ── */
+        .kpi-ribbon {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 14px;
+        }
+        @media (max-width: 960px) {
+            .kpi-ribbon { grid-template-columns: repeat(2, 1fr); }
+        }
+        @media (max-width: 560px) {
+            .kpi-ribbon { grid-template-columns: 1fr; }
+        }
+        .kpi-card {
+            background: var(--surface);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 8px;
+            padding: 14px 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+        }
+        [data-theme="light"] .kpi-card {
+            border-color: rgba(0, 0, 0, 0.08);
+        }
+        .kpi-card:hover {
+            transform: translateY(-2px);
+            border-color: rgba(255, 255, 255, 0.16);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        }
+        [data-theme="light"] .kpi-card:hover {
+            border-color: rgba(0, 0, 0, 0.16);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+        }
+
+        .kpi-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .kpi-symbol {
+            font-weight: 700;
+            font-size: 14px;
+            letter-spacing: 0.05em;
+            color: var(--text);
+        }
+
+        /* Conviction & Regime Badges (Neutral Slate / Amber / Indigo) */
+        .kpi-verdict {
+            display: inline-block;
+            white-space: nowrap;
+            text-align: center;
+            line-height: 1.4;
+            font-family: var(--mono);
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            padding: 2px 8px;
+            border-radius: 4px;
+            background: rgba(148, 163, 184, 0.12);
+            border: 1px solid rgba(148, 163, 184, 0.25);
+            color: #94a3b8;
+        }
+        .kpi-verdict.conviction-high {
+            background: rgba(129, 140, 248, 0.14);
+            border-color: rgba(129, 140, 248, 0.35);
+            color: #a5b4fc;
+        }
+        .kpi-verdict.conviction-med {
+            background: rgba(245, 158, 11, 0.12);
+            border-color: rgba(245, 158, 11, 0.3);
+            color: #fbbf24;
+        }
+        .kpi-verdict.conviction-low {
+            background: rgba(100, 116, 139, 0.15);
+            border-color: rgba(100, 116, 139, 0.3);
+            color: #cbd5e1;
+        }
+
+        /* Light Theme High Contrast Overrides for KPI Verdict Badges */
+        [data-theme="light"] .kpi-verdict {
+            background: rgba(100, 116, 139, 0.08);
+            border-color: rgba(100, 116, 139, 0.25);
+            color: #334155;
+        }
+        [data-theme="light"] .kpi-verdict.conviction-high {
+            background: rgba(79, 70, 229, 0.08);
+            border-color: rgba(79, 70, 229, 0.28);
+            color: #4338ca;
+        }
+        [data-theme="light"] .kpi-verdict.conviction-med {
+            background: rgba(217, 119, 6, 0.10);
+            border-color: rgba(217, 119, 6, 0.30);
+            color: #92400e;
+        }
+        [data-theme="light"] .kpi-verdict.conviction-low {
+            background: rgba(71, 85, 105, 0.08);
+            border-color: rgba(71, 85, 105, 0.25);
+            color: #334155;
+        }
+
+        .kpi-right {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .kpi-scan-age {
+            font-family: var(--mono);
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--text-dim);
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            padding: 1px 6px;
+            border-radius: 4px;
+        }
+        .kpi-scan-age.stale {
+            color: #f59e0b;
+            border-color: rgba(245, 158, 11, 0.35);
+            background: rgba(245, 158, 11, 0.08);
+        }
+
+        .kpi-spot-row {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+        }
+        .kpi-spot {
+            font-family: var(--mono);
+            font-size: 22px;
+            font-weight: 700;
+            color: var(--text);
+            font-variant-numeric: tabular-nums;
+        }
+        .kpi-change-col {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            line-height: 1.2;
+        }
+        .kpi-change-label {
+            font-size: 9px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-dim);
+            font-weight: 600;
+        }
+        .kpi-change {
+            font-family: var(--mono);
+            font-size: 12px;
+            font-weight: 600;
+            font-variant-numeric: tabular-nums;
+        }
+        .kpi-change.up { color: var(--green); }
+        .kpi-change.down { color: var(--red); }
+        .kpi-change.flat { color: var(--text-dim); }
+
+        .kpi-details-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 8px 14px;
+            font-size: 12px;
+            border-top: 1px solid rgba(255, 255, 255, 0.08);
+            padding-top: 8px;
+        }
+        [data-theme="light"] .kpi-details-grid {
+            border-top-color: rgba(0, 0, 0, 0.08);
+        }
+        .kpi-kv {
+            display: flex;
+            justify-content: space-between;
+            color: var(--text-dim);
+            align-items: center;
+        }
+        .kpi-kv.kpi-kv-delta {
+            align-items: center;
+        }
+        .kpi-kv.kpi-kv-delta > span:first-child {
+            display: flex;
+            align-items: center;
+            line-height: 1;
+        }
+        .kpi-kv span:last-child {
+            font-family: var(--mono);
+            font-weight: 600;
+            color: var(--text);
+            font-variant-numeric: tabular-nums;
+        }
+
+        /* De-cluttered Delta OI Chips */
+        .delta-chips-container {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 2px;
+            align-items: flex-end;
+        }
+        .oi-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            font-family: var(--mono);
+            font-size: 10px;
+            font-weight: 700;
+            padding: 1px 5px;
+            border-radius: 3px;
+            font-variant-numeric: tabular-nums;
+            line-height: 1.2;
+        }
+        .oi-chip.bullish {
+            background: rgba(52, 211, 153, 0.12);
+            color: #34d399;
+            border: 1px solid rgba(52, 211, 153, 0.28);
+        }
+        .oi-chip.bearish {
+            background: rgba(251, 113, 133, 0.12);
+            color: #fb7185;
+            border: 1px solid rgba(251, 113, 133, 0.28);
+        }
+        .oi-chip.unwind {
+            background: rgba(251, 113, 133, 0.1);
+            color: #fb7185;
+            border: 1px solid rgba(251, 113, 133, 0.25);
+        }
+        .oi-chip.buildup {
+            background: rgba(52, 211, 153, 0.1);
+            color: #34d399;
+            border: 1px solid rgba(52, 211, 153, 0.25);
+        }
+        .oi-chip.neutral {
+            background: rgba(148, 163, 184, 0.1);
+            color: #94a3b8;
+            border: 1px solid rgba(148, 163, 184, 0.25);
+        }
+        .oi-chip .chip-lbl {
+            font-weight: 800;
+            opacity: 0.8;
+            font-size: 9px;
+        }
+        [data-theme="light"] .oi-chip.bullish,
+        [data-theme="light"] .oi-chip.buildup {
+            background: rgba(5, 150, 105, 0.10);
+            color: #047857;
+            border-color: rgba(5, 150, 105, 0.25);
+        }
+        [data-theme="light"] .oi-chip.bearish,
+        [data-theme="light"] .oi-chip.unwind {
+            background: rgba(220, 38, 38, 0.10);
+            color: #b91c1c;
+            border-color: rgba(220, 38, 38, 0.25);
+        }
+        [data-theme="light"] .oi-chip.neutral {
+            background: rgba(100, 116, 139, 0.10);
+            color: #334155;
+            border-color: rgba(100, 116, 139, 0.25);
+        }
+
+        /* ── Executive Synthesis ── */
+        .synthesis-container {
+            display: block;
+            width: 100%;
+        }
+
+        .takeaways-box {
+            background: var(--surface);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-left: 4px solid var(--accent);
+            border-radius: 8px;
+            padding: 16px 20px;
+            display: flex;
+            flex-direction: column;
+        }
+        [data-theme="light"] .takeaways-box {
+            border-color: rgba(0, 0, 0, 0.08);
+            border-left-color: var(--accent);
+        }
+        .takeaways-heading {
+            font-family: var(--serif);
+            font-size: 15px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--accent);
+            margin-bottom: 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .takeaways-list {
+            list-style: none;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+        .takeaways-list li {
+            position: relative;
+            padding-left: 16px;
+            font-size: 15.5px;
+            color: var(--text);
+            line-height: 1.6;
+            border-left: 2px solid rgba(52, 211, 153, 0.4);
+            margin-bottom: 0.25rem;
+        }
+        .takeaways-list li:last-child {
+            margin-bottom: 0;
+        }
+        .takeaways-list li strong, .takeaways-list li b {
+            color: #ffffff;
+            font-weight: 700;
+        }
+        [data-theme="light"] .takeaways-list li strong, [data-theme="light"] .takeaways-list li b {
+            color: #0f172a;
+        }
+
+        /* ── 1.0 SCIR Strategic Context ── */
+        .scir-section {
+            margin-top: 2rem;
+        }
+        .section-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 12px;
+        }
+        .section-title {
+            font-family: var(--serif);
+            font-size: 17px;
+            font-weight: 700;
+            letter-spacing: -0.2px;
+            color: var(--text);
+        }
+        .section-sub {
+            font-size: 12.5px;
+            color: var(--text-dim);
+        }
+        .scir-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 14px;
+        }
+        @media (max-width: 768px) {
+            .scir-grid { grid-template-columns: 1fr; }
+        }
+        .scir-card {
+            background: var(--surface);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 8px;
+            padding: 16px 18px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            border-top: 3px solid #64748b;
+        }
+        [data-theme="light"] .scir-card {
+            border-color: rgba(0, 0, 0, 0.08);
+        }
+        /* Tactical Semantic Colors */
+        .scir-card.situation { border-top-color: #64748b; }
+        .scir-card.complication { border-top-color: #f59e0b; }
+        .scir-card.implication { border-top-color: #8b5cf6; }
+        .scir-card.resolution { border-top-color: #10b981; }
+
+        .scir-label {
+            font-family: var(--mono);
+            font-size: 12.5px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+        }
+        .scir-card.situation .scir-label { color: #94a3b8; }
+        .scir-card.complication .scir-label { color: #f59e0b; }
+        .scir-card.implication .scir-label { color: #a78bfa; }
+        .scir-card.resolution .scir-label { color: #10b981; }
+
+        .scir-card p {
+            font-size: 14.5px;
+            color: var(--text);
+            line-height: 1.6;
+            flex: 1;
+        }
+        .scir-footer {
+            margin-top: auto;
+            padding-top: 10px;
+            border-top: 1px solid rgba(255, 255, 255, 0.06);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        [data-theme="light"] .scir-footer {
+            border-top-color: rgba(0, 0, 0, 0.06);
+        }
+        .scir-strike-tag {
+            font-family: var(--mono);
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.05em;
+            color: rgba(255, 255, 255, 0.85);
+            background: rgba(255, 255, 255, 0.04);
+            padding: 3px 9px;
+            border-radius: 4px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            font-variant-numeric: tabular-nums;
+        }
+        [data-theme="light"] .scir-strike-tag {
+            color: #334155;
+            background: rgba(0, 0, 0, 0.04);
+            border-color: rgba(0, 0, 0, 0.08);
+        }
+
+        /* ── Exhibits (SVG Charts) ── */
+        .exhibits-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+        @media (max-width: 900px) {
+            .exhibits-grid { grid-template-columns: 1fr; }
+        }
+        .exhibit-panel {
+            background: var(--surface);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 8px;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        [data-theme="light"] .exhibit-panel {
+            border-color: rgba(0, 0, 0, 0.08);
+        }
+        .exhibit-title-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .exhibit-name {
+            font-family: var(--sans);
+            font-size: 14.5px;
+            font-weight: 700;
+            color: var(--text);
+        }
+        .exhibit-meta {
+            font-family: var(--mono);
+            font-size: 11.5px;
+            font-weight: 600;
+            color: var(--text-dim);
+        }
+        .svg-container {
+            width: 100%;
+            overflow-x: auto;
+        }
+
+        /* Theme rules for embedded SVGs */
+        .svg-container svg {
+            width: 100%;
+            height: auto;
+            border-radius: 6px;
+            transition: background 0.25s ease;
+        }
+        [data-theme="light"] .svg-container svg {
+            background: #ffffff !important;
+            border: 1px solid #e2e8f0 !important;
+        }
+        :root:not([data-theme="light"]) .svg-container svg {
+            background: #111418 !important;
+            border: 1px solid #1e2530 !important;
+        }
+        :root:not([data-theme="light"]) .svg-container svg text[fill="#0f172a"] {
+            fill: #e2e8f0 !important;
+        }
+        :root:not([data-theme="light"]) .svg-container svg text[fill="#334155"] {
+            fill: #94a3b8 !important;
+        }
+        :root:not([data-theme="light"]) .svg-container svg text[fill="#64748b"] {
+            fill: #718096 !important;
+        }
+        :root:not([data-theme="light"]) .svg-container svg line[stroke="#cbd5e1"] {
+            stroke: #334155 !important;
+        }
+        :root:not([data-theme="light"]) .svg-container svg rect[fill="#e2e8f0"] {
+            fill: #1e293b !important;
+        }
+        :root:not([data-theme="light"]) .svg-container svg rect[fill="#fee2e2"] {
+            fill: rgba(220, 38, 38, 0.25) !important;
+        }
+        :root:not([data-theme="light"]) .svg-container svg rect[fill="#ffedd5"] {
+            fill: rgba(234, 88, 12, 0.25) !important;
+        }
+        :root:not([data-theme="light"]) .svg-container svg rect[fill="#e0f2fe"] {
+            fill: rgba(2, 132, 199, 0.25) !important;
+        }
+        :root:not([data-theme="light"]) .svg-container svg rect[fill="#fef3c7"] {
+            fill: rgba(217, 119, 6, 0.25) !important;
+        }
+
+        /* ── Tables & Micro-Visual Divergence Bars ── */
+        .table-panel {
+            background: var(--surface);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 8px;
+            padding: 16px;
+            overflow-x: auto;
+        }
+        [data-theme="light"] .table-panel {
+            border-color: rgba(0, 0, 0, 0.08);
+        }
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+            text-align: left;
+            font-variant-numeric: tabular-nums;
+        }
+        .data-table th {
+            font-family: var(--mono);
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--text-dim);
+            padding: 10px 12px;
+            border-bottom: 1px solid var(--border);
+            background: var(--surface-2);
+        }
+        .data-table td {
+            padding: 10px 12px;
+            border-bottom: 1px solid var(--border-subtle);
+            color: var(--text);
+            font-variant-numeric: tabular-nums;
+        }
+        .data-table tr:hover td {
+            background: rgba(255, 255, 255, 0.015);
+        }
+        [data-theme="light"] .data-table tr:hover td {
+            background: rgba(0, 0, 0, 0.02);
+        }
+        #matrix-table th,
+        #matrix-table td {
+            white-space: nowrap;
+            vertical-align: middle;
+        }
+        #matrix-table th:last-child,
+        #matrix-table td:last-child {
+            min-width: 145px;
+            text-align: center;
+        }
+        .data-table .mono {
+            font-family: var(--mono);
+            font-variant-numeric: tabular-nums;
+        }
+        .badge-pill {
+            display: inline-block;
+            font-family: var(--mono);
+            font-size: 9.5px;
+            font-weight: 700;
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
+        .badge-pill.bullish { background: rgba(0, 229, 160, 0.12); color: var(--green); }
+        .badge-pill.bearish { background: rgba(255, 77, 109, 0.12); color: var(--red); }
+        .badge-pill.neutral { background: rgba(255, 209, 102, 0.12); color: var(--yellow); }
+
+        [data-theme="light"] .badge-pill.bullish {
+            background: rgba(5, 150, 105, 0.10);
+            color: #047857;
+            border: 1px solid rgba(5, 150, 105, 0.25);
+        }
+        [data-theme="light"] .badge-pill.bearish {
+            background: rgba(220, 38, 38, 0.10);
+            color: #b91c1c;
+            border: 1px solid rgba(220, 38, 38, 0.25);
+        }
+        [data-theme="light"] .badge-pill.neutral {
+            background: rgba(217, 119, 6, 0.10);
+            color: #92400e;
+            border: 1px solid rgba(217, 119, 6, 0.25);
+        }
+
+        /* Inline Horizontal Divergence Bar Meters */
+        .divergence-cell {
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+            min-width: 105px;
+        }
+        .divergence-text {
+            display: flex;
+            justify-content: space-between;
+            font-size: 10.5px;
+            font-family: var(--mono);
+            font-variant-numeric: tabular-nums;
+            font-weight: 600;
+        }
+        .divergence-bar-track {
+            height: 4px;
+            background: rgba(255, 255, 255, 0.08);
+            border-radius: 2px;
+            overflow: hidden;
+            width: 100%;
+        }
+        [data-theme="light"] .divergence-bar-track {
+            background: rgba(0, 0, 0, 0.08);
+        }
+        .divergence-bar-fill {
+            height: 100%;
+            border-radius: 2px;
+            transition: width 0.3s ease;
+        }
+        .divergence-bar-fill.ce { background: #38bdf8; }
+        .divergence-bar-fill.pe { background: #34d399; }
+        .divergence-bar-fill.unwind { background: #fb7185; }
+        .divergence-bar-fill.bullish { background: #34d399; }
+        .divergence-bar-fill.bearish { background: #fb7185; }
+
+        /* ── Macro & Sector Grid ── */
+        .macro-sector-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+        @media (max-width: 800px) {
+            .macro-sector-grid { grid-template-columns: 1fr; }
+        }
+        .sector-chips {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+        }
+        @media (max-width: 500px) {
+            .sector-chips { grid-template-columns: repeat(2, 1fr); }
+        }
+        .sector-chip {
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 8px 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .sector-name { font-size: 10.5px; font-weight: 700; color: var(--text-dim); }
+        .sector-val { font-family: var(--mono); font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+        .fii-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+        }
+        .fii-card {
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 8px 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .fii-card .sector-val { font-variant-numeric: tabular-nums; }
+
+        /* ── Provenance Footer ── */
+        .provenance-footer {
+            border-top: 1px solid var(--border);
+            padding: 16px 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 11px;
+            color: var(--text-dim);
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .provenance-left {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        .provenance-right {
+            font-family: var(--mono);
+            font-size: 10px;
+        }
+
+        /* Flash Toast for Live Scan Updates */
+        .toast-notification {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            background: var(--surface-2);
+            border: 1px solid var(--accent);
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+            padding: 10px 16px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text);
+            z-index: 1000;
+            transform: translateY(100px);
+            opacity: 0;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .toast-notification.show {
+            transform: translateY(0);
+            opacity: 1;
+        }
+
+        /* Subtle Value Update Glow */
+        .data-glow {
+            animation: glowGreen 1.5s ease-out;
+        }
+        @keyframes glowGreen {
+            0% { background-color: rgba(0, 229, 160, 0.3); }
+            100% { background-color: transparent; }
+        }
+    </style>
+</head>
+<body>
+    <!-- App Header (Single Consolidated Row) -->
+    <header class="app-header">
+        <div class="header-left">
+            <div class="brand-badge">
+                <span class="firm-brand">SteadyAlpha</span>
+                <span class="practice-group">INDIAN CAPITAL MARKETS & QUANT PRACTICE</span>
+            </div>
+
+            <div class="header-nav">
+                <a href="/" class="nav-tab" id="tab-dashboard">Dashboard</a>
+                <a href="/paper" class="nav-tab" id="tab-paper">Paper Trades</a>
+                <a href="/broker" class="nav-tab" id="tab-broker">Broker Console</a>
+                <a href="/ai" class="nav-tab" id="tab-ai-insights">AI Insights</a>
+                <a href="/report" class="nav-tab active" id="tab-report">Market Summary</a>
+                <a href="/settings" class="nav-tab" id="tab-settings">Settings</a>
+                <a href="/ops" class="nav-tab" id="tab-ops">Ops Monitor</a>
+            </div>
+        </div>
+
+        <div class="live-pill" id="live-pill">
+            <span class="live-dot pulse"></span>
+            <span>LIVE SCAN SYNC</span>
+            <span class="live-sep">•</span>
+            <span class="live-timestamp" id="header-scan-time">Connecting...</span>
+        </div>
+
+        <div class="header-right">
+            <a href="/api/eod_report_pdf" class="btn-action btn-ghost-action" id="btn-download-pdf" target="_blank" title="Download SteadyAlpha Executive PDF">
+                <span>📄</span> Executive PDF
+            </a>
+            <button id="theme-toggle-btn" class="theme-toggle-btn" title="Toggle Day/Night">🌙</button>
+        </div>
+    </header>
+
+    <!-- Main Report Body -->
+    <main class="report-wrapper">
+        <!-- Memorandum Masthead -->
+        <section class="memorandum-header">
+            <div class="memo-top">
+                <div class="memo-title-block">
+                    <span class="memo-category">STRATEGIC DERIVATIVES INTELLIGENCE MEMORANDUM</span>
+                    <h1 class="memo-title">SteadyAlpha Executive Market & Derivatives Report</h1>
+                    <span class="memo-subtitle">Real-time systematic scan analysis, option-chain order flow, and scenario playbook</span>
+                </div>
+                <div class="memo-meta-badges">
+                    <span class="memo-tag" id="memo-date">Loading date...</span>
+                    <span class="memo-tag highlight" id="memo-regime">REGIME: SCAN-ALIGNED</span>
+                    <span class="memo-tag" id="memo-time">16:00 IST EOD CLOSE</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- KPI Ribbon (4 Cards) -->
+        <section class="kpi-ribbon">
+            <!-- NIFTY -->
+            <div class="kpi-card" id="kpi-nifty">
+                <div class="kpi-header">
+                    <span class="kpi-symbol">NIFTY 50</span>
+                    <div class="kpi-right">
+                        <span class="kpi-scan-age" id="nifty-scan-time">—</span>
+                        <span class="kpi-verdict" id="nifty-verdict">—</span>
+                    </div>
+                </div>
+                <div class="kpi-spot-row">
+                    <span class="kpi-spot" id="nifty-spot">—</span>
+                    <div class="kpi-change-col">
+                        <span class="kpi-change-label">DAY Δ</span>
+                        <span class="kpi-change" id="nifty-change">—</span>
+                    </div>
+                </div>
+                <div class="kpi-details-grid">
+                    <div class="kpi-kv"><span>PCR</span><span id="nifty-pcr">—</span></div>
+                    <div class="kpi-kv"><span>Max Pain</span><span id="nifty-mp">—</span></div>
+                    <div class="kpi-kv"><span>ATM Strike</span><span id="nifty-atm">—</span></div>
+                    <div class="kpi-kv kpi-kv-delta">
+                        <span>Net ΔOI</span>
+                        <div class="delta-chips-container" id="nifty-delta-chips">
+                            <span class="oi-chip neutral">—</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- BANKNIFTY -->
+            <div class="kpi-card" id="kpi-banknifty">
+                <div class="kpi-header">
+                    <span class="kpi-symbol">BANKNIFTY</span>
+                    <div class="kpi-right">
+                        <span class="kpi-scan-age" id="bn-scan-time">—</span>
+                        <span class="kpi-verdict" id="bn-verdict">—</span>
+                    </div>
+                </div>
+                <div class="kpi-spot-row">
+                    <span class="kpi-spot" id="bn-spot">—</span>
+                    <div class="kpi-change-col">
+                        <span class="kpi-change-label">DAY Δ</span>
+                        <span class="kpi-change" id="bn-change">—</span>
+                    </div>
+                </div>
+                <div class="kpi-details-grid">
+                    <div class="kpi-kv"><span>PCR</span><span id="bn-pcr">—</span></div>
+                    <div class="kpi-kv"><span>Max Pain</span><span id="bn-mp">—</span></div>
+                    <div class="kpi-kv"><span>ATM Strike</span><span id="bn-atm">—</span></div>
+                    <div class="kpi-kv kpi-kv-delta">
+                        <span>Net ΔOI</span>
+                        <div class="delta-chips-container" id="bn-delta-chips">
+                            <span class="oi-chip neutral">—</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SENSEX -->
+            <div class="kpi-card" id="kpi-sensex">
+                <div class="kpi-header">
+                    <span class="kpi-symbol">SENSEX</span>
+                    <div class="kpi-right">
+                        <span class="kpi-scan-age" id="sensex-scan-time">—</span>
+                        <span class="kpi-verdict" id="sensex-verdict">—</span>
+                    </div>
+                </div>
+                <div class="kpi-spot-row">
+                    <span class="kpi-spot" id="sensex-spot">—</span>
+                    <div class="kpi-change-col">
+                        <span class="kpi-change-label">DAY Δ</span>
+                        <span class="kpi-change" id="sensex-change">—</span>
+                    </div>
+                </div>
+                <div class="kpi-details-grid">
+                    <div class="kpi-kv"><span>PCR</span><span id="sensex-pcr">—</span></div>
+                    <div class="kpi-kv"><span>Max Pain</span><span id="sensex-mp">—</span></div>
+                    <div class="kpi-kv"><span>ATM Strike</span><span id="sensex-atm">—</span></div>
+                    <div class="kpi-kv kpi-kv-delta">
+                        <span>Net ΔOI</span>
+                        <div class="delta-chips-container" id="sensex-delta-chips">
+                            <span class="oi-chip neutral">—</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- NATURALGAS -->
+            <div class="kpi-card" id="kpi-natgas">
+                <div class="kpi-header">
+                    <span class="kpi-symbol">NATURALGAS (MCX)</span>
+                    <div class="kpi-right">
+                        <span class="kpi-scan-age" id="ng-scan-time">—</span>
+                        <span class="kpi-verdict" id="ng-verdict">—</span>
+                    </div>
+                </div>
+                <div class="kpi-spot-row">
+                    <span class="kpi-spot" id="ng-spot">—</span>
+                    <div class="kpi-change-col">
+                        <span class="kpi-change-label">DAY Δ</span>
+                        <span class="kpi-change" id="ng-change">—</span>
+                    </div>
+                </div>
+                <div class="kpi-details-grid">
+                    <div class="kpi-kv"><span>PCR</span><span id="ng-pcr">—</span></div>
+                    <div class="kpi-kv"><span>Max Pain</span><span id="ng-mp">—</span></div>
+                    <div class="kpi-kv"><span>ATM Strike</span><span id="ng-atm">—</span></div>
+                    <div class="kpi-kv"><span>1H / 3H</span><span id="ng-candles">—</span></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Executive Synthesis & Key Takeaways -->
+        <section class="synthesis-container">
+            <div class="takeaways-box">
+                <h2 class="takeaways-heading">Executive Synthesis & Key Takeaways</h2>
+                <ul class="takeaways-list" id="takeaways-list">
+                    <li>Loading real-time scan synthesis...</li>
+                </ul>
+            </div>
+        </section>
+
+        <!-- 1.0 SCIR Strategic Context -->
+        <section class="scir-section">
+            <div class="section-header">
+                <div>
+                    <h2 class="section-title">1.0 SCIR Strategic Context & Derivatives Structure</h2>
+                    <span class="section-sub">Institutional Situation, Complication, Implication, and Resolution Matrix</span>
+                </div>
+            </div>
+            <div class="scir-grid">
+                <div class="scir-card situation">
+                    <div class="scir-label">Situation</div>
+                    <p id="scir-situation">Loading situational baseline...</p>
+                    <div class="scir-footer">
+                        <span class="scir-strike-tag" id="scir-tag-situation">Anchor: ATM Equilibrium</span>
+                    </div>
+                </div>
+                <div class="scir-card complication">
+                    <div class="scir-label">Complication</div>
+                    <p id="scir-complication">Analyzing order flow friction...</p>
+                    <div class="scir-footer">
+                        <span class="scir-strike-tag" id="scir-tag-complication">Friction: Overhead Wall</span>
+                    </div>
+                </div>
+                <div class="scir-card implication">
+                    <div class="scir-label">Implication</div>
+                    <p id="scir-implication">Evaluating volatility skew and gamma profile...</p>
+                    <div class="scir-footer">
+                        <span class="scir-strike-tag" id="scir-tag-implication">Gamma: ATM ±50 Pinned</span>
+                    </div>
+                </div>
+                <div class="scir-card resolution">
+                    <div class="scir-label">Resolution</div>
+                    <p id="scir-resolution">Formulating execution posture...</p>
+                    <div class="scir-footer">
+                        <span class="scir-strike-tag" id="scir-tag-resolution">Action: Delta Stop & Roll</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Exhibits (SVG Charts) -->
+        <section class="exhibits-grid">
+            <!-- Exhibit 1A: Net Delta OI Waterfall -->
+            <div class="exhibit-panel">
+                <div class="exhibit-title-bar">
+                    <span class="exhibit-name">Exhibit 1A: Net ΔOI Landscape (Call vs Put Flow)</span>
+                    <span class="exhibit-meta">Source: Internal Scanning Engine</span>
+                </div>
+                <div class="svg-container" id="oi-chart-svg-container">
+                    <div style="padding: 40px; text-align:center; color: var(--text-dim);">Generating OI flow graph...</div>
+                </div>
+            </div>
+
+            <!-- Exhibit 1B: Sentiment Gauges -->
+            <div class="exhibit-panel">
+                <div class="exhibit-title-bar">
+                    <span class="exhibit-name">Exhibit 1B: Multi-Zone PCR Sentiment Gauges</span>
+                    <span class="exhibit-meta">Oversold &lt;0.75 | Neutral 0.95-1.20 | Wall &gt;1.20</span>
+                </div>
+                <div class="svg-container" id="pcr-gauge-svg-container">
+                    <div style="padding: 40px; text-align:center; color: var(--text-dim);">Rendering sentiment gauges...</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Exhibit 1C: Cross-Index Derivatives Matrix -->
+        <section class="table-panel">
+            <div class="section-header">
+                <div>
+                    <h2 class="section-title">Exhibit 1C: Systematic Scan Cross-Index Derivatives Matrix</h2>
+                    <span class="section-sub">Strike clusters, Max Pain anchors, and TFSS timeframe signals</span>
+                </div>
+            </div>
+            <table class="data-table" id="matrix-table">
+                <thead>
+                    <tr>
+                        <th>Index</th>
+                        <th>Spot Price</th>
+                        <th>ATM Strike</th>
+                        <th>PCR</th>
+                        <th>Net ΔCE OI</th>
+                        <th>Net ΔPE OI</th>
+                        <th>Max Pain</th>
+                        <th>Primary Base (PE)</th>
+                        <th>Primary Cap (CE)</th>
+                        <th>1H / 3H</th>
+                        <th>Engine Verdict</th>
+                    </tr>
+                </thead>
+                <tbody id="matrix-tbody">
+                    <tr><td colspan="11" style="text-align: center; color: var(--text-dim); padding: 20px;">Fetching live scan matrix...</td></tr>
+                </tbody>
+            </table>
+        </section>
+
+        <!-- Exhibit 2: Strategic Battleground Matrix -->
+        <section class="table-panel">
+            <div class="section-header">
+                <div>
+                    <h2 class="section-title">Exhibit 2: Strategic Battleground Matrix & Scenario Playbook</h2>
+                    <span class="section-sub">Quantitative levels, volatility pinning magnets, and recommended desk posture</span>
+                </div>
+            </div>
+            <table class="data-table" id="battleground-table">
+                <thead>
+                    <tr>
+                        <th>Asset</th>
+                        <th>Spot</th>
+                        <th>ATM Straddle</th>
+                        <th>Put Wall (Base)</th>
+                        <th>Call Wall (Cap)</th>
+                        <th>Max Pain Magnet</th>
+                        <th>PCR</th>
+                        <th>Flow Bias</th>
+                        <th>Recommended Desk Action</th>
+                    </tr>
+                </thead>
+                <tbody id="battleground-tbody">
+                    <tr><td colspan="9" style="text-align: center; color: var(--text-dim); padding: 20px;">Computing battleground scenario matrix...</td></tr>
+                </tbody>
+            </table>
+        </section>
+
+        <!-- Macro & Sector Breadth -->
+        <section class="macro-sector-grid">
+            <!-- Sector Breadth -->
+            <div class="table-panel">
+                <div class="section-header">
+                    <div>
+                        <h3 class="section-title" style="font-size: 14px;">Sectoral Breadth Matrix</h3>
+                        <span class="section-sub">Intra-day leadership and drag</span>
+                    </div>
+                </div>
+                <div class="sector-chips" id="sector-chips">
+                    <!-- Populated via JS -->
+                </div>
+            </div>
+
+            <!-- FII / DII Institutional Flows -->
+            <div class="table-panel">
+                <div class="section-header">
+                    <div>
+                        <h3 class="section-title" style="font-size: 14px;">Institutional Flow Distribution</h3>
+                        <span class="section-sub">Cash market absorption & futures positioning</span>
+                    </div>
+                </div>
+                <div class="fii-grid" id="fii-grid">
+                    <!-- Populated via JS -->
+                </div>
+            </div>
+        </section>
+
+        <!-- Provenance Footer -->
+        <footer class="provenance-footer">
+            <div class="provenance-left">
+                <span>SteadyAlpha Quantitative Derivatives Desk</span>
+                <span>•</span>
+                <span id="footer-digest">Digest: Connecting...</span>
+                <span>•</span>
+                <span id="footer-broker-status">Broker Gate: Fail-Closed Enforced</span>
+            </div>
+            <div class="provenance-right">
+                <span id="footer-sync-time">Synchronized with Engine</span>
+            </div>
+        </footer>
+    </main>
+
+    <!-- Toast Notification -->
+    <div class="toast-notification" id="scan-toast">
+        <span>✨</span>
+        <span id="toast-text">New scan cycle ingested</span>
+    </div>
+
+    <!-- JavaScript Live Synchronization Logic -->
+    <script>
+        let currentScanIso = null;
+        let pollTimer = null;
+        let freshnessTimer = null;
+        let lastScanAgeSec = 0;
+
+        function fmtNum(val, decimals = 2) {
+            if (val === null || val === undefined || isNaN(val)) return '—';
+            return Number(val).toLocaleString('en-IN', {
+                minimumFractionDigits: decimals,
+                maximumFractionDigits: decimals
+            });
+        }
+
+        function fmtOI(val) {
+            if (val === null || val === undefined || isNaN(val)) return '0';
+            const num = Number(val);
+            const sign = num > 0 ? '+' : '';
+            if (Math.abs(num) >= 1000000) {
+                return `${sign}${(num / 1000000).toFixed(2)}M`;
+            } else if (Math.abs(num) >= 1000) {
+                return `${sign}${(num / 1000).toFixed(1)}K`;
+            }
+            return `${sign}${num.toLocaleString('en-IN')}`;
+        }
+
+        function getConvictionClass(confidence, verdictLabel) {
+            const conf = Number(confidence) || 0;
+            const lbl = (verdictLabel || '').toLowerCase();
+            if (conf >= 70 || lbl.includes('high')) {
+                return 'conviction-high';
+            } else if (conf >= 40 || lbl.includes('mod') || lbl.includes('range') || lbl.includes('neutral')) {
+                return 'conviction-med';
+            } else {
+                return 'conviction-low';
+            }
+        }
+
+        function renderDeltaChips(ceDelta, peDelta) {
+            function buildChip(type, delta) {
+                const d = Number(delta) || 0;
+                let chipClass = 'neutral';
+                let arrow = '—';
+
+                if (type === 'CE') {
+                    if (d < 0) {
+                        chipClass = 'bullish'; // Call unwinding = Bullish (green)
+                        arrow = '↘';
+                    } else if (d > 0) {
+                        chipClass = 'bearish'; // Call buildup = Bearish (red)
+                        arrow = '↗';
+                    }
+                } else { // PE
+                    if (d < 0) {
+                        chipClass = 'bearish'; // Put unwinding = Bearish (red)
+                        arrow = '↘';
+                    } else if (d > 0) {
+                        chipClass = 'bullish'; // Put buildup = Bullish (green)
+                        arrow = '↗';
+                    }
+                }
+                return `<span class="oi-chip ${chipClass}"><span class="chip-lbl">${type}</span> ${fmtOI(d)} ${arrow}</span>`;
+            }
+            return `${buildChip('CE', ceDelta)}${buildChip('PE', peDelta)}`;
+        }
+
+        function renderDivergenceCell(deltaVal, type, maxDelta) {
+            const val = Number(deltaVal) || 0;
+            const absVal = Math.abs(val);
+            const pct = Math.min(100, Math.max(8, Math.round((absVal / (maxDelta || 1)) * 100)));
+            let valColor = 'var(--text-dim)';
+            let barClass = 'bullish';
+            let label = 'Neutral';
+            let arrow = '—';
+
+            if (type === 'CE') {
+                if (val < 0) {
+                    valColor = 'var(--green)';
+                    barClass = 'bullish';
+                    label = 'Unwind';
+                    arrow = '↘';
+                } else if (val > 0) {
+                    valColor = 'var(--red)';
+                    barClass = 'bearish';
+                    label = 'Buildup';
+                    arrow = '↗';
+                }
+            } else { // PE
+                if (val < 0) {
+                    valColor = 'var(--red)';
+                    barClass = 'bearish';
+                    label = 'Unwind';
+                    arrow = '↘';
+                } else if (val > 0) {
+                    valColor = 'var(--green)';
+                    barClass = 'bullish';
+                    label = 'Buildup';
+                    arrow = '↗';
+                }
+            }
+
+            return `
+                <div class="divergence-cell">
+                    <div class="divergence-text">
+                        <span style="color: ${valColor}; font-weight: 700;">${fmtOI(val)} ${arrow}</span>
+                        <span style="color: var(--text-dim); font-size: 9.5px;">${label}</span>
+                    </div>
+                    <div class="divergence-bar-track">
+                        <div class="divergence-bar-fill ${barClass}" style="width: ${val === 0 ? 0 : pct}%;"></div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function showToast(text) {
+            const toast = document.getElementById('scan-toast');
+            const toastText = document.getElementById('toast-text');
+            if (!toast || !toastText) return;
+            toastText.textContent = text;
+            toast.classList.add('show');
+            setTimeout(() => { toast.classList.remove('show'); }, 4000);
+        }
+
+        async function fetchReportData() {
+            try {
+                const resp = await fetch(`/api/eod_live_data?t=${Date.now()}`, {
+                    cache: "no-store",
+                });
+                if (!resp.ok) return;
+                const data = await resp.json();
+                if (data.status !== 'ok') return;
+
+                const isNewScan = currentScanIso !== null && data.last_scan_iso !== currentScanIso;
+                currentScanIso = data.last_scan_iso;
+                lastScanAgeSec = data.scan_age_seconds || 0;
+
+                // Update Timestamps & Header
+                document.getElementById('header-scan-time').textContent = data.last_scan_time_str;
+                document.getElementById('memo-date').textContent = data.date_display;
+                document.getElementById('footer-sync-time').textContent = `Last Scan: ${data.last_scan_display}`;
+
+                // Update KPI Cards
+                const syms = data.symbols;
+                if (syms) {
+                    // NIFTY
+                    if (syms.NIFTY) {
+                        const n = syms.NIFTY;
+                        document.getElementById('nifty-spot').textContent = `₹${n.underlying_str}`;
+                        document.getElementById('nifty-change').textContent = n.change.str;
+                        document.getElementById('nifty-change').className = `kpi-change ${n.change.dir === 'BULLISH' ? 'up' : (n.change.dir === 'BEARISH' ? 'down' : 'flat')}`;
+                        document.getElementById('nifty-verdict').textContent = n.verdict_label;
+                        document.getElementById('nifty-verdict').className = `kpi-verdict ${getConvictionClass(n.confidence, n.verdict_label)}`;
+                        const nScan = document.getElementById('nifty-scan-time');
+                        if (nScan) {
+                            nScan.textContent = n.scan_time_str ? `${n.scan_time_str} (${n.scan_age_min}m ago)` : '—';
+                            nScan.className = `kpi-scan-age ${n.scan_age_min > 15 ? 'stale' : ''}`;
+                        }
+                        document.getElementById('nifty-pcr').textContent = n.pcr_str;
+                        document.getElementById('nifty-mp').textContent = n.max_pain_str;
+                        document.getElementById('nifty-atm').textContent = n.atm_strike_str;
+                        const niftyChips = document.getElementById('nifty-delta-chips');
+                        if (niftyChips) niftyChips.innerHTML = renderDeltaChips(n.ce_oi_change, n.pe_oi_change);
+                        if (n.digest_id) document.getElementById('footer-digest').textContent = `Digest: ${n.digest_id.slice(0, 10)}...`;
+                    }
+
+                    // BANKNIFTY
+                    if (syms.BANKNIFTY) {
+                        const b = syms.BANKNIFTY;
+                        document.getElementById('bn-spot').textContent = `₹${b.underlying_str}`;
+                        document.getElementById('bn-change').textContent = b.change.str;
+                        document.getElementById('bn-change').className = `kpi-change ${b.change.dir === 'BULLISH' ? 'up' : (b.change.dir === 'BEARISH' ? 'down' : 'flat')}`;
+                        document.getElementById('bn-verdict').textContent = b.verdict_label;
+                        document.getElementById('bn-verdict').className = `kpi-verdict ${getConvictionClass(b.confidence, b.verdict_label)}`;
+                        const bScan = document.getElementById('bn-scan-time');
+                        if (bScan) {
+                            bScan.textContent = b.scan_time_str ? `${b.scan_time_str} (${b.scan_age_min}m ago)` : '—';
+                            bScan.className = `kpi-scan-age ${b.scan_age_min > 15 ? 'stale' : ''}`;
+                        }
+                        document.getElementById('bn-pcr').textContent = b.pcr_str;
+                        document.getElementById('bn-mp').textContent = b.max_pain_str;
+                        document.getElementById('bn-atm').textContent = b.atm_strike_str;
+                        const bnChips = document.getElementById('bn-delta-chips');
+                        if (bnChips) bnChips.innerHTML = renderDeltaChips(b.ce_oi_change, b.pe_oi_change);
+                    }
+
+                    // SENSEX
+                    if (syms.SENSEX) {
+                        const s = syms.SENSEX;
+                        document.getElementById('sensex-spot').textContent = `₹${s.underlying_str}`;
+                        document.getElementById('sensex-change').textContent = s.change.str;
+                        document.getElementById('sensex-change').className = `kpi-change ${s.change.dir === 'BULLISH' ? 'up' : (s.change.dir === 'BEARISH' ? 'down' : 'flat')}`;
+                        document.getElementById('sensex-verdict').textContent = s.verdict_label;
+                        document.getElementById('sensex-verdict').className = `kpi-verdict ${getConvictionClass(s.confidence, s.verdict_label)}`;
+                        const sScan = document.getElementById('sensex-scan-time');
+                        if (sScan) {
+                            sScan.textContent = s.scan_time_str ? `${s.scan_time_str} (${s.scan_age_min}m ago)` : '—';
+                            sScan.className = `kpi-scan-age ${s.scan_age_min > 15 ? 'stale' : ''}`;
+                        }
+                        document.getElementById('sensex-pcr').textContent = s.pcr_str;
+                        document.getElementById('sensex-mp').textContent = s.max_pain_str;
+                        document.getElementById('sensex-atm').textContent = s.atm_strike_str;
+                        const sensexChips = document.getElementById('sensex-delta-chips');
+                        if (sensexChips) sensexChips.innerHTML = renderDeltaChips(s.ce_oi_change, s.pe_oi_change);
+                    }
+
+                    // NATURALGAS
+                    if (syms.NATURALGAS) {
+                        const g = syms.NATURALGAS;
+                        document.getElementById('ng-spot').textContent = `₹${g.underlying_str}`;
+                        document.getElementById('ng-change').textContent = g.change.str;
+                        document.getElementById('ng-change').className = `kpi-change ${g.change.dir === 'BULLISH' ? 'up' : (g.change.dir === 'BEARISH' ? 'down' : 'flat')}`;
+                        document.getElementById('ng-verdict').textContent = g.verdict_label;
+                        document.getElementById('ng-verdict').className = `kpi-verdict ${getConvictionClass(g.confidence, g.verdict_label)}`;
+                        const gScan = document.getElementById('ng-scan-time');
+                        if (gScan) {
+                            gScan.textContent = g.scan_time_str ? `${g.scan_time_str} (${g.scan_age_min}m ago)` : '—';
+                            gScan.className = `kpi-scan-age ${g.scan_age_min > 15 ? 'stale' : ''}`;
+                        }
+                        document.getElementById('ng-pcr').textContent = g.pcr_str;
+                        document.getElementById('ng-mp').textContent = g.max_pain_str;
+                        document.getElementById('ng-atm').textContent = g.atm_strike_str;
+                        document.getElementById('ng-candles').textContent = `${g.candle_1h} / ${g.candle_3h}`;
+                    }
+
+                    // Dynamic SCIR Strike Tags
+                    if (syms.NIFTY) {
+                        const n = syms.NIFTY;
+                        const s = syms.SENSEX || {};
+                        const sitTag = document.getElementById('scir-tag-situation');
+                        const compTag = document.getElementById('scir-tag-complication');
+                        const impTag = document.getElementById('scir-tag-implication');
+                        const resTag = document.getElementById('scir-tag-resolution');
+                        if (sitTag) sitTag.textContent = `Pinned: ${n.support ? fmtNum(n.support, 0) : '23,400'}–${n.resistance ? fmtNum(n.resistance, 0) : '23,500'}`;
+                        if (compTag) compTag.textContent = `Wall: NIFTY ${n.resistance ? fmtNum(n.resistance, 0) : '23,500'} / SENSEX ${s.resistance ? fmtNum(s.resistance, 0) : '75,000'}`;
+                        if (impTag) impTag.textContent = `Gamma: ATM ±50 pts (${fmtNum(n.atm_strike - 50, 0)}–${fmtNum(n.atm_strike + 50, 0)})`;
+                        if (resTag) resTag.textContent = `Mandate: Delta Cap 0.60 | Roll Stop`;
+                    }
+                }
+
+                // Update Executive Takeaways
+                if (data.executive_takeaways && data.executive_takeaways.length) {
+                    const listEl = document.getElementById('takeaways-list');
+                    listEl.innerHTML = data.executive_takeaways.map(t => `<li>${t}</li>`).join('');
+                }
+
+                // Update SCIR Context
+                if (data.scir) {
+                    document.getElementById('scir-situation').textContent = data.scir.situation;
+                    document.getElementById('scir-complication').textContent = data.scir.complication;
+                    document.getElementById('scir-implication').textContent = data.scir.implication;
+                    document.getElementById('scir-resolution').textContent = data.scir.resolution;
+                }
+
+                // Update SVG Charts
+                if (data.oi_chart_svg) {
+                    document.getElementById('oi-chart-svg-container').innerHTML = data.oi_chart_svg;
+                }
+                if (data.pcr_gauge_svg) {
+                    document.getElementById('pcr-gauge-svg-container').innerHTML = data.pcr_gauge_svg;
+                }
+
+                // Update Exhibit 1C Table
+                if (syms) {
+                    const tbody = document.getElementById('matrix-tbody');
+                    const rows = [syms.NIFTY, syms.BANKNIFTY, syms.SENSEX, syms.NATURALGAS].filter(Boolean);
+
+                    // Compute desk max delta for relative meter widths
+                    let maxAbsDelta = 1;
+                    rows.forEach(r => {
+                        const m = Math.max(Math.abs(r.ce_oi_change || 0), Math.abs(r.pe_oi_change || 0));
+                        if (m > maxAbsDelta) maxAbsDelta = m;
+                    });
+
+                    tbody.innerHTML = rows.map(r => `
+                        <tr>
+                            <td><b>${r.symbol}</b></td>
+                            <td class="mono">₹${r.underlying_str}</td>
+                            <td class="mono">${r.atm_strike_str}</td>
+                            <td class="mono"><span class="badge-pill ${r.pcr_badge}">${r.pcr_str}</span></td>
+                            <td>${renderDivergenceCell(r.ce_oi_change, 'CE', maxAbsDelta)}</td>
+                            <td>${renderDivergenceCell(r.pe_oi_change, 'PE', maxAbsDelta)}</td>
+                            <td class="mono">${r.max_pain_str}</td>
+                            <td class="mono">${r.support ? fmtNum(r.support, 0) : '—'}</td>
+                            <td class="mono">${r.resistance ? fmtNum(r.resistance, 0) : '—'}</td>
+                            <td class="mono" style="font-size: 11px;">${r.candle_1h} / ${r.candle_3h}</td>
+                            <td><span class="kpi-verdict ${getConvictionClass(r.confidence, r.verdict_label)}">${r.verdict_label} (${r.confidence}%)</span></td>
+                        </tr>
+                    `).join('');
+                }
+
+                // Update Exhibit 2 Battleground Table
+                if (data.battleground && data.battleground.length) {
+                    const bgBody = document.getElementById('battleground-tbody');
+                    bgBody.innerHTML = data.battleground.map(b => `
+                        <tr>
+                            <td><b>${b.symbol}</b></td>
+                            <td class="mono">₹${b.spot}</td>
+                            <td class="mono">${b.straddle}</td>
+                            <td class="mono" style="color: var(--green);">${b.put_wall}</td>
+                            <td class="mono" style="color: var(--blue);">${b.call_wall}</td>
+                            <td class="mono">${b.max_pain}</td>
+                            <td class="mono">${b.pcr}</td>
+                            <td><span class="badge-pill neutral">${b.bias}</span></td>
+                            <td style="font-size: 11.5px;">${b.strategy}</td>
+                        </tr>
+                    `).join('');
+                }
+
+                // Update Sectors
+                if (data.sectors && data.sectors.length) {
+                    const sectorContainer = document.getElementById('sector-chips');
+                    sectorContainer.innerHTML = data.sectors.map(s => `
+                        <div class="sector-chip">
+                            <span class="sector-name">${s.name}</span>
+                            <span class="sector-val" style="color: ${s.change.startsWith('+') ? 'var(--green)' : 'var(--red)'}">${s.change}</span>
+                        </div>
+                    `).join('');
+                }
+
+                // Update FII/DII
+                if (data.fii_dii) {
+                    const fiiContainer = document.getElementById('fii-grid');
+                    fiiContainer.innerHTML = `
+                        <div class="fii-card">
+                            <span class="sector-name">FII Net Cash</span>
+                            <span class="sector-val" style="color: var(--red);">${data.fii_dii.fii_cash}</span>
+                        </div>
+                        <div class="fii-card">
+                            <span class="sector-name">DII Net Cash</span>
+                            <span class="sector-val" style="color: var(--green);">${data.fii_dii.dii_cash}</span>
+                        </div>
+                        <div class="fii-card">
+                            <span class="sector-name">Combined Cash</span>
+                            <span class="sector-val" style="color: var(--green);">${data.fii_dii.net_combined}</span>
+                        </div>
+                    `;
+                }
+
+                // If new scan arrived, toast notification and highlight
+                if (isNewScan) {
+                    showToast(`✨ New scan cycle ingested at ${data.last_scan_time_str}`);
+                    document.querySelectorAll('.kpi-spot, .kpi-change, .kpi-verdict').forEach(el => {
+                        el.classList.add('data-glow');
+                        setTimeout(() => el.classList.remove('data-glow'), 1500);
+                    });
+                }
+
+            } catch (err) {
+                console.error('[EOD Report] fetch error:', err);
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            // Initial data fetch
+            fetchReportData();
+
+            // Background polling every 15s to keep scan cycle synchronized
+            if (pollTimer) clearInterval(pollTimer);
+            pollTimer = setInterval(fetchReportData, 15000);
+        });
+    </script>
+</body>
+</html>
