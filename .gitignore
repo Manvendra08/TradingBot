@@ -59,6 +59,25 @@ htmlcov/
 cleanup_backup_*/
 backup_safe_delete_*/
 
+# Runtime cache and sentinel data
+data/cache/*
+data/sentinel/*
+
+# Generated reports and artifacts
+docs/reports/*
+!docs/reports/.gitkeep
+
+# Kilo temporary investigation scripts
+.kilo/tmp_*.py
+
+# Test media assets
+test_*.jpg
+test_*.jpeg
+test_*.gif
+test_*.png
+test_*.mp4
+test_*.webm
+
 # Scratch directory (keep folder, ignore contents)
 scratch/*
 !scratch/.gitkeep
