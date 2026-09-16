@@ -141,8 +141,8 @@ def authenticate(credentials: HTTPBasicCredentials = Depends(security)):
 
     runtime_config = load_runtime_config()
 
-    # If authentication is disabled (default), bypass credentials check
-    if not runtime_config.get("dashboard_auth_enabled", False):
+    # If authentication is disabled explicitly, bypass credentials check
+    if not runtime_config.get("dashboard_auth_enabled", True):
         return "anonymous"
 
     # Authentication is enabled, check credentials
@@ -155,8 +155,8 @@ def authenticate(credentials: HTTPBasicCredentials = Depends(security)):
 
     from config.settings import DASHBOARD_PASSWORD, DASHBOARD_USERNAME
 
-    correct_username = secrets.compare_digest(credentials.username, DASHBOARD_USERNAME)
-    correct_password = secrets.compare_digest(credentials.password, DASHBOARD_PASSWORD)
+    correct_username = secrets.compare_digest(credentials.username or "", DASHBOARD_USERNAME or "")
+    correct_password = secrets.compare_digest(credentials.password or "", DASHBOARD_PASSWORD or "")
     if not (correct_username and correct_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -1278,7 +1278,7 @@ async def get_expiries(symbol: str):
     return [r["expiry"] for r in rows]
 
 
-@app.get("/api/runtime")
+@app.get("/api/runtime", dependencies=[Depends(authenticate)])
 async def get_runtime():
     return {
         "scan_frequency_minutes": get_scan_frequency_minutes(),
@@ -1290,7 +1290,7 @@ async def get_runtime():
     }
 
 
-@app.post("/api/runtime")
+@app.post("/api/runtime", dependencies=[Depends(authenticate)])
 async def set_runtime(
     scan_frequency_minutes: int | None = Query(None),
     scan_frequency_nse: int | None = Query(None),
@@ -1770,7 +1770,7 @@ def get_multi_leg_trades(status: str = "ALL"):
     return list_multi_leg_trades(status_filter=status)
 
 
-@app.delete("/api/multi_leg_trades/{trade_ref}")
+@app.delete("/api/multi_leg_trades/{trade_ref}", dependencies=[Depends(authenticate)])
 def delete_multi_leg_trade_endpoint(trade_ref: str):
     from src.models.schema import delete_multi_leg_trade
 
@@ -2158,7 +2158,7 @@ def _calculate_consecutive_wins(where: str, params: tuple) -> int:
     return streak
 
 
-@app.post("/api/paper_trades/close")
+@app.post("/api/paper_trades/close", dependencies=[Depends(authenticate)])
 async def manual_close_paper_trade(trade_id: int = Query(...)):
     from datetime import datetime, timezone
 
@@ -2249,7 +2249,7 @@ async def manual_close_paper_trade(trade_id: int = Query(...)):
     return {"ok": True, "trade_id": trade_id}
 
 
-@app.delete("/api/paper_trades")
+@app.delete("/api/paper_trades", dependencies=[Depends(authenticate)])
 async def delete_paper_trades(date_from: str = "", date_to: str = ""):
     """
     Delete paper trades by date range.
@@ -3723,6 +3723,20 @@ def get_risk_metrics(mode: str = "live"):
     }
 
 
+@app.get("/api/calibration")
+def get_calibration_curve(days: int = 90, symbol: str = ""):
+    """Confidence calibration curve (Phase 5)."""
+    from src.intelligence.history_analyzer import get_confidence_calibration_curve
+    return get_confidence_calibration_curve(days=days, symbol=symbol or None)
+
+
+@app.get("/api/model_scorecard")
+def get_model_scorecard_api(days: int = 7):
+    """Weekly per-model win rate and scorecard (Phase 4)."""
+    from src.engine.llm_enrichment import get_model_scorecard
+    return get_model_scorecard(days=days)
+
+
 @app.get("/api/broker_status", dependencies=[Depends(authenticate)])
 def get_broker_status():
     from src.models.schema import get_broker_config
@@ -3930,7 +3944,7 @@ async def trigger_auto_login(data: dict = {}):
     return result
 
 
-@app.post("/internal/reauth")
+@app.post("/internal/reauth", dependencies=[Depends(authenticate)])
 async def internal_reauth():
     """
     Internal endpoint for ops_agent.py to trigger Shoonya re-authentication.
@@ -5211,6 +5225,7 @@ if __name__ == "__main__":
     threading.Thread(target=_supervise_ops_agent, daemon=True).start()
 
     port = int(os.environ.get("PORT", 8080))
+    host = os.environ.get("HOST", "127.0.0.1")
     print(f"  DB: {DB_PATH}")
-    print(f"  Dashboard: http://localhost:{port}")
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
+    print(f"  Dashboard: http://{host}:{port}")
+    uvicorn.run(app, host=host, port=port, log_level="warning")

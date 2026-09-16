@@ -248,13 +248,13 @@ def step_ai_alignment(ctx: PipelineContext) -> StepResult:
                 ai_verdict = getattr(ai_verdict, "__dict__", {})
 
     if not ai_verdict:
-        if ai_decision_mode == "full" and ctx.engine == "CORE_OI":
+        if ai_decision_mode == "full":
             return StepResult(
                 name="ai",
-                passed=True,
+                passed=False,
                 score=-1,
-                reason="Missing AI verdict, trade demoted to experimental",
-                data={"demote": True}
+                reason="Missing AI verdict in full decision mode — entry blocked",
+                data={"blocked": True, "demote": False}
             )
         return StepResult(
             name="ai",
@@ -648,15 +648,27 @@ def step_trend_alignment_core(ctx: PipelineContext) -> StepResult:
             )
 
         # Priority 5: Full AI Primary Decision Ownership (live_ai_decision_mode == "full")
+        # Blocker #6 Fix: Require an affirmative, non-null, un-vetoed AI verdict. Fail-closed on missing/null verdict.
         if not passed and ai_decision_mode == "full":
-            veto_flag = _extract_ai_veto_flag(ctx.ai_verdict) if ctx.ai_verdict else False
-            if not veto_flag:
-                passed = True
-                setup_type = "AI_PRIMARY_DECISION"
-                reason = (
-                    f"AI decision mode 'full' active — LLM primary decision ownership enabled "
-                    f"(conf={confidence}%, eq={entry_quality}, ta={trend_alignment})"
-                )
+            if ctx.ai_verdict and isinstance(ctx.ai_verdict, dict):
+                ai_action = str(ctx.ai_verdict.get("action") or "").upper().strip()
+                ai_conf = int(ctx.ai_verdict.get("confidence") or 0)
+                veto_flag = _extract_ai_veto_flag(ctx.ai_verdict)
+                min_boost_conf = int(rconf.get("live_ai_min_confidence_boost", 80))
+                if not veto_flag and ai_action not in ("", "NO_TRADE", "HOLD") and ai_conf >= min_boost_conf:
+                    passed = True
+                    setup_type = "AI_PRIMARY_DECISION"
+                    reason = (
+                        f"AI decision mode 'full' active — LLM affirmative approval: {ai_action} "
+                        f"(ai_conf={ai_conf}%, engine_conf={confidence}%, eq={entry_quality}, ta={trend_alignment})"
+                    )
+                else:
+                    log.info(
+                        "%s: AI 'full' mode rejected promotion (action=%s, conf=%d%% < %d%%, veto=%s)",
+                        ctx.symbol, ai_action, ai_conf, min_boost_conf, veto_flag
+                    )
+            else:
+                log.info("%s: AI 'full' mode did not promote — no affirmative AI verdict available (fail-closed)", ctx.symbol)
 
         # Priority 6: Empirical promotion (ADR-007 v2 fallback)
         if not passed and ai_decision_mode == "empirical":
@@ -758,7 +770,7 @@ def step_risk(ctx: PipelineContext) -> StepResult:
     #   block TIMEFRAME signals.
     setup_type = "TIMEFRAME" if ctx.engine == "TIMEFRAME" else ctx.scan_context.get("_setup_type", None)
 
-    allowed, reason, sub_check_code = _check_risk_limits_for_table(ctx.symbol, table, mode, setup_type=setup_type)
+    allowed, reason, sub_check_code = _check_risk_limits_for_table(ctx.symbol, table, mode, setup_type=setup_type, scan_context=ctx.scan_context)
     return StepResult(
         name="risk",
         passed=allowed,

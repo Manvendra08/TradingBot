@@ -283,6 +283,7 @@ def _is_reversal_against_open_trade(
         return False
 
     # Guard 2: entry quality — requires a genuine setup, not noise
+    entry_quality = 60
     if ctx and option_type and strike:
         entry_quality, entry_reasons = calculate_entry_quality(
             symbol, option_type, strike, ctx
@@ -575,7 +576,7 @@ def execute_paper_trade(
             "lots": plan.get("lots", 1),
             "option_rows": ctx.get("option_rows") or [],
         }
-    risk_ok, risk_reason = check_risk_limits(symbol, setup_type=setup_type, candidate_leg=candidate_leg)
+    risk_ok, risk_reason = check_risk_limits(symbol, setup_type=setup_type, candidate_leg=candidate_leg, scan_context=ctx)
     if not risk_ok:
         from src.engine.decision_audit import update_decision_audit
 
@@ -610,6 +611,7 @@ def execute_paper_trade(
         tranche_index=tranche_idx,
         option_type=option_type,
         strike=plan.get("strike"),
+        sl_premium=plan.get("sl_premium"),
     )
     if lots <= 0:
         from src.engine.decision_audit import update_decision_audit
@@ -715,6 +717,7 @@ def execute_paper_trade(
         "pyramid_level": plan.get("pyramid_level", 1),
         "max_favorable_r": 0.0,
         "snapshot_id": ctx.get("snapshot_id"),
+        "ai_model_name": plan.get("ai_model_name") or ctx.get("ai_model_name") or (getattr(plan.get("ai_verdict"), "model_name", None) if plan.get("ai_verdict") else None),
         # Phase 0: ML feature columns (captured at trade open time)
         **ml_features,
     }
@@ -820,7 +823,7 @@ def _monitor_single_paper_trade(symbol: str, open_trade: dict, current_ctx: dict
                 (max_fav, open_trade["id"]),
             )
 
-    trade_option_rows = _get_option_rows_for_expiry(current_ctx, open_trade.get("expiry"))
+    trade_option_rows = _get_option_rows_for_expiry(current_ctx, open_trade.get("expiry"), symbol=symbol)
     # ── Option Premium SL/Target Check (Flaw #11) ────────────────────────────
     # For option trades, also check if the option premium itself hit SL or Target
     if not hit_sl and not hit_target and option_type in ("CE", "PE"):
@@ -1009,16 +1012,36 @@ def _monitor_single_paper_trade(symbol: str, open_trade: dict, current_ctx: dict
     return actions
 
 
-def _get_option_rows_for_expiry(current_ctx: dict, expiry: str | None) -> list[dict]:
+def _get_option_rows_for_expiry(current_ctx: dict, expiry: str | None, symbol: str = "") -> list[dict]:
+    """Retrieve option chain rows strictly for the target expiry.
+    Never falls back to a different expiry, preventing context divergence."""
     if not expiry:
         return current_ctx.get("current_expiry_option_rows") or current_ctx.get("option_rows") or []
-    curr_exp = current_ctx.get("current_expiry")
-    if curr_exp and str(expiry).strip() == str(curr_exp).strip():
-        return current_ctx.get("current_expiry_option_rows") or current_ctx.get("option_rows") or []
-    target_exp = current_ctx.get("expiry")
-    if target_exp and str(expiry).strip() == str(target_exp).strip():
-        return current_ctx.get("option_rows") or []
-    return current_ctx.get("current_expiry_option_rows") or current_ctx.get("option_rows") or []
+    exp_str = str(expiry).strip()
+    curr_exp = str(current_ctx.get("current_expiry") or "").strip()
+    if curr_exp and exp_str == curr_exp:
+        rows = current_ctx.get("current_expiry_option_rows") or current_ctx.get("option_rows") or []
+        if rows:
+            return rows
+    target_exp = str(current_ctx.get("expiry") or "").strip()
+    if target_exp and exp_str == target_exp:
+        rows = current_ctx.get("option_rows") or []
+        if rows:
+            return rows
+
+    # Query DB snapshot for exact (symbol, expiry) match
+    sym = symbol or current_ctx.get("symbol") or ""
+    if sym and exp_str:
+        try:
+            from src.models.schema import get_latest_snapshots_for_symbol
+            db_rows = get_latest_snapshots_for_symbol(sym, exp_str)
+            if db_rows:
+                return db_rows
+        except Exception:
+            pass
+
+    # Strictly fail-closed: never return rows from a different expiry
+    return []
 
 
 def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
@@ -1052,7 +1075,7 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
             HARD_STOP_DELTA = 0.60
 
         sample_leg_exp = tfss_legs[0].get("expiry") if tfss_legs else None
-        option_rows = _get_option_rows_for_expiry(current_ctx, sample_leg_exp)
+        option_rows = _get_option_rows_for_expiry(current_ctx, sample_leg_exp, symbol=symbol)
         book = compute_combined_book(symbol, option_rows)
         leg_deltas = book.get("leg_deltas", {})
         within_caps = book.get("within_caps", True)
@@ -1903,6 +1926,7 @@ def run_timeframe_strategy(
         "pyramid_level": pyramid_level,
         "max_favorable_r": 0.0,
         "snapshot_id": ctx.get("snapshot_id"),
+        "ai_model_name": getattr(ai_verdict, "model_name", None) if ai_verdict else ctx.get("ai_model_name"),
         # Phase 0: ML feature columns (captured at trade open time)
         **ml_features,
     }

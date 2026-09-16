@@ -186,7 +186,7 @@ class TestADR007AsyncEnrichment(unittest.TestCase):
     def test_llm_enrichment_async_setting(self):
         from config.settings import LLM_ENRICHMENT_ASYNC, LLM_ENRICH_TIMEOUT_S
 
-        self.assertTrue(LLM_ENRICHMENT_ASYNC)
+        self.assertFalse(LLM_ENRICHMENT_ASYNC)
         self.assertEqual(LLM_ENRICH_TIMEOUT_S, 120)
 
     def test_async_llm_pending_flag(self):

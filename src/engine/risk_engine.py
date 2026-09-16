@@ -128,6 +128,25 @@ def _check_risk_limits_for_table(
             if block_reason:
                 return False, f"[{label}] {block_reason}", "CONTRA_DAILY_LIMIT"
 
+        # 0c. Edge decay monitor check (Phase 5)
+        try:
+            from src.intelligence.edge_monitor import get_monitor
+            monitor = get_monitor()
+            filt = {"symbol": symbol}
+            if setup_type and setup_type not in ("CORE", "UNKNOWN"):
+                filt["verdict_label"] = setup_type
+            h_reports = monitor.check_edge_health(strategy_filter=filt)
+            if h_reports:
+                h = h_reports[0]
+                if (
+                    h.health_score < 35
+                    and h.win_rate_trend != "INSUFFICIENT_HISTORY"
+                    and (h.win_rate_trend == "DECLINING" or h.pnl_trend == "DECLINING" or h.current_win_rate < 0.40)
+                ):
+                    return False, f"[{label}] Edge decay detected for {symbol} ({setup_type}): health_score={h.health_score:.1f}, win_rate={h.current_win_rate:.0%}, trend={h.win_rate_trend} — trading paused", "EDGE_DECAY"
+        except Exception as e:
+            log.debug("[risk-engine] %s: Edge decay check encountered error: %s", symbol, e)
+
         # 1. Max open trades per symbol (for non-TFSS setups)
         # TIMEFRAME entries are quota-isolated from CORE: each strategy gets its
         # own MAX_OPEN_TRADES_PER_SYMBOL count so CORE and TFSS legs don't absorb
@@ -151,13 +170,22 @@ def _check_risk_limits_for_table(
                 ), "MAX_OPEN_TRADES_PER_SYMBOL"
 
         # 2. Max total open trades
+        from config.runtime_config import load_runtime_config
+        rc = load_runtime_config()
+        if trades_table == "live_trades":
+            max_daily_loss = float(rc.get("live_max_daily_loss_rupees") or MAX_DAILY_LOSS_RUPEES)
+            max_open_total = int(rc.get("live_max_concurrent_positions") or MAX_OPEN_TRADES_TOTAL)
+        else:
+            max_daily_loss = float(rc.get("paper_max_daily_loss_rupees") or rc.get("live_max_daily_loss_rupees") or MAX_DAILY_LOSS_RUPEES)
+            max_open_total = int(rc.get("paper_max_concurrent_positions") or MAX_OPEN_TRADES_TOTAL)
+
         open_total = conn.execute(
             f"SELECT COUNT(*) AS cnt FROM {trades_table} WHERE status = 'OPEN'"
         ).fetchone()["cnt"]
-        if open_total >= MAX_OPEN_TRADES_TOTAL:
+        if open_total >= max_open_total:
             return False, (
                 f"[{label}] Max total open trades reached "
-                f"({open_total}/{MAX_OPEN_TRADES_TOTAL})"
+                f"({open_total}/{max_open_total})"
             ), "MAX_OPEN_TRADES_TOTAL"
 
         # 3. Max trades per symbol per day
@@ -176,24 +204,52 @@ def _check_risk_limits_for_table(
                 f"({day_count}/{MAX_TRADES_PER_SYMBOL_PER_DAY})"
             ), "MAX_TRADES_PER_SYMBOL_PER_DAY"
 
-        # 4. Daily loss cap
-        # BUG-M4 FIX: Use parameterized timestamps only instead of mixing parameterized
-        # and CURRENT_TIMESTAMP. This prevents timezone offset mismatches.
+        # 4. Daily loss cap (Realized net P&L + open MTM)
         now_utc = datetime.now(timezone.utc).isoformat()
-        today_loss_row = conn.execute(
+        today_realized_row = conn.execute(
             f"""
             SELECT COALESCE(SUM(pnl_rupees), 0) AS total
             FROM {trades_table}
-            WHERE closed_at >= ? AND closed_at <= ? AND pnl_rupees < 0
+            WHERE closed_at >= ? AND closed_at <= ?
             """,
             (today_start, now_utc),
         ).fetchone()
-        today_realized_loss = float(today_loss_row["total"] if today_loss_row else 0.0)
-        if today_realized_loss < -abs(MAX_DAILY_LOSS_RUPEES):
+        today_realized_pnl = float(today_realized_row["total"] if today_realized_row else 0.0)
+
+        open_mtm_row = conn.execute(
+            f"""
+            SELECT COALESCE(SUM(pnl_rupees), 0) AS total
+            FROM {trades_table}
+            WHERE status = 'OPEN'
+            """
+        ).fetchone()
+        open_mtm = float(open_mtm_row["total"] if open_mtm_row else 0.0)
+
+        ml_realized_row = conn.execute(
+            """
+            SELECT COALESCE(SUM(total_pnl), 0) AS total
+            FROM multi_leg_trades
+            WHERE closed_at >= ? AND closed_at <= ?
+            """,
+            (today_start, now_utc),
+        ).fetchone()
+        ml_realized_pnl = float(ml_realized_row["total"] if ml_realized_row else 0.0)
+
+        ml_open_row = conn.execute(
+            """
+            SELECT COALESCE(SUM(total_pnl), 0) AS total
+            FROM multi_leg_trades
+            WHERE status = 'OPEN'
+            """
+        ).fetchone()
+        ml_open_pnl = float(ml_open_row["total"] if ml_open_row else 0.0)
+
+        total_daily_pnl = today_realized_pnl + open_mtm + ml_realized_pnl + ml_open_pnl
+        if total_daily_pnl < -abs(max_daily_loss):
             return False, (
                 f"[{label}] Daily loss limit hit "
-                f"(realized losses \u20b9{today_realized_loss:,.0f} / "
-                f"limit -\u20b9{MAX_DAILY_LOSS_RUPEES:,.0f})"
+                f"(net daily P&L \u20b9{total_daily_pnl:,.0f} [realized=\u20b9{today_realized_pnl + ml_realized_pnl:,.0f}, open MTM=\u20b9{open_mtm + ml_open_pnl:,.0f}] / "
+                f"limit -\u20b9{max_daily_loss:,.0f})"
             ), "DAILY_LOSS_CAP"
 
         # 4. Cooldown after SL/loss (per-symbol)

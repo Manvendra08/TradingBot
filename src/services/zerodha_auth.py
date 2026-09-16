@@ -75,7 +75,8 @@ def is_token_valid() -> bool:
         return False
     
     from datetime import datetime
-    today = datetime.now().strftime("%Y-%m-%d")
+    from config.settings import IST
+    today = datetime.now(IST).strftime("%Y-%m-%d")
     return config["last_login_date"] == today
 
 

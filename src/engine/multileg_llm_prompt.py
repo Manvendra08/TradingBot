@@ -415,13 +415,13 @@ Strategy Map:
 - Rangebound+defined → IRON_CONDOR (Wings MUST be sufficiently wide to avoid insurance drag: NIFTY ≥100-200 pts, BANKNIFTY ≥300-500 pts, SENSEX ≥400-800 pts. Never pick buy wings adjacent or too close to sell legs!)
 - Bearish+defined → BEAR_CALL_SPREAD | Bullish+defined → BULL_PUT_SPREAD (spread width ≥ 0.5% of spot)
 - Bullish+high IV → JADE_LIZARD
-- Uncertain → IRON_CONDOR (preferred over NO_TRADE if any liquid strikes exist)
+- Uncertain → NO_TRADE is always acceptable; a missed trade costs nothing.
 
 MCX Parity (NATURALGAS/CRUDEOIL):
 - Deviation >+1.5%: inflated → BEAR_CALL_SPREAD or sell upper CE
 - Deviation <-1.5%: discounted → BULL_PUT_SPREAD or sell lower PE
 - |Deviation| ≤1.0%: fair value → SHORT_STRANGLE or IRON_CONDOR
-- **EIA Report Day / Window**: If EIA inventory release is active/imminent, avoid naked straddles; prefer defined-risk spreads or wider strangle strikes with safe deltas (Δ 0.10 - 0.15). Only emit **NO_TRADE** if event risk is extreme AND no defined-risk alternative fits margin/delta caps.
+- **EIA Report Day / Window**: If EIA inventory release is active/imminent, avoid naked straddles; prefer defined-risk spreads or wider strangle strikes with safe deltas (Δ 0.10 - 0.15). NO_TRADE is always acceptable; a missed trade costs nothing if event risk is elevated or setup is unclear.
 
 ### Important Constraints on Legs:
 Leg counts: STRADDLE=2 SELL, STRANGLE=2 SELL, CONDOR=4(2 SELL+2 BUY), SPREAD=2, NO_TRADE=legs[]
@@ -434,7 +434,7 @@ Condor/Spreads: all sold+bought legs liquid.
   * For IRON_CONDOR and defined-risk spreads: DO NOT place buy hedge legs too close to short legs.
   * Minimum wing width (buy strike minus sell strike): NIFTY ≥100 pts, BANKNIFTY ≥250 pts, SENSEX ≥400 pts (ideally 500–800 pts).
   * Max Hedge Cost: Total debit spent on BUY wings MUST NOT exceed 65% of gross credit collected from SELL legs (collect ≥35% net premium). Placing wings only 1 strike away consumes 75-80% of premium, resulting in unviable trades!
-→ If NO liquid strikes for chosen strategy, fall back to IRON_CONDOR with liquid strikes if possible; only NO_TRADE if NO liquid strikes exist across the entire chain.
+→ If NO liquid strikes for chosen strategy, emit NO_TRADE. NO_TRADE is always acceptable; a missed trade costs nothing.
 
 Delta target: 0.15-0.30 for OTM sell legs | Max pain={max_pain:.0f} as magnet | S/R for strike anchors.
 
@@ -568,7 +568,14 @@ def build_multileg_exit_prompt(
     profit_target_pct = float(book.get("profit_target_pct") or 0.5)
     stop_loss_pct = float(book.get("stop_loss_pct") or 1.5)
     time_decay_exit_dte = int(book.get("time_decay_exit_dte") or 0)
-    profit_pct_of_max = total_pnl / max_profit_rupees
+    # Robust sanity bounds on profit_pct_of_max (-500% to +100% for credit sellers)
+    raw_profit_pct = total_pnl / max_profit_rupees
+    if raw_profit_pct > 1.05:
+        log.warning(
+            "[multileg-prompt] %s: book %s anomalous profit_pct_of_max %.1f%% (total_pnl=₹%.0f, max_profit=₹%.0f) — clamped to 100%%",
+            symbol, book.get("book_id", "unknown"), raw_profit_pct * 100, total_pnl, max_profit_rupees
+        )
+    profit_pct_of_max = min(max(raw_profit_pct, -5.0), 1.0)
 
     is_weekly = symbol in ("NIFTY", "BANKNIFTY", "SENSEX")
     now_ist = datetime.now(IST)

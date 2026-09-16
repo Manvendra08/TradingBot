@@ -288,19 +288,19 @@ def _price_oi_verdict(
             and a.get("alert_type") in ("OI_SPIKE", "BUILDUP_CLASSIFY", "OTM_UNUSUAL")
             and a.get("option_type") == "PE"
         )
-        # Bullish override: PCR protective of downside + CE buildup by smart money
-        if pcr >= 1.25 and high_ce_spikes >= 1:
+        # Bullish override: PCR supportive of downside + PE writing/buildup (support building)
+        if pcr >= 1.25 and high_pe_spikes >= 1:
             return (
                 "OI Bias Bullish",
                 "🟡",
-                "Cautious Bullish — PCR supportive, CE OI accumulating",
+                "Cautious Bullish — PCR supportive, PE OI accumulating (put writing support)",
             )
-        # Bearish override: low PCR + PE buildup signals
-        if pcr <= 0.80 and high_pe_spikes >= 1:
+        # Bearish override: low PCR + CE writing/buildup (resistance building overhead)
+        if pcr <= 0.80 and high_ce_spikes >= 1:
             return (
                 "OI Bias Bearish",
                 "🟠",
-                "Cautious Bearish — PCR weak, PE OI accumulating",
+                "Cautious Bearish — PCR weak, CE OI accumulating (call writing resistance)",
             )
         # Pure PCR signal — but ONLY when the relevant side is actually BUILDING.
         # High PCR while PE is unwinding is NOT put writing; it is stale OI + exit.

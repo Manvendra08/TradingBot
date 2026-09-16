@@ -653,3 +653,203 @@ def send_document(document_path: str, caption: str = "", filename: str | None = 
         log.warning("Telegram send_document failed: %s | type: %s", exc, type(exc).__name__)
         return None
 
+
+# ── Telegram Command Listener ────────────────────────────────────────────────
+_telegram_listener_thread: threading.Thread | None = None
+_telegram_listener_stop = threading.Event()
+_telegram_listener_lock = threading.Lock()
+
+
+def _process_telegram_command(command_text: str) -> None:
+    """Parse and execute a Telegram bot command from an authorized chat."""
+    cmd_raw = command_text.strip().split()
+    if not cmd_raw:
+        return
+    cmd = cmd_raw[0].lower().split("@")[0]
+
+    log.info("[telegram_listener] Processing command: %s", cmd)
+
+    if cmd == "/pause":
+        from config.runtime_config import update_runtime_config
+
+        update_runtime_config({"trading_paused": True})
+        send_text(
+            "⏸️ **Trading Paused**\n"
+            "• New automated trade entries are now **BLOCKED**.\n"
+            "• Existing open positions will continue to be monitored for exit."
+        )
+
+    elif cmd == "/resume":
+        from config.runtime_config import update_runtime_config
+
+        update_runtime_config({"trading_paused": False})
+        send_text(
+            "▶️ **Trading Resumed**\n"
+            "• Automated trade entries and exits are active."
+        )
+
+    elif cmd == "/status":
+        from config.runtime_config import load_runtime_config
+        from src.models.schema import get_conn
+
+        cfg = load_runtime_config()
+        paused = cfg.get("trading_paused", False)
+        broker_disabled = cfg.get("live_broker_disabled", True)
+        shadow = cfg.get("live_shadow_mode", True)
+        direct_kite = cfg.get("manage_direct_kite_positions", True)
+
+        try:
+            with get_conn(read_only=True) as conn:
+                open_trades = [
+                    dict(r)
+                    for r in conn.execute(
+                        "SELECT id, symbol, option_type, strike, side, lots, entry_premium, pnl_rupees, trade_status, setup_type FROM live_trades WHERE status='OPEN'"
+                    ).fetchall()
+                ]
+                open_books = [
+                    dict(r)
+                    for r in conn.execute(
+                        "SELECT id, symbol, structure, total_pnl FROM multi_leg_trades WHERE status='OPEN'"
+                    ).fetchall()
+                ]
+        except Exception as se:
+            log.warning("Failed to fetch trades for /status: %s", se)
+            open_trades, open_books = [], []
+
+        status_lines = [
+            "📊 **System Status**",
+            f"• **Trading:** {'⏸️ PAUSED' if paused else '▶️ ACTIVE'}",
+            f"• **Broker:** {'🔴 DISABLED' if broker_disabled else '🟢 ENABLED'}",
+            f"• **Mode:** {'👻 SHADOW' if shadow else '⚡ LIVE'}",
+            f"• **Direct Kite Sync:** {'ON' if direct_kite else 'OFF'}",
+            "",
+            f"📈 **Open Positions:** {len(open_trades)} single-leg, {len(open_books)} multileg book(s)",
+        ]
+        for t in open_trades[:5]:
+            pnl_val = float(t.get("pnl_rupees") or 0.0)
+            status_lines.append(
+                f"  - #{t['id']} {t['symbol']} {t['side']} {t['option_type']} {int(t['strike'] or 0)} ({t['lots']}L) P&L: ₹{pnl_val:.1f}"
+            )
+        if len(open_trades) > 5:
+            status_lines.append(f"  ... and {len(open_trades) - 5} more")
+
+        for b in open_books[:5]:
+            pnl_val = float(b.get("total_pnl") or 0.0)
+            status_lines.append(
+                f"  - Book #{b['id']} {b['symbol']} {b['structure']} P&L: ₹{pnl_val:.1f}"
+            )
+        if len(open_books) > 5:
+            status_lines.append(f"  ... and {len(open_books) - 5} more")
+
+        send_text("\n".join(status_lines))
+
+    elif cmd == "/panic":
+        send_text("🚨 **EXECUTING EMERGENCY PANIC SHUTDOWN...**")
+        try:
+            from src.engine.live_trading import execute_panic_shutdown
+
+            summary = execute_panic_shutdown()
+            send_text(summary)
+        except Exception as pe:
+            log.critical("Panic shutdown error: %s", pe)
+            send_text(f"⚠️ Panic shutdown encountered an error: `{pe}`")
+
+    elif cmd in ("/help", "/start"):
+        help_text = (
+            "🤖 **NSEBOT Telegram Commands**\n\n"
+            "• `/status` — View current trading state, broker flags & open positions\n"
+            "• `/pause` — Pause new automated trade entries\n"
+            "• `/resume` — Resume automated trade entries\n"
+            "• `/panic` — 🚨 **EMERGENCY STOP**: Cancel all GTTs, market square-off all positions, disable broker & pause\n"
+            "• `/help` — Show this command menu"
+        )
+        send_text(help_text)
+
+    else:
+        send_text(f"❓ Unknown command: `{cmd}`. Type `/help` for available commands.")
+
+
+def _telegram_listener_worker() -> None:
+    """Long-polling daemon thread for Telegram commands."""
+    import time
+    import urllib.error
+
+    if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "YOUR_BOT_TOKEN":
+        log.info("[telegram_listener] Bot token not configured; command listener not started.")
+        return
+
+    offset = 0
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
+    log.info("[telegram_listener] Telegram command listener started for authorized chat_id=%s", TELEGRAM_CHAT_ID)
+
+    while not _telegram_listener_stop.is_set():
+        try:
+            params = urllib.parse.urlencode({"offset": offset, "timeout": 20})
+            req = urllib.request.Request(
+                f"{url}?{params}",
+                headers={"User-Agent": "NSEBOT-Telegram-Listener"},
+            )
+            with urllib.request.urlopen(req, timeout=25) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                if not data.get("ok"):
+                    time.sleep(3)
+                    continue
+
+                for update in data.get("result", []):
+                    update_id = update.get("update_id", 0)
+                    offset = max(offset, update_id + 1)
+
+                    message = update.get("message") or update.get("channel_post")
+                    if not message:
+                        continue
+
+                    # STRICT SECURITY: Only accept commands from TELEGRAM_CHAT_ID
+                    chat_id = str(message.get("chat", {}).get("id", ""))
+                    if chat_id != str(TELEGRAM_CHAT_ID):
+                        log.warning("[telegram_listener] Unauthorized command from chat_id=%s ignored", chat_id)
+                        continue
+
+                    text = (message.get("text") or "").strip()
+                    if text.startswith("/"):
+                        try:
+                            _process_telegram_command(text)
+                        except Exception as cmd_err:
+                            log.error("[telegram_listener] Error executing command '%s': %s", text, cmd_err)
+
+        except urllib.error.URLError:
+            # Long-poll timeout or transient connection drop — brief sleep and retry
+            time.sleep(2)
+        except Exception as e:
+            log.warning("[telegram_listener] Polling exception: %s", e)
+            time.sleep(5)
+
+
+def start_telegram_command_listener() -> None:
+    """Start the background Telegram command listener if not already running."""
+    global _telegram_listener_thread
+    if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "YOUR_BOT_TOKEN":
+        return
+
+    with _telegram_listener_lock:
+        if _telegram_listener_thread is not None and _telegram_listener_thread.is_alive():
+            return
+        _telegram_listener_stop.clear()
+        _telegram_listener_thread = threading.Thread(
+            target=_telegram_listener_worker,
+            name="telegram-cmd-listener",
+            daemon=True,
+        )
+        _telegram_listener_thread.start()
+        log.info("[telegram_listener] Telegram command listener thread dispatched.")
+
+
+def stop_telegram_command_listener() -> None:
+    """Stop the background Telegram command listener."""
+    global _telegram_listener_thread
+    with _telegram_listener_lock:
+        if _telegram_listener_thread is not None:
+            _telegram_listener_stop.set()
+            _telegram_listener_thread = None
+            log.info("[telegram_listener] Telegram command listener stopped.")
+
+

@@ -460,3 +460,79 @@ def audit_multileg_adjustment(
         symbol = str(book["symbol"] if book else "")
         _alert("multi_leg_trades:ADJUSTMENT", trade_id, {"symbol": symbol, **issues})
 
+
+def audit_session_level_multileg_closes(date_str: str | None = None) -> dict[str, object]:
+    """Audit session-level multi-leg closed books for mass-close anomalies or abnormal P&L concentration.
+
+    Flags sessions where:
+    1. A single session has > 10 AI-initiated closes (cluster anomaly).
+    2. A single session accounts for > 30% of trailing 30-day cumulative realized profit.
+    """
+    from src.models.schema import get_conn
+
+    target_date = date_str or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    anomalies: dict[str, object] = {}
+
+    with get_conn(read_only=True) as conn:
+        # Check day's closed books
+        day_rows = conn.execute(
+            """
+            SELECT id, symbol, exit_reason, total_pnl
+            FROM multi_leg_trades
+            WHERE status='CLOSED' AND closed_at LIKE ?
+            """,
+            (f"{target_date}%",),
+        ).fetchall()
+
+        # Check trailing 30-day cumulative PnL
+        trailing_row = conn.execute(
+            """
+            SELECT SUM(total_pnl) as cum_pnl, COUNT(*) as total_closes
+            FROM multi_leg_trades
+            WHERE status='CLOSED' AND closed_at >= datetime('now', '-30 days')
+            """
+        ).fetchone()
+
+    if not day_rows:
+        return {"status": "NO_CLOSES_TODAY", "date": target_date}
+
+    day_closes_count = len(day_rows)
+    day_total_pnl = sum(float(r["total_pnl"] or 0.0) for r in day_rows)
+    ai_closes = [r for r in day_rows if "AI_EXIT" in str(r["exit_reason"] or "")]
+
+    # Check 1: AI Mass-Close cluster check
+    if len(ai_closes) >= 10:
+        anomalies["ai_mass_close_cluster"] = {
+            "ai_closes_count": len(ai_closes),
+            "total_day_closes": day_closes_count,
+            "sample_reasons": [r["exit_reason"] for r in ai_closes[:3]],
+        }
+
+    # Check 2: Single-day dominance check (> 30% of 30-day PnL when 30-day PnL > 100k)
+    cum_30d_pnl = float((trailing_row["cum_pnl"] if trailing_row else 0.0) or 0.0)
+    if cum_30d_pnl > 100000.0 and day_total_pnl > 0.30 * cum_30d_pnl:
+        anomalies["extreme_pnl_concentration"] = {
+            "day_pnl": round(day_total_pnl, 2),
+            "trailing_30d_pnl": round(cum_30d_pnl, 2),
+            "concentration_pct": round((day_total_pnl / cum_30d_pnl) * 100, 1),
+        }
+
+    if anomalies:
+        log.warning(
+            "trade_audit: session %s flagged with %d anomaly(ies): %s",
+            target_date, len(anomalies), list(anomalies.keys())
+        )
+        _alert(
+            "multi_leg_trades:SESSION_AUDIT",
+            0,
+            {"date": target_date, "day_closes": day_closes_count, **anomalies},
+        )
+
+    return {
+        "date": target_date,
+        "day_closes": day_closes_count,
+        "day_pnl": round(day_total_pnl, 2),
+        "ai_closes": len(ai_closes),
+        "anomalies": anomalies,
+    }
+

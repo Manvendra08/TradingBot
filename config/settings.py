@@ -635,7 +635,7 @@ AI_MIN_CONFIDENCE_VETO = int(os.environ.get("AI_MIN_CONFIDENCE_VETO", "85"))
 EMP_BOOST_MIN_TRADES = int(os.environ.get("EMP_BOOST_MIN_TRADES", "20"))
 EMP_BOOST_MIN_WINRATE = float(os.environ.get("EMP_BOOST_MIN_WINRATE", "0.60"))
 ML_PREDICTOR_MODE = os.environ.get("ML_PREDICTOR_MODE", "shadow")          # off | shadow | live (live gated by §7)
-LLM_ENRICHMENT_ASYNC = os.environ.get("LLM_ENRICHMENT_ASYNC", "true").lower() == "true"
+LLM_ENRICHMENT_ASYNC = os.environ.get("LLM_ENRICHMENT_ASYNC", "false").lower() == "true"
 LLM_ENRICH_TIMEOUT_S = int(os.environ.get("LLM_ENRICH_TIMEOUT_S", "120"))
 AUTOPSY_ENABLED = os.environ.get("AUTOPSY_ENABLED", "true").lower() == "true"
 AUTOPSY_TIME_IST = os.environ.get("AUTOPSY_TIME_IST", "23:45")

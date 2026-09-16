@@ -21,6 +21,9 @@ env/
 # Environment / secrets
 .env
 *.env.local
+data/.fernet_key
+*.fernet_key
+.fernet_key
 
 # SQLite database (local data — don't commit)
 data/*.db

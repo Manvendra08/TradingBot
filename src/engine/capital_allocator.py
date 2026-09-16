@@ -123,8 +123,10 @@ def _calculate_live_lots(
     config: dict,
     option_type: str | None = None,
     strike: float | None = None,
+    sl_premium: float | None = None,
+    sl_distance: float | None = None,
 ) -> int:
-    """Live/broker lot sizing: per-symbol override or capital-based auto-calc."""
+    """Live/broker lot sizing: per-symbol override or risk-based auto-calc capped by capital/margin."""
     base = _base_symbol(symbol)
 
     symbol_lots = config.get("live_symbol_lots") or {}
@@ -187,7 +189,26 @@ def _calculate_live_lots(
     else:
         effective_cost_per_lot = entry_premium * instrument_lot_size
 
-    calculated = int(capital_per_trade // effective_cost_per_lot)
+    calculated_margin_lots = int(capital_per_trade // effective_cost_per_lot)
+
+    # Risk-based sizing: lots = floor(max_loss_per_trade / (SL_distance_premium × lot_size))
+    # Capped strictly by capital/margin logic
+    max_loss_per_trade = float(
+        config.get("live_max_loss_per_trade_inr") or min(capital_per_trade * 0.20, 25000.0)
+    )
+    if sl_distance is None and sl_premium is not None and entry_premium > 0:
+        sl_distance = abs(entry_premium - sl_premium)
+
+    if sl_distance and sl_distance > 0:
+        risk_lots = int(max_loss_per_trade // (sl_distance * instrument_lot_size))
+        calculated = min(calculated_margin_lots, max(1, risk_lots))
+        log.info(
+            "%s: risk-based sizing: risk_lots=%d (max_loss=₹%.0f, sl_dist=%.2f, lot_size=%d) vs margin_lots=%d -> using %d lots",
+            base, risk_lots, max_loss_per_trade, sl_distance, instrument_lot_size, calculated_margin_lots, calculated
+        )
+    else:
+        calculated = calculated_margin_lots
+
     lots = min(max(1, calculated), max_auto_lots)
 
     if calculated > max_auto_lots:
@@ -216,16 +237,18 @@ def calculate_trade_lots(
     tranche_index: int = 0,
     option_type: str | None = None,
     strike: float | None = None,
+    sl_premium: float | None = None,
+    sl_distance: float | None = None,
 ) -> int:
     """
-    Calculate the number of lots to trade for a symbol based on settings and premium.
+    Calculate the number of lots to trade for a symbol based on settings, risk limits, and premium.
 
     Paper trades (is_paper=True):
       - Broker mode ON (live_broker_disabled=False): mirror live_symbol_lots / live auto-calc.
       - Broker mode OFF: paper_symbol_lots per symbol, else global paper_lots (default 10).
 
     Live trades:
-      - live_symbol_lots override, else capital-based auto-calc.
+      - live_symbol_lots override, else risk-based auto-calc capped by capital.
       
     Pyramiding (pyramid_level > 1):
       - Scale down lots for subsequent entries (50% for level 2, 25% for level 3+).
@@ -240,7 +263,7 @@ def calculate_trade_lots(
         broker_mode = _broker_mode_enabled(config)
         if broker_mode:
             # Broker mode ON: mirror live settings for paper trading
-            lots = _calculate_live_lots(base, entry_premium, side, config, option_type, strike)
+            lots = _calculate_live_lots(base, entry_premium, side, config, option_type, strike, sl_premium=sl_premium, sl_distance=sl_distance)
             log.debug("%s: paper trade (broker mode ON) — mirroring live lots=%d", base, lots)
         else:
             # Broker mode OFF: use paper-specific settings
@@ -252,7 +275,7 @@ def calculate_trade_lots(
                 lots = max(1, int(config.get("paper_lots") or 10))
                 log.debug("%s: paper trade — using global paper_lots=%d", base, lots)
     else:
-        lots = _calculate_live_lots(base, entry_premium, side, config, option_type, strike)
+        lots = _calculate_live_lots(base, entry_premium, side, config, option_type, strike, sl_premium=sl_premium, sl_distance=sl_distance)
 
     # Pyramiding Sizing (Flaw #10): Reduce size on scaling in
     original_lots = lots

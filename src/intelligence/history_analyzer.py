@@ -753,3 +753,119 @@ class TradeHistoryAnalyzer:
             "avg_loss": similar_trades["avg_loss"] or 0,
             "confidence_note": note,
         }
+
+    def get_confidence_calibration_curve(
+        self, days: int = 90, symbol: str | None = None
+    ) -> dict:
+        """
+        Compute calibration curve: engine confidence bucket vs realized win rate.
+        Phase 5 requirement: evaluates whether higher engine/LLM confidence correlates
+        with higher realized win rates.
+
+        Buckets:
+          - '<50%'
+          - '50-59%'
+          - '60-69%'
+          - '70-79%'
+          - '80-89%'
+          - '90-100%'
+        """
+        from src.models.schema import get_conn
+        now_utc = datetime.now(timezone.utc)
+        cutoff = (now_utc - timedelta(days=days)).isoformat()
+
+        where_clauses = ["status != 'OPEN'", "closed_at IS NOT NULL", "closed_at >= ?"]
+        params = [cutoff]
+        if symbol:
+            where_clauses.append("symbol = ?")
+            params.append(symbol)
+
+        where_sql = " AND ".join(where_clauses)
+
+        query = f"""
+            SELECT
+                confidence_score,
+                pnl_rupees
+            FROM {UNIFIED_TRADES_SQL}
+            WHERE {where_sql}
+        """
+
+        buckets = {
+            "<50%": {"range": (0, 49), "mid": 0.25, "trades": 0, "wins": 0, "pnl": 0.0, "gross_win": 0.0, "gross_loss": 0.0},
+            "50-59%": {"range": (50, 59), "mid": 0.55, "trades": 0, "wins": 0, "pnl": 0.0, "gross_win": 0.0, "gross_loss": 0.0},
+            "60-69%": {"range": (60, 69), "mid": 0.65, "trades": 0, "wins": 0, "pnl": 0.0, "gross_win": 0.0, "gross_loss": 0.0},
+            "70-79%": {"range": (70, 79), "mid": 0.75, "trades": 0, "wins": 0, "pnl": 0.0, "gross_win": 0.0, "gross_loss": 0.0},
+            "80-89%": {"range": (80, 89), "mid": 0.85, "trades": 0, "wins": 0, "pnl": 0.0, "gross_win": 0.0, "gross_loss": 0.0},
+            "90-100%": {"range": (90, 100), "mid": 0.95, "trades": 0, "wins": 0, "pnl": 0.0, "gross_win": 0.0, "gross_loss": 0.0},
+        }
+
+        with get_conn(read_only=True) as conn:
+            rows = conn.execute(query, params).fetchall()
+
+        for r in rows:
+            conf = float(r["confidence_score"] or 0)
+            pnl = float(r["pnl_rupees"] or 0)
+
+            if conf < 50:
+                target_b = buckets["<50%"]
+            elif 50 <= conf <= 59:
+                target_b = buckets["50-59%"]
+            elif 60 <= conf <= 69:
+                target_b = buckets["60-69%"]
+            elif 70 <= conf <= 79:
+                target_b = buckets["70-79%"]
+            elif 80 <= conf <= 89:
+                target_b = buckets["80-89%"]
+            else:
+                target_b = buckets["90-100%"]
+
+            target_b["trades"] += 1
+            target_b["pnl"] += pnl
+            if pnl > 0:
+                target_b["wins"] += 1
+                target_b["gross_win"] += pnl
+            else:
+                target_b["gross_loss"] += abs(pnl)
+
+        results = []
+        total_trades = sum(b["trades"] for b in buckets.values())
+        brier_score_sum = 0.0
+
+        for name, b in buckets.items():
+            cnt = b["trades"]
+            wr = round(b["wins"] / cnt, 4) if cnt > 0 else 0.0
+            avg_pnl = round(b["pnl"] / cnt, 2) if cnt > 0 else 0.0
+            pf = round(b["gross_win"] / b["gross_loss"], 2) if b["gross_loss"] > 0 else (99.0 if b["gross_win"] > 0 else 0.0)
+            gap = round(wr - b["mid"], 4) if cnt > 0 else 0.0
+
+            if cnt > 0:
+                brier_score_sum += b["wins"] * ((b["mid"] - 1.0) ** 2) + (cnt - b["wins"]) * (b["mid"] ** 2)
+
+            results.append({
+                "bucket": name,
+                "confidence_midpoint": b["mid"],
+                "trades": cnt,
+                "wins": b["wins"],
+                "win_rate": wr,
+                "avg_pnl": avg_pnl,
+                "total_pnl": round(b["pnl"], 2),
+                "profit_factor": pf,
+                "calibration_gap": gap,
+                "is_well_calibrated": abs(gap) <= 0.10 if cnt >= 5 else None,
+            })
+
+        overall_brier = round(brier_score_sum / total_trades, 4) if total_trades > 0 else None
+
+        return {
+            "period_days": days,
+            "symbol": symbol or "ALL",
+            "total_trades": total_trades,
+            "brier_score": overall_brier,
+            "calibration_curve": results,
+        }
+
+
+def get_confidence_calibration_curve(days: int = 90, symbol: str | None = None) -> dict:
+    """Convenience module function for calibration curve."""
+    return get_analyzer().get_confidence_calibration_curve(days=days, symbol=symbol)
+

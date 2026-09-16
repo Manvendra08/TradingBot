@@ -17,14 +17,32 @@ class ValidationResult:
 
 
 def _estimate_margin(legs: list[dict], underlying: float, symbol: str = "NIFTY") -> float:
-    """Rough estimation of margin requirement based on symbol lot size."""
+    """Accurate estimation of broker margin requirement based on structure and lot size."""
+    try:
+        from src.engine.multileg_strategy import calculate_combined_margin
+        norm_legs = []
+        for leg in legs:
+            l_copy = dict(leg)
+            if "side" not in l_copy and "action" in l_copy:
+                l_copy["side"] = l_copy["action"]
+            if "lots" not in l_copy and "ratio" in l_copy:
+                l_copy["lots"] = l_copy["ratio"]
+            if "premium" not in l_copy and "entry_premium" in l_copy:
+                l_copy["premium"] = l_copy["entry_premium"]
+            norm_legs.append(l_copy)
+        margin = calculate_combined_margin(norm_legs, symbol, underlying=underlying)
+        if margin > 0:
+            return float(margin)
+    except Exception:
+        pass
+
     from config.settings import LOT_SIZES
     base = symbol.upper().split()[0] if symbol else "NIFTY"
     lot_size = LOT_SIZES.get(base, LOT_SIZES.get(symbol, 75))
     margin = 0.0
     for leg in legs:
-        if leg.get("action") == "SELL":
-            ratio = leg.get("ratio", 1)
+        if str(leg.get("action") or leg.get("side") or "").upper() == "SELL":
+            ratio = float(leg.get("ratio") or leg.get("lots") or 1)
             margin += (underlying * ratio * lot_size * 0.15)
     return margin
 
@@ -109,7 +127,7 @@ def validate_multileg_trade(
         )
 
     # Defined-risk wing width check
-    strategy_type = getattr(proposal, "strategy_type", None) or getattr(proposal, "structure", None) or ""
+    strategy_type = getattr(proposal, "strategy_type", None) or getattr(proposal, "strategy", None) or getattr(proposal, "structure", None) or ""
     if str(strategy_type).upper() in ("IRON_CONDOR", "BEAR_CALL_SPREAD", "BULL_PUT_SPREAD"):
         from config.multileg_strategies import MIN_WING_WIDTH_PCT, MIN_WING_WIDTH_POINTS
         sym_key = symbol.upper().split()[0] if symbol else "DEFAULT"
