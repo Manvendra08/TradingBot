@@ -142,15 +142,16 @@ class TestMultilegPnlAndSnapshotFixes:
             {"id": 3, "exit_premium": 70.0},
             {"id": 4, "exit_premium": 20.0},
         ]
-        close_book(
-            "BOOK-REGRESSION-1",
-            "2026-01-07T15:35:00+00:00",
-            "CLOSED",
-            "REGRESSION_TEST",
-            total_pnl=synthetic_total_pnl,
-            exit_underlying=24550.0,
-            leg_exits=leg_exits,
-        )
+        with patch("src.models.schema._calc_transaction_costs", return_value=0.0):
+            close_book(
+                "BOOK-REGRESSION-1",
+                "2026-01-07T15:35:00+00:00",
+                "CLOSED",
+                "REGRESSION_TEST",
+                total_pnl=synthetic_total_pnl,
+                exit_underlying=24550.0,
+                leg_exits=leg_exits,
+            )
 
         import sqlite3
         from src.models.schema import DB_PATH

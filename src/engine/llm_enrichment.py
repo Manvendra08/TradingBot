@@ -73,6 +73,11 @@ _IST = pytz.timezone("Asia/Kolkata")
 
 _OPENCODE_HOST = "opencode.ai"
 
+# When True, live trading paths must reject malformed LLM output instead of
+# repairing it. Repair strategies that mutate JSON structure can turn truncated
+# or semantically wrong responses into syntactically valid trade plans.
+_STRICT_JSON_PARSE = os.environ.get("NSEBOT_STRICT_JSON", "false").lower() == "true"
+
 # Groq models that DO NOT support `response_format={"type":"json_object"}`.
 # Passing json_object to these triggers a 400 formatting error.
 _GROQ_NO_JSON_MODELS = frozenset(
@@ -351,6 +356,92 @@ def get_cost_tracker() -> CostTracker:
     """Thread-safe getter for the active global CostTracker."""
     with _cost_tracker_lock:
         return _GLOBAL_COST_TRACKER
+
+
+def get_model_scorecard(days: int = 7) -> list[dict]:
+    """Calculate weekly per-model performance scorecard across paper, live, and multi-leg trades.
+    
+    Returns list of dicts with:
+    - model_name
+    - total_trades
+    - wins
+    - win_rate
+    - total_pnl
+    - avg_pnl
+    """
+    from datetime import datetime, timedelta, timezone
+    from src.models.schema import get_read_conn
+
+    cutoff_iso = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    query = """
+        SELECT ai_model_name, pnl_rupees, status FROM (
+            SELECT ai_model_name, pnl_rupees, status FROM paper_trades
+            WHERE status != 'OPEN' AND closed_at >= ? AND ai_model_name IS NOT NULL AND ai_model_name != ''
+            UNION ALL
+            SELECT ai_model_name, pnl_rupees, status FROM live_trades
+            WHERE status != 'OPEN' AND closed_at >= ? AND ai_model_name IS NOT NULL AND ai_model_name != ''
+            UNION ALL
+            SELECT ai_model_name, total_pnl as pnl_rupees, status FROM multi_leg_trades
+            WHERE status != 'OPEN' AND closed_at >= ? AND ai_model_name IS NOT NULL AND ai_model_name != ''
+        )
+    """
+    try:
+        with get_read_conn() as conn:
+            rows = conn.execute(query, (cutoff_iso, cutoff_iso, cutoff_iso)).fetchall()
+    except Exception as exc:
+        log.warning("[llm] Failed to query model scorecard: %s", exc)
+        return []
+
+    model_stats: dict[str, dict] = {}
+    for r in rows:
+        name = r["ai_model_name"]
+        pnl = float(r["pnl_rupees"] or 0.0)
+        st = str(r["status"] or "").upper()
+        if name not in model_stats:
+            model_stats[name] = {"model_name": name, "total_trades": 0, "wins": 0, "total_pnl": 0.0}
+        model_stats[name]["total_trades"] += 1
+        model_stats[name]["total_pnl"] += pnl
+        if pnl > 0 or "TARGET" in st:
+            model_stats[name]["wins"] += 1
+
+    scorecard = []
+    for m in model_stats.values():
+        cnt = m["total_trades"]
+        wins = m["wins"]
+        win_rate = (wins / cnt) if cnt > 0 else 0.0
+        avg_pnl = (m["total_pnl"] / cnt) if cnt > 0 else 0.0
+        scorecard.append({
+            "model_name": m["model_name"],
+            "total_trades": cnt,
+            "wins": wins,
+            "win_rate": round(win_rate, 3),
+            "total_pnl": round(m["total_pnl"], 2),
+            "avg_pnl": round(avg_pnl, 2),
+        })
+
+    # Sort best to worst by win_rate descending, then total_pnl descending
+    scorecard.sort(key=lambda x: (x["win_rate"], x["total_pnl"]), reverse=True)
+    return scorecard
+
+
+def get_excluded_models(days: int = 7, min_trades: int = 4) -> set[str]:
+    """Return set of model names falling in the bottom quartile of weekly performance.
+    
+    Only models with at least min_trades are considered for exclusion.
+    """
+    scorecard = get_model_scorecard(days=days)
+    qualified = [m for m in scorecard if m["total_trades"] >= min_trades]
+    if len(qualified) < 4:
+        return set()
+
+    # Bottom quartile = worst 25% of qualified models
+    num_to_exclude = max(1, len(qualified) // 4)
+    bottom_quartile = qualified[-num_to_exclude:]
+    excluded = {
+        m["model_name"] for m in bottom_quartile
+        if m["win_rate"] < 0.45 or m["total_pnl"] < 0
+    }
+    return excluded
 
 
 _COMPLEXITY_TEXT_THRESHOLD = 8_000   # chars
@@ -1106,14 +1197,14 @@ ANALYSIS (ordered):
 5. Macro catalyst? (EIA/RBI/OPEC/expiry)
 6. Confidence: count [OI, price, news] agreement
    3/3→80-95 | 2/3→60-75 | 1/3→35-55 | 0/3→NO_TRADE
-7. Engine Alignment: The quantitative OI engine decides direction ({_bias_str} with {intel.get('confidence', 0)}% confidence). Your role is execution detail (levels, target, stop loss). Do NOT override a triggered engine trade to NO_TRADE based on subjective chart doubt or routine theta decay; reserve NO_TRADE strictly for missing strike liquidity, invalid quotes, or hard data integrity failures. Under NO circumstances may you flip direction against the engine!
+7. Engine Alignment: The quantitative OI engine decides direction ({_bias_str} with {intel.get('confidence', 0)}% confidence). Your role is execution detail (levels, target, stop loss). Never oppose the ENGINE direction. However, NO_TRADE is always acceptable; a missed trade costs nothing if strike liquidity, spread, or risk-reward is unfavorable.
 
 TRADE DISCIPLINE:
 {get_reality_check_guardrails()}
 • Anchor targets to DATA levels: long/bullish → resistance/max-pain above, short/bearish → support/max-pain below. Never project a target past the nearest opposing level without stating why in thesis.
 • SL at the nearest DATA level that invalidates the setup — not an arbitrary %.
 • Compute risk_reward from YOUR OWN levels: For BUY options / long trades: (target_1 − entry) / (entry − stop_loss). For SELL options: (entry − target_1) / (stop_loss − entry). Below 1:1.2 → adjust targets or stops to align with market structure.
-• Reserve NO_TRADE strictly for cases where evidence is completely contradictory (0/3 agree), chosen strike shows "—" or zero bid in Premiums, or option chain data is corrupt. A valid quantitative signal with liquid strikes must be structured and executed.
+• NO_TRADE is always acceptable; a missed trade costs nothing. Choose NO_TRADE if evidence is contradictory, chosen strike lacks liquidity, risk-reward is unfavorable, or option chain data is corrupt.
 • NAKED SHORT BAN into events: DTE≤2 AND event_day={event_risk_today} → defined-risk spread / IRON_CONDOR or NO_TRADE. No naked short strangle/straddle.
 • Lot check: max_risk_per_lot = abs(entry − stop_loss) × {lot_size}. Max single-trade loss ≤ 1.5% of portfolio.
 
@@ -1874,6 +1965,7 @@ def call_llm_api(
         "4. CE OI unwinding (-CE ΔOI) = Call short covering = BULLISH resistance clearance. "
         "5. Rising PCR (or >1.0) = BULLISH accumulation / put addition; Falling PCR (or <1.0) = BEARISH distribution / call addition. "
         "NEVER describe PE buildup as bearish institutional short positioning, and NEVER claim a rising PCR is bearish.\n"
+        "RISK MANDATE: Capital preservation is paramount. Every decision must prioritize capital protection over profit capture. Max loss per trade must be strictly limited. Prefer defined-risk structures (e.g., credit spreads, iron condors) over undefined-risk structures when market volatility, gap risk, or event risk is elevated. If market structure, liquidity, or risk-reward is questionable, default to NO_TRADE. NO_TRADE is always acceptable; a missed trade costs nothing.\n"
         "CONTEXT RULES: All times are IST (UTC+5:30). All monetary amounts are INR (₹). All prices and premiums are per-unit INR unless explicitly stated. Do not use USD, $, ET, UTC, or other timezones in reasoning or output.\n"
         f"Target Schema ({schema_name}):\n{schema_json}"
     )
@@ -1919,6 +2011,36 @@ def call_llm_api(
         _omnirouter_url = f"{_omnirouter_base}/chat/completions"
     else:
         _omnirouter_url = _omnirouter_base
+
+    # Deterministic provider ladder: ordered list with fixed precedence.
+    # All fallbacks below are same-group/model alternatives only; cross-model
+    # fallback is not permitted because different models can yield different
+    # trade decisions for identical input.
+    _PROVIDER_LADDER_ORDER = [
+        "OmniRouter (Claude-Models Combo)",
+        "OmniRouter (Claude/Antigravity)",
+        "OmniRouter (Claude/Free)",
+        "OmniRouter (GPT 5.5 CX)",
+        "OmniRouter (GLM 5 KR)",
+        "OmniRouter (KR Haiku)",
+        "GitHub Models",
+        "Groq",
+        "OpenCode Zen",
+        "AnyAPI Free",
+        "Bedrock Mantle",
+        "NVIDIA NIM",
+        "Bedrock",
+        "OpenRouter",
+        "Gemini",
+        "SambaNova",
+    ]
+
+    def _provider_sort_key(provider: dict) -> int:
+        name = provider.get("name", "")
+        for idx, canonical in enumerate(_PROVIDER_LADDER_ORDER):
+            if name.startswith(canonical):
+                return idx
+        return len(_PROVIDER_LADDER_ORDER) + 1
 
     # OmniRouter primary group — Claude Combos, Antigravity, Claude Free, GPT 5.5 CX, GLM 5 KR & KR Haiku models.
     _omnirouter_group = {
@@ -2898,6 +3020,11 @@ def call_llm_api(
             )
             continue
 
+        providers = list(group.get("providers") or [])
+        if providers:
+            providers.sort(key=_provider_sort_key)
+            group = {**group, "providers": providers}
+
         for provider in group["providers"]:
             now_loop = time.time()
             if group_name and _PROVIDER_COOLDOWN_UNTIL.get(group_name, 0.0) > now_loop:
@@ -2911,6 +3038,20 @@ def call_llm_api(
                 provider["model_group"] = group_name
             if override_providers is not None and provider not in override_providers:
                 continue
+
+            # Scorecard rotation gate: skip models in bottom quartile of weekly performance
+            try:
+                excluded_models = get_excluded_models(days=7, min_trades=4)
+                p_name = provider.get("name") or ""
+                p_model = provider.get("model") or ""
+                if excluded_models and (p_name in excluded_models or p_model in excluded_models):
+                    log.info(
+                        "[llm] Skipping %s (%s) — dropped from rotation by weekly model scorecard (bottom quartile)",
+                        p_name, p_model
+                    )
+                    continue
+            except Exception:
+                pass
             key_name = provider["env_key"]
             api_key = os.environ.get(key_name)
             if not api_key:
@@ -3002,6 +3143,7 @@ def call_llm_api(
                         provider["model"],
                     )
                     _CONSECUTIVE_FAILURES = 0
+                    _log_provider_audit(symbol, provider, schema_name)
                     return result
                 except Exception as inner_e:
                     err = str(inner_e)
@@ -3081,6 +3223,7 @@ def call_llm_api(
                             provider["model"],
                         )
                         _CONSECUTIVE_FAILURES = 0
+                        _log_provider_audit(symbol, provider, schema_name)
                         return result
                     else:
                         log.info(
@@ -3122,7 +3265,7 @@ def call_llm_api(
                         modelId=provider["model"],
                         messages=messages,
                         inferenceConfig={
-                            "temperature": 0.2,
+                            "temperature": 0.1,
                             "maxTokens": provider.get(
                                 "max_tokens_override", max_tokens
                             ),
@@ -3152,6 +3295,7 @@ def call_llm_api(
                         provider["model"],
                     )
                     _CONSECUTIVE_FAILURES = 0
+                    _log_provider_audit(symbol, provider, schema_name)
                     return result
                 except Exception as inner_e:
                     err = str(inner_e)
@@ -3189,7 +3333,7 @@ def call_llm_api(
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": prompt},
                     ],
-                    "temperature": 0.2,
+                    "temperature": 0.1,
                     "max_tokens": provider.get("max_tokens_override", max_tokens),
                     "stream": False,
                 }
@@ -3334,6 +3478,7 @@ def call_llm_api(
                         # Clear this call's read-timeout tally for the group on success.
                         rt = _per_thread_state.__dict__.setdefault("read_timeouts", {})
                         rt[group_name] = 0
+                    _log_provider_audit(symbol, provider, schema_name)
                     return result
                 elif resp.status_code == 429:
                     log.warning(
@@ -3438,6 +3583,7 @@ def call_llm_api(
                                 with _cooldown_lock:
                                     _CONSECUTIVE_FAILURES = 0
                                 _record_host_success(provider)
+                                _log_provider_audit(symbol, provider, schema_name)
                                 return result
                     # After retry, if still not 200, register the failure and skip this model.
                     # Do NOT re-try indefinitely — move to next model in pipeline.
@@ -3489,6 +3635,22 @@ def call_llm_api(
         curr_failures,
     )
     return None
+
+
+def _log_provider_audit(symbol: str, provider: dict | None, schema_name: str | None = None) -> None:
+    """Audit log for deterministic provider ladder."""
+    try:
+        name = (provider or {}).get("name") or "UNKNOWN"
+        model = (provider or {}).get("model") or "UNKNOWN"
+        log.info(
+            "[llm-audit] %s | schema=%s | provider=%s | model=%s",
+            symbol,
+            schema_name or "unknown",
+            name,
+            model,
+        )
+    except Exception:
+        pass
 
 
 # Backward-compatibility alias for internal and test callers
@@ -3550,6 +3712,78 @@ def _sanitize_parsed_strings(data: any) -> any:
     return data
 
 
+def _try_parse_candidate(cand: str) -> dict | list | None:
+    cand = cand.strip()
+    if not cand:
+        return None
+    cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", cand)
+
+    if _STRICT_JSON_PARSE:
+        try:
+            res = json.loads(cleaned, strict=False)
+            if isinstance(res, (dict, list)):
+                if isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
+                    return res[0]
+                return res
+        except Exception:
+            pass
+        return None
+
+    # Strategy 1: Direct loads
+    try:
+        res = json.loads(cleaned, strict=False)
+        if isinstance(res, (dict, list)):
+            if isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
+                return res[0]
+            return res
+    except Exception:
+        pass
+
+    # Strategy 2: Strip trailing commas and comments
+    c2 = re.sub(r",\s*([}\]])", r"\1", cleaned)
+    c2 = re.sub(r"//.*?\n", "\n", c2)
+    try:
+        res = json.loads(c2, strict=False)
+        if isinstance(res, (dict, list)):
+            if isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
+                return res[0]
+            return res
+    except Exception:
+        pass
+
+    # Strategy 3: Fix unescaped newlines inside quotes
+    try:
+        c3 = re.sub(
+            r'(?<=: ")(.*?)(?=")',
+            lambda m: m.group(1).replace("\n", "\\n").replace("\r", "\\r"),
+            c2,
+            flags=re.DOTALL,
+        )
+        res = json.loads(c3, strict=False)
+        if isinstance(res, (dict, list)):
+            if isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
+                return res[0]
+            return res
+    except Exception:
+        pass
+
+    # Strategy 4: Repair inner unescaped quotes
+    try:
+        repaired = _repair_inner_quotes(c2)
+        res = json.loads(repaired, strict=False)
+        if isinstance(res, (dict, list)):
+            if isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
+                return res[0]
+            return res
+    except Exception:
+        pass
+
+    # Strategy 5: Truncated JSON repair is intentionally DISABLED for trade execution.
+    # Auto-closing open brackets on truncated streams fabricates semantically invalid
+    # trade plans (missing legs, incomplete strikes). Truncated responses must fail-closed.
+    return None
+
+
 def _extract_json(raw: str) -> dict | list:
     """
     Tolerant multi-candidate JSON extraction:
@@ -3568,74 +3802,6 @@ def _extract_json(raw: str) -> dict | list:
             stripped_raw = original_raw[think_pos + 8:].strip()
     if stripped_raw:
         original_raw = stripped_raw
-
-    def _try_parse_candidate(cand: str) -> dict | list | None:
-        cand = cand.strip()
-        if not cand:
-            return None
-        # Remove invalid control characters
-        cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", cand)
-
-        # Strategy 1: Direct loads
-        try:
-            res = json.loads(cleaned, strict=False)
-            if isinstance(res, (dict, list)):
-                if isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
-                    return res[0]
-                return res
-        except Exception:
-            pass
-
-        # Strategy 2: Strip trailing commas and comments
-        c2 = re.sub(r",\s*([}\]])", r"\1", cleaned)
-        c2 = re.sub(r"//.*?\n", "\n", c2)
-        try:
-            res = json.loads(c2, strict=False)
-            if isinstance(res, (dict, list)):
-                if isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
-                    return res[0]
-                return res
-        except Exception:
-            pass
-
-        # Strategy 3: Fix unescaped newlines inside quotes
-        try:
-            c3 = re.sub(
-                r'(?<=: ")(.*?)(?=")',
-                lambda m: m.group(1).replace("\n", "\\n").replace("\r", "\\r"),
-                c2,
-                flags=re.DOTALL,
-            )
-            res = json.loads(c3, strict=False)
-            if isinstance(res, (dict, list)):
-                if isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
-                    return res[0]
-                return res
-        except Exception:
-            pass
-
-        # Strategy 4: Repair inner unescaped quotes
-        try:
-            repaired = _repair_inner_quotes(c2)
-            res = json.loads(repaired, strict=False)
-            if isinstance(res, (dict, list)):
-                if isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
-                    return res[0]
-                return res
-        except Exception:
-            pass
-
-        # Strategy 5: Truncated JSON repair
-        try:
-            res = _repair_truncated_json(cand)
-            if isinstance(res, (dict, list)):
-                if isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
-                    return res[0]
-                return res
-        except Exception:
-            pass
-
-        return None
 
     # ── Gather Candidate Substrings in Priority Order ──
     candidates: list[str] = []
@@ -4015,7 +4181,23 @@ def _sanitize_llm_verdict(
 
     # 4. Validate and correct entry_premium_range, stop_loss, target_1, target_2, risk_reward
     entry_range = result.entry_premium_range or ""
+    action_upper = str(result.action or "").upper()
+    is_no_trade = "NO_TRADE" in action_upper or "NEUTRAL" in action_upper
+    is_action_long = "LONG" in action_upper or "BUY" in action_upper
+
     m = re.search(r"(\d+(?:\.\d+)?)\s*(CE|PE|FUT)", instr, re.IGNORECASE)
+
+    if not is_no_trade and not m:
+        log.warning("[llm] %s: Rejecting %s - could not parse instrument strike from '%s'", symbol, result.action, instr)
+        update_fields = {
+            "action": "NO_TRADE",
+            "thesis": f"Rejected: Unparseable instrument '{instr}'. " + (result.thesis or ""),
+            "signal_chain": f"Instrument parse failure for '{instr}'",
+        }
+        if hasattr(result, "model_copy"):
+            return result.model_copy(update=update_fields)
+        return result.copy(update=update_fields)
+
     if m:
         try:
             target_strike = float(m.group(1))
@@ -4031,6 +4213,38 @@ def _sanitize_llm_verdict(
                 from src.engine.trade_plan import get_option_premium
                 scan_expiry = scan_context.get("expiry") or ""
                 actual_premium = get_option_premium(symbol, scan_expiry, target_strike, target_opt, option_rows)
+
+            # Reject non-chain strikes or missing premiums for actionable trades
+            if not is_no_trade:
+                if target_opt in ("CE", "PE"):
+                    strike_in_chain = any(
+                        abs(float(row.get("strike", 0)) - target_strike) < 0.01
+                        for row in option_rows if isinstance(row, dict)
+                    )
+                    if not strike_in_chain or actual_premium is None or actual_premium <= 0:
+                        log.warning(
+                            "[llm] %s: Rejecting %s - strike %.1f %s not found in option chain or lacks valid quote",
+                            symbol, result.action, target_strike, target_opt
+                        )
+                        update_fields = {
+                            "action": "NO_TRADE",
+                            "thesis": f"Rejected: Strike {target_strike} {target_opt} not in option chain or lacks valid quote. " + (result.thesis or ""),
+                            "signal_chain": f"Strike {target_strike} {target_opt} missing/illiquid in option chain",
+                        }
+                        if hasattr(result, "model_copy"):
+                            return result.model_copy(update=update_fields)
+                        return result.copy(update=update_fields)
+
+                if underlying <= 0:
+                    log.warning("[llm] %s: Rejecting %s - missing underlying spot price", symbol, result.action)
+                    update_fields = {
+                        "action": "NO_TRADE",
+                        "thesis": "Rejected: Missing valid underlying spot price. " + (result.thesis or ""),
+                        "signal_chain": "Missing underlying spot price",
+                    }
+                    if hasattr(result, "model_copy"):
+                        return result.model_copy(update=update_fields)
+                    return result.copy(update=update_fields)
 
             if actual_premium and actual_premium > 0 and underlying > 0:
                 # 1. Correct entry_premium_range if wildly off
@@ -4049,21 +4263,13 @@ def _sanitize_llm_verdict(
                     high = round(actual_premium * 1.1, 2)
                     corrected_range = f"{low}-{high}"
 
-                # 2. Recalculate Stop Loss, Target 1, Target 2 using code formula
+                # 2. Unconditionally recalculate Stop Loss, Target 1, Target 2 using code formula
                 from src.engine.trade_plan import get_atr, convert_underlying_sl_to_premium
                 from config.symbol_classes import get_strike_step
                 atr = get_atr(scan_context)
                 step = float(get_strike_step(symbol) or 1)
 
-                # Determine direction for underlying price movement
-                action_upper = str(result.action or "").upper()
-                is_no_trade = "NO_TRADE" in action_upper or "NEUTRAL" in action_upper
-                is_action_long = "LONG" in action_upper or "BUY" in action_upper
-
                 if not is_no_trade:
-                    # GO_LONG -> underlying spot moves UP (bullish=True)
-                    # GO_SHORT -> underlying spot moves DOWN (bullish=False)
-                    # For single-leg options, side is always BUY (GO_LONG buys CE, GO_SHORT buys PE)
                     bullish = is_action_long
                     side = "BUY"
                     if target_opt == "FUT":
@@ -4664,11 +4870,35 @@ def get_multileg_verdict(
                         strat = "NO_TRADE"
                         legs = []
 
+            # Direction lock for directional multileg strategies against canonical engine bias
+            from src.engine.verdict_sets import is_bearish, is_bullish
+            from config.multileg_strategies import is_bearish_strategy, is_bullish_strategy
+            vl = (intel or {}).get("verdict_label", "")
+            engine_conf = int((intel or {}).get("confidence", 0))
+            if is_bullish(vl) and is_bearish_strategy(strat):
+                log.warning(
+                    "[llm-multileg] %s: Direction conflict — engine is Bullish (%s) but LLM proposed %s. Defaulting to NO_TRADE.",
+                    symbol, vl, strat
+                )
+                strat = "NO_TRADE"
+                legs = []
+            elif is_bearish(vl) and is_bullish_strategy(strat):
+                log.warning(
+                    "[llm-multileg] %s: Direction conflict — engine is Bearish (%s) but LLM proposed %s. Defaulting to NO_TRADE.",
+                    symbol, vl, strat
+                )
+                strat = "NO_TRADE"
+                legs = []
+
+            llm_conf = int(getattr(result, "confidence", 0) or 0)
+            final_conf = min(llm_conf, engine_conf) if (engine_conf > 0 and llm_conf > 0) else llm_conf
+
             if hasattr(result, "model_copy"):
-                result = result.model_copy(update={"strategy_type": strat, "legs": legs})
+                result = result.model_copy(update={"strategy_type": strat, "legs": legs, "confidence": final_conf})
             else:
                 result.strategy_type = strat
                 result.legs = legs
+                result.confidence = final_conf
 
             log.info(
                 "[llm-multileg] %s: %s with %d legs, net premium ₹%.1f, confidence %d%%",

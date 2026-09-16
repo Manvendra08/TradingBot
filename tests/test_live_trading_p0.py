@@ -473,9 +473,16 @@ def test_llm_caching_and_cooldown():
         "src.engine.llm_enrichment._call_llm_api", return_value=dummy_verdict
     ) as mock_api, patch(
         "src.engine.llm_enrichment._format_historical_oi", return_value="dummy historical data"
+    ), patch(
+        "src.engine.llm_enrichment._sanitize_llm_verdict", side_effect=lambda result, *args, **kwargs: result
     ):
         intel = {"verdict_label": "Long Buildup", "confidence": 80}
-        scan_ctx = {"underlying": 24000.0}
+        scan_ctx = {
+            "underlying": 24000.0,
+            "option_rows": [
+                {"strike": 24500.0, "option_type": "CE", "ltp": 185.0},
+            ],
+        }
 
         # 1. First call -> should query API
         v1 = get_llm_verdict("NIFTY", intel, scan_ctx)
@@ -483,13 +490,13 @@ def test_llm_caching_and_cooldown():
         assert mock_api.call_count == 1
 
         # 2. Second call with same parameters and minor price change -> should reuse cache
-        scan_ctx_minor = {"underlying": 24010.0}  # 10 / 24000 = 0.04% move (< 0.2%)
+        scan_ctx_minor = {"underlying": 24010.0, "option_rows": scan_ctx["option_rows"]}  # 10 / 24000 = 0.04% move (< 0.2%)
         v2 = get_llm_verdict("NIFTY", intel, scan_ctx_minor)
         assert v2 == dummy_verdict
         assert mock_api.call_count == 1  # call count still 1
 
         # 3. Third call with significant price change -> should bypass cache and query API
-        scan_ctx_major = {"underlying": 24100.0}  # 100 / 24000 = 0.41% move (> 0.2%)
+        scan_ctx_major = {"underlying": 24100.0, "option_rows": scan_ctx["option_rows"]}  # 100 / 24000 = 0.41% move (> 0.2%)
         v3 = get_llm_verdict("NIFTY", intel, scan_ctx_major)
         assert v3 == dummy_verdict
         assert mock_api.call_count == 2

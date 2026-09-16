@@ -145,7 +145,8 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     entry_dev_pct       REAL,
     leg_group_id        TEXT,
     tranche_index       INTEGER DEFAULT 0,
-    snapshot_id         TEXT
+    snapshot_id         TEXT,
+    ai_model_name       TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_paper_symbol_status
@@ -237,7 +238,8 @@ CREATE TABLE IF NOT EXISTS live_trades (
     trend_alignment_score INTEGER,
     regime_score        INTEGER,
     entry_dev_pct       REAL,
-    snapshot_id         TEXT
+    snapshot_id         TEXT,
+    ai_model_name       TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_live_symbol_status
@@ -364,7 +366,29 @@ CREATE TABLE IF NOT EXISTS multi_leg_trades (
     status TEXT DEFAULT 'OPEN',
     reason TEXT,
     profit_factor REAL,
-    snapshot_id TEXT
+    snapshot_id TEXT,
+    book_id TEXT,
+    strategy_type TEXT,
+    expiry TEXT,
+    entry_underlying REAL,
+    exit_underlying REAL,
+    net_delta REAL,
+    net_theta REAL,
+    net_vega REAL,
+    max_profit REAL,
+    max_loss REAL,
+    breakeven_upper REAL,
+    breakeven_lower REAL,
+    profit_target_pct REAL,
+    stop_loss_pct REAL,
+    time_decay_exit_dte INTEGER,
+    adjustment_count INTEGER DEFAULT 0,
+    confidence_score INTEGER,
+    entry_quality_score INTEGER,
+    digest_id TEXT,
+    ai_model_name TEXT,
+    entry_reason TEXT,
+    exit_reason TEXT
 );
 
 CREATE TABLE IF NOT EXISTS multi_leg_legs (
@@ -376,6 +400,20 @@ CREATE TABLE IF NOT EXISTS multi_leg_legs (
     option_type TEXT NOT NULL,
     entry_premium REAL,
     exit_premium REAL,
+    delta REAL,
+    theta REAL,
+    vega REAL,
+    iv REAL,
+    rationale TEXT,
+    status TEXT DEFAULT 'OPEN',
+    closed_at TEXT,
+    exit_reason TEXT,
+    broker_order_id TEXT,
+    current_premium REAL,
+    gtt_order_id TEXT,
+    book_id TEXT,
+    leg_group_id TEXT,
+    expiry TEXT,
     FOREIGN KEY (trade_id) REFERENCES multi_leg_trades(id) ON DELETE CASCADE
 );
 
@@ -628,6 +666,12 @@ _MIGRATIONS = [
     ("M111_add_snapshot_id_to_paper_trades", "ALTER TABLE paper_trades ADD COLUMN snapshot_id TEXT"),
     ("M112_add_snapshot_id_to_live_trades", "ALTER TABLE live_trades ADD COLUMN snapshot_id TEXT"),
     ("M113_add_snapshot_id_to_ml_trades", "ALTER TABLE multi_leg_trades ADD COLUMN snapshot_id TEXT"),
+    ("M114_add_mll_gtt_order_id", "ALTER TABLE multi_leg_legs ADD COLUMN gtt_order_id TEXT"),
+    ("M115_add_ai_model_name_to_paper_trades", "ALTER TABLE paper_trades ADD COLUMN ai_model_name TEXT"),
+    ("M116_add_ai_model_name_to_live_trades", "ALTER TABLE live_trades ADD COLUMN ai_model_name TEXT"),
+    ("M117_add_mll_book_id", "ALTER TABLE multi_leg_legs ADD COLUMN book_id TEXT"),
+    ("M118_add_mll_leg_group_id", "ALTER TABLE multi_leg_legs ADD COLUMN leg_group_id TEXT"),
+    ("M119_add_mll_expiry", "ALTER TABLE multi_leg_legs ADD COLUMN expiry TEXT"),
 ]
 
 
@@ -1270,7 +1314,7 @@ def insert_paper_trade(trade: dict) -> int:
              signal_key, pyramid_level, max_favorable_r,
              price_change_pct, pcr, ce_oi_change, pe_oi_change, underlying,
              support, resistance, max_pain, days_to_expiry, chart_conflict,
-              rsi_1h, rsi_3h, regime, entry_dev_pct, leg_group_id, tranche_index, snapshot_id)
+              rsi_1h, rsi_3h, regime, entry_dev_pct, leg_group_id, tranche_index, snapshot_id, ai_model_name)
         VALUES
             (:opened_at, :symbol, :expiry, :verdict_label, :side, :option_type, :strike, :entry_underlying,
              :entry_premium, :sl_underlying, :sl_premium, :target_underlying, :target_premium,
@@ -1280,7 +1324,7 @@ def insert_paper_trade(trade: dict) -> int:
              :signal_key, :pyramid_level, :max_favorable_r,
              :price_change_pct, :pcr, :ce_oi_change, :pe_oi_change, :underlying,
              :support, :resistance, :max_pain, :days_to_expiry, :chart_conflict,
-             :rsi_1h, :rsi_3h, :regime, :entry_dev_pct, :leg_group_id, :tranche_index, :snapshot_id)
+             :rsi_1h, :rsi_3h, :regime, :entry_dev_pct, :leg_group_id, :tranche_index, :snapshot_id, :ai_model_name)
         RETURNING id
     """
     row_data = {
@@ -1298,6 +1342,7 @@ def insert_paper_trade(trade: dict) -> int:
         "leg_group_id": trade.get("leg_group_id"),
         "tranche_index": trade.get("tranche_index", 0),
         "snapshot_id": trade.get("snapshot_id"),
+        "ai_model_name": trade.get("ai_model_name"),
         "lot_size": trade["lot_size"]
         if "lot_size" in trade
         else LOT_SIZES.get(trade.get("symbol", "").upper(), 1),
@@ -1403,79 +1448,94 @@ def _calc_transaction_costs(
     """
     Return total round-trip transaction costs in ₹ for one closed trade.
 
-    Modelled as entry leg + exit leg where:
-      - Options turnover = premium × lot_size × lots
-      - Futures turnover = underlying × lot_size × lots
-
-    STT rules (India):
-      - Index options (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY): STT on BOTH legs (0.0625% each)
-      - Stock options: STT on sell leg only (0.0625%)
-      - Futures: STT on sell leg only (0.02%)
-
-    P0-04 FIX: Index options now charge STT on both legs.
+    Realistic Indian retail cost model (Zerodha/NSE/MCX standard):
+      - Brokerage: ₹20 per executed order (round-trip = ₹40 flat)
+      - STT / CTT:
+          - Index options: 0.0625% on both legs (or 0.1% on sell-side premium turnover)
+          - Stock options: 0.0625% on sell-side premium turnover
+          - MCX commodity options: 0.05% CTT on sell-side premium turnover
+          - MCX commodity futures: 0.01% CTT on sell-side notional turnover
+          - NSE index futures: 0.0125% STT on sell-side notional turnover
+          - Stock futures: 0.02% STT on sell-side notional turnover
+      - Exchange Transaction Charges:
+          - Options: 0.05% (0.0005) on round-trip premium turnover
+          - Futures: 0.0019% (0.000019) on round-trip notional turnover
+      - SEBI Turnover Charges: ₹10 per crore (0.000001) on total turnover
+      - Stamp Duty:
+          - Options (buy leg only): 0.003% (0.00003) on buy premium turnover
+          - Futures (buy leg only): 0.002% (0.00002) on buy notional turnover
+      - GST: 18% on (Brokerage + Exchange Charges + SEBI Charges)
     """
-    from config.settings import LOT_SIZES
+    # 1. Brokerage: ₹20 entry + ₹20 exit
+    brokerage = 40.0
 
-    flat_per_leg = 20.0 + 5.0
-    round_trip_flat = flat_per_leg * 2
-
-    # Extract base symbol for index detection
+    # Extract base symbol for index / MCX detection
     base_symbol = symbol.upper().split()[0] if symbol else ""
-    index_symbols = {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"}
-    is_index_option = base_symbol in index_symbols and option_type in ("CE", "PE")
+    index_symbols = {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX"}
+    is_index = base_symbol in index_symbols
 
-    if option_type in ("CE", "PE"):
+    mcx_commodity_symbols = {
+        "NATURALGAS", "CRUDEOIL", "GOLD", "SILVER",
+        "COPPER", "ZINC", "ALUMINIUM", "LEAD", "NICKEL", "MENTHA", "COTTON", "CPO"
+    }
+    is_mcx = base_symbol in mcx_commodity_symbols
+
+    opt_type_upper = str(option_type or "").upper()
+    is_option = opt_type_upper in ("CE", "PE")
+
+    if is_option:
         entry_turnover = float(entry_premium or 0.0) * lot_size * lots
         exit_turnover = float(exit_premium or 0.0) * lot_size * lots
+        total_turnover = entry_turnover + exit_turnover
+        buy_turnover = entry_turnover if side == "BUY" else exit_turnover
+        sell_turnover = exit_turnover if side == "BUY" else entry_turnover
 
-        if is_index_option:
-            # P0-04 FIX: Index options — STT on BOTH legs
-            stt = (entry_turnover + exit_turnover) * 0.000625
+        # STT / CTT
+        if is_mcx:
+            stt = sell_turnover * 0.0005  # 0.05% CTT on MCX option sell
+        elif is_index:
+            stt = (entry_turnover + exit_turnover) * 0.000625  # Index options
         else:
-            # Stock options — STT on sell leg only
-            is_sell_side = side == "SELL"
-            sell_premium = entry_premium if is_sell_side else exit_premium
-            sell_turnover = float(sell_premium or 0.0) * lot_size * lots
-            stt = sell_turnover * 0.000625
+            stt = sell_turnover * 0.000625  # Stock options
+
+        # Exchange charges: ~0.05% on option turnover
+        exchange_charges = total_turnover * 0.0005
+
+        # Stamp duty: 0.003% on buy turnover
+        stamp_duty = buy_turnover * 0.00003
+
+        # SEBI turnover charges: ₹10 / crore
+        sebi_charges = total_turnover * 0.000001
     else:
-        # BUG-029 FIX: MCX commodity futures use CTT (Commodity Transaction Tax)
-        # at 0.01% (0.0001), not STT at 0.02% (0.0002). NSE index futures use STT.
-        # Previously all futures used 0.0002, overestimating MCX costs by 2x.
-        mcx_commodity_symbols = {
-            "NATURALGAS",
-            "CRUDEOIL",
-            "GOLD",
-            "SILVER",
-            "COPPER",
-            "ZINC",
-            "ALUMINIUM",
-            "LEAD",
-            "NICKEL",
-            "MENTHA",
-            "COTTON",
-            "CPO",
-        }
-        is_mcx_commodity_future = base_symbol in mcx_commodity_symbols
+        # Futures
+        entry_turnover = float(entry_underlying or 0.0) * lot_size * lots
+        exit_turnover = float(exit_underlying or 0.0) * lot_size * lots
+        total_turnover = entry_turnover + exit_turnover
+        buy_turnover = entry_turnover if side == "BUY" else exit_turnover
+        sell_turnover = exit_turnover if side == "BUY" else entry_turnover
 
-        # Futures — STT on sell leg only
-        # NSE Index Futures (NIFTY, BANKNIFTY): 0.01% (0.0001) - actually STT was reduced
-        # MCX Commodity Futures: 0.01% (0.0001) - CTT
-        # Stock Futures: 0.02% (0.0002) - STT
-        if is_mcx_commodity_future:
-            stt_rate = 0.0001  # CTT rate for MCX commodities
-        elif base_symbol in index_symbols:
-            # BUG-H04 FIX: NSE index futures STT is 0.01% (0.0001) — this is the
-            # correct current rate, not a reduction. The previous comment was misleading.
-            stt_rate = 0.0001  # STT rate for NSE index futures (0.01%)
+        # STT / CTT
+        if is_mcx:
+            stt = sell_turnover * 0.0001  # 0.01% CTT
+        elif is_index:
+            stt = sell_turnover * 0.000125  # 0.0125% STT
         else:
-            stt_rate = 0.0002  # STT rate for stock futures
+            stt = sell_turnover * 0.0002  # 0.02% STT
 
-        is_sell_side = side == "SELL"
-        sell_price = entry_underlying if is_sell_side else exit_underlying
-        sell_turnover = float(sell_price or 0.0) * lot_size * lots
-        stt = sell_turnover * stt_rate
+        # Exchange charges: 0.0019% on futures turnover
+        exchange_charges = total_turnover * 0.000019
 
-    return round(stt + round_trip_flat, 2)
+        # Stamp duty: 0.002% on buy turnover
+        stamp_duty = buy_turnover * 0.00002
+
+        # SEBI turnover charges: ₹10 / crore
+        sebi_charges = total_turnover * 0.000001
+
+    # GST: 18% on (Brokerage + Exchange Charges + SEBI Charges)
+    gst = (brokerage + exchange_charges + sebi_charges) * 0.18
+
+    total_costs = brokerage + stt + exchange_charges + sebi_charges + stamp_duty + gst
+    return round(total_costs, 2)
 
 
 def close_paper_trade(
@@ -1544,20 +1604,35 @@ def close_paper_trade(
                 and exit_premium
                 and exit_premium > 0
             ):
+                # Apply realistic premium-dependent slippage (0.5% of premium, min ₹0.05)
+                slippage = max(0.05, round(exit_premium * 0.005, 2))
                 if side == "SELL":
-                    pnl_points = entry_premium - exit_premium
+                    # Buying to close: adverse slippage raises cost
+                    final_exit_premium = round(exit_premium + slippage, 2)
+                    pnl_points = entry_premium - final_exit_premium
                 else:
-                    pnl_points = exit_premium - entry_premium
+                    # Selling to close: adverse slippage lowers proceeds
+                    final_exit_premium = max(0.05, round(exit_premium - slippage, 2))
+                    pnl_points = final_exit_premium - entry_premium
+                exit_premium = final_exit_premium
             elif entry_premium and entry_premium > 0:
                 estimated_exit = None
                 snaps = conn.execute(
-                    "SELECT ltp FROM option_chain_snapshots WHERE symbol=? AND expiry=? AND strike=? AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 10",
+                    "SELECT ltp, bid, ask FROM option_chain_snapshots WHERE symbol=? AND expiry=? AND strike=? AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 10",
                     (symbol.upper(), expiry, strike, option_type),
                 ).fetchall()
                 for snap_row in snaps:
                     cand_ltp = float(snap_row["ltp"])
                     if is_valid_option_premium(strike, option_type, cand_ltp, exit_underlying):
-                        estimated_exit = cand_ltp
+                        cand_bid = float(snap_row["bid"] or 0.0) if snap_row["bid"] is not None else 0.0
+                        cand_ask = float(snap_row["ask"] or 0.0) if snap_row["ask"] is not None else 0.0
+                        slippage = max(0.05, round(cand_ltp * 0.005, 2))
+                        if side == "SELL":
+                            # Buying to close -> Ask mark or LTP + slippage
+                            estimated_exit = cand_ask if cand_ask > 0 else round(cand_ltp + slippage, 2)
+                        else:
+                            # Selling to close -> Bid mark or LTP - slippage
+                            estimated_exit = cand_bid if cand_bid > 0 else max(0.05, round(cand_ltp - slippage, 2))
                         break
 
                 if estimated_exit is None:
@@ -1587,15 +1662,12 @@ def close_paper_trade(
             else:
                 pnl_points = 0.0
         else:
-            # BUG-006 FIX: Use only `side` to determine futures P&L direction.
-            # Previously, the OR chain `side == "SELL" or verdict_label == "SHORT"
-            # or is_bearish(verdict_label)` could cause P&L inversion if side
-            # disagreed with verdict_label. The `side` field is the authoritative
-            # source of position direction (BUY = long, SELL = short).
+            # Futures P&L with bid/ask / slippage
+            fut_slippage = max(0.05, float(exit_underlying) * 0.0002)
             if side == "SELL":
-                pnl_points = entry_underlying - float(exit_underlying)
+                pnl_points = entry_underlying - (float(exit_underlying) + fut_slippage)
             else:
-                pnl_points = float(exit_underlying) - entry_underlying
+                pnl_points = (float(exit_underlying) - fut_slippage) - entry_underlying
 
         gross_pnl_rupees = pnl_points * lot_size * lots
 
@@ -1747,7 +1819,7 @@ def insert_live_trade(trade: dict, conn: sqlite3.Connection | None = None) -> in
              broker_order_id, gtt_order_id, broker_status, broker_message, exit_mode,
              price_change_pct, pcr, ce_oi_change, pe_oi_change, underlying,
              support, resistance, max_pain, days_to_expiry, chart_conflict,
-              rsi_1h, rsi_3h, regime, entry_dev_pct, snapshot_id)
+              rsi_1h, rsi_3h, regime, entry_dev_pct, snapshot_id, ai_model_name)
         VALUES
             (:opened_at, :symbol, :expiry, :verdict_label, :side, :option_type, :strike, :entry_underlying,
              :entry_premium, :sl_underlying, :sl_premium, :target_underlying, :target_premium,
@@ -1758,7 +1830,7 @@ def insert_live_trade(trade: dict, conn: sqlite3.Connection | None = None) -> in
              :broker_order_id, :gtt_order_id, :broker_status, :broker_message, :exit_mode,
              :price_change_pct, :pcr, :ce_oi_change, :pe_oi_change, :underlying,
              :support, :resistance, :max_pain, :days_to_expiry, :chart_conflict,
-             :rsi_1h, :rsi_3h, :regime, :entry_dev_pct, :snapshot_id)
+             :rsi_1h, :rsi_3h, :regime, :entry_dev_pct, :snapshot_id, :ai_model_name)
         RETURNING id
     """
     row_data = {
@@ -1779,6 +1851,7 @@ def insert_live_trade(trade: dict, conn: sqlite3.Connection | None = None) -> in
         "broker_message": trade.get("broker_message"),
         "exit_mode": trade.get("exit_mode"),
         "snapshot_id": trade.get("snapshot_id"),
+        "ai_model_name": trade.get("ai_model_name"),
         "lot_size": trade.get("lot_size")
         if trade.get("lot_size") is not None
         else LOT_SIZES.get(trade.get("symbol", "").upper().split()[0], 1),
@@ -2247,13 +2320,15 @@ def insert_multi_leg_trade(trade: dict) -> int:
 
 def insert_multi_leg_leg(leg: dict) -> int:
     """Insert a multi-leg leg and return its id."""
+    leg = dict(leg)
+    leg.setdefault("gtt_order_id", None)
     sql = """
         INSERT INTO multi_leg_legs
             (trade_id, side, lots, strike, option_type, entry_premium, exit_premium,
-             delta, theta, vega, iv, rationale, status, closed_at, exit_reason, broker_order_id)
+             delta, theta, vega, iv, rationale, status, closed_at, exit_reason, broker_order_id, gtt_order_id)
         VALUES
             (:trade_id, :side, :lots, :strike, :option_type, :entry_premium, :exit_premium,
-             :delta, :theta, :vega, :iv, :rationale, :status, :closed_at, :exit_reason, :broker_order_id)
+             :delta, :theta, :vega, :iv, :rationale, :status, :closed_at, :exit_reason, :broker_order_id, :gtt_order_id)
         RETURNING id
     """
     with get_conn() as conn:
@@ -2305,13 +2380,15 @@ def insert_multileg_trade_atomically(trade: dict, legs: list[dict]) -> int:
         leg_sql = """
             INSERT INTO multi_leg_legs
                 (trade_id, side, lots, strike, option_type, entry_premium, exit_premium,
-                 delta, theta, vega, iv, rationale, status, closed_at, exit_reason, broker_order_id)
+                 delta, theta, vega, iv, rationale, status, closed_at, exit_reason, broker_order_id, gtt_order_id)
             VALUES
                 (:trade_id, :side, :lots, :strike, :option_type, :entry_premium, :exit_premium,
-                 :delta, :theta, :vega, :iv, :rationale, :status, :closed_at, :exit_reason, :broker_order_id)
+                 :delta, :theta, :vega, :iv, :rationale, :status, :closed_at, :exit_reason, :broker_order_id, :gtt_order_id)
         """
         for leg in legs:
+            leg = dict(leg)
             leg["trade_id"] = trade_id
+            leg.setdefault("gtt_order_id", None)
             conn.execute(leg_sql, leg)
 
     if trade_id:
@@ -2413,6 +2490,34 @@ def close_book(
         # Prefer caller-supplied total_pnl only when it came from a trusted
         # realized-close path; otherwise use recomputed leg math.
         book_pnl = total_pnl if (total_pnl is not None and computed_pnl is None) else (computed_pnl or total_pnl or 0.0)
+
+        # Deduct transaction costs so multileg P&L is net of brokerage, STT, and exchange fees
+        if leg_exits and 'legs_by_id' in locals() and legs_by_id:
+            total_tx_costs = 0.0
+            for lid, l in legs_by_id.items():
+                l_opt = str(l.get("option_type") or "CE").upper()
+                l_side = str(l.get("side") or "SELL").upper()
+                l_entry = float(l.get("entry_premium") or 0.0)
+                l_exit = 0.0
+                for le in leg_exits:
+                    if int(le.get("id") or 0) == lid:
+                        l_exit = float(le.get("exit_premium") or 0.0)
+                        break
+                if l_exit == 0.0 and l.get("exit_premium"):
+                    l_exit = float(l.get("exit_premium") or 0.0)
+                l_lots = int(l.get("lots") or 1)
+                total_tx_costs += _calc_transaction_costs(
+                    option_type=l_opt,
+                    side=l_side,
+                    entry_premium=l_entry,
+                    entry_underlying=float(exit_underlying or 0.0),
+                    exit_premium=l_exit,
+                    exit_underlying=float(exit_underlying or 0.0),
+                    lot_size=lot_size,
+                    lots=l_lots,
+                    symbol=symbol,
+                )
+            book_pnl = float(book_pnl) - total_tx_costs
 
         trade_sql = (
             "UPDATE multi_leg_trades SET closed_at=?, status=?, reason=?, exit_reason=?, "

@@ -17,10 +17,10 @@ class ExecutionAuthorization:
     config_snapshot: dict[str, Any]
 
 
-def _is_market_open(symbol: str) -> bool:
+def _is_market_open(symbol: str, expiry_str: str | None = None) -> bool:
     try:
         from src.engine.time_guards import is_trading_allowed_now
-        allowed, _reason = is_trading_allowed_now(symbol)
+        allowed, _reason = is_trading_allowed_now(symbol, expiry_str=expiry_str)
         return bool(allowed)
     except Exception as e:
         log.warning("Could not check market hours for %s: %s", symbol, e)
@@ -50,12 +50,10 @@ def authorize_broker_execution(
             config_snapshot={}
         )
 
-    # Note: shadow_mode applies to everything including exits in the safest implementation,
-    # but some systems allow exist despite shadow mode on entries.
-    # Wait, the spec says shadow mode prevents any real order placement.
-    # Exits in shadow mode check this gate too? Unclear. It says "All live execution paths".
-    # Wait, multileg paper trading doesn't use this. Live trades do. If it's a live trade being closed, it needs real broker order.
-    # We should stick strict to the rules.
+    # Strict fail-closed shadow invariant:
+    # In shadow mode (live_shadow_mode=True), NO real broker orders (ENTRY, EXIT, or GTT)
+    # are permitted. All operations run in paper/shadow simulation.
+    # Real broker exits are strictly prohibited while shadow mode is active.
 
     if config.get("live_shadow_mode", True):
         return ExecutionAuthorization(
@@ -98,15 +96,57 @@ def authorize_broker_execution(
             config_snapshot=config
         )
 
-    if not _is_market_open(symbol):
+    expiry_str = scan_context.get("expiry") if isinstance(scan_context, dict) else None
+    if not _is_market_open(symbol, expiry_str=expiry_str):
         return ExecutionAuthorization(
             is_authorized=False,
             is_shadow=False,
             symbol=symbol,
             operation=operation,
-            reason=f"Market closed for {symbol}",
+            reason=f"Market closed or trading restricted for {symbol}",
             config_snapshot=config
         )
+
+    # ── Phase 5: Edge Decay Gate ─────────────────────────────────────────
+    if operation == "ENTRY":
+        try:
+            from src.intelligence.edge_monitor import get_monitor
+            monitor = get_monitor()
+            health_reports = monitor.check_edge_health(strategy_filter={"symbol": symbol})
+            if health_reports:
+                h = health_reports[0]
+                if (
+                    h.health_score < 35
+                    and h.win_rate_trend != "INSUFFICIENT_HISTORY"
+                    and (h.win_rate_trend == "DECLINING" or h.pnl_trend == "DECLINING" or h.current_win_rate < 0.40)
+                ):
+                    return ExecutionAuthorization(
+                        is_authorized=False,
+                        is_shadow=False,
+                        symbol=symbol,
+                        operation=operation,
+                        reason=f"Edge decay detected for {symbol} (health_score={h.health_score:.1f}, wr={h.current_win_rate:.0%}, trend={h.win_rate_trend}): live entry paused",
+                        config_snapshot=config,
+                    )
+        except Exception as e:
+            log.warning("[broker-gate] %s: Edge decay check encountered error: %s", symbol, e)
+
+        # ── Walk-Forward Positive Expectancy Gate ─────────────────────────
+        try:
+            from src.engine.replay_backtester import verify_positive_expectancy
+            exp_check = verify_positive_expectancy(symbol)
+            # If backtested with sufficient trades and fails positive expectancy, block live entry
+            if exp_check.get("trades", 0) >= 3 and not exp_check.get("passed"):
+                return ExecutionAuthorization(
+                    is_authorized=False,
+                    is_shadow=False,
+                    symbol=symbol,
+                    operation=operation,
+                    reason=f"Positive expectancy gate failed for {symbol}: {exp_check.get('reason')}",
+                    config_snapshot=config,
+                )
+        except Exception as e:
+            log.debug("[broker-gate] %s: Positive expectancy gate check skipped: %s", symbol, e)
 
     return ExecutionAuthorization(
         is_authorized=True,

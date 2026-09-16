@@ -46,18 +46,20 @@ def _dte_from_expiry(expiry: str) -> int:
         return 999
 
 
+_AI_CLOSE_PENDING_BOOKS: dict[str, float] = {}
+_AI_CLOSE_EVENT_TIMESTAMPS: list[float] = []
+MAX_AI_CLOSES_PER_15M_WINDOW: int = 3
+
+
 def _get_stop_loss_threshold_rupees(book: dict, legs: list[dict], symbol: str) -> float:
     """Calculate the exact Stop Loss threshold in Rupees for a multi-leg book.
     
-    For defined-risk strategies (iron condor, spreads), use the max_loss value.
-    For undefined-risk strategies (short strangle/straddle), use the actual 
-    broker margin requirement (SPAN + exposure) as the stop loss threshold,
-    which represents the real capital at risk. Falls back to a multiple of 
-    net premium if the broker API is unavailable.
+    Hard-enforced by code independent of LLM hallucinations:
+    - Defined-risk: min(credit_collected * stop_loss_pct, physical_max_loss)
+    - Undefined-risk: bounded by broker margin requirement (2.5% of required margin)
+      and hard rupee ceiling per lot (₹25,000 / lot).
     """
     from config.settings import LOT_SIZES
-    from src.engine.capital_allocator import _fetch_broker_margin_requirement
-    from config.symbol_classes import get_kite_exchange
 
     base_symbol = symbol.upper().split()[0] if symbol else symbol.upper()
     lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_symbol, 1))
@@ -66,81 +68,72 @@ def _get_stop_loss_threshold_rupees(book: dict, legs: list[dict], symbol: str) -
     strategy_type = (book.get("strategy_type") or book.get("structure") or "").upper()
     net_premium = float(book.get("net_premium") or 0.0)
     max_loss_val = float(book.get("max_loss") or 0.0)
-    stop_loss_pct = float(book.get("stop_loss_pct") or 1.5)
+
+    # Code-level clamp: stop_loss_pct must be between 0.5 (50% credit loss) and 2.0 (200% credit loss)
+    raw_sl_pct = float(book.get("stop_loss_pct") or 1.5)
+    stop_loss_pct = min(max(raw_sl_pct, 0.5), 2.0)
 
     underlying = float(book.get("entry_underlying") or 0.0)
     is_defined_risk = strategy_type in ("IRON_CONDOR", "BEAR_CALL_SPREAD", "BULL_PUT_SPREAD")
 
     if is_defined_risk and max_loss_val > 0 and (underlying <= 0 or max_loss_val < underlying * 0.4):
-        # Defined risk strategies: stop loss triggers at stop_loss_pct of credit collected, capped at max physical loss
         credit_sl = max(net_premium, 1.0) * lot_size * total_lots * stop_loss_pct
         physical_max = max_loss_val * lot_size * total_lots
         total_max_loss_rupees = min(credit_sl, physical_max)
     else:
-        # Undefined risk strategies (short strangle/straddle): use actual broker margin
-        # as the stop loss threshold only when live broker trading is active.
-        from config.runtime_config import is_broker_trade_enabled
-        if not is_broker_trade_enabled():
-            # Broker trade is turned off (shadow mode, disabled, or paused) —
-            # compute SL directly from net premium without contacting broker API
-            total_max_loss_rupees = max(net_premium, 1.0) * lot_size * total_lots * stop_loss_pct
-        else:
-            total_margin = 0.0
-            margin_fetched = False
-            
-            try:
-                kite_exchange = get_kite_exchange(symbol)
-                
-                for leg in legs:
-                    leg_side = (leg.get("side") or "").upper()
-                    if leg_side != "SELL":
-                        continue  # Only SELL legs contribute to undefined risk
-                    
-                    leg_lots = int(leg.get("lots") or 1)
-                    tradingsymbol = leg.get("tradingsymbol") or leg.get("tradingsymbol_kite")
-                    strike = float(leg.get("strike") or 0)
-                    option_type = leg.get("option_type") or ""
-                    premium = float(leg.get("entry_premium") or leg.get("premium") or 0.0)
-                    
+        # Undefined risk: calculate based on broker margin requirement and premium credit
+        from src.engine.multileg_strategy import calculate_combined_margin
+        margin_req = float(book.get("margin_req") or 0.0)
+        if margin_req <= 0:
+            norm_legs = []
+            for l in legs:
+                c = dict(l)
+                if "side" not in c and "action" in c:
+                    c["side"] = c["action"]
+                if "lots" not in c and "ratio" in c:
+                    c["lots"] = c["ratio"]
+                norm_legs.append(c)
+            margin_req = calculate_combined_margin(norm_legs, symbol, underlying=underlying)
+
+        # Try actual broker margin API first for live broker mode.
+        broker_margin = None
+        try:
+            from src.engine.capital_allocator import _fetch_broker_margin_requirement
+            from config.runtime_config import is_broker_trade_enabled
+            if is_broker_trade_enabled():
+                for l in legs:
+                    tradingsymbol = l.get("tradingsymbol") or l.get("instrument") or ""
+                    exchange = l.get("exchange") or "NFO"
+                    lots = int(l.get("lots") or l.get("ratio") or 1)
+                    premium = float(l.get("entry_premium") or l.get("premium") or 0.0)
                     if not tradingsymbol or premium <= 0:
                         continue
-                        
-                    # Fetch actual broker margin for this SELL leg (requires actual units = lots * lot_size)
-                    margin = _fetch_broker_margin_requirement(
+                    broker_margin = _fetch_broker_margin_requirement(
                         symbol=symbol,
                         tradingsymbol=tradingsymbol,
-                        exchange=kite_exchange,
+                        exchange=exchange,
                         transaction_type="SELL",
-                        quantity=leg_lots * lot_size,
+                        quantity=lots * lot_size,
                         premium=premium,
                     )
-                    
-                    if margin and margin > 0:
-                        total_margin += margin
-                        margin_fetched = True
-                    else:
-                        # Fallback: use static multiplier for this leg
-                        total_margin += max(premium, 1.0) * lot_size * stop_loss_pct
-                
-                if margin_fetched and total_margin > 0:
-                    total_max_loss_rupees = total_margin * stop_loss_pct
-                else:
-                    # Fallback: use static multiplier of net premium
-                    total_max_loss_rupees = max(net_premium, 1.0) * lot_size * total_lots * stop_loss_pct
-                    log.debug(
-                        "[multileg-live] %s: broker margin API unavailable for undefined-risk book; "
-                        "falling back to %.1fx net premium (₹%.0f)",
-                        symbol, stop_loss_pct, total_max_loss_rupees
-                    )
-            except Exception as e:
-                log.debug(
-                    "[multileg-live] %s: error fetching broker margin for SL threshold: %s; "
-                    "falling back to %.1fx net premium",
-                    symbol, e, stop_loss_pct
-                )
-                total_max_loss_rupees = max(net_premium, 1.0) * lot_size * total_lots * stop_loss_pct
+                    if broker_margin and broker_margin > 0:
+                        margin_req = max(margin_req, broker_margin)
+                        break
+        except Exception:
+            broker_margin = None
+
+        credit_sl = max(net_premium, 1.0) * lot_size * total_lots * stop_loss_pct
+        margin_sl = margin_req * 0.025 if margin_req > 0 else 25000.0 * total_lots
+        hard_rupee_ceiling = 25000.0 * total_lots
+        total_max_loss_rupees = min(max(credit_sl, 2000.0 * total_lots), margin_sl, hard_rupee_ceiling)
+        log.debug(
+            "[multileg-live] %s: book %s SL threshold set to ₹%.0f (credit_sl=₹%.0f, margin_sl=₹%.0f, cap=₹%.0f, sl_pct=%.2f, broker_margin=%s)",
+            symbol, book.get("book_id", "unknown"), total_max_loss_rupees, credit_sl, margin_sl, hard_rupee_ceiling, stop_loss_pct,
+            f"₹{broker_margin:.0f}" if broker_margin else "N/A",
+        )
 
     return max(total_max_loss_rupees, 1.0)
+
 
 
 def run_multileg_live_strategy(
@@ -187,7 +180,14 @@ def _run_multileg_live_strategy_inner(
     ai_verdict=None,
 ) -> dict | None:
     """Inner implementation — isolated so the outer wrapper can catch all errors."""
-    # ── 1. Basic validation ────────────────────────────────────────────
+    # ── 1. Basic validation & Market hours guard ───────────────────────
+    from config.symbol_classes import is_market_open
+    if not is_market_open(symbol):
+        log.debug(
+            "[multileg-live] %s: skipped — outside market hours", symbol
+        )
+        return {"action": "SKIPPED_MARKET_CLOSED", "reason": "Outside market hours"}
+
     from config.multileg_strategies import ALLOWED_SYMBOLS
 
     if symbol not in ALLOWED_SYMBOLS:
@@ -236,7 +236,26 @@ def _run_multileg_live_strategy_inner(
         # Re-fetch open books in case monitoring closed a book
         open_books = get_open_books_for_symbol(symbol)
 
-    # ── 5. Attempt new entry ─────────────────────────────────────────────
+    # ── 5. Gate: Max open books per symbol (cap = 5) ───────────────────
+    MAX_OPEN_BOOKS_PER_SYMBOL = 5
+    if open_books and len(open_books) >= MAX_OPEN_BOOKS_PER_SYMBOL:
+        log.info(
+            "[multileg-live] %s: open books cap reached (%d >= %d) — skipping new entry",
+            symbol,
+            len(open_books),
+            MAX_OPEN_BOOKS_PER_SYMBOL,
+        )
+        if isinstance(mon_res, dict):
+            mon_res["new_entry_skipped"] = f"Max open books cap reached ({len(open_books)} >= {MAX_OPEN_BOOKS_PER_SYMBOL})"
+            return mon_res
+        return {
+            "action": "HOLD",
+            "decision_stage": "OPEN_BOOKS_CAP",
+            "reason": f"Max open books cap reached ({len(open_books)} >= {MAX_OPEN_BOOKS_PER_SYMBOL})",
+            "open_books": len(open_books),
+        }
+
+    # ── 6. Attempt new entry ─────────────────────────────────────────────
     new_res = _attempt_new_live_entry(
         symbol,
         scan_context,
@@ -513,10 +532,60 @@ def _monitor_open_books_live(
                                 )
                                 continue
 
+                            # Verification Guard: Require consecutive confirmation OR a code-side quantitative co-sign
+                            # to prevent single spurious LLM hallucinations from closing books prematurely.
+                            import time as _time
+                            now_ts = _time.time()
+                            is_consecutive = (
+                                book_id in _AI_CLOSE_PENDING_BOOKS
+                                and (now_ts - _AI_CLOSE_PENDING_BOOKS[book_id]) <= 7200
+                            )
+                            base_symbol = symbol.upper().split()[0] if symbol else symbol.upper()
+                            lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_symbol, 1))
+                            stop_loss_threshold = _get_stop_loss_threshold_rupees(book, legs, symbol)
+                            pnl_co_sign = (
+                                (total_pnl <= -0.5 * stop_loss_threshold)
+                                or (net_premium > 0 and total_pnl >= 0.70 * (net_premium * lot_size * max((int(leg.get("lots") or 1) for leg in legs), default=1) * profit_target_pct))
+                            )
+                            expiry_co_sign = (dte == 0 and now_ist.hour >= 14)
+
+                            if not (is_consecutive or pnl_co_sign or expiry_co_sign):
+                                _AI_CLOSE_PENDING_BOOKS[book_id] = now_ts
+                                log.info(
+                                    "[multileg-live] %s: book %s — AI CLOSE staged (awaiting 2nd consecutive cycle confirmation or quantitative co-sign; PnL=₹%.0f, SL_thresh=₹%.0f, DTE=%d): %s",
+                                    symbol,
+                                    book_id,
+                                    total_pnl,
+                                    stop_loss_threshold,
+                                    dte,
+                                    reasoning,
+                                )
+                                continue
+
+                            # Cluster / Mass-Exit Breaker: Throttle if more than 3 AI closes trigger within 15 minutes
+                            _AI_CLOSE_EVENT_TIMESTAMPS[:] = [ts for ts in _AI_CLOSE_EVENT_TIMESTAMPS if (now_ts - ts) <= 900]
+                            if len(_AI_CLOSE_EVENT_TIMESTAMPS) >= MAX_AI_CLOSES_PER_15M_WINDOW:
+                                log.warning(
+                                    "[multileg-live] %s: book %s — AI CLOSE throttled by mass-close circuit breaker (%d closes in last 15m >= cap %d): %s",
+                                    symbol,
+                                    book_id,
+                                    len(_AI_CLOSE_EVENT_TIMESTAMPS),
+                                    MAX_AI_CLOSES_PER_15M_WINDOW,
+                                    reasoning,
+                                )
+                                continue
+
+                            # Confirmed — record timestamp, clear pending flag and proceed to close
+                            _AI_CLOSE_EVENT_TIMESTAMPS.append(now_ts)
+                            _AI_CLOSE_PENDING_BOOKS.pop(book_id, None)
+
                             log.info(
-                                "[multileg-live] %s: book %s — AI executing autonomous CLOSE: %s",
+                                "[multileg-live] %s: book %s — AI executing confirmed autonomous CLOSE (consecutive=%s, pnl_cosign=%s, expiry_cosign=%s): %s",
                                 symbol,
                                 book_id,
+                                is_consecutive,
+                                pnl_co_sign,
+                                expiry_co_sign,
                                 reasoning,
                             )
                             exit_reason_str = f"CLOSED_AI_EXIT ({reasoning[:60]})"
@@ -575,6 +644,12 @@ def _monitor_open_books_live(
                 )
 
     if closed_actions:
+        try:
+            from src.engine.trade_audit import audit_session_level_multileg_closes
+            audit_session_level_multileg_closes()
+        except Exception as _ae:
+            log.debug("[multileg-live] Session audit check failed: %s", _ae)
+
         return {
             "action": "MONITORED",
             "closed": closed_actions,
@@ -778,6 +853,22 @@ def _close_live_book(
                     symbol, leg_id, resolve_err
                 )
 
+        # Cancel broker-side GTT if active on this leg
+        gtt_id = leg.get("gtt_order_id")
+        if kite and gtt_id:
+            try:
+                from src.engine.live_trading import cancel_kite_gtt
+                cancel_kite_gtt(kite, gtt_id, shadow_mode=False)
+                log.info(
+                    "[multileg-live] %s: cancelled GTT %s for leg %d",
+                    symbol, gtt_id, leg_id
+                )
+            except Exception as gtt_cancel_err:
+                log.warning(
+                    "[multileg-live] %s: error cancelling GTT %s for leg %d: %s",
+                    symbol, gtt_id, leg_id, gtt_cancel_err
+                )
+
         if kite and resolved:
             try:
                 lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_sym, 1))
@@ -882,6 +973,27 @@ def _attempt_new_live_entry(
         log.info("[multileg-live] %s: 0DTE entry cutoff reached — new entries prohibited", symbol)
         return {"action": "BLOCKED_0DTE_CUTOFF", "reason": "0DTE entry cutoff reached — new entries prohibited"}
 
+    # ── Safety Switch: Kill Switch and Trading Paused ───────────────────
+    from config.runtime_config import load_runtime_config
+    r_cfg = load_runtime_config()
+    if r_cfg.get("kill_switch_active", False) or r_cfg.get("trading_paused", True):
+        log.info("[multileg-live] %s: kill switch active or trading paused — entry blocked", symbol)
+        return {"action": "BLOCKED_KILL_SWITCH", "reason": "Kill switch active or trading paused"}
+
+    # ── Cap: Max Open Books Per Symbol ──────────────────────────────────
+    MAX_OPEN_BOOKS_PER_SYMBOL = 5
+    if open_books and len(open_books) >= MAX_OPEN_BOOKS_PER_SYMBOL:
+        log.info(
+            "[multileg-live] %s: open books cap reached (%d >= %d) — skipping new entry",
+            symbol,
+            len(open_books),
+            MAX_OPEN_BOOKS_PER_SYMBOL,
+        )
+        return {
+            "action": "SKIPPED_MAX_BOOKS",
+            "reason": f"Max open books cap reached ({len(open_books)} >= {MAX_OPEN_BOOKS_PER_SYMBOL})",
+        }
+
     from config.multileg_strategies import (
         MAX_BOOK_MARGIN,
         MAX_NET_DELTA,
@@ -932,11 +1044,10 @@ def _attempt_new_live_entry(
     is_mcx = symbol in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER")
     conf_floor = 72 if is_mcx else 70
 
-    # Engine-aligned confidence: if engine conviction is high (>= conf_floor),
-    # blend 60% engine conviction + 40% LLM structural confidence to prevent
-    # conservative LLM probability estimates from falsely vetoing high-conviction trades.
-    if engine_conf >= conf_floor and llm_conf > 0:
-        effective_confidence = max(llm_conf, int(round(0.6 * engine_conf + 0.4 * llm_conf)))
+    # Phase 2 High #14: Gate multileg confidence on min(llm, engine) so LLM doubt
+    # is never overridden by high engine confidence.
+    if engine_conf > 0 and llm_conf > 0:
+        effective_confidence = min(llm_conf, engine_conf)
     else:
         effective_confidence = llm_conf
 
@@ -977,6 +1088,19 @@ def _attempt_new_live_entry(
             "confidence": effective_confidence,
             "thesis": thesis,
             "reason": f"Effective confidence {effective_confidence}% below minimum {conf_floor}% floor (LLM={llm_conf}%, Engine={engine_conf}%)",
+        }
+
+    # ── Live Risk Engine Limits Check ─────────────────────────────────
+    from src.engine.risk_engine import check_live_risk_limits
+    risk_ok, risk_reason = check_live_risk_limits(symbol, setup_type=st_upper, scan_context=scan_context)
+    if not risk_ok:
+        log.info("[multileg-live] %s: live risk limits blocked entry: %s", symbol, risk_reason)
+        return {
+            "action": "BLOCKED_RISK_LIMITS",
+            "decision_stage": "RISK_ENGINE_GATE",
+            "strategy_type": st_upper,
+            "reason": risk_reason,
+            "confidence": effective_confidence,
         }
 
     # ── 5b. Validate legs ─────────────────────────────────────────────
@@ -1078,6 +1202,38 @@ def _attempt_new_live_entry(
                 "action": "REJECTED",
                 "reason": f"Legs validation: {validation_msg}",
             }
+
+    # ── Strict Multi-Leg Proposal Validation (validate_multileg_trade) ─
+    try:
+        from src.engine.execution_parser import parse_llm_execution
+        from src.engine.multileg_validator import validate_multileg_trade
+        raw_proposal = {
+            "strategy": strategy_type,
+            "action": getattr(verdict, "action", "") or (
+                "GO_LONG" if "BULL" in strategy_type else "GO_SHORT" if "BEAR" in strategy_type else "NEUTRAL"
+            ),
+            "legs": legs,
+        }
+        proposal = parse_llm_execution(raw_proposal, underlying=underlying)
+        engine_verdict_str = str((intel or {}).get("verdict") or (scan_context or {}).get("verdict") or "")
+        val_res = validate_multileg_trade(
+            proposal=proposal,
+            engine_verdict=engine_verdict_str,
+            underlying=underlying,
+            max_margin_inr=MAX_BOOK_MARGIN,
+            max_net_delta=MAX_NET_DELTA,
+            symbol=symbol,
+        )
+        if not val_res.is_valid:
+            log.info("[multileg-live] %s: validate_multileg_trade rejected entry: %s", symbol, val_res.rejection_reason)
+            return {
+                "action": "REJECTED",
+                "decision_stage": "MULTILEG_VALIDATOR",
+                "strategy_type": strategy_type,
+                "reason": f"Multileg proposal validation failed: {val_res.rejection_reason}",
+            }
+    except Exception as e:
+        log.warning("[multileg-live] %s: validate_multileg_trade check encountered error: %s", symbol, e)
 
     # ── Strict Binary Pre-Flight Validation for All Entry Legs (Safety Gate) ──
     # Mirrors the paper-trading safety check to ensure atomic leg data integrity
@@ -1388,6 +1544,72 @@ def _attempt_new_live_entry(
                 broker_status,
             )
 
+            # ── Place Broker-Side GTT Stop Loss on Short Legs ─────────────
+            gtt_order_id = None
+            if side.upper() == "SELL":
+                try:
+                    from src.engine.live_trading import place_kite_gtt
+                    leg_sl_pct = min(max(float(getattr(verdict, "stop_loss_pct", 1.0) or 1.0), 0.4), 1.5)
+                    sl_trigger = round(premium * (1.0 + leg_sl_pct), 2)
+                    sl_limit = round(sl_trigger * 1.05, 2)
+
+                    target_pct = min(max(float(getattr(verdict, "profit_target_pct", 0.6) or 0.6), 0.2), 0.8)
+                    t_size = float(resolved.get("tick_size") or 0.05)
+                    target_trigger = max(round(premium * (1.0 - target_pct), 2), t_size)
+                    target_limit = max(round(target_trigger * 0.98, 2), t_size)
+
+                    gtt_order_id = place_kite_gtt(
+                        kite=kite,
+                        symbol=symbol,
+                        exchange=exchange,
+                        tradingsymbol=resolved["tradingsymbol"],
+                        transaction_type="BUY",
+                        quantity=quantity,
+                        trigger_values=[target_trigger, sl_trigger],
+                        limit_prices=[target_limit, sl_limit],
+                        last_price=premium,
+                        shadow_mode=False,
+                        tick_size=t_size,
+                    )
+                    log.info(
+                        "[multileg-live] %s: leg %d GTT stop-loss placed — GTT ID: %s (SL: ₹%.2f, Target: ₹%.2f)",
+                        symbol,
+                        i + 1,
+                        gtt_order_id,
+                        sl_trigger,
+                        target_trigger,
+                    )
+                except Exception as gtt_exc:
+                    log.error(
+                        "[multileg-live] %s: leg %d GTT placement FAILED: %s — squaring off immediately to prevent unhedged exposure",
+                        symbol,
+                        i + 1,
+                        gtt_exc,
+                    )
+                    # Add to placed_legs so rollback squares it off immediately
+                    placed_legs.append({
+                        "trade_id": 0,
+                        "side": side,
+                        "lots": lots,
+                        "strike": strike,
+                        "option_type": option_type,
+                        "expiry": expiry,
+                        "entry_premium": premium,
+                        "exit_premium": 0.0,
+                        "delta": float(leg.get("delta") or 0.0),
+                        "theta": 0.0,
+                        "vega": 0.0,
+                        "iv": 0.0,
+                        "rationale": leg.get("rationale", ""),
+                        "status": "OPEN",
+                        "closed_at": None,
+                        "exit_reason": None,
+                        "broker_order_id": order_id,
+                        "gtt_order_id": None,
+                    })
+                    failed = True
+                    break
+
             placed_legs.append({
                 "trade_id": 0,
                 "side": side,
@@ -1406,6 +1628,7 @@ def _attempt_new_live_entry(
                 "closed_at": None,
                 "exit_reason": None,
                 "broker_order_id": order_id,
+                "gtt_order_id": gtt_order_id,
             })
 
         except Exception as e:
@@ -1606,6 +1829,22 @@ def _rollback_placed_legs(
                 len(placed_legs),
             )
             return {"total": len(placed_legs), "filled": 0, "failed": len(placed_legs), "pending": 0}
+
+        # Cancel broker-side GTT if active on this placed leg
+        gtt_id = leg.get("gtt_order_id")
+        if kite and gtt_id:
+            try:
+                from src.engine.live_trading import cancel_kite_gtt
+                cancel_kite_gtt(kite, gtt_id, shadow_mode=False)
+                log.info(
+                    "[multileg-live] %s: cancelled GTT %s during rollback",
+                    symbol, gtt_id
+                )
+            except Exception as gtt_cancel_err:
+                log.warning(
+                    "[multileg-live] %s: error cancelling GTT %s during rollback: %s",
+                    symbol, gtt_id, gtt_cancel_err
+                )
 
         try:
             leg_expiry = leg.get("expiry", "")

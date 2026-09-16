@@ -1192,7 +1192,7 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
 
     from config.runtime_config import load_runtime_config
     rconf = load_runtime_config()
-    llm_async = rconf.get("llm_enrichment_async", True)
+    llm_async = rconf.get("llm_enrichment_async", False)
     llm_verdict = None
     open_trade = None
 
@@ -1227,7 +1227,15 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
             except Exception:
                 log.exception("%s: AI exit advice failed gracefully", symbol)
         elif intel:
-            if llm_async:
+            ai_mode = rconf.get("live_ai_decision_mode", "advisory")
+            should_run_sync = (not llm_async) or (ai_mode == "full")
+            try:
+                from config.runtime_config import is_broker_trade_enabled
+            except Exception:
+                is_broker_trade_enabled = lambda: False
+            if is_broker_trade_enabled():
+                should_run_sync = True
+            if not should_run_sync:
                 intel_text += "\n💡 *Thesis:* ⏳ Pending async analysis...\n"
             else:
                 try:
@@ -1271,12 +1279,40 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                 monitor_paper_trades(symbol, scan_context)
 
                 from src.engine.strategy_registry import active_strategies_for, get_runner
-                for sid in active_strategies_for(symbol):
+                active_strategies = active_strategies_for(symbol)
+                try:
+                    from config.runtime_config import is_broker_trade_enabled
+                except Exception:
+                    is_broker_trade_enabled = lambda: False
+                if is_broker_trade_enabled() and active_strategies:
+                    _edge_ok = True
+                    _edge_reason = ""
+                    try:
+                        from pathlib import Path as _Path
+                        from src.engine.replay_backtester import verify_positive_expectancy
+                        _res = verify_positive_expectancy(symbol)
+                        if not _res.get("passed"):
+                            _edge_ok = False
+                            _edge_reason = _res.get("reason") or "Positive expectancy not verified"
+                    except Exception as _exc:
+                        _edge_ok = False
+                        _edge_reason = f"Edge validation error: {_exc}"
+                    if not _edge_ok:
+                        log.error("%s: blocking live strategy execution — %s", symbol, _edge_reason)
+                        active_strategies = []
+                for sid in active_strategies:
                     runner = get_runner(sid)
                     if runner is None:
                         continue
                     # Pass multi-leg verdict for MULTILEG; single-leg for others
                     ai_verdict_for_runner = multileg_verdict if sid == "MULTILEG" else llm_verdict
+                    try:
+                        from config.runtime_config import is_broker_trade_enabled
+                    except Exception:
+                        is_broker_trade_enabled = lambda: False
+                    if is_broker_trade_enabled() and sid != "TIMEFRAME" and ai_verdict_for_runner is None:
+                        log.error("%s: blocking %s execution because AI verdict is unavailable in broker mode", symbol, sid)
+                        continue
                     res = runner(symbol, scan_context, scan_digest_id, intel, ai_verdict=ai_verdict_for_runner)
                     if sid == "TIMEFRAME":
                         timeframe_res = res

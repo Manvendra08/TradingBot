@@ -623,23 +623,12 @@ def place_kite_order(
                 price=limit_price,
             )
         else:
-            log.warning(
-                "No LTP and no expected price for %s — placing LIMIT at floor price (tick_size=%.2f)",
-                full_symbol, tick_size,
+            err_msg = (
+                f"Refusing to place {transaction_type} order for {full_symbol}: "
+                f"no valid market price (LTP unavailable and expected_price={expected_price})"
             )
-            t_size = tick_size or 0.05
-            if t_size <= 0:
-                t_size = 0.05
-            order_id = kite.place_order(
-                variety=kite.VARIETY_REGULAR,
-                exchange=exchange,
-                tradingsymbol=tradingsymbol,
-                transaction_type=transaction_type,
-                quantity=quantity,
-                product=kite.PRODUCT_NRML,
-                order_type=kite.ORDER_TYPE_LIMIT,
-                price=t_size,
-            )
+            log.error(err_msg)
+            raise ValueError(err_msg)
         return order_id
     except Exception as e:
         _handle_kite_ip_error(e)
@@ -652,8 +641,10 @@ def confirm_order_fill(kite, order_id: str, shadow_mode: bool) -> tuple[str, str
     Poll Kite API to confirm if the order is filled, rejected, or still pending.
     Returns a tuple of (broker_status, broker_message).
     """
-    if shadow_mode or not order_id:
+    if shadow_mode:
         return "SHADOW", "Shadow trade executed"
+    if not order_id:
+        return "REJECTED", "Missing or empty order ID"
 
     import time
 
@@ -898,16 +889,36 @@ def _exit_open_live_trade(
     return _latest_live_trade(trade["id"]) or trade
 
 
-def _get_option_rows_for_expiry(current_ctx: dict, expiry: str | None) -> list[dict]:
+def _get_option_rows_for_expiry(current_ctx: dict, expiry: str | None, symbol: str = "") -> list[dict]:
+    """Retrieve option chain rows strictly for the target expiry.
+    Never falls back to a different expiry, preventing context divergence."""
     if not expiry:
         return current_ctx.get("current_expiry_option_rows") or current_ctx.get("option_rows") or []
-    curr_exp = current_ctx.get("current_expiry")
-    if curr_exp and str(expiry).strip() == str(curr_exp).strip():
-        return current_ctx.get("current_expiry_option_rows") or current_ctx.get("option_rows") or []
-    target_exp = current_ctx.get("expiry")
-    if target_exp and str(expiry).strip() == str(target_exp).strip():
-        return current_ctx.get("option_rows") or []
-    return current_ctx.get("current_expiry_option_rows") or current_ctx.get("option_rows") or []
+    exp_str = str(expiry).strip()
+    curr_exp = str(current_ctx.get("current_expiry") or "").strip()
+    if curr_exp and exp_str == curr_exp:
+        rows = current_ctx.get("current_expiry_option_rows") or current_ctx.get("option_rows") or []
+        if rows:
+            return rows
+    target_exp = str(current_ctx.get("expiry") or "").strip()
+    if target_exp and exp_str == target_exp:
+        rows = current_ctx.get("option_rows") or []
+        if rows:
+            return rows
+
+    # Query DB snapshot for exact (symbol, expiry) match
+    sym = symbol or current_ctx.get("symbol") or ""
+    if sym and exp_str:
+        try:
+            from src.models.schema import get_latest_snapshots_for_symbol
+            db_rows = get_latest_snapshots_for_symbol(sym, exp_str)
+            if db_rows:
+                return db_rows
+        except Exception:
+            pass
+
+    # Strictly fail-closed: never return rows from a different expiry
+    return []
 
 def run_live_trading(
     symbol: str, scan_context: dict, digest_id: str, intel: dict, ai_verdict=None
@@ -933,6 +944,7 @@ def run_live_trading(
         log.warning(
             "Live trading skipped: Zerodha credentials / access token invalid or not logged in."
         )
+        check_token_expiry_with_open_positions(None)
         return {"action": "BLOCKED_AUTH", "reason": "Kite client not initialized"}
 
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -944,7 +956,7 @@ def run_live_trading(
     )
 
     current_open_trade = get_open_live_trade(symbol)
-    trade_option_rows = _get_option_rows_for_expiry(scan_context, current_open_trade.get("expiry") if current_open_trade else None)
+    trade_option_rows = _get_option_rows_for_expiry(scan_context, current_open_trade.get("expiry") if current_open_trade else None, symbol=symbol)
     option_rows = trade_option_rows if current_open_trade else (scan_context.get("option_rows") or [])
 
     if not current_open_trade:
@@ -1218,7 +1230,7 @@ def run_live_trading(
     if decision.get("status") == "BLOCKED":
         return {"action": "BLOCKED_DECISION", "reason": decision.get("reason", "Blocked by trade decision engine")}
 
-    risk_ok, risk_reason = check_live_risk_limits(symbol)
+    risk_ok, risk_reason = check_live_risk_limits(symbol, scan_context=ctx)
     if not risk_ok:
         return {"action": "BLOCKED_RISK", "reason": risk_reason}
 
@@ -1235,6 +1247,7 @@ def run_live_trading(
         pyramid_level=plan.get("pyramid_level", 1),
         option_type=plan.get("option_type"),
         strike=plan.get("strike"),
+        sl_premium=plan.get("sl_premium"),
     )
     today_date = datetime.now(IST).strftime("%Y%m%d")
     signal_key = f"{symbol}:{plan.get('option_type', '')}:{int(plan.get('strike') or 0)}:{today_date}:live"
@@ -1274,6 +1287,7 @@ def run_live_trading(
         else "Pending broker entry",
         "exit_mode": exit_mode,
         "snapshot_id": ctx.get("snapshot_id"),
+        "ai_model_name": plan.get("ai_model_name") or ctx.get("ai_model_name") or (getattr(ai_verdict, "model_name", None) if ai_verdict else None),
         # Phase 0: ML feature columns (captured at trade open time)
         **_build_ml_feature_snapshot(ctx, ai_verdict),
     }
@@ -1862,6 +1876,7 @@ def run_live_timeframe_strategy(
         setup_type="TIMEFRAME",
         option_type=opt_type,
         strike=strike,
+        sl_premium=sl_premium,
     )
     exchange = _get_exchange(symbol)
     resolved = resolve_instrument(symbol, expiry, strike, opt_type)
@@ -1980,6 +1995,7 @@ def run_live_timeframe_strategy(
         "broker_message": broker_message,
         "exit_mode": exit_mode,
         "snapshot_id": ctx.get("snapshot_id"),
+        "ai_model_name": getattr(ai_verdict, "model_name", None) if ai_verdict else ctx.get("ai_model_name"),
         # Phase 0: ML feature columns (captured at trade open time)
         **_build_ml_feature_snapshot(ctx, ai_verdict),
     }
@@ -2050,8 +2066,373 @@ def run_live_timeframe_strategy(
     }
 
 
+_last_token_expiry_alert_ts: float = 0.0
+
+
+def check_token_expiry_with_open_positions(kite_client=None) -> bool:
+    """Check if Kite token is expired or unavailable while holding open live positions.
+
+    If open positions exist but Kite cannot authenticate, dispatches an urgent Telegram alert.
+    Returns True if healthy, False if token is invalid with open positions.
+    """
+    global _last_token_expiry_alert_ts
+    from src.models.schema import get_conn
+
+    try:
+        with get_conn(read_only=True) as conn:
+            open_live_trades = conn.execute(
+                "SELECT count(*) FROM live_trades WHERE status='OPEN' AND (trade_status IS NULL OR trade_status != 'SHADOW')"
+            ).fetchone()[0]
+            open_live_books = conn.execute(
+                "SELECT count(*) FROM multi_leg_trades WHERE status='OPEN'"
+            ).fetchone()[0]
+    except Exception as e:
+        log.warning("Failed to check open live positions for token alert: %s", e)
+        return True
+
+    total_live_open = open_live_trades + open_live_books
+    if total_live_open == 0:
+        return True
+
+    from config.runtime_config import is_broker_trade_enabled
+    if not is_broker_trade_enabled():
+        return True
+
+    from src.services.zerodha_auth import is_token_valid
+
+    is_valid = is_token_valid() and (kite_client is not None or get_kite_client() is not None)
+    if not is_valid:
+        now_ts = time.time()
+        if now_ts - _last_token_expiry_alert_ts > 600:
+            _last_token_expiry_alert_ts = now_ts
+            msg = (
+                f"🚨 **CRITICAL: Zerodha Kite Token Expired / Unavailable!**\n"
+                f"You are currently holding **{total_live_open} open live position(s)** "
+                f"({open_live_trades} single-leg, {open_live_books} multileg)!\n"
+                f"⚠️ Automated SL/Target exits, GTT tracking, and risk management are **BLOCKED**.\n"
+                f"👉 Please re-authenticate immediately at http://localhost:8080/settings"
+            )
+            log.critical(msg)
+            try:
+                from src.alerts.telegram_dispatcher import send_text
+
+                send_text(msg)
+            except Exception as e:
+                log.error("Failed to send token expiry alert to Telegram: %s", e)
+        return False
+    return True
+
+
+def reconcile_and_cancel_orphan_gtts(kite=None) -> int:
+    """Find and cancel any active GTT triggers on monitored contracts that have no open position.
+
+    A stale GTT on a closed position is a naked reverse entry.
+    Returns the count of cancelled orphan GTTs.
+    """
+    from config.runtime_config import is_broker_trade_enabled, load_runtime_config
+
+    if not is_broker_trade_enabled():
+        return 0
+
+    cfg = load_runtime_config()
+    if cfg.get("live_shadow_mode", True):
+        return 0
+
+    kite = kite or get_kite_client()
+    if not kite:
+        return 0
+
+    try:
+        gtt_list = kite.get_gtts() or []
+    except Exception as ge:
+        log.warning("[orphan_gtt_reconcile] Failed to fetch GTTs from Kite: %s", ge)
+        return 0
+
+    if not gtt_list:
+        return 0
+
+    try:
+        positions = kite.positions()
+        net_pos = positions.get("net", [])
+    except Exception as pe:
+        log.warning("[orphan_gtt_reconcile] Failed to fetch positions from Kite: %s", pe)
+        return 0
+
+    active_kite_symbols: dict[str, int] = {}
+    for p in net_pos:
+        qty = int(p.get("quantity", 0) or 0)
+        ts = p.get("tradingsymbol", "")
+        if ts and qty != 0:
+            active_kite_symbols[ts] = qty
+
+    from src.models.schema import get_conn
+
+    open_db_gtt_ids = set()
+    try:
+        with get_conn(read_only=True) as conn:
+            lt_gtts = conn.execute(
+                "SELECT gtt_order_id FROM live_trades WHERE status='OPEN' AND gtt_order_id IS NOT NULL"
+            ).fetchall()
+            for r in lt_gtts:
+                if r[0]:
+                    open_db_gtt_ids.add(str(r[0]))
+
+            mll_gtts = conn.execute(
+                "SELECT l.gtt_order_id FROM multi_leg_legs l "
+                "JOIN multi_leg_trades t ON l.trade_id = t.id "
+                "WHERE t.status='OPEN' AND l.gtt_order_id IS NOT NULL"
+            ).fetchall()
+            for r in mll_gtts:
+                if r[0]:
+                    open_db_gtt_ids.add(str(r[0]))
+    except Exception as dbe:
+        log.warning("[orphan_gtt_reconcile] Failed to fetch DB GTT IDs: %s", dbe)
+
+    monitored_bases = ["NIFTY", "BANKNIFTY", "SENSEX", "NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"]
+    cancelled_count = 0
+
+    for gtt in gtt_list:
+        if gtt.get("status") != "active":
+            continue
+        gtt_id = str(gtt.get("id"))
+        cond = gtt.get("condition", {})
+        tsym = cond.get("tradingsymbol", "")
+        if not tsym:
+            continue
+
+        if not any(tsym.startswith(mb) for mb in monitored_bases):
+            continue
+
+        pos_qty = active_kite_symbols.get(tsym, 0)
+        is_in_db = gtt_id in open_db_gtt_ids
+
+        # If zero net position exists on Kite, this GTT has no open position protecting/closing it
+        if pos_qty == 0:
+            log.warning(
+                "[orphan_gtt_reconcile] Cancelling orphan GTT %s for %s (net position is 0 on Kite, db_tracked=%s)",
+                gtt_id,
+                tsym,
+                is_in_db,
+            )
+            try:
+                kite.cancel_gtt(int(gtt_id) if gtt_id.isdigit() else gtt_id)
+                cancelled_count += 1
+                try:
+                    from src.alerts.telegram_dispatcher import send_text
+
+                    send_text(
+                        f"⚠️ **[RECONCILIATION]** Cancelled orphan GTT `{gtt_id}` on `{tsym}` — position on Kite is flat."
+                    )
+                except Exception:
+                    pass
+            except Exception as ce:
+                log.error("[orphan_gtt_reconcile] Failed to cancel orphan GTT %s: %s", gtt_id, ce)
+
+    if cancelled_count > 0:
+        log.info("[orphan_gtt_reconcile] Cancelled %d orphan GTT trigger(s)", cancelled_count)
+    return cancelled_count
+
+
+def reconcile_pending_live_trades_on_restart(kite=None) -> dict:
+    """On restart, re-derive state from broker positions rather than trusting DB PENDING rows.
+
+    1. Cross-checks all DB trades with broker_status='PENDING' against broker order history.
+    2. If order was filled, marks COMPLETE, updates prices, and places GTT if needed.
+    3. If order was rejected/cancelled or missing, marks REJECTED/CANCELLED.
+    4. Cross-checks all OPEN non-shadow live trades and books against Kite net positions.
+       If no corresponding position exists on Kite, marks as CLOSED_MANUAL.
+    5. Reconciles and cancels any orphan GTTs.
+    """
+    from config.runtime_config import is_broker_trade_enabled
+    from src.models.schema import get_conn
+
+    res = {"reconciled_pending": 0, "cancelled_orphan_gtts": 0}
+
+    if not is_broker_trade_enabled():
+        log.debug("[reconcile_on_restart] Broker trade is disabled (Broker OFF) — skipping restart reconciliation")
+        return res
+
+    kite = kite or get_kite_client()
+    if not kite:
+        check_token_expiry_with_open_positions(None)
+        log.warning("[reconcile_on_restart] Kite client unavailable; cannot reconcile pending orders on restart")
+        return res
+
+    log.info("[reconcile_on_restart] Starting startup broker reconciliation...")
+
+    # 1. Resolve PENDING orders in DB
+    try:
+        with get_conn() as conn:
+            pending_trades = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT * FROM live_trades WHERE status='OPEN' AND broker_status='PENDING' AND (trade_status IS NULL OR trade_status != 'SHADOW')"
+                ).fetchall()
+            ]
+
+        for pt in pending_trades:
+            order_id = pt.get("broker_order_id")
+            if not order_id or order_id in ("direct", "manual"):
+                positions = kite.positions().get("net", [])
+                match_found = False
+                for p in positions:
+                    if int(p.get("quantity", 0)) != 0 and pt.get("symbol") in p.get("tradingsymbol", ""):
+                        match_found = True
+                        break
+                if match_found:
+                    update_live_trade_entry(
+                        pt["id"],
+                        broker_status="COMPLETE",
+                        broker_message="Reconciled on restart: position found on Kite",
+                    )
+                else:
+                    update_live_trade_entry(
+                        pt["id"],
+                        status="REJECTED",
+                        broker_status="REJECTED",
+                        reason="Reconciled on restart: no matching position on Kite",
+                        broker_message="Order was not found at broker on startup",
+                    )
+                res["reconciled_pending"] += 1
+            else:
+                b_status, b_msg = confirm_order_fill(kite, order_id, shadow_mode=False)
+                if b_status == "COMPLETE":
+                    update_live_trade_entry(
+                        pt["id"],
+                        broker_status="COMPLETE",
+                        broker_message="Reconciled on restart: order filled",
+                    )
+                    log.info("[reconcile_on_restart] Trade #%s order %s filled at broker", pt["id"], order_id)
+                elif b_status in ("REJECTED", "CANCELLED"):
+                    update_live_trade_entry(
+                        pt["id"],
+                        status="REJECTED",
+                        broker_status=b_status,
+                        reason=f"Order {b_status} on restart",
+                        broker_message=b_msg,
+                    )
+                    log.warning("[reconcile_on_restart] Trade #%s order %s was %s at broker", pt["id"], order_id, b_status)
+                else:
+                    log.info("[reconcile_on_restart] Trade #%s order %s still %s at broker", pt["id"], order_id, b_status)
+                res["reconciled_pending"] += 1
+    except Exception as pe:
+        log.error("[reconcile_on_restart] Error resolving PENDING trades: %s", pe)
+
+    # 2. Run sync_direct_kite_positions to auto-close any stale DB rows across all setup types
+    try:
+        sync_direct_kite_positions()
+    except Exception as se:
+        log.error("[reconcile_on_restart] Error running position sync on restart: %s", se)
+
+    # 3. Cancel orphan GTTs
+    try:
+        cancelled = reconcile_and_cancel_orphan_gtts(kite)
+        res["cancelled_orphan_gtts"] = cancelled
+    except Exception as ge:
+        log.error("[reconcile_on_restart] Error cancelling orphan GTTs on restart: %s", ge)
+
+    log.info("[reconcile_on_restart] Startup broker reconciliation finished: %s", res)
+    return res
+
+
+def execute_panic_shutdown() -> str:
+    """EMERGENCY PANIC: Instantly cancels all GTTs, market squares-off all open net positions on Kite,
+    pauses trading, disables broker, and updates database records.
+    """
+    from datetime import datetime, timezone
+    from config.runtime_config import update_runtime_config
+    from src.models.schema import get_conn
+
+    log.critical("🚨 [PANIC] Initiating Emergency Panic Shutdown!")
+
+    update_runtime_config({
+        "trading_paused": True,
+        "live_broker_disabled": True,
+    })
+
+    cancelled_gtts = 0
+    square_off_orders = []
+    failed_orders = []
+
+    kite = get_kite_client()
+    if kite:
+        try:
+            gtt_list = kite.get_gtts() or []
+            for gtt in gtt_list:
+                if gtt.get("status") == "active":
+                    gid = gtt.get("id")
+                    try:
+                        kite.cancel_gtt(int(gid) if str(gid).isdigit() else gid)
+                        cancelled_gtts += 1
+                    except Exception as ce:
+                        log.warning("[PANIC] Failed to cancel GTT %s: %s", gid, ce)
+        except Exception as ge:
+            log.warning("[PANIC] Failed to fetch GTTs: %s", ge)
+
+        try:
+            positions = kite.positions().get("net", [])
+            for p in positions:
+                qty = int(p.get("quantity", 0) or 0)
+                ts = p.get("tradingsymbol", "")
+                exch = p.get("exchange", "NFO")
+                prod = p.get("product", kite.PRODUCT_NRML)
+                if qty != 0 and ts:
+                    trans_type = kite.TRANSACTION_TYPE_SELL if qty > 0 else kite.TRANSACTION_TYPE_BUY
+                    try:
+                        order_id = kite.place_order(
+                            variety=kite.VARIETY_REGULAR,
+                            exchange=exch,
+                            tradingsymbol=ts,
+                            transaction_type=trans_type,
+                            quantity=abs(qty),
+                            product=prod,
+                            order_type=kite.ORDER_TYPE_MARKET,
+                        )
+                        square_off_orders.append(f"{ts} ({trans_type} {abs(qty)}) [order: {order_id}]")
+                        log.critical("[PANIC] Placed market square-off order for %s: %s", ts, order_id)
+                    except Exception as oe:
+                        err_msg = f"{ts} ({trans_type} {abs(qty)}): {oe}"
+                        failed_orders.append(err_msg)
+                        log.critical("[PANIC] Failed to square off %s: %s", ts, oe)
+        except Exception as pe:
+            log.error("[PANIC] Failed to fetch Kite positions: %s", pe)
+    else:
+        log.warning("[PANIC] Kite client unavailable — unable to send market orders to broker directly")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with get_conn() as conn:
+        closed_single = conn.execute(
+            "UPDATE live_trades SET status='CLOSED_MANUAL', closed_at=?, reason='Panic emergency square-off' WHERE status='OPEN'",
+            (now_iso,),
+        ).rowcount
+        closed_books = conn.execute(
+            "UPDATE multi_leg_trades SET status='CLOSED', closed_at=?, reason='Panic emergency square-off' WHERE status='OPEN'",
+            (now_iso,),
+        ).rowcount
+
+    summary_lines = [
+        "🚨 **PANIC SHUTDOWN COMPLETE** 🚨",
+        "• **Trading Paused:** `TRUE`",
+        "• **Broker Disabled:** `TRUE`",
+        f"• **Cancelled GTTs:** {cancelled_gtts}",
+        f"• **Broker Square-offs Sent:** {len(square_off_orders)}",
+    ]
+    for s in square_off_orders:
+        summary_lines.append(f"   ✓ {s}")
+    if failed_orders:
+        summary_lines.append(f"• **Failed Square-offs ({len(failed_orders)}):**")
+        for f in failed_orders:
+            summary_lines.append(f"   ⚠️ {f}")
+    summary_lines.append(f"• **Database Rows Closed:** {closed_single} single-leg, {closed_books} multileg book(s)")
+
+    summary = "\n".join(summary_lines)
+    log.critical(summary)
+    return summary
+
+
 def sync_direct_kite_positions() -> None:
     from config.runtime_config import is_broker_trade_enabled, load_runtime_config
+    from config.settings import LOT_SIZES
 
     if not is_broker_trade_enabled():
         log.debug("[live_trading] Broker trade is disabled (Broker OFF) — skipping Kite position sync")
@@ -2063,6 +2444,7 @@ def sync_direct_kite_positions() -> None:
 
     kite = get_kite_client()
     if not kite:
+        check_token_expiry_with_open_positions(None)
         return
 
     try:
@@ -2070,15 +2452,16 @@ def sync_direct_kite_positions() -> None:
         net_positions = positions.get("net", [])
     except Exception as e:
         log.error("Failed to fetch Kite positions for direct sync: %s", e)
-        # Clear Kite client cache if fetching positions failed, to force re-initialization
         clear_kite_client_cache()
         if "access_token" in str(e).lower() or "api_key" in str(e).lower() or "TokenException" in type(e).__name__:
             from src.services.zerodha_auth import invalidate_token
+
             invalidate_token()
+        check_token_expiry_with_open_positions(None)
         log.warning("Cleared Kite client cache due to position sync failure.")
         return
 
-    monitored_bases = ["NIFTY", "BANKNIFTY", "SENSEX", "NATURALGAS", "CRUDEOIL"]
+    monitored_bases = ["NIFTY", "BANKNIFTY", "SENSEX", "NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"]
 
     import re
     from datetime import datetime, timedelta, timezone
@@ -2089,40 +2472,48 @@ def sync_direct_kite_positions() -> None:
         db_trades = [
             dict(r)
             for r in conn.execute(
-                "SELECT id, symbol, option_type, strike, side, setup_type, reason FROM live_trades WHERE status='OPEN'"
+                "SELECT id, symbol, option_type, strike, side, lots, lot_size, setup_type, reason, gtt_order_id, trade_status, broker_status FROM live_trades WHERE status='OPEN'"
             ).fetchall()
         ]
         open_db_signatures = []
+        open_db_specs: dict[str, list[dict]] = {}
         for dt in db_trades:
             sym = dt["symbol"]
             ot = dt["option_type"]
             stk = int(dt["strike"] or 0)
             sd = dt["side"]
-            open_db_signatures.append(f"{sym}:{ot}:{stk}:{sd}")
+            trade_lots = int(dt.get("lots") or 1)
+            trade_lot_size = int(dt.get("lot_size") or 0) or LOT_SIZES.get(sym, 1)
+            trade_qty = trade_lots * trade_lot_size
+            open_db_signatures.append(f"{sym}:{ot}:{stk}:{sd}:{trade_qty}")
+            spec_key = f"{sym}:{ot}:{stk}:{sd}"
+            open_db_specs.setdefault(spec_key, []).append(dt)
 
-        # Also exclude DIRECT_KITE positions that were adopted and closed today.
-        # Without this, a position closed by CMP poll exit immediately re-adopts on
-        # the next sync because it's no longer in status='OPEN'.
-        # BUG-M8 FIX: Use precise timestamp range instead of LIKE with date prefix
-        # to avoid missing trades opened very close to midnight UTC
         today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         tomorrow_start = today_start + timedelta(days=1)
         today_start_iso = today_start.isoformat()
         tomorrow_start_iso = tomorrow_start.isoformat()
         closed_today = conn.execute(
-            "SELECT symbol, option_type, strike, side FROM live_trades "
+            "SELECT symbol, option_type, strike, side, lots, lot_size FROM live_trades "
             "WHERE setup_type='DIRECT_KITE' AND status!='OPEN' AND opened_at >= ? AND opened_at < ?",
             (today_start_iso, tomorrow_start_iso),
         ).fetchall()
         for ct in closed_today:
-            sig = f"{ct['symbol']}:{ct['option_type']}:{int(ct['strike'] or 0)}:{ct['side']}"
+            c_sym = ct["symbol"]
+            c_lots = int(ct["lots"] or 1)
+            c_lsize = int(ct["lot_size"] or 0) or LOT_SIZES.get(c_sym, 1)
+            c_qty = c_lots * c_lsize
+            sig = f"{c_sym}:{ct['option_type']}:{int(ct['strike'] or 0)}:{ct['side']}:{c_qty}"
             if sig not in open_db_signatures:
                 open_db_signatures.append(sig)
 
         now_iso = datetime.now(timezone.utc).isoformat()
         active_kite_sigs = set()
+        active_kite_specs: dict[str, int] = {}
+        active_kite_symbols: dict[str, int] = {}
+
         for p in net_positions:
-            net_qty = p.get("quantity", 0)
+            net_qty = int(p.get("quantity", 0) or 0)
             if net_qty == 0:
                 continue
             ts = p.get("tradingsymbol", "")
@@ -2144,22 +2535,111 @@ def sync_direct_kite_positions() -> None:
                 m = re.search(r"(\d+(?:\.\d+)?)(?:CE|PE)$", ts)
                 if m:
                     strike = float(m.group(1))
-            active_kite_sigs.add(f"{base_sym}:{option_type}:{int(strike)}:{side}")
+            abs_qty = abs(net_qty)
+            active_kite_sigs.add(f"{base_sym}:{option_type}:{int(strike)}:{side}:{abs_qty}")
+            active_kite_specs[f"{base_sym}:{option_type}:{int(strike)}:{side}"] = abs_qty
+            active_kite_symbols[ts] = abs_qty
 
-        # Auto-close DIRECT_KITE DB rows that are no longer open on Zerodha Kite
+        # 1. Auto-close stale rows across EVERY setup type if position is flat on Kite
         for dt in db_trades:
-            if dt.get("setup_type") == "DIRECT_KITE" or dt.get("reason") == "Direct Kite Manual Entry":
-                sym = dt["symbol"]
-                ot = dt["option_type"]
-                stk = int(dt["strike"] or 0)
-                sd = dt["side"]
-                sig = f"{sym}:{ot}:{stk}:{sd}"
-                if sig not in active_kite_sigs:
-                    log.info("Auto-closing reconciled DIRECT_KITE trade ID %s (%s) no longer active on Kite", dt["id"], sig)
-                    conn.execute("UPDATE live_trades SET status='CLOSED', closed_at=?, reason='Closed on Kite' WHERE id=?", (now_iso, dt["id"]))
+            # Only reconcile trades that were actually sent to broker (not shadow trades)
+            if dt.get("trade_status") == "SHADOW" or dt.get("broker_status") == "SHADOW":
+                continue
+            sym = dt["symbol"]
+            ot = dt["option_type"]
+            stk = int(dt["strike"] or 0)
+            sd = dt["side"]
+            spec = f"{sym}:{ot}:{stk}:{sd}"
+            trade_lots = int(dt.get("lots") or 1)
+            trade_lot_size = int(dt.get("lot_size") or 0) or LOT_SIZES.get(sym, 1)
+            trade_qty = trade_lots * trade_lot_size
 
+            if spec not in active_kite_specs:
+                log.info(
+                    "Auto-closing reconciled %s trade ID %s (%s) no longer active on Kite",
+                    dt.get("setup_type"),
+                    dt["id"],
+                    spec,
+                )
+                conn.execute(
+                    "UPDATE live_trades SET status='CLOSED_MANUAL', closed_at=?, reason='Closed on Kite (reconciled)', broker_message='Auto-closed via Kite position reconciliation' WHERE id=?",
+                    (now_iso, dt["id"]),
+                )
+                if dt.get("gtt_order_id"):
+                    cancel_kite_gtt(kite, dt["gtt_order_id"], shadow_mode=False)
+                try:
+                    from src.alerts.telegram_dispatcher import send_text
+
+                    send_text(
+                        f"🔄 **[RECONCILIATION]** Trade #{dt['id']} ({sym} {ot} {stk} {sd}) closed on Kite. Auto-closed DB record & cancelled GTT."
+                    )
+                except Exception:
+                    pass
+            else:
+                # Position is active on Kite — verify quantity alignment
+                kite_qty = active_kite_specs[spec]
+                if kite_qty != trade_qty:
+                    new_lots = max(1, kite_qty // trade_lot_size)
+                    log.info(
+                        "Reconciliation: Updating lots for %s trade #%s (%s): DB had %d, Kite has %d. New lots: %d",
+                        dt.get("setup_type"),
+                        dt["id"],
+                        spec,
+                        trade_qty,
+                        kite_qty,
+                        new_lots,
+                    )
+                    conn.execute("UPDATE live_trades SET lots=? WHERE id=?", (new_lots, dt["id"]))
+
+        # 2. Auto-close stale multileg books if all constituent legs are flat on Kite
+        open_books = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT id, symbol, structure FROM multi_leg_trades WHERE status='OPEN'"
+            ).fetchall()
+        ]
+        for book in open_books:
+            legs = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT id, side, strike, option_type, lots, gtt_order_id FROM multi_leg_legs WHERE trade_id=?",
+                    (book["id"],),
+                ).fetchall()
+            ]
+            if not legs:
+                continue
+            all_closed = True
+            for leg in legs:
+                leg_spec = f"{book['symbol']}:{leg['option_type']}:{int(leg['strike'] or 0)}:{leg['side']}"
+                if leg_spec in active_kite_specs:
+                    all_closed = False
+                    break
+            if all_closed:
+                log.info(
+                    "Auto-closing reconciled multileg book #%s (%s %s) — all legs closed on Kite",
+                    book["id"],
+                    book["symbol"],
+                    book["structure"],
+                )
+                conn.execute(
+                    "UPDATE multi_leg_trades SET status='CLOSED', closed_at=?, reason='Closed on Kite (reconciled)' WHERE id=?",
+                    (now_iso, book["id"]),
+                )
+                for leg in legs:
+                    if leg.get("gtt_order_id"):
+                        cancel_kite_gtt(kite, leg["gtt_order_id"], shadow_mode=False)
+                try:
+                    from src.alerts.telegram_dispatcher import send_text
+
+                    send_text(
+                        f"🔄 **[RECONCILIATION]** Multileg book #{book['id']} ({book['symbol']} {book['structure']}) closed on Kite. Auto-closed DB book & cleaned up GTTs."
+                    )
+                except Exception:
+                    pass
+
+        # 3. Adopt unmonitored direct Kite positions into DB
         for p in net_positions:
-            net_qty = p.get("quantity", 0)
+            net_qty = int(p.get("quantity", 0) or 0)
             if net_qty == 0:
                 continue
 
@@ -2188,9 +2668,12 @@ def sync_direct_kite_positions() -> None:
                 if m:
                     strike = float(m.group(1))
 
-            sig = f"{base_sym}:{option_type}:{int(strike)}:{side}"
+            abs_qty = abs(net_qty)
+            sig = f"{base_sym}:{option_type}:{int(strike)}:{side}:{abs_qty}"
+            spec_key = f"{base_sym}:{option_type}:{int(strike)}:{side}"
 
-            if sig in open_db_signatures:
+            # If already tracked in open DB trades, do not duplicate
+            if sig in open_db_signatures or spec_key in open_db_specs:
                 continue
 
             init_mode = config.get("direct_kite_initialization_mode", "fixed_pct")
@@ -2231,6 +2714,7 @@ def sync_direct_kite_positions() -> None:
                     # Kite API accounts lack MCX market data permissions — fetch via commodity router
                     try:
                         from src.fetchers.router import get_commodity_ohlc
+
                         cmd_res = get_commodity_ohlc(base_sym)
                         if cmd_res and float(cmd_res.get("price") or 0.0) > 0:
                             underlying_price = float(cmd_res["price"])
@@ -2249,11 +2733,14 @@ def sync_direct_kite_positions() -> None:
                     except Exception as ltp_err:
                         if "Insufficient permission" in str(ltp_err):
                             log.debug(
-                                "Kite market data permission missing for %s (using stored underlying price fallback)", symbol_key
+                                "Kite market data permission missing for %s (using stored underlying price fallback)",
+                                symbol_key,
                             )
                         else:
                             log.warning(
-                                "Failed to fetch live LTP for index %s: %s", symbol_key, ltp_err
+                                "Failed to fetch live LTP for index %s: %s",
+                                symbol_key,
+                                ltp_err,
                             )
 
             if not live_resolved:
@@ -2315,7 +2802,6 @@ def sync_direct_kite_positions() -> None:
                 sl_premium = sl_underlying
                 tgt_premium = tgt_underlying
             else:
-                # Options (CE/PE)
                 if init_mode == "dynamic" and atr and atr > 0 and underlying_price > 0:
                     vol_pct = atr / underlying_price
                     sl_pct = max(0.15, min(0.45, vol_pct * 40.0))
@@ -2342,17 +2828,11 @@ def sync_direct_kite_positions() -> None:
                     sl_premium = round(avg_price * (1 + sl_pct), 2)
                     tgt_premium = round(avg_price * (1 - tgt_pct), 2)
 
-            lots = 1
-            from config.settings import LOT_SIZES
-
-            if base_sym in LOT_SIZES:
-                lots = max(1, abs(net_qty) // LOT_SIZES[base_sym])
+            lot_size_val = LOT_SIZES.get(base_sym, 1)
+            lots = max(1, abs_qty // lot_size_val)
 
             expiry_val = get_expiry_for_tradingsymbol(ts)
             if not expiry_val:
-                # P2-06: If expiry cannot be resolved (unknown symbol, new contract,
-                # non-standard naming), skip adoption. Empty expiry causes zero PnL
-                # in close_live_trade() because the expiry= lookup returns no rows.
                 log.warning(
                     "Skipping direct Kite position adoption for %s — "
                     "could not resolve expiry from tradingsymbol '%s'",
@@ -2361,6 +2841,7 @@ def sync_direct_kite_positions() -> None:
                 )
                 continue
 
+            shadow_mode = config.get("live_shadow_mode", True)
             trade_data = {
                 "opened_at": now_iso,
                 "symbol": base_sym,
@@ -2378,6 +2859,7 @@ def sync_direct_kite_positions() -> None:
                 "target_underlying": tgt_underlying,
                 "target_premium": tgt_premium if option_type != "FUT" else 0.0,
                 "lots": lots,
+                "lot_size": lot_size_val,
                 "status": "OPEN",
                 "reason": "Direct Kite Manual Entry",
                 "digest_id": "manual",
@@ -2389,14 +2871,99 @@ def sync_direct_kite_positions() -> None:
                 "broker_status": "COMPLETE",
                 "broker_message": "Adopted manually placed position",
                 "exit_mode": "POLL",
+                "ai_model_name": "DIRECT_KITE_MANUAL",
             }
 
             inserted_id = insert_live_trade(trade_data, conn=conn)
             if inserted_id:
                 open_db_signatures.append(sig)
                 log.info("Adopted Kite direct position: %s as %s", ts, sig)
-                from src.alerts.telegram_dispatcher import send_text
+                try:
+                    from src.alerts.telegram_dispatcher import send_text
 
-                send_text(
-                    f"🤖 **[KITE DIRECT]** Adopted manual position `{ts}` ({side} Qty: {abs(net_qty)}) at `₹{avg_price}`. AI Exit Advisor will monitor it (SL: `₹{sl_premium}`, Target: `₹{tgt_premium}`)."
+                    send_text(
+                        f"🤖 **[KITE DIRECT]** Adopted manual position `{ts}` ({side} Qty: {abs_qty}) at `₹{avg_price}`. AI Exit Advisor will monitor it (SL: `₹{sl_premium}`, Target: `₹{tgt_premium}`)."
+                    )
+                except Exception:
+                    pass
+
+    # 4. Reconcile and cancel orphan GTT triggers on Kite
+    reconcile_and_cancel_orphan_gtts(kite)
+
+
+def check_all_live_exits_every_2_min() -> None:
+    """Poll all open live positions and books every 2 minutes for stop-loss, target, or expiry exit.
+
+    Runs as a fast periodic background job, decoupled from the 60-minute NSE scan interval.
+    """
+    from src.models.schema import get_conn
+    from src.fetchers.router import fetch_option_chain
+
+    # Quick check if there are any open live single-leg trades or multi-leg books
+    with get_conn(read_only=True) as conn:
+        open_trades = [dict(r) for r in conn.execute(
+            "SELECT * FROM live_trades WHERE status = 'OPEN'"
+        ).fetchall()]
+        open_books = [dict(r) for r in conn.execute(
+            "SELECT * FROM multi_leg_trades WHERE status = 'OPEN'"
+        ).fetchall()]
+
+    if not open_trades and not open_books:
+        return
+
+    # Check token validity and alert if expired with open positions
+    check_token_expiry_with_open_positions()
+
+    log.debug("[live-exit-poll] Found %d open live trade(s) and %d open multileg book(s)", len(open_trades), len(open_books))
+
+    from config.symbol_classes import is_market_open
+
+    # 1. Single-leg live trade polling
+    for trade in open_trades:
+        sym = trade.get("symbol", "")
+        if not sym or not is_market_open(sym):
+            continue
+        try:
+            oc = fetch_option_chain(sym, expiry=trade.get("expiry"))
+            if not oc:
+                continue
+            scan_ctx = {
+                "symbol": sym,
+                "underlying": oc.get("underlying_price") or oc.get("underlying"),
+                "expiry": trade.get("expiry"),
+                "option_rows": oc.get("options") or [],
+            }
+            run_live_trading(
+                symbol=sym,
+                scan_context=scan_ctx,
+                digest_id=f"poll_{int(datetime.now().timestamp())}",
+                intel={"verdict_label": "Neutral", "confidence": 50, "trade_decision": {"status": "BLOCKED", "reason": "POLL_EXIT_CHECK_ONLY"}},
+            )
+        except Exception as te:
+            log.warning("[live-exit-poll] Error polling live trade #%s for %s: %s", trade.get("id"), sym, te)
+
+    # 2. Multi-leg live book polling
+    if open_books:
+        symbols_with_books = {b.get("symbol") for b in open_books if b.get("symbol")}
+        for sym in symbols_with_books:
+            if not is_market_open(sym):
+                continue
+            try:
+                from src.engine.multileg_live_trading import run_multileg_live_strategy
+                oc = fetch_option_chain(sym)
+                if not oc:
+                    continue
+                scan_ctx = {
+                    "symbol": sym,
+                    "underlying": oc.get("underlying_price") or oc.get("underlying"),
+                    "expiry": oc.get("expiry"),
+                    "option_rows": oc.get("options") or [],
+                }
+                run_multileg_live_strategy(
+                    symbol=sym,
+                    scan_context=scan_ctx,
+                    digest_id=f"poll_ml_{int(datetime.now().timestamp())}",
+                    intel={"verdict_label": "Neutral", "confidence": 50},
                 )
+            except Exception as me:
+                log.warning("[live-exit-poll] Error polling live multileg books for %s: %s", sym, me)

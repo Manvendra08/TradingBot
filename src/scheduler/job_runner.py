@@ -7,13 +7,22 @@ Phase 2: Weekly ML training job added (Sunday 2 AM IST fallback).
 Event-driven triggers (20+ trades, edge health < 60) are wired in pipeline.py.
 """
 import logging
+import multiprocessing
+import socket
 import subprocess
 import sys
 import time
 import threading
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
+
+# Set default socket timeout to prevent indefinite socket hangs across network requests
+try:
+    socket.setdefaulttimeout(60.0)
+except Exception:
+    pass
 
 import pytz
 
@@ -35,6 +44,8 @@ SCRAPE_RUNNER = ROOT / "tools" / "scrape_dhan_naturalgas.py"
 IST = pytz.timezone("Asia/Kolkata")
 
 MAX_CATCHUP_INTERVALS = 3
+_ACTIVE_TASKS: dict[str, multiprocessing.Process] = {}
+_ACTIVE_TASKS_LOCK = threading.Lock()
 
 def touch_heartbeat(detail: str = "running") -> None:
     """Touch the heartbeat file and update scheduler health state."""
@@ -50,22 +61,87 @@ def touch_heartbeat(detail: str = "running") -> None:
 
 
 def run_with_timeout(func, timeout: int = 600, *args, **kwargs) -> bool:
-    """Run a function in a worker thread with timeout watchdog while keeping heartbeat fresh."""
-    t = threading.Thread(target=func, args=args, kwargs=kwargs, daemon=True)
-    t.start()
-    start_ts = time.time()
+    """Run a function in a worker process with timeout watchdog while keeping heartbeat fresh.
+    Prevents overlapping execution of hung tasks and kills the worker process on timeout.
+    Falls back to a daemon thread when the target cannot be pickled.
+    """
     func_name = getattr(func, "__name__", "task")
-    while t.is_alive():
-        t.join(timeout=10.0)
+    with _ACTIVE_TASKS_LOCK:
+        existing_p = _ACTIVE_TASKS.get(func_name)
+        if existing_p and existing_p.is_alive():
+            log.warning(
+                "Watchdog: task '%s' is already active in process %s — skipping overlapping execution",
+                func_name,
+                existing_p.pid,
+            )
+            return False
+
+        # Check whether `func` can be pickled before spawning a process.
+        # Windows `spawn` cannot pickle local functions/methods, so we fall
+        # back to a daemon thread in that case to avoid child-process spawn
+        # errors and resource-handle leaks during tests.
+        use_process = True
+        try:
+            import pickle
+            pickle.dumps(func)
+        except Exception:
+            use_process = False
+
+        if use_process:
+            p = multiprocessing.Process(
+                target=func,
+                args=args,
+                kwargs=kwargs,
+                name=f"watchdog-{func_name}",
+            )
+        else:
+            p = threading.Thread(
+                target=func,
+                args=args,
+                kwargs=kwargs,
+                daemon=True,
+            )
+        _ACTIVE_TASKS[func_name] = p
+        p.start()
+
+    start_ts = time.time()
+    while p.is_alive():
+        p.join(timeout=10.0)
         elapsed = int(time.time() - start_ts)
         touch_heartbeat(f"executing {func_name} ({elapsed}s)")
         if time.time() - start_ts >= timeout:
             log.error(
-                "Watchdog: function '%s' timed out after %ds and might be hung",
+                "Watchdog: function '%s' timed out after %ds and is hung — terminating %s %s",
                 func_name,
                 timeout,
+                "process" if use_process else "thread",
+                p.pid if use_process else p.ident,
             )
+            if use_process:
+                try:
+                    p.terminate()
+                    p.join(timeout=5)
+                    if p.is_alive():
+                        log.warning("Watchdog: process %s did not exit after terminate — forcing kill", p.pid)
+                        p.kill()
+                        p.join(timeout=5)
+                except Exception as exc:
+                    log.error("Watchdog: failed to terminate process %s: %s", p.pid, exc)
+            # Note: threads cannot be forcefully killed on Windows; we rely on the
+            # overlapping-execution guard above to avoid stacking hung threads.
+            try:
+                from src.models.schema import stamp_health
+                stamp_health("scheduler_watchdog", "ERROR", f"Task '{func_name}' timed out after {timeout}s")
+            except Exception:
+                pass
+            with _ACTIVE_TASKS_LOCK:
+                if _ACTIVE_TASKS.get(func_name) is p:
+                    _ACTIVE_TASKS.pop(func_name, None)
             return False
+
+    with _ACTIVE_TASKS_LOCK:
+        if _ACTIVE_TASKS.get(func_name) is p:
+            _ACTIVE_TASKS.pop(func_name, None)
     return True
 
 
@@ -1220,6 +1296,22 @@ def start_scheduler(immediate: bool = False):
     # Run auth immediately at startup
     _pre_pipeline_auth()
 
+    # Phase 3: Startup Broker Reconciliation & Orphan GTT Purge
+    try:
+        from src.engine.live_trading import reconcile_pending_live_trades_on_restart
+
+        reconcile_pending_live_trades_on_restart()
+    except Exception as re_err:
+        log.warning("[scheduler] Startup broker reconciliation error: %s", re_err)
+
+    # Phase 3: Start Telegram Command Listener (/status, /pause, /resume, /panic)
+    try:
+        from src.alerts.telegram_dispatcher import start_telegram_command_listener
+
+        start_telegram_command_listener()
+    except Exception as tg_err:
+        log.warning("[scheduler] Failed to start Telegram command listener: %s", tg_err)
+
     current_date = datetime.now(IST).date()
     last_scanned_interval: dict[str, int] = {}
     has_done_startup_scan: dict[str, bool] = {}
@@ -1861,11 +1953,18 @@ def start_scheduler(immediate: bool = False):
                     target=_run_autopsy, daemon=True, name="autopsy-writer"
                 ).start()
 
-            # 7. Natural Gas Exit Check Loop (Runs every 120 seconds)
+            # 7. Live Positions & Natural Gas Exit Check Loop (Runs every 120 seconds)
             if time.time() - last_ng_exit_check >= 120:
                 last_ng_exit_check = time.time()
 
-                def _run_ng_exits():
+                def _run_fast_exits():
+                    # Check all open live positions and multileg books across all symbols every 2 minutes
+                    try:
+                        from src.engine.live_trading import check_all_live_exits_every_2_min
+                        check_all_live_exits_every_2_min()
+                    except Exception as exc:
+                        log.warning("[scheduler] Live positions exit check failed: %s", exc)
+
                     try:
                         from src.engine.ng_parity_strategy import (
                             check_ng_parity_exits_every_2_min,
@@ -1888,7 +1987,7 @@ def start_scheduler(immediate: bool = False):
                         log.warning("[scheduler] NG exits check failed: %s", exc)
 
                 threading.Thread(
-                    target=_run_ng_exits, daemon=True, name="ng-exits-check"
+                    target=_run_fast_exits, daemon=True, name="fast-exits-check"
                 ).start()
 
             # 8. EIA Pre-Print Force Close (Thursday 19:40 IST)
@@ -1978,4 +2077,10 @@ def start_scheduler(immediate: bool = False):
 
             time.sleep(10)
     except (KeyboardInterrupt, SystemExit):
+        try:
+            from src.alerts.telegram_dispatcher import stop_telegram_command_listener
+
+            stop_telegram_command_listener()
+        except Exception:
+            pass
         log.info("Scheduler stopped")

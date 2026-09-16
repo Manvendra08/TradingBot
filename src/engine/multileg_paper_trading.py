@@ -38,11 +38,18 @@ def _dte_from_expiry(expiry: str) -> int:
         return 999
 
 
+_AI_CLOSE_PENDING_PAPER_BOOKS: dict[str, float] = {}
+_AI_CLOSE_EVENT_TIMESTAMPS: list[float] = []
+MAX_AI_CLOSES_PER_15M_WINDOW: int = 3
+
+
 def _get_stop_loss_threshold_rupees(book: dict, legs: list[dict], symbol: str) -> float:
     """Calculate the exact Stop Loss threshold in Rupees for a multi-leg book.
 
-    Prevents comparing total_pnl (in Rupees) against max_loss (in points/unscaled units),
-    which previously caused premature false liquidations on tiny tick movements.
+    Hard-enforced by code independent of LLM hallucinations:
+    - Defined-risk: min(credit_collected * stop_loss_pct, physical_max_loss)
+    - Undefined-risk: bounded by broker margin requirement (2.5% of required margin)
+      and hard rupee ceiling per lot (₹25,000 / lot).
     """
     from config.settings import LOT_SIZES
 
@@ -53,21 +60,41 @@ def _get_stop_loss_threshold_rupees(book: dict, legs: list[dict], symbol: str) -
     strategy_type = (book.get("strategy_type") or book.get("structure") or "").upper()
     net_premium = float(book.get("net_premium") or 0.0)
     max_loss_val = float(book.get("max_loss") or 0.0)
-    stop_loss_pct = float(book.get("stop_loss_pct") or 1.5)
+
+    # Code-level clamp: stop_loss_pct must be between 0.5 (50% credit loss) and 2.0 (200% credit loss)
+    raw_sl_pct = float(book.get("stop_loss_pct") or 1.5)
+    stop_loss_pct = min(max(raw_sl_pct, 0.5), 2.0)
 
     underlying = float(book.get("entry_underlying") or 0.0)
     is_defined_risk = strategy_type in ("IRON_CONDOR", "BEAR_CALL_SPREAD", "BULL_PUT_SPREAD")
 
     if is_defined_risk and max_loss_val > 0 and (underlying <= 0 or max_loss_val < underlying * 0.4):
-        # Defined risk credit spread / iron condor: stop loss triggers at stop_loss_pct of credit collected,
-        # capped strictly at the physical max loss of the spread.
         credit_sl = max(net_premium, 1.0) * lot_size * total_lots * stop_loss_pct
         physical_max = max_loss_val * lot_size * total_lots
         total_max_loss_rupees = min(credit_sl, physical_max)
     else:
-        # Undefined risk / short strangle / straddle / fallback:
-        # Cap loss at stop_loss_pct (default 1.5x = 150%) of net premium collected
-        total_max_loss_rupees = max(net_premium, 1.0) * lot_size * total_lots * stop_loss_pct
+        # Undefined risk: calculate based on broker margin requirement and premium credit
+        from src.engine.multileg_strategy import calculate_combined_margin
+        margin_req = float(book.get("margin_req") or 0.0)
+        if margin_req <= 0:
+            norm_legs = []
+            for l in legs:
+                c = dict(l)
+                if "side" not in c and "action" in c:
+                    c["side"] = c["action"]
+                if "lots" not in c and "ratio" in c:
+                    c["lots"] = c["ratio"]
+                norm_legs.append(c)
+            margin_req = calculate_combined_margin(norm_legs, symbol, underlying=underlying)
+
+        credit_sl = max(net_premium, 1.0) * lot_size * total_lots * stop_loss_pct
+        margin_sl = margin_req * 0.025 if margin_req > 0 else 25000.0 * total_lots
+        hard_rupee_ceiling = 25000.0 * total_lots
+        total_max_loss_rupees = min(max(credit_sl, 2000.0 * total_lots), margin_sl, hard_rupee_ceiling)
+        log.debug(
+            "[multileg-paper] %s: book %s SL threshold set to ₹%.0f (credit_sl=₹%.0f, margin_sl=₹%.0f, cap=₹%.0f, sl_pct=%.2f)",
+            symbol, book.get("book_id", "unknown"), total_max_loss_rupees, credit_sl, margin_sl, hard_rupee_ceiling, stop_loss_pct
+        )
 
     return max(total_max_loss_rupees, 1.0)
 
@@ -484,10 +511,61 @@ def _monitor_open_books(
                                 )
                                 continue
 
+                            # Verification Guard: Require consecutive confirmation OR a code-side quantitative co-sign
+                            # to prevent single spurious LLM hallucinations from closing books prematurely.
+                            import time as _time
+                            from config.settings import LOT_SIZES
+                            base_symbol = symbol.upper().split()[0] if symbol else symbol.upper()
+                            lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_symbol, 1))
+                            now_ts = _time.time()
+                            is_consecutive = (
+                                book_id in _AI_CLOSE_PENDING_PAPER_BOOKS
+                                and (now_ts - _AI_CLOSE_PENDING_PAPER_BOOKS[book_id]) <= 7200
+                            )
+                            stop_loss_threshold = _get_stop_loss_threshold_rupees(book, legs, symbol)
+                            pnl_co_sign = (
+                                (total_pnl <= -0.5 * stop_loss_threshold)
+                                or (net_premium > 0 and total_pnl >= 0.70 * (net_premium * lot_size * max((int(leg.get("lots") or 1) for leg in legs), default=1) * profit_target_pct))
+                            )
+                            expiry_co_sign = (dte == 0 and now_ist.hour >= 14)
+
+                            if not (is_consecutive or pnl_co_sign or expiry_co_sign):
+                                _AI_CLOSE_PENDING_PAPER_BOOKS[book_id] = now_ts
+                                log.info(
+                                    "[multileg-paper] %s: book %s — AI CLOSE staged (awaiting 2nd consecutive cycle confirmation or quantitative co-sign; PnL=₹%.0f, SL_thresh=₹%.0f, DTE=%d): %s",
+                                    symbol,
+                                    book_id,
+                                    total_pnl,
+                                    stop_loss_threshold,
+                                    dte,
+                                    reasoning,
+                                )
+                                continue
+
+                            # Cluster / Mass-Exit Breaker: Throttle if more than 3 AI closes trigger within 15 minutes
+                            _AI_CLOSE_EVENT_TIMESTAMPS[:] = [ts for ts in _AI_CLOSE_EVENT_TIMESTAMPS if (now_ts - ts) <= 900]
+                            if len(_AI_CLOSE_EVENT_TIMESTAMPS) >= MAX_AI_CLOSES_PER_15M_WINDOW:
+                                log.warning(
+                                    "[multileg-paper] %s: book %s — AI CLOSE throttled by mass-close circuit breaker (%d closes in last 15m >= cap %d): %s",
+                                    symbol,
+                                    book_id,
+                                    len(_AI_CLOSE_EVENT_TIMESTAMPS),
+                                    MAX_AI_CLOSES_PER_15M_WINDOW,
+                                    reasoning,
+                                )
+                                continue
+
+                            # Confirmed — record timestamp, clear pending flag and proceed to close
+                            _AI_CLOSE_EVENT_TIMESTAMPS.append(now_ts)
+                            _AI_CLOSE_PENDING_PAPER_BOOKS.pop(book_id, None)
+
                             log.info(
-                                "[multileg-paper] %s: book %s — AI executing autonomous CLOSE: %s",
+                                "[multileg-paper] %s: book %s — AI executing confirmed autonomous CLOSE (consecutive=%s, pnl_cosign=%s, expiry_cosign=%s): %s",
                                 symbol,
                                 book_id,
+                                is_consecutive,
+                                pnl_co_sign,
+                                expiry_co_sign,
                                 reasoning,
                             )
                             exit_reason_str = f"CLOSED_AI_EXIT ({reasoning[:60]})"
@@ -660,6 +738,12 @@ def _monitor_open_books(
         })
 
     if closed_actions:
+        try:
+            from src.engine.trade_audit import audit_session_level_multileg_closes
+            audit_session_level_multileg_closes()
+        except Exception as _ae:
+            log.debug("[multileg-paper] Session audit check failed: %s", _ae)
+
         return {
             "action": "MONITORED",
             "decision_stage": "BOOK_MONITOR",
@@ -763,11 +847,10 @@ def _attempt_new_entry(
     is_mcx = symbol in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER")
     conf_floor = 72 if is_mcx else 70
 
-    # Engine-aligned confidence: if engine conviction is high (>= conf_floor),
-    # blend 60% engine conviction + 40% LLM structural confidence to prevent
-    # conservative LLM probability estimates from falsely vetoing high-conviction trades.
-    if engine_conf >= conf_floor and llm_conf > 0:
-        effective_confidence = max(llm_conf, int(round(0.6 * engine_conf + 0.4 * llm_conf)))
+    # Phase 2 High #14: Gate multileg confidence on min(llm, engine) so LLM doubt
+    # is never overridden by high engine confidence.
+    if engine_conf > 0 and llm_conf > 0:
+        effective_confidence = min(llm_conf, engine_conf)
     else:
         effective_confidence = llm_conf
 
@@ -919,6 +1002,41 @@ def _attempt_new_entry(
                 "ai_model_name": getattr(verdict, "model_name", None),
                 "reason": f"Legs validation: {validation_msg}",
             }
+
+    # ── Strict Multi-Leg Proposal Validation (validate_multileg_trade) ─
+    try:
+        from src.engine.execution_parser import parse_llm_execution
+        from src.engine.multileg_validator import validate_multileg_trade
+        raw_proposal = {
+            "strategy": strategy_type,
+            "action": getattr(verdict, "action", "") or (
+                "GO_LONG" if "BULL" in strategy_type else "GO_SHORT" if "BEAR" in strategy_type else "NEUTRAL"
+            ),
+            "legs": legs,
+        }
+        proposal = parse_llm_execution(raw_proposal, underlying=underlying)
+        engine_verdict_str = str((intel or {}).get("verdict") or (scan_context or {}).get("verdict") or "")
+        val_res = validate_multileg_trade(
+            proposal=proposal,
+            engine_verdict=engine_verdict_str,
+            underlying=underlying,
+            max_margin_inr=MAX_BOOK_MARGIN,
+            max_net_delta=MAX_NET_DELTA,
+            symbol=symbol,
+        )
+        if not val_res.is_valid:
+            log.info("[multileg-paper] %s: validate_multileg_trade rejected entry: %s", symbol, val_res.rejection_reason)
+            return {
+                "action": "REJECTED",
+                "decision_stage": "MULTILEG_VALIDATOR",
+                "strategy_type": strategy_type,
+                "confidence": getattr(verdict, "confidence", 0),
+                "thesis": getattr(verdict, "thesis", ""),
+                "ai_model_name": getattr(verdict, "model_name", None),
+                "reason": f"Multileg proposal validation failed: {val_res.rejection_reason}",
+            }
+    except Exception as e:
+        log.warning("[multileg-paper] %s: validate_multileg_trade check encountered error: %s", symbol, e)
 
     # ── Strict Binary Pre-Flight Validation for All Entry Legs (Flaw #5) ──
     from src.engine.data_validator import validate_trade_leg_data
@@ -1444,16 +1562,33 @@ def _build_real_leg_exits(
         entry_prem = float(leg.get("entry_premium") or 0.0)
         curr_prem = float(leg.get("current_premium") or 0.0)
 
+        side = str(leg.get("side") or "SELL").upper()
+        snap_bid = float(snap.get("bid") or 0.0) if snap else 0.0
+        snap_ask = float(snap.get("ask") or 0.0) if snap else 0.0
+        slippage = max(0.05, round(snap_ltp * 0.005, 2))
+
         if snap_ltp > 0 and (current_underlying <= 0 or is_valid_option_premium(leg_strike, leg_opt, snap_ltp, current_underlying)):
-            exit_premium = snap_ltp
+            if side == "SELL":
+                # Buying to close -> Ask mark or LTP + slippage
+                exit_premium = snap_ask if snap_ask > 0 else round(snap_ltp + slippage, 2)
+            else:
+                # Selling to close -> Bid mark or LTP - slippage
+                exit_premium = snap_bid if snap_bid > 0 else max(0.05, round(snap_ltp - slippage, 2))
         elif curr_prem > 0 and (current_underlying <= 0 or is_valid_option_premium(leg_strike, leg_opt, curr_prem, current_underlying)):
-            exit_premium = curr_prem
+            if side == "SELL":
+                exit_premium = round(curr_prem + max(0.05, round(curr_prem * 0.005, 2)), 2)
+            else:
+                exit_premium = max(0.05, round(curr_prem - max(0.05, round(curr_prem * 0.005, 2)), 2))
         elif current_underlying > 0 and book and book.get("entry_underlying"):
             entry_und = float(book.get("entry_underlying") or current_underlying)
             und_move = current_underlying - entry_und
             delta = float(leg.get("delta") or 0.25)
             delta_sign = delta if leg_opt == "CE" else -abs(delta)
-            exit_premium = max(0.05, round(entry_prem + delta_sign * und_move, 2))
+            est = max(0.05, round(entry_prem + delta_sign * und_move, 2))
+            if side == "SELL":
+                exit_premium = round(est + max(0.05, round(est * 0.005, 2)), 2)
+            else:
+                exit_premium = max(0.05, round(est - max(0.05, round(est * 0.005, 2)), 2))
         elif entry_prem > 0:
             exit_premium = entry_prem
         else:

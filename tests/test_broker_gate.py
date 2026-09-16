@@ -63,7 +63,7 @@ def test_authorize_broker_execution_blocked_when_market_closed(monkeypatch):
         "live_enabled_broker_symbols": ["NIFTY"]
     }
     monkeypatch.setattr("config.runtime_config.load_runtime_config", lambda: config)
-    monkeypatch.setattr("src.engine.broker_gate._is_market_open", lambda sym: False)
+    monkeypatch.setattr("src.engine.broker_gate._is_market_open", lambda sym, expiry_str=None: False)
 
     auth = authorize_broker_execution("NIFTY", operation="ENTRY")
     assert auth.is_authorized is False
@@ -77,7 +77,7 @@ def test_authorize_broker_execution_success(monkeypatch):
         "live_enabled_broker_symbols": ["NIFTY"]
     }
     monkeypatch.setattr("config.runtime_config.load_runtime_config", lambda: config)
-    monkeypatch.setattr("src.engine.broker_gate._is_market_open", lambda sym: True)
+    monkeypatch.setattr("src.engine.broker_gate._is_market_open", lambda sym, expiry_str=None: True)
 
     auth = authorize_broker_execution("NIFTY", operation="ENTRY")
     assert auth.is_authorized is True

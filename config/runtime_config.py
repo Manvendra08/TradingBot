@@ -61,7 +61,7 @@ def get_fail_closed_defaults(default_freq: int = 15) -> dict:
         "paper_enabled_symbols": [],  # BLOCK ALL SYMBOLS
         "oi_spike_threshold_pct": 10.0,
         "price_spike_threshold_pct": 2.0,
-        "dashboard_auth_enabled": False,
+        "dashboard_auth_enabled": True,
         "live_ai_decision_mode": "advisory",  # ADVISORY ONLY
         "live_ai_min_confidence_boost": 80,
         "live_ai_min_confidence_veto": 85,
@@ -70,11 +70,11 @@ def get_fail_closed_defaults(default_freq: int = 15) -> dict:
         "emp_boost_min_winrate": 0.60,
         "ml_predictor_mode": "shadow",
         "derive_min_confidence": False,
-        "llm_enrichment_async": True,
+        "llm_enrichment_async": False,
         "llm_enrich_timeout_s": 120,
         "autopsy_enabled": True,
         "autopsy_time_ist": "23:45",
-        "manage_direct_kite_positions": False,
+        "manage_direct_kite_positions": True,
         "direct_kite_initialization_mode": "fixed_pct",
         "direct_kite_default_sl_pct": 75.0,
         "direct_kite_default_tgt_pct": 60.0,
@@ -123,7 +123,7 @@ def load_runtime_config() -> dict:
         "paper_enabled_symbols": ["NIFTY", "BANKNIFTY", "NATURALGAS", "CRUDEOIL"],
         "oi_spike_threshold_pct": 10.0,
         "price_spike_threshold_pct": 2.0,
-        "dashboard_auth_enabled": False,
+        "dashboard_auth_enabled": True,
         "live_ai_decision_mode": "advisory",
         "live_ai_min_confidence_boost": 80,
         "live_ai_min_confidence_veto": 85,
@@ -132,16 +132,16 @@ def load_runtime_config() -> dict:
         "emp_boost_min_winrate": 0.60,
         "ml_predictor_mode": "shadow",
         "derive_min_confidence": False,  # v3.1: data-driven MIN_PAPER_CONFIDENCE (gated, needs 50+ trades)
-        "llm_enrichment_async": True,
+        "llm_enrichment_async": False,
         "llm_enrich_timeout_s": 120,
         "autopsy_enabled": True,
         "autopsy_time_ist": "23:45",
-        "manage_direct_kite_positions": False,
+        "manage_direct_kite_positions": True,
         "direct_kite_initialization_mode": "fixed_pct",
         "direct_kite_default_sl_pct": 75.0,
         "direct_kite_default_tgt_pct": 60.0,
-        "live_broker_disabled": False,  # Completely block all broker order placement
-        "trading_paused": False,  # OPS Agent safety switch — one-way (human-only unpause)
+        "live_broker_disabled": True,  # Completely block all broker order placement (fail-closed)
+        "trading_paused": True,  # OPS Agent safety switch — one-way (human-only unpause, fail-closed)
         "enable_tfss_trade_blocked_rules": False,
         "enable_ng_parity_trades": True,  # Natural Gas Fair Value Parity arbitrage
         "sentinel_report_mode": "anomalies",  # "anomalies" = only when rules fire; "full" = every scan
@@ -271,9 +271,9 @@ def is_broker_trade_enabled() -> bool:
     cfg = load_runtime_config()
     if cfg.get("live_shadow_mode", True):
         return False
-    if cfg.get("live_broker_disabled", False):
+    if cfg.get("live_broker_disabled", True):
         return False
-    if cfg.get("trading_paused", False):
+    if cfg.get("trading_paused", True):
         return False
     return True
 
