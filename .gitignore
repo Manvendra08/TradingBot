@@ -142,3 +142,6 @@ test_*.txt
 # YouTube Generator Output
 Social Channels/YouTube/output/
 Social Channels/YouTube/pipeline.log
+
+# Playwright MCP artifacts
+.playwright-mcp/
