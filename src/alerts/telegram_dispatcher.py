@@ -754,6 +754,94 @@ def _process_telegram_command(command_text: str) -> None:
             log.critical("Panic shutdown error: %s", pe)
             send_text(f"⚠️ Panic shutdown encountered an error: `{pe}`")
 
+    elif cmd == "/restart":
+        send_text("🔄 **Requesting scheduler/scan loop restart...**")
+        try:
+            from src.scheduler.job_runner import request_scheduler_restart
+
+            request_scheduler_restart()
+            send_text(
+                "✅ **Restart requested**\n"
+                "• Scheduler loop will restart shortly.\n"
+                "• Telegram listener will reconnect automatically.\n"
+                "• Open positions remain intact."
+            )
+        except Exception as re:
+            log.error("Telegram /restart failed: %s", re)
+            send_text(f"❌ Restart failed: `{re}`")
+
+    elif cmd == "/health":
+        send_text("🩺 **Running system health check...**")
+        try:
+            lines = ["🩺 **System Health**", ""]
+            from datetime import datetime as _dt
+
+            # DB connectivity
+            try:
+                from src.models.schema import get_conn, read_health_state
+
+                with get_conn(read_only=True) as _c:
+                    _c.execute("SELECT 1")
+                db_status = "🟢 OK"
+            except Exception as _db_err:
+                db_status = f"🔴 FAIL: {_db_err}"
+
+            lines.append(f"• **Database:** {db_status}")
+
+            # Broker sessions
+            broker_parts = []
+            try:
+                from src.services.zerodha_auth import is_token_valid as _kite_valid
+
+                _kite_ok = _kite_valid()
+                broker_parts.append(f"Kite {'🟢' if _kite_ok else '🔴'}")
+            except Exception as _kite_err:
+                broker_parts.append(f"Kite 🔴 ({_kite_err})")
+
+            try:
+                from src.fetchers.shoonya_fetcher import get_shoonya_fetcher as _get_shoonya
+
+                _shoonya = _get_shoonya()
+                _shoonya_ok = _shoonya.login() if _shoonya else False
+                broker_parts.append(f"Shoonya {'🟢' if _shoonya_ok else '🔴'}")
+            except Exception as _sh_err:
+                broker_parts.append(f"Shoonya 🔴 ({_sh_err})")
+
+            lines.append(f"• **Broker:** {' | '.join(broker_parts)}")
+
+            # Last scan / scheduler heartbeat
+            try:
+                _health_rows = read_health_state()
+                _scheduler_row = next((r for r in _health_rows if r.get("key") == "scheduler_loop"), None)
+                _heartbeat_row = next((r for r in _health_rows if r.get("key") == "scheduler_heartbeat"), None)
+
+                if _scheduler_row:
+                    _updated = _scheduler_row.get("updated_at") or _scheduler_row.get("updatedAt") or "?"
+                    lines.append(f"• **Last scheduler update:** {_updated}")
+                    lines.append(f"• **Scheduler status:** {_scheduler_row.get('status', '?')} {_scheduler_row.get('detail', '')}")
+                else:
+                    lines.append("• **Scheduler health:** ⚪ no heartbeat recorded yet")
+
+                if _heartbeat_row:
+                    lines.append(f"• **Heartbeat:** {_heartbeat_row.get('status', '?')} {_heartbeat_row.get('detail', '')}")
+            except Exception as _h_err:
+                lines.append(f"• **Health state:** ❌ {_h_err}")
+
+            # Disk space
+            try:
+                import shutil as _shutil
+
+                _usage = _shutil.disk_usage(Path(__file__).resolve().parents[2])
+                _free_gb = _usage.free / (1024 * 1024 * 1024)
+                lines.append(f"• **Disk free:** {_free_gb:.2f} GB")
+            except Exception as _disk_err:
+                lines.append(f"• **Disk:** ❌ {_disk_err}")
+
+            send_text("\n".join(lines))
+        except Exception as he:
+            log.error("Telegram /health failed: %s", he)
+            send_text(f"❌ Health check failed: `{he}`")
+
     elif cmd in ("/help", "/start"):
         help_text = (
             "🤖 **NSEBOT Telegram Commands**\n\n"
@@ -761,6 +849,8 @@ def _process_telegram_command(command_text: str) -> None:
             "• `/pause` — Pause new automated trade entries\n"
             "• `/resume` — Resume automated trade entries\n"
             "• `/panic` — 🚨 **EMERGENCY STOP**: Cancel all GTTs, market square-off all positions, disable broker & pause\n"
+            "• `/restart` — Restart scheduler/scan loop without full process restart\n"
+            "• `/health` — Run system health check: DB, broker sessions, scheduler heartbeat, disk space\n"
             "• `/help` — Show this command menu"
         )
         send_text(help_text)

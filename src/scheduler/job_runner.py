@@ -46,6 +46,22 @@ IST = pytz.timezone("Asia/Kolkata")
 MAX_CATCHUP_INTERVALS = 3
 _ACTIVE_TASKS: dict[str, multiprocessing.Process] = {}
 _ACTIVE_TASKS_LOCK = threading.Lock()
+_scheduler_restart_requested = False
+_scheduler_restart_lock = threading.Lock()
+
+
+def request_scheduler_restart() -> None:
+    """Request a graceful restart of the scheduler loop."""
+    global _scheduler_restart_requested
+    with _scheduler_restart_lock:
+        _scheduler_restart_requested = True
+
+
+def is_scheduler_restart_requested() -> bool:
+    """Check and consume the scheduler restart request."""
+    global _scheduler_restart_requested
+    with _scheduler_restart_lock:
+        return _scheduler_restart_requested
 
 def touch_heartbeat(detail: str = "running") -> None:
     """Touch the heartbeat file and update scheduler health state."""
@@ -1482,6 +1498,11 @@ def start_scheduler(immediate: bool = False):
             now_ts = time.time()
 
             now_ist = datetime.fromtimestamp(now_ts, IST)
+
+            if is_scheduler_restart_requested():
+                log.info("[scheduler] Restart requested — exiting scheduler loop")
+                touch_heartbeat("restart_requested")
+                break
 
             if now_ist.date() > current_date:
                 current_date = now_ist.date()

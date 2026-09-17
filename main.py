@@ -162,11 +162,24 @@ Examples:
         log.info("One-shot run complete.")
         return
 
-    # Default: blocking scheduler
+    # Default: restartable scheduler
     log.info("Starting scheduler — press Ctrl+C to stop")
-    from src.scheduler.job_runner import start_scheduler
+    from src.scheduler.job_runner import start_scheduler, request_scheduler_restart, is_scheduler_restart_requested
 
-    start_scheduler(immediate=args.now)
+    while True:
+        try:
+            start_scheduler(immediate=args.now)
+        except KeyboardInterrupt:
+            log.info("[main] Scheduler interrupted by Ctrl+C")
+            break
+        except Exception as exc:
+            log.error("[main] Scheduler crashed: %s", exc)
+            time.sleep(5)
+            continue
+
+        if not is_scheduler_restart_requested():
+            break
+        log.info("[main] Restarting scheduler loop")
 
 
 if __name__ == "__main__":
