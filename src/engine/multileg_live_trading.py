@@ -976,9 +976,14 @@ def _attempt_new_live_entry(
     # ── Safety Switch: Kill Switch and Trading Paused ───────────────────
     from config.runtime_config import load_runtime_config
     r_cfg = load_runtime_config()
-    if r_cfg.get("kill_switch_active", False) or r_cfg.get("trading_paused", True):
-        log.info("[multileg-live] %s: kill switch active or trading paused — entry blocked", symbol)
-        return {"action": "BLOCKED_KILL_SWITCH", "reason": "Kill switch active or trading paused"}
+    kill_switch_active = bool(r_cfg.get("kill_switch_active", False))
+    trading_paused = bool(r_cfg.get("trading_paused", True))
+    if kill_switch_active:
+        log.info("[multileg-live] %s: kill switch active — entry blocked", symbol)
+        return {"action": "BLOCKED_KILL_SWITCH", "reason": "Kill switch active"}
+    if trading_paused:
+        log.info("[multileg-live] %s: trading paused — entry blocked", symbol)
+        return {"action": "BLOCKED_TRADING_PAUSED", "reason": "Trading paused"}
 
     # ── Cap: Max Open Books Per Symbol ──────────────────────────────────
     MAX_OPEN_BOOKS_PER_SYMBOL = 5

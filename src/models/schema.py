@@ -2227,6 +2227,18 @@ def set_kill_switch(active: bool) -> None:
                 "INSERT INTO broker_configs (kill_switch_active) VALUES (?)", (val,)
             )
 
+    # Sync runtime_config trading_paused with kill switch state so the
+    # single dashboard control is the source of truth for entry blocking.
+    try:
+        from config.runtime_config import load_runtime_config, save_runtime_config
+
+        cfg = load_runtime_config()
+        if cfg.get("trading_paused") != bool(active):
+            cfg["trading_paused"] = bool(active)
+            save_runtime_config(cfg)
+    except Exception as exc:
+        log.debug("Failed to sync trading_paused with kill switch: %s", exc)
+
 
 def insert_ng_parity_log(log_data: dict) -> None:
     """Insert a row into ng_parity_log."""
