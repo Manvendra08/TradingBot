@@ -908,6 +908,7 @@ def _telegram_listener_worker() -> None:
 
         except urllib.error.URLError:
             # Long-poll timeout or transient connection drop — brief sleep and retry
+            log.debug("[telegram_listener] Long-poll timeout or transient network drop; retrying")
             time.sleep(2)
         except Exception as e:
             log.warning("[telegram_listener] Polling exception: %s", e)
