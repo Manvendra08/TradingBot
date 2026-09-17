@@ -81,3 +81,13 @@ DEFAULT_TIME_DECAY_EXIT_DTE = 0    # 0 = hold through expiry day until 15:25 IST
 # ── IV Thresholds for Strategy Selection ────────────────────────────
 IV_HIGH_THRESHOLD = 20.0     # IV above this = high premium environment
 IV_LOW_THRESHOLD = 12.0      # IV below this = low premium, avoid selling
+
+
+def is_bullish_strategy(strategy: str) -> bool:
+    """Return True if the multi-leg strategy has bullish directional bias."""
+    return str(strategy or "").upper() in {"BULL_PUT_SPREAD"}
+
+
+def is_bearish_strategy(strategy: str) -> bool:
+    """Return True if the multi-leg strategy has bearish directional bias."""
+    return str(strategy or "").upper() in {"BEAR_CALL_SPREAD"}
