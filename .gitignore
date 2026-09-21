@@ -29,6 +29,7 @@ data/.fernet_key
 data/*.db
 data/*.db-shm
 data/*.db-wal
+data/*.db.*
 data/*.bak*
 *.bak*
 
@@ -116,6 +117,9 @@ data/runtime_config.json
 
 # ML model artifacts
 data/models/
+*.onnx
+Social Channels/YouTube/assets/models/
+Social Channels/YouTube/assets/music/
 
 # Broker token caches
 shoonya_shared_token.json

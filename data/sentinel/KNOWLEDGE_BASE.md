@@ -391,6 +391,17 @@
     3. Updated `schema.py` (`close_book`) to include realized P&L from both current `leg_exits` and previously closed/rolled legs for full lifecycle accuracy.
     4. Enhanced `multileg_paper_trading.py` (`_build_real_leg_exits`) with delta-based exit estimation when direct option snapshots are missing, preventing artificial 0-PnL leg exits.
 
+- **Incident F149: False Expiry Day AI Exit Square-Off on Non-Expiry Index Options (2026-09-17)**
+  - **Symptom:** Open NIFTY (expiry 2026-09-22, DTE 5) and BANKNIFTY (expiry 2026-09-29, DTE 12) multi-leg positions were prematurely closed by AI exit advisor at 14:31 IST with exit reason `CLOSED_AI_EXIT (DTE is 0 and current time is 14:31 IST — past the 13:00 IST )` on a Thursday when only SENSEX was expiring.
+  - **Root Cause:**
+    1. In `src/engine/multileg_llm_prompt.py`, `build_multileg_exit_prompt` extracted `dte` as `int(scan_context.get("dte") or scan_context.get("days_to_expiry") or 0)`. It completely ignored `book.get("expiry")` and `legs[0].get("expiry")`. Because `scan_context` lacked `dte`, `dte` defaulted to `0` for all symbols.
+    2. The prompt injected: `Time: EXPIRY TODAY: Exit after 13:00 IST` and `Weekly index: On expiry day (DTE 0) ... after 13:00 IST, time decay exits are valid`. The LLM obeyed the prompt and issued `CLOSE`.
+    3. Python open book monitoring (`multileg_paper_trading.py` and `multileg_live_trading.py`) computed true `dte` (5 and 12), but lacked a safety guard to suppress hallucinated expiry day / time decay AI closes when `dte > 0` for weekly index options.
+  - **Fix:**
+    1. Added `_resolve_dte_from_expiry()` in `multileg_llm_prompt.py` to parse book/leg expiry strings across multiple formats and compute exact DTE. Fallback defaults to 99, never 0.
+    2. Updated `src/engine/pipeline.py` to populate `expiry`, `dte`, and `days_to_expiry` into `scan_context`.
+    3. Added code-level non-expiry AI suppression guards in `multileg_paper_trading.py` and `multileg_live_trading.py` to suppress false 0DTE/time-decay AI closes and reset consecutive pending trackers whenever `is_weekly_index and dte > 0 and is_expiry_reason`.
+
 ---
 
 ## 3. Scan Sentinel Safety Suite (Rules R1–R12)

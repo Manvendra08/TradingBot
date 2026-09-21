@@ -925,6 +925,7 @@ def run_live_trading(
 ) -> dict | None:
     from src.engine.broker_gate import authorize_broker_execution
 
+    config = load_runtime_config()
     current_open_trade = get_open_live_trade(symbol)
     op = "EXIT" if current_open_trade else "ENTRY"
     auth = authorize_broker_execution(symbol, operation=op, scan_context=scan_context)
@@ -1862,9 +1863,14 @@ def run_live_timeframe_strategy(
     tgt_underlying = None
     side = "BUY" if direction == "LONG" else ("SELL" if opt_type == "FUT" else "BUY")
 
+    sl_premium: float | None = None
+    target_premium: float | None = None
     if opt_type in ("CE", "PE"):
         sl_premium = round(entry_premium * 0.50, 2)
         target_premium = None
+    elif opt_type == "FUT":
+        sl_premium = round(sl_underlying, 2)
+        target_premium = round(tgt_underlying, 2) if tgt_underlying is not None else None
     from src.engine.capital_allocator import calculate_trade_lots
     pyramid_level = ctx.get("_pyramid_level", 1)
     lots = calculate_trade_lots(
@@ -1926,6 +1932,11 @@ def run_live_timeframe_strategy(
         try:
             sl_trigger = float(sl_premium)            # BUG-C04 FIX: Use tight 1% / max ₹0.50 tick buffer instead of 5% slippage
             sl_buf = max(0.25, min(round(sl_trigger * 0.01, 2), 0.50))
+            sl_limit = (
+                round(sl_trigger - sl_buf, 2)
+                if side == "BUY"
+                else round(sl_trigger + sl_buf, 2)
+            )
             if target_premium is not None:
                 target_trigger = float(target_premium)
                 tgt_buf = max(0.25, min(round(target_trigger * 0.01, 2), 0.50))
@@ -1938,13 +1949,8 @@ def run_live_timeframe_strategy(
                 limits = [sl_limit, target_limit]
             else:
                 triggers = [sl_trigger]
-                limits = [round(sl_trigger - sl_buf, 2) if side == "BUY" else round(sl_trigger + sl_buf, 2)]
+                limits = [sl_limit]
 
-            sl_limit = (
-                round(sl_trigger - sl_buf, 2)
-                if side == "BUY"
-                else round(sl_trigger + sl_buf, 2)
-            )
             gtt_order_id = place_kite_gtt(
                 kite,
                 symbol,
@@ -2067,6 +2073,7 @@ def run_live_timeframe_strategy(
 
 
 _last_token_expiry_alert_ts: float = 0.0
+_token_expiry_alert_lock = threading.Lock()
 
 
 def check_token_expiry_with_open_positions(kite_client=None) -> bool:
@@ -2102,9 +2109,13 @@ def check_token_expiry_with_open_positions(kite_client=None) -> bool:
 
     is_valid = is_token_valid() and (kite_client is not None or get_kite_client() is not None)
     if not is_valid:
-        now_ts = time.time()
-        if now_ts - _last_token_expiry_alert_ts > 600:
-            _last_token_expiry_alert_ts = now_ts
+        should_alert = False
+        with _token_expiry_alert_lock:
+            now_ts = time.time()
+            if now_ts - _last_token_expiry_alert_ts > 600:
+                _last_token_expiry_alert_ts = now_ts
+                should_alert = True
+        if should_alert:
             msg = (
                 f"🚨 **CRITICAL: Zerodha Kite Token Expired / Unavailable!**\n"
                 f"You are currently holding **{total_live_open} open live position(s)** "
@@ -2437,6 +2448,16 @@ def sync_direct_kite_positions() -> None:
     if not is_broker_trade_enabled():
         log.debug("[live_trading] Broker trade is disabled (Broker OFF) — skipping Kite position sync")
         return
+
+    from config.symbol_classes import is_market_open
+    from config.holidays import is_market_holiday
+    from config.settings import _is_testing, WATCH_SYMBOLS
+    if not _is_testing:
+        from datetime import datetime, timezone, timedelta
+        now_ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+        if not any(is_market_open(s, now_ist) and not is_market_holiday(s, now_ist) for s in WATCH_SYMBOLS):
+            log.debug("[live_trading] All markets closed or holiday — skipping direct Kite position sync")
+            return
 
     config = load_runtime_config()
     if not config.get("manage_direct_kite_positions", False):

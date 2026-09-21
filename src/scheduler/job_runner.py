@@ -733,6 +733,10 @@ def _startup_fill_missed(
         log.info("[scheduler] %s: weekend/holiday — skipping startup gap-fill", class_key)
         return
 
+    if not immediate_flag and not any(_is_open_for(s) for s in symbols):
+        log.info("[scheduler] %s: market currently closed — skipping startup catch-up scan", class_key)
+        return
+
     missed_intervals = []
     for idx in range(target_interval + 1):
         interval_start_ist = market_open_time_ist + timedelta(minutes=idx * interval_min)
@@ -794,7 +798,7 @@ def _startup_fill_missed(
             interval_ts.strftime("%H:%M"),
         )
         try:
-            _guarded_run(class_key, force=True)
+            _guarded_run(class_key, force=immediate_flag)
             if class_key == "MCX_COMMODITY":
                 _run_dhan_naturalgas_scrape()
         except Exception as e:
@@ -822,7 +826,7 @@ def _guarded_run(class_key: str | None = None, force: bool = False):
     closed = set(symbols_to_check) - set(open_symbols)
     if closed:
         log.debug("Skipping closed symbols: %s", sorted(closed))
-    run_pipeline(symbols=open_symbols)
+    run_pipeline(symbols=open_symbols, force=force)
 
 
 def _run_dhan_naturalgas_scrape():
@@ -1432,25 +1436,22 @@ def start_scheduler(immediate: bool = False):
                 if now_ist >= market_close_time:
                     total_market_minutes = (market_close_time - market_open_time).total_seconds() / 60.0
                     target_interval = math.floor(total_market_minutes / interval_min) - 1
+                    has_done_startup_scan[class_key] = True
+                    last_scanned_interval[class_key] = target_interval
+                    log.info(
+                        "[scheduler] %s: started post-market (close %s) — skipping catch-up scan (market closed).",
+                        class_key,
+                        close_t,
+                    )
                 else:
                     target_interval = math.floor(delta_minutes / interval_min)
-
-                _startup_fill_missed(class_key, market_open_time, interval_min, target_interval, False)
-
-                has_done_startup_scan[class_key] = True
-                last_scanned_interval[class_key] = target_interval
-                if now_ist < market_close_time:
+                    _startup_fill_missed(class_key, market_open_time, interval_min, target_interval, False)
+                    has_done_startup_scan[class_key] = True
+                    last_scanned_interval[class_key] = target_interval
                     log.info(
                         "Bypassing immediate startup scan for %s. Next scan will trigger at interval index %d.",
                         class_key,
                         target_interval + 1,
-                    )
-                else:
-                    log.info(
-                        "[scheduler] %s: started post-market (close %s) — checked catch-up up to interval %d.",
-                        class_key,
-                        close_t,
-                        target_interval,
                     )
 
     last_cmp_refresh = 0.0
@@ -1820,6 +1821,14 @@ def start_scheduler(immediate: bool = False):
                     try:
                         from config.runtime_config import is_broker_trade_enabled
                         if not is_broker_trade_enabled():
+                            return
+                        from config.symbol_classes import is_market_open
+                        from config.holidays import is_market_holiday
+                        from config.settings import WATCH_SYMBOLS
+                        from datetime import datetime, timezone, timedelta
+                        now_ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+                        if not any(is_market_open(s, now_ist) and not is_market_holiday(s, now_ist) for s in WATCH_SYMBOLS):
+                            log.debug("[scheduler] Market is closed or holiday for all symbols — skipping Kite position sync")
                             return
                         from src.engine.live_trading import sync_direct_kite_positions
 

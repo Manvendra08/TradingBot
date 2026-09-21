@@ -27,13 +27,21 @@ log = logging.getLogger(__name__)
 
 
 def _dte_from_expiry(expiry: str) -> int:
-    """Calculate days to expiry from YYYY-MM-DD string using IST timezone date."""
+    """Calculate days to expiry from date string using IST timezone date."""
+    if not expiry:
+        return 999
     try:
         from config.settings import IST
 
-        exp_date = datetime.strptime(expiry, "%Y-%m-%d").date()
-        today = datetime.now(IST).date()
-        return (exp_date - today).days
+        cleaned = str(expiry).strip().split("T")[0].split()[0]
+        for fmt in ("%Y-%m-%d", "%d-%b-%Y", "%d-%m-%Y"):
+            try:
+                exp_date = datetime.strptime(cleaned, fmt).date()
+                today = datetime.now(IST).date()
+                return (exp_date - today).days
+            except Exception:
+                continue
+        return 999
     except Exception:
         return 999
 
@@ -253,6 +261,17 @@ def _monitor_open_books(
     Checks profit target, stop loss, and time decay exit for each open book.
     If ai_mode is "full", also calls LLM for exit/adjustment advice.
     """
+    from config.symbol_classes import is_market_open
+    from config.holidays import is_market_holiday
+    from config.settings import _is_testing
+    is_test = bool((scan_context or {}).get("is_test", False) or (scan_context or {}).get("force_monitor", False) or _is_testing)
+    if not is_test:
+        from datetime import datetime, timezone, timedelta
+        now_ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+        if is_market_holiday(symbol, now_ist) or not is_market_open(symbol, now_ist):
+            log.debug("[multileg-paper] %s: Market closed or holiday — position tracking disabled", symbol)
+            return {"action": "HOLD", "live_books": open_books, "closed": [], "reason": "Market closed or holiday — position tracking disabled"}
+
     from config.multileg_strategies import (
         DEFAULT_PROFIT_TARGET_PCT,
         DEFAULT_STOP_LOSS_PCT,
@@ -276,6 +295,7 @@ def _monitor_open_books(
         net_premium = float(book.get("net_premium") or 0.0)
         legs = book.get("legs") or get_open_book_legs(trade_id)
         total_pnl = _calc_multileg_pnl(book, legs, scan_context=scan_context)
+        book["total_pnl"] = total_pnl
         profit_target_pct = float(
             book.get("profit_target_pct") or DEFAULT_PROFIT_TARGET_PCT
         )
@@ -285,7 +305,7 @@ def _monitor_open_books(
         time_decay_exit_dte = int(
             book.get("time_decay_exit_dte") or DEFAULT_TIME_DECAY_EXIT_DTE
         )
-        expiry = book.get("expiry", "")
+        expiry = book.get("expiry") or (legs[0].get("expiry") if legs else "") or ""
         entry_underlying = float(book.get("entry_underlying") or 0.0)
         adjustment_count = int(book.get("adjustment_count") or 0)
 
@@ -511,6 +531,26 @@ def _monitor_open_books(
                                 )
                                 continue
 
+                            # Non-Expiry Guard: For weekly index options on non-expiry days (DTE > 0),
+                            # strictly suppress AI closes that cite expiry day, 0DTE, or time decay triggers.
+                            lower_reason = reasoning.lower()
+                            is_expiry_reason = any(term in lower_reason for term in (
+                                "dte is 0", "dte 0", "0 dte", "0dte", "zero days to", "0 days to",
+                                "expiry day", "past 13:00", "past the 13:00", "time decay",
+                                "expiry-day", "expiration day", "time exit", "time-exit"
+                            ))
+                            if is_weekly_index and dte > 0 and is_expiry_reason:
+                                _AI_CLOSE_PENDING_PAPER_BOOKS.pop(book_id, None)
+                                log.warning(
+                                    "[multileg-paper] %s: book %s — Suppressed false AI expiry/time-decay close on non-expiry day (DTE=%d, expiry=%s): %s",
+                                    symbol,
+                                    book_id,
+                                    dte,
+                                    expiry,
+                                    reasoning,
+                                )
+                                continue
+
                             # Verification Guard: Require consecutive confirmation OR a code-side quantitative co-sign
                             # to prevent single spurious LLM hallucinations from closing books prematurely.
                             import time as _time
@@ -568,7 +608,8 @@ def _monitor_open_books(
                                 expiry_co_sign,
                                 reasoning,
                             )
-                            exit_reason_str = f"CLOSED_AI_EXIT ({reasoning[:60]})"
+                            clean_reason = " ".join(reasoning.split()).strip()
+                            exit_reason_str = f"CLOSED_AI_EXIT ({clean_reason})" if clean_reason else "CLOSED_AI_EXIT"
                             curr_und = float((scan_context or {}).get("underlying") or entry_underlying)
                             leg_exits = _build_real_leg_exits(symbol, expiry, legs, scan_context, book)
                             close_book(

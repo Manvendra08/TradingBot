@@ -1054,6 +1054,17 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
     if underlying <= 0:
         return actions
 
+    from config.symbol_classes import is_market_open
+    from config.holidays import is_market_holiday
+    from config.settings import _is_testing
+    is_test = bool(current_ctx.get("is_test", False) or current_ctx.get("force_monitor", False) or _is_testing)
+    if not is_test:
+        from datetime import datetime, timezone, timedelta
+        now_ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+        if is_market_holiday(symbol, now_ist) or not is_market_open(symbol, now_ist):
+            log.debug("%s: Market closed or holiday — position tracking disabled", symbol)
+            return actions
+
     open_trade = get_open_paper_trade(symbol)
     if open_trade:
         actions.extend(_monitor_single_paper_trade(symbol, open_trade, current_ctx, underlying))

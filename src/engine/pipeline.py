@@ -17,6 +17,9 @@ import threading
 import time
 from concurrent.futures import as_completed
 from datetime import datetime, timedelta, timezone
+from typing import Any
+
+import pytz
 
 from config.settings import WATCH_SYMBOLS, get_symbol_thresholds, LLM_ENRICHMENT_ASYNC, MAX_ANOMALIES_PER_SYMBOL, ANOMALY_MIN_SEVERITY
 from config.settings import DISABLE_LLM_ENRICHMENT as _DISABLE_LLM_ENV
@@ -52,8 +55,9 @@ from src.utils.ip_monitor import check_ip_changed
 
 log = logging.getLogger(__name__)
 
+IST = pytz.timezone("Asia/Kolkata")
 NSE_NEWS_BYPASS_SYMBOLS = {"NIFTY", "BANKNIFTY", "SENSEX", "FINNIFTY", "MIDCPNIFTY"}
-_CLEANUP_DATES = set()
+_CLEANUP_DATES: set[str] = set()
 _llm_pacing_lock = threading.Lock()
 
 def _process_symbol(*args, **kwargs):
@@ -194,9 +198,8 @@ def _prefetch_symbol_data(symbol: str, fetched_at: str) -> dict:
     expiry = oc_data.get("expiry")
     if expiry:
         try:
-            import pytz
             exp_date = datetime.strptime(expiry, "%Y-%m-%d").date()
-            today = datetime.now(pytz.timezone("Asia/Kolkata")).date()
+            today = datetime.now(IST).date()
             dte = (exp_date - today).days
             is_mcx = symbol.upper().strip().split()[0] in {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"}
             threshold = 5 if is_mcx else 2
@@ -257,8 +260,32 @@ def _prefetch_symbol_data(symbol: str, fetched_at: str) -> dict:
     return packet
 
 
+def get_eligible_symbols(symbols: list[str] | None = None, is_test: bool = False) -> list[str]:
+    """Check eligible symbols list to be scanned.
+    Drawn from runtime_config (union of paper_enabled_symbols and live_enabled_broker_symbols,
+    or WATCH_SYMBOLS fallback) and strictly filtered by WATCH_SYMBOLS.
+    """
+    if symbols is not None and is_test:
+        return list(symbols)
+    from config.runtime_config import load_runtime_config
+    cfg = load_runtime_config()
+    paper_symbols = set(cfg.get("paper_enabled_symbols") or [])
+    live_symbols = set(cfg.get("live_enabled_broker_symbols") or [])
+    configured_eligible = paper_symbols | live_symbols
+    if not configured_eligible:
+        configured_eligible = set(WATCH_SYMBOLS)
+
+    eligible_universe = [s for s in WATCH_SYMBOLS if s in configured_eligible]
+    if not eligible_universe:
+        eligible_universe = list(WATCH_SYMBOLS)
+
+    if symbols is not None:
+        return [s for s in symbols if s in eligible_universe]
+    return list(eligible_universe)
+
+
 def run_pipeline(symbols: list[str] | None = None, force: bool = False, is_test: bool = False) -> None:
-    symbols = symbols or WATCH_SYMBOLS
+    symbols = get_eligible_symbols(symbols, is_test=is_test)
     fetched_at = datetime.now(timezone.utc).isoformat()
 
     with single_flight_gate.acquire_or_skip("run_pipeline") as acquired:
@@ -440,7 +467,7 @@ def _build_sentinel_report(
     underlying_price: float,
     expiry: str,
     source: str,
-    llm_verdict: any,
+    llm_verdict: Any,
     intel: dict | None,
     scan_context: dict | None,
     is_test: bool,
@@ -453,8 +480,7 @@ def _build_sentinel_report(
     Computes the IST timestamp correctly (field was previously filled with
     UTC, not IST, despite the name `timestamp_ist`).
     """
-    IST_offset = timezone(timedelta(hours=5, minutes=30))
-    ts_ist = datetime.now(IST_offset).isoformat()
+    ts_ist = datetime.now(IST).isoformat()
 
     def _get_num_val(val):
         if val is None:
@@ -523,13 +549,13 @@ def _build_sentinel_report(
     }
 
 
-def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, intel: dict, llm_verdict: any, news_data: dict | None = None, open_trade: dict | None = None, exit_advice: any = None, digest_id: str | None = None, timeframe_res: dict | None = None) -> dict:
+def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, intel: dict, llm_verdict: Any, news_data: dict | None = None, open_trade: dict | None = None, exit_advice: Any = None, digest_id: str | None = None, timeframe_res: dict | None = None) -> dict:
     td = (intel or {}).get("trade_decision") or {}
     
     # 1. Header
     try:
         dt = datetime.fromisoformat(fetched_at or "").astimezone(timezone.utc)
-        dt = dt.astimezone(timezone(timedelta(hours=5, minutes=30)))
+        dt = dt.astimezone(IST)
         ts = dt.strftime("%H:%M IST")
     except Exception:
         ts = "N/A"
@@ -681,8 +707,7 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
     if dte_val is None and exp_val:
         try:
             exp_dt = datetime.strptime(str(exp_val).strip(), "%Y-%m-%d").date()
-            import pytz
-            today_dt = datetime.now(pytz.timezone("Asia/Kolkata")).date()
+            today_dt = datetime.now(IST).date()
             dte_val = max(0, (exp_dt - today_dt).days)
         except Exception:
             pass
@@ -970,9 +995,8 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
 
     if is_mcx and current_expiry_str:
         try:
-            import pytz
             exp_date = datetime.strptime(current_expiry_str, "%Y-%m-%d").date()
-            today_date = datetime.now(pytz.timezone("Asia/Kolkata")).date()
+            today_date = datetime.now(IST).date()
             dte = (exp_date - today_date).days
 
             if dte == 0:  # Expiry day for MCX symbol
@@ -1001,6 +1025,7 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                              symbol, next_oc_data.get("expiry"), current_expiry_str)
                     target_signal_oc_data = next_oc_data
                     packet["oc_data"] = next_oc_data
+                    oc_data = next_oc_data
                     if "chart_indicators" not in target_signal_oc_data:
                         target_signal_oc_data["chart_indicators"] = current_expiry_oc_data.get("chart_indicators") or {}
                     for r in target_signal_oc_data["strikes"]:
@@ -1058,8 +1083,7 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
     if exp_str:
         try:
             exp_dt = datetime.strptime(str(exp_str).strip(), "%Y-%m-%d").date()
-            import pytz
-            today_dt = datetime.now(pytz.timezone("Asia/Kolkata")).date()
+            today_dt = datetime.now(IST).date()
             scan_context["dte"] = max(0, (exp_dt - today_dt).days)
         except Exception:
             pass

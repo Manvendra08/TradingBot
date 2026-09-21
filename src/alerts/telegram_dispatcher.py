@@ -43,11 +43,11 @@ def _escape_md(text: str) -> str:
 
 
 def _escape_md_v1(text: str) -> str:
-    """Escape Telegram Markdown (legacy) special characters: _, *, [, ], (, ), ~, `, >, #, +, -, =, |, {, }, ., !"""
+    """Escape Telegram Markdown (legacy) special characters: _, *, `, ["""
     if not text:
         return ""
-    # Markdown (legacy) special chars: _ * [ ] ( ) ~ ` > # + - = | { } . !
-    return re.sub(r"([_*\[\]()~`>#\+\-=|{}.!])", r"\\\1", text)
+    # In Telegram Markdown V1, only _, *, `, and [ trigger entity parsing
+    return re.sub(r"([_*`\[])", r"\\\1", str(text))
 
 
 def _start_loop():
@@ -771,9 +771,9 @@ def _process_telegram_command(command_text: str) -> None:
             send_text(f"❌ Restart failed: `{re}`")
 
     elif cmd == "/health":
-        send_text("🩺 **Running system health check...**")
+        send_text("🩺 *Running system health check...*")
         try:
-            lines = ["🩺 **System Health**", ""]
+            lines = ["🩺 *System Health*", ""]
             from datetime import datetime as _dt
 
             # DB connectivity
@@ -784,9 +784,9 @@ def _process_telegram_command(command_text: str) -> None:
                     _c.execute("SELECT 1")
                 db_status = "🟢 OK"
             except Exception as _db_err:
-                db_status = f"🔴 FAIL: {_db_err}"
+                db_status = f"🔴 FAIL: {_escape_md_v1(str(_db_err))}"
 
-            lines.append(f"• **Database:** {db_status}")
+            lines.append(f"• *Database:* {db_status}")
 
             # Broker sessions
             broker_parts = []
@@ -796,7 +796,7 @@ def _process_telegram_command(command_text: str) -> None:
                 _kite_ok = _kite_valid()
                 broker_parts.append(f"Kite {'🟢' if _kite_ok else '🔴'}")
             except Exception as _kite_err:
-                broker_parts.append(f"Kite 🔴 ({_kite_err})")
+                broker_parts.append(f"Kite 🔴 ({_escape_md_v1(str(_kite_err))})")
 
             try:
                 from src.fetchers.shoonya_fetcher import get_shoonya_fetcher as _get_shoonya
@@ -805,9 +805,9 @@ def _process_telegram_command(command_text: str) -> None:
                 _shoonya_ok = _shoonya.login() if _shoonya else False
                 broker_parts.append(f"Shoonya {'🟢' if _shoonya_ok else '🔴'}")
             except Exception as _sh_err:
-                broker_parts.append(f"Shoonya 🔴 ({_sh_err})")
+                broker_parts.append(f"Shoonya 🔴 ({_escape_md_v1(str(_sh_err))})")
 
-            lines.append(f"• **Broker:** {' | '.join(broker_parts)}")
+            lines.append(f"• *Broker:* {' | '.join(broker_parts)}")
 
             # Last scan / scheduler heartbeat
             try:
@@ -816,16 +816,20 @@ def _process_telegram_command(command_text: str) -> None:
                 _heartbeat_row = next((r for r in _health_rows if r.get("key") == "scheduler_heartbeat"), None)
 
                 if _scheduler_row:
-                    _updated = _scheduler_row.get("updated_at") or _scheduler_row.get("updatedAt") or "?"
-                    lines.append(f"• **Last scheduler update:** {_updated}")
-                    lines.append(f"• **Scheduler status:** {_scheduler_row.get('status', '?')} {_scheduler_row.get('detail', '')}")
+                    _updated = _escape_md_v1(str(_scheduler_row.get("updated_at") or _scheduler_row.get("updatedAt") or "?"))
+                    _status = _escape_md_v1(str(_scheduler_row.get("status", "?")))
+                    _detail = _escape_md_v1(str(_scheduler_row.get("detail", "")))
+                    lines.append(f"• *Last scheduler update:* {_updated}")
+                    lines.append(f"• *Scheduler status:* {_status} {_detail}".strip())
                 else:
-                    lines.append("• **Scheduler health:** ⚪ no heartbeat recorded yet")
+                    lines.append("• *Scheduler health:* ⚪ no heartbeat recorded yet")
 
                 if _heartbeat_row:
-                    lines.append(f"• **Heartbeat:** {_heartbeat_row.get('status', '?')} {_heartbeat_row.get('detail', '')}")
+                    _hb_status = _escape_md_v1(str(_heartbeat_row.get("status", "?")))
+                    _hb_detail = _escape_md_v1(str(_heartbeat_row.get("detail", "")))
+                    lines.append(f"• *Heartbeat:* {_hb_status} {_hb_detail}".strip())
             except Exception as _h_err:
-                lines.append(f"• **Health state:** ❌ {_h_err}")
+                lines.append(f"• *Health state:* ❌ {_escape_md_v1(str(_h_err))}")
 
             # Disk space
             try:
@@ -833,14 +837,14 @@ def _process_telegram_command(command_text: str) -> None:
 
                 _usage = _shutil.disk_usage(Path(__file__).resolve().parents[2])
                 _free_gb = _usage.free / (1024 * 1024 * 1024)
-                lines.append(f"• **Disk free:** {_free_gb:.2f} GB")
+                lines.append(f"• *Disk free:* {_free_gb:.2f} GB")
             except Exception as _disk_err:
-                lines.append(f"• **Disk:** ❌ {_disk_err}")
+                lines.append(f"• *Disk:* ❌ {_escape_md_v1(str(_disk_err))}")
 
             send_text("\n".join(lines))
         except Exception as he:
             log.error("Telegram /health failed: %s", he)
-            send_text(f"❌ Health check failed: `{he}`")
+            send_text(f"❌ Health check failed: `{_escape_md_v1(str(he))}`")
 
     elif cmd in ("/help", "/start"):
         help_text = (

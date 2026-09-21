@@ -1654,7 +1654,7 @@ class ShoonyaFetcher(BaseFetcher):
                 try:
                     resolved_weekly_tsym = None
 
-                    # If a specific expiry is requested, generate its weekly prefix directly
+                    # If a specific expiry is requested, search both weekly and monthly prefixes directly
                     if expiry:
                         try:
                             exp_dt = datetime.strptime(expiry, "%Y-%m-%d")
@@ -1663,19 +1663,23 @@ class ShoonyaFetcher(BaseFetcher):
                             m_str = "O" if m_val == 10 else ("N" if m_val == 11 else ("D" if m_val == 12 else str(m_val)))
                             dd = exp_dt.strftime("%d")
                             prefix_weekly = f"{base}{yy}{m_str}{dd}"
-                            log.info("[shoonya] Searching BFO for expiry-specific prefix %s...", prefix_weekly)
-                            res = self._search_scrip("BFO", prefix_weekly)
-                            if res and res.get("stat") == "Ok" and res.get("values"):
-                                for val in res["values"]:
-                                    tsym_opt = val.get("tsym", "")
-                                    if _is_option_tsym(tsym_opt):
-                                        resolved_weekly_tsym = tsym_opt
-                                        log.info("[shoonya] Resolved BFO option symbol for expiry %s: %s", expiry, resolved_weekly_tsym)
-                                        break
+                            prefix_monthly = f"{base}{yy}{exp_dt.strftime('%b').upper()}"
+                            for prefix in (prefix_weekly, prefix_monthly):
+                                log.info("[shoonya] Searching BFO for expiry-specific prefix %s...", prefix)
+                                res = self._search_scrip("BFO", prefix)
+                                if res and res.get("stat") == "Ok" and res.get("values"):
+                                    for val in res["values"]:
+                                        tsym_opt = val.get("tsym", "")
+                                        if _is_option_tsym(tsym_opt):
+                                            resolved_weekly_tsym = tsym_opt
+                                            log.info("[shoonya] Resolved BFO option symbol for expiry %s: %s", expiry, resolved_weekly_tsym)
+                                            break
+                                if resolved_weekly_tsym:
+                                    break
                         except Exception as exp_err:
-                            log.warning("[shoonya] failed to generate weekly prefix for expiry %s: %s", expiry, exp_err)
+                            log.warning("[shoonya] failed to generate prefix for expiry %s: %s", expiry, exp_err)
 
-                    if not resolved_weekly_tsym:
+                    if not resolved_weekly_tsym and not expiry:
                         # Find first Thursday >= today
                         cand_dt = today_ist
                         while cand_dt.weekday() != 3:  # 3 is Thursday
@@ -1712,6 +1716,10 @@ class ShoonyaFetcher(BaseFetcher):
                                     break
                             if resolved_weekly_tsym:
                                 break
+
+                    if expiry and not resolved_weekly_tsym:
+                        log.warning("[shoonya] could not resolve BFO option symbol for requested expiry %s", expiry)
+                        return None
 
                     if resolved_weekly_tsym:
                         chain_tsym = resolved_weekly_tsym

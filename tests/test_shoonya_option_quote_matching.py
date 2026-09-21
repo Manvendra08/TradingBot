@@ -174,3 +174,117 @@ def test_fetch_option_chain_discards_leaked_index_quotes():
     ce_strike = result["strikes"][0]
     assert ce_strike["ltp"] == 0.0
     assert ce_strike["oi"] == 0
+
+
+def test_fetch_option_chain_bfo_monthly_prefix_search():
+    f = ShoonyaFetcher.__new__(ShoonyaFetcher)
+    f.access_token = "tok-123"
+    f.user_id = "TESTU1"
+    f.actid = "TESTU1"
+    f.login = MagicMock(return_value=True)
+    f._save_token = MagicMock()
+    f._load_cached_token = MagicMock()
+
+    searched_queries = []
+
+    def mock_search_scrip(exch, query):
+        searched_queries.append((exch, query))
+        if exch == "BFO":
+            if query in ("SENSEX FUT", "SENSEX"):
+                return {
+                    "stat": "Ok",
+                    "values": [{
+                        "tsym": "SENSEX26SEPFUT",
+                        "token": "1",
+                        "instname": "FUTIDX",
+                        "exd": "24-SEP-2026",
+                    }],
+                }
+            elif query == "SENSEX26924":
+                # Weekly pattern yields nothing for monthly expiry 2026-09-24
+                return {"stat": "Not_Ok", "emsg": "No scrips found"}
+            elif query == "SENSEX26SEP":
+                # Monthly pattern succeeds
+                return {
+                    "stat": "Ok",
+                    "values": [
+                        {"tsym": "SENSEX26SEP80000CE", "token": "80001", "instname": "OPTIDX"},
+                        {"tsym": "SENSEX26SEP80000PE", "token": "80002", "instname": "OPTIDX"},
+                    ],
+                }
+        return {"stat": "Not_Ok"}
+
+    f._search_scrip = MagicMock(side_effect=mock_search_scrip)
+
+    f._get_option_chain = MagicMock(return_value={
+        "stat": "Ok",
+        "values": [
+            {
+                "optt": "CE",
+                "strprc": "80000.00",
+                "token": "80001",
+                "expiry": "24-SEP-2026",
+                "tsym": "SENSEX26SEP80000CE",
+            },
+            {
+                "optt": "PE",
+                "strprc": "80000.00",
+                "token": "80002",
+                "expiry": "24-SEP-2026",
+                "tsym": "SENSEX26SEP80000PE",
+            },
+        ],
+    })
+
+    def mock_get_quotes(exch, token):
+        if str(token) == "1":
+            return {"stat": "Ok", "token": "1", "tsym": "SENSEX26SEPFUT", "lp": "80150.00"}
+        elif str(token) == "80001":
+            return {"stat": "Ok", "token": "80001", "tsym": "SENSEX26SEP80000CE", "lp": "210.50", "oi": "50000"}
+        elif str(token) == "80002":
+            return {"stat": "Ok", "token": "80002", "tsym": "SENSEX26SEP80000PE", "lp": "190.20", "oi": "45000"}
+        return None
+
+    f._get_quotes = MagicMock(side_effect=mock_get_quotes)
+
+    result = f.fetch_option_chain("SENSEX", expiry="2026-09-24")
+
+    assert result is not None
+    assert result["symbol"] == "SENSEX"
+    # Verify search sequence: searched weekly first, then monthly
+    assert ("BFO", "SENSEX26924") in searched_queries
+    assert ("BFO", "SENSEX26SEP") in searched_queries
+    # Verify _get_option_chain was called with the resolved monthly tsym
+    f._get_option_chain.assert_called_once_with("BFO", "SENSEX26SEP80000CE", 80150.0, count=15)
+
+
+def test_fetch_option_chain_bfo_unresolved_expiry_returns_none():
+    f = ShoonyaFetcher.__new__(ShoonyaFetcher)
+    f.access_token = "tok-123"
+    f.user_id = "TESTU1"
+    f.actid = "TESTU1"
+    f.login = MagicMock(return_value=True)
+    f._save_token = MagicMock()
+    f._load_cached_token = MagicMock()
+
+    def mock_search_scrip(exch, query):
+        if exch == "BFO" and query in ("SENSEX FUT", "SENSEX"):
+            return {
+                "stat": "Ok",
+                "values": [{
+                    "tsym": "SENSEX26SEPFUT",
+                    "token": "1",
+                    "instname": "FUTIDX",
+                    "exd": "24-SEP-2026",
+                }],
+            }
+        return {"stat": "Not_Ok", "emsg": "No scrips found"}
+
+    f._search_scrip = MagicMock(side_effect=mock_search_scrip)
+    f._get_quotes = MagicMock(return_value={"stat": "Ok", "token": "1", "tsym": "SENSEX26SEPFUT", "lp": "80150.00"})
+    f._get_option_chain = MagicMock()
+
+    result = f.fetch_option_chain("SENSEX", expiry="2026-10-29")
+
+    assert result is None
+    f._get_option_chain.assert_not_called()

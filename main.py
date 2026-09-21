@@ -36,19 +36,24 @@ except AttributeError:
 
 # ── Load .env first, before any config import ──────────────────────────────
 try:
+    import multiprocessing
+    _is_main_proc = multiprocessing.current_process().name == "MainProcess"
     from dotenv import load_dotenv
 
     env_file = Path(__file__).parent / ".env"
     if env_file.exists():
         load_dotenv(env_file)
-        print(f"[NSEBOT] Loaded credentials from {env_file}")
+        if _is_main_proc:
+            print(f"[NSEBOT] Loaded credentials from {env_file}")
     else:
-        print("[NSEBOT] No .env found — expecting credentials in system environment")
+        if _is_main_proc:
+            print("[NSEBOT] No .env found — expecting credentials in system environment")
 except ImportError:
-    print(
-        "[NSEBOT] python-dotenv not installed — reading credentials from system environment only"
-    )
-    print("         Install with: pip install python-dotenv")
+    if _is_main_proc:
+        print(
+            "[NSEBOT] python-dotenv not installed — reading credentials from system environment only"
+        )
+        print("         Install with: pip install python-dotenv")
 
 # ── Now safe to import config (reads os.environ) ───────────────────────────
 from config.logging_config import configure_logging

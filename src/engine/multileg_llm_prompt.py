@@ -17,6 +17,21 @@ from config.multileg_strategies import MAX_BOOK_MARGIN, MAX_NET_DELTA
 log = logging.getLogger(__name__)
 
 
+def _resolve_dte_from_expiry(expiry_str: str | None) -> int | None:
+    """Calculate days to expiry from date string using IST timezone date."""
+    if not expiry_str:
+        return None
+    cleaned = str(expiry_str).strip().split("T")[0].split()[0]
+    for fmt in ("%Y-%m-%d", "%d-%b-%Y", "%d-%m-%Y"):
+        try:
+            exp_date = datetime.strptime(cleaned, fmt).date()
+            today = datetime.now(IST).date()
+            return (exp_date - today).days
+        except Exception:
+            continue
+    return None
+
+
 def _format_full_option_chain(
     option_rows: list[dict], atm_strike: float, underlying: float
 ) -> str:
@@ -293,8 +308,16 @@ def build_multileg_prompt(
     """
     underlying = float(scan_context.get("underlying") or 0)
     atm_strike = float(scan_context.get("atm_strike") or 0)
-    expiry = scan_context.get("expiry", "")
-    dte = int(scan_context.get("dte") or 0)
+    expiry = str(scan_context.get("expiry") or scan_context.get("current_expiry") or "")
+    calc_dte = _resolve_dte_from_expiry(expiry)
+    if calc_dte is not None:
+        dte = calc_dte
+    elif scan_context.get("dte") is not None:
+        dte = int(scan_context["dte"])
+    elif scan_context.get("days_to_expiry") is not None:
+        dte = int(scan_context["days_to_expiry"])
+    else:
+        dte = 99
     option_rows = scan_context.get("option_rows") or []
 
     verdict_label = intel.get("verdict_label", "N/A")
@@ -505,9 +528,23 @@ def build_multileg_exit_prompt(
     scan_context: dict,
     intel: dict,
 ) -> str:
-    """Build prompt for multi-leg book exit/adjustment decisions."""
     underlying = float(scan_context.get("underlying") or 0)
-    dte = int(scan_context.get("dte") or scan_context.get("days_to_expiry") or 0)
+    book_expiry = (
+        book.get("expiry")
+        or (legs[0].get("expiry") if legs else None)
+        or scan_context.get("expiry")
+        or scan_context.get("current_expiry")
+        or ""
+    )
+    calc_dte = _resolve_dte_from_expiry(book_expiry)
+    if calc_dte is not None:
+        dte = calc_dte
+    elif scan_context.get("dte") is not None:
+        dte = int(scan_context["dte"])
+    elif scan_context.get("days_to_expiry") is not None:
+        dte = int(scan_context["days_to_expiry"])
+    else:
+        dte = 99
 
     try:
         from config.settings import LOT_SIZES
@@ -517,13 +554,16 @@ def build_multileg_exit_prompt(
 
     leg_lines = []
     from src.engine.trade_plan import is_valid_option_premium
+    from src.models.schema import get_latest_option_snapshot
+    calc_total_pnl = 0.0
     for l in legs:
         current_premium = 0.0
         strike_val = float(l.get("strike", 0))
         opt_type_val = str(l.get("option_type") or "").upper()
         entry_prem_val = float(l.get("entry_premium") or 0.0)
+        leg_expiry = str(l.get("expiry") or book_expiry or "").strip()
 
-        # Look up current premium from option_rows
+        # Step 1: Look up current premium from scan_context option_rows
         found_ltp = None
         for row in scan_context.get("option_rows", []):
             if (abs(float(row.get("strike", 0)) - strike_val) < 0.01
@@ -533,10 +573,26 @@ def build_multileg_exit_prompt(
                     found_ltp = ltp_val
                 break
 
+        # Step 2: Query latest DB option snapshot (exact same source as _build_real_leg_exits)
+        if found_ltp is None and leg_expiry:
+            try:
+                snap = get_latest_option_snapshot(symbol, leg_expiry, strike_val, opt_type_val)
+                if snap:
+                    snap_ltp = float(snap.get("ltp") or 0.0)
+                    if snap_ltp > 0 and (underlying <= 0 or is_valid_option_premium(strike_val, opt_type_val, snap_ltp, underlying)):
+                        found_ltp = snap_ltp
+            except Exception:
+                pass
+
+        # Step 3: Check in-memory leg current_premium populated by _calc_multileg_pnl / _update_live_book_pnl
         if found_ltp is not None:
             current_premium = found_ltp
+        elif float(l.get("current_premium") or 0.0) > 0 and (
+            underlying <= 0 or is_valid_option_premium(strike_val, opt_type_val, float(l.get("current_premium")), underlying)
+        ):
+            current_premium = float(l.get("current_premium"))
         else:
-            # Fallback to delta-based estimate aligned with _calc_multileg_pnl()
+            # Step 4: Fallback to delta-based estimate aligned with _calc_multileg_pnl()
             if underlying > 0 and book.get("entry_underlying"):
                 entry_und = float(book.get("entry_underlying") or underlying)
                 und_move = underlying - entry_und
@@ -549,6 +605,7 @@ def build_multileg_exit_prompt(
         # Short legs profit as premium decays; long (BUY) legs profit as premium rises.
         direction = 1 if str(l.get("side") or "SELL").upper() == "SELL" else -1
         pnl = direction * (entry_prem_val - current_premium) * int(l.get("lots", 1)) * lot_size
+        calc_total_pnl += pnl
         leg_lines.append(
             f"  {l['side']} {l['option_type']} {strike_val:.0f} | "
             f"Entry: ₹{entry_prem_val:.1f} | "
@@ -556,7 +613,9 @@ def build_multileg_exit_prompt(
             f"P&L: ₹{pnl:.0f} | Δ={float(l.get('delta',0)):.2f}"
         )
 
-    total_pnl = float(book.get("total_pnl") or 0)
+    # Use explicit book total_pnl if non-zero, otherwise use freshly summed legs P&L + realized
+    book_pnl_val = book.get("total_pnl")
+    total_pnl = float(book_pnl_val) if book_pnl_val is not None and abs(float(book_pnl_val)) > 0.01 else (calc_total_pnl + float(book.get("realized_pnl") or 0))
     net_premium = float(book.get("net_premium") or 0)
     adjustment_count = int(book.get("adjustment_count") or 0)
 

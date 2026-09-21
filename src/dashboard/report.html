@@ -1561,7 +1561,8 @@
                         document.getElementById('nifty-verdict').className = `kpi-verdict ${getConvictionClass(n.confidence, n.verdict_label)}`;
                         const nScan = document.getElementById('nifty-scan-time');
                         if (nScan) {
-                            nScan.textContent = n.scan_time_str ? `${n.scan_time_str} (${n.scan_age_min}m ago)` : '—';
+                            nScan.textContent = n.scan_time_str || '—';
+                            nScan.title = n.scan_time_str ? `${n.scan_age_min}m ago` : '';
                             nScan.className = `kpi-scan-age ${n.scan_age_min > 15 ? 'stale' : ''}`;
                         }
                         document.getElementById('nifty-pcr').textContent = n.pcr_str;
@@ -1582,7 +1583,8 @@
                         document.getElementById('bn-verdict').className = `kpi-verdict ${getConvictionClass(b.confidence, b.verdict_label)}`;
                         const bScan = document.getElementById('bn-scan-time');
                         if (bScan) {
-                            bScan.textContent = b.scan_time_str ? `${b.scan_time_str} (${b.scan_age_min}m ago)` : '—';
+                            bScan.textContent = b.scan_time_str || '—';
+                            bScan.title = b.scan_time_str ? `${b.scan_age_min}m ago` : '';
                             bScan.className = `kpi-scan-age ${b.scan_age_min > 15 ? 'stale' : ''}`;
                         }
                         document.getElementById('bn-pcr').textContent = b.pcr_str;
@@ -1602,7 +1604,8 @@
                         document.getElementById('sensex-verdict').className = `kpi-verdict ${getConvictionClass(s.confidence, s.verdict_label)}`;
                         const sScan = document.getElementById('sensex-scan-time');
                         if (sScan) {
-                            sScan.textContent = s.scan_time_str ? `${s.scan_time_str} (${s.scan_age_min}m ago)` : '—';
+                            sScan.textContent = s.scan_time_str || '—';
+                            sScan.title = s.scan_time_str ? `${s.scan_age_min}m ago` : '';
                             sScan.className = `kpi-scan-age ${s.scan_age_min > 15 ? 'stale' : ''}`;
                         }
                         document.getElementById('sensex-pcr').textContent = s.pcr_str;
@@ -1622,7 +1625,8 @@
                         document.getElementById('ng-verdict').className = `kpi-verdict ${getConvictionClass(g.confidence, g.verdict_label)}`;
                         const gScan = document.getElementById('ng-scan-time');
                         if (gScan) {
-                            gScan.textContent = g.scan_time_str ? `${g.scan_time_str} (${g.scan_age_min}m ago)` : '—';
+                            gScan.textContent = g.scan_time_str || '—';
+                            gScan.title = g.scan_time_str ? `${g.scan_age_min}m ago` : '';
                             gScan.className = `kpi-scan-age ${g.scan_age_min > 15 ? 'stale' : ''}`;
                         }
                         document.getElementById('ng-pcr').textContent = g.pcr_str;

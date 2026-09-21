@@ -172,6 +172,13 @@ def check_ng_parity_exits_every_2_min() -> None:
     """
     Evaluates open Natural Gas parity trades. Runs every 2 minutes in the background.
     """
+    from config.symbol_classes import is_market_open
+    from config.holidays import is_market_holiday
+    from datetime import datetime, timezone, timedelta
+    now_ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    if not is_market_open("NATURALGAS", now_ist) or is_market_holiday("NATURALGAS", now_ist):
+        return
+
     open_trade = get_open_paper_trade("NATURALGAS")
     if not open_trade or open_trade.get("setup_type") != "NG_PARITY":
         return

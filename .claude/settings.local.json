@@ -43,7 +43,8 @@
       "Bash(graft ask *)",
       "Bash(graft callers *)",
       "mcp__graft__graft_file_api",
-      "mcp__graft__graft_find_code"
+      "mcp__graft__graft_find_code",
+      "Bash(sqlite3 data/nsebot.db \"SELECT * FROM scan_summaries WHERE symbol='NIFTY' AND fetched_at LIKE '2026-09-08%' ORDER BY fetched_at DESC LIMIT 1;\")"
     ]
   }
 }
