@@ -221,6 +221,7 @@ OPENCODE_API_KEY = _optional_env("OPENCODE_API_KEY")
 NVIDIA_API_KEY = _optional_env("NVIDIA_API_KEY")
 OMNIROUTER_API_KEY = _optional_env("OMNIROUTER_API_KEY")
 OMNIROUTER_BASE_URL = _optional_env("OMNIROUTER_BASE_URL", "http://localhost:20128/v1")
+TYPESAFE_API_KEY: str = os.getenv("TYPESAFE_API_KEY", "")
 
 # ── Dashboard Authentication ────────────────────────────────────────────────────────────────────────────
 # FIX #13: Removed insecure admin/admin defaults.

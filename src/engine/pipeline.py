@@ -1238,6 +1238,7 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
 
     intel_text_base = intel_text
     exit_advice = None
+    _jev_proceed = True  # default: proceed with LLM; Jev may override below
     if not _DISABLE_LLM_ENV:
         if open_trade:
             try:
@@ -1259,8 +1260,34 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                 is_broker_trade_enabled = lambda: False
             if is_broker_trade_enabled():
                 should_run_sync = True
+
+            # ── Jev System-1 fast gate ──────────────────────────────────────
+            # Run a cheap TypeSafe AI call first; if conviction < floor, skip
+            # the expensive Claude/OmniRouter enrichment entirely.
+            _jev_proceed = True
+            try:
+                from src.engine.jev_gate import jev_fast_gate
+                _jev_result = jev_fast_gate(symbol, scan_context, intel, news_data)
+                _jev_proceed = _jev_result.proceed
+                if not _jev_result.skipped and _jev_result.direction:
+                    # Surface Jev's quick direction read in intel for downstream
+                    if isinstance(intel, dict):
+                        intel.setdefault("jev_direction", _jev_result.direction)
+                        intel.setdefault("jev_conviction", round(_jev_result.conviction, 3))
+                if not _jev_proceed:
+                    log.info(
+                        "%s: Jev System-1 low conviction (%.2f) — skipping heavy LLM enrichment",
+                        symbol, _jev_result.conviction,
+                    )
+            except Exception:
+                log.debug("%s: Jev gate failed — defaulting to proceed", symbol)
+            # ───────────────────────────────────────────────────────────────
+
             if not should_run_sync:
                 intel_text += "\n💡 *Thesis:* ⏳ Pending async analysis...\n"
+            elif not _jev_proceed:
+                # Low-conviction: no async dispatch either; skip entirely
+                pass
             else:
                 try:
                     from src.engine.llm_enrichment import get_llm_verdict
@@ -1269,6 +1296,7 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                         intel_text += f"\n\n💡 *Thesis:* {getattr(llm_verdict, 'thesis', '')}\n"
                 except Exception:
                     log.exception("%s: AI enrichment failed gracefully", symbol)
+
 
     import uuid
     scan_digest_id = str(uuid.uuid4())[:8]
@@ -1438,7 +1466,7 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
             sent_digest = False
         else:
             if should_send:
-                if llm_async and not _DISABLE_LLM_ENV and intel and not open_trade:
+                if llm_async and not _DISABLE_LLM_ENV and intel and not open_trade and _jev_proceed:
                     telegram_message_id = send_text_and_return_id(digest_msg)
                     sent_digest = telegram_message_id is not None
                     if sent_digest:
