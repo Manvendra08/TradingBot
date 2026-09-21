@@ -1294,6 +1294,15 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                     llm_verdict = get_llm_verdict(symbol, intel, scan_context, alerts=new_alerts, news_data=news_data, open_trade=None)
                     if llm_verdict:
                         intel_text += f"\n\n💡 *Thesis:* {getattr(llm_verdict, 'thesis', '')}\n"
+                        try:
+                            from src.engine.trade_decision import make_trade_decision
+                            refreshed_td = make_trade_decision(symbol, intel, scan_context, ai_verdict=llm_verdict)
+                            if refreshed_td and isinstance(intel, dict):
+                                intel["trade_decision"] = refreshed_td
+                                scan_context["trade_decision"] = refreshed_td
+                                deterministic_v1["trade_decision"] = refreshed_td
+                        except Exception as td_err:
+                            log.debug("%s: could not refresh trade_decision with llm_verdict: %s", symbol, td_err)
                 except Exception:
                     log.exception("%s: AI enrichment failed gracefully", symbol)
 

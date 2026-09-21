@@ -1275,6 +1275,26 @@ def run_paper_trading(
             td = intel.trade_decision
         elif isinstance(intel, dict):
             td = intel.get("trade_decision")
+
+        # If decision is missing or blocked because AI verdict hadn't run yet, but ai_verdict
+        # is now available, re-evaluate make_trade_decision with the actual ai_verdict
+        if (
+            td is None
+            or (
+                isinstance(td, dict)
+                and td.get("status") == "BLOCKED"
+                and "Missing AI verdict" in str(td.get("reason", ""))
+                and ai_verdict is not None
+            )
+        ):
+            try:
+                from src.engine.trade_decision import make_trade_decision
+                td = make_trade_decision(symbol, intel, plan_ctx, ai_verdict=ai_verdict)
+                if isinstance(intel, dict):
+                    intel["trade_decision"] = td
+            except Exception as _td_err:
+                log.debug("%s: could not re-evaluate trade decision in paper_trading: %s", symbol, _td_err)
+
         if td and isinstance(td, dict):
             if td.get("audit_row_id"):
                 plan["audit_row_id"] = td["audit_row_id"]

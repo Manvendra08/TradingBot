@@ -1224,6 +1224,12 @@ def run_live_trading(
     decision = None
     if isinstance(intel, dict) and intel.get("trade_decision"):
         decision = intel["trade_decision"]
+        if (
+            decision.get("status") == "BLOCKED"
+            and "Missing AI verdict" in str(decision.get("reason", ""))
+            and ai_verdict is not None
+        ):
+            decision = make_trade_decision(symbol, intel, ctx, ai_verdict=ai_verdict)
     else:
         decision = make_trade_decision(symbol, intel, ctx, ai_verdict=ai_verdict)
 
