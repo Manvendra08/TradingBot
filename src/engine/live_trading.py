@@ -1202,8 +1202,7 @@ def run_live_trading(
     # Kill switch checked at top of function
 
     base_sym = _get_base_symbol(symbol)
-    broker_conf = get_broker_config()
-    enabled_symbols = broker_conf.get("live_enabled_broker_symbols")
+    enabled_symbols = (config or load_runtime_config()).get("live_enabled_broker_symbols")
     if enabled_symbols is not None and base_sym not in enabled_symbols:
         return {
             "action": "BLOCKED_DISABLED_SYMBOL",
