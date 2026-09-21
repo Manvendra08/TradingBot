@@ -811,12 +811,21 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
         and not is_closed_cycle
     )
     is_advisory = ml_action == "ADVISORY"
-    is_rejected = ml_action == "REJECTED"
+    is_rejected = ml_action in ("REJECTED", "BLOCKED")
     is_conflict = ml_action == "CONFLICT"
+    is_paused = ml_action == "BLOCKED_TRADING_PAUSED" or ml_stage == "BLOCKED_TRADING_PAUSED"
 
     # Header status badge
-    if is_entered:
-        trade_status_str = "🟢 *ENTERED*"
+    if is_paused:
+        trade_status_str = "⏸️ *PAUSED*"
+    elif is_entered:
+        _is_live = False
+        try:
+            from config.runtime_config import is_broker_trade_enabled
+            _is_live = is_broker_trade_enabled()
+        except Exception:
+            pass
+        trade_status_str = "🟢 *LIVE ENTERED*" if _is_live else "🟢 *PAPER ENTERED*"
     elif is_closed_cycle:
         trade_status_str = "🔴 *EXITED*"
     elif is_holding:

@@ -1411,6 +1411,20 @@ def _attempt_new_live_entry(
             "reason": f"Net delta {net_delta:.2f} exceeds cap {MAX_NET_DELTA}",
         }
 
+    # ── 5g2. Entry quality score gate ──────────────────────────────────
+    MIN_MULTILEG_ENTRY_QUALITY = 35
+    if entry_quality < MIN_MULTILEG_ENTRY_QUALITY:
+        log.info(
+            "[multileg-live] %s: entry quality %d/100 below minimum %d — rejecting trade (%s)",
+            symbol, entry_quality, MIN_MULTILEG_ENTRY_QUALITY, "; ".join(quality_reasons)
+        )
+        return {
+            "action": "REJECTED",
+            "decision_stage": "ENTRY_QUALITY_GATE",
+            "strategy_type": strategy_type,
+            "reason": f"Entry quality score {entry_quality}/100 below threshold {MIN_MULTILEG_ENTRY_QUALITY} ({'; '.join(quality_reasons)})",
+        }
+
     # ── 5h. Log verdict summary ────────────────────────────────────────
     log.info(
         "[multileg-live] %s: %s with %d legs, net premium ₹%.1f, "

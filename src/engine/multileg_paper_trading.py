@@ -828,6 +828,18 @@ def _attempt_new_entry(
         log.info("[multileg-paper] %s: 0DTE entry cutoff reached — new entries prohibited", symbol)
         return {"action": "BLOCKED_0DTE_CUTOFF", "reason": "0DTE entry cutoff reached — new entries prohibited"}
 
+    # ── Safety Switch: Kill Switch and Trading Paused ───────────────────
+    from config.runtime_config import load_runtime_config
+    r_cfg = load_runtime_config()
+    kill_switch_active = bool(r_cfg.get("kill_switch_active", False))
+    trading_paused = bool(r_cfg.get("trading_paused", True))
+    if kill_switch_active:
+        log.info("[multileg-paper] %s: kill switch active — entry blocked", symbol)
+        return {"action": "BLOCKED_KILL_SWITCH", "reason": "Kill switch active"}
+    if trading_paused:
+        log.info("[multileg-paper] %s: trading paused — entry blocked", symbol)
+        return {"action": "BLOCKED_TRADING_PAUSED", "reason": "Trading paused"}
+
     # ── Gate: Max open books per symbol (cap = 5) ─────────────────────
     MAX_OPEN_BOOKS_PER_SYMBOL = 5
     if open_books and len(open_books) >= MAX_OPEN_BOOKS_PER_SYMBOL:
@@ -1255,6 +1267,31 @@ def _attempt_new_entry(
             "thesis": getattr(verdict, "thesis", ""),
             "ai_model_name": getattr(verdict, "model_name", None),
             "reason": f"Net delta {net_delta:.2f} exceeds cap {MAX_NET_DELTA}",
+        }
+
+    # ── 5g2. Entry quality score gate ──────────────────────────────────
+    MIN_MULTILEG_ENTRY_QUALITY = 35
+    if entry_quality < MIN_MULTILEG_ENTRY_QUALITY:
+        log.info(
+            "[multileg-paper] %s: entry quality %d/100 below minimum %d — rejecting trade (%s)",
+            symbol, entry_quality, MIN_MULTILEG_ENTRY_QUALITY, "; ".join(quality_reasons)
+        )
+        return {
+            "action": "REJECTED",
+            "decision_stage": "ENTRY_QUALITY_GATE",
+            "strategy_type": strategy_type,
+            "legs": legs,
+            "net_premium": net_premium,
+            "confidence": verdict.confidence,
+            "entry_quality": entry_quality,
+            "quality_reasons": quality_reasons,
+            "book_greeks": book_greeks,
+            "risk_profile": risk_profile,
+            "margin": combined_margin,
+            "net_delta": net_delta,
+            "reason": f"Entry quality score {entry_quality}/100 below threshold {MIN_MULTILEG_ENTRY_QUALITY} ({'; '.join(quality_reasons)})",
+            "thesis": getattr(verdict, "thesis", ""),
+            "ai_model_name": getattr(verdict, "model_name", None),
         }
 
     # ── 5h. Log verdict summary ────────────────────────────────────────

@@ -1244,6 +1244,15 @@ def run_paper_trading(
     # 2. Check if we already have an open trade
     current_open_trade = get_open_paper_trade(symbol)
 
+    from config.runtime_config import load_runtime_config
+    r_cfg = load_runtime_config()
+    if r_cfg.get("kill_switch_active", False):
+        log.info("[paper] %s: kill switch active — entry blocked", symbol)
+        return {"action": "BLOCKED_KILL_SWITCH", "reason": "Kill switch active"}
+    if r_cfg.get("trading_paused", False):
+        log.info("[paper] %s: trading paused — entry blocked", symbol)
+        return {"action": "BLOCKED_TRADING_PAUSED", "reason": "Trading paused"}
+
     # 3. Parse verdict and confidence from intel
     verdict = intel.get("verdict_label", "")
     confidence = int(intel.get("confidence") or 0)
