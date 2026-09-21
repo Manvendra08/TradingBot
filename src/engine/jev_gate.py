@@ -128,12 +128,16 @@ def jev_fast_gate(
         questions: dict[str, Any] = {
             "tradeable_setup": {
                 "type": "noul",
-                "question": "Does this market state represent a high-probability tradeable setup worth detailed AI analysis?",
+                "instructions": "Does this market state represent a high-probability tradeable setup worth detailed options analysis?",
             },
             "direction": {
                 "type": "choice",
-                "question": "What is the dominant near-term market direction indicated by the data?",
-                "options": ["BULLISH", "BEARISH", "NEUTRAL"],
+                "instructions": "What is the dominant near-term market direction indicated by the data?",
+                "criteria": {
+                    "BULLISH": "Upward momentum, call buying or put writing support",
+                    "BEARISH": "Downward momentum, put buying or call writing resistance",
+                    "NEUTRAL": "Rangebound, consolidation, or mixed signals",
+                },
             },
         }
 
@@ -145,19 +149,17 @@ def jev_fast_gate(
         ts_answer = answers.get("tradeable_setup") or {}
         direction_answer = answers.get("direction") or {}
 
-        # noul: value is bool, probability is how confident that value is True
-        ts_value = ts_answer.get("value")
-        ts_prob = float(ts_answer.get("probability") or 0.0)
-        direction_val = direction_answer.get("value") or None
+        # TypeSafe NoulAnswer: {"type": "noul", "noul": 0.56} -> probability 0.0 to 1.0
+        ts_prob = float(ts_answer.get("noul") if "noul" in ts_answer else (ts_answer.get("probability") or 0.5))
+        # TypeSafe ChoiceAnswer: {"type": "choice", "choice": "BEARISH", "confidence": 0.99, ...}
+        direction_val = direction_answer.get("choice") or direction_answer.get("value")
 
-        # Conviction = probability of tradeable_setup being True
-        conviction = ts_prob if (ts_value is True) else (1.0 - ts_prob)
-
+        conviction = ts_prob
         proceed = conviction >= conviction_floor
 
         log.info(
-            "jev: %s tradeable=%s (p=%.2f) direction=%s → %s",
-            symbol, ts_value, ts_prob, direction_val,
+            "jev: %s tradeable conviction=%.2f (floor=%.2f) direction=%s → %s",
+            symbol, conviction, conviction_floor, direction_val,
             "PROCEED" if proceed else "SKIP_LLM",
         )
         return JevResult(proceed=proceed, direction=direction_val, conviction=conviction, skipped=False)

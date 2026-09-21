@@ -48,6 +48,7 @@ _DEFAULT_TIMEOUT = 3.0  # seconds – Jev is fast; 3 s is a generous ceiling
 def evaluate_system_one(
     state_text: str,
     questions: dict[str, dict[str, Any]],
+    model: str = "jev-latest",
     timeout: float = _DEFAULT_TIMEOUT,
 ) -> dict[str, Any] | None:
     """Call TypeSafe AI System-1 (Jev) and return the answers dict.
@@ -56,12 +57,13 @@ def evaluate_system_one(
         state_text: Plain-text description of market state fed as the
                     ``state`` field in the request body.
         questions:  Mapping of answer-key → question spec.
-                    Each spec must contain at minimum ``type`` and ``question``.
-                    For ``choice`` questions also include ``options``.
+                    Each spec must contain at minimum ``type`` and ``instructions``.
+                    For ``choice`` questions include ``criteria`` mapping.
+        model:      Model identifier (default: 'jev-latest').
         timeout:    HTTP read timeout in seconds (default 3 s).
 
     Returns:
-        Dict mapping answer-key → ``{"value": ..., "probability": float}``,
+        Dict mapping answer-key → answer object (e.g. {'noul': 0.85} or {'choice': 'BULLISH', ...}),
         or ``None`` on auth failure, network error, or malformed response.
     """
     from config.settings import TYPESAFE_API_KEY  # late import — avoids circular at module load
@@ -71,6 +73,7 @@ def evaluate_system_one(
         return None
 
     payload: dict[str, Any] = {
+        "model": model,
         "state": state_text,
         "questions": questions,
     }
