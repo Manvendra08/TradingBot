@@ -678,7 +678,11 @@ NG_STRATEGY_ENABLED = _optional_env("NG_STRATEGY_ENABLED", "false").lower() == "
 NG_FUT_ONLY = True                                             # hard, not configurable
 PARITY_MAX_STALENESS_SEC = 300
 PARITY_DEV_ENTRY_PCT = 0.45        # placeholder; overwritten by §5 calibration
+PARITY_DEV_MAX_ENTRY_PCT = 2.0      # max safe deviation; > 2% indicates roll/shock, not mean-reversion
 PARITY_DEV_STOP_MULT = 2.0         # stop = entry deviation × this
+MAX_NG_PARITY_SL_POINTS = 5.0      # hard ceiling on stop loss in points (prevents 20-30 pt blowouts)
+MIN_NG_PARITY_SL_POINTS = 1.5      # floor on stop loss in points
+NG_MIN_DTE_ENTRY = 3               # block new parity entries when DTE <= 3 (rollover / tender period)
 PARITY_FORCE_FLAT_IST = "17:30"
 MOMENTUM_ENTRY_START_IST = "18:00"
 MOMENTUM_NO_ENTRY_AFTER_IST = "23:00"
@@ -686,8 +690,8 @@ NG_WEEKEND_FLAT = True             # no NG position past Fri 23:00
 EIA_MIN_SURPRISE_BCF = 15
 EIA_NO_TRADE_BAND_BCF = 8
 EIA_TIME_STOP_IST = "21:30"
-NG_MAX_POSITIONS = 20               # one NG position at a time, all regimes
-NG_RISK_PCT_PER_TRADE = 2        # % of capital
+NG_MAX_POSITIONS = 1               # one NG position at a time, all regimes
+NG_RISK_PCT_PER_TRADE = 2          # % of capital
 
 # ── Weather Intelligence (Phase 5) ────────────────────────────────────────────
 WEATHER_SIGNAL_ENABLED = _optional_env("WEATHER_SIGNAL_ENABLED", "true").lower() == "true"

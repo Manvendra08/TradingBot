@@ -31,6 +31,21 @@ def get_ng_regime(now_ist: datetime) -> tuple[str, str]:
     if is_cme_closed(now_ist.date()):
         return "BLOCKED", "CME Holiday"
 
+    # Expiry period guard (DTE <= NG_MIN_DTE_ENTRY):
+    # During expiry/rollover week, near-month MCX basis uncouples from NYMEX prompt due to roll contango.
+    from config.symbol_classes import get_futures_expiry
+    from config.settings import NG_MIN_DTE_ENTRY
+    fut_exp_str = get_futures_expiry("NATURALGAS", now_ist.date())
+    if fut_exp_str:
+        try:
+            from datetime import datetime as _dt
+            fut_exp_date = _dt.strptime(fut_exp_str, "%Y-%m-%d").date()
+            dte = (fut_exp_date - now_ist.date()).days
+            if dte <= NG_MIN_DTE_ENTRY:
+                return "BLOCKED", f"Expiry Week / Rollover (DTE={dte} <= {NG_MIN_DTE_ENTRY}) — near-month basis distorted"
+        except Exception:
+            pass
+
     # Thursday EIA Storage Report Event
     if now_ist.weekday() == 3:
         # BUG-H02 FIX: Use pytz localize for DST-aware time construction.
