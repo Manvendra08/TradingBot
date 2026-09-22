@@ -1313,22 +1313,43 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
     # Pre-fetch multi-leg verdict for MULTILEG strategy symbols to avoid
     # single-leg/multi-leg schema mismatch and ensure the LLM verdict
     # is available when the runner executes.
+    # Jev gates multi-leg with a softer floor (0.15 vs 0.35 single-leg)
+    # because neutral setups are valid for strangles/condors/straddles.
+    _MULTILEG_JEV_FLOOR = 0.15
     multileg_verdict = None
     if not is_test:
         try:
             from src.engine.strategy_registry import active_strategies_for
             if "MULTILEG" in active_strategies_for(symbol):
-                from src.engine.llm_enrichment import get_multileg_verdict
-                multileg_verdict = get_multileg_verdict(
-                    symbol=symbol,
-                    intel=intel,
-                    scan_context=scan_context,
-                    alerts=new_alerts,
-                    news_data=news_data,
-                    open_books=None,  # will be fetched inside if needed
-                )
-                if multileg_verdict and isinstance(intel, dict):
-                    intel["multileg_verdict"] = multileg_verdict
+                # ── Jev multileg gate ──────────────────────────────────────
+                _ml_jev_skip = False
+                _ml_jev_conv = 1.0
+                try:
+                    # Reuse existing _jev_result if available (computed above)
+                    if '_jev_result' in locals() and not _jev_result.skipped:
+                        _ml_jev_conv = _jev_result.conviction
+                        if _ml_jev_conv < _MULTILEG_JEV_FLOOR:
+                            _ml_jev_skip = True
+                            log.info(
+                                "%s: Jev multileg gate — conviction %.2f below floor %.2f — skipping heavy multileg LLM",
+                                symbol, _ml_jev_conv, _MULTILEG_JEV_FLOOR,
+                            )
+                except Exception:
+                    log.debug("%s: Jev multileg gate check failed — proceeding", symbol)
+                # ──────────────────────────────────────────────────────────
+
+                if not _ml_jev_skip:
+                    from src.engine.llm_enrichment import get_multileg_verdict
+                    multileg_verdict = get_multileg_verdict(
+                        symbol=symbol,
+                        intel=intel,
+                        scan_context=scan_context,
+                        alerts=new_alerts,
+                        news_data=news_data,
+                        open_books=None,  # will be fetched inside if needed
+                    )
+                    if multileg_verdict and isinstance(intel, dict):
+                        intel["multileg_verdict"] = multileg_verdict
         except Exception:
             log.exception("%s: Multi-leg pre-fetch failed gracefully", symbol)
 
