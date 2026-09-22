@@ -388,7 +388,8 @@ CREATE TABLE IF NOT EXISTS multi_leg_trades (
     digest_id TEXT,
     ai_model_name TEXT,
     entry_reason TEXT,
-    exit_reason TEXT
+    exit_reason TEXT,
+    trade_mode TEXT DEFAULT 'PAPER'
 );
 
 CREATE TABLE IF NOT EXISTS multi_leg_legs (
@@ -414,6 +415,7 @@ CREATE TABLE IF NOT EXISTS multi_leg_legs (
     book_id TEXT,
     leg_group_id TEXT,
     expiry TEXT,
+    trade_mode TEXT DEFAULT 'PAPER',
     FOREIGN KEY (trade_id) REFERENCES multi_leg_trades(id) ON DELETE CASCADE
 );
 
@@ -672,6 +674,9 @@ _MIGRATIONS = [
     ("M117_add_mll_book_id", "ALTER TABLE multi_leg_legs ADD COLUMN book_id TEXT"),
     ("M118_add_mll_leg_group_id", "ALTER TABLE multi_leg_legs ADD COLUMN leg_group_id TEXT"),
     ("M119_add_mll_expiry", "ALTER TABLE multi_leg_legs ADD COLUMN expiry TEXT"),
+    ("M120_add_ml_trade_mode", "ALTER TABLE multi_leg_trades ADD COLUMN trade_mode TEXT DEFAULT 'PAPER'"),
+    ("M121_add_mll_trade_mode", "ALTER TABLE multi_leg_legs ADD COLUMN trade_mode TEXT DEFAULT 'PAPER'"),
+    ("M122_create_ml_sync_index", "CREATE INDEX IF NOT EXISTS idx_ml_trade_mode ON multi_leg_trades (trade_mode, status)"),
 ]
 
 
@@ -2602,7 +2607,7 @@ def execute_multi_leg_adjustment(
     new_leg_dict = dict(new_leg)
     with get_conn() as conn:
         trade = conn.execute(
-            "SELECT id, net_premium FROM multi_leg_trades WHERE book_id=? AND status='OPEN'",
+            "SELECT id, net_premium, trade_mode FROM multi_leg_trades WHERE book_id=? AND status='OPEN'",
             (book_id,)
         ).fetchone()
         if not trade:
@@ -2625,14 +2630,16 @@ def execute_multi_leg_adjustment(
         new_leg_dict.setdefault("closed_at", None)
         new_leg_dict.setdefault("exit_reason", None)
         new_leg_dict.setdefault("broker_order_id", None)
+        trade_mode = dict(trade).get("trade_mode") or "PAPER"
+        new_leg_dict.setdefault("trade_mode", trade_mode)
 
         leg_sql = """
             INSERT INTO multi_leg_legs
                 (trade_id, side, lots, strike, option_type, entry_premium, exit_premium,
-                 delta, theta, vega, iv, rationale, status, closed_at, exit_reason, broker_order_id)
+                 delta, theta, vega, iv, rationale, status, closed_at, exit_reason, broker_order_id, trade_mode)
             VALUES
                 (:trade_id, :side, :lots, :strike, :option_type, :entry_premium, :exit_premium,
-                 :delta, :theta, :vega, :iv, :rationale, :status, :closed_at, :exit_reason, :broker_order_id)
+                 :delta, :theta, :vega, :iv, :rationale, :status, :closed_at, :exit_reason, :broker_order_id, :trade_mode)
         """
         conn.execute(leg_sql, new_leg_dict)
 
