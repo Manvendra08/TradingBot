@@ -2920,11 +2920,21 @@ def list_multi_leg_trades(status_filter: str | None = None) -> list[dict]:
     return result_trades
 
 
-def get_open_books_for_symbol(symbol: str) -> list[dict]:
-    """Get all distinct open books for a symbol, each with its legs."""
-    sql = "SELECT * FROM multi_leg_trades WHERE symbol=? AND status='OPEN' ORDER BY opened_at DESC"
-    with get_read_conn() as conn:
-        trades = [dict(r) for r in conn.execute(sql, (symbol,)).fetchall()]
+def get_open_books_for_symbol(symbol: str, trade_mode: str | None = None) -> list[dict]:
+    """Get all distinct open books for a symbol, each with its legs.
+    
+    Args:
+        symbol: Trading symbol
+        trade_mode: Optional filter - 'PAPER' or 'LIVE'. If None, returns all.
+    """
+    if trade_mode:
+        sql = "SELECT * FROM multi_leg_trades WHERE symbol=? AND status='OPEN' AND trade_mode=? ORDER BY opened_at DESC"
+        with get_read_conn() as conn:
+            trades = [dict(r) for r in conn.execute(sql, (symbol, trade_mode)).fetchall()]
+    else:
+        sql = "SELECT * FROM multi_leg_trades WHERE symbol=? AND status='OPEN' ORDER BY opened_at DESC"
+        with get_read_conn() as conn:
+            trades = [dict(r) for r in conn.execute(sql, (symbol,)).fetchall()]
     for trade in trades:
         trade["legs"] = get_open_book_legs(trade["id"])
     return trades

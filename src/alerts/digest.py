@@ -48,8 +48,8 @@ def _esc(text: any) -> str:
     if text is None:
         return ""
     s = str(text)
-    # Only escape target formatting chars; don't pre-escape backslashes which breaks Telegram V1 parser
-    for char in ("_", "*", "`", "["):
+    # Escape all Telegram Markdown V1 special chars: _ * ` [ ] ( )
+    for char in ("_", "*", "`", "[", "]", "(", ")"):
         s = s.replace(char, f"\\{char}")
     return s
 

@@ -17,6 +17,7 @@ import pytz
 
 from src.models.schema import get_conn
 from config.settings import AUTOPSY_ENABLED, AUTOPSY_TIME_IST
+from src.engine.skill_loader import get_autopsy_analyst_guidance
 
 log = logging.getLogger(__name__)
 

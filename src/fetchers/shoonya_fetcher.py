@@ -478,16 +478,21 @@ class ShoonyaFetcher(BaseFetcher):
                             pass
                         browser.close()
 
-                        if "blocked" in body_text.lower() or "unsuccessful login attempts" in body_text.lower():
-                            log.error(
-                                "[shoonya] ACCOUNT BLOCKED: Shoonya user '%s' is blocked by broker due to unsuccessful login attempts. Unblock via PAN + DOB on Shoonya portal: https://api.shoonya.com/OAuthlogin/investor-entry-level/login?api_key=%s",
-                                self.user_id,
-                                self.vendor_code,
-                            )
-                            self._login_failed_until = time.time() + 900
-                            return None
+                    # m11 FIX: the account-blocked check was previously inside the
+                    # `finally:` block, where `return None` silently swallowed any
+                    # in-flight exception and overrode the try-block's return.
+                    # Run it in the normal flow AFTER the finally so genuine
+                    # exceptions propagate instead of being discarded.
+                    if "blocked" in body_text.lower() or "unsuccessful login attempts" in body_text.lower():
+                        log.error(
+                            "[shoonya] ACCOUNT BLOCKED: Shoonya user '%s' is blocked by broker due to unsuccessful login attempts. Unblock via PAN + DOB on Shoonya portal: https://api.shoonya.com/OAuthlogin/investor-entry-level/login?api_key=%s",
+                            self.user_id,
+                            self.vendor_code,
+                        )
+                        self._login_failed_until = time.time() + 900
+                        return None
 
-                        log.debug("[shoonya] Post-login URL: %s", final_url)
+                    log.debug("[shoonya] Post-login URL: %s", final_url)
 
                     # Extract auth_code from URL candidates (both final URL and any intermediate requests)
                     for candidate in [final_url] + captured_urls:

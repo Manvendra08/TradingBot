@@ -113,6 +113,7 @@ def run_multileg_paper_strategy(
     digest_id: str,
     intel: dict,
     ai_verdict=None,
+    exit_check: bool = False,
 ) -> dict | None:
     """Multi-leg paper trading entry point.
 
@@ -124,13 +125,14 @@ def run_multileg_paper_strategy(
         digest_id: Digest identifier for traceability
         intel: Intelligence dict with verdict_label, confidence, news, etc.
         ai_verdict: Optional AI verdict from the LLM pipeline
+        exit_check: When True, only evaluate exits on open books and skip new entries.
 
     Returns:
         dict with action key, or None if nothing to do.
     """
     try:
         return _run_multileg_paper_strategy_inner(
-            symbol, scan_context, digest_id, intel, ai_verdict
+            symbol, scan_context, digest_id, intel, ai_verdict, exit_check=exit_check
         )
     except Exception as e:
         log.error(
@@ -148,6 +150,7 @@ def _run_multileg_paper_strategy_inner(
     digest_id: str,
     intel: dict,
     ai_verdict=None,
+    exit_check: bool = False,
 ) -> dict | None:
     """Inner implementation — isolated so the outer wrapper can catch all errors."""
     # ── 1. Market hours guard ──────────────────────────────────────────
@@ -193,7 +196,7 @@ def _run_multileg_paper_strategy_inner(
         insert_multileg_trade_atomically,
     )
 
-    open_books = get_open_books_for_symbol(symbol)
+    open_books = get_open_books_for_symbol(symbol, trade_mode="PAPER")
     mon_res = None
     if open_books:
         mon_res = _monitor_open_books(
@@ -206,7 +209,10 @@ def _run_multileg_paper_strategy_inner(
             now_iso,
         )
         # Re-fetch open books in case monitoring closed a book
-        open_books = get_open_books_for_symbol(symbol)
+        open_books = get_open_books_for_symbol(symbol, trade_mode="PAPER")
+
+    if exit_check:
+        return mon_res
 
     # ── 5. Gate: Max open books per symbol (cap = 5) ───────────────────
     MAX_OPEN_BOOKS_PER_SYMBOL = 5
@@ -880,7 +886,7 @@ def _attempt_new_entry(
                 scan_context=scan_context,
                 alerts=intel.get("alerts") if isinstance(intel, dict) else None,
                 news_data=intel.get("news_data") if isinstance(intel, dict) else None,
-                open_books=open_books or get_open_books_for_symbol(symbol),
+                open_books=open_books or get_open_books_for_symbol(symbol, trade_mode="PAPER"),
             )
             if isinstance(intel, dict) and verdict is not None:
                 intel["multileg_verdict"] = verdict
@@ -1161,7 +1167,7 @@ def _attempt_new_entry(
     if check_book_conflicts is not None:
         try:
             has_conflict, conflict_msg = check_book_conflicts(
-                symbol, strategy_type, open_books or get_open_books_for_symbol(symbol)
+                symbol, strategy_type, open_books or get_open_books_for_symbol(symbol, trade_mode="PAPER")
             )
             if has_conflict:
                 log.info(
@@ -1208,7 +1214,7 @@ def _attempt_new_entry(
             )
 
     # ── 5f. Margin cap check (book-level and combined open symbol margin) ──
-    open_books_symbol = open_books or get_open_books_for_symbol(symbol)
+    open_books_symbol = open_books or get_open_books_for_symbol(symbol, trade_mode="PAPER")
     existing_symbol_margin = sum(float(b.get("margin_req") or 0.0) for b in open_books_symbol if b.get("status") == "OPEN")
     total_margin_symbol = existing_symbol_margin + combined_margin
 
@@ -1427,6 +1433,7 @@ def _attempt_new_entry(
             "closed_at": None,
             "exit_reason": None,
             "broker_order_id": None,
+            "trade_mode": "PAPER",
         })
 
     try:

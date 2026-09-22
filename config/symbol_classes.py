@@ -5,6 +5,7 @@ strike step size, and market window key.
 from __future__ import annotations
 
 import logging
+from datetime import date
 from config.settings import MARKET_WINDOWS, STRIKE_STEPS
 
 log = logging.getLogger(__name__)
@@ -248,6 +249,15 @@ def _get_nse_monthly_expiry(ref_date: "date", base: str) -> "str | None":
         expiry = d
     
     return expiry.strftime("%Y-%m-%d")
+
+
+def _prev_working_day(d: date, holidays: set[date]) -> str:
+    """Return the previous working day (Mon-Fri, not in holidays) as YYYY-MM-DD."""
+    from datetime import timedelta
+    cur = d
+    while cur.weekday() >= 5 or cur in holidays:
+        cur -= timedelta(days=1)
+    return cur.strftime("%Y-%m-%d")
 
 
 def get_futures_expiry(symbol: str, ref_date: "date | None" = None) -> "str | None":

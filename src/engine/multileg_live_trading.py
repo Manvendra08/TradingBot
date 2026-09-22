@@ -150,6 +150,7 @@ def run_multileg_live_strategy(
     digest_id: str,
     intel: dict,
     ai_verdict=None,
+    exit_check: bool = False,
 ) -> dict | None:
     """Multi-leg live trading entry point.
 
@@ -162,13 +163,14 @@ def run_multileg_live_strategy(
         digest_id: Digest identifier for traceability
         intel: Intelligence dict with verdict_label, confidence, news, etc.
         ai_verdict: Optional AI verdict from the LLM pipeline
+        exit_check: When True, only evaluate exits on open books and skip new entries.
 
     Returns:
         dict with action key, or None if nothing to do.
     """
     try:
         return _run_multileg_live_strategy_inner(
-            symbol, scan_context, digest_id, intel, ai_verdict
+            symbol, scan_context, digest_id, intel, ai_verdict, exit_check=exit_check
         )
     except Exception as e:
         log.error(
@@ -186,6 +188,7 @@ def _run_multileg_live_strategy_inner(
     digest_id: str,
     intel: dict,
     ai_verdict=None,
+    exit_check: bool = False,
 ) -> dict | None:
     """Inner implementation — isolated so the outer wrapper can catch all errors."""
     # ── 1. Basic validation & Market hours guard ───────────────────────
@@ -229,7 +232,7 @@ def _run_multileg_live_strategy_inner(
         insert_multileg_trade_atomically,
     )
 
-    open_books = get_open_books_for_symbol(symbol)
+    open_books = get_open_books_for_symbol(symbol, trade_mode="LIVE")
     mon_res = None
     if open_books:
         mon_res = _monitor_open_books_live(
@@ -242,7 +245,10 @@ def _run_multileg_live_strategy_inner(
             now_iso,
         )
         # Re-fetch open books in case monitoring closed a book
-        open_books = get_open_books_for_symbol(symbol)
+        open_books = get_open_books_for_symbol(symbol, trade_mode="LIVE")
+
+    if exit_check:
+        return mon_res
 
     # ── 5. Gate: Max open books per symbol (cap = 5) ───────────────────
     MAX_OPEN_BOOKS_PER_SYMBOL = 5
@@ -815,19 +821,28 @@ def _close_live_book(
     reason: str,
     total_pnl: float,
     exit_underlying: float | None = None,
-) -> None:
+) -> bool:
     """Close a live book — squaring off all open legs via Kite orders.
 
-    Attempts to place exit orders for each leg. If any exit fails,
-    logs the failure but continues closing remaining legs.
-    When live_broker_disabled is True, skips all broker interaction
-    and closes the book in DB only.
+    C1 FIX: Every exit order is verified with confirm_order_fill() before the
+    leg is closed in DB. A REJECTED/PENDING/FAILED exit order leaves the leg
+    OPEN in DB (and the book OPEN) so the next monitoring cycle retries the
+    square-off — previously a failed order still DB-closed the leg while the
+    broker position remained live and untracked.
+
+    Returns True only when the book is fully closed in DB (all legs verified
+    squared off, or an intentional DB-only close in shadow/broker-disabled
+    mode). Returns False when the book must stay OPEN for retry.
     """
     from src.models.schema import close_book, close_leg
 
     # ── Centralized Broker Authorization Gate ──────────────────────
     from src.engine.broker_gate import authorize_broker_execution
     auth = authorize_broker_execution(symbol, operation="EXIT")
+    # C1 FIX: DB-only close is intentional ONLY when the broker gate explicitly
+    # denies execution (shadow mode / broker disabled) — no real broker
+    # positions exist in that case.
+    db_only_close = not auth.is_authorized
 
     # ── Attempt broker square-off for each leg ─────────────────────────
     kite = None
@@ -841,6 +856,27 @@ def _close_live_book(
                 symbol,
                 e,
             )
+        if kite is None:
+            # C1 FIX: broker authorized but Kite client unavailable (expired
+            # token / network). DB-closing here would phantom-close REAL broker
+            # positions. Keep the book OPEN; the token watchdog alerts the
+            # operator and the next cycle retries.
+            log.error(
+                "[multileg-live] %s: CRITICAL — broker authorized but Kite client unavailable; "
+                "book %s kept OPEN (no DB-only close with live positions)",
+                symbol,
+                book_id,
+            )
+            try:
+                from src.alerts.telegram_dispatcher import send_text
+
+                send_text(
+                    f"🚨 **[MULTILEG LIVE]** `{symbol}` book `{book_id}` exit blocked — "
+                    f"Kite client unavailable (token/network). Book kept OPEN; will retry."
+                )
+            except Exception:
+                pass
+            return False
     else:
         log.info(
             "[multileg-live] %s: broker execution unauthorized (%s) — closing book %s in DB only (no order placement)",
@@ -856,6 +892,7 @@ def _close_live_book(
     
     exit_results = []
     leg_exits = []
+    unfilled_leg_ids: list[int] = []
     for leg in legs:
         leg_id = leg.get("id")
         broker_order_id = leg.get("broker_order_id")
@@ -887,6 +924,7 @@ def _close_live_book(
                         option_type,
                     )
                     exit_results.append({"leg_id": leg_id, "status": "UNRESOLVED"})
+                    unfilled_leg_ids.append(leg_id)
                     continue
             except Exception as resolve_err:
                 log.warning(
@@ -910,12 +948,13 @@ def _close_live_book(
                     symbol, gtt_id, leg_id, gtt_cancel_err
                 )
 
+        leg_fill_verified = False
         if kite and resolved:
             try:
                 lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_sym, 1))
                 quantity = lots * lot_size
 
-                from src.engine.live_trading import place_kite_order
+                from src.engine.live_trading import place_kite_order, confirm_order_fill
 
                 exchange = resolved.get("exchange", "NFO")
                 order_id = place_kite_order(
@@ -927,21 +966,45 @@ def _close_live_book(
                     quantity,
                     shadow_mode=False,
                 )
-                log.info(
-                    "[multileg-live] %s: square-off order placed for leg %d — %s %s %s Qty=%d, order_id=%s",
-                    symbol,
-                    leg_id,
-                    exit_transaction,
-                    resolved["tradingsymbol"],
-                    option_type,
-                    quantity,
-                    order_id,
+                # C1 FIX: verify the exit order actually filled before closing
+                # the leg in DB. A REJECTED/PENDING exit order must NOT mark the
+                # leg closed — the broker position would remain open untracked.
+                broker_status, broker_message = confirm_order_fill(
+                    kite, order_id, shadow_mode=False
                 )
-                exit_results.append({
-                    "leg_id": leg_id,
-                    "status": "ORDER_PLACED",
-                    "order_id": order_id,
-                })
+                if broker_status == "COMPLETE":
+                    leg_fill_verified = True
+                    log.info(
+                        "[multileg-live] %s: square-off order filled for leg %d — %s %s %s Qty=%d, order_id=%s",
+                        symbol,
+                        leg_id,
+                        exit_transaction,
+                        resolved["tradingsymbol"],
+                        option_type,
+                        quantity,
+                        order_id,
+                    )
+                    exit_results.append({
+                        "leg_id": leg_id,
+                        "status": "ORDER_PLACED",
+                        "order_id": order_id,
+                    })
+                else:
+                    log.error(
+                        "[multileg-live] %s: CRITICAL — exit order for leg %d is %s (not COMPLETE): %s — leg kept OPEN in DB for retry",
+                        symbol,
+                        leg_id,
+                        broker_status,
+                        broker_message,
+                    )
+                    exit_results.append({
+                        "leg_id": leg_id,
+                        "status": broker_status,
+                        "order_id": order_id,
+                        "error": broker_message,
+                    })
+                    unfilled_leg_ids.append(leg_id)
+                    continue
             except Exception as e:
                 log.error(
                     "[multileg-live] %s: failed to square off leg %d: %s",
@@ -950,28 +1013,66 @@ def _close_live_book(
                     e,
                 )
                 exit_results.append({"leg_id": leg_id, "status": "FAILED", "error": str(e)})
-        else:
+                unfilled_leg_ids.append(leg_id)
+                continue
+        elif db_only_close:
             log.debug(
-                "[multileg-live] %s: no Kite client (or broker disabled) — leg %d not squared off via broker",
+                "[multileg-live] %s: broker disabled/shadow — leg %d closed in DB only (no broker interaction)",
                 symbol,
                 leg_id,
             )
             exit_results.append({"leg_id": leg_id, "status": "NO_BROKER"})
-
-        # Close leg in DB with actual exit premium from current market
-        try:
-            leg_exit_premium = leg.get("current_premium") or leg.get("entry_premium")
-            close_leg(leg_id, closed_at, leg_exit_premium, reason)
-            leg_exits.append({"id": leg_id, "exit_premium": leg_exit_premium})
-        except Exception as e:
+            leg_fill_verified = True  # intentional DB-only close
+        else:
+            # Authorized broker but no client/instrument — do NOT DB-close
             log.error(
-                "[multileg-live] %s: failed to close leg %d in DB: %s",
+                "[multileg-live] %s: CRITICAL — leg %d cannot be squared off (no broker client/instrument); leg kept OPEN in DB",
                 symbol,
                 leg_id,
-                e,
             )
+            exit_results.append({"leg_id": leg_id, "status": "NO_BROKER_AUTHORIZED"})
+            unfilled_leg_ids.append(leg_id)
+            continue
+
+        # Close leg in DB only after verified fill (or intentional DB-only close)
+        if leg_fill_verified:
+            try:
+                leg_exit_premium = leg.get("current_premium") or leg.get("entry_premium")
+                close_leg(leg_id, closed_at, leg_exit_premium, reason)
+                leg_exits.append({"id": leg_id, "exit_premium": leg_exit_premium})
+            except Exception as e:
+                log.error(
+                    "[multileg-live] %s: failed to close leg %d in DB: %s",
+                    symbol,
+                    leg_id,
+                    e,
+                )
+                unfilled_leg_ids.append(leg_id)
 
     # ── Close the book record ──────────────────────────────────────────
+    if unfilled_leg_ids and not db_only_close:
+        # C1 FIX: some legs could not be verified as squared off. Keep the book
+        # OPEN so monitoring retries the remaining legs next cycle; only the
+        # verified legs are closed in DB.
+        log.error(
+            "[multileg-live] %s: CRITICAL — book %s NOT closed: %d/%d leg(s) unverified at broker %s. Will retry next cycle.",
+            symbol,
+            book_id,
+            len(unfilled_leg_ids),
+            len(legs),
+            unfilled_leg_ids,
+        )
+        try:
+            from src.alerts.telegram_dispatcher import send_text
+
+            send_text(
+                f"🚨 **[MULTILEG LIVE]** `{symbol}` book `{book_id}` square-off incomplete — "
+                f"{len(unfilled_leg_ids)}/{len(legs)} leg(s) unverified. Book kept OPEN for retry."
+            )
+        except Exception:
+            pass
+        return False
+
     try:
         close_book(
             book_id, closed_at, status, reason, total_pnl,
@@ -993,6 +1094,8 @@ def _close_live_book(
             book_id,
             e,
         )
+        return False
+    return True
 
 
 # ── New Book Entry (Live) ────────────────────────────────────────────────────
@@ -1070,7 +1173,7 @@ def _attempt_new_live_entry(
                 scan_context=scan_context,
                 alerts=intel.get("alerts") if isinstance(intel, dict) else None,
                 news_data=intel.get("news_data") if isinstance(intel, dict) else None,
-                open_books=open_books or get_open_books_for_symbol(symbol),
+                open_books=open_books or get_open_books_for_symbol(symbol, trade_mode="LIVE"),
             )
             if isinstance(intel, dict) and verdict is not None:
                 intel["multileg_verdict"] = verdict
@@ -1343,7 +1446,7 @@ def _attempt_new_live_entry(
     if check_book_conflicts is not None:
         try:
             has_conflict, conflict_msg = check_book_conflicts(
-                symbol, strategy_type, open_books or get_open_books_for_symbol(symbol)
+                symbol, strategy_type, open_books or get_open_books_for_symbol(symbol, trade_mode="LIVE")
             )
             if has_conflict:
                 log.info(

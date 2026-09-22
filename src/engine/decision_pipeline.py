@@ -650,10 +650,29 @@ def step_trend_alignment_core(ctx: PipelineContext) -> StepResult:
         # Priority 5: Full AI Primary Decision Ownership (live_ai_decision_mode == "full")
         # Blocker #6 Fix: Require an affirmative, non-null, un-vetoed AI verdict. Fail-closed on missing/null verdict.
         if not passed and ai_decision_mode == "full":
-            if ctx.ai_verdict and isinstance(ctx.ai_verdict, dict):
-                ai_action = str(ctx.ai_verdict.get("action") or "").upper().strip()
-                ai_conf = int(ctx.ai_verdict.get("confidence") or 0)
-                veto_flag = _extract_ai_veto_flag(ctx.ai_verdict)
+            # FIX: ctx.ai_verdict is a pydantic LLMTradeVerdict object (passed straight
+            # from get_llm_verdict via make_trade_decision), NOT a dict. The previous
+            # isinstance(..., dict) gate silently rejected every valid verdict, logging
+            # "no affirmative AI verdict available (fail-closed)" even when enrichment
+            # had succeeded — the root cause of the NATURALGAS 2026-09-21 22:00 sentinel
+            # "missing AI verdict" diagnosis. Normalize pydantic/dataclass objects to
+            # dicts before the affirmative-verdict check.
+            ai_verdict_promo = ctx.ai_verdict
+            if ai_verdict_promo is not None and not isinstance(ai_verdict_promo, dict):
+                if hasattr(ai_verdict_promo, "model_dump"):
+                    try:
+                        ai_verdict_promo = ai_verdict_promo.model_dump()
+                    except Exception:
+                        ai_verdict_promo = None
+                else:
+                    try:
+                        ai_verdict_promo = asdict(ai_verdict_promo)
+                    except TypeError:
+                        ai_verdict_promo = getattr(ai_verdict_promo, "__dict__", None) or None
+            if ai_verdict_promo and isinstance(ai_verdict_promo, dict):
+                ai_action = str(ai_verdict_promo.get("action") or "").upper().strip()
+                ai_conf = int(ai_verdict_promo.get("confidence") or 0)
+                veto_flag = _extract_ai_veto_flag(ai_verdict_promo)
                 min_boost_conf = int(rconf.get("live_ai_min_confidence_boost", 80))
                 if not veto_flag and ai_action not in ("", "NO_TRADE", "HOLD") and ai_conf >= min_boost_conf:
                     passed = True
@@ -1306,13 +1325,12 @@ def run_entry_pipeline(ctx: PipelineContext) -> PipelineContext:
             weights = profile.get("weights", {})
             floors = profile.get("floors", {})
 
-            # 1. Check soft step floors
-            floor_breached = False
+            # 1. Check soft step floors (m2: per-gate floor re-check below
+            # consumes fl_val; this loop only logs which floor failed)
             for s in ctx.steps:
                 if s.name in SOFT_GATE_NAMES:
                     fl_val = float(floors.get(s.name, 0.0))
                     if fl_val > 0.0 and float(s.score) < fl_val:
-                        floor_breached = True
                         log.info(
                             "%s: [Tiered Gates] Soft floor failed for %s: score %.1f < floor %.1f",
                             ctx.symbol, s.name, s.score, fl_val,

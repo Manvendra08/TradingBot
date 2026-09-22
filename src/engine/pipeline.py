@@ -1388,38 +1388,44 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                         continue
                     # Pass multi-leg verdict for MULTILEG; single-leg for others
                     ai_verdict_for_runner = multileg_verdict if sid == "MULTILEG" else llm_verdict
-                    try:
-                        from config.runtime_config import is_broker_trade_enabled
-                    except Exception:
-                        is_broker_trade_enabled = lambda: False
-                    if is_broker_trade_enabled() and sid != "TIMEFRAME" and ai_verdict_for_runner is None:
-                        log.error("%s: blocking %s execution because AI verdict is unavailable in broker mode", symbol, sid)
-                        continue
+
+                    # ALWAYS run paper trading runner first (dual-execution requirement)
                     res = runner(symbol, scan_context, scan_digest_id, intel, ai_verdict=ai_verdict_for_runner)
                     if sid == "TIMEFRAME":
                         timeframe_res = res
                     else:
                         if isinstance(intel, dict):
                             intel["paper_res"] = res
-                    
-                    if sid in ("CORE", "NG_MOMENTUM", "NG_PARITY", "NG_EVENT"):
-                        try:
-                            from src.engine.live_trading import run_live_trading
-                            run_live_trading(symbol, scan_context, scan_digest_id, intel, ai_verdict=llm_verdict)
-                        except Exception as le:
-                            log.exception("%s: live/shadow trading execution failed for %s", symbol, sid)
-                    elif sid == "TIMEFRAME":
-                        try:
-                            from src.engine.live_trading import run_live_timeframe_strategy
-                            run_live_timeframe_strategy(symbol, scan_context, scan_digest_id, intel, ai_verdict=llm_verdict)
-                        except Exception as le:
-                            log.exception("%s: live/shadow timeframe strategy execution failed", symbol)
-                    elif sid == "MULTILEG":
-                        try:
-                            from src.engine.multileg_live_trading import run_multileg_live_strategy
-                            run_multileg_live_strategy(symbol, scan_context, scan_digest_id, intel, ai_verdict=ai_verdict_for_runner)
-                        except Exception as le:
-                            log.exception("%s: live/shadow multileg strategy execution failed", symbol)
+
+                    # Live trading: only run when broker is enabled and AI verdict available
+                    broker_enabled = False
+                    try:
+                        from config.runtime_config import is_broker_trade_enabled
+                        broker_enabled = is_broker_trade_enabled()
+                    except Exception:
+                        broker_enabled = False
+
+                    if broker_enabled and sid != "TIMEFRAME" and ai_verdict_for_runner is None:
+                        log.error("%s: skipping %s live execution because AI verdict unavailable in broker mode", symbol, sid)
+                    elif broker_enabled:
+                        if sid in ("CORE", "NG_MOMENTUM", "NG_PARITY", "NG_EVENT"):
+                            try:
+                                from src.engine.live_trading import run_live_trading
+                                run_live_trading(symbol, scan_context, scan_digest_id, intel, ai_verdict=llm_verdict)
+                            except Exception as le:
+                                log.exception("%s: live/shadow trading execution failed for %s", symbol, sid)
+                        elif sid == "TIMEFRAME":
+                            try:
+                                from src.engine.live_trading import run_live_timeframe_strategy
+                                run_live_timeframe_strategy(symbol, scan_context, scan_digest_id, intel, ai_verdict=llm_verdict)
+                            except Exception as le:
+                                log.exception("%s: live/shadow timeframe strategy execution failed", symbol)
+                        elif sid == "MULTILEG":
+                            try:
+                                from src.engine.multileg_live_trading import run_multileg_live_strategy
+                                run_multileg_live_strategy(symbol, scan_context, scan_digest_id, intel, ai_verdict=ai_verdict_for_runner)
+                            except Exception as le:
+                                log.exception("%s: live/shadow multileg strategy execution failed", symbol)
             except Exception:
                 position_sync_dirty_state.mark_dirty("broker_action_failed")
                 kite_health_cache.invalidate("session_ok")

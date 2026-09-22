@@ -1163,13 +1163,13 @@ def run_live_trading(
                 close_status = ""
                 close_reason = ""
 
-                if is_sell and exit_premium >= sl_premium:
+                if is_sell and sl_premium > 0 and exit_premium >= sl_premium:
                     close_status, close_reason = "CLOSED_SL", "stop loss hit"
-                elif is_sell and exit_premium <= target_premium:
+                elif is_sell and target_premium > 0 and exit_premium <= target_premium:
                     close_status, close_reason = "CLOSED_TARGET", "target hit"
-                elif not is_sell and exit_premium <= sl_premium:
+                elif not is_sell and sl_premium > 0 and exit_premium <= sl_premium:
                     close_status, close_reason = "CLOSED_SL", "stop loss hit"
-                elif not is_sell and exit_premium >= target_premium:
+                elif not is_sell and target_premium > 0 and exit_premium >= target_premium:
                     close_status, close_reason = "CLOSED_TARGET", "target hit"
 
                 if close_status:
@@ -1215,6 +1215,14 @@ def run_live_trading(
         "expiry": expiry,
         "option_rows": option_rows,
     }
+    # M1: Use intel fields first, fallback to telegram text parsing
+    verdict = intel.get("verdict_label", "")
+    confidence = int(intel.get("confidence") or 0)
+    if not verdict:
+        verdict, confidence = _parse_verdict_and_confidence(
+            intel.get("telegram_text") or ""
+        )
+
     # Pass LLM instrument so GO_LONG/GO_SHORT use the actual CE/PE from the LLM
     if ai_verdict is not None:
         ctx["instrument"] = getattr(ai_verdict, "instrument", None) or (
@@ -1935,7 +1943,7 @@ def run_live_timeframe_strategy(
     ):
         # Only place GTT if order is complete
         try:
-            sl_trigger = float(sl_premium)            # BUG-C04 FIX: Use tight 1% / max ₹0.50 tick buffer instead of 5% slippage
+            sl_trigger = float(sl_premium)
             sl_buf = max(0.25, min(round(sl_trigger * 0.01, 2), 0.50))
             sl_limit = (
                 round(sl_trigger - sl_buf, 2)
@@ -2416,15 +2424,42 @@ def execute_panic_shutdown() -> str:
         log.warning("[PANIC] Kite client unavailable — unable to send market orders to broker directly")
 
     now_iso = datetime.now(timezone.utc).isoformat()
-    with get_conn() as conn:
-        closed_single = conn.execute(
-            "UPDATE live_trades SET status='CLOSED_MANUAL', closed_at=?, reason='Panic emergency square-off' WHERE status='OPEN'",
-            (now_iso,),
-        ).rowcount
-        closed_books = conn.execute(
-            "UPDATE multi_leg_trades SET status='CLOSED', closed_at=?, reason='Panic emergency square-off' WHERE status='OPEN'",
-            (now_iso,),
-        ).rowcount
+    # M3 FIX: Do NOT unconditionally mark every open row CLOSED when some
+    # broker square-off orders FAILED. Phantom-closing a row whose position is
+    # still live at the broker hides the exposure (no monitoring, no alerts).
+    # When any square-off failed we keep rows OPEN and raise a critical alert so
+    # the operator reconciles manually; the normal reconciliation path
+    # (sync_direct_kite_positions / orphan-GTT sweep) will clear genuinely-flat
+    # rows on the next cycle.
+    if failed_orders:
+        log.critical(
+            "[PANIC] %d square-off order(s) FAILED — leaving live_trades/multi_leg_trades OPEN "
+            "to avoid phantom-closing live broker exposure. Manual reconciliation required: %s",
+            len(failed_orders),
+            failed_orders,
+        )
+        closed_single = 0
+        closed_books = 0
+        try:
+            from src.alerts.telegram_dispatcher import send_text
+
+            send_text(
+                "🚨 **[PANIC] PARTIAL SQUARE-OFF** — some broker orders failed. DB rows left OPEN "
+                "for the failed positions. Reconcile manually in Kite.\n"
+                f"Failed: {failed_orders}"
+            )
+        except Exception:
+            pass
+    else:
+        with get_conn() as conn:
+            closed_single = conn.execute(
+                "UPDATE live_trades SET status='CLOSED_MANUAL', closed_at=?, reason='Panic emergency square-off' WHERE status='OPEN'",
+                (now_iso,),
+            ).rowcount
+            closed_books = conn.execute(
+                "UPDATE multi_leg_trades SET status='CLOSED', closed_at=?, reason='Panic emergency square-off' WHERE status='OPEN'",
+                (now_iso,),
+            ).rowcount
 
     summary_lines = [
         "🚨 **PANIC SHUTDOWN COMPLETE** 🚨",
@@ -2918,9 +2953,9 @@ def sync_direct_kite_positions() -> None:
 
 
 def check_all_live_exits_every_2_min() -> None:
-    """Poll all open live positions and books every 2 minutes for stop-loss, target, or expiry exit.
+    """Poll all open live positions and books every 15 minutes for stop-loss, target, or expiry exit.
 
-    Runs as a fast periodic background job, decoupled from the 60-minute NSE scan interval.
+    Runs as a periodic background job, decoupled from the 60-minute NSE scan interval.
     """
     from src.models.schema import get_conn
     from src.fetchers.router import fetch_option_chain
@@ -2990,6 +3025,7 @@ def check_all_live_exits_every_2_min() -> None:
                     scan_context=scan_ctx,
                     digest_id=f"poll_ml_{int(datetime.now().timestamp())}",
                     intel={"verdict_label": "Neutral", "confidence": 50},
+                    exit_check=True,
                 )
             except Exception as me:
                 log.warning("[live-exit-poll] Error polling live multileg books for %s: %s", sym, me)

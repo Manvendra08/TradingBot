@@ -834,8 +834,9 @@ def _process_telegram_command(command_text: str) -> None:
             # Disk space
             try:
                 import shutil as _shutil
+                from pathlib import Path as _Path
 
-                _usage = _shutil.disk_usage(Path(__file__).resolve().parents[2])
+                _usage = _shutil.disk_usage(_Path(__file__).resolve().parents[2])
                 _free_gb = _usage.free / (1024 * 1024 * 1024)
                 lines.append(f"• *Disk free:* {_free_gb:.2f} GB")
             except Exception as _disk_err:
