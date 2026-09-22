@@ -32,7 +32,7 @@ log = logging.getLogger(__name__)
 CACHE_DIR = Path(DATA_DIR) / "cache"
 NEWS_CACHE_FILE = CACHE_DIR / "news_sentiment.json"
 DEFAULT_POLL_INTERVAL_SECONDS = 15 * 60  # 15 minutes
-OMNIROUTER_NEWS_MODEL = "Claude/Free"
+OMNIROUTER_NEWS_MODEL = "Claude/Antigravity"
 OMNIROUTER_NEWS_TIMEOUT = 35.0
 
 # In-memory fast cache
@@ -171,12 +171,12 @@ def _evaluate_sentiment_via_omnirouter(
                     raw_dir = str(parsed.get("direction", "")).upper().strip()
                     if raw_dir not in {"BULLISH", "BEARISH", "MIXED"}:
                         raw_dir = _dir_label(clamped_score)
-                    reason = str(parsed.get("reason", "")).strip() or "OmniRouter Claude/Free assessment"
+                    reason = str(parsed.get("reason", "")).strip() or "OmniRouter Claude/Antigravity assessment"
                     log.info(
                         "[news_worker] OmniRouter %s evaluated %s: score=%.2f direction=%s in %.2fs (%s)",
                         OMNIROUTER_NEWS_MODEL, symbol, clamped_score, raw_dir, dt, reason[:60],
                     )
-                    return (round(clamped_score, 3), raw_dir, "omnirouter_claude_free", reason)
+                    return (round(clamped_score, 3), raw_dir, "omnirouter_claude_antigravity", reason)
                 else:
                     log.warning(
                         "[news_worker] OmniRouter %s returned unparseable content for %s (took %.2fs): %s",
@@ -352,7 +352,7 @@ def get_cached_news_sentiment(
         "current_news_direction": direction,
         "news_score_current": effective_score,
         "news_score_day": round(float(data.get("news_score_day", raw_score)), 3),
-        "evaluator": data.get("evaluator", "omnirouter_claude_free"),
+        "evaluator": data.get("evaluator", "omnirouter_claude_antigravity"),
         "reason": data.get("reason", ""),
         "age_minutes": round(age_minutes, 1),
         "evaluated_at": data.get("evaluated_at"),
