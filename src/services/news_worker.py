@@ -33,7 +33,7 @@ CACHE_DIR = Path(DATA_DIR) / "cache"
 NEWS_CACHE_FILE = CACHE_DIR / "news_sentiment.json"
 DEFAULT_POLL_INTERVAL_SECONDS = 15 * 60  # 15 minutes
 OMNIROUTER_NEWS_MODEL = "Claude/Free"
-OMNIROUTER_NEWS_TIMEOUT = 25.0
+OMNIROUTER_NEWS_TIMEOUT = 35.0
 
 # In-memory fast cache
 _LOCK = threading.Lock()
@@ -55,6 +55,8 @@ def _extract_json_dict(text: str) -> dict | None:
     if not text:
         return None
     text = text.strip()
+    # Strip <think>...</think> blocks from reasoning models
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
     match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if match:
         try:
@@ -154,9 +156,17 @@ def _evaluate_sentiment_via_omnirouter(
             if choices:
                 msg = choices[0].get("message", {})
                 content = msg.get("content") or ""
+                if not content and "reasoning" in msg:
+                    content = msg.get("reasoning") or ""
                 parsed = _extract_json_dict(content)
-                if parsed and "score" in parsed:
-                    raw_score = float(parsed["score"])
+                score_val = None
+                if parsed:
+                    score_val = parsed.get("score")
+                    if score_val is None:
+                        score_val = parsed.get("sentiment_score") or parsed.get("sentiment")
+
+                if parsed and score_val is not None:
+                    raw_score = float(score_val)
                     clamped_score = max(-1.0, min(1.0, raw_score))
                     raw_dir = str(parsed.get("direction", "")).upper().strip()
                     if raw_dir not in {"BULLISH", "BEARISH", "MIXED"}:
@@ -167,10 +177,16 @@ def _evaluate_sentiment_via_omnirouter(
                         OMNIROUTER_NEWS_MODEL, symbol, clamped_score, raw_dir, dt, reason[:60],
                     )
                     return (round(clamped_score, 3), raw_dir, "omnirouter_claude_free", reason)
-        log.warning(
-            "[news_worker] OmniRouter returned status %d for %s (took %.2fs). Falling back to regex.",
-            resp.status_code, symbol, dt,
-        )
+                else:
+                    log.warning(
+                        "[news_worker] OmniRouter %s returned unparseable content for %s (took %.2fs): %s",
+                        OMNIROUTER_NEWS_MODEL, symbol, dt, content[:150],
+                    )
+        else:
+            log.warning(
+                "[news_worker] OmniRouter returned status %d for %s (took %.2fs). Falling back to regex.",
+                resp.status_code, symbol, dt,
+            )
     except Exception as exc:
         log.warning(
             "[news_worker] OmniRouter news evaluation failed for %s: %s. Falling back to regex.",
@@ -211,7 +227,10 @@ def _save_disk_cache(cache_data: dict[str, dict[str, Any]]) -> None:
 
 
 def evaluate_and_cache_news(symbols: list[str] | None = None) -> dict[str, dict[str, Any]]:
-    """Poll news feeds for target symbols, score sentiment via OmniRouter Claude/Free, and update cache."""
+    """Poll news feeds for target symbols, score sentiment via OmniRouter Claude/Free, and update cache.
+    Evaluates symbols concurrently via ThreadPoolExecutor to prevent cumulative queue delays.
+    """
+    from concurrent.futures import ThreadPoolExecutor
     from src.fetchers.news_fetcher import fetch_news
 
     targets = symbols or list(WATCH_SYMBOLS)
@@ -219,15 +238,12 @@ def evaluate_and_cache_news(symbols: list[str] | None = None) -> dict[str, dict[
     now_ts = time.time()
     now_iso = datetime.now(timezone.utc).isoformat()
 
-    for sym in targets:
-        sym_clean = sym.upper().strip().split()[0]
+    def _eval_single(sym_clean: str) -> tuple[str, dict[str, Any]] | None:
         try:
-            # fetch_news handles symbol-specific scrapers and deduplication
             res = fetch_news(sym_clean)
             if not isinstance(res, dict):
-                continue
+                return None
 
-            # Deterministic fallback regex score
             regex_score = float(res.get("news_score_current", 0.0))
             regex_score = max(-1.0, min(1.0, regex_score))
 
@@ -249,13 +265,24 @@ def evaluate_and_cache_news(symbols: list[str] | None = None) -> dict[str, dict[
                 "evaluated_timestamp": now_ts,
                 "items": items[:10],
             }
-            updated[sym_clean] = entry
             log.info(
                 "[news_worker] Evaluated %s via %s: score=%.3f direction=%s articles=%d (%s)",
                 sym_clean, evaluator, entry["raw_score"], entry["direction"], entry["count_24h"], reason[:50],
             )
+            return sym_clean, entry
         except Exception as exc:
             log.warning("[news_worker] Failed evaluating news for %s: %s", sym_clean, exc)
+            return None
+
+    clean_targets = [s.upper().strip().split()[0] for s in targets]
+    max_workers = min(4, max(1, len(clean_targets)))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(_eval_single, s) for s in clean_targets]
+        for f in futures:
+            res = f.result()
+            if res:
+                sym_clean, entry = res
+                updated[sym_clean] = entry
 
     if updated:
         with _LOCK:
