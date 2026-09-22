@@ -67,15 +67,22 @@ def _build_state_text(
         parts.append(f"PCR: {pcr:.2f}" if isinstance(pcr, float) else f"PCR: {pcr}")
 
     if intel:
-        td = intel.get("trade_decision") or intel.get("direction")
-        if td:
-            parts.append(f"OI direction: {td}")
+        verdict = intel.get("verdict_label") or intel.get("direction")
+        if verdict:
+            parts.append(f"Engine verdict: {verdict}")
         conf = intel.get("confidence")
         if conf is not None:
-            parts.append(f"OI confidence: {conf}%")
+            parts.append(f"Engine confidence: {conf}%")
         sentiment = intel.get("sentiment") or intel.get("oi_sentiment")
         if sentiment:
             parts.append(f"Sentiment: {sentiment}")
+
+    t1h = scan_context.get("trend_1h") or (intel or {}).get("trend_1h")
+    t3h = scan_context.get("trend_3h") or (intel or {}).get("trend_3h")
+    if t1h:
+        parts.append(f"1H trend: {t1h}")
+    if t3h:
+        parts.append(f"3H trend: {t3h}")
 
     diagnostics = scan_context.get("diagnostics") or {}
     max_oi = diagnostics.get("max_oi_delta_pct")
@@ -116,10 +123,18 @@ def jev_fast_gate(
 
     # Strong OI signal override — always proceed, no need to ask Jev
     if intel:
+        verdict = str(intel.get("verdict_label") or "").strip()
+        conf = int(intel.get("confidence") or 0)
+        # 1. High-confidence engine buildup/writing verdicts (>= 75%) bypass Jev
+        if conf >= 75 and verdict in ("Long Buildup", "Short Buildup", "Call Writing", "Put Writing"):
+            v_dir = "BULLISH" if verdict in ("Long Buildup", "Put Writing") else "BEARISH"
+            log.info("jev: strong engine signal '%s' (%d%%) on %s — bypassing Jev gate", verdict, conf, symbol)
+            return JevResult(proceed=True, direction=v_dir, conviction=conf / 100.0, skipped=True)
+
         for key in _STRONG_OI_KEYS:
             if intel.get(key):
                 log.debug("jev: strong OI signal '%s' on %s — bypassing Jev gate", key, symbol)
-                return JevResult(proceed=True, direction=intel.get("trade_decision"), conviction=1.0, skipped=True)
+                return JevResult(proceed=True, direction=intel.get("direction") or verdict or None, conviction=1.0, skipped=True)
 
     try:
         from src.services.typesafe_client import evaluate_system_one

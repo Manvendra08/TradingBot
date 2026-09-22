@@ -102,8 +102,13 @@ def get_runner(sid: str) -> Optional[Callable]:
     elif sid == "NG_MOMENTUM":
         def run_ng_momentum_strategy(sym, scan_ctx, dig_id, intel_dict, ai_verdict=None):
             from src.engine.ng_momentum_strategy import check_ng_momentum_entry
-            verdict = intel_dict.get("verdict_label", "")
-            side = "BUY" if verdict in ("LONG", "BULLISH") else "SELL" if verdict in ("SHORT", "BEARISH") else None
+            verdict = str(intel_dict.get("verdict_label", "")).upper()
+            if any(k in verdict for k in ("LONG", "BULLISH", "PUT WRITING")):
+                side = "BUY"
+            elif any(k in verdict for k in ("SHORT", "BEARISH", "CALL WRITING")):
+                side = "SELL"
+            else:
+                side = None
             if side:
                 ok, reason = check_ng_momentum_entry(side)
                 if not ok:
