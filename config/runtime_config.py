@@ -220,6 +220,16 @@ def save_runtime_config(config: dict) -> None:
             _CACHED_MTIME = 0.0
 
 
+def update_runtime_config(updates: dict) -> dict:
+    """Update runtime config with partial updates and persist atomically."""
+    if not isinstance(updates, dict):
+        raise TypeError("Updates must be a dict")
+    config = load_runtime_config()
+    config.update(updates)
+    save_runtime_config(config)
+    return config
+
+
 def get_scan_frequency_minutes() -> int:
     return load_runtime_config().get("scan_frequency_minutes", 15)
 
