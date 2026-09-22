@@ -15,6 +15,7 @@ Credentials are loaded from .env if present, else from system environment.
 import argparse
 import logging
 import socket
+import time
 
 # ── Force IPv4 for HTTP clients (urllib3-scoped) ───────────────────────────
 # Zerodha Kite whitelists IPv4 only. When the OS prefers IPv6, requests
@@ -169,11 +170,17 @@ Examples:
 
     # Default: restartable scheduler
     log.info("Starting scheduler — press Ctrl+C to stop")
-    from src.scheduler.job_runner import start_scheduler, request_scheduler_restart, is_scheduler_restart_requested
+    from src.scheduler.job_runner import (
+        start_scheduler,
+        request_scheduler_restart,
+        is_scheduler_restart_requested,
+        consume_scheduler_restart_request,
+    )
 
+    immediate_run = args.now
     while True:
         try:
-            start_scheduler(immediate=args.now)
+            start_scheduler(immediate=immediate_run)
         except KeyboardInterrupt:
             log.info("[main] Scheduler interrupted by Ctrl+C")
             break
@@ -182,9 +189,11 @@ Examples:
             time.sleep(5)
             continue
 
-        if not is_scheduler_restart_requested():
+        if not consume_scheduler_restart_request():
             break
-        log.info("[main] Restarting scheduler loop")
+        immediate_run = False
+        log.info("[main] Restarting scheduler loop in 2 seconds...")
+        time.sleep(2)
 
 
 if __name__ == "__main__":

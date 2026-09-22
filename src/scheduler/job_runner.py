@@ -58,10 +58,26 @@ def request_scheduler_restart() -> None:
 
 
 def is_scheduler_restart_requested() -> bool:
-    """Check and consume the scheduler restart request."""
+    """Check whether a scheduler restart was requested without clearing the flag."""
     global _scheduler_restart_requested
     with _scheduler_restart_lock:
         return _scheduler_restart_requested
+
+
+def consume_scheduler_restart_request() -> bool:
+    """Check and atomically consume (clear) the scheduler restart request flag."""
+    global _scheduler_restart_requested
+    with _scheduler_restart_lock:
+        requested = _scheduler_restart_requested
+        _scheduler_restart_requested = False
+        return requested
+
+
+def reset_scheduler_restart_request() -> None:
+    """Explicitly reset the scheduler restart flag."""
+    global _scheduler_restart_requested
+    with _scheduler_restart_lock:
+        _scheduler_restart_requested = False
 
 def touch_heartbeat(detail: str = "running") -> None:
     """Touch the heartbeat file and update scheduler health state."""
@@ -1192,6 +1208,8 @@ def _update_live_cmps() -> None:
 def start_scheduler(immediate: bool = False):
     from src.models.schema import delete_expired_contracts
 
+    reset_scheduler_restart_request()
+
     log.info(
         "Scheduler started (immediate_scan=%s) — default interval: %d min | NSE interval: %d min | MCX interval: %d min | symbols: %s",
         immediate,
@@ -1204,15 +1222,16 @@ def start_scheduler(immediate: bool = False):
     touch_heartbeat("scheduler_starting")
 
     # Start background daemon to keep heartbeat fresh even during long idle/scan cycles
-    def _heartbeat_daemon():
-        while True:
-            try:
-                touch_heartbeat("scheduler_alive")
-            except Exception:
-                pass
-            time.sleep(30)
+    if not any(t.name == "scheduler-heartbeat" and t.is_alive() for t in threading.enumerate()):
+        def _heartbeat_daemon():
+            while True:
+                try:
+                    touch_heartbeat("scheduler_alive")
+                except Exception:
+                    pass
+                time.sleep(30)
 
-    threading.Thread(target=_heartbeat_daemon, daemon=True, name="scheduler-heartbeat").start()
+        threading.Thread(target=_heartbeat_daemon, daemon=True, name="scheduler-heartbeat").start()
 
     # Run a cleanup of expired data on startup
     delete_expired_contracts()
@@ -1983,12 +2002,12 @@ def start_scheduler(immediate: bool = False):
                     target=_run_autopsy, daemon=True, name="autopsy-writer"
                 ).start()
 
-            # 7. Live Positions & Natural Gas Exit Check Loop (Runs every 120 seconds)
-            if time.time() - last_ng_exit_check >= 120:
+            # 7. Live Positions & Natural Gas Exit Check Loop (Runs every 900 seconds)
+            if time.time() - last_ng_exit_check >= 900:
                 last_ng_exit_check = time.time()
 
                 def _run_fast_exits():
-                    # Check all open live positions and multileg books across all symbols every 2 minutes
+                    # Check all open live positions and multileg books across all symbols every 15 minutes
                     try:
                         from src.engine.live_trading import check_all_live_exits_every_2_min
                         check_all_live_exits_every_2_min()
