@@ -391,19 +391,35 @@ def build_multileg_prompt(
     else:
         oi_flow_ground_truth = "MIXED / CONSOLIDATION"
 
-    # Jev System-1 fast read (pre-computed directional bias)
-    jev_section = ""
-    jev_dir = intel.get("jev_direction") if intel else None
-    jev_conv = intel.get("jev_conviction") if intel else None
-    if jev_dir and jev_conv is not None:
-        jev_section = f"\nJev System-1: direction={jev_dir} conviction={jev_conv:.2f} (fast pre-LLM read — factor into strategy selection bias)"
+    # Directional Strategy Directive from Quant Engine Ground Truth
+    v_upper = str(verdict_label).upper()
+    is_strong_bull = any(k in v_upper for k in ("LONG", "BULLISH", "PUT WRITING")) and confidence >= 65
+    is_strong_bear = any(k in v_upper for k in ("SHORT", "BEARISH", "CALL WRITING")) and confidence >= 65
+
+    directional_mandate = ""
+    if is_strong_bull:
+        directional_mandate = f"""
+*** QUANT ENGINE MANDATE: HIGH-CONVICTION BULLISH ({verdict_label} {confidence}%) ***
+• The quantitative engine has established a high-conviction BULLISH regime.
+• Candidate Strategy Priority: BULL_PUT_SPREAD (credit put spread with defined risk) or JADE_LIZARD.
+• DO NOT construct delta-neutral straddles, strangles, or bear spreads fighting this upward momentum.
+• Leg Structure: Sell liquid OTM PE (Δ 0.15-0.30) below support, buy lower OTM PE wing for defined risk.
+"""
+    elif is_strong_bear:
+        directional_mandate = f"""
+*** QUANT ENGINE MANDATE: HIGH-CONVICTION BEARISH ({verdict_label} {confidence}%) ***
+• The quantitative engine has established a high-conviction BEARISH regime.
+• Candidate Strategy Priority: BEAR_CALL_SPREAD (credit call spread with defined risk).
+• DO NOT construct delta-neutral straddles, strangles, or bull spreads fighting this downward momentum.
+• Leg Structure: Sell liquid OTM CE (Δ 0.15-0.30) above resistance, buy higher OTM CE wing for defined risk.
+"""
 
     prompt = f"""NSE/MCX options seller. Design a multi-leg premium strategy.
 
 {symbol} | ₹{underlying:.2f} | ATM {atm_strike:.0f} | {expiry} (DTE {dte})
 Verdict: {verdict_label} {confidence}% | PCR {pcr:.2f} | S={support:.0f} R={resistance:.0f} Pain={max_pain:.0f} | Regime: {regime}
 OI Flow: CE Δ {ce_oi_chg:+,} | PE Δ {pe_oi_chg:+,} → {oi_flow_ground_truth}
-Price Move: {px_chg_pts} pts ({px_chg_pct}%){jev_section}
+Price Move: {px_chg_pts} pts ({px_chg_pct}%)
 
 OPTIONS MARKET MECHANICS (MANDATORY WRITER GROUND TRUTH — NEVER INVERT):
 • PE Buildup (Positive PE OI change) = PUT WRITING / PUT SELLING by institutions establishing support floor → BULLISH. NEVER interpret PE buildup as bearish short positioning!
@@ -433,7 +449,7 @@ CONSTRAINTS (non-negotiable):
 
 
 TASK: Select best multi-leg strategy — or NO_TRADE. You are selling premium: your edge is IV overpricing realized movement plus theta. If that edge is absent, there is no strategy to pick.
-
+{directional_mandate}
 EDGE CHECKS (before choosing legs):
 1. Expected move ≈ ATM CE LTP + ATM PE LTP (straddle). Short strikes must sit OUTSIDE spot ± expected move — unless deliberately trading a straddle.
 2. IV must pay for the risk: if ATM IV is depressed and OTM credits are thin relative to strike width, prefer defined-risk spreads (IRON_CONDOR, BEAR_CALL_SPREAD, BULL_PUT_SPREAD) over naked shorts.
@@ -441,11 +457,11 @@ EDGE CHECKS (before choosing legs):
 4. Max pain {max_pain:.0f} is a magnet into expiry — shorts straddling it benefit; shorts fighting it need wider strikes.
 
 Strategy Map:
-- Sideways → SHORT_STRADDLE (ATM) or SHORT_STRANGLE (OTM)
-- Rangebound+defined → IRON_CONDOR (Wings MUST be sufficiently wide to avoid insurance drag: NIFTY ≥100-200 pts, BANKNIFTY ≥300-500 pts, SENSEX ≥400-800 pts. Never pick buy wings adjacent or too close to sell legs!)
-- Bearish+defined → BEAR_CALL_SPREAD | Bullish+defined → BULL_PUT_SPREAD (spread width ≥ 0.5% of spot)
-- Bullish+high IV → JADE_LIZARD
-- Uncertain → NO_TRADE is always acceptable; a missed trade costs nothing.
+- Strong Bullish → BULL_PUT_SPREAD (spread width ≥ 0.5% of spot) or JADE_LIZARD
+- Strong Bearish → BEAR_CALL_SPREAD (spread width ≥ 0.5% of spot)
+- Sideways / Consolidation → SHORT_STRADDLE (ATM) or SHORT_STRANGLE (OTM)
+- Rangebound + defined → IRON_CONDOR (Wings MUST be sufficiently wide to avoid insurance drag: NIFTY ≥100-200 pts, BANKNIFTY ≥300-500 pts, SENSEX ≥400-800 pts, NATURALGAS ≥5-10 pts. Never pick buy wings adjacent or too close to sell legs!)
+- Uncertain / No edge → NO_TRADE is always acceptable; a missed trade costs nothing.
 
 MCX Parity (NATURALGAS/CRUDEOIL):
 - Deviation >+1.5%: inflated → BEAR_CALL_SPREAD or sell upper CE

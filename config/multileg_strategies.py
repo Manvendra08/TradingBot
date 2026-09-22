@@ -45,6 +45,8 @@ MIN_WING_WIDTH_POINTS = {
     "FINNIFTY": 100.0,
     "MIDCPNIFTY": 50.0,
     "SENSEX": 400.0,      # SENSEX 200 pt wings are too narrow; require >= 400 pts (ideally 500+)
+    "NATURALGAS": 5.0,    # Natural Gas strike interval is 5.0 pts
+    "CRUDEOIL": 50.0,     # Crude Oil strike interval is 50-100 pts
     "DEFAULT": 50.0,
 }
 

@@ -1238,7 +1238,6 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
 
     intel_text_base = intel_text
     exit_advice = None
-    _jev_proceed = True  # default: proceed with LLM; Jev may override below
     if not _DISABLE_LLM_ENV:
         if open_trade:
             try:
@@ -1261,33 +1260,19 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
             if is_broker_trade_enabled():
                 should_run_sync = True
 
-            # ── Jev System-1 fast gate ──────────────────────────────────────
-            # Run a cheap TypeSafe AI call first; if conviction < floor, skip
-            # the expensive Claude/OmniRouter enrichment entirely.
-            _jev_proceed = True
-            try:
-                from src.engine.jev_gate import jev_fast_gate
-                _jev_result = jev_fast_gate(symbol, scan_context, intel, news_data)
-                _jev_proceed = _jev_result.proceed
-                if not _jev_result.skipped and _jev_result.direction:
-                    # Surface Jev's quick direction read in intel for downstream
-                    if isinstance(intel, dict):
-                        intel.setdefault("jev_direction", _jev_result.direction)
-                        intel.setdefault("jev_conviction", round(_jev_result.conviction, 3))
-                if not _jev_proceed:
-                    log.info(
-                        "%s: Jev System-1 low conviction (%.2f) — skipping heavy LLM enrichment",
-                        symbol, _jev_result.conviction,
-                    )
-            except Exception:
-                log.debug("%s: Jev gate failed — defaulting to proceed", symbol)
-            # ───────────────────────────────────────────────────────────────
+            # ── Deterministic Engine System-1 Gate ────────────────────────
+            # Skip heavy single-leg LLM enrichment on un-tradeable noise / low conviction chop
+            _engine_verdict = str((intel or {}).get("verdict_label") or "").strip()
+            _engine_conf = int((intel or {}).get("confidence") or 0)
+            _is_low_conviction = _engine_verdict == "Low Conviction" or _engine_conf < 50
 
             if not should_run_sync:
                 intel_text += "\n💡 *Thesis:* ⏳ Pending async analysis...\n"
-            elif not _jev_proceed:
-                # Low-conviction: no async dispatch either; skip entirely
-                pass
+            elif _is_low_conviction:
+                log.info(
+                    "%s: Quant engine reports %s (%d%%) — skipping heavy single-leg LLM enrichment",
+                    symbol, _engine_verdict or "Low Conviction", _engine_conf,
+                )
             else:
                 try:
                     from src.engine.llm_enrichment import get_llm_verdict
@@ -1313,43 +1298,22 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
     # Pre-fetch multi-leg verdict for MULTILEG strategy symbols to avoid
     # single-leg/multi-leg schema mismatch and ensure the LLM verdict
     # is available when the runner executes.
-    # Jev gates multi-leg with a softer floor (0.15 vs 0.35 single-leg)
-    # because neutral setups are valid for strangles/condors/straddles.
-    _MULTILEG_JEV_FLOOR = 0.15
     multileg_verdict = None
     if not is_test:
         try:
             from src.engine.strategy_registry import active_strategies_for
             if "MULTILEG" in active_strategies_for(symbol):
-                # ── Jev multileg gate ──────────────────────────────────────
-                _ml_jev_skip = False
-                _ml_jev_conv = 1.0
-                try:
-                    # Reuse existing _jev_result if available (computed above)
-                    if '_jev_result' in locals() and not _jev_result.skipped:
-                        _ml_jev_conv = _jev_result.conviction
-                        if _ml_jev_conv < _MULTILEG_JEV_FLOOR:
-                            _ml_jev_skip = True
-                            log.info(
-                                "%s: Jev multileg gate — conviction %.2f below floor %.2f — skipping heavy multileg LLM",
-                                symbol, _ml_jev_conv, _MULTILEG_JEV_FLOOR,
-                            )
-                except Exception:
-                    log.debug("%s: Jev multileg gate check failed — proceeding", symbol)
-                # ──────────────────────────────────────────────────────────
-
-                if not _ml_jev_skip:
-                    from src.engine.llm_enrichment import get_multileg_verdict
-                    multileg_verdict = get_multileg_verdict(
-                        symbol=symbol,
-                        intel=intel,
-                        scan_context=scan_context,
-                        alerts=new_alerts,
-                        news_data=news_data,
-                        open_books=None,  # will be fetched inside if needed
-                    )
-                    if multileg_verdict and isinstance(intel, dict):
-                        intel["multileg_verdict"] = multileg_verdict
+                from src.engine.llm_enrichment import get_multileg_verdict
+                multileg_verdict = get_multileg_verdict(
+                    symbol=symbol,
+                    intel=intel,
+                    scan_context=scan_context,
+                    alerts=new_alerts,
+                    news_data=news_data,
+                    open_books=None,  # will be fetched inside if needed
+                )
+                if multileg_verdict and isinstance(intel, dict):
+                    intel["multileg_verdict"] = multileg_verdict
         except Exception:
             log.exception("%s: Multi-leg pre-fetch failed gracefully", symbol)
 
