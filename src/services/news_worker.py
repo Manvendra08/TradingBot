@@ -16,11 +16,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+import requests
 
 from config.settings import DATA_DIR, WATCH_SYMBOLS
 
@@ -29,6 +32,8 @@ log = logging.getLogger(__name__)
 CACHE_DIR = Path(DATA_DIR) / "cache"
 NEWS_CACHE_FILE = CACHE_DIR / "news_sentiment.json"
 DEFAULT_POLL_INTERVAL_SECONDS = 15 * 60  # 15 minutes
+OMNIROUTER_NEWS_MODEL = "Claude/Free"
+OMNIROUTER_NEWS_TIMEOUT = 25.0
 
 # In-memory fast cache
 _LOCK = threading.Lock()
@@ -43,6 +48,141 @@ def _dir_label(score: float) -> str:
     if score <= -0.35:
         return "BEARISH"
     return "MIXED"
+
+
+def _extract_json_dict(text: str) -> dict | None:
+    """Safely extract JSON object from LLM response text."""
+    if not text:
+        return None
+    text = text.strip()
+    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(1))
+        except Exception:
+            pass
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        try:
+            return json.loads(text[start : end + 1])
+        except Exception:
+            pass
+    try:
+        return json.loads(text)
+    except Exception:
+        return None
+
+
+def _evaluate_sentiment_via_omnirouter(
+    symbol: str,
+    items: list[dict],
+    fallback_score: float,
+) -> tuple[float, str, str, str]:
+    """Call OmniRouter with Claude/Free combo to evaluate sentiment.
+
+    Returns:
+        (score, direction, evaluator, reason)
+    """
+    if not items:
+        return (0.0, "MIXED", "empty", "No news headlines available")
+
+    # Format the top headlines
+    headlines = []
+    for idx, item in enumerate(items[:6], 1):
+        title = (item.get("title") or "").strip()
+        provider = (item.get("provider") or "").strip()
+        if title:
+            headlines.append(f"{idx}. [{provider}] {title}" if provider else f"{idx}. {title}")
+
+    if not headlines:
+        return (0.0, "MIXED", "empty", "No valid headline text")
+
+    headlines_text = "\n".join(headlines)
+
+    base_url = (
+        os.environ.get("OMNIROUTER_BASE_URL") or "http://localhost:20128/v1"
+    ).strip().rstrip("/").replace(":3000", ":20128")
+    if not base_url.endswith("/chat/completions"):
+        url = f"{base_url}/chat/completions"
+    else:
+        url = base_url
+
+    api_key = os.environ.get("OMNIROUTER_API_KEY", "sk-omniroute")
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "Connection": "close",
+        "x-omniroute-compression": "off",
+    }
+
+    system_prompt = (
+        "You are an expert financial and commodity market sentiment analyst for algorithmic trading.\n"
+        "Evaluate the net short-term price sentiment of the provided news headlines for the given asset.\n"
+        "Output ONLY a valid JSON object with exactly these fields:\n"
+        '{"score": float between -1.0 (strongly bearish) and 1.0 (strongly bullish), '
+        '"direction": "BULLISH" | "BEARISH" | "MIXED", '
+        '"reason": "brief 1-sentence analytical reason"}'
+    )
+
+    user_prompt = f"Asset: {symbol}\nHeadlines:\n{headlines_text}"
+
+    json_payload = {
+        "model": OMNIROUTER_NEWS_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.1,
+        "max_tokens": 512,
+        "response_format": {"type": "json_object"},
+    }
+
+    try:
+        t0 = time.time()
+        resp = requests.post(
+            url,
+            headers=headers,
+            json=json_payload,
+            timeout=OMNIROUTER_NEWS_TIMEOUT,
+        )
+        dt = time.time() - t0
+
+        if resp.status_code == 200:
+            resp_data = resp.json()
+            choices = resp_data.get("choices", [])
+            if choices:
+                msg = choices[0].get("message", {})
+                content = msg.get("content") or ""
+                parsed = _extract_json_dict(content)
+                if parsed and "score" in parsed:
+                    raw_score = float(parsed["score"])
+                    clamped_score = max(-1.0, min(1.0, raw_score))
+                    raw_dir = str(parsed.get("direction", "")).upper().strip()
+                    if raw_dir not in {"BULLISH", "BEARISH", "MIXED"}:
+                        raw_dir = _dir_label(clamped_score)
+                    reason = str(parsed.get("reason", "")).strip() or "OmniRouter Claude/Free assessment"
+                    log.info(
+                        "[news_worker] OmniRouter %s evaluated %s: score=%.2f direction=%s in %.2fs (%s)",
+                        OMNIROUTER_NEWS_MODEL, symbol, clamped_score, raw_dir, dt, reason[:60],
+                    )
+                    return (round(clamped_score, 3), raw_dir, "omnirouter_claude_free", reason)
+        log.warning(
+            "[news_worker] OmniRouter returned status %d for %s (took %.2fs). Falling back to regex.",
+            resp.status_code, symbol, dt,
+        )
+    except Exception as exc:
+        log.warning(
+            "[news_worker] OmniRouter news evaluation failed for %s: %s. Falling back to regex.",
+            symbol, exc,
+        )
+
+    return (
+        round(fallback_score, 3),
+        _dir_label(fallback_score),
+        "deterministic_regex",
+        "Fallback regex score",
+    )
 
 
 def _load_disk_cache() -> dict[str, dict[str, Any]]:
@@ -71,7 +211,7 @@ def _save_disk_cache(cache_data: dict[str, dict[str, Any]]) -> None:
 
 
 def evaluate_and_cache_news(symbols: list[str] | None = None) -> dict[str, dict[str, Any]]:
-    """Poll news feeds for target symbols, score sentiment, and update cache."""
+    """Poll news feeds for target symbols, score sentiment via OmniRouter Claude/Free, and update cache."""
     from src.fetchers.news_fetcher import fetch_news
 
     targets = symbols or list(WATCH_SYMBOLS)
@@ -87,24 +227,32 @@ def evaluate_and_cache_news(symbols: list[str] | None = None) -> dict[str, dict[
             if not isinstance(res, dict):
                 continue
 
-            raw_score = float(res.get("news_score_current", 0.0))
-            # Clamp to bounded float [-1.0, 1.0]
-            raw_score = max(-1.0, min(1.0, raw_score))
+            # Deterministic fallback regex score
+            regex_score = float(res.get("news_score_current", 0.0))
+            regex_score = max(-1.0, min(1.0, regex_score))
+
+            items = res.get("items", [])
+            score, direction, evaluator, reason = _evaluate_sentiment_via_omnirouter(
+                sym_clean, items, regex_score
+            )
 
             entry = {
                 "symbol": sym_clean,
-                "raw_score": round(raw_score, 3),
-                "direction": res.get("current_news_direction") or _dir_label(raw_score),
+                "raw_score": score,
+                "direction": direction,
+                "evaluator": evaluator,
+                "reason": reason,
+                "regex_fallback_score": round(regex_score, 3),
                 "count_24h": int(res.get("count_24h", 0)),
-                "news_score_day": float(res.get("news_score_day", raw_score)),
+                "news_score_day": float(res.get("news_score_day", score)),
                 "evaluated_at": now_iso,
                 "evaluated_timestamp": now_ts,
-                "items": res.get("items", [])[:10],
+                "items": items[:10],
             }
             updated[sym_clean] = entry
             log.info(
-                "[news_worker] Evaluated %s: score=%.3f direction=%s articles=%d",
-                sym_clean, entry["raw_score"], entry["direction"], entry["count_24h"],
+                "[news_worker] Evaluated %s via %s: score=%.3f direction=%s articles=%d (%s)",
+                sym_clean, evaluator, entry["raw_score"], entry["direction"], entry["count_24h"], reason[:50],
             )
         except Exception as exc:
             log.warning("[news_worker] Failed evaluating news for %s: %s", sym_clean, exc)
@@ -151,6 +299,8 @@ def get_cached_news_sentiment(
             "current_news_direction": "MIXED",
             "news_score_current": 0.0,
             "news_score_day": 0.0,
+            "evaluator": None,
+            "reason": None,
             "age_minutes": None,
             "evaluated_at": None,
             "cached": True,
@@ -175,6 +325,8 @@ def get_cached_news_sentiment(
         "current_news_direction": direction,
         "news_score_current": effective_score,
         "news_score_day": round(float(data.get("news_score_day", raw_score)), 3),
+        "evaluator": data.get("evaluator", "omnirouter_claude_free"),
+        "reason": data.get("reason", ""),
         "age_minutes": round(age_minutes, 1),
         "evaluated_at": data.get("evaluated_at"),
         "cached": True,
