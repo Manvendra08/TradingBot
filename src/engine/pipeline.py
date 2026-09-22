@@ -229,14 +229,12 @@ def _prefetch_symbol_data(symbol: str, fetched_at: str) -> dict:
     )
 
     skip_news = symbol.upper().strip().split()[0] in NSE_NEWS_BYPASS_SYMBOLS
-    news_future = None
     if skip_news:
         packet["news_result"] = {"ok": True, "data": None, "bypassed": True}
     else:
-        def _fetch_news():
-            from src.fetchers.news_fetcher import fetch_news
-            return fetch_news(symbol)
-        news_future = pipeline_io_executor.submit(lambda: run_with_deadline("news", _fetch_news))
+        from src.services.news_worker import get_cached_news_sentiment
+        cached_news = get_cached_news_sentiment(symbol)
+        packet["news_result"] = {"ok": True, "data": cached_news, "bypassed": False}
 
     # BUG-H06 FIX: Safe dict conversion for chart_result - evaluate chart first
     chart_result = chart_future.result()
@@ -246,15 +244,6 @@ def _prefetch_symbol_data(symbol: str, fetched_at: str) -> dict:
         packet["chart_result"] = chart_result
     else:
         packet["chart_result"] = {"ok": True, "data": chart_result}
-
-    if news_future:
-        news_result = news_future.result()
-        if hasattr(news_result, '__dict__'):
-            packet["news_result"] = news_result.__dict__
-        elif isinstance(news_result, dict):
-            packet["news_result"] = news_result
-        else:
-            packet["news_result"] = {"ok": True, "data": news_result}
 
     packet["oc_data"] = oc_data
     return packet

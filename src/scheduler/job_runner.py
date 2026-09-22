@@ -1243,6 +1243,14 @@ def start_scheduler(immediate: bool = False):
     except Exception as e:
         log.error("[scheduler] Failed to trigger startup index weights refresh: %s", e)
 
+    # Start Asynchronous News Sentiment Background Worker (15m poll interval)
+    try:
+        from src.services.news_worker import start_news_worker
+        start_news_worker(poll_interval_seconds=15 * 60)
+        log.info("[scheduler] Asynchronous News Sentiment Worker dispatched (interval=15m)")
+    except Exception as e:
+        log.error("[scheduler] Failed to start news worker: %s", e)
+
     # ── Phase 2: Weekly ML Training Job ──────────────────────────────────────
     # AI_INTELLIGENCE_ROADMAP_v3.0 — Weekly fallback retraining (Sunday 2 AM IST)
     # Event-driven triggers (20+ trades, edge health < 60) are wired separately
