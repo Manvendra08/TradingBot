@@ -457,8 +457,8 @@ EDGE CHECKS (before choosing legs):
 4. Max pain {max_pain:.0f} is a magnet into expiry — shorts straddling it benefit; shorts fighting it need wider strikes.
 
 Strategy Map:
-- Strong Bullish → BULL_PUT_SPREAD (spread width ≥ 0.5% of spot) or JADE_LIZARD
-- Strong Bearish → BEAR_CALL_SPREAD (spread width ≥ 0.5% of spot)
+- Strong Bullish → BULL_PUT_SPREAD (spread width must satisfy the hard wing-width floors below) or JADE_LIZARD
+- Strong Bearish → BEAR_CALL_SPREAD (spread width must satisfy the hard wing-width floors below)
 - Sideways / Consolidation → SHORT_STRADDLE (ATM) or SHORT_STRANGLE (OTM)
 - Rangebound + defined → IRON_CONDOR (Wings MUST be sufficiently wide to avoid insurance drag: NIFTY ≥100-200 pts, BANKNIFTY ≥300-500 pts, SENSEX ≥400-800 pts, NATURALGAS ≥5-10 pts. Never pick buy wings adjacent or too close to sell legs!)
 - Uncertain / No edge → NO_TRADE is always acceptable; a missed trade costs nothing.
@@ -467,7 +467,7 @@ MCX Parity (NATURALGAS/CRUDEOIL):
 - Deviation >+1.5%: inflated → BEAR_CALL_SPREAD or sell upper CE
 - Deviation <-1.5%: discounted → BULL_PUT_SPREAD or sell lower PE
 - |Deviation| ≤1.0%: fair value → SHORT_STRANGLE or IRON_CONDOR
-- **EIA Report Day / Window**: If EIA inventory release is active/imminent, avoid naked straddles; prefer defined-risk spreads or wider strangle strikes with safe deltas (Δ 0.10 - 0.15). NO_TRADE is always acceptable; a missed trade costs nothing if event risk is elevated or setup is unclear.
+- **EIA Report Day / Window**: If EIA inventory release is active/imminent, avoid naked straddles; prefer defined-risk spreads or wider strangle strikes with safe deltas (Δ 0.10 - 0.15). Prefer defined-risk structures when event risk is elevated. NO_TRADE remains acceptable only if strikes are illiquid, spread is incoherent, or risk-reward is unfavorable.
 
 ### Important Constraints on Legs:
 Leg counts: STRADDLE=2 SELL, STRANGLE=2 SELL, CONDOR=4(2 SELL+2 BUY), SPREAD=2, NO_TRADE=legs[]
@@ -478,9 +478,11 @@ Straddle: Both CE+PE at ATM {atm_strike:.0f}.
 Condor/Spreads: all sold+bought legs liquid.
 → Wing Width & Insurance Guardrail (CRITICAL):
   * For IRON_CONDOR and defined-risk spreads: DO NOT place buy hedge legs too close to short legs.
-  * Minimum wing width (buy strike minus sell strike): NIFTY ≥100 pts, BANKNIFTY ≥250 pts, SENSEX ≥400 pts (ideally 500–800 pts).
-  * Max Hedge Cost: Total debit spent on BUY wings MUST NOT exceed 65% of gross credit collected from SELL legs (collect ≥35% net premium). Placing wings only 1 strike away consumes 75-80% of premium, resulting in unviable trades!
-→ If NO liquid strikes for chosen strategy, emit NO_TRADE. NO_TRADE is always acceptable; a missed trade costs nothing.
+  * Minimum wing width (buy strike minus sell strike) — HARD validator floors, a proposal below these is auto-rejected:
+    NIFTY >=0.50% of spot (approx 120 pts) | BANKNIFTY >=0.60% (approx 340 pts) | SENSEX >=0.60% (approx 450 pts) | NATURALGAS >=10 pts (2 strike steps) | CRUDEOIL >=50 pts.
+    Prefer 1.5x these minimums whenever premium allows.
+  * Max Hedge Cost: Total debit spent on BUY wings MUST NOT exceed 65% of gross credit collected from SELL legs. For NATURALGAS, hedge strikes are wider-spaced: use 2-3 strike steps for wings so buy legs sit far enough from short legs to keep the hedge debit under control.
+  * If NO liquid strikes for chosen strategy, emit NO_TRADE. A missed trade costs nothing, but valid setups should be proposed when risk-reward is coherent.
 
 Delta target: 0.15-0.30 for OTM sell legs | Max pain={max_pain:.0f} as magnet | S/R for strike anchors.
 

@@ -573,7 +573,7 @@ def _monitor_open_books(
                                 (total_pnl <= -0.5 * stop_loss_threshold)
                                 or (net_premium > 0 and total_pnl >= 0.70 * (net_premium * lot_size * max((int(leg.get("lots") or 1) for leg in legs), default=1) * profit_target_pct))
                             )
-                            expiry_co_sign = (dte == 0 and now_ist.hour >= 14)
+                            expiry_co_sign = (dte == 0 and (now_ist.hour >= 22 if is_mcx else now_ist.hour >= 14))
 
                             if not (is_consecutive or pnl_co_sign or expiry_co_sign):
                                 _AI_CLOSE_PENDING_PAPER_BOOKS[book_id] = now_ts
@@ -838,13 +838,9 @@ def _attempt_new_entry(
     from config.runtime_config import load_runtime_config
     r_cfg = load_runtime_config()
     kill_switch_active = bool(r_cfg.get("kill_switch_active", False))
-    trading_paused = bool(r_cfg.get("trading_paused", True))
     if kill_switch_active:
         log.info("[multileg-paper] %s: kill switch active — entry blocked", symbol)
         return {"action": "BLOCKED_KILL_SWITCH", "reason": "Kill switch active"}
-    if trading_paused:
-        log.info("[multileg-paper] %s: trading paused — entry blocked", symbol)
-        return {"action": "BLOCKED_TRADING_PAUSED", "reason": "Trading paused"}
 
     # ── Gate: Max open books per symbol (cap = 5) ─────────────────────
     MAX_OPEN_BOOKS_PER_SYMBOL = 5
@@ -1044,7 +1040,7 @@ def _attempt_new_entry(
         option_rows = list((scan_context or {}).get("option_rows") or [])
 
         is_valid, validation_msg = validate_legs(
-            strategy_type, legs, option_rows, underlying
+            strategy_type, legs, option_rows, underlying, symbol
         )
         if not is_valid:
             log.info(

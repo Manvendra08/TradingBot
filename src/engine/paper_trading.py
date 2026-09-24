@@ -1249,9 +1249,6 @@ def run_paper_trading(
     if r_cfg.get("kill_switch_active", False):
         log.info("[paper] %s: kill switch active — entry blocked", symbol)
         return {"action": "BLOCKED_KILL_SWITCH", "reason": "Kill switch active"}
-    if r_cfg.get("trading_paused", False):
-        log.info("[paper] %s: trading paused — entry blocked", symbol)
-        return {"action": "BLOCKED_TRADING_PAUSED", "reason": "Trading paused"}
 
     # 3. Parse verdict and confidence from intel
     verdict = intel.get("verdict_label", "")

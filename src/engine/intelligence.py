@@ -464,12 +464,16 @@ def _score_alert_severity(
             weight = 4 if is_unwind else 10
         elif sev == "LOW":
             weight = 0
-        if weight > 0:
-            alert_dir = _get_alert_direction(a)
-            if verdict_bias != "NEUTRAL" and alert_dir != "NEUTRAL":
-                score += weight if alert_dir == verdict_bias else -weight
-            else:
-                score += weight
+        if weight <= 0:
+            continue
+        alert_dir = _get_alert_direction(a)
+        if a.get("alert_type") == "PRICE_SPIKE":
+            score += weight
+            continue
+        if verdict_bias != "NEUTRAL" and alert_dir != "NEUTRAL":
+            score += weight if alert_dir == verdict_bias else -weight
+        else:
+            score += weight
     return score
 
 

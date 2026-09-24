@@ -88,7 +88,11 @@ def fetch_eia_actual_fallback() -> float | None:
     return None
 
 def get_pre_release_price() -> float | None:
-    """Finds NATURALGAS price logged in database between 19:40 and 19:59 IST today."""
+    """Finds NATURALGAS price logged in database between 19:40 and 19:59 IST today.
+    
+    Falls back to the most recent prior price if no pre-release snapshot exists,
+    so the reaction-override gate can still evaluate post-EIA price moves.
+    """
     now_ist = datetime.now(IST)
     start_ist = now_ist.replace(hour=19, minute=40, second=0, microsecond=0)
     start_utc = start_ist.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -103,6 +107,17 @@ def get_pre_release_price() -> float | None:
             LIMIT 1
             """,
             (start_utc,)
+        ).fetchone()
+        if row:
+            return float(row["price"])
+        
+        row = conn.execute(
+            """
+            SELECT price FROM underlying_price 
+            WHERE symbol = 'NATURALGAS' 
+            ORDER BY fetched_at DESC 
+            LIMIT 1
+            """
         ).fetchone()
         if row:
             return float(row["price"])
@@ -138,6 +153,11 @@ def run_ng_eia_strategy(
 ) -> dict | None:
     """ Thursday EIA storage surprise play. """
     from config.settings import NG_STRATEGY_ENABLED, EIA_MIN_SURPRISE_BCF, EIA_NO_TRADE_BAND_BCF
+
+    # A post-print price reaction is actionable even when the inventory surprise
+    # is small, because the market can reprice on expectations, revisions, or
+    # positioning that the headline storage delta does not capture.
+    event_reaction_min_pct = 1.5
     
     if not NG_STRATEGY_ENABLED:
         return None
@@ -193,6 +213,14 @@ def run_ng_eia_strategy(
     surprise = actual - consensus
     abs_surprise = abs(surprise)
 
+    pre_price = get_pre_release_price()
+    reaction_pct = (
+        ((underlying - pre_price) / pre_price) * 100.0
+        if pre_price and pre_price > 0
+        else None
+    )
+    reaction_override = reaction_pct is not None and abs(reaction_pct) >= event_reaction_min_pct
+
     # Store surprise in DB
     with get_conn() as conn:
         conn.execute(
@@ -200,13 +228,20 @@ def run_ng_eia_strategy(
             (actual, surprise, thursday_str)
         )
 
-    if abs_surprise < EIA_NO_TRADE_BAND_BCF:
+    if abs_surprise < EIA_NO_TRADE_BAND_BCF and not reaction_override:
         log.info("EIA surprise (%+d Bcf) is within no-trade band (%d Bcf).", surprise, EIA_NO_TRADE_BAND_BCF)
         return {"action": "HOLD", "reason": f"EIA_NO_TRADE_BAND: surprise={surprise}"}
 
-    if abs_surprise < EIA_MIN_SURPRISE_BCF:
+    if abs_surprise < EIA_MIN_SURPRISE_BCF and not reaction_override:
         log.info("EIA surprise (%+d Bcf) is below minimum threshold (%d Bcf).", surprise, EIA_MIN_SURPRISE_BCF)
         return {"action": "HOLD", "reason": f"EIA_BELOW_MIN_SURPRISE: surprise={surprise}"}
+
+    if reaction_override and abs_surprise < EIA_MIN_SURPRISE_BCF:
+        log.info(
+            "EIA storage surprise is small (%+.1f Bcf), but price reaction is %.2f%%; evaluating event reaction.",
+            surprise,
+            reaction_pct,
+        )
 
     # Position check
     if not check_ng_position_limit():
@@ -214,14 +249,16 @@ def run_ng_eia_strategy(
     if check_ng_daily_loss_cap():
         return {"action": "BLOCKED_RISK", "reason": "NG daily loss cap hit"}
 
-    # Determine side
-    # build > consensus (positive surprise, bearish) -> SELL
-    # draw > consensus (negative surprise, bullish) -> BUY
-    side = "SELL" if surprise > 0 else "BUY"
+    # Fundamental surprise: build > consensus -> SELL, draw > consensus -> BUY.
+    # For a small surprise, follow the confirmed post-print price reaction.
+    side = (
+        "BUY" if reaction_pct > 0 else "SELL"
+        if reaction_override
+        else "SELL" if surprise > 0 else "BUY"
+    )
     verdict = "SHORT" if side == "SELL" else "LONG"
 
     # Check confirmation: price must have moved in surprise direction vs pre-release
-    pre_price = get_pre_release_price()
     if not pre_price:
         pre_price = underlying  # default
 
@@ -275,7 +312,10 @@ def run_ng_eia_strategy(
         "target_underlying": target_underlying,
         "lots": lots,
         "status": "OPEN",
-        "reason": f"NG EVENT surprise play | actual={actual} (consensus={consensus}, surprise={surprise:+.1f} Bcf)",
+        "reason": (
+            f"NG EVENT {'price reaction' if reaction_override else 'surprise'} play | "
+            f"actual={actual} (consensus={consensus}, surprise={surprise:+.1f} Bcf)"
+        ),
         "digest_id": digest_id,
         "trade_status": "TRIGGERED_CORE",
         "setup_type": "NG_EVENT",
