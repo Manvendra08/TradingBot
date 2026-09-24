@@ -860,14 +860,15 @@ def _format_historical_oi(symbol: str) -> str:
                 f"Insufficient historical data ({len(rows) if rows else 0} scans < 2). Skipping LLM enrichment."
             )
 
+    chrono_rows = list(reversed(rows))
     lines = []
-    lines.append(f"  Last {len(rows)} scans (newest first):")
+    lines.append(f"  Last {len(chrono_rows)} scans (chronological: oldest → CURRENT):")
 
     pcr_vals: list[float] = []
     oi_net: list[int] = []
     price_vals: list[float] = []
 
-    for row in rows:
+    for i, row in enumerate(chrono_rows):
         fetched_at = row["fetched_at"] or ""
         underlying = float(row["underlying"] or 0)
         pcr = float(row["pcr"] or 0)
@@ -877,10 +878,12 @@ def _format_historical_oi(symbol: str) -> str:
 
         # Extract time portion for display (HH:MM)
         time_str = fetched_at[11:16] if len(fetched_at) > 16 else fetched_at
+        is_latest = (i == len(chrono_rows) - 1)
+        marker = " [CURRENT / LATEST]" if is_latest else ""
 
         lines.append(
             f"    {time_str}: Und {underlying:.0f} | PCR {pcr:.2f} | "
-            f"CE \u0394{ce_chg:+,} | PE \u0394{pe_chg:+,} | {verdict}"
+            f"CE \u0394{ce_chg:+,} | PE \u0394{pe_chg:+,} | {verdict}{marker}"
         )
 
         if pcr > 0:
@@ -891,8 +894,8 @@ def _format_historical_oi(symbol: str) -> str:
 
     # ── Trend summaries ──────────────────────────────────────────────────
     if len(pcr_vals) >= 3:
-        pcr_newest = pcr_vals[0]
-        pcr_oldest = pcr_vals[-1]
+        pcr_oldest = pcr_vals[0]
+        pcr_newest = pcr_vals[-1]
         pcr_dir = (
             "rising"
             if pcr_newest > pcr_oldest + 0.05
@@ -925,8 +928,8 @@ def _format_historical_oi(symbol: str) -> str:
 
     # ── Price impact analysis (Options-Aware) ──
     if len(price_vals) >= 3:
-        price_newest = price_vals[0]
-        price_oldest = price_vals[-1]
+        price_oldest = price_vals[0]
+        price_newest = price_vals[-1]
         price_chg = price_newest - price_oldest
         price_pct = (price_chg / price_oldest) * 100 if price_oldest > 0 else 0.0
 
@@ -1094,6 +1097,7 @@ OPTIONS WRITER GROUND TRUTH (MANDATORY — NEVER INVERT):
 • CE Buildup (Positive CE OI change) = CALL WRITING / CALL SELLING establishing overhead resistance ceiling → BEARISH.
 • PE Unwinding (Negative PE OI change) = PUT UNWINDING / support crumbling → BEARISH.
 • PCR = Total PE OI / Total CE OI. Rising PCR (e.g. 0.80 → 1.10) reflects heavier Put writing than Call writing → BULLISH accumulation. Lowering PCR (e.g. 1.20 → 0.60) reflects Put unwinding or heavy Call writing → BEARISH.
+• TIMELINE & PCR DIRECTION: Scans in OI HISTORY are strictly CHRONOLOGICAL (oldest at top, CURRENT/LATEST at bottom). Evaluate trends top-down (oldest → newest). The bottom scan is the active market reality. If current PCR is higher than earlier scans, PCR is RISING; never claim PCR is falling when the latest scan is higher.
 • In your thesis, ALWAYS adhere to these mathematical facts.
 
 INDIA REGIME CONTEXT:
@@ -1910,6 +1914,17 @@ def call_llm_api(
             "[llm] Circuit breaker OPEN for %s (cooldown ends in %.0fs)",
             symbol,
             _CIRCUIT_OPEN_UNTIL - now,
+        )
+        return None
+
+    # Budget guard: block new LLM calls when cost tracker exceeds budget
+    tracker = get_cost_tracker()
+    if tracker.over_budget:
+        log.warning(
+            "[llm] Budget exceeded for %s — current_cost=$%.4f, budget=$%.2f",
+            symbol,
+            tracker.total_cost,
+            tracker.budget_limit,
         )
         return None
 

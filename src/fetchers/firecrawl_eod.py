@@ -71,7 +71,7 @@ def _firecrawl_search(api_key: str, query: str, limit: int = 3, country: str = "
         return []
 
 
-def fetch_firecrawl_eod_data() -> dict:
+def fetch_firecrawl_eod_data(report_date: str | None = None) -> dict:
     """Fetch full EOD market data via multiple Firecrawl searches with burst pacing.
 
     Returns:
@@ -88,10 +88,13 @@ def fetch_firecrawl_eod_data() -> dict:
         empty = {"items": [], "count": 0, "error": "FIRECRAWL_API_KEY missing"}
         return {"ok": False, "closing_bell": empty, "fii_dii_flows": empty, "macro_news": empty}
 
-    # ── Query 1: Market closing bell & sector performance ──────────────────
+    date_hint = f" {report_date}" if report_date else ""
+
+    # Include the explicit report date because "today" search results can lag
+    # by a session around the Indian market close.
     closing = _firecrawl_search(
         api_key,
-        "Indian stock market closing bell Sensex Nifty today",
+        f"Indian stock market closing bell Sensex Nifty{date_hint}",
         limit=3,
     )
     log.info("[firecrawl] Closing bell: %d items", len(closing))
@@ -100,7 +103,7 @@ def fetch_firecrawl_eod_data() -> dict:
     # ── Query 2: FII/DII Institutional flows ───────────────────────────────
     fii_dii = _firecrawl_search(
         api_key,
-        "Indian stock market closing FII DII flow today Sensex Nifty",
+        f"Indian stock market closing FII DII flow Sensex Nifty{date_hint}",
         limit=2,
     )
     log.info("[firecrawl] FII/DII flows: %d items", len(fii_dii))
@@ -109,7 +112,7 @@ def fetch_firecrawl_eod_data() -> dict:
     # ── Query 3: Market wrap & macro commentary ────────────────────────────
     news = _firecrawl_search(
         api_key,
-        "Sensex Nifty closing news market wrap Moneycontrol Livemint",
+        f"Sensex Nifty closing news market wrap Moneycontrol Livemint{date_hint}",
         limit=2,
     )
     log.info("[firecrawl] Market wrap: %d items", len(news))

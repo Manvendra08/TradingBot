@@ -112,6 +112,10 @@ def _humanize_age(iso_ts: str | None) -> str:
         if mins < 60:
             return f"{mins}m"
         hrs = mins // 60
+        if hrs >= 24:
+            days = hrs // 24
+            rem_hrs = hrs % 24
+            return f"{days}d {rem_hrs}h" if rem_hrs > 0 else f"{days}d"
         return f"{hrs}h {mins % 60}m"
     except Exception:
         return ""
@@ -1061,8 +1065,8 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
     # the section header never renders empty.
     should_show_books = (
         has_ml_activity
-        and (has_current_trade or bool(ai_exit))
-        and (bool(closed_items) or (is_entered and bool(live_books)) or bool(ai_exit))
+        and (has_current_trade or is_holding or bool(ai_exit))
+        and (bool(closed_items) or ((is_entered or is_holding) and bool(live_books)) or bool(ai_exit))
     )
     if should_show_books:
         lines.append("")
@@ -1078,13 +1082,12 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
                 pnl_icon = "🟢" if c_pnl >= 0 else "🔴"
                 lines.append(f"• Closed: `{_esc_code(c_id)}` ({c_st}) | {pnl_icon} P&L ₹{c_pnl:,.0f} | {_esc(c_re)}")
 
-        # Show full detail ONLY for the new entry in this cycle (is_entered).
-        # HOLDING alerts no longer enumerate the entire open book — only the
-        # current trade (new entry / exit) is reported.
-        if is_entered and live_books:
+        # Show full detail for the new entry in this cycle (is_entered),
+        # or active open books when HOLDING with age disambiguation.
+        if (is_entered or is_holding) and live_books:
             entered_book_id = multileg.get("book_id")
             # live_books from DB is ordered by opened_at DESC, so live_books[0] is the newest book
-            target_books = [b for b in live_books if b.get("book_id") == entered_book_id] if entered_book_id else [live_books[0]]
+            target_books = [b for b in live_books if b.get("book_id") == entered_book_id] if (entered_book_id and is_entered) else live_books
             for b in target_books:
                 b_id = b.get("book_id") or ""
                 b_st = str(b.get("strategy_type") or "").replace("_", " ").upper()
@@ -1093,7 +1096,13 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
                 b_delta = float(b.get("net_delta") or 0.0)
                 pnl_icon = "🟢" if b_pnl >= 0 else "🔴"
 
-                lines.append(f"• Book: `{_esc_code(b_id)}` · {b_st}")
+                age_suffix = ""
+                if is_holding and b.get("opened_at"):
+                    age = _humanize_age(b.get("opened_at"))
+                    if age:
+                        age_suffix = f" · entered {age} ago"
+
+                lines.append(f"• Book: `{_esc_code(b_id)}` · {b_st}{age_suffix}")
                 lines.append(f"  Net Prem ₹{b_prem:.1f}/lot | {pnl_icon} Total P&L ₹{b_pnl:,.0f} | Δ Net {b_delta:+.2f}")
 
                 be_l = b.get("breakeven_lower")
@@ -1126,7 +1135,10 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
     if thesis_text:
         lines.append("")
         lines.append(DIV)
-        lines.append("💡 *THESIS & MARKET CONTEXT*")
+        if is_holding:
+            lines.append("💡 *CANDIDATE ENTRY EVALUATION*")
+        else:
+            lines.append("💡 *THESIS & MARKET CONTEXT*")
         for raw_line in thesis_text.splitlines():
             if not raw_line.strip():
                 continue

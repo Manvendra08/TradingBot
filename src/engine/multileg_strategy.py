@@ -184,7 +184,7 @@ def validate_legs(
         from config.multileg_strategies import (
             MIN_WING_WIDTH_PCT,
             MIN_WING_WIDTH_POINTS,
-            MAX_HEDGE_COST_RATIO,
+            get_max_hedge_cost_ratio,
         )
 
         sym_key = symbol.upper().split()[0] if symbol else "DEFAULT"
@@ -215,15 +215,17 @@ def validate_legs(
                     f"(minimum required: {effective_min_width:.0f} pts). Buy wing is too close to sell leg."
                 )
 
-        # Check hedge cost drag: bought wings should not consume excessive premium
+        # Check hedge cost drag: bought wings should not consume excessive premium.
+        # Ceiling is per-symbol (NATURALGAS gets 0.75, everything else 0.65).
         gross_credit = sum(float(l.get("premium") or 0.0) for l in legs if (l.get("side") or "").upper() == "SELL")
         hedge_debit = sum(float(l.get("premium") or 0.0) for l in legs if (l.get("side") or "").upper() == "BUY")
         if gross_credit > 0 and hedge_debit > 0:
             hedge_ratio = hedge_debit / gross_credit
-            if hedge_ratio > MAX_HEDGE_COST_RATIO:
+            max_hedge_ratio = get_max_hedge_cost_ratio(sym_key)
+            if hedge_ratio > max_hedge_ratio:
                 return False, (
                     f"Insurance drag too high: Hedge wings cost ₹{hedge_debit:.2f} ({hedge_ratio*100:.1f}% of gross credit ₹{gross_credit:.2f}), "
-                    f"exceeding max {MAX_HEDGE_COST_RATIO*100:.0f}%. Move buy wings further OTM for viable profit."
+                    f"exceeding max {max_hedge_ratio*100:.0f}%. Move buy wings further OTM for viable profit."
                 )
 
     return True, ""
@@ -691,7 +693,12 @@ def build_execution_plan(
     expiry = scan_context.get("expiry", "")
 
     # ── Step 1: Validate legs ──────────────────────────────────────
-    is_valid, err = validate_legs(strategy_type, legs, option_chain, underlying)
+    # NOTE: symbol is REQUIRED here — validate_legs() resolves per-symbol
+    # wing-width floors (MIN_WING_WIDTH_POINTS/PCT) and MCX strategy bans
+    # from it. Omitting it silently falls back to the DEFAULT 50-pt floor.
+    is_valid, err = validate_legs(
+        strategy_type, legs, option_chain, underlying, symbol
+    )
     if not is_valid:
         log.warning("multileg validation failed for %s/%s: %s", symbol, strategy_type, err)
         return {"error": err, "symbol": symbol, "strategy_type": strategy_type, "book_id": book_id}

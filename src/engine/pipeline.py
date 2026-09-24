@@ -46,6 +46,7 @@ from src.fetchers.router import fetch_option_chain
 from src.intelligence.history_analyzer import IST_OFFSET, get_analyzer
 from src.models.schema import (
     get_previous_underlying,
+    get_previous_underlying_for_expiry,
     insert_alert,
     insert_snapshots,
     insert_underlying_price,
@@ -59,6 +60,7 @@ IST = pytz.timezone("Asia/Kolkata")
 NSE_NEWS_BYPASS_SYMBOLS = {"NIFTY", "BANKNIFTY", "SENSEX", "FINNIFTY", "MIDCPNIFTY"}
 _CLEANUP_DATES: set[str] = set()
 _llm_pacing_lock = threading.Lock()
+_HAS_CHECKED_STARTUP_NEWS: bool = False
 
 def _process_symbol(*args, **kwargs):
     # Backward compatibility alias for _process_prefetched_symbol in test mocks
@@ -277,9 +279,19 @@ def run_pipeline(symbols: list[str] | None = None, force: bool = False, is_test:
     symbols = get_eligible_symbols(symbols, is_test=is_test)
     fetched_at = datetime.now(timezone.utc).isoformat()
 
+    global _HAS_CHECKED_STARTUP_NEWS
     with single_flight_gate.acquire_or_skip("run_pipeline") as acquired:
         if not acquired:
             return
+
+        # On fresh start/restart, ensure news worker has evaluated if last run was > 60m ago
+        if not _HAS_CHECKED_STARTUP_NEWS:
+            _HAS_CHECKED_STARTUP_NEWS = True
+            try:
+                from src.services.news_worker import ensure_news_worker_ready
+                ensure_news_worker_ready(max_age_seconds=3600)
+            except Exception as nw_exc:
+                log.warning("[pipeline] Startup news check encountered exception: %s", nw_exc)
 
         log.info("Pipeline run started | %s | symbols=%s | force=%s | is_test=%s", fetched_at, symbols, force, is_test)
         pipeline_io_executor.submit(_refresh_ip_async)
@@ -607,7 +619,7 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
     # Without this guard the query runs for every watched symbol that didn't
     # produce a multileg_payload this cycle (e.g. MIDCPNIFTY which is not in
     # ALLOWED_SYMBOLS), wasting a DB round-trip per scan cycle.
-    if not multileg_payload:
+    if not multileg_payload or not multileg_payload.get("live_books"):
         try:
             from config.multileg_strategies import ALLOWED_SYMBOLS
         except ImportError:
@@ -617,12 +629,15 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
                 from src.models.schema import get_open_books_for_symbol
                 ml_books = get_open_books_for_symbol(symbol)
                 if ml_books:
-                    multileg_payload = {
-                        "action": "HOLD",
-                        "decision_stage": "BOOK_MONITOR",
-                        "live_books": ml_books,
-                        "reason": f"Holding {len(ml_books)} active multi-leg book(s)",
-                    }
+                    if not multileg_payload:
+                        multileg_payload = {
+                            "action": "HOLD",
+                            "decision_stage": "BOOK_MONITOR",
+                            "live_books": ml_books,
+                            "reason": f"Holding {len(ml_books)} active multi-leg book(s)",
+                        }
+                    else:
+                        multileg_payload["live_books"] = ml_books
             except Exception as exc:
                 log.warning("[pipeline] Fallback open-book lookup failed for %s: %s", symbol, exc)
     actual_lots = 1
@@ -1013,6 +1028,9 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                     log.info("[pipeline] %s | Successfully set MCX expiry day signal target to next expiry %s (monitoring current expiry %s)",
                              symbol, next_oc_data.get("expiry"), current_expiry_str)
                     target_signal_oc_data = next_oc_data
+                    target_signal_oc_data["is_expiry_swap"] = True
+                    target_signal_oc_data["prev_expiry"] = current_expiry_str
+                    target_signal_oc_data["prev_expiry_underlying"] = current_expiry_oc_data.get("underlying_price")
                     packet["oc_data"] = next_oc_data
                     oc_data = next_oc_data
                     if "chart_indicators" not in target_signal_oc_data:
@@ -1024,11 +1042,18 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
 
     # ── Pre-Flight Market Data Legitimacy Gate ──
     from src.engine.data_validator import validate_market_data
+    target_prev_price = prev_price
+    if target_signal_oc_data.get("is_expiry_swap"):
+        # Resolve baseline price specifically for the new expiry contract to prevent false spot jump rejection
+        target_prev_price = get_previous_underlying_for_expiry(
+            symbol, target_signal_oc_data.get("expiry"), fetched_at
+        )
+
     legitimacy = validate_market_data(
         symbol=symbol,
         oc_data=target_signal_oc_data,
         chart_payload=chart_payload,
-        prev_price=prev_price,
+        prev_price=target_prev_price,
     )
     if not legitimacy.is_legitimate:
         log.warning(
@@ -1486,8 +1511,13 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                         mark_telegram_sent(alert_id)
 
             pct_chg = None
-            if underlying is not None and prev_price and prev_price != 0:
-                pct_chg = round((underlying - prev_price) / abs(prev_price) * 100, 4)
+            price_for_pct = prev_price
+            if oc_data.get("is_expiry_swap"):
+                price_for_pct = get_previous_underlying_for_expiry(
+                    symbol, oc_data.get("expiry"), fetched_at
+                )
+            if underlying is not None and price_for_pct and price_for_pct != 0:
+                pct_chg = round((underlying - price_for_pct) / abs(price_for_pct) * 100, 4)
             insert_underlying_price(symbol, underlying, pct_chg, fetched_at)
 
             rows = [{

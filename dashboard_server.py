@@ -94,6 +94,17 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         log.warning("Could not set AnyIO thread pool limit: %s", exc)
 
+    host = os.environ.get("HOST", "127.0.0.1")
+    try:
+        from config.runtime_config import load_runtime_config
+        if not load_runtime_config().get("dashboard_auth_enabled", True) and host not in {"127.0.0.1", "::1"}:
+            log.warning(
+                "Startup: dashboard_auth_enabled=false but dashboard is bound to %s; this exposes trading controls without authentication",
+                host,
+            )
+    except Exception as exc:
+        log.warning("Could not evaluate dashboard auth startup guard: %s", exc)
+
     # Warm up instrument cache at startup so resolve_instrument() doesn't miss
     import threading
 
@@ -3989,6 +4000,12 @@ def zerodha_callback(client_id: str = None, request_token: str = None):
     if not config or not config.get("api_key") or not config.get("api_secret"):
         return HTMLResponse(
             "<h1>Error: Zerodha api_key or api_secret not configured in database</h1>",
+            status_code=400,
+        )
+
+    if not client_id or client_id != config.get("api_key"):
+        return HTMLResponse(
+            "<h1>Error: Invalid client_id for stored Zerodha configuration</h1>",
             status_code=400,
         )
 

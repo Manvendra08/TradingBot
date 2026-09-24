@@ -1333,7 +1333,7 @@ def generate_eod_macro_report() -> Path | None:
     log.info("[eod_report] Starting EOD Strategic Intelligence Report generation for %s (4:00 PM IST)", date_display)
 
     # ── 1. Fetch live web market wrap via Firecrawl ─────────────────────────
-    fc_data = fetch_firecrawl_eod_data()
+    fc_data = fetch_firecrawl_eod_data(date_display)
     closing_bell_text = _format_firecrawl_items(fc_data["closing_bell"]["items"], max_snippet=1200)
     fii_dii_text = _format_firecrawl_items(fc_data["fii_dii_flows"]["items"], max_snippet=800)
     news_text = _format_firecrawl_items(fc_data["macro_news"]["items"], max_snippet=800)
@@ -1384,7 +1384,7 @@ RULES:
 
 ═══ OUTPUT FORMAT ═══
 
-1. index_summary: One line per index. Include spot, % change, and key moving sectors/drivers from the web wrap:
+1. index_summary: One line per index. Use the LOCAL scan spot as the authoritative close; use the web wrap only for % change and sector/market drivers. Never copy a web spot that differs from LOCAL QUANTITATIVE OI & VERDICTS:
    NIFTY Spot ±X% | DRIVER (e.g. IT gains, Energy drags) | VERDICT
    BANKNIFTY Spot ±X% | VERDICT
    SENSEX Spot ±X% | VERDICT

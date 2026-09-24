@@ -225,13 +225,14 @@ def _check_risk_limits_for_table(
         ).fetchone()
         open_mtm = float(open_mtm_row["total"] if open_mtm_row else 0.0)
 
+        ml_mode = "LIVE" if trades_table == "live_trades" else "PAPER"
         ml_realized_row = conn.execute(
             """
             SELECT COALESCE(SUM(total_pnl), 0) AS total
             FROM multi_leg_trades
-            WHERE closed_at >= ? AND closed_at <= ?
+            WHERE closed_at >= ? AND closed_at <= ? AND trade_mode = ?
             """,
-            (today_start, now_utc),
+            (today_start, now_utc, ml_mode),
         ).fetchone()
         ml_realized_pnl = float(ml_realized_row["total"] if ml_realized_row else 0.0)
 
@@ -239,8 +240,9 @@ def _check_risk_limits_for_table(
             """
             SELECT COALESCE(SUM(total_pnl), 0) AS total
             FROM multi_leg_trades
-            WHERE status = 'OPEN'
-            """
+            WHERE status = 'OPEN' AND trade_mode = ?
+            """,
+            (ml_mode,),
         ).fetchone()
         ml_open_pnl = float(ml_open_row["total"] if ml_open_row else 0.0)
 
@@ -248,8 +250,8 @@ def _check_risk_limits_for_table(
         if total_daily_pnl < -abs(max_daily_loss):
             return False, (
                 f"[{label}] Daily loss limit hit "
-                f"(net daily P&L \u20b9{total_daily_pnl:,.0f} [realized=\u20b9{today_realized_pnl + ml_realized_pnl:,.0f}, open MTM=\u20b9{open_mtm + ml_open_pnl:,.0f}] / "
-                f"limit -\u20b9{max_daily_loss:,.0f})"
+                f"(net daily P&L ₹{total_daily_pnl:,.0f} [realized=₹{today_realized_pnl + ml_realized_pnl:,.0f}, open MTM=₹{open_mtm + ml_open_pnl:,.0f}] / "
+                f"limit -₹{max_daily_loss:,.0f})"
             ), "DAILY_LOSS_CAP"
 
         # 4. Cooldown after SL/loss (per-symbol)
@@ -324,7 +326,8 @@ def _check_risk_limits_for_table(
         if setup_type and setup_type.upper() in _MULTILEG_SETUPS:
             from config.multileg_strategies import MAX_BOOK_MARGIN, MAX_NET_DELTA, MAX_LEGS_PER_BOOK
             from src.models.schema import get_open_books_for_symbol
-            open_books = get_open_books_for_symbol(symbol)
+            ml_mode = "LIVE" if trades_table == "live_trades" else "PAPER"
+            open_books = get_open_books_for_symbol(symbol, trade_mode=ml_mode)
             total_book_legs = sum(len(b.get("legs", [])) for b in open_books)
             if candidate_leg and isinstance(candidate_leg, dict):
                 total_book_legs += 1

@@ -41,6 +41,8 @@ from src.models.schema import (
     get_prev_snapshots_bulk,
     get_previous_underlying,
     get_previous_underlying_before,
+    get_previous_underlying_for_expiry,
+    get_last_recorded_expiry,
     get_previous_snapshot,
     get_latest_snapshots_for_symbol,
     get_latest_n_snapshots,
@@ -443,24 +445,42 @@ def _detect_price_spike(
     underlying: float,
     price_spike_thresh: float = PRICE_SPIKE_THRESHOLD_PCT,
     fetched_at: str = "",
+    is_expiry_swap: bool = False,
+    prev_expiry: str | None = None,
 ) -> list[dict]:
     alerts = []
-    # BUG-C11 FIX: Use get_previous_underlying_before to get the price strictly
-    # before the current scan time. Previously used get_previous_underlying which
-    # could return the just-inserted current price, causing false positive spikes
-    # (comparing current price against itself = 0% change, or against a stale
-    # same-session price instead of the actual previous scan).
-    if fetched_at:
-        prev_row = get_previous_underlying_before(symbol, fetched_at)
+    # Cross-expiry price comparison is invalid (e.g. contango/backwardation basis spread
+    # between near and next month commodity futures). When an expiry swap or contract
+    # rollover occurs, strictly compare against prior prices of THIS EXACT EXPIRY.
+    prev_price = None
+    if is_expiry_swap:
+        prev_price = get_previous_underlying_for_expiry(symbol, expiry, fetched_at)
+        if prev_price is None:
+            log.info(
+                "[engine] PRICE_SPIKE suppressed for %s: contract expiry swap (%s -> %s) "
+                "with no prior baseline for target expiry %s (underlying=%.2f)",
+                symbol, prev_expiry or "previous_contract", expiry, expiry, underlying,
+            )
+            return alerts
     else:
-        prev_row = get_previous_underlying(symbol)
-    if not prev_row:
+        # Standard scan: check if we have a contract-specific previous underlying first
+        prev_price = get_previous_underlying_for_expiry(symbol, expiry, fetched_at)
+        if prev_price is None:
+            # BUG-C11 FIX: Use get_previous_underlying_before to get the price strictly
+            # before the current scan time.
+            if fetched_at:
+                prev_row = get_previous_underlying_before(symbol, fetched_at)
+            else:
+                prev_row = get_previous_underlying(symbol)
+            if prev_row:
+                prev_price = prev_row["price"]
+
+    if prev_price is None or prev_price <= 0:
         return alerts
-    prev_price = prev_row["price"]
     pct = _pct_change(prev_price, underlying)
-    if pct is None or abs(pct) < PRICE_SPIKE_THRESHOLD_PCT:
+    if pct is None or abs(pct) < price_spike_thresh:
         return alerts
-    sev = _score_severity(abs(pct) / PRICE_SPIKE_THRESHOLD_PCT)
+    sev = _score_severity(abs(pct) / price_spike_thresh)
     detail = {
         "prev_price": prev_price,
         "curr_price": underlying,
@@ -857,6 +877,17 @@ def detect_anomalies(
     if chart_indicators is None:
         chart_indicators = oc_data.get("chart_indicators")
 
+    is_expiry_swap = bool(oc_data.get("is_expiry_swap", False))
+    prev_expiry = oc_data.get("prev_expiry")
+    if not is_expiry_swap:
+        try:
+            last_recorded_exp = get_last_recorded_expiry(symbol, fetched_at)
+            if last_recorded_exp and last_recorded_exp != expiry:
+                is_expiry_swap = True
+                prev_expiry = last_recorded_exp
+        except Exception:
+            pass
+
     # Calculate DTE (days to expiry) — suppress expiry-sensitive alerts beyond max DTE
     dte = _dte_from_expiry(expiry)
     t = override_thresholds or {}
@@ -942,8 +973,13 @@ def detect_anomalies(
             min_oi_threshold=min_oi_thresh,
         )
     alerts += _detect_price_spike(
-        symbol, expiry, underlying, price_spike_thresh=price_spike_thresh,
+        symbol,
+        expiry,
+        underlying,
+        price_spike_thresh=price_spike_thresh,
         fetched_at=fetched_at,
+        is_expiry_swap=is_expiry_swap,
+        prev_expiry=prev_expiry,
     )
 
     pcr = _compute_pcr(filtered)
@@ -1092,13 +1128,27 @@ def detect_anomalies(
     if prev_snaps:
         prev_price = prev_snaps[0].get("underlying_price")
     if prev_price is None:
-        prev_und = get_previous_underlying_before(symbol, fetched_at)
-        prev_price = prev_und["price"] if prev_und else None
-    price_change_points = (
-        round(float(underlying or 0) - float(prev_price or 0), 4)
-        if prev_price is not None
-        else 0.0
-    )
+        if is_expiry_swap:
+            prev_price = get_previous_underlying_for_expiry(symbol, expiry, fetched_at)
+        else:
+            prev_und = get_previous_underlying_before(symbol, fetched_at)
+            prev_price = prev_und["price"] if prev_und else None
+
+    if is_expiry_swap and prev_price is None:
+        # Rollover to a new contract expiry with no prior scans:
+        # Baseline price change is zero to prevent false spike metrics in LLM / strategies.
+        price_change_points = 0.0
+        price_change_pct = None
+        prev_underlying_val = underlying
+    else:
+        price_change_points = (
+            round(float(underlying or 0) - float(prev_price or 0), 4)
+            if prev_price is not None
+            else 0.0
+        )
+        price_change_pct = _pct_change(prev_price, underlying) if prev_price is not None else None
+        prev_underlying_val = prev_price if prev_price is not None else underlying
+
     levels = _key_levels(strikes, underlying)
     curr_mp = levels.get("max_pain")
     prev_mp = _compute_max_pain(prev_snaps) if prev_snaps else None
@@ -1110,9 +1160,11 @@ def detect_anomalies(
         "symbol": symbol,
         "expiry": expiry,
         "underlying": underlying,
-        "prev_underlying": prev_price if prev_price is not None else underlying,
+        "prev_underlying": prev_underlying_val,
         "price_change_points": price_change_points,
-        "price_change_pct": _pct_change(prev_price, underlying) if prev_price is not None else None,
+        "price_change_pct": price_change_pct,
+        "is_expiry_swap": is_expiry_swap,
+        "prev_expiry": prev_expiry,
         "total_ce_oi": total_ce_oi,
         "total_pe_oi": total_pe_oi,
         "ce_oi_change": total_ce_oi - prev_ce_oi,

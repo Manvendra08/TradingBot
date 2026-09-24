@@ -21,7 +21,7 @@ import logging
 import re
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from config.settings import IST
@@ -280,6 +280,12 @@ def _run_multileg_live_strategy_inner(
         now_iso,
         open_books=open_books,
     )
+    if new_res and isinstance(mon_res, dict):
+        # Preserve open-book state so the digest can show both the live book
+        # and this scan's new-entry decision.
+        new_res.setdefault("live_books", mon_res.get("live_books") or [])
+        new_res.setdefault("closed", mon_res.get("closed") or [])
+        new_res.setdefault("ai_exit_advice", mon_res.get("ai_exit_advice"))
     return new_res if new_res else mon_res
 
 
@@ -305,7 +311,7 @@ def _monitor_open_books_live(
     from config.settings import _is_testing
     is_test = bool((scan_context or {}).get("is_test", False) or (scan_context or {}).get("force_monitor", False) or _is_testing)
     if not is_test:
-        from datetime import datetime, timezone, timedelta
+        from datetime import timedelta
         now_ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
         if is_market_holiday(symbol, now_ist) or not is_market_open(symbol, now_ist):
             log.debug("[multileg-live] %s: Market closed or holiday — position tracking disabled", symbol)
@@ -593,7 +599,7 @@ def _monitor_open_books_live(
                                 (total_pnl <= -0.5 * stop_loss_threshold)
                                 or (net_premium > 0 and total_pnl >= 0.70 * (net_premium * lot_size * max((int(leg.get("lots") or 1) for leg in legs), default=1) * profit_target_pct))
                             )
-                            expiry_co_sign = (dte == 0 and now_ist.hour >= 14)
+                            expiry_co_sign = (dte == 0 and (now_ist.hour >= 22 if is_mcx else now_ist.hour >= 14))
 
                             if not (is_consecutive or pnl_co_sign or expiry_co_sign):
                                 _AI_CLOSE_PENDING_BOOKS[book_id] = now_ts
@@ -662,13 +668,23 @@ def _monitor_open_books_live(
                         from config.runtime_config import load_runtime_config
                         exit_advisor_enabled = load_runtime_config().get("live_ai_exit_advisor_enabled", True)
                         if exit_advisor_enabled and adjustment_details and adjustment_count < 3:
-                            log.info(
-                                "[multileg-live] %s: book %s — AI executing autonomous ADJUST: %s",
-                                symbol,
-                                book_id,
-                                reasoning,
-                            )
-                            increment_adjustment_count(book_id)
+                            from src.engine.risk_engine import check_live_risk_limits
+                            risk_ok, risk_reason = check_live_risk_limits(symbol, scan_context=scan_context)
+                            if not risk_ok:
+                                log.warning(
+                                    "[multileg-live] %s: book %s — AI ADJUST blocked by risk limits: %s",
+                                    symbol,
+                                    book_id,
+                                    risk_reason,
+                                )
+                            else:
+                                log.info(
+                                    "[multileg-live] %s: book %s — AI executing autonomous ADJUST: %s",
+                                    symbol,
+                                    book_id,
+                                    reasoning,
+                                )
+                                increment_adjustment_count(book_id)
                         elif not exit_advisor_enabled and adjustment_details and adjustment_count < 3:
                             log.info(
                                 "[multileg-live] %s: book %s — AI recommends ADJUST (advisory only; AI Exit Advisor disabled): %s",
@@ -798,7 +814,23 @@ def _update_live_book_pnl(
                 pass
 
         if current_premium is None:
-            current_premium = entry_premium
+            # Estimate using delta movement rather than raw entry fallback
+            if underlying > 0 and book.get("entry_underlying"):
+                entry_und = float(book.get("entry_underlying") or underlying)
+                und_move = underlying - entry_und
+                delta = float(leg.get("delta") or 0.25)
+                delta_sign = delta if option_type == "CE" else -abs(delta)
+                current_premium = max(0.05, entry_premium + delta_sign * und_move)
+                log.warning(
+                    "[multileg-live] %s: leg %s %.0f missing live LTP — delta-approximated current premium to %.2f (spot move=%.2f)",
+                    symbol, option_type, strike, current_premium, und_move,
+                )
+            else:
+                current_premium = entry_premium
+                log.warning(
+                    "[multileg-live] %s: leg %s %.0f missing live LTP — fell back to entry premium %.2f",
+                    symbol, option_type, strike, entry_premium,
+                )
 
         leg["current_premium"] = current_premium
 
@@ -1339,7 +1371,7 @@ def _attempt_new_live_entry(
         option_rows = list((scan_context or {}).get("option_rows") or [])
 
         is_valid, validation_msg = validate_legs(
-            strategy_type, legs, option_rows, underlying
+            strategy_type, legs, option_rows, underlying, symbol
         )
         if not is_valid:
             log.info(

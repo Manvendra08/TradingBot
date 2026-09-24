@@ -19,27 +19,55 @@ import os
 import re
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import requests
 
-from config.settings import DATA_DIR, WATCH_SYMBOLS
+from config.settings import DATA_DIR, WATCH_SYMBOLS, IST
 
 log = logging.getLogger(__name__)
 
 CACHE_DIR = Path(DATA_DIR) / "cache"
 NEWS_CACHE_FILE = CACHE_DIR / "news_sentiment.json"
-DEFAULT_POLL_INTERVAL_SECONDS = 15 * 60  # 15 minutes
+DEFAULT_POLL_INTERVAL_SECONDS = 60 * 60  # 60 minutes
+RECENCY_THRESHOLD_SECONDS = 60 * 60  # 60 minutes
 OMNIROUTER_NEWS_MODEL = "Claude/Antigravity"
 OMNIROUTER_NEWS_TIMEOUT = 35.0
 
 # In-memory fast cache
 _LOCK = threading.Lock()
 _IN_MEMORY_NEWS: dict[str, dict[str, Any]] = {}
+_LAST_DISK_MTIME: float = 0.0
+_LAST_EVALUATED_TS: float = 0.0
 _WORKER_THREAD: threading.Thread | None = None
 _STOP_EVENT = threading.Event()
+
+
+def get_last_news_eval_timestamp() -> float:
+    """Return the most recent news evaluation timestamp across all cached entries."""
+    global _LAST_EVALUATED_TS
+    if _LAST_EVALUATED_TS > 0:
+        return _LAST_EVALUATED_TS
+    disk = _load_disk_cache()
+    if disk:
+        ts_values = [float(v.get("evaluated_timestamp", 0.0)) for v in disk.values() if isinstance(v, dict)]
+        if ts_values:
+            _LAST_EVALUATED_TS = max(ts_values)
+            return _LAST_EVALUATED_TS
+    return 0.0
+
+
+def seconds_until_next_minute(target_minute: int = 55) -> float:
+    """Calculate the number of seconds until the next occurrence of target_minute past the hour in IST."""
+    now_dt = datetime.now(IST)
+    target_dt = now_dt.replace(minute=target_minute, second=0, microsecond=0)
+    if target_dt <= now_dt:
+        # Move to next hour
+        target_dt += timedelta(hours=1)
+    diff = (target_dt - now_dt).total_seconds()
+    return max(1.0, diff)
 
 
 def _dir_label(score: float) -> str:
@@ -76,10 +104,261 @@ def _extract_json_dict(text: str) -> dict | None:
         return None
 
 
+# Index symbols whose live price action is authoritative over news sentiment.
+# Commodities (NATURALGAS etc.) are intentionally excluded: news legitimately
+# drives commodity prices, and a 0.5% move is routine intraday noise there.
+_INDEX_SYMBOLS = frozenset({"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"})
+
+
+def _headline_time_ist(published_at: Any) -> str:
+    """Render a headline's published_at (ISO UTC) as 'HH:MM IST' for the prompt."""
+    if not published_at:
+        return "time n/a"
+    try:
+        dt = datetime.fromisoformat(str(published_at).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(IST).strftime("%H:%M IST")
+    except (ValueError, TypeError):
+        return "time n/a"
+
+
+def _get_market_context(symbol: str) -> dict[str, Any] | None:
+    """Fetch latest underlying price + change vs previous session close.
+
+    Returns None when no local price history exists. Used to ground the news
+    sentiment LLM prompt in live price reality (headlines often lag intraday
+    moves) and to power the news/price divergence guard.
+
+    session_fresh=True means the latest price row was written today (IST),
+    i.e. it reflects the currently running session.
+    """
+    try:
+        from src.models.schema import get_read_conn
+
+        now_ist = datetime.now(IST)
+        if now_ist.weekday() >= 5:  # weekend — no fresh session data
+            return None
+        day_start_utc = (
+            now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+            .astimezone(timezone.utc)
+            .isoformat()
+        )
+
+        with get_read_conn() as conn:
+            latest = conn.execute(
+                "SELECT fetched_at, price FROM underlying_price "
+                "WHERE symbol = ? ORDER BY fetched_at DESC LIMIT 1",
+                (symbol,),
+            ).fetchone()
+            if not latest:
+                return None
+            prev_row = conn.execute(
+                "SELECT price FROM underlying_price "
+                "WHERE symbol = ? AND fetched_at < ? "
+                "ORDER BY fetched_at DESC LIMIT 1",
+                (symbol, day_start_utc),
+            ).fetchone()
+
+        price = float(latest["price"] or 0.0)
+        if price <= 0:
+            return None
+
+        asof_str = str(latest["fetched_at"] or "")
+        # fetched_at is stored as UTC ISO-8601; lexicographic compare is valid.
+        session_fresh = bool(asof_str) and asof_str >= day_start_utc
+        try:
+            asof_dt = datetime.fromisoformat(asof_str.replace("Z", "+00:00"))
+            if asof_dt.tzinfo is None:
+                asof_dt = asof_dt.replace(tzinfo=timezone.utc)
+            asof_ist = asof_dt.astimezone(IST).strftime("%d %b %H:%M IST")
+        except (ValueError, TypeError):
+            asof_ist = asof_str
+
+        pct: float | None = None
+        prev_close = float(prev_row["price"]) if prev_row and prev_row["price"] else None
+        if prev_close and prev_close > 0:
+            pct = round((price - prev_close) / prev_close * 100.0, 2)
+
+        return {
+            "price": price,
+            "prev_close": prev_close,
+            "pct_change": pct,
+            "session_fresh": session_fresh,
+            "asof_ist": asof_ist,
+        }
+    except Exception as exc:
+        log.debug("[news_worker] Market context unavailable for %s: %s", symbol, exc)
+        return None
+
+
+def _news_jev_flag(name: str, default: str = "false") -> bool:
+    """Read a news-worker feature flag from the environment."""
+    return os.environ.get(name, default).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _format_prompt_headlines(items: list[dict], limit: int = 6) -> list[str]:
+    """Format headlines with IST publish times for sentiment prompts.
+
+    Undated ICICIDirect commentary shows as 'time n/a' and is explicitly
+    de-prioritized in the system prompts.
+    """
+    headlines: list[str] = []
+    for idx, item in enumerate(items[:limit], 1):
+        title = (item.get("title") or "").strip()
+        if not title:
+            continue
+        provider = (item.get("provider") or "").strip()
+        time_str = _headline_time_ist(item.get("published_at"))
+        tag = f"{provider}, {time_str}" if provider else time_str
+        headlines.append(f"{idx}. [{tag}] {title}")
+    return headlines
+
+
+def _evaluate_sentiment_via_jev(
+    symbol: str,
+    items: list[dict],
+    market_context: dict[str, Any] | None = None,
+) -> tuple[float, str, str, str] | None:
+    """TypeSafe System-1 (Jev) sentiment — fallback/shadow evaluator.
+
+    Returns (score, direction, evaluator, reason) or None when Jev is
+    unavailable (no TYPESAFE_API_KEY, no answer, or malformed response).
+    Uses the same headline + live-market state as the OmniRouter prompt so
+    shadow comparisons are apples-to-apples. Question schema mirrors the
+    proven one in src/engine/jev_gate.py.
+    """
+    if not items:
+        return None
+    try:
+        from config.settings import TYPESAFE_API_KEY
+
+        if not TYPESAFE_API_KEY:
+            return None
+        from src.services.typesafe_client import evaluate_system_one
+
+        headlines = _format_prompt_headlines(items)
+        if not headlines:
+            return None
+
+        state_parts = [
+            f"Asset: {symbol}",
+            f"Current time: {datetime.now(IST).strftime('%a %d %b %Y %H:%M IST')}",
+        ]
+        if market_context and market_context.get("pct_change") is not None:
+            pct = float(market_context["pct_change"])
+            tape = "DOWN" if pct < 0 else ("UP" if pct > 0 else "FLAT")
+            freshness = (
+                "live session" if market_context.get("session_fresh") else "prior session data"
+            )
+            state_parts.append(
+                f"Live market: {symbol} {float(market_context['price']):.2f} "
+                f"({pct:+.2f}% vs prev close, {tape}; {freshness})"
+            )
+        state_parts.append("Headlines:\n" + "\n".join(headlines))
+        state = "\n".join(state_parts)
+
+        questions: dict[str, Any] = {
+            "news_direction": {
+                "type": "choice",
+                "instructions": (
+                    "What is the dominant short-term news sentiment for this asset "
+                    "given the headlines and any live price action?"
+                ),
+                "criteria": {
+                    "BULLISH": "Recent positive headlines aligned with (or leading) price action",
+                    "BEARISH": "Recent negative headlines aligned with (or leading) price action",
+                    "NEUTRAL": "Mixed, stale, or headline-vs-price conflicting evidence",
+                },
+            },
+        }
+        answers = evaluate_system_one(state, questions, timeout=3.0)
+        if not answers:
+            return None
+
+        ans = answers.get("news_direction") or {}
+        # ChoiceAnswer: {"type": "choice", "choice": "BEARISH", "confidence": 0.99}
+        choice = str(ans.get("choice") or ans.get("value") or "").upper().strip()
+        if choice not in ("BULLISH", "BEARISH", "NEUTRAL"):
+            return None
+        try:
+            conf = float(ans.get("confidence") or 0.5)
+        except (TypeError, ValueError):
+            conf = 0.5
+        conf = max(0.0, min(1.0, conf))
+
+        score = conf if choice == "BULLISH" else (-conf if choice == "BEARISH" else 0.0)
+        direction = "MIXED" if choice == "NEUTRAL" else choice
+        return (
+            round(score, 3),
+            direction,
+            "jev_system1",
+            f"Jev System-1: {choice} (confidence {conf:.2f})",
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.debug("[news_worker] Jev sentiment unavailable for %s: %s", symbol, exc)
+        return None
+
+
+def _md_sanitize(text: str) -> str:
+    """Strip legacy-Markdown metacharacters so LLM reasons cannot break
+    Telegram parse_mode='Markdown' (Telegram has no escape in legacy v1)."""
+    if not text:
+        return ""
+    return re.sub(r"[*_`\[\]]", "", str(text))
+
+
+def _build_ab_telegram_message(entries: dict[str, dict[str, Any]]) -> str:
+    """Build one consolidated OmniRouter-vs-Jev A/B message for Telegram.
+
+    Returns '' when no symbol has a Jev verdict (shadow off / Jev unavailable),
+    so callers can skip sending entirely.
+    """
+    rows: list[str] = []
+    for sym in sorted(entries):
+        e = entries[sym] or {}
+        if e.get("jev_direction") is None:
+            continue
+        pct = e.get("market_pct_change")
+        tape = f"{float(pct):+.2f}%" if isinstance(pct, (int, float)) else "n/a"
+        agree = (
+            "✅ AGREE"
+            if e.get("jev_direction") == e.get("direction")
+            else "❌ DISAGREE"
+        )
+        ev = str(e.get("evaluator") or "")
+        if ev.startswith("omnirouter"):
+            ev_label = "OmniRouter Claude"
+        elif ev == "jev_system1":
+            ev_label = "Jev"
+        elif ev == "deterministic_regex":
+            ev_label = "regex"
+        else:
+            ev_label = ev or "unknown"
+        omni_reason = _md_sanitize(e.get("reason"))[:200]
+        jev_reason = _md_sanitize(e.get("jev_reason"))[:200]
+        rows.append(
+            f"\n**{sym}** | tape {tape} | {agree}\n"
+            f"• Omni: {e.get('direction', '?')} ({float(e.get('raw_score') or 0):+.2f}, {ev_label})\n"
+            f"   {omni_reason}\n"
+            f"• Jev: {e.get('jev_direction')} ({float(e.get('jev_score') or 0):+.2f})\n"
+            f"   {jev_reason}"
+        )
+    if not rows:
+        return ""
+    now_str = datetime.now(IST).strftime("%d %b %H:%M IST")
+    return (
+        "**🤖 News AI A/B — OmniRouter vs Jev**\n"
+        f"_{now_str}_"
+        + "".join(rows)
+    )
+
+
 def _evaluate_sentiment_via_omnirouter(
     symbol: str,
     items: list[dict],
     fallback_score: float,
+    market_context: dict[str, Any] | None = None,
 ) -> tuple[float, str, str, str]:
     """Call OmniRouter with Claude/Free combo to evaluate sentiment.
 
@@ -89,13 +368,9 @@ def _evaluate_sentiment_via_omnirouter(
     if not items:
         return (0.0, "MIXED", "empty", "No news headlines available")
 
-    # Format the top headlines
-    headlines = []
-    for idx, item in enumerate(items[:6], 1):
-        title = (item.get("title") or "").strip()
-        provider = (item.get("provider") or "").strip()
-        if title:
-            headlines.append(f"{idx}. [{provider}] {title}" if provider else f"{idx}. {title}")
+    # Format the top headlines with IST publish times (shared with the Jev
+    # fallback so shadow comparisons use identical state).
+    headlines = _format_prompt_headlines(items)
 
     if not headlines:
         return (0.0, "MIXED", "empty", "No valid headline text")
@@ -110,7 +385,9 @@ def _evaluate_sentiment_via_omnirouter(
     else:
         url = base_url
 
-    api_key = os.environ.get("OMNIROUTER_API_KEY", "sk-omniroute")
+    api_key = os.environ.get("OMNIROUTER_API_KEY")
+    if not api_key:
+        raise RuntimeError("OMNIROUTER_API_KEY is not configured")
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -121,13 +398,40 @@ def _evaluate_sentiment_via_omnirouter(
     system_prompt = (
         "You are an expert financial and commodity market sentiment analyst for algorithmic trading.\n"
         "Evaluate the net short-term price sentiment of the provided news headlines for the given asset.\n"
+        "Headlines include publish times (IST). Weight recent headlines (last 1-2 hours during market "
+        "hours) far more heavily than older ones; treat headlines marked 'time n/a' as undated "
+        "commentary and weight them below timestamped headlines.\n"
+        "If a 'Live market' line is provided and the headlines conflict with live price action, score "
+        "toward the price action or return MIXED — news headlines routinely lag intraday moves, so a "
+        "falling index must not be scored bullish on the strength of older positive headlines.\n"
         "Output ONLY a valid JSON object with exactly these fields:\n"
         '{"score": float between -1.0 (strongly bearish) and 1.0 (strongly bullish), '
         '"direction": "BULLISH" | "BEARISH" | "MIXED", '
         '"reason": "brief 1-sentence analytical reason"}'
     )
 
-    user_prompt = f"Asset: {symbol}\nHeadlines:\n{headlines_text}"
+    prompt_lines = [
+        f"Asset: {symbol}",
+        f"Current time: {datetime.now(IST).strftime('%a %d %b %Y %H:%M IST')}",
+    ]
+    if market_context and market_context.get("pct_change") is not None:
+        pct = float(market_context["pct_change"])
+        tape = "DOWN" if pct < 0 else ("UP" if pct > 0 else "FLAT")
+        freshness = (
+            "live session" if market_context.get("session_fresh") else "prior session data"
+        )
+        prompt_lines.append(
+            f"Live market: {symbol} {float(market_context['price']):.2f} "
+            f"({pct:+.2f}% vs prev close, {tape}; {freshness}, "
+            f"as of {market_context.get('asof_ist', 'n/a')})"
+        )
+    elif market_context and market_context.get("price"):
+        prompt_lines.append(
+            f"Live market: {symbol} {float(market_context['price']):.2f} "
+            f"(no prev-close comparison; as of {market_context.get('asof_ist', 'n/a')})"
+        )
+    prompt_lines.append(f"Headlines:\n{headlines_text}")
+    user_prompt = "\n".join(prompt_lines)
 
     json_payload = {
         "model": OMNIROUTER_NEWS_MODEL,
@@ -193,6 +497,19 @@ def _evaluate_sentiment_via_omnirouter(
             symbol, exc,
         )
 
+    # OmniRouter failed (HTTP error / timeout / unparseable) → try Jev
+    # System-1 before degrading to the crude regex scorer. Flag-gated via
+    # NEWS_JEV_FALLBACK (default on — it can only improve on regex, and is
+    # skipped automatically when TYPESAFE_API_KEY is unset).
+    if _news_jev_flag("NEWS_JEV_FALLBACK", default="true"):
+        jev = _evaluate_sentiment_via_jev(symbol, items, market_context)
+        if jev:
+            log.info(
+                "[news_worker] Jev System-1 fallback used for %s: score=%.2f direction=%s",
+                symbol, jev[0], jev[1],
+            )
+            return jev
+
     return (
         round(fallback_score, 3),
         _dir_label(fallback_score),
@@ -248,9 +565,57 @@ def evaluate_and_cache_news(symbols: list[str] | None = None) -> dict[str, dict[
             regex_score = max(-1.0, min(1.0, regex_score))
 
             items = res.get("items", [])
+            market_ctx = _get_market_context(sym_clean)
             score, direction, evaluator, reason = _evaluate_sentiment_via_omnirouter(
-                sym_clean, items, regex_score
+                sym_clean, items, regex_score, market_context=market_ctx
             )
+
+            # News/price divergence guard (index symbols, live session only):
+            # a verdict materially opposite to live price action is downgraded
+            # to MIXED so stale headlines cannot greenlight trades against the
+            # tape. Score is clamped inside the MIXED band because readers
+            # (get_cached_news_sentiment) re-derive direction from raw_score.
+            if (
+                sym_clean in _INDEX_SYMBOLS
+                and market_ctx
+                and market_ctx.get("session_fresh")
+                and market_ctx.get("pct_change") is not None
+                and abs(float(market_ctx["pct_change"])) > 0.5
+            ):
+                pct = float(market_ctx["pct_change"])
+                opposes = (pct <= -0.5 and direction == "BULLISH") or (
+                    pct >= 0.5 and direction == "BEARISH"
+                )
+                if opposes:
+                    log.warning(
+                        "[news_worker] News/price divergence for %s: news=%s (score=%.2f) "
+                        "vs price=%+.2f%% — downgrading to MIXED",
+                        sym_clean, direction, score, pct,
+                    )
+                    score = max(-0.34, min(0.34, score))
+                    direction = "MIXED"
+                    reason = (
+                        f"{reason} [downgraded to MIXED: live price {pct:+.2f}% "
+                        f"contradicts news sentiment]"
+                    )
+
+            # Shadow A/B: evaluate Jev on identical state and stash both
+            # verdicts in the cache entry so evaluate_and_cache_news() can
+            # send one consolidated Telegram alert per cycle (replaces
+            # grepping logs for 'Jev shadow').
+            jev_score: float | None = None
+            jev_direction: str | None = None
+            jev_reason: str | None = None
+            if _news_jev_flag("NEWS_JEV_SHADOW"):
+                jev_res = _evaluate_sentiment_via_jev(sym_clean, items, market_ctx)
+                if jev_res:
+                    jev_score, jev_direction, _jev_ev, jev_reason = jev_res
+                    agree = jev_direction == direction
+                    log.info(
+                        "[news_worker] Jev shadow %s: omni=%s(%.2f) jev=%s(%.2f) — %s",
+                        sym_clean, direction, score, jev_direction, jev_score,
+                        "AGREE" if agree else "DISAGREE",
+                    )
 
             entry = {
                 "symbol": sym_clean,
@@ -258,6 +623,10 @@ def evaluate_and_cache_news(symbols: list[str] | None = None) -> dict[str, dict[
                 "direction": direction,
                 "evaluator": evaluator,
                 "reason": reason,
+                "jev_score": jev_score,
+                "jev_direction": jev_direction,
+                "jev_reason": jev_reason,
+                "market_pct_change": market_ctx.get("pct_change") if market_ctx else None,
                 "regex_fallback_score": round(regex_score, 3),
                 "count_24h": int(res.get("count_24h", 0)),
                 "news_score_day": float(res.get("news_score_day", score)),
@@ -285,12 +654,31 @@ def evaluate_and_cache_news(symbols: list[str] | None = None) -> dict[str, dict[
                 updated[sym_clean] = entry
 
     if updated:
+        global _LAST_DISK_MTIME, _LAST_EVALUATED_TS
         with _LOCK:
             _IN_MEMORY_NEWS.update(updated)
+            _LAST_EVALUATED_TS = now_ts
             # Merge with existing on-disk cache
             current_disk = _load_disk_cache()
             current_disk.update(_IN_MEMORY_NEWS)
             _save_disk_cache(current_disk)
+            try:
+                if NEWS_CACHE_FILE.exists():
+                    _LAST_DISK_MTIME = os.path.getmtime(NEWS_CACHE_FILE)
+            except Exception:
+                pass
+
+    # Consolidated shadow A/B alert: one Telegram message per evaluation cycle
+    # showing BOTH OmniRouter and Jev verdicts (active only when
+    # NEWS_JEV_SHADOW=true and at least one Jev verdict was produced).
+    if updated and _news_jev_flag("NEWS_JEV_SHADOW"):
+        try:
+            ab_msg = _build_ab_telegram_message(updated)
+            if ab_msg:
+                from src.alerts.telegram_dispatcher import send_text
+                send_text(ab_msg)
+        except Exception as exc:
+            log.debug("[news_worker] A/B Telegram alert failed: %s", exc)
 
     return updated
 
@@ -308,7 +696,22 @@ def get_cached_news_sentiment(
     """
     sym = symbol.upper().strip().split()[0]
 
+    global _LAST_DISK_MTIME
     data: dict[str, Any] | None = None
+
+    # Multi-process sync: check disk cache file modification time
+    try:
+        if NEWS_CACHE_FILE.exists():
+            mtime = os.path.getmtime(NEWS_CACHE_FILE)
+            if mtime > _LAST_DISK_MTIME:
+                disk_data = _load_disk_cache()
+                if disk_data:
+                    with _LOCK:
+                        _IN_MEMORY_NEWS.update(disk_data)
+                        _LAST_DISK_MTIME = mtime
+    except Exception as m_exc:
+        log.debug("[news_worker] Disk cache mtime check failed: %s", m_exc)
+
     with _LOCK:
         data = _IN_MEMORY_NEWS.get(sym)
 
@@ -360,23 +763,75 @@ def get_cached_news_sentiment(
     }
 
 
-def _worker_loop(poll_interval: int) -> None:
-    """Daemon thread loop executing periodic news evaluations."""
-    log.info("[news_worker] Asynchronous News Sentiment Worker started (poll interval=%ds)", poll_interval)
+def ensure_news_worker_ready(max_age_seconds: int = RECENCY_THRESHOLD_SECONDS, force: bool = False) -> bool:
+    """Pre-scan startup check: Run news worker before Symbols pipeline begins,
+    but only if the last News scan completed more than 60 minutes ago.
+    If the last scan was within the past 60 minutes, skip and return False.
+    """
+    last_eval = get_last_news_eval_timestamp()
+    now_ts = time.time()
+    age = now_ts - last_eval if last_eval > 0 else float("inf")
+
+    if not force and age <= max_age_seconds:
+        log.info(
+            "[news_worker] Last news evaluation was %.1fm ago (<= %.0fm threshold) — skipping pre-pipeline news run.",
+            age / 60.0, max_age_seconds / 60.0,
+        )
+        return False
+
+    log.info(
+        "[news_worker] Pre-pipeline news evaluation triggered (last run was %.1fm ago > %.0fm threshold)...",
+        age / 60.0, max_age_seconds / 60.0,
+    )
+    evaluate_and_cache_news()
+    log.info("[news_worker] Pre-pipeline news evaluation finished.")
+    return True
+
+
+def _worker_loop() -> None:
+    """Daemon thread loop executing hourly news evaluations at 55 minutes past each hour in IST.
+    Enforces a 60-minute recency check before each run so it skips if already ran recently.
+    """
+    log.info("[news_worker] Asynchronous News Sentiment Worker started (scheduled at :55 past each hour IST)")
     while not _STOP_EVENT.is_set():
+        # Sleep until the next :55 minute boundary in IST
+        wait_seconds = seconds_until_next_minute(55)
+        next_run_dt = datetime.now(IST) + timedelta(seconds=wait_seconds)
+        log.info(
+            "[news_worker] Next scheduled news evaluation at %s IST (in %.1f minutes)",
+            next_run_dt.strftime("%H:%M:%S"),
+            wait_seconds / 60.0,
+        )
+        if _STOP_EVENT.wait(timeout=wait_seconds):
+            break
+
+        # Check recency before running scheduled job
+        last_eval = get_last_news_eval_timestamp()
+        now_ts = time.time()
+        age = now_ts - last_eval if last_eval > 0 else float("inf")
+        if age < RECENCY_THRESHOLD_SECONDS - 60:  # Allow 1-minute jitter
+            log.info(
+                "[news_worker] Scheduled run at :55 IST skipped — news was already evaluated %.1fm ago (< 60m)",
+                age / 60.0,
+            )
+            continue
+
         try:
+            now_ist = datetime.now(IST)
+            log.info(
+                "[news_worker] Scheduled news evaluation triggered at %s IST (:55 past the hour)...",
+                now_ist.strftime("%H:%M:%S"),
+            )
             evaluate_and_cache_news()
+            log.info("[news_worker] Scheduled news evaluation finished.")
         except Exception as exc:
             log.exception("[news_worker] Unexpected error in news worker cycle: %s", exc)
 
-        # Sleep with stop event interruptibility
-        if _STOP_EVENT.wait(timeout=poll_interval):
-            break
     log.info("[news_worker] News Sentiment Worker stopped")
 
 
-def start_news_worker(poll_interval_seconds: int = DEFAULT_POLL_INTERVAL_SECONDS) -> None:
-    """Start the asynchronous news background worker daemon."""
+def start_news_worker() -> None:
+    """Start the asynchronous news background worker daemon scheduled at :55 of each hour."""
     global _WORKER_THREAD
     with _LOCK:
         if _WORKER_THREAD is not None and _WORKER_THREAD.is_alive():
@@ -386,7 +841,6 @@ def start_news_worker(poll_interval_seconds: int = DEFAULT_POLL_INTERVAL_SECONDS
         _STOP_EVENT.clear()
         _WORKER_THREAD = threading.Thread(
             target=_worker_loop,
-            args=(poll_interval_seconds,),
             daemon=True,
             name="NewsSentimentWorker",
         )

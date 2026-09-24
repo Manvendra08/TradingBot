@@ -882,6 +882,65 @@ def get_previous_underlying_before(symbol: str, fetched_at: str, *args, **kwargs
         return dict(best_row) if best_row else None
 
 
+def get_previous_underlying_for_expiry(
+    symbol: str, expiry: str, fetched_at: str | None = None
+) -> float | None:
+    """
+    Get the most recent underlying price for a specific symbol and contract expiry
+    from option_chain_snapshots. This ensures cross-expiry basis differences
+    (e.g., rollover contango/backwardation) are never mistaken for price moves.
+    """
+    if fetched_at:
+        sql = """
+            SELECT underlying_price FROM option_chain_snapshots
+            WHERE symbol=? AND expiry=? AND underlying_price IS NOT NULL AND underlying_price > 0
+              AND fetched_at < ?
+            ORDER BY fetched_at DESC
+            LIMIT 1
+        """
+        params = (symbol, expiry, fetched_at)
+    else:
+        sql = """
+            SELECT underlying_price FROM option_chain_snapshots
+            WHERE symbol=? AND expiry=? AND underlying_price IS NOT NULL AND underlying_price > 0
+            ORDER BY fetched_at DESC
+            LIMIT 1
+        """
+        params = (symbol, expiry)
+
+    with get_conn(read_only=True) as conn:
+        row = conn.execute(sql, params).fetchone()
+        return float(row["underlying_price"]) if row and row["underlying_price"] is not None else None
+
+
+def get_last_recorded_expiry(
+    symbol: str, fetched_at: str | None = None
+) -> str | None:
+    """
+    Get the most recent option contract expiry recorded for symbol.
+    Useful for auto-detecting contract expiry rollovers across scans.
+    """
+    if fetched_at:
+        sql = """
+            SELECT expiry FROM option_chain_snapshots
+            WHERE symbol=? AND expiry IS NOT NULL AND fetched_at < ?
+            ORDER BY fetched_at DESC
+            LIMIT 1
+        """
+        params = (symbol, fetched_at)
+    else:
+        sql = """
+            SELECT expiry FROM option_chain_snapshots
+            WHERE symbol=? AND expiry IS NOT NULL
+            ORDER BY fetched_at DESC
+            LIMIT 1
+        """
+        params = (symbol,)
+    with get_conn(read_only=True) as conn:
+        row = conn.execute(sql, params).fetchone()
+        return str(row["expiry"]) if row and row["expiry"] else None
+
+
 def get_latest_snapshots_for_symbol(symbol: str, expiry: str) -> list[dict]:
     sql = """
         SELECT * FROM option_chain_snapshots
@@ -2186,6 +2245,19 @@ def get_broker_config() -> dict | None:
         return config
 
 
+_BROKER_CONFIG_ALLOWED_COLUMNS = {
+    "api_key",
+    "api_secret",
+    "access_token",
+    "request_token",
+    "totp_secret",
+    "kill_switch_active",
+    "last_login_date",
+    "user_id",
+    "password",
+}
+
+
 def update_broker_config(**kwargs) -> None:
     from src.services.zerodha_auth import encrypt_secret
 
@@ -2194,26 +2266,25 @@ def update_broker_config(**kwargs) -> None:
         if encrypt_key in kwargs_copy and kwargs_copy[encrypt_key]:
             kwargs_copy[encrypt_key] = encrypt_secret(kwargs_copy[encrypt_key])
 
+    safe_kwargs = {k: v for k, v in kwargs_copy.items() if k in _BROKER_CONFIG_ALLOWED_COLUMNS}
+    if not safe_kwargs:
+        return
+
     with get_conn() as conn:
         row = conn.execute(
             "SELECT id FROM broker_configs ORDER BY id DESC LIMIT 1"
         ).fetchone()
         if row:
             broker_id = row["id"]
-            sets = []
-            vals = []
-            for k, v in kwargs_copy.items():
-                sets.append(f"{k}=?")
-                vals.append(v)
+            sets = [f"{k}=?" for k in safe_kwargs.keys()]
+            vals = list(safe_kwargs.values())
             vals.append(broker_id)
-            sql = f"UPDATE broker_configs SET {', '.join(sets)} WHERE id=?"
-            conn.execute(sql, tuple(vals))
+            conn.execute(f"UPDATE broker_configs SET {', '.join(sets)} WHERE id=?", tuple(vals))
         else:
-            cols = list(kwargs_copy.keys())
-            vals = list(kwargs_copy.values())
+            cols = list(safe_kwargs.keys())
+            vals = list(safe_kwargs.values())
             placeholders = ", ".join(["?"] * len(cols))
-            sql = f"INSERT INTO broker_configs ({', '.join(cols)}) VALUES ({placeholders})"
-            conn.execute(sql, tuple(vals))
+            conn.execute(f"INSERT INTO broker_configs ({', '.join(cols)}) VALUES ({placeholders})", tuple(vals))
 
 
 def set_kill_switch(active: bool) -> None:

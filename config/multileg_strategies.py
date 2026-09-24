@@ -31,7 +31,7 @@ MIN_NET_PREMIUM = 2.0             # Minimum net premium collected (₹)
 # Minimum wing width as a percentage of underlying price (prevents ultra-narrow spreads that bleed premium)
 MIN_WING_WIDTH_PCT = {
     "NIFTY": 0.005,       # >= 0.50% (~120 pts)
-    "BANKNIFTY": 0.006,   # >= 0.60% (~300 pts)
+    "BANKNIFTY": 0.006,   # >= 0.60% (~340 pts at 56k spot)
     "FINNIFTY": 0.005,    # >= 0.50% (~120 pts)
     "MIDCPNIFTY": 0.005,  # >= 0.50% (~60 pts)
     "SENSEX": 0.006,      # >= 0.60% (~450-500 pts)
@@ -53,8 +53,22 @@ MIN_WING_WIDTH_POINTS = {
 # Minimum net credit collected as a fraction of wing width (e.g. 0.25 = collect at least 25% of spread width)
 MIN_CREDIT_TO_WIDTH_RATIO = 0.20
 
-# Maximum insurance cost: Long hedge legs cannot consume more than 65% of gross premium collected on short legs
+# Maximum insurance cost: Long hedge legs cannot consume more than 65% of gross premium collected on short legs.
+# NATURALGAS next-strike hedges are structurally expensive (5-pt strike grid, premium-heavy wings),
+# so it gets a wider 75% allowance. Per-symbol overrides live in MAX_HEDGE_COST_RATIO_BY_SYMBOL.
 MAX_HEDGE_COST_RATIO = 0.65
+MAX_HEDGE_COST_RATIO_BY_SYMBOL: dict[str, float] = {
+    "NATURALGAS": 0.75,
+}
+
+
+def get_max_hedge_cost_ratio(symbol: str = "") -> float:
+    """Return the insurance-debit ceiling (fraction of gross credit) for *symbol*.
+
+    Falls back to MAX_HEDGE_COST_RATIO (0.65) for unlisted symbols.
+    """
+    base = str(symbol or "").upper().strip().split()[0]
+    return MAX_HEDGE_COST_RATIO_BY_SYMBOL.get(base, MAX_HEDGE_COST_RATIO)
 
 # ── Strategy-Specific Constraints ───────────────────────────────────
 STRATEGY_CONSTRAINTS = {

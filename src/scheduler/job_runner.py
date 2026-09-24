@@ -43,6 +43,14 @@ SCRAPE_RUNNER = ROOT / "tools" / "scrape_dhan_naturalgas.py"
 
 IST = pytz.timezone("Asia/Kolkata")
 
+# ── Expiry-Day Auto-Exit tuning ────────────────────────────────────────────
+# The sweep fires at (class close − _EXPIRY_EXIT_TRIGGER_LEAD_MIN) and stays
+# eligible for catch-up attempts up to _EXPIRY_EXIT_GRACE_MIN minutes after
+# close, so a blocked main loop (LLM-heavy scans, market-close pipelines) or a
+# mid-window process restart can never silently miss the square-off.
+_EXPIRY_EXIT_TRIGGER_LEAD_MIN = 1
+_EXPIRY_EXIT_GRACE_MIN = 10
+
 MAX_CATCHUP_INTERVALS = 3
 _ACTIVE_TASKS: dict[str, multiprocessing.Process] = {}
 _ACTIVE_TASKS_LOCK = threading.Lock()
@@ -412,10 +420,19 @@ def exit_all_positions_friday(market_class: str) -> None:
             )
 
 
-def exit_expiry_day_positions(market_class: str) -> None:
+def exit_expiry_day_positions(market_class: str) -> bool:
     """
     Exit open paper and live trades for current expiry positions 1 minute before market closing time.
     Only closes positions whose contract expiry date matches today's date in IST.
+
+    Runs within the market window plus the post-close catch-up grace
+    (_EXPIRY_EXIT_GRACE_MIN). During that post-close grace only paper trades are
+    squared off (at the last valid premium or intrinsic value); live broker
+    orders are skipped because the exchange session is over.
+
+    Returns True when the sweep completed (nothing to close, or every expiring
+    trade was closed), False when a symbol was skipped or a close failed — the
+    caller may retry until the grace window ends.
     """
     from datetime import datetime, timezone
 
@@ -428,6 +445,7 @@ def exit_expiry_day_positions(market_class: str) -> None:
 
     now_ist = datetime.now(IST)
     today_ist_str = now_ist.strftime("%Y-%m-%d")
+    completed = True
 
     log.info(
         "[Expiry Exit] Expiry day 1-min auto-exit triggered for class: %s (date: %s)",
@@ -443,11 +461,14 @@ def exit_expiry_day_positions(market_class: str) -> None:
     symbols = [s for s in WATCH_SYMBOLS if get_symbol_class(s) == market_class]
 
     for symbol in symbols:
-        if not _is_open_for(symbol):
+        strict_open = _is_open_for(symbol)
+        in_catchup_grace = _is_open_for(symbol, grace_minutes=_EXPIRY_EXIT_GRACE_MIN)
+        if not in_catchup_grace:
             log.info(
-                "[Expiry Exit] Market closed for %s — skipping exit (no valid prices available)",
+                "[Expiry Exit] Market closed beyond grace for %s — skipping exit (no valid prices available)",
                 symbol,
             )
+            completed = False
             continue
 
         try:
@@ -493,6 +514,7 @@ def exit_expiry_day_positions(market_class: str) -> None:
                     "[Expiry Exit] Could not fetch latest prices for %s. Skipping expiry exit.",
                     symbol,
                 )
+                completed = False
                 continue
 
             underlying = oc_data["underlying_price"]
@@ -545,6 +567,15 @@ def exit_expiry_day_positions(market_class: str) -> None:
             # Exit Expiring Live Trades
             for row in expiring_live:
                 trade = dict(row)
+                if not strict_open and not shadow_mode:
+                    log.warning(
+                        "[Expiry Exit] Live trade #%d for %s skipped — exchange session closed "
+                        "(post-close catch-up) and live mode is on; broker settlement/reconciliation "
+                        "will handle it.",
+                        trade["id"],
+                        symbol,
+                    )
+                    continue
                 exit_premium = None
                 if trade.get("option_type") == "FUT":
                     exit_premium = underlying
@@ -598,13 +629,27 @@ def exit_expiry_day_positions(market_class: str) -> None:
                     )
 
         except Exception as sym_exc:
+            completed = False
             log.error(
                 "[Expiry Exit] Error executing expiry exit for %s: %s", symbol, sym_exc
             )
 
+    if not completed:
+        log.warning(
+            "[Expiry Exit] %s: expiry sweep incomplete — caller will retry within the grace window.",
+            market_class,
+        )
+    return completed
 
-def _is_open_for(symbol: str) -> bool:
-    """Check if the market is currently open for the given symbol (used for scheduling guards)."""
+
+def _is_open_for(symbol: str, grace_minutes: int = 0) -> bool:
+    """Check if the market is currently open for the given symbol (used for scheduling guards).
+
+    When *grace_minutes* > 0, the window is additionally treated as "open" for
+    that many minutes after the configured class close. Used only by the
+    expiry-day sweep so a delayed/blocked trigger can still square off expiring
+    contracts (prices fall back to the last valid premium or intrinsic value).
+    """
     now = datetime.now(IST)
     open_t, close_t, days = market_window(symbol)
     if now.weekday() not in days:
@@ -613,6 +658,11 @@ def _is_open_for(symbol: str) -> bool:
 
     if is_market_holiday(symbol, now):
         return False
+    if grace_minutes > 0:
+        close_h, close_m = map(int, close_t.split(":"))
+        close_dt = now.replace(hour=close_h, minute=close_m, second=0, microsecond=0)
+        if close_dt <= now <= close_dt + timedelta(minutes=grace_minutes):
+            return True
     t = now.strftime("%H:%M")
     return open_t <= t <= close_t
 
@@ -1243,11 +1293,11 @@ def start_scheduler(immediate: bool = False):
     except Exception as e:
         log.error("[scheduler] Failed to trigger startup index weights refresh: %s", e)
 
-    # Start Asynchronous News Sentiment Background Worker (15m poll interval)
+    # Start Asynchronous News Sentiment Background Worker (scheduled at :55 past each hour)
     try:
         from src.services.news_worker import start_news_worker
-        start_news_worker(poll_interval_seconds=15 * 60)
-        log.info("[scheduler] Asynchronous News Sentiment Worker dispatched (interval=15m)")
+        start_news_worker()
+        log.info("[scheduler] Asynchronous News Sentiment Worker dispatched (scheduled at :55 of each hour)")
     except Exception as e:
         log.error("[scheduler] Failed to start news worker: %s", e)
 
@@ -1342,6 +1392,13 @@ def start_scheduler(immediate: bool = False):
 
     # Run auth immediately at startup
     _pre_pipeline_auth()
+
+    # Pre-pipeline News Recency Check: Evaluate if last news scan completed > 60m ago
+    try:
+        from src.services.news_worker import ensure_news_worker_ready
+        ensure_news_worker_ready(max_age_seconds=3600)
+    except Exception as nw_startup_err:
+        log.warning("[scheduler] Startup news worker check error: %s", nw_startup_err)
 
     # Phase 3: Startup Broker Reconciliation & Orphan GTT Purge
     try:
@@ -1493,7 +1550,9 @@ def start_scheduler(immediate: bool = False):
 
     _last_friday_nse_exit_date = None
     _last_friday_mcx_exit_date = None
-    _last_expiry_exit_tracker: set[tuple[str, str, str]] = set()
+    _last_expiry_exit_tracker: set[tuple[str, str]] = set()  # (class_key, "YYYY-MM-DD")
+    _expiry_exit_alerted: set[tuple[str, str]] = set()  # Telegram warn-once guard
+    _expiry_exit_lock = threading.Lock()  # non-blocking "sweep busy" flag
     _last_market_close_scan_tracker: set[tuple[str, str]] = set()
     _last_auto_login_date = None
     _last_fii_fetch_date = None
@@ -1521,6 +1580,102 @@ def start_scheduler(immediate: bool = False):
         _last_weather_fetch_times[hour_key] = now_ts
         return True
 
+    def _run_expiry_exit_checks() -> None:
+        """Expiry-day 1-min auto-exit with catch-up semantics (per market class).
+
+        Fires when (class close − _EXPIRY_EXIT_TRIGGER_LEAD_MIN) is reached and
+        stays eligible for retries until close + _EXPIRY_EXIT_GRACE_MIN minutes.
+        Always uses a fresh wall-clock time — never the (possibly stale) loop
+        tick — so a blocked main loop or a mid-window process restart cannot
+        skip the square-off. Each class fires at most once per day; the tracker
+        entry is recorded only after a successful sweep, so transient failures
+        (missing prices, exceptions) are retried within the grace window.
+        """
+        from config.holidays import is_market_holiday
+
+        now_ist = datetime.now(IST)
+        today_key = now_ist.strftime("%Y-%m-%d")
+        for class_key in MARKET_WINDOWS:
+            _, close_t, days = MARKET_WINDOWS[class_key]
+            if now_ist.weekday() not in days:
+                continue
+            close_h, close_m = map(int, close_t.split(":"))
+            close_dt = now_ist.replace(
+                hour=close_h, minute=close_m, second=0, microsecond=0
+            )
+            target_dt = close_dt - timedelta(minutes=_EXPIRY_EXIT_TRIGGER_LEAD_MIN)
+            deadline_dt = close_dt + timedelta(minutes=_EXPIRY_EXIT_GRACE_MIN)
+            if not target_dt <= now_ist <= deadline_dt:
+                continue
+
+            tracker_key = (class_key, today_key)
+            if tracker_key in _last_expiry_exit_tracker:
+                continue
+
+            class_symbols = [
+                s for s in WATCH_SYMBOLS if get_symbol_class(s) == class_key
+            ]
+            if not class_symbols:
+                # Classes without monitored symbols (e.g. NSE_EQUITY / NFO) — nothing to exit.
+                _last_expiry_exit_tracker.add(tracker_key)
+                continue
+            if all(is_market_holiday(s, now_ist) for s in class_symbols):
+                continue
+
+            if not _expiry_exit_lock.acquire(blocking=False):
+                continue  # another worker is already running the sweep
+            try:
+                if tracker_key in _last_expiry_exit_tracker:
+                    continue
+                try:
+                    completed = exit_expiry_day_positions(class_key)
+                except Exception as exc:
+                    completed = False
+                    log.error(
+                        "[scheduler] Expiry 1-min auto-exit raised for %s: %s",
+                        class_key,
+                        exc,
+                    )
+                if completed:
+                    _last_expiry_exit_tracker.add(tracker_key)
+                else:
+                    log.warning(
+                        "[scheduler] Expiry auto-exit for %s incomplete — retrying within"
+                        " the close+%d min grace window",
+                        class_key,
+                        _EXPIRY_EXIT_GRACE_MIN,
+                    )
+                    if tracker_key not in _expiry_exit_alerted:
+                        _expiry_exit_alerted.add(tracker_key)
+                        try:
+                            from src.alerts.telegram_dispatcher import send_text
+
+                            send_text(
+                                f"⚠️ **Expiry Auto-Exit Incomplete** | `{class_key}` — some "
+                                f"contracts expiring today could not be squared off yet. "
+                                f"Bot will keep retrying until close + {_EXPIRY_EXIT_GRACE_MIN} min."
+                            )
+                        except Exception:
+                            pass
+            finally:
+                _expiry_exit_lock.release()
+
+    def _expiry_exit_watchdog() -> None:
+        """Daemon watchdog: drives the expiry-day sweep independently of the main
+        loop so long-running scans (LLM enrichment, market-close pipelines) can
+        never block the (close − 1 min) square-off."""
+        time.sleep(30)  # let scheduler warm-up finish first
+        while True:
+            try:
+                _run_expiry_exit_checks()
+            except Exception as exc:  # never let the watchdog die
+                log.error("[Expiry Exit] Watchdog iteration failed: %s", exc)
+            time.sleep(20)
+
+    threading.Thread(
+        target=_expiry_exit_watchdog, daemon=True, name="expiry-exit-watchdog"
+    ).start()
+
     try:
         while True:
             now_ts = time.time()
@@ -1539,6 +1694,12 @@ def start_scheduler(immediate: bool = False):
                 has_logged_closed_pre_open.clear()
                 has_logged_closed_post_close.clear()
                 _last_eod_report_date = None
+                _last_expiry_exit_tracker = {
+                    k for k in _last_expiry_exit_tracker if k[1] == str(current_date)
+                }
+                _expiry_exit_alerted = {
+                    k for k in _expiry_exit_alerted if k[1] == str(current_date)
+                }
 
                 # Daily re-auth: refresh Shoonya token & Kite login if needed
                 def _daily_reauth():
@@ -1686,26 +1847,11 @@ def start_scheduler(immediate: bool = False):
                     except Exception as e:
                         log.error("Friday auto-exit failed for MCX: %s", e)
 
-            # Expiry Day Auto-Exits (1 min before market closing time for current expiry positions)
-            current_time_str = now_ist.strftime("%H:%M")
-            for class_key in MARKET_WINDOWS:
-                _, close_t, _ = MARKET_WINDOWS[class_key]
-                close_h, close_m = map(int, close_t.split(":"))
-                close_dt = datetime.combine(now_ist.date(), dt_time(close_h, close_m))
-                target_time_str = (close_dt - timedelta(minutes=1)).strftime("%H:%M")
-
-                if target_time_str <= current_time_str <= close_t:
-                    tracker_key = (class_key, target_time_str, current_date)
-                    if tracker_key not in _last_expiry_exit_tracker:
-                        _last_expiry_exit_tracker.add(tracker_key)
-                        try:
-                            exit_expiry_day_positions(class_key)
-                        except Exception as e:
-                            log.error(
-                                "[scheduler] Expiry 1-min auto-exit failed for %s: %s",
-                                class_key,
-                                e,
-                            )
+            # Expiry Day Auto-Exits (1 min before market closing time for current expiry positions).
+            # Catch-up semantics + success-only tracking live in _run_expiry_exit_checks(), which
+            # is also driven by the dedicated "expiry-exit-watchdog" thread so a blocked main loop
+            # (long LLM scans / market-close pipelines) can never miss the square-off window.
+            _run_expiry_exit_checks()
 
             # Mandatory Daily Market-Close Final Scan (15:38 IST for NSE/BSE, 23:30 IST for MCX)
             # Guaranteed to run regardless of configured scan frequency (5m, 15m, 30m, 1H).
@@ -1716,6 +1862,12 @@ def start_scheduler(immediate: bool = False):
                 close_tracker=_last_market_close_scan_tracker,
                 current_date=str(current_date),
             )
+
+            # Re-check expiry exits with a fresh wall-clock time right after the
+            # (potentially long, blocking) market-close scan pipelines return, so
+            # expiring trades are still squared off even if the scan overran the
+            # 1-minute trigger window.
+            _run_expiry_exit_checks()
 
             # 1. Full Scan Loop per market class
             import math

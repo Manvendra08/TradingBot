@@ -24,7 +24,7 @@ logging.getLogger("urllib3.connectionpool").setLevel(logging.ERROR)
 
 # ── NewsAPI.org ────────────────────────────────────────────────────────────
 _NEWSAPI_BASE = "https://newsapi.org/v2/everything"
-from config.settings import NEWSAPI_KEY as _NEWSAPI_KEY
+from config.settings import IST, NEWSAPI_KEY as _NEWSAPI_KEY
 
 # Map symbols to NewsAPI search queries (Indian-market focused)
 _SYMBOL_NEWSAPI_QUERIES: dict[str, str] = {
@@ -349,7 +349,29 @@ def _fetch_newsapi_news(symbol: str) -> list[dict]:
             )
 
         rows.sort(key=lambda x: x["published"], reverse=True)
-        log.debug("[newsapi] Fetched %d articles for %s", len(rows), symbol)
+
+        # Freshness tightening: free-tier NewsAPI can serve articles up to
+        # ~48h old, and stale headlines previously dominated intraday verdicts.
+        # Prefer a tight window and fall back progressively rather than
+        # returning an empty pool:
+        #   NSE market hours (weekday 09:15-15:30 IST) -> <=12h, then <=24h
+        #   off-hours                                  -> <=24h
+        # If neither window has articles, keep the full 48h pool.
+        now_ist = datetime.now(IST)
+        in_market_hours = now_ist.weekday() < 5 and (
+            (now_ist.hour == 9 and now_ist.minute >= 15)
+            or (10 <= now_ist.hour <= 14)
+            or (now_ist.hour == 15 and now_ist.minute < 30)
+        )
+        for hours in ((12, 24) if in_market_hours else (24,)):
+            fresh = [r for r in rows if r["published"] >= now_ts - hours * 3600]
+            if fresh:
+                rows = fresh
+                break
+        log.debug(
+            "[newsapi] Fetched %d articles for %s after freshness window (%s)",
+            len(rows), symbol, "market-hours" if in_market_hours else "off-hours",
+        )
         return rows
 
     except requests.exceptions.Timeout:
@@ -421,8 +443,14 @@ def _fetch_icici_commentary() -> list[dict]:
                         {
                             "title": title,
                             "provider": "ICICIDirect",
-                            "published": int(time.time()),
-                            "published_at": datetime.now(timezone.utc).isoformat(),
+                            # The commentary page does not expose publish times.
+                            # These used to be faked with time.time(), which
+                            # hoisted potentially days-old commentary above
+                            # genuinely fresh headlines in the recency sort and
+                            # misled the LLM sentiment verdict. Keep them undated;
+                            # fetch_news() appends undated items after dated ones.
+                            "published": None,
+                            "published_at": None,
                             "url": url,
                             "score": _news_sentiment_score(t),
                         }
@@ -615,7 +643,15 @@ def fetch_news(symbol: str) -> dict:
             seen_titles.add(fp)
             merged.append(item)
 
-    merged.sort(key=lambda x: x["published"], reverse=True)
+    # Recency sort — but only across genuinely timestamped items. Scraped
+    # ICICIDirect commentary has no real publish timestamp (published=None);
+    # faking it with time.time() previously hoisted stale commentary to the
+    # top and drove wrong bullish verdicts on down markets. Undated items
+    # keep source order and go last.
+    timestamped = [x for x in merged if x.get("published") is not None]
+    undated = [x for x in merged if x.get("published") is None]
+    timestamped.sort(key=lambda x: x["published"], reverse=True)
+    merged = timestamped + undated
 
     current_items = merged[:5]
     current_score = (

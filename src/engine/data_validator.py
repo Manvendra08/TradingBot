@@ -162,7 +162,9 @@ def validate_market_data(
 
         # Check against previous price jump (> 35% single-scan gap is critical, > 15% is warning)
         # Note: Percentage anomaly checks are strictly restricted to underlying spot, never option premiums.
-        if prev_price and prev_price > 0:
+        # When an expiry swap occurs (e.g. MCX commodity rollover), cross-contract price jumps reflect
+        # basis spread (contango/backwardation), not spot data corruption.
+        if prev_price and prev_price > 0 and not oc_data.get("is_expiry_swap"):
             pct_jump = abs(underlying - prev_price) / prev_price
             if pct_jump > 0.35:
                 issues.append(

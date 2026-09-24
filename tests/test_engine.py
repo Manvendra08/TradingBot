@@ -211,6 +211,39 @@ class TestPriceSpike:
             alerts, _ctx = detect_anomalies(oc, FETCHED_AT)
         assert not any(a["alert_type"] == "PRICE_SPIKE" for a in alerts)
 
+    def test_expiry_swap_suppresses_false_price_spike(self):
+        from src.engine.anomaly_detector import detect_anomalies
+
+        # Contract rolled over from 289.20 to 304.20 (+5.19% calendar basis)
+        oc = _make_oc(underlying=304.20)
+        oc["expiry"] = "2026-10-23"
+        oc["is_expiry_swap"] = True
+        oc["prev_expiry"] = "2026-09-23"
+        prev_price = {"price": 289.20, "fetched_at": FETCHED_AT}
+        with (
+            patch(
+                "src.engine.anomaly_detector.get_previous_snapshot", return_value=None
+            ),
+            patch(
+                "src.engine.anomaly_detector.get_previous_underlying_for_expiry",
+                return_value=None,
+            ),
+            patch(
+                "src.engine.anomaly_detector.get_previous_underlying_before",
+                return_value=prev_price,
+            ),
+            patch(
+                "src.engine.anomaly_detector.get_latest_snapshots_for_symbol",
+                return_value=[],
+            ),
+        ):
+            alerts, ctx = detect_anomalies(oc, FETCHED_AT)
+        assert not any(a["alert_type"] == "PRICE_SPIKE" for a in alerts)
+        assert ctx["price_change_points"] == 0.0
+        assert ctx["price_change_pct"] is None
+        assert ctx["is_expiry_swap"] is True
+
+
 
 # ── PCR computation ────────────────────────────────────────────────────────
 
