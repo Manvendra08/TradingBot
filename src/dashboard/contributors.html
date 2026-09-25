@@ -752,7 +752,7 @@
             <div class="sub-controls">
                 <label class="switch-wrap">
                     <input type="checkbox" id="auto-refresh-toggle" checked onchange="toggleAutoRefresh(this.checked)" />
-                    <span>Auto Refresh (30s)</span>
+                    <span>Auto Refresh (300s)</span>
                 </label>
                 <span class="sync-badge" id="last-updated-badge">Loading...</span>
             </div>
@@ -1289,14 +1289,14 @@
                 });
             }
 
-            // Auto-refresh timer
+            // Auto-refresh timer (300s / 5m)
             function toggleAutoRefresh(enabled) {
                 if (autoRefreshTimer) clearInterval(autoRefreshTimer);
                 if (enabled) {
                     autoRefreshTimer = setInterval(() => {
                         fetchContributors(false);
                         fetchTopbarCmps();
-                    }, 30000);
+                    }, 300000);
                 }
             }
 
