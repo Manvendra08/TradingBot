@@ -323,6 +323,20 @@ CREATE TABLE IF NOT EXISTS eia_consensus (
     consensus_bcf REAL,           -- expected build(+)/draw(-)
     actual_bcf REAL,              -- filled post-release
     surprise_bcf REAL,
+    five_year_avg_bcf REAL,       -- 5-year average injection/draw for the week
+    five_year_total_bcf REAL,     -- 5-year average total working gas level
+    surplus_vs_5yr_bcf REAL,      -- actual inventory minus 5-year average
+    surplus_vs_5yr_pct REAL,      -- percentage difference vs 5-year average
+    total_storage_bcf REAL,       -- total working gas in storage (Lower 48)
+    year_ago_bcf REAL,            -- inventory level one year ago
+    pct_change_yrago REAL,        -- percentage change vs year ago
+    prior_week_revised_bcf REAL,  -- revised delta for prior week if any
+    prior_week_revision_flag INTEGER DEFAULT 0,
+    seasonal_regime TEXT,         -- INJECTION / WITHDRAWAL / SHOULDER
+    macro_stance TEXT,            -- BULLISH_TIGHTENING / BEARISH_LOOSENING / NEUTRAL_BALANCED
+    stance_summary TEXT,          -- Executive fundamental summary persisting between releases
+    key_levels_json TEXT,         -- Fibonacci & technical resistance/support levels
+    valid_until TEXT,             -- Validity window ending at next Thursday release
     fetched_at TEXT, source TEXT
 );
 
@@ -677,6 +691,21 @@ _MIGRATIONS = [
     ("M120_add_ml_trade_mode", "ALTER TABLE multi_leg_trades ADD COLUMN trade_mode TEXT DEFAULT 'PAPER'"),
     ("M121_add_mll_trade_mode", "ALTER TABLE multi_leg_legs ADD COLUMN trade_mode TEXT DEFAULT 'PAPER'"),
     ("M122_create_ml_sync_index", "CREATE INDEX IF NOT EXISTS idx_ml_trade_mode ON multi_leg_trades (trade_mode, status)"),
+    # M123-M136: EIA weekly storage macro intelligence & persistent weekly stance
+    ("M123_add_eia_five_year_avg_bcf", "ALTER TABLE eia_consensus ADD COLUMN five_year_avg_bcf REAL"),
+    ("M124_add_eia_five_year_total_bcf", "ALTER TABLE eia_consensus ADD COLUMN five_year_total_bcf REAL"),
+    ("M125_add_eia_surplus_vs_5yr_bcf", "ALTER TABLE eia_consensus ADD COLUMN surplus_vs_5yr_bcf REAL"),
+    ("M126_add_eia_surplus_vs_5yr_pct", "ALTER TABLE eia_consensus ADD COLUMN surplus_vs_5yr_pct REAL"),
+    ("M127_add_eia_total_storage_bcf", "ALTER TABLE eia_consensus ADD COLUMN total_storage_bcf REAL"),
+    ("M128_add_eia_year_ago_bcf", "ALTER TABLE eia_consensus ADD COLUMN year_ago_bcf REAL"),
+    ("M129_add_eia_pct_change_yrago", "ALTER TABLE eia_consensus ADD COLUMN pct_change_yrago REAL"),
+    ("M130_add_eia_prior_week_revised_bcf", "ALTER TABLE eia_consensus ADD COLUMN prior_week_revised_bcf REAL"),
+    ("M131_add_eia_prior_week_revision_flag", "ALTER TABLE eia_consensus ADD COLUMN prior_week_revision_flag INTEGER DEFAULT 0"),
+    ("M132_add_eia_seasonal_regime", "ALTER TABLE eia_consensus ADD COLUMN seasonal_regime TEXT"),
+    ("M133_add_eia_macro_stance", "ALTER TABLE eia_consensus ADD COLUMN macro_stance TEXT"),
+    ("M134_add_eia_stance_summary", "ALTER TABLE eia_consensus ADD COLUMN stance_summary TEXT"),
+    ("M135_add_eia_key_levels_json", "ALTER TABLE eia_consensus ADD COLUMN key_levels_json TEXT"),
+    ("M136_add_eia_valid_until", "ALTER TABLE eia_consensus ADD COLUMN valid_until TEXT"),
 ]
 
 

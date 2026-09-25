@@ -269,6 +269,11 @@ def _price_oi_verdict(
             return "Put Writing", "🟢", "Bullish — support building"
         if ce_oi_change > 0 and (pe_oi_change <= 0 or abs_ce > abs_pe * 1.5):
             return "Call Writing", "🔴", "Bearish — resistance building"
+        # Dual-side institutional writing in balance — classic strangle / condor setup
+        if pe_oi_change > 0 and ce_oi_change > 0:
+            ratio = max(abs_pe, abs_ce) / max(min(abs_pe, abs_ce), 1)
+            if ratio < 2.0:
+                return "Rangebound", "🟣", "Neutral — dual-side OI writing (strangle/condor territory)"
 
     # ── TERTIARY: PCR override when price is flat but sentiment is clear ────
     # PCR > 1.3 with HIGH CE OI spikes = smart money positioning bullish
@@ -544,8 +549,8 @@ def _apply_confidence_caps(
         if directional_count <= max(2, len(alerts) * 0.15):
             score = min(score, 88)
 
-    # Flat price + balanced OI cap
-    if score > 65:
+    # Flat price + balanced OI cap — only applies to directional setups, not Rangebound
+    if score > 65 and verdict_label != "Rangebound":
         abs_ce = abs(scan_ctx.get("ce_oi_change", 0))
         abs_pe = abs(scan_ctx.get("pe_oi_change", 0))
         p_pct = scan_ctx.get("price_change_pct") or 0
@@ -570,9 +575,45 @@ def _apply_confidence_caps(
         if unwind_ratio >= 0.7 and both_shrinking and significant_oi:
             score = min(score, 45)
 
-    # Sideways verdict cap
+    # Sideways verdict cap (Rangebound is exempt — it reflects an intentional strangle/condor setup)
     if verdict_label and verdict_label in ("Sideways",):
         score = min(score, 50)
+    return score
+
+
+def _score_rangebound_confluence(scan_ctx: dict, pcr: float) -> int:
+    """Scores non-directional consolidation and dual-sided writing quality."""
+    score = 0
+    p_pct = abs(_safe(scan_ctx.get("price_change_pct")))
+    if p_pct <= 0.05:
+        score += 20  # Tight range consolidation
+    elif p_pct <= 0.15:
+        score += 10
+
+    # Balanced PCR (0.85 to 1.15) indicates equilibrium
+    if 0.85 <= pcr <= 1.15:
+        score += 15
+    elif 0.70 <= pcr <= 1.30:
+        score += 8
+
+    # Balanced OI writing bonus
+    ce_chg = _safe(scan_ctx.get("ce_oi_change"))
+    pe_chg = _safe(scan_ctx.get("pe_oi_change"))
+    if ce_chg > 0 and pe_chg > 0:
+        ratio = max(ce_chg, pe_chg) / max(min(ce_chg, pe_chg), 1)
+        if ratio <= 1.5:
+            score += 20
+        elif ratio <= 2.0:
+            score += 10
+
+    # Max pain magnet
+    underlying = _safe(scan_ctx.get("underlying"))
+    max_pain = _safe(scan_ctx.get("max_pain"))
+    if underlying and max_pain:
+        mp_dist_pct = abs(underlying - max_pain) / underlying * 100
+        if mp_dist_pct < 1.0:
+            score += 10
+
     return score
 
 
@@ -599,12 +640,19 @@ def _compute_confidence(
             verdict_bias = "BEARISH"
 
     # Compose score from modular components
-    score = 10  # base
-    score += _score_alert_severity(alerts, verdict_bias)
-    score += _score_pcr_confluence(pcr, price_pct)
-    score += _score_level_proximity(scan_ctx, price_pct)
-    chart_bonus, chart_conflict = _score_chart_alignment(parsed_chart, verdict_bias)
-    score += chart_bonus
+    if verdict_label == "Rangebound":
+        score = 15  # base for dual-sided writing
+        score += _score_alert_severity(alerts, "NEUTRAL")
+        score += _score_rangebound_confluence(scan_ctx, pcr)
+        chart_bonus, chart_conflict = _score_chart_alignment(parsed_chart, "NEUTRAL")
+        score += chart_bonus
+    else:
+        score = 10  # base
+        score += _score_alert_severity(alerts, verdict_bias)
+        score += _score_pcr_confluence(pcr, price_pct)
+        score += _score_level_proximity(scan_ctx, price_pct)
+        chart_bonus, chart_conflict = _score_chart_alignment(parsed_chart, verdict_bias)
+        score += chart_bonus
 
     # Apply caps
     score = _apply_confidence_caps(score, scan_ctx, alerts, verdict_label)
@@ -715,6 +763,13 @@ def _generate_trade_idea(
         if support and resistance:
             idea_parts.append(f"Expected range: {support:.0f}–{resistance:.0f}")
 
+    elif verdict_label == "Rangebound":
+        idea_parts.append("🟣 *Bias: Rangebound / Neutral Premium Selling*")
+        idea_parts.append("Balanced CE & PE writing establishing dual support & resistance floors")
+        idea_parts.append("Consider: Short Strangle or Iron Condor outside expected move")
+        if support and resistance:
+            idea_parts.append(f"Anchor Range: {support:.0f}–{resistance:.0f}")
+
     else:
         idea_parts.append("📘 *Bias: Neutral — Wait & Watch*")
         idea_parts.append("No clear edge — sit on hands or scalp only")
@@ -758,6 +813,11 @@ def _generate_risk_note(verdict: str, ctx: dict) -> str:
     if verdict == "Call Writing":
         return "Caution: Resistance weakens if call writing exits"
 
+    if verdict == "Rangebound":
+        if support and resistance:
+            return f"Thesis invalid if spot breaks outside {support:.0f}–{resistance:.0f}"
+        return "Thesis invalid if directional breakout triggers on high volume"
+
     if "Expansion" in verdict:
         return "Breakout direction unclear — wait for confirmation candle"
 
@@ -768,6 +828,8 @@ def _compute_dynamic_action_plan(
     v_label: str, tf_1h: str | None, tf_3h: str | None, conflict: bool
 ) -> str:
     """Compute action plan dynamically based on verdict."""
+    if v_label == "Rangebound":
+        return "Sell OTM Strangle / Iron Condor. Harvest theta within anchor range."
     if v_label in ("Long Buildup", "Short Covering", "Put Writing"):
         return "Trail SL on longs. Avoid blind chase."
     elif v_label in ("Short Buildup", "Long Unwinding", "Call Writing"):

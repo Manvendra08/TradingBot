@@ -101,26 +101,37 @@ _NEG_WORDS = [
 
 import re
 
-# Commodity-context overrides for NATURALGAS: supply-increase = bearish,
-# demand-increase = bullish.  These patterns take priority over generic
-# keyword scoring because "storage rises" and "inventories rise" are
-# fundamentally bearish in commodity markets (supply build).
-_NG_SUPPLY_BEARISH = [
-    r"storage\s+(?:rises?|builds?|increases?|grows?|climbs?|expands?)",
-    r"inject(?:ion|s|ed|ing)\s+(?:rises?|increases?|grows?|climbs?)",
-    r"(?:inventories?|stockpiles?|stocks?)\s+(?:rises?|builds?|increases?|grows?|climbs?|expand|swell)",
-    r"(?:production|output)\s+(?:rises?|increases?|grows?|climbs?|jumps?|surges?|hits?)",
-    r"(?:supply|supplies)\s+(?:rises?|increases?|grows?|climbs?|glut|ample|abundant|surplus)",
-    r"(?:high|record|ample|sufficient)\s+(?:supply|storage|inventor)",
-    r"(?:eases?|cools?|drops?|falls?|retreats?|declines?|tumbles?|plunges?)\s+to\s+\w*\s*(?:low|bottom|trough)",
-    r"(?:two|three|four|five|six)-month\s+low",
-    r"(?:low|bottom|trough)\s+(?:on|amid|as)\s+(?:rising|increased|ample|high)",
+# Commodity-context overrides for NATURALGAS:
+# Differentiates between actual supply gluts vs standard seasonal injections.
+# In injection season (Apr-Oct), storage builds are normal; builds below expectations
+# or below the 5-year average are bullish (surplus erosion).
+
+_NG_STORAGE_BULLISH = [
+    r"(?:storage|build|injection)\s+(?:misses?|below|smaller|trails?|lags?|underperforms?|less than)",
+    r"(?:smaller|lesser|modest|meager|subdued|weak|lean)\s+(?:than expected|than average)?\s*(?:build|injection|addition)",
+    r"(?:surplus|cushion)\s+(?:shrinks?|narrows?|erodes?|tightens?|slims?|declines?|contracts?)",
+    r"(?:deficit|draw)\s+(?:widens?|expands?|deepens?|accelerates?)",
+    r"(?:production|output)\s+(?:drops?|falls?|dips?|curtailed|curtailments?|slides?|declines?|slumps?|cuts?)",
+    r"(?:pipeline|gathering|field)\s+(?:maintenance|outage|freeze|curtailment|constraint)",
+    r"(?:tight|tightening)\s+(?:suppl(?:y|ies)|market|balance|physical)",
+    r"(?:short-covering|short squeeze|covering rally|expiry squeeze|rollover squeeze)",
 ]
+
+_NG_STORAGE_BEARISH = [
+    r"(?:storage|build|injection)\s+(?:beats?|exceeds?|tops?|larger|surpasses?|higher than)",
+    r"(?:heavier|massive|huge|strong|oversized|jumbo|monster)\s+(?:than expected|than average)?\s*(?:build|injection|addition)",
+    r"(?:surplus|cushion)\s+(?:swells?|grows?|widens?|expands?|balloons?|rises?|balloons?)",
+    r"(?:glut|oversupply|abundant supply|record production)",
+    r"(?:production|output)\s+(?:record|rises?|jumps?|surges?|hits?\s+record|climbs?)",
+    r"(?:weak|slumping|lagging)\s+(?:feedgas|LNG exports?|cooling demand|heating demand)",
+]
+
 _NG_DEMAND_BULLISH = [
     r"demand\s+(?:rises?|increases?|grows?|climbs?|surges?|jumps?|soars?|spikes?)",
     r"(?:cold|freezing|winter|polar|arctic|icy)\s+(?:weather|forecast|snap|wave|blast|temperatures?)",
     r"heating\s+(?:degree|demand|needs?|season|loads?)",
-    r"(?:LNG|liquefied)\s+(?:exports?|demand|shipments?|cargoes?)\s+(?:rises?|increases?|grow|climb|surge|jump|hit|record)",
+    r"(?:cooling|heatwave|record heat|blistering)\s+(?:demand|wave|load|degrees?)",
+    r"(?:LNG|liquefied)\s+(?:exports?|demand|shipments?|cargoes?|feedgas)\s+(?:rises?|increases?|grow|climb|surge|jump|hit|record)",
     r"(?:exports?|exporting)\s+(?:rises?|increases?|grows?|climbs?|surges?)",
     r"(?:freeze|freezing|cold|winter)\s+(?:drives?|fuels?|boosts?|supports?|lifts?)\s+(?:prices?|demand|rall)",
 ]
@@ -129,14 +140,27 @@ _NG_DEMAND_BULLISH = [
 def _news_sentiment_score(title: str) -> int:
     t = (title or "").lower()
 
-    # Commodity-context overrides take priority
-    for pat in _NG_SUPPLY_BEARISH:
+    # 1. Specific contextual storage & physical balance overrides take precedence
+    for pat in _NG_STORAGE_BULLISH:
+        if re.search(pat, t):
+            return 1
+    for pat in _NG_STORAGE_BEARISH:
         if re.search(pat, t):
             return -1
     for pat in _NG_DEMAND_BULLISH:
         if re.search(pat, t):
             return 1
 
+    # 2. Check for generic seasonal build mentions without qualifiers
+    # In injection season (Apr-Oct), an injection on its own is neutral, NOT bearish!
+    current_month = datetime.now(timezone.utc).month
+    is_injection_season = 4 <= current_month <= 10
+    if is_injection_season and re.search(r"storage\s+(?:rises?|builds?|increases?)", t):
+        # Unless labeled "glut" or "oversupply", do not penalize as bearish
+        if not re.search(r"(?:glut|oversupply|excess|plunge|crash)", t):
+            return 0  # Neutral operational build
+
+    # 3. Standard dictionary word matching
     score = 0
     for w in _POS_WORDS:
         if re.search(r'\b' + re.escape(w) + r'\b', t):

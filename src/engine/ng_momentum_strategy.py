@@ -57,6 +57,20 @@ def check_ng_momentum_entry(side: str) -> tuple[bool, str]:
         return False, "NYMEX_DIVERGENCE"
     elif side == "SELL" and nymex_trend != "BEARISH":
         return False, "NYMEX_DIVERGENCE"
+
+    # Check active weekly EIA macro stance to prevent fighting structural deficit/surplus trends
+    try:
+        from src.engine.ng_macro_context import get_active_ng_macro_context
+        macro_ctx = get_active_ng_macro_context()
+        macro_stance = macro_ctx.get("macro_stance", "NEUTRAL_BALANCED")
+        if side == "SELL" and macro_stance == "BULLISH_TIGHTENING":
+            log.warning("NG Momentum Entry Blocked: Side=SELL conflicts with active weekly EIA stance BULLISH_TIGHTENING")
+            return False, "EIA_MACRO_CONFLICT_BULLISH_TIGHTENING"
+        elif side == "BUY" and macro_stance == "BEARISH_LOOSENING":
+            log.warning("NG Momentum Entry Blocked: Side=BUY conflicts with active weekly EIA stance BEARISH_LOOSENING")
+            return False, "EIA_MACRO_CONFLICT_BEARISH_LOOSENING"
+    except Exception as e:
+        log.debug("NG Momentum Macro Stance check error: %s", e)
         
     return True, "PASSED"
 

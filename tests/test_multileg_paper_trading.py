@@ -243,3 +243,164 @@ class TestMultilegPnlAndSnapshotFixes:
             assert leg_row["status"] == "CLOSED"
             assert leg_row["exit_premium"] in (None, 0.0)
 
+
+class TestDualModeDecisionEngineAndConfidenceDecoupling:
+    """Tests for Dual-Mode Decision Engine & Multi-Leg Confidence Decoupling."""
+
+    def test_rangebound_verdict_sets_membership(self):
+        """Verify Rangebound is registered in NEUTRAL_VERDICTS and NOT in directional sets."""
+        from src.engine.verdict_sets import is_neutral, is_bullish, is_bearish
+        assert is_neutral("Rangebound") is True
+        assert is_bullish("Rangebound") is False
+        assert is_bearish("Rangebound") is False
+
+    def test_rangebound_detected_on_balanced_dual_writing(self):
+        """Verify _price_oi_verdict returns Rangebound when both CE and PE OI are building in balance."""
+        from src.engine.intelligence import _price_oi_verdict
+        verdict_label, emoji, desc = _price_oi_verdict(
+            price_pct=0.01,
+            net_oi_change=4000,
+            ce_oi_change=2000,
+            pe_oi_change=2000,
+            pcr=1.02,
+            alerts=[],
+        )
+        assert verdict_label == "Rangebound"
+        assert emoji == "🟣"
+        assert "strangle/condor" in desc.lower()
+
+    def test_rangebound_confidence_scoring_and_cap_exemption(self):
+        """Verify Rangebound scores high on consolidation and is not capped to 50% or 65%."""
+        from src.engine.intelligence import _compute_confidence
+        scan_ctx = {
+            "underlying": 24500.0,
+            "max_pain": 24500.0,
+            "price_change_pct": 0.02,
+            "pcr": 1.05,
+            "ce_oi_change": 2500,
+            "pe_oi_change": 2200,
+            "support": 24300.0,
+            "resistance": 24700.0,
+        }
+        score, conflict = _compute_confidence(scan_ctx, [], parsed_chart=None, verdict_label="Rangebound")
+        # Base 15 + flat price 20 + balanced PCR 15 + balanced OI 20 + max pain 10 = 80
+        assert score >= 75
+        assert score > 65  # Must not be capped by the 65% flat price cap or 50% sideways cap
+
+    def test_llm_enrichment_decouples_nondirectional_strategy_confidence(self):
+        """Verify get_multileg_verdict preserves LLM confidence for non-directional strategies even when engine_conf is low."""
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from src.engine.llm_enrichment import get_multileg_verdict
+
+        mock_result = SimpleNamespace(
+            strategy_type="SHORT_STRANGLE",
+            legs=[
+                SimpleNamespace(strike=330.0, option_type="CE", side="SELL", ratio=1, premium=10.0),
+                SimpleNamespace(strike=290.0, option_type="PE", side="SELL", ratio=1, premium=8.0),
+            ],
+            confidence=85,
+            net_premium=18.0,
+            model_name="test-llm",
+            thesis="Dual-sided decay edge",
+            entry_rationale="Rangebound harvest",
+        )
+
+        with patch("src.engine.llm_enrichment._call_llm_api", return_value=mock_result):
+            res = get_multileg_verdict(
+                symbol="NATURALGAS",
+                intel={"verdict_label": "Low Conviction", "confidence": 10},
+                scan_context={"underlying": 308.0, "option_rows": []},
+            )
+            assert res is not None
+            assert res.strategy_type == "SHORT_STRANGLE"
+            # Crucial assertion: Must remain 85, NOT clamped to engine_conf=10
+            assert res.confidence == 85
+
+    def test_llm_enrichment_clamps_directional_strategy_confidence(self):
+        """Verify get_multileg_verdict still clamps directional strategies to engine_conf."""
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from src.engine.llm_enrichment import get_multileg_verdict
+
+        mock_result = SimpleNamespace(
+            strategy_type="BEAR_CALL_SPREAD",
+            legs=[
+                SimpleNamespace(strike=320.0, option_type="CE", side="SELL", ratio=1, premium=12.0),
+                SimpleNamespace(strike=330.0, option_type="CE", side="BUY", ratio=1, premium=6.0),
+            ],
+            confidence=85,
+            net_premium=6.0,
+            model_name="test-llm",
+            thesis="Directional call spread",
+            entry_rationale="Bearish drift",
+        )
+
+        with patch("src.engine.llm_enrichment._call_llm_api", return_value=mock_result):
+            res = get_multileg_verdict(
+                symbol="NATURALGAS",
+                intel={"verdict_label": "Short Buildup", "confidence": 45},
+                scan_context={"underlying": 308.0, "option_rows": []},
+            )
+            assert res is not None
+            assert res.strategy_type == "BEAR_CALL_SPREAD"
+            # Directional spread must clamp to min(85, 45) = 45
+            assert res.confidence == 45
+
+    def test_multileg_paper_trading_decouples_nondirectional_effective_confidence(self):
+        """Verify _attempt_new_entry accepts non-directional trades when LLM conf >= floor, ignoring low engine conf."""
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from src.engine.multileg_paper_trading import _attempt_new_entry
+
+        mock_verdict = SimpleNamespace(
+            strategy_type="SHORT_STRANGLE",
+            legs=[
+                {"strike": 24800.0, "option_type": "CE", "side": "SELL", "premium": 90.0, "lots": 1, "delta": 0.20},
+                {"strike": 24200.0, "option_type": "PE", "side": "SELL", "premium": 80.0, "lots": 1, "delta": -0.20},
+            ],
+            confidence=78,
+            entry_rationale="Safe strikes outside expected move",
+            thesis="Consolidation play",
+            model_name="test-llm",
+            net_delta=0.0,
+            net_premium=170.0,
+            profit_target_pct=0.5,
+            stop_loss_pct=1.0,
+            time_decay_exit_dte=2,
+            adjustment_plan="Roll tested side when delta exceeds 0.35",
+        )
+
+        ctx = {
+            "underlying": 24500.0,
+            "expiry": "2026-10-23",
+            "option_rows": [
+                {"strike": 24800.0, "option_type": "CE", "ltp": 90.0, "oi": 5000, "bid": 89.0, "ask": 91.0},
+                {"strike": 24200.0, "option_type": "PE", "ltp": 80.0, "oi": 5000, "bid": 79.0, "ask": 81.0},
+            ],
+            "engine_confidence": 10,
+        }
+        intel = {"verdict_label": "Low Conviction", "confidence": 10}
+
+        # Mock downstream validation and DB calls to isolate confidence gate check
+        with patch("src.models.schema.get_open_books_for_symbol", return_value=[]), \
+             patch("src.engine.multileg_validator.validate_multileg_trade") as mock_val, \
+             patch("src.engine.multileg_strategy.validate_legs", return_value=(True, "")), \
+             patch("src.engine.multileg_strategy.score_entry_quality", return_value=(80, ["Good setup"])), \
+             patch("src.models.schema.insert_multileg_trade_atomically", return_value=999):
+            res = _attempt_new_entry(
+                "NIFTY",
+                ctx,
+                "test-digest",
+                intel,
+                ai_verdict=mock_verdict,
+                ai_mode="advisory",
+                now_iso="2026-10-23T10:00:00+00:00",
+                open_books=[],
+            )
+            assert res is not None
+            # Trade must NOT be rejected by LLM_CONFIDENCE_GATE
+            assert res.get("decision_stage") != "LLM_CONFIDENCE_GATE"
+            assert res.get("confidence") == 78
+
+

@@ -395,6 +395,7 @@ def build_multileg_prompt(
     v_upper = str(verdict_label).upper()
     is_strong_bull = any(k in v_upper for k in ("LONG", "BULLISH", "PUT WRITING")) and confidence >= 65
     is_strong_bear = any(k in v_upper for k in ("SHORT", "BEARISH", "CALL WRITING")) and confidence >= 65
+    is_rangebound = "RANGEBOUND" in v_upper or ("SIDEWAYS" in v_upper and not is_strong_bull and not is_strong_bear)
 
     directional_mandate = ""
     if is_strong_bull:
@@ -412,6 +413,20 @@ def build_multileg_prompt(
 • Candidate Strategy Priority: BEAR_CALL_SPREAD (credit call spread with defined risk).
 • DO NOT construct delta-neutral straddles, strangles, or bull spreads fighting this downward momentum.
 • Leg Structure: Sell liquid OTM CE (Δ 0.15-0.30) above resistance, buy higher OTM CE wing for defined risk.
+"""
+    elif is_rangebound or (not is_strong_bull and not is_strong_bear):
+        if is_mcx:
+            strat_priority = "SHORT_STRANGLE (OTM Δ 0.15-0.25) or SHORT_STRADDLE (ATM). NOTE: Do NOT use IRON_CONDOR on MCX commodities due to illiquid wing contracts."
+        else:
+            strat_priority = "IRON_CONDOR (defined risk with wide wings) or SHORT_STRANGLE (OTM Δ 0.15-0.25)."
+
+        directional_mandate = f"""
+*** QUANT ENGINE MANDATE: RANGEBOUND / NON-DIRECTIONAL PREMIUM SELLING ({verdict_label} {confidence}%) ***
+• The quantitative engine detects balanced two-sided OI flow or rangebound consolidation.
+• Candidate Strategy Priority: {strat_priority}
+• Edge Source: These non-directional strategies profit from TIME DECAY (Theta) and IV OVERPRICING, not directional price movement.
+• Leg Structure: Place short strikes safely outside spot ± expected move (S/R anchors).
+• DO NOT force directional naked spreads when the market is rangebound.
 """
 
     prompt = f"""NSE/MCX options seller. Design a multi-leg premium strategy.
@@ -491,7 +506,9 @@ Risk: Max loss ≤ 3x net premium | Net delta near 0 | Profit target 30-50% max 
 
 CONFIDENCE CALIBRATION & ENGINE ALIGNMENT (0-100):
 - Execution confidence floor is {conf_floor}%. Any proposed strategy with confidence below {conf_floor}% will abort execution.
-- Baseline: Anchor your confidence to the underlying ENGINE conviction ({confidence}%).
+- Calibration Rules:
+  * For DIRECTIONAL strategies (BULL_PUT_SPREAD, BEAR_CALL_SPREAD, JADE_LIZARD): Anchor your confidence to the underlying ENGINE conviction ({confidence}%).
+  * For NON-DIRECTIONAL strategies (IRON_CONDOR, SHORT_STRANGLE, SHORT_STRADDLE): Anchor your confidence to the IV edge, strike distance outside expected move, and option chain liquidity INDEPENDENT of directional engine conviction. If the chain is liquid, net credit is viable, and short strikes sit safely outside expected move, output high confidence (≥75%, typically 75-90%).
 - When the engine confidence is high (≥70%) and you identify liquid strikes with viable net premium and safe delta: output confidence ≥ 70% (typically 75-95% commensurate with setup quality).
 - If the option chain has poor liquidity, wide bid-ask spreads, or negative risk-reward, downgrade confidence below {conf_floor}% or set strategy_type="NO_TRADE" and legs=[].
 - If you genuinely see extreme event risk, data corruption, or lack of premium edge, explicitly set strategy_type="NO_TRADE" with confidence=0 and explain in entry_rationale and thesis.

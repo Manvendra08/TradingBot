@@ -40,6 +40,7 @@ _VERDICT_STYLE = {
     "Long Unwinding": ("\U0001f7e0", "BEARISH, but late"),
     "OI Bias Bearish": ("\U0001f7e0", "BEARISH BIAS"),
     "Sideways": (EMOJI_WHITE, "SIDEWAYS"),
+    "Rangebound": ("🟣", "RANGEBOUND / STRANGLE SETUP"),
 }
 
 
@@ -1174,7 +1175,13 @@ def build_digest(
     which handles all rendering paths including no-trade and trade states.
     """
     if structured_payload:
-        d_id, msg = build_tfss_timeframe_digest(structured_payload, digest_id=digest_id)
+        sym_check = str(symbol or (structured_payload.get("header") or {}).get("symbol") or "").upper()
+        is_mcx = any(m in sym_check for m in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"))
+        if is_mcx:
+            from src.alerts.mcx_digest import build_mcx_timeframe_digest
+            d_id, msg = build_mcx_timeframe_digest(structured_payload, digest_id=digest_id)
+        else:
+            d_id, msg = build_tfss_timeframe_digest(structured_payload, digest_id=digest_id)
         return d_id, sanitize_mojibake(msg)
 
     if _LEGACY_DIGEST:

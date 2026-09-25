@@ -543,14 +543,37 @@ def _save_disk_cache(cache_data: dict[str, dict[str, Any]]) -> None:
         log.error("[news_worker] Failed saving news cache file %s: %s", NEWS_CACHE_FILE, exc)
 
 
-def evaluate_and_cache_news(symbols: list[str] | None = None) -> dict[str, dict[str, Any]]:
+def evaluate_and_cache_news(
+    symbols: list[str] | None = None,
+    only_open_markets: bool = True,
+) -> dict[str, dict[str, Any]]:
     """Poll news feeds for target symbols, score sentiment via OmniRouter Claude/Free, and update cache.
     Evaluates symbols concurrently via ThreadPoolExecutor to prevent cumulative queue delays.
+    If only_open_markets is True, symbols whose respective markets are closed are skipped.
     """
     from concurrent.futures import ThreadPoolExecutor
     from src.fetchers.news_fetcher import fetch_news
+    from config.symbol_classes import is_market_open_for_news
 
     targets = symbols or list(WATCH_SYMBOLS)
+    if only_open_markets:
+        now_ist = datetime.now(IST)
+        open_targets = [s for s in targets if is_market_open_for_news(s, now_ist)]
+        closed_targets = [s for s in targets if s not in open_targets]
+        if closed_targets:
+            log.info(
+                "[news_worker] Respective market closed for %s at %s IST — skipping news fetch",
+                ", ".join(closed_targets),
+                now_ist.strftime("%H:%M:%S"),
+            )
+        if not open_targets:
+            log.info(
+                "[news_worker] All target markets closed at %s IST — news evaluation cycle skipped",
+                now_ist.strftime("%H:%M:%S"),
+            )
+            return {}
+        targets = open_targets
+
     updated: dict[str, dict[str, Any]] = {}
     now_ts = time.time()
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -767,7 +790,17 @@ def ensure_news_worker_ready(max_age_seconds: int = RECENCY_THRESHOLD_SECONDS, f
     """Pre-scan startup check: Run news worker before Symbols pipeline begins,
     but only if the last News scan completed more than 60 minutes ago.
     If the last scan was within the past 60 minutes, skip and return False.
+    Also skips if all target markets are currently closed.
     """
+    from config.symbol_classes import is_market_open_for_news
+    now_ist = datetime.now(IST)
+    if not force and not any(is_market_open_for_news(s, now_ist) for s in WATCH_SYMBOLS):
+        log.info(
+            "[news_worker] Pre-pipeline news check: all target markets currently closed at %s IST — skipping pre-pipeline news run.",
+            now_ist.strftime("%H:%M:%S"),
+        )
+        return False
+
     last_eval = get_last_news_eval_timestamp()
     now_ts = time.time()
     age = now_ts - last_eval if last_eval > 0 else float("inf")
@@ -783,14 +816,15 @@ def ensure_news_worker_ready(max_age_seconds: int = RECENCY_THRESHOLD_SECONDS, f
         "[news_worker] Pre-pipeline news evaluation triggered (last run was %.1fm ago > %.0fm threshold)...",
         age / 60.0, max_age_seconds / 60.0,
     )
-    evaluate_and_cache_news()
-    log.info("[news_worker] Pre-pipeline news evaluation finished.")
+    res = evaluate_and_cache_news(only_open_markets=True)
+    log.info("[news_worker] Pre-pipeline news evaluation finished (%d symbols updated).", len(res))
     return True
 
 
 def _worker_loop() -> None:
     """Daemon thread loop executing hourly news evaluations at 55 minutes past each hour in IST.
     Enforces a 60-minute recency check before each run so it skips if already ran recently.
+    Skips runs completely when all respective markets are closed.
     """
     log.info("[news_worker] Asynchronous News Sentiment Worker started (scheduled at :55 past each hour IST)")
     while not _STOP_EVENT.is_set():
@@ -818,11 +852,21 @@ def _worker_loop() -> None:
 
         try:
             now_ist = datetime.now(IST)
+            from config.symbol_classes import is_market_open_for_news
+            active_symbols = [s for s in WATCH_SYMBOLS if is_market_open_for_news(s, now_ist)]
+            if not active_symbols:
+                log.info(
+                    "[news_worker] Scheduled run at %s IST skipped — all respective markets are currently closed",
+                    now_ist.strftime("%H:%M:%S"),
+                )
+                continue
+
             log.info(
-                "[news_worker] Scheduled news evaluation triggered at %s IST (:55 past the hour)...",
+                "[news_worker] Scheduled news evaluation triggered at %s IST (:55 past the hour) for active markets: %s...",
                 now_ist.strftime("%H:%M:%S"),
+                active_symbols,
             )
-            evaluate_and_cache_news()
+            evaluate_and_cache_news(only_open_markets=True)
             log.info("[news_worker] Scheduled news evaluation finished.")
         except Exception as exc:
             log.exception("[news_worker] Unexpected error in news worker cycle: %s", exc)

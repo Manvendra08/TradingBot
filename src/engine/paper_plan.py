@@ -141,6 +141,7 @@ VERDICT_ACTION_MAP = {
     "OI Bias Bearish": ("SELL", "CE"), # Handled by TFSS v4
     # Neutral — ideal for option selling (strangle/straddle)
     "Sideways":              ("SELL", "STRANGLE"), # Sell both CE + PE
+    "Rangebound":            ("SELL", "STRANGLE"), # Dual-side OI writing (strangle/condor)
     "Volatility Expansion":  ("SELL", "STRANGLE"), # Sell premium into high IV
     "Volatility Contraction": ("SELL", "STRANGLE"), # Sell before IV expansion
     # LLM action labels — map to canonical option actions

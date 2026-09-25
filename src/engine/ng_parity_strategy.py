@@ -134,6 +134,18 @@ def run_ng_parity_strategy(
     side = "SELL" if dev_pct > 0 else "BUY"
     verdict = "NG Parity - Short" if side == "SELL" else "NG Parity - Long"
 
+    # Check Macro Context: Block selling rich MCX into an active BULLISH_TIGHTENING stance during rollover squeeze weeks
+    try:
+        from src.engine.ng_macro_context import get_active_ng_macro_context
+        macro_ctx = get_active_ng_macro_context()
+        macro_stance = macro_ctx.get("macro_stance", "NEUTRAL_BALANCED")
+        squeeze_risk = macro_ctx.get("is_rollover_squeeze_risk", False)
+        if side == "SELL" and macro_stance == "BULLISH_TIGHTENING" and squeeze_risk:
+            log.warning("NG Parity Entry blocked: Selling rich MCX into front-month rollover short squeeze & BULLISH_TIGHTENING stance.")
+            return {"action": "BLOCKED_RISK", "reason": "Rollover squeeze & BULLISH_TIGHTENING stance"}
+    except Exception as e:
+        log.debug("NG Parity Macro Context check error: %s", e)
+
     # Sizing calculations
     config = load_runtime_config()
     capital = float(config.get("live_capital_per_trade_inr") or 50000.0)

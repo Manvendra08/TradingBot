@@ -17,7 +17,7 @@ import logging
 import re
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from config.settings import IST
@@ -272,7 +272,6 @@ def _monitor_open_books(
     from config.settings import _is_testing
     is_test = bool((scan_context or {}).get("is_test", False) or (scan_context or {}).get("force_monitor", False) or _is_testing)
     if not is_test:
-        from datetime import datetime, timezone, timedelta
         now_ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
         if is_market_holiday(symbol, now_ist) or not is_market_open(symbol, now_ist):
             log.debug("[multileg-paper] %s: Market closed or holiday — position tracking disabled", symbol)
@@ -902,9 +901,13 @@ def _attempt_new_entry(
     is_mcx = symbol in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER")
     conf_floor = 72 if is_mcx else 70
 
-    # Phase 2 High #14: Gate multileg confidence on min(llm, engine) so LLM doubt
-    # is never overridden by high engine confidence.
-    if engine_conf > 0 and llm_conf > 0:
+    # For non-directional strategies (IRON_CONDOR, SHORT_STRANGLE, SHORT_STRADDLE),
+    # LLM's assessment of IV, chain quality, and expected move safety is authoritative.
+    # For directional spreads (BULL_PUT_SPREAD, BEAR_CALL_SPREAD), require min(llm, engine).
+    is_nondirectional = st_upper in ("IRON_CONDOR", "SHORT_STRANGLE", "SHORT_STRADDLE")
+    if is_nondirectional:
+        effective_confidence = llm_conf
+    elif engine_conf > 0 and llm_conf > 0:
         effective_confidence = min(llm_conf, engine_conf)
     else:
         effective_confidence = llm_conf

@@ -755,7 +755,11 @@ def _format_macro_context(symbol: str) -> str:
     _is_wed = datetime.now(_IST).weekday() == 2
 
     if "NATURALGAS" in base:
-        return f"  NATURALGAS: Track Henry Hub, Weather, INR/USD. {'EIA Report TODAY 8PM IST (Risk/Catalyst)' if _is_thu else 'EIA on Thursdays.'}"
+        try:
+            from src.engine.ng_macro_context import format_ng_macro_for_llm
+            return format_ng_macro_for_llm()
+        except Exception as e:
+            return f"  NATURALGAS: Track Henry Hub, Weather, INR/USD. {'EIA Report TODAY 8PM IST (Risk/Catalyst)' if _is_thu else 'EIA on Thursdays.'}"
     if "CRUDEOIL" in base:
         return f"  CRUDEOIL: Track WTI/Brent, OPEC+, INR/USD. {'EIA Report TODAY 8PM IST (Risk/Catalyst)' if _is_wed else 'EIA on Wednesdays.'}"
     if "GOLD" in base:
@@ -1709,12 +1713,22 @@ def _register_provider_failure(
     # True host-level errors: host unreachable / connection refused / connect timeout
     is_host_error = any(
         e in body_l
-        for e in ("connectionrefusederror", "connecttimedout", "connection reset", "host unreachable", "connection refused", "name or service not known")
+        for e in (
+            "connectionrefusederror",
+            "connecttimedout",
+            "connection reset",
+            "host unreachable",
+            "connection refused",
+            "name or service not known",
+            "html response",
+            "<!doctype html>",
+            "status=404",
+        )
     )
-    if is_host_error and group_name and group_name != "omnirouter-primary":
+    if is_host_error and group_name:
         with _cooldown_lock:
             _PROVIDER_COOLDOWN_UNTIL[group_name] = now + 120.0
-        log.info("[llm] Host/Endpoint connection error on %s — cooling down group '%s' for 120s", provider.get("name"), group_name)
+        log.info("[llm] Host/Endpoint error on %s — cooling down group '%s' for 120s", provider.get("name"), group_name)
 
     log.info("[llm] %s failed (status=%d, err=%.50s) — 10m cooldown", provider.get("name"), status_code, body_l)
 
@@ -4906,7 +4920,13 @@ def get_multileg_verdict(
                 legs = []
 
             llm_conf = int(getattr(result, "confidence", 0) or 0)
-            final_conf = min(llm_conf, engine_conf) if (engine_conf > 0 and llm_conf > 0) else llm_conf
+            is_nondirectional = str(strat or "").upper().strip() in ("IRON_CONDOR", "SHORT_STRANGLE", "SHORT_STRADDLE")
+            if is_nondirectional:
+                final_conf = llm_conf
+            elif engine_conf > 0 and llm_conf > 0:
+                final_conf = min(llm_conf, engine_conf)
+            else:
+                final_conf = llm_conf
 
             if hasattr(result, "model_copy"):
                 result = result.model_copy(update={"strategy_type": strat, "legs": legs, "confidence": final_conf})

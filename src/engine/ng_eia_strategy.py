@@ -195,14 +195,16 @@ def run_ng_eia_strategy(
         log.warning("EVENT Strategy skipped: No consensus storage estimate available.")
         return {"action": "HOLD", "reason": "EIA_NO_CONSENSUS"}
         
-    # Scrape actual
-    actual = None
-    # 1. Try from Forex Factory
-    ff_data = fetch_eia_weekly_data()
-    if ff_data and ff_data.get("actual_bcf") is not None:
-        actual = ff_data.get("actual_bcf")
+    # 1. Fetch complete official EIA dataset + consensus
+    from src.fetchers.eia_consensus_fetcher import fetch_complete_eia_dataset, store_eia_weekly_data
+    eia_full = fetch_complete_eia_dataset()
+    if eia_full and eia_full.get("actual_bcf") is not None:
+        actual = eia_full["actual_bcf"]
+        if eia_full.get("consensus_bcf") is not None:
+            consensus = eia_full["consensus_bcf"]
+        store_eia_weekly_data(eia_full)
         
-    # 2. Try fallback scrape from EIA site
+    # 2. Try fallback scrape from EIA site if needed
     if actual is None:
         actual = fetch_eia_actual_fallback()
         
@@ -210,7 +212,7 @@ def run_ng_eia_strategy(
         log.info("EIA actual release not yet available. Retrying on next scan.")
         return {"action": "HOLD", "reason": "EIA actual release not yet available"}
 
-    surprise = actual - consensus
+    surprise = (actual - consensus) if consensus is not None else 0.0
     abs_surprise = abs(surprise)
 
     pre_price = get_pre_release_price()
@@ -221,26 +223,11 @@ def run_ng_eia_strategy(
     )
     reaction_override = reaction_pct is not None and abs(reaction_pct) >= event_reaction_min_pct
 
-    # Store surprise in DB
+    # Ensure DB is updated with latest actual & surprise
     with get_conn() as conn:
         conn.execute(
             "UPDATE eia_consensus SET actual_bcf=?, surprise_bcf=? WHERE report_date=?",
             (actual, surprise, thursday_str)
-        )
-
-    if abs_surprise < EIA_NO_TRADE_BAND_BCF and not reaction_override:
-        log.info("EIA surprise (%+d Bcf) is within no-trade band (%d Bcf).", surprise, EIA_NO_TRADE_BAND_BCF)
-        return {"action": "HOLD", "reason": f"EIA_NO_TRADE_BAND: surprise={surprise}"}
-
-    if abs_surprise < EIA_MIN_SURPRISE_BCF and not reaction_override:
-        log.info("EIA surprise (%+d Bcf) is below minimum threshold (%d Bcf).", surprise, EIA_MIN_SURPRISE_BCF)
-        return {"action": "HOLD", "reason": f"EIA_BELOW_MIN_SURPRISE: surprise={surprise}"}
-
-    if reaction_override and abs_surprise < EIA_MIN_SURPRISE_BCF:
-        log.info(
-            "EIA storage surprise is small (%+.1f Bcf), but price reaction is %.2f%%; evaluating event reaction.",
-            surprise,
-            reaction_pct,
         )
 
     # Position check
@@ -249,13 +236,35 @@ def run_ng_eia_strategy(
     if check_ng_daily_loss_cap():
         return {"action": "BLOCKED_RISK", "reason": "NG daily loss cap hit"}
 
-    # Fundamental surprise: build > consensus -> SELL, draw > consensus -> BUY.
-    # For a small surprise, follow the confirmed post-print price reaction.
-    side = (
-        "BUY" if reaction_pct > 0 else "SELL"
-        if reaction_override
-        else "SELL" if surprise > 0 else "BUY"
-    )
+    # Determine fundamental side using complete seasonal and 5-year average context
+    macro_stance = eia_full.get("macro_stance", "NEUTRAL_BALANCED") if eia_full else "NEUTRAL_BALANCED"
+    five_yr_avg = eia_full.get("five_year_avg_bcf") if eia_full else None
+    five_yr_delta = (actual - five_yr_avg) if (five_yr_avg is not None and actual is not None) else surprise
+
+    if reaction_override:
+        # Strong confirmed market absorption overrides initial metrics
+        side = "BUY" if reaction_pct > 0 else "SELL"
+        log.info("EVENT Strategy: Market reaction override (%.2f%%) triggered -> %s", reaction_pct, side)
+    elif macro_stance == "BULLISH_TIGHTENING":
+        side = "BUY"
+        log.info("EVENT Strategy: Fundamental stance BULLISH_TIGHTENING (Actual=%+.1f vs 5YrAvg=%+.1f, delta=%+.1f) -> BUY",
+                 actual, five_yr_avg or 0, five_yr_delta)
+    elif macro_stance == "BEARISH_LOOSENING":
+        side = "SELL"
+        log.info("EVENT Strategy: Fundamental stance BEARISH_LOOSENING (Actual=%+.1f vs 5YrAvg=%+.1f, delta=%+.1f) -> SELL",
+                 actual, five_yr_avg or 0, five_yr_delta)
+    else:
+        # Neutral / balanced: respect consensus surprise if significant
+        if abs_surprise < EIA_NO_TRADE_BAND_BCF and not reaction_override:
+            log.info("EIA surprise (%+d Bcf) is within no-trade band (%d Bcf).", surprise, EIA_NO_TRADE_BAND_BCF)
+            return {"action": "HOLD", "reason": f"EIA_NO_TRADE_BAND: surprise={surprise}"}
+
+        if abs_surprise < EIA_MIN_SURPRISE_BCF and not reaction_override:
+            log.info("EIA surprise (%+d Bcf) is below minimum threshold (%d Bcf).", surprise, EIA_MIN_SURPRISE_BCF)
+            return {"action": "HOLD", "reason": f"EIA_BELOW_MIN_SURPRISE: surprise={surprise}"}
+
+        side = "SELL" if surprise > 0 else "BUY"
+
     verdict = "SHORT" if side == "SELL" else "LONG"
 
     # Check confirmation: price must have moved in surprise direction vs pre-release

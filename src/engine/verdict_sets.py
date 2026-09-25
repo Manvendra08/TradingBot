@@ -27,6 +27,7 @@ _OI_BEARISH = frozenset({
 
 _OI_NEUTRAL = frozenset({
     "Sideways",
+    "Rangebound",
     "Volatility Expansion",
     "Volatility Contraction",
 })

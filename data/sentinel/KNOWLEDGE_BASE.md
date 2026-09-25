@@ -237,8 +237,23 @@
   7. **Direction-Aware R:R Formula (`llm_enrichment.py`)**: Replaced the single long formula `(target_1 - entry) / (entry - stop_loss)` with explicit formulas for BUY options vs SELL options so short-side calculations reconcile arithmetically.
   8. **Multi-Leg Schema Unit Clarifications (`multileg_llm_schema.py`)**: Annotated `net_premium`, `max_profit`, and `max_loss` in `LLMMultiLegVerdict` to explicitly indicate points per unit.
 
+### F147: Dual-Mode Decision Engine & Multi-Leg Non-Directional Execution (P0-CRITICAL)
+- **Status:** RESOLVED & VERIFIED across quantitative intelligence, prompt generation, and dual paper/live execution engines.
+- **Symptom:** Zero multi-leg non-directional option trades (Iron Condors, Strangles, Straddles) executed despite valid consolidating/rangebound market conditions. Multi-leg runners repeatedly logged rejection: `Effective confidence 50% (LLM 85%, Engine 50%) below floor 70% — rejecting trade`.
+- **Root Causes:**
+  1. **Directional-Only Verdicts (`intelligence.py`)**: `_price_oi_verdict` classified dual-sided institutional writing (both CE & PE OI building) as `Sideways` because neither side exceeded the 1.5x dominance threshold.
+  2. **Cascading Confidence Caps (`intelligence.py`)**: `_apply_confidence_caps` hard-capped `Sideways` to 50% and flat-price balanced OI to 65%, guaranteeing failure against the 70% (NSE) / 72% (MCX) execution floors.
+  3. **Directional Subordination in Prompt (`multileg_llm_prompt.py`)**: The system prompt instructed the LLM: `Baseline: Anchor your confidence to the underlying ENGINE conviction ({confidence}%)`, forcing the LLM to lower its confidence whenever the directional engine was undecided.
+  4. **Coupled Confidence Formula (`multileg_paper_trading.py` & `multileg_live_trading.py`)**: `effective_confidence = min(llm_conf, engine_conf)` vetoed non-directional structures based on low directional conviction.
+  5. **MCX Commodity Wing Disablement (`multileg_strategy.py:L119`)**: `validate_legs` rejected `IRON_CONDOR` on MCX commodities due to illiquid wing contracts, but prompt lacked explicit guidance to route MCX non-directional trades to `SHORT_STRANGLE` or `SHORT_STRADDLE`.
+- **Fix / Architectural Separation:**
+  1. Registered canonical `Rangebound` verdict across `verdict_sets.py`, `digest.py` (`_VERDICT_STYLE`), `paper_plan.py` (`VERDICT_ACTION_MAP`), and `intelligence.py` (`_price_oi_verdict`, `_generate_trade_idea`, `_generate_risk_note`, `_compute_dynamic_action_plan`).
+  2. Added dedicated `_score_rangebound_confluence` awarding confidence (75-85%) for tight price consolidation, balanced PCR (0.85-1.15), max pain magnet, and dual-sided OI buildup, while exempting `Rangebound` from the 50%/65% directional volatility caps.
+  3. Decoupled prompt confidence calibration: directional strategies anchor to directional engine conviction; non-directional strategies (`IRON_CONDOR`, `SHORT_STRANGLE`, `SHORT_STRADDLE`) anchor to IV edge, strike safety outside expected move, and chain liquidity.
+  4. Added explicit non-directional mandates to `build_multileg_prompt`: Index options route to `IRON_CONDOR` / `SHORT_STRANGLE`; MCX commodities route strictly to `SHORT_STRANGLE` / `SHORT_STRADDLE`.
+  5. Decoupled `effective_confidence` in both `multileg_paper_trading.py` and `multileg_live_trading.py`: `effective_confidence = llm_conf` for non-directional strategies, while preserving `min(llm_conf, engine_conf)` for directional spreads.
 
-### F10: Friday Mandatory Exit Window (P0-CRITICAL)
+
 - **Symptom:** Open position carried over the weekend exposing account to gap risk.
 - **Self-Heal:** Range check `"15:25" <= current_time <= "15:30"` IST (MCX `"23:25" <= current_time <= "23:30"`) forces square-off of open positions on Fridays.
 
@@ -401,6 +416,45 @@
     1. Added `_resolve_dte_from_expiry()` in `multileg_llm_prompt.py` to parse book/leg expiry strings across multiple formats and compute exact DTE. Fallback defaults to 99, never 0.
     2. Updated `src/engine/pipeline.py` to populate `expiry`, `dte`, and `days_to_expiry` into `scan_context`.
     3. Added code-level non-expiry AI suppression guards in `multileg_paper_trading.py` and `multileg_live_trading.py` to suppress false 0DTE/time-decay AI closes and reset consecutive pending trackers whenever `is_weekly_index and dte > 0 and is_expiry_reason`.
+
+- **Incident F150: News Sentiment Verdict Divergence from Live Market Direction (2026-09-24)**
+  - **Symptom:** NSE/BSE indices traded down while `news_worker` scored NIFTY `BULLISH` (0.70, 36 articles) and BANKNIFTY/SENSEX `MIXED` at 09:44 IST, feeding bullish news direction into scan intelligence on a falling market.
+  - **Root Cause:**
+    1. `_fetch_icici_commentary()` in `news_fetcher.py` stamped every scraped headline with a fabricated `published = time.time()`, hoisting potentially days-old commentary (e.g. unrelated IPO listing-gain stories) above genuinely fresh NewsAPI headlines in `fetch_news()`'s recency sort.
+    2. The sentiment LLM prompt (`_evaluate_sentiment_via_omnirouter`) received only 6 bare titles — no publish times, no current time, and no live price context — so it could not weight recency or detect conflict with the tape.
+    3. NewsAPI used a flat 48-hour cutoff regardless of market hours, admitting two-day-old headlines into the intraday pool.
+    4. No divergence guard existed between the news score and live index % change.
+  - **Fix:**
+    1. `news_fetcher.py`: ICICI items now carry `published=None` / `published_at=None` (undated); `fetch_news()` recency-sorts only timestamped items and appends undated items last.
+    2. `news_fetcher.py`: NewsAPI freshness window tightened — 12h then 24h during NSE market hours (weekday 09:15–15:30 IST), 24h off-hours, falling back progressively to the original 48h pool only when tighter windows are empty.
+    3. `news_worker.py`: headlines in the prompt now include IST publish times (`time n/a` for undated); the prompt includes current time plus a `Live market:` line (price, % vs prev close, session freshness) with an instruction to score toward price action or return MIXED on conflict.
+    4. `news_worker.py`: `_get_market_context()` reads `underlying_price` for live session price vs previous close; a divergence guard downgrades index-symbol verdicts to MIXED (score clamped to ±0.34) when |% change| > 0.5 opposes the verdict, logging `News/price divergence` for Sentinel correlation. Commodities (NATURALGAS etc.) are excluded — news legitimately leads commodity prices.
+    5. `news_worker.py`: Jev System-1 integration (flag-gated) — `NEWS_JEV_FALLBACK` (default on) uses `_evaluate_sentiment_via_jev()` as a ~3s fallback scorer when OmniRouter fails (replacing regex degradation; auto-skips without `TYPESAFE_API_KEY`); `NEWS_JEV_SHADOW` (default off) evaluates Jev on identical state each cycle, stores `jev_score`/`jev_direction`/`jev_reason` in the news cache entry, and sends ONE consolidated Telegram A/B alert per cycle via `_build_ab_telegram_message()` + `send_text()` (`🤖 News AI A/B — OmniRouter vs Jev` with per-symbol tape %, both verdicts/scores/reasons, AGREE/DISAGREE) — replacing log-grepping. Question schema mirrors `src/engine/jev_gate.py` (`choice` + `criteria`, response `{"choice", "confidence"}`).
+
+- **Incident F151: Expiry-Day Auto Square-Off Window Missed by Blocking Market-Close Scans (2026-09-24)**
+  - **Symptom:** SENSEX SELL paper position (expiry 2026-09-24, opened 12:18 IST) left `OPEN` after close. `logs/main.log` shows NO `[Expiry Exit]` sweep for `NSE_INDEX`/`BSE_INDEX` that day — only `[Expiry Exit] ... class: NSE_EQUITY` at 15:29:05 (harmless no-op; no watched symbols map to that class).
+  - **Root Cause:**
+    1. The trigger was a strict 1-minute window (`close − 1 min ≤ now ≤ close`, i.e. 15:39–15:40 for the 15:40 F&O close) evaluated only at main-loop iteration start using the iteration's frozen `now_ist`.
+    2. The 15:38:05 iteration evaluated `15:38 < 15:39` (no fire) and then blocked synchronously inside `_maybe_market_close_scan()` — NSE market-close pipeline 15:38:05→15:40:15, then BSE 15:40:15→15:41:18 — consuming the entire 15:39–15:40 window.
+    3. The next iteration started at 15:41:28 with `now > close_t`, so the window test was permanently false → the sweep never ran.
+    4. Secondary defects: the dedup tracker was marked BEFORE execution (a failure could never retry), and `_is_open_for()` blocked any post-close catch-up despite the intrinsic-value fallback.
+  - **Fix (`src/scheduler/job_runner.py`):**
+    1. New catch-up helper `_run_expiry_exit_checks()` (closure in `start_scheduler`): fires per class when `close − _EXPIRY_EXIT_TRIGGER_LEAD_MIN (1) ≤ now ≤ close + _EXPIRY_EXIT_GRACE_MIN (10)`, always with a FRESH `datetime.now(IST)` — never the stale loop tick. Tracker recorded ONLY after a successful sweep (retries on failure); warn-once Telegram alert (`⚠️ Expiry Auto-Exit Incomplete`) per class/day; non-blocking lock prevents double sweeps.
+    2. Dedicated daemon thread `expiry-exit-watchdog` (20s cadence) drives the same helper, so a blocked main loop (long LLM scans / market-close pipelines) or a mid-window restart can never miss the square-off. The helper is also invoked in-loop and again right after `_maybe_market_close_scan()` returns (fresh clock).
+    3. `exit_expiry_day_positions()` now returns `bool` (True = complete): missing option-chain/premium data or per-symbol errors mark the sweep incomplete instead of silently aborting, enabling retries within grace.
+    4. `_is_open_for(symbol, grace_minutes=0)` accepts the post-close grace window; in post-close grace only PAPER trades are squared off (last valid premium → intrinsic fallback) — live broker orders are skipped (real mode) since the exchange session is over; shadow live trades close bookkeeping-only.
+    5. `_last_expiry_exit_tracker` / `_expiry_exit_alerted` pruned on date rollover (also fixes the unbounded-set growth noted in the architecture audit).
+  - **Remediation:** `scratch/close_expired_open_positions.py` (dry-run default; `--apply` settles stuck OPEN trades at intrinsic using the last `underlying_price` on/before the trade's expiry date; live trades only closed when `live_shadow_mode` is on).
+
+- **Incident F152: Multi-Leg Entry Drought — Per-Symbol Wing Floors Bypassed & Prompt/Validator Mismatch (2026-09-23 → 2026-09-24)**
+  - **Symptom:** No multi-leg books opened for 2 consecutive sessions. Logs show repeated `[multileg-paper] ... legs validation failed — Put wing width 10 pts is too narrow for  (minimum required: 50 pts)` (note the EMPTY symbol in the message) and `validate_multileg_trade rejected entry: Put wing width 300 pts is too narrow for BANKNIFTY (min required: 333 pts)`.
+  - **Root Cause:**
+    1. `validate_legs()` (`src/engine/multileg_strategy.py`) resolves per-symbol wing-width floors (`MIN_WING_WIDTH_POINTS`/`MIN_WING_WIDTH_PCT`) and the MCX IRON_CONDOR ban from its `symbol` parameter, but all three call sites (`multileg_paper_trading.py` L1042, `multileg_live_trading.py` L1373, `multileg_strategy.py::build_execution_plan` L694) omitted it → `sym_key="DEFAULT"` → NATURALGAS received the DEFAULT 50-pt floor instead of its configured 5-pt floor (10×), so every normal NG spread (5–10 pt wings) was auto-rejected.
+    2. `multileg_llm_prompt.py` wing-width guidance (NIFTY ≥100, BANKNIFTY ≥250, SENSEX ≥400 pts) was lower than the validator's pct-based floors (NIFTY max(100, 0.5%)≈120, BANKNIFTY max(250, 0.6%)≈334, SENSEX max(400, 0.6%)≈441) → the LLM proposed per-prompt-valid wings (e.g. BANKNIFTY 300 pts) that the validator then rejected.
+  - **Fix:** Passed `symbol` at all three `validate_legs` call sites (per-symbol floors + MCX bans now active; floor logic now agrees with `validate_multileg_trade`, which already received `symbol`). Rewrote the prompt wing-width block to state the actual hard floors incl. NATURALGAS ≥10 pts and NG-specific hedge-debit ≤65% guidance; corrected the BANKNIFTY pct-table comment.
+  - **Residual (by design, not a defect):** Confidence floor 70% NSE / 72% MCX with `effective = min(LLM, engine)` still suppresses low-conviction cycles — evidence: NIFTY 65% < 70%, NATURALGAS 70% < 72%. NATURALGAS hedge-debit ceiling is now per-symbol at 75% (`MAX_HEDGE_COST_RATIO_BY_SYMBOL` via `get_max_hedge_cost_ratio()`; all other symbols stay 0.65) — the observed 71.5% 300/290 PE spread now passes; NG spreads whose hedge debit exceeds 75% are still rejected.
+
+
 
 ---
 

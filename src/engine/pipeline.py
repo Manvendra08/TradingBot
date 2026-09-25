@@ -891,6 +891,15 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
         elif has_live_books or ml_act in ("HOLD", "MONITORED"):
             tfss["action"] = "HOLD"
 
+    mcx_macro = None
+    if any(m in symbol.upper() for m in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER")):
+        if "NATURALGAS" in symbol.upper():
+            try:
+                from src.engine.ng_macro_context import get_active_ng_macro_context
+                mcx_macro = get_active_ng_macro_context()
+            except Exception:
+                pass
+
     return {
         "header": header,
         "tfss": tfss,
@@ -902,7 +911,9 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
         "options_insight": format_options_insight(scan_context, symbol),
         "ai_thesis": ai_thesis,
         "ai_model_name": ai_model_name,
-        "exit_advice": exit_advice
+        "exit_advice": exit_advice,
+        "news_data": news_data,
+        "mcx_macro": mcx_macro,
     }
 
 

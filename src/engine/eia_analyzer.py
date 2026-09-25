@@ -1,24 +1,44 @@
-import logging
+"""
+EIA Natural Gas Storage Report Analyzer & Inter-Report Recalibrator.
+
+Analyzes Thursday EIA reports (20:00 IST) using the unified multi-provider LLM chain
+(OmniRouter -> Claude -> Groq -> Gemini) within deep seasonal, historical, and physical
+supply-demand context.
+
+Recalibrates the persistent weekly macro stance (BULLISH_TIGHTENING / BEARISH_LOOSENING / NEUTRAL_BALANCED)
+which persists in the database to guide all Natural Gas trades until the next release.
+"""
+
+from __future__ import annotations
+
 import json
-import sys
+import logging
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
+import pytz
 from pydantic import BaseModel, Field
+
 from config.settings import GEMINI_API_KEY
 from src.alerts.telegram_dispatcher import send_text
 from src.models.schema import get_conn
+from src.fetchers.eia_consensus_fetcher import fetch_complete_eia_dataset, store_eia_weekly_data
+from src.engine.ng_macro_context import get_seasonal_regime, classify_storage_event
 
 log = logging.getLogger(__name__)
-ROOT = Path(__file__).resolve().parents[2]
+_IST = pytz.timezone("Asia/Kolkata")
 
 
 class EIAAnalysisVerdict(BaseModel):
-    sentiment: str = Field(description="BULLISH | BEARISH | NEUTRAL")
-    summary: str = Field(description="Summary of EIA Natural Gas Storage Report")
-    expected_impact: str = Field(description="Expected price impact on MCX Natural Gas")
+    sentiment: str = Field(description="BULLISH_TIGHTENING | BEARISH_LOOSENING | NEUTRAL_BALANCED")
+    summary: str = Field(description="Summary of physical supply-demand balance and surplus trajectory")
+    weekly_outlook: str = Field(description="Actionable multi-day guidance for trades until the next weekly EIA release")
+    expected_impact: str = Field(description="Expected immediate and multi-session price impact on MCX/NYMEX Natural Gas")
+    key_resistance: str = Field(description="Key overhead resistance ceiling & Fibonacci retracement clusters")
+    key_support: str = Field(description="Key downside support floor & moving average levels")
     markdown_telegram_message: str = Field(description="Complete Telegram formatted markdown alert with emojis")
 
 
-def _get_latest_naturalgas_oi():
+def _get_latest_naturalgas_oi() -> dict:
     """Fetch the latest OI data for NATURALGAS from the database."""
     try:
         with get_conn() as conn:
@@ -31,7 +51,6 @@ def _get_latest_naturalgas_oi():
                 LIMIT 1
                 """
             ).fetchone()
-            
             if row:
                 return dict(row)
     except Exception as e:
@@ -39,69 +58,35 @@ def _get_latest_naturalgas_oi():
     return {}
 
 
-def analyze_eia_report():
-    """Fetch EIA consensus/actual data and analyze using the unified LLM chain.
-    
-    Uses Forex Factory and official EIA HTTP endpoints first (fast, reliable),
-    falling back to cached DB and scraper if needed. LLM analysis is routed
-    through the unified multi-provider chain (OmniRouter -> Claude -> Groq -> Gemini).
+def analyze_eia_report() -> None:
+    """
+    Fetch EIA consensus & official actual data, compute 5-year seasonal metrics,
+    query the unified LLM chain, recalibrate weekly stance, and dispatch Telegram alert.
     """
     try:
-        data = None
-        from datetime import datetime
-        import pytz
-        now_ist = datetime.now(pytz.timezone("Asia/Kolkata"))
+        now_ist = datetime.now(_IST)
         today_str = now_ist.strftime("%Y-%m-%d")
 
-        # 1. Fast HTTP fetch via Forex Factory JSON feed
-        try:
-            from src.fetchers.eia_consensus_fetcher import fetch_eia_weekly_data, store_eia_weekly_data
-            ff_data = fetch_eia_weekly_data()
-            if ff_data:
-                store_eia_weekly_data(ff_data)
-        except Exception as e:
-            log.warning("Forex Factory EIA fetch failed: %s", e)
+        # 1. Fetch complete official EIA dataset + consensus
+        eia_data = fetch_complete_eia_dataset()
+        if not eia_data:
+            log.warning("Could not fetch EIA data; attempting DB fallback")
+            eia_data = {}
 
-        # 2. Check DB consensus & official EIA fallback for actual release
-        consensus = None
-        actual = None
-        release_date = today_str
-        try:
-            with get_conn() as conn:
-                row = conn.execute(
-                    "SELECT report_date, consensus_bcf, actual_bcf FROM eia_consensus ORDER BY report_date DESC LIMIT 1"
-                ).fetchone()
-                if row:
-                    release_date = row["report_date"] or today_str
-                    if row["consensus_bcf"] is not None:
-                        consensus = float(row["consensus_bcf"])
-                    if row["actual_bcf"] is not None:
-                        actual = float(row["actual_bcf"])
-        except Exception as e:
-            log.warning("Failed to query eia_consensus table: %s", e)
+        report_date = eia_data.get("report_date") or today_str
+        actual = eia_data.get("actual_bcf")
+        consensus = eia_data.get("consensus_bcf")
+        surprise = eia_data.get("surprise_bcf")
+        five_yr_avg = eia_data.get("five_year_avg_bcf")
+        surplus_bcf = eia_data.get("surplus_vs_5yr_bcf")
+        surplus_pct = eia_data.get("surplus_vs_5yr_pct")
+        total_storage = eia_data.get("total_storage_bcf")
+        year_ago_bcf = eia_data.get("year_ago_bcf")
+        seasonal_regime = eia_data.get("seasonal_regime") or "INJECTION"
 
-        if actual is None:
-            try:
-                from src.engine.ng_eia_strategy import fetch_eia_actual_fallback
-                actual = fetch_eia_actual_fallback()
-                if actual is not None and consensus is not None:
-                    with get_conn() as conn:
-                        conn.execute(
-                            "UPDATE eia_consensus SET actual_bcf=?, surprise_bcf=? WHERE report_date=?",
-                            (actual, actual - consensus, release_date),
-                        )
-            except Exception as e:
-                log.warning("Official EIA fallback scrape failed: %s", e)
+        season_info = get_seasonal_regime(now_ist)
 
-        surprise_str = f"{(actual - consensus):+.1f} Bcf" if (actual is not None and consensus is not None) else "N/A"
-        data = {
-            "release_date": release_date,
-            "actual": f"{actual:.1f} Bcf" if actual is not None else "Pending / N/A",
-            "forecast": f"{consensus:.1f} Bcf" if consensus is not None else "N/A",
-            "previous": "N/A",
-            "surprise": surprise_str,
-        }
-
+        # 2. Options context
         oi_data = _get_latest_naturalgas_oi()
         underlying = oi_data.get("underlying", "N/A")
         pcr = oi_data.get("pcr", "N/A")
@@ -129,31 +114,71 @@ def analyze_eia_report():
         else:
             oi_sentiment = "NEUTRAL / BALANCED"
 
-        prompt = f"""You are an expert commodities trader analyzing the US Natural Gas EIA storage report.
+        # 3. Trailing consecutive below/above normal weeks
+        consecutive_weeks = 0
+        try:
+            with get_conn() as conn:
+                hist_rows = conn.execute(
+                    """
+                    SELECT actual_bcf, five_year_avg_bcf FROM eia_consensus 
+                    WHERE actual_bcf IS NOT NULL AND report_date <= ? 
+                    ORDER BY report_date DESC LIMIT 6
+                    """,
+                    (report_date,),
+                ).fetchall()
+                for hr in hist_rows:
+                    a = hr["actual_bcf"]
+                    f = hr["five_year_avg_bcf"] or season_info["expected_benchmark_bcf"]
+                    if a is not None and f is not None:
+                        if a < f:
+                            consecutive_weeks += 1
+                        else:
+                            break
+        except Exception:
+            pass
 
-REPORT DATA:
-- Release Date: {data.get('release_date')}
-- Actual: {data.get('actual')}
-- Forecast: {data.get('forecast')}
-- Previous: {data.get('previous')}
-- Surprise (Actual - Forecast): {data.get('surprise')}
+        # 4. Prompt Construction with complete seasonal awareness
+        actual_str = f"{actual:+.1f} Bcf" if actual is not None else "Pending / N/A"
+        cons_str = f"{consensus:+.1f} Bcf" if consensus is not None else "N/A"
+        surp_str = f"{surprise:+.1f} Bcf" if surprise is not None else "N/A"
+        fyr_str = f"{five_yr_avg:+.1f} Bcf" if five_yr_avg is not None else "N/A"
+        surplus_delta_str = f"{(actual - five_yr_avg):+.1f} Bcf" if (actual is not None and five_yr_avg is not None) else "N/A"
 
-CONTEXT (MCX NATURALGAS):
-- Current Underlying Price: ₹{underlying}
-- PCR: {pcr}
-- CE OI Change: {ce_oi_chg}
-- PE OI Change: {pe_oi_chg}
+        prompt = f"""You are an elite commodity hedge fund energy strategist analyzing the US EIA Weekly Natural Gas Storage Report.
+
+REPORT DATA (Lower 48):
+- Release Date: {report_date}
+- Actual Net Change: {actual_str}
+- Consensus Expectation: {cons_str}
+- Surprise vs Consensus: {surp_str}
+- 5-Year Historical Average Net Change: {fyr_str}
+- 5-Year Historical Delta (Actual - 5YrAvg): {surplus_delta_str}
+- Total Working Gas in Storage: {total_storage or 'N/A'} Bcf
+- Surplus/Deficit vs 5-Year Average: {surplus_bcf:+.0f} Bcf ({surplus_pct:+.1f}%) if surplus_bcf else 'N/A'
+- Trailing Tightening Streak: {consecutive_weeks} consecutive below-normal builds
+
+SEASONAL & MACRO CONTEXT:
+- Seasonal Regime: {seasonal_regime} Season (Calendar Week {season_info['calendar_week']})
+- Core Fundamental Rule: {season_info['rule_description']}
+- Market Dynamics: 
+  * In Injection Season (Apr-Oct), an injection on its own is NOT bearish. A build below expectations or below the 5-year average tightens the pre-winter buffer (BULLISH_TIGHTENING).
+  * Check for front-month contract expiry rollover and short-covering triggers.
+  * Check for supply curtailments (Lower 48 production drops) and export LNG feedgas demand.
+
+CURRENT MCX/LOCAL MARKET STATUS:
+- Spot / Underlying Price: ₹{underlying}
+- PCR: {pcr} | CE ΔOI: {ce_oi_chg} | PE ΔOI: {pe_oi_chg}
 - Options Flow Ground Truth: {oi_sentiment}
 
-RULES:
-1. Compare Actual vs Forecast. A draw (or smaller build) than forecast is BULLISH. A larger build than forecast is BEARISH.
-2. Contextualize with options OI flow: Options OI is WRITER-CENTRIC. Positive PE change = Put Writing (Bullish support); Positive CE change = Call Writing (Bearish resistance). Rising PCR = Bullish accumulation.
-3. Provide a clear, actionable summary of the sentiment and expected price impact on MCX Natural Gas.
-4. Format markdown_telegram_message with emojis, bold headers, and concise bullet points.
+TASK:
+1. Determine the calibrated macro stance: BULLISH_TIGHTENING, BEARISH_LOOSENING, or NEUTRAL_BALANCED.
+2. Formulate a multi-day trading perspective that guides trades until NEXT Thursday's report resets the view.
+3. Identify specific technical ceiling (resistance) and floor (support) levels.
+4. Generate an executive Telegram message with emojis, bold headers, and dense bullet points.
 """
 
-        # 3. Call Unified Multi-Provider LLM Chain
         analysis_msg = None
+        verdict_obj: EIAAnalysisVerdict | None = None
         try:
             from src.engine.llm_enrichment import _call_llm_api
             result: EIAAnalysisVerdict | None = _call_llm_api(
@@ -163,43 +188,77 @@ RULES:
                 purpose="eia_analysis",
             )
             if result and hasattr(result, "markdown_telegram_message") and result.markdown_telegram_message:
+                verdict_obj = result
                 analysis_msg = result.markdown_telegram_message
-            elif result and hasattr(result, "summary"):
-                analysis_msg = (
-                    f"🛢️ *EIA Natural Gas Report Analysis*\n\n"
-                    f"*Sentiment*: {getattr(result, 'sentiment', 'NEUTRAL')}\n"
-                    f"*Actual*: {data.get('actual')} | *Forecast*: {data.get('forecast')} ({data.get('surprise')})\n\n"
-                    f"{getattr(result, 'summary', '')}\n\n"
-                    f"*Impact*: {getattr(result, 'expected_impact', '')}"
-                )
         except Exception as e:
             log.warning("Primary LLM chain for EIA failed, trying fallback: %s", e)
 
-        # 4. Fallback if primary LLM chain failed
-        if not analysis_msg:
-            # Deterministic quantitative analysis
-            bias = "NEUTRAL"
-            if actual is not None and consensus is not None:
-                diff = actual - consensus
-                if diff <= -2.0:
-                    bias = "BULLISH (Smaller Build / Draw)"
-                elif diff >= 2.0:
-                    bias = "BEARISH (Larger Build)"
-                else:
-                    bias = "IN-LINE (Neutral)"
-
+        # 5. Deterministic fallback if LLM chain failed
+        if not verdict_obj or not analysis_msg:
+            deterministic_stance, deterministic_summary, _ = classify_storage_event(
+                actual_bcf=actual if actual is not None else 0.0,
+                consensus_bcf=consensus,
+                five_year_avg_bcf=five_yr_avg,
+                surplus_vs_5yr_bcf=surplus_bcf,
+                surplus_vs_5yr_pct=surplus_pct,
+                seasonal_regime=seasonal_regime,
+            )
             analysis_msg = (
                 f"🛢️ *EIA Natural Gas Storage Report*\n\n"
-                f"• *Release Date*: `{data.get('release_date')}`\n"
-                f"• *Actual*: `{data.get('actual')}`\n"
-                f"• *Forecast*: `{data.get('forecast')}`\n"
-                f"• *Surprise*: `{data.get('surprise')}`\n\n"
-                f"📊 *Fundamental Bias*: **{bias}**\n"
-                f"• Spot Price: ₹{underlying}\n"
-                f"• PCR: {pcr} | CE ΔOI: {ce_oi_chg:,} | PE ΔOI: {pe_oi_chg:,}"
+                f"• *Release Date*: `{report_date}`\n"
+                f"• *Actual Net Change*: `{actual_str}`\n"
+                f"• *Consensus*: `{cons_str}` ({surp_str})\n"
+                f"• *5-Year Benchmark*: `{fyr_str}` (Delta: `{surplus_delta_str}`)\n"
+                f"• *Total Storage*: `{total_storage or 'N/A'}` Bcf ({surplus_pct:+.1f}% vs 5-yr norm)\n\n"
+                f"📊 *Weekly Calibrated Stance*: **{deterministic_stance}**\n"
+                f"{deterministic_summary}\n\n"
+                f"• Spot Price: ₹{underlying} | PCR: {pcr}\n"
+                f"• Options Flow: {oi_sentiment}"
             )
+            stance_to_store = deterministic_stance
+            summary_to_store = deterministic_summary
+            key_levels_to_store = {}
+        else:
+            stance_to_store = verdict_obj.sentiment
+            summary_to_store = f"{verdict_obj.summary} | Outlook: {verdict_obj.weekly_outlook}"
+            key_levels_to_store = {
+                "resistance": verdict_obj.key_resistance,
+                "support": verdict_obj.key_support,
+            }
 
-        # 5. Dispatch to Telegram
+        # 6. Persist calibrated weekly stance into eia_consensus table
+        days_to_next_thu = (3 - now_ist.weekday()) % 7
+        if days_to_next_thu == 0:
+            days_to_next_thu = 7
+        next_thu = (now_ist + timedelta(days=days_to_next_thu)).replace(hour=20, minute=0, second=0, microsecond=0)
+        valid_until_str = next_thu.astimezone(timezone.utc).isoformat()
+
+        persisted_data = {
+            "report_date": report_date,
+            "consensus_bcf": consensus,
+            "actual_bcf": actual,
+            "surprise_bcf": surprise,
+            "five_year_avg_bcf": five_yr_avg,
+            "five_year_total_bcf": eia_data.get("five_year_total_bcf"),
+            "surplus_vs_5yr_bcf": surplus_bcf,
+            "surplus_vs_5yr_pct": surplus_pct,
+            "total_storage_bcf": total_storage,
+            "year_ago_bcf": year_ago_bcf,
+            "pct_change_yrago": eia_data.get("pct_change_yrago"),
+            "prior_week_revised_bcf": None,
+            "prior_week_revision_flag": eia_data.get("prior_week_revision_flag", 0),
+            "seasonal_regime": seasonal_regime,
+            "macro_stance": stance_to_store,
+            "stance_summary": summary_to_store,
+            "key_levels_json": json.dumps(key_levels_to_store) if key_levels_to_store else None,
+            "valid_until": valid_until_str,
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "source": "eia_analyzer_recalibration",
+        }
+        store_eia_weekly_data(persisted_data)
+        log.info("Persisted weekly EIA recalibration: stance=%s, valid_until=%s", stance_to_store, valid_until_str)
+
+        # 7. Dispatch alert
         if not analysis_msg.startswith("🛢️"):
             analysis_msg = f"🛢️ *EIA Natural Gas Report Analysis*\n\n{analysis_msg}"
         send_text(analysis_msg)

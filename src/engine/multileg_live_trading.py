@@ -1225,9 +1225,13 @@ def _attempt_new_live_entry(
     is_mcx = symbol in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER")
     conf_floor = 72 if is_mcx else 70
 
-    # Phase 2 High #14: Gate multileg confidence on min(llm, engine) so LLM doubt
-    # is never overridden by high engine confidence.
-    if engine_conf > 0 and llm_conf > 0:
+    # For non-directional strategies (IRON_CONDOR, SHORT_STRANGLE, SHORT_STRADDLE),
+    # LLM's assessment of IV, chain quality, and expected move safety is authoritative.
+    # For directional spreads (BULL_PUT_SPREAD, BEAR_CALL_SPREAD), require min(llm, engine).
+    is_nondirectional = st_upper in ("IRON_CONDOR", "SHORT_STRANGLE", "SHORT_STRADDLE")
+    if is_nondirectional:
+        effective_confidence = llm_conf
+    elif engine_conf > 0 and llm_conf > 0:
         effective_confidence = min(llm_conf, engine_conf)
     else:
         effective_confidence = llm_conf

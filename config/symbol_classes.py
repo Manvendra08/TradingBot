@@ -104,6 +104,35 @@ def is_market_open(symbol: str, dt=None) -> bool:
     return open_t <= t <= close_t
 
 
+def is_market_open_for_news(symbol: str, dt=None, pre_open_buffer_min: int = 25) -> bool:
+    """Check if the market for `symbol` is active or about to open for news evaluation.
+
+    Returns False if:
+      - Today is not a trading weekday for the symbol (e.g. weekend).
+      - Today is a market holiday for the symbol.
+      - The time is before pre-market start (open_time - buffer, default 08:50 for NSE, 08:35 for MCX).
+      - The time is after the market's official closing time (15:40 for NSE, 23:30 for MCX).
+    """
+    from datetime import datetime
+    import pytz
+    if dt is None:
+        dt = datetime.now(pytz.timezone("Asia/Kolkata"))
+    open_t, close_t, days = market_window(symbol)
+    if dt.weekday() not in days:
+        return False
+    from config.holidays import is_market_holiday
+    if is_market_holiday(symbol, dt):
+        return False
+
+    open_h, open_m = map(int, open_t.split(":"))
+    open_minutes = open_h * 60 + open_m
+    news_start_minutes = max(0, open_minutes - pre_open_buffer_min)
+    news_start_t = f"{news_start_minutes // 60:02d}:{news_start_minutes % 60:02d}"
+
+    t = dt.strftime("%H:%M")
+    return news_start_t <= t <= close_t
+
+
 def get_kite_exchange(symbol: str) -> str:
     """Return Zerodha Kite exchange code for order/instrument resolution."""
     base = _base_symbol(symbol)
