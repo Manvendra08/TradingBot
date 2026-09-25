@@ -1,0 +1,1293 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>NSEBOT — Index Contributors</title>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+        <style>
+            @import url("https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;700;800&display=swap");
+
+            :root {
+                --bg: #0a0c0f;
+                --surface: #111418;
+                --surface-2: #161a22;
+                --surface-3: #1c222c;
+                --border: #1e2530;
+                --accent: #00e5a0;
+                --red: #ff4d6d;
+                --red-bg: rgba(255, 77, 109, 0.12);
+                --green: #00e5a0;
+                --green-bg: rgba(0, 229, 160, 0.12);
+                --yellow: #ffd166;
+                --yellow-bg: rgba(255, 209, 102, 0.12);
+                --muted: #4a5568;
+                --text: #e2e8f0;
+                --text-dim: #718096;
+                --mono: "Space Mono", monospace;
+                --sans: "DM Sans", sans-serif;
+            }
+
+            [data-theme="light"] {
+                --bg: #f8fafc;
+                --surface: #ffffff;
+                --surface-2: #f1f5f9;
+                --surface-3: #e2e8f0;
+                --border: #cbd5e1;
+                --accent: #059669;
+                --red: #e11d48;
+                --red-bg: rgba(225, 29, 72, 0.1);
+                --green: #059669;
+                --green-bg: rgba(5, 150, 105, 0.1);
+                --yellow: #d97706;
+                --yellow-bg: rgba(217, 119, 6, 0.1);
+                --muted: #94a3b8;
+                --text: #0f172a;
+                --text-dim: #64748b;
+            }
+
+            * {
+                box-sizing: border-box;
+                margin: 0;
+                padding: 0;
+            }
+
+            body {
+                background: var(--bg);
+                color: var(--text);
+                font-family: var(--sans);
+                font-size: 14px;
+                min-height: 100vh;
+                display: flex;
+                flex-direction: column;
+            }
+
+            /* ── Header & Navigation ────────────────────────────────────────── */
+            .app-header {
+                display: flex;
+                flex-direction: column;
+                padding: 10px 24px;
+                gap: 10px;
+                background: var(--surface);
+                border-bottom: 1px solid var(--border);
+                position: sticky;
+                top: 0;
+                z-index: 100;
+            }
+            .header-top-row {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                width: 100%;
+                gap: 16px;
+            }
+            .header-bottom-row {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                width: 100%;
+                flex-wrap: wrap;
+                gap: 8px;
+            }
+            .header-left {
+                display: flex;
+                align-items: center;
+                gap: 12px;
+            }
+            .logo-stack {
+                display: flex;
+                flex-direction: column;
+            }
+            .logo-text {
+                font-family: var(--sans);
+                font-weight: 800;
+                font-size: 16px;
+                letter-spacing: 1.5px;
+                color: var(--text);
+            }
+            .logo-sub {
+                font-family: var(--mono);
+                font-size: 9px;
+                color: var(--accent);
+                letter-spacing: 2px;
+                text-transform: uppercase;
+            }
+            .cmp-ticker {
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                overflow-x: auto;
+                scrollbar-width: none;
+            }
+            .cmp-ticker::-webkit-scrollbar {
+                display: none;
+            }
+            .ticker-item {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                font-family: var(--mono);
+                font-size: 11px;
+                font-weight: 700;
+                flex-shrink: 0;
+                background: var(--surface-2);
+                border: 1px solid var(--border);
+                padding: 4px 10px;
+                border-radius: 6px;
+            }
+            .ticker-label {
+                font-weight: 600;
+                color: var(--text-dim);
+                font-size: 10px;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                font-family: var(--sans);
+            }
+
+            .header-nav {
+                display: flex;
+                background: rgba(0, 0, 0, 0.15);
+                border: 1px solid var(--border);
+                border-radius: 8px;
+                padding: 3px;
+                gap: 2px;
+                overflow-x: auto;
+                scrollbar-width: none;
+            }
+            .nav-tab {
+                color: var(--text-dim);
+                text-decoration: none;
+                padding: 6px 14px;
+                font-size: 13px;
+                font-weight: 600;
+                border-radius: 6px;
+                transition: all 0.2s ease;
+                border: 1px solid transparent;
+                font-family: var(--sans);
+                white-space: nowrap;
+            }
+            .nav-tab:hover {
+                color: var(--text);
+                background: rgba(255, 255, 255, 0.04);
+            }
+            .nav-tab.active {
+                color: var(--accent);
+                background: var(--surface-2);
+                border-color: var(--border);
+            }
+            .theme-toggle-btn {
+                background: transparent;
+                border: 1px solid var(--border);
+                color: var(--text);
+                width: 36px;
+                height: 36px;
+                border-radius: 8px;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 16px;
+                transition: all 0.2s ease;
+            }
+            .theme-toggle-btn:hover {
+                border-color: var(--accent);
+                background: var(--surface-2);
+            }
+            .btn-refresh {
+                background: var(--accent);
+                color: #000;
+                border: none;
+                border-radius: 6px;
+                font-family: var(--sans);
+                font-weight: 700;
+                font-size: 12px;
+                padding: 8px 14px;
+                cursor: pointer;
+                transition: all 0.2s;
+                display: flex;
+                align-items: center;
+                gap: 6px;
+            }
+            .btn-refresh:hover {
+                filter: brightness(1.1);
+                transform: translateY(-1px);
+            }
+
+            /* ── Control Bar / Subheader ────────────────────────────────────── */
+            .sub-bar {
+                background: var(--surface-2);
+                border-bottom: 1px solid var(--border);
+                padding: 10px 24px;
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                flex-wrap: wrap;
+                gap: 12px;
+            }
+            .index-pills {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                background: rgba(0, 0, 0, 0.2);
+                padding: 4px;
+                border-radius: 8px;
+                border: 1px solid var(--border);
+            }
+            .index-pill {
+                padding: 6px 16px;
+                border-radius: 6px;
+                cursor: pointer;
+                font-weight: 700;
+                font-size: 12px;
+                border: 1px solid transparent;
+                background: transparent;
+                color: var(--text-dim);
+                transition: all 0.2s;
+            }
+            .index-pill:hover {
+                color: var(--text);
+            }
+            .index-pill.active {
+                background: var(--surface);
+                color: var(--accent);
+                border-color: var(--border);
+                box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+            }
+            .sub-controls {
+                display: flex;
+                align-items: center;
+                gap: 14px;
+                font-size: 12px;
+                color: var(--text-dim);
+            }
+            .switch-wrap {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                cursor: pointer;
+                user-select: none;
+            }
+            .switch-wrap input {
+                cursor: pointer;
+                accent-color: var(--accent);
+            }
+            .sync-badge {
+                font-family: var(--mono);
+                font-size: 11px;
+                padding: 3px 8px;
+                background: var(--surface);
+                border: 1px solid var(--border);
+                border-radius: 4px;
+            }
+
+            /* ── Main Content Container ────────────────────────────────────── */
+            .main-container {
+                max-width: 1440px;
+                width: 100%;
+                margin: 0 auto;
+                padding: 20px 24px;
+                display: flex;
+                flex-direction: column;
+                gap: 20px;
+                flex-grow: 1;
+            }
+
+            /* ── KPI Cards Grid ────────────────────────────────────────────── */
+            .kpi-grid {
+                display: grid;
+                grid-template-columns: repeat(3, 1fr);
+                gap: 16px;
+            }
+            @media (max-width: 900px) {
+                .kpi-grid {
+                    grid-template-columns: 1fr;
+                }
+            }
+            .kpi-card {
+                background: var(--surface);
+                border: 1px solid var(--border);
+                border-radius: 10px;
+                padding: 16px 20px;
+                display: flex;
+                flex-direction: column;
+                gap: 8px;
+                position: relative;
+                overflow: hidden;
+            }
+            .kpi-card::before {
+                content: "";
+                position: absolute;
+                top: 0;
+                left: 0;
+                bottom: 0;
+                width: 4px;
+            }
+            .kpi-card.positive::before {
+                background: var(--green);
+            }
+            .kpi-card.net::before {
+                background: #3b82f6;
+            }
+            .kpi-card.negative::before {
+                background: var(--red);
+            }
+
+            .kpi-header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+            }
+            .kpi-title {
+                font-size: 11px;
+                letter-spacing: 1px;
+                text-transform: uppercase;
+                color: var(--text-dim);
+                font-weight: 700;
+            }
+            .kpi-badge {
+                font-family: var(--mono);
+                font-size: 11px;
+                font-weight: 700;
+                padding: 2px 8px;
+                border-radius: 4px;
+            }
+            .kpi-badge.green {
+                background: var(--green-bg);
+                color: var(--green);
+            }
+            .kpi-badge.red {
+                background: var(--red-bg);
+                color: var(--red);
+            }
+            .kpi-badge.blue {
+                background: rgba(59, 130, 246, 0.12);
+                color: #60a5fa;
+            }
+
+            .kpi-value {
+                font-family: var(--mono);
+                font-size: 26px;
+                font-weight: 800;
+                letter-spacing: -0.5px;
+            }
+            .kpi-value.green {
+                color: var(--green);
+            }
+            .kpi-value.red {
+                color: var(--red);
+            }
+            .kpi-value.blue {
+                color: #60a5fa;
+            }
+
+            .kpi-subtext {
+                font-size: 12px;
+                color: var(--text-dim);
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                font-family: var(--sans);
+            }
+            .kpi-subtext b {
+                color: var(--text);
+            }
+
+            /* Breadth Bar */
+            .breadth-bar-wrap {
+                width: 100%;
+                height: 8px;
+                background: var(--surface-3);
+                border-radius: 4px;
+                overflow: hidden;
+                display: flex;
+                margin-top: 4px;
+            }
+            .breadth-bar-gainers {
+                height: 100%;
+                background: var(--green);
+                transition: width 0.3s;
+            }
+            .breadth-bar-losers {
+                height: 100%;
+                background: var(--red);
+                transition: width 0.3s;
+            }
+
+            /* ── View Controls Bar ─────────────────────────────────────────── */
+            .view-bar {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                flex-wrap: wrap;
+                gap: 12px;
+                background: var(--surface);
+                border: 1px solid var(--border);
+                padding: 10px 16px;
+                border-radius: 8px;
+            }
+            .view-tabs {
+                display: flex;
+                align-items: center;
+                gap: 4px;
+                background: var(--surface-2);
+                padding: 3px;
+                border-radius: 6px;
+                border: 1px solid var(--border);
+            }
+            .view-tab {
+                padding: 6px 12px;
+                border-radius: 5px;
+                border: none;
+                background: transparent;
+                color: var(--text-dim);
+                font-size: 12px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: all 0.15s;
+                display: flex;
+                align-items: center;
+                gap: 6px;
+            }
+            .view-tab:hover {
+                color: var(--text);
+            }
+            .view-tab.active {
+                background: var(--surface);
+                color: var(--text);
+                box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+            }
+            .filter-tools {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                flex-wrap: wrap;
+            }
+            .search-box {
+                background: var(--surface-2);
+                border: 1px solid var(--border);
+                border-radius: 6px;
+                padding: 6px 12px;
+                color: var(--text);
+                font-size: 12px;
+                outline: none;
+                width: 200px;
+                font-family: var(--sans);
+                transition: border-color 0.2s;
+            }
+            .search-box:focus {
+                border-color: var(--accent);
+            }
+            .sector-select {
+                background: var(--surface-2);
+                border: 1px solid var(--border);
+                border-radius: 6px;
+                padding: 6px 12px;
+                color: var(--text);
+                font-size: 12px;
+                outline: none;
+                font-family: var(--sans);
+                cursor: pointer;
+            }
+
+            /* ── Split View Layout ─────────────────────────────────────────── */
+            .split-view-grid {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 16px;
+            }
+            @media (max-width: 900px) {
+                .split-view-grid {
+                    grid-template-columns: 1fr;
+                }
+            }
+            .split-column {
+                background: var(--surface);
+                border: 1px solid var(--border);
+                border-radius: 10px;
+                overflow: hidden;
+                display: flex;
+                flex-direction: column;
+            }
+            .split-column-header {
+                padding: 12px 18px;
+                border-bottom: 1px solid var(--border);
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                font-weight: 700;
+                font-size: 13px;
+                background: var(--surface-2);
+            }
+            .split-column-header.pullers {
+                color: var(--green);
+                border-top: 3px solid var(--green);
+            }
+            .split-column-header.draggers {
+                color: var(--red);
+                border-top: 3px solid var(--red);
+            }
+
+            /* ── Tables & Rows ─────────────────────────────────────────────── */
+            .table-wrap {
+                overflow-x: auto;
+                width: 100%;
+            }
+            table {
+                width: 100%;
+                border-collapse: collapse;
+                font-size: 12px;
+                text-align: left;
+            }
+            th {
+                background: var(--surface-2);
+                color: var(--text-dim);
+                padding: 10px 14px;
+                font-weight: 600;
+                font-size: 11px;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                border-bottom: 1px solid var(--border);
+                white-space: nowrap;
+            }
+            td {
+                padding: 10px 14px;
+                border-bottom: 1px solid var(--border);
+                vertical-align: middle;
+            }
+            tr:hover td {
+                background: rgba(255, 255, 255, 0.02);
+            }
+            .stock-cell {
+                display: flex;
+                flex-direction: column;
+                gap: 2px;
+            }
+            .stock-sym {
+                font-weight: 700;
+                font-family: var(--mono);
+                color: var(--text);
+                font-size: 13px;
+            }
+            .stock-name {
+                font-size: 11px;
+                color: var(--text-dim);
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                max-width: 190px;
+            }
+            .sector-tag {
+                font-size: 10px;
+                color: var(--text-dim);
+                background: var(--surface-2);
+                border: 1px solid var(--border);
+                padding: 1px 6px;
+                border-radius: 4px;
+                width: fit-content;
+                margin-top: 2px;
+            }
+
+            .impact-cell {
+                font-family: var(--mono);
+                font-weight: 700;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            .impact-pill {
+                padding: 3px 8px;
+                border-radius: 4px;
+                font-size: 12px;
+                min-width: 65px;
+                text-align: right;
+            }
+            .impact-pill.green {
+                background: var(--green-bg);
+                color: var(--green);
+            }
+            .impact-pill.red {
+                background: var(--red-bg);
+                color: var(--red);
+            }
+            .mini-bar {
+                height: 6px;
+                border-radius: 3px;
+                max-width: 70px;
+                flex-grow: 1;
+            }
+            .mini-bar.green {
+                background: var(--green);
+            }
+            .mini-bar.red {
+                background: var(--red);
+            }
+
+            /* ── Visual Bar Chart Container ────────────────────────────────── */
+            .chart-view-card {
+                background: var(--surface);
+                border: 1px solid var(--border);
+                border-radius: 10px;
+                padding: 20px;
+                display: flex;
+                flex-direction: column;
+                gap: 16px;
+            }
+            .chart-canvas-wrap {
+                position: relative;
+                height: 650px;
+                width: 100%;
+            }
+
+            /* Loading overlay */
+            .loading-wrap {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                padding: 60px;
+                color: var(--text-dim);
+                font-family: var(--mono);
+                font-size: 13px;
+                gap: 10px;
+            }
+            .spinner {
+                width: 18px;
+                height: 18px;
+                border: 2px solid var(--border);
+                border-top-color: var(--accent);
+                border-radius: 50%;
+                animation: spin 0.8s linear infinite;
+            }
+            @keyframes spin {
+                to {
+                    transform: rotate(360deg);
+                }
+            }
+        </style>
+    </head>
+    <body data-theme="dark">
+        <!-- ── Top App Header ─────────────────────────────────────────────── -->
+        <header class="app-header">
+            <div class="header-top-row">
+                <div class="header-left">
+                    <div class="logo-stack">
+                        <span class="logo-text">NSEBOT</span>
+                        <span class="logo-sub">INDEX CONTRIBUTORS</span>
+                    </div>
+                </div>
+
+                <!-- Live CMP Ticker -->
+                <div class="cmp-ticker" id="topbar-ticker">
+                    <div class="ticker-item">
+                        <span class="ticker-label">NIFTY:</span>
+                        <span id="ticker-nifty-ltp" style="color: var(--text)">--</span>
+                        <span id="ticker-nifty-chg"></span>
+                    </div>
+                    <div class="ticker-item">
+                        <span class="ticker-label">BANKNIFTY:</span>
+                        <span id="ticker-banknifty-ltp" style="color: var(--text)">--</span>
+                        <span id="ticker-banknifty-chg"></span>
+                    </div>
+                    <div class="ticker-item">
+                        <span class="ticker-label">SENSEX:</span>
+                        <span id="ticker-sensex-ltp" style="color: var(--text)">--</span>
+                        <span id="ticker-sensex-chg"></span>
+                    </div>
+                    <div class="ticker-item">
+                        <span class="ticker-label">NATURALGAS:</span>
+                        <span id="ticker-naturalgas-ltp" style="color: var(--text)">--</span>
+                        <span id="ticker-naturalgas-chg"></span>
+                    </div>
+                    <div class="ticker-item">
+                        <span class="ticker-label">CRUDEOIL:</span>
+                        <span id="ticker-crudeoil-ltp" style="color: var(--text)">--</span>
+                        <span id="ticker-crudeoil-chg"></span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Navigation Tabs -->
+            <div class="header-bottom-row">
+                <div class="header-nav">
+                    <a href="/" class="nav-tab" id="tab-dashboard">Dashboard</a>
+                    <a href="/paper" class="nav-tab" id="tab-paper">Paper Trades</a>
+                    <a href="/broker" class="nav-tab" id="tab-broker">Broker Console</a>
+                    <a href="/ai" class="nav-tab" id="tab-ai">AI Insights</a>
+                    <a href="/contributors" class="nav-tab active" id="tab-contributors">Contributors</a>
+                    <a href="/report" class="nav-tab" id="tab-report">Market Summary</a>
+                    <a href="/settings" class="nav-tab" id="tab-settings">Settings</a>
+                    <a href="/ops" class="nav-tab" id="tab-ops">Ops Monitor</a>
+                </div>
+
+                <div style="display: flex; align-items: center; gap: 10px">
+                    <button id="theme-toggle-btn" class="theme-toggle-btn" title="Toggle Theme">
+                        🌙
+                    </button>
+                    <button class="btn-refresh" onclick="fetchContributors(true)">
+                        <span>⟳</span> REFRESH
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <!-- ── Sub Control Bar ────────────────────────────────────────────── -->
+        <div class="sub-bar">
+            <!-- Index Selector Pills -->
+            <div class="index-pills">
+                <button class="index-pill active" data-index="NIFTY" onclick="switchIndex('NIFTY')">NIFTY 50</button>
+                <button class="index-pill" data-index="BANKNIFTY" onclick="switchIndex('BANKNIFTY')">BANK NIFTY</button>
+                <button class="index-pill" data-index="SENSEX" onclick="switchIndex('SENSEX')">SENSEX</button>
+            </div>
+
+            <div class="sub-controls">
+                <label class="switch-wrap">
+                    <input type="checkbox" id="auto-refresh-toggle" checked onchange="toggleAutoRefresh(this.checked)" />
+                    <span>Auto Refresh (30s)</span>
+                </label>
+                <span class="sync-badge" id="last-updated-badge">Loading...</span>
+            </div>
+        </div>
+
+        <!-- ── Main Dashboard Body ────────────────────────────────────────── -->
+        <main class="main-container">
+            <!-- Summary KPI Cards -->
+            <section class="kpi-grid">
+                <!-- Positive Contributors -->
+                <div class="kpi-card positive">
+                    <div class="kpi-header">
+                        <span class="kpi-title">Positive Contributors (Pullers)</span>
+                        <span class="kpi-badge green" id="kpi-pullers-count">0 Gaining</span>
+                    </div>
+                    <div class="kpi-value green" id="kpi-pullers-pts">+0.00 pts</div>
+                    <div class="kpi-subtext">
+                        <span>Index Weight Driving Up:</span>
+                        <b id="kpi-pullers-weight">0.0%</b>
+                    </div>
+                </div>
+
+                <!-- Net Contribution & Breadth -->
+                <div class="kpi-card net">
+                    <div class="kpi-header">
+                        <span class="kpi-title" id="kpi-index-title">Nifty 50 Net Move</span>
+                        <span class="kpi-badge blue" id="kpi-spot-badge">Spot: --</span>
+                    </div>
+                    <div class="kpi-value blue" id="kpi-net-pts">+0.00 pts</div>
+                    <div class="kpi-subtext">
+                        <span>Market Breadth:</span>
+                        <span id="kpi-breadth-stats" style="font-family: var(--mono); font-weight: 700">0G / 0L</span>
+                    </div>
+                    <div class="breadth-bar-wrap">
+                        <div class="breadth-bar-gainers" id="breadth-bar-g" style="width: 50%"></div>
+                        <div class="breadth-bar-losers" id="breadth-bar-l" style="width: 50%"></div>
+                    </div>
+                </div>
+
+                <!-- Negative Contributors -->
+                <div class="kpi-card negative">
+                    <div class="kpi-header">
+                        <span class="kpi-title">Negative Contributors (Draggers)</span>
+                        <span class="kpi-badge red" id="kpi-draggers-count">0 Losing</span>
+                    </div>
+                    <div class="kpi-value red" id="kpi-draggers-pts">-0.00 pts</div>
+                    <div class="kpi-subtext">
+                        <span>Index Weight Dragging Down:</span>
+                        <b id="kpi-draggers-weight">0.0%</b>
+                    </div>
+                </div>
+            </section>
+
+            <!-- View Modes & Filter Tools -->
+            <section class="view-bar">
+                <div class="view-tabs">
+                    <button class="view-tab active" data-view="split" onclick="switchView('split')">
+                        ◫ Split View
+                    </button>
+                    <button class="view-tab" data-view="chart" onclick="switchView('chart')">
+                        📊 Visual Bar Graph
+                    </button>
+                    <button class="view-tab" data-view="gainers" onclick="switchView('gainers')">
+                        ▲ Top Pullers
+                    </button>
+                    <button class="view-tab" data-view="losers" onclick="switchView('losers')">
+                        ▼ Top Draggers
+                    </button>
+                    <button class="view-tab" data-view="all" onclick="switchView('all')">
+                        📋 All Stocks
+                    </button>
+                </div>
+
+                <div class="filter-tools">
+                    <input
+                        type="text"
+                        id="search-input"
+                        class="search-box"
+                        placeholder="Search symbol or name..."
+                        oninput="onSearchOrSectorChange()"
+                    />
+                    <select id="sector-select" class="sector-select" onchange="onSearchOrSectorChange()">
+                        <option value="ALL">All Sectors</option>
+                    </select>
+                </div>
+            </section>
+
+            <!-- Content Views Container -->
+            <div id="views-container">
+                <!-- 1. Split View (Default) -->
+                <div id="view-split" class="split-view-grid">
+                    <!-- Pullers Column -->
+                    <div class="split-column">
+                        <div class="split-column-header pullers">
+                            <span>▲ POSITIVE CONTRIBUTORS</span>
+                            <span id="split-pullers-summary" style="font-family: var(--mono); font-size: 11px">+0.00 pts</span>
+                        </div>
+                        <div class="table-wrap">
+                            <table id="table-split-pullers">
+                                <thead>
+                                    <tr>
+                                        <th>Stock</th>
+                                        <th style="text-align: right">Weight</th>
+                                        <th style="text-align: right">LTP</th>
+                                        <th style="text-align: right">Change</th>
+                                        <th style="text-align: right">Point Impact</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Draggers Column -->
+                    <div class="split-column">
+                        <div class="split-column-header draggers">
+                            <span>▼ NEGATIVE CONTRIBUTORS</span>
+                            <span id="split-draggers-summary" style="font-family: var(--mono); font-size: 11px">-0.00 pts</span>
+                        </div>
+                        <div class="table-wrap">
+                            <table id="table-split-draggers">
+                                <thead>
+                                    <tr>
+                                        <th>Stock</th>
+                                        <th style="text-align: right">Weight</th>
+                                        <th style="text-align: right">LTP</th>
+                                        <th style="text-align: right">Change</th>
+                                        <th style="text-align: right">Point Impact</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 2. Visual Bar Graph View -->
+                <div id="view-chart" class="chart-view-card" style="display: none">
+                    <div style="display: flex; align-items: center; justify-content: space-between">
+                        <span style="font-weight: 700; font-size: 13px; text-transform: uppercase; color: var(--text-dim)">
+                            Constituent Point Contribution Waterfall
+                        </span>
+                        <span style="font-family: var(--mono); font-size: 11px; color: var(--text-dim)">
+                            Green: Positive Index Impact · Red: Negative Index Impact
+                        </span>
+                    </div>
+                    <div class="chart-canvas-wrap">
+                        <canvas id="contributorsChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- 3. All / Filtered Single Table View -->
+                <div id="view-table" class="split-column" style="display: none">
+                    <div class="split-column-header" id="single-table-header">
+                        <span>ALL CONSTITUENTS</span>
+                        <span id="single-table-count" style="font-family: var(--mono); font-size: 11px">0 stocks</span>
+                    </div>
+                    <div class="table-wrap">
+                        <table id="table-single">
+                            <thead>
+                                <tr>
+                                    <th style="width: 40px">#</th>
+                                    <th>Stock</th>
+                                    <th>Sector</th>
+                                    <th style="text-align: right">Weight</th>
+                                    <th style="text-align: right">LTP (₹)</th>
+                                    <th style="text-align: right">Day Change</th>
+                                    <th style="text-align: right">Point Impact</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- ── Interactive JavaScript ─────────────────────────────────────── -->
+        <script>
+            let currentIndex = localStorage.getItem("nsebot_contrib_index") || "NIFTY";
+            let currentView = localStorage.getItem("nsebot_contrib_view") || "split";
+            let rawData = null;
+            let autoRefreshTimer = null;
+            let chartInstance = null;
+
+            // Theme Management
+            function initTheme() {
+                const savedTheme = localStorage.getItem("theme") || "dark";
+                document.body.setAttribute("data-theme", savedTheme);
+                updateThemeButton(savedTheme);
+            }
+            function updateThemeButton(theme) {
+                const btn = document.getElementById("theme-toggle-btn");
+                if (btn) btn.textContent = theme === "light" ? "☀️" : "🌙";
+            }
+            document.getElementById("theme-toggle-btn").addEventListener("click", () => {
+                const current = document.body.getAttribute("data-theme") || "dark";
+                const next = current === "dark" ? "light" : "dark";
+                document.body.setAttribute("data-theme", next);
+                localStorage.setItem("theme", next);
+                updateThemeButton(next);
+                if (chartInstance) renderChart();
+            });
+
+            // Index Switching
+            function switchIndex(idx) {
+                currentIndex = idx;
+                localStorage.setItem("nsebot_contrib_index", idx);
+                document.querySelectorAll(".index-pill").forEach(p => {
+                    p.classList.toggle("active", p.dataset.index === idx);
+                });
+                fetchContributors(false);
+            }
+
+            // View Switching
+            function switchView(view) {
+                currentView = view;
+                localStorage.setItem("nsebot_contrib_view", view);
+                document.querySelectorAll(".view-tab").forEach(t => {
+                    t.classList.toggle("active", t.dataset.view === view);
+                });
+
+                document.getElementById("view-split").style.display = view === "split" ? "grid" : "none";
+                document.getElementById("view-chart").style.display = view === "chart" ? "flex" : "none";
+                document.getElementById("view-table").style.display = (view === "all" || view === "gainers" || view === "losers") ? "flex" : "none";
+
+                if (view === "chart") {
+                    renderChart();
+                } else if (view === "all" || view === "gainers" || view === "losers") {
+                    renderSingleTable();
+                }
+            }
+
+            // Topbar Ticker Fetcher
+            async function fetchTopbarCmps() {
+                try {
+                    const res = await fetch("/api/cmps");
+                    if (!res.ok) return;
+                    const data = await res.json();
+                    for (const [sym, info] of Object.entries(data)) {
+                        const ltpEl = document.getElementById(`ticker-${sym.toLowerCase()}-ltp`);
+                        const chgEl = document.getElementById(`ticker-${sym.toLowerCase()}-chg`);
+                        if (ltpEl && info) {
+                            ltpEl.textContent = info.price.toLocaleString("en-IN", { minimumFractionDigits: 2 });
+                        }
+                        if (chgEl && info) {
+                            const isPos = info.change >= 0;
+                            chgEl.style.color = isPos ? "var(--green)" : "var(--red)";
+                            chgEl.textContent = `${isPos ? "+" : ""}${info.change.toFixed(2)} (${isPos ? "+" : ""}${info.pct_change.toFixed(2)}%)`;
+                        }
+                    }
+                } catch (e) {
+                    console.warn("Failed to fetch topbar cmps:", e);
+                }
+            }
+
+            // Fetch Contributors Data
+            async function fetchContributors(force = false) {
+                const badge = document.getElementById("last-updated-badge");
+                if (badge) badge.textContent = "Updating...";
+
+                try {
+                    const res = await fetch(`/api/contributors?index=${currentIndex}&refresh=${force}`);
+                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                    rawData = await res.json();
+                    updateKPIs();
+                    populateSectorDropdown();
+                    renderViews();
+                    if (badge) badge.textContent = `Synced: ${rawData.last_updated.split(",")[1] || rawData.last_updated}`;
+                } catch (err) {
+                    console.error("Failed to fetch contributors:", err);
+                    if (badge) badge.textContent = "Sync error";
+                }
+            }
+
+            // Update KPI Header Cards
+            function updateKPIs() {
+                if (!rawData) return;
+
+                // Pullers
+                document.getElementById("kpi-pullers-pts").textContent = `+${rawData.positive_points.toFixed(2)} pts`;
+                document.getElementById("kpi-pullers-count").textContent = `${rawData.gainers_count} Gaining`;
+                document.getElementById("kpi-pullers-weight").textContent = `${rawData.positive_weight_pct}%`;
+
+                // Draggers
+                document.getElementById("kpi-draggers-pts").textContent = `${rawData.negative_points.toFixed(2)} pts`;
+                document.getElementById("kpi-draggers-count").textContent = `${rawData.losers_count} Losing`;
+                document.getElementById("kpi-draggers-weight").textContent = `${rawData.negative_weight_pct}%`;
+
+                // Net
+                document.getElementById("kpi-index-title").textContent = `${rawData.display_name} Net Move`;
+                const netPts = rawData.net_points;
+                const netEl = document.getElementById("kpi-net-pts");
+                const isNetPos = netPts >= 0;
+                netEl.textContent = `${isNetPos ? "+" : ""}${netPts.toFixed(2)} pts (${isNetPos ? "+" : ""}${rawData.index_change_pct.toFixed(2)}%)`;
+                netEl.style.color = isNetPos ? "var(--green)" : "var(--red)";
+
+                document.getElementById("kpi-spot-badge").textContent = `Spot: ₹${rawData.spot_price.toLocaleString("en-IN", { minimumFractionDigits: 2 })}`;
+
+                // Breadth
+                document.getElementById("kpi-breadth-stats").textContent = `${rawData.gainers_count}G / ${rawData.losers_count}L (${rawData.neutral_count} Neutral)`;
+                const tot = Math.max(1, rawData.gainers_count + rawData.losers_count);
+                const gPct = (rawData.gainers_count / tot) * 100;
+                const lPct = (rawData.losers_count / tot) * 100;
+                document.getElementById("breadth-bar-g").style.width = `${gPct}%`;
+                document.getElementById("breadth-bar-l").style.width = `${lPct}%`;
+
+                // Split Header summaries
+                document.getElementById("split-pullers-summary").textContent = `+${rawData.positive_points.toFixed(2)} pts (${rawData.gainers_count})`;
+                document.getElementById("split-draggers-summary").textContent = `${rawData.negative_points.toFixed(2)} pts (${rawData.losers_count})`;
+            }
+
+            // Populate Sector Filter Options
+            function populateSectorDropdown() {
+                if (!rawData || !rawData.sectors) return;
+                const sel = document.getElementById("sector-select");
+                const currentVal = sel.value;
+                sel.innerHTML = `<option value="ALL">All Sectors (${rawData.total_constituents})</option>`;
+                rawData.sectors.forEach(sec => {
+                    const opt = document.createElement("option");
+                    opt.value = sec;
+                    opt.textContent = sec;
+                    sel.appendChild(opt);
+                });
+                if (currentVal && Array.from(sel.options).some(o => o.value === currentVal)) {
+                    sel.value = currentVal;
+                }
+            }
+
+            function onSearchOrSectorChange() {
+                renderViews();
+            }
+
+            // Filter constituents by search text and sector
+            function getFilteredList(items) {
+                if (!items) return [];
+                const search = (document.getElementById("search-input").value || "").toLowerCase().trim();
+                const sector = document.getElementById("sector-select").value;
+
+                return items.filter(item => {
+                    const matchSearch = !search ||
+                        item.symbol.toLowerCase().includes(search) ||
+                        item.name.toLowerCase().includes(search);
+                    const matchSector = sector === "ALL" || item.sector === sector;
+                    return matchSearch && matchSector;
+                });
+            }
+
+            // Render all views
+            function renderViews() {
+                if (!rawData) return;
+                if (currentView === "split") {
+                    renderSplitView();
+                } else if (currentView === "chart") {
+                    renderChart();
+                } else {
+                    renderSingleTable();
+                }
+            }
+
+            // Render Split View Tables
+            function renderSplitView() {
+                const pullers = getFilteredList(rawData.gainers);
+                const draggers = getFilteredList(rawData.losers);
+
+                const tbPullers = document.querySelector("#table-split-pullers tbody");
+                const tbDraggers = document.querySelector("#table-split-draggers tbody");
+
+                tbPullers.innerHTML = pullers.map(renderRow).join("") || `<tr><td colspan="5" style="text-align:center; padding:20px; color:var(--text-dim)">No matching gainers</td></tr>`;
+                tbDraggers.innerHTML = draggers.map(renderRow).join("") || `<tr><td colspan="5" style="text-align:center; padding:20px; color:var(--text-dim)">No matching losers</td></tr>`;
+            }
+
+            // Render Single Table
+            function renderSingleTable() {
+                let items = [];
+                let title = "ALL CONSTITUENTS";
+                if (currentView === "gainers") {
+                    items = rawData.gainers;
+                    title = "TOP PULLERS (POSITIVE CONTRIBUTORS)";
+                } else if (currentView === "losers") {
+                    items = rawData.losers;
+                    title = "TOP DRAGGERS (NEGATIVE CONTRIBUTORS)";
+                } else {
+                    items = rawData.all_constituents;
+                }
+
+                const filtered = getFilteredList(items);
+                document.getElementById("single-table-header").firstElementChild.textContent = title;
+                document.getElementById("single-table-count").textContent = `${filtered.length} of ${items.length} stocks`;
+
+                const tbody = document.querySelector("#table-single tbody");
+                tbody.innerHTML = filtered.map((item, idx) => `
+                    <tr>
+                        <td style="color:var(--text-dim); font-family:var(--mono)">${item.rank || (idx + 1)}</td>
+                        <td>
+                            <div class="stock-cell">
+                                <span class="stock-sym">${item.symbol}</span>
+                                <span class="stock-name">${item.name}</span>
+                            </div>
+                        </td>
+                        <td><span class="sector-tag">${item.sector}</span></td>
+                        <td style="text-align: right; font-family:var(--mono); font-weight:600">${item.weight.toFixed(2)}%</td>
+                        <td style="text-align: right; font-family:var(--mono)">₹${item.ltp.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</td>
+                        <td style="text-align: right; font-family:var(--mono); font-weight:700; color:${item.change_pct >= 0 ? "var(--green)" : "var(--red)"}">
+                            ${item.change_pct >= 0 ? "+" : ""}${item.change_pct.toFixed(2)}%
+                        </td>
+                        <td style="text-align: right">
+                            <div class="impact-cell" style="justify-content: flex-end">
+                                <div class="mini-bar ${item.point_impact >= 0 ? "green" : "red"}" style="width: ${item.bar_pct}%"></div>
+                                <span class="impact-pill ${item.point_impact >= 0 ? "green" : "red"}">
+                                    ${item.point_impact >= 0 ? "+" : ""}${item.point_impact.toFixed(2)}
+                                </span>
+                            </div>
+                        </td>
+                    </tr>
+                `).join("") || `<tr><td colspan="7" style="text-align:center; padding:30px; color:var(--text-dim)">No stocks match criteria</td></tr>`;
+            }
+
+            function renderRow(item) {
+                const isPos = item.point_impact >= 0;
+                return `
+                    <tr>
+                        <td>
+                            <div class="stock-cell">
+                                <span class="stock-sym">${item.symbol}</span>
+                                <span class="stock-name">${item.name}</span>
+                            </div>
+                        </td>
+                        <td style="text-align: right; font-family:var(--mono); color:var(--text-dim)">${item.weight.toFixed(2)}%</td>
+                        <td style="text-align: right; font-family:var(--mono)">₹${item.ltp.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</td>
+                        <td style="text-align: right; font-family:var(--mono); font-weight:700; color:${isPos ? "var(--green)" : "var(--red)"}">
+                            ${isPos ? "+" : ""}${item.change_pct.toFixed(2)}%
+                        </td>
+                        <td style="text-align: right">
+                            <div class="impact-cell" style="justify-content: flex-end">
+                                <div class="mini-bar ${isPos ? "green" : "red"}" style="width: ${item.bar_pct}%"></div>
+                                <span class="impact-pill ${isPos ? "green" : "red"}">
+                                    ${isPos ? "+" : ""}${item.point_impact.toFixed(2)}
+                                </span>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            }
+
+            // Render Chart.js Horizontal Waterfall / Impact Bar
+            function renderChart() {
+                if (!rawData) return;
+                const canvas = document.getElementById("contributorsChart");
+                if (!canvas) return;
+
+                const filtered = getFilteredList(rawData.all_constituents).slice(0, 35); // top 35 for clarity
+                const labels = filtered.map(x => x.symbol);
+                const values = filtered.map(x => x.point_impact);
+                const bgColors = values.map(v => v >= 0 ? "rgba(0, 229, 160, 0.85)" : "rgba(255, 77, 109, 0.85)");
+                const borderColors = values.map(v => v >= 0 ? "#00e5a0" : "#ff4d6d");
+
+                const isDark = (document.body.getAttribute("data-theme") || "dark") === "dark";
+                const gridColor = isDark ? "#1e2530" : "#e2e8f0";
+                const textColor = isDark ? "#718096" : "#64748b";
+
+                if (chartInstance) {
+                    chartInstance.destroy();
+                }
+
+                const ctx = canvas.getContext("2d");
+                chartInstance = new Chart(ctx, {
+                    type: "bar",
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            label: "Point Contribution",
+                            data: values,
+                            backgroundColor: bgColors,
+                            borderColor: borderColors,
+                            borderWidth: 1,
+                            borderRadius: 4
+                        }]
+                    },
+                    options: {
+                        indexAxis: "y",
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        animation: { duration: 400 },
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        const item = filtered[context.dataIndex];
+                                        return [
+                                            `Impact: ${item.point_impact >= 0 ? "+" : ""}${item.point_impact.toFixed(2)} pts`,
+                                            `Price: ₹${item.ltp} (${item.change_pct >= 0 ? "+" : ""}${item.change_pct.toFixed(2)}%)`,
+                                            `Weight: ${item.weight}%`,
+                                            `Sector: ${item.sector}`
+                                        ];
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            x: {
+                                grid: { color: gridColor },
+                                ticks: {
+                                    color: textColor,
+                                    font: { family: "Space Mono", size: 10 }
+                                },
+                                title: {
+                                    display: true,
+                                    text: "Index Points Contributed",
+                                    color: textColor,
+                                    font: { family: "DM Sans", size: 11 }
+                                }
+                            },
+                            y: {
+                                grid: { display: false },
+                                ticks: {
+                                    color: isDark ? "#e2e8f0" : "#0f172a",
+                                    font: { family: "Space Mono", size: 11, weight: 600 }
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+
+            // Auto-refresh timer
+            function toggleAutoRefresh(enabled) {
+                if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+                if (enabled) {
+                    autoRefreshTimer = setInterval(() => {
+                        fetchContributors(false);
+                        fetchTopbarCmps();
+                    }, 30000);
+                }
+            }
+
+            // Initial Bootstrap
+            document.addEventListener("DOMContentLoaded", () => {
+                initTheme();
+                switchIndex(currentIndex);
+                switchView(currentView);
+                fetchTopbarCmps();
+                toggleAutoRefresh(true);
+                setInterval(fetchTopbarCmps, 15000);
+            });
+        </script>
+    </body>
+</html>

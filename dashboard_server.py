@@ -937,6 +937,13 @@ def get_price(symbol: str, hours: int = 6):
     return rows
 
 
+@app.get("/api/contributors")
+def get_contributors_api(index: str = "NIFTY", refresh: bool = False):
+    from src.engine.index_contributors import get_index_contributors
+    return get_index_contributors(index_name=index, force_refresh=refresh)
+
+
+@app.get("/api/cmps")
 @app.get("/api/topbar_cmps")
 def get_topbar_cmps():
     symbols = ["NIFTY", "BANKNIFTY", "SENSEX", "NATURALGAS", "CRUDEOIL"]
@@ -4630,6 +4637,15 @@ async def ops_monitor_page():
 
 
 # ── EOD Report Web Page & Live Scan Synchronization Endpoint ─────────────────
+
+
+@app.get("/contributors", response_class=HTMLResponse)
+async def contributors_page():
+    """Index Contributors & Point Impact Breakdown (NIFTY 50, BANK NIFTY, SENSEX)."""
+    html_path = ROOT / "src" / "dashboard" / "contributors.html"
+    if html_path.exists():
+        return HTMLResponse(html_path.read_text(encoding="utf-8"))
+    return HTMLResponse("<h1>contributors.html not found</h1>", status_code=404)
 
 
 @app.get("/report", response_class=HTMLResponse)
