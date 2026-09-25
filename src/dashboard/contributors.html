@@ -593,13 +593,15 @@
                 display: flex;
                 align-items: center;
                 gap: 8px;
+                justify-content: flex-end;
             }
             .impact-pill {
                 padding: 3px 8px;
                 border-radius: 4px;
                 font-size: 12px;
-                min-width: 65px;
+                min-width: 68px;
                 text-align: right;
+                flex-shrink: 0;
             }
             .impact-pill.green {
                 background: var(--green-bg);
@@ -609,11 +611,20 @@
                 background: var(--red-bg);
                 color: var(--red);
             }
-            .mini-bar {
+            .mini-bar-track {
+                width: 64px;
                 height: 6px;
+                background: var(--surface-3);
                 border-radius: 3px;
-                max-width: 70px;
-                flex-grow: 1;
+                overflow: hidden;
+                flex-shrink: 0;
+                display: flex;
+                align-items: center;
+            }
+            .mini-bar {
+                height: 100%;
+                border-radius: 3px;
+                transition: width 0.3s ease;
             }
             .mini-bar.green {
                 background: var(--green);
@@ -1149,8 +1160,10 @@
                             ${item.change_pct >= 0 ? "+" : ""}${item.change_pct.toFixed(2)}%
                         </td>
                         <td style="text-align: right">
-                            <div class="impact-cell" style="justify-content: flex-end">
-                                <div class="mini-bar ${item.point_impact >= 0 ? "green" : "red"}" style="width: ${item.bar_pct}%"></div>
+                            <div class="impact-cell">
+                                <div class="mini-bar-track" title="Relative Impact: ${item.bar_pct}%">
+                                    <div class="mini-bar ${item.point_impact >= 0 ? "green" : "red"}" style="width: ${item.bar_pct}%"></div>
+                                </div>
                                 <span class="impact-pill ${item.point_impact >= 0 ? "green" : "red"}">
                                     ${item.point_impact >= 0 ? "+" : ""}${item.point_impact.toFixed(2)}
                                 </span>
@@ -1176,8 +1189,10 @@
                             ${isPos ? "+" : ""}${item.change_pct.toFixed(2)}%
                         </td>
                         <td style="text-align: right">
-                            <div class="impact-cell" style="justify-content: flex-end">
-                                <div class="mini-bar ${isPos ? "green" : "red"}" style="width: ${item.bar_pct}%"></div>
+                            <div class="impact-cell">
+                                <div class="mini-bar-track" title="Relative Impact: ${item.bar_pct}%">
+                                    <div class="mini-bar ${isPos ? "green" : "red"}" style="width: ${item.bar_pct}%"></div>
+                                </div>
                                 <span class="impact-pill ${isPos ? "green" : "red"}">
                                     ${isPos ? "+" : ""}${item.point_impact.toFixed(2)}
                                 </span>
@@ -1193,11 +1208,17 @@
                 const canvas = document.getElementById("contributorsChart");
                 if (!canvas) return;
 
-                const filtered = getFilteredList(rawData.all_constituents).slice(0, 35); // top 35 for clarity
+                const filtered = getFilteredList(rawData.all_constituents);
                 const labels = filtered.map(x => x.symbol);
                 const values = filtered.map(x => x.point_impact);
                 const bgColors = values.map(v => v >= 0 ? "rgba(0, 229, 160, 0.85)" : "rgba(255, 77, 109, 0.85)");
                 const borderColors = values.map(v => v >= 0 ? "#00e5a0" : "#ff4d6d");
+
+                const canvasWrap = document.querySelector(".chart-canvas-wrap");
+                if (canvasWrap) {
+                    const neededHeight = Math.max(500, filtered.length * 24);
+                    canvasWrap.style.height = `${neededHeight}px`;
+                }
 
                 const isDark = (document.body.getAttribute("data-theme") || "dark") === "dark";
                 const gridColor = isDark ? "#1e2530" : "#e2e8f0";

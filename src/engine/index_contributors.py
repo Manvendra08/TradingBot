@@ -239,7 +239,8 @@ def get_index_contributors(index_name: str = "NIFTY", force_refresh: bool = Fals
     # Attempt 2: Yahoo Finance batch download fallback
     if not kite_success:
         try:
-            suffix = ".BO" if idx_key == "SENSEX" else ".NS"
+            # Query .NS for all constituents — all 30 Sensex & 50 Nifty stocks trade on NSE with complete OHLC
+            suffix = ".NS"
             tickers = [f"{c}{suffix}" for c in constituents]
             idx_yf_ticker = INDEX_INFO[idx_key]["yf_ticker"]
             tickers.append(idx_yf_ticker)
@@ -276,8 +277,11 @@ def get_index_contributors(index_name: str = "NIFTY", force_refresh: bool = Fals
                         chg_pct = ((curr - prev) / prev) * 100.0 if prev > 0 else 0.0
                         quotes[sym] = {"ltp": curr, "prev_close": prev, "change_pct": chg_pct}
                     elif len(closes) == 1:
+                        open_vals = tdf["Open"].dropna()
+                        open_p = float(open_vals.iloc[-1]) if not open_vals.empty else float(closes.iloc[-1])
                         curr = float(closes.iloc[-1])
-                        quotes[sym] = {"ltp": curr, "prev_close": curr, "change_pct": 0.0}
+                        chg_pct = ((curr - open_p) / open_p) * 100.0 if open_p > 0 else 0.0
+                        quotes[sym] = {"ltp": curr, "prev_close": open_p, "change_pct": chg_pct}
                     else:
                         quotes[sym] = {"ltp": 0.0, "prev_close": 0.0, "change_pct": 0.0}
                 else:
@@ -341,9 +345,12 @@ def get_index_contributors(index_name: str = "NIFTY", force_refresh: bool = Fals
             "abs_impact": abs_impact
         })
 
-    # Add relative visual bar percentage for UI
+    # Add relative visual bar percentage for UI (scaled proportionally, min 3% for visible impact)
     for rec in constituent_records:
-        rec["bar_pct"] = min(100.0, round((rec["abs_impact"] / max_abs_pts) * 100.0, 1))
+        if max_abs_pts > 0 and rec["abs_impact"] > 0.001:
+            rec["bar_pct"] = max(3.0, min(100.0, round((rec["abs_impact"] / max_abs_pts) * 100.0, 1)))
+        else:
+            rec["bar_pct"] = 0.0
 
     # Sort gainers (highest positive first) and losers (most negative first)
     gainers = sorted(
