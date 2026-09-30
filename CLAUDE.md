@@ -263,7 +263,22 @@ Key test files:
 - `AI_INTELLIGENCE_ROADMAP_v3.0.md` is the active ML roadmap — Phase 0 (feature persistence migration) is the current blocker before any ML training.
 - **Strategy Registry:** toggling a strategy/symbol in Settings → Strategies is hot-reload (no restart) — confirm by checking `pipeline.py` log line showing which strategy_ids dispatched for a symbol after a settings save.
 - **TFSS runner not built yet.** Do not register a `run_tfss` callable in `strategy_registry._get_runners()` until it exists and has been reviewed against `Trend_Following_Short_Strangle_FRS_v1.1.md` — registering an unbuilt/unreviewed callable will crash dispatch or execute an unvalidated short-strangle strategy with real risk parameters.
-- **Update KNOWLEDGE_BASE.md**: Always update the Scan Sentinel grounded codebase knowledge base at `data/sentinel/KNOWLEDGE_BASE.md` when making changes to codebase architecture, pipeline flow, or when introducing new features relevant to Scan Sentinel agentic AI diagnostics.
+- **Update KNOWLEDGE_BASE.md**: Update `data/sentinel/KNOWLEDGE_BASE.md` only for **major changes/fixes** in the app or when changes are relevant to **Sentinel scan diagnostics**. Do not update for routine architecture/pipeline changes.
+- **ML Predictor Quality Gate & Mode**: Realignment set to `ml_predictor_mode: "shadow"` in `data/runtime_config.json`. The sample qualification threshold for live activation is calibrated to `MIN_SAMPLES_FOR_LIVE = 250` (samples > 200, CV AUC > 0.68). Multi-leg trade closures automatically trigger incremental retraining.
+- **Natural Gas EIA Macro Stance Dynamic Override**: While weekly EIA stance (`BULLISH_TIGHTENING` / `BEARISH_LOOSENING`) sets initial macro orientation, real-time NYMEX 1H trend alignment and decisive OI buildup patterns (`Call Writing`, `Short Buildup`) override stale EIA bias to permit short entries when price action dictates.
+- **Pipeline Shadow Trading Decoupling**: Fixed `pipeline.py` gating to ensure `run_live_trading()` is invoked under `live_shadow_mode=True` even when physical Kite broker execution is disabled (`is_broker_trade_enabled() == False`).
+- **Multi-Leg Risk Profile & Stoploss Realignment**: Fixed `max_loss` calculation for undefined-risk short straddles/strangles to reference defined strategy stop-loss rather than rigid `underlying * 0.5`, preventing artificial trade rejection in `entry_quality.py` and `multileg_strategy.py`.
+- **NiftyTrader Fetcher Fallback**: Added `src/fetchers/niftytrader_fetcher.py` and wired into `router.py` fallback hierarchy for index option chains.
+- **Shoonya Fetcher Threading Resilience**: Hardened `_bulk_get_quotes` against concurrent shutdown and interpreter cleanup races.
+
+### Recent Engine & Architecture Enhancements
+
+- **Natural Gas EIA Macro Override:** Updated `src/engine/ng_momentum_strategy.py`, `strategy_registry.py`, and `multileg_llm_prompt.py` to allow intraday price breakdown and OI conviction to override weekly EIA stance.
+- **Shadow Mode Pipeline Execution Unblocked:** Refactored `src/engine/pipeline.py` execution guards so shadow live trading executes cleanly without requiring live broker order placement permissions.
+- **ML Predictor Sample Gate Calibration:** Lowered `MIN_SAMPLES_FOR_LIVE` from 300 to 250 in `src/intelligence/ml_predictor.py`, connected multi-leg closures (`close_book()` in `src/models/schema.py`) to retraining triggers, and set runtime default to shadow mode.
+- **Multi-Leg Quality & Risk Profiling Overhaul:** Replaced synthetic `underlying * 0.5` max loss cap in `multileg_strategy.py` and `entry_quality.py` with dynamic stoploss-anchored risk profiling, preventing erroneous rejection of valid short strangles.
+- **NiftyTrader Fetcher Integration:** Implemented `src/fetchers/niftytrader_fetcher.py` and wired secondary fallback routing into `src/fetchers/router.py`.
+- **Shoonya Concurrency Fix:** Hardened `shoonya_fetcher.py` bulk quotes execution to handle shutdown state safely without uncaught futures exceptions.
 
 ### Changes in this session
 
