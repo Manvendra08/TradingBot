@@ -1386,17 +1386,18 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                         if isinstance(intel, dict):
                             intel["paper_res"] = res
 
-                    # Live trading: only run when broker is enabled and AI verdict available
-                    broker_enabled = False
+                    # Live/shadow trading: run when real broker is enabled OR live shadow mode is active
+                    live_or_shadow_enabled = False
                     try:
-                        from config.runtime_config import is_broker_trade_enabled
-                        broker_enabled = is_broker_trade_enabled()
+                        from config.runtime_config import is_broker_trade_enabled, load_runtime_config
+                        cfg = load_runtime_config()
+                        live_or_shadow_enabled = is_broker_trade_enabled() or bool(cfg.get("live_shadow_mode", False))
                     except Exception:
-                        broker_enabled = False
+                        live_or_shadow_enabled = False
 
-                    if broker_enabled and sid != "TIMEFRAME" and ai_verdict_for_runner is None:
-                        log.error("%s: skipping %s live execution because AI verdict unavailable in broker mode", symbol, sid)
-                    elif broker_enabled:
+                    if live_or_shadow_enabled and sid != "TIMEFRAME" and ai_verdict_for_runner is None:
+                        log.debug("%s: skipping %s live/shadow execution because AI verdict unavailable", symbol, sid)
+                    elif live_or_shadow_enabled:
                         if sid in ("CORE", "NG_MOMENTUM", "NG_PARITY", "NG_EVENT"):
                             try:
                                 from src.engine.live_trading import run_live_trading

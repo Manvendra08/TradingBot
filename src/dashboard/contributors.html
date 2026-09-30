@@ -549,6 +549,32 @@
                 border-bottom: 1px solid var(--border);
                 white-space: nowrap;
             }
+            th.sortable {
+                cursor: pointer;
+                user-select: none;
+                transition: background 0.15s ease, color 0.15s ease;
+            }
+            th.sortable:hover {
+                background: var(--surface-3);
+                color: var(--text);
+            }
+            .sort-icon {
+                display: inline-block;
+                margin-left: 4px;
+                font-size: 10px;
+                opacity: 0.35;
+                transition: opacity 0.15s ease, color 0.15s ease;
+            }
+            th.sortable:hover .sort-icon {
+                opacity: 0.7;
+            }
+            th.sortable.active {
+                color: var(--blue);
+            }
+            th.sortable.active .sort-icon {
+                opacity: 1;
+                color: var(--blue);
+            }
             td {
                 padding: 10px 14px;
                 border-bottom: 1px solid var(--border);
@@ -854,11 +880,11 @@
                             <table id="table-split-pullers">
                                 <thead>
                                     <tr>
-                                        <th>Stock</th>
-                                        <th style="text-align: right">Weight</th>
-                                        <th style="text-align: right">LTP</th>
-                                        <th style="text-align: right">Change</th>
-                                        <th style="text-align: right">Point Impact</th>
+                                        <th class="sortable" data-col="symbol" onclick="handleSort('pullers', 'symbol')">Stock <span class="sort-icon">⇅</span></th>
+                                        <th class="sortable" data-col="weight" style="text-align: right" onclick="handleSort('pullers', 'weight')">Weight <span class="sort-icon">⇅</span></th>
+                                        <th class="sortable" data-col="ltp" style="text-align: right" onclick="handleSort('pullers', 'ltp')">LTP <span class="sort-icon">⇅</span></th>
+                                        <th class="sortable" data-col="change_pct" style="text-align: right" onclick="handleSort('pullers', 'change_pct')">Change <span class="sort-icon">⇅</span></th>
+                                        <th class="sortable active" data-col="point_impact" style="text-align: right" onclick="handleSort('pullers', 'point_impact')">Point Impact <span class="sort-icon">▼</span></th>
                                     </tr>
                                 </thead>
                                 <tbody></tbody>
@@ -876,11 +902,11 @@
                             <table id="table-split-draggers">
                                 <thead>
                                     <tr>
-                                        <th>Stock</th>
-                                        <th style="text-align: right">Weight</th>
-                                        <th style="text-align: right">LTP</th>
-                                        <th style="text-align: right">Change</th>
-                                        <th style="text-align: right">Point Impact</th>
+                                        <th class="sortable" data-col="symbol" onclick="handleSort('draggers', 'symbol')">Stock <span class="sort-icon">⇅</span></th>
+                                        <th class="sortable" data-col="weight" style="text-align: right" onclick="handleSort('draggers', 'weight')">Weight <span class="sort-icon">⇅</span></th>
+                                        <th class="sortable" data-col="ltp" style="text-align: right" onclick="handleSort('draggers', 'ltp')">LTP <span class="sort-icon">⇅</span></th>
+                                        <th class="sortable" data-col="change_pct" style="text-align: right" onclick="handleSort('draggers', 'change_pct')">Change <span class="sort-icon">⇅</span></th>
+                                        <th class="sortable active" data-col="point_impact" style="text-align: right" onclick="handleSort('draggers', 'point_impact')">Point Impact <span class="sort-icon">▲</span></th>
                                     </tr>
                                 </thead>
                                 <tbody></tbody>
@@ -915,12 +941,12 @@
                             <thead>
                                 <tr>
                                     <th style="width: 40px">#</th>
-                                    <th>Stock</th>
-                                    <th>Sector</th>
-                                    <th style="text-align: right">Weight</th>
-                                    <th style="text-align: right">LTP (₹)</th>
-                                    <th style="text-align: right">Day Change</th>
-                                    <th style="text-align: right">Point Impact</th>
+                                    <th class="sortable" data-col="symbol" onclick="handleSort('single', 'symbol')">Stock <span class="sort-icon">⇅</span></th>
+                                    <th class="sortable" data-col="sector" onclick="handleSort('single', 'sector')">Sector <span class="sort-icon">⇅</span></th>
+                                    <th class="sortable" data-col="weight" style="text-align: right" onclick="handleSort('single', 'weight')">Weight <span class="sort-icon">⇅</span></th>
+                                    <th class="sortable" data-col="ltp" style="text-align: right" onclick="handleSort('single', 'ltp')">LTP (₹) <span class="sort-icon">⇅</span></th>
+                                    <th class="sortable" data-col="change_pct" style="text-align: right" onclick="handleSort('single', 'change_pct')">Day Change <span class="sort-icon">⇅</span></th>
+                                    <th class="sortable active" data-col="point_impact" style="text-align: right" onclick="handleSort('single', 'point_impact')">Point Impact <span class="sort-icon">▼</span></th>
                                 </tr>
                             </thead>
                             <tbody></tbody>
@@ -937,6 +963,83 @@
             let rawData = null;
             let autoRefreshTimer = null;
             let chartInstance = null;
+
+            // Sorting State per Table View
+            const sortState = {
+                pullers: { col: "point_impact", dir: "desc" },
+                draggers: { col: "point_impact", dir: "asc" }, // most negative impact first
+                single: { col: "point_impact", dir: "desc" }
+            };
+
+            function handleSort(tableKey, col) {
+                const current = sortState[tableKey];
+                if (current.col === col) {
+                    current.dir = current.dir === "asc" ? "desc" : "asc";
+                } else {
+                    current.col = col;
+                    if (col === "symbol" || col === "sector") {
+                        current.dir = "asc";
+                    } else if (tableKey === "draggers" && col === "point_impact") {
+                        current.dir = "asc";
+                    } else {
+                        current.dir = "desc";
+                    }
+                }
+                updateSortIcons(tableKey);
+                renderViews();
+            }
+
+            function updateSortIcons(tableKey) {
+                const tableId = tableKey === "pullers" ? "table-split-pullers" :
+                                tableKey === "draggers" ? "table-split-draggers" : "table-single";
+                const table = document.getElementById(tableId);
+                if (!table) return;
+
+                const state = sortState[tableKey];
+                const ths = table.querySelectorAll("th.sortable");
+                ths.forEach(th => {
+                    const col = th.getAttribute("data-col");
+                    const icon = th.querySelector(".sort-icon");
+                    if (col === state.col) {
+                        th.classList.add("active");
+                        if (icon) icon.textContent = state.dir === "asc" ? "▲" : "▼";
+                    } else {
+                        th.classList.remove("active");
+                        if (icon) icon.textContent = "⇅";
+                    }
+                });
+            }
+
+            function sortItems(items, tableKey) {
+                if (!items || !items.length) return [];
+                const state = sortState[tableKey];
+                if (!state || !state.col) return items;
+
+                const col = state.col;
+                const dir = state.dir === "asc" ? 1 : -1;
+
+                return [...items].sort((a, b) => {
+                    let valA, valB;
+                    if (col === "symbol" || col === "sector") {
+                        valA = (a[col] || "").toLowerCase();
+                        valB = (b[col] || "").toLowerCase();
+                        return valA.localeCompare(valB) * dir;
+                    } else if (col === "weight") {
+                        valA = a.weight_raw ?? a.weight ?? 0;
+                        valB = b.weight_raw ?? b.weight ?? 0;
+                    } else if (col === "point_impact") {
+                        valA = a.point_impact ?? 0;
+                        valB = b.point_impact ?? 0;
+                    } else if (col === "abs_impact") {
+                        valA = a.abs_impact ?? Math.abs(a.point_impact ?? 0);
+                        valB = b.abs_impact ?? Math.abs(b.point_impact ?? 0);
+                    } else {
+                        valA = a[col] ?? 0;
+                        valB = b[col] ?? 0;
+                    }
+                    return (valA - valB) * dir;
+                });
+            }
 
             // Theme Management
             function initTheme() {
@@ -1115,8 +1218,11 @@
 
             // Render Split View Tables
             function renderSplitView() {
-                const pullers = getFilteredList(rawData.gainers);
-                const draggers = getFilteredList(rawData.losers);
+                let pullers = getFilteredList(rawData.gainers);
+                let draggers = getFilteredList(rawData.losers);
+
+                pullers = sortItems(pullers, "pullers");
+                draggers = sortItems(draggers, "draggers");
 
                 const tbPullers = document.querySelector("#table-split-pullers tbody");
                 const tbDraggers = document.querySelector("#table-split-draggers tbody");
@@ -1139,7 +1245,8 @@
                     items = rawData.all_constituents;
                 }
 
-                const filtered = getFilteredList(items);
+                let filtered = getFilteredList(items);
+                filtered = sortItems(filtered, "single");
                 document.getElementById("single-table-header").firstElementChild.textContent = title;
                 document.getElementById("single-table-count").textContent = `${filtered.length} of ${items.length} stocks`;
 
@@ -1303,6 +1410,9 @@
             // Initial Bootstrap
             document.addEventListener("DOMContentLoaded", () => {
                 initTheme();
+                updateSortIcons("pullers");
+                updateSortIcons("draggers");
+                updateSortIcons("single");
                 switchIndex(currentIndex);
                 switchView(currentView);
                 fetchTopbarCmps();

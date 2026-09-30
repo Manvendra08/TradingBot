@@ -79,6 +79,7 @@ AUC_IMPROVEMENT_THRESHOLD = 0.02  # Only deploy if AUC improves >= 2%
 # (e.g. 0.449) be saved as the "deployed" v1 model. This floor closes that
 # gap so a worse-than-random model is never written to disk.
 MIN_DEPLOY_AUC = 0.55
+MIN_SAMPLES_FOR_LIVE = 250  # Lowered from 300 per operator directive
 
 # ── Explicit feature order — NEVER use sorted() at runtime ────────────────────
 # v2.0 FIX: This MUST match between training and prediction.
@@ -225,14 +226,30 @@ class TradeSuccessPredictor:
             )
 
             # ADR-007 §3 A2: AUC guard — force shadow if model quality insufficient
-            if self.current_auc < 0.55 or self.training_samples < 300:
-                log.warning(
-                    "ML model below quality threshold (AUC=%.3f, samples=%d). "
-                    "Forcing shadow mode regardless of ML_PREDICTOR_MODE setting.",
-                    self.current_auc,
-                    self.training_samples,
-                )
+            try:
+                from config.runtime_config import load_runtime_config
+                _rconf = load_runtime_config()
+                _configured_mode = _rconf.get("ml_predictor_mode", "shadow")
+            except Exception:
+                _configured_mode = "shadow"
+
+            if self.current_auc < 0.55 or self.training_samples < MIN_SAMPLES_FOR_LIVE:
                 self._force_shadow = True
+                if _configured_mode == "live":
+                    log.warning(
+                        "ML model below quality threshold (AUC=%.3f, samples=%d < %d). "
+                        "Forcing shadow mode despite live setting.",
+                        self.current_auc,
+                        self.training_samples,
+                        MIN_SAMPLES_FOR_LIVE,
+                    )
+                else:
+                    log.info(
+                        "ML model operating in shadow mode (AUC=%.3f, samples=%d/%d for live qualification).",
+                        self.current_auc,
+                        self.training_samples,
+                        MIN_SAMPLES_FOR_LIVE,
+                    )
             else:
                 self._force_shadow = False
         except Exception as e:

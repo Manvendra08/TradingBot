@@ -65,6 +65,12 @@ class BoundedExecutor:
         )
 
     def submit(self, fn: Callable[..., T], /, *args, **kwargs) -> Future:
+        import sys
+        if sys.is_finalizing():
+            f: Future = Future()
+            f.set_exception(RuntimeError("cannot schedule new futures after interpreter shutdown"))
+            return f
+
         with self._lock:
             if getattr(self._executor, "_shutdown", False):
                 self._executor = ThreadPoolExecutor(
@@ -73,7 +79,11 @@ class BoundedExecutor:
                 )
             try:
                 return self._executor.submit(fn, *args, **kwargs)
-            except RuntimeError:
+            except RuntimeError as exc:
+                if sys.is_finalizing() or "interpreter shutdown" in str(exc).lower():
+                    f = Future()
+                    f.set_exception(exc)
+                    return f
                 self._executor = ThreadPoolExecutor(
                     max_workers=self.max_workers,
                     thread_name_prefix=self.thread_name_prefix,

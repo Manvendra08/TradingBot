@@ -262,6 +262,12 @@ class ShoonyaFetcher(BaseFetcher):
         # Cache for resolved MCX futures tokens: symbol -> (token, exchange, expires_at)
         self._futures_token_cache: dict[str, tuple[str, str, float]] = {}
 
+        # Cache for resolved index futures and option chain symbols:
+        # (base, expiry) -> {"exch": str, "option_exch": str, "underlying_token": str, "underlying_tsym": str, "chain_tsym": str, "ts": float}
+        self._index_chain_cache: dict[tuple[str, str | None], dict] = {}
+        self._index_cache_lock = threading.Lock()
+        self._INDEX_CACHE_TTL = 1800.0  # 30 minutes
+
         self._login_lock = threading.RLock()
         # Serialises Shoonya API calls so token rotation from one call's response
         # is saved before the next call reads `access_token`.  Eliminates the race
@@ -854,6 +860,11 @@ class ShoonyaFetcher(BaseFetcher):
 
         Returns dict mapping contract token (str) -> GetQuotes response.
         """
+        import sys
+        if sys.is_finalizing():
+            log.debug("[shoonya] _bulk_get_quotes: interpreter shutting down — aborting batch")
+            return {}
+
         from concurrent.futures import ThreadPoolExecutor
 
         self._load_cached_token()
@@ -874,15 +885,21 @@ class ShoonyaFetcher(BaseFetcher):
             return tok, None
 
         results: dict[str, dict] = {}
-        with ThreadPoolExecutor(max_workers=12) as executor:
-            futures = [executor.submit(_fetch, row) for row in contracts]
-            for fut in futures:
-                try:
-                    tok, q = fut.result(timeout=4.0)
-                    if q:
-                        results[tok] = q
-                except Exception:
-                    continue
+        try:
+            with ThreadPoolExecutor(max_workers=12) as executor:
+                futures = [executor.submit(_fetch, row) for row in contracts]
+                for fut in futures:
+                    try:
+                        tok, q = fut.result(timeout=4.0)
+                        if q:
+                            results[tok] = q
+                    except Exception:
+                        continue
+        except RuntimeError as r_err:
+            if "interpreter shutdown" in str(r_err).lower() or sys.is_finalizing():
+                log.debug("[shoonya] _bulk_get_quotes interrupted by interpreter shutdown")
+                return results
+            raise
 
         # Persist the freshest rotated token (all responses carry the same session token).
         for q in results.values():
@@ -1261,6 +1278,221 @@ class ShoonyaFetcher(BaseFetcher):
                     return dest_file
                 return None
 
+    def _parse_index_chain(
+        self,
+        base: str,
+        expiry: str | None,
+        chain: dict,
+        option_exch: str,
+        underlying_price: float,
+    ) -> dict | None:
+        scrip_list = chain.get("values")
+        if not scrip_list:
+            return None
+
+        expiry_dates: dict[str, str] = {}
+        now = datetime.now()
+        for item in scrip_list:
+            exp_str = item.get("expiry")
+            if not exp_str:
+                tsym = item.get("tsym", "")
+                # Try NFO format: NIFTY25JUN2677100CE → captures "25JUN26"
+                m = re.search(r"(\d{2}[A-Z]{3}\d{2})[CP]", tsym)
+                if m:
+                    candidate = m.group(1)
+                    try:
+                        dt = datetime.strptime(candidate, "%d%b%y")
+                        if now.year - 5 <= dt.year <= now.year + 2:
+                            exp_str = candidate
+                            item["expiry_parsed"] = exp_str
+                            expiry_dates[exp_str] = dt.strftime("%Y-%m-%d")
+                    except ValueError:
+                        pass
+                # If NFO format failed, try BFO monthly format: SENSEX26JUN77100CE
+                if not item.get("expiry_parsed"):
+                    m = re.search(r"(\d{2}[A-Z]{3})\d+[CP]", tsym)
+                    if m:
+                        exp_str = m.group(1)
+                        item["expiry_parsed"] = exp_str
+                        try:
+                            exp_month = datetime.strptime(exp_str[2:], "%b").month
+                            year = 2000 + int(exp_str[:2])
+                            import calendar
+                            last_day = calendar.monthrange(year, exp_month)[1]
+                            dt = datetime(year, exp_month, last_day)
+                            while dt.weekday() != 3:  # 3 is Thursday (monthly option expiry)
+                                dt -= timedelta(days=1)
+                            expiry_dates[exp_str] = dt.strftime("%Y-%m-%d")
+                        except ValueError:
+                            pass
+
+                # If NFO and BFO monthly failed, try BFO weekly format: SENSEX2670266500CE
+                if not item.get("expiry_parsed"):
+                    m = re.search(rf"^{base}(\d{{2}})([1-9OND])(\d{{2}})\d+(?:CE|PE)$", tsym)
+                    if m:
+                        yy_str = m.group(1)
+                        m_str = m.group(2)
+                        dd_str = m.group(3)
+                        month_map = {"O": 10, "N": 11, "D": 12}
+                        try:
+                            year = 2000 + int(yy_str)
+                            month = month_map.get(m_str) or int(m_str)
+                            day = int(dd_str)
+                            dt = datetime(year, month, day)
+                            iso_date = dt.strftime("%Y-%m-%d")
+                            exp_str = f"{dd_str}{dt.strftime('%b').upper()}{yy_str}"
+                            item["expiry_parsed"] = exp_str
+                            expiry_dates[exp_str] = iso_date
+                        except ValueError:
+                            pass
+            else:
+                item["expiry_parsed"] = exp_str
+                if exp_str not in expiry_dates:
+                    try:
+                        dt = datetime.strptime(exp_str.title(), "%d-%b-%Y")
+                        expiry_dates[exp_str] = dt.strftime("%Y-%m-%d")
+                    except ValueError:
+                        pass
+
+        all_expiries = sorted(expiry_dates.values())
+        if not all_expiries:
+            log.warning("[shoonya] no valid expiries for %s", base)
+            return None
+
+        target_expiry_iso = expiry
+        if not target_expiry_iso:
+            today = datetime.now(IST).date()
+            future = [
+                e
+                for e in all_expiries
+                if datetime.strptime(e, "%Y-%m-%d").date() >= today
+            ]
+            target_expiry_iso = future[0] if future else all_expiries[0]
+
+        target_expiry_shoonya = next(
+            (sh for sh, iso in expiry_dates.items() if iso == target_expiry_iso),
+            None,
+        )
+        if not target_expiry_shoonya:
+            log.warning("[shoonya] target expiry %s not found", target_expiry_iso)
+            return None
+
+        target_scrips = [
+            s for s in scrip_list if s.get("expiry_parsed") == target_expiry_shoonya
+        ]
+        if not target_scrips:
+            log.warning("[shoonya] no contracts for expiry %s", target_expiry_iso)
+            return None
+
+        # Filter target_scrips to ATM ± STRIKES_AROUND_ATM strikes first
+        # to avoid fetching quotes for dozens of far OTM/ITM strikes!
+        strike_vals = []
+        for s in target_scrips:
+            try:
+                sv = float(s.get("strprc") or 0.0)
+                if sv > 0:
+                    strike_vals.append(sv)
+            except (ValueError, TypeError):
+                pass
+        unique_strikes = sorted(list(set(strike_vals)))
+        if unique_strikes and underlying_price > 0:
+            atm_strike = min(unique_strikes, key=lambda s: abs(s - underlying_price))
+            atm_idx = unique_strikes.index(atm_strike)
+            radius = max(STRIKES_AROUND_ATM, 10)
+            start_idx = max(0, atm_idx - radius)
+            end_idx = min(len(unique_strikes), atm_idx + radius + 1)
+            selected_strikes = set(unique_strikes[start_idx:end_idx])
+            target_scrips = [s for s in target_scrips if float(s.get("strprc") or 0.0) in selected_strikes]
+
+        missing_items = [
+            s for s in target_scrips
+            if s.get("optt") in ("CE", "PE")
+            and (s.get("lp") is None or s.get("oi") is None)
+            and s.get("token")
+        ]
+        fetched_quotes: dict[str, dict] = {}
+        if missing_items:
+            log.debug(
+                "[shoonya] %s: %d/%d strikes missing lp/oi — fetching via parallel bulk quotes",
+                base, len(missing_items), len(target_scrips)
+            )
+            fetched_quotes = self._bulk_get_quotes(option_exch, missing_items)
+
+        strikes = []
+        for item in target_scrips:
+            ot = item.get("optt")
+            if ot not in ("CE", "PE"):
+                continue
+
+            try:
+                strike = float(item.get("strprc") or 0)
+            except (ValueError, TypeError):
+                continue
+
+            data = item
+            ltp_raw = item.get("lp")
+            oi_raw = item.get("oi")
+            if ltp_raw is None or oi_raw is None:
+                token = item.get("token")
+                if token:
+                    q = fetched_quotes.get(str(token)) or self._get_quotes(option_exch, token)
+                    if q and q.get("stat") == "Ok":
+                        q_tok = str(q.get("token") or "")
+                        q_tsym = str(q.get("tsym") or "")
+                        if (
+                            q_tok == str(token)
+                            and q_tsym not in (base, "SENSEX", "NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "Nifty 50", "Nifty Bank")
+                            and _is_option_tsym(q_tsym)
+                        ):
+                            data = q
+                        else:
+                            log.debug(
+                                "[shoonya] %s: Discarding inactive/index quote for token %s (got token %s, tsym %s)",
+                                base, token, q_tok, q_tsym
+                            )
+
+            def _fq(key, _src=data):
+                try:
+                    v = _src.get(key)
+                    return float(v) if v is not None else None
+                except (ValueError, TypeError):
+                    return None
+
+            def _iq(key, _src=data):
+                try:
+                    v = _src.get(key)
+                    return int(v) if v is not None else None
+                except (ValueError, TypeError):
+                    return None
+
+            strikes.append(
+                {
+                    "strike": strike,
+                    "option_type": ot,
+                    "ltp": _fq("lp") or 0.0,
+                    "oi": _iq("oi") or 0,
+                    "oi_change": _iq("oichg") or 0,
+                    "volume": _iq("v") or 0,
+                    "iv": _fq("iv") or 0.0,
+                    "bid": _fq("bp1") or 0.0,
+                    "ask": _fq("sp1") or 0.0,
+                    "token": item.get("token"),
+                }
+            )
+
+        if not strikes:
+            log.warning("[shoonya] no strikes parsed for %s", base)
+            return None
+
+        return {
+            "symbol": base,
+            "underlying_price": underlying_price,
+            "expiry": target_expiry_iso,
+            "strikes": strikes,
+            "source": self.name,
+            "all_expiries": all_expiries,
+        }
+
     def fetch_option_chain(self, symbol: str, expiry: str | None = None) -> dict | None:
         if not self.login():
             return None
@@ -1269,6 +1501,47 @@ class ShoonyaFetcher(BaseFetcher):
 
         try:
             is_index = base in _INDEX_SPOT_NAMES
+            cache_key = (base, expiry)
+
+            # Fast-path: Check cached underlying and chain symbol resolution
+            if is_index:
+                cached_meta = None
+                with self._index_cache_lock:
+                    entry = self._index_chain_cache.get(cache_key)
+                    if entry and (time.time() - entry.get("ts", 0.0) < self._INDEX_CACHE_TTL):
+                        cached_meta = entry
+
+                if cached_meta:
+                    try:
+                        c_exch = cached_meta["exch"]
+                        c_opt_exch = cached_meta["option_exch"]
+                        c_u_token = cached_meta["underlying_token"]
+                        c_chain_tsym = cached_meta["chain_tsym"]
+
+                        quote = self._get_quotes(c_exch, c_u_token)
+                        u_price = 0.0
+                        if quote and quote.get("stat") == "Ok":
+                            try:
+                                val = quote.get("lp")
+                                if val is not None:
+                                    u_price = float(val)
+                            except (ValueError, TypeError):
+                                u_price = 0.0
+
+                        if u_price > 0.0:
+                            chain = self._get_option_chain(
+                                c_opt_exch, c_chain_tsym, u_price, count=15
+                            )
+                            if chain and chain.get("stat") == "Ok" and chain.get("values"):
+                                res = self._parse_index_chain(base, expiry, chain, c_opt_exch, u_price)
+                                if res and res.get("strikes"):
+                                    return res
+                    except Exception as c_err:
+                        log.debug("[shoonya] cached fast-path failed for %s: %s", base, c_err)
+
+                    # Evict invalid/expired entry
+                    with self._index_cache_lock:
+                        self._index_chain_cache.pop(cache_key, None)
             if is_index:
                 exch = _EXCHANGE_MAP.get(base, "NFO")
                 search_text = base
@@ -1631,11 +1904,19 @@ class ShoonyaFetcher(BaseFetcher):
                             log.warning("[shoonya] failed to search NFO weekly prefix for expiry %s: %s", expiry, exp_err)
 
                     if not resolved_nfo_tsym:
-                        # Find nearest active weekly expiry (check next 14 calendar days)
+                        # Find nearest active weekly expiry (check next 14 calendar days, skipping weekends)
                         from datetime import time as dt_time
                         # NFO closes 15:40 IST (SEBI extension); use as the "roll forward" cutoff
                         start_offset = 1 if now_ist.time() > dt_time(15, 40) else 0
-                        for d in range(start_offset, 15):
+                        day_candidates = [
+                            d for d in range(start_offset, 15)
+                            if (today_ist + timedelta(days=d)).weekday() in (1, 2, 3)
+                        ]
+                        other_days = [
+                            d for d in range(start_offset, 15)
+                            if (today_ist + timedelta(days=d)).weekday() not in (1, 2, 3, 5, 6)
+                        ]
+                        for d in (day_candidates + other_days):
                             c_date = today_ist + timedelta(days=d)
                             prefix_cand = f"{base}{c_date.strftime('%d%b%y').upper()}"
                             res = self._search_scrip("NFO", prefix_cand)
@@ -1738,210 +2019,26 @@ class ShoonyaFetcher(BaseFetcher):
                 log.warning("[shoonya] empty option chain for %s", chain_tsym)
                 return None
 
-            scrip_list = chain["values"]
-
-            expiry_dates: dict[str, str] = {}
-            now = datetime.now()
-            for item in scrip_list:
-                exp_str = item.get("expiry")
-                if not exp_str:
-                    tsym = item.get("tsym", "")
-                    # Try NFO format: NIFTY25JUN2677100CE → captures "25JUN26"
-                    m = re.search(r"(\d{2}[A-Z]{3}\d{2})[CP]", tsym)
-                    if m:
-                        candidate = m.group(1)
-                        try:
-                            dt = datetime.strptime(candidate, "%d%b%y")
-                            # Sanity check: year should be within ~5 years of current
-                            if now.year - 5 <= dt.year <= now.year + 2:
-                                exp_str = candidate
-                                item["expiry_parsed"] = exp_str
-                                expiry_dates[exp_str] = dt.strftime("%Y-%m-%d")
-                        except ValueError:
-                            pass
-                    # If NFO format failed, try BFO monthly format:
-                    # SENSEX26JUN77100CE → captures "26JUN" (no year digits)
-                    if not item.get("expiry_parsed"):
-                        m = re.search(r"(\d{2}[A-Z]{3})\d+[CP]", tsym)
-                        if m:
-                            exp_str = m.group(1)
-                            item["expiry_parsed"] = exp_str
-                            try:
-                                exp_month = datetime.strptime(exp_str[2:], "%b").month
-                                year = 2000 + int(exp_str[:2])
-                                import calendar
-                                last_day = calendar.monthrange(year, exp_month)[1]
-                                dt = datetime(year, exp_month, last_day)
-                                while dt.weekday() != 3:  # 3 is Thursday (monthly option expiry)
-                                    dt -= timedelta(days=1)
-                                expiry_dates[exp_str] = dt.strftime("%Y-%m-%d")
-                            except ValueError:
-                                pass
-
-                    # If NFO and BFO monthly failed, try BFO weekly format:
-                    # SENSEX2670266500CE → captures "26702" (YY + M + DD)
-                    if not item.get("expiry_parsed"):
-                        m = re.search(rf"^{base}(\d{{2}})([1-9OND])(\d{{2}})\d+(?:CE|PE)$", tsym)
-                        if m:
-                            yy_str = m.group(1)
-                            m_str = m.group(2)
-                            dd_str = m.group(3)
-                            month_map = {"O": 10, "N": 11, "D": 12}
-                            try:
-                                year = 2000 + int(yy_str)
-                                month = month_map.get(m_str) or int(m_str)
-                                day = int(dd_str)
-                                dt = datetime(year, month, day)
-                                iso_date = dt.strftime("%Y-%m-%d")
-                                
-                                exp_str = f"{dd_str}{dt.strftime('%b').upper()}{yy_str}"  # e.g., "02JUL26"
-                                item["expiry_parsed"] = exp_str
-                                expiry_dates[exp_str] = iso_date
-                            except ValueError:
-                                pass
-                else:
-                    item["expiry_parsed"] = exp_str
-                    if exp_str not in expiry_dates:
-                        try:
-                            dt = datetime.strptime(exp_str.title(), "%d-%b-%Y")
-                            expiry_dates[exp_str] = dt.strftime("%Y-%m-%d")
-                        except ValueError:
-                            pass
-
-            all_expiries = sorted(expiry_dates.values())
-            if not all_expiries:
-                log.warning("[shoonya] no valid expiries for %s", base)
-                return None
-
-            target_expiry_iso = expiry
-            if not target_expiry_iso:
-                today = datetime.now(IST).date()
-                future = [
-                    e
-                    for e in all_expiries
-                    if datetime.strptime(e, "%Y-%m-%d").date() >= today
-                ]
-                target_expiry_iso = future[0] if future else all_expiries[0]
-
-            target_expiry_shoonya = next(
-                (sh for sh, iso in expiry_dates.items() if iso == target_expiry_iso),
-                None,
-            )
-            if not target_expiry_shoonya:
-                log.warning("[shoonya] target expiry %s not found", target_expiry_iso)
-                return None
-
-            target_scrips = [
-                s for s in scrip_list if s.get("expiry_parsed") == target_expiry_shoonya
-            ]
-            if not target_scrips:
-                log.warning("[shoonya] no contracts for expiry %s", target_expiry_iso)
-                return None
-
-            # ── NSE index: read LTP/OI/IV directly from GetOptionChain items ──────
-            # Shoonya's GetOptionChain response already contains lp, oi, oichg, v, iv,
-            # bp1, sp1 per item.  Previously this code made one _get_quotes() call per
-            # strike (42 calls per symbol), which exhausted the ~45-call session quota
-            # on a single NSE index fetch.  Now we extract these fields directly from the
-            # chain response, eliminating 42 redundant API calls per NSE symbol.
-            #
-            # If any item is missing critical fields, fetch them via parallel _bulk_get_quotes()
-            # rather than making serial HTTP calls per strike.
-            missing_items = [
-                s for s in target_scrips
-                if s.get("optt") in ("CE", "PE")
-                and (s.get("lp") is None or s.get("oi") is None)
-                and s.get("token")
-            ]
-            fetched_quotes: dict[str, dict] = {}
-            if missing_items:
-                log.debug(
-                    "[shoonya] %s: %d/%d strikes missing lp/oi — fetching via parallel bulk quotes",
-                    base, len(missing_items), len(target_scrips)
-                )
-                fetched_quotes = self._bulk_get_quotes(option_exch, missing_items)
-
-            strikes = []
-            for item in target_scrips:
-                ot = item.get("optt")
-                if ot not in ("CE", "PE"):
-                    continue
-
-                try:
-                    strike = float(item.get("strprc") or 0)
-                except (ValueError, TypeError):
-                    continue
-
-                # Determine data source: GetOptionChain item first, fall back to bulk GetQuotes
-                # if LTP or OI is missing.
-                data = item
-                ltp_raw = item.get("lp")
-                oi_raw = item.get("oi")
-                if ltp_raw is None or oi_raw is None:
-                    token = item.get("token")
-                    if token:
-                        q = fetched_quotes.get(str(token)) or self._get_quotes(option_exch, token)
-                        if q and q.get("stat") == "Ok":
-                            q_tok = str(q.get("token") or "")
-                            q_tsym = str(q.get("tsym") or "")
-                            # Prevent Shoonya from leaking index quote (e.g. token 1 / SENSEX / NIFTY spot) into option leg
-                            if (
-                                q_tok == str(token)
-                                and q_tsym not in (base, "SENSEX", "NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "Nifty 50", "Nifty Bank")
-                                and _is_option_tsym(q_tsym)
-                            ):
-                                data = q
-                            else:
-                                log.debug(
-                                    "[shoonya] %s: Discarding inactive/index quote for token %s (got token %s, tsym %s)",
-                                    base, token, q_tok, q_tsym
-                                )
-
-                def _fq(key, _src=data):
-                    try:
-                        v = _src.get(key)
-                        return float(v) if v is not None else None
-                    except (ValueError, TypeError):
-                        return None
-
-                def _iq(key, _src=data):
-                    try:
-                        v = _src.get(key)
-                        return int(v) if v is not None else None
-                    except (ValueError, TypeError):
-                        return None
-
-                strikes.append(
-                    {
-                        "strike": strike,
-                        "option_type": ot,
-                        "ltp": _fq("lp") or 0.0,
-                        "oi": _iq("oi") or 0,
-                        "oi_change": _iq("oichg") or 0,
-                        "volume": _iq("v") or 0,
-                        "iv": _fq("iv") or 0.0,
-                        "bid": _fq("bp1") or 0.0,
-                        "ask": _fq("sp1") or 0.0,
-                        "token": item.get("token"),
-                    }
-                )
-
-            if not strikes:
-                log.warning("[shoonya] no strikes parsed for %s", base)
-                return None
-
-
-
-            return {
-                "symbol": base,
-                "underlying_price": underlying_price,
-                "expiry": target_expiry_iso,
-                "strikes": strikes,
-                "source": self.name,
-                "all_expiries": all_expiries,
-            }
+            res = self._parse_index_chain(base, expiry, chain, option_exch, underlying_price)
+            if res and res.get("strikes"):
+                if is_index:
+                    with self._index_cache_lock:
+                        self._index_chain_cache[cache_key] = {
+                            "exch": exch,
+                            "option_exch": option_exch,
+                            "underlying_token": underlying_token,
+                            "underlying_tsym": underlying_tsym,
+                            "chain_tsym": chain_tsym,
+                            "ts": time.time(),
+                        }
+                return res
+            return None
 
         except Exception as exc:
+            import sys
+            if (isinstance(exc, RuntimeError) and "interpreter shutdown" in str(exc).lower()) or sys.is_finalizing():
+                log.debug("[shoonya] option chain fetch for %s aborted during interpreter shutdown", symbol)
+                return None
             log.exception("[shoonya] option chain fetch failed for %s: %s", symbol, exc)
             return None
 

@@ -1512,7 +1512,7 @@ def generate_intelligence(
             },
             decision_ctx,
             ai_verdict=ai_verdict,
-            suppress_logs=False,
+            suppress_logs=(ai_verdict is None),
         )
 
         risk_ok, risk_reason = check_risk_limits(symbol)

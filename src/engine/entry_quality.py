@@ -137,6 +137,7 @@ def calculate_multileg_entry_quality(
     net_delta = abs(float(book_greeks.get("net_delta") or 0))
     max_profit = float(risk_profile.get("max_profit") or 0)
     max_loss = float(risk_profile.get("max_loss") or 1)
+    planned_loss = float(risk_profile.get("planned_max_loss") or 0)
     net_premium = float(scan_context.get("net_premium") or 0)
 
     # 1. IV signal — high IV is good for selling premium
@@ -161,12 +162,13 @@ def calculate_multileg_entry_quality(
         score -= 20
         reasons.append(f"High directional exposure (Δ={net_delta:.2f})")
 
-    # 3. Risk/reward ratio
-    rr = max_profit / max_loss if max_loss > 0 else 0
-    if rr > 0.3:
+    # 3. Risk/reward ratio — evaluate against planned risk
+    eval_loss = planned_loss if planned_loss > 0 else max_loss
+    rr = max_profit / eval_loss if eval_loss > 0 else 0
+    if rr >= 0.5:
         score += 10
-        reasons.append(f"Good R:R ({rr:.2f})")
-    elif rr < 0.1:
+        reasons.append(f"Good planned R:R ({rr:.2f})")
+    elif rr < 0.15:
         score -= 10
         reasons.append(f"Poor R:R ({rr:.2f})")
 
@@ -188,7 +190,10 @@ def calculate_multileg_entry_quality(
             reasons.append(f"Wide breakeven ({width_pct:.1f}% of underlying)")
 
     # 6. Max loss cap
-    if max_loss > 5 * max_profit and max_profit > 0:
+    if planned_loss > 2.5 * max_profit and max_profit > 0:
+        score -= 15
+        reasons.append(f"Planned loss {planned_loss/max_profit:.1f}x max profit")
+    elif max_loss > 10 * max_profit and max_profit > 0 and planned_loss <= 0:
         score -= 15
         reasons.append(f"Max loss {max_loss/max_profit:.1f}x max profit")
 

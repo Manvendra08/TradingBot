@@ -90,9 +90,11 @@ def is_trading_allowed_now(symbol: str, expiry_str: str | None = None) -> tuple[
             if is_cme_early_close(now.date()) and (h, m) >= (17, 30):
                 return False, "CME early close — no NYMEX price discovery after 17:30 IST"
 
-        # ── Window 1: Opening auction noise 09:15–09:30 IST ─────────────────
-        if (h, m) >= (9, 15) and (h, m) < (9, 30):
+        # ── Window 1: Opening auction noise (NSE/BSE 09:15–09:30, MCX 09:00–09:15 IST) ───
+        if not is_mcx and (h, m) >= (9, 15) and (h, m) < (9, 30):
             return False, "Opening auction noise window (09:15–09:30 IST)"
+        if is_mcx and (h, m) >= (9, 0) and (h, m) < (9, 15):
+            return False, "MCX opening auction noise window (09:00–09:15 IST)"
 
         # ── Window 2: Expiry end-of-session guard ────────────────────────────
         # For index F&O (trade until 15:40), only block last 15 min before CAS close

@@ -682,12 +682,14 @@ def step_trend_alignment_core(ctx: PipelineContext) -> StepResult:
                         f"(ai_conf={ai_conf}%, engine_conf={confidence}%, eq={entry_quality}, ta={trend_alignment})"
                     )
                 else:
-                    log.info(
-                        "%s: AI 'full' mode rejected promotion (action=%s, conf=%d%% < %d%%, veto=%s)",
-                        ctx.symbol, ai_action, ai_conf, min_boost_conf, veto_flag
-                    )
+                    if not ctx.scan_context.get("suppress_logs"):
+                        log.info(
+                            "%s: AI 'full' mode rejected promotion (action=%s, conf=%d%% < %d%%, veto=%s)",
+                            ctx.symbol, ai_action, ai_conf, min_boost_conf, veto_flag
+                        )
             else:
-                log.info("%s: AI 'full' mode did not promote — no affirmative AI verdict available (fail-closed)", ctx.symbol)
+                if not ctx.scan_context.get("suppress_logs"):
+                    log.info("%s: AI 'full' mode did not promote — no affirmative AI verdict available (fail-closed)", ctx.symbol)
 
         # Priority 6: Empirical promotion (ADR-007 v2 fallback)
         if not passed and ai_decision_mode == "empirical":

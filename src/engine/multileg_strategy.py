@@ -216,7 +216,7 @@ def validate_legs(
                 )
 
         # Check hedge cost drag: bought wings should not consume excessive premium.
-        # Ceiling is per-symbol (NATURALGAS gets 0.75, everything else 0.65).
+        # Ceiling is per-symbol (max 50% across symbols via get_max_hedge_cost_ratio).
         gross_credit = sum(float(l.get("premium") or 0.0) for l in legs if (l.get("side") or "").upper() == "SELL")
         hedge_debit = sum(float(l.get("premium") or 0.0) for l in legs if (l.get("side") or "").upper() == "BUY")
         if gross_credit > 0 and hedge_debit > 0:
@@ -308,17 +308,21 @@ def compute_book_risk_profile(
     legs: list[dict],
     net_premium: float,
     underlying: float,
+    stop_loss_pct: float = 1.5,
 ) -> dict:
     """
-    Compute max profit, max loss, and breakevens for a multi-leg book.
+    Compute max profit, max loss, planned max loss, and breakevens for a multi-leg book.
 
     Breakevens are derived from the short strikes (the strikes we are
     selling).  For credit books the upper breakeven is short CE strike + net premium;
     the lower is short PE strike - net premium.
 
+    Note: max_loss represents theoretical/tail crash risk (used for SPAN margin classification).
+    planned_max_loss represents operational risk governed by the strategy's mechanical stop loss.
+
     Returns
     -------
-    dict with max_profit, max_loss, breakeven_upper, breakeven_lower.
+    dict with max_profit, max_loss, planned_max_loss, breakeven_upper, breakeven_lower.
     """
     # Separate PE and CE legs by option type
     pe_legs = [l for l in legs if (l.get("option_type") or "").upper() == "PE"]
@@ -330,8 +334,11 @@ def compute_book_risk_profile(
 
     max_profit = max(0.0, net_premium)
     max_loss = 0.0
+    planned_max_loss = 0.0
     breakeven_upper = 0.0
     breakeven_lower = 0.0
+
+    sl_mult = min(max(float(stop_loss_pct or 1.5), 0.5), 3.0)
 
     if strategy_type == "IRON_CONDOR":
         # For iron condor: max loss = wider spread width - net premium
@@ -342,16 +349,19 @@ def compute_book_risk_profile(
         ce_width = (ce_strikes[-1] - ce_strikes[0]) if len(ce_strikes) > 1 else 0
         spread_width = max(pe_width, ce_width)
         max_loss = max(0.0, spread_width - net_premium)
+        planned_max_loss = min(max_loss, net_premium * sl_mult) if max_loss > 0 else (net_premium * sl_mult)
         breakeven_upper = short_ce_strike + net_premium if short_ce_strike else 0
         breakeven_lower = short_pe_strike - net_premium if short_pe_strike else 0
 
     elif strategy_type == "SHORT_STRANGLE":
-        max_loss = underlying * 0.5  # practical cap (unlimited in theory)
+        max_loss = underlying * 0.5  # practical cap (unlimited in theory) for SPAN margin / tail risk
+        planned_max_loss = net_premium * sl_mult  # planned operational risk governed by SL
         breakeven_upper = short_ce_strike + net_premium if short_ce_strike else 0
         breakeven_lower = short_pe_strike - net_premium if short_pe_strike else 0
 
     elif strategy_type == "SHORT_STRADDLE":
         max_loss = underlying * 0.5
+        planned_max_loss = net_premium * sl_mult
         # Straddle: same strike for both; use CE strike as reference
         ref_strike = short_ce_strike or short_pe_strike
         breakeven_upper = ref_strike + net_premium if ref_strike else 0
@@ -363,20 +373,24 @@ def compute_book_risk_profile(
         if strategy_type == "BEAR_CALL_SPREAD" and len(ce_strikes) >= 2:
             spread_width = ce_strikes[-1] - ce_strikes[0]
             max_loss = max(0.0, spread_width - net_premium)
+            planned_max_loss = min(max_loss, net_premium * sl_mult) if max_loss > 0 else (net_premium * sl_mult)
             short_strike = min(ce_strikes)
             breakeven_upper = short_strike + net_premium
         elif strategy_type == "BULL_PUT_SPREAD" and len(pe_strikes) >= 2:
             spread_width = pe_strikes[-1] - pe_strikes[0]
             max_loss = max(0.0, spread_width - net_premium)
+            planned_max_loss = min(max_loss, net_premium * sl_mult) if max_loss > 0 else (net_premium * sl_mult)
             short_strike = max(pe_strikes)
             breakeven_lower = short_strike - net_premium
         else:
             max_loss = underlying * 0.5
+            planned_max_loss = net_premium * sl_mult
 
     elif strategy_type == "JADE_LIZARD":
         # Jade Lizard: no upside risk if short CE premium + short PE premium
         # covers the spread. PE side unlimited if market drops below PE strike.
         max_loss = underlying * 0.5  # practical cap on PE-side risk
+        planned_max_loss = net_premium * sl_mult
         breakeven_upper = short_ce_strike + net_premium if short_ce_strike else 0
         breakeven_lower = short_pe_strike - net_premium if short_pe_strike else 0
 
@@ -387,16 +401,19 @@ def compute_book_risk_profile(
             max_loss = max_distance * underlying * 0.1
         else:
             max_loss = underlying * 0.5
+        planned_max_loss = net_premium * sl_mult
         breakeven_upper = short_ce_strike + net_premium if short_ce_strike else 0
         breakeven_lower = short_pe_strike - net_premium if short_pe_strike else 0
 
     else:
         # Fallback for unknown types
         max_loss = underlying * 0.5
+        planned_max_loss = net_premium * sl_mult
 
     return {
         "max_profit": float(round(max(0.0, max_profit), 2)),
         "max_loss": float(round(max(0.0, max_loss), 2)),
+        "planned_max_loss": float(round(max(0.0, planned_max_loss), 2)),
         "breakeven_upper": float(round(breakeven_upper, 2)),
         "breakeven_lower": float(round(breakeven_lower, 2)),
     }
@@ -509,6 +526,22 @@ def score_entry_quality(
     max_profit = risk_profile.get("max_profit", 0)
     max_loss = risk_profile.get("max_loss", 0)
 
+    # Resolve planned operational loss governed by mechanical stop loss
+    raw_sl_pct = kwargs.get("stop_loss_pct") or scan_context.get("stop_loss_pct") or 1.5
+    try:
+        stop_loss_pct = float(raw_sl_pct)
+    except (ValueError, TypeError):
+        stop_loss_pct = 1.5
+    stop_loss_pct = min(max(stop_loss_pct, 0.5), 3.0)
+
+    is_undefined_risk = strategy_type in ("SHORT_STRANGLE", "SHORT_STRADDLE", "CUSTOM")
+
+    planned_loss = float(risk_profile.get("planned_max_loss") or 0.0)
+    if planned_loss <= 0.0:
+        planned_loss = (net_premium * stop_loss_pct) if is_undefined_risk else (
+            min(max_loss, net_premium * stop_loss_pct) if max_loss > 0 else (net_premium * stop_loss_pct)
+        )
+
     # ── Positives ──────────────────────────────────────────────────
 
     # 1. IV rank — high IV provides fat premium; moderate/low IV in calm markets provides safe decay
@@ -530,15 +563,19 @@ def score_entry_quality(
         score += 8
         reasons.append(f"Near-delta-neutral ({book_greeks.get('net_delta', 0):+.2f})")
 
-    # 3. Risk/reward ratio
-    if max_loss > 0 and max_profit > 0:
-        rr = max_profit / max_loss
-        if rr > 0.3:
+    # 3. Risk/reward ratio — evaluate against planned operational risk (not 50% catastrophic tail crash)
+    eval_risk = planned_loss if planned_loss > 0 else max_loss
+    if eval_risk > 0 and max_profit > 0:
+        rr = max_profit / eval_risk
+        if rr >= 0.5:
             score += 10
-            reasons.append(f"Strong R:R {rr:.2f}")
-        elif rr > 0.15:
+            reasons.append(f"Strong planned R:R {rr:.2f}")
+        elif rr >= 0.25:
             score += 5
-            reasons.append(f"Moderate R:R {rr:.2f}")
+            reasons.append(f"Moderate planned R:R {rr:.2f}")
+        elif rr > 0.15:
+            score += 3
+            reasons.append(f"Acceptable planned R:R {rr:.2f}")
 
     # 4. Premium yield on margin
     if margin > 0 and net_premium > 0:
@@ -583,10 +620,19 @@ def score_entry_quality(
         score -= deduction
         reasons.append(f"HIGH directional risk — net delta {book_greeks.get('net_delta', 0):+.2f}")
 
-    if max_loss > 0 and max_profit > 0 and max_loss > 5 * max_profit:
-        deduction = 15
-        score -= deduction
-        reasons.append(f"Unfavorable loss profile — max loss {max_loss:.0f} > 5x max profit {max_profit:.0f}")
+    if is_undefined_risk:
+        # Undefined risk: only penalize if the planned stop loss is excessively wide (> 2.5x credit)
+        if planned_loss > 2.5 * max_profit and max_profit > 0:
+            deduction = 15
+            score -= deduction
+            reasons.append(f"Unfavorable stop loss — planned loss {planned_loss:.1f} > 2.5x max profit {max_profit:.1f}")
+    else:
+        # Defined-risk: penalize only if physical spread max loss is severely skewed (> 10x max profit, i.e. < 9% credit collected).
+        # Standard high-POP (80-85%) wings operate around 4x to 8x max loss to max profit.
+        if max_loss > 10 * max_profit and max_profit > 0:
+            deduction = 15
+            score -= deduction
+            reasons.append(f"Unfavorable loss profile — max loss {max_loss:.0f} > 10x max profit {max_profit:.0f}")
 
     # 7. Deduct for high insurance drag on defined risk spreads
     gross_cred = sum(float(l.get("premium") or 0.0) for l in legs if (l.get("side") or "").upper() == "SELL")
@@ -725,7 +771,8 @@ def build_execution_plan(
     )
 
     # ── Step 5: Risk profile ───────────────────────────────────────
-    risk_profile = compute_book_risk_profile(strategy_type, legs, net_premium, underlying)
+    stop_loss_pct = float(scan_context.get("stop_loss_pct") or 1.5)
+    risk_profile = compute_book_risk_profile(strategy_type, legs, net_premium, underlying, stop_loss_pct=stop_loss_pct)
 
     # ── Step 6: Margin ─────────────────────────────────────────────
     margin = calculate_combined_margin(legs, symbol, risk_profile=risk_profile, underlying=underlying)
@@ -735,9 +782,10 @@ def build_execution_plan(
         **scan_context,
         "net_premium": net_premium,
         "margin": margin,
+        "stop_loss_pct": stop_loss_pct,
     }
     quality_score, quality_reasons = score_entry_quality(
-        strategy_type, legs, quality_context, book_greeks, risk_profile,
+        strategy_type, legs, quality_context, book_greeks, risk_profile, stop_loss_pct=stop_loss_pct,
     )
 
     plan = {

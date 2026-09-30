@@ -15,6 +15,7 @@ from src.fetchers.dhan_commodity_fetcher import DhanCommodityFetcher
 from src.fetchers.dhan_fetcher import DhanFetcher
 from src.fetchers.dhan_sensex_fetcher import DhanSensexFetcher
 from src.fetchers.nse_fetcher import NSEPublicFetcher
+from src.fetchers.niftytrader_fetcher import NiftyTraderFetcher
 from src.fetchers.paytm_fetcher import PaytmFetcher
 from src.fetchers.dhan_headless_fetcher import DhanHeadlessFetcher
 from src.fetchers.moneycontrol_fetcher import MoneycontrolFetcher
@@ -39,6 +40,7 @@ _FETCHERS = {
     "dhan_commodity": DhanCommodityFetcher,
     "dhan_sensex": DhanSensexFetcher,
     "nse_public": NSEPublicFetcher,
+    "niftytrader": NiftyTraderFetcher,
     "paytm": PaytmFetcher,
     "dhan_headless": DhanHeadlessFetcher,
     "moneycontrol": MoneycontrolFetcher,
@@ -47,6 +49,12 @@ if ShoonyaFetcher is not None:
     _FETCHERS["shoonya"] = ShoonyaFetcher
 if SensibullFetcher is not None:
     _FETCHERS["sensibull"] = SensibullFetcher
+
+# Circuit breaker state: source -> {"fails": int, "until": float | None}
+_cb_state: dict = {}
+_cb_lock = threading.Lock()
+_CB_FAIL_THRESHOLD = 3
+_CB_COOLDOWN_S = 300
 
 _instances: dict = {}
 _lock = threading.Lock()
@@ -68,6 +76,9 @@ def _get_fetcher(name: str):
             elif name == "sensibull":
                 from src.fetchers.sensibull_fetcher import SensibullFetcher
                 _instances[name] = SensibullFetcher()
+            elif name == "niftytrader":
+                from src.fetchers.niftytrader_fetcher import NiftyTraderFetcher
+                _instances[name] = NiftyTraderFetcher()
             else:
                 _instances[name] = _FETCHERS[name]()
     return _instances[name]
@@ -106,11 +117,11 @@ def _priority_for(symbol: str) -> list[str]:
     
     # Default priorities per symbol class
     if base in _MCX_COMMODITIES:
-        return ["dhan_commodity", "shoonya", "dhan", "dhan_headless"]
+        return ["dhan_commodity", "shoonya", "niftytrader", "dhan", "dhan_headless"]
     if base == "SENSEX":
-        return ["sensibull", "shoonya", "dhan_sensex", "dhan", "nse_public"]
+        return ["niftytrader", "shoonya", "sensibull", "dhan_headless", "nse_public", "moneycontrol"]
     return [
-        "sensibull", "shoonya", "dhan", "nse_public", "dhan_headless",
+        "niftytrader", "shoonya", "sensibull", "dhan_headless", "nse_public", "moneycontrol",
     ]
 
 
@@ -188,8 +199,41 @@ def _filter_atm_strikes(result: dict, required_strikes: set[float] | None = None
         log.warning("Failed to filter ATM strikes: %s", e)
 
 
+def _cb_should_skip(source: str) -> bool:
+    import time
+    with _cb_lock:
+        state = _cb_state.get(source)
+        if not state:
+            return False
+        until = state.get("until")
+        if until and time.time() < until:
+            log.warning("[router] %s skipped by circuit breaker (cooldown until %.0f)", source, until)
+            return True
+        # Cooldown expired — reset
+        _cb_state[source] = {"fails": 0, "until": None}
+        return False
+
+
+def _cb_record(source: str, success: bool) -> None:
+    import time
+    with _cb_lock:
+        state = _cb_state.setdefault(source, {"fails": 0, "until": None})
+        if success:
+            state["fails"] = 0
+            state["until"] = None
+        else:
+            state["fails"] += 1
+            if state["fails"] >= _CB_FAIL_THRESHOLD:
+                state["until"] = time.time() + _CB_COOLDOWN_S
+                log.warning("[router] %s circuit breaker tripped after %d fails (cooldown %ds)",
+                            source, state["fails"], _CB_COOLDOWN_S)
+
+
 def _try_fetcher(source: str, symbol: str, expiry: str | None) -> dict | None:
     """Run a single fetcher and return normalised result or None."""
+    if _cb_should_skip(source):
+        return None
+
     if source == "shoonya":
         # ISP IP-change guard: Shoonya validates the login source IP; a rotated
         # public IP would burn a ~60s Playwright OAuth and fail with INVALID_IP.
@@ -216,6 +260,7 @@ def _try_fetcher(source: str, symbol: str, expiry: str | None) -> dict | None:
         result = fetcher.fetch_option_chain(symbol, expiry=expiry)
         if not result or not result.get("strikes"):
             log.debug("[router] %s | %-12s returned no data", symbol, source)
+            _cb_record(source, False)
             return None
         base = str(result.get("symbol") or symbol).upper().split()[0]
         if base in _MCX_COMMODITIES and not result.get("underlying_price"):
@@ -223,6 +268,7 @@ def _try_fetcher(source: str, symbol: str, expiry: str | None) -> dict | None:
                 "[router] %s | %-12s returned MCX data without underlying price — skipping",
                 symbol, source,
             )
+            _cb_record(source, False)
             return None
         total_oi = sum(s.get("oi") or 0 for s in result["strikes"])
         total_ltp = sum(s.get("ltp") or 0 for s in result["strikes"])
@@ -231,10 +277,13 @@ def _try_fetcher(source: str, symbol: str, expiry: str | None) -> dict | None:
                 "[router] %s | %-12s returned zero-filled strikes — skipping",
                 symbol, source,
             )
+            _cb_record(source, False)
             return None
+        _cb_record(source, True)
         return result
     except Exception as exc:
         log.error("[router] %s | %-12s raised exception: %s", symbol, source, exc)
+        _cb_record(source, False)
         if source == "shoonya" and any(k in str(exc) for k in ("401", "403", "Invalid Token")):
             try:
                 from src.models.schema import stamp_health
@@ -330,7 +379,9 @@ def _finalise_result(result: dict, source: str, symbol: str, priority: list[str]
 # Fetcher pairs that should race in parallel (primary vs hot-backup).
 # Only used when both are present in the symbol's priority list.
 _PARALLEL_RACE_PAIRS: list[tuple[str, str]] = [
+    ("niftytrader", "shoonya"),
     ("shoonya", "sensibull"),
+    ("sensibull", "niftytrader"),
 ]
 
 
@@ -532,15 +583,20 @@ def fetch_option_chain(symbol: str, expiry: str | None = None, required_strikes:
             active_futures[src] = pipeline_io_executor.submit(_try_fetcher, src, symbol, expiry)
         return active_futures[src]
 
-    def get_fetch_data(src: str, timeout_s: float = 16.0):
+    def get_fetch_data(src: str, timeout_s: float = 16.0, is_optional: bool = False):
         fut = get_fetch_future(src)
         try:
             return fut.result(timeout=timeout_s)
         except Exception as exc:
-            if timeout_s < 1.0:
-                log.debug("[router] %s | %s optional fetch cutoff (%.1fs): %s", symbol, src, timeout_s, exc)
+            err_msg = str(exc) or type(exc).__name__
+            if is_optional or timeout_s < 5.0:
+                log.debug("[router] %s | %s optional fetch cutoff (%.1fs): %s", symbol, src, timeout_s, err_msg)
+                try:
+                    fut.cancel()
+                except Exception:
+                    pass
             else:
-                log.warning("[router] %s | %s fetch failed/timed out: %s", symbol, src, exc)
+                log.warning("[router] %s | %s fetch failed/timed out: %s", symbol, src, err_msg)
             return None
 
     i = 0
@@ -556,16 +612,23 @@ def fetch_option_chain(symbol: str, expiry: str | None = None, required_strikes:
             p_fut = get_fetch_future(primary_src)
             f_fut = get_fetch_future(fallback_src)
 
-            # Wait for BOTH futures concurrently with full deadline to prefer single consolidated chain data
-            p_data = get_fetch_data(primary_src, timeout_s=20.0)
-            f_data = get_fetch_data(fallback_src, timeout_s=20.0)
+            # Wait for primary with standard timeout
+            p_data = get_fetch_data(primary_src, timeout_s=20.0, is_optional=False)
+
+            # If primary succeeded, fallback is purely optional (for consolidation merge);
+            # give it a short cutoff (1.5s) and do not log warning if it is still working.
+            if p_data:
+                f_data = get_fetch_data(fallback_src, timeout_s=1.5, is_optional=True)
+            else:
+                # Primary failed: fallback is mandatory! Give it full 20.0s deadline and log warning if it fails.
+                f_data = get_fetch_data(fallback_src, timeout_s=20.0, is_optional=False)
 
             if p_data and f_data:
                 result_data = _merge_fetcher_results(p_data, f_data, symbol)
                 result_source = f"{primary_src}+{fallback_src}"
                 break
             elif p_data:
-                log.info("[router] %s | Consolidated DUALFETCH unavailable (fallback %s failed/timed out) — using primary %s", symbol, fallback_src, primary_src)
+                log.info("[router] %s | Consolidated DUALFETCH unavailable (fallback %s not ready/timed out) — using primary %s", symbol, fallback_src, primary_src)
                 result_data = p_data
                 result_source = primary_src
                 break

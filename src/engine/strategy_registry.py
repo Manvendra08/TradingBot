@@ -110,7 +110,7 @@ def get_runner(sid: str) -> Optional[Callable]:
             else:
                 side = None
             if side:
-                ok, reason = check_ng_momentum_entry(side)
+                ok, reason = check_ng_momentum_entry(side, scan_context=scan_ctx, intel=intel_dict)
                 if not ok:
                     log.info("NG Momentum Entry Blocked: %s", reason)
                     return {"action": "BLOCKED_DECISION", "reason": reason}

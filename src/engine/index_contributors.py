@@ -17,6 +17,7 @@ import yfinance as yf
 from src.engine.index_weights import (
     get_index_weights_state,
     _get_yf_session,
+    DEFAULT_WEIGHTS,
     INDEX_CONSTITUENTS as BASE_INDEX_CONSTITUENTS,
 )
 
@@ -170,20 +171,24 @@ def get_index_contributors(index_name: str = "NIFTY", force_refresh: bool = Fals
 
     constituents = INDEX_CONSTITUENTS[idx_key]
     weights_state = get_index_weights_state()
-    index_weights = weights_state.get("weights", {}).get(idx_key, {})
+    cached_weights = weights_state.get("weights", {}).get(idx_key, {})
+    default_idx_w = DEFAULT_WEIGHTS.get(idx_key, {})
     
-    # Fallback to equal weighting if index_weights missing or incomplete
-    if not index_weights or len(index_weights) < len(constituents) * 0.7:
-        eq = 1.0 / len(constituents)
-        index_weights = {c: eq for c in constituents}
-    else:
-        # Normalize weights so they sum to exactly 1.0
-        tot_w = sum(index_weights.get(c, 0.0) for c in constituents)
-        if tot_w > 0:
-            index_weights = {c: index_weights.get(c, 0.0) / tot_w for c in constituents}
+    # Merge cached weights with robust default baseline weights
+    resolved_weights = {}
+    for c in constituents:
+        if c in cached_weights and cached_weights[c] > 0:
+            resolved_weights[c] = float(cached_weights[c])
+        elif c in default_idx_w and default_idx_w[c] > 0:
+            resolved_weights[c] = float(default_idx_w[c])
         else:
-            eq = 1.0 / len(constituents)
-            index_weights = {c: eq for c in constituents}
+            resolved_weights[c] = 0.01
+
+    tot_w = sum(resolved_weights.values())
+    if tot_w > 0:
+        index_weights = {c: w / tot_w for c, w in resolved_weights.items()}
+    else:
+        index_weights = {c: 1.0 / len(constituents) for c in constituents}
 
     quotes: Dict[str, Dict[str, float]] = {}
     index_price: float = 0.0

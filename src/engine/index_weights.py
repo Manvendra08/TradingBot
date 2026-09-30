@@ -53,72 +53,78 @@ def _get_yf_session():
         _YF_SESSION = sess
         return sess
 
-# Curated free-float factors
+# Curated free-float factors for all constituents across NIFTY 50, BANK NIFTY, and SENSEX
 FREE_FLOAT_FACTORS = {
-    # NIFTY / SENSEX / BANKNIFTY unique constituents
-    "RELIANCE": 0.50,
-    "TCS": 0.28,
-    "HDFCBANK": 1.00,
-    "ICICIBANK": 1.00,
-    "INFY": 0.85,
-    "ITC": 1.00,
-    "BHARTIARTL": 0.45,
-    "LT": 1.00,
-    "AXISBANK": 1.00,
-    "SBIN": 0.43,
-    "KOTAKBANK": 0.74,
-    "M&M": 0.81,
-    "HINDUNILVR": 0.38,
-    "TMPV": 0.54,      # successor demerged passenger vehicles entity
-    "TMCV": 0.54,      # commercial vehicles entity
-    "BAJFINANCE": 0.45,
-    "MARUTI": 0.44,
-    "SUNPHARMA": 0.46,
-    "NTPC": 0.49,
-    "HCLTECH": 0.39,
-    "POWERGRID": 0.51,
-    "INDUSINDBK": 0.85,
-    "PNB": 0.27,
-    "BANKBARODA": 0.36,
-    "AUBANK": 0.75,
-    "FEDERALBNK": 1.00,
-    "IDFCFIRSTB": 0.60,
+    "RELIANCE": 0.50, "TCS": 0.28, "HDFCBANK": 1.00, "ICICIBANK": 1.00, "INFY": 0.85,
+    "ITC": 1.00, "BHARTIARTL": 0.45, "LT": 1.00, "AXISBANK": 1.00, "SBIN": 0.43,
+    "KOTAKBANK": 0.74, "M&M": 0.81, "HINDUNILVR": 0.38, "TMPV": 0.54, "TMCV": 0.54,
+    "BAJFINANCE": 0.45, "MARUTI": 0.44, "SUNPHARMA": 0.46, "NTPC": 0.49, "HCLTECH": 0.39,
+    "POWERGRID": 0.49, "TRENT": 0.63, "TITAN": 0.47, "TATASTEEL": 0.66, "ULTRACEMCO": 0.40,
+    "ASIANPAINT": 0.47, "BAJAJ-AUTO": 0.45, "BEL": 0.49, "COALINDIA": 0.34, "JSWSTEEL": 0.55,
+    "ADANIPORTS": 0.34, "ADANIENT": 0.25, "ONGC": 0.41, "GRASIM": 0.57, "TECHM": 0.65,
+    "ETERNAL": 0.98, "SHRIRAMFIN": 0.75, "TATACONSUM": 0.65, "SBILIFE": 0.44, "DRREDDY": 0.73,
+    "CIPLA": 0.66, "HDFCLIFE": 0.49, "EICHERMOT": 0.51, "JIOFIN": 0.54, "NESTLEIND": 0.37,
+    "WIPRO": 0.27, "APOLLOHOSP": 0.71, "HINDALCO": 0.65, "INDIGO": 0.62, "BAJAJFINSV": 0.39,
+    "MAXHEALTH": 0.76, "INDUSINDBK": 0.85, "PNB": 0.27, "BANKBARODA": 0.36, "AUBANK": 0.75,
+    "FEDERALBNK": 1.00, "IDFCFIRSTB": 0.60, "CANBK": 0.37, "UNIONBANK": 0.25, "YESBANK": 1.00,
     "BANDHANBNK": 0.60,
-    "CANBK": 0.37,
-    "UNIONBANK": 0.25,
 }
 
+# Complete constituent lists: 50 Nifty, 14 Bank Nifty, 30 Sensex
 INDEX_CONSTITUENTS = {
     "NIFTY": [
-        "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "INFY",
-        "ITC", "BHARTIARTL", "LT", "AXISBANK", "SBIN",
-        "KOTAKBANK", "M&M", "HINDUNILVR", "TMPV", "BAJFINANCE",
-        "MARUTI", "SUNPHARMA", "NTPC", "HCLTECH", "POWERGRID"
-    ],
-    "SENSEX": [
-        "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "INFY",
-        "ITC", "BHARTIARTL", "LT", "AXISBANK", "SBIN",
-        "KOTAKBANK", "M&M", "HINDUNILVR", "TMPV", "BAJFINANCE",
-        "MARUTI", "SUNPHARMA", "NTPC", "HCLTECH", "POWERGRID"
+        "ADANIENT", "ADANIPORTS", "APOLLOHOSP", "ASIANPAINT", "AXISBANK",
+        "BAJAJ-AUTO", "BAJFINANCE", "BAJAJFINSV", "BEL", "BHARTIARTL",
+        "CIPLA", "COALINDIA", "DRREDDY", "EICHERMOT", "ETERNAL",
+        "GRASIM", "HCLTECH", "HDFCBANK", "HDFCLIFE", "HINDALCO",
+        "HINDUNILVR", "ICICIBANK", "ITC", "INFY", "INDIGO",
+        "JSWSTEEL", "JIOFIN", "KOTAKBANK", "LT", "M&M",
+        "MARUTI", "MAXHEALTH", "NTPC", "NESTLEIND", "ONGC",
+        "POWERGRID", "RELIANCE", "SBILIFE", "SHRIRAMFIN", "SBIN",
+        "SUNPHARMA", "TCS", "TATACONSUM", "TMPV", "TATASTEEL",
+        "TECHM", "TITAN", "TRENT", "ULTRACEMCO", "WIPRO"
     ],
     "BANKNIFTY": [
-        "HDFCBANK", "ICICIBANK", "SBIN", "AXISBANK", "KOTAKBANK",
-        "INDUSINDBK", "PNB", "BANKBARODA", "AUBANK", "FEDERALBNK",
-        "IDFCFIRSTB", "BANDHANBNK", "CANBK", "UNIONBANK"
+        "AUBANK", "AXISBANK", "BANKBARODA", "CANBK", "FEDERALBNK",
+        "HDFCBANK", "ICICIBANK", "IDFCFIRSTB", "INDUSINDBK", "KOTAKBANK",
+        "PNB", "SBIN", "UNIONBANK", "YESBANK"
     ],
+    "SENSEX": [
+        "ADANIPORTS", "ASIANPAINT", "AXISBANK", "BAJFINANCE", "BAJAJFINSV",
+        "BEL", "BHARTIARTL", "ETERNAL", "HCLTECH", "HDFCBANK",
+        "HINDUNILVR", "ICICIBANK", "INDIGO", "INFY", "ITC",
+        "KOTAKBANK", "LT", "M&M", "MARUTI", "NTPC",
+        "POWERGRID", "RELIANCE", "SBIN", "SUNPHARMA", "TCS",
+        "TATASTEEL", "TECHM", "TITAN", "TRENT", "ULTRACEMCO"
+    ]
 }
 
+# Comprehensive baseline free-float weights for all constituents (normalized to 1.0)
 DEFAULT_WEIGHTS = {
     "NIFTY": {
-        "RELIANCE": 0.130, "HDFCBANK": 0.120, "ICICIBANK": 0.090, "INFY": 0.070, "ITC": 0.060,
-        "TCS": 0.055, "BHARTIARTL": 0.050, "LT": 0.045, "AXISBANK": 0.040, "SBIN": 0.035,
-        "KOTAKBANK": 0.030, "M&M": 0.025, "HINDUNILVR": 0.025, "TMPV": 0.020, "BAJFINANCE": 0.020,
-        "MARUTI": 0.018, "SUNPHARMA": 0.015, "NTPC": 0.015, "HCLTECH": 0.015, "POWERGRID": 0.012,
+        "HDFCBANK": 0.1120, "ICICIBANK": 0.0880, "RELIANCE": 0.0830, "INFY": 0.0520, "BHARTIARTL": 0.0480,
+        "LT": 0.0420, "TCS": 0.0380, "ITC": 0.0370, "AXISBANK": 0.0330, "SBIN": 0.0310,
+        "KOTAKBANK": 0.0280, "M&M": 0.0250, "HINDUNILVR": 0.0220, "BAJFINANCE": 0.0200, "MARUTI": 0.0160,
+        "SUNPHARMA": 0.0160, "NTPC": 0.0150, "TRENT": 0.0140, "TATASTEEL": 0.0130, "POWERGRID": 0.0130,
+        "TITAN": 0.0130, "HCLTECH": 0.0130, "ULTRACEMCO": 0.0110, "BAJAJ-AUTO": 0.0110, "ASIANPAINT": 0.0105,
+        "BEL": 0.0105, "COALINDIA": 0.0095, "JSWSTEEL": 0.0095, "ADANIPORTS": 0.0095, "ADANIENT": 0.0085,
+        "ONGC": 0.0085, "GRASIM": 0.0080, "TECHM": 0.0080, "TMPV": 0.0080, "ETERNAL": 0.0080,
+        "SHRIRAMFIN": 0.0080, "TATACONSUM": 0.0075, "SBILIFE": 0.0075, "DRREDDY": 0.0070, "CIPLA": 0.0070,
+        "HDFCLIFE": 0.0070, "EICHERMOT": 0.0070, "JIOFIN": 0.0070, "NESTLEIND": 0.0070, "WIPRO": 0.0065,
+        "APOLLOHOSP": 0.0065, "HINDALCO": 0.0065, "INDIGO": 0.0065, "BAJAJFINSV": 0.0060, "MAXHEALTH": 0.0050,
     },
     "BANKNIFTY": {
-        "HDFCBANK": 0.290, "ICICIBANK": 0.230, "SBIN": 0.110, "AXISBANK": 0.100, "KOTAKBANK": 0.090,
-        "INDUSINDBK": 0.060, "PNB": 0.025, "BANKBARODA": 0.025, "AUBANK": 0.015, "FEDERALBNK": 0.015,
-        "IDFCFIRSTB": 0.012, "BANDHANBNK": 0.010, "CANBK": 0.010, "UNIONBANK": 0.008,
+        "HDFCBANK": 0.2750, "ICICIBANK": 0.2350, "SBIN": 0.1120, "AXISBANK": 0.1020, "KOTAKBANK": 0.0850,
+        "INDUSINDBK": 0.0450, "BANKBARODA": 0.0280, "FEDERALBNK": 0.0250, "PNB": 0.0220, "AUBANK": 0.0200,
+        "IDFCFIRSTB": 0.0180, "CANBK": 0.0150, "UNIONBANK": 0.0100, "YESBANK": 0.0080,
+    },
+    "SENSEX": {
+        "HDFCBANK": 0.1380, "ICICIBANK": 0.1080, "RELIANCE": 0.1020, "INFY": 0.0640, "BHARTIARTL": 0.0590,
+        "LT": 0.0520, "TCS": 0.0470, "ITC": 0.0450, "AXISBANK": 0.0400, "SBIN": 0.0380,
+        "KOTAKBANK": 0.0340, "M&M": 0.0310, "HINDUNILVR": 0.0270, "BAJFINANCE": 0.0250, "MARUTI": 0.0200,
+        "SUNPHARMA": 0.0200, "NTPC": 0.0180, "TRENT": 0.0170, "TATASTEEL": 0.0160, "POWERGRID": 0.0160,
+        "TITAN": 0.0160, "HCLTECH": 0.0160, "ULTRACEMCO": 0.0140, "ASIANPAINT": 0.0130, "BEL": 0.0130,
+        "ADANIPORTS": 0.0120, "TECHM": 0.0100, "ETERNAL": 0.0100, "INDIGO": 0.0080, "BAJAJFINSV": 0.0070,
     }
 }
 
@@ -143,21 +149,12 @@ def get_index_weights_state() -> dict:
         "weights": {}
     }
     for idx_name, constituents in INDEX_CONSTITUENTS.items():
-        if idx_name in DEFAULT_WEIGHTS:
-            raw_weights = DEFAULT_WEIGHTS[idx_name]
-            total = sum(raw_weights.values())
-            if total > 0:
-                default_state["weights"][idx_name] = {c: w / total for c, w in raw_weights.items()}
-            else:
-                default_state["weights"][idx_name] = raw_weights
-        elif idx_name == "SENSEX":
-            # Derive SENSEX fallback from NIFTY (since they share constituents)
-            nifty_fallback = DEFAULT_WEIGHTS["NIFTY"]
-            total = sum(nifty_fallback.get(c, 0.0) for c in constituents)
-            if total > 0:
-                default_state["weights"]["SENSEX"] = {c: nifty_fallback.get(c, 0.0) / total for c in constituents}
-            else:
-                default_state["weights"]["SENSEX"] = {c: 1.0 / len(constituents) for c in constituents}
+        raw_weights = DEFAULT_WEIGHTS.get(idx_name, {})
+        total = sum(raw_weights.get(c, 0.0) for c in constituents)
+        if total > 0:
+            default_state["weights"][idx_name] = {c: raw_weights.get(c, 0.0) / total for c in constituents}
+        else:
+            default_state["weights"][idx_name] = {c: 1.0 / len(constituents) for c in constituents}
     return default_state
 
 def refresh_index_weights(force: bool = False) -> dict:
@@ -229,19 +226,16 @@ def refresh_index_weights(force: bool = False) -> dict:
         # Compute relative weights for each index
         new_weights = {}
         for idx_name, constituents in INDEX_CONSTITUENTS.items():
-            suffix = ".BO" if idx_name == "SENSEX" else ".NS"
             idx_ff_mcaps = {}
             for c in constituents:
-                ticker = f"{c}{suffix}"
-                # Fallback to defaults if fetching failed
-                val = ff_mcaps.get(ticker)
+                # Prefer .NS ticker since Yahoo Finance provides robust data on NSE
+                val = ff_mcaps.get(f"{c}.NS")
                 if val is None:
-                    log.warning("Constituent %s mcap missing during refresh. Using static fallback.", ticker)
-                    # Get static fallback relative weight
+                    val = ff_mcaps.get(f"{c}.BO")
+                if val is None:
+                    log.warning("Constituent %s mcap missing during refresh. Using static fallback.", c)
                     default_idx = DEFAULT_WEIGHTS.get(idx_name, {})
-                    if idx_name == "SENSEX":
-                        default_idx = DEFAULT_WEIGHTS.get("NIFTY", {})
-                    fallback_w = default_idx.get(c, 0.05)
+                    fallback_w = default_idx.get(c, 0.01)
                     val = fallback_w * 1e12  # arbitrary dummy large float
                 idx_ff_mcaps[c] = val
 
@@ -249,7 +243,9 @@ def refresh_index_weights(force: bool = False) -> dict:
             if total_ff > 0:
                 new_weights[idx_name] = {c: val / total_ff for c, val in idx_ff_mcaps.items()}
             else:
-                new_weights[idx_name] = {c: 1.0 / len(constituents) for c in constituents}
+                default_idx = DEFAULT_WEIGHTS.get(idx_name, {})
+                tot_def = sum(default_idx.get(c, 0.01) for c in constituents)
+                new_weights[idx_name] = {c: default_idx.get(c, 0.01) / tot_def for c in constituents}
 
         # Cache the results
         os.makedirs(CACHE_DIR, exist_ok=True)

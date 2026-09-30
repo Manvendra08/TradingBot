@@ -235,15 +235,15 @@ STRIKES_AROUND_ATM = 8
 # ── Fetcher Priority ────────────────────────────────────────────────────────────────────────────────────────────
 # Order in which fetchers are tried for each symbol.
 FETCHER_PRIORITY = {
-    "NIFTY": ["sensibull", "shoonya", "paytm", "dhan", "nse_public", "dhan_headless", "moneycontrol"],
-    "BANKNIFTY": ["sensibull", "shoonya", "paytm", "dhan", "nse_public", "dhan_headless", "moneycontrol"],
-    "FINNIFTY": ["sensibull", "shoonya", "paytm", "dhan", "nse_public", "dhan_headless", "moneycontrol"],
-    "MIDCPNIFTY": ["sensibull", "shoonya", "paytm", "dhan", "nse_public", "dhan_headless", "moneycontrol"],
-    "SENSEX": ["sensibull", "shoonya", "dhan_sensex", "dhan", "nse_public"],
-    "NATURALGAS": ["dhan_commodity", "shoonya", "dhan", "dhan_headless", "moneycontrol"],
-    "CRUDEOIL": ["dhan_commodity", "shoonya", "dhan", "dhan_headless", "moneycontrol"],
-    "GOLD": ["dhan_commodity", "shoonya", "dhan", "dhan_headless", "moneycontrol"],
-    "SILVER": ["dhan_commodity", "shoonya", "dhan", "dhan_headless", "moneycontrol"],
+    "NIFTY": ["niftytrader", "shoonya", "sensibull", "dhan_headless", "nse_public", "moneycontrol"],
+    "BANKNIFTY": ["niftytrader", "shoonya", "sensibull", "dhan_headless", "nse_public", "moneycontrol"],
+    "FINNIFTY": ["niftytrader", "shoonya", "sensibull", "dhan_headless", "nse_public", "moneycontrol"],
+    "MIDCPNIFTY": ["niftytrader", "shoonya", "sensibull", "dhan_headless", "nse_public", "moneycontrol"],
+    "SENSEX": ["niftytrader", "shoonya", "sensibull", "dhan_headless", "nse_public", "moneycontrol"],
+    "NATURALGAS": ["dhan_commodity", "shoonya", "niftytrader", "dhan", "dhan_headless", "moneycontrol"],
+    "CRUDEOIL": ["dhan_commodity", "shoonya", "niftytrader", "dhan", "dhan_headless", "moneycontrol"],
+    "GOLD": ["dhan_commodity", "shoonya", "niftytrader", "dhan", "dhan_headless", "moneycontrol"],
+    "SILVER": ["dhan_commodity", "shoonya", "niftytrader", "dhan", "dhan_headless", "moneycontrol"],
 }
 
 LOG_LEVEL = "INFO"

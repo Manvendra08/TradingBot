@@ -2670,6 +2670,13 @@ def close_book(
         except Exception:
             log.exception("close_book: accounting audit failed for trade %s", trade_id)
 
+        try:
+            from src.scheduler.ml_training_job import on_trade_closed
+
+            on_trade_closed()
+        except Exception:
+            pass
+
 
 def close_leg(leg_id: int, closed_at: str, exit_premium: float, exit_reason: str) -> None:
     """Close a single leg in a multi-leg book."""

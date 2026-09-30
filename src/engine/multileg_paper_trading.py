@@ -1140,10 +1140,11 @@ def _attempt_new_entry(
         except Exception as e:
             log.warning("[multileg-paper] %s: Greeks computation failed: %s", symbol, e)
 
+    sl_pct_verdict = float(getattr(verdict, "stop_loss_pct", 1.5) or 1.5)
     if compute_book_risk_profile is not None:
         try:
             risk_profile = compute_book_risk_profile(
-                strategy_type, legs, net_premium, underlying
+                strategy_type, legs, net_premium, underlying, stop_loss_pct=sl_pct_verdict
             ) or {}
         except Exception as e:
             log.warning(
@@ -1204,6 +1205,7 @@ def _attempt_new_entry(
                 book_greeks=book_greeks,
                 risk_profile=risk_profile,
                 combined_margin=combined_margin,
+                stop_loss_pct=sl_pct_verdict,
             )
         except Exception as e:
             log.warning(

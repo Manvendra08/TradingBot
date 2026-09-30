@@ -270,8 +270,8 @@ def _format_commodity_regime_intelligence(symbol: str, scan_context: dict) -> st
         # 3. Momentum Engine Status
         try:
             from src.engine.ng_momentum_strategy import check_ng_momentum_entry
-            bull_ok, bull_msg = check_ng_momentum_entry("BUY")
-            bear_ok, bear_msg = check_ng_momentum_entry("SELL")
+            bull_ok, bull_msg = check_ng_momentum_entry("BUY", scan_context=scan_context)
+            bear_ok, bear_msg = check_ng_momentum_entry("SELL", scan_context=scan_context)
             if bull_ok:
                 mom_status = "Bullish momentum breakout active"
             elif bear_ok:
@@ -496,7 +496,7 @@ Condor/Spreads: all sold+bought legs liquid.
   * Minimum wing width (buy strike minus sell strike) — HARD validator floors, a proposal below these is auto-rejected:
     NIFTY >=0.50% of spot (approx 120 pts) | BANKNIFTY >=0.60% (approx 340 pts) | SENSEX >=0.60% (approx 450 pts) | NATURALGAS >=10 pts (2 strike steps) | CRUDEOIL >=50 pts.
     Prefer 1.5x these minimums whenever premium allows.
-  * Max Hedge Cost: Total debit spent on BUY wings MUST NOT exceed 65% of gross credit collected from SELL legs. For NATURALGAS, hedge strikes are wider-spaced: use 2-3 strike steps for wings so buy legs sit far enough from short legs to keep the hedge debit under control.
+  * Max Hedge Cost: Total debit spent on BUY wings MUST NOT exceed 50% of gross credit collected from SELL legs. For NATURALGAS and indices, choose wings far enough OTM so buy legs sit at safe strike distances to keep hedge debit strictly under 50%.
   * If NO liquid strikes for chosen strategy, emit NO_TRADE. A missed trade costs nothing, but valid setups should be proposed when risk-reward is coherent.
 
 Delta target: 0.15-0.30 for OTM sell legs | Max pain={max_pain:.0f} as magnet | S/R for strike anchors.

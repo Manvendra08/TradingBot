@@ -38,11 +38,16 @@ def check_nymex_1h_trend() -> str:
         log.warning("Failed to check NYMEX 1H trend from yfinance: %s", e)
     return "NEUTRAL"
 
-def check_ng_momentum_entry(side: str) -> tuple[bool, str]:
+def check_ng_momentum_entry(
+    side: str,
+    scan_context: dict | None = None,
+    intel: dict | None = None
+) -> tuple[bool, str]:
     """
     Evals momentum strategy gates:
     - NYMEX 1H trend alignment.
     - Position limit & Daily loss cap.
+    - Active EIA macro stance calibrated against real-time price trend and OI data.
     """
     if not check_ng_position_limit():
         return False, "NG_POSITION_LIMIT_EXCEEDED"
@@ -58,17 +63,97 @@ def check_ng_momentum_entry(side: str) -> tuple[bool, str]:
     elif side == "SELL" and nymex_trend != "BEARISH":
         return False, "NYMEX_DIVERGENCE"
 
-    # Check active weekly EIA macro stance to prevent fighting structural deficit/surplus trends
+    # Check active weekly EIA macro stance to prevent fighting structural deficit/surplus trends,
+    # but give decisive weightage to real-time price movement and OI positioning.
     try:
         from src.engine.ng_macro_context import get_active_ng_macro_context
         macro_ctx = get_active_ng_macro_context()
         macro_stance = macro_ctx.get("macro_stance", "NEUTRAL_BALANCED")
-        if side == "SELL" and macro_stance == "BULLISH_TIGHTENING":
-            log.warning("NG Momentum Entry Blocked: Side=SELL conflicts with active weekly EIA stance BULLISH_TIGHTENING")
-            return False, "EIA_MACRO_CONFLICT_BULLISH_TIGHTENING"
-        elif side == "BUY" and macro_stance == "BEARISH_LOOSENING":
-            log.warning("NG Momentum Entry Blocked: Side=BUY conflicts with active weekly EIA stance BEARISH_LOOSENING")
-            return False, "EIA_MACRO_CONFLICT_BEARISH_LOOSENING"
+        squeeze_risk = bool(macro_ctx.get("is_rollover_squeeze_risk", False))
+
+        is_conflict = (
+            (side == "SELL" and macro_stance == "BULLISH_TIGHTENING") or
+            (side == "BUY" and macro_stance == "BEARISH_LOOSENING")
+        )
+
+        if is_conflict:
+            # 1. Resolve real-time OI and technical context
+            verdict_label = ""
+            conf = 0
+            candle_1h = ""
+            candle_3h = ""
+            ce_oi_chg = 0
+            pe_oi_chg = 0
+
+            if intel and isinstance(intel, dict):
+                verdict_label = str(intel.get("verdict_label") or "").upper()
+                conf = int(intel.get("confidence") or 0)
+            if scan_context and isinstance(scan_context, dict):
+                if not verdict_label:
+                    verdict_label = str(scan_context.get("verdict_label") or "").upper()
+                if not conf:
+                    conf = int(scan_context.get("engine_confidence") or 0)
+                candle_1h = str(scan_context.get("candle_1h") or "").upper()
+                candle_3h = str(scan_context.get("candle_3h") or "").upper()
+                ce_oi_chg = int(scan_context.get("ce_oi_change") or 0)
+                pe_oi_chg = int(scan_context.get("pe_oi_change") or 0)
+
+            # Fallback to latest scan summary if context not supplied
+            if not verdict_label:
+                try:
+                    with get_conn() as conn:
+                        row = conn.execute(
+                            "SELECT verdict_label, confidence, candle_1h, candle_3h, ce_oi_change, pe_oi_change "
+                            "FROM scan_summaries WHERE symbol='NATURALGAS' ORDER BY id DESC LIMIT 1"
+                        ).fetchone()
+                        if row:
+                            verdict_label = str(row["verdict_label"] or "").upper()
+                            conf = int(row["confidence"] or 0)
+                            candle_1h = str(row["candle_1h"] or "").upper()
+                            candle_3h = str(row["candle_3h"] or "").upper()
+                            ce_oi_chg = int(row["ce_oi_change"] or 0)
+                            pe_oi_chg = int(row["pe_oi_change"] or 0)
+                except Exception:
+                    pass
+
+            # 2. Evaluate Price Action & OI conviction
+            oi_confirms = False
+            price_confirms = False
+
+            if side == "SELL":
+                # Price confirmed: NYMEX is BEARISH (already checked) + MCX candle is BEARISH
+                price_confirms = (candle_1h == "BEARISH" or candle_3h == "BEARISH" or nymex_trend == "BEARISH")
+                # OI confirmed: Short Buildup, Call Writing, Long Unwinding, or Call OI added > Put OI
+                is_bearish_verdict = any(k in verdict_label for k in ("SHORT", "CALL WRITING", "LONG UNWINDING", "BEARISH"))
+                is_bearish_flows = (ce_oi_chg > 0 and pe_oi_chg <= 0) or (ce_oi_chg - pe_oi_chg > 1000)
+                oi_confirms = (is_bearish_verdict and conf >= 40) or (is_bearish_flows and conf >= 30)
+            elif side == "BUY":
+                # Price confirmed: NYMEX is BULLISH (already checked) + MCX candle is BULLISH
+                price_confirms = (candle_1h == "BULLISH" or candle_3h == "BULLISH" or nymex_trend == "BULLISH")
+                # OI confirmed: Long Buildup, Put Writing, Short Covering, or Put OI added > Call OI
+                is_bullish_verdict = any(k in verdict_label for k in ("LONG", "PUT WRITING", "SHORT COVERING", "BULLISH"))
+                is_bullish_flows = (pe_oi_chg > 0 and ce_oi_chg <= 0) or (pe_oi_chg - ce_oi_chg > 1000)
+                oi_confirms = (is_bullish_verdict and conf >= 40) or (is_bullish_flows and conf >= 30)
+
+            # 3. Rollover squeeze risk check: Front-month expiry squeeze risk takes precedence
+            if side == "SELL" and macro_stance == "BULLISH_TIGHTENING" and squeeze_risk:
+                log.warning("NG Momentum Entry Blocked: Selling into front-month rollover squeeze risk & BULLISH_TIGHTENING stance.")
+                return False, "EIA_MACRO_ROLLOVER_SQUEEZE_RISK"
+
+            # 4. If price action and OI confirm trend momentum, OVERRIDE the weekly EIA stance
+            if price_confirms and oi_confirms:
+                log.info(
+                    "NG Momentum: Active weekly EIA stance %s OVERRIDDEN by price action (NYMEX=%s, MCX_1H=%s, 3H=%s) "
+                    "and OI data (verdict='%s', conf=%d, CE_OI_chg=%+d, PE_OI_chg=%+d)",
+                    macro_stance, nymex_trend, candle_1h, candle_3h, verdict_label, conf, ce_oi_chg, pe_oi_chg
+                )
+            else:
+                log.warning(
+                    "NG Momentum Entry Blocked: Side=%s conflicts with active weekly EIA stance %s "
+                    "(insufficient price/OI conviction to override: verdict='%s', conf=%d, price_confirms=%s, oi_confirms=%s)",
+                    side, macro_stance, verdict_label, conf, price_confirms, oi_confirms
+                )
+                return False, f"EIA_MACRO_CONFLICT_{macro_stance}"
     except Exception as e:
         log.debug("NG Momentum Macro Stance check error: %s", e)
         

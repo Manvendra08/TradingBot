@@ -229,10 +229,20 @@ class SensibullFetcher(BaseFetcher):
                 ptheta = pg.get("theta")
                 pdelta = pg.get("delta", 0) or 0
                 pvega = pg.get("vega")
+                # Check delta signs and Put-Call parity (ce_cand - pe_cand ~ 1.0)
+                if delta > 0 and pdelta < 0:
+                    ce_cand, pe_cand = delta, pdelta
+                elif delta < 0 and pdelta > 0:
+                    ce_cand, pe_cand = pdelta, delta
+                else:
+                    continue
+
+                if abs((ce_cand - pe_cand) - 1.0) > 0.20:
+                    continue
+
                 if (
                     ptheta is not None
-                    and abs(ptheta - theta) < 0.01
-                    and ((delta > 0 and pdelta < 0) or (delta < 0 and pdelta > 0))
+                    and abs(ptheta - theta) < 0.05
                     and (vega is None or pvega is None or abs(pvega - vega) < 0.05)
                 ):
                     best = (pt, po)
@@ -272,8 +282,22 @@ class SensibullFetcher(BaseFetcher):
             log.warning("[sensibull] no pairs constructed for %s/%s", sym, target_expiry)
             return None
 
-        # Sort by CE LTP descending → increasing strike
-        pairs.sort(key=lambda x: x["ce_ltp"], reverse=True)
+        # Filter out dead untraded pairs where an option has 0 LTP, 0 vol, 0 OI
+        # or where both sides have 0 LTP to prevent stale out-of-sequence quotes
+        pairs = [
+            p for p in pairs
+            if not (p["ce_ltp"] <= 0 and p["ce_volume"] <= 0 and p["ce_oi"] <= 0)
+            and not (p["pe_ltp"] <= 0 and p["pe_volume"] <= 0 and p["pe_oi"] <= 0)
+            and not (p["ce_ltp"] <= 0 and p["pe_ltp"] <= 0)
+        ]
+
+        if not pairs:
+            log.warning("[sensibull] no active liquid pairs remaining for %s/%s", sym, target_expiry)
+            return None
+
+        # Sort by CE delta descending (decreasing delta = increasing strike)
+        # Fall back to CE LTP descending if deltas are equal/missing
+        pairs.sort(key=lambda x: (x["ce_delta"], x["ce_ltp"]), reverse=True)
 
         # Locate ATM: CE delta closest to 0.5
         valid_indices = [i for i, p in enumerate(pairs) if p["ce_delta"] is not None]
@@ -302,7 +326,7 @@ class SensibullFetcher(BaseFetcher):
 
             if not ce_valid or not pe_valid:
                 corrupted_strike_count += 1
-                log.warning(
+                log.debug(
                     "[sensibull] %s: Reconstructed strike %.0f failed validity (CE LTP=%.2f valid=%s, PE LTP=%.2f valid=%s, spot=%.2f)",
                     sym, strike_price, p["ce_ltp"], ce_valid, p["pe_ltp"], pe_valid, validation_spot
                 )

@@ -53,19 +53,18 @@ MIN_WING_WIDTH_POINTS = {
 # Minimum net credit collected as a fraction of wing width (e.g. 0.25 = collect at least 25% of spread width)
 MIN_CREDIT_TO_WIDTH_RATIO = 0.20
 
-# Maximum insurance cost: Long hedge legs cannot consume more than 65% of gross premium collected on short legs.
-# NATURALGAS next-strike hedges are structurally expensive (5-pt strike grid, premium-heavy wings),
-# so it gets a wider 75% allowance. Per-symbol overrides live in MAX_HEDGE_COST_RATIO_BY_SYMBOL.
-MAX_HEDGE_COST_RATIO = 0.65
+# Maximum insurance cost: Long hedge legs cannot consume more than 50% of gross premium collected on short legs.
+# Per-symbol overrides live in MAX_HEDGE_COST_RATIO_BY_SYMBOL.
+MAX_HEDGE_COST_RATIO = 0.50
 MAX_HEDGE_COST_RATIO_BY_SYMBOL: dict[str, float] = {
-    "NATURALGAS": 0.75,
+    "NATURALGAS": 0.50,
 }
 
 
 def get_max_hedge_cost_ratio(symbol: str = "") -> float:
     """Return the insurance-debit ceiling (fraction of gross credit) for *symbol*.
 
-    Falls back to MAX_HEDGE_COST_RATIO (0.65) for unlisted symbols.
+    Falls back to MAX_HEDGE_COST_RATIO (0.50) for unlisted symbols.
     """
     base = str(symbol or "").upper().strip().split()[0]
     return MAX_HEDGE_COST_RATIO_BY_SYMBOL.get(base, MAX_HEDGE_COST_RATIO)
