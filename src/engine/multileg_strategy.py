@@ -482,6 +482,11 @@ def score_entry_quality(
     scan_context: dict,
     book_greeks: dict,
     risk_profile: dict,
+    *,
+    net_premium: float | None = None,
+    margin: float | None = None,
+    underlying: float | None = None,
+    stop_loss_pct: float | None = None,
     **kwargs,
 ) -> tuple[int, list[str]]:
     """
@@ -508,6 +513,14 @@ def score_entry_quality(
         From compute_book_greeks().
     risk_profile : dict
         From compute_book_risk_profile().
+    net_premium : float, optional
+        Explicit net premium for the book. Falls back to scan_context["net_premium"].
+    margin : float, optional
+        Explicit margin requirement. Falls back to scan_context["margin"].
+    underlying : float, optional
+        Explicit underlying price. Falls back to scan_context["underlying"].
+    stop_loss_pct : float, optional
+        Mechanical stop-loss percentage. Falls back to kwargs/scan_context.
 
     Returns
     -------
@@ -518,16 +531,16 @@ def score_entry_quality(
 
     iv_rank = float(scan_context.get("iv_rank") or 0)
     regime = (scan_context.get("regime") or "").lower()
-    underlying = float(scan_context.get("underlying") or 0)
-    net_premium = float(scan_context.get("net_premium") or 0)
-    margin = float(scan_context.get("margin") or 0)
+    underlying = float(underlying or scan_context.get("underlying") or 0)
+    net_premium = float(net_premium or scan_context.get("net_premium") or 0)
+    margin = float(margin or scan_context.get("margin") or 0)
 
     net_delta = abs(book_greeks.get("net_delta", 0))
     max_profit = risk_profile.get("max_profit", 0)
     max_loss = risk_profile.get("max_loss", 0)
 
     # Resolve planned operational loss governed by mechanical stop loss
-    raw_sl_pct = kwargs.get("stop_loss_pct") or scan_context.get("stop_loss_pct") or 1.5
+    raw_sl_pct = stop_loss_pct or scan_context.get("stop_loss_pct") or kwargs.get("stop_loss_pct") or 1.5
     try:
         stop_loss_pct = float(raw_sl_pct)
     except (ValueError, TypeError):

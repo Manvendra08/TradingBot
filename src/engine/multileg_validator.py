@@ -108,17 +108,26 @@ def validate_multileg_trade(
             rejection_reason=f"Margin requirement exceeded: Estimated margin ₹{estimated_margin:.2f} > max ₹{max_margin_inr:.2f}."
         )
 
-    # Net delta cap check
+    # Net delta cap check (evaluated on the normalized strategy structure)
+    ratios = [float(l.get("ratio") or 1.0) for l in proposal.legs if float(l.get("ratio") or 1.0) > 0]
+    min_ratio = min(ratios) if ratios else 1.0
+
     net_delta = 0.0
     has_delta = False
     for leg in proposal.legs:
         if "delta" in leg and leg["delta"] is not None:
             has_delta = True
-            leg_delta = float(leg["delta"])
+            raw_delta = abs(float(leg["delta"]))
             action = str(leg.get("action") or leg.get("side") or "SELL").upper()
-            ratio = float(leg.get("ratio") or 1)
-            sign = -1.0 if action == "SELL" else 1.0
-            net_delta += sign * leg_delta * ratio
+            opt_type = str(leg.get("option_type") or "").upper()
+            ratio = float(leg.get("ratio") or 1.0)
+            norm_ratio = ratio / min_ratio if min_ratio > 0 else 1.0
+
+            # CE delta is positive (+), PE delta is negative (-)
+            und_delta = -raw_delta if opt_type == "PE" else raw_delta
+            # BUY takes underlying delta (+), SELL negates it (-)
+            pos_delta = und_delta if action == "BUY" else -und_delta
+            net_delta += pos_delta * norm_ratio
 
     if has_delta and abs(net_delta) > max_net_delta:
         return ValidationResult(

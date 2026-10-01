@@ -90,15 +90,18 @@ def parse_llm_execution(raw_response: dict[str, Any] | str | None, underlying: f
                 action=action,
             )
 
+        raw_ratio = leg.get("ratio")
+        if raw_ratio is None:
+            raw_ratio = leg.get("lots", 1)
         try:
-            ratio = int(leg.get("ratio", 1))
+            ratio = int(raw_ratio)
         except (ValueError, TypeError):
             ratio = 1
 
         if ratio <= 0:
             return ParsedExecution(
                 is_valid=False,
-                rejection_reason=f"Invalid ratio for leg #{i}: {leg.get('ratio')}",
+                rejection_reason=f"Invalid ratio for leg #{i}: {raw_ratio}",
                 strategy=strategy,
                 action=action,
             )
@@ -108,12 +111,18 @@ def parse_llm_execution(raw_response: dict[str, Any] | str | None, underlying: f
         except (ValueError, TypeError):
             entry_premium = 0.0
 
+        try:
+            delta = float(leg.get("delta") or 0.0)
+        except (ValueError, TypeError):
+            delta = 0.0
+
         validated_legs.append({
             "action": leg_action,
             "strike": strike,
             "option_type": option_type,
             "ratio": ratio,
             "entry_premium": max(0.0, entry_premium),
+            "delta": delta,
         })
 
     net_credit = float(raw_response.get("net_credit", 0.0) or 0.0)

@@ -454,7 +454,23 @@
   - **Fix:** Passed `symbol` at all three `validate_legs` call sites (per-symbol floors + MCX bans now active; floor logic now agrees with `validate_multileg_trade`, which already received `symbol`). Rewrote the prompt wing-width block to state the actual hard floors incl. NATURALGAS ≥10 pts and NG-specific hedge-debit ≤65% guidance; corrected the BANKNIFTY pct-table comment.
   - **Residual (by design, not a defect):** Confidence floor 70% NSE / 72% MCX with `effective = min(LLM, engine)` still suppresses low-conviction cycles — evidence: NIFTY 65% < 70%, NATURALGAS 70% < 72%. NATURALGAS hedge-debit ceiling is now per-symbol at 75% (`MAX_HEDGE_COST_RATIO_BY_SYMBOL` via `get_max_hedge_cost_ratio()`; all other symbols stay 0.65) — the observed 71.5% 300/290 PE spread now passes; NG spreads whose hedge debit exceeds 75% are still rejected.
 
-
+### F130: Multi-Leg Execution Engine Integrity & Broker Reconciliation Audit (P0-CRITICAL)
+- **Issues Identified & Fixed (15 Audit Points):**
+  1. *Trade Mode Persistence*: Added `trade_mode` to `multi_leg_trades` and `multi_leg_legs` insert schemas (migrations M137/M138 backfilled existing real broker trades to `LIVE`). Live entries now explicitly write `LIVE` or `SHADOW`, preventing paper runners from closing real broker positions in DB.
+  2. *Exit Gate Exemption*: `broker_gate.py` permits `EXIT` operations when `trading_paused=True` to guarantee stops and square-offs always execute at broker. Real books are never DB-closed on gate rejection.
+  3. *Pending Order Cancellation*: Unfilled exit, rollback, or entry orders are actively cancelled via `_cancel_pending_order()`, preventing stale working orders from executing later and creating accidental net-long exposures.
+  4. *GTT Protective Ordering*: GTTs on short legs are checked for prior fills (`_gtt_already_filled`, `_broker_position_is_flat`) to prevent duplicate exits; standing GTTs are cancelled strictly after exit fills complete.
+  5. *Fallback Expected Price*: `place_kite_order` passes authoritative leg premium as `expected_price` with `tick_size` buffer when `kite.ltp` lacks quote subscriptions.
+  6. *Exchange Resolution*: Replaced hardcoded `"NFO"` fallback with `get_kite_exchange(symbol)`, correctly routing SENSEX to `BFO` and MCX commodities to `MCX`.
+  7. *Contract Expiry Preservation*: `multi_leg_legs.expiry` is explicitly persisted; exit lookup, 2-minute poller, and option row PnL matching filter strictly by exact leg contract expiry.
+  8. *Atomic Partial Fills & Rollback Alerts*: `_cancel_pending_order` captures filled quantity from order history; `_rollback_placed_legs` squares off exact filled lots; rollback failures send emergency Telegram alerts and write `ROLLBACK_FAILED` DB records for manual oversight.
+  9. *Direct Kite Sync Multileg Exemption*: Open `LIVE` multileg legs are excluded from `DIRECT_KITE` adoption and reconciler filters strictly to `trade_mode='LIVE'`, preventing duplicate exits and false auto-closes.
+  10. *Shadow Mode Pipeline Parity*: Live shadow mode records trades under `trade_mode='SHADOW'`, generating synthetic execution IDs and tracking performance without placing real broker orders.
+  11. *LOT_SIZES Scope Safety*: Function-level import in `_monitor_open_books_live` prevents `UnboundLocalError` when evaluating debit spreads with `net_premium <= 0`.
+  12. *AI ADJUST Advisory Handling*: Adjustments are logged and dispatched as operator alerts without prematurely burning adjustment counters on non-executed legs.
+  13. *Authoritative Net Premium*: Net premium is calculated from live option chain quotes (`sum(sell) - sum(buy)`) rather than trusting hallucinated LLM values.
+  14. *Pipeline Exit Continuity*: Edge expectancy failure blocks live entries (`_live_entries_blocked = True`) without clearing `active_strategies`, ensuring exit monitoring for open positions continues running.
+  15. *Realized Fill Pricing*: `_close_live_book` reads actual `average_price` from completed Kite order history via `get_order_execution_details()` rather than assuming raw snapshot LTP.
 
 ---
 

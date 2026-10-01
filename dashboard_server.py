@@ -1788,10 +1788,77 @@ def get_multi_leg_trades(status: str = "ALL"):
     return list_multi_leg_trades(status_filter=status)
 
 
+def _find_open_ml_book(trade_ref: str):
+    """OPEN multi_leg_trades row by book_id, then trade_ref, then id (exact match wins)."""
+    from src.models.schema import get_conn
+
+    ref = str(trade_ref).strip().lstrip("#")
+    with get_conn(read_only=True) as conn:
+        row = conn.execute(
+            "SELECT * FROM multi_leg_trades WHERE status='OPEN' AND (book_id=? OR trade_ref=? OR id=?) "
+            "ORDER BY (book_id=?) DESC, (trade_ref=?) DESC LIMIT 1",
+            (ref, ref, ref, ref, ref),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+@app.post("/api/multi_leg_trades/{trade_ref}/close", dependencies=[Depends(authenticate)])
+def close_multi_leg_trade_endpoint(trade_ref: str):
+    """Close an OPEN multi-leg book (history kept). LIVE books square off via the broker gate."""
+    from datetime import datetime, timezone
+
+    from config.settings import LOT_SIZES
+    from src.models.schema import close_book, get_open_book_legs
+
+    book = _find_open_ml_book(trade_ref)
+    if not book:
+        return JSONResponse(
+            {"ok": False, "message": f"No OPEN multi-leg book {trade_ref} (TFSS paper legs close individually)"},
+            status_code=404,
+        )
+    symbol = book.get("symbol") or ""
+    book_id = book.get("book_id") or ""
+    if not book_id:
+        return JSONResponse({"ok": False, "message": f"Book {trade_ref} has no book_id"}, status_code=409)
+    legs = get_open_book_legs(int(book["id"]))
+    lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(symbol.upper().split()[0] if symbol else "", 1))
+    leg_exits = []
+    total_pnl = 0.0
+    for leg in legs:
+        entry = float(leg.get("entry_premium") or 0.0)
+        exit_p = float(leg.get("current_premium") or entry)
+        diff = (entry - exit_p) if (leg.get("side") or "SELL").upper() == "SELL" else (exit_p - entry)
+        total_pnl += diff * int(leg.get("lots") or 1) * lot_size
+        leg_exits.append({"id": leg["id"], "exit_premium": exit_p})
+    total_pnl = round(total_pnl, 2)
+    closed_at = datetime.now(timezone.utc).isoformat()
+    reason = "Closed via dashboard"
+
+    if str(book.get("trade_mode") or "PAPER").upper() == "LIVE":
+        from src.engine.multileg_live_trading import _close_live_book
+
+        if not _close_live_book(symbol, book_id, legs, closed_at, "CLOSED_MANUAL", reason, total_pnl):
+            return JSONResponse(
+                {"ok": False, "message": f"Broker exit failed for LIVE book {book_id}; book kept OPEN (will retry)"},
+                status_code=502,
+            )
+    else:
+        close_book(book_id, closed_at, "CLOSED_MANUAL", reason, total_pnl, leg_exits=leg_exits)
+        if _find_open_ml_book(book_id):
+            return JSONResponse({"ok": False, "message": f"close_book rejected book {book_id}"}, status_code=500)
+    return {"ok": True, "message": f"Multi-leg book {book_id} closed", "total_pnl": total_pnl}
+
+
 @app.delete("/api/multi_leg_trades/{trade_ref}", dependencies=[Depends(authenticate)])
 def delete_multi_leg_trade_endpoint(trade_ref: str):
     from src.models.schema import delete_multi_leg_trade
 
+    # Hard-delete destroys history and orphans legs; OPEN books must be closed first.
+    if _find_open_ml_book(trade_ref):
+        return JSONResponse(
+            {"ok": False, "message": f"Book {trade_ref} is OPEN — close it via POST /api/multi_leg_trades/{{ref}}/close"},
+            status_code=409,
+        )
     delete_multi_leg_trade(trade_ref)
     return {"ok": True, "message": f"Multi-leg trade {trade_ref} deleted"}
 

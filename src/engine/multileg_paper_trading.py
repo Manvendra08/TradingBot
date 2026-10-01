@@ -1032,10 +1032,12 @@ def _attempt_new_entry(
         for leg in legs:
             # Preserve multi-leg relative ratios (e.g. 1:2 ratio spread or asymmetric structures)
             orig_ratio = max(1, int(leg.get("lots") or 1) // max(1, min_lot))
+            leg["ratio"] = orig_ratio
             leg["lots"] = dashboard_lots * orig_ratio
     except Exception as e:
         log.warning("[multileg-paper] %s: lot sizing failed, defaulting to 1 lot: %s", symbol, e)
         for leg in legs:
+            leg.setdefault("ratio", 1)
             leg.setdefault("lots", 1)
 
     if validate_legs is not None:
@@ -1195,16 +1197,14 @@ def _attempt_new_entry(
     if score_entry_quality is not None:
         try:
             entry_quality, quality_reasons = score_entry_quality(
-                symbol=symbol,
                 strategy_type=strategy_type,
                 legs=legs,
-                net_premium=net_premium,
-                underlying=underlying,
                 scan_context=scan_context,
-                intel=intel,
                 book_greeks=book_greeks,
                 risk_profile=risk_profile,
-                combined_margin=combined_margin,
+                net_premium=net_premium,
+                margin=combined_margin,
+                underlying=underlying,
                 stop_loss_pct=sl_pct_verdict,
             )
         except Exception as e:
@@ -1493,12 +1493,11 @@ def _calc_multileg_pnl(book: dict, legs: list[dict], scan_context: dict | None =
     For short options (SELL): PnL = (entry_premium - current_premium) * lots * lot_size
     summed across all open legs + realized PnL of previously closed legs in this book.
     """
-    from config.settings import LOT_SIZES
+    from src.engine.multileg_pnl import calc_leg_pnl, _resolve_leg_current_premium
     from src.models.schema import get_read_conn, update_multi_leg_trade_pnl
-    from src.engine.trade_plan import is_valid_option_premium
+    from config.settings import LOT_SIZES
 
     sc = scan_context or book.get("scan_context") or {}
-    option_rows = list((sc or {}).get("option_rows") or [])
     symbol = book.get("symbol", "")
     base_sym = symbol.upper().split()[0] if symbol else ""
     lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_sym, 1))
@@ -1512,55 +1511,7 @@ def _calc_multileg_pnl(book: dict, legs: list[dict], scan_context: dict | None =
         lots = int(leg.get("lots") or 1)
         side = (leg.get("side") or "SELL").upper()
 
-        current_premium = None
-        for row in option_rows:
-            row_strike = float(row.get("strike") or 0.0)
-            row_type = (row.get("option_type") or "").upper()
-            if abs(row_strike - strike) < 0.01 and row_type == option_type:
-                ltp = float(row.get("ltp") or row.get("premium") or 0.0)
-                if ltp > 0:
-                    if underlying > 0 and not is_valid_option_premium(strike, option_type, ltp, underlying):
-                        log.warning(
-                            "[multileg-paper] %s: _calc_multileg_pnl rejected corrupted row LTP %.2f for %s %.0f (spot=%.2f)",
-                            symbol, ltp, option_type, strike, underlying,
-                        )
-                    else:
-                        current_premium = ltp
-                        break
-
-        if current_premium is None:
-            try:
-                leg_expiry = str(leg.get("expiry") or book.get("expiry") or "").strip()
-                if leg_expiry:
-                    with get_read_conn() as conn:
-                        opt_row = conn.execute(
-                            "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND expiry=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
-                            (symbol, base_sym, strike, option_type, leg_expiry)
-                        ).fetchone()
-                        if opt_row:
-                            snap_ltp = float(opt_row["ltp"])
-                            if underlying > 0 and not is_valid_option_premium(strike, option_type, snap_ltp, underlying):
-                                log.warning(
-                                    "[multileg-paper] %s: _calc_multileg_pnl rejected corrupted DB snapshot LTP %.2f for %s %.0f (spot=%.2f)",
-                                    symbol, snap_ltp, option_type, strike, underlying,
-                                )
-                            else:
-                                current_premium = snap_ltp
-            except Exception:
-                pass
-
-        if current_premium is None:
-            # Estimate using delta movement rather than raw fallback
-            if underlying > 0 and book.get("entry_underlying"):
-                entry_und = float(book.get("entry_underlying") or underlying)
-                und_move = underlying - entry_und
-                delta = float(leg.get("delta") or 0.25)
-                # For CE: price increases if spot increases; for PE: price increases if spot decreases
-                delta_sign = delta if option_type == "CE" else -abs(delta)
-                current_premium = max(0.05, entry_premium + delta_sign * und_move)
-            else:
-                current_premium = entry_premium
-
+        current_premium = _resolve_leg_current_premium(symbol, leg, sc, book)
         leg["current_premium"] = current_premium
 
         # Persist MTM to DB so digest reads (via get_open_books_for_symbol)
@@ -1574,12 +1525,7 @@ def _calc_multileg_pnl(book: dict, legs: list[dict], scan_context: dict | None =
             except Exception as e:
                 log.debug("[multileg-paper] %s: MTM persist failed for leg %s: %s", symbol, leg_id, e)
 
-        if side == "SELL":
-            pnl = (entry_premium - current_premium) * lots * lot_size
-        else:
-            pnl = (current_premium - entry_premium) * lots * lot_size
-
-        total_pnl += pnl
+        total_pnl += calc_leg_pnl(entry_premium, current_premium, side, lots, lot_size)
 
     # Include realized PnL of any closed/rolled legs for this book
     trade_id = book.get("id")

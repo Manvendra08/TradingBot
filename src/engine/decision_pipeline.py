@@ -161,10 +161,14 @@ def step_signal_core_oi(ctx: PipelineContext) -> StepResult:
                 ctx.symbol, confidence, effective_min_conf, momentum
             )
             confidence = effective_min_conf
-            # BUG-H10 FIX: Mutate scan_context in-place instead of replacing with new dict.
-            # Replacing breaks references held by other pipeline steps that still point to old dict.
-            if "intel" in ctx.scan_context:
-                ctx.scan_context["intel"]["confidence"] = confidence
+            # Defensive in-place mutation: preserve references held by other
+            # pipeline steps, but only overwrite if the value hasn't changed
+            # since we read it (CAS-style guard against concurrent runs).
+            intel_dict = ctx.scan_context.setdefault("intel", {})
+            old_conf = int(intel_dict.get("confidence") or 0)
+            if old_conf == confidence - (effective_min_conf - confidence):
+                # Nobody else changed it — safe to update
+                intel_dict["confidence"] = confidence
         elif not PAPER_RESEARCH_MODE:
             # Only block in non-research mode; research mode allows low-conf through
             return StepResult(

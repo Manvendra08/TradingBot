@@ -38,6 +38,7 @@ _MODULE_LOG = log
 
 import re
 from datetime import datetime
+from typing import Any
 
 import pytz
 from pydantic import BaseModel, Field
@@ -337,7 +338,33 @@ def estimate_call_cost(model: str, input_tokens: int, output_tokens: int) -> flo
 
 
 _cost_tracker_lock = threading.Lock()
-_GLOBAL_COST_TRACKER = CostTracker(budget_limit=10.00)
+
+
+def _get_llm_daily_budget() -> float:
+    """Read LLM daily budget from runtime_config.json or env, fallback to 10.00."""
+    try:
+        import json
+        from pathlib import Path
+
+        config_path = Path(__file__).resolve().parents[2] / "data" / "runtime_config.json"
+        if config_path.exists():
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+            budget = config.get("llm_daily_budget_usd")
+            if budget is not None:
+                return float(budget)
+    except Exception:
+        pass
+
+    import os
+    env_budget = os.environ.get("LLM_DAILY_BUDGET_USD")
+    if env_budget:
+        return float(env_budget)
+
+    return 10.00
+
+
+_GLOBAL_COST_TRACKER = CostTracker(budget_limit=_get_llm_daily_budget())
 
 
 def record_call_cost(model: str, input_tokens: int, output_tokens: int) -> float:
@@ -1480,6 +1507,7 @@ def _reset_thread_read_timeouts() -> None:
 
 _VERDICT_CACHE = {}
 _EXIT_CACHE = {}
+_MULTILEG_VERDICT_CACHE: dict[str, dict[str, Any]] = {}
 _API_QUOTA_EXHAUSTED_UNTIL = 0.0
 _CONSECUTIVE_FAILURES = 0
 _CIRCUIT_BREAKER_THRESHOLD = 3
@@ -1834,13 +1862,34 @@ def _normalize_parsed_schema(parsed: dict, schema) -> dict:
         parsed.setdefault("thesis", "No thesis provided")
         parsed.setdefault("profit_target_pct", 0.5)
         parsed.setdefault("stop_loss_pct", 2.0)
-        parsed.setdefault("time_decay_exit_dte", 7)
+        from config.multileg_strategies import DEFAULT_TIME_DECAY_EXIT_DTE
+        parsed.setdefault("time_decay_exit_dte", DEFAULT_TIME_DECAY_EXIT_DTE)
         parsed.setdefault("per_leg_exit_triggers", "NONE")
         parsed.setdefault("book_level_exit_triggers", "NONE")
         parsed.setdefault("adjustment_plan", "NONE")
 
     elif schema_name == "LLMMultiLegExit":
-        act = str(parsed.get("action") or "").upper().strip()
+        # Tolerate legacy prompt shape: {"decision":..., "adjustments":[...]}
+        act = str(parsed.get("action") or parsed.get("decision") or "").upper().strip()
+        adjs = parsed.get("adjustments")
+        if not parsed.get("adjustment") and isinstance(adjs, list) and adjs:
+            dicts = [a for a in adjs if isinstance(a, dict)]
+            if dicts and "close_strike" in dicts[0]:
+                parsed["adjustment"] = dicts[0]
+            elif dicts:
+                close = next((a for a in dicts if str(a.get("action", "")).upper() == "CLOSE"), {})
+                add = next((a for a in dicts if str(a.get("action", "")).upper() in ("ADD", "OPEN", "SELL", "BUY")), {})
+                if close and add:
+                    parsed["adjustment"] = {
+                        "close_strike": float(close.get("strike") or 0),
+                        "close_option_type": str(close.get("option_type") or "").upper(),
+                        "new_strike": float(add.get("strike") or 0),
+                        "new_option_type": str(add.get("option_type") or "").upper(),
+                        "new_side": str(add.get("side") or "SELL").upper(),
+                        "rationale": str(add.get("reason") or close.get("reason") or ""),
+                    }
+        parsed.pop("adjustments", None)
+        parsed.pop("decision", None)
         parsed["action"] = act if act in ("HOLD", "ADJUST", "CLOSE") else "HOLD"
         parsed.setdefault("urgency", "LOW")
         parsed.setdefault("reasoning", str(parsed.get("reason") or "Holding open book"))
@@ -4756,6 +4805,34 @@ INSTRUCTIONS:
 
 # ── Multi-Leg Strategy Verdict ──────────────────────────────────────────────
 
+_LEG_SIDE_ALIASES = {
+    "BUY": "BUY", "B": "BUY", "LONG": "BUY",
+    "SELL": "SELL", "S": "SELL", "SHORT": "SELL", "WRITE": "SELL",
+}
+# (BUY count, SELL count) required per strategy
+_REQUIRED_SIDE_COUNTS = {
+    "IRON_CONDOR": (2, 2),
+    "BEAR_CALL_SPREAD": (1, 1),
+    "BULL_PUT_SPREAD": (1, 1),
+    "SHORT_STRANGLE": (0, 2),
+    "SHORT_STRADDLE": (0, 2),
+}
+
+
+def _normalize_leg_sides(strategy: str, sides: list) -> tuple[list[str] | None, str]:
+    """Map leg side aliases to BUY/SELL and check per-strategy BUY/SELL counts.
+
+    Returns (normalized_sides, "") when valid, else (None, reason).
+    """
+    norm = [_LEG_SIDE_ALIASES.get(str(s or "").strip().upper()) for s in sides]
+    if None in norm:
+        return None, f"unknown leg side(s) {sides}"
+    need = _REQUIRED_SIDE_COUNTS.get(str(strategy or "").upper())
+    if need and (norm.count("BUY"), norm.count("SELL")) != need:
+        return None, f"requires {need[0]} BUY + {need[1]} SELL legs, got {norm.count('BUY')} BUY + {norm.count('SELL')} SELL"
+    return norm, ""
+
+
 def get_multileg_verdict(
     symbol: str,
     intel: dict,
@@ -4777,6 +4854,23 @@ def get_multileg_verdict(
 
     from src.engine.multileg_llm_schema import LLMMultiLegVerdict
     from src.engine.multileg_llm_prompt import build_multileg_prompt
+
+    # Input-hash cache for multileg verdicts (F6): 120s TTL
+    now = time.time()
+    cache_key = _multileg_verdict_cache_key(symbol, intel, scan_context, open_books)
+    cached_ml = _MULTILEG_VERDICT_CACHE.get(cache_key)
+    if cached_ml and (now - cached_ml["timestamp"]) < 120.0:
+        log.debug("[llm-multileg] %s: Reusing cached multileg verdict (age: %.1fs)", symbol, now - cached_ml["timestamp"])
+        return cached_ml["verdict"]
+
+    if open_books is None:
+        open_books = []
+        try:
+            from src.models.schema import get_open_books_for_symbol
+            for mode in ("PAPER", "LIVE"):
+                open_books.extend(get_open_books_for_symbol(symbol, trade_mode=mode))
+        except Exception as e:
+            log.warning("[llm-multileg] %s: could not load open books for prompt: %s", symbol, e)
 
     prompt = build_multileg_prompt(
         symbol=symbol,
@@ -4819,16 +4913,32 @@ def get_multileg_verdict(
                 max_legs = constraints.get("max_legs", 6)
 
                 if len(legs) < min_legs:
-                    # If LLM returned 2 legs for IRON_CONDOR (common LLM mistake for strangle), auto-reclassify to SHORT_STRANGLE
+                    # If LLM returned 2 legs for IRON_CONDOR, inspect legs to reclassify accurately
                     if strat == "IRON_CONDOR" and len(legs) == 2:
-                        log.info(
-                            "[llm-multileg] %s: Reclassifying 2-leg IRON_CONDOR to SHORT_STRANGLE",
-                            symbol,
-                        )
-                        strat = "SHORT_STRANGLE"
-                        constraints = STRATEGY_CONSTRAINTS.get("SHORT_STRANGLE", {})
-                        min_legs = constraints.get("min_legs", 2)
-                        max_legs = constraints.get("max_legs", 2)
+                        opt_types = {str(getattr(l, "option_type", "")).upper() for l in legs}
+                        leg_sides = [_LEG_SIDE_ALIASES.get(str(getattr(l, "side", "") or getattr(l, "action", "")).strip().upper()) for l in legs]
+
+                        if opt_types == {"CE", "PE"} and leg_sides.count("SELL") == 2:
+                            strat = "SHORT_STRANGLE"
+                            log.info("[llm-multileg] %s: Reclassifying 2-leg IRON_CONDOR with CE+PE to SHORT_STRANGLE", symbol)
+                        elif opt_types == {"CE"} and leg_sides.count("BUY") == 1 and leg_sides.count("SELL") == 1:
+                            strat = "BEAR_CALL_SPREAD"
+                            log.info("[llm-multileg] %s: Reclassifying 2-leg IRON_CONDOR with CE credit spread to BEAR_CALL_SPREAD", symbol)
+                        elif opt_types == {"PE"} and leg_sides.count("BUY") == 1 and leg_sides.count("SELL") == 1:
+                            strat = "BULL_PUT_SPREAD"
+                            log.info("[llm-multileg] %s: Reclassifying 2-leg IRON_CONDOR with PE credit spread to BULL_PUT_SPREAD", symbol)
+                        else:
+                            log.warning(
+                                "[llm-multileg] %s: 2-leg IRON_CONDOR with opt_types=%s, sides=%s is not a valid spread/strangle — defaulting to NO_TRADE",
+                                symbol, opt_types, leg_sides,
+                            )
+                            strat = "NO_TRADE"
+                            legs = []
+
+                        if strat != "NO_TRADE":
+                            constraints = STRATEGY_CONSTRAINTS.get(strat, {})
+                            min_legs = constraints.get("min_legs", 2)
+                            max_legs = constraints.get("max_legs", 2)
                     else:
                         log.warning(
                             "[llm-multileg] %s: %s requires %d+ legs, got %d — invalid verdict, defaulting to NO_TRADE",
@@ -4854,17 +4964,26 @@ def get_multileg_verdict(
                         strat = "NO_TRADE"
                         legs = []
 
-                # Ensure legs observe strategy constraints (all_sell check)
-                all_sell_required = constraints.get("all_sell", False)
-                updated_legs = []
-                for leg in legs:
-                    side = "SELL" if all_sell_required or not getattr(leg, "side", None) or leg.side.upper() not in ("BUY", "SELL") else leg.side
-                    if hasattr(leg, "model_copy"):
-                        updated_legs.append(leg.model_copy(update={"side": side}))
-                    else:
-                        leg.side = side
-                        updated_legs.append(leg)
-                legs = updated_legs
+                # Normalize side aliases; unknown sides or wrong BUY/SELL mix → NO_TRADE (never coerce to SELL)
+                sides, side_err = _normalize_leg_sides(strat, [getattr(l, "side", None) for l in legs])
+                if sides is not None and constraints.get("all_sell", False) and "BUY" in sides:
+                    sides, side_err = None, "all-SELL strategy contains BUY leg"
+                if strat != "NO_TRADE" and sides is None:
+                    log.warning(
+                        "[llm-multileg] %s: %s invalid leg sides (%s) — defaulting to NO_TRADE",
+                        symbol, strat, side_err,
+                    )
+                    strat = "NO_TRADE"
+                    legs = []
+                else:
+                    updated_legs = []
+                    for leg, side in zip(legs, sides or []):
+                        if hasattr(leg, "model_copy"):
+                            updated_legs.append(leg.model_copy(update={"side": side}))
+                        else:
+                            leg.side = side
+                            updated_legs.append(leg)
+                    legs = updated_legs
 
                 # Validate that all legs exist with valid liquidity in option_rows
                 option_rows = scan_context.get("option_rows") or []
@@ -4940,10 +5059,40 @@ def get_multileg_verdict(
                 symbol, result.strategy_type, len(result.legs),
                 result.net_premium, result.confidence,
             )
+
+            # Store in multileg verdict cache (F6)
+            _MULTILEG_VERDICT_CACHE[cache_key] = {
+                "timestamp": now,
+                "verdict": result,
+            }
+
         return result
     except Exception as e:
         log.error("[llm-multileg] %s: Multi-leg verdict call failed: %s", symbol, e)
         return None
+
+
+def _multileg_verdict_cache_key(
+    symbol: str,
+    intel: dict,
+    scan_context: dict,
+    open_books: list[dict] | None,
+) -> str:
+    """Return a stable cache key for multileg verdict inputs."""
+    import hashlib
+    import json
+
+    payload = {
+        "symbol": symbol,
+        "intel": intel,
+        "scan_context": scan_context,
+        "open_books_count": len(open_books or []),
+    }
+    try:
+        raw = json.dumps(payload, sort_keys=True, default=str)
+    except Exception:
+        raw = str(payload)
+    return hashlib.sha256(raw.encode()).hexdigest()
 
 
 def get_multileg_exit_advice(

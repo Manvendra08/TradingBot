@@ -536,3 +536,66 @@ def audit_session_level_multileg_closes(date_str: str | None = None) -> dict[str
         "anomalies": anomalies,
     }
 
+
+def audit_session_level_multileg_adjusts(date_str: str | None = None) -> dict[str, object]:
+    """Audit session-level multi-leg adjustments for frequency and P&L impact.
+
+    Flags sessions where:
+    1. A single session has > 5 adjustments on the same symbol (over-adjustment).
+    2. Adjustment count correlates with negative P&L on the adjusted book.
+    """
+    from src.models.schema import get_conn
+
+    target_date = date_str or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    anomalies: dict[str, object] = {}
+
+    with get_conn(read_only=True) as conn:
+        # Find books adjusted today with adjustment_count > 0
+        adjusted_rows = conn.execute(
+            """
+            SELECT id, symbol, strategy_type, adjustment_count, total_pnl, status
+            FROM multi_leg_trades
+            WHERE adjustment_count > 0 AND updated_at LIKE ?
+            """,
+            (f"{target_date}%",),
+        ).fetchall()
+
+    if not adjusted_rows:
+        return {"status": "NO_ADJUSTMENTS_TODAY", "date": target_date}
+
+    # Check 1: Over-adjustment on same symbol (> 5 adjustments in one session)
+    symbol_counts: dict[str, int] = {}
+    for row in adjusted_rows:
+        sym = str(row["symbol"] or "")
+        symbol_counts[sym] = symbol_counts.get(sym, 0) + 1
+
+    over_adjusted = {sym: cnt for sym, cnt in symbol_counts.items() if cnt > 5}
+    if over_adjusted:
+        anomalies["over_adjusted_symbols"] = over_adjusted
+
+    # Check 2: Negative P&L on adjusted books
+    negative_pnl = [
+        {"book_id": r["id"], "symbol": r["symbol"], "total_pnl": round(float(r["total_pnl"] or 0.0), 2)}
+        for r in adjusted_rows
+        if float(r["total_pnl"] or 0.0) < 0
+    ]
+    if negative_pnl:
+        anomalies["negative_pnl_adjustments"] = negative_pnl[:5]
+
+    if anomalies:
+        log.warning(
+            "trade_audit: session %s adjustment audit flagged %d anomaly(ies): %s",
+            target_date, len(anomalies), list(anomalies.keys())
+        )
+        _alert(
+            "multi_leg_trades:ADJUST_SESSION_AUDIT",
+            0,
+            {"date": target_date, "adjusted_count": len(adjusted_rows), **anomalies},
+        )
+
+    return {
+        "date": target_date,
+        "adjusted_count": len(adjusted_rows),
+        "anomalies": anomalies,
+    }
+

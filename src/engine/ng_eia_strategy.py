@@ -8,7 +8,12 @@ import pytz
 import yfinance as yf
 from src.models.schema import get_conn, get_open_paper_trade, insert_paper_trade, close_paper_trade
 from src.engine.ng_risk_manager import check_ng_position_limit, check_ng_daily_loss_cap, calculate_ng_lot_size
-from src.fetchers.eia_consensus_fetcher import fetch_eia_weekly_data, store_eia_weekly_data, parse_bcf_value
+from src.fetchers.eia_consensus_fetcher import (
+    fetch_eia_weekly_data,
+    store_eia_weekly_data,
+    parse_bcf_value,
+    fetch_complete_eia_dataset,
+)
 from config.runtime_config import load_runtime_config
 from config.settings import LOT_SIZES
 
@@ -196,7 +201,7 @@ def run_ng_eia_strategy(
         return {"action": "HOLD", "reason": "EIA_NO_CONSENSUS"}
         
     # 1. Fetch complete official EIA dataset + consensus
-    from src.fetchers.eia_consensus_fetcher import fetch_complete_eia_dataset, store_eia_weekly_data
+    actual = None
     eia_full = fetch_complete_eia_dataset()
     if eia_full and eia_full.get("actual_bcf") is not None:
         actual = eia_full["actual_bcf"]

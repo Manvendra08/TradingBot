@@ -392,9 +392,11 @@ def build_multileg_prompt(
         oi_flow_ground_truth = "MIXED / CONSOLIDATION"
 
     # Directional Strategy Directive from Quant Engine Ground Truth
+    # Canonical sets: Long Unwinding is bearish, Short Covering is bullish (substring "LONG"/"SHORT" is wrong).
+    from src.engine.verdict_sets import is_bearish, is_bullish
     v_upper = str(verdict_label).upper()
-    is_strong_bull = any(k in v_upper for k in ("LONG", "BULLISH", "PUT WRITING")) and confidence >= 65
-    is_strong_bear = any(k in v_upper for k in ("SHORT", "BEARISH", "CALL WRITING")) and confidence >= 65
+    is_strong_bull = (is_bullish(verdict_label) or "BULLISH" in v_upper) and confidence >= 65
+    is_strong_bear = (is_bearish(verdict_label) or "BEARISH" in v_upper) and confidence >= 65
     is_rangebound = "RANGEBOUND" in v_upper or ("SIDEWAYS" in v_upper and not is_strong_bull and not is_strong_bear)
 
     directional_mandate = ""
@@ -794,8 +796,8 @@ Rules (use EXIT PLAN above):
 - Both sides tested → CLOSE (strangle broken)
 
 JSON:
-{{"decision":"{'HOLD|CLOSE' if max_adj_reached else 'HOLD|ADJUST|CLOSE'}","urgency":"LOW|MEDIUM|HIGH","reasoning":"why","target_legs":[{{"option_type":"CE|PE","strike":num}}],"adjustments":[{{"action":"ADD|CLOSE","option_type":"CE|PE","strike":num,"reason":"why"}}]}}
+{{"action":"{'HOLD|CLOSE' if max_adj_reached else 'HOLD|ADJUST|CLOSE'}","urgency":"LOW|MEDIUM|HIGH","reasoning":"why","adjustment":{{"close_strike":num,"close_option_type":"CE|PE","new_strike":num,"new_option_type":"CE|PE","new_side":"SELL|BUY","rationale":"why"}}}}
 
-Note: ADJUST requires adjustment object. Null for HOLD/CLOSE.
+Note: "adjustment" is REQUIRED when action=ADJUST (roll the tested leg: close_strike/close_option_type → new_strike/new_option_type). Set "adjustment": null for HOLD/CLOSE.
 """
     return prompt

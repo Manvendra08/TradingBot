@@ -99,8 +99,11 @@ IV_LOW_THRESHOLD = 12.0      # IV below this = low premium, avoid selling
 
 
 def is_bullish_strategy(strategy: str) -> bool:
-    """Return True if the multi-leg strategy has bullish directional bias."""
-    return str(strategy or "").upper() in {"BULL_PUT_SPREAD"}
+    """Return True if the multi-leg strategy has bullish directional bias.
+
+    CUSTOM is not classified (bias depends on legs) and bypasses the direction lock.
+    """
+    return str(strategy or "").upper() in {"BULL_PUT_SPREAD", "JADE_LIZARD"}
 
 
 def is_bearish_strategy(strategy: str) -> bool:

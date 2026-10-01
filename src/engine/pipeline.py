@@ -1355,6 +1355,7 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                     from config.runtime_config import is_broker_trade_enabled
                 except Exception:
                     is_broker_trade_enabled = lambda: False
+                _live_entries_blocked = False
                 if is_broker_trade_enabled() and active_strategies:
                     _edge_ok = True
                     _edge_reason = ""
@@ -1369,8 +1370,10 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                         _edge_ok = False
                         _edge_reason = f"Edge validation error: {_exc}"
                     if not _edge_ok:
-                        log.error("%s: blocking live strategy execution — %s", symbol, _edge_reason)
-                        active_strategies = []
+                        # Block NEW live entries only — paper runners and exit monitoring
+                        # of already-open books must keep running.
+                        log.error("%s: blocking new live entries — %s", symbol, _edge_reason)
+                        _live_entries_blocked = True
                 for sid in active_strategies:
                     runner = get_runner(sid)
                     if runner is None:
@@ -1395,8 +1398,17 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                     except Exception:
                         live_or_shadow_enabled = False
 
-                    if live_or_shadow_enabled and sid != "TIMEFRAME" and ai_verdict_for_runner is None:
-                        log.debug("%s: skipping %s live/shadow execution because AI verdict unavailable", symbol, sid)
+                    if live_or_shadow_enabled and sid == "MULTILEG" and (
+                        ai_verdict_for_runner is None or _live_entries_blocked
+                    ):
+                        # No verdict / edge gate: never skip exit monitoring of open live books.
+                        try:
+                            from src.engine.multileg_live_trading import run_multileg_live_strategy
+                            run_multileg_live_strategy(symbol, scan_context, scan_digest_id, intel, ai_verdict=None, exit_check=True)
+                        except Exception:
+                            log.exception("%s: live/shadow multileg exit monitoring failed", symbol)
+                    elif live_or_shadow_enabled and (_live_entries_blocked or (sid != "TIMEFRAME" and ai_verdict_for_runner is None)):
+                        log.debug("%s: skipping %s live/shadow entry (verdict unavailable or edge gate)", symbol, sid)
                     elif live_or_shadow_enabled:
                         if sid in ("CORE", "NG_MOMENTUM", "NG_PARITY", "NG_EVENT"):
                             try:

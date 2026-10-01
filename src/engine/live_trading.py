@@ -694,6 +694,16 @@ def confirm_order_fill(kite, order_id: str, shadow_mode: bool) -> tuple[str, str
     return "PENDING", "Order placed but fill confirmation timed out"
 
 
+def get_order_filled_quantity(kite, order_id: str) -> int:
+    """Return filled_quantity from the latest Kite order_history entry (0 on error)."""
+    try:
+        history = kite.order_history(order_id) if order_id else None
+        return int((history[-1].get("filled_quantity") or 0) if history else 0)
+    except Exception as e:
+        log.warning("Failed to read filled_quantity for %s: %s", order_id, e)
+        return 0
+
+
 def place_kite_gtt(
     kite,
     symbol: str,
@@ -2550,7 +2560,16 @@ def sync_direct_kite_positions() -> None:
             spec_key = f"{sym}:{ot}:{stk}:{sd}"
             open_db_specs.setdefault(spec_key, []).append(dt)
 
-        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        # Open LIVE multileg legs are managed by multileg_live_trading — never adopt them as DIRECT_KITE.
+        for ml in conn.execute(
+            "SELECT t.symbol, l.option_type, l.strike, l.side FROM multi_leg_legs l "
+            "JOIN multi_leg_trades t ON l.trade_id = t.id "
+            "WHERE t.status='OPEN' AND l.status='OPEN' AND COALESCE(t.trade_mode,'PAPER')='LIVE'"
+        ).fetchall():
+            ml_key = f"{ml['symbol']}:{ml['option_type']}:{int(ml['strike'] or 0)}:{ml['side']}"
+            open_db_specs.setdefault(ml_key, []).append(dict(ml))
+
+        today_start =datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         tomorrow_start = today_start + timedelta(days=1)
         today_start_iso = today_start.isoformat()
         tomorrow_start_iso = tomorrow_start.isoformat()
@@ -2652,18 +2671,23 @@ def sync_direct_kite_positions() -> None:
                     )
                     conn.execute("UPDATE live_trades SET lots=? WHERE id=?", (new_lots, dt["id"]))
 
-        # 2. Auto-close stale multileg books if all constituent legs are flat on Kite
+        # 2. Auto-close stale LIVE multileg books if all broker-placed legs are flat on Kite.
+        # PAPER/SHADOW books never touch Kite, so they must never be reconciled here.
         open_books = [
             dict(r)
             for r in conn.execute(
-                "SELECT id, symbol, structure FROM multi_leg_trades WHERE status='OPEN'"
+                "SELECT id, book_id, symbol, structure FROM multi_leg_trades "
+                "WHERE status='OPEN' AND COALESCE(trade_mode,'PAPER')='LIVE'"
             ).fetchall()
         ]
+        books_to_close: list[tuple[str, list[dict]]] = []
         for book in open_books:
             legs = [
                 dict(r)
                 for r in conn.execute(
-                    "SELECT id, side, strike, option_type, lots, gtt_order_id FROM multi_leg_legs WHERE trade_id=?",
+                    "SELECT id, side, strike, option_type, lots, gtt_order_id, current_premium, entry_premium "
+                    "FROM multi_leg_legs WHERE trade_id=? AND status='OPEN' "
+                    "AND broker_order_id IS NOT NULL AND broker_order_id != '' AND broker_order_id NOT LIKE 'sh-%'",
                     (book["id"],),
                 ).fetchall()
             ]
@@ -2682,10 +2706,18 @@ def sync_direct_kite_positions() -> None:
                     book["symbol"],
                     book["structure"],
                 )
-                conn.execute(
-                    "UPDATE multi_leg_trades SET status='CLOSED', closed_at=?, reason='Closed on Kite (reconciled)' WHERE id=?",
-                    (now_iso, book["id"]),
-                )
+                # close_book opens its own write txn — defer until this one commits.
+                if book.get("book_id"):
+                    books_to_close.append((book["book_id"], legs))
+                else:  # legacy book without book_id — close_book cannot address it
+                    conn.execute(
+                        "UPDATE multi_leg_trades SET status='CLOSED', closed_at=?, reason='Closed on Kite (reconciled)' WHERE id=?",
+                        (now_iso, book["id"]),
+                    )
+                    conn.execute(
+                        "UPDATE multi_leg_legs SET status='CLOSED', closed_at=?, exit_reason='Closed on Kite (reconciled)' WHERE trade_id=? AND status='OPEN'",
+                        (now_iso, book["id"]),
+                    )
                 for leg in legs:
                     if leg.get("gtt_order_id"):
                         cancel_kite_gtt(kite, leg["gtt_order_id"], shadow_mode=False)
@@ -2948,6 +2980,16 @@ def sync_direct_kite_positions() -> None:
                 except Exception:
                     pass
 
+    if books_to_close:
+        from src.models.schema import close_book
+
+        for book_id, legs in books_to_close:
+            leg_exits = [
+                {"id": l["id"], "exit_premium": float(l.get("current_premium") or l.get("entry_premium") or 0.0)}
+                for l in legs
+            ]
+            close_book(book_id, now_iso, "CLOSED", "Closed on Kite (reconciled)", leg_exits=leg_exits)
+
     # 4. Reconcile and cancel orphan GTT triggers on Kite
     reconcile_and_cancel_orphan_gtts(kite)
 
@@ -2992,7 +3034,7 @@ def check_all_live_exits_every_2_min() -> None:
                 "symbol": sym,
                 "underlying": oc.get("underlying_price") or oc.get("underlying"),
                 "expiry": trade.get("expiry"),
-                "option_rows": oc.get("options") or [],
+                "option_rows": oc.get("strikes") or oc.get("options") or [],
             }
             run_live_trading(
                 symbol=sym,
@@ -3005,20 +3047,25 @@ def check_all_live_exits_every_2_min() -> None:
 
     # 2. Multi-leg live book polling
     if open_books:
-        symbols_with_books = {b.get("symbol") for b in open_books if b.get("symbol")}
-        for sym in symbols_with_books:
-            if not is_market_open(sym):
+        books_by_sym_exp: dict[tuple[str, str | None], list[dict]] = {}
+        for b in open_books:
+            sym = b.get("symbol", "")
+            if not sym or not is_market_open(sym):
                 continue
+            exp = b.get("expiry")
+            books_by_sym_exp.setdefault((sym, exp), []).append(b)
+
+        for (sym, exp), sym_books in books_by_sym_exp.items():
             try:
                 from src.engine.multileg_live_trading import run_multileg_live_strategy
-                oc = fetch_option_chain(sym)
+                oc = fetch_option_chain(sym, expiry=exp)
                 if not oc:
                     continue
                 scan_ctx = {
                     "symbol": sym,
                     "underlying": oc.get("underlying_price") or oc.get("underlying"),
-                    "expiry": oc.get("expiry"),
-                    "option_rows": oc.get("options") or [],
+                    "expiry": exp or oc.get("expiry"),
+                    "option_rows": oc.get("strikes") or oc.get("options") or [],
                 }
                 run_multileg_live_strategy(
                     symbol=sym,
@@ -3028,4 +3075,4 @@ def check_all_live_exits_every_2_min() -> None:
                     exit_check=True,
                 )
             except Exception as me:
-                log.warning("[live-exit-poll] Error polling live multileg books for %s: %s", sym, me)
+                log.warning("[live-exit-poll] Error polling live multileg books for %s (expiry=%s): %s", sym, exp, me)

@@ -86,3 +86,76 @@ def test_validate_multileg_symbol_specific_margin():
     assert res.is_valid is True
 
 
+def test_validate_multileg_delta_normalization_scaled_lots():
+    # 16-lot BEAR_CALL_SPREAD on NIFTY:
+    # Sell CE delta 0.35, Buy CE delta 0.15.
+    # Unit net delta is -0.35 + 0.15 = -0.20 (within ±0.60).
+    # Scaled ratio 16 must NOT produce -3.20 delta breach.
+    proposal = ParsedExecution(
+        is_valid=True,
+        strategy="BEAR_CALL_SPREAD",
+        action="GO_SHORT",
+        legs=[
+            {"action": "SELL", "strike": 25950, "option_type": "CE", "entry_premium": 100.0, "ratio": 16, "delta": 0.35},
+            {"action": "BUY", "strike": 26150, "option_type": "CE", "entry_premium": 40.0, "ratio": 16, "delta": 0.15},
+        ]
+    )
+    res = validate_multileg_trade(
+        proposal,
+        engine_verdict="BEARISH",
+        underlying=25900.0,
+        max_margin_inr=5000000.0,
+        max_net_delta=0.60,
+        symbol="NIFTY",
+    )
+    assert res.is_valid is True
+    assert res.rejection_reason == ""
+
+
+def test_validate_multileg_bull_put_spread_delta():
+    # BULL_PUT_SPREAD: Sell PE delta 0.30, Buy PE delta 0.15.
+    # Selling PE is bullish (+0.30), Buying PE is bearish (-0.15) -> unit net delta = +0.15.
+    proposal = ParsedExecution(
+        is_valid=True,
+        strategy="BULL_PUT_SPREAD",
+        action="GO_LONG",
+        legs=[
+            {"action": "SELL", "strike": 25000, "option_type": "PE", "entry_premium": 120.0, "ratio": 10, "delta": 0.30},
+            {"action": "BUY", "strike": 24800, "option_type": "PE", "entry_premium": 50.0, "ratio": 10, "delta": 0.15},
+        ]
+    )
+    res = validate_multileg_trade(
+        proposal,
+        engine_verdict="BULLISH",
+        underlying=25100.0,
+        max_margin_inr=5000000.0,
+        max_net_delta=0.60,
+        symbol="NIFTY",
+    )
+    assert res.is_valid is True
+    assert res.rejection_reason == ""
+
+
+def test_validate_multileg_delta_breach():
+    # Single deep ITM short call with delta 0.75 breaches ±0.60 cap even when scaled to 5 lots
+    proposal = ParsedExecution(
+        is_valid=True,
+        strategy="CUSTOM",
+        action="GO_SHORT",
+        legs=[
+            {"action": "SELL", "strike": 25000, "option_type": "CE", "entry_premium": 250.0, "ratio": 5, "delta": 0.75},
+        ]
+    )
+    res = validate_multileg_trade(
+        proposal,
+        engine_verdict="BEARISH",
+        underlying=25500.0,
+        max_margin_inr=5000000.0,
+        max_net_delta=0.60,
+        symbol="NIFTY",
+    )
+    assert res.is_valid is False
+    assert "Proposal net delta -0.75 exceeds cap ±0.60" in res.rejection_reason
+
+
+

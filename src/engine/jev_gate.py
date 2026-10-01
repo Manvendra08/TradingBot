@@ -156,7 +156,7 @@ def jev_fast_gate(
             },
         }
 
-        answers = evaluate_system_one(state, questions, timeout=3.0)
+        answers = evaluate_system_one(state, questions, timeout=_get_typesafe_timeout())
         if answers is None:
             log.debug("jev: no answer for %s — proceeding with LLM", symbol)
             return JevResult(proceed=True, direction=None, conviction=1.0, skipped=True)
@@ -182,3 +182,27 @@ def jev_fast_gate(
     except Exception as exc:  # noqa: BLE001
         log.debug("jev: gate error for %s: %s — proceeding with LLM", symbol, exc)
         return JevResult(proceed=True, direction=None, conviction=1.0, skipped=True)
+
+
+def _get_typesafe_timeout() -> float:
+    """Return Jev gate timeout from runtime_config or env, fallback to 3.0s."""
+    try:
+        import json
+        from pathlib import Path
+
+        config_path = Path(__file__).resolve().parents[2] / "data" / "runtime_config.json"
+        if config_path.exists():
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+            timeout = config.get("typesafe_timeout_s")
+            if timeout is not None:
+                return float(timeout)
+    except Exception:
+        pass
+
+    import os
+    env_timeout = os.environ.get("TYPESAFE_TIMEOUT_S")
+    if env_timeout:
+        return float(env_timeout)
+
+    return 3.0

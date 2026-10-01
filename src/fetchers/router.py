@@ -117,7 +117,7 @@ def _priority_for(symbol: str) -> list[str]:
     
     # Default priorities per symbol class
     if base in _MCX_COMMODITIES:
-        return ["dhan_commodity", "shoonya", "niftytrader", "dhan", "dhan_headless"]
+        return ["dhan_commodity", "shoonya", "niftytrader", "dhan_headless", "moneycontrol", "dhan"]
     if base == "SENSEX":
         return ["niftytrader", "shoonya", "sensibull", "dhan_headless", "nse_public", "moneycontrol"]
     return [
@@ -540,6 +540,7 @@ def fetch_option_chain(symbol: str, expiry: str | None = None, required_strikes:
     Executes a dual-source parallel fetch and merge for the top 2 available fetchers in the priority list.
     Fails over to remaining sequential fetchers if both primary/fallback fail.
     """
+    import time
     from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
 
     open_strikes = _get_open_position_strikes(symbol)
@@ -618,7 +619,7 @@ def fetch_option_chain(symbol: str, expiry: str | None = None, required_strikes:
             # If primary succeeded, fallback is purely optional (for consolidation merge);
             # give it a short cutoff (1.5s) and do not log warning if it is still working.
             if p_data:
-                f_data = get_fetch_data(fallback_src, timeout_s=1.5, is_optional=True)
+                f_data = get_fetch_data(fallback_src, timeout_s=4.5, is_optional=True)
             else:
                 # Primary failed: fallback is mandatory! Give it full 20.0s deadline and log warning if it fails.
                 f_data = get_fetch_data(fallback_src, timeout_s=20.0, is_optional=False)
@@ -628,14 +629,68 @@ def fetch_option_chain(symbol: str, expiry: str | None = None, required_strikes:
                 result_source = f"{primary_src}+{fallback_src}"
                 break
             elif p_data:
-                log.info("[router] %s | Consolidated DUALFETCH unavailable (fallback %s not ready/timed out) — using primary %s", symbol, fallback_src, primary_src)
-                result_data = p_data
-                result_source = primary_src
+                log.info(
+                    "[router] %s | Dual combo primary %s ready, fallback %s unavailable/timed out. Cascading downstream...",
+                    symbol, primary_src, fallback_src
+                )
+                secondary_data = None
+                secondary_source = None
+                start_cascade = time.time()
+                CASCADE_BUDGET_S = 8.0
+
+                for next_src in available_priority[i + 2:]:
+                    elapsed = time.time() - start_cascade
+                    if elapsed >= CASCADE_BUDGET_S:
+                        log.info("[router] %s | Dual combo cascade budget (%.1fs) reached — proceeding with %s", symbol, CASCADE_BUDGET_S, primary_src)
+                        break
+                    rem_timeout = min(4.0, max(1.5, CASCADE_BUDGET_S - elapsed))
+                    log.info("[router] %s | Cascading dual combo attempt with %s (timeout: %.1fs)", symbol, next_src, rem_timeout)
+                    c_data = get_fetch_data(next_src, timeout_s=rem_timeout, is_optional=True)
+                    if c_data:
+                        secondary_data = c_data
+                        secondary_source = next_src
+                        log.info("[router] %s | ✅ Dual combo successfully formed: %s + %s", symbol, primary_src, next_src)
+                        break
+
+                if secondary_data:
+                    result_data = _merge_fetcher_results(p_data, secondary_data, symbol)
+                    result_source = f"{primary_src}+{secondary_source}"
+                else:
+                    log.info("[router] %s | No downstream fetcher paired with %s — proceeding with single primary", symbol, primary_src)
+                    result_data = p_data
+                    result_source = primary_src
                 break
             elif f_data:
-                log.info("[router] %s | Consolidated DUALFETCH unavailable (primary %s failed/timed out) — using fallback %s", symbol, primary_src, fallback_src)
-                result_data = f_data
-                result_source = fallback_src
+                log.info(
+                    "[router] %s | Dual combo primary %s failed, fallback %s ready. Cascading downstream...",
+                    symbol, primary_src, fallback_src
+                )
+                secondary_data = None
+                secondary_source = None
+                start_cascade = time.time()
+                CASCADE_BUDGET_S = 8.0
+
+                for next_src in available_priority[i + 2:]:
+                    elapsed = time.time() - start_cascade
+                    if elapsed >= CASCADE_BUDGET_S:
+                        log.info("[router] %s | Dual combo cascade budget (%.1fs) reached — proceeding with %s", symbol, CASCADE_BUDGET_S, fallback_src)
+                        break
+                    rem_timeout = min(4.0, max(1.5, CASCADE_BUDGET_S - elapsed))
+                    log.info("[router] %s | Cascading dual combo attempt with %s (timeout: %.1fs)", symbol, next_src, rem_timeout)
+                    c_data = get_fetch_data(next_src, timeout_s=rem_timeout, is_optional=True)
+                    if c_data:
+                        secondary_data = c_data
+                        secondary_source = next_src
+                        log.info("[router] %s | ✅ Dual combo successfully formed: %s + %s", symbol, fallback_src, next_src)
+                        break
+
+                if secondary_data:
+                    result_data = _merge_fetcher_results(f_data, secondary_data, symbol)
+                    result_source = f"{fallback_src}+{secondary_source}"
+                else:
+                    log.info("[router] %s | No downstream fetcher paired with %s — proceeding with single fallback", symbol, fallback_src)
+                    result_data = f_data
+                    result_source = fallback_src
                 break
             else:
                 i += 2

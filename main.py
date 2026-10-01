@@ -122,6 +122,19 @@ Examples:
     # Always ensure DB is initialised
     init_db()
 
+    # ── Multileg startup validation (F5/F16/F17) ─────────────────────
+    try:
+        from src.engine.multileg_startup import (
+            validate_multileg_schema,
+            validate_runtime_config_for_multileg,
+            reconcile_multileg_books_at_startup,
+        )
+        validate_multileg_schema()
+        validate_runtime_config_for_multileg()
+        reconcile_multileg_books_at_startup()
+    except Exception as e:
+        log.error("[main] Multileg startup validation failed: %s", e)
+
     if args.update_shoonya_ip:
         from src.fetchers.shoonya_ip_updater import update_shoonya_portal_ip
 

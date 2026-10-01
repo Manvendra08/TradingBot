@@ -326,8 +326,10 @@ def _check_risk_limits_for_table(
         if setup_type and setup_type.upper() in _MULTILEG_SETUPS:
             from config.multileg_strategies import MAX_BOOK_MARGIN, MAX_NET_DELTA, MAX_LEGS_PER_BOOK
             from src.models.schema import get_open_books_for_symbol
-            ml_mode = "LIVE" if trades_table == "live_trades" else "PAPER"
-            open_books = get_open_books_for_symbol(symbol, trade_mode=ml_mode)
+            if trades_table == "live_trades":
+                open_books = [b for m in ("LIVE", "SHADOW") for b in get_open_books_for_symbol(symbol, trade_mode=m)]
+            else:
+                open_books = get_open_books_for_symbol(symbol, trade_mode="PAPER")
             total_book_legs = sum(len(b.get("legs", [])) for b in open_books)
             if candidate_leg and isinstance(candidate_leg, dict):
                 total_book_legs += 1

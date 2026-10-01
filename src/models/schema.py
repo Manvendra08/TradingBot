@@ -430,6 +430,7 @@ CREATE TABLE IF NOT EXISTS multi_leg_legs (
     leg_group_id TEXT,
     expiry TEXT,
     trade_mode TEXT DEFAULT 'PAPER',
+    snapshot_id TEXT,
     FOREIGN KEY (trade_id) REFERENCES multi_leg_trades(id) ON DELETE CASCADE
 );
 
@@ -706,6 +707,11 @@ _MIGRATIONS = [
     ("M134_add_eia_stance_summary", "ALTER TABLE eia_consensus ADD COLUMN stance_summary TEXT"),
     ("M135_add_eia_key_levels_json", "ALTER TABLE eia_consensus ADD COLUMN key_levels_json TEXT"),
     ("M136_add_eia_valid_until", "ALTER TABLE eia_consensus ADD COLUMN valid_until TEXT"),
+    # M137-M138: Backfill trade_mode='LIVE' for multi-leg trades/legs placed at broker
+    ("M137_backfill_ml_live_trade_mode", "UPDATE multi_leg_trades SET trade_mode = 'LIVE' WHERE id IN (SELECT DISTINCT trade_id FROM multi_leg_legs WHERE broker_order_id IS NOT NULL AND broker_order_id != '' AND broker_order_id NOT LIKE 'sh-%') AND (trade_mode IS NULL OR trade_mode = 'PAPER')"),
+    ("M138_backfill_mll_live_trade_mode", "UPDATE multi_leg_legs SET trade_mode = 'LIVE' WHERE broker_order_id IS NOT NULL AND broker_order_id != '' AND broker_order_id NOT LIKE 'sh-%' AND (trade_mode IS NULL OR trade_mode = 'PAPER')"),
+    # M139: snapshot_id linkage for multi_leg_legs provenance
+    ("M139_add_snapshot_id_to_mll", "ALTER TABLE multi_leg_legs ADD COLUMN snapshot_id TEXT"),
 ]
 
 
@@ -2411,6 +2417,9 @@ def insert_multi_leg_trade(trade: dict) -> int:
         trade["entry_reason"] = trade.get("reason", "")
     if "exit_reason" not in trade:
         trade["exit_reason"] = None
+    if "snapshot_id" not in trade:
+        trade["snapshot_id"] = None
+    trade["trade_mode"] = str(trade.get("trade_mode") or "PAPER").upper()
     sql = """
         INSERT INTO multi_leg_trades
             (trade_ref, symbol, structure, net_premium, margin_req, total_pnl,
@@ -2419,7 +2428,7 @@ def insert_multi_leg_trade(trade: dict) -> int:
              net_delta, net_theta, net_vega, max_profit, max_loss,
              breakeven_upper, breakeven_lower, profit_target_pct, stop_loss_pct,
              time_decay_exit_dte, adjustment_count, confidence_score,
-             entry_quality_score, digest_id, ai_model_name)
+             entry_quality_score, digest_id, ai_model_name, snapshot_id, trade_mode)
         VALUES
             (:trade_ref, :symbol, :structure, :net_premium, :margin_req, :total_pnl,
              :opened_at, :closed_at, :status, :reason, :entry_reason, :exit_reason, :profit_factor,
@@ -2427,7 +2436,7 @@ def insert_multi_leg_trade(trade: dict) -> int:
              :net_delta, :net_theta, :net_vega, :max_profit, :max_loss,
              :breakeven_upper, :breakeven_lower, :profit_target_pct, :stop_loss_pct,
              :time_decay_exit_dte, :adjustment_count, :confidence_score,
-             :entry_quality_score, :digest_id, :ai_model_name)
+             :entry_quality_score, :digest_id, :ai_model_name, :snapshot_id, :trade_mode)
         RETURNING id
     """
     with get_conn() as conn:
@@ -2439,13 +2448,19 @@ def insert_multi_leg_leg(leg: dict) -> int:
     """Insert a multi-leg leg and return its id."""
     leg = dict(leg)
     leg.setdefault("gtt_order_id", None)
+    leg.setdefault("book_id", None)
+    leg.setdefault("expiry", None)
+    leg["trade_mode"] = str(leg.get("trade_mode") or "PAPER").upper()
+    leg.setdefault("current_premium", leg.get("entry_premium"))
     sql = """
         INSERT INTO multi_leg_legs
             (trade_id, side, lots, strike, option_type, entry_premium, exit_premium,
-             delta, theta, vega, iv, rationale, status, closed_at, exit_reason, broker_order_id, gtt_order_id)
+             delta, theta, vega, iv, rationale, status, closed_at, exit_reason, broker_order_id, gtt_order_id,
+             book_id, expiry, trade_mode, current_premium)
         VALUES
             (:trade_id, :side, :lots, :strike, :option_type, :entry_premium, :exit_premium,
-             :delta, :theta, :vega, :iv, :rationale, :status, :closed_at, :exit_reason, :broker_order_id, :gtt_order_id)
+             :delta, :theta, :vega, :iv, :rationale, :status, :closed_at, :exit_reason, :broker_order_id, :gtt_order_id,
+             :book_id, :expiry, :trade_mode, :current_premium)
         RETURNING id
     """
     with get_conn() as conn:
@@ -2470,6 +2485,9 @@ def insert_multileg_trade_atomically(trade: dict, legs: list[dict]) -> int:
         trade["exit_reason"] = None
     if "snapshot_id" not in trade:
         trade["snapshot_id"] = None
+    # trade_mode MUST be persisted: LIVE books saved as the 'PAPER' default were
+    # invisible to the live monitor and got closed DB-only by the paper runner.
+    trade["trade_mode"] = str(trade.get("trade_mode") or "PAPER").upper()
     with get_conn() as conn:
         trade_sql = """
             INSERT INTO multi_leg_trades
@@ -2479,7 +2497,7 @@ def insert_multileg_trade_atomically(trade: dict, legs: list[dict]) -> int:
                  net_delta, net_theta, net_vega, max_profit, max_loss,
                  breakeven_upper, breakeven_lower, profit_target_pct, stop_loss_pct,
                  time_decay_exit_dte, adjustment_count, confidence_score,
-                 entry_quality_score, digest_id, ai_model_name, snapshot_id)
+                 entry_quality_score, digest_id, ai_model_name, snapshot_id, trade_mode)
             VALUES
                 (:trade_ref, :symbol, :structure, :net_premium, :margin_req, :total_pnl,
                  :opened_at, :closed_at, :status, :reason, :entry_reason, :exit_reason, :profit_factor,
@@ -2487,7 +2505,7 @@ def insert_multileg_trade_atomically(trade: dict, legs: list[dict]) -> int:
                  :net_delta, :net_theta, :net_vega, :max_profit, :max_loss,
                  :breakeven_upper, :breakeven_lower, :profit_target_pct, :stop_loss_pct,
                  :time_decay_exit_dte, :adjustment_count, :confidence_score,
-                 :entry_quality_score, :digest_id, :ai_model_name, :snapshot_id)
+                 :entry_quality_score, :digest_id, :ai_model_name, :snapshot_id, :trade_mode)
             RETURNING id
         """
         row = conn.execute(trade_sql, trade).fetchone()
@@ -2497,15 +2515,22 @@ def insert_multileg_trade_atomically(trade: dict, legs: list[dict]) -> int:
         leg_sql = """
             INSERT INTO multi_leg_legs
                 (trade_id, side, lots, strike, option_type, entry_premium, exit_premium,
-                 delta, theta, vega, iv, rationale, status, closed_at, exit_reason, broker_order_id, gtt_order_id)
+                 delta, theta, vega, iv, rationale, status, closed_at, exit_reason, broker_order_id, gtt_order_id,
+                 book_id, expiry, trade_mode, current_premium)
             VALUES
                 (:trade_id, :side, :lots, :strike, :option_type, :entry_premium, :exit_premium,
-                 :delta, :theta, :vega, :iv, :rationale, :status, :closed_at, :exit_reason, :broker_order_id, :gtt_order_id)
+                 :delta, :theta, :vega, :iv, :rationale, :status, :closed_at, :exit_reason, :broker_order_id, :gtt_order_id,
+                 :book_id, :expiry, :trade_mode, :current_premium)
         """
         for leg in legs:
             leg = dict(leg)
             leg["trade_id"] = trade_id
             leg.setdefault("gtt_order_id", None)
+            # Expiry is required so exits/P&L resolve the exact contract, not the nearest one.
+            leg["expiry"] = leg.get("expiry") or trade.get("expiry")
+            leg["book_id"] = leg.get("book_id") or trade.get("book_id")
+            leg["trade_mode"] = trade["trade_mode"]
+            leg.setdefault("current_premium", leg.get("entry_premium"))
             conn.execute(leg_sql, leg)
 
     if trade_id:

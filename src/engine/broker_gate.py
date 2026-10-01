@@ -75,7 +75,7 @@ def authorize_broker_execution(
             config_snapshot=config
         )
 
-    if config.get("trading_paused", True):
+    if operation != "EXIT" and config.get("trading_paused", True):
         return ExecutionAuthorization(
             is_authorized=False,
             is_shadow=False,

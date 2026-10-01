@@ -5,10 +5,12 @@ One message per alert with full context + signal interpretation.
 """
 
 import asyncio
+import collections
 import json
 import logging
 import re
 import threading
+import time
 import urllib.parse
 import urllib.request
 from concurrent.futures import TimeoutError as FuturesTimeoutError
@@ -28,6 +30,11 @@ IST = timezone(timedelta(hours=5, minutes=30))
 # Module-level event loop (runs in background thread)
 _loop: asyncio.AbstractEventLoop | None = None
 _loop_thread: threading.Thread | None = None
+
+# Telegram retry queue (F11)
+_TG_RETRY_QUEUE: collections.deque = collections.deque(maxlen=50)
+_TG_RETRY_LOCK = threading.Lock()
+_TG_RETRY_WORKER_STARTED = False
 
 
 # ── Markdown escaping ────────────────────────────────────────────────────────
@@ -507,8 +514,50 @@ def send_alert(alert: dict) -> bool:
     return True
 
 
+def _tg_retry_worker() -> None:
+    """Background worker that retries failed Telegram sends with exponential backoff."""
+    while True:
+        try:
+            time.sleep(5.0)
+            with _TG_RETRY_LOCK:
+                now = time.time()
+                ready = [
+                    (text, retries, next_retry)
+                    for text, retries, next_retry in _TG_RETRY_QUEUE
+                    if next_retry <= now
+                ]
+            for text, retries, _ in ready:
+                if send_text(text):
+                    with _TG_RETRY_LOCK:
+                        try:
+                            _TG_RETRY_QUEUE.remove((text, retries, _))
+                        except ValueError:
+                            pass
+                else:
+                    next_retry = time.time() + (2 ** min(retries, 3))
+                    with _TG_RETRY_LOCK:
+                        try:
+                            _TG_RETRY_QUEUE.remove((text, retries, _))
+                        except ValueError:
+                            pass
+                        if retries + 1 < 3:
+                            _TG_RETRY_QUEUE.append((text, retries + 1, next_retry))
+        except Exception as e:
+            log.debug("[tg-retry] worker error: %s", e)
+
+
+def _ensure_tg_retry_worker() -> None:
+    """Start the Telegram retry worker thread if not already running."""
+    global _TG_RETRY_WORKER_STARTED
+    if not _TG_RETRY_WORKER_STARTED:
+        _TG_RETRY_WORKER_STARTED = True
+        t = threading.Thread(target=_tg_retry_worker, daemon=True)
+        t.start()
+
+
 def send_text(text: str) -> bool:
-    """Sends raw text to Telegram in background."""
+    """Sends raw text to Telegram in background. Queues for retry on failure."""
+    _ensure_tg_retry_worker()
     text = sanitize_mojibake(text)
     tg_queued = False
 
@@ -520,6 +569,11 @@ def send_text(text: str) -> bool:
             tg_queued = True
         except Exception as exc:
             log.error("Telegram unexpected error queueing text: %s", exc)
+            with _TG_RETRY_LOCK:
+                _TG_RETRY_QUEUE.append((text, 0, time.time() + 2.0))
+                if len(_TG_RETRY_QUEUE) >= 50:
+                    oldest = _TG_RETRY_QUEUE.popleft()
+                    log.warning("[tg-retry] Queue full (%d), dropped oldest message", len(_TG_RETRY_QUEUE) + 1)
 
     return tg_queued
 

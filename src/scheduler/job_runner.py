@@ -496,7 +496,23 @@ def exit_expiry_day_positions(market_class: str) -> bool:
                 if str(dict(row).get("expiry") or "")[:10] == today_ist_str
             ]
 
-            if not expiring_paper and not expiring_live:
+            # 3. Multileg books (PAPER/LIVE/SHADOW) expiring today — runners refuse to run
+            # after close, so without this they would stay OPEN past expiry.
+            from src.engine.trade_plan import _normalize_expiry_date
+
+            with get_conn(read_only=True) as conn:
+                open_books = [
+                    dict(r) for r in conn.execute(
+                        "SELECT * FROM multi_leg_trades WHERE symbol=? AND status='OPEN'",
+                        (symbol,),
+                    ).fetchall()
+                ]
+            expiring_books = [
+                b for b in open_books
+                if _normalize_expiry_date(b.get("expiry")) == today_ist_str
+            ]
+
+            if not expiring_paper and not expiring_live and not expiring_books:
                 continue
 
             log.info(
@@ -626,6 +642,71 @@ def exit_expiry_day_positions(market_class: str) -> bool:
                         trade["id"],
                         symbol,
                         live_exc,
+                    )
+
+            # Exit Expiring Multileg Books
+            for book in expiring_books:
+                mode = str(book.get("trade_mode") or "PAPER").upper()
+                book_reason = f"Expiry-day square-off (expiry: {today_ist_str})"
+                with get_conn(read_only=True) as conn:
+                    legs = [
+                        dict(r) for r in conn.execute(
+                            "SELECT * FROM multi_leg_legs WHERE trade_id=? AND status='OPEN'",
+                            (book["id"],),
+                        ).fetchall()
+                    ]
+                try:
+                    if mode == "PAPER":
+                        from src.models.schema import close_book
+
+                        leg_exits = []
+                        for leg in legs:
+                            ep = get_option_premium(
+                                symbol, book.get("expiry"), leg.get("strike"), leg.get("option_type"), option_rows
+                            ) or leg.get("current_premium")
+                            if ep is None or ep <= 0:
+                                stk = float(leg.get("strike") or 0.0)
+                                ep = max(0.0, underlying - stk) if leg.get("option_type") == "CE" else max(0.0, stk - underlying)
+                            leg_exits.append({"id": leg["id"], "exit_premium": float(ep)})
+                        close_book(
+                            book["book_id"], now_iso, "CLOSED_EXPIRY", book_reason,
+                            exit_underlying=underlying, leg_exits=leg_exits,
+                        )
+                        closed = True
+                    elif not strict_open and mode == "LIVE":
+                        log.warning(
+                            "[Expiry Exit] Live multileg book %s for %s skipped — exchange session closed",
+                            book.get("book_id"), symbol,
+                        )
+                        closed = False
+                    else:
+                        from src.engine.multileg_live_trading import _close_live_book
+
+                        closed = _close_live_book(
+                            symbol=symbol,
+                            book_id=book["book_id"],
+                            legs=legs,
+                            closed_at=now_iso,
+                            status="CLOSED_EXPIRY",
+                            reason=book_reason,
+                            total_pnl=float(book.get("total_pnl") or 0.0),
+                            exit_underlying=underlying,
+                        )
+                except Exception as book_exc:
+                    log.error("[Expiry Exit] Failed to close multileg book %s for %s: %s", book.get("book_id"), symbol, book_exc)
+                    closed = False
+
+                from src.alerts.telegram_dispatcher import send_text
+
+                if closed:
+                    log.info("[Expiry Exit] Closed %s multileg book %s for %s", mode, book.get("book_id"), symbol)
+                    send_text(
+                        f"⌛ **Expiry Auto-Exit** | Closed {mode} multileg `{symbol}` `{book.get('structure')}` book `{book.get('book_id')}` (Expiry: `{today_ist_str}`)."
+                    )
+                else:
+                    completed = False
+                    send_text(
+                        f"🚨 **Expiry Auto-Exit FAILED** | {mode} multileg `{symbol}` book `{book.get('book_id')}` expiring today is still OPEN — square off manually."
                     )
 
         except Exception as sym_exc:
@@ -1544,7 +1625,7 @@ def start_scheduler(immediate: bool = False):
     )  # mark as refreshed now (warmup thread handles first)
     _INSTRUMENT_CACHE_REFRESH_INTERVAL = 4 * 60 * 60  # 4 hours
     last_kite_sync_refresh = 0.0
-    _KITE_POSITION_SYNC_INTERVAL = 5 * 60  # L3: sync Kite positions every 5 minutes
+    _KITE_POSITION_SYNC_INTERVAL = 15 * 60  # L3: sync Kite positions every 15 minutes
     _scan_attempts: dict[tuple[str, int], int] = {}
     _last_scan_attempt_time: dict[str, float] = {}
 
@@ -1992,7 +2073,7 @@ def start_scheduler(immediate: bool = False):
                         for missed_idx in missed:
                             _run_catchup_scan(class_key, missed_idx, interval_min, market_open_time, last_scanned_interval)
 
-            # 2a. L3: Kite Position Sync Loop (every 5 minutes)
+            # 2a. L3: Kite Position Sync Loop (every 15 minutes)
             if time.time() - last_kite_sync_refresh >= _KITE_POSITION_SYNC_INTERVAL:
                 last_kite_sync_refresh = time.time()
 

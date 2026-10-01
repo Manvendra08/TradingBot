@@ -33,6 +33,99 @@ resolve_option_contract = resolve_instrument
 
 log = logging.getLogger(__name__)
 
+# Live runner owns both real (LIVE) and simulated (SHADOW) books.
+_LIVE_MODES = ("LIVE", "SHADOW")
+
+
+def _open_live_books(symbol: str) -> list[dict]:
+    from src.models.schema import get_open_books_for_symbol
+    return [b for m in _LIVE_MODES for b in get_open_books_for_symbol(symbol, trade_mode=m)]
+
+
+def _is_real_broker_leg(leg: dict) -> bool:
+    """True when the leg was actually placed at Kite (shadow ids start with 'sh-')."""
+    oid = str(leg.get("broker_order_id") or "")
+    return bool(oid) and not oid.startswith("sh-")
+
+
+_ALERT_LAST_SENT: dict[str, float] = {}
+
+
+def _alert(key: str, text: str, every_s: float = 900.0) -> None:
+    """Telegram alert, throttled per key (monitor loops retry every cycle)."""
+    now = time.monotonic()
+    if now - _ALERT_LAST_SENT.get(key, -1e9) < every_s:
+        return
+    _ALERT_LAST_SENT[key] = now
+    try:
+        from src.alerts.telegram_dispatcher import send_text
+        send_text(text)
+    except Exception:
+        log.warning("[multileg-live] alert send failed for %s", key)
+
+
+def _filled_qty(kite, order_id: str) -> int:
+    try:
+        hist = kite.order_history(order_id) or []
+        return int((hist[-1] or {}).get("filled_quantity") or 0) if hist else 0
+    except Exception:
+        return 0
+
+
+def _cancel_pending_order(kite, order_id: str) -> tuple[str, int]:
+    """Cancel a still-working order; return (final_status, filled_qty).
+
+    A LIMIT order left working can fill later, and the next cycle would then
+    send a duplicate order (e.g. a second BUY-to-close → net long).
+    """
+    try:
+        kite.cancel_order(variety=kite.VARIETY_REGULAR, order_id=order_id)
+    except Exception as e:
+        log.warning("[multileg-live] cancel_order %s failed: %s", order_id, e)
+    status, _ = confirm_order_fill(kite, order_id, shadow_mode=False)
+    return status, _filled_qty(kite, order_id)
+
+
+def _gtt_already_filled(kite, gtt_id: str) -> bool:
+    """True when the leg's SL/target GTT fired and its order filled (position flat)."""
+    try:
+        g = kite.get_gtt(gtt_id) or {}
+        if str(g.get("status", "")).lower() != "triggered":
+            return False
+        for o in g.get("orders") or []:
+            oid = (((o or {}).get("result") or {}).get("order_result") or {}).get("order_id")
+            if oid and confirm_order_fill(kite, oid, shadow_mode=False)[0] == "COMPLETE":
+                return True
+    except Exception as e:
+        log.warning("[multileg-live] GTT %s status check failed: %s", gtt_id, e)
+    return False
+
+
+def _broker_position_is_flat(kite, tradingsymbol: str) -> bool:
+    """True if broker reports 0 net quantity for tradingsymbol."""
+    try:
+        net_positions = (kite.positions() or {}).get("net", [])
+        for pos in net_positions:
+            if pos.get("tradingsymbol") == tradingsymbol:
+                return int(pos.get("quantity") or 0) == 0
+    except Exception as e:
+        log.warning("[multileg-live] Failed to check broker position for %s: %s", tradingsymbol, e)
+    return False
+
+
+def get_order_execution_details(kite, order_id: str) -> tuple[float, int]:
+    """Return (average_price, filled_quantity) from Kite order history."""
+    try:
+        hist = kite.order_history(order_id) or []
+        if hist:
+            latest = hist[-1] or {}
+            avg = float(latest.get("average_price") or 0.0)
+            qty = int(latest.get("filled_quantity") or 0)
+            return avg, qty
+    except Exception:
+        pass
+    return 0.0, 0
+
 
 def _dte_from_expiry(expiry: str) -> int:
     """Calculate days to expiry from date string using IST timezone date."""
@@ -227,12 +320,11 @@ def _run_multileg_live_strategy_inner(
         close_book,
         close_leg,
         get_open_book_legs,
-        get_open_books_for_symbol,
         increment_adjustment_count,
         insert_multileg_trade_atomically,
     )
 
-    open_books = get_open_books_for_symbol(symbol, trade_mode="LIVE")
+    open_books = _open_live_books(symbol)
     mon_res = None
     if open_books:
         mon_res = _monitor_open_books_live(
@@ -245,7 +337,7 @@ def _run_multileg_live_strategy_inner(
             now_iso,
         )
         # Re-fetch open books in case monitoring closed a book
-        open_books = get_open_books_for_symbol(symbol, trade_mode="LIVE")
+        open_books = _open_live_books(symbol)
 
     if exit_check:
         return mon_res
@@ -322,6 +414,8 @@ def _monitor_open_books_live(
         DEFAULT_STOP_LOSS_PCT,
         DEFAULT_TIME_DECAY_EXIT_DTE,
     )
+    # Function-level import: used by the AI CLOSE co-sign even when net_premium <= 0.
+    from config.settings import LOT_SIZES
     from src.models.schema import (
         close_book,
         close_leg,
@@ -332,6 +426,7 @@ def _monitor_open_books_live(
     closed_actions = []
 
     for book in open_books:
+        _ok = True  # False when a broker exit failed and the book stays OPEN for retry
         book_id = book.get("book_id", "")
         trade_id = book.get("id", 0)
         strategy_type = book.get("strategy_type", "")
@@ -374,7 +469,7 @@ def _monitor_open_books_live(
                 book_id, now_iso, "CLOSED", "NO_OPEN_LEGS", total_pnl, curr_und
             )
             closed_actions.append({
-                "action": "CLOSED",
+                "action": "CLOSED" if _ok else "CLOSE_PENDING",
                 "book_id": book_id,
                 "reason": "No open legs — auto-closed",
                 "total_pnl": total_pnl,
@@ -398,7 +493,7 @@ def _monitor_open_books_live(
                     profit_pct * 100,
                     profit_target_pct * 100,
                 )
-                _close_live_book(
+                _ok = _close_live_book(
                     symbol, book_id, legs, now_iso,
                     "CLOSED",
                     f"PROFIT_TARGET ({profit_pct*100:.0f}% of max)",
@@ -406,7 +501,7 @@ def _monitor_open_books_live(
                     exit_underlying=curr_und,
                 )
                 closed_actions.append({
-                    "action": "CLOSED",
+                    "action": "CLOSED" if _ok else "CLOSE_PENDING",
                     "book_id": book_id,
                     "reason": f"Profit target hit: {profit_pct*100:.0f}%",
                     "total_pnl": total_pnl,
@@ -423,7 +518,7 @@ def _monitor_open_books_live(
                 abs(total_pnl),
                 stop_loss_threshold_rupees,
             )
-            _close_live_book(
+            _ok = _close_live_book(
                 symbol, book_id, legs, now_iso,
                 "CLOSED",
                 f"STOP_LOSS (loss ₹{abs(total_pnl):.0f} > cap ₹{stop_loss_threshold_rupees:.0f})",
@@ -431,7 +526,7 @@ def _monitor_open_books_live(
                 exit_underlying=curr_und,
             )
             closed_actions.append({
-                "action": "CLOSED",
+                "action": "CLOSED" if _ok else "CLOSE_PENDING",
                 "book_id": book_id,
                 "reason": f"Stop loss hit: ₹{abs(total_pnl):.0f} loss",
                 "total_pnl": total_pnl,
@@ -478,7 +573,7 @@ def _monitor_open_books_live(
                 dte,
                 time_decay_exit_dte,
             )
-            _close_live_book(
+            _ok = _close_live_book(
                 symbol, book_id, legs, now_iso,
                 "CLOSED",
                 exit_reason_str,
@@ -486,7 +581,7 @@ def _monitor_open_books_live(
                 exit_underlying=curr_und,
             )
             closed_actions.append({
-                "action": "CLOSED",
+                "action": "CLOSED" if _ok else "CLOSE_PENDING",
                 "book_id": book_id,
                 "reason": exit_reason_str,
                 "total_pnl": total_pnl,
@@ -518,7 +613,7 @@ def _monitor_open_books_live(
                         "[multileg-live] %s: book %s hit structural invalidation — spot %.2f breached level %.2f",
                         symbol, book_id, curr_und, inval_spot,
                     )
-                    _close_live_book(
+                    _ok = _close_live_book(
                         symbol, book_id, legs, now_iso,
                         "CLOSED",
                         f"STRUCTURAL_INVALIDATION (spot {curr_und:.1f} breached level {inval_spot:.1f})",
@@ -526,7 +621,7 @@ def _monitor_open_books_live(
                         exit_underlying=curr_und,
                     )
                     closed_actions.append({
-                        "action": "CLOSED",
+                        "action": "CLOSED" if _ok else "CLOSE_PENDING",
                         "book_id": book_id,
                         "reason": f"Structural invalidation hit: spot {curr_und:.1f} breached {inval_spot:.1f}",
                         "total_pnl": total_pnl,
@@ -535,8 +630,8 @@ def _monitor_open_books_live(
             except Exception as _ie:
                 log.debug("[multileg-live] Invalidation check error: %s", _ie)
 
-        # 4e. AI exit advice (full mode only)
-        if ai_mode == "full":
+        # 4e. AI exit advice (full and boost_only; boost only affects entries)
+        if ai_mode in ("full", "boost_only"):
             try:
                 from src.engine.llm_enrichment import get_multileg_exit_advice
 
@@ -546,6 +641,9 @@ def _monitor_open_books_live(
                 if advice and isinstance(advice, dict):
                     action = (advice.get("action") or "HOLD").upper()
                     reasoning = advice.get("reasoning", "")
+                    if action != "CLOSE":
+                        # "Consecutive" CLOSE confirmation means back-to-back cycles.
+                        _AI_CLOSE_PENDING_BOOKS.pop(book_id, None)
 
                     if action == "CLOSE":
                         from config.runtime_config import load_runtime_config
@@ -642,7 +740,7 @@ def _monitor_open_books_live(
                             )
                             clean_reason = " ".join(reasoning.split()).strip()
                             exit_reason_str = f"CLOSED_AI_EXIT ({clean_reason})" if clean_reason else "CLOSED_AI_EXIT"
-                            _close_live_book(
+                            _ok = _close_live_book(
                                 symbol, book_id, legs, now_iso,
                                 "CLOSED",
                                 exit_reason_str,
@@ -650,7 +748,7 @@ def _monitor_open_books_live(
                                 exit_underlying=curr_und,
                             )
                             closed_actions.append({
-                                "action": "CLOSED",
+                                "action": "CLOSED" if _ok else "CLOSE_PENDING",
                                 "book_id": book_id,
                                 "reason": exit_reason_str,
                                 "total_pnl": total_pnl,
@@ -678,13 +776,22 @@ def _monitor_open_books_live(
                                     risk_reason,
                                 )
                             else:
+                                # ponytail: live leg-rolls are advisory — a roll is 2 broker orders
+                                # needing its own fill/rollback protocol. Alert the operator instead
+                                # of burning the adjustment budget on a no-op.
                                 log.info(
-                                    "[multileg-live] %s: book %s — AI executing autonomous ADJUST: %s",
+                                    "[multileg-live] %s: book %s — AI recommends ADJUST (manual action required): %s | %s",
                                     symbol,
                                     book_id,
+                                    adjustment_details,
                                     reasoning,
                                 )
-                                increment_adjustment_count(book_id)
+                                _alert(
+                                    f"adjust:{book_id}",
+                                    f"🛠 **[MULTILEG LIVE]** `{symbol}` book `{book_id}` — AI suggests ADJUST: "
+                                    f"{adjustment_details}\nReason: {reasoning}",
+                                    every_s=3600,
+                                )
                         elif not exit_advisor_enabled and adjustment_details and adjustment_count < 3:
                             log.info(
                                 "[multileg-live] %s: book %s — AI recommends ADJUST (advisory only; AI Exit Advisor disabled): %s",
@@ -738,18 +845,11 @@ def _update_live_book_pnl(
 ) -> float:
     """Calculate and return updated total PnL for a live multi-leg book."""
     from config.settings import LOT_SIZES
-    from src.models.schema import get_read_conn
-    from src.engine.trade_plan import is_valid_option_premium
+    from src.engine.multileg_pnl import calc_leg_pnl, _resolve_leg_current_premium
+    from src.models.schema import get_read_conn, update_multi_leg_leg_current_premium, update_multi_leg_trade_pnl
 
     base_sym = symbol.upper().split()[0] if symbol else ""
     lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_sym, 1))
-    book_expiry = str(book.get("expiry") or "").strip()
-    underlying = float(
-        (scan_context or {}).get("underlying")
-        or book.get("entry_underlying")
-        or 0.0
-    )
-    option_rows = list((scan_context or {}).get("option_rows") or [])
 
     total_pnl = 0.0
     for leg in legs:
@@ -760,86 +860,27 @@ def _update_live_book_pnl(
         )
         lots = int(leg.get("lots") or 1)
         side = (leg.get("side") or "SELL").upper()
-        leg_expiry = str(leg.get("expiry") or book_expiry or "").strip()
 
-        current_premium = None
-        for row in option_rows:
-            row_strike = float(row.get("strike") or 0.0)
-            row_type = (row.get("option_type") or "").upper()
-            if abs(row_strike - strike) < 0.01 and row_type == option_type:
-                ltp = float(row.get("ltp") or row.get("premium") or 0.0)
-                if ltp > 0:
-                    if underlying > 0 and not is_valid_option_premium(
-                        strike, option_type, ltp, underlying
-                    ):
-                        log.warning(
-                            "[multileg-live] %s: rejected corrupted scan row LTP %.2f for %s %.0f",
-                            symbol,
-                            ltp,
-                            option_type,
-                            strike,
-                        )
-                    else:
-                        current_premium = ltp
-                        break
-
-        if current_premium is None:
-            try:
-                with get_read_conn() as conn:
-                    if leg_expiry:
-                        opt_row = conn.execute(
-                            "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND expiry=? AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
-                            (symbol, base_sym, leg_expiry, strike, option_type),
-                        ).fetchone()
-                    else:
-                        opt_row = conn.execute(
-                            "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
-                            (symbol, base_sym, strike, option_type),
-                        ).fetchone()
-                    if opt_row:
-                        snap_ltp = float(opt_row["ltp"])
-                        if underlying > 0 and not is_valid_option_premium(
-                            strike, option_type, snap_ltp, underlying
-                        ):
-                            log.warning(
-                                "[multileg-live] %s: rejected corrupted snapshot LTP %.2f for %s %.0f",
-                                symbol,
-                                snap_ltp,
-                                option_type,
-                                strike,
-                            )
-                        else:
-                            current_premium = snap_ltp
-            except Exception:
-                pass
-
-        if current_premium is None:
-            # Estimate using delta movement rather than raw entry fallback
-            if underlying > 0 and book.get("entry_underlying"):
-                entry_und = float(book.get("entry_underlying") or underlying)
-                und_move = underlying - entry_und
-                delta = float(leg.get("delta") or 0.25)
-                delta_sign = delta if option_type == "CE" else -abs(delta)
-                current_premium = max(0.05, entry_premium + delta_sign * und_move)
-                log.warning(
-                    "[multileg-live] %s: leg %s %.0f missing live LTP — delta-approximated current premium to %.2f (spot move=%.2f)",
-                    symbol, option_type, strike, current_premium, und_move,
-                )
-            else:
-                current_premium = entry_premium
-                log.warning(
-                    "[multileg-live] %s: leg %s %.0f missing live LTP — fell back to entry premium %.2f",
-                    symbol, option_type, strike, entry_premium,
-                )
-
+        current_premium = _resolve_leg_current_premium(symbol, leg, scan_context, book)
         leg["current_premium"] = current_premium
 
-        if side == "SELL":
-            pnl = (entry_premium - current_premium) * lots * lot_size
-        else:
-            pnl = (current_premium - entry_premium) * lots * lot_size
+        # Persist MTM premium to DB for dashboard/digest visibility (F15)
+        leg_id = leg.get("id")
+        if leg_id:
+            try:
+                update_multi_leg_leg_current_premium(int(leg_id), float(current_premium))
+            except Exception as e:
+                log.debug("[multileg-live] %s: MTM persist failed for leg %s: %s", symbol, leg_id, e)
 
-        total_pnl += pnl
+        total_pnl += calc_leg_pnl(entry_premium, current_premium, side, lots, lot_size)
+
+    # Persist total MTM PnL to DB for dashboard/digest visibility (F15)
+    book_id = book.get("book_id")
+    if book_id:
+        try:
+            update_multi_leg_trade_pnl(book_id, round(total_pnl, 2))
+        except Exception:
+            pass
 
     return total_pnl
 
@@ -871,14 +912,42 @@ def _close_live_book(
     # ── Centralized Broker Authorization Gate ──────────────────────
     from src.engine.broker_gate import authorize_broker_execution
     auth = authorize_broker_execution(symbol, operation="EXIT")
-    # C1 FIX: DB-only close is intentional ONLY when the broker gate explicitly
-    # denies execution (shadow mode / broker disabled) — no real broker
-    # positions exist in that case.
-    db_only_close = not auth.is_authorized
+    # DB-only close is decided by the book's ORIGIN, not the gate: shadow legs
+    # never existed at Kite, real legs always do. A gate denial (paused, shadow
+    # toggled on, symbol delisted, auction window) must never DB-close real
+    # positions — that would leave naked shorts at the broker, unmonitored.
+    has_real_legs = any(_is_real_broker_leg(l) for l in legs)
+    db_only_close = not has_real_legs
+    if has_real_legs and not auth.is_authorized:
+        log.error(
+            "[multileg-live] %s: CRITICAL — exit of real book %s refused by broker gate (%s); kept OPEN",
+            symbol, book_id, auth.reason,
+        )
+        _alert(
+            f"exit-refused:{book_id}",
+            f"🚨 **[MULTILEG LIVE]** `{symbol}` book `{book_id}` needs exit ({reason}) but the broker "
+            f"gate refused: {auth.reason}. Real positions are still OPEN at Kite — resume trading "
+            f"or square off manually.",
+        )
+        return False
+
+    from config.settings import LOT_SIZES
+    from config.symbol_classes import get_kite_exchange
+    from src.engine.symbol_resolver import resolve_instrument
+
+    exchange = get_kite_exchange(symbol)
+    book_expiry = ""
+    try:
+        from src.models.schema import get_read_conn
+        with get_read_conn() as _c:
+            _r = _c.execute("SELECT expiry FROM multi_leg_trades WHERE book_id=?", (book_id,)).fetchone()
+            book_expiry = (_r["expiry"] if _r else "") or ""
+    except Exception:
+        pass
 
     # ── Attempt broker square-off for each leg ─────────────────────────
     kite = None
-    if auth.is_authorized:
+    if has_real_legs:
         try:
             from src.engine.live_trading import get_kite_client
             kite = get_kite_client()
@@ -911,17 +980,13 @@ def _close_live_book(
             return False
     else:
         log.info(
-            "[multileg-live] %s: broker execution unauthorized (%s) — closing book %s in DB only (no order placement)",
+            "[multileg-live] %s: book %s has no broker legs (shadow) — closing in DB only",
             symbol,
-            auth.reason,
             book_id,
         )
 
-    from config.settings import LOT_SIZES
-    from src.engine.symbol_resolver import resolve_instrument
-    
     base_sym = symbol.upper().split()[0] if symbol else ""
-    
+
     exit_results = []
     leg_exits = []
     unfilled_leg_ids: list[int] = []
@@ -932,14 +997,21 @@ def _close_live_book(
         option_type = (leg.get("option_type") or "").upper()
         lots = int(leg.get("lots") or 1)
         side = (leg.get("side") or "SELL").upper()
-        leg_expiry = leg.get("expiry", "")
+        leg_expiry = leg.get("expiry") or book_expiry
 
         if not leg_id:
             continue
 
         # Determine exit transaction type (opposite of entry)
         exit_transaction = "BUY" if side == "SELL" else "SELL"
-        
+
+        if not _is_real_broker_leg(leg):
+            # Shadow leg — never placed at Kite, so never square it off there.
+            close_leg(leg_id, closed_at, leg.get("current_premium") or leg.get("entry_premium"), reason)
+            leg_exits.append({"id": leg_id, "exit_premium": leg.get("current_premium") or leg.get("entry_premium")})
+            exit_results.append({"leg_id": leg_id, "status": "NO_BROKER"})
+            continue
+
         # Resolve instrument for this leg (needed for both broker orders and premium lookup)
         resolved = None
         if kite:
@@ -964,22 +1036,27 @@ def _close_live_book(
                     symbol, leg_id, resolve_err
                 )
 
-        # Cancel broker-side GTT if active on this leg
+        # If the broker-side SL/target GTT already fired and filled, or broker position is already flat,
+        # sending an exit order now would open a new unintended position.
         gtt_id = leg.get("gtt_order_id")
-        if kite and gtt_id:
-            try:
-                from src.engine.live_trading import cancel_kite_gtt
-                cancel_kite_gtt(kite, gtt_id, shadow_mode=False)
-                log.info(
-                    "[multileg-live] %s: cancelled GTT %s for leg %d",
-                    symbol, gtt_id, leg_id
-                )
-            except Exception as gtt_cancel_err:
-                log.warning(
-                    "[multileg-live] %s: error cancelling GTT %s for leg %d: %s",
-                    symbol, gtt_id, leg_id, gtt_cancel_err
-                )
+        already_flat = False
+        flat_reason = "GTT filled"
+        if kite:
+            if gtt_id and _gtt_already_filled(kite, gtt_id):
+                already_flat = True
+                flat_reason = f"GTT {gtt_id} filled"
+            elif resolved and _broker_position_is_flat(kite, resolved["tradingsymbol"]):
+                already_flat = True
+                flat_reason = f"Position flat at broker ({resolved['tradingsymbol']})"
 
+        if already_flat:
+            log.info("[multileg-live] %s: leg %d already flat at broker (%s) — DB close only", symbol, leg_id, flat_reason)
+            close_leg(leg_id, closed_at, leg.get("current_premium") or leg.get("entry_premium"), f"{reason} [{flat_reason}]")
+            leg_exits.append({"id": leg_id, "exit_premium": leg.get("current_premium") or leg.get("entry_premium")})
+            exit_results.append({"leg_id": leg_id, "status": "ALREADY_FLAT"})
+            continue
+
+        order_id = None
         leg_fill_verified = False
         if kite and resolved:
             try:
@@ -988,7 +1065,6 @@ def _close_live_book(
 
                 from src.engine.live_trading import place_kite_order, confirm_order_fill
 
-                exchange = resolved.get("exchange", "NFO")
                 order_id = place_kite_order(
                     kite,
                     symbol,
@@ -997,6 +1073,9 @@ def _close_live_book(
                     exit_transaction,
                     quantity,
                     shadow_mode=False,
+                    # Fallback when kite.ltp is unavailable (missing quote permission).
+                    expected_price=float(leg.get("current_premium") or leg.get("entry_premium") or 0.0),
+                    tick_size=float(resolved.get("tick_size") or 0.05),
                 )
                 # C1 FIX: verify the exit order actually filled before closing
                 # the leg in DB. A REJECTED/PENDING exit order must NOT mark the
@@ -1004,6 +1083,29 @@ def _close_live_book(
                 broker_status, broker_message = confirm_order_fill(
                     kite, order_id, shadow_mode=False
                 )
+                if broker_status not in ("COMPLETE", "REJECTED", "CANCELLED"):
+                    # Never leave a working exit order behind: cancel, then re-check.
+                    broker_status, filled = _cancel_pending_order(kite, order_id)
+                    if broker_status != "COMPLETE" and filled > 0:
+                        remaining_lots = max(lots - filled // max(lot_size, 1), 0)
+                        try:
+                            from src.models.schema import get_conn
+                            with get_conn() as _c:
+                                _c.execute("UPDATE multi_leg_legs SET lots=? WHERE id=?", (remaining_lots, leg_id))
+                        except Exception:
+                            log.exception("[multileg-live] %s: could not record partial exit for leg %d", symbol, leg_id)
+                        _alert(
+                            f"partial-exit:{leg_id}",
+                            f"⚠️ **[MULTILEG LIVE]** `{symbol}` leg {leg_id} exit partially filled "
+                            f"({filled}/{quantity}); {remaining_lots} lot(s) remain — will retry.",
+                        )
+                if broker_status == "COMPLETE" and gtt_id:
+                    # Cancel the protective GTT only once the position is actually flat.
+                    try:
+                        from src.engine.live_trading import cancel_kite_gtt
+                        cancel_kite_gtt(kite, gtt_id, shadow_mode=False)
+                    except Exception as gtt_cancel_err:
+                        log.warning("[multileg-live] %s: GTT %s cancel failed: %s", symbol, gtt_id, gtt_cancel_err)
                 if broker_status == "COMPLETE":
                     leg_fill_verified = True
                     log.info(
@@ -1069,7 +1171,10 @@ def _close_live_book(
         # Close leg in DB only after verified fill (or intentional DB-only close)
         if leg_fill_verified:
             try:
-                leg_exit_premium = leg.get("current_premium") or leg.get("entry_premium")
+                avg_price = 0.0
+                if kite and order_id and not str(order_id).startswith("sh-"):
+                    avg_price, _ = get_order_execution_details(kite, order_id)
+                leg_exit_premium = avg_price if avg_price > 0 else (leg.get("current_premium") or leg.get("entry_premium"))
                 close_leg(leg_id, closed_at, leg_exit_premium, reason)
                 leg_exits.append({"id": leg_id, "exit_premium": leg_exit_premium})
             except Exception as e:
@@ -1184,12 +1289,15 @@ def _attempt_new_live_entry(
     # ── Broker Authorization Gate ──────────────────────────────────────
     from src.engine.broker_gate import authorize_broker_execution
     auth = authorize_broker_execution(symbol, operation="ENTRY", scan_context=scan_context)
-    if not auth.is_authorized:
+    is_shadow = getattr(auth, "is_shadow", False)
+    if not auth.is_authorized and not is_shadow:
         log.debug("[multileg-live] %s: broker authorization gate failed for new entry — %s", symbol, auth.reason)
         return {
             "action": "SKIPPED_BROKER_DISABLED",
             "reason": auth.reason,
         }
+    shadow_mode = is_shadow
+    trade_mode = "SHADOW" if is_shadow else "LIVE"
 
     # ── 5a. LLM verdict ───────────────────────────────────────────────
     verdict = ai_verdict if (ai_verdict is not None and getattr(ai_verdict, "strategy_type", None)) else None
@@ -1205,7 +1313,7 @@ def _attempt_new_live_entry(
                 scan_context=scan_context,
                 alerts=intel.get("alerts") if isinstance(intel, dict) else None,
                 news_data=intel.get("news_data") if isinstance(intel, dict) else None,
-                open_books=open_books or get_open_books_for_symbol(symbol, trade_mode="LIVE"),
+                open_books=open_books or _open_live_books(symbol),
             )
             if isinstance(intel, dict) and verdict is not None:
                 intel["multileg_verdict"] = verdict
@@ -1363,11 +1471,16 @@ def _attempt_new_live_entry(
             is_paper=False,
             setup_type="MULTILEG",
         )
+        base_lots = [int(l.get("lots") or 1) for l in legs]
+        min_lot = min(base_lots) if base_lots else 1
         for leg in legs:
-            leg["lots"] = dashboard_lots
+            orig_ratio = max(1, int(leg.get("lots") or 1) // max(1, min_lot))
+            leg["ratio"] = orig_ratio
+            leg["lots"] = dashboard_lots * orig_ratio
     except Exception as e:
         log.warning("[multileg-live] %s: lot sizing failed, defaulting to 1 lot: %s", symbol, e)
         for leg in legs:
+            leg.setdefault("ratio", 1)
             leg.setdefault("lots", 1)
 
     if validate_legs is not None:
@@ -1442,7 +1555,13 @@ def _attempt_new_live_entry(
     expiry = (scan_context or {}).get("expiry", "")
     underlying = float((scan_context or {}).get("underlying") or 0.0)
     option_rows = list((scan_context or {}).get("option_rows") or [])
-    net_premium = verdict.net_premium
+    # Bug 13 fix: Compute real net_premium from authoritative leg market prices,
+    # rather than trusting verdict.net_premium hallucinated by the LLM.
+    sell_prem = sum(float(l.get("premium") or l.get("entry_premium") or 0.0) for l in legs if (l.get("side") or "").upper() == "SELL")
+    buy_prem = sum(float(l.get("premium") or l.get("entry_premium") or 0.0) for l in legs if (l.get("side") or "").upper() == "BUY")
+    net_premium = round(sell_prem - buy_prem, 2)
+    if net_premium <= 0.0 and getattr(verdict, "net_premium", 0.0) > 0.0:
+        net_premium = float(verdict.net_premium)
 
     book_greeks = {}
     risk_profile = {}
@@ -1483,7 +1602,7 @@ def _attempt_new_live_entry(
     if check_book_conflicts is not None:
         try:
             has_conflict, conflict_msg = check_book_conflicts(
-                symbol, strategy_type, open_books or get_open_books_for_symbol(symbol, trade_mode="LIVE")
+                symbol, strategy_type, open_books or _open_live_books(symbol)
             )
             if has_conflict:
                 log.info(
@@ -1506,16 +1625,14 @@ def _attempt_new_live_entry(
     if score_entry_quality is not None:
         try:
             entry_quality, quality_reasons = score_entry_quality(
-                symbol=symbol,
                 strategy_type=strategy_type,
                 legs=legs,
-                net_premium=net_premium,
-                underlying=underlying,
                 scan_context=scan_context,
-                intel=intel,
                 book_greeks=book_greeks,
                 risk_profile=risk_profile,
-                combined_margin=combined_margin,
+                net_premium=net_premium,
+                margin=combined_margin,
+                underlying=underlying,
                 stop_loss_pct=sl_pct_verdict,
             )
         except Exception as e:
@@ -1621,7 +1738,7 @@ def _attempt_new_live_entry(
     except Exception as e:
         log.warning("[multileg-live] %s: could not get Kite client: %s", symbol, e)
 
-    if not kite:
+    if not kite and not shadow_mode:
         log.error(
             "[multileg-live] %s: no Kite client available — cannot place live orders",
             symbol,
@@ -1632,11 +1749,13 @@ def _attempt_new_live_entry(
         }
 
     from config.settings import LOT_SIZES
+    from config.symbol_classes import get_kite_exchange
     from src.engine.live_trading import place_kite_order
     from src.engine.symbol_resolver import resolve_instrument
 
     base_sym = symbol.upper().split()[0] if symbol else ""
     lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_sym, 1))
+    exchange = get_kite_exchange(symbol)
 
     for i, leg in enumerate(legs):
         strike = float(leg.get("strike") or 0.0)
@@ -1661,7 +1780,6 @@ def _attempt_new_live_entry(
                 failed = True
                 break
 
-            exchange = resolved.get("exchange", "NFO")
             order_id = place_kite_order(
                 kite,
                 symbol,
@@ -1669,13 +1787,14 @@ def _attempt_new_live_entry(
                 resolved["tradingsymbol"],
                 side,
                 quantity,
-                shadow_mode=False,
+                shadow_mode=shadow_mode,
                 expected_price=premium,
+                tick_size=float(resolved.get("tick_size") or 0.05),
             )
 
             # Verify order status before proceeding to next leg (Risk 4 fix)
             from src.engine.live_trading import confirm_order_fill
-            broker_status, broker_message = confirm_order_fill(kite, order_id, shadow_mode=False)
+            broker_status, broker_message = confirm_order_fill(kite, order_id, shadow_mode=shadow_mode)
 
             if broker_status in ("REJECTED", "CANCELLED"):
                 log.error(
@@ -1687,30 +1806,8 @@ def _attempt_new_live_entry(
                     option_type,
                     broker_message,
                 )
-                failed = True
-                break
-
-            if broker_status != "COMPLETE":
-                log.error(
-                    "[multileg-live] %s: leg %d order status is %s (not COMPLETE) — attempting cancel to prevent unhedged exposure",
-                    symbol,
-                    i + 1,
-                    broker_status,
-                )
-                cancelled_ok = False
-                try:
-                    kite.cancel_order(variety=kite.VARIETY_REGULAR, order_id=order_id)
-                    c_status, _ = confirm_order_fill(kite, order_id, shadow_mode=False)
-                    if c_status in ("CANCELLED", "REJECTED"):
-                        cancelled_ok = True
-                except Exception as cancel_err:
-                    log.error(
-                        "[multileg-live] %s: cancel order %s failed: %s",
-                        symbol, order_id, cancel_err
-                    )
-
-                if not cancelled_ok:
-                    # Cancel failed or order filled during cancel attempt; add to placed_legs so rollback squares it off
+                filled_qty = _filled_qty(kite, order_id) if not shadow_mode and kite else 0
+                if filled_qty > 0:
                     placed_legs.append({
                         "trade_id": 0,
                         "side": side,
@@ -1729,6 +1826,57 @@ def _attempt_new_live_entry(
                         "closed_at": None,
                         "exit_reason": None,
                         "broker_order_id": order_id,
+                        "gtt_order_id": None,
+                        "trade_mode": trade_mode,
+                        "filled_quantity": filled_qty,
+                    })
+                failed = True
+                break
+
+            if broker_status not in ("COMPLETE", "SHADOW"):
+                log.error(
+                    "[multileg-live] %s: leg %d order status is %s (not COMPLETE) — attempting cancel to prevent unhedged exposure",
+                    symbol,
+                    i + 1,
+                    broker_status,
+                )
+                cancelled_ok = False
+                filled_qty = 0
+                if not shadow_mode and kite:
+                    try:
+                        c_status, filled_qty = _cancel_pending_order(kite, order_id)
+                        if c_status in ("CANCELLED", "REJECTED") and filled_qty == 0:
+                            cancelled_ok = True
+                    except Exception as cancel_err:
+                        log.error(
+                            "[multileg-live] %s: cancel order %s failed: %s",
+                            symbol, order_id, cancel_err
+                        )
+
+                if not cancelled_ok:
+                    # Cancel failed or order filled/partially filled during cancel attempt;
+                    # add to placed_legs so rollback squares it off
+                    placed_legs.append({
+                        "trade_id": 0,
+                        "side": side,
+                        "lots": lots,
+                        "strike": strike,
+                        "option_type": option_type,
+                        "expiry": expiry,
+                        "entry_premium": premium,
+                        "exit_premium": 0.0,
+                        "delta": float(leg.get("delta") or 0.0),
+                        "theta": 0.0,
+                        "vega": 0.0,
+                        "iv": 0.0,
+                        "rationale": leg.get("rationale", ""),
+                        "status": "OPEN",
+                        "closed_at": None,
+                        "exit_reason": None,
+                        "broker_order_id": order_id,
+                        "gtt_order_id": None,
+                        "trade_mode": trade_mode,
+                        "filled_quantity": filled_qty if filled_qty > 0 else quantity,
                     })
                 failed = True
                 break
@@ -1769,7 +1917,7 @@ def _attempt_new_live_entry(
                         trigger_values=[target_trigger, sl_trigger],
                         limit_prices=[target_limit, sl_limit],
                         last_price=premium,
-                        shadow_mode=False,
+                        shadow_mode=shadow_mode,
                         tick_size=t_size,
                     )
                     log.info(
@@ -1782,34 +1930,19 @@ def _attempt_new_live_entry(
                     )
                 except Exception as gtt_exc:
                     log.error(
-                        "[multileg-live] %s: leg %d GTT placement FAILED: %s — squaring off immediately to prevent unhedged exposure",
+                        "[multileg-live] %s: leg %d GTT placement FAILED: %s — continuing without broker-side GTT; "
+                        "monitoring loop will manage SL/target via code-side checks",
                         symbol,
                         i + 1,
                         gtt_exc,
                     )
-                    # Add to placed_legs so rollback squares it off immediately
-                    placed_legs.append({
-                        "trade_id": 0,
-                        "side": side,
-                        "lots": lots,
-                        "strike": strike,
-                        "option_type": option_type,
-                        "expiry": expiry,
-                        "entry_premium": premium,
-                        "exit_premium": 0.0,
-                        "delta": float(leg.get("delta") or 0.0),
-                        "theta": 0.0,
-                        "vega": 0.0,
-                        "iv": 0.0,
-                        "rationale": leg.get("rationale", ""),
-                        "status": "OPEN",
-                        "closed_at": None,
-                        "exit_reason": None,
-                        "broker_order_id": order_id,
-                        "gtt_order_id": None,
-                    })
-                    failed = True
-                    break
+                    _alert(
+                        f"gtt-failed:{symbol}",
+                        f"⚠️ **[MULTILEG LIVE]** `{symbol}` leg {i + 1} ({option_type} {strike}) broker-side GTT "
+                        f"failed to place: {gtt_exc}. Position remains OPEN without GTT hedge. "
+                        f"Monitoring loop will manage SL/target via code-side checks.",
+                    )
+                    gtt_order_id = None
 
             placed_legs.append({
                 "trade_id": 0,
@@ -1830,6 +1963,8 @@ def _attempt_new_live_entry(
                 "exit_reason": None,
                 "broker_order_id": order_id,
                 "gtt_order_id": gtt_order_id,
+                "trade_mode": trade_mode,
+                "filled_quantity": quantity,
             })
 
         except Exception as e:
@@ -1852,12 +1987,47 @@ def _attempt_new_live_entry(
             len(placed_legs),
             len(legs),
         )
-        _rollback_placed_legs(symbol, kite, placed_legs)
+        rb_summary = _rollback_placed_legs(symbol, kite, placed_legs, shadow_mode=shadow_mode)
+
+        if rb_summary.get("failed", 0) > 0 or rb_summary.get("pending", 0) > 0:
+            from src.alerts.telegram_dispatcher import send_text
+            try:
+                send_text(
+                    f"🚨 **[MULTILEG CRITICAL]** Rollback failed for `{symbol}` ({rb_summary.get('failed')} failed, {rb_summary.get('pending')} pending)!\n"
+                    f"Orphan positions may remain open at Kite! Manual inspection required immediately."
+                )
+            except Exception:
+                pass
+            # Insert a record so manual reconciler / operator sees it
+            try:
+                orphaned_trade = {
+                    "trade_ref": 0,
+                    "symbol": symbol,
+                    "structure": strategy_type,
+                    "net_premium": net_premium,
+                    "margin_req": combined_margin,
+                    "total_pnl": 0.0,
+                    "opened_at": now_iso,
+                    "closed_at": None,
+                    "status": "ROLLBACK_FAILED",
+                    "reason": f"Partial fill rollback failed: {rb_summary}",
+                    "entry_reason": f"Partial fill rollback failed: {rb_summary}",
+                    "exit_reason": "MANUAL_HANDLING_REQUIRED",
+                    "book_id": book_id,
+                    "strategy_type": strategy_type,
+                    "expiry": expiry,
+                    "trade_mode": trade_mode,
+                    "snapshot_id": (scan_context or {}).get("snapshot_id"),
+                }
+                insert_multileg_trade_atomically(orphaned_trade, placed_legs)
+            except Exception as ins_err:
+                log.critical("[multileg-live] %s: failed to persist ROLLBACK_FAILED book: %s", symbol, ins_err)
 
         return {
             "action": "PARTIAL_FILL_ROLLBACK",
-            "reason": f"Leg {len(placed_legs) + 1}/{len(legs)} failed — rolled back {len(placed_legs)} orders",
+            "reason": f"Leg {len(placed_legs) + 1}/{len(legs)} failed — rolled back {len(placed_legs)} orders (summary: {rb_summary})",
             "placed_count": len(placed_legs),
+            "rollback_summary": rb_summary,
         }
 
     if failed and not placed_legs:
@@ -1914,14 +2084,16 @@ def _attempt_new_live_entry(
         "digest_id": digest_id,
         "ai_model_name": verdict.model_name,
         "snapshot_id": (scan_context or {}).get("snapshot_id"),
+        "trade_mode": trade_mode,
     }
 
     try:
         inserted_id = insert_multileg_trade_atomically(trade_dict, placed_legs)
         if inserted_id:
             log.info(
-                "[multileg-live] %s: LIVE book %s inserted (trade_id=%d) — %s, %d legs, net premium ₹%.1f",
+                "[multileg-live] %s: %s book %s inserted (trade_id=%d) — %s, %d legs, net premium ₹%.1f",
                 symbol,
+                trade_mode,
                 book_id,
                 inserted_id,
                 strategy_type,
@@ -1934,11 +2106,11 @@ def _attempt_new_live_entry(
                 from src.alerts.telegram_dispatcher import send_text
 
                 legs_summary = ", ".join(
-                    f"SELL {l.get('option_type','')} {l.get('strike','')} @ ₹{l.get('entry_premium',0):.1f}"
+                    f"{l.get('side','')} {l.get('option_type','')} {l.get('strike','')} @ ₹{l.get('entry_premium',0):.1f}"
                     for l in placed_legs
                 )
                 send_text(
-                    f"🤖 **[MULTILEG LIVE]** `{symbol}` {strategy_type}\n"
+                    f"🤖 **[MULTILEG {trade_mode}]** `{symbol}` {strategy_type}\n"
                     f"Legs: {legs_summary}\n"
                     f"Net Premium: ₹{net_premium:.1f} | Confidence: {effective_confidence}%\n"
                     f"Book: `{book_id}`"
@@ -1951,7 +2123,7 @@ def _attempt_new_live_entry(
                 )
 
             return {
-                "action": "ENTERED_LIVE",
+                "action": "ENTERED_SHADOW" if is_shadow else "ENTERED_LIVE",
                 "trade_id": inserted_id,
                 "book_id": book_id,
                 "strategy_type": strategy_type,
@@ -1972,7 +2144,7 @@ def _attempt_new_live_entry(
                 "[multileg-live] %s: DB insert failed after broker orders — rolling back",
                 symbol,
             )
-            _rollback_placed_legs(symbol, kite, placed_legs)
+            _rollback_placed_legs(symbol, kite, placed_legs, shadow_mode=shadow_mode)
             return {
                 "action": "DB_INSERT_FAILED_ROLLBACK",
                 "reason": "DB insert failed after broker orders placed — rolled back",
@@ -1984,7 +2156,7 @@ def _attempt_new_live_entry(
             e,
             exc_info=True,
         )
-        _rollback_placed_legs(symbol, kite, placed_legs)
+        _rollback_placed_legs(symbol, kite, placed_legs, shadow_mode=shadow_mode)
         return {
             "action": "DB_INSERT_FAILED_ROLLBACK",
             "reason": f"DB error: {e}",
@@ -1992,7 +2164,7 @@ def _attempt_new_live_entry(
 
 
 def _rollback_placed_legs(
-    symbol: str, kite, placed_legs: list[dict]
+    symbol: str, kite, placed_legs: list[dict], shadow_mode: bool = False
 ) -> dict:
     """Square off all already-placed legs on a failed multi-leg entry.
 
@@ -2006,11 +2178,13 @@ def _rollback_placed_legs(
         return {"total": 0, "filled": 0, "failed": 0, "pending": 0}
 
     from config.settings import LOT_SIZES
+    from config.symbol_classes import get_kite_exchange
     from src.engine.live_trading import place_kite_order
     from src.engine.symbol_resolver import resolve_instrument
 
     base_sym = symbol.upper().split()[0] if symbol else ""
     lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_sym, 1))
+    exchange = get_kite_exchange(symbol)
     
     rollback_results = []
     rollback_order_ids = []
@@ -2021,9 +2195,11 @@ def _rollback_placed_legs(
         strike = leg.get("strike", 0.0)
         option_type = leg.get("option_type", "")
         lots = leg.get("lots", 1)
-        quantity = lots * lot_size
+        quantity = int(leg.get("filled_quantity") or (lots * lot_size))
+        if quantity <= 0:
+            continue
 
-        if not kite:
+        if not kite and not shadow_mode:
             log.error(
                 "[multileg-live] %s: CRITICAL — rollback skipped for %d legs, no Kite client!",
                 symbol,
@@ -2033,7 +2209,7 @@ def _rollback_placed_legs(
 
         # Cancel broker-side GTT if active on this placed leg
         gtt_id = leg.get("gtt_order_id")
-        if kite and gtt_id:
+        if kite and gtt_id and not shadow_mode:
             try:
                 from src.engine.live_trading import cancel_kite_gtt
                 cancel_kite_gtt(kite, gtt_id, shadow_mode=False)
@@ -2067,11 +2243,13 @@ def _rollback_placed_legs(
             order_id = place_kite_order(
                 kite,
                 symbol,
-                resolved.get("exchange", "NFO"),
+                exchange,
                 resolved["tradingsymbol"],
                 exit_transaction,
                 quantity,
-                shadow_mode=False,
+                shadow_mode=shadow_mode,
+                expected_price=float(leg.get("entry_premium") or leg.get("current_premium") or 0.0),
+                tick_size=float(resolved.get("tick_size") or 0.05),
             )
             log.info(
                 "[multileg-live] %s: rollback order placed — %s %s %s Qty=%d, order_id=%s",
@@ -2105,10 +2283,20 @@ def _rollback_placed_legs(
     failed_count = len([r for r in rollback_results if r["status"] in ("RESOLVE_FAILED", "ORDER_FAILED")])
     pending_count = 0
 
-    if rollback_order_ids and kite:
-        try:
-            for rb_order in rollback_order_ids:
-                status, msg = confirm_order_fill(kite, rb_order["order_id"], shadow_mode=False)
+    if rollback_order_ids:
+        for rb_order in rollback_order_ids:
+            oid = rb_order["order_id"]
+            if shadow_mode or str(oid).startswith("sh-"):
+                rb_order["filled"] = True
+                filled_count += 1
+                continue
+
+            if not kite:
+                failed_count += 1
+                continue
+
+            try:
+                status, msg = confirm_order_fill(kite, oid, shadow_mode=False)
                 if status == "COMPLETE":
                     rb_order["filled"] = True
                     filled_count += 1
@@ -2117,29 +2305,68 @@ def _rollback_placed_legs(
                     failed_count += 1
                     log.error(
                         "[multileg-live] %s: CRITICAL — rollback order %s was %s for %s %s: %s",
-                        symbol, rb_order["order_id"], status,
+                        symbol, oid, status,
                         rb_order["strike"], rb_order["option_type"], msg
                     )
                 else:
-                    pending_count += 1
-        except Exception as e:
-            log.error(
-                "[multileg-live] %s: could not verify rollback order fills: %s",
-                symbol, e
-            )
+                    # Order still working: cancel it and check filled amount (Bug 3)
+                    c_status, c_filled = _cancel_pending_order(kite, oid)
+                    if c_status == "COMPLETE" or c_filled >= rb_order["quantity"]:
+                        rb_order["filled"] = True
+                        filled_count += 1
+                    else:
+                        pending_count += 1
+                        remaining_qty = rb_order["quantity"] - c_filled
+                        rb_order["remaining_qty"] = remaining_qty
+                        log.error(
+                            "[multileg-live] %s: CRITICAL — rollback order %s stayed pending/unfilled (%d/%d filled), remaining qty=%d",
+                            symbol, oid, c_filled, rb_order["quantity"], remaining_qty
+                        )
+            except Exception as e:
+                log.error(
+                    "[multileg-live] %s: could not verify rollback order fills: %s",
+                    symbol, e
+                )
+                failed_count += 1
+
+    partial_fills = [
+                {
+                    "order_id": rb.get("order_id"),
+                    "strike": rb.get("strike"),
+                    "option_type": rb.get("option_type"),
+                    "quantity": rb.get("quantity"),
+                    "remaining_qty": rb.get("remaining_qty", 0),
+                }
+                for rb in rollback_order_ids
+                if not rb.get("filled") and rb.get("remaining_qty", 0) > 0
+            ]
 
     summary = {
         "total": len(placed_legs),
         "filled": filled_count,
         "failed": failed_count,
         "pending": pending_count,
+        "partial_fills": partial_fills,
     }
-    
+
     if summary["failed"] > 0 or summary["pending"] > 0:
+        partial_details = ""
+        if partial_fills:
+            partial_details = "\nPartial fills remaining:\n" + "\n".join(
+                f"- {pf['option_type']} {pf['strike']}: {pf['remaining_qty']}/{pf['quantity']} lots remaining"
+                for pf in partial_fills
+            )
         log.error(
-            "[multileg-live] %s: CRITICAL ROLLBACK SUMMARY — Total=%d, Filled=%d, Failed=%d, Pending=%d",
-            symbol, summary["total"], summary["filled"], summary["failed"], summary["pending"]
+            "[multileg-live] %s: CRITICAL ROLLBACK SUMMARY — Total=%d, Filled=%d, Failed=%d, Pending=%d%s",
+            symbol, summary["total"], summary["filled"], summary["failed"], summary["pending"], partial_details
         )
+        if not shadow_mode:
+            _alert(
+                f"rollback-failed:{symbol}",
+                f"🚨 **[MULTILEG CRITICAL]** Rollback for `{symbol}` has {summary['failed']} failed, {summary['pending']} pending orders!{partial_details}\n"
+                f"Unhedged positions may remain open at broker. Immediate manual square-off required!",
+                every_s=60.0,
+            )
     else:
         log.info(
             "[multileg-live] %s: rollback complete — all %d legs squared off",
