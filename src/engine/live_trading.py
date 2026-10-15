@@ -399,6 +399,8 @@ def _trade_plan_from_verdict(verdict: str, confidence: int, ctx: dict) -> dict |
     sl_premium, target_premium = convert_underlying_sl_to_premium(
         underlying, sl_ul, tgt_ul, entry_premium, side, option_type, strike, option_rows
     )
+    if side == "SELL" and option_type in ("CE", "PE") and sl_premium is not None:
+        sl_premium = min(float(sl_premium), round(entry_premium * 1.35, 2))
 
     plan["entry_premium"] = entry_premium
     plan["sl_premium"] = sl_premium
@@ -990,30 +992,33 @@ def run_live_trading(
         if shadow_mode and current_open_trade:
             try:
                 from src.models.schema import get_conn
-                with get_conn() as conn:
+                p_trade = None
+                with get_conn(read_only=True) as conn:
                     p_row = conn.execute(
                         "SELECT * FROM paper_trades WHERE symbol=? AND option_type=? AND abs(strike - ?) < 0.1 AND status != 'OPEN' ORDER BY id DESC LIMIT 1",
                         (symbol, current_open_trade.get("option_type"), float(current_open_trade.get("strike") or 0))
                     ).fetchone()
                     if p_row:
                         p_trade = dict(p_row)
-                        log.info(
-                            "%s: Shadow live trade #%d auto-closing in sync with closed paper trade #%d (%s)",
-                            symbol, current_open_trade["id"], p_trade["id"], p_trade["status"]
-                        )
-                        update_live_trade_entry(
-                            current_open_trade["id"],
-                            status=p_trade["status"],
-                            broker_status="SHADOW",
-                            closed_at=p_trade.get("closed_at") or now_iso,
-                            exit_underlying=p_trade.get("exit_underlying"),
-                            exit_premium=p_trade.get("exit_premium"),
-                            pnl_points=p_trade.get("pnl_points"),
-                            pnl_rupees=p_trade.get("pnl_rupees"),
-                            exit_reason=p_trade.get("exit_reason") or p_trade.get("reason"),
-                            broker_message=f"Shadow trade closed via paper {p_trade['status']} sync",
-                        )
-                        return {"action": "CLOSED", "trade": p_trade, "reason": f"shadow paper sync {p_trade['status']}"}
+
+                if p_trade:
+                    log.info(
+                        "%s: Shadow live trade #%d auto-closing in sync with closed paper trade #%d (%s)",
+                        symbol, current_open_trade["id"], p_trade["id"], p_trade["status"]
+                    )
+                    update_live_trade_entry(
+                        current_open_trade["id"],
+                        status=p_trade["status"],
+                        broker_status="SHADOW",
+                        closed_at=p_trade.get("closed_at") or now_iso,
+                        exit_underlying=p_trade.get("exit_underlying"),
+                        exit_premium=p_trade.get("exit_premium"),
+                        pnl_points=p_trade.get("pnl_points"),
+                        pnl_rupees=p_trade.get("pnl_rupees"),
+                        exit_reason=p_trade.get("exit_reason") or p_trade.get("reason"),
+                        broker_message=f"Shadow trade closed via paper {p_trade['status']} sync",
+                    )
+                    return {"action": "CLOSED", "trade": p_trade, "reason": f"shadow paper sync {p_trade['status']}"}
             except Exception as se:
                 log.warning("%s: Failed to sync shadow live trade with paper exit: %s", symbol, se)
 
@@ -1170,17 +1175,39 @@ def run_live_trading(
                 sl_premium = float(current_open_trade.get("sl_premium") or 0.0)
                 target_premium = float(current_open_trade.get("target_premium") or 0.0)
                 is_sell = current_open_trade.get("side") == "SELL"
+                opt_type = str(current_open_trade.get("option_type") or "").upper()
+                entry_prem = float(current_open_trade.get("entry_premium") or 0.0)
+
+                # For SELL options: enforce hard cap of max 1.35x entry premium (+35% expansion)
+                if is_sell and opt_type in ("CE", "PE") and entry_prem > 0:
+                    max_sell_sl = round(entry_prem * 1.35, 2)
+                    if sl_premium <= 0 or sl_premium > max_sell_sl:
+                        sl_premium = max_sell_sl
+
                 close_status = ""
                 close_reason = ""
 
-                if is_sell and sl_premium > 0 and exit_premium >= sl_premium:
-                    close_status, close_reason = "CLOSED_SL", "stop loss hit"
-                elif is_sell and target_premium > 0 and exit_premium <= target_premium:
-                    close_status, close_reason = "CLOSED_TARGET", "target hit"
-                elif not is_sell and sl_premium > 0 and exit_premium <= sl_premium:
-                    close_status, close_reason = "CLOSED_SL", "stop loss hit"
-                elif not is_sell and target_premium > 0 and exit_premium >= target_premium:
-                    close_status, close_reason = "CLOSED_TARGET", "target hit"
+                # Delta Stop check: Force-exit if leg delta reaches >= 0.60
+                if is_sell and opt_type in ("CE", "PE"):
+                    from src.engine.trade_plan import get_leg_delta
+                    delta_val = get_leg_delta(
+                        current_open_trade.get("strike"),
+                        opt_type,
+                        option_rows,
+                    )
+                    if delta_val is not None and delta_val >= 0.60:
+                        close_status = "CLOSED_DELTA_STOP"
+                        close_reason = f"delta stop hit (delta {delta_val:.2f} >= 0.60)"
+
+                if not close_status:
+                    if is_sell and sl_premium > 0 and exit_premium >= sl_premium:
+                        close_status, close_reason = "CLOSED_SL", "stop loss hit (1.35x premium cap)"
+                    elif is_sell and target_premium > 0 and exit_premium <= target_premium:
+                        close_status, close_reason = "CLOSED_TARGET", "target hit"
+                    elif not is_sell and sl_premium > 0 and exit_premium <= sl_premium:
+                        close_status, close_reason = "CLOSED_SL", "stop loss hit"
+                    elif not is_sell and target_premium > 0 and exit_premium >= target_premium:
+                        close_status, close_reason = "CLOSED_TARGET", "target hit"
 
                 if close_status:
                     try:

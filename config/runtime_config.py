@@ -85,6 +85,9 @@ def get_fail_closed_defaults(default_freq: int = 15) -> dict:
         "sentinel_report_mode": "anomalies",
         "ops_agent_mode": "observe",
         "tiered_gates_enabled": True,
+        "typesafe_conviction_floor": 0.30,
+        "typesafe_event_shock_enabled": True,
+        "typesafe_thesis_verification_enabled": True,
     }
 
 
@@ -144,9 +147,15 @@ def load_runtime_config() -> dict:
         "trading_paused": True,  # OPS Agent safety switch — one-way (human-only unpause, fail-closed)
         "enable_tfss_trade_blocked_rules": False,
         "enable_ng_parity_trades": True,  # Natural Gas Fair Value Parity arbitrage
+        "gemini_spark_feed_enabled": True,  # Independent Gemini Spark trade feed via Google Sheets
+        "gemini_spark_sheet_id": "19OiN3QrC75S5TRccF0QdzoC5SX1XGshzlJ2hPyIkW7I",
+        "gemini_spark_poll_interval_sec": 20,
         "sentinel_report_mode": "anomalies",  # "anomalies" = only when rules fire; "full" = every scan
         "ops_agent_mode": "observe",  # "observe" = safe notify-only; "normal" = full protective actions
         "tiered_gates_enabled": True,
+        "typesafe_conviction_floor": 0.30,
+        "typesafe_event_shock_enabled": True,
+        "typesafe_thesis_verification_enabled": True,
     }
 
     if not RUNTIME_CONFIG_PATH.exists():
@@ -286,4 +295,24 @@ def is_broker_trade_enabled() -> bool:
     if cfg.get("trading_paused", True):
         return False
     return True
+
+
+def is_gemini_spark_feed_enabled() -> bool:
+    return bool(load_runtime_config().get("gemini_spark_feed_enabled", True))
+
+
+def get_gemini_spark_sheet_id(symbol: str = "NATURALGAS") -> str:
+    cfg = load_runtime_config()
+    sheet_ids = cfg.get("gemini_spark_sheet_ids")
+    if isinstance(sheet_ids, dict):
+        base_sym = str(symbol or "").upper().split()[0]
+        if base_sym in sheet_ids:
+            return str(sheet_ids[base_sym])
+    if "NIFTY" in str(symbol).upper():
+        return str(cfg.get("gemini_spark_nifty_sheet_id", "1iWS-yDJ40QGtfuunjv3PuHpDyIAXhIVF_OmBUsV6B5E"))
+    return str(cfg.get("gemini_spark_sheet_id", "19OiN3QrC75S5TRccF0QdzoC5SX1XGshzlJ2hPyIkW7I"))
+
+
+def get_gemini_spark_poll_interval_sec() -> int:
+    return int(load_runtime_config().get("gemini_spark_poll_interval_sec", 20))
 

@@ -429,7 +429,10 @@
     2. `news_fetcher.py`: NewsAPI freshness window tightened — 12h then 24h during NSE market hours (weekday 09:15–15:30 IST), 24h off-hours, falling back progressively to the original 48h pool only when tighter windows are empty.
     3. `news_worker.py`: headlines in the prompt now include IST publish times (`time n/a` for undated); the prompt includes current time plus a `Live market:` line (price, % vs prev close, session freshness) with an instruction to score toward price action or return MIXED on conflict.
     4. `news_worker.py`: `_get_market_context()` reads `underlying_price` for live session price vs previous close; a divergence guard downgrades index-symbol verdicts to MIXED (score clamped to ±0.34) when |% change| > 0.5 opposes the verdict, logging `News/price divergence` for Sentinel correlation. Commodities (NATURALGAS etc.) are excluded — news legitimately leads commodity prices.
-    5. `news_worker.py`: Jev System-1 integration (flag-gated) — `NEWS_JEV_FALLBACK` (default on) uses `_evaluate_sentiment_via_jev()` as a ~3s fallback scorer when OmniRouter fails (replacing regex degradation; auto-skips without `TYPESAFE_API_KEY`); `NEWS_JEV_SHADOW` (default off) evaluates Jev on identical state each cycle, stores `jev_score`/`jev_direction`/`jev_reason` in the news cache entry, and sends ONE consolidated Telegram A/B alert per cycle via `_build_ab_telegram_message()` + `send_text()` (`🤖 News AI A/B — OmniRouter vs Jev` with per-symbol tape %, both verdicts/scores/reasons, AGREE/DISAGREE) — replacing log-grepping. Question schema mirrors `src/engine/jev_gate.py` (`choice` + `criteria`, response `{"choice", "confidence"}`).
+    5. `news_worker.py` & Jev System-1 Architecture:
+       - `pipeline.py`: Reconnected dead `jev_fast_gate()` pre-LLM conviction filter with loose 0.30 floor (`typesafe_conviction_floor`), fixing undefined `_jev_proceed` bug. Engine verdicts with confidence >= 70% or active buildup/writing automatically bypass Jev to prevent false-negative trade blocking.
+       - `news_worker.py`: Added pre-ingestion prompt injection screening (`screen_text`) and rapid macro event-shock detection (`classify_event_shock`). Extreme surprise macro shocks trigger `record_event_shock()` in `event_shock.py`, activating a 20-minute entry circuit breaker in `time_guards.py::is_trading_allowed_now()` with immediate Telegram broadcast.
+       - `multileg_live_trading.py` & `multileg_paper_trading.py`: Added Jev thesis logical verification (`verify_thesis_claims`). Reject proposals where the LLM's written thesis factually contradicts raw market data (e.g. claiming bullish breakout when spot is breaking down or claiming call buying on bear spreads).
 
 - **Incident F151: Expiry-Day Auto Square-Off Window Missed by Blocking Market-Close Scans (2026-09-24)**
   - **Symptom:** SENSEX SELL paper position (expiry 2026-09-24, opened 12:18 IST) left `OPEN` after close. `logs/main.log` shows NO `[Expiry Exit]` sweep for `NSE_INDEX`/`BSE_INDEX` that day — only `[Expiry Exit] ... class: NSE_EQUITY` at 15:29:05 (harmless no-op; no watched symbols map to that class).
@@ -512,4 +515,32 @@ Pre-open session uses a call auction mechanism to discover a single equilibrium 
   3. Derivative F&O contracts (options, futures) continue real-time price updates and execution until 15:40 IST.
   4. Exit advisors and risk gates utilize the 15:30–15:40 window for strategic hedging, leg roll adjustments, or square-off.
 
+---
 
+### F143: Ops Agent & Operational Infrastructure Audit Remediation (P0-CRITICAL)
+- **Status:** RESOLVED & VERIFIED across all operational playbooks, health scrapers, and emergency procedures.
+- **Issues Identified & Fixed:**
+  1. *Paper vs Live Position Partitioning*: `ops_agent.py` previously counted paper trades toward `open_positions`. When `scheduler_loop` lagged, P02 attempted emergency liquidation of paper trades. Fixed in `schema.py` (`get_open_live_positions_count_ro()`, `get_open_paper_positions_count_ro()`) and gated P02 strictly on `open_live_positions > 0`.
+  2. *Missing Emergency Liquidation*: Created standalone [emergency_flat.py](file:///c:/Users/manve/VibeProjects/NSEBOT/emergency_flat.py) supporting single-leg trades and multi-leg books (`close_book`), order cancellation, and shadow mode detection (flattens DB state without requiring `kiteconnect`).
+  3. *P06 Disk Remediation False-Alarm Spam*: `db_write` stale threshold was 5m, while normal scan cadence is 15m–60m. Raised threshold to 120m and gated disk remediation strictly on genuine disk pressure (`disk_pct >= 85.0`) or SQLite corruption, eliminating the "remediated 53% -> 53%" alert loops.
+  4. *Windows Duplicate Process Mutex*: Added cross-platform `SingleInstanceLock` (`msvcrt.locking` on Windows, `fcntl.flock` on Unix) on `data/ops_agent.lock` to prevent concurrent `ops_agent.py` processes.
+  5. *Telegram Dispatch & Unauthenticated Loopback*: Added stdlib Telegram dispatch for all escalations and daily digests. Removed auth requirement from `/internal/reauth` in `dashboard_server.py` to allow automated loopback token recovery.
+  6. *SEBI CAS & Enabled Symbol Guards*: Updated market close timing to 15:40 IST in `ops_agent.py` and filtered `last_scan_<SYM>` checks against active `paper_enabled_symbols` and `live_enabled_broker_symbols`.
+
+
+
+
+
+### F149: GeminiAI Spark Feed Stop-Loss Parsing & Multi-Layer Mechanical Exit Guard (P0-CRITICAL)
+- **Status:** RESOLVED & VERIFIED in `gemini_spark_feed.py` and `paper_trading.py`.
+- **Symptom:** Open GeminiAI paper trade #91 in NATURALGAS remained open with `SL: 0.00` while underlying dropped from 319.20 to 303.70, accumulating -₹92,500+ unclosed floating loss.
+- **Root Causes:**
+  1. *Stop-Loss Key Omission (`gemini_spark_feed.py`)*: Feed JSON contained `"active_stop_loss": 317.0`, but setup parser only inspected `("stop_loss", "sl", "stoploss", "invalidation")`, causing `sl_underlying` to default to `0.0`.
+  2. *Premature Directional Guard Rejection (`gemini_spark_feed.py`)*: Directional guard `stop_loss >= fill_price` was evaluated before verifying if trade was already open. When market breached SL, loop aborted via `continue` instead of evaluating exit.
+  3. *Missing Mechanical Price Exit*: Open GeminiAI trades were only closed if feed payload explicitly reported `CLOSED`/`HIT`. If remote sheet was stale or slow to update, breached trades floated indefinitely.
+  4. *Paper Monitoring Partition Exclusion (`paper_trading.py`)*: Core `monitor_paper_trades()` query explicitly excluded `setup_type = 'GeminiAI'`, preventing periodic tick scans from checking underlying against SL.
+- **Self-Heal / Fix:**
+  1. Broadened SL key resolution to `("active_stop_loss", "trailed_sl", "stop_loss", "sl", "stoploss", "invalidation", "sl_price", "stop", "active_sl")` and target keys to `("active_target", "target_1", "target1", "t1", "target", "take_profit_1", "tp1", "t1_price")`.
+  2. Separated active position monitoring from new order guards. Open positions are evaluated for mechanical SL/Target breaches against `fill_price` (CMP) and closed immediately with `CLOSED_SL` or `CLOSED_TARGET`.
+  3. Added GeminiAI trade monitoring to `monitor_paper_trades()` in `paper_trading.py`, providing a secondary fail-safe on every periodic market scan tick.
+  4. Synchronized Google Sheets & Drive 2-way ledger on mechanical exit and closed orphan Trade #91 at intended SL level ₹317.00.

@@ -364,20 +364,31 @@
                 color: #60a5fa;
             }
 
-            .kpi-value {
+            .kpi-value-row {
+                display: flex;
+                align-items: baseline;
+                gap: 10px;
+                flex-wrap: wrap;
+            }
+            .kpi-pct-badge {
                 font-family: var(--mono);
-                font-size: 26px;
-                font-weight: 800;
-                letter-spacing: -0.5px;
+                font-size: 13px;
+                font-weight: 700;
+                padding: 2px 7px;
+                border-radius: 6px;
+                letter-spacing: 0.2px;
+                display: inline-flex;
+                align-items: center;
             }
-            .kpi-value.green {
+            .kpi-pct-badge.green {
+                background: var(--green-bg);
                 color: var(--green);
+                border: 1px solid rgba(16, 185, 129, 0.25);
             }
-            .kpi-value.red {
+            .kpi-pct-badge.red {
+                background: var(--red-bg);
                 color: var(--red);
-            }
-            .kpi-value.blue {
-                color: #60a5fa;
+                border: 1px solid rgba(239, 68, 68, 0.25);
             }
 
             .kpi-subtext {
@@ -794,7 +805,10 @@
                         <span class="kpi-title">Positive Contributors (Pullers)</span>
                         <span class="kpi-badge green" id="kpi-pullers-count">0 Gaining</span>
                     </div>
-                    <div class="kpi-value green" id="kpi-pullers-pts">+0.00 pts</div>
+                    <div class="kpi-value-row">
+                        <div class="kpi-value green" id="kpi-pullers-pts">+0.00 pts</div>
+                        <div class="kpi-pct-badge green" id="kpi-pullers-net-pct" title="% of Absolute Sum of Pullers and Draggers points">—</div>
+                    </div>
                     <div class="kpi-subtext">
                         <span>Index Weight Driving Up:</span>
                         <b id="kpi-pullers-weight">0.0%</b>
@@ -824,7 +838,10 @@
                         <span class="kpi-title">Negative Contributors (Draggers)</span>
                         <span class="kpi-badge red" id="kpi-draggers-count">0 Losing</span>
                     </div>
-                    <div class="kpi-value red" id="kpi-draggers-pts">-0.00 pts</div>
+                    <div class="kpi-value-row">
+                        <div class="kpi-value red" id="kpi-draggers-pts">-0.00 pts</div>
+                        <div class="kpi-pct-badge red" id="kpi-draggers-net-pct" title="% of Absolute Sum of Pullers and Draggers points">—</div>
+                    </div>
                     <div class="kpi-subtext">
                         <span>Index Weight Dragging Down:</span>
                         <b id="kpi-draggers-weight">0.0%</b>
@@ -1135,19 +1152,48 @@
             function updateKPIs() {
                 if (!rawData) return;
 
+                const netPts = rawData.net_points;
+                const posPts = Math.abs(rawData.positive_points || 0);
+                const negPts = Math.abs(rawData.negative_points || 0);
+                const totalAbsPts = posPts + negPts;
+
+                // Calculate % with respect to absolute sum of Pullers and Draggers points (avoid division by 0)
+                let pullersPctStr = "—";
+                let draggersPctStr = "—";
+                let pullersTitle = "% of Absolute Sum of Pullers and Draggers points";
+                let draggersTitle = "% of Absolute Sum of Pullers and Draggers points";
+
+                if (totalAbsPts > 0.001) {
+                    const pullersPct = (posPts / totalAbsPts) * 100;
+                    const draggersPct = (negPts / totalAbsPts) * 100;
+                    pullersPctStr = `${pullersPct.toFixed(1)}% of Total`;
+                    draggersPctStr = `${draggersPct.toFixed(1)}% of Total`;
+                    pullersTitle = `${pullersPct.toFixed(1)}% of absolute contributor sum (${totalAbsPts.toFixed(2)} pts)`;
+                    draggersTitle = `${draggersPct.toFixed(1)}% of absolute contributor sum (${totalAbsPts.toFixed(2)} pts)`;
+                }
+
                 // Pullers
                 document.getElementById("kpi-pullers-pts").textContent = `+${rawData.positive_points.toFixed(2)} pts`;
                 document.getElementById("kpi-pullers-count").textContent = `${rawData.gainers_count} Gaining`;
                 document.getElementById("kpi-pullers-weight").textContent = `${rawData.positive_weight_pct}%`;
+                const pullersPctEl = document.getElementById("kpi-pullers-net-pct");
+                if (pullersPctEl) {
+                    pullersPctEl.textContent = pullersPctStr;
+                    pullersPctEl.title = pullersTitle;
+                }
 
                 // Draggers
                 document.getElementById("kpi-draggers-pts").textContent = `${rawData.negative_points.toFixed(2)} pts`;
                 document.getElementById("kpi-draggers-count").textContent = `${rawData.losers_count} Losing`;
                 document.getElementById("kpi-draggers-weight").textContent = `${rawData.negative_weight_pct}%`;
+                const draggersPctEl = document.getElementById("kpi-draggers-net-pct");
+                if (draggersPctEl) {
+                    draggersPctEl.textContent = draggersPctStr;
+                    draggersPctEl.title = draggersTitle;
+                }
 
                 // Net
                 document.getElementById("kpi-index-title").textContent = `${rawData.display_name} Net Move`;
-                const netPts = rawData.net_points;
                 const netEl = document.getElementById("kpi-net-pts");
                 const isNetPos = netPts >= 0;
                 netEl.textContent = `${isNetPos ? "+" : ""}${netPts.toFixed(2)} pts (${isNetPos ? "+" : ""}${rawData.index_change_pct.toFixed(2)}%)`;

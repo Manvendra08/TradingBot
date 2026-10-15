@@ -51,8 +51,59 @@ _state_lock = __import__("threading").Lock()
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
+class SingleInstanceLock:
+    """Cross-platform single-instance file lock to prevent duplicate ops_agent processes."""
+
+    def __init__(self, lockfile: Path):
+        self.lockfile = lockfile
+        self.fp = None
+
+    def acquire(self) -> bool:
+        self.lockfile.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self.fp = open(self.lockfile, "w+")
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(self.fp.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self.fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.fp.seek(0)
+            self.fp.truncate()
+            self.fp.write(str(os.getpid()))
+            self.fp.flush()
+            return True
+        except (IOError, OSError):
+            if self.fp:
+                try:
+                    self.fp.close()
+                except Exception:
+                    pass
+                self.fp = None
+            return False
+
+    def release(self):
+        if self.fp:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(self.fp.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(self.fp.fileno(), fcntl.LOCK_UN)
+                self.fp.close()
+            except Exception:
+                pass
+            self.fp = None
+            try:
+                if self.lockfile.exists():
+                    self.lockfile.unlink()
+            except Exception:
+                pass
+
+
 def _is_market_hours() -> bool:
-    """Check if current time is within NSE or MCX market hours (IST)."""
+    """Check if current time is within NSE or MCX market hours (IST), excluding holidays."""
     now = datetime.now(IST)
     weekday = now.weekday()
     if weekday >= 5:  # Saturday or Sunday
@@ -60,11 +111,23 @@ def _is_market_hours() -> bool:
     hour = now.hour
     minute = now.minute
     time_val = hour * 100 + minute
-    # NSE equity: 09:15-15:30; NSE F&O extended to 15:40 (SEBI). Use 15:40 as
-    # the upper bound so callers that pass F&O symbols still report in-market.
-    # MCX: 09:00-23:30
-    nse_open = 915 <= time_val <= 1540
-    mcx_open = 900 <= time_val <= 2330
+    # NSE equity / F&O: 09:15-15:40 IST (including SEBI Call Auction Session)
+    # MCX: 09:00-23:30 IST
+    nse_time = 915 <= time_val <= 1540
+    mcx_time = 900 <= time_val <= 2330
+
+    nse_open = nse_time
+    mcx_open = mcx_time
+
+    try:
+        from config.holidays import is_market_holiday
+        if nse_time and is_market_holiday("NIFTY", now):
+            nse_open = False
+        if mcx_time and is_market_holiday("NATURALGAS", now):
+            mcx_open = False
+    except Exception:
+        pass
+
     return nse_open or mcx_open
 
 
@@ -203,6 +266,8 @@ class HealthSnapshot:
     heartbeat_ok: bool = False
     health_rows: list[dict] = field(default_factory=list)
     open_positions: int = 0
+    open_live_positions: int | None = None
+    open_paper_positions: int | None = None
     oldest_position_age_min: float | None = None
     dashboard_up: bool = False
     read_source: str = "none"  # heartbeat | dashboard | sqlite | none
@@ -246,25 +311,50 @@ def _read_health_via_sqlite() -> list[dict]:
         return []
 
 
-def _read_open_positions_count() -> int:
+def _read_open_live_positions_count() -> int:
+    try:
+        from src.models.schema import get_open_live_positions_count_ro
+        return get_open_live_positions_count_ro()
+    except Exception:
+        pass
     try:
         db_uri = Path(BOT_DB_PATH).as_uri() + "?mode=ro"
-        conn = sqlite3.connect(
-            db_uri,
-            uri=True,
-            timeout=5.0,
-        )
+        conn = sqlite3.connect(db_uri, uri=True, timeout=5.0)
         conn.row_factory = sqlite3.Row
-        paper = conn.execute(
-            "SELECT COUNT(*) as c FROM paper_trades WHERE status='OPEN'"
-        ).fetchone()["c"]
-        live = conn.execute(
-            "SELECT COUNT(*) as c FROM live_trades WHERE status='OPEN'"
-        ).fetchone()["c"]
+        live = conn.execute("SELECT COUNT(*) as c FROM live_trades WHERE status='OPEN'").fetchone()["c"]
+        try:
+            ml_live = conn.execute("SELECT COUNT(*) as c FROM multi_leg_trades WHERE status='OPEN' AND UPPER(trade_mode)='LIVE'").fetchone()["c"]
+        except Exception:
+            ml_live = 0
         conn.close()
-        return paper + live
+        return live + ml_live
     except Exception:
         return 0
+
+
+def _read_open_paper_positions_count() -> int:
+    try:
+        from src.models.schema import get_open_paper_positions_count_ro
+        return get_open_paper_positions_count_ro()
+    except Exception:
+        pass
+    try:
+        db_uri = Path(BOT_DB_PATH).as_uri() + "?mode=ro"
+        conn = sqlite3.connect(db_uri, uri=True, timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        paper = conn.execute("SELECT COUNT(*) as c FROM paper_trades WHERE status='OPEN'").fetchone()["c"]
+        try:
+            ml_paper = conn.execute("SELECT COUNT(*) as c FROM multi_leg_trades WHERE status='OPEN' AND UPPER(trade_mode)='PAPER'").fetchone()["c"]
+        except Exception:
+            ml_paper = 0
+        conn.close()
+        return paper + ml_paper
+    except Exception:
+        return 0
+
+
+def _read_open_positions_count() -> int:
+    return _read_open_live_positions_count() + _read_open_paper_positions_count()
 
 
 def _read_oldest_position_age() -> float | None:
@@ -281,6 +371,8 @@ def _read_oldest_position_age() -> float | None:
             "  SELECT opened_at FROM paper_trades WHERE status='OPEN'"
             "  UNION ALL"
             "  SELECT opened_at FROM live_trades WHERE status='OPEN'"
+            "  UNION ALL"
+            "  SELECT opened_at FROM multi_leg_trades WHERE status='OPEN'"
             ")"
         ).fetchone()
         conn.close()
@@ -305,7 +397,13 @@ def read_health() -> HealthSnapshot:
     dash_data = _read_health_via_dashboard()
     if dash_data and dash_data.get("status") == "ok":
         snap.health_rows = dash_data.get("health", [])
-        snap.open_positions = dash_data.get("open_positions", 0)
+        snap.open_live_positions = dash_data.get("open_live_positions")
+        snap.open_paper_positions = dash_data.get("open_paper_positions")
+        if snap.open_live_positions is None:
+            snap.open_live_positions = _read_open_live_positions_count()
+        if snap.open_paper_positions is None:
+            snap.open_paper_positions = _read_open_paper_positions_count()
+        snap.open_positions = snap.open_live_positions + snap.open_paper_positions
         hb_age = dash_data.get("heartbeat_age_s")
         if hb_age is not None:
             snap.heartbeat_age_s = hb_age
@@ -316,7 +414,9 @@ def read_health() -> HealthSnapshot:
 
     # 3. Fallback: read-only SQLite
     snap.health_rows = _read_health_via_sqlite()
-    snap.open_positions = _read_open_positions_count()
+    snap.open_live_positions = _read_open_live_positions_count()
+    snap.open_paper_positions = _read_open_paper_positions_count()
+    snap.open_positions = snap.open_live_positions + snap.open_paper_positions
     snap.oldest_position_age_min = _read_oldest_position_age()
     snap.read_source = "sqlite"
     return snap
@@ -329,7 +429,7 @@ _COMPONENT_THRESHOLDS = {
     "shoonya_session": {"stale_min": 10},
     "parity_feed": {"stale_min": 20},  # MCX interval is 15m, so 10m triggers false alarms
     "telegram_send": {"stale_min": 999},  # on-failure only
-    "db_write": {"stale_min": 5},
+    "db_write": {"stale_min": 120},  # Stamped at scan interval end (15m-60m); 5m caused false-alarm spam
 }
 
 
@@ -465,6 +565,38 @@ def _send_discord(text: str) -> bool:
         return False
 
 
+def _send_telegram(text: str) -> bool:
+    """Send alert via Telegram using raw HTTP (standalone, no event loop conflicts)."""
+    token = TELEGRAM_BOT_TOKEN or os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat_id = TELEGRAM_CHAT_ID or os.environ.get("TELEGRAM_CHAT_ID", "")
+    if not token or not chat_id:
+        try:
+            from config.settings import TELEGRAM_BOT_TOKEN as S_TOK, TELEGRAM_CHAT_ID as S_CHAT
+            token = token or S_TOK
+            chat_id = chat_id or S_CHAT
+        except Exception:
+            pass
+    if not token or not chat_id:
+        return False
+    try:
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload = json.dumps({
+            "chat_id": chat_id,
+            "text": text,
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status == 200
+    except Exception as e:
+        log.warning("Telegram send failed: %s", e)
+        return False
+
+
 def _send_fallback(text: str) -> bool:
     """Send notification via fallback channel (ntfy.sh)."""
     if not NTFY_URL:
@@ -492,7 +624,7 @@ _PLAYBOOK_COOLDOWN_SEC = 1800  # 30-minute cooldown for repeated non-critical al
 
 
 def _escalate(playbook_id: str, message: str, critical: bool = False) -> None:
-    """Send escalation via Discord + fallback for CRITICAL."""
+    """Send escalation via Discord, Telegram + fallback for CRITICAL."""
     global _critical_last_sent, _playbook_last_escalated
     
     with _state_lock:
@@ -521,8 +653,9 @@ def _escalate(playbook_id: str, message: str, critical: bool = False) -> None:
     ts = datetime.now(IST).strftime("%H:%M IST")
     text = f"{prefix} | {playbook_id} | {message} | {ts}"
     
-    # Send to Discord (primary channel for ops alerts)
+    # Send to active notification channels
     _send_discord(text)
+    _send_telegram(text)
     
     # For CRITICAL: send fallback (ntfy.sh) simultaneously + track for repeat
     if critical:
@@ -541,6 +674,10 @@ def _repeat_critical_alerts() -> None:
         items = list(_critical_last_sent.items())
     for playbook_id, last_sent in items:
         if now - last_sent >= _critical_repeat_interval:
+            # Suppress repeat alerts outside market hours if no live broker capital is at risk
+            if not _is_market_hours() and _read_open_live_positions_count() == 0:
+                continue
+
             # Check if acked in incidents DB
             try:
                 conn = _get_incidents_conn()
@@ -551,7 +688,10 @@ def _repeat_critical_alerts() -> None:
                 conn.close()
                 if row and not row["acked"]:
                     # Not acked yet, repeat
-                    _send_fallback(f"🚨 CRITICAL REPEAT | {playbook_id} | Still active — not yet acked | {datetime.now(IST).strftime('%H:%M IST')}")
+                    repeat_text = f"🚨 CRITICAL REPEAT | {playbook_id} | Still active — not yet acked | {datetime.now(IST).strftime('%H:%M IST')}"
+                    _send_fallback(repeat_text)
+                    _send_discord(repeat_text)
+                    _send_telegram(repeat_text)
                     with _state_lock:
                         _critical_last_sent[playbook_id] = now
                 else:
@@ -560,6 +700,28 @@ def _repeat_critical_alerts() -> None:
                         _critical_last_sent.pop(playbook_id, None)
             except Exception:
                 pass
+
+
+def _is_bot_process_running() -> tuple[bool, int | None]:
+    """Check if main.py process is currently running on the system."""
+    try:
+        if os.name == "nt":
+            cmd = "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*main.py*' } | Select-Object -ExpandProperty ProcessId"
+            out = subprocess.check_output(["powershell", "-NoProfile", "-Command", cmd], text=True, timeout=5).strip()
+            if out:
+                pids = [int(p) for p in out.splitlines() if p.strip().isdigit()]
+                if pids:
+                    return True, pids[0]
+            return False, None
+        else:
+            out = subprocess.check_output(["pgrep", "-f", "main.py"], text=True, timeout=5).strip()
+            if out:
+                pids = [int(p) for p in out.splitlines() if p.strip().isdigit()]
+                if pids:
+                    return True, pids[0]
+            return False, None
+    except Exception:
+        return False, None
 
 
 def _restart_nsebot() -> bool:
@@ -581,7 +743,20 @@ def _restart_nsebot() -> bool:
 
 
 def _reauth_shoonya() -> bool:
-    """Trigger bot's re-auth hook."""
+    """Trigger bot's re-auth hook (in-process first, then dashboard API fallback)."""
+    try:
+        from src.fetchers.shoonya_fetcher import get_shoonya_fetcher
+        from src.fetchers.shoonya_ip_guard import reset_shoonya_ip_skip
+        reset_shoonya_ip_skip()
+        f = get_shoonya_fetcher()
+        f.access_token = None
+        f._token_created_at = 0
+        if f.login():
+            log.info("Direct in-process Shoonya re-auth succeeded")
+            return True
+    except Exception as e:
+        log.debug("Direct Shoonya reauth attempt: %s", e)
+
     try:
         import requests
         r = requests.post(f"{DASHBOARD_URL}/internal/reauth", timeout=10)
@@ -618,6 +793,13 @@ def _verify_shoonya_session() -> bool:
 def _set_trading_paused() -> bool:
     """Set runtime_config.trading_paused = true (one-way safety switch)."""
     try:
+        from config.runtime_config import update_runtime_config
+        update_runtime_config({"trading_paused": True})
+        return True
+    except Exception as e:
+        log.error("Failed to set trading_paused via update_runtime_config: %s", e)
+
+    try:
         config_path = DATA_DIR / "runtime_config.json"
         if config_path.exists():
             config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -627,7 +809,7 @@ def _set_trading_paused() -> bool:
         config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
         return True
     except Exception as e:
-        log.error("Failed to set trading_paused: %s", e)
+        log.error("Failed to set trading_paused fallback: %s", e)
         return False
 
 
@@ -763,7 +945,22 @@ def _get_validated_now_ist() -> datetime:
 # ── Playbook Engine ──────────────────────────────────────────────────────────
 
 # Rollout level: 0=observe-only, 1=T1 enabled, 2=T2 enabled
-ROLLOUT_LEVEL = 0 if OBSERVE_ONLY else 2
+def _get_rollout_level() -> int:
+    """Determine rollout level: CLI flag takes precedence, then runtime_config."""
+    if OBSERVE_ONLY:
+        return 0
+    try:
+        from config.runtime_config import load_runtime_config
+        cfg = load_runtime_config()
+        mode = cfg.get("ops_agent_mode", "normal")
+        if mode == "observe":
+            return 0
+    except Exception:
+        pass
+    return 2
+
+
+ROLLOUT_LEVEL = _get_rollout_level()
 
 
 @dataclass
@@ -803,8 +1000,20 @@ def run_playbooks(snap: HealthSnapshot, sm: StateMachine) -> list[PlaybookResult
         if restart_count < 2:
             sm._get("_restart_count").consecutive_down += 1
             if os.name == "nt":
-                # On Windows, systemctl auto-restart is not applicable.
-                _escalate("P01", "Bot scheduler heartbeat stale (manual restart/check required if process stopped).", critical=False)
+                # On Windows, report live process status
+                is_running, pid = _is_bot_process_running()
+                if is_running:
+                    _escalate(
+                        "P01",
+                        f"Bot scheduler heartbeat stale ({snap.heartbeat_age_s:.0f}s). Process RUNNING (PID {pid}) but appears frozen.",
+                        critical=False,
+                    )
+                else:
+                    _escalate(
+                        "P01",
+                        f"Bot scheduler heartbeat stale ({snap.heartbeat_age_s:.0f}s). Bot process (main.py) is NOT RUNNING!",
+                        critical=True,
+                    )
                 results.append(PlaybookResult(action_taken="windows_notify_only"))
             elif ROLLOUT_LEVEL >= 1:
                 ok = _restart_nsebot()
@@ -834,19 +1043,23 @@ def run_playbooks(snap: HealthSnapshot, sm: StateMachine) -> list[PlaybookResult
                 results.append(PlaybookResult(action_taken="P02_crash_loop", escalated=True, critical=True))
                 _escalate("P02", "Crash-loop detected (>2 restarts). Bot dead, no open positions.", critical=True)
 
-    # ── P02: Bot dead + open positions → emergency flat ──
-    if hb_stale and open_pos > 0:
+    # ── P02: Bot dead + open LIVE positions → emergency flat ──
+    # Check live position risk only (paper positions do not risk broker capital)
+    live_pos_count = snap.open_live_positions if snap.open_live_positions is not None else _read_open_live_positions_count()
+    if hb_stale and live_pos_count > 0:
         if ROLLOUT_LEVEL >= 2:
             ok = _run_emergency_flat()
             result = PlaybookResult(action_taken="emergency_flat", escalated=True, critical=True)
             if ok:
-                _escalate("P02", f"Emergency flat executed — {open_pos} positions closed", critical=True)
+                _escalate("P02", f"Emergency flat executed — {live_pos_count} live position(s) closed", critical=True)
             else:
-                _escalate("P02", "Emergency flat FAILED — manual intervention required", critical=True)
+                _escalate("P02", f"Emergency flat FAILED for {live_pos_count} live position(s) — manual intervention required", critical=True)
             results.append(result)
         else:
             # T0 observe-only: notify but never flatten
-            _escalate("P02", f"Bot dead with {open_pos} open position(s). Emergency flat REQUIRED — suppressed in observe-only mode.", critical=True)
+            _escalate("P02", f"Bot dead with {live_pos_count} open live position(s). Emergency flat REQUIRED — suppressed in observe-only mode.", critical=True)
+    elif hb_stale and open_pos > 0 and live_pos_count == 0:
+        log.info("P02: Bot dead with %d paper position(s) only — no broker capital at risk.", open_pos)
 
     # ── P03: Shoonya auth-fail → re-auth ──
     shoonya_state = sm.components.get("shoonya_session")
@@ -879,25 +1092,17 @@ def run_playbooks(snap: HealthSnapshot, sm: StateMachine) -> list[PlaybookResult
         else:
             # P04: Broker down (502/Timeout) → pause trading
             # ONLY fire if the health stamp is recent (within last 5 minutes).
-            # Stale health stamps (from previous scans) should not trigger trading pause.
             is_broker_down = "502" in detail or "timeout" in detail
             if is_broker_down:
-                # Verify freshness: parse timestamp from shoonya_state
                 try:
-                    ts_str = getattr(shoonya_state, "timestamp", getattr(shoonya_state, "last_updated", None))  # ISO8601 UTC
+                    ts_str = getattr(shoonya_state, "timestamp", getattr(shoonya_state, "last_updated", None))
                     if ts_str:
-                        from datetime import datetime, timezone
                         ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
                         age_sec = (datetime.now(timezone.utc) - ts).total_seconds()
-                        if age_sec > 300:  # 5 minutes
-                            log.debug(
-                                "P04: Shoonya 502/timeout health stamp is stale (%d seconds old) — not escalating",
-                                age_sec,
-                            )
+                        if age_sec > 300:
+                            log.debug("P04: Shoonya 502/timeout health stamp is stale (%d seconds old) — not escalating", age_sec)
                             is_broker_down = False
                 except Exception as e:
-                    log.warning("P04: Failed to parse health stamp timestamp: %s", e)
-                    # Fall back to assuming fresh if parsing fails when timestamp field is missing
                     if isinstance(e, AttributeError):
                         is_broker_down = True
                     else:
@@ -918,47 +1123,58 @@ def run_playbooks(snap: HealthSnapshot, sm: StateMachine) -> list[PlaybookResult
             results.append(PlaybookResult(action_taken="P05_parity_down"))
             _escalate("P05", f"Parity feed DOWN during NG hours. Detail: {parity_state.detail}")
             
-            # BUG-C09 FIX: Require ~10 min of consecutive downtime before emergency flat.
-            # Previously triggered after just 2 cycles (~2 min), causing premature
-            # emergency exits during brief network blips or API hiccups.
-            if parity_state.consecutive_down >= 10:  # 10 consecutive downs = ~10 min (60s loop interval)
-                # Check for open PARITY position
+            # Require 10 consecutive downs (~10 min) before emergency flat
+            if parity_state.consecutive_down >= 10:
                 try:
                     conn = sqlite3.connect(f"file:{BOT_DB_PATH}?mode=ro", uri=True, timeout=5.0)
                     conn.row_factory = sqlite3.Row
-                    parity_open = conn.execute(
-                        "SELECT COUNT(*) as c FROM paper_trades WHERE symbol='NATURALGAS' AND setup_type='NG_PARITY' AND status='OPEN'"
+                    live_parity = conn.execute(
+                        "SELECT COUNT(*) as c FROM live_trades WHERE symbol='NATURALGAS' AND setup_type='NG_PARITY' AND status='OPEN'"
                     ).fetchone()["c"]
                     conn.close()
-                    if parity_open > 0 and ROLLOUT_LEVEL >= 2:
-                        # Feed dead with open PARITY position → emergency flat
+                    if live_parity > 0 and ROLLOUT_LEVEL >= 2:
                         ok = _run_emergency_flat()
                         result = PlaybookResult(action_taken="P05_parity_flat", escalated=True, critical=True)
                         if ok:
-                            _escalate("P05", f"Emergency flat: PARITY position open with feed dead >15min. Closed.", critical=True)
+                            _escalate("P05", f"Emergency flat: {live_parity} live PARITY position(s) open with feed dead >15min. Liquidated.", critical=True)
                         else:
-                            _escalate("P05", "Emergency flat FAILED for PARITY position", critical=True)
+                            _escalate("P05", "Emergency flat FAILED for live PARITY position", critical=True)
                         results.append(result)
                 except Exception:
                     pass
 
-    # ── P06: Disk/DB health → rotate logs, vacuum, prune ──
+    # ── P06: Disk/DB health → rotate logs, vacuum, prune (ONLY on genuine issues) ──
     db_write_state = sm.components.get("db_write")
-    if db_write_state and db_write_state.status == "DOWN" and ROLLOUT_LEVEL >= 1:
-        disk_pct = _check_disk_usage()
-        # T1: Try remediation first
-        log.info("P06: db_write DOWN, disk=%.1f%%. Attempting remediation...", disk_pct)
+    disk_pct = _check_disk_usage()
+    db_is_corrupt = False
+
+    if db_write_state and db_write_state.status == "DOWN":
+        try:
+            conn = sqlite3.connect(f"file:{BOT_DB_PATH}?mode=ro", uri=True, timeout=5.0)
+            res = conn.execute("PRAGMA quick_check;").fetchone()
+            conn.close()
+            if not res or res[0] != "ok":
+                db_is_corrupt = True
+        except Exception:
+            db_is_corrupt = True
+
+    # Remediate ONLY when disk is genuinely high (>=85%) or SQLite is corrupt
+    if (disk_pct >= 85.0 or db_is_corrupt) and ROLLOUT_LEVEL >= 1:
+        log.warning("P06: Disk/DB issue detected (disk=%.1f%%, corrupt=%s). Attempting remediation...", disk_pct, db_is_corrupt)
         _rotate_logs()
-        _vacuum_database()
-        _prune_timeout = 300  # 5 minutes
+        _prune_temp()
+        if disk_pct >= 85.0:
+            _vacuum_database()
         time.sleep(2)
-        # Re-check after remediation
         new_disk_pct = _check_disk_usage()
-        if new_disk_pct > 90:
-            # T2: Still failing → pause + escalate
+        if new_disk_pct >= 90.0 or db_is_corrupt:
             _set_trading_paused()
             results.append(PlaybookResult(action_taken="P06_db_disk_critical", escalated=True, critical=True))
-            _escalate("P06", f"Disk critical ({new_disk_pct:.1f}%) after remediation. Trading PAUSED.", critical=True)
+            _escalate(
+                "P06",
+                f"Disk/DB critical (disk={new_disk_pct:.1f}%, corrupt={db_is_corrupt}) after remediation. Trading PAUSED.",
+                critical=True,
+            )
         else:
             results.append(PlaybookResult(action_taken="P06_db_disk_remediated"))
             _escalate("P06", f"Disk/DB issue remediated. Disk: {disk_pct:.1f}% → {new_disk_pct:.1f}%")
@@ -971,7 +1187,6 @@ def run_playbooks(snap: HealthSnapshot, sm: StateMachine) -> list[PlaybookResult
 
     # ── P08: VM reboot (heartbeat age < 10 min but stale health) ──
     if snap.heartbeat_ok and snap.heartbeat_age_s is not None and snap.heartbeat_age_s < 600:
-        # Heartbeat is fresh, check if this is a recent reboot
         scheduler_state = sm.components.get("scheduler_loop")
         if scheduler_state and scheduler_state.status in ("DEGRADED", "DOWN"):
             results.append(PlaybookResult(action_taken="P08_vm_reboot"))
@@ -980,28 +1195,74 @@ def run_playbooks(snap: HealthSnapshot, sm: StateMachine) -> list[PlaybookResult
     # ── P09: Force-flat sentinel (Thursday 19:40 IST for NG) ──
     now_ist = _get_validated_now_ist()
     if now_ist.weekday() == 3 and now_ist.hour == 19 and now_ist.minute >= 40:
-        # Check if NG position still open
         try:
             conn = sqlite3.connect(f"file:{BOT_DB_PATH}?mode=ro", uri=True, timeout=5.0)
             conn.row_factory = sqlite3.Row
             ng_live = conn.execute(
                 "SELECT COUNT(*) as c FROM live_trades WHERE symbol='NATURALGAS' AND status='OPEN'"
             ).fetchone()["c"]
-            ng_paper = conn.execute(
-                "SELECT COUNT(*) as c FROM paper_trades WHERE symbol='NATURALGAS' AND status='OPEN'"
+            ng_live_ml = conn.execute(
+                "SELECT COUNT(*) as c FROM multi_leg_trades WHERE symbol='NATURALGAS' AND status='OPEN' AND UPPER(trade_mode)='LIVE'"
             ).fetchone()["c"]
-            ng_open = ng_live + ng_paper
             conn.close()
-            if ng_open > 0 and ROLLOUT_LEVEL >= 2:
+            ng_total_live = ng_live + ng_live_ml
+            if ng_total_live > 0 and ROLLOUT_LEVEL >= 2:
                 ok = _run_emergency_flat()
                 result = PlaybookResult(action_taken="P09_force_flat", escalated=True, critical=True)
                 if ok:
-                    _escalate("P09", "Force-flat: NG position still open at EIA cutoff. Closed.", critical=True)
+                    _escalate("P09", f"Force-flat: {ng_total_live} live NG position(s) still open at EIA cutoff. Liquidated.", critical=True)
                 else:
-                    _escalate("P09", "Force-flat: NG position STILL OPEN — emergency flat failed", critical=True)
+                    _escalate("P09", "Force-flat: NG live position STILL OPEN — emergency flat failed!", critical=True)
                 results.append(result)
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("P09: Failed to evaluate EIA force-flat: %s", e)
+
+    # ── P10: Friday Weekend Gap Risk Watchdog ──
+    if now_ist.weekday() == 4:  # Friday
+        time_val = now_ist.hour * 100 + now_ist.minute
+        # Check NSE/BSE after CAS close (15:42 - 15:55 IST)
+        if 1542 <= time_val <= 1555:
+            try:
+                conn = sqlite3.connect(f"file:{BOT_DB_PATH}?mode=ro", uri=True, timeout=5.0)
+                conn.row_factory = sqlite3.Row
+                nse_symbols = "('NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX')"
+                nse_live = conn.execute(
+                    f"SELECT COUNT(*) as c FROM live_trades WHERE symbol IN {nse_symbols} AND status='OPEN'"
+                ).fetchone()["c"]
+                nse_ml = conn.execute(
+                    f"SELECT COUNT(*) as c FROM multi_leg_trades WHERE symbol IN {nse_symbols} AND status='OPEN' AND UPPER(trade_mode)='LIVE'"
+                ).fetchone()["c"]
+                conn.close()
+                total_nse_live = nse_live + nse_ml
+                if total_nse_live > 0:
+                    _escalate("P10", f"Friday Weekend Risk: {total_nse_live} live NSE/BSE position(s) open post-CAS!", critical=True)
+                    if ROLLOUT_LEVEL >= 2:
+                        ok = _run_emergency_flat()
+                        results.append(PlaybookResult(action_taken="P10_friday_nse_flat", escalated=True, critical=True))
+            except Exception as e:
+                log.warning("P10 Friday NSE check failed: %s", e)
+
+        # Check MCX after 23:30 close (23:32 - 23:45 IST)
+        if 2332 <= time_val <= 2345:
+            try:
+                conn = sqlite3.connect(f"file:{BOT_DB_PATH}?mode=ro", uri=True, timeout=5.0)
+                conn.row_factory = sqlite3.Row
+                mcx_symbols = "('NATURALGAS', 'CRUDEOIL', 'GOLD', 'SILVER', 'COPPER')"
+                mcx_live = conn.execute(
+                    f"SELECT COUNT(*) as c FROM live_trades WHERE symbol IN {mcx_symbols} AND status='OPEN'"
+                ).fetchone()["c"]
+                mcx_ml = conn.execute(
+                    f"SELECT COUNT(*) as c FROM multi_leg_trades WHERE symbol IN {mcx_symbols} AND status='OPEN' AND UPPER(trade_mode)='LIVE'"
+                ).fetchone()["c"]
+                conn.close()
+                total_mcx_live = mcx_live + mcx_ml
+                if total_mcx_live > 0:
+                    _escalate("P10", f"Friday Weekend Risk: {total_mcx_live} live MCX position(s) open post-close!", critical=True)
+                    if ROLLOUT_LEVEL >= 2:
+                        ok = _run_emergency_flat()
+                        results.append(PlaybookResult(action_taken="P10_friday_mcx_flat", escalated=True, critical=True))
+            except Exception as e:
+                log.warning("P10 Friday MCX check failed: %s", e)
 
     # ── P11: last_scan_<SYM> stale → notify (fetcher-source degradation pattern) ──
     for key, comp_state in sm.components.items():
@@ -1036,15 +1297,19 @@ def run_playbooks(snap: HealthSnapshot, sm: StateMachine) -> list[PlaybookResult
             notified_rows = local_conn.execute(
                 "SELECT trigger_state FROM incidents WHERE playbook_id='P13'"
             ).fetchall()
-            notified_ids = {int(r["trigger_state"]) for r in notified_rows if r["trigger_state"].isdigit()}
+            notified_ids = {
+                int(r["trigger_state"])
+                for r in notified_rows
+                if r["trigger_state"] and str(r["trigger_state"]).isdigit()
+            }
             local_conn.close()
             
-            # Fetch incidents from nsebot.db
+            # Fetch latest 50 incidents from nsebot.db
             db_incidents = conn.execute(
-                "SELECT * FROM sentinel_incidents ORDER BY id ASC"
+                "SELECT * FROM sentinel_incidents ORDER BY id DESC LIMIT 50"
             ).fetchall()
             
-            for incident in db_incidents:
+            for incident in reversed(db_incidents):
                 inc_id = incident["id"]
                 if inc_id not in notified_ids:
                     # Log locally to prevent duplicate alerts
@@ -1134,136 +1399,172 @@ def _maybe_send_daily_digest(snap: HealthSnapshot) -> None:
         f"{hb_line}"
     )
     _send_discord(msg)
+    _send_telegram(msg)
 
 
 # ── Main Loop ────────────────────────────────────────────────────────────────
 
 def main():
+    global ROLLOUT_LEVEL
+    ROLLOUT_LEVEL = _get_rollout_level()
     log.info("OPS Agent starting (observe_only=%s, rollout=%d)", OBSERVE_ONLY, ROLLOUT_LEVEL)
 
     # Ensure data dir exists
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Initialize incidents DB
-    _get_incidents_conn().close()
+    # Single-instance process lock
+    lock = SingleInstanceLock(DATA_DIR / "ops_agent.lock")
+    if not lock.acquire():
+        log.warning("Another ops_agent instance is already running (failed to acquire ops_agent.lock). Exiting.")
+        sys.exit(0)
 
-    sm = StateMachine()
-    loop_count = 0
+    try:
+        # Initialize incidents DB
+        _get_incidents_conn().close()
 
-    while True:
-        loop_count += 1
-        try:
-            snap = read_health()
+        sm = StateMachine()
+        loop_count = 0
 
-            # Evaluate each component
-            health_by_key = {h["key"]: h for h in snap.health_rows}
+        while True:
+            loop_count += 1
+            try:
+                # Dynamically sync rollout level from runtime_config
+                ROLLOUT_LEVEL = _get_rollout_level()
 
-            # Staleness-based checks
-            now_ist = datetime.now(IST)
-            time_val = now_ist.hour * 100 + now_ist.minute
-            nse_open = 915 <= time_val <= 1530 and now_ist.weekday() < 5
-            mcx_open = 900 <= time_val <= 2330 and now_ist.weekday() < 5
-            in_market = nse_open or mcx_open
+                snap = read_health()
 
-            for key, cfg in _COMPONENT_THRESHOLDS.items():
-                row = health_by_key.get(key)
-                # Only check shoonya_session staleness during market hours
-                if key == "shoonya_session" and not in_market:
-                    continue
-                # Only check parity_feed staleness during active PARITY regime hours (09:00-17:30 IST)
-                if key == "parity_feed":
-                    from src.engine.ng_session_router import get_ng_regime
-                    regime, _ = get_ng_regime(now_ist)
-                    if regime != "PARITY":
+                # Evaluate each component
+                health_by_key = {h["key"]: h for h in snap.health_rows}
+
+                # Staleness-based checks
+                now_ist = datetime.now(IST)
+                time_val = now_ist.hour * 100 + now_ist.minute
+                is_weekday = now_ist.weekday() < 5
+                nse_time = 915 <= time_val <= 1540 and is_weekday
+                mcx_time = 900 <= time_val <= 2330 and is_weekday
+
+                nse_open = nse_time
+                mcx_open = mcx_time
+                try:
+                    from config.holidays import is_market_holiday
+                    if nse_time and is_market_holiday("NIFTY", now_ist):
+                        nse_open = False
+                    if mcx_time and is_market_holiday("NATURALGAS", now_ist):
+                        mcx_open = False
+                except Exception:
+                    pass
+                in_market = nse_open or mcx_open
+
+                for key, cfg in _COMPONENT_THRESHOLDS.items():
+                    row = health_by_key.get(key)
+                    # Only check shoonya_session staleness during market hours
+                    if key == "shoonya_session" and not in_market:
                         continue
-                    # Grace period: allow 30 minutes after parity session open (09:00 IST) for first scan to run
-                    parity_start = now_ist.replace(hour=9, minute=0, second=0, microsecond=0)
-                    if now_ist >= parity_start and (now_ist - parity_start).total_seconds() < 1800:
-                        continue
-                
-                stale_min = cfg["stale_min"]
-                if key == "parity_feed":
-                    try:
-                        from config.runtime_config import load_runtime_config
-                        rconf = load_runtime_config()
-                        mcx_interval = int(rconf.get("scan_frequency_mcx") or 15)
-                        stale_min = max(stale_min, mcx_interval * 2)
-                    except Exception:
-                        pass
-                sm.evaluate_stale(key, row, stale_min)
-
-            # Check last_scan_<SYM> staleness (2× scan interval)
-            for key, row in health_by_key.items():
-                if key.startswith("last_scan_"):
-                    symbol = key[len("last_scan_"):]
+                    # Only check parity_feed staleness during active PARITY regime hours (09:00-17:30 IST)
+                    if key == "parity_feed":
+                        from src.engine.ng_session_router import get_ng_regime
+                        regime, _ = get_ng_regime(now_ist)
+                        if regime != "PARITY":
+                            continue
+                        # Grace period: allow 30 minutes after parity session open (09:00 IST) for first scan to run
+                        parity_start = now_ist.replace(hour=9, minute=0, second=0, microsecond=0)
+                        if now_ist >= parity_start and (now_ist - parity_start).total_seconds() < 1800:
+                            continue
                     
-                    mcx_symbols = {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER", "COPPER"}
-                    is_mcx = symbol.upper() in mcx_symbols
-                    
-                    # Prevent false alarms by skipping staleness check if market is closed
-                    if is_mcx and not mcx_open:
-                        continue
-                    if not is_mcx and not nse_open:
-                        continue
-
-                    # Dynamic stale threshold: 2× configured scan interval
-                    try:
-                        from config.runtime_config import load_runtime_config
-                        rconf = load_runtime_config()
-                        if is_mcx:
-                            interval = int(rconf.get("scan_frequency_mcx") or 15)
-                        else:
-                            interval = int(rconf.get("scan_frequency_nse") or 5)
-                        stale_min = interval * 2
-                    except Exception:
-                        stale_min = 30 if is_mcx else 10
-                        
+                    stale_min = cfg["stale_min"]
+                    if key == "parity_feed":
+                        try:
+                            from config.runtime_config import load_runtime_config
+                            rconf = load_runtime_config()
+                            mcx_interval = int(rconf.get("scan_frequency_mcx") or 15)
+                            stale_min = max(stale_min, mcx_interval * 2)
+                        except Exception:
+                            pass
                     sm.evaluate_stale(key, row, stale_min)
 
-            # Heartbeat-based scheduler check
-            if not snap.heartbeat_ok:
-                sm.evaluate("scheduler_loop", {"status": "DOWN", "detail": f"heartbeat stale {snap.heartbeat_age_s:.0f}s"})
-            else:
-                sm.evaluate("scheduler_loop", health_by_key.get("scheduler_loop"))
+                # Check last_scan_<SYM> staleness (2× scan interval)
+                # Load enabled symbols from runtime config to prevent false alerts on disabled symbols
+                try:
+                    from config.runtime_config import load_runtime_config
+                    rconf = load_runtime_config()
+                    enabled_symbols = set(rconf.get("paper_enabled_symbols", [])) | set(rconf.get("live_enabled_broker_symbols", []))
+                    mcx_interval = int(rconf.get("scan_frequency_mcx") or 15)
+                    nse_interval = int(rconf.get("scan_frequency_nse") or 5)
+                except Exception:
+                    enabled_symbols = set()
+                    mcx_interval = 15
+                    nse_interval = 5
 
-            # Open positions stamp
-            sm.evaluate("open_positions", {"status": "OK", "detail": f"count={snap.open_positions}"})
+                for key, row in health_by_key.items():
+                    if key.startswith("last_scan_"):
+                        symbol = key[len("last_scan_"):]
+                        
+                        # Skip staleness check for symbols not currently enabled
+                        if enabled_symbols and symbol.upper() not in enabled_symbols:
+                            continue
 
-            # Auto-resolve incidents for healthy components
-            _resolve_playbooks_if_healthy(sm)
+                        mcx_symbols = {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER", "COPPER"}
+                        is_mcx = symbol.upper() in mcx_symbols
+                        
+                        # Prevent false alarms by skipping staleness check if market is closed
+                        if is_mcx and not mcx_open:
+                            continue
+                        if not is_mcx and not nse_open:
+                            continue
 
-            # Run playbooks
-            results = run_playbooks(snap, sm)
+                        # Dynamic stale threshold: 2× configured scan interval
+                        interval = mcx_interval if is_mcx else nse_interval
+                        stale_min = interval * 2
+                            
+                        sm.evaluate_stale(key, row, stale_min)
 
-            # Repeat CRITICAL alerts every 10 min until acked
-            _repeat_critical_alerts()
+                # Heartbeat-based scheduler check
+                if not snap.heartbeat_ok:
+                    sm.evaluate("scheduler_loop", {"status": "DOWN", "detail": f"heartbeat stale {snap.heartbeat_age_s:.0f}s"})
+                else:
+                    sm.evaluate("scheduler_loop", health_by_key.get("scheduler_loop"))
 
-            # Log if actions were taken
-            if results:
-                for r in results:
-                    log.info("Playbook %s → action=%s critical=%s", r.action_taken, r.action_taken, r.critical)
+                # Open positions stamp
+                sm.evaluate("open_positions", {"status": "OK", "detail": f"count={snap.open_positions}"})
 
-            # Daily digest
-            _maybe_send_daily_digest(snap)
+                # Auto-resolve incidents for healthy components
+                _resolve_playbooks_if_healthy(sm)
 
-            # Healthchecks.io ping
-            _ping_healthchecks()
+                # Run playbooks
+                results = run_playbooks(snap, sm)
 
-            if loop_count % 10 == 0:
-                log.info(
-                    "OPS Agent loop %d | source=%s hb=%s pos=%d components=%s",
-                    loop_count,
-                    snap.read_source,
-                    "OK" if snap.heartbeat_ok else "STALE",
-                    snap.open_positions,
-                    {k: v.status for k, v in sm.components.items() if not k.startswith("_")},
-                )
+                # Repeat CRITICAL alerts every 10 min until acked
+                _repeat_critical_alerts()
 
-        except Exception as e:
-            log.error("OPS Agent loop error: %s", e)
+                # Log if actions were taken
+                if results:
+                    for r in results:
+                        log.info("Playbook %s → action=%s critical=%s", r.action_taken, r.action_taken, r.critical)
 
-        time.sleep(60)
+                # Daily digest
+                _maybe_send_daily_digest(snap)
+
+                # Healthchecks.io ping
+                _ping_healthchecks()
+
+                if loop_count % 10 == 0:
+                    log.info(
+                        "OPS Agent loop %d | source=%s hb=%s pos=%d components=%s",
+                        loop_count,
+                        snap.read_source,
+                        "OK" if snap.heartbeat_ok else "STALE",
+                        snap.open_positions,
+                        {k: v.status for k, v in sm.components.items() if not k.startswith("_")},
+                    )
+
+            except Exception as e:
+                log.error("OPS Agent loop error: %s", e)
+
+            time.sleep(60)
+    finally:
+        lock.release()
 
 
 if __name__ == "__main__":
     main()
+

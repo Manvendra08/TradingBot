@@ -30,8 +30,13 @@ data/*.db
 data/*.db-shm
 data/*.db-wal
 data/*.db.*
+data/*.sqlite*
+data/*.lock
+data/*.html
 data/*.bak*
 *.bak*
+*.pdf
+.kilo/
 
 # Logs
 logs/
@@ -63,6 +68,7 @@ backup_safe_delete_*/
 # Runtime cache and sentinel data
 data/cache/*
 data/sentinel/*
+!data/sentinel/KNOWLEDGE_BASE.md
 
 # Generated reports and artifacts
 docs/reports/*
@@ -113,6 +119,7 @@ data/google_drive_service_account.json
 # Runtime state files
 data/ip_state.json
 data/shoonya_ip_state.json
+data/gemini_spark_state.json
 data/runtime_config.json
 
 # ML model artifacts

@@ -1146,17 +1146,39 @@ def _check_live_exits(symbol: str, underlying: float, strikes: list[dict]) -> No
         sl_premium = float(trade.get("sl_premium") or 0.0)
         target_premium = float(trade.get("target_premium") or 0.0)
         is_sell = trade.get("side") == "SELL"
+        opt_type = str(trade.get("option_type") or "").upper()
+        entry_prem = float(trade.get("entry_premium") or 0.0)
+
+        # For SELL options: enforce hard cap of max 1.35x entry premium (+35% expansion)
+        if is_sell and opt_type in ("CE", "PE") and entry_prem > 0:
+            max_sell_sl = round(entry_prem * 1.35, 2)
+            if sl_premium <= 0 or sl_premium > max_sell_sl:
+                sl_premium = max_sell_sl
+
         close_status = ""
         close_reason = ""
 
-        if is_sell and sl_premium > 0 and exit_premium >= sl_premium:
-            close_status, close_reason = "CLOSED_SL", "stop loss hit (CMP poll)"
-        elif is_sell and target_premium > 0 and exit_premium <= target_premium:
-            close_status, close_reason = "CLOSED_TARGET", "target hit (CMP poll)"
-        elif not is_sell and sl_premium > 0 and exit_premium <= sl_premium:
-            close_status, close_reason = "CLOSED_SL", "stop loss hit (CMP poll)"
-        elif not is_sell and target_premium > 0 and exit_premium >= target_premium:
-            close_status, close_reason = "CLOSED_TARGET", "target hit (CMP poll)"
+        # Delta Stop check: Force-exit if leg delta reaches >= 0.60
+        if is_sell and opt_type in ("CE", "PE"):
+            from src.engine.trade_plan import get_leg_delta
+            delta_val = get_leg_delta(
+                trade.get("strike"),
+                opt_type,
+                strikes,
+            )
+            if delta_val is not None and delta_val >= 0.60:
+                close_status = "CLOSED_DELTA_STOP"
+                close_reason = f"delta stop hit (CMP poll: delta {delta_val:.2f} >= 0.60)"
+
+        if not close_status:
+            if is_sell and sl_premium > 0 and exit_premium >= sl_premium:
+                close_status, close_reason = "CLOSED_SL", "stop loss hit (CMP poll 1.35x cap)"
+            elif is_sell and target_premium > 0 and exit_premium <= target_premium:
+                close_status, close_reason = "CLOSED_TARGET", "target hit (CMP poll)"
+            elif not is_sell and sl_premium > 0 and exit_premium <= sl_premium:
+                close_status, close_reason = "CLOSED_SL", "stop loss hit (CMP poll)"
+            elif not is_sell and target_premium > 0 and exit_premium >= target_premium:
+                close_status, close_reason = "CLOSED_TARGET", "target hit (CMP poll)"
 
         if not close_status:
             continue
@@ -1367,10 +1389,13 @@ def start_scheduler(immediate: bool = False):
     # Run a cleanup of expired data on startup
     delete_expired_contracts()
 
-    # Trigger Index Weights refresh check on startup
+    # Trigger Index Weights refresh check on startup only if not updated today
     try:
-        from src.engine.index_weights import refresh_index_weights_async
-        refresh_index_weights_async(force=False)
+        from src.engine.index_weights import is_index_weights_updated_today, refresh_index_weights_async
+        if not is_index_weights_updated_today():
+            refresh_index_weights_async(force=False)
+        else:
+            log.debug("[scheduler] Startup index weights refresh skipped — already updated today.")
     except Exception as e:
         log.error("[scheduler] Failed to trigger startup index weights refresh: %s", e)
 
@@ -1381,6 +1406,14 @@ def start_scheduler(immediate: bool = False):
         log.info("[scheduler] Asynchronous News Sentiment Worker dispatched (scheduled at :55 of each hour)")
     except Exception as e:
         log.error("[scheduler] Failed to start news worker: %s", e)
+
+    # Start Asynchronous Gemini Spark Feed Poller (Google Sheet feed for Natural Gas paper trades)
+    try:
+        from src.engine.gemini_spark_feed import start_gemini_spark_worker
+        start_gemini_spark_worker()
+        log.info("[scheduler] Gemini Spark Feed Poller dispatched")
+    except Exception as e:
+        log.error("[scheduler] Failed to start Gemini Spark feed worker: %s", e)
 
     # ── Phase 2: Weekly ML Training Job ──────────────────────────────────────
     # AI_INTELLIGENCE_ROADMAP_v3.0 — Weekly fallback retraining (Sunday 2 AM IST)
@@ -1637,7 +1670,11 @@ def start_scheduler(immediate: bool = False):
     _last_market_close_scan_tracker: set[tuple[str, str]] = set()
     _last_auto_login_date = None
     _last_fii_fetch_date = None
-    _last_weights_refresh_date = None
+    try:
+        from src.engine.index_weights import get_last_weights_refresh_date
+        _last_weights_refresh_date = get_last_weights_refresh_date()
+    except Exception:
+        _last_weights_refresh_date = None
     last_ng_eia_pre_print_close_date = None
     last_ng_eia_consensus_fetch_date = None
     last_ng_exit_check = 0.0
@@ -1828,14 +1865,20 @@ def start_scheduler(immediate: bool = False):
                             log.warning("[scheduler] Failed to send market closed Telegram alert: %s", e)
 
             # ── Monday Weightage Refresh ──
+            # Only trigger once every Monday; skip if already updated today
             if now_ist.weekday() == 0 and _last_weights_refresh_date != current_date:
-                _last_weights_refresh_date = current_date
-                log.info("[scheduler] Triggering weekly index weights refresh (Monday)")
-                try:
-                    from src.engine.index_weights import refresh_index_weights_async
-                    refresh_index_weights_async(force=False)
-                except Exception as exc:
-                    log.error("[scheduler] Index weights refresh trigger exception: %s", exc)
+                from src.engine.index_weights import is_index_weights_updated_today
+                if is_index_weights_updated_today(current_date):
+                    _last_weights_refresh_date = current_date
+                    log.debug("[scheduler] Weekly index weights already updated today (%s). Skipping refresh.", current_date)
+                else:
+                    _last_weights_refresh_date = current_date
+                    log.info("[scheduler] Triggering weekly index weights refresh (Monday)")
+                    try:
+                        from src.engine.index_weights import refresh_index_weights_async
+                        refresh_index_weights_async(force=False)
+                    except Exception as exc:
+                        log.error("[scheduler] Index weights refresh trigger exception: %s", exc)
 
             # ── Pre-market: headless Kite auto-login at ~08:45 IST Mon-Fri ──
             # Runs once per day for NSE indices (NSE opens at 09:15).

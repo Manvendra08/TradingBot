@@ -882,9 +882,12 @@ def _canonical_symbol(symbol: str | None) -> str:
 
 def _matching_symbols(symbol: str) -> list[str]:
     canonical = _canonical_symbol(symbol)
-    rows = _q("SELECT DISTINCT symbol FROM option_chain_snapshots")
-    matches = [r["symbol"] for r in rows if _canonical_symbol(r["symbol"]) == canonical]
-    return sorted(set(matches)) or [canonical or symbol]
+    if not canonical:
+        return [symbol]
+    # Fast path: use known watched symbols and aliases without scanning million-row snapshot table
+    valid_symbols = set(CANONICAL_SYMBOLS) | set(WATCH_SYMBOLS)
+    matches = [s for s in valid_symbols if _canonical_symbol(s) == canonical]
+    return sorted(matches) or [canonical]
 
 
 def _in_clause(values: list[str]) -> tuple[str, tuple]:
@@ -1394,16 +1397,21 @@ def _enrich_open_trades_with_live_pnl(rows: list[dict]) -> None:
                 leg_exp = str(leg.get("expiry") or expiry or "").strip()
                 leg_status = (leg.get("status") or "OPEN").upper()
 
+                from src.engine.accounting import calculate_leg_pnl
+
                 if leg_status == "CLOSED":
                     # For closed/rolled legs, CMP is their locked exit premium
                     leg_exit_p = float(leg.get("exit_premium") or 0.0)
                     leg_cmp = leg_exit_p if leg_exit_p > 0 else entry_p
                     leg["cmp"] = round(leg_cmp, 2)
                     leg["exit_or_cmp"] = round(leg_cmp, 2)
-                    if leg_side == "SELL":
-                        pnl = (entry_p - leg_cmp) * leg_lots * lot_size
-                    else:
-                        pnl = (leg_cmp - entry_p) * leg_lots * lot_size
+                    pnl = calculate_leg_pnl(
+                        entry_premium=entry_p,
+                        current_or_exit_premium=leg_cmp,
+                        side=leg_side,
+                        lots=leg_lots,
+                        lot_size=lot_size,
+                    )
                     leg["pnl"] = round(pnl, 2)
                     total_pnl += pnl
                     continue
@@ -1428,11 +1436,16 @@ def _enrich_open_trades_with_live_pnl(rows: list[dict]) -> None:
                 leg["cmp"] = round(leg_cmp, 2)
                 leg["exit_or_cmp"] = round(leg_cmp, 2)
 
+                pnl = calculate_leg_pnl(
+                    entry_premium=entry_p,
+                    current_or_exit_premium=leg_cmp,
+                    side=leg_side,
+                    lots=leg_lots,
+                    lot_size=lot_size,
+                )
                 if leg_side == "SELL":
-                    pnl = (entry_p - leg_cmp) * leg_lots * lot_size
                     sell_cmp_sum += leg_cmp
                 else:
-                    pnl = (leg_cmp - entry_p) * leg_lots * lot_size
                     buy_cmp_sum += leg_cmp
 
                 leg["pnl"] = round(pnl, 2)
@@ -1482,10 +1495,14 @@ def _enrich_open_trades_with_live_pnl(rows: list[dict]) -> None:
             base_sym = symbol.upper().split()[0]
             lot_size = LOT_SIZES.get(base_sym, 1)
 
-            pnl = (
-                (cmp - entry) * lots * lot_size
-                if side == "BUY"
-                else (entry - cmp) * lots * lot_size
+            from src.engine.accounting import calculate_leg_pnl
+
+            pnl = calculate_leg_pnl(
+                entry_premium=entry,
+                current_or_exit_premium=cmp,
+                side=side,
+                lots=lots,
+                lot_size=lot_size,
             )
 
             row["pnl_rupees"] = round(pnl, 2)
@@ -1824,11 +1841,18 @@ def close_multi_leg_trade_endpoint(trade_ref: str):
     lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(symbol.upper().split()[0] if symbol else "", 1))
     leg_exits = []
     total_pnl = 0.0
+    from src.engine.accounting import calculate_leg_pnl
     for leg in legs:
         entry = float(leg.get("entry_premium") or 0.0)
         exit_p = float(leg.get("current_premium") or entry)
-        diff = (entry - exit_p) if (leg.get("side") or "SELL").upper() == "SELL" else (exit_p - entry)
-        total_pnl += diff * int(leg.get("lots") or 1) * lot_size
+        leg_pnl = calculate_leg_pnl(
+            entry_premium=entry,
+            current_or_exit_premium=exit_p,
+            side=str(leg.get("side") or "SELL"),
+            lots=int(leg.get("lots") or 1),
+            lot_size=lot_size,
+        )
+        total_pnl += leg_pnl
         leg_exits.append({"id": leg["id"], "exit_premium": exit_p})
     total_pnl = round(total_pnl, 2)
     closed_at = datetime.now(timezone.utc).isoformat()
@@ -2014,6 +2038,32 @@ async def get_paper_summary(symbol: str = ""):
 
     symbol_stats.sort(key=lambda x: x["total_pnl"], reverse=True)
 
+    # Gemini AI specific KPI metrics across all GeminiAI trades
+    gemini_trades = [
+        t for t in all_trades
+        if str((t.get("raw") or {}).get("setup_type", "")).upper() == "GEMINIAI"
+        or str((t.get("raw") or {}).get("verdict_label", "")).upper() == "GEMINIAI"
+        or str((t.get("raw") or {}).get("ai_model_name", "")).upper() == "GEMINIAI"
+    ]
+    gemini_closed = [t for t in gemini_trades if t["is_closed"]]
+    gemini_wins = [t for t in gemini_closed if t["pnl_rupees"] > 0]
+    gemini_losses = [t for t in gemini_closed if t["pnl_rupees"] < 0]
+    gemini_total_trades = len(gemini_trades)
+    gemini_closed_count = len(gemini_closed)
+    gemini_total_pnl = round(sum(t["pnl_rupees"] for t in gemini_closed), 2)
+    gemini_win_rate = round((len(gemini_wins) / gemini_closed_count) * 100, 2) if gemini_closed_count > 0 else 0.0
+    gemini_avg_pnl = round(gemini_total_pnl / gemini_closed_count, 2) if gemini_closed_count > 0 else 0.0
+
+    gemini_stats = {
+        "total_trades": gemini_total_trades,
+        "closed_trades": gemini_closed_count,
+        "wins": len(gemini_wins),
+        "losses": len(gemini_losses),
+        "win_rate": gemini_win_rate,
+        "total_pnl": gemini_total_pnl,
+        "avg_pnl": gemini_avg_pnl,
+    }
+
     # Consecutive wins streak on closed trades sorted by closed_at
     closed_trades.sort(key=lambda x: x.get("closed_at") or "")
     consecutive_wins = 0
@@ -2098,6 +2148,7 @@ async def get_paper_summary(symbol: str = ""):
         "consecutive_wins": consecutive_wins,
         "open_trades": open_rows,
         "symbol_breakdown": symbol_stats,
+        "gemini_stats": gemini_stats,
         "holding_analysis": holding_analysis,
     }
     return out
@@ -2335,15 +2386,16 @@ async def manual_close_paper_trade(trade_id: int = Query(...)):
 
 
 @app.delete("/api/paper_trades", dependencies=[Depends(authenticate)])
-async def delete_paper_trades(date_from: str = "", date_to: str = ""):
+async def delete_paper_trades(date_from: str = "", date_to: str = "", max_duration_minutes: float = None):
     """
-    Delete paper trades by date range.
+    Delete paper trades by date range and/or maximum duration.
     date_from / date_to: ISO date strings e.g. '2026-05-01' or '2026-05-26T23:59:59'
-    At least one of date_from or date_to must be provided.
+    max_duration_minutes: delete trades with duration (closed_at - opened_at) < max_duration_minutes
+    At least one of date_from, date_to, or max_duration_minutes must be provided.
     """
-    if not date_from and not date_to:
+    if not date_from and not date_to and max_duration_minutes is None:
         return JSONResponse(
-            {"ok": False, "error": "Provide at least date_from or date_to"},
+            {"ok": False, "error": "Provide at least date_from, date_to, or max_duration_minutes"},
             status_code=400,
         )
     clauses = []
@@ -2352,23 +2404,70 @@ async def delete_paper_trades(date_from: str = "", date_to: str = ""):
         clauses.append("opened_at >= ?")
         params.append(date_from)
     if date_to:
-        # include the full end day
         end = date_to if "T" in date_to else date_to + "T23:59:59"
         clauses.append("opened_at <= ?")
         params.append(end)
-    where = "WHERE " + " AND ".join(clauses)
+    where_pt = f"WHERE {' AND '.join(clauses)}" if clauses else ""
 
-    count_rows = _q(f"SELECT COUNT(*) AS n FROM paper_trades {where}", tuple(params))
-    n = int((count_rows[0] if count_rows else {}).get("n") or 0)
+    pt_rows = _q(f"SELECT id, opened_at, closed_at FROM paper_trades {where_pt}", tuple(params))
+    pt_to_del = []
+    for r in pt_rows:
+        if max_duration_minutes is not None:
+            if not r.get("closed_at") or not r.get("opened_at"):
+                continue
+            try:
+                o = datetime.fromisoformat(r["opened_at"].replace("Z", "+00:00"))
+                c = datetime.fromisoformat(r["closed_at"].replace("Z", "+00:00"))
+                if (c - o).total_seconds() / 60.0 < float(max_duration_minutes):
+                    pt_to_del.append(r["id"])
+            except Exception:
+                continue
+        else:
+            pt_to_del.append(r["id"])
+
+    ml_rows = _q(f"SELECT id, opened_at, closed_at FROM multi_leg_trades {where_pt}", tuple(params))
+    ml_to_del = []
+    for r in ml_rows:
+        if max_duration_minutes is not None:
+            if not r.get("closed_at") or not r.get("opened_at"):
+                continue
+            try:
+                o = datetime.fromisoformat(r["opened_at"].replace("Z", "+00:00"))
+                c = datetime.fromisoformat(r["closed_at"].replace("Z", "+00:00"))
+                if (c - o).total_seconds() / 60.0 < float(max_duration_minutes):
+                    ml_to_del.append(r["id"])
+            except Exception:
+                continue
+        else:
+            ml_to_del.append(r["id"])
+
+    total_deleted = len(pt_to_del) + len(ml_to_del)
 
     conn = _db()
     try:
         with conn:
-            conn.execute(f"DELETE FROM paper_trades {where}", tuple(params))
+            if pt_to_del:
+                ph_pt = ",".join("?" for _ in pt_to_del)
+                conn.execute(f"UPDATE decision_audit SET trade_id = NULL WHERE trade_id IN ({ph_pt})", tuple(pt_to_del))
+                conn.execute(f"DELETE FROM trade_autopsies WHERE trade_id IN ({ph_pt})", tuple(pt_to_del))
+                conn.execute(f"DELETE FROM paper_trades WHERE id IN ({ph_pt})", tuple(pt_to_del))
+            if ml_to_del:
+                ph_ml = ",".join("?" for _ in ml_to_del)
+                conn.execute(f"DELETE FROM multi_leg_legs WHERE trade_id IN ({ph_ml})", tuple(ml_to_del))
+                conn.execute(f"DELETE FROM multi_leg_trades WHERE id IN ({ph_ml})", tuple(ml_to_del))
             conn.commit()
     finally:
         conn.close()
-    return {"ok": True, "deleted": n, "date_from": date_from, "date_to": date_to}
+
+    return {
+        "ok": True,
+        "deleted": total_deleted,
+        "paper_deleted": len(pt_to_del),
+        "multileg_deleted": len(ml_to_del),
+        "date_from": date_from,
+        "date_to": date_to,
+        "max_duration_minutes": max_duration_minutes,
+    }
 
 
 @app.get("/api/paper_equity")
@@ -2425,27 +2524,12 @@ async def get_settings():
 @app.post("/api/settings", dependencies=[Depends(authenticate)])
 async def post_settings(data: dict):
     from config.runtime_config import save_runtime_config
-    from src.models.schema import get_conn
 
     save_runtime_config(data)
-    shadow_mode = data.get("live_shadow_mode", True)
-    with get_conn() as conn:
-        if shadow_mode:
-            conn.execute(
-                "UPDATE live_trades SET trade_status = 'SHADOW' WHERE status = 'OPEN' AND trade_status = 'LIVE'"
-            )
-        else:
-            conn.execute(
-                "UPDATE live_trades SET trade_status = 'LIVE' WHERE status = 'OPEN' AND trade_status = 'SHADOW' AND setup_type = 'DIRECT_KITE'"
-            )
     return {"status": "SUCCESS", "message": "Runtime settings updated successfully"}
 
 
-# BUG-H09/H12 FIX: Add threading locks for cache globals to prevent race conditions
-# from concurrent uvicorn requests.
-import threading as _dash_threading
-# BUG-H09/H12 FIX: Add threading locks for cache globals to prevent race conditions
-# from concurrent uvicorn requests.
+# Threading locks for cache globals to prevent race conditions
 import threading as _dash_threading
 _positions_cache = None
 _positions_cache_ts = 0.0
@@ -2453,20 +2537,19 @@ _positions_failure_ts = 0.0
 _KITE_FAILURE_COOLDOWN_SECONDS = 30.0
 _positions_cache_lock = _dash_threading.Lock()
 _margins_cache_lock = _dash_threading.Lock()
-_positions_cache_lock = _dash_threading.Lock()
-_margins_cache_lock = _dash_threading.Lock()
 
 
 def _fetch_real_kite_positions(kite) -> list[dict]:
     global _positions_cache, _positions_cache_ts, _positions_failure_ts
     now = time.time()
-    if _positions_cache is not None and (now - _positions_cache_ts) < 10.0:
-        return _positions_cache
-    if (
-        _positions_failure_ts
-        and (now - _positions_failure_ts) < _KITE_FAILURE_COOLDOWN_SECONDS
-    ):
-        return _positions_cache if _positions_cache is not None else []
+    with _positions_cache_lock:
+        if _positions_cache is not None and (now - _positions_cache_ts) < 10.0:
+            return _positions_cache
+        if (
+            _positions_failure_ts
+            and (now - _positions_failure_ts) < _KITE_FAILURE_COOLDOWN_SECONDS
+        ):
+            return _positions_cache if _positions_cache is not None else []
 
     try:
         from config.runtime_config import load_runtime_config
@@ -2843,12 +2926,14 @@ def _fetch_real_kite_positions(kite) -> list[dict]:
                         "tradingsymbol": tradingsymbol,
                     }
                 )
-        _positions_cache = parsed_positions
-        _positions_cache_ts = now
-        _positions_failure_ts = 0.0
+        with _positions_cache_lock:
+            _positions_cache = parsed_positions
+            _positions_cache_ts = now
+            _positions_failure_ts = 0.0
         return parsed_positions
     except Exception as e:
-        _positions_failure_ts = now
+        with _positions_cache_lock:
+            _positions_failure_ts = now
         err_msg = str(e).lower()
         if "api_key" in err_msg or "token" in err_msg:
             try:
@@ -2861,7 +2946,8 @@ def _fetch_real_kite_positions(kite) -> list[dict]:
             _KITE_FAILURE_COOLDOWN_SECONDS,
             e,
         )
-        return _positions_cache if _positions_cache is not None else []
+        with _positions_cache_lock:
+            return _positions_cache if _positions_cache is not None else []
 
 
 _kite_closed_trades_cache = None
@@ -4029,7 +4115,7 @@ async def trigger_auto_login(data: dict = {}):
     return result
 
 
-@app.post("/internal/reauth", dependencies=[Depends(authenticate)])
+@app.post("/internal/reauth")
 async def internal_reauth():
     """
     Internal endpoint for ops_agent.py to trigger Shoonya re-authentication.
@@ -4643,10 +4729,16 @@ async def broker_page(username: str = Depends(authenticate)):
 async def health_endpoint():
     """Unauthenticated health endpoint for ops_agent.py and healthchecks.io."""
     import tempfile
-    from src.models.schema import read_health_state_ro, get_open_positions_count_ro
+    from src.models.schema import (
+        read_health_state_ro,
+        get_open_live_positions_count_ro,
+        get_open_paper_positions_count_ro,
+    )
     try:
         health = read_health_state_ro()
-        open_count = get_open_positions_count_ro()
+        live_count = get_open_live_positions_count_ro()
+        paper_count = get_open_paper_positions_count_ro()
+        open_count = live_count + paper_count
         # BUG-C02 FIX: Use cross-platform temp directory
         heartbeat_path = Path(tempfile.gettempdir()) / "nsebot.heartbeat"
         heartbeat_age_s = None
@@ -4656,6 +4748,8 @@ async def health_endpoint():
             "status": "ok",
             "health": health,
             "open_positions": open_count,
+            "open_live_positions": live_count,
+            "open_paper_positions": paper_count,
             "heartbeat_age_s": heartbeat_age_s,
         })
     except Exception as e:
@@ -5212,34 +5306,49 @@ async def sentinel_runs():
 
 # ── Supervise Ops Agent (keeps the Ops Agent Activity Log live) ────────────
 def _ops_agent_already_running() -> bool:
-    """Best-effort check for an already-running ops_agent.py process."""
-    try:
-        if sys.platform == "win32":
-            out = subprocess.check_output(
-                ["wmic", "process", "where", "name='python.exe' or name='pythonw.exe'",
-                 "get", "commandline", "/format:csv"],
-                stderr=subprocess.DEVNULL, text=True, timeout=10,
-            )
-        else:
-            out = subprocess.check_output(
-                ["pgrep", "-af", "ops_agent.py"],
-                stderr=subprocess.DEVNULL, text=True, timeout=10,
-            )
-        return "ops_agent.py" in out
-    except Exception:
+    """Check if ops_agent.py is already actively running (via single-instance lock file)."""
+    lock_file = ROOT / "data" / "ops_agent.lock"
+    if not lock_file.exists():
         return False
+    try:
+        with open(lock_file, "a+") as f:
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+        # We were able to acquire and release the lock, so no active process holds it
+        return False
+    except (IOError, OSError):
+        # File is locked by an active ops_agent process
+        return True
 
 
 def _terminate_external_ops_agent():
-    """Best-effort kill of any ops_agent.py process not owned by this supervisor."""
+    """Best-effort kill of any ops_agent.py process using PID recorded in lock file or system tools."""
+    lock_file = ROOT / "data" / "ops_agent.lock"
+    if lock_file.exists():
+        try:
+            with open(lock_file, "r") as f:
+                content = f.read().strip()
+                if content.isdigit():
+                    pid = int(content)
+                    if pid != os.getpid():
+                        if sys.platform == "win32":
+                            subprocess.call(
+                                ["taskkill", "/F", "/PID", str(pid)],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10,
+                            )
+                        else:
+                            import signal
+                            os.kill(pid, signal.SIGTERM)
+        except Exception:
+            pass
     try:
-        if sys.platform == "win32":
-            where = "name='python.exe' and commandline like '%ops_agent.py%'"
-            subprocess.call(
-                ["wmic", "process", "where", where, "call", "terminate"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20,
-            )
-        else:
+        if sys.platform != "win32":
             subprocess.call(
                 ["pkill", "-f", "ops_agent.py"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20,
@@ -5293,15 +5402,23 @@ def _supervise_ops_agent():
                 proc = None
                 current_mode = None
 
-            # If we don't own an instance, take over from any external one so the
-            # UI-configured mode is authoritative.
+            # If we don't own an instance, check if an external one is running.
             if proc is None and _ops_agent_already_running():
                 log.info("ops_agent supervisor: taking over external instance")
                 _terminate_external_ops_agent()
                 time.sleep(2)
+                # If still locked (e.g. external process didn't terminate yet), do not spawn to avoid collision
+                if _ops_agent_already_running():
+                    time.sleep(15)
+                    continue
 
             if proc is None or (proc is not None and proc.poll() is not None):
                 if proc is not None:
+                    # If proc exited with rc=0 because another instance held lock, wait before retry
+                    if proc.returncode == 0 and _ops_agent_already_running():
+                        proc = None
+                        time.sleep(15)
+                        continue
                     log.warning("ops_agent exited (rc=%s) — restarting", proc.returncode)
                 args = [py, str(agent_script)]
                 if desired != "normal":

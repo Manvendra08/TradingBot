@@ -1254,6 +1254,35 @@ OUTPUT (JSON per schema; every number MUST appear in DATA or be arithmetic on DA
 • NO_TRADE: signal_chain = why no edge, entry_trigger = what would change the view
 • thesis: WHY the edge exists (flow/S-R/catalyst confluence), NOT a verdict restatement"""
 
+    if base_sym == "NATURALGAS":
+        prompt += """
+
+SCHEDULED BOT FEED FORMAT (Gemini Spark JSON Drive):
+After your JSON verdict, append a single raw JSON block wrapped in `[GEMINI_SPARK_JSON]` ... `[/GEMINI_SPARK_JSON]` representing the active setups.
+Example:
+[GEMINI_SPARK_JSON]
+{
+  "timestamp": "2026-10-01 20:25:00",
+  "market_state": "OPEN",
+  "symbol": "NATURALGAS 27-OCT-2026",
+  "setups": [
+    {
+      "id": "NG_BUY_SMA50",
+      "type": "BUY",
+      "entry_zone": {
+        "recommended": 287.50
+      },
+      "stop_loss": 289.00,
+      "targets": [
+        {"price": 291.20},
+        {"price": 293.90}
+      ]
+    }
+  ]
+}
+[/GEMINI_SPARK_JSON]
+"""
+
     return prompt
 
 
@@ -1992,9 +2021,9 @@ def call_llm_api(
         return None
 
     def _remaining() -> float:
-        """Seconds left before deadline, or large number if no deadline."""
+        """Seconds left before deadline, or generous budget if no deadline."""
         if deadline is None:
-            return 15.0
+            return 90.0
         return max(5.0, deadline - time.time())
 
     import requests

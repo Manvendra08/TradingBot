@@ -589,10 +589,20 @@ def _monitor_open_books_live(
             continue
 
         # 4d. Structural Invalidation exit (spot breached thesis invalidation level)
-        inval_match = re.search(r"Invalidation:\s*(?:Spot\s*)?([0-9.]+)", str(book.get("entry_reason") or book.get("reason") or ""))
-        if inval_match:
+        inval_spot = None
+        raw_inval = book.get("structural_invalidation_spot")
+        if raw_inval is not None and float(raw_inval or 0.0) > 0:
+            inval_spot = float(raw_inval)
+        else:
+            inval_match = re.search(r"Invalidation:\s*(?:Spot\s*)?([0-9.]+)", str(book.get("entry_reason") or book.get("reason") or ""))
+            if inval_match:
+                try:
+                    inval_spot = float(inval_match.group(1))
+                except (ValueError, TypeError):
+                    inval_spot = None
+
+        if inval_spot is not None and inval_spot > 0:
             try:
-                inval_spot = float(inval_match.group(1))
                 strat_upper = str(strategy_type or "").upper()
                 is_bull_strat = "BULL" in strat_upper or strat_upper in ("LONG_CALL", "SHORT_PUT")
                 is_bear_strat = "BEAR" in strat_upper or strat_upper in ("LONG_PUT", "SHORT_CALL")
@@ -1282,6 +1292,7 @@ def _attempt_new_live_entry(
 
     from config.multileg_strategies import (
         MAX_BOOK_MARGIN,
+        MAX_SYMBOL_MARGIN,
         MAX_NET_DELTA,
     )
     from src.models.schema import get_open_books_for_symbol, insert_multileg_trade_atomically
@@ -1395,6 +1406,37 @@ def _attempt_new_live_entry(
             "reason": risk_reason,
             "confidence": effective_confidence,
         }
+
+    # ── Jev Thesis Verification Gate (verify_thesis_claims) ───────────
+    # Prevents hallucinations from placing real capital at risk by verifying
+    # that the written thesis does not factually contradict live market data.
+    thesis_text = str(getattr(verdict, "thesis", "") or getattr(verdict, "entry_rationale", "") or "").strip()
+    if thesis_text and len(thesis_text) > 20:
+        try:
+            from src.services.typesafe_client import verify_thesis_claims
+            spot = scan_context.get("underlying") or scan_context.get("underlying_price")
+            pcr = scan_context.get("pcr") or scan_context.get("put_call_ratio")
+            v_label = (intel or {}).get("verdict_label") or (scan_context or {}).get("verdict_label") or "Neutral"
+            summary_facts = (
+                f"Asset: {symbol}, Spot: {spot}, PCR: {pcr}, "
+                f"Engine Verdict: {v_label}, Strategy: {st_upper}"
+            )
+            v_res = verify_thesis_claims(thesis_text, summary_facts)
+            if v_res.get("is_contradicted"):
+                log.warning(
+                    "[multileg-live] %s: Jev System-1 flagged thesis contradiction (conf=%.2f): '%s' vs facts '%s'",
+                    symbol, v_res.get("confidence", 0), thesis_text[:120], summary_facts,
+                )
+                return {
+                    "action": "REJECTED_THESIS_CONTRADICTION",
+                    "decision_stage": "JEV_THESIS_VERIFICATION",
+                    "strategy_type": st_upper,
+                    "confidence": effective_confidence,
+                    "thesis": thesis_text,
+                    "reason": f"Jev System-1 flagged thesis logical contradiction with market data (conf={v_res.get('confidence', 0):.2f})",
+                }
+        except Exception as v_err:
+            log.debug("[multileg-live] %s: Thesis verification skipped due to error: %s", symbol, v_err)
 
     # ── 5b. Validate legs ─────────────────────────────────────────────
     try:
@@ -1594,9 +1636,25 @@ def _attempt_new_live_entry(
                 legs, symbol, risk_profile=risk_profile, underlying=underlying
             )
         except Exception as e:
-            log.warning(
-                "[multileg-live] %s: Margin computation failed: %s", symbol, e
+            log.error(
+                "[multileg-live] %s: Margin computation failed — failing closed: %s", symbol, e
             )
+            return {
+                "action": "REJECTED",
+                "decision_stage": "RISK_GATE_MARGIN",
+                "reason": f"Margin computation failed (fail-closed): {e}",
+            }
+        if combined_margin <= 0 and any((l.get("side") or "SELL").upper() == "SELL" for l in legs):
+            log.error(
+                "[multileg-live] %s: Margin computation returned invalid non-positive value %.2f — failing closed",
+                symbol,
+                combined_margin,
+            )
+            return {
+                "action": "REJECTED",
+                "decision_stage": "RISK_GATE_MARGIN",
+                "reason": "Margin computation returned invalid zero/negative margin for short options book",
+            }
 
     # ── 5d. Book conflict check ────────────────────────────────────────
     if check_book_conflicts is not None:
@@ -1642,21 +1700,36 @@ def _attempt_new_live_entry(
                 e,
             )
 
-    # ── 5f. Margin cap check ──────────────────────────────────────────
-    if combined_margin > MAX_BOOK_MARGIN:
+    # ── 5f. Margin cap check (book-level and combined open symbol margin) ──
+    open_books_symbol = open_books or _open_live_books(symbol)
+    existing_symbol_margin = sum(float(b.get("margin_req") or 0.0) for b in open_books_symbol if b.get("status") == "OPEN")
+    total_margin_symbol = existing_symbol_margin + combined_margin
+
+    if combined_margin > MAX_BOOK_MARGIN or total_margin_symbol > MAX_SYMBOL_MARGIN:
+        cap_val = MAX_BOOK_MARGIN if combined_margin > MAX_BOOK_MARGIN else MAX_SYMBOL_MARGIN
+        exceeded_val = combined_margin if combined_margin > MAX_BOOK_MARGIN else total_margin_symbol
         log.info(
-            "[multileg-live] %s: combined margin ₹%.0f exceeds cap ₹%.0f",
+            "[multileg-live] %s: margin ₹%.0f exceeds cap ₹%.0f (existing: ₹%.0f)",
             symbol,
-            combined_margin,
-            MAX_BOOK_MARGIN,
+            exceeded_val,
+            cap_val,
+            existing_symbol_margin,
         )
         return {
             "action": "REJECTED",
-            "reason": f"Margin ₹{combined_margin:,.0f} exceeds cap ₹{MAX_BOOK_MARGIN:,.0f}",
+            "decision_stage": "RISK_GATE_MARGIN",
+            "reason": f"Combined symbol margin ₹{total_margin_symbol:,.0f} exceeds cap ₹{cap_val:,.0f}",
         }
 
     # ── 5g. Net delta cap check ───────────────────────────────────────
-    net_delta = book_greeks.get("net_delta", verdict.net_delta)
+    if "net_delta" not in book_greeks or book_greeks.get("net_delta") is None:
+        log.error("[multileg-live] %s: Verified Greeks net_delta missing — failing closed", symbol)
+        return {
+            "action": "REJECTED",
+            "decision_stage": "RISK_GATE_DELTA",
+            "reason": "Verified Greeks calculation unavailable — cannot validate net delta cap",
+        }
+    net_delta = float(book_greeks["net_delta"])
     if abs(net_delta) > MAX_NET_DELTA:
         log.info(
             "[multileg-live] %s: net delta %.2f exceeds cap %.2f",
@@ -1666,6 +1739,7 @@ def _attempt_new_live_entry(
         )
         return {
             "action": "REJECTED",
+            "decision_stage": "RISK_GATE_DELTA",
             "reason": f"Net delta {net_delta:.2f} exceeds cap {MAX_NET_DELTA}",
         }
 
@@ -1757,7 +1831,12 @@ def _attempt_new_live_entry(
     lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_sym, 1))
     exchange = get_kite_exchange(symbol)
 
-    for i, leg in enumerate(legs):
+    # TWO-PHASE INVARIANT: Always sort BUY (hedge) legs before SELL (short) legs.
+    # Placing long wings first gives margin relief and ensures naked short risk
+    # cannot occur if the broker rejects subsequent legs.
+    sorted_legs = sorted(legs, key=lambda l: 0 if str(l.get("side") or "").upper() == "BUY" else 1)
+
+    for i, leg in enumerate(sorted_legs):
         strike = float(leg.get("strike") or 0.0)
         option_type = leg.get("option_type", "")
         lots = int(leg.get("lots") or 1)
@@ -2085,6 +2164,7 @@ def _attempt_new_live_entry(
         "ai_model_name": verdict.model_name,
         "snapshot_id": (scan_context or {}).get("snapshot_id"),
         "trade_mode": trade_mode,
+        "structural_invalidation_spot": float(getattr(verdict, "structural_invalidation_spot", 0.0) or 0.0) or None,
     }
 
     try:

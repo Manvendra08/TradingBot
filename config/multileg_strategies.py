@@ -20,8 +20,9 @@ STRATEGY_TYPES = {
 # ── Allowed Symbols (NSE indices & MCX commodities) ─────────────────────────────
 ALLOWED_SYMBOLS = {"NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX", "NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"}
 
-# ── Book-Level Risk Caps ────────────────────────────────────────────
+# ── Book-Level & Symbol-Level Risk Caps ────────────────────────────
 MAX_BOOK_MARGIN = 7_500_000.0     # Maximum combined margin per book (₹75L / 7500K)
+MAX_SYMBOL_MARGIN = 7_500_000.0   # Maximum combined open margin per symbol across all books (₹75L)
 MAX_NET_DELTA = 0.60              # Maximum absolute net delta per book
 MAX_NET_VEGA = 500.0              # Maximum net vega exposure
 MAX_LEGS_PER_BOOK = 6             # Maximum legs in a single book
@@ -34,7 +35,7 @@ MIN_WING_WIDTH_PCT = {
     "BANKNIFTY": 0.006,   # >= 0.60% (~340 pts at 56k spot)
     "FINNIFTY": 0.005,    # >= 0.50% (~120 pts)
     "MIDCPNIFTY": 0.005,  # >= 0.50% (~60 pts)
-    "SENSEX": 0.006,      # >= 0.60% (~450-500 pts)
+    "SENSEX": 0.0055,     # >= 0.55% (~396 pts at 72k spot, aligns with 400-500 pt wings)
     "DEFAULT": 0.005,     # >= 0.50%
 }
 

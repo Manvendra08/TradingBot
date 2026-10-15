@@ -964,11 +964,40 @@
                 height: 68px;
                 display: flex;
                 align-items: center;
-                justify-content: center; /* center the M2M card */
+                justify-content: space-between;
                 padding: 0 24px;
                 background: var(--surface) !important;
                 border-bottom: 1px solid var(--border) !important;
                 box-shadow: var(--shadow);
+                gap: 16px;
+            }
+            .sub-header-left {
+                flex: 1;
+                display: flex;
+                align-items: center;
+                justify-content: flex-start;
+                min-width: 0;
+            }
+            .sub-header-right {
+                flex: 1;
+                display: flex;
+                align-items: center;
+                justify-content: flex-end;
+                min-width: 0;
+            }
+            @media (max-width: 900px) {
+                .sub-header {
+                    height: auto;
+                    flex-wrap: wrap;
+                    gap: 12px;
+                    padding: 10px 16px;
+                    justify-content: center;
+                }
+                .sub-header-left,
+                .sub-header-right {
+                    flex: unset;
+                    justify-content: center;
+                }
             }
             .heartbeat-left {
                 display: flex;
@@ -1692,37 +1721,6 @@
                 </div>
 
                 <div class="header-operations-cluster">
-
-                    <!-- SHADOW/LIVE/OFF Segment Switcher -->
-                    <div class="segment-control" style="margin: 0">
-                        <div id="segment-glow"></div>
-                        <button
-                            type="button"
-                            class="segment-btn active"
-                            id="btn-env-shadow"
-                            onclick="setEnvironmentMode('shadow')"
-                        >
-                            Shadow
-                        </button>
-                        <button
-                            type="button"
-                            class="segment-btn"
-                            id="btn-env-live"
-                            onclick="setEnvironmentMode('live')"
-                        >
-                            Live
-                        </button>
-                        <button
-                            type="button"
-                            class="segment-btn"
-                            id="btn-env-off"
-                            onclick="setEnvironmentMode('off')"
-                            title="Block all broker order placement"
-                        >
-                            Broker Off
-                        </button>
-                    </div>
-
                     <!-- EMERGENCY KILL Button -->
                     <button
                         id="kill-switch-btn"
@@ -1846,6 +1844,38 @@
         </header>
 
         <div class="sub-header">
+            <div class="sub-header-left">
+                <!-- SHADOW/LIVE/OFF Segment Switcher -->
+                <div class="segment-control" style="margin: 0">
+                    <div id="segment-glow"></div>
+                    <button
+                        type="button"
+                        class="segment-btn active"
+                        id="btn-env-shadow"
+                        onclick="setEnvironmentMode('shadow')"
+                    >
+                        Shadow
+                    </button>
+                    <button
+                        type="button"
+                        class="segment-btn"
+                        id="btn-env-live"
+                        onclick="setEnvironmentMode('live')"
+                    >
+                        Live
+                    </button>
+                    <button
+                        type="button"
+                        class="segment-btn"
+                        id="btn-env-off"
+                        onclick="setEnvironmentMode('off')"
+                        title="Block all broker order placement"
+                    >
+                        Broker Off
+                    </button>
+                </div>
+            </div>
+
             <!-- Centered M2M P&L Card -->
             <div id="m2m-card" class="m2m-card neutral">
                 <div
@@ -1927,6 +1957,8 @@
                     >
                 </div>
             </div>
+
+            <div class="sub-header-right"></div>
         </div>
 
         <div class="main-container">

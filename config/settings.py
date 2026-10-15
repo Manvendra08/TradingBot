@@ -230,7 +230,8 @@ TYPESAFE_API_KEY: str = os.getenv("TYPESAFE_API_KEY", "")
 DASHBOARD_USERNAME = _optional_env("DASHBOARD_USERNAME")
 DASHBOARD_PASSWORD = _optional_env("DASHBOARD_PASSWORD")
 
-STRIKES_AROUND_ATM = 8
+# Strikes window around ATM (15 strikes provides ±1500 pts for BANKNIFTY/SENSEX, enabling full multi-leg wing coverage)
+STRIKES_AROUND_ATM = int(os.environ.get("STRIKES_AROUND_ATM", "15"))
 
 # ── Fetcher Priority ────────────────────────────────────────────────────────────────────────────────────────────
 # Order in which fetchers are tried for each symbol.

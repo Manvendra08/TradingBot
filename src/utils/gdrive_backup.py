@@ -59,6 +59,14 @@ def backup_db_to_telegram() -> bool:
             dst_conn = sqlite3.connect(str(backup_db_path))
             src_conn.backup(dst_conn)
 
+            # Security sanitization: purge broker secrets from the backup database before archiving
+            try:
+                dst_conn.execute("DROP TABLE IF EXISTS broker_configs")
+                dst_conn.commit()
+                dst_conn.execute("VACUUM")
+            except Exception as scrub_err:
+                log.warning("Failed to scrub broker_configs table from backup: %s", scrub_err)
+
             # Collect table stats
             c = dst_conn.cursor()
             tables = [r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()]

@@ -403,7 +403,8 @@ CREATE TABLE IF NOT EXISTS multi_leg_trades (
     ai_model_name TEXT,
     entry_reason TEXT,
     exit_reason TEXT,
-    trade_mode TEXT DEFAULT 'PAPER'
+    trade_mode TEXT DEFAULT 'PAPER',
+    structural_invalidation_spot REAL
 );
 
 CREATE TABLE IF NOT EXISTS multi_leg_legs (
@@ -712,6 +713,11 @@ _MIGRATIONS = [
     ("M138_backfill_mll_live_trade_mode", "UPDATE multi_leg_legs SET trade_mode = 'LIVE' WHERE broker_order_id IS NOT NULL AND broker_order_id != '' AND broker_order_id NOT LIKE 'sh-%' AND (trade_mode IS NULL OR trade_mode = 'PAPER')"),
     # M139: snapshot_id linkage for multi_leg_legs provenance
     ("M139_add_snapshot_id_to_mll", "ALTER TABLE multi_leg_legs ADD COLUMN snapshot_id TEXT"),
+    # M140: Mark entry verdict as GeminiAI for Gemini Spark trades
+    ("M140_set_gemini_spark_verdict_label", "UPDATE paper_trades SET verdict_label = 'GeminiAI' WHERE setup_type = 'GeminiAI'"),
+    # M141-M142: Invalidation spot column and unique constraint on book_id
+    ("M141_add_ml_structural_invalidation_spot", "ALTER TABLE multi_leg_trades ADD COLUMN structural_invalidation_spot REAL"),
+    ("M142_add_unique_ml_book_id", "CREATE UNIQUE INDEX IF NOT EXISTS uq_ml_book_id ON multi_leg_trades (book_id) WHERE book_id IS NOT NULL"),
 ]
 
 
@@ -748,7 +754,7 @@ def init_db() -> None:
                 "CREATE INDEX IF NOT EXISTS idx_paper_leg_group ON paper_trades (leg_group_id, status)"
             )
             conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_ml_book_id ON multi_leg_trades (book_id)"
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_ml_book_id ON multi_leg_trades (book_id) WHERE book_id IS NOT NULL"
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_ml_symbol_status ON multi_leg_trades (symbol, status)"
@@ -1225,7 +1231,7 @@ def delete_alerts(symbol: str | None = None) -> int:
 def get_open_paper_trade(symbol: str) -> dict | None:
     sql = """
         SELECT * FROM paper_trades
-        WHERE symbol=? AND status='OPEN' AND (setup_type IS NULL OR (setup_type != 'TIMEFRAME' AND setup_type != 'TFSS'))
+        WHERE symbol=? AND status='OPEN' AND (setup_type IS NULL OR (setup_type != 'TIMEFRAME' AND setup_type != 'TFSS' AND setup_type != 'GeminiAI'))
         ORDER BY opened_at DESC
         LIMIT 1
     """
@@ -1565,76 +1571,19 @@ def _calc_transaction_costs(
           - Futures (buy leg only): 0.002% (0.00002) on buy notional turnover
       - GST: 18% on (Brokerage + Exchange Charges + SEBI Charges)
     """
-    # 1. Brokerage: ₹20 entry + ₹20 exit
-    brokerage = 40.0
+    from src.engine.accounting import calculate_transaction_costs
 
-    # Extract base symbol for index / MCX detection
-    base_symbol = symbol.upper().split()[0] if symbol else ""
-    index_symbols = {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX"}
-    is_index = base_symbol in index_symbols
-
-    mcx_commodity_symbols = {
-        "NATURALGAS", "CRUDEOIL", "GOLD", "SILVER",
-        "COPPER", "ZINC", "ALUMINIUM", "LEAD", "NICKEL", "MENTHA", "COTTON", "CPO"
-    }
-    is_mcx = base_symbol in mcx_commodity_symbols
-
-    opt_type_upper = str(option_type or "").upper()
-    is_option = opt_type_upper in ("CE", "PE")
-
-    if is_option:
-        entry_turnover = float(entry_premium or 0.0) * lot_size * lots
-        exit_turnover = float(exit_premium or 0.0) * lot_size * lots
-        total_turnover = entry_turnover + exit_turnover
-        buy_turnover = entry_turnover if side == "BUY" else exit_turnover
-        sell_turnover = exit_turnover if side == "BUY" else entry_turnover
-
-        # STT / CTT
-        if is_mcx:
-            stt = sell_turnover * 0.0005  # 0.05% CTT on MCX option sell
-        elif is_index:
-            stt = (entry_turnover + exit_turnover) * 0.000625  # Index options
-        else:
-            stt = sell_turnover * 0.000625  # Stock options
-
-        # Exchange charges: ~0.05% on option turnover
-        exchange_charges = total_turnover * 0.0005
-
-        # Stamp duty: 0.003% on buy turnover
-        stamp_duty = buy_turnover * 0.00003
-
-        # SEBI turnover charges: ₹10 / crore
-        sebi_charges = total_turnover * 0.000001
-    else:
-        # Futures
-        entry_turnover = float(entry_underlying or 0.0) * lot_size * lots
-        exit_turnover = float(exit_underlying or 0.0) * lot_size * lots
-        total_turnover = entry_turnover + exit_turnover
-        buy_turnover = entry_turnover if side == "BUY" else exit_turnover
-        sell_turnover = exit_turnover if side == "BUY" else entry_turnover
-
-        # STT / CTT
-        if is_mcx:
-            stt = sell_turnover * 0.0001  # 0.01% CTT
-        elif is_index:
-            stt = sell_turnover * 0.000125  # 0.0125% STT
-        else:
-            stt = sell_turnover * 0.0002  # 0.02% STT
-
-        # Exchange charges: 0.0019% on futures turnover
-        exchange_charges = total_turnover * 0.000019
-
-        # Stamp duty: 0.002% on buy turnover
-        stamp_duty = buy_turnover * 0.00002
-
-        # SEBI turnover charges: ₹10 / crore
-        sebi_charges = total_turnover * 0.000001
-
-    # GST: 18% on (Brokerage + Exchange Charges + SEBI Charges)
-    gst = (brokerage + exchange_charges + sebi_charges) * 0.18
-
-    total_costs = brokerage + stt + exchange_charges + sebi_charges + stamp_duty + gst
-    return round(total_costs, 2)
+    return calculate_transaction_costs(
+        option_type=option_type,
+        side=side,
+        entry_premium=entry_premium,
+        entry_underlying=entry_underlying,
+        exit_premium=exit_premium,
+        exit_underlying=exit_underlying,
+        lot_size=lot_size,
+        lots=lots,
+        symbol=symbol,
+    )
 
 
 def close_paper_trade(
@@ -1656,7 +1605,7 @@ def close_paper_trade(
 
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT symbol, expiry, option_type, verdict_label, entry_underlying, entry_premium, lots, lot_size, strike, side FROM paper_trades WHERE id=? AND status='OPEN'",
+            "SELECT symbol, expiry, option_type, verdict_label, entry_underlying, entry_premium, lots, lot_size, strike, side, setup_type FROM paper_trades WHERE id=? AND status='OPEN'",
             (trade_id,),
         ).fetchone()
         if not row:
@@ -1826,13 +1775,25 @@ def close_paper_trade(
     except Exception:
         log.exception("close_paper_trade: accounting audit failed for trade %s", trade_id)
 
-    # Phase 1: Invalidate pattern cache after trade close
+    # 2-Way Architecture: Feedback to Gemini Spark Shared Ledger if GeminiAI trade
     try:
-        from src.engine.paper_trading import _invalidate_pattern_cache
+        if row and row["setup_type"] == "GeminiAI":
+            from src.engine.gemini_spark_feed import push_execution_feedback_to_ledger, sync_active_positions_snapshot
+            push_execution_feedback_to_ledger("TRADE_CLOSED", {
+                "trade_id": trade_id,
+                "symbol": symbol,
+                "side": row["side"],
+                "fill_price": row["entry_underlying"],
+                "exit_price": exit_underlying,
+                "pnl_rupees": round(pnl_rupees, 2),
+                "pnl_points": round(pnl_points, 4),
+                "status": status,
+                "reason": reason,
+            })
+            sync_active_positions_snapshot()
+    except Exception as e:
+        log.debug("close_paper_trade: gemini 2-way feedback skipped/failed: %s", e)
 
-        _invalidate_pattern_cache()
-    except Exception:
-        pass
 
 
 def list_paper_trades(symbol: str | None = None, limit: int = 300) -> list[dict]:
@@ -2029,6 +1990,12 @@ def update_live_trade_entry(
     exit_mode: str | None = None,
     status: str | None = None,
     reason: str | None = None,
+    closed_at: str | None = None,
+    exit_underlying: float | None = None,
+    exit_premium: float | None = None,
+    pnl_points: float | None = None,
+    pnl_rupees: float | None = None,
+    exit_reason: str | None = None,
 ) -> None:
     updates: list[str] = []
     params: list = []
@@ -2049,6 +2016,12 @@ def update_live_trade_entry(
         ("exit_mode", _clean_val(exit_mode)),
         ("status", _clean_val(status)),
         ("reason", _clean_val(reason)),
+        ("closed_at", _clean_val(closed_at)),
+        ("exit_underlying", exit_underlying),
+        ("exit_premium", exit_premium),
+        ("pnl_points", round(pnl_points, 4) if pnl_points is not None else None),
+        ("pnl_rupees", round(pnl_rupees, 2) if pnl_rupees is not None else None),
+        ("exit_reason", _clean_val(exit_reason)),
     ):
         if value is not None:
             updates.append(f"{column}=?")
@@ -2061,6 +2034,13 @@ def update_live_trade_entry(
     sql = f"UPDATE live_trades SET {', '.join(updates)} WHERE id=?"
     with get_conn() as conn:
         conn.execute(sql, tuple(params))
+
+    if status and status != "OPEN":
+        try:
+            from src.engine.trade_audit import audit_trade_close
+            audit_trade_close("live_trades", trade_id)
+        except Exception:
+            pass
 
 
 def close_live_trade(
@@ -2420,6 +2400,7 @@ def insert_multi_leg_trade(trade: dict) -> int:
     if "snapshot_id" not in trade:
         trade["snapshot_id"] = None
     trade["trade_mode"] = str(trade.get("trade_mode") or "PAPER").upper()
+    trade.setdefault("structural_invalidation_spot", None)
     sql = """
         INSERT INTO multi_leg_trades
             (trade_ref, symbol, structure, net_premium, margin_req, total_pnl,
@@ -2428,7 +2409,8 @@ def insert_multi_leg_trade(trade: dict) -> int:
              net_delta, net_theta, net_vega, max_profit, max_loss,
              breakeven_upper, breakeven_lower, profit_target_pct, stop_loss_pct,
              time_decay_exit_dte, adjustment_count, confidence_score,
-             entry_quality_score, digest_id, ai_model_name, snapshot_id, trade_mode)
+             entry_quality_score, digest_id, ai_model_name, snapshot_id, trade_mode,
+             structural_invalidation_spot)
         VALUES
             (:trade_ref, :symbol, :structure, :net_premium, :margin_req, :total_pnl,
              :opened_at, :closed_at, :status, :reason, :entry_reason, :exit_reason, :profit_factor,
@@ -2436,7 +2418,8 @@ def insert_multi_leg_trade(trade: dict) -> int:
              :net_delta, :net_theta, :net_vega, :max_profit, :max_loss,
              :breakeven_upper, :breakeven_lower, :profit_target_pct, :stop_loss_pct,
              :time_decay_exit_dte, :adjustment_count, :confidence_score,
-             :entry_quality_score, :digest_id, :ai_model_name, :snapshot_id, :trade_mode)
+             :entry_quality_score, :digest_id, :ai_model_name, :snapshot_id, :trade_mode,
+             :structural_invalidation_spot)
         RETURNING id
     """
     with get_conn() as conn:
@@ -2488,6 +2471,7 @@ def insert_multileg_trade_atomically(trade: dict, legs: list[dict]) -> int:
     # trade_mode MUST be persisted: LIVE books saved as the 'PAPER' default were
     # invisible to the live monitor and got closed DB-only by the paper runner.
     trade["trade_mode"] = str(trade.get("trade_mode") or "PAPER").upper()
+    trade.setdefault("structural_invalidation_spot", None)
     with get_conn() as conn:
         trade_sql = """
             INSERT INTO multi_leg_trades
@@ -2497,7 +2481,8 @@ def insert_multileg_trade_atomically(trade: dict, legs: list[dict]) -> int:
                  net_delta, net_theta, net_vega, max_profit, max_loss,
                  breakeven_upper, breakeven_lower, profit_target_pct, stop_loss_pct,
                  time_decay_exit_dte, adjustment_count, confidence_score,
-                 entry_quality_score, digest_id, ai_model_name, snapshot_id, trade_mode)
+                 entry_quality_score, digest_id, ai_model_name, snapshot_id, trade_mode,
+                 structural_invalidation_spot)
             VALUES
                 (:trade_ref, :symbol, :structure, :net_premium, :margin_req, :total_pnl,
                  :opened_at, :closed_at, :status, :reason, :entry_reason, :exit_reason, :profit_factor,
@@ -2505,7 +2490,8 @@ def insert_multileg_trade_atomically(trade: dict, legs: list[dict]) -> int:
                  :net_delta, :net_theta, :net_vega, :max_profit, :max_loss,
                  :breakeven_upper, :breakeven_lower, :profit_target_pct, :stop_loss_pct,
                  :time_decay_exit_dte, :adjustment_count, :confidence_score,
-                 :entry_quality_score, :digest_id, :ai_model_name, :snapshot_id, :trade_mode)
+                 :entry_quality_score, :digest_id, :ai_model_name, :snapshot_id, :trade_mode,
+                 :structural_invalidation_spot)
             RETURNING id
         """
         row = conn.execute(trade_sql, trade).fetchone()
@@ -2838,13 +2824,19 @@ def list_multi_leg_trades(status_filter: str | None = None) -> list[dict]:
                     entry_p = float(leg.get("entry_premium") or leg.get("entry_price") or 0.0)
                     lots = int(leg.get("lots") or leg.get("lot_size") or 1)
 
-                    if not is_open:
-                        cmp = float(leg.get("exit_premium") or leg.get("current_premium") or entry_p)
+                    leg_status = (leg.get("status") or ("OPEN" if is_open else "CLOSED")).upper()
+
+                    if not is_open or leg_status == "CLOSED":
+                        leg_exit_p = float(leg.get("exit_premium") or 0.0)
+                        cmp = leg_exit_p if leg_exit_p > 0 else float(leg.get("current_premium") or entry_p)
                         leg["cmp"] = round(cmp, 2)
                         if side == "SELL":
-                            leg["pnl"] = round((entry_p - cmp) * lots * lot_size, 2)
+                            leg_pnl = (entry_p - cmp) * lots * lot_size
                         else:
-                            leg["pnl"] = round((cmp - entry_p) * lots * lot_size, 2)
+                            leg_pnl = (cmp - entry_p) * lots * lot_size
+                        leg["pnl"] = round(leg_pnl, 2)
+                        live_book_pnl += leg_pnl
+                        has_live_pnl = True
                         continue
 
                     cmp = None
@@ -2885,14 +2877,19 @@ def list_multi_leg_trades(status_filter: str | None = None) -> list[dict]:
                         else:
                             cmp = entry_p
                             
-                    leg["cmp"] = round(cmp, 2) if cmp is not None else entry_p
-                    
+                    cmp_val = round(cmp, 2) if cmp is not None else entry_p
+                    leg["cmp"] = cmp_val
+
                     if cmp is not None:
                         has_live_pnl = True
-                        if side == "SELL":
-                            leg_pnl = (entry_p - cmp) * lots * lot_size
-                        else:
-                            leg_pnl = (cmp - entry_p) * lots * lot_size
+                        from src.engine.accounting import calculate_leg_pnl
+                        leg_pnl = calculate_leg_pnl(
+                            entry_premium=entry_p,
+                            current_or_exit_premium=cmp_val,
+                            side=side,
+                            lots=lots,
+                            lot_size=lot_size,
+                        )
                         leg["pnl"] = round(leg_pnl, 2)
                         live_book_pnl += leg_pnl
                 
@@ -3187,7 +3184,7 @@ def read_health_state_ro() -> list[dict]:
 
 
 def get_open_positions_count() -> int:
-    """Count open paper + live positions."""
+    """Count open paper + live positions (including multi-leg)."""
     with get_conn(read_only=True) as conn:
         paper = conn.execute(
             "SELECT COUNT(*) as c FROM paper_trades WHERE status='OPEN'"
@@ -3195,11 +3192,43 @@ def get_open_positions_count() -> int:
         live = conn.execute(
             "SELECT COUNT(*) as c FROM live_trades WHERE status='OPEN'"
         ).fetchone()["c"]
-    return paper + live
+        try:
+            ml = conn.execute(
+                "SELECT COUNT(*) as c FROM multi_leg_trades WHERE status='OPEN'"
+            ).fetchone()["c"]
+        except Exception:
+            ml = 0
+    return paper + live + ml
 
 
-def get_open_positions_count_ro() -> int:
-    """Count open paper + live positions using a read-only connection."""
+def get_open_live_positions_count_ro() -> int:
+    """Count open live positions (single-leg + multi-leg) using read-only connection."""
+    try:
+        db_uri = Path(DB_PATH).as_uri() + "?mode=ro"
+        conn = sqlite3.connect(
+            db_uri,
+            uri=True,
+            detect_types=sqlite3.PARSE_DECLTYPES,
+            timeout=5.0,
+        )
+        conn.row_factory = sqlite3.Row
+        live = conn.execute(
+            "SELECT COUNT(*) as c FROM live_trades WHERE status='OPEN'"
+        ).fetchone()["c"]
+        try:
+            ml_live = conn.execute(
+                "SELECT COUNT(*) as c FROM multi_leg_trades WHERE status='OPEN' AND UPPER(trade_mode)='LIVE'"
+            ).fetchone()["c"]
+        except Exception:
+            ml_live = 0
+        conn.close()
+        return live + ml_live
+    except Exception:
+        return 0
+
+
+def get_open_paper_positions_count_ro() -> int:
+    """Count open paper positions (single-leg + multi-leg) using read-only connection."""
     try:
         db_uri = Path(DB_PATH).as_uri() + "?mode=ro"
         conn = sqlite3.connect(
@@ -3212,13 +3241,21 @@ def get_open_positions_count_ro() -> int:
         paper = conn.execute(
             "SELECT COUNT(*) as c FROM paper_trades WHERE status='OPEN'"
         ).fetchone()["c"]
-        live = conn.execute(
-            "SELECT COUNT(*) as c FROM live_trades WHERE status='OPEN'"
-        ).fetchone()["c"]
+        try:
+            ml_paper = conn.execute(
+                "SELECT COUNT(*) as c FROM multi_leg_trades WHERE status='OPEN' AND UPPER(trade_mode)='PAPER'"
+            ).fetchone()["c"]
+        except Exception:
+            ml_paper = 0
         conn.close()
-        return paper + live
+        return paper + ml_paper
     except Exception:
         return 0
+
+
+def get_open_positions_count_ro() -> int:
+    """Count open paper + live positions (including multi-leg) using a read-only connection."""
+    return get_open_live_positions_count_ro() + get_open_paper_positions_count_ro()
 
 
 
@@ -3231,6 +3268,8 @@ def get_oldest_open_position_age_min() -> float | None:
                 SELECT opened_at FROM paper_trades WHERE status='OPEN'
                 UNION ALL
                 SELECT opened_at FROM live_trades WHERE status='OPEN'
+                UNION ALL
+                SELECT opened_at FROM multi_leg_trades WHERE status='OPEN'
             )
             """
         ).fetchone()
@@ -3245,11 +3284,14 @@ def get_oldest_open_position_age_min() -> float | None:
         return None
 
 
+
 def stamp_open_positions() -> None:
     """Stamp open_positions health row with count and oldest age."""
-    count = get_open_positions_count()
+    live = get_open_live_positions_count_ro()
+    paper = get_open_paper_positions_count_ro()
+    total = live + paper
     age = get_oldest_open_position_age_min()
-    detail = f"count={count}"
+    detail = f"count={total} live={live} paper={paper}"
     if age is not None:
         detail += f" oldest_age={age:.0f}m"
-    stamp_health("open_positions", "OK" if count == 0 else "OK", detail)
+    stamp_health("open_positions", "OK", detail)

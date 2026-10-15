@@ -12,7 +12,7 @@ import re
 from typing import Optional
 
 from config.settings import IST
-from config.multileg_strategies import MAX_BOOK_MARGIN, MAX_NET_DELTA
+from config.multileg_strategies import MAX_BOOK_MARGIN, MAX_SYMBOL_MARGIN, MAX_NET_DELTA
 
 log = logging.getLogger(__name__)
 
@@ -55,14 +55,14 @@ def _format_full_option_chain(
 
     lines = []
     sorted_strikes = sorted(strikes.keys())
-    # Show strikes within a reasonable range of ATM (±10 strikes per AGENTS.md)
+    # Show strikes within range of ATM (±15 strikes to cover multi-leg wings)
     atm_idx = 0
     for i, s in enumerate(sorted_strikes):
         if s >= atm_strike:
             atm_idx = i
             break
-    start = max(0, atm_idx - 10)
-    end = min(len(sorted_strikes), atm_idx + 10)
+    start = max(0, atm_idx - 15)
+    end = min(len(sorted_strikes), atm_idx + 16)
 
     lines.append(f"  {'Strike':>10}  {'CE LTP':>8}  {'CE OI':>10}  {'CE Δ':>6}  {'CE IV':>6}  │  {'PE LTP':>8}  {'PE OI':>10}  {'PE Δ':>6}  {'PE IV':>6}")
     lines.append(f"  {'─'*10}  {'─'*8}  {'─'*10}  {'─'*6}  {'─'*6}  │  {'─'*8}  {'─'*10}  {'─'*6}  {'─'*6}")
@@ -109,6 +109,54 @@ def _format_full_option_chain(
         lines.append(f"  ... showing {start+1}-{end} of {len(sorted_strikes)} strikes ...")
 
     return "\n".join(lines)
+
+
+def _format_candidate_strikes_summary(
+    candidate_strikes: dict[str, list[dict]],
+    underlying: float,
+    atm_strike: float,
+) -> str:
+    """Format top-ranked candidate strikes for the LLM prompt.
+
+    Highlights pre-ranked liquid strikes scored by OI, tight bid-ask spread,
+    delta sweet spot, and wing clearance.
+    """
+    ce_list = candidate_strikes.get("CE") or []
+    pe_list = candidate_strikes.get("PE") or []
+
+    if not ce_list and not pe_list:
+        return ""
+
+    lines = [
+        "*** PRE-RANKED CANDIDATE STRIKES (Top Quality: High OI, Tight Spreads, Optimal Delta) ***",
+        "NOTE: Strongly prefer constructing legs from these pre-filtered liquid strikes:",
+    ]
+
+    if ce_list:
+        lines.append("  Top CE Candidate Strikes:")
+        for c in ce_list[:8]:
+            strike_str = f"{c['strike']:.0f}" if c['strike'] % 1 == 0 else f"{c['strike']:.1f}"
+            dist_sign = "+" if c['dist_pts'] >= 0 else ""
+            delta_str = f"Delta {c['delta']:.2f}" if c.get('delta') else "Delta N/A"
+            spr_str = f"Spread {c['spread_pct']:.1f}%" if c.get('spread_pct') else "Spread <1%"
+            lines.append(
+                f"    - {strike_str} CE | LTP: {c['ltp']:.1f} | OI: {c['oi']:,} | {delta_str} | {spr_str} | "
+                f"Dist: {dist_sign}{c['dist_pts']:.0f}pts ({c['dist_pct']:.1f}%) [Rank Score: {c['score']}]"
+            )
+
+    if pe_list:
+        lines.append("  Top PE Candidate Strikes:")
+        for p in pe_list[:8]:
+            strike_str = f"{p['strike']:.0f}" if p['strike'] % 1 == 0 else f"{p['strike']:.1f}"
+            dist_sign = "+" if p['dist_pts'] >= 0 else ""
+            delta_str = f"Delta {p['delta']:.2f}" if p.get('delta') else "Delta N/A"
+            spr_str = f"Spread {p['spread_pct']:.1f}%" if p.get('spread_pct') else "Spread <1%"
+            lines.append(
+                f"    - {strike_str} PE | LTP: {p['ltp']:.1f} | OI: {p['oi']:,} | {delta_str} | {spr_str} | "
+                f"Dist: {dist_sign}{p['dist_pts']:.0f}pts ({p['dist_pct']:.1f}%) [Rank Score: {p['score']}]"
+            )
+
+    return "\n".join(lines) + "\n"
 
 
 def _format_iv_summary(option_rows: list[dict], atm_strike: float) -> str:
@@ -290,6 +338,28 @@ def _format_commodity_regime_intelligence(symbol: str, scan_context: dict) -> st
             if weather_dir != "neutral" or weather_z != 0.0 or storm:
                 lines.append(f"- Weather Factors   : Direction={weather_dir}, Z-Score={weather_z:+.2f}, Storm={'Active' if storm else 'Inactive'}")
 
+        # 5. Scheduled Bot Feed Output Format (Gemini Spark JSON Drive)
+        lines.append(
+            "- SCHEDULED BOT FEED FORMAT (Gemini Spark JSON Drive): After your JSON verdict, append a single raw JSON block wrapped in `[GEMINI_SPARK_JSON]` ... `[/GEMINI_SPARK_JSON]` representing the active setups.\n"
+            "  Example:\n"
+            "  [GEMINI_SPARK_JSON]\n"
+            "  {\n"
+            "    \"timestamp\": \"2026-10-01 20:25:00\",\n"
+            "    \"market_state\": \"OPEN\",\n"
+            "    \"symbol\": \"NATURALGAS 27-OCT-2026\",\n"
+            "    \"setups\": [\n"
+            "      {\n"
+            "        \"id\": \"NG_BUY_SMA50\",\n"
+            "        \"type\": \"BUY\",\n"
+            "        \"entry_zone\": { \"recommended\": 287.50 },\n"
+            "        \"stop_loss\": 289.00,\n"
+            "        \"targets\": [ { \"price\": 291.20 }, { \"price\": 293.90 } ]\n"
+            "      }\n"
+            "    ]\n"
+            "  }\n"
+            "  [/GEMINI_SPARK_JSON]"
+        )
+
     return "\n" + "\n".join(lines) + "\n"
 
 
@@ -356,7 +426,7 @@ def build_multileg_prompt(
     commodity_intel = _format_commodity_regime_intelligence(symbol, scan_context)
 
     # Compact open books summary with margin/delta caps
-    open_summary = _format_open_book_summary(open_books, MAX_BOOK_MARGIN, MAX_NET_DELTA)
+    open_summary = _format_open_book_summary(open_books, MAX_SYMBOL_MARGIN, MAX_NET_DELTA)
 
     # F&O ban check (placeholder - actual check happens downstream but good to inform LLM)
     # In practice, this would come from an API. For now, we'll let downstream validation handle it.
@@ -431,6 +501,13 @@ def build_multileg_prompt(
 • DO NOT force directional naked spreads when the market is rangebound.
 """
 
+    # ── Pre-rank Candidate Strikes (Deterministic Python Pre-Filter) ───────
+    from src.engine.multileg_strategy import get_candidate_strikes
+    candidate_strikes = get_candidate_strikes(
+        option_rows, symbol, underlying, atm_strike, direction=verdict_label, top_k=10
+    )
+    candidate_strikes_section = _format_candidate_strikes_summary(candidate_strikes, underlying, atm_strike)
+
     prompt = f"""NSE/MCX options seller. Design a multi-leg premium strategy.
 
 {symbol} | ₹{underlying:.2f} | ATM {atm_strike:.0f} | {expiry} (DTE {dte})
@@ -446,6 +523,7 @@ OPTIONS MARKET MECHANICS (MANDATORY WRITER GROUND TRUTH — NEVER INVERT):
 • PCR = Total PE OI / Total CE OI. Rising PCR (e.g. 0.80 → 1.10) reflects heavier Put writing than Call writing → BULLISH accumulation. Lowering PCR (e.g. 1.20 → 0.60) reflects Put unwinding or heavy Call writing → BEARISH.
 • In your thesis and rationale, ALWAYS adhere to these mathematical facts.
 {commodity_intel}
+{candidate_strikes_section}
 CHAIN (use only strikes with OI>0 and LTP>0):
 {_format_full_option_chain(option_rows, atm_strike, underlying)}
 
@@ -461,7 +539,7 @@ CONSTRAINTS (non-negotiable):
 • {symbol} F&O ban status: CHECK_DOWNSTREAM → if BANNED, strategy_type="NO_TRADE", legs=[]
 • Weekly vs Monthly expiry: {"Weekly" if dte <= 7 else "Monthly"}. Weekly → 2 legs for strangles/straddles/spreads (or 4 legs for defined-risk IRON_CONDOR), tighter 15-20% profit target. Monthly → up to 4 legs, 30-50% target.
 • SEBI STT on sell side: ~0.05% on premium for equity options, ~0.125% for commodity. Factor into max_profit estimate if not already netted.
-• SPAN margin is dynamic. If estimated margin + existing ₹{sum(float(b.get("margin_req") or b.get("margin") or 0) for b in (open_books or [])):,.0f} > ₹{MAX_BOOK_MARGIN:,.0f} → NO_TRADE.
+• SPAN margin is dynamic. If estimated margin + existing ₹{sum(float(b.get("margin_req") or b.get("margin") or 0) for b in (open_books or [])):,.0f} > ₹{MAX_SYMBOL_MARGIN:,.0f} → NO_TRADE.
 • Combined delta headroom: {MAX_NET_DELTA - abs(sum(float(b.get("net_delta") or 0) for b in (open_books or []))):.2f} remaining.
 
 

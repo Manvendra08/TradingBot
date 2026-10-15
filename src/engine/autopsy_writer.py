@@ -54,10 +54,33 @@ def get_closed_trades_today() -> list[dict]:
                     trades.append(r_dict)
             except Exception as e:
                 log.error("Failed to fetch closed trades from %s: %s", table, e)
+
+        # Multi-leg trades (Strangles, Straddles, Spreads, Iron Condors)
+        try:
+            ml_rows = conn.execute(
+                """
+                SELECT id, symbol, opened_at, closed_at, net_premium as entry_premium,
+                       0.0 as exit_premium, total_pnl as pnl_rupees, status,
+                       strategy_type as verdict_label, structure as setup_type,
+                       reason, 0.0 as sl_premium, 0.0 as target_premium
+                FROM multi_leg_trades
+                WHERE status != 'OPEN'
+                  AND closed_at >= ?
+                ORDER BY closed_at DESC
+                """,
+                (today_start_utc,),
+            ).fetchall()
+            for r in ml_rows:
+                r_dict = dict(r)
+                r_dict["source_table"] = "multi_leg_trades"
+                trades.append(r_dict)
+        except Exception as e:
+            log.error("Failed to fetch closed multi_leg_trades: %s", e)
+
     return trades
 
 
-_ALLOWED_TRADE_TABLES = frozenset({"paper_trades", "live_trades"})
+_ALLOWED_TRADE_TABLES = frozenset({"paper_trades", "live_trades", "multi_leg_trades"})
 
 
 def get_shadow_decisions_for_trade(trade_id: int, source_table: str) -> dict | None:

@@ -57,6 +57,47 @@ def _escape_md_v1(text: str) -> str:
     return re.sub(r"([_*`\[])", r"\\\1", str(text))
 
 
+def _sanitize_md_v1_text(text: str) -> str:
+    """Sanitize arbitrary text for Telegram Markdown V1 parse mode.
+    
+    Prevents 400 Bad Request 'Can't parse entities' errors by:
+    1. Converting CommonMark **bold** to Telegram V1 *bold*.
+    2. Escaping naked brackets '[' not followed by '](url)' to prevent broken link parsing.
+    3. Escaping mid-identifier underscores (e.g. ABC_123) outside of code blocks.
+    4. Guarding against unbalanced * or _ delimiters outside code blocks.
+    5. Preserving code blocks (`...`) intact.
+    """
+    if not text:
+        return ""
+    # Split text by backticks to preserve content within code spans
+    parts = text.split("`")
+    for i in range(0, len(parts), 2):
+        # Convert CommonMark **bold** to Telegram *bold*
+        parts[i] = re.sub(r"\*\*(.+?)\*\*", r"*\1*", parts[i])
+        # Escape naked '[' not part of markdown link [text](url)
+        parts[i] = re.sub(r"\[(?![^\]\n]+\]\([^\)\n]+\))", r"\[", parts[i])
+        # Escape mid-word underscores outside code spans
+        parts[i] = re.sub(r"(?<=\w)_(?=\w)", r"\_", parts[i])
+
+    sanitized = "`".join(parts)
+
+    # Check for unmatched formatting delimiters outside code blocks
+    non_code_parts = sanitized.split("`")[0::2]
+    asterisks_count = sum(p.count("*") for p in non_code_parts)
+    underscores_count = sum(len(re.findall(r"(?<!\\)_", p)) for p in non_code_parts)
+
+    if asterisks_count % 2 != 0 or underscores_count % 2 != 0:
+        parts = sanitized.split("`")
+        for i in range(0, len(parts), 2):
+            if asterisks_count % 2 != 0:
+                parts[i] = parts[i].replace("*", r"\*")
+            if underscores_count % 2 != 0:
+                parts[i] = re.sub(r"(?<!\\)_", r"\_", parts[i])
+        sanitized = "`".join(parts)
+
+    return sanitized
+
+
 def _start_loop():
     global _loop
     import sys
@@ -401,11 +442,12 @@ def _get_tg_bot() -> Bot:
 async def _send_async_safe(message: str, symbol: str = None, atype: str = None) -> None:
     try:
         bot = _get_tg_bot()
+        clean_message = _sanitize_md_v1_text(message)
         try:
             await asyncio.wait_for(
                 bot.send_message(
                     chat_id=TELEGRAM_CHAT_ID,
-                    text=message,
+                    text=clean_message,
                     parse_mode="Markdown",
                 ),
                 timeout=10.0,
@@ -584,11 +626,12 @@ async def _edit_message_text_async(message_id: int, text: str) -> bool:
     """Edit an existing Telegram message by message_id."""
     try:
         bot = _get_tg_bot()
+        clean_text = _sanitize_md_v1_text(text)
         await asyncio.wait_for(
             bot.edit_message_text(
                 chat_id=TELEGRAM_CHAT_ID,
                 message_id=message_id,
-                text=text,
+                text=clean_text,
                 parse_mode="Markdown",
             ),
             timeout=10.0,
@@ -621,6 +664,7 @@ def send_text_and_return_id(text: str) -> int | None:
     if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "YOUR_BOT_TOKEN":
         return None
     text = sanitize_mojibake(text)
+    clean_text = _sanitize_md_v1_text(text)
     _ensure_loop()
     try:
         async def _send_and_get_id():
@@ -629,7 +673,7 @@ def send_text_and_return_id(text: str) -> int | None:
                 msg = await asyncio.wait_for(
                     bot.send_message(
                         chat_id=TELEGRAM_CHAT_ID,
-                        text=text,
+                        text=clean_text,
                         parse_mode="Markdown",
                     ),
                     timeout=10.0,
@@ -965,13 +1009,17 @@ def _telegram_listener_worker() -> None:
                         except Exception as cmd_err:
                             log.error("[telegram_listener] Error executing command '%s': %s", text, cmd_err)
 
-        except urllib.error.URLError:
+        except (urllib.error.URLError, TimeoutError) as te:
             # Long-poll timeout or transient connection drop — brief sleep and retry
-            log.debug("[telegram_listener] Long-poll timeout or transient network drop; retrying")
-            time.sleep(2)
+            log.debug("[telegram_listener] Long-poll timeout or transient network drop: %s; retrying", te)
+            time.sleep(1)
         except Exception as e:
-            log.warning("[telegram_listener] Polling exception: %s", e)
-            time.sleep(5)
+            if "timed out" in str(e).lower() or "timeout" in str(e).lower():
+                log.debug("[telegram_listener] Long-poll read timeout: %s; retrying", e)
+                time.sleep(1)
+            else:
+                log.warning("[telegram_listener] Polling exception: %s", e)
+                time.sleep(5)
 
 
 def start_telegram_command_listener() -> None:

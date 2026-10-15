@@ -588,6 +588,54 @@ def evaluate_and_cache_news(
             regex_score = max(-1.0, min(1.0, regex_score))
 
             items = res.get("items", [])
+
+            # ── 1. Jev Pre-Ingestion Sanitization (screen_text) ─────────
+            clean_items = []
+            for item in items:
+                title = item.get("title") or item.get("headline") or ""
+                if not title:
+                    continue
+                try:
+                    from src.services.typesafe_client import screen_text
+                    screen_res = screen_text(title, purpose=f"Trading news for {sym_clean}")
+                    if screen_res.get("recommendation") == "block":
+                        log.warning("[news_worker] Jev screen BLOCKED headline for %s: %s", sym_clean, title[:80])
+                        continue
+                except Exception:
+                    pass
+                clean_items.append(item)
+            items = clean_items if clean_items else items
+
+            # ── 2. Jev Rapid Macro Shock Classification (classify_event_shock) ─
+            if items:
+                top_headline = (items[0].get("title") or items[0].get("headline") or "").strip()
+                if top_headline:
+                    try:
+                        from src.services.typesafe_client import classify_event_shock
+                        shock_res = classify_event_shock(top_headline, symbol=sym_clean)
+                        if shock_res.get("is_shock"):
+                            from src.engine.event_shock import record_event_shock
+                            record_event_shock(
+                                sym_clean,
+                                top_headline,
+                                severity=shock_res.get("severity", "EXTREME_SHOCK"),
+                                duration_minutes=20,
+                                reason=shock_res.get("reason", ""),
+                            )
+                            try:
+                                from src.alerts.telegram_dispatcher import send_text
+                                send_text(
+                                    f"🚨 **MACRO SHOCK DETECTED [Jev System-1]**\n\n"
+                                    f"Symbol: `{sym_clean}`\n"
+                                    f"Severity: `{shock_res.get('severity')}` (conf: {shock_res.get('confidence', 0):.2f})\n"
+                                    f"Headline: _{top_headline}_\n\n"
+                                    f"⚠️ *Entries paused for 20 minutes to prevent high-gamma shock slippage.*"
+                                )
+                            except Exception as tg_err:
+                                log.debug("[news_worker] Failed to send shock alert to Telegram: %s", tg_err)
+                    except Exception as shock_err:
+                        log.debug("[news_worker] Event shock classification error for %s: %s", sym_clean, shock_err)
+
             market_ctx = _get_market_context(sym_clean)
             score, direction, evaluator, reason = _evaluate_sentiment_via_omnirouter(
                 sym_clean, items, regex_score, market_context=market_ctx

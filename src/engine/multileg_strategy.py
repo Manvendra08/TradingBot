@@ -530,10 +530,25 @@ def score_entry_quality(
     reasons: list[str] = []
 
     iv_rank = float(scan_context.get("iv_rank") or 0)
-    regime = (scan_context.get("regime") or "").lower()
+    regime = (
+        str(scan_context.get("regime") or scan_context.get("market_regime") or kwargs.get("regime") or "")
+    ).lower()
     underlying = float(underlying or scan_context.get("underlying") or 0)
     net_premium = float(net_premium or scan_context.get("net_premium") or 0)
     margin = float(margin or scan_context.get("margin") or 0)
+
+    # Fallback IV estimation if iv_rank is unpopulated
+    option_rows = list(scan_context.get("option_rows") or [])
+    if iv_rank <= 0 and option_rows and underlying > 0:
+        atm_row = min(option_rows, key=lambda r: abs(float(r.get("strike") or 0) - underlying), default={})
+        atm_iv = float(atm_row.get("iv") or 0.0)
+        if atm_iv > 0:
+            if atm_iv >= 18.0:
+                iv_rank = 65.0
+            elif atm_iv >= 12.0:
+                iv_rank = 40.0
+            else:
+                iv_rank = 20.0
 
     net_delta = abs(book_greeks.get("net_delta", 0))
     max_profit = risk_profile.get("max_profit", 0)
@@ -564,9 +579,9 @@ def score_entry_quality(
     elif iv_rank >= 30:
         score += 10
         reasons.append(f"Moderate IV rank {iv_rank:.0f} — balanced decay")
-    elif iv_rank >= 10 and (regime or "").lower() in ("range", "rangebound", "sideways"):
+    elif (iv_rank >= 10 or iv_rank == 0) and (regime or "").lower() in ("range", "rangebound", "sideways"):
         score += 8
-        reasons.append(f"Low IV {iv_rank:.0f} with calm/range regime — safe theta decay")
+        reasons.append(f"Calm/range regime ({iv_rank:.0f} IV rank) — safe theta decay")
 
     # 2. Net delta near 0 — market neutral is ideal for non-directional
     if net_delta <= 0.15:
@@ -590,9 +605,14 @@ def score_entry_quality(
             score += 3
             reasons.append(f"Acceptable planned R:R {rr:.2f}")
 
-    # 4. Premium yield on margin
+    # 4. Premium yield on margin (convert per-share points to total contract INR)
     if margin > 0 and net_premium > 0:
-        yield_pct = (net_premium / margin) * 100
+        from config.settings import LOT_SIZES
+        sym_key = str(kwargs.get("symbol") or scan_context.get("symbol") or (legs[0].get("symbol") if legs else "") or "").upper().split()[0]
+        lot_size = LOT_SIZES.get(sym_key, 1)
+        total_lots = max((int(l.get("lots") or 1) for l in legs), default=1)
+        total_premium_inr = net_premium * lot_size * total_lots
+        yield_pct = (total_premium_inr / margin) * 100
         if yield_pct > 2.0:
             score += 10
             reasons.append(f"Good yield {yield_pct:.1f}% on margin")
@@ -822,3 +842,154 @@ def build_execution_plan(
     )
 
     return plan
+
+
+def get_candidate_strikes(
+    option_rows: list[dict],
+    symbol: str,
+    underlying: float,
+    atm_strike: float,
+    direction: str = "NEUTRAL",
+    top_k: int = 12,
+) -> dict[str, list[dict]]:
+    """Deterministic multi-factor ranking of candidate strikes for options selling.
+
+    Pre-filters and scores strikes based on:
+    1. Liquidity (OI > 0 and LTP > 0; non-zero volume prioritized).
+    2. Bid-Ask Spread: tighter spread is heavily rewarded; wide spread (> 5%) penalized.
+    3. Distance from ATM / Delta Sweet Spot:
+       - Selling legs: target Delta ~ 0.15 - 0.25 (or distance ~ 0.8% - 3.0% OTM).
+       - Wings: distance >= min_wing_width_points.
+    4. Wing Width Clearance: ensures candidate strikes have valid wing clearance for defined-risk strategies.
+
+    Returns:
+        {
+            "CE": [ranked list of top CE candidate dicts],
+            "PE": [ranked list of top PE candidate dicts],
+        }
+    """
+    if not option_rows or underlying <= 0:
+        return {"CE": [], "PE": []}
+
+    from config.multileg_strategies import MIN_WING_WIDTH_PCT, MIN_WING_WIDTH_POINTS
+
+    sym_key = symbol.upper().split()[0] if symbol else "DEFAULT"
+    min_width_pts = MIN_WING_WIDTH_POINTS.get(sym_key, MIN_WING_WIDTH_POINTS.get("DEFAULT", 50.0))
+    min_width_pct = MIN_WING_WIDTH_PCT.get(sym_key, MIN_WING_WIDTH_PCT.get("DEFAULT", 0.005))
+    required_wing_width = max(min_width_pts, underlying * min_width_pct)
+
+    ce_candidates: list[dict] = []
+    pe_candidates: list[dict] = []
+
+    # Find max OI for normalization
+    max_ce_oi = max([int(r.get("oi") or 0) for r in option_rows if str(r.get("option_type", "")).upper() == "CE"] or [1])
+    max_pe_oi = max([int(r.get("oi") or 0) for r in option_rows if str(r.get("option_type", "")).upper() == "PE"] or [1])
+
+    for row in option_rows:
+        try:
+            strike = float(row.get("strike") or 0.0)
+            ltp = float(row.get("ltp") or 0.0)
+            oi = int(row.get("oi") or 0)
+            opt_type = str(row.get("option_type") or "").upper().strip()
+
+            if strike <= 0 or ltp <= 0 or oi <= 0 or opt_type not in ("CE", "PE"):
+                continue
+
+            # Premium sanity check: discard absurd deep-ITM quotes
+            if ltp > underlying * 0.50:
+                continue
+
+            bid = float(row.get("bid") or 0.0)
+            ask = float(row.get("ask") or 0.0)
+            vol = int(row.get("volume") or 0)
+            delta = float(row.get("delta") or 0.0)
+            abs_delta = abs(delta)
+
+            # ── 1. Liquidity Score (0 - 35 pts) ───────────────────────
+            max_oi = max_ce_oi if opt_type == "CE" else max_pe_oi
+            oi_ratio = min(1.0, oi / max(1, max_oi))
+            oi_score = oi_ratio * 30.0
+            if vol > 100:
+                oi_score += 5.0
+
+            # ── 2. Bid-Ask Spread Quality (0 - 30 pts) ────────────────
+            spread_pct = 0.0
+            if bid > 0 and ask > 0 and ask >= bid:
+                spread_pct = (ask - bid) / ltp
+                if spread_pct <= 0.01:
+                    spread_score = 30.0
+                elif spread_pct <= 0.025:
+                    spread_score = 22.0
+                elif spread_pct <= 0.05:
+                    spread_score = 12.0
+                else:
+                    spread_score = 2.0  # Wide spread penalty
+            else:
+                spread_score = 15.0  # Neutral fallback when bid/ask unavailable
+
+            # ── 3. Distance from ATM / Delta Target (0 - 25 pts) ──────
+            # Optimal sweet spot for options sellers: Delta ~ 0.15 - 0.25
+            dist_pts = strike - underlying
+            dist_pct = abs(dist_pts) / underlying * 100.0
+
+            if abs_delta > 0.01:
+                # Delta-based scoring: peak score at delta = 0.20
+                delta_gap = abs(abs_delta - 0.20)
+                delta_score = max(0.0, 25.0 - (delta_gap * 90.0))
+            else:
+                # Distance-based fallback: peak score at 1.0% - 2.5% OTM
+                if 0.8 <= dist_pct <= 3.0:
+                    delta_score = 25.0
+                elif dist_pct < 0.8:
+                    delta_score = 10.0  # too close to ATM
+                else:
+                    delta_score = max(0.0, 25.0 - ((dist_pct - 3.0) * 5.0))
+
+            # ── 4. Wing Clearance Bonus (0 - 10 pts) ──────────────────
+            dist_from_atm = abs(strike - atm_strike)
+            wing_score = 10.0 if dist_from_atm >= required_wing_width else 5.0
+
+            # ── 5. Regime / Direction Alignment Bonus (0 - 10 pts) ────
+            dir_bonus = 0.0
+            dir_upper = str(direction or "").upper()
+            if "BULL" in dir_upper and opt_type == "PE" and strike < underlying:
+                dir_bonus = 10.0  # Bullish favors selling OTM PE (Bull Put Spread)
+            elif "BEAR" in dir_upper and opt_type == "CE" and strike > underlying:
+                dir_bonus = 10.0  # Bearish favors selling OTM CE (Bear Call Spread)
+            elif "RANGE" in dir_upper or "NEUTRAL" in dir_upper:
+                dir_bonus = 5.0   # Balanced two-sided credit selling
+
+            composite_score = oi_score + spread_score + delta_score + wing_score + dir_bonus
+
+            # Mark OTM status
+            is_otm = (opt_type == "CE" and strike >= underlying) or (opt_type == "PE" and strike <= underlying)
+
+            candidate_obj = {
+                "strike": strike,
+                "option_type": opt_type,
+                "ltp": round(ltp, 2),
+                "oi": oi,
+                "volume": vol,
+                "delta": round(delta, 2),
+                "spread_pct": round(spread_pct * 100, 2) if spread_pct > 0 else 0.0,
+                "dist_pts": round(dist_pts, 1),
+                "dist_pct": round(dist_pct, 2),
+                "is_otm": is_otm,
+                "score": round(composite_score, 1),
+            }
+
+            if opt_type == "CE":
+                ce_candidates.append(candidate_obj)
+            else:
+                pe_candidates.append(candidate_obj)
+        except Exception:
+            continue
+
+    ce_candidates.sort(key=lambda x: x["score"], reverse=True)
+    pe_candidates.sort(key=lambda x: x["score"], reverse=True)
+
+    return {
+        "CE": ce_candidates[:top_k],
+        "PE": pe_candidates[:top_k],
+    }
+

@@ -180,11 +180,13 @@ TASK:
         analysis_msg = None
         verdict_obj: EIAAnalysisVerdict | None = None
         try:
+            import time
             from src.engine.llm_enrichment import _call_llm_api
             result: EIAAnalysisVerdict | None = _call_llm_api(
                 symbol="NATURALGAS",
                 prompt=prompt,
                 response_schema=EIAAnalysisVerdict,
+                deadline=time.time() + 90.0,
                 purpose="eia_analysis",
             )
             if result and hasattr(result, "markdown_telegram_message") and result.markdown_telegram_message:

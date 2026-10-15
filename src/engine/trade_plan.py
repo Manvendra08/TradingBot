@@ -83,7 +83,7 @@ def calculate_buy_sl_target(
     ctx: dict,
     step: float = 50.0,
     option_type: str = "CE",
-    preferred_tf: str = "3h",
+    preferred_tf: str = "1h",
 ) -> tuple[float, float]:
     """
     ATR-based SL/Target for BUY legs.
@@ -160,7 +160,7 @@ def calculate_sell_sl_target(
     ctx: dict,
     step: float = 50.0,
     option_type: str = "CE",
-    preferred_tf: str = "3h",
+    preferred_tf: str = "1h",
 ) -> tuple[float, float]:
     """
     ATR-based SL/Target for SELL legs.
@@ -525,6 +525,32 @@ def _get_tick_size(symbol: str) -> float:
     return TICK_SIZES.get(str(symbol).upper(), 0.05)
 
 
+def get_leg_delta(
+    strike: float | None,
+    option_type: str,
+    option_rows: list[dict] | None,
+) -> float | None:
+    """
+    Extract absolute option delta for a specific strike and option_type from option chain rows.
+    Returns None if strike, option_rows, or delta is unavailable.
+    """
+    if strike is None or not option_rows:
+        return None
+    opt_type_upper = str(option_type or "").upper()
+    for row in option_rows:
+        try:
+            r_strike = float(row.get("strike") or row.get("strike_price") or 0)
+            if abs(r_strike - float(strike)) < 0.1:
+                r_type = str(row.get("option_type") or "").upper()
+                if r_type == opt_type_upper:
+                    d_val = row.get("delta")
+                    if d_val is not None:
+                        return abs(float(d_val))
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
 def convert_underlying_sl_to_premium(
     underlying: float,
     sl_underlying: float,
@@ -541,6 +567,7 @@ def convert_underlying_sl_to_premium(
 
     For FUT: premium = underlying (1:1)
     For options: delta-based conversion based on underlying price distances.
+    For SELL options: SL premium is capped at max 1.35x entry premium (35% expansion).
 
     Args:
         underlying: Current underlying price
@@ -561,7 +588,7 @@ def convert_underlying_sl_to_premium(
     if underlying <= 0:
         # Fallback: fixed multipliers
         if side == "SELL":
-            sl_premium = round(entry_premium * 1.50, 2)
+            sl_premium = round(entry_premium * 1.35, 2)
             # 35% time decay profit target (retains 65% of entry premium as exit trigger)
             target_premium = round(entry_premium * 0.65, 2)
         else:
@@ -570,22 +597,9 @@ def convert_underlying_sl_to_premium(
         return sl_premium, target_premium
 
     # 1. Resolve delta
-    delta = None
-    if strike is not None and option_rows:
-        for row in option_rows:
-            try:
-                if (
-                    abs(float(row.get("strike") or 0) - strike) < 0.01
-                    and str(row.get("option_type") or "").upper() == option_type.upper()
-                ):
-                    d_val = row.get("delta")
-                    if d_val is not None:
-                        d_val = abs(float(d_val))
-                        if 0.05 <= d_val <= 0.95:
-                            delta = d_val
-                            break
-            except Exception:
-                continue
+    delta = get_leg_delta(strike, option_type, option_rows)
+    if delta is not None and not (0.05 <= delta <= 0.95):
+        delta = None
 
     if delta is None:
         DEFAULT_SYMBOL_DELTAS = {
@@ -611,6 +625,9 @@ def convert_underlying_sl_to_premium(
         target_premium = max(target_premium, entry_premium + tick)
     else:  # SELL
         sl_premium = entry_premium + delta * underlying_sl_dist
+        # Hard cap: Max 30%-40% premium expansion over entry price (max 1.35x entry premium)
+        max_sell_sl = round(entry_premium * 1.35, 2)
+        sl_premium = min(sl_premium, max_sell_sl)
         # Cap target premium at 35% time decay target (exit when premium drops to 65% of entry)
         target_premium = min(entry_premium - delta * underlying_tgt_dist, entry_premium * 0.65)
         # Apply safety bounds to prevent negative or zero premiums

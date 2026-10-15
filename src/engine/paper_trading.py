@@ -517,6 +517,7 @@ def execute_paper_trade(
             else:
                 from src.models.schema import get_all_open_paper_trades
                 all_open = get_all_open_paper_trades(symbol)
+                all_open = [t for t in all_open if str(t.get("setup_type", "")).upper() != "GEMINIAI"]
                 max_pos = rconf.get("max_concurrent_positions_per_symbol", 3)
 
                 # If a position for the EXACT same strike & option_type is already open, do not open duplicate
@@ -824,12 +825,38 @@ def _monitor_single_paper_trade(symbol: str, open_trade: dict, current_ctx: dict
             )
 
     trade_option_rows = _get_option_rows_for_expiry(current_ctx, open_trade.get("expiry"), symbol=symbol)
-    # ── Option Premium SL/Target Check (Flaw #11) ────────────────────────────
-    # For option trades, also check if the option premium itself hit SL or Target
+    # ── Option Premium SL/Target Check & Delta Hard Stop ────────────────────────
+    # For option trades, check if the option premium hit SL/Target or Delta threshold
+    hit_delta_stop = False
+    delta_val = None
     if not hit_sl and not hit_target and option_type in ("CE", "PE"):
         sl_prem = float(open_trade.get("sl_premium") or 0)
         tgt_prem = float(open_trade.get("target_premium") or 0)
-        if sl_prem > 0 or tgt_prem > 0:
+        entry_prem = float(open_trade.get("entry_premium") or 0)
+
+        # For SELL options: enforce hard cap of max 1.35x entry premium (+35% expansion)
+        if side == "SELL" and entry_prem > 0:
+            max_sell_sl = round(entry_prem * 1.35, 2)
+            if sl_prem <= 0 or sl_prem > max_sell_sl:
+                sl_prem = max_sell_sl
+
+        # Delta Stop check: Force-exit if leg delta reaches >= 0.60
+        if side == "SELL":
+            from src.engine.trade_plan import get_leg_delta
+            delta_val = get_leg_delta(
+                strike=open_trade.get("strike"),
+                option_type=option_type,
+                option_rows=trade_option_rows,
+            )
+            if delta_val is not None and delta_val >= 0.60:
+                hit_delta_stop = True
+                hit_sl = True
+                log.warning(
+                    "%s: Trade #%s DELTA STOP HIT — leg delta %.2f >= 0.60 threshold",
+                    symbol, open_trade["id"], delta_val,
+                )
+
+        if not hit_delta_stop and (sl_prem > 0 or tgt_prem > 0):
             current_prem = _get_option_premium(
                 symbol,
                 open_trade.get("expiry"),
@@ -846,6 +873,10 @@ def _monitor_single_paper_trade(symbol: str, open_trade: dict, current_ctx: dict
                 else:  # SELL option
                     if sl_prem > 0 and current_prem >= sl_prem:
                         hit_sl = True
+                        log.warning(
+                            "%s: Trade #%s PREMIUM SL HIT — current premium %.2f >= sl_prem %.2f (entry %.2f, 1.35x cap)",
+                            symbol, open_trade["id"], current_prem, sl_prem, entry_prem,
+                        )
                     elif tgt_prem > 0 and current_prem <= tgt_prem:
                         hit_target = True
 
@@ -895,7 +926,9 @@ def _monitor_single_paper_trade(symbol: str, open_trade: dict, current_ctx: dict
 
     if hit_sl or hit_target:
         if hit_sl:
-            if trailing_sl_hit:
+            if hit_delta_stop:
+                reason = "CLOSED_DELTA_STOP"
+            elif trailing_sl_hit:
                 reason = "CLOSED_TRAILING_SL"
             else:
                 reason = "SL_HIT"
@@ -937,22 +970,42 @@ def _monitor_single_paper_trade(symbol: str, open_trade: dict, current_ctx: dict
                             )
                             exit_premium = sl_prem * 0.995
 
+        close_status = "CLOSED_DELTA_STOP" if hit_delta_stop else ("CLOSED_SL" if hit_sl else "CLOSED_TARGET")
+        close_reason = f"delta stop hit ({delta_val:.2f} >= 0.60)" if hit_delta_stop else reason
         close_paper_trade(
             open_trade["id"],
             datetime.now(timezone.utc).isoformat(),
             underlying,
             exit_premium,
-            "CLOSED_SL" if hit_sl else "CLOSED_TARGET",
-            reason,
+            close_status,
+            close_reason,
         )
         log.info(
-            "%s: paper trade #%s closed — %s at underlying %g",
-            symbol, open_trade["id"], reason, underlying,
+            "%s: paper trade #%s closed — %s (%s) at underlying %g",
+            symbol, open_trade["id"], close_status, close_reason, underlying,
         )
         _invalidate_pattern_cache()
         _trigger_ml_retraining()
+        if open_trade.get("setup_type") == "GeminiAI":
+            try:
+                from src.engine.gemini_spark_feed import push_execution_feedback_to_ledger, sync_active_positions_snapshot
+                push_execution_feedback_to_ledger("TRADE_CLOSED", {
+                    "trade_id": open_trade["id"],
+                    "symbol": symbol,
+                    "side": side,
+                    "fill_price": open_trade.get("entry_underlying"),
+                    "exit_price": underlying,
+                    "sl_price": open_trade.get("sl_underlying"),
+                    "target_price": open_trade.get("target_underlying"),
+                    "lots": open_trade.get("lots"),
+                    "setup_id": open_trade.get("signal_key"),
+                    "reason": close_reason,
+                })
+                sync_active_positions_snapshot()
+            except Exception:
+                pass
         actions.append(
-            {"action": reason, "trade_id": open_trade["id"], "underlying": underlying}
+            {"action": close_status, "trade_id": open_trade["id"], "underlying": underlying}
         )
     elif dead_trade_close:
         exit_premium = None
@@ -1074,6 +1127,15 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
     tf_trades = get_open_timeframe_trades(symbol, table="paper_trades")
     for tf_trade in tf_trades:
         actions.extend(_monitor_single_paper_trade(symbol, tf_trade, current_ctx, underlying))
+
+    # ── GeminiAI Trade Monitoring ────────────────────────────────────────────
+    # Gemini Spark trades are autonomously managed by execute_gemini_setups using feed CMP.
+    # Spot-based monitoring is skipped for FUT trades to prevent basis mismatch false stop-outs.
+    from src.engine.gemini_spark_feed import get_open_gemini_paper_trades_map
+    gemini_trades = list(get_open_gemini_paper_trades_map(symbol).values())
+    for g_trade in gemini_trades:
+        if str(g_trade.get("option_type", "")).upper() != "FUT":
+            actions.extend(_monitor_single_paper_trade(symbol, g_trade, current_ctx, underlying))
 
     # ── TFSS Multi-Leg Book Monitoring ───────────────────────────────────────
     from src.models.schema import get_open_tfss_legs
@@ -1358,6 +1420,29 @@ def run_paper_trading(
 
     plan["entry_premium"] = entry_premium
     plan["digest_id"] = digest_id
+
+    # Compute sl_premium and target_premium for options if not already present
+    if option_type in ("CE", "PE") and entry_premium > 0:
+        if plan.get("sl_premium") is None or plan.get("target_premium") is None:
+            from src.engine.trade_plan import convert_underlying_sl_to_premium
+            sl_prem, tgt_prem = convert_underlying_sl_to_premium(
+                underlying=underlying,
+                sl_underlying=float(plan.get("sl_underlying") or underlying),
+                target_underlying=float(plan.get("target_underlying") or underlying),
+                entry_premium=entry_premium,
+                side=plan.get("side", "BUY"),
+                option_type=option_type,
+                strike=strike,
+                option_rows=option_rows,
+                symbol=symbol,
+            )
+            plan["sl_premium"] = sl_prem
+            plan["target_premium"] = tgt_prem
+
+        # For SELL options: strictly enforce max 1.35x entry premium stop loss
+        if plan.get("side") == "SELL" and plan.get("sl_premium") is not None:
+            max_sell_sl = round(entry_premium * 1.35, 2)
+            plan["sl_premium"] = min(float(plan["sl_premium"]), max_sell_sl)
 
     # Execute paper trade (reversal check is handled inside)
     report = execute_paper_trade(

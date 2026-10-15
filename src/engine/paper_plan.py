@@ -447,9 +447,9 @@ def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | N
         # FUT
         strike = atm
 
-    # ATR for SL/Target calculation — fall back to step-based ATR when candle ATR unavailable.
+    # ATR for SL/Target calculation — prefer 1H ATR (capped at 1.5 * ATR_1H) for spot stops.
     from src.engine.trade_plan import get_atr
-    atr = get_atr(ctx)
+    atr = get_atr(ctx, preferred_tf="1h")
     if not atr or atr <= 0:
         step = float(get_strike_step(symbol) or 1.0)
         atr = round(step * 1.5, 4)
@@ -462,7 +462,7 @@ def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | N
         sl = underlying + 1.5 * atr
         target = underlying - 2.0 * atr
 
-    return {
+    res_plan = {
         "symbol": symbol,
         "verdict_label": verdict,
         "side": side,
@@ -474,6 +474,19 @@ def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | N
         "confidence": int(confidence or 0),
         "setup_type": setup_type,
     }
+
+    prem_val = locals().get("selected_premium")
+    if prem_val and prem_val > 0:
+        res_plan["entry_premium"] = prem_val
+        from src.engine.trade_plan import convert_underlying_sl_to_premium
+        sl_p, tgt_p = convert_underlying_sl_to_premium(
+            underlying, sl, target, prem_val, side, option_type,
+            strike=strike, option_rows=ctx.get("option_rows"), symbol=symbol
+        )
+        res_plan["sl_premium"] = sl_p
+        res_plan["target_premium"] = tgt_p
+
+    return res_plan
 
 
 def format_paper_plan(plan: dict | None) -> str:

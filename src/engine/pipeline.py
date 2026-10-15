@@ -1244,6 +1244,7 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
     llm_async = rconf.get("llm_enrichment_async", False)
     llm_verdict = None
     open_trade = None
+    _jev_proceed = True
 
     try:
         from src.models.schema import get_open_paper_trade
@@ -1285,6 +1286,23 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
             if is_broker_trade_enabled():
                 should_run_sync = True
 
+            # ── Fast System-1 Pre-LLM Gate (Jev) ──────────────────────────
+            # Pure cost & noise filter: skips heavy LLM calls on dead-market chop
+            # without ever vetoing valid quantitative engine signals.
+            _jev_proceed = True
+            try:
+                from src.engine.jev_gate import jev_fast_gate
+                _jev_res = jev_fast_gate(symbol, scan_context, intel, news_data)
+                _jev_proceed = _jev_res.proceed
+                if not _jev_proceed:
+                    log.info(
+                        "[pipeline] %s: Jev System-1 gate reported low conviction (%.2f) — skipping heavy LLM enrichment",
+                        symbol, _jev_res.conviction,
+                    )
+            except Exception as _jev_err:
+                log.debug("[pipeline] %s: Jev fast gate error: %s — proceeding with LLM", symbol, _jev_err)
+                _jev_proceed = True
+
             # ── Deterministic Engine System-1 Gate ────────────────────────
             # Skip heavy single-leg LLM enrichment on un-tradeable noise / low conviction chop
             _engine_verdict = str((intel or {}).get("verdict_label") or "").strip()
@@ -1293,6 +1311,8 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
 
             if not should_run_sync:
                 intel_text += "\n💡 *Thesis:* ⏳ Pending async analysis...\n"
+            elif not _jev_proceed:
+                intel_text += f"\n💡 *Thesis:* Low conviction ({_engine_verdict or 'Flat'}) — LLM skipped\n"
             elif _is_low_conviction:
                 log.info(
                     "%s: Quant engine reports %s (%d%%) — skipping heavy single-leg LLM enrichment",
@@ -1324,7 +1344,7 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
     # single-leg/multi-leg schema mismatch and ensure the LLM verdict
     # is available when the runner executes.
     multileg_verdict = None
-    if not is_test:
+    if not is_test and _jev_proceed:
         try:
             from src.engine.strategy_registry import active_strategies_for
             if "MULTILEG" in active_strategies_for(symbol):

@@ -17,10 +17,10 @@ class ExecutionAuthorization:
     config_snapshot: dict[str, Any]
 
 
-def _is_market_open(symbol: str, expiry_str: str | None = None) -> bool:
+def _is_market_open(symbol: str, expiry_str: str | None = None, operation: str = "ENTRY") -> bool:
     try:
         from src.engine.time_guards import is_trading_allowed_now
-        allowed, _reason = is_trading_allowed_now(symbol, expiry_str=expiry_str)
+        allowed, _reason = is_trading_allowed_now(symbol, expiry_str=expiry_str, operation=operation)
         return bool(allowed)
     except Exception as e:
         log.warning("Could not check market hours for %s: %s", symbol, e)
@@ -97,7 +97,7 @@ def authorize_broker_execution(
         )
 
     expiry_str = scan_context.get("expiry") if isinstance(scan_context, dict) else None
-    if not _is_market_open(symbol, expiry_str=expiry_str):
+    if not _is_market_open(symbol, expiry_str=expiry_str, operation=operation):
         return ExecutionAuthorization(
             is_authorized=False,
             is_shadow=False,
@@ -129,7 +129,15 @@ def authorize_broker_execution(
                         config_snapshot=config,
                     )
         except Exception as e:
-            log.warning("[broker-gate] %s: Edge decay check encountered error: %s", symbol, e)
+            log.error("[broker-gate] %s: Edge decay check error (fail-closed): %s", symbol, e)
+            return ExecutionAuthorization(
+                is_authorized=False,
+                is_shadow=False,
+                symbol=symbol,
+                operation=operation,
+                reason=f"Edge decay check evaluation failed (fail-closed): {e}",
+                config_snapshot=config,
+            )
 
         # ── Walk-Forward Positive Expectancy Gate ─────────────────────────
         try:
@@ -146,7 +154,15 @@ def authorize_broker_execution(
                     config_snapshot=config,
                 )
         except Exception as e:
-            log.debug("[broker-gate] %s: Positive expectancy gate check skipped: %s", symbol, e)
+            log.error("[broker-gate] %s: Positive expectancy gate error (fail-closed): %s", symbol, e)
+            return ExecutionAuthorization(
+                is_authorized=False,
+                is_shadow=False,
+                symbol=symbol,
+                operation=operation,
+                reason=f"Positive expectancy gate evaluation failed (fail-closed): {e}",
+                config_snapshot=config,
+            )
 
     return ExecutionAuthorization(
         is_authorized=True,

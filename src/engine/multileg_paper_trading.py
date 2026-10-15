@@ -456,10 +456,20 @@ def _monitor_open_books(
             continue
 
         # 4d. Structural Invalidation exit (spot breached thesis invalidation level)
-        inval_match = re.search(r"Invalidation:\s*(?:Spot\s*)?([0-9.]+)", str(book.get("entry_reason") or book.get("reason") or ""))
-        if inval_match:
+        inval_spot = None
+        raw_inval = book.get("structural_invalidation_spot")
+        if raw_inval is not None and float(raw_inval or 0.0) > 0:
+            inval_spot = float(raw_inval)
+        else:
+            inval_match = re.search(r"Invalidation:\s*(?:Spot\s*)?([0-9.]+)", str(book.get("entry_reason") or book.get("reason") or ""))
+            if inval_match:
+                try:
+                    inval_spot = float(inval_match.group(1))
+                except (ValueError, TypeError):
+                    inval_spot = None
+
+        if inval_spot is not None and inval_spot > 0:
             try:
-                inval_spot = float(inval_match.group(1))
                 curr_und = float((scan_context or {}).get("underlying") or entry_underlying)
                 strat_upper = str(strategy_type or "").upper()
                 is_bull_strat = "BULL" in strat_upper or strat_upper in ("LONG_CALL", "SHORT_PUT")
@@ -861,6 +871,7 @@ def _attempt_new_entry(
         ALLOWED_SYMBOLS,
         CONFLICTING_STRATEGIES,
         MAX_BOOK_MARGIN,
+        MAX_SYMBOL_MARGIN,
         MAX_LEGS_PER_BOOK,
         MAX_NET_DELTA,
     )
@@ -950,6 +961,37 @@ def _attempt_new_entry(
             "thesis": thesis,
             "reason": f"Effective confidence {effective_confidence}% below minimum {conf_floor}% floor (LLM={llm_conf}%, Engine={engine_conf}%)",
         }
+
+    # ── Jev Thesis Verification Gate (verify_thesis_claims) ───────────
+    # Prevents hallucinations from opening paper trades by verifying
+    # that the written thesis does not factually contradict live market data.
+    thesis_text = str(getattr(verdict, "thesis", "") or getattr(verdict, "entry_rationale", "") or "").strip()
+    if thesis_text and len(thesis_text) > 20:
+        try:
+            from src.services.typesafe_client import verify_thesis_claims
+            spot = scan_context.get("underlying") or scan_context.get("underlying_price")
+            pcr = scan_context.get("pcr") or scan_context.get("put_call_ratio")
+            v_label = (intel or {}).get("verdict_label") or (scan_context or {}).get("verdict_label") or "Neutral"
+            summary_facts = (
+                f"Asset: {symbol}, Spot: {spot}, PCR: {pcr}, "
+                f"Engine Verdict: {v_label}, Strategy: {st_upper}"
+            )
+            v_res = verify_thesis_claims(thesis_text, summary_facts)
+            if v_res.get("is_contradicted"):
+                log.warning(
+                    "[multileg-paper] %s: Jev System-1 flagged thesis contradiction (conf=%.2f): '%s' vs facts '%s'",
+                    symbol, v_res.get("confidence", 0), thesis_text[:120], summary_facts,
+                )
+                return {
+                    "action": "REJECTED_THESIS_CONTRADICTION",
+                    "decision_stage": "JEV_THESIS_VERIFICATION",
+                    "strategy_type": st_upper,
+                    "confidence": effective_confidence,
+                    "thesis": thesis_text,
+                    "reason": f"Jev System-1 flagged thesis logical contradiction with market data (conf={v_res.get('confidence', 0):.2f})",
+                }
+        except Exception as v_err:
+            log.debug("[multileg-paper] %s: Thesis verification skipped due to error: %s", symbol, v_err)
 
     # ── 5b. Validate legs ─────────────────────────────────────────────
     try:
@@ -1161,9 +1203,27 @@ def _attempt_new_entry(
                 legs, symbol, risk_profile=risk_profile, underlying=underlying
             )
         except Exception as e:
-            log.warning(
-                "[multileg-paper] %s: Margin computation failed: %s", symbol, e
+            log.error(
+                "[multileg-paper] %s: Margin computation failed — failing closed: %s", symbol, e
             )
+            return {
+                "action": "REJECTED",
+                "decision_stage": "RISK_GATE_MARGIN",
+                "strategy_type": strategy_type,
+                "reason": f"Margin computation failed (fail-closed): {e}",
+            }
+        if combined_margin <= 0 and any((l.get("side") or "SELL").upper() == "SELL" for l in legs):
+            log.error(
+                "[multileg-paper] %s: Margin computation returned invalid non-positive value %.2f — failing closed",
+                symbol,
+                combined_margin,
+            )
+            return {
+                "action": "REJECTED",
+                "decision_stage": "RISK_GATE_MARGIN",
+                "strategy_type": strategy_type,
+                "reason": "Margin computation returned invalid zero/negative margin for short options book",
+            }
 
     # ── 5d. Book conflict check ────────────────────────────────────────
     if check_book_conflicts is not None:
@@ -1219,8 +1279,8 @@ def _attempt_new_entry(
     existing_symbol_margin = sum(float(b.get("margin_req") or 0.0) for b in open_books_symbol if b.get("status") == "OPEN")
     total_margin_symbol = existing_symbol_margin + combined_margin
 
-    if combined_margin > MAX_BOOK_MARGIN or total_margin_symbol > (MAX_BOOK_MARGIN * 2):
-        cap_val = MAX_BOOK_MARGIN if combined_margin > MAX_BOOK_MARGIN else (MAX_BOOK_MARGIN * 2)
+    if combined_margin > MAX_BOOK_MARGIN or total_margin_symbol > MAX_SYMBOL_MARGIN:
+        cap_val = MAX_BOOK_MARGIN if combined_margin > MAX_BOOK_MARGIN else MAX_SYMBOL_MARGIN
         exceeded_val = combined_margin if combined_margin > MAX_BOOK_MARGIN else total_margin_symbol
         log.info(
             "[multileg-paper] %s: margin ₹%.0f exceeds cap ₹%.0f (existing: ₹%.0f)",
@@ -1249,7 +1309,15 @@ def _attempt_new_entry(
         }
 
     # ── 5g. Net delta cap check ───────────────────────────────────────
-    net_delta = book_greeks.get("net_delta", verdict.net_delta)
+    if "net_delta" not in book_greeks or book_greeks.get("net_delta") is None:
+        log.error("[multileg-paper] %s: Verified Greeks net_delta missing — failing closed", symbol)
+        return {
+            "action": "REJECTED",
+            "decision_stage": "RISK_GATE_DELTA",
+            "strategy_type": strategy_type,
+            "reason": "Verified Greeks calculation unavailable — cannot validate net delta cap",
+        }
+    net_delta = float(book_greeks["net_delta"])
     if abs(net_delta) > MAX_NET_DELTA:
         log.info(
             "[multileg-paper] %s: net delta %.2f exceeds cap %.2f",
@@ -1406,6 +1474,8 @@ def _attempt_new_entry(
         "digest_id": digest_id,
         "ai_model_name": verdict.model_name,
         "snapshot_id": (scan_context or {}).get("snapshot_id"),
+        "trade_mode": "PAPER",
+        "structural_invalidation_spot": float(getattr(verdict, "structural_invalidation_spot", 0.0) or 0.0) or None,
     }
 
     per_leg_greeks = book_greeks.get("per_leg_greeks") or []
@@ -1525,7 +1595,14 @@ def _calc_multileg_pnl(book: dict, legs: list[dict], scan_context: dict | None =
             except Exception as e:
                 log.debug("[multileg-paper] %s: MTM persist failed for leg %s: %s", symbol, leg_id, e)
 
-        total_pnl += calc_leg_pnl(entry_premium, current_premium, side, lots, lot_size)
+        from src.engine.accounting import calculate_leg_pnl
+        total_pnl += calculate_leg_pnl(
+            entry_premium=entry_premium,
+            current_or_exit_premium=current_premium,
+            side=side,
+            lots=lots,
+            lot_size=lot_size,
+        )
 
     # Include realized PnL of any closed/rolled legs for this book
     trade_id = book.get("id")
@@ -1541,10 +1618,13 @@ def _calc_multileg_pnl(book: dict, legs: list[dict], scan_context: dict | None =
                     cl_entry = float(cl["entry_premium"] or 0.0)
                     cl_exit = float(cl["exit_premium"] or 0.0)
                     cl_lots = int(cl["lots"] or 1)
-                    if cl_side == "SELL":
-                        cl_pnl = (cl_entry - cl_exit) * cl_lots * lot_size
-                    else:
-                        cl_pnl = (cl_exit - cl_entry) * cl_lots * lot_size
+                    cl_pnl = calculate_leg_pnl(
+                        entry_premium=cl_entry,
+                        current_or_exit_premium=cl_exit,
+                        side=cl_side,
+                        lots=cl_lots,
+                        lot_size=lot_size,
+                    )
                     total_pnl += cl_pnl
         except Exception as e:
             log.debug("[multileg-paper] %s: Error reading closed legs for trade %s: %s", symbol, trade_id, e)

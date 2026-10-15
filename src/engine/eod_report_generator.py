@@ -1411,11 +1411,13 @@ RULES:
 
     report_obj: EODMarketReport | None = None
     try:
+        import time
         from src.engine.llm_enrichment import _call_llm_api
         res = _call_llm_api(
             symbol="NIFTY",
             prompt=prompt,
             response_schema=EODMarketReport,
+            deadline=time.time() + 90.0,
             purpose="eod_review",
         )
         if res and hasattr(res, "index_summary"):

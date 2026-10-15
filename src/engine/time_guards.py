@@ -64,15 +64,15 @@ _EIA_MINUTE  = 0
 _EIA_WINDOW  = 15   # minutes either side of the announcement
 
 
-def is_trading_allowed_now(symbol: str, expiry_str: str | None = None) -> tuple[bool, str]:
+def is_trading_allowed_now(symbol: str, expiry_str: str | None = None, operation: str = "ENTRY") -> tuple[bool, str]:
     """Return ``(allowed, reason)``.
 
-    ``allowed=True``  — no guard is active; entry may proceed.
+    ``allowed=True``  — no guard is active; action may proceed.
     ``allowed=False`` — ``reason`` describes which guard tripped.
 
-    All checks are lightweight (clock reads + optional runtime-config
-    lookup) and never raise; any unexpected error returns ``True``
-    (allow) to avoid silently blocking the engine.
+    operation : "ENTRY" | "EXIT". Entry cutoffs are strictly enforced.
+    Exit operations (like Friday risk square-offs or broker-level closes)
+    are permitted until market session close (23:30 IST on MCX, 15:40 on NSE F&O).
     """
     try:
         from config.settings import MCX_SYMBOLS
@@ -81,6 +81,15 @@ def is_trading_allowed_now(symbol: str, expiry_str: str | None = None) -> tuple[
         sym  = str(symbol).upper().split()[0]  # "NIFTY 50" → "NIFTY"
         is_mcx = sym in MCX_SYMBOLS or sym in ("NATURALGAS", "NATGAS", "CRUDEOIL", "GOLD", "SILVER")
         is_index_fno = sym in INDEX_FNO_SYMBOLS
+
+        # ── Window -1: Macro Event Shock Circuit Breaker (Jev System-1) ───────
+        try:
+            from src.engine.event_shock import is_event_shock_active
+            shock_active, shock_reason = is_event_shock_active(sym)
+            if shock_active:
+                return False, f"Event Shock Circuit Breaker: {shock_reason}"
+        except Exception:
+            pass
 
         # ── Window 0: CME (NYMEX) holidays (NATURALGAS, CRUDEOIL) ────────────
         if sym in ("NATURALGAS", "NATGAS", "CRUDEOIL"):
@@ -167,9 +176,14 @@ def is_trading_allowed_now(symbol: str, expiry_str: str | None = None) -> tuple[
                 expiry_date = datetime.strptime(expiry_str, "%Y-%m-%d").date()
                 if expiry_date == now.date():
                     if is_mcx:
-                        # MCX cutoff: 8:00 pm IST (20:00) on expiry day
-                        if (h, m) >= (20, 0):
-                            return False, f"Expiry day trading cutoff (after 20:00 IST for MCX on expiry day)"
+                        # MCX cutoff: entries blocked after 20:00 IST on expiry day.
+                        # Exits remain permitted through 23:30 IST to allow Friday/EOD auto-exits.
+                        if operation == "EXIT":
+                            if (h, m) >= (23, 30):
+                                return False, "MCX market session close (after 23:30 IST)"
+                        else:
+                            if (h, m) >= (20, 0):
+                                return False, "Expiry day entry cutoff (after 20:00 IST for MCX on expiry day)"
                     elif is_index_fno:
                         # Index F&O: trade until 15:40 (CAS closes)
                         if (h, m) >= (15, 40):
@@ -184,5 +198,9 @@ def is_trading_allowed_now(symbol: str, expiry_str: str | None = None) -> tuple[
         return True, ""
 
     except Exception as exc:
-        log.warning("time_guards.is_trading_allowed_now: unexpected error (%s) — allowing", exc)
-        return True, ""
+        log.exception("time_guards.is_trading_allowed_now: unexpected error (%s)", exc)
+        # Fail-closed for entries to prevent dangerous order placements during engine errors;
+        # allow exits to ensure open risk can always be flattened.
+        if operation == "EXIT":
+            return True, ""
+        return False, f"Time guard system error — fail-closed: {exc}"

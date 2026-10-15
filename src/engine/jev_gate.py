@@ -29,12 +29,13 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 # Minimum System-1 conviction to allow heavy LLM enrichment.
-# Below this value the scan is treated as low-conviction and LLM is skipped.
-_CONVICTION_FLOOR = 0.35
+# Kept loose (0.30) so Jev acts as a pure cost/noise filter and never vetoes
+# legitimate quantitative setups. Configurable via runtime_config.
+_CONVICTION_FLOOR = 0.30
 
 # Intel keys that indicate a strong OI-engine signal.
 # When these are present we trust the OI engine and always proceed.
-_STRONG_OI_KEYS = ("oi_buildup", "breakout_direction", "reversal_signal")
+_STRONG_OI_KEYS = ("oi_buildup", "breakout_direction", "reversal_signal", "trend_aligned")
 
 
 @dataclass(slots=True)
@@ -99,12 +100,25 @@ def _build_state_text(
     return ". ".join(parts) + "."
 
 
+def _get_conviction_floor() -> float:
+    """Read conviction floor from runtime config if available."""
+    try:
+        from config.runtime_config import get_runtime_config
+        rc = get_runtime_config()
+        val = rc.get("typesafe_conviction_floor")
+        if val is not None:
+            return float(val)
+    except Exception:
+        pass
+    return _CONVICTION_FLOOR
+
+
 def jev_fast_gate(
     symbol: str,
     scan_context: dict[str, Any],
     intel: dict[str, Any] | None,
     news_data: dict[str, Any] | None,
-    conviction_floor: float = _CONVICTION_FLOOR,
+    conviction_floor: float | None = None,
 ) -> JevResult:
     """Run Jev System-1 pre-LLM gate and return a JevResult.
 
@@ -113,9 +127,12 @@ def jev_fast_gate(
     so the pipeline behaves as if Jev doesn't exist.
 
     Strong OI-engine signals bypass the conviction floor: if the intel dict
-    already contains a decisive direction we trust the OI engine and always
-    proceed regardless of Jev's answer.
+    already contains a decisive direction or confidence >= 70% we trust the
+    quant engine and always proceed regardless of Jev's answer.
     """
+    if conviction_floor is None:
+        conviction_floor = _get_conviction_floor()
+
     from config.settings import TYPESAFE_API_KEY  # late import
 
     if not TYPESAFE_API_KEY:
@@ -125,9 +142,12 @@ def jev_fast_gate(
     if intel:
         verdict = str(intel.get("verdict_label") or "").strip()
         conf = int(intel.get("confidence") or 0)
-        # 1. High-confidence engine buildup/writing verdicts (>= 75%) bypass Jev
-        if conf >= 75 and verdict in ("Long Buildup", "Short Buildup", "Call Writing", "Put Writing"):
-            v_dir = "BULLISH" if verdict in ("Long Buildup", "Put Writing") else "BEARISH"
+        # 1. Any valid engine buildup/writing verdicts (>= 70%) bypass Jev
+        if conf >= 70 and verdict in (
+            "Long Buildup", "Short Buildup", "Call Writing", "Put Writing",
+            "BULLISH", "BEARISH", "Bullish", "Bearish",
+        ):
+            v_dir = "BULLISH" if verdict in ("Long Buildup", "Put Writing", "BULLISH", "Bullish") else "BEARISH"
             log.info("jev: strong engine signal '%s' (%d%%) on %s — bypassing Jev gate", verdict, conf, symbol)
             return JevResult(proceed=True, direction=v_dir, conviction=conf / 100.0, skipped=True)
 

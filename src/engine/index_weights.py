@@ -9,7 +9,7 @@ import json
 import logging
 import threading
 import time
-from datetime import datetime
+from datetime import date, datetime
 
 import pytz
 import requests as _requests
@@ -269,6 +269,27 @@ def refresh_index_weights_async(force: bool = False) -> None:
     t = threading.Thread(target=refresh_index_weights, args=(force,), name="IndexWeightsRefresh")
     t.daemon = True
     t.start()
+
+
+def get_last_weights_refresh_date() -> date | None:
+    """Return the date of the last successful weights refresh, or None."""
+    state = get_index_weights_state()
+    lr = state.get("last_refresh")
+    if not lr or lr == "Fallback (Static Defaults)":
+        return None
+    try:
+        return datetime.fromisoformat(lr).date()
+    except Exception:
+        return None
+
+
+def is_index_weights_updated_today(target_date: date | None = None) -> bool:
+    """Check if index weights have already been refreshed on target_date (defaults to today IST)."""
+    if target_date is None:
+        target_date = datetime.now(IST).date()
+    last_date = get_last_weights_refresh_date()
+    return last_date is not None and last_date == target_date
+
 
 def get_live_constituent_changes(symbol: str) -> dict:
     """

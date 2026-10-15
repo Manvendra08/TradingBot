@@ -14,7 +14,7 @@ IST = pytz.timezone("Asia/Kolkata")
 
 def check_ng_position_limit(table: str = "paper_trades", setup_type: str = "CORE") -> bool:
     """Returns True if open positions are below limit (NG_MAX_POSITIONS = 1)."""
-    if setup_type and "TFSS" in str(setup_type).upper():
+    if setup_type and ("TFSS" in str(setup_type).upper() or "GEMINI" in str(setup_type).upper()):
         return True
 
     from config.settings import NG_MAX_POSITIONS
@@ -23,7 +23,7 @@ def check_ng_position_limit(table: str = "paper_trades", setup_type: str = "CORE
     
     with get_conn(read_only=True) as conn:
         row = conn.execute(
-            f"SELECT COUNT(*) FROM {table} WHERE symbol = 'NATURALGAS' AND status = 'OPEN' AND (setup_type IS NULL OR setup_type NOT IN ('TFSS', 'TIMEFRAME'))"
+            f"SELECT COUNT(*) FROM {table} WHERE symbol = 'NATURALGAS' AND status = 'OPEN' AND (setup_type IS NULL OR setup_type NOT IN ('TFSS', 'TIMEFRAME', 'GeminiAI'))"
         ).fetchone()
         open_count = int(row[0]) if row else 0
         

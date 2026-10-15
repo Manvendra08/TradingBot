@@ -139,12 +139,13 @@ def calc_leg_pnl(
     lots: int,
     lot_size: int,
 ) -> float:
-    """Calculate PnL for a single option leg.
+    """Calculate PnL for a single option leg (delegated to centralized accounting)."""
+    from src.engine.accounting import calculate_leg_pnl
 
-    Short options (SELL):  PnL = (entry - current) * lots * lot_size
-    Long options (BUY):    PnL = (current - entry) * lots * lot_size
-    """
-    side = (side or "SELL").upper()
-    if side == "SELL":
-        return (entry_premium - current_premium) * lots * lot_size
-    return (current_premium - entry_premium) * lots * lot_size
+    return calculate_leg_pnl(
+        entry_premium=entry_premium,
+        current_or_exit_premium=current_premium,
+        side=side,
+        lots=lots,
+        lot_size=lot_size,
+    )

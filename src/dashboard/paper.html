@@ -830,6 +830,17 @@
             .kpi-pnl::before {
                 background: var(--grad-profit);
             }
+            .kpi-pnl {
+                cursor: pointer !important;
+            }
+            .kpi-pnl:hover {
+                transform: translateY(-3px) scale(1.01) !important;
+                border-color: var(--cyan) !important;
+                box-shadow: 0 8px 24px rgba(34, 211, 238, 0.2) !important;
+            }
+            .kpi-pnl:active {
+                transform: translateY(-1px) !important;
+            }
             .kpi-avg::before {
                 background: linear-gradient(90deg, var(--cyan), var(--indigo));
             }
@@ -1144,6 +1155,9 @@
             }
             .sym-crudeoil::before {
                 background: linear-gradient(180deg, var(--orange), #facc15);
+            }
+            .sym-geminiai::before {
+                background: linear-gradient(180deg, #8b5cf6, #3b82f6);
             }
             .sym-default::before {
                 background: linear-gradient(180deg, var(--pink), var(--purple));
@@ -2670,10 +2684,13 @@
                     <div class="sub" id="k-win-sub">— W / — L</div>
                     <div class="kpi-icon">🎯</div>
                 </div>
-                <div class="kpi kpi-pnl">
-                    <div class="lbl">Total P&amp;L <span id="k-pnl-arrow" class="kpi-arrow flat">—</span></div>
+                <div class="kpi kpi-pnl" id="kpi-pnl-card" onclick="toggleEquityCurve()" title="Click to view / toggle Equity Curve">
+                    <div class="lbl" style="display: flex; align-items: center; justify-content: space-between;">
+                        <span>Total P&amp;L <span id="k-pnl-arrow" class="kpi-arrow flat">—</span></span>
+                        <span style="font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 6px; background: rgba(34, 211, 238, 0.15); color: var(--cyan); letter-spacing: 0.5px;">📈 CURVE</span>
+                    </div>
                     <div class="val" id="k-pnl">—</div>
-                    <div class="sub">closed trades</div>
+                    <div class="sub">closed trades • <span style="text-decoration: underline; color: var(--cyan);">view curve ▾</span></div>
                     <div class="kpi-icon">💰</div>
                 </div>
                 <div class="kpi kpi-avg">
@@ -2685,7 +2702,7 @@
                 <div class="kpi kpi-pf">
                     <div class="lbl">Profit Factor <span id="k-pf-arrow" class="kpi-arrow flat">—</span></div>
                     <div class="val" id="k-pf">—</div>
-                    <div class="sub">gross wins ÷ losses</div>
+                    <div class="sub" id="k-pf">gross wins ÷ losses</div>
                     <div class="kpi-icon">⚡</div>
                 </div>
                 <div class="kpi kpi-streak">
@@ -2694,6 +2711,27 @@
                     <div class="sub">consecutive wins</div>
                     <div class="kpi-icon">🔥</div>
                 </div>
+            </div>
+
+            <!-- Equity Curve Card (Linked to Top P&L) -->
+            <div class="card" id="equity-curve-card" style="margin-bottom: 20px; transition: all 0.3s ease;">
+                <div class="card-title" style="justify-content: space-between">
+                    <div style="display:flex;align-items:center;gap:8px">
+                        <div class="card-title-bar"></div>
+                        Equity Curve (₹)
+                        <span style="font-size: 11px; color: var(--text-dim); font-weight: 500;">(Linked to Total P&amp;L)</span>
+                    </div>
+                    <div style="display:flex; align-items:center; gap: 10px;">
+                        <div class="eq-tf-bar" id="eq-tf-bar">
+                            <button class="eq-tf-btn active" id="eq-tf-1d" onclick="setEqTf('1d',this)">1D</button>
+                            <button class="eq-tf-btn" id="eq-tf-1w" onclick="setEqTf('1w',this)">1W</button>
+                            <button class="eq-tf-btn" id="eq-tf-1m" onclick="setEqTf('1m',this)">1M</button>
+                            <button class="eq-tf-btn" id="eq-tf-all" onclick="setEqTf('all',this)">ALL</button>
+                        </div>
+                        <button class="btn btn-sm" onclick="toggleEquityCurve(false)" style="padding: 2px 8px; font-size: 11px; border-radius: 6px;" title="Minimize / Close Curve">✕</button>
+                    </div>
+                </div>
+                <div class="chart-wrap"><canvas id="equity"></canvas></div>
             </div>
 
             <!-- Symbol Breakdown -->
@@ -2835,74 +2873,56 @@
                 </div>
             </div>
 
-            <!-- Equity + Open Positions -->
-            <div class="grid2">
-                <div class="card">
-                    <div class="card-title" style="justify-content: space-between">
-                        <div style="display:flex;align-items:center;gap:8px">
-                            <div class="card-title-bar"></div>
-                            Equity Curve (₹)
-                        </div>
-                        <div class="eq-tf-bar" id="eq-tf-bar">
-                            <button class="eq-tf-btn active" id="eq-tf-1d" onclick="setEqTf('1d',this)">1D</button>
-                            <button class="eq-tf-btn" id="eq-tf-1w" onclick="setEqTf('1w',this)">1W</button>
-                            <button class="eq-tf-btn" id="eq-tf-1m" onclick="setEqTf('1m',this)">1M</button>
-                            <button class="eq-tf-btn" id="eq-tf-all" onclick="setEqTf('all',this)">ALL</button>
-                        </div>
-                    </div>
-                    <div class="chart-wrap"><canvas id="equity"></canvas></div>
+            <!-- Open Positions -->
+            <div class="card">
+                <div class="card-title">
+                    <div class="card-title-bar cyan"></div>
+                    Open Positions
+                    <span
+                        id="open-count"
+                        style="
+                            background: rgba(34, 211, 238, 0.15);
+                            color: var(--cyan);
+                            padding: 2px 8px;
+                            border-radius: 10px;
+                            font-size: 11px;
+                            font-family: var(--mono);
+                            margin-left: 4px;
+                            font-weight: 600;
+                        "
+                        >0</span
+                    >
                 </div>
-
-                <div class="card">
-                    <div class="card-title">
-                        <div class="card-title-bar cyan"></div>
-                        Open Positions
-                        <span
-                            id="open-count"
-                            style="
-                                background: rgba(34, 211, 238, 0.15);
-                                color: var(--cyan);
-                                padding: 2px 8px;
-                                border-radius: 10px;
-                                font-size: 11px;
-                                font-family: var(--mono);
-                                margin-left: 4px;
-                                font-weight: 600;
-                            "
-                            >0</span
-                        >
-                    </div>
-                    <div class="tbl-wrap">
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th class="L">Opened</th>
-                                    <th class="L">Symbol</th>
-                                    <th>Type</th>
-                                    <th>Instrument</th>
-                                    <th>Entry Spot</th>
-                                    <th>Entry</th>
-                                    <th class="cmp-col">CMP</th>
-                                    <th>SL</th>
-                                    <th>Target</th>
-                                    <th>Lots</th>
-                                    <th>P&amp;L (₹)</th>
-                                    <th class="L">Verdict</th>
-                                    <th>Action</th>
-                                </tr>
-                            </thead>
-                            <tbody id="open-body">
-                                <tr>
-                                    <td colspan="13">
-                                        <div class="empty-state">
-                                            <div class="empty-icon">🟢</div>
-                                            No open trades
-                                        </div>
-                                    </td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
+                <div class="tbl-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th class="L">Opened</th>
+                                <th class="L">Symbol</th>
+                                <th>Type</th>
+                                <th>Instrument</th>
+                                <th>Entry Spot</th>
+                                <th>Entry</th>
+                                <th class="cmp-col">CMP</th>
+                                <th>SL</th>
+                                <th>Target</th>
+                                <th>Lots</th>
+                                <th>P&amp;L (₹)</th>
+                                <th class="L">Verdict</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="open-body">
+                            <tr>
+                                <td colspan="13">
+                                    <div class="empty-state">
+                                        <div class="empty-icon">🟢</div>
+                                        No open trades
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
                 </div>
             </div>
 
@@ -3032,13 +3052,22 @@
                                 "
                                 >Symbol</label
                             >
-                            <input
-                                type="text"
+                            <select
                                 id="filter-symbol"
                                 class="del-input"
                                 style="width: 100%"
-                                placeholder="e.g. NIFTY"
-                            />
+                                onchange="applyTradeFilters()"
+                            >
+                                <option value="">All Symbols</option>
+                                <option value="NIFTY">NIFTY</option>
+                                <option value="BANKNIFTY">BANKNIFTY</option>
+                                <option value="FINNIFTY">FINNIFTY</option>
+                                <option value="SENSEX">SENSEX</option>
+                                <option value="NATURALGAS">NATURALGAS</option>
+                                <option value="CRUDEOIL">CRUDEOIL</option>
+                                <option value="GOLD">GOLD</option>
+                                <option value="SILVER">SILVER</option>
+                            </select>
                         </div>
                         <div>
                             <label
@@ -3053,13 +3082,26 @@
                                 "
                                 >Verdict</label
                             >
-                            <input
-                                type="text"
+                            <select
                                 id="filter-verdict"
                                 class="del-input"
                                 style="width: 100%"
-                                placeholder="e.g. LONG"
-                            />
+                                onchange="applyTradeFilters()"
+                            >
+                                <option value="">All Verdicts</option>
+                                <option value="GeminiAI">GeminiAI</option>
+                                <option value="Long Buildup">Long Buildup</option>
+                                <option value="Short Buildup">Short Buildup</option>
+                                <option value="Call Writing">Call Writing</option>
+                                <option value="Long Unwinding">Long Unwinding</option>
+                                <option value="Short Covering">Short Covering</option>
+                                <option value="NG Parity - Short">NG Parity - Short</option>
+                                <option value="NG Parity - Long">NG Parity - Long</option>
+                                <option value="NG Momentum - Bearish">NG Momentum - Bearish</option>
+                                <option value="NG Momentum - Bullish">NG Momentum - Bullish</option>
+                                <option value="BULLISH">BULLISH</option>
+                                <option value="BEARISH">BEARISH</option>
+                            </select>
                         </div>
                         <div>
                             <label
@@ -3200,6 +3242,14 @@
                             <label class="del-lbl">To Date</label>
                             <input type="date" id="del-to" class="del-input" />
                         </div>
+                    </div>
+                    <div class="del-field" style="margin-top: 10px;">
+                        <label class="del-lbl">Max Duration Filter (minutes)</label>
+                        <div style="display: flex; gap: 8px; align-items: center;">
+                            <input type="number" id="del-max-dur" class="del-input" placeholder="e.g. 5 (leave blank for all)" min="0" step="0.5" style="flex: 1;" />
+                            <button type="button" class="btn" style="padding: 4px 10px; font-size: 11px; white-space: nowrap;" onclick="document.getElementById('del-max-dur').value = '5'; document.getElementById('del-from').value=''; document.getElementById('del-to').value=''; previewDelete();">⚡ &lt; 5m Only</button>
+                        </div>
+                        <div style="font-size: 10.5px; color: var(--text-dim); margin-top: 4px;">Delete trades with duration under N minutes across all or selected dates.</div>
                     </div>
                     <div
                         id="del-preview"
@@ -3476,12 +3526,31 @@
                 document.getElementById("k-streak").textContent = streak;
                 setArrow('k-streak-arrow', streak >= 3 ? 'up' : streak >= 1 ? 'flat' : 'flat');
 
-                /* Symbol breakdown */
+                /* Symbol breakdown + Gemini AI Card */
                 const bd = s.symbol_breakdown || [];
-                document.getElementById("sym-breakdown").innerHTML = bd.length
-                    ? bd
-                          .map(
-                              (sym) => `
+                const gStats = s.gemini_stats || null;
+                let cardsHtml = "";
+
+                if (gStats && (gStats.total_trades > 0 || gStats.closed_trades > 0)) {
+                    const gPnl = Number(gStats.total_pnl || 0);
+                    const gWr = Number(gStats.win_rate || 0);
+                    const gWrClass = gWr >= 60 ? "good" : gWr >= 40 ? "warn" : "bad";
+                    cardsHtml += `
+      <div class="sym-card sym-geminiai" style="border: 1px solid rgba(139, 92, 246, 0.35) !important;">
+        <div class="sym-name" style="color: #a78bfa; display: flex; align-items: center; justify-content: space-between;">
+            <span>✨ Gemini AI</span>
+            <span style="font-size: 10px; font-weight: 500; background: rgba(139, 92, 246, 0.15); color: #c4b5fd; padding: 2px 6px; border-radius: 4px; border: 1px solid rgba(139, 92, 246, 0.3);">AI FEED</span>
+        </div>
+        <div class="sym-row"><span class="sym-lbl">P&amp;L</span><span class="sym-val ${pc(gPnl)}" style="font-weight: 700;">${signRs(gPnl)}</span></div>
+        <div class="sym-row"><span class="sym-lbl">Total Trades</span><span class="sym-val">${gStats.total_trades}</span></div>
+        <div class="sym-row"><span class="sym-lbl">Win Ratio</span><span class="sym-val ${gWrClass}">${gWr.toFixed(1)}%</span></div>
+      </div>`;
+                }
+
+                if (bd.length) {
+                    cardsHtml += bd
+                        .map(
+                            (sym) => `
       <div class="sym-card ${symClass(sym.symbol)}">
         <div class="sym-name">${sym.symbol}</div>
         <div class="sym-row"><span class="sym-lbl">Trades</span><span class="sym-val">${sym.total_trades}</span></div>
@@ -3489,9 +3558,11 @@
         <div class="sym-row"><span class="sym-lbl">Avg P&amp;L</span><span class="sym-val ${pc(sym.avg_pnl)}">${signRs(sym.avg_pnl)}</span></div>
         <div class="sym-row"><span class="sym-lbl">Total P&amp;L</span><span class="sym-val ${pc(sym.total_pnl)}">${signRs(sym.total_pnl)}</span></div>
       </div>`,
-                          )
-                          .join("")
-                    : '<div class="empty-state"><div class="empty-icon">🗃️</div>No trades yet</div>';
+                        )
+                        .join("");
+                }
+
+                document.getElementById("sym-breakdown").innerHTML = cardsHtml || '<div class="empty-state"><div class="empty-icon">🗃️</div>No trades yet</div>';
 
                 /* Open trades (exclude multi-leg trades as they have their dedicated section) */
                 const ot = (s.open_trades || []).filter(t => (t.option_type || '').toUpperCase() !== "MULTILEG" && (t.setup_type || '').toUpperCase() !== "MULTILEG" && !String(t.id).startsWith("ML-"));
@@ -3621,6 +3692,27 @@
 
             let eqAllRows = [];
             let eqTfActive = '1d';
+
+            function toggleEquityCurve(forceState) {
+                const card = document.getElementById("equity-curve-card");
+                if (!card) return;
+                const isHidden = card.style.display === "none";
+                const newState = (forceState !== undefined) ? forceState : isHidden;
+                card.style.display = newState ? "block" : "none";
+                if (newState) {
+                    card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+                    card.style.borderColor = "var(--cyan)";
+                    card.style.boxShadow = "0 0 20px rgba(34, 211, 238, 0.25)";
+                    setTimeout(() => {
+                        card.style.borderColor = "";
+                        card.style.boxShadow = "";
+                    }, 1200);
+                    setTimeout(() => {
+                        if (eqChart) eqChart.resize();
+                        else if (eqAllRows && eqAllRows.length) renderEquity(eqAllRows);
+                    }, 50);
+                }
+            }
 
             function filterEquityByTf(rows, tf) {
                 if (!rows.length || tf === 'all') return rows;
@@ -4061,7 +4153,20 @@
                     ]);
                     renderSummary(summary || {});
                     allTrades = trades || [];
-                    sortCol ? sortTrades() : renderTrades(allTrades);
+                    populateTradeFilterDropdowns(allTrades);
+                    const hasActiveFilter = (
+                        (document.getElementById("filter-symbol") && document.getElementById("filter-symbol").value) ||
+                        (document.getElementById("filter-verdict") && document.getElementById("filter-verdict").value) ||
+                        (document.getElementById("filter-date-from") && document.getElementById("filter-date-from").value) ||
+                        (document.getElementById("filter-date-to") && document.getElementById("filter-date-to").value) ||
+                        (document.getElementById("filter-dur-min") && document.getElementById("filter-dur-min").value) ||
+                        (document.getElementById("filter-dur-max") && document.getElementById("filter-dur-max").value)
+                    );
+                    if (hasActiveFilter) {
+                        applyTradeFilters();
+                    } else {
+                        sortCol ? sortTrades() : renderTrades(allTrades);
+                    }
                     renderEquity(equity || []);
                     document.getElementById("last").textContent =
                         `Updated ${new Date().toLocaleTimeString("en-IN")}`;
@@ -4089,6 +4194,8 @@
                 document.getElementById("del-to").value = today
                     .toISOString()
                     .slice(0, 10);
+                const durEl = document.getElementById("del-max-dur");
+                if (durEl) durEl.value = "";
                 document.getElementById("del-preview").style.display = "none";
                 document.getElementById("del-confirm-btn").disabled = true;
                 const m = document.getElementById("delete-modal");
@@ -4109,14 +4216,14 @@
             async function previewDelete() {
                 const from = document.getElementById("del-from").value;
                 const to = document.getElementById("del-to").value;
-                if (!from && !to) {
-                    alert("Select at least one date.");
+                const durVal = document.getElementById("del-max-dur") ? document.getElementById("del-max-dur").value.trim() : "";
+                const maxDur = durVal !== "" ? parseFloat(durVal) : null;
+
+                if (!from && !to && maxDur === null) {
+                    alert("Select at least one date or specify a Max Duration.");
                     return;
                 }
                 try {
-                    const params = new URLSearchParams();
-                    if (from) params.set("date_from", from);
-                    if (to) params.set("date_to", to);
                     // Use GET paper_trades to count matching rows
                     const trades = await api(`/api/paper_trades?limit=9999`);
                     const fromTs = from ? new Date(from).getTime() : 0;
@@ -4125,20 +4232,27 @@
                         : Infinity;
                     const matching = trades.filter((t) => {
                         const ts = new Date(t.opened_at).getTime();
-                        return ts >= fromTs && ts <= toTs;
+                        if (from && ts < fromTs) return false;
+                        if (to && ts > toTs) return false;
+                        if (maxDur !== null) {
+                            if (t.duration_minutes === null || t.duration_minutes === undefined) return false;
+                            if (Number(t.duration_minutes) >= maxDur) return false;
+                        }
+                        return true;
                     });
                     const prev = document.getElementById("del-preview");
                     prev.style.display = "block";
                     if (matching.length === 0) {
                         prev.textContent =
-                            "⚠ No trades found in this date range.";
+                            "⚠ No trades found matching these criteria.";
                         document.getElementById("del-confirm-btn").disabled =
                             true;
                     } else {
                         const syms = [
                             ...new Set(matching.map((t) => t.symbol)),
                         ].join(", ");
-                        prev.textContent = `⚠ ${matching.length} trade(s) will be deleted — Symbols: ${syms}`;
+                        const durText = maxDur !== null ? ` (duration < ${maxDur}m)` : "";
+                        prev.textContent = `⚠ ${matching.length} trade(s) will be deleted${durText} — Symbols: ${syms}`;
                         document.getElementById("del-confirm-btn").disabled =
                             false;
                     }
@@ -4150,10 +4264,15 @@
             async function confirmDelete() {
                 const from = document.getElementById("del-from").value;
                 const to = document.getElementById("del-to").value;
-                const label = from && to ? `${from} → ${to}` : from || to;
+                const durVal = document.getElementById("del-max-dur") ? document.getElementById("del-max-dur").value.trim() : "";
+                const maxDur = durVal !== "" ? parseFloat(durVal) : null;
+
+                let label = from && to ? `${from} → ${to}` : from || to || "All dates";
+                if (maxDur !== null) label += ` (duration < ${maxDur}m)`;
+
                 if (
                     !confirm(
-                        `Permanently delete trades from ${label}?\n\nThis cannot be undone.`,
+                        `Permanently delete trades matching: ${label}?\n\nThis cannot be undone.`,
                     )
                 )
                     return;
@@ -4161,6 +4280,8 @@
                     const params = new URLSearchParams();
                     if (from) params.set("date_from", from);
                     if (to) params.set("date_to", to);
+                    if (maxDur !== null) params.set("max_duration_minutes", maxDur);
+
                     const res = await fetch(`/api/paper_trades?${params}`, {
                         method: "DELETE",
                     });
@@ -4277,6 +4398,61 @@
                     filters.style.display === "none" ? "block" : "none";
             }
 
+            function populateTradeFilterDropdowns(trades) {
+                const symSelect = document.getElementById("filter-symbol");
+                const verdictSelect = document.getElementById("filter-verdict");
+                if (!symSelect || !verdictSelect) return;
+
+                const currentSym = (symSelect.value || "").toUpperCase().trim();
+                const currentVerdict = (verdictSelect.value || "").toUpperCase().trim();
+
+                // 1. Gather all unique symbols
+                const defaultSymbols = ["NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX", "NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"];
+                const symSet = new Set(defaultSymbols);
+                (trades || []).forEach(t => {
+                    if (t.symbol) symSet.add(String(t.symbol).toUpperCase().trim());
+                });
+
+                symSelect.innerHTML = '<option value="">All Symbols</option>';
+                Array.from(symSet).sort().forEach(sym => {
+                    const opt = document.createElement("option");
+                    opt.value = sym;
+                    opt.textContent = sym;
+                    if (sym === currentSym) opt.selected = true;
+                    symSelect.appendChild(opt);
+                });
+
+                // 2. Gather all unique verdicts
+                const defaultVerdicts = [
+                    "GeminiAI",
+                    "Long Buildup",
+                    "Short Buildup",
+                    "Call Writing",
+                    "Long Unwinding",
+                    "Short Covering",
+                    "NG Parity - Short",
+                    "NG Parity - Long",
+                    "NG Momentum - Bearish",
+                    "NG Momentum - Bullish",
+                    "BULLISH",
+                    "BEARISH"
+                ];
+                const verdictSet = new Set(defaultVerdicts);
+                (trades || []).forEach(t => {
+                    const v = (t.verdict_label || "").trim();
+                    if (v) verdictSet.add(v);
+                });
+
+                verdictSelect.innerHTML = '<option value="">All Verdicts</option>';
+                Array.from(verdictSet).sort().forEach(v => {
+                    const opt = document.createElement("option");
+                    opt.value = v;
+                    opt.textContent = v;
+                    if (v.toUpperCase() === currentVerdict) opt.selected = true;
+                    verdictSelect.appendChild(opt);
+                });
+            }
+
             function applyTradeFilters() {
                 const dateFrom =
                     document.getElementById("filter-date-from").value;
@@ -4314,7 +4490,7 @@
                     // Symbol filter
                     if (symbolFilter) {
                         const tSym = (t.symbol || "").toUpperCase();
-                        if (!tSym.includes(symbolFilter)) return false;
+                        if (tSym !== symbolFilter && !tSym.includes(symbolFilter)) return false;
                     }
 
                     // Verdict filter
@@ -4324,7 +4500,7 @@
                             t.reason ||
                             ""
                         ).toUpperCase();
-                        if (!tVerdict.includes(verdictFilter)) return false;
+                        if (tVerdict !== verdictFilter && !tVerdict.includes(verdictFilter)) return false;
                     }
 
                     // Duration filter
@@ -4694,12 +4870,25 @@
                         const symPnlSign = symTotalPnl > 0 ? "+" : symTotalPnl < 0 ? "-" : "";
                         const symPnlStr = `${symPnlSign}₹${Math.abs(symTotalPnl).toLocaleString("en-IN", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
 
+                        const symTotalMargin = groupTrades.reduce((acc, t) => acc + Number(t.margin_req || 0), 0);
+                        const symMarginStr = symTotalMargin >= 10000000 
+                            ? `₹${(symTotalMargin / 10000000).toFixed(2)} Cr` 
+                            : symTotalMargin >= 100000 
+                                ? `₹${(symTotalMargin / 100000).toFixed(2)}L` 
+                                : `₹${symTotalMargin.toLocaleString("en-IN")}`;
+
                         html += `
                             <div class="multileg-group-block">
                                 <div class="multileg-group-header">
-                                    <div class="multileg-group-title">
-                                        <span class="badge" style="background: rgba(59, 130, 246, 0.15); color: #3b82f6; border: 1px solid rgba(59, 130, 246, 0.3); font-weight: 800; font-size: 12px;">${sym}</span>
-                                        <span style="font-size: 12px; color: var(--text-dim); font-weight: 500;">${groupTrades.length} ${groupTrades.length === 1 ? 'Open Book' : 'Open Books'}</span>
+                                    <div class="multileg-group-title" style="flex-wrap: wrap; gap: 8px 12px;">
+                                        <div style="display: flex; align-items: center; gap: 8px;">
+                                            <span class="badge" style="background: rgba(59, 130, 246, 0.15); color: #3b82f6; border: 1px solid rgba(59, 130, 246, 0.3); font-weight: 800; font-size: 12px;">${sym}</span>
+                                            <span style="font-size: 12px; color: var(--text-dim); font-weight: 500;">${groupTrades.length} ${groupTrades.length === 1 ? 'Open Book' : 'Open Books'}</span>
+                                        </div>
+                                        <div style="display: flex; align-items: center; gap: 6px; background: rgba(255, 255, 255, 0.04); padding: 2px 8px; border-radius: 6px; border: 1px solid var(--border);">
+                                            <span style="font-size: 10.5px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600;">Margin:</span>
+                                            <span style="font-size: 12px; font-weight: 700; font-family: var(--mono); color: var(--text);">${symMarginStr}</span>
+                                        </div>
                                     </div>
                                     <div class="multileg-group-pnl">
                                         <span style="font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px;">Live Symbol P&amp;L:</span>

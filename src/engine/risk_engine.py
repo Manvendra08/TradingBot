@@ -103,6 +103,10 @@ def _check_risk_limits_for_table(
     if trades_table not in ("paper_trades", "live_trades"):
         raise ValueError(f"Unexpected table: {trades_table}")
 
+    # Gemini Spark paper trade execution operates completely autonomously
+    if setup_type and "GEMINI" in str(setup_type).upper():
+        return True, "OK (Gemini Spark autonomous execution)", "OK"
+
     # 0a. Check 0DTE entry cutoff
     if scan_context and isinstance(scan_context, dict):
         legit = scan_context.get("data_legitimacy") or {}
@@ -158,9 +162,9 @@ def _check_risk_limits_for_table(
                     (symbol,),
                 ).fetchone()["cnt"]
             else:
-                # CORE: count all non-TFSS, non-TIMEFRAME open trades for the symbol
+                # CORE: count all non-TFSS, non-TIMEFRAME, non-GeminiAI open trades for the symbol
                 open_symbol = conn.execute(
-                    f"SELECT COUNT(*) AS cnt FROM {trades_table} WHERE symbol = ? AND status = 'OPEN' AND (setup_type IS NULL OR setup_type NOT IN ('TFSS', 'TIMEFRAME'))",
+                    f"SELECT COUNT(*) AS cnt FROM {trades_table} WHERE symbol = ? AND status = 'OPEN' AND (setup_type IS NULL OR setup_type NOT IN ('TFSS', 'TIMEFRAME', 'GeminiAI'))",
                     (symbol,),
                 ).fetchone()["cnt"]
             if open_symbol >= MAX_OPEN_TRADES_PER_SYMBOL:
@@ -180,7 +184,7 @@ def _check_risk_limits_for_table(
             max_open_total = int(rc.get("paper_max_concurrent_positions") or MAX_OPEN_TRADES_TOTAL)
 
         open_total = conn.execute(
-            f"SELECT COUNT(*) AS cnt FROM {trades_table} WHERE status = 'OPEN'"
+            f"SELECT COUNT(*) AS cnt FROM {trades_table} WHERE status = 'OPEN' AND (setup_type IS NULL OR setup_type != 'GeminiAI')"
         ).fetchone()["cnt"]
         if open_total >= max_open_total:
             return False, (
@@ -324,7 +328,7 @@ def _check_risk_limits_for_table(
         _MULTILEG_SETUPS = {"IRON_CONDOR", "SHORT_STRANGLE", "SHORT_STRADDLE",
                             "BEAR_CALL_SPREAD", "BULL_PUT_SPREAD", "JADE_LIZARD", "MULTILEG"}
         if setup_type and setup_type.upper() in _MULTILEG_SETUPS:
-            from config.multileg_strategies import MAX_BOOK_MARGIN, MAX_NET_DELTA, MAX_LEGS_PER_BOOK
+            from config.multileg_strategies import MAX_BOOK_MARGIN, MAX_SYMBOL_MARGIN, MAX_NET_DELTA, MAX_LEGS_PER_BOOK
             from src.models.schema import get_open_books_for_symbol
             if trades_table == "live_trades":
                 open_books = [b for m in ("LIVE", "SHADOW") for b in get_open_books_for_symbol(symbol, trade_mode=m)]
@@ -340,9 +344,9 @@ def _check_risk_limits_for_table(
             total_margin = sum(float(b.get("margin_req") or 0) for b in open_books)
             if candidate_leg and isinstance(candidate_leg, dict):
                 total_margin += _leg_margin(candidate_leg)
-            if total_margin > MAX_BOOK_MARGIN:
+            if total_margin > MAX_SYMBOL_MARGIN:
                 return False, (
-                    f"[{label}] Multi-leg combined book margin exceeded (₹{total_margin:,.0f} > ₹{MAX_BOOK_MARGIN:,.0f})"
+                    f"[{label}] Multi-leg combined symbol margin exceeded (₹{total_margin:,.0f} > ₹{MAX_SYMBOL_MARGIN:,.0f})"
                 ), "MULTILEG_MAX_MARGIN"
 
     return True, "OK", "OK"
