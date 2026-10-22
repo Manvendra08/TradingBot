@@ -233,10 +233,17 @@ def _prefetch_symbol_data(symbol: str, fetched_at: str) -> dict:
     skip_news = symbol.upper().strip().split()[0] in NSE_NEWS_BYPASS_SYMBOLS
     if skip_news:
         packet["news_result"] = {"ok": True, "data": None, "bypassed": True}
+        try:
+            from src.engine.index_contributors import calculate_contributor_sentiment
+            packet["contributor_sentiment"] = calculate_contributor_sentiment(symbol)
+        except Exception as cs_err:
+            log.debug("[pipeline] %s | Contributor sentiment prefetch failed: %s", symbol, cs_err)
+            packet["contributor_sentiment"] = None
     else:
         from src.services.news_worker import get_cached_news_sentiment
         cached_news = get_cached_news_sentiment(symbol)
         packet["news_result"] = {"ok": True, "data": cached_news, "bypassed": False}
+        packet["contributor_sentiment"] = None
 
     # BUG-H06 FIX: Safe dict conversion for chart_result - evaluate chart first
     chart_result = chart_future.result()
@@ -682,7 +689,10 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
                             # Final fallback: any trade opened for this symbol
                             # in the last 5 minutes. Covers runners that wrote
                             # a different digest_id than the one passed in.
-                            cutoff = (datetime.now() - timedelta(minutes=5)).isoformat()
+                            # opened_at is stored ISO8601 UTC (schema contract);
+                            # a naive local wall-clock cutoff is 5.5h behind on
+                            # IST hosts and minted phantom re-entry allowances.
+                            cutoff = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
                             row_recent = conn.execute(
                                 "SELECT 1 FROM paper_trades WHERE symbol=? AND opened_at > ? "
                                 "UNION SELECT 1 FROM live_trades WHERE symbol=? AND opened_at > ? "
@@ -961,6 +971,9 @@ def _build_quant_inputs(symbol: str, scan_context: dict, intel: dict, news_data:
         "chart_3h": ((chart.get("3h") or {}).get("sentiment") or "NEUTRAL"),
         "news_direction": (news_data or {}).get("current_news_direction"),
         "news_count": (news_data or {}).get("count_24h"),
+        "contributor_direction": (ctx.get("contributor_sentiment") or {}).get("direction"),
+        "contributor_score": (ctx.get("contributor_sentiment") or {}).get("sentiment_score"),
+        "net_points": (ctx.get("contributor_sentiment") or {}).get("net_move", {}).get("net_points"),
         "ng_regime": ctx.get("ng_regime"),
         "ng_dev_pct": ctx.get("ng_dev_pct"),
     }
@@ -1076,14 +1089,18 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
         try:
             save_scan_summary(
                 symbol,
-                verdict="DATA_LEGITIMACY_FAILURE",
-                confidence=0,
-                underlying=legitimacy.underlying_price or prev_price or 0.0,
-                fallback=True,
-                thesis=f"Pre-flight market data validation rejected snapshot: {', '.join(legitimacy.issues)}",
+                {"underlying": legitimacy.underlying_price or prev_price or 0.0},
+                [],  # no anomaly analysis was possible on rejected data
+                {"verdict_label": "DATA_LEGITIMACY_FAILURE", "confidence": 0},
+                "",
+                fetched_at,
+                is_fallback=True,
             )
         except Exception:
-            pass
+            log.exception(
+                "[pipeline] %s | failed to record DATA_LEGITIMACY_FAILURE scan summary — dashboard will not show this rejection",
+                symbol,
+            )
         return
 
     # Use sanitized strikes from validator
@@ -1138,6 +1155,30 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                 scan_context["weather_gulf_storm"] = wsig.get("gulf_storm_active", False)
         except Exception:
             log.debug("%s: weather signal injection failed gracefully", symbol)
+
+    # Inject index heavyweights sentiment for NIFTY / BANKNIFTY / SENSEX scans
+    if symbol.upper() in ("NIFTY", "BANKNIFTY", "SENSEX"):
+        try:
+            from src.engine.index_weights import calculate_index_momentum
+            ws = calculate_index_momentum(symbol)
+            if ws:
+                scan_context["index_weights_sentiment"] = ws
+                scan_context["heavyweight_intel"] = ws
+        except Exception as exc:
+            log.debug("%s: index weights injection failed gracefully: %s", symbol, exc)
+
+    # Inject contributor sentiment for NSE/BSE symbols (replacing news)
+    if symbol.upper().strip().split()[0] in NSE_NEWS_BYPASS_SYMBOLS:
+        cs = packet.get("contributor_sentiment")
+        if not cs:
+            try:
+                from src.engine.index_contributors import calculate_contributor_sentiment
+                cs = calculate_contributor_sentiment(symbol)
+            except Exception as cs_err:
+                log.debug("%s: contributor sentiment injection failed gracefully: %s", symbol, cs_err)
+                cs = None
+        if cs:
+            scan_context["contributor_sentiment"] = cs
 
     try:
         update_scan_snapshot(symbol, scan_context)

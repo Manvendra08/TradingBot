@@ -64,6 +64,33 @@ _EIA_MINUTE  = 0
 _EIA_WINDOW  = 15   # minutes either side of the announcement
 
 
+def _parse_expiry_date(expiry_str: str | None) -> "date | None":
+    """Tolerantly parse an expiry string into a date.
+
+    Accepts: "YYYY-MM-DD" (optionally followed by a time component), and
+    common Kite-style formats like "22Oct2026" / "22-Oct-2026".
+    Returns ``None`` (with a warning log) on unparsable input so callers'
+    expiry-day windows degrade predictably instead of raising.
+    """
+    if not expiry_str:
+        return None
+    s = str(expiry_str).strip()
+    if not s:
+        return None
+    if len(s) > 10:  # e.g. "2026-10-22T09:15:00+05:30"
+        s = s[:10]
+    for fmt in ("%Y-%m-%d", "%d%b%Y", "%d-%b-%Y", "%d %b %Y"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    log.warning(
+        "time_guards: unparseable expiry %r — expiry-day windows will be skipped",
+        expiry_str,
+    )
+    return None
+
+
 def is_trading_allowed_now(symbol: str, expiry_str: str | None = None, operation: str = "ENTRY") -> tuple[bool, str]:
     """Return ``(allowed, reason)``.
 
@@ -106,53 +133,56 @@ def is_trading_allowed_now(symbol: str, expiry_str: str | None = None, operation
             return False, "MCX opening auction noise window (09:00–09:15 IST)"
 
         # ── Window 2: Expiry end-of-session guard ────────────────────────────
-        # For index F&O (trade until 15:40), only block last 15 min before CAS close
-        # For F&O stocks (continuous until 15:15, then CAS until 15:40), block 15:15–15:40
-        # For other NSE stocks (close 15:30), block 15:15–15:30
+        # Entries blocked ahead of the CAS wind-down on expiry day. EXIT
+        # operations are NEVER blocked here: protective square-offs
+        # (Friday weekend-risk sweep 15:35–15:40 IST, SL/target exits) must
+        # stay executable right up to the session close; Window 5 applies the
+        # hard post-close cutoff for exits.
         if not is_mcx and expiry_str:
-            try:
-                expiry_date = datetime.strptime(expiry_str, "%Y-%m-%d").date()
-                if expiry_date == now.date():
-                    if is_index_fno:
-                        # Index F&O: trade until 15:40, block last 15 min (15:25–15:40)
-                        if (h, m) >= (15, 25) and (h, m) < (15, 40):
-                            return False, f"Index F&O expiry end-of-session window (15:25–15:40 IST) for expiry {expiry_str}"
-                    else:
-                        # F&O stocks: continuous stops 15:15, CAS 15:15–15:40
-                        # Other NSE stocks: close 15:30, block 15:15–15:30
-                        # (No clean symbol-level distinction here; treat F&O stocks as
-                        #  the dominant path and keep the wider 15:15–15:40 window.)
-                        if (h, m) >= (15, 15) and (h, m) <= (15, 40):
-                            return False, f"F&O expiry end-of-session window (15:15–15:40 IST) for expiry {expiry_str}"
-            except Exception:
-                pass
+            expiry_date = _parse_expiry_date(expiry_str)
+            if expiry_date is not None and expiry_date == now.date():
+                if is_index_fno:
+                    # Index F&O: entries blocked 15:25–15:40; exits permitted
+                    # until the 15:40 session close.
+                    if operation != "EXIT" and (h, m) >= (15, 25) and (h, m) < (15, 40):
+                        return False, f"Index F&O expiry end-of-session window (15:25–15:40 IST) for expiry {expiry_str}"
+                else:
+                    # F&O stocks: continuous stops 15:15, CAS 15:15–15:40
+                    # Other NSE stocks: close 15:30, blocked 15:15–15:30
+                    # (No clean symbol-level distinction here; treat F&O stocks as
+                    #  the dominant path and keep the wider 15:15–15:40 window.)
+                    if operation != "EXIT" and (h, m) >= (15, 15) and (h, m) <= (15, 40):
+                        return False, f"F&O expiry end-of-session window (15:15–15:40 IST) for expiry {expiry_str}"
 
         # ── Window 3: EIA report ±15 min (NATURALGAS Thursday, CRUDEOIL Wednesday) ────────
-        if sym in ("NATURALGAS", "NATGAS"):
-            if now.weekday() == _EIA_WEEKDAY:
-                eia_min = _EIA_HOUR * 60 + _EIA_MINUTE
-                now_min = h * 60 + m
-                if abs(now_min - eia_min) <= _EIA_WINDOW:
-                    return (
-                        False,
-                        f"EIA Natural Gas Storage Report window "
-                        f"(Thu {_EIA_HOUR:02d}:{_EIA_MINUTE:02d} IST "
-                        f"±{_EIA_WINDOW} min)",
-                    )
-        elif sym == "CRUDEOIL":
-            if now.weekday() == 2:  # Wednesday
-                eia_min = _EIA_HOUR * 60 + _EIA_MINUTE
-                now_min = h * 60 + m
-                if abs(now_min - eia_min) <= _EIA_WINDOW:
-                    return (
-                        False,
-                        f"EIA Weekly Petroleum Status Report window "
-                        f"(Wed {_EIA_HOUR:02d}:{_EIA_MINUTE:02d} IST "
-                        f"±{_EIA_WINDOW} min)",
-                    )
+        # EXIT operations bypass event/noise windows: that is exactly when
+        # protective square-offs are most needed.
+        if operation != "EXIT":
+            if sym in ("NATURALGAS", "NATGAS"):
+                if now.weekday() == _EIA_WEEKDAY:
+                    eia_min = _EIA_HOUR * 60 + _EIA_MINUTE
+                    now_min = h * 60 + m
+                    if abs(now_min - eia_min) <= _EIA_WINDOW:
+                        return (
+                            False,
+                            f"EIA Natural Gas Storage Report window "
+                            f"(Thu {_EIA_HOUR:02d}:{_EIA_MINUTE:02d} IST "
+                            f"±{_EIA_WINDOW} min)",
+                        )
+            elif sym == "CRUDEOIL":
+                if now.weekday() == 2:  # Wednesday
+                    eia_min = _EIA_HOUR * 60 + _EIA_MINUTE
+                    now_min = h * 60 + m
+                    if abs(now_min - eia_min) <= _EIA_WINDOW:
+                        return (
+                            False,
+                            f"EIA Weekly Petroleum Status Report window "
+                            f"(Wed {_EIA_HOUR:02d}:{_EIA_MINUTE:02d} IST "
+                            f"±{_EIA_WINDOW} min)",
+                        )
 
         # ── Window 4: RBI announcement ±5 min (BANKNIFTY) ────────────────────
-        if sym == "BANKNIFTY":
+        if sym == "BANKNIFTY" and operation != "EXIT":
             try:
                 from config.runtime_config import load_runtime_config
                 rconf = load_runtime_config()
@@ -172,28 +202,32 @@ def is_trading_allowed_now(symbol: str, expiry_str: str | None = None, operation
 
         # ── Window 5: Expiry day trading cutoff ──────────────────────────────
         if expiry_str:
-            try:
-                expiry_date = datetime.strptime(expiry_str, "%Y-%m-%d").date()
-                if expiry_date == now.date():
-                    if is_mcx:
-                        # MCX cutoff: entries blocked after 20:00 IST on expiry day.
-                        # Exits remain permitted through 23:30 IST to allow Friday/EOD auto-exits.
-                        if operation == "EXIT":
-                            if (h, m) >= (23, 30):
-                                return False, "MCX market session close (after 23:30 IST)"
-                        else:
-                            if (h, m) >= (20, 0):
-                                return False, "Expiry day entry cutoff (after 20:00 IST for MCX on expiry day)"
-                    elif is_index_fno:
-                        # Index F&O: trade until 15:40 (CAS closes)
-                        if (h, m) >= (15, 40):
-                            return False, f"Expiry day trading cutoff (after 15:40 IST for Index F&O on expiry day)"
+            expiry_date = _parse_expiry_date(expiry_str)
+            if expiry_date is not None and expiry_date == now.date():
+                if is_mcx:
+                    # MCX cutoff: entries blocked after 20:00 IST on expiry day.
+                    # Exits remain permitted through 23:30 IST to allow Friday/EOD auto-exits.
+                    if operation == "EXIT":
+                        if (h, m) >= (23, 30):
+                            return False, "MCX market session close (after 23:30 IST)"
                     else:
-                        # F&O stocks & other NSE: cutoff at 15:25
-                        if (h, m) >= (15, 25):
-                            return False, f"Expiry day trading cutoff (after 15:25 IST for NSE on expiry day)"
-            except Exception as parse_exc:
-                log.warning("time_guards: failed to parse expiry date %s (%s)", expiry_str, parse_exc)
+                        if (h, m) >= (20, 0):
+                            return False, "Expiry day entry cutoff (after 20:00 IST for MCX on expiry day)"
+                elif is_index_fno:
+                    # Index F&O: trade until 15:40 (CAS closes); applies to
+                    # both ENTRY (or Window 2 cuts it earlier at 15:25) and EXIT.
+                    if (h, m) >= (15, 40):
+                        return False, f"Expiry day trading cutoff (after 15:40 IST for Index F&O on expiry day)"
+                else:
+                    # F&O stocks & other NSE: entries cut at 15:25 (CAS),
+                    # protective exits permitted until the 15:40 session close.
+                    cutoff = (15, 40) if operation == "EXIT" else (15, 25)
+                    if (h, m) >= cutoff:
+                        return False, (
+                            "Expiry day exit cutoff (after 15:40 IST for NSE on expiry day)"
+                            if operation == "EXIT"
+                            else "Expiry day trading cutoff (after 15:25 IST for NSE on expiry day)"
+                        )
 
         return True, ""
 

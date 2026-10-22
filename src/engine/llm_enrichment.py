@@ -1016,20 +1016,37 @@ def _build_deep_prompt(
 
     ctx = scan_context or {}
 
+    # Get lot size and approximate margin per lot
+    base_sym = symbol.upper().split()[0] if symbol else ""
+    is_nse_bse = base_sym in ("NIFTY", "BANKNIFTY", "SENSEX", "FINNIFTY", "MIDCPNIFTY")
+
     # Calculate RISK FLAGS
     dte = ctx.get("days_to_expiry", 99)
     risk_flags = []
     if dte is not None and int(dte) <= 2:
         risk_flags.append(f"EXPIRY IMMINENT ({dte} DTE)")
-    if news_data:
+    if news_data and not is_nse_bse:
         high_impact = [
             i for i in (news_data.get("items") or []) if abs(i.get("score", 0)) >= 3
         ]
         if high_impact:
             risk_flags.append(f"HIGH-IMPACT NEWS ACTIVE ({len(high_impact)} articles)")
 
-    # Get lot size and approximate margin per lot
-    base_sym = symbol.upper().split()[0] if symbol else ""
+    if is_nse_bse:
+        macro_or_constituent_guidance = (
+            "INDEX CONSTITUENT BREADTH & DRIVERS (NEWS SCRAPING DISABLED):\n"
+            "• Sentiment for this symbol is mathematically driven by the Index Net Move, Positive Contributors (Pullers) % of total,\n"
+            "  Negative Contributors (Draggers) % of total, and the Top 8 heavyweight constituents.\n"
+            "• News scraping and headline sentiment are completely bypassed and replaced by constituent breadth."
+        )
+    else:
+        macro_or_constituent_guidance = (
+            "NEWS & MACRO WEIGHTING:\n"
+            "• Headlines from economic-policy sources (RBI, MoPNG, EIA) weight 3x vs. analyst commentary.\n"
+            "• Recency: same-day news overrides stale directional bias. If last 2h news is neutral, treat as NO_NEWS not BULLISH/BEARISH.\n"
+            f"{get_investment_research_guidance()}"
+        )
+
     try:
         from config.settings import LOT_SIZES
         lot_size = int(LOT_SIZES.get(base_sym, 1))
@@ -1154,29 +1171,38 @@ PRICE DISCOVERY & MARKET TIMING RULES (MANDATORY):
 
 
 
-NEWS & MACRO WEIGHTING:
-• Headlines from economic-policy sources (RBI, MoPNG, EIA) weight 3x vs. analyst commentary.
-• Recency: same-day news overrides stale directional bias. If last 2h news is neutral, treat as NO_NEWS not BULLISH/BEARISH.
-{get_investment_research_guidance()}
+{macro_or_constituent_guidance}
 
 OI HISTORY:
 {_format_historical_oi(symbol)}
 """
 
-    if "index_weights_sentiment" in ctx and ctx["index_weights_sentiment"]:
-        ws = ctx["index_weights_sentiment"]
-        prompt += (
-            f"\nINDEX HEAVYWEIGHTS WEIGHTAGE SENTIMENT:\n"
-            f"• Weighted Momentum Score: {ws.get('weighted_momentum'):.3f}%\n"
-            f"• Momentum Direction: {ws.get('direction')}\n"
-            f"• Last weights refresh: {ws.get('last_refresh')}\n"
-            f"• Top Constituents Weight & Performance:\n"
-        )
-        for c in ws.get("constituents", [])[:5]:
-            prompt += f"  - {c['symbol']}: Weight {c['weight_pct']:.2f}% | Change: {c['change_pct']:.2f}%\n"
+    if is_nse_bse:
+        cs = ctx.get("contributor_sentiment")
+        if not cs:
+            try:
+                from src.engine.index_contributors import calculate_contributor_sentiment
+                cs = calculate_contributor_sentiment(symbol)
+            except Exception:
+                cs = None
+        if cs:
+            from src.engine.index_contributors import format_contributor_sentiment_text
+            prompt += f"\n{format_contributor_sentiment_text(cs)}\n"
+    else:
+        if "index_weights_sentiment" in ctx and ctx["index_weights_sentiment"]:
+            ws = ctx["index_weights_sentiment"]
+            prompt += (
+                f"\nINDEX HEAVYWEIGHTS WEIGHTAGE SENTIMENT:\n"
+                f"• Weighted Momentum Score: {ws.get('weighted_momentum'):.3f}%\n"
+                f"• Momentum Direction: {ws.get('direction')}\n"
+                f"• Last weights refresh: {ws.get('last_refresh')}\n"
+                f"• Top Constituents Weight & Performance:\n"
+            )
+            for c in ws.get("constituents", [])[:5]:
+                prompt += f"  - {c['symbol']}: Weight {c['weight_pct']:.2f}% | Change: {c['change_pct']:.2f}%\n"
 
-    if news_data and news_data.get("items"):
-        prompt += f"NEWS: {_format_news(news_data)}\n"
+        if news_data and news_data.get("items"):
+            prompt += f"NEWS: {_format_news(news_data)}\n"
     prompt += f"MACRO: {_format_macro_context(symbol)}\n"
 
     if open_trade:
@@ -1455,8 +1481,24 @@ def _build_exit_prompt(
         oi_flow_gt = f"BEARISH (CE writing +{ce_chg:,} outpaces PE writing +{pe_chg:,})"
     elif ce_chg < 0 and pe_chg < 0:
         oi_flow_gt = "NEUTRAL (Two-sided unwinding / squaring)"
+    is_nse_bse = base_sym in ("NIFTY", "BANKNIFTY", "SENSEX", "FINNIFTY", "MIDCPNIFTY")
+    if is_nse_bse:
+        cs = ctx.get("contributor_sentiment")
+        if not cs:
+            try:
+                from src.engine.index_contributors import calculate_contributor_sentiment
+                cs = calculate_contributor_sentiment(symbol)
+            except Exception:
+                cs = None
+        if cs:
+            from src.engine.index_contributors import format_contributor_sentiment_text
+            news_or_breadth = format_contributor_sentiment_text(cs)
+        else:
+            news_or_breadth = "INDEX CONSTITUENT SENTIMENT: Bypassed news / data unavailable."
+    elif news_data and news_data.get("items"):
+        news_or_breadth = f"NEWS: {_format_news(news_data)}"
     else:
-        oi_flow_gt = "BALANCED / NEUTRAL"
+        news_or_breadth = "NEWS: No commodity news data available."
 
     return f"""Trade exit decision for EXISTING position.
 
@@ -1475,7 +1517,7 @@ MARKET:
   OI Δ: CE {ce_chg:+,} | PE {pe_chg:+,} → Flow: {oi_flow_gt}
   (Ground Truth: PE buildup = Bullish Support; CE buildup = Bearish Resistance)
   Chart: {_format_chart_data(ctx.get("chart_indicators"))}
-NEWS: {_format_news(news_data)}
+{news_or_breadth}
 
 EVENT WINDOW RISK:
 • {symbol} next catalyst: {next_catalyst} in {hours_to_event:.1f}h
@@ -4482,6 +4524,8 @@ def get_llm_verdict(
     # Calculate DTE and store in scan_context
     # For MCX commodities, use futures_expiry (futures expire on a different schedule than options)
     _sym_base = symbol.upper().strip().split()[0]
+    if _sym_base in {"NIFTY", "BANKNIFTY", "SENSEX", "FINNIFTY", "MIDCPNIFTY"}:
+        news_data = None
     _is_mcx_sym = _sym_base in {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"}
     if _is_mcx_sym and scan_context.get("futures_expiry"):
         expiry_val = scan_context.get("futures_expiry")
@@ -4652,6 +4696,9 @@ def get_exit_advice(
     # Check cache first
     now = time.time()
     deadline = now + 90.0  # 90-second budget for the entire call
+    _sym_base = symbol.upper().strip().split()[0]
+    if _sym_base in {"NIFTY", "BANKNIFTY", "SENSEX", "FINNIFTY", "MIDCPNIFTY"}:
+        news_data = None
     current_underlying = float(scan_context.get("underlying") or 0.0)
     trade_id = open_trade.get("id")
 
@@ -4880,6 +4927,10 @@ def get_multileg_verdict(
     from config.settings import DISABLE_LLM_ENRICHMENT
     if DISABLE_LLM_ENRICHMENT:
         return None
+
+    _sym_base = symbol.upper().strip().split()[0]
+    if _sym_base in {"NIFTY", "BANKNIFTY", "SENSEX", "FINNIFTY", "MIDCPNIFTY"}:
+        news_data = None
 
     from src.engine.multileg_llm_schema import LLMMultiLegVerdict
     from src.engine.multileg_llm_prompt import build_multileg_prompt

@@ -157,6 +157,28 @@ class TestComputeBookRiskProfile:
         assert result["max_profit"] == 170
         assert result["max_loss"] > 0
 
+    def test_bull_put_spread_profile(self):
+        from src.engine.multileg_strategy import compute_book_risk_profile
+        legs = [
+            {"strike": 73500, "option_type": "PE", "side": "SELL", "premium": 120.8},
+            {"strike": 73000, "option_type": "PE", "side": "BUY", "premium": 48.2},
+        ]
+        result = compute_book_risk_profile("BULL_PUT_SPREAD", legs, 72.6, 73756)
+        assert result["max_profit"] == 72.6
+        assert result["breakeven_lower"] == round(73500 - 72.6, 2)
+        assert result["breakeven_upper"] is None
+
+    def test_bear_call_spread_profile(self):
+        from src.engine.multileg_strategy import compute_book_risk_profile
+        legs = [
+            {"strike": 74500, "option_type": "CE", "side": "SELL", "premium": 110.0},
+            {"strike": 75000, "option_type": "CE", "side": "BUY", "premium": 40.0},
+        ]
+        result = compute_book_risk_profile("BEAR_CALL_SPREAD", legs, 70.0, 74000)
+        assert result["max_profit"] == 70.0
+        assert result["breakeven_upper"] == round(74500 + 70.0, 2)
+        assert result["breakeven_lower"] is None
+
 
 class TestCheckBookConflicts:
     """Tests for check_book_conflicts()."""
@@ -172,3 +194,35 @@ class TestCheckBookConflicts:
         conflict, msg = check_book_conflicts("NIFTY", "BEAR_CALL_SPREAD", existing)
         assert conflict is True
         assert "conflict" in msg.lower() or "BULL_PUT_SPREAD" in msg
+
+    def test_same_structure_type_conflict(self):
+        """Only one position of a particular structure type can be open at any time."""
+        from src.engine.multileg_strategy import check_book_conflicts
+        existing = [{"strategy_type": "IRON_CONDOR", "symbol": "NIFTY", "status": "OPEN", "book_id": "B1"}]
+        conflict, msg = check_book_conflicts("NIFTY", "IRON_CONDOR", existing)
+        assert conflict is True
+        assert "Structure exclusivity" in msg or "already open" in msg
+
+    def test_different_structure_type_allowed(self):
+        """Different structure types can be open at the same time."""
+        from src.engine.multileg_strategy import check_book_conflicts
+        existing = [{"strategy_type": "IRON_CONDOR", "symbol": "NIFTY", "status": "OPEN", "book_id": "B1"}]
+        conflict, msg = check_book_conflicts("NIFTY", "SHORT_STRANGLE", existing)
+        assert conflict is False
+        assert msg == ""
+
+    def test_closed_same_structure_type_allowed(self):
+        """A new position of the same structure type is allowed if prior position is CLOSED."""
+        from src.engine.multileg_strategy import check_book_conflicts
+        existing = [{"strategy_type": "IRON_CONDOR", "symbol": "NIFTY", "status": "CLOSED", "book_id": "B1"}]
+        conflict, msg = check_book_conflicts("NIFTY", "IRON_CONDOR", existing)
+        assert conflict is False
+        assert msg == ""
+
+    def test_different_symbol_same_structure_allowed(self):
+        """Structure exclusivity is scoped per symbol."""
+        from src.engine.multileg_strategy import check_book_conflicts
+        existing = [{"strategy_type": "IRON_CONDOR", "symbol": "BANKNIFTY", "status": "OPEN", "book_id": "B1"}]
+        conflict, msg = check_book_conflicts("NIFTY", "IRON_CONDOR", existing)
+        assert conflict is False
+        assert msg == ""

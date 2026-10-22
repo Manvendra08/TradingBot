@@ -86,7 +86,11 @@ def authorize_broker_execution(
         )
 
     enabled_symbols = config.get("live_enabled_broker_symbols", [])
-    if symbol not in enabled_symbols:
+    # EXIT operations bypass the symbol allowlist (and trading_paused above):
+    # they only close existing exposure, so they must stay executable even for
+    # a symbol that was removed from the monitor list while a trade was open.
+    # Kill switches (shadow mode, broker disabled) still block ALL operations.
+    if operation != "EXIT" and symbol not in enabled_symbols:
         return ExecutionAuthorization(
             is_authorized=False,
             is_shadow=False,

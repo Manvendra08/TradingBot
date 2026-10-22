@@ -172,6 +172,12 @@ def load_runtime_config() -> dict:
             return json.loads(json.dumps(_CACHED_CONFIG))
 
         data = json.loads(RUNTIME_CONFIG_PATH.read_text(encoding="utf-8"))
+        # Fail-closed load validation: a hand-edited or truncated file must
+        # never poison gate invariants (e.g. live_shadow_mode="yes" string
+        # passing silently). Invalid values route to fail-closed defaults.
+        if not isinstance(data, dict):
+            raise TypeError("Runtime config file must contain a JSON object")
+        validate_config_dict(data)
         for k, v in data.items():
             defaults[k] = v
         # Merge nested symbol-lot maps so new symbols (e.g. SENSEX) get defaults.

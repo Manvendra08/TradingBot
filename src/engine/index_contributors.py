@@ -405,3 +405,126 @@ def get_index_contributors(index_name: str = "NIFTY", force_refresh: bool = Fals
 
     _CONTRIBUTORS_CACHE[idx_key] = (payload, now)
     return payload
+
+
+def calculate_contributor_sentiment(symbol: str, force_refresh: bool = False) -> Dict[str, Any]:
+    """
+    Computes mathematical index breadth & constituent-driven sentiment for NSE/BSE symbols.
+    Replaces external news sentiment with:
+      1. Indices Net Move (net points and index change %)
+      2. Positive Contributors (Pullers) % of total (weight % and count %)
+      3. Negative Contributors (Draggers) % of total (weight % and count %)
+      4. Snapshot of the top 8 constituents with individual change and weighted point impact.
+    """
+    sym = symbol.upper().strip().split()[0]
+    idx_key = "NIFTY"
+    if "BANK" in sym:
+        idx_key = "BANKNIFTY"
+    elif "SENSEX" in sym:
+        idx_key = "SENSEX"
+    elif sym in INDEX_CONSTITUENTS:
+        idx_key = sym
+
+    data = get_index_contributors(idx_key, force_refresh=force_refresh)
+
+    total = max(1, data.get("total_constituents", 1))
+    gainers = data.get("gainers_count", 0)
+    losers = data.get("losers_count", 0)
+    pullers_count_pct = round((gainers / total) * 100.0, 1)
+    draggers_count_pct = round((losers / total) * 100.0, 1)
+
+    pos_wt = float(data.get("positive_weight_pct", 0.0))
+    neg_wt = float(data.get("negative_weight_pct", 0.0))
+
+    net_pts = float(data.get("net_points", 0.0))
+    chg_pct = float(data.get("index_change_pct", 0.0))
+
+    # Mathematical sentiment score in [-1.0, +1.0]:
+    # 60% weight to net weight breadth ((pos_wt - neg_wt) / 100.0)
+    # 40% weight to index move percentage clamped to [-1.0, 1.0] with 1.5% as full scale
+    weight_bias = (pos_wt - neg_wt) / 100.0
+    move_bias = max(-1.0, min(1.0, chg_pct / 1.5))
+    sentiment_score = round(max(-1.0, min(1.0, (weight_bias * 0.60) + (move_bias * 0.40))), 3)
+
+    if sentiment_score >= 0.20:
+        direction = "BULLISH"
+    elif sentiment_score <= -0.20:
+        direction = "BEARISH"
+    else:
+        direction = "MIXED"
+
+    top_8 = []
+    for c in data.get("all_constituents", [])[:8]:
+        top_8.append({
+            "symbol": c.get("symbol"),
+            "name": c.get("name"),
+            "sector": c.get("sector"),
+            "change_pct": c.get("change_pct", 0.0),
+            "weight_pct": c.get("weight", 0.0),
+            "point_impact": c.get("point_impact", 0.0),
+        })
+
+    return {
+        "symbol": sym,
+        "index_name": idx_key,
+        "display_name": data.get("display_name", idx_key),
+        "spot_price": data.get("spot_price", 0.0),
+        "prev_close": data.get("prev_close", 0.0),
+        "net_move": {
+            "net_points": net_pts,
+            "change_pct": chg_pct,
+        },
+        "pullers": {
+            "weight_pct": pos_wt,
+            "count": gainers,
+            "count_pct": pullers_count_pct,
+        },
+        "draggers": {
+            "weight_pct": neg_wt,
+            "count": losers,
+            "count_pct": draggers_count_pct,
+        },
+        "top_8_constituents": top_8,
+        "sentiment_score": sentiment_score,
+        "direction": direction,
+        "total_constituents": total,
+        "last_updated": data.get("last_updated", ""),
+    }
+
+
+def format_contributor_sentiment_text(cs: Dict[str, Any]) -> str:
+    """Format contributor sentiment as an AI-ready Markdown text block replacing news."""
+    if not cs:
+        return "No constituent sentiment available."
+
+    nm = cs.get("net_move", {})
+    pts = nm.get("net_points", 0.0)
+    pct = nm.get("change_pct", 0.0)
+    spot = cs.get("spot_price", 0.0)
+    prev = cs.get("prev_close", 0.0)
+
+    p = cs.get("pullers", {})
+    d = cs.get("draggers", {})
+    tot = cs.get("total_constituents", 0)
+    direction = cs.get("direction", "MIXED")
+    score = cs.get("sentiment_score", 0.0)
+
+    lines = [
+        "INDEX CONSTITUENT SENTIMENT & BREADTH (Deterministic / News-Free):",
+        f"• Indices Net Move: {pts:+.2f} pts ({pct:+.2f}%) | Spot: {spot:.2f} (Prev Close: {prev:.2f})",
+        f"• Positive Contributors (Pullers): {p.get('weight_pct', 0.0):.1f}% of total index weight ({p.get('count', 0)}/{tot} stocks, {p.get('count_pct', 0.0):.1f}% of basket)",
+        f"• Negative Contributors (Draggers): {d.get('weight_pct', 0.0):.1f}% of total index weight ({d.get('count', 0)}/{tot} stocks, {d.get('count_pct', 0.0):.1f}% of basket)",
+        f"• Mathematical Breadth Sentiment: {direction} (Score: {score:+.3f} on [-1.0, +1.0] scale)",
+        "• Top 8 Heavyweight Constituents Snapshot (Impact & Individual Change):",
+    ]
+
+    for idx, c in enumerate(cs.get("top_8_constituents", [])[:8], start=1):
+        sym = c.get("symbol", "")
+        chg = c.get("change_pct", 0.0)
+        wt = c.get("weight_pct", 0.0)
+        impact = c.get("point_impact", 0.0)
+        sector = c.get("sector", "")
+        lines.append(f"  {idx}. {sym}: Chg {chg:+.2f}% | Wt {wt:.2f}% | Impact {impact:+.2f} pts [{sector}]")
+
+    return "\n".join(lines)
+

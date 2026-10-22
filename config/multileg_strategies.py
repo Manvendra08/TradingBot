@@ -21,7 +21,13 @@ STRATEGY_TYPES = {
 ALLOWED_SYMBOLS = {"NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX", "NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"}
 
 # ── Book-Level & Symbol-Level Risk Caps ────────────────────────────
-MAX_BOOK_MARGIN = 7_500_000.0     # Maximum combined margin per book (₹75L / 7500K)
+# MAX_BOOK_MARGIN: documented combined margin cap per multi-leg book (₹6L),
+# consistent with the TFSS tranche risk engine (TFSS_MAX_BOOK_MARGIN ₹5L).
+# Entry validation rejects any book whose estimated margin exceeds it.
+MAX_BOOK_MARGIN = 600_000.0       # Maximum combined margin per book (₹6L / 600K)
+# MAX_SYMBOL_MARGIN: combined open margin per symbol across all books. Must
+# remain strictly GREATER than MAX_BOOK_MARGIN so the per-book cap is the
+# binding constraint and multi-book symbol exposure stays governed separately.
 MAX_SYMBOL_MARGIN = 7_500_000.0   # Maximum combined open margin per symbol across all books (₹75L)
 MAX_NET_DELTA = 0.60              # Maximum absolute net delta per book
 MAX_NET_VEGA = 500.0              # Maximum net vega exposure

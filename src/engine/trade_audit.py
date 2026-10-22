@@ -365,12 +365,18 @@ def audit_multileg_entry(trade_id: int) -> None:
 
 
 def audit_multileg_close(trade_id: int) -> None:
-    """Recompute realized multi-leg P&L across all legs and alert on discrepancies."""
-    from src.models.schema import get_conn
+    """Recompute realized multi-leg P&L across all legs and alert on discrepancies.
+
+    Recomputes the NET book P&L (gross leg P&L minus Indian transaction costs) so it
+    compares apples-to-apples against multi_leg_trades.total_pnl, which close_book()
+    persists net of brokerage/STT/exchange fees. Without the cost deduction this audit
+    produced false-positive "discrepancies" equal to the round-trip transaction costs.
+    """
+    from src.models.schema import _calc_transaction_costs, get_conn
 
     with get_conn(read_only=True) as conn:
         book = conn.execute(
-            "SELECT id, symbol, structure, net_premium, total_pnl, status FROM multi_leg_trades WHERE id=?",
+            "SELECT id, symbol, structure, net_premium, total_pnl, status, exit_underlying FROM multi_leg_trades WHERE id=?",
             (trade_id,),
         ).fetchone()
         if not book:
@@ -383,9 +389,11 @@ def audit_multileg_close(trade_id: int) -> None:
     symbol = str(book["symbol"] or "")
     base_sym = symbol.upper().split()[0] if symbol else ""
     lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_sym, 1))
+    exit_underlying = _number(book["exit_underlying"]) or 0.0
 
     issues: dict[str, object] = {}
     computed_pnl = 0.0
+    total_tx_costs = 0.0
     unclosed_legs: list[int] = []
     synthetic_exits: list[int] = []
 
@@ -409,6 +417,20 @@ def audit_multileg_close(trade_id: int) -> None:
 
         pnl_pts = (entry_prem - exit_prem) if side == "SELL" else (exit_prem - entry_prem)
         computed_pnl += pnl_pts * lot_size * lots
+        # Net down by the same transaction costs close_book() deducts.
+        total_tx_costs += _calc_transaction_costs(
+            option_type=str(l["option_type"] or "CE"),
+            side=side,
+            entry_premium=entry_prem,
+            entry_underlying=exit_underlying,
+            exit_premium=exit_prem,
+            exit_underlying=exit_underlying,
+            lot_size=lot_size,
+            lots=lots,
+            symbol=symbol,
+        )
+
+    computed_pnl -= total_tx_costs
 
     stored_pnl = _number(book["total_pnl"])
     if stored_pnl is not None:

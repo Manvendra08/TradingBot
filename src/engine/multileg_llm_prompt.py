@@ -269,8 +269,14 @@ def _format_open_book_summary(open_books: list[dict] | None, margin_cap: float =
     margin_headroom = max(0.0, margin_cap - combined_margin)
     delta_headroom = max(0.0, delta_cap - abs(combined_delta))
 
+    open_types = sorted(list({
+        str(b.get("strategy_type") or b.get("structure") or "").upper().strip()
+        for b in open_books if b.get("status", "OPEN") == "OPEN" and str(b.get("strategy_type") or b.get("structure") or "").strip()
+    }))
+    open_types_str = ", ".join(open_types) if open_types else "None"
+
     lines = [
-        f"  Open books: {book_count}",
+        f"  Open books: {book_count} (Active structure types: {open_types_str})",
         f"  Combined net delta: {combined_delta:+.2f} (cap {delta_cap:.2f}, headroom {delta_headroom:.2f})",
         f"  Combined margin used: ₹{combined_margin:,.0f} / ₹{margin_cap:,.0f} (headroom ₹{margin_headroom:,.0f})",
     ]
@@ -406,11 +412,24 @@ def build_multileg_prompt(
     ohlc_1h = chart_1h.get("ohlc") or {}
     ohlc_3h = chart_3h.get("ohlc") or {}
 
-    # News (external headlines are untrusted input — sanitize before prompt injection)
-    from src.engine.llm_enrichment import _sanitize_news_text
+    # News / Constituent Breadth
+    base_sym = symbol.upper().strip().split()[0]
+    is_nse_bse = base_sym in ("NIFTY", "BANKNIFTY", "SENSEX", "FINNIFTY", "MIDCPNIFTY")
 
     news_section = ""
-    if news_data:
+    if is_nse_bse:
+        cs = scan_context.get("contributor_sentiment")
+        if not cs:
+            try:
+                from src.engine.index_contributors import calculate_contributor_sentiment
+                cs = calculate_contributor_sentiment(symbol)
+            except Exception:
+                cs = None
+        if cs:
+            from src.engine.index_contributors import format_contributor_sentiment_text
+            news_section = f"\n{format_contributor_sentiment_text(cs)}\n"
+    elif news_data:
+        from src.engine.llm_enrichment import _sanitize_news_text
         direction = news_data.get("current_news_direction", "MIXED")
         score = news_data.get("news_score_current", 0)
         items = news_data.get("items", [])[:3]
@@ -427,6 +446,12 @@ def build_multileg_prompt(
 
     # Compact open books summary with margin/delta caps
     open_summary = _format_open_book_summary(open_books, MAX_SYMBOL_MARGIN, MAX_NET_DELTA)
+    active_types = sorted(list({
+        str(b.get("strategy_type") or b.get("structure") or "").upper().strip()
+        for b in (open_books or [])
+        if b.get("status", "OPEN") == "OPEN" and str(b.get("strategy_type") or b.get("structure") or "").strip()
+    }))
+    active_types_str = ", ".join(active_types) if active_types else "None"
 
     # F&O ban check (placeholder - actual check happens downstream but good to inform LLM)
     # In practice, this would come from an API. For now, we'll let downstream validation handle it.
@@ -508,6 +533,20 @@ def build_multileg_prompt(
     )
     candidate_strikes_section = _format_candidate_strikes_summary(candidate_strikes, underlying, atm_strike)
 
+    # ── Heavyweights Sentiment ─────────────────────────────────────────────
+    hw_sentiment = scan_context.get("index_weights_sentiment") or scan_context.get("heavyweight_intel")
+    hw_section = ""
+    if hw_sentiment and isinstance(hw_sentiment, dict):
+        hw_dir = hw_sentiment.get("direction", "NEUTRAL")
+        hw_wm = float(hw_sentiment.get("weighted_momentum") or 0.0)
+        b_drag = float(hw_sentiment.get("banking_drag") or 0.0)
+        hw_summary = hw_sentiment.get("heavyweight_summary", "")
+        hw_section = (
+            f"INDEX HEAVYWEIGHTS SENTIMENT:\n"
+            f"• Weighted Momentum: {hw_wm:+.3f}% ({hw_dir}) | Banking Sector Drag: {b_drag:+.2f}%\n"
+            f"• Key Pillars: {hw_summary}\n"
+        )
+
     prompt = f"""NSE/MCX options seller. Design a multi-leg premium strategy.
 
 {symbol} | ₹{underlying:.2f} | ATM {atm_strike:.0f} | {expiry} (DTE {dte})
@@ -523,6 +562,7 @@ OPTIONS MARKET MECHANICS (MANDATORY WRITER GROUND TRUTH — NEVER INVERT):
 • PCR = Total PE OI / Total CE OI. Rising PCR (e.g. 0.80 → 1.10) reflects heavier Put writing than Call writing → BULLISH accumulation. Lowering PCR (e.g. 1.20 → 0.60) reflects Put unwinding or heavy Call writing → BEARISH.
 • In your thesis and rationale, ALWAYS adhere to these mathematical facts.
 {commodity_intel}
+{hw_section}
 {candidate_strikes_section}
 CHAIN (use only strikes with OI>0 and LTP>0):
 {_format_full_option_chain(option_rows, atm_strike, underlying)}
@@ -534,6 +574,10 @@ Open: {open_summary}
 History: {historical_perf or _format_historical_strategy_performance(symbol)}
 
 CONSTRAINTS (non-negotiable):
+• STRUCTURE EXCLUSIVITY RULE (MANDATORY): Only ONE position of a particular structure type can be open at any time for {symbol}.
+  Currently active structure types: {active_types_str}.
+  Do NOT propose any structure type that is already active (e.g. if IRON_CONDOR is active, another IRON_CONDOR is strictly prohibited — select an alternative viable structure like SHORT_STRANGLE, SPREAD, or NO_TRADE). Different structure types CAN be open concurrently.
+• HEAVYWEIGHT ALIGNMENT RULE: Never select a directional strategy that fights index heavyweight momentum. If index heavyweights are dragging down (e.g. Banks and Reliance negative), do NOT propose BULL_PUT_SPREAD; select BEAR_CALL_SPREAD, IRON_CONDOR, or NO_TRADE.
 • Price Discovery & Timings: 09:00–09:15 F&O Pre-open call auction (09:00-09:08 entry, 09:08-09:12 matching, 09:12-09:15 buffer) | 15:15 cash continuous close for F&O stocks | 15:15–15:35 CAS price discovery | 15:40 derivative F&O close (extra 10 min window past 15:30 to hedge/adjust). Non-F&O cash trades to 15:30.
 
 • {symbol} F&O ban status: CHECK_DOWNSTREAM → if BANNED, strategy_type="NO_TRADE", legs=[]

@@ -8,17 +8,21 @@
   "live_max_concurrent_positions": 10,
   "live_max_daily_loss_rupees": 200000,
   "live_symbol_lots": {
-    "NATURALGAS": 5,
     "NIFTY": 10,
     "BANKNIFTY": 10,
+    "FINNIFTY": 1,
+    "MIDCPNIFTY": 1,
     "SENSEX": 10,
+    "NATURALGAS": 5,
     "CRUDEOIL": 1
   },
   "paper_symbol_lots": {
-    "NATURALGAS": 10,
     "NIFTY": 15,
     "BANKNIFTY": 15,
+    "FINNIFTY": 10,
+    "MIDCPNIFTY": 10,
     "SENSEX": 15,
+    "NATURALGAS": 10,
     "CRUDEOIL": 10
   },
   "paper_lots": 10,

@@ -10,10 +10,12 @@ class TestMultilegRiskChecks:
 
     def test_config_constants_importable(self):
         from config.multileg_strategies import (
-            MAX_BOOK_MARGIN, MAX_NET_DELTA, MAX_LEGS_PER_BOOK,
+            MAX_BOOK_MARGIN, MAX_SYMBOL_MARGIN, MAX_NET_DELTA, MAX_LEGS_PER_BOOK,
             STRATEGY_CONSTRAINTS, CONFLICTING_STRATEGIES, ALLOWED_SYMBOLS,
         )
-        assert MAX_BOOK_MARGIN == 7_500_000.0
+        assert MAX_BOOK_MARGIN == 600_000.0
+        # Symbol cap must stay strictly above the per-book cap
+        assert MAX_SYMBOL_MARGIN > MAX_BOOK_MARGIN
         assert MAX_NET_DELTA == 0.60
         assert MAX_LEGS_PER_BOOK == 6
         assert "IRON_CONDOR" in STRATEGY_CONSTRAINTS

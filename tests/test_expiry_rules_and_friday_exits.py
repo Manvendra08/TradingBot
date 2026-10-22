@@ -76,7 +76,7 @@ class TestExpiryCutoffs:
         mock_dt.now.return_value = _make_ist_dt(20, 1, weekday=1)  # Tue June 30, 2026
         allowed, reason = is_trading_allowed_now("NATURALGAS", "2026-06-30")
         assert allowed is False
-        assert "Expiry day trading cutoff" in reason
+        assert "Expiry day entry cutoff" in reason
 
         # 2. On expiry day, before 20:00 -> allowed
         mock_dt.now.return_value = _make_ist_dt(19, 0, weekday=1)
@@ -201,13 +201,13 @@ class TestFridayWeekendAutoExit:
         # Call exit_all_positions_friday
         exit_all_positions_friday("NSE_INDEX")
 
-        # Verify paper trade is closed
+        # Verify paper trade is closed (exit_premium is stored NET of ~0.5% transaction costs)
         with get_conn() as conn:
             p_trade = conn.execute(
                 "SELECT * FROM paper_trades WHERE id=?", (trade_id,)
             ).fetchone()
             assert p_trade["status"] == "CLOSED_WEEKEND"
-            assert p_trade["exit_premium"] == 150.0
+            assert p_trade["exit_premium"] == 149.25
 
             # Verify live trade status closed in DB (since mock_exit_live will be called and mock closing should update it)
             assert mock_exit_live.call_count == 1
@@ -335,8 +335,9 @@ class TestExpiryDay1MinAutoExit:
             l_future = conn.execute("SELECT * FROM live_trades WHERE id=?", (live_future_id,)).fetchone()
 
             # Today paper trade MUST be closed with CLOSED_EXPIRY
+            # (exit_premium stored NET of ~0.5% transaction costs: 120 -> 119.4)
             assert p_today["status"] == "CLOSED_EXPIRY"
-            assert p_today["exit_premium"] == 120.0
+            assert p_today["exit_premium"] == 119.4
 
             # Future paper trade MUST remain OPEN
             assert p_future["status"] == "OPEN"

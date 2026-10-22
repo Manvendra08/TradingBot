@@ -52,6 +52,7 @@ _WORKER_THREAD: threading.Thread | None = None
 _STOP_EVENT = threading.Event()
 _FEED_SESSION: requests.Session | None = None
 _FEED_SESSION_LOCK = threading.Lock()
+_ALERTED_REJECTED_SETUPS: set[str] = set()
 
 
 def _get_feed_session() -> requests.Session:
@@ -473,12 +474,13 @@ def sync_active_positions_snapshot() -> bool:
     return False
 
 
-def execute_gemini_setups(payload: dict[str, Any]) -> None:
+def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> None:
     """
     Process incoming Gemini Spark JSON payload and execute purely in PAPER TRADING.
     Supports both MCX Commodity and NSE Index Futures.
     Autonomous execution: Not blocked by generic NSEBOT open position caps (>5) or scan blockers.
     """
+    log_eval = log.info if is_new_scan else log.debug
     now_iso = datetime.now(timezone.utc).isoformat()
     market_state_raw = payload.get("market_state", "OPEN")
     if isinstance(market_state_raw, dict):
@@ -560,119 +562,16 @@ def execute_gemini_setups(payload: dict[str, Any]) -> None:
             )
             open_trades_map.pop(open_signal_key, None)
 
+    skipped_inactive_count = 0
     for setup in setups:
         setup_id = setup.get("id")
-
-        # 1. Action / Direction Resolution
-        raw_direction = str(
-            setup.get("direction") or setup.get("type") or setup.get("action") or setup.get("action_bias") or ""
-        ).upper()
-        status_upper = str(setup.get("status", "")).upper()
-
-        # Guard: Check for non-actionable or neutral waiting states
-        if "NEUTRAL" in raw_direction or "WAITING" in raw_direction or "FLAT" in raw_direction or "NO_TRADE" in raw_direction:
-            log.info("[gemini_spark] Setup %s is %s (status=%s). Skipping order execution.", setup_id, raw_direction, status_upper)
-            continue
-
-        if "SHORT" in raw_direction or "SELL" in raw_direction or "BEARISH" in raw_direction:
-            action_upper = "SELL"
-        elif "LONG" in raw_direction or "BUY" in raw_direction or "BULLISH" in raw_direction:
-            action_upper = "BUY"
-        else:
-            log.info("[gemini_spark] Setup %s has unhandled direction '%s'. Skipping.", setup_id, raw_direction)
-            continue
-
-        # 2. Entry Zone / Trigger Price Resolution
-        entry_target = 0.0
-        entry_zone = setup.get("entry_zone")
-        if "entry_trigger" in setup and setup["entry_trigger"] is not None:
-            try:
-                entry_target = float(setup["entry_trigger"] or 0.0)
-            except (ValueError, TypeError):
-                entry_target = 0.0
-        elif entry_zone is not None:
-            ez = entry_zone
-            if isinstance(ez, dict):
-                try:
-                    entry_target = float(ez.get("recommended") or ez.get("min") or 0.0)
-                except (ValueError, TypeError):
-                    entry_target = 0.0
-            else:
-                try:
-                    entry_target = float(ez or 0.0)
-                except (ValueError, TypeError):
-                    entry_target = 0.0
-        elif "trigger_zone" in setup and setup["trigger_zone"] is not None:
-            try:
-                entry_target = float(setup["trigger_zone"] or 0.0)
-            except (ValueError, TypeError):
-                entry_target = 0.0
-
-        # 3. Stop-Loss Resolution
-        stop_loss = 0.0
-        for sl_key in (
-            "active_stop_loss",
-            "trailed_sl",
-            "stop_loss",
-            "sl",
-            "stoploss",
-            "invalidation",
-            "sl_price",
-            "stop",
-            "active_sl",
-        ):
-            if sl_key in setup and setup[sl_key] is not None:
-                try:
-                    val = float(setup[sl_key] or 0.0)
-                    if val > 0:
-                        stop_loss = val
-                        break
-                except (ValueError, TypeError):
-                    pass
-
-        # 4. Target 1 and Target 2 Resolution
-        target_1 = 0.0
-        target_2 = 0.0
-        for t1_key in ("active_target", "target_1", "target1", "t1", "target", "take_profit_1", "tp1", "t1_price"):
-            if t1_key in setup and setup[t1_key] is not None:
-                try:
-                    val = float(setup[t1_key] or 0.0)
-                    if val > 0:
-                        target_1 = val
-                        break
-                except (ValueError, TypeError):
-                    pass
-
-        for t2_key in ("target_2", "target2", "t2", "take_profit_2", "tp2", "t2_price"):
-            if t2_key in setup and setup[t2_key] is not None:
-                try:
-                    val = float(setup[t2_key] or 0.0)
-                    if val > 0:
-                        target_2 = val
-                        break
-                except (ValueError, TypeError):
-                    pass
-
-        if target_1 == 0.0 and "targets" in setup and isinstance(setup["targets"], list):
-            targets_list = setup["targets"]
-            if len(targets_list) > 0 and isinstance(targets_list[0], dict):
-                target_1 = float(targets_list[0].get("price") or 0.0)
-            if len(targets_list) > 1 and isinstance(targets_list[1], dict):
-                target_2 = float(targets_list[1].get("price") or 0.0)
-
-        # 5. Determine actual fill price / current price utilizing top-level CMP
-        fill_price = float(cmp_val if cmp_val is not None else (entry_target or stop_loss))
-
-        log.info(
-            "[gemini_spark] Processing setup: %s | %s %s | CMP/Fill: %.2f (Zone/Trigger: %.2f) | SL: %.2f | T1: %.2f",
-            setup_id, action_upper, symbol, fill_price, entry_target, stop_loss, target_1,
-        )
 
         # Check if the setup is completed, closed, missed, or invalidated
         if _is_setup_inactive(setup):
             existing_trade = open_trades_map.get(str(setup_id))
             if existing_trade:
                 existing_id = int(existing_trade["id"])
+                status_upper = str(setup.get("status", "")).upper()
                 
                 # Check setup first, then reconciled records, then cmp_val
                 reconciled = _extract_reconciled_trade_exit(payload, str(setup_id))
@@ -731,8 +630,114 @@ def execute_gemini_setups(payload: dict[str, Any]) -> None:
                 )
                 open_trades_map.pop(str(setup_id), None)
             else:
-                log.info("[gemini_spark] Setup %s is inactive/closed in feed (status=%s). Skipping execution.", setup_id, status_upper)
+                skipped_inactive_count += 1
+                log.debug("[gemini_spark] Setup %s is inactive/closed in feed (status=%s). Skipping.", setup_id, setup.get("status"))
             continue
+
+        # 1. Action / Direction Resolution
+        raw_direction = str(
+            setup.get("direction") or setup.get("type") or setup.get("action") or setup.get("action_bias") or ""
+        ).upper()
+        status_upper = str(setup.get("status", "")).upper()
+
+        # Guard: Check for non-actionable or neutral waiting states
+        if "NEUTRAL" in raw_direction or "WAITING" in raw_direction or "FLAT" in raw_direction or "NO_TRADE" in raw_direction:
+            log_eval("[gemini_spark] Setup %s is %s (status=%s). Skipping order execution.", setup_id, raw_direction, status_upper)
+            continue
+
+        if "SHORT" in raw_direction or "SELL" in raw_direction or "BEARISH" in raw_direction:
+            action_upper = "SELL"
+        elif "LONG" in raw_direction or "BUY" in raw_direction or "BULLISH" in raw_direction:
+            action_upper = "BUY"
+        else:
+            log_eval("[gemini_spark] Setup %s has unhandled direction '%s'. Skipping.", setup_id, raw_direction)
+            continue
+
+        # 2. Entry Zone / Trigger Price Resolution
+        entry_target = 0.0
+        entry_zone = setup.get("entry_zone")
+        if "entry_trigger" in setup and setup["entry_trigger"] is not None:
+            try:
+                entry_target = float(setup["entry_trigger"] or 0.0)
+            except (ValueError, TypeError):
+                entry_target = 0.0
+        elif entry_zone is not None:
+            ez = entry_zone
+            if isinstance(ez, dict):
+                try:
+                    entry_target = float(ez.get("recommended") or ez.get("min") or 0.0)
+                except (ValueError, TypeError):
+                    entry_target = 0.0
+            else:
+                try:
+                    entry_target = float(ez or 0.0)
+                except (ValueError, TypeError):
+                    entry_target = 0.0
+        elif "trigger_zone" in setup and setup["trigger_zone"] is not None:
+            try:
+                entry_target = float(setup["trigger_zone"] or 0.0)
+            except (ValueError, TypeError):
+                entry_target = 0.0
+
+        # 3. Stop-Loss Resolution
+        stop_loss = 0.0
+        for sl_key in (
+            "active_stop_loss",
+            "trailed_sl",
+            "stop_loss",
+            "sl",
+            "stoploss",
+            "invalidation",
+            "sl_price",
+            "stop",
+            "active_sl",
+        ):
+            if sl_key in setup and setup[sl_key] is not None:
+                try:
+                    val = float(setup[sl_key] or 0.0)
+                    if val > 0:
+                        stop_loss = val
+                        break
+                except (ValueError, TypeError):
+                    pass
+
+        # 4. Take-Profit Resolution
+        target_1 = 0.0
+        target_2 = 0.0
+        for t1_key in ("target_1", "target1", "t1", "take_profit_1", "tp1", "target", "t1_price"):
+            if t1_key in setup and setup[t1_key] is not None:
+                try:
+                    val = float(setup[t1_key] or 0.0)
+                    if val > 0:
+                        target_1 = val
+                        break
+                except (ValueError, TypeError):
+                    pass
+
+        for t2_key in ("target_2", "target2", "t2", "take_profit_2", "tp2", "t2_price"):
+            if t2_key in setup and setup[t2_key] is not None:
+                try:
+                    val = float(setup[t2_key] or 0.0)
+                    if val > 0:
+                        target_2 = val
+                        break
+                except (ValueError, TypeError):
+                    pass
+
+        if target_1 == 0.0 and "targets" in setup and isinstance(setup["targets"], list):
+            targets_list = setup["targets"]
+            if len(targets_list) > 0 and isinstance(targets_list[0], dict):
+                target_1 = float(targets_list[0].get("price") or 0.0)
+            if len(targets_list) > 1 and isinstance(targets_list[1], dict):
+                target_2 = float(targets_list[1].get("price") or 0.0)
+
+        # 5. Determine actual fill price / current price utilizing top-level CMP
+        fill_price = float(cmp_val if cmp_val is not None else (entry_target or stop_loss))
+
+        log_eval(
+            "[gemini_spark] Evaluating setup: %s | %s %s | CMP: %.2f (Zone/Trigger: %.2f) | SL: %.2f | T1: %.2f",
+            setup_id, action_upper, symbol, fill_price, entry_target, stop_loss, target_1,
+        )
 
         existing_trade = open_trades_map.get(str(setup_id))
         if existing_trade:
@@ -857,48 +862,57 @@ def execute_gemini_setups(payload: dict[str, Any]) -> None:
                 (f"{sig_key}%", f"%{sig_key}%"),
             ).fetchone()
             if prior_trade:
-                log.info(
+                log_eval(
                     "[gemini_spark] Setup %s was already executed in paper_trades (#%s, status=%s). Skipping duplicate re-entry.",
                     setup_id, prior_trade["id"], prior_trade["status"],
                 )
                 continue
 
-        # 6. Directional Stop-Loss Validation Guard (Applies to NEW Entries ONLY)
-        if stop_loss > 0:
-            if action_upper == "BUY" and stop_loss >= fill_price:
-                log.error(
-                    "[gemini_spark] REJECTED %s setup %s: Inverted Stop-Loss for BUY! SL (%.2f) >= Fill (%.2f)",
-                    symbol, setup_id, stop_loss, fill_price,
-                )
-                _send_telegram_notification(
-                    f"⚠️ *[GeminiAI] REJECTED Setup `{setup_id}`*\n"
-                    f"• Symbol: `{symbol}` (BUY)\n"
-                    f"• Invalid SL: ₹{stop_loss:.2f} >= Fill ₹{fill_price:.2f}\n"
-                    f"• Action: Execution aborted by engine safety guard."
-                )
-                continue
-            elif action_upper == "SELL" and stop_loss <= fill_price:
-                log.error(
-                    "[gemini_spark] REJECTED %s setup %s: Inverted Stop-Loss for SELL! SL (%.2f) <= Fill (%.2f)",
-                    symbol, setup_id, stop_loss, fill_price,
-                )
-                _send_telegram_notification(
-                    f"⚠️ *[GeminiAI] REJECTED Setup `{setup_id}`*\n"
-                    f"• Symbol: `{symbol}` (SELL)\n"
-                    f"• Invalid SL: ₹{stop_loss:.2f} <= Fill ₹{fill_price:.2f}\n"
-                    f"• Action: Execution aborted by engine safety guard."
-                )
-                continue
-
-        # 7. Breakout / Trigger Condition Check for pending states (Applies to NEW Entries ONLY)
+        # 6. Breakout / Trigger Condition Check for pending states (Applies to NEW Entries ONLY)
+        # If the setup is waiting for a breakout/breakdown, verify if price has reached the trigger level.
         if "WAITING" in status_upper or "PENDING" in status_upper:
             if entry_target > 0:
                 if action_upper == "BUY" and fill_price < entry_target:
-                    log.info("[gemini_spark] %s setup %s pending breakout (CMP %.2f < Trigger %.2f). Awaiting trigger.", symbol, setup_id, fill_price, entry_target)
+                    log_eval("[gemini_spark] %s setup %s pending breakout (CMP %.2f < Trigger %.2f). Awaiting trigger.", symbol, setup_id, fill_price, entry_target)
                     continue
                 elif action_upper == "SELL" and fill_price > entry_target:
-                    log.info("[gemini_spark] %s setup %s pending breakdown (CMP %.2f > Trigger %.2f). Awaiting trigger.", symbol, setup_id, fill_price, entry_target)
+                    log_eval("[gemini_spark] %s setup %s pending breakdown (CMP %.2f > Trigger %.2f). Awaiting trigger.", symbol, setup_id, fill_price, entry_target)
                     continue
+
+        # 7. Directional Stop-Loss Validation Guard (Applies to NEW Entries ONLY)
+        # Validate stop loss relative to planned entry (entry_target if set, else actual fill_price)
+        ref_entry = entry_target if entry_target > 0 else fill_price
+        if stop_loss > 0 and ref_entry > 0:
+            if action_upper == "BUY" and stop_loss >= ref_entry:
+                log.error(
+                    "[gemini_spark] REJECTED %s setup %s: Inverted Stop-Loss for BUY! SL (%.2f) >= Entry/Fill (%.2f)",
+                    symbol, setup_id, stop_loss, ref_entry,
+                )
+                setup_alert_key = f"{symbol}:{setup_id}:BUY_INV_SL"
+                if setup_alert_key not in _ALERTED_REJECTED_SETUPS:
+                    _ALERTED_REJECTED_SETUPS.add(setup_alert_key)
+                    _send_telegram_notification(
+                        f"⚠️ *[GeminiAI] REJECTED Setup `{setup_id}`*\n"
+                        f"• Symbol: `{symbol}` (BUY)\n"
+                        f"• Invalid SL: ₹{stop_loss:.2f} >= Entry ₹{ref_entry:.2f}\n"
+                        f"• Action: Execution aborted by engine safety guard."
+                    )
+                continue
+            elif action_upper == "SELL" and stop_loss <= ref_entry:
+                log.error(
+                    "[gemini_spark] REJECTED %s setup %s: Inverted Stop-Loss for SELL! SL (%.2f) <= Entry/Fill (%.2f)",
+                    symbol, setup_id, stop_loss, ref_entry,
+                )
+                setup_alert_key = f"{symbol}:{setup_id}:SELL_INV_SL"
+                if setup_alert_key not in _ALERTED_REJECTED_SETUPS:
+                    _ALERTED_REJECTED_SETUPS.add(setup_alert_key)
+                    _send_telegram_notification(
+                        f"⚠️ *[GeminiAI] REJECTED Setup `{setup_id}`*\n"
+                        f"• Symbol: `{symbol}` (SELL)\n"
+                        f"• Invalid SL: ₹{stop_loss:.2f} <= Entry ₹{ref_entry:.2f}\n"
+                        f"• Action: Execution aborted by engine safety guard."
+                    )
+                continue
 
         # New Setup Execution: Autonomous paper trading, never blocked by open position caps (>5) or scan blockers
         capital = float(load_runtime_config().get("live_capital_per_trade_inr", 1000000))
@@ -971,6 +985,13 @@ def execute_gemini_setups(payload: dict[str, Any]) -> None:
             trade_data["id"] = new_trade_id
             open_trades_map[str(setup_id)] = trade_data
 
+    if skipped_inactive_count > 0:
+        log.info(
+            "[gemini_spark] %s: Skipped %d inactive/historical setups from feed (logged at DEBUG).",
+            symbol,
+            skipped_inactive_count,
+        )
+
 
 def _send_telegram_notification(msg: str) -> None:
     """Helper to dispatch telegram alert safely without throwing exceptions."""
@@ -1009,12 +1030,13 @@ def poll_and_process_feed(target_symbol: str = "NATURALGAS") -> bool:
     last_ts = _get_symbol_last_ts(state, target_symbol)
     current_ts = payload.get("timestamp")
 
+    is_new_scan = bool(current_ts and current_ts != last_ts)
     has_open_trades = len(get_open_gemini_paper_trades_map(target_symbol)) > 0
-    if (current_ts and current_ts != last_ts) or has_open_trades:
-        if current_ts and current_ts != last_ts:
+    if is_new_scan or has_open_trades:
+        if is_new_scan:
             log.info("[gemini_spark] New Gemini Spark scan detected for %s at %s!", target_symbol, current_ts)
-        execute_gemini_setups(payload)
-        if current_ts and current_ts != last_ts:
+        execute_gemini_setups(payload, is_new_scan=is_new_scan)
+        if is_new_scan:
             _set_symbol_last_ts(state, target_symbol, current_ts, payload)
             _save_state(state)
         return True

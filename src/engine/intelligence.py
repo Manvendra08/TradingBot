@@ -1194,6 +1194,39 @@ def generate_intelligence(
     elif verdict_bias == "BEARISH" and fii_bear_forces:
         confidence += fii_confidence_boost
 
+    # ── Index Heavyweight Sentiment & Force Calibration ──────────────────────
+    hw_bull_forces = []
+    hw_bear_forces = []
+    hw_conf_boost = 0
+    hw_sentiment = ctx.get("index_weights_sentiment") or ctx.get("heavyweight_intel")
+    hw_wm = 0.0
+    banking_drag = 0.0
+    hw_conflict = False
+    if hw_sentiment and isinstance(hw_sentiment, dict):
+        hw_dir = hw_sentiment.get("direction", "NEUTRAL")
+        hw_wm = float(hw_sentiment.get("weighted_momentum") or 0.0)
+        banking_drag = float(hw_sentiment.get("banking_drag") or 0.0)
+        hw_conflict = bool(hw_sentiment.get("heavyweight_conflict"))
+
+        if hw_wm >= 0.20:
+            hw_bull_forces.append((82, f"Heavyweights supportive (+{hw_wm:.2f}% | Banks: {banking_drag:+.2f}%)"))
+        elif hw_wm <= -0.20:
+            hw_bear_forces.append((82, f"Heavyweights dragging ({hw_wm:.2f}% | Banks: {banking_drag:+.2f}%)"))
+
+        if symbol.upper() == "NIFTY":
+            if banking_drag <= -0.60:
+                hw_bear_forces.append((85, f"Banking sector drag ({banking_drag:+.2f}%)"))
+            elif banking_drag >= 0.60:
+                hw_bull_forces.append((85, f"Banking sector thrust (+{banking_drag:+.2f}%)"))
+
+        # Heavyweight alignment boost
+        if verdict_bias == "BULLISH" and hw_dir == "BULLISH" and hw_wm >= 0.25:
+            hw_conf_boost = 6
+        elif verdict_bias == "BEARISH" and hw_dir == "BEARISH" and hw_wm <= -0.25:
+            hw_conf_boost = 6
+
+    confidence += hw_conf_boost
+
     # ── Build Message ──────────────────────────────────────────────────────
     # H5 fix: apply ALL confidence ceilings in one pass after the confluence boost.
     # Previously only volume-dominant (88) and chart-conflict (85) were re-applied
@@ -1240,6 +1273,15 @@ def generate_intelligence(
         both_shrinking = (ce_chg < 0) and (pe_chg < 0)
         if unwind_ratio >= 0.7 and both_shrinking:
             ceiling = min(ceiling, 45)
+
+    # Heavyweight contrarian conflict ceiling and penalty
+    # Prevents aggressive directional trades that fight the index heavyweights
+    if verdict_bias == "BULLISH" and (hw_wm <= -0.30 or (symbol.upper() == "NIFTY" and banking_drag <= -0.75) or hw_conflict):
+        confidence = max(20, confidence - 15)
+        ceiling = min(ceiling, 65)
+    elif verdict_bias == "BEARISH" and (hw_wm >= 0.30 or (symbol.upper() == "NIFTY" and banking_drag >= 0.75) or hw_conflict):
+        confidence = max(20, confidence - 15)
+        ceiling = min(ceiling, 65)
 
     confidence = min(confidence, ceiling)
 
@@ -1377,15 +1419,22 @@ def generate_intelligence(
     if straddle > 0:
         msg.append(f"ATM Straddle: `{straddle:.0f}` pts")
 
-    # Index Weights Sentiment (NIFTY/BANKNIFTY/SENSEX only)
-    if "index_weights_sentiment" in ctx and ctx["index_weights_sentiment"]:
-        ws = ctx["index_weights_sentiment"]
+    # Index Heavyweights Sentiment (NIFTY/BANKNIFTY/SENSEX only)
+    if hw_sentiment and isinstance(hw_sentiment, dict):
+        ws = hw_sentiment
         msg.append("")
-        msg.append("⚖️ *Index Weights Sentiment*")
-        color_emoji = "🟢" if ws["direction"] == "BULLISH" else ("🔴" if ws["direction"] == "BEARISH" else "⚪")
-        msg.append(f"Weighted Momentum: `{ws['weighted_momentum']:.3f}%` {color_emoji} ({ws['direction']})")
-        top_3 = ", ".join([f"{c['symbol']}: `{c['change_pct']:+.2f}%`" for c in ws.get("constituents", [])[:3]])
-        msg.append(f"Top Movers: {top_3}")
+        msg.append("⚖️ *Index Heavyweights Sentiment*")
+        color_emoji = "🟢" if ws.get("direction") == "BULLISH" else ("🔴" if ws.get("direction") == "BEARISH" else "⚪")
+        msg.append(f"Weighted Momentum: `{ws.get('weighted_momentum', 0.0):.3f}%` {color_emoji} ({ws.get('direction', 'NEUTRAL')})")
+        if ws.get("banking_drag") is not None and symbol.upper() == "NIFTY":
+            b_val = float(ws["banking_drag"])
+            bank_emoji = "🟢" if b_val > 0 else ("🔴" if b_val < 0 else "⚪")
+            msg.append(f"Banking Sector Drag: `{b_val:+.2f}%` {bank_emoji}")
+        if ws.get("heavyweight_summary"):
+            msg.append(f"Pillars: {ws['heavyweight_summary']}")
+        elif ws.get("constituents"):
+            top_3 = ", ".join([f"{c['symbol']}: `{c['change_pct']:+.2f}%`" for c in ws.get("constituents", [])[:3]])
+            msg.append(f"Top Movers: {top_3}")
 
     # ── Chart Status ───────────────────────────────────────────────────────
     # parsed_chart was built earlier (before confidence print) to allow boost.
@@ -1450,7 +1499,9 @@ def generate_intelligence(
     )
     
     bull_forces.extend(fii_bull_forces)
+    bull_forces.extend(hw_bull_forces)
     bear_forces.extend(fii_bear_forces)
+    bear_forces.extend(hw_bear_forces)
     bull_forces.sort(key=lambda x: x[0], reverse=True)
     bear_forces.sort(key=lambda x: x[0], reverse=True)
 

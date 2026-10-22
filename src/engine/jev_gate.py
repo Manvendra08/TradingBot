@@ -90,12 +90,33 @@ def _build_state_text(
     if max_oi is not None:
         parts.append(f"Max OI delta: {max_oi:.1f}%" if isinstance(max_oi, float) else f"Max OI delta: {max_oi}%")
 
-    if news_data and not (news_data or {}).get("bypassed"):
-        headlines = news_data.get("headlines") or news_data.get("articles") or []
-        if headlines:
-            top = headlines[0]
-            title = top.get("title") or top.get("headline") or str(top)
-            parts.append(f"Top news: {title[:120]}")
+    base_sym = symbol.upper().strip().split()[0]
+    if base_sym in {"NIFTY", "BANKNIFTY", "SENSEX", "FINNIFTY", "MIDCPNIFTY"}:
+        cs = scan_context.get("contributor_sentiment")
+        if not cs:
+            try:
+                from src.engine.index_contributors import calculate_contributor_sentiment
+                cs = calculate_contributor_sentiment(base_sym)
+            except Exception:
+                cs = None
+        if cs:
+            nm = cs.get("net_move", {})
+            p = cs.get("pullers", {})
+            d = cs.get("draggers", {})
+            parts.append(
+                f"Index Net Move: {nm.get('net_points', 0.0):+.1f}pts ({nm.get('change_pct', 0.0):+.2f}%). "
+                f"Pullers: {p.get('weight_pct', 0.0):.1f}% wt ({p.get('count_pct', 0.0):.1f}% count). "
+                f"Draggers: {d.get('weight_pct', 0.0):.1f}% wt ({d.get('count_pct', 0.0):.1f}% count). "
+                f"Breadth: {cs.get('direction', 'MIXED')} ({cs.get('sentiment_score', 0.0):+.2f})"
+            )
+    else:
+        # Commodities retain news evaluation
+        if news_data and not (news_data or {}).get("bypassed"):
+            headlines = news_data.get("headlines") or news_data.get("articles") or []
+            if headlines:
+                top = headlines[0]
+                title = top.get("title") or top.get("headline") or str(top)
+                parts.append(f"Top news: {title[:120]}")
 
     return ". ".join(parts) + "."
 

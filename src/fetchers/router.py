@@ -117,7 +117,7 @@ def _priority_for(symbol: str) -> list[str]:
     
     # Default priorities per symbol class
     if base in _MCX_COMMODITIES:
-        return ["dhan_commodity", "shoonya", "niftytrader", "dhan_headless", "moneycontrol", "dhan"]
+        return ["dhan_commodity", "shoonya", "niftytrader", "moneycontrol", "dhan"]
     if base == "SENSEX":
         return ["niftytrader", "shoonya", "sensibull", "dhan_headless", "nse_public", "moneycontrol"]
     return [

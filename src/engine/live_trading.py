@@ -839,56 +839,99 @@ def _exit_open_live_trade(
     shadow_mode: bool,
     now_iso: str,
 ) -> dict:
-    exit_side = "SELL" if trade.get("side") == "BUY" else "BUY"
-    exchange = _get_exchange(symbol)
-    resolved = resolve_instrument(
-        symbol,
-        trade.get("expiry") or "",
-        trade.get("strike") or 0.0,
-        trade.get("option_type") or "FUT",
-    )
-    reject_reason = _reject_fallback_instrument(symbol, resolved, shadow_mode)
-    if reject_reason:
-        raise RuntimeError(reject_reason)
-    tradingsymbol = (
-        resolved["tradingsymbol"]
-        if resolved and resolved.get("tradingsymbol")
-        else symbol
-    )
-    quantity = _resolve_trade_quantity(symbol, int(trade.get("lots") or 1), resolved)
-
-    order_id = place_kite_order(
-        kite,
-        symbol,
-        exchange,
-        tradingsymbol,
-        exit_side,
-        quantity,
-        shadow_mode,
-        expected_price=exit_premium or 0.0,
-        tick_size=resolved.get("tick_size", 0.05) if resolved else 0.05,
-    )
-
-    broker_status, broker_message = confirm_order_fill(kite, order_id, shadow_mode)
-    if broker_status in ("REJECTED", "CANCELLED"):
-        raise RuntimeError(f"Exit order {broker_status.lower()}: {broker_message}")
-
-    # BUG-H07 FIX: Verify exit order is actually COMPLETE before closing trade.
-    # Previously, PENDING orders would still mark the trade as CLOSED even though
-    # the position remained open at the broker, causing phantom closed trades.
-    if not shadow_mode and broker_status != "COMPLETE":
-        log.warning(
-            "%s: Exit order %s is %s (not COMPLETE). Trade will NOT be marked closed. "
-            "Position may still be open at broker.",
-            symbol, order_id, broker_status,
+    # ── Fail-closed broker gate: every live exit MUST be authorized ─────────
+    # CMP-poll exits, Friday sweeps, expiry sweeps, reversal exits and
+    # pipeline-managed exits all funnel through here, so the gate is enforced
+    # at this single choke point. Shadow exits skip the gate (no real orders).
+    if not shadow_mode:
+        from src.engine.broker_gate import authorize_broker_execution
+        exit_scan_ctx = (
+            {"expiry": trade.get("expiry")} if trade.get("expiry") else {}
         )
-        raise RuntimeError(
-            f"Exit order not filled (status={broker_status}): {broker_message}. "
-            f"Trade remains OPEN to prevent phantom close."
+        exit_auth = authorize_broker_execution(
+            symbol, operation="EXIT", scan_context=exit_scan_ctx
+        )
+        if not exit_auth.is_authorized:
+            raise RuntimeError(
+                f"Exit blocked by broker gate: {exit_auth.reason}"
+            )
+
+    # ── Atomic exit claim (double-exit race guard) ───────────────────────────
+    # Concurrent callers (scheduler CMP poll + main pipeline) must not both
+    # place the same SELL/BUY square-off. Exactly one caller wins the
+    # OPEN→EXIT_PENDING transition; losers raise, winners own the exit and
+    # revert the claim if their order path fails (trade returns to OPEN so
+    # the next poll can retry).
+    from src.models.schema import get_conn
+    trade_id = int(trade["id"])
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE live_trades SET status='EXIT_PENDING' WHERE id=? AND status='OPEN'",
+            (trade_id,),
+        )
+        if cur.rowcount != 1:
+            raise RuntimeError(
+                f"Exit race lost for live trade #{trade_id}: status no longer OPEN"
+            )
+
+    try:
+        exit_side = "SELL" if trade.get("side") == "BUY" else "BUY"
+        exchange = _get_exchange(symbol)
+        resolved = resolve_instrument(
+            symbol,
+            trade.get("expiry") or "",
+            trade.get("strike") or 0.0,
+            trade.get("option_type") or "FUT",
+        )
+        reject_reason = _reject_fallback_instrument(symbol, resolved, shadow_mode)
+        if reject_reason:
+            raise RuntimeError(reject_reason)
+        tradingsymbol = (
+            resolved["tradingsymbol"]
+            if resolved and resolved.get("tradingsymbol")
+            else symbol
+        )
+        quantity = _resolve_trade_quantity(symbol, int(trade.get("lots") or 1), resolved)
+
+        order_id = place_kite_order(
+            kite,
+            symbol,
+            exchange,
+            tradingsymbol,
+            exit_side,
+            quantity,
+            shadow_mode,
+            expected_price=exit_premium or 0.0,
+            tick_size=resolved.get("tick_size", 0.05) if resolved else 0.05,
         )
 
-    if trade.get("gtt_order_id"):
-        cancel_kite_gtt(kite, trade["gtt_order_id"], shadow_mode)
+        broker_status, broker_message = confirm_order_fill(kite, order_id, shadow_mode)
+        if broker_status in ("REJECTED", "CANCELLED"):
+            raise RuntimeError(f"Exit order {broker_status.lower()}: {broker_message}")
+
+        # BUG-H07 FIX: Verify exit order is actually COMPLETE before closing trade.
+        # Previously, PENDING orders would still mark the trade as CLOSED even though
+        # the position remained open at the broker, causing phantom closed trades.
+        if not shadow_mode and broker_status != "COMPLETE":
+            log.warning(
+                "%s: Exit order %s is %s (not COMPLETE). Trade will NOT be marked closed. "
+                "Position may still be open at broker.",
+                symbol, order_id, broker_status,
+            )
+            raise RuntimeError(
+                f"Exit order not filled (status={broker_status}): {broker_message}. "
+                f"Trade remains OPEN to prevent phantom close."
+            )
+
+        if trade.get("gtt_order_id"):
+            cancel_kite_gtt(kite, trade["gtt_order_id"], shadow_mode)
+    except Exception:
+        with get_conn() as conn:
+            conn.execute(
+                "UPDATE live_trades SET status='OPEN' WHERE id=? AND status='EXIT_PENDING'",
+                (trade_id,),
+            )
+        raise
 
     close_live_trade(
         trade["id"],

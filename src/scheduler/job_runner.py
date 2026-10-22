@@ -51,6 +51,13 @@ IST = pytz.timezone("Asia/Kolkata")
 _EXPIRY_EXIT_TRIGGER_LEAD_MIN = 1
 _EXPIRY_EXIT_GRACE_MIN = 10
 
+# Friday weekend-risk square-off (NSE/BSE 15:35 IST, MCX 23:25 IST).
+# Fires at (close − _FRIDAY_EXIT_LEAD_MIN) and retries until
+# (close + _FRIDAY_EXIT_GRACE_MIN); the date tracker is stamped only on
+# success. Mirrors the expiry-exit watchdog pattern.
+_FRIDAY_EXIT_LEAD_MIN = 5
+_FRIDAY_EXIT_GRACE_MIN = 4
+
 MAX_CATCHUP_INTERVALS = 3
 _ACTIVE_TASKS: dict[str, multiprocessing.Process] = {}
 _ACTIVE_TASKS_LOCK = threading.Lock()
@@ -250,8 +257,13 @@ def _get_required_strikes(symbol: str) -> set[float]:
     return required
 
 
-def exit_all_positions_friday(market_class: str) -> None:
-    """Exit all open paper and live trades for symbols matching the given market class."""
+def exit_all_positions_friday(market_class: str) -> bool:
+    """Exit all open paper and live trades for symbols matching the given market class.
+
+    Returns True only when every attempted close succeeded (or there was
+    nothing to exit); any symbol-level failure returns False so callers using
+    success-only tracking can retry within the sweep grace window.
+    """
     from datetime import datetime, timezone
 
     from config.runtime_config import load_runtime_config
@@ -274,6 +286,7 @@ def exit_all_positions_friday(market_class: str) -> None:
 
     # Determine symbols matching class
     symbols = [s for s in WATCH_SYMBOLS if get_symbol_class(s) == market_class]
+    failed_closes = 0
 
     for symbol in symbols:
         # BUG-H08 FIX: Check if market is actually open before attempting exit.
@@ -317,6 +330,7 @@ def exit_all_positions_friday(market_class: str) -> None:
                     "[Friday Exit] Could not fetch latest prices for %s. Skipping Friday exit.",
                     symbol,
                 )
+                failed_closes += 1
                 continue
 
             underlying = oc_data["underlying_price"]
@@ -407,6 +421,7 @@ def exit_all_positions_friday(market_class: str) -> None:
                         f"{prefix} **Friday Auto-Exit** | Closed `{symbol}` `{trade.get('option_type')}` position at underlying `{underlying}` to avoid weekend risk."
                     )
                 except Exception as live_exc:
+                    failed_closes += 1
                     log.error(
                         "[Friday Exit] Failed to close live trade #%d for %s: %s",
                         trade["id"],
@@ -415,9 +430,12 @@ def exit_all_positions_friday(market_class: str) -> None:
                     )
 
         except Exception as sym_exc:
+            failed_closes += 1
             log.error(
                 "[Friday Exit] Error executing Friday exit for %s: %s", symbol, sym_exc
             )
+
+    return failed_closes == 0
 
 
 def exit_expiry_day_positions(market_class: str) -> bool:
@@ -1662,11 +1680,12 @@ def start_scheduler(immediate: bool = False):
     _scan_attempts: dict[tuple[str, int], int] = {}
     _last_scan_attempt_time: dict[str, float] = {}
 
-    _last_friday_nse_exit_date = None
-    _last_friday_mcx_exit_date = None
     _last_expiry_exit_tracker: set[tuple[str, str]] = set()  # (class_key, "YYYY-MM-DD")
     _expiry_exit_alerted: set[tuple[str, str]] = set()  # Telegram warn-once guard
     _expiry_exit_lock = threading.Lock()  # non-blocking "sweep busy" flag
+    _friday_exit_tracker: set[tuple[str, str]] = set()  # (class_key, "YYYY-MM-DD")
+    _friday_exit_alerted: set[tuple[str, str]] = set()  # Telegram warn-once guard
+    _friday_exit_lock = threading.Lock()  # non-blocking "sweep busy" flag
     _last_market_close_scan_tracker: set[tuple[str, str]] = set()
     _last_auto_login_date = None
     _last_fii_fetch_date = None
@@ -1794,6 +1813,96 @@ def start_scheduler(immediate: bool = False):
         target=_expiry_exit_watchdog, daemon=True, name="expiry-exit-watchdog"
     ).start()
 
+    # Friday weekend-risk sweep: NSE/BSE F&O (close 15:40) and MCX (close 23:30).
+    _FRIDAY_EXIT_CLASSES: tuple[tuple[str, str], ...] = (
+        ("NSE_INDEX", "15:40"),
+        ("BSE_INDEX", "15:40"),
+        ("MCX_COMMODITY", "23:30"),
+    )
+
+    def _run_friday_exit_checks() -> None:
+        """Friday weekend-risk auto-exit with catch-up semantics (per market class).
+
+        Fires when (class close − _FRIDAY_EXIT_LEAD_MIN) is reached and stays
+        eligible for retries until close + _FRIDAY_EXIT_GRACE_MIN minutes.
+        The date tracker entry is recorded only AFTER a fully successful sweep,
+        so a first-window failure, a partially closed book or a blocked main
+        loop is retried instead of silently leaving positions open over the
+        weekend. Warns once per (class, day) via Telegram while incomplete.
+        """
+        now_ist = datetime.now(IST)
+        if now_ist.weekday() != 4:  # Friday
+            return
+        today_key = now_ist.strftime("%Y-%m-%d")
+        for class_key, close_t in _FRIDAY_EXIT_CLASSES:
+            close_h, close_m = map(int, close_t.split(":"))
+            close_dt = now_ist.replace(
+                hour=close_h, minute=close_m, second=0, microsecond=0
+            )
+            target_dt = close_dt - timedelta(minutes=_FRIDAY_EXIT_LEAD_MIN)
+            deadline_dt = close_dt + timedelta(minutes=_FRIDAY_EXIT_GRACE_MIN)
+            if not target_dt <= now_ist <= deadline_dt:
+                continue
+
+            tracker_key = (class_key, today_key)
+            if tracker_key in _friday_exit_tracker:
+                continue
+
+            if not _friday_exit_lock.acquire(blocking=False):
+                continue  # another worker is already running this sweep
+            try:
+                if tracker_key in _friday_exit_tracker:
+                    continue
+                try:
+                    completed = exit_all_positions_friday(class_key)
+                except Exception as exc:
+                    completed = False
+                    log.error(
+                        "[scheduler] Friday weekend-risk exit raised for %s: %s",
+                        class_key,
+                        exc,
+                    )
+                if completed:
+                    _friday_exit_tracker.add(tracker_key)
+                else:
+                    log.warning(
+                        "[scheduler] Friday weekend-risk exit for %s incomplete — retrying"
+                        " within the close+%d min grace window",
+                        class_key,
+                        _FRIDAY_EXIT_GRACE_MIN,
+                    )
+                    if tracker_key not in _friday_exit_alerted:
+                        _friday_exit_alerted.add(tracker_key)
+                        try:
+                            from src.alerts.telegram_dispatcher import send_text
+
+                            send_text(
+                                f"⚠️ **Friday Auto-Exit incomplete** | `{class_key}` — weekend "
+                                f"risk: some open positions could not be squared off yet. "
+                                f"Bot will keep retrying until close "
+                                f"+ {_FRIDAY_EXIT_GRACE_MIN} min."
+                            )
+                        except Exception:
+                            pass
+            finally:
+                _friday_exit_lock.release()
+
+    def _friday_exit_watchdog() -> None:
+        """Daemon watchdog: drives the Friday sweep independently of the main
+        loop so long-running scans (LLM enrichment, market-close pipelines)
+        can never block the weekend-risk square-off."""
+        time.sleep(30)  # let scheduler warm-up finish first
+        while True:
+            try:
+                _run_friday_exit_checks()
+            except Exception as exc:  # never let the watchdog die
+                log.error("[Friday Exit] Watchdog iteration failed: %s", exc)
+            time.sleep(20)
+
+    threading.Thread(
+        target=_friday_exit_watchdog, daemon=True, name="friday-exit-watchdog"
+    ).start()
+
     try:
         while True:
             now_ts = time.time()
@@ -1817,6 +1926,12 @@ def start_scheduler(immediate: bool = False):
                 }
                 _expiry_exit_alerted = {
                     k for k in _expiry_exit_alerted if k[1] == str(current_date)
+                }
+                _friday_exit_tracker = {
+                    k for k in _friday_exit_tracker if k[1] == str(current_date)
+                }
+                _friday_exit_alerted = {
+                    k for k in _friday_exit_alerted if k[1] == str(current_date)
                 }
 
                 # Daily re-auth: refresh Shoonya token & Kite login if needed
@@ -1948,28 +2063,11 @@ def start_scheduler(immediate: bool = False):
                     except Exception as exc:
                         log.error("[scheduler] FII/DII fetcher exception: %s", exc)
 
-            # Friday Weekend Risk Auto-Exits
-            if now_ist.weekday() == 4:  # Friday
-                current_time_str = now_ist.strftime("%H:%M")
-                if (
-                    "15:35" <= current_time_str <= "15:40"
-                    and _last_friday_nse_exit_date != current_date
-                ):
-                    _last_friday_nse_exit_date = current_date
-                    try:
-                        exit_all_positions_friday("NSE_INDEX")
-                        exit_all_positions_friday("BSE_INDEX")
-                    except Exception as e:
-                        log.error("Friday auto-exit failed for NSE/BSE: %s", e)
-                elif (
-                    "23:25" <= current_time_str <= "23:30"
-                    and _last_friday_mcx_exit_date != current_date
-                ):
-                    _last_friday_mcx_exit_date = current_date
-                    try:
-                        exit_all_positions_friday("MCX_COMMODITY")
-                    except Exception as e:
-                        log.error("Friday auto-exit failed for MCX: %s", e)
+            # Friday Weekend Risk Auto-Exits.
+            # Catch-up semantics + success-only tracking live in _run_friday_exit_checks(),
+            # which is also driven by the dedicated "friday-exit-watchdog" thread so a
+            # blocked main loop can never miss the 15:35/23:25 IST square-off windows.
+            _run_friday_exit_checks()
 
             # Expiry Day Auto-Exits (1 min before market closing time for current expiry positions).
             # Catch-up semantics + success-only tracking live in _run_expiry_exit_checks(), which

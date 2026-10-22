@@ -26,15 +26,11 @@ logging.getLogger("urllib3.connectionpool").setLevel(logging.ERROR)
 _NEWSAPI_BASE = "https://newsapi.org/v2/everything"
 from config.settings import IST, NEWSAPI_KEY as _NEWSAPI_KEY
 
-# Map symbols to NewsAPI search queries (Indian-market focused)
+# Map symbols to NewsAPI search queries (Commodities only — NSE/BSE use constituent sentiment)
 _SYMBOL_NEWSAPI_QUERIES: dict[str, str] = {
-    "NIFTY": "Nifty OR Sensex India stock market NSE",
-    "BANKNIFTY": "Bank Nifty OR Nifty Bank banking stocks India",
-    "FINNIFTY": "Fin Nifty OR Nifty Financial Services India",
-    "MIDCPNIFTY": "Midcap Nifty OR Nifty Midcap India stock market",
-    "SENSEX": "Sensex OR BSE India stock market NSE",
     "GOLD": "\"Gold\" AND (MCX OR commodity)",
     "SILVER": "\"Silver\" AND (MCX OR commodity)",
+    "CRUDEOIL": "\"Crude Oil\" AND (MCX OR commodity)",
 }
 
 # ── TradingView News API ──────────────────────────────────────────────────
@@ -614,9 +610,19 @@ def fetch_news(symbol: str) -> dict:
     if cached is not None:
         return cached
 
-    sym = symbol.upper().strip()
+    sym = symbol.upper().strip().split()[0]
+    if sym in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"):
+        return {
+            "items": [],
+            "count_24h": 0,
+            "current_news_direction": "MIXED",
+            "news_score_current": 0.0,
+            "news_score_day": 0.0,
+            "bypassed": True,
+            "reason": "NSE/BSE symbols use mathematical constituent sentiment instead of news",
+        }
 
-    # Step 1: Fetch symbol-specific primary source
+    # Step 1: Fetch symbol-specific primary source (MCX Commodities)
     primary_items: list[dict] = []
     if sym in ("NATURALGAS", "CRUDEOIL"):
         tv_result = _fetch_tv_commodity_news(sym)
@@ -625,23 +631,10 @@ def fetch_news(symbol: str) -> dict:
             te_items = _fetch_te_naturalgas()
             x_items = _fetch_x_nginews()
             primary_items = primary_items + te_items + x_items
-    elif sym in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"):
-        icici_items = _fetch_icici_commentary()
-        all_items = icici_items
 
-        for item in all_items:
-            t = item["title"].lower()
-            if sym == "BANKNIFTY":
-                if any(
-                    w in t for w in ["bank", "nifty", "index", "benchmark", "indices"]
-                ):
-                    primary_items.append(item)
-            else:
-                primary_items.append(item)
-
-    # Step 2: Supplement with NewsAPI.org for ALL symbols (except NATURALGAS)
+    # Step 2: Supplement with NewsAPI.org for commodity symbols (except NATURALGAS)
     newsapi_items = []
-    if sym != "NATURALGAS":
+    if sym not in ("NATURALGAS", "NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"):
         newsapi_items = _fetch_newsapi_news(sym)
 
     # Step 3: Merge — deduplicate by title (fuzzy), prefer primary source order

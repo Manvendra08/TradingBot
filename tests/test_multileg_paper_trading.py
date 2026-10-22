@@ -243,6 +243,53 @@ class TestMultilegPnlAndSnapshotFixes:
             assert leg_row["status"] == "CLOSED"
             assert leg_row["exit_premium"] in (None, 0.0)
 
+    def test_insert_bull_put_spread_with_unilateral_breakeven(self):
+        """Verify that Bull Put Spreads with 0.0 or None upper breakeven insert cleanly without trigger violation."""
+        from src.models.schema import insert_multileg_trade_atomically
+
+        trade = {
+            "trade_ref": "T3",
+            "symbol": "SENSEX",
+            "structure": "BULL_PUT_SPREAD",
+            "strategy_type": "BULL_PUT_SPREAD",
+            "net_premium": 72.6,
+            "margin_req": 160000.0,
+            "total_pnl": 0.0,
+            "opened_at": "2026-10-21T11:21:22+00:00",
+            "closed_at": None,
+            "status": "OPEN",
+            "reason": "BULL_PUT_SPREAD entry",
+            "entry_reason": "BULL_PUT_SPREAD entry",
+            "exit_reason": None,
+            "profit_factor": 0.0,
+            "book_id": "BOOK-BULL-PUT-1",
+            "expiry": "2026-10-23",
+            "entry_underlying": 74121.34,
+            "exit_underlying": None,
+            "net_delta": 0.13,
+            "net_theta": 25.0,
+            "net_vega": -10.0,
+            "max_profit": 72.6,
+            "max_loss": 427.4,
+            "breakeven_upper": 0.0,  # Legacy 0.0 or None should be normalized cleanly
+            "breakeven_lower": 73427.4,
+            "profit_target_pct": 0.5,
+            "stop_loss_pct": 1.5,
+            "time_decay_exit_dte": 1,
+            "adjustment_count": 0,
+            "confidence_score": 78,
+            "entry_quality_score": 45,
+            "digest_id": "digest-bps",
+            "ai_model_name": "Claude-Models",
+            "snapshot_id": "snap-bps",
+        }
+        legs = [
+            {"side": "SELL", "lots": 1, "strike": 73500.0, "option_type": "PE", "entry_premium": 120.8, "exit_premium": 0.0, "delta": -0.26, "theta": -7.0, "vega": 11.0, "iv": 19.0, "rationale": "sell pe", "status": "OPEN", "closed_at": None, "exit_reason": None, "broker_order_id": None},
+            {"side": "BUY", "lots": 1, "strike": 73000.0, "option_type": "PE", "entry_premium": 48.2, "exit_premium": 0.0, "delta": -0.13, "theta": 3.0, "vega": 6.0, "iv": 19.5, "rationale": "buy pe", "status": "OPEN", "closed_at": None, "exit_reason": None, "broker_order_id": None},
+        ]
+        trade_id = insert_multileg_trade_atomically(trade, legs)
+        assert trade_id > 0
+
 
 class TestDualModeDecisionEngineAndConfidenceDecoupling:
     """Tests for Dual-Mode Decision Engine & Multi-Leg Confidence Decoupling."""

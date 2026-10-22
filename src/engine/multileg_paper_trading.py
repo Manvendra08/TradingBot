@@ -1439,6 +1439,27 @@ def _attempt_new_entry(
         leg_rats = [l.get("rationale") for l in legs if l.get("rationale")]
         entry_reason = "; ".join(leg_rats) if leg_rats else f"{strategy_type} entry"
 
+    be_upper = risk_profile.get("breakeven_upper")
+    if be_upper is None:
+        be_upper = getattr(verdict, "breakeven_upper", None)
+    if be_upper is not None and float(be_upper) <= 0:
+        be_upper = None
+
+    be_lower = risk_profile.get("breakeven_lower")
+    if be_lower is None:
+        be_lower = getattr(verdict, "breakeven_lower", None)
+    if be_lower is not None and float(be_lower) <= 0:
+        be_lower = None
+
+    if be_upper is not None and be_lower is not None and float(be_upper) < float(be_lower):
+        st_upper = str(strategy_type).upper()
+        if "PUT" in st_upper:
+            be_upper = None
+        elif "CALL" in st_upper:
+            be_lower = None
+        else:
+            be_upper, be_lower = max(float(be_upper), float(be_lower)), min(float(be_upper), float(be_lower))
+
     trade_dict = {
         "trade_ref": 0,  # Will be set by DB if needed
         "symbol": symbol,
@@ -1463,8 +1484,8 @@ def _attempt_new_entry(
         "net_vega": book_greeks.get("net_vega", verdict.net_vega),
         "max_profit": risk_profile.get("max_profit") if risk_profile.get("max_profit") is not None else getattr(verdict, "max_profit", 0.0),
         "max_loss": risk_profile.get("max_loss") if risk_profile.get("max_loss") is not None else getattr(verdict, "max_loss", 0.0),
-        "breakeven_upper": risk_profile.get("breakeven_upper") if risk_profile.get("breakeven_upper") is not None else getattr(verdict, "breakeven_upper", 0.0),
-        "breakeven_lower": risk_profile.get("breakeven_lower") if risk_profile.get("breakeven_lower") is not None else getattr(verdict, "breakeven_lower", 0.0),
+        "breakeven_upper": be_upper,
+        "breakeven_lower": be_lower,
         "profit_target_pct": verdict.profit_target_pct,
         "stop_loss_pct": verdict.stop_loss_pct,
         "time_decay_exit_dte": verdict.time_decay_exit_dte,

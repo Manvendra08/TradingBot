@@ -241,10 +241,10 @@ FETCHER_PRIORITY = {
     "FINNIFTY": ["niftytrader", "shoonya", "sensibull", "dhan_headless", "nse_public", "moneycontrol"],
     "MIDCPNIFTY": ["niftytrader", "shoonya", "sensibull", "dhan_headless", "nse_public", "moneycontrol"],
     "SENSEX": ["niftytrader", "shoonya", "sensibull", "dhan_headless", "nse_public", "moneycontrol"],
-    "NATURALGAS": ["dhan_commodity", "shoonya", "niftytrader", "dhan_headless", "moneycontrol", "dhan"],
-    "CRUDEOIL": ["dhan_commodity", "shoonya", "niftytrader", "dhan_headless", "moneycontrol", "dhan"],
-    "GOLD": ["dhan_commodity", "shoonya", "niftytrader", "dhan_headless", "moneycontrol", "dhan"],
-    "SILVER": ["dhan_commodity", "shoonya", "niftytrader", "dhan_headless", "moneycontrol", "dhan"],
+    "NATURALGAS": ["dhan_commodity", "shoonya", "niftytrader", "moneycontrol", "dhan"],
+    "CRUDEOIL": ["dhan_commodity", "shoonya", "niftytrader", "moneycontrol", "dhan"],
+    "GOLD": ["dhan_commodity", "shoonya", "niftytrader", "moneycontrol", "dhan"],
+    "SILVER": ["dhan_commodity", "shoonya", "niftytrader", "moneycontrol", "dhan"],
 }
 
 LOG_LEVEL = "INFO"

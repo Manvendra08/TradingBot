@@ -335,8 +335,8 @@ def compute_book_risk_profile(
     max_profit = max(0.0, net_premium)
     max_loss = 0.0
     planned_max_loss = 0.0
-    breakeven_upper = 0.0
-    breakeven_lower = 0.0
+    breakeven_upper = None
+    breakeven_lower = None
 
     sl_mult = min(max(float(stop_loss_pct or 1.5), 0.5), 3.0)
 
@@ -350,22 +350,22 @@ def compute_book_risk_profile(
         spread_width = max(pe_width, ce_width)
         max_loss = max(0.0, spread_width - net_premium)
         planned_max_loss = min(max_loss, net_premium * sl_mult) if max_loss > 0 else (net_premium * sl_mult)
-        breakeven_upper = short_ce_strike + net_premium if short_ce_strike else 0
-        breakeven_lower = short_pe_strike - net_premium if short_pe_strike else 0
+        breakeven_upper = short_ce_strike + net_premium if short_ce_strike else None
+        breakeven_lower = short_pe_strike - net_premium if short_pe_strike else None
 
     elif strategy_type == "SHORT_STRANGLE":
         max_loss = underlying * 0.5  # practical cap (unlimited in theory) for SPAN margin / tail risk
         planned_max_loss = net_premium * sl_mult  # planned operational risk governed by SL
-        breakeven_upper = short_ce_strike + net_premium if short_ce_strike else 0
-        breakeven_lower = short_pe_strike - net_premium if short_pe_strike else 0
+        breakeven_upper = short_ce_strike + net_premium if short_ce_strike else None
+        breakeven_lower = short_pe_strike - net_premium if short_pe_strike else None
 
     elif strategy_type == "SHORT_STRADDLE":
         max_loss = underlying * 0.5
         planned_max_loss = net_premium * sl_mult
         # Straddle: same strike for both; use CE strike as reference
         ref_strike = short_ce_strike or short_pe_strike
-        breakeven_upper = ref_strike + net_premium if ref_strike else 0
-        breakeven_lower = ref_strike - net_premium if ref_strike else 0
+        breakeven_upper = ref_strike + net_premium if ref_strike else None
+        breakeven_lower = ref_strike - net_premium if ref_strike else None
 
     elif strategy_type in ("BEAR_CALL_SPREAD", "BULL_PUT_SPREAD"):
         ce_strikes = sorted(float(l["strike"]) for l in ce_legs)
@@ -376,11 +376,13 @@ def compute_book_risk_profile(
             planned_max_loss = min(max_loss, net_premium * sl_mult) if max_loss > 0 else (net_premium * sl_mult)
             short_strike = min(ce_strikes)
             breakeven_upper = short_strike + net_premium
+            breakeven_lower = None
         elif strategy_type == "BULL_PUT_SPREAD" and len(pe_strikes) >= 2:
             spread_width = pe_strikes[-1] - pe_strikes[0]
             max_loss = max(0.0, spread_width - net_premium)
             planned_max_loss = min(max_loss, net_premium * sl_mult) if max_loss > 0 else (net_premium * sl_mult)
             short_strike = max(pe_strikes)
+            breakeven_upper = None
             breakeven_lower = short_strike - net_premium
         else:
             max_loss = underlying * 0.5
@@ -391,8 +393,8 @@ def compute_book_risk_profile(
         # covers the spread. PE side unlimited if market drops below PE strike.
         max_loss = underlying * 0.5  # practical cap on PE-side risk
         planned_max_loss = net_premium * sl_mult
-        breakeven_upper = short_ce_strike + net_premium if short_ce_strike else 0
-        breakeven_lower = short_pe_strike - net_premium if short_pe_strike else 0
+        breakeven_upper = short_ce_strike + net_premium if short_ce_strike else None
+        breakeven_lower = short_pe_strike - net_premium if short_pe_strike else None
 
     elif strategy_type == "CUSTOM":
         all_strikes = [float(l["strike"]) for l in legs]
@@ -402,20 +404,24 @@ def compute_book_risk_profile(
         else:
             max_loss = underlying * 0.5
         planned_max_loss = net_premium * sl_mult
-        breakeven_upper = short_ce_strike + net_premium if short_ce_strike else 0
-        breakeven_lower = short_pe_strike - net_premium if short_pe_strike else 0
+        breakeven_upper = short_ce_strike + net_premium if short_ce_strike else None
+        breakeven_lower = short_pe_strike - net_premium if short_pe_strike else None
 
     else:
         # Fallback for unknown types
         max_loss = underlying * 0.5
         planned_max_loss = net_premium * sl_mult
 
+    if breakeven_upper is not None and breakeven_lower is not None:
+        if breakeven_upper < breakeven_lower:
+            breakeven_upper, breakeven_lower = breakeven_lower, breakeven_upper
+
     return {
         "max_profit": float(round(max(0.0, max_profit), 2)),
         "max_loss": float(round(max(0.0, max_loss), 2)),
         "planned_max_loss": float(round(max(0.0, planned_max_loss), 2)),
-        "breakeven_upper": float(round(breakeven_upper, 2)),
-        "breakeven_lower": float(round(breakeven_lower, 2)),
+        "breakeven_upper": float(round(breakeven_upper, 2)) if breakeven_upper is not None else None,
+        "breakeven_lower": float(round(breakeven_lower, 2)) if breakeven_lower is not None else None,
     }
 
 
@@ -435,7 +441,8 @@ def calculate_combined_margin(
       margin = max_loss * lot_size * total_lots * 1.25
 
     For unhedged/naked short legs or fallback, static 12x SELL margin multiplier is used.
-    Result is capped at MAX_BOOK_MARGIN from config.
+    Result is returned UNCLAMPED — the MAX_BOOK_MARGIN cap is enforced by the
+    risk gates (paper/live entry + multileg_validator), not by this estimator.
     """
     lot_size = LOT_SIZES.get(symbol, 1)
     SELL_MARGIN_MULTIPLIER = 12
@@ -465,13 +472,18 @@ def calculate_combined_margin(
         multiplier = SELL_MARGIN_MULTIPLIER if side == "SELL" else 1.0
         naked_margin += premium * lot_size * lots * multiplier
 
+    # NOTE: the raw estimate is returned UNCLAMPED on purpose — the book-level
+    # cap (MAX_BOOK_MARGIN) is enforced by the risk gates that compare
+    # `combined_margin > MAX_BOOK_MARGIN` (paper/live entry + validator).
+    # Clamping the estimate here previously made those comparisons no-ops for
+    # oversized books (a ₹7.6M book reported exactly ₹75L and passed).
     if risk_profile and underlying > 0:
         max_loss = risk_profile.get("max_loss", 0.0)
         if 0.0 < max_loss < (underlying * 0.45):
             hedged_margin = max_loss * lot_size * total_lots * 1.25
-            return float(min(hedged_margin, naked_margin, MAX_BOOK_MARGIN))
+            return float(min(hedged_margin, naked_margin))
 
-    return float(min(naked_margin, MAX_BOOK_MARGIN))
+    return float(naked_margin)
 
 
 # ── Entry Quality Scoring ─────────────────────────────────────────
@@ -690,6 +702,18 @@ def score_entry_quality(
 
 # ── Conflict Detection ────────────────────────────────────────────
 
+def _normalize_structure_type(strategy_name: str) -> str:
+    """Normalize strategy/structure type strings to canonical keys."""
+    s = str(strategy_name or "").upper().strip()
+    if s in ("TFSS_LEGACY", "TFSS_STRANGLE", "STRANGLE"):
+        return "SHORT_STRANGLE"
+    if s in ("STRADDLE",):
+        return "SHORT_STRADDLE"
+    if s in ("CONDOR",):
+        return "IRON_CONDOR"
+    return s
+
+
 def check_book_conflicts(
     symbol: str,
     proposed_strategy: str,
@@ -698,34 +722,58 @@ def check_book_conflicts(
     """
     Check if a proposed strategy conflicts with any existing open books.
 
+    Invariants:
+    1. Structure Exclusivity: Only ONE position of a particular structure type
+       can be open at any time for the given symbol. A new position of the same
+       structure type is allowed only if there is no open position for that type.
+       Different structure types (e.g. Iron Condor + Short Strangle) can be open
+       concurrently.
+    2. Mutually Conflicting Strategies: Strategies defined in CONFLICTING_STRATEGIES
+       (e.g. BULL_PUT_SPREAD vs BEAR_CALL_SPREAD) cannot be open concurrently.
+
     Parameters
     ----------
     symbol : str
     proposed_strategy : str
-        Strategy type key (e.g. "BULL_PUT_SPREAD").
+        Strategy type key (e.g. "IRON_CONDOR", "BULL_PUT_SPREAD").
     existing_books : list[dict]
-        Each book must have at least: strategy_type, status.
+        Each book must have at least: strategy_type (or structure), status.
         Only books with status == "OPEN" are checked.
 
     Returns
     -------
     (conflict_found, reason) — reason is empty string if no conflict.
     """
-    conflict_map = CONFLICTING_STRATEGIES.get(proposed_strategy, {})
-    conflicts_with = set(conflict_map.get("conflicts_with", []))
-
-    if not conflicts_with:
-        return False, ""
+    norm_proposed = _normalize_structure_type(proposed_strategy)
+    conflict_map = CONFLICTING_STRATEGIES.get(norm_proposed, {})
+    conflicts_with = {
+        _normalize_structure_type(s)
+        for s in conflict_map.get("conflicts_with", [])
+    }
 
     for book in existing_books:
         if book.get("status") != "OPEN":
             continue
         if book.get("symbol") != symbol:
             continue
-        existing_type = book.get("strategy_type", "")
-        if existing_type in conflicts_with:
+
+        existing_raw = str(book.get("strategy_type") or book.get("structure") or "").strip()
+        norm_existing = _normalize_structure_type(existing_raw)
+
+        # 1. Structure Exclusivity Rule: Disallow multiple positions of the exact same structure type
+        if norm_existing == norm_proposed:
             reason = (
-                f"Conflicts with existing {existing_type} book on {symbol} "
+                f"Structure exclusivity: A {existing_raw or norm_existing} position is already open on {symbol} "
+                f"(book_id={book.get('book_id', 'unknown')}). "
+                f"Only one open position per structure type is permitted."
+            )
+            log.info("multileg conflict: %s", reason)
+            return True, reason
+
+        # 2. Conflicting directional strategies (e.g. Bull Put Spread vs Bear Call Spread)
+        if norm_existing in conflicts_with:
+            reason = (
+                f"Conflicts with existing {existing_raw} book on {symbol} "
                 f"(book_id={book.get('book_id', 'unknown')})"
             )
             log.warning("multileg conflict: %s", reason)

@@ -160,15 +160,21 @@ def step_signal_core_oi(ctx: PipelineContext) -> StepResult:
                 "%s: Boosting 'Low Conviction' confidence from %d to %d due to high momentum (%d)",
                 ctx.symbol, confidence, effective_min_conf, momentum
             )
-            confidence = effective_min_conf
             # Defensive in-place mutation: preserve references held by other
             # pipeline steps, but only overwrite if the value hasn't changed
             # since we read it (CAS-style guard against concurrent runs).
             intel_dict = ctx.scan_context.setdefault("intel", {})
+            orig_conf = confidence  # pre-boost value the boost decision was based on
+            confidence = effective_min_conf
             old_conf = int(intel_dict.get("confidence") or 0)
-            if old_conf == confidence - (effective_min_conf - confidence):
-                # Nobody else changed it — safe to update
+            if old_conf == orig_conf:
+                # Nobody else changed it — safe to overwrite with the boost
                 intel_dict["confidence"] = confidence
+            else:
+                log.debug(
+                    "%s: skipped intel confidence sync (read %s, expected %s)",
+                    ctx.symbol, old_conf, orig_conf,
+                )
         elif not PAPER_RESEARCH_MODE:
             # Only block in non-research mode; research mode allows low-conf through
             return StepResult(
@@ -1142,7 +1148,16 @@ def step_trend_alignment_tf(ctx: PipelineContext) -> StepResult:
     if not any(k in chart_indicators for k in ("1h", "3h")):
         tf_data = next(iter(chart_indicators.values()), {}) if chart_indicators else {}
     pay_1h = tf_data.get("1h") or {}
-    ohlc_1h = pay_1h.get("ohlc") or {}
+    # Confirm against the last CLOSED 1H candle, never the forming one:
+    # chart_fetcher's live "ohlc" mutates intra-bar, so conditioning an entry
+    # on it would let a mid-bar repaint drive entry timing (1H is exit/timing
+    # role only per timeframe separation rules).
+    ohlc_1h = (
+        pay_1h.get("last_closed_ohlc")
+        or pay_1h.get("prev_ohlc")
+        or pay_1h.get("ohlc")
+        or {}
+    )
 
     one_h_confirm = False
     c_1h_open = float(ohlc_1h.get("open") or 0)
@@ -1225,7 +1240,7 @@ def step_heavyweight_alignment(ctx: PipelineContext) -> StepResult:
             data={}
         )
 
-    ws = ctx.scan_context.get("index_weights_sentiment")
+    ws = ctx.scan_context.get("index_weights_sentiment") or ctx.scan_context.get("heavyweight_intel")
     if not ws:
         return StepResult(
             name="heavyweight_alignment",
@@ -1236,25 +1251,46 @@ def step_heavyweight_alignment(ctx: PipelineContext) -> StepResult:
         )
 
     weighted_momentum = float(ws.get("weighted_momentum", 0.0))
+    banking_drag = float(ws.get("banking_drag", 0.0))
+    hw_conflict = bool(ws.get("heavyweight_conflict", False))
     passed = True
-    reason = f"Heavyweight momentum {weighted_momentum:.3f}% is aligned with trade direction {direction}"
+    reason = f"Heavyweight momentum {weighted_momentum:+.3f}% is aligned with trade direction {direction}"
 
     from config.settings import HEAVYWEIGHT_THRESHOLDS
     threshold = HEAVYWEIGHT_THRESHOLDS.get(symbol, 0.50)
 
-    if direction == "LONG" and weighted_momentum <= -threshold:
-        passed = False
-        reason = f"LONG trade blocked: Index heavyweight momentum is deeply negative ({weighted_momentum:.3f}%, threshold={-threshold:.2f}%)"
-    elif direction == "SHORT" and weighted_momentum >= threshold:
-        passed = False
-        reason = f"SHORT trade blocked: Index heavyweight momentum is deeply positive ({weighted_momentum:.3f}%, threshold={threshold:.2f}%)"
+    if direction == "LONG":
+        if weighted_momentum <= -threshold:
+            passed = False
+            reason = f"LONG trade blocked: Index heavyweight momentum is deeply negative ({weighted_momentum:+.3f}%, threshold={-threshold:.2f}%)"
+        elif symbol == "NIFTY" and banking_drag <= -0.80:
+            passed = False
+            reason = f"LONG trade blocked: Severe banking sector drag ({banking_drag:+.2f}%) opposes bullish move"
+        elif hw_conflict and weighted_momentum < 0:
+            passed = False
+            reason = f"LONG trade blocked: Key heavyweight pillars opposing upward index movement"
+    elif direction == "SHORT":
+        if weighted_momentum >= threshold:
+            passed = False
+            reason = f"SHORT trade blocked: Index heavyweight momentum is deeply positive ({weighted_momentum:+.3f}%, threshold={threshold:.2f}%)"
+        elif symbol == "NIFTY" and banking_drag >= 0.80:
+            passed = False
+            reason = f"SHORT trade blocked: Strong banking sector thrust ({banking_drag:+.2f}%) opposes bearish move"
+        elif hw_conflict and weighted_momentum > 0:
+            passed = False
+            reason = f"SHORT trade blocked: Key heavyweight pillars supporting index against downward move"
 
     return StepResult(
         name="heavyweight_alignment",
         passed=passed,
         score=100 if passed else 0,
         reason=reason,
-        data={"weighted_momentum": weighted_momentum, "direction": direction}
+        data={
+            "weighted_momentum": weighted_momentum,
+            "banking_drag": banking_drag,
+            "direction": direction,
+            "heavyweight_summary": ws.get("heavyweight_summary", ""),
+        }
     )
 
 

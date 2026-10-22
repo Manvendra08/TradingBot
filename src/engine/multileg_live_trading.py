@@ -1921,6 +1921,7 @@ def _attempt_new_live_entry(
                 )
                 cancelled_ok = False
                 filled_qty = 0
+                fill_verified = False
                 if not shadow_mode and kite:
                     try:
                         c_status, filled_qty = _cancel_pending_order(kite, order_id)
@@ -1930,6 +1931,29 @@ def _attempt_new_live_entry(
                         log.error(
                             "[multileg-live] %s: cancel order %s failed: %s",
                             symbol, order_id, cancel_err
+                        )
+
+                if not cancelled_ok:
+                    # Verify the REAL filled quantity from broker order history.
+                    # The rollback squares off exactly what traded — assuming a
+                    # full fill when the order actually never traded would fire
+                    # an offsetting order and mint a naked position.
+                    if not shadow_mode and kite:
+                        try:
+                            _, verified_filled = get_order_execution_details(kite, order_id)
+                            if verified_filled and verified_filled > 0:
+                                filled_qty = max(filled_qty, int(verified_filled))
+                                fill_verified = True
+                        except Exception as verify_err:
+                            log.error(
+                                "[multileg-live] %s: fill verification for %s failed: %s",
+                                symbol, order_id, verify_err
+                            )
+                    if not fill_verified:
+                        log.error(
+                            "[multileg-live] %s: leg %d fill quantity UNKNOWN for order %s "
+                            "— recording 0 filled; reconciliation sync must confirm actual position",
+                            symbol, i + 1, order_id,
                         )
 
                 if not cancelled_ok:
@@ -1955,7 +1979,7 @@ def _attempt_new_live_entry(
                         "broker_order_id": order_id,
                         "gtt_order_id": None,
                         "trade_mode": trade_mode,
-                        "filled_quantity": filled_qty if filled_qty > 0 else quantity,
+                        "filled_quantity": filled_qty,
                     })
                 failed = True
                 break
@@ -2128,6 +2152,21 @@ def _attempt_new_live_entry(
         leg_rats = [l.get("rationale") for l in placed_legs if l.get("rationale")]
         entry_reason = "; ".join(leg_rats) if leg_rats else f"{strategy_type} entry"
 
+    be_upper = getattr(verdict, "breakeven_upper", None)
+    if be_upper is not None and float(be_upper) <= 0:
+        be_upper = None
+    be_lower = getattr(verdict, "breakeven_lower", None)
+    if be_lower is not None and float(be_lower) <= 0:
+        be_lower = None
+    if be_upper is not None and be_lower is not None and float(be_upper) < float(be_lower):
+        st_upper = str(strategy_type).upper()
+        if "PUT" in st_upper:
+            be_upper = None
+        elif "CALL" in st_upper:
+            be_lower = None
+        else:
+            be_upper, be_lower = max(float(be_upper), float(be_lower)), min(float(be_upper), float(be_lower))
+
     trade_dict = {
         "trade_ref": 0,
         "symbol": symbol,
@@ -2152,8 +2191,8 @@ def _attempt_new_live_entry(
         "net_vega": book_greeks.get("net_vega", verdict.net_vega),
         "max_profit": verdict.max_profit,
         "max_loss": verdict.max_loss,
-        "breakeven_upper": verdict.breakeven_upper,
-        "breakeven_lower": verdict.breakeven_lower,
+        "breakeven_upper": be_upper,
+        "breakeven_lower": be_lower,
         "profit_target_pct": verdict.profit_target_pct,
         "stop_loss_pct": verdict.stop_loss_pct,
         "time_decay_exit_dte": verdict.time_decay_exit_dte,
@@ -2275,8 +2314,21 @@ def _rollback_placed_legs(
         strike = leg.get("strike", 0.0)
         option_type = leg.get("option_type", "")
         lots = leg.get("lots", 1)
-        quantity = int(leg.get("filled_quantity") or (lots * lot_size))
+        # filled_quantity is authoritative whenever the caller recorded it:
+        # falling back to full lots when the recorded fill is 0 would mint an
+        # offsetting order for a position the broker never opened.
+        if "filled_quantity" in leg:
+            quantity = int(leg.get("filled_quantity") or 0)
+        else:
+            quantity = int(lots * lot_size)
         if quantity <= 0:
+            log.error(
+                "[multileg-live] %s: nothing to square off — %s %s had filled_quantity=0 at broker",
+                symbol, option_type, strike,
+            )
+            rollback_results.append({
+                "strike": strike, "option_type": option_type, "status": "NOT_FILLED"
+            })
             continue
 
         if not kite and not shadow_mode:

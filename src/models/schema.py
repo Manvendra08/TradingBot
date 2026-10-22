@@ -516,6 +516,10 @@ def get_conn(read_only: bool = False, *args, **kwargs):
             conn.execute("PRAGMA busy_timeout = 60000")
             conn.execute("PRAGMA journal_mode = WAL")
             conn.execute("PRAGMA synchronous = NORMAL")
+            # The schema's declared FK (multi_leg_legs -> multi_leg_trades, ON
+            # DELETE CASCADE) is only ever ENFORCED when this per-connection
+            # pragma runs — the DDL-string PRAGMA does not persist.
+            conn.execute("PRAGMA foreign_keys = ON")
             conn.row_factory = sqlite3.Row
             if not read_only:
                 conn.execute("BEGIN IMMEDIATE")
@@ -2401,6 +2405,24 @@ def insert_multi_leg_trade(trade: dict) -> int:
         trade["snapshot_id"] = None
     trade["trade_mode"] = str(trade.get("trade_mode") or "PAPER").upper()
     trade.setdefault("structural_invalidation_spot", None)
+
+    bu = trade.get("breakeven_upper")
+    bl = trade.get("breakeven_lower")
+    if bu is not None and float(bu) <= 0:
+        bu = None
+    if bl is not None and float(bl) <= 0:
+        bl = None
+    if bu is not None and bl is not None and float(bu) < float(bl):
+        st = str(trade.get("strategy_type") or trade.get("structure") or "").upper()
+        if "PUT" in st:
+            bu = None
+        elif "CALL" in st:
+            bl = None
+        else:
+            bu, bl = max(float(bu), float(bl)), min(float(bu), float(bl))
+    trade["breakeven_upper"] = bu
+    trade["breakeven_lower"] = bl
+
     sql = """
         INSERT INTO multi_leg_trades
             (trade_ref, symbol, structure, net_premium, margin_req, total_pnl,
@@ -2472,6 +2494,24 @@ def insert_multileg_trade_atomically(trade: dict, legs: list[dict]) -> int:
     # invisible to the live monitor and got closed DB-only by the paper runner.
     trade["trade_mode"] = str(trade.get("trade_mode") or "PAPER").upper()
     trade.setdefault("structural_invalidation_spot", None)
+
+    bu = trade.get("breakeven_upper")
+    bl = trade.get("breakeven_lower")
+    if bu is not None and float(bu) <= 0:
+        bu = None
+    if bl is not None and float(bl) <= 0:
+        bl = None
+    if bu is not None and bl is not None and float(bu) < float(bl):
+        st = str(trade.get("strategy_type") or trade.get("structure") or "").upper()
+        if "PUT" in st:
+            bu = None
+        elif "CALL" in st:
+            bl = None
+        else:
+            bu, bl = max(float(bu), float(bl)), min(float(bu), float(bl))
+    trade["breakeven_upper"] = bu
+    trade["breakeven_lower"] = bl
+
     with get_conn() as conn:
         trade_sql = """
             INSERT INTO multi_leg_trades
@@ -2592,6 +2632,7 @@ def close_book(
             lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_sym, 1))
             computed_pnl = 0.0
             closed_exit_ids = set()
+            unknown_exit_leg = False
             for le in leg_exits:
                 lid = int(le.get("id") or 0)
                 ep = float(le.get("exit_premium") or 0.0)
@@ -2602,6 +2643,13 @@ def close_book(
                 side = (l.get("side") or "SELL").upper()
                 entry_premium = float(l.get("entry_premium") or 0.0)
                 lots = int(l.get("lots") or 1)
+                # A 0.0 exit premium is a missing fill price, never a real
+                # premium. Trusting it books the full entry premium as profit
+                # on SELL legs (phantom windfall) — reject the leg math and
+                # fall back to the caller's trusted total when any exit is unknown.
+                if ep <= 0.0:
+                    unknown_exit_leg = True
+                    continue
                 leg_pnl = (entry_premium - ep) if side == "SELL" else (ep - entry_premium)
                 computed_pnl += leg_pnl * lot_size * lots
 
@@ -2612,8 +2660,20 @@ def close_book(
                     entry_premium = float(l.get("entry_premium") or 0.0)
                     ep = float(l.get("exit_premium") or 0.0)
                     lots = int(l.get("lots") or 1)
+                    if ep <= 0.0:
+                        unknown_exit_leg = True
+                        continue
                     leg_pnl = (entry_premium - ep) if side == "SELL" else (ep - entry_premium)
                     computed_pnl += leg_pnl * lot_size * lots
+
+            if unknown_exit_leg:
+                log.warning(
+                    "close_book: book %s has legs with unknown/zero exit premium — "
+                    "leg-math recomputation discarded (would fabricate P&L); "
+                    "falling back to caller-supplied total_pnl",
+                    book_id,
+                )
+                computed_pnl = None
 
         # Prefer caller-supplied total_pnl only when it came from a trusted
         # realized-close path; otherwise use recomputed leg math.

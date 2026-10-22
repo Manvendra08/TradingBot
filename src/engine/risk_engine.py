@@ -103,8 +103,11 @@ def _check_risk_limits_for_table(
     if trades_table not in ("paper_trades", "live_trades"):
         raise ValueError(f"Unexpected table: {trades_table}")
 
-    # Gemini Spark paper trade execution operates completely autonomously
-    if setup_type and "GEMINI" in str(setup_type).upper():
+    # Gemini Spark paper trade execution operates completely autonomously.
+    # Exact-match set — a substring check (e.g. "GEMINI" in name) would let
+    # arbitrary setup types that merely mention the token bypass ALL risk gates.
+    gemini_autonomous_setups = {"GEMINI_SPARK", "GEMINIAI", "GEMINI_AI"}
+    if setup_type and str(setup_type).upper() in gemini_autonomous_setups:
         return True, "OK (Gemini Spark autonomous execution)", "OK"
 
     # 0a. Check 0DTE entry cutoff

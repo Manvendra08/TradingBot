@@ -555,7 +555,9 @@ def evaluate_and_cache_news(
     from src.fetchers.news_fetcher import fetch_news
     from config.symbol_classes import is_market_open_for_news
 
-    targets = symbols or list(WATCH_SYMBOLS)
+    raw_targets = symbols or list(WATCH_SYMBOLS)
+    # Exclusively evaluate commodity symbols (NSE/BSE use constituent sentiment, no news)
+    targets = [s for s in raw_targets if s.upper().strip().split()[0] not in _INDEX_SYMBOLS]
     if only_open_markets:
         now_ist = datetime.now(IST)
         open_targets = [s for s in targets if is_market_open_for_news(s, now_ist)]
@@ -568,7 +570,7 @@ def evaluate_and_cache_news(
             )
         if not open_targets:
             log.info(
-                "[news_worker] All target markets closed at %s IST — news evaluation cycle skipped",
+                "[news_worker] All target commodity markets closed at %s IST — news evaluation cycle skipped",
                 now_ist.strftime("%H:%M:%S"),
             )
             return {}
@@ -766,6 +768,20 @@ def get_cached_news_sentiment(
     If age > max_age_minutes (4 hours default), sentiment decays to 0.0 (neutral).
     """
     sym = symbol.upper().strip().split()[0]
+    if sym in _INDEX_SYMBOLS:
+        return {
+            "items": [],
+            "count_24h": 0,
+            "current_news_direction": "MIXED",
+            "news_score_current": 0.0,
+            "news_score_day": 0.0,
+            "evaluator": None,
+            "reason": "NSE/BSE symbols use mathematical constituent sentiment instead of news",
+            "age_minutes": None,
+            "evaluated_at": None,
+            "cached": True,
+            "bypassed": True,
+        }
 
     global _LAST_DISK_MTIME
     data: dict[str, Any] | None = None
@@ -842,9 +858,10 @@ def ensure_news_worker_ready(max_age_seconds: int = RECENCY_THRESHOLD_SECONDS, f
     """
     from config.symbol_classes import is_market_open_for_news
     now_ist = datetime.now(IST)
-    if not force and not any(is_market_open_for_news(s, now_ist) for s in WATCH_SYMBOLS):
+    commodity_symbols = [s for s in WATCH_SYMBOLS if s.upper().strip().split()[0] not in _INDEX_SYMBOLS]
+    if not force and not any(is_market_open_for_news(s, now_ist) for s in commodity_symbols):
         log.info(
-            "[news_worker] Pre-pipeline news check: all target markets currently closed at %s IST — skipping pre-pipeline news run.",
+            "[news_worker] Pre-pipeline news check: all target commodity markets currently closed at %s IST — skipping pre-pipeline news run.",
             now_ist.strftime("%H:%M:%S"),
         )
         return False

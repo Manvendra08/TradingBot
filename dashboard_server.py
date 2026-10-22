@@ -2523,9 +2523,11 @@ async def get_settings():
 
 @app.post("/api/settings", dependencies=[Depends(authenticate)])
 async def post_settings(data: dict):
-    from config.runtime_config import save_runtime_config
+    from config.runtime_config import update_runtime_config
 
-    save_runtime_config(data)
+    # Partial-merge persist: replacing the whole file would silently DROP every
+    # key absent from the request body (irreversible settings wipe).
+    update_runtime_config(data)
     return {"status": "SUCCESS", "message": "Runtime settings updated successfully"}
 
 

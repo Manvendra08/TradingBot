@@ -232,7 +232,8 @@ class TestRouterHeadlessIntegration:
 
     def test_fetcher_priority_includes_headless(self):
         from src.fetchers.router import _priority_for
-        assert "dhan_headless" in _priority_for("NATURALGAS")
+        assert "dhan_headless" in _priority_for("NIFTY")
+        assert "dhan_headless" not in _priority_for("NATURALGAS")
 
     def test_fetcher_priority_includes_moneycontrol(self):
         from src.fetchers.router import _priority_for
