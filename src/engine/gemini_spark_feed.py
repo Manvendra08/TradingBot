@@ -277,17 +277,30 @@ def _is_setup_inactive(setup: dict[str, Any]) -> bool:
     Inactive setups must NEVER trigger new trade entries.
     """
     status_upper = str(setup.get("status", "")).upper()
-    invalidation_ist = str(setup.get("invalidation_time_ist", "")).upper()
+    invalidation_ist = str(setup.get("invalidation_time_ist", "")).strip()
     
     inactive_keywords = (
-        "CLOSED", "HIT", "TARGET", "MISSED", "CANCELLED", "INVALID", "EXPIRED", "STOP_LOSS_HIT", "SL_HIT"
+        "CLOSED", "HIT", "TARGET", "MISSED", "CANCELLED", "CANCELED", "INVALID",
+        "SUPERSEDED", "EXPIRED", "STOP_LOSS_HIT", "SL_HIT", "SUBORDINATED",
+        "REJECTED", "ABANDONED", "NO_TRADE"
     )
     if any(k in status_upper for k in inactive_keywords):
         return True
-    if invalidation_ist == "CLOSED" or "CLOSED" in invalidation_ist:
+    if "CLOSED" in invalidation_ist.upper():
         return True
     if setup.get("remaining_lots") == 0:
         return True
+
+    # Check if invalidation timestamp has expired
+    if invalidation_ist:
+        try:
+            inv_dt = datetime.fromisoformat(invalidation_ist.replace("Z", "+00:00"))
+            now_dt = datetime.now(inv_dt.tzinfo) if inv_dt.tzinfo else datetime.now(timezone.utc)
+            if now_dt >= inv_dt:
+                return True
+        except Exception:
+            pass
+
     return False
 
 

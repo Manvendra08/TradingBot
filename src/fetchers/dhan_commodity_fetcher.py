@@ -760,8 +760,7 @@ class DhanCommodityFetcher(BaseFetcher):
 
             # Ensure the security ID matches the target futures contract month (e.g. July)
             # if options rolled over and we have no open near-month futures positions.
-            open_fut_expiry = _get_open_futures_expiry(base)
-            futures_target_expiry = open_fut_expiry or target_expiry
+            futures_target_expiry = target_expiry or _get_open_futures_expiry(base)
             resolved_sid = get_dhan_security_id(base, target_expiry=futures_target_expiry)
             if resolved_sid:
                 sid = resolved_sid
@@ -795,8 +794,7 @@ class DhanCommodityFetcher(BaseFetcher):
         # ── API-ONLY FALLBACK ──────────────────────────────────────────────────
         if not strikes:
             log.info("[dhan_commodity] HTML parsing failed or empty. Falling back to ScanX API scan for %s", base)
-            open_fut_expiry = _get_open_futures_expiry(base)
-            futures_target_expiry = open_fut_expiry or expiry
+            futures_target_expiry = expiry or target_expiry or _get_open_futures_expiry(base)
             secid = get_dhan_security_id(base, target_expiry=futures_target_expiry)
             if secid:
                 fl_payload = {"Data": {"Seg": 5, "Sid": int(secid), "Exp": 0}}
@@ -884,8 +882,7 @@ class DhanCommodityFetcher(BaseFetcher):
             log.warning("[dhan_commodity] no strikes parsed for %s", base)
             return None
 
-        open_fut_expiry = _get_open_futures_expiry(base)
-        futures_target_expiry = open_fut_expiry or target_expiry
+        futures_target_expiry = target_expiry or _get_open_futures_expiry(base)
         secid = get_dhan_security_id(base, target_expiry=futures_target_expiry)
         if secid:
             live_fut = self._fetch_builtup_live_price(secid)

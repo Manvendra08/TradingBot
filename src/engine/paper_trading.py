@@ -977,10 +977,23 @@ def _monitor_single_paper_trade(
 
         close_status = "CLOSED_DELTA_STOP" if hit_delta_stop else ("CLOSED_TRAILING_SL" if trailing_sl_hit else ("CLOSED_SL" if hit_sl else "CLOSED_TARGET"))
         close_reason = f"delta stop hit ({delta_val:.2f} >= 0.60)" if hit_delta_stop else reason
+
+        # Target limit order fill clamping:
+        # When a trade exits via TARGET_HIT, the exit price cannot exceed the planned target
+        # (limit orders fill at the limit price, not arbitrary down-spike ticks).
+        actual_exit_underlying = underlying
+        if close_status == "CLOSED_TARGET" and option_type == "FUT":
+            tgt_ul = float(open_trade.get("target_underlying") or 0.0)
+            if tgt_ul > 0:
+                if side == "SELL" and underlying < tgt_ul:
+                    actual_exit_underlying = tgt_ul
+                elif side == "BUY" and underlying > tgt_ul:
+                    actual_exit_underlying = tgt_ul
+
         close_paper_trade(
             open_trade["id"],
             datetime.now(timezone.utc).isoformat(),
-            underlying,
+            actual_exit_underlying,
             exit_premium,
             close_status,
             close_reason,
@@ -1125,7 +1138,13 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
 
     open_trade = get_open_paper_trade(symbol)
     if open_trade:
-        actions.extend(_monitor_single_paper_trade(symbol, open_trade, current_ctx, underlying))
+        trade_exp = str(open_trade.get("expiry") or "")
+        ctx_exp = str(current_ctx.get("expiry") or "")
+        is_mcx_sym = symbol in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER", "COPPER")
+        if is_mcx_sym and trade_exp and ctx_exp and trade_exp != ctx_exp:
+            log.debug("%s: Skipping paper trade #%s monitoring — expiry mismatch (%s vs %s)", symbol, open_trade.get("id"), trade_exp, ctx_exp)
+        else:
+            actions.extend(_monitor_single_paper_trade(symbol, open_trade, current_ctx, underlying))
 
     # ── TIMEFRAME Trade Monitoring ───────────────────────────────────────────
     from src.models.schema import get_open_timeframe_trades
@@ -1149,6 +1168,15 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
             # B1 FIX: NIFTY/BANKNIFTY/SENSEX futures trade with spot basis difference (50-200+ pts).
             # Comparing index spot underlying against futures trigger/SL/target causes false stop-outs.
             # Local safety net is restricted to MCX commodities where spot feed IS futures.
+            continue
+        trade_exp = str(g_trade.get("expiry") or "")
+        ctx_exp = str(current_ctx.get("expiry") or "")
+        if is_mcx and trade_exp and ctx_exp and trade_exp != ctx_exp:
+            # Do NOT monitor an MCX contract against underlying of a different expiry month (contango spread)
+            log.debug(
+                "%s: Skipping Gemini trade #%s monitoring — expiry mismatch (%s vs %s)",
+                symbol, g_trade.get("id"), trade_exp, ctx_exp,
+            )
             continue
         actions.extend(
             _monitor_single_paper_trade(

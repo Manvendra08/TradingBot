@@ -1626,7 +1626,7 @@ def close_paper_trade(
 
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT symbol, expiry, option_type, verdict_label, entry_underlying, entry_premium, lots, lot_size, strike, side, setup_type FROM paper_trades WHERE id=? AND status='OPEN'",
+            "SELECT symbol, expiry, option_type, verdict_label, entry_underlying, entry_premium, lots, lot_size, strike, side, setup_type, target_underlying FROM paper_trades WHERE id=? AND status='OPEN'",
             (trade_id,),
         ).fetchone()
         if not row:
@@ -1732,6 +1732,14 @@ def close_paper_trade(
                 pnl_points = 0.0
         else:
             # Futures P&L with bid/ask / slippage
+            # Target limit fill clamping: limit orders fill at target price, not runaway spike ticks
+            target_underlying = float(row["target_underlying"] or 0.0) if "target_underlying" in row.keys() else 0.0
+            if status == "CLOSED_TARGET" and target_underlying > 0:
+                if side == "SELL" and float(exit_underlying) < target_underlying:
+                    exit_underlying = target_underlying
+                elif side == "BUY" and float(exit_underlying) > target_underlying:
+                    exit_underlying = target_underlying
+
             fut_slippage = max(0.05, float(exit_underlying) * 0.0002)
             if side == "SELL":
                 pnl_points = entry_underlying - (float(exit_underlying) + fut_slippage)
