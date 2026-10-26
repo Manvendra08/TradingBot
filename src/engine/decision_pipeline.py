@@ -120,14 +120,26 @@ def step_signal_core_oi(ctx: PipelineContext) -> StepResult:
     # For option selling strategies, neutral verdicts (Sideways, Volatility
     # Expansion/Contraction) are valid — range-bound markets maximize theta
     # decay.  Directional verdicts remain the primary signal for buying premium.
+    sym_base = str(ctx.symbol).upper().split()[0]
+    effective_min_conf = MCX_MIN_CONFIDENCE if sym_base in MCX_SYMBOLS else MIN_CONFIDENCE_CORE
+
     if not is_bullish(verdict) and not is_bearish(verdict):
         if is_neutral(verdict):
             ctx.direction = "NEUTRAL"
+            # A11 FIX: Enforce confidence floor on neutral verdicts too
+            if confidence < effective_min_conf:
+                return StepResult(
+                    name="signal",
+                    passed=False,
+                    score=confidence,
+                    reason=f"Neutral signal '{verdict}' confidence {confidence}% below minimum {effective_min_conf}%",
+                    data={"verdict": verdict, "confidence": confidence, "direction": "NEUTRAL"}
+                )
             return StepResult(
                 name="signal",
                 passed=True,
-                score=80,
-                reason=f"Neutral signal '{verdict}' — valid for option selling (theta decay)",
+                score=confidence,
+                reason=f"Neutral signal '{verdict}' (conf {confidence}%) — valid for option selling (theta decay)",
                 data={"verdict": verdict, "confidence": confidence, "direction": "NEUTRAL"}
             )
         return StepResult(
@@ -246,9 +258,11 @@ def step_ai_alignment(ctx: PipelineContext) -> StepResult:
     """Shared LLM enrichment alignment step for Core and Timeframe."""
     ai_verdict = ctx.ai_verdict
 
+    # C17 FIX: Strategy-aware AI mode lookup
+    from src.engine.strategy_registry import get_ai_mode
     from config.runtime_config import load_runtime_config
     rconf = load_runtime_config()
-    ai_decision_mode = rconf.get("live_ai_decision_mode", "advisory")
+    ai_decision_mode = get_ai_mode(ctx.engine) or rconf.get("live_ai_decision_mode", "advisory")
 
     if ai_verdict:
         if not isinstance(ai_verdict, dict):
@@ -278,7 +292,8 @@ def step_ai_alignment(ctx: PipelineContext) -> StepResult:
     ai_conf = int(ai_verdict.get("confidence") or 0)
     ai_risk = str(ai_verdict.get("risk_rating") or "").upper()
 
-    verdict_bias = "BULLISH" if ctx.direction == "LONG" else "BEARISH"
+    # A11 FIX: Explicit NEUTRAL bias handling
+    verdict_bias = "BULLISH" if ctx.direction == "LONG" else ("NEUTRAL" if ctx.direction == "NEUTRAL" else "BEARISH")
     ai_agrees = (ai_bias == verdict_bias)
 
     # Timeframe Engine specific AI gates
@@ -300,11 +315,23 @@ def step_ai_alignment(ctx: PipelineContext) -> StepResult:
                 data={"ai_bias": ai_bias, "ai_conf": ai_conf, "ai_risk": ai_risk}
             )
 
-    # Core Engine specific AI Veto in full mode (ADR-007: veto_flag binary only, no confidence threshold)
+    # A3 FIX: Derive AI Veto in full mode across schema variants
     if ctx.engine == "CORE_OI" and ai_decision_mode == "full":
         veto_flag = _extract_ai_veto_flag(ai_verdict)
         veto_reason = _extract_ai_veto_reason(ai_verdict)
-        if not ai_agrees and veto_flag:
+        ai_action = str(ai_verdict.get("recommended_action") or ai_verdict.get("action") or "").upper()
+        if not veto_flag:
+            if ai_action in ("NO_TRADE", "WAIT", "BLOCK", "BLOCKED"):
+                veto_flag = True
+                veto_reason = f"AI recommended action is {ai_action}"
+            elif ai_risk == "HIGH":
+                veto_flag = True
+                veto_reason = "AI risk rating is HIGH"
+            elif not ai_agrees and ai_bias != "NEUTRAL":
+                veto_flag = True
+                veto_reason = f"AI bias ({ai_bias}) conflicts with engine direction ({verdict_bias})"
+
+        if veto_flag:
             reason_str = veto_reason or "LLM flagged disqualifier"
             return StepResult(
                 name="ai",
@@ -482,7 +509,8 @@ def step_regime(ctx: PipelineContext) -> StepResult:
     else:
         plan = ctx.scan_context.get("_pipeline_plan") or {}
         option_type = plan.get("option_type", "CE")
-        regime_sc = regime_score_for_trade(regime, option_type)
+        side = plan.get("side", "SELL")
+        regime_sc = regime_score_for_trade(regime, option_type, side=side, direction=ctx.direction)
 
         from config.runtime_config import load_runtime_config
         rconf = load_runtime_config()
@@ -1215,7 +1243,7 @@ def step_heavyweight_alignment(ctx: PipelineContext) -> StepResult:
         return StepResult(
             name="heavyweight_alignment",
             passed=True,
-            score=100,
+            score=50,
             reason="Heavyweight alignment guard not active for this symbol",
             data={}
         )
@@ -1343,8 +1371,8 @@ def run_entry_pipeline(ctx: PipelineContext) -> PipelineContext:
     ctx.scan_context["_signal_key"] = ""
 
     steps = CORE_OI_STEPS if ctx.engine == "CORE_OI" else TIMEFRAME_STEPS
-    HARD_GATE_NAMES = {"signal", "rule", "ai", "tfss_handoff", "risk"}
-    SOFT_GATE_NAMES = {"entry_quality", "regime", "trend", "heavyweight_alignment"}
+    HARD_GATE_NAMES = {"signal", "rule", "ai", "tfss_handoff", "risk", "trend"}
+    SOFT_GATE_NAMES = {"entry_quality", "regime", "heavyweight_alignment"}
 
     from config.runtime_config import load_runtime_config
     rconf = load_runtime_config()
@@ -1387,13 +1415,9 @@ def run_entry_pipeline(ctx: PipelineContext) -> PipelineContext:
                     sc = max(0.0, float(s.score))
                     composite_score += sc * w
 
-            # 3. Calculate confidence-scaled effective composite threshold
+            # 3. Calculate effective composite threshold (fixed composite threshold without confidence reduction)
             confidence = int(ctx.scan_context.get("intel", {}).get("confidence") or 0)
-            conf_delta = max(0.0, float(confidence - 70))
-            step_size = float(profile.get("confidence_scaling_step", 5.0))
-            reduction_rate = float(profile.get("confidence_scaling_reduction", 1.5))
-            threshold_reduction = (conf_delta / step_size) * reduction_rate
-            effective_threshold = max(0.0, float(profile.get("composite_threshold", 62.0)) - threshold_reduction)
+            effective_threshold = max(0.0, float(profile.get("composite_threshold", 62.0)))
 
             ctx.scan_context["_composite_score"] = round(composite_score, 2)
             ctx.scan_context["_composite_threshold"] = round(effective_threshold, 2)

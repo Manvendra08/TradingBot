@@ -95,13 +95,13 @@ def _get_stop_loss_threshold_rupees(book: dict, legs: list[dict], symbol: str) -
                 norm_legs.append(c)
             margin_req = calculate_combined_margin(norm_legs, symbol, underlying=underlying)
 
+        # C8 FIX: Strangle rupee SL aligns with prompt (150% credit, min ₹2000/lot, hard cap)
         credit_sl = max(net_premium, 1.0) * lot_size * total_lots * stop_loss_pct
-        margin_sl = margin_req * 0.025 if margin_req > 0 else 25000.0 * total_lots
-        hard_rupee_ceiling = 25000.0 * total_lots
-        total_max_loss_rupees = min(max(credit_sl, 2000.0 * total_lots), margin_sl, hard_rupee_ceiling)
+        hard_rupee_ceiling = 50000.0 * total_lots
+        total_max_loss_rupees = min(max(credit_sl, 2000.0 * total_lots), hard_rupee_ceiling)
         log.debug(
-            "[multileg-paper] %s: book %s SL threshold set to ₹%.0f (credit_sl=₹%.0f, margin_sl=₹%.0f, cap=₹%.0f, sl_pct=%.2f)",
-            symbol, book.get("book_id", "unknown"), total_max_loss_rupees, credit_sl, margin_sl, hard_rupee_ceiling, stop_loss_pct
+            "[multileg-paper] %s: book %s SL threshold set to ₹%.0f (credit_sl=₹%.0f, margin_req=₹%.0f, cap=₹%.0f, sl_pct=%.2f)",
+            symbol, book.get("book_id", "unknown"), total_max_loss_rupees, credit_sl, margin_req, hard_rupee_ceiling, stop_loss_pct
         )
 
     return max(total_max_loss_rupees, 1.0)
@@ -410,21 +410,18 @@ def _monitor_open_books(
                 is_expiry_close = (now_ist.hour > 15 or (now_ist.hour == 15 and now_ist.minute >= 35))
                 is_expiry_after_1pm = (now_ist.hour >= 13)
 
-        if is_weekly_index:
-            should_exit_time_decay = (
-                (dte == 0 and is_expiry_after_1pm) or
-                (dte < 0)
-            )
-            exit_reason_str = f"EXPIRY_SQUAREOFF (15:35 IST)" if (dte == 0 and is_expiry_close) else (
-                "EXPIRY_TIME_DECAY (DTE 0 after 13:00 IST)" if (dte == 0 and is_expiry_after_1pm) else f"EXPIRED (DTE {dte})"
-            )
+        # C15 FIX: Honor configured time_decay_exit_dte for all instruments (NIFTY/BANKNIFTY/SENSEX/MCX)
+        if (time_decay_exit_dte > 0 and dte <= time_decay_exit_dte and dte > 0):
+            should_exit_time_decay = True
+            exit_reason_str = f"TIME_DECAY (DTE {dte} <= {time_decay_exit_dte})"
+        elif (dte == 0 and is_expiry_after_1pm):
+            should_exit_time_decay = True
+            exit_reason_str = f"EXPIRY_SQUAREOFF (15:35 IST)" if is_expiry_close else "EXPIRY_TIME_DECAY (DTE 0 after 13:00 IST)"
+        elif dte < 0:
+            should_exit_time_decay = True
+            exit_reason_str = f"EXPIRED (DTE {dte})"
         else:
-            should_exit_time_decay = (
-                (time_decay_exit_dte > 0 and dte < time_decay_exit_dte and dte > 0) or
-                (dte == 0 and is_expiry_close) or
-                (dte < 0)
-            )
-            exit_reason_str = f"EXPIRY_SQUAREOFF ({'23:25' if is_mcx else '15:35'} IST)" if (dte == 0 and is_expiry_close) else f"TIME_DECAY (DTE {dte} < {time_decay_exit_dte})"
+            should_exit_time_decay = False
 
         if should_exit_time_decay:
             log.info(
@@ -578,9 +575,11 @@ def _monitor_open_books(
                                 and (now_ts - _AI_CLOSE_PENDING_PAPER_BOOKS[book_id]) <= 7200
                             )
                             stop_loss_threshold = _get_stop_loss_threshold_rupees(book, legs, symbol)
+                            # C20 FIX: Quantitative profit co-sign requires full profit target (100%), not 28%
+                            target_profit_inr = net_premium * lot_size * max((int(leg.get("lots") or 1) for leg in legs), default=1) * profit_target_pct
                             pnl_co_sign = (
                                 (total_pnl <= -0.5 * stop_loss_threshold)
-                                or (net_premium > 0 and total_pnl >= 0.70 * (net_premium * lot_size * max((int(leg.get("lots") or 1) for leg in legs), default=1) * profit_target_pct))
+                                or (net_premium > 0 and total_pnl >= target_profit_inr)
                             )
                             expiry_co_sign = (dte == 0 and (now_ist.hour >= 22 if is_mcx else now_ist.hour >= 14))
 
@@ -650,7 +649,11 @@ def _monitor_open_books(
                                 book_id,
                                 reasoning,
                             )
-                    elif action == "ADJUST":
+                    else:
+                        # C20 FIX: Clear staged close when AI action is HOLD or non-CLOSE
+                        _AI_CLOSE_PENDING_PAPER_BOOKS.pop(book_id, None)
+
+                    if action == "ADJUST":
                         adjustment_details = advice.get("adjustment")
                         from config.runtime_config import load_runtime_config
                         exit_advisor_enabled = load_runtime_config().get("live_ai_exit_advisor_enabled", True)
@@ -673,7 +676,19 @@ def _monitor_open_books(
                                 if len(same_opt_legs) == 1:
                                     target_leg = same_opt_legs[0]
 
+                            # C2 FIX: Strictly enforce side preservation and OTM roll direction
                             if target_leg and new_strike > 0:
+                                target_side = str(target_leg.get("side") or "SELL").upper()
+                                target_stk = float(target_leg.get("strike") or 0.0)
+                                if target_side == "SELL":
+                                    # Short rolls must move further OTM
+                                    if close_opt == "PE" and new_strike >= target_stk:
+                                        log.warning("[multileg-paper] %s: AI roll rejected — Put roll must move further OTM (new strike %.1f >= current %.1f)", symbol, new_strike, target_stk)
+                                        continue
+                                    elif close_opt == "CE" and new_strike <= target_stk:
+                                        log.warning("[multileg-paper] %s: AI roll rejected — Call roll must move further OTM (new strike %.1f <= current %.1f)", symbol, new_strike, target_stk)
+                                        continue
+
                                 close_exit_prem = float(target_leg.get("current_premium") or target_leg.get("entry_premium") or 0.0)
                                 from src.engine.trade_plan import get_option_premium
                                 new_prem = get_option_premium(
@@ -693,11 +708,15 @@ def _monitor_open_books(
                                 if new_prem > 0:
                                     target_lots = int(target_leg.get("lots") or 1)
                                     from src.models.schema import execute_multi_leg_adjustment
+                                    # C2 FIX: Preserve side and populate book_id/expiry/trade_mode
                                     new_leg_dict = {
-                                        "side": new_side,
+                                        "book_id": book_id,
+                                        "expiry": expiry,
+                                        "trade_mode": str(book.get("trade_mode") or "PAPER").upper(),
+                                        "side": target_leg.get("side", "SELL"),
                                         "lots": target_lots,
                                         "strike": new_strike,
-                                        "option_type": new_opt,
+                                        "option_type": close_opt,
                                         "entry_premium": new_prem,
                                         "exit_premium": 0.0,
                                         "delta": float(target_leg.get("delta") or 0.20),
@@ -866,6 +885,21 @@ def _attempt_new_entry(
             "reason": f"Max open books cap reached ({len(open_books)} >= {MAX_OPEN_BOOKS_PER_SYMBOL})",
             "open_books": len(open_books),
         }
+
+    # C10 FIX: Cross-book net-delta cap per symbol (max 0.60 net delta across all open books)
+    if open_books:
+        total_open_net_delta = sum(abs(float(b.get("net_delta") or 0.0)) for b in open_books)
+        if total_open_net_delta >= 0.60:
+            log.warning(
+                "[multileg-paper] %s: cross-book net delta cap reached (%.2f >= 0.60) — new entries prohibited",
+                symbol,
+                total_open_net_delta,
+            )
+            return {
+                "action": "BLOCKED_DELTA_CAP",
+                "decision_stage": "CROSS_BOOK_DELTA_CAP",
+                "reason": f"Cross-book net delta cap reached ({total_open_net_delta:.2f} >= 0.60)",
+            }
 
     from config.multileg_strategies import (
         ALLOWED_SYMBOLS,
@@ -1138,7 +1172,14 @@ def _attempt_new_entry(
                 "reason": f"Multileg proposal validation failed: {val_res.rejection_reason}",
             }
     except Exception as e:
-        log.warning("[multileg-paper] %s: validate_multileg_trade check encountered error: %s", symbol, e)
+        # C13 FIX: Fail closed on validator exception
+        log.error("[multileg-paper] %s: validate_multileg_trade crashed: %s", symbol, e)
+        return {
+            "action": "REJECTED",
+            "decision_stage": "MULTILEG_VALIDATOR_ERROR",
+            "strategy_type": strategy_type,
+            "reason": f"Validator execution error: {e} (fail-closed guard)",
+        }
 
     # ── Strict Binary Pre-Flight Validation for All Entry Legs (Flaw #5) ──
     from src.engine.data_validator import validate_trade_leg_data
@@ -1670,61 +1711,104 @@ def _build_real_leg_exits(
 ) -> list[dict]:
     """Build leg exits from real prices only.
 
-    Preference order:
-    1) latest option snapshot LTP
-    2) in-memory current_premium / DB current_premium
-    3) valid fallback estimate from underlying move
+    C1 FIX - Preference order:
+    1) Live decision price: leg["current_premium"] resolved during this scan cycle
+       (exact price that drove the exit decision)
+    2) Fresh live option chain from scan_context or get_option_premium (max 15m DB staleness)
+    3) Fresh DB snapshot (max 15 min old)
+    4) Delta-approximation fallback from underlying move with correct sign (C3 FIX)
+    5) Entry premium fallback
 
     If no valid price is available, that leg is skipped instead of inventing
     a synthetic exit premium.
     """
     from src.models.schema import get_latest_option_snapshot
-    from src.engine.trade_plan import is_valid_option_premium
+    from src.engine.trade_plan import is_valid_option_premium, get_option_premium
 
-    sc = scan_context or book or {}
-    current_underlying = float((sc or {}).get("underlying") or book.get("entry_underlying") or 0.0)
+    sc = scan_context or (book.get("scan_context") if book else None) or {}
+    option_rows = list((sc or {}).get("option_rows") or [])
+    current_underlying = float((sc or {}).get("underlying") or (book.get("entry_underlying") if book else 0.0) or 0.0)
     leg_exits: list[dict] = []
+
     for leg in legs:
         leg_id = leg.get("id")
         if not leg_id:
             continue
         leg_strike = float(leg.get("strike") or 0.0)
-        leg_opt = leg.get("option_type", "CE")
-        snap = get_latest_option_snapshot(symbol, expiry, leg_strike, leg_opt)
-        snap_ltp = float(snap.get("ltp") or 0.0) if snap else 0.0
+        leg_opt = str(leg.get("option_type", "CE")).upper()
+        side = str(leg.get("side") or "SELL").upper()
         entry_prem = float(leg.get("entry_premium") or 0.0)
         curr_prem = float(leg.get("current_premium") or 0.0)
 
-        side = str(leg.get("side") or "SELL").upper()
-        snap_bid = float(snap.get("bid") or 0.0) if snap else 0.0
-        snap_ask = float(snap.get("ask") or 0.0) if snap else 0.0
-        slippage = max(0.05, round(snap_ltp * 0.005, 2))
+        # Check in-memory option rows for bid/ask depth
+        matching_row = next(
+            (
+                r for r in option_rows
+                if abs(float(r.get("strike") or 0.0) - leg_strike) < 0.01
+                and str(r.get("option_type") or "").upper() == leg_opt
+            ),
+            None,
+        )
+        row_bid = float((matching_row or {}).get("bid") or (matching_row or {}).get("best_bid") or 0.0)
+        row_ask = float((matching_row or {}).get("ask") or (matching_row or {}).get("best_ask") or 0.0)
 
-        if snap_ltp > 0 and (current_underlying <= 0 or is_valid_option_premium(leg_strike, leg_opt, snap_ltp, current_underlying)):
+        # C1 FIX: Priority #1: Live decision price from this cycle
+        if curr_prem > 0 and (current_underlying <= 0 or is_valid_option_premium(leg_strike, leg_opt, curr_prem, current_underlying)):
+            slippage = max(0.05, round(curr_prem * 0.005, 2))
             if side == "SELL":
-                # Buying to close -> Ask mark or LTP + slippage
-                exit_premium = snap_ask if snap_ask > 0 else round(snap_ltp + slippage, 2)
+                exit_premium = row_ask if row_ask > 0 else round(curr_prem + slippage, 2)
             else:
-                # Selling to close -> Bid mark or LTP - slippage
-                exit_premium = snap_bid if snap_bid > 0 else max(0.05, round(snap_ltp - slippage, 2))
-        elif curr_prem > 0 and (current_underlying <= 0 or is_valid_option_premium(leg_strike, leg_opt, curr_prem, current_underlying)):
-            if side == "SELL":
-                exit_premium = round(curr_prem + max(0.05, round(curr_prem * 0.005, 2)), 2)
-            else:
-                exit_premium = max(0.05, round(curr_prem - max(0.05, round(curr_prem * 0.005, 2)), 2))
-        elif current_underlying > 0 and book and book.get("entry_underlying"):
-            entry_und = float(book.get("entry_underlying") or current_underlying)
-            und_move = current_underlying - entry_und
-            delta = float(leg.get("delta") or 0.25)
-            delta_sign = delta if leg_opt == "CE" else -abs(delta)
-            est = max(0.05, round(entry_prem + delta_sign * und_move, 2))
-            if side == "SELL":
-                exit_premium = round(est + max(0.05, round(est * 0.005, 2)), 2)
-            else:
-                exit_premium = max(0.05, round(est - max(0.05, round(est * 0.005, 2)), 2))
-        elif entry_prem > 0:
-            exit_premium = entry_prem
+                exit_premium = row_bid if row_bid > 0 else max(0.05, round(curr_prem - slippage, 2))
+
+        # Priority #2: Fresh option premium lookup (checks live rows + max 15m DB snapshots)
         else:
-            continue
+            fresh_prem = get_option_premium(
+                symbol=symbol,
+                expiry=expiry,
+                strike=leg_strike,
+                option_type=leg_opt,
+                option_rows=option_rows,
+                underlying_price=current_underlying,
+            )
+            if fresh_prem is not None and fresh_prem > 0:
+                slippage = max(0.05, round(fresh_prem * 0.005, 2))
+                if side == "SELL":
+                    exit_premium = row_ask if row_ask > 0 else round(fresh_prem + slippage, 2)
+                else:
+                    exit_premium = row_bid if row_bid > 0 else max(0.05, round(fresh_prem - slippage, 2))
+
+            # Priority #3: Fresh DB snapshot (guarded by max_age_minutes=15)
+            else:
+                snap = get_latest_option_snapshot(symbol, expiry, leg_strike, leg_opt, max_age_minutes=15)
+                snap_ltp = float(snap.get("ltp") or 0.0) if snap else 0.0
+                if snap_ltp > 0 and (current_underlying <= 0 or is_valid_option_premium(leg_strike, leg_opt, snap_ltp, current_underlying)):
+                    snap_bid = float(snap.get("bid") or 0.0) if snap else 0.0
+                    snap_ask = float(snap.get("ask") or 0.0) if snap else 0.0
+                    slippage = max(0.05, round(snap_ltp * 0.005, 2))
+                    if side == "SELL":
+                        exit_premium = snap_ask if snap_ask > 0 else round(snap_ltp + slippage, 2)
+                    else:
+                        exit_premium = snap_bid if snap_bid > 0 else max(0.05, round(snap_ltp - slippage, 2))
+
+                # Priority #4: Delta-approximation fallback with C3 FIX sign
+                elif current_underlying > 0 and book and book.get("entry_underlying"):
+                    entry_und = float(book.get("entry_underlying") or current_underlying)
+                    und_move = current_underlying - entry_und
+                    delta = float(leg.get("delta") or 0.25)
+                    # C3 FIX: CE moves with spot, PE moves inversely
+                    delta_sign = abs(delta) if leg_opt == "CE" else -abs(delta)
+                    est = max(0.05, round(entry_prem + delta_sign * und_move, 2))
+                    slippage = max(0.05, round(est * 0.005, 2))
+                    if side == "SELL":
+                        exit_premium = round(est + slippage, 2)
+                    else:
+                        exit_premium = max(0.05, round(est - slippage, 2))
+
+                # Priority #5: Last resort entry premium fallback
+                elif entry_prem > 0:
+                    exit_premium = entry_prem
+                else:
+                    continue
+
         leg_exits.append({"id": leg_id, "exit_premium": exit_premium})
     return leg_exits

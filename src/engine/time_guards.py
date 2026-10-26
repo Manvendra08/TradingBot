@@ -57,11 +57,41 @@ IST = pytz.timezone("Asia/Kolkata")
 # Symbols that trade until 15:40 IST (index F&O, effective Aug 3 2026)
 INDEX_FNO_SYMBOLS = frozenset({"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"})
 
-# EIA Natural Gas Storage Report — every Thursday, 20:00 IST
+US_EASTERN = pytz.timezone("America/New_York")
+
+# EIA Storage Reports & MCX Trading Session Hours (DST-aware)
 _EIA_WEEKDAY = 3    # Thursday (0=Monday)
-_EIA_HOUR    = 20
-_EIA_MINUTE  = 0
 _EIA_WINDOW  = 15   # minutes either side of the announcement
+
+def get_mcx_close_time(dt: datetime | None = None) -> tuple[int, int]:
+    """Return MCX close time (hour, minute) in IST.
+    
+    MCX extends trading hours during US Standard Time (winter):
+    - US DST active (summer): 23:30 IST
+    - US Standard Time (winter): 23:55 IST
+    """
+    if dt is None:
+        dt = datetime.now(IST)
+    elif dt.tzinfo is None:
+        dt = dt.replace(tzinfo=IST)
+    et_dt = dt.astimezone(US_EASTERN)
+    is_dst = bool(et_dt.dst())
+    return (23, 30) if is_dst else (23, 55)
+
+def get_eia_announcement_time(dt: datetime | None = None) -> tuple[int, int]:
+    """Return EIA storage report release time (hour, minute) in IST.
+    
+    EIA reports are released at 10:30 AM US Eastern Time:
+    - US DST (summer): 20:00 IST (10:30 EDT)
+    - US Standard Time (winter): 21:00 IST (10:30 EST)
+    """
+    if dt is None:
+        dt = datetime.now(IST)
+    elif dt.tzinfo is None:
+        dt = dt.replace(tzinfo=IST)
+    et_dt = dt.astimezone(US_EASTERN)
+    is_dst = bool(et_dt.dst())
+    return (20, 0) if is_dst else (21, 0)
 
 
 def _parse_expiry_date(expiry_str: str | None) -> "date | None":
@@ -110,16 +140,17 @@ def is_trading_allowed_now(symbol: str, expiry_str: str | None = None, operation
         is_index_fno = sym in INDEX_FNO_SYMBOLS
 
         # ── Window -1: Macro Event Shock Circuit Breaker (Jev System-1) ───────
-        try:
-            from src.engine.event_shock import is_event_shock_active
-            shock_active, shock_reason = is_event_shock_active(sym)
-            if shock_active:
-                return False, f"Event Shock Circuit Breaker: {shock_reason}"
-        except Exception:
-            pass
+        if operation != "EXIT":
+            try:
+                from src.engine.event_shock import is_event_shock_active
+                shock_active, shock_reason = is_event_shock_active(sym)
+                if shock_active:
+                    return False, f"Event Shock Circuit Breaker: {shock_reason}"
+            except Exception:
+                pass
 
         # ── Window 0: CME (NYMEX) holidays (NATURALGAS, CRUDEOIL) ────────────
-        if sym in ("NATURALGAS", "NATGAS", "CRUDEOIL"):
+        if operation != "EXIT" and sym in ("NATURALGAS", "NATGAS", "CRUDEOIL"):
             from config.cme_holidays import is_cme_closed, is_cme_early_close
             if is_cme_closed(now.date()):
                 return False, "CME holiday — no NYMEX price discovery, MCX zombie session"
@@ -127,10 +158,11 @@ def is_trading_allowed_now(symbol: str, expiry_str: str | None = None, operation
                 return False, "CME early close — no NYMEX price discovery after 17:30 IST"
 
         # ── Window 1: Opening auction noise (NSE/BSE 09:15–09:30, MCX 09:00–09:15 IST) ───
-        if not is_mcx and (h, m) >= (9, 15) and (h, m) < (9, 30):
-            return False, "Opening auction noise window (09:15–09:30 IST)"
-        if is_mcx and (h, m) >= (9, 0) and (h, m) < (9, 15):
-            return False, "MCX opening auction noise window (09:00–09:15 IST)"
+        if operation != "EXIT":
+            if not is_mcx and (h, m) >= (9, 15) and (h, m) < (9, 30):
+                return False, "Opening auction noise window (09:15–09:30 IST)"
+            if is_mcx and (h, m) >= (9, 0) and (h, m) < (9, 15):
+                return False, "MCX opening auction noise window (09:00–09:15 IST)"
 
         # ── Window 2: Expiry end-of-session guard ────────────────────────────
         # Entries blocked ahead of the CAS wind-down on expiry day. EXIT
@@ -158,26 +190,27 @@ def is_trading_allowed_now(symbol: str, expiry_str: str | None = None, operation
         # EXIT operations bypass event/noise windows: that is exactly when
         # protective square-offs are most needed.
         if operation != "EXIT":
+            eia_hour, eia_minute = get_eia_announcement_time(now)
             if sym in ("NATURALGAS", "NATGAS"):
                 if now.weekday() == _EIA_WEEKDAY:
-                    eia_min = _EIA_HOUR * 60 + _EIA_MINUTE
+                    eia_min = eia_hour * 60 + eia_minute
                     now_min = h * 60 + m
                     if abs(now_min - eia_min) <= _EIA_WINDOW:
                         return (
                             False,
                             f"EIA Natural Gas Storage Report window "
-                            f"(Thu {_EIA_HOUR:02d}:{_EIA_MINUTE:02d} IST "
+                            f"(Thu {eia_hour:02d}:{eia_minute:02d} IST "
                             f"±{_EIA_WINDOW} min)",
                         )
             elif sym == "CRUDEOIL":
                 if now.weekday() == 2:  # Wednesday
-                    eia_min = _EIA_HOUR * 60 + _EIA_MINUTE
+                    eia_min = eia_hour * 60 + eia_minute
                     now_min = h * 60 + m
                     if abs(now_min - eia_min) <= _EIA_WINDOW:
                         return (
                             False,
                             f"EIA Weekly Petroleum Status Report window "
-                            f"(Wed {_EIA_HOUR:02d}:{_EIA_MINUTE:02d} IST "
+                            f"(Wed {eia_hour:02d}:{eia_minute:02d} IST "
                             f"±{_EIA_WINDOW} min)",
                         )
 
@@ -206,10 +239,11 @@ def is_trading_allowed_now(symbol: str, expiry_str: str | None = None, operation
             if expiry_date is not None and expiry_date == now.date():
                 if is_mcx:
                     # MCX cutoff: entries blocked after 20:00 IST on expiry day.
-                    # Exits remain permitted through 23:30 IST to allow Friday/EOD auto-exits.
+                    # Exits remain permitted through MCX session close (23:30 summer, 23:55 winter) to allow Friday/EOD auto-exits.
+                    mcx_close_h, mcx_close_m = get_mcx_close_time(now)
                     if operation == "EXIT":
-                        if (h, m) >= (23, 30):
-                            return False, "MCX market session close (after 23:30 IST)"
+                        if (h, m) >= (mcx_close_h, mcx_close_m):
+                            return False, f"MCX market session close (after {mcx_close_h:02d}:{mcx_close_m:02d} IST)"
                     else:
                         if (h, m) >= (20, 0):
                             return False, "Expiry day entry cutoff (after 20:00 IST for MCX on expiry day)"

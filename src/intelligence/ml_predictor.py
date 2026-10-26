@@ -594,6 +594,7 @@ class TradeSuccessPredictor:
                 WHERE m.status != 'OPEN'
                   AND m.closed_at IS NOT NULL
                   AND m.total_pnl IS NOT NULL
+                  AND COALESCE(m.is_pnl_corrupted, 0) = 0
             """).fetchall()
 
 

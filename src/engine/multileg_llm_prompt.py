@@ -762,8 +762,9 @@ def build_multileg_exit_prompt(
             if underlying > 0 and book.get("entry_underlying"):
                 entry_und = float(book.get("entry_underlying") or underlying)
                 und_move = underlying - entry_und
+                # C3 FIX: Stored deltas for short legs are negative. Contract delta for CE is always positive
                 delta = float(l.get("delta") or 0.25)
-                delta_sign = delta if opt_type_val == "CE" else -abs(delta)
+                delta_sign = abs(delta) if opt_type_val == "CE" else -abs(delta)
                 current_premium = max(0.05, entry_prem_val + delta_sign * und_move)
             else:
                 current_premium = float(l.get("current_premium") or entry_prem_val or 0.05)
@@ -772,11 +773,20 @@ def build_multileg_exit_prompt(
         direction = 1 if str(l.get("side") or "SELL").upper() == "SELL" else -1
         pnl = direction * (entry_prem_val - current_premium) * int(l.get("lots", 1)) * lot_size
         calc_total_pnl += pnl
+        # C16 FIX: Refresh Greeks/delta using live option chain if available
+        live_delta = None
+        try:
+            from src.engine.trade_plan import get_leg_delta
+            live_delta = get_leg_delta(strike=strike_val, option_type=opt_type_val, option_rows=option_rows)
+        except Exception:
+            pass
+        disp_delta = live_delta if live_delta is not None else float(l.get("delta", 0.0))
+
         leg_lines.append(
             f"  {l['side']} {l['option_type']} {strike_val:.0f} | "
             f"Entry: ₹{entry_prem_val:.1f} | "
             f"Current: ₹{current_premium:.1f} | "
-            f"P&L: ₹{pnl:.0f} | Δ={float(l.get('delta',0)):.2f}"
+            f"P&L: ₹{pnl:.0f} | Δ={disp_delta:.2f}"
         )
 
     # Use explicit book total_pnl if non-zero, otherwise use freshly summed legs P&L + realized

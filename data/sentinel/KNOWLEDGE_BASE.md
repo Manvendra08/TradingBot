@@ -601,3 +601,68 @@ Pre-open session uses a call auction mechanism to discover a single equilibrium 
   10. **Dashboard settings full-file wipe (dashboard_server.py POST /api/settings)**: full-file REPLACE dropped every key absent from the request body (irreversible). Now uses update_runtime_config (partial merge, validated, atomic).
 - **Deferred (product decision required):** `live_max_capital_utilisation_pct` (config/runtime_config.py L54/L119) is editable in the settings UI but consumed by NO engine code — wire it into a live capital aggregator or remove the slider; deferred as it defines sizing semantics.
 
+
+### F154: Live EXIT_PENDING Close-Filter Regression & GeminiAI FUT Exit Blind Spot (P0)
+- **Status:** RESOLVED & VERIFIED (py_compile clean; 41 targeted tests green incl. new tests/test_exit_lifecycle_fixes.py; 2 failures in test_operational_robustness are pre-existing double-slippage assertions, confirmed identical on HEAD).
+- **Root Causes (two independent silent no-exit paths):**
+  1. **Live exits never recorded.** The P0 atomic claim moved rows `OPEN -> EXIT_PENDING` before the broker call, but `close_live_trade()` (src/models/schema.py) selected AND updated with `WHERE status='OPEN'`. Every successful live exit therefore hit "trade not found or already closed, skipping" and returned silently: order placed, DB row left `EXIT_PENDING`, pnl 0, invisible to all exit queries (which filter `status='OPEN'`). Live rows 27/29/30 (all SHADOW) were stuck this way.
+  2. **GeminiAI FUT paper trades had no exit safety net.** `monitor_paper_trades()` (src/engine/paper_trading.py) deliberately skipped FUT trades, delegating exits entirely to `execute_gemini_setups()` driven by the external Google Sheet. If the sheet keeps a setup listed (status OPEN) and never posts a reconciled close, NSEBOT never acts, even after the stored `target_underlying`/`sl_underlying` is decisively breached. Paper #136 (SELL FUT 271.20, target 267.50) stayed OPEN with NATURALGAS at 261-262, as did #138 (269.60, target 268.40).
+- **Fixes:**
+  1. **close_live_trade accepts the claim** (src/models/schema.py:2051): SELECT and UPDATE now use `status IN ('OPEN','EXIT_PENDING')`; the close clears `exit_claimed_at`. Wins the exact regression: 	est_close_live_trade_accepts_exit_pending_claim.
+  2. **Stuck-claim recovery** (src/models/schema.py:recover_stale_exit_pending): migration `M143_add_exit_claimed_at_to_live_trades` adds `exit_claimed_at`; the claim writes it, the revert clears it, and crashed/legacy claims (NULL or older than 10 min) are reclaimed to OPEN. Called on scheduler startup (max_age=0) and from every `_update_live_cmps()` tick - importantly BEFORE the `open_symbols` early-return, so a stuck row cannot starve CMP refresh for the symbol.
+  3. **Revert hardening** (src/engine/live_trading.py:_exit_open_live_trade): the EXIT_PENDING->OPEN revert is wrapped in its own try; a failed revert logs CRITICAL and leaves the timestamp for the recovery sweep instead of raising a masked error.
+  4. **GeminiAI FUT safety net** (src/engine/paper_trading.py:monitor_paper_trades): FUT GeminiAI trades are now monitored with the same underlying-based SL/target logic (`_monitor_single_paper_trade` already handled FUT pricing). Scan-verdict reversal exits are gated off for FUT (`skip_reversal=True`) so the feed remains the primary thesis manager; SL/target/trailing guards are local and fail-closed. The stored levels share units with the underlying feed used for dashboard CMP.
+- **Data repair applied (shadow mode only, live_shadow_mode=true):** paper #136 and #138 closed at the last `underlying_price` (261.0) as CLOSED_TARGET with net P&L +63,095.93 and +21,210.54; live #27/#29/#30 reclaimed EXIT_PENDING -> OPEN so the next CMP poll exits them cleanly (no broker exposure - all SHADOW).
+- **Residual Known Risk:** Paper FUT monitoring runs on scan ticks (5m/15m cadence), not the 20s CMP poll, so a breach can lag one scan interval. Snapshot-based paper monitoring still ignores GeminiAI (get_open_paper_trade excludes setup_type GeminiAI by design).
+
+### F155: Comprehensive Trading Logic Audit Remediation (Phases 0–5) (RESOLVED & VERIFIED)
+- **Status:** RESOLVED & VERIFIED across all 43 findings from `review-bot-s-trading-logic-misty-hamming.md`. Regression test suites: `tests/test_exit_lifecycle_fixes.py` (Phase 0), `tests/test_phase1_pnl_truth_fixes.py` (Phase 1), `tests/test_phase2_entry_fixes.py` (Phase 2), `tests/test_phase3_multileg_risk_fixes.py` (Phase 3), `tests/test_phase4_live_readiness_fixes.py` (Phase 4), and `tests/test_phase5_signal_tuning_fixes.py` (Phase 5).
+- **Fixes Applied:**
+  1. **Phase 0 (DST & Crash Fixes):**
+     - C14: Added single-sided breakeven cushion (+5 to +10 pts) and None guards in `multileg_strategy.py:650-665`.
+     - A18 & B19: US DST-aware MCX close (23:30 summer, 23:55 winter) and EIA report blackout (20:00 summer, 21:00 winter) derived dynamically from `America/New_York` timezone in `time_guards.py`.
+     - B1: Restricted Gemini FUT safety net strictly to MCX commodities in `paper_trading.py`, preventing spot vs futures basis stops on NIFTY.
+     - B7: Order status and net position verification before recovering `EXIT_PENDING` rows in `schema.py`.
+  2. **Phase 1 (P&L Accuracy & Stale Pricing):**
+     - C1: Real-time decision leg pricing prioritized over DB snapshot in `multileg_paper_trading.py`; max 15-min age in `schema.py` and `multileg_pnl.py`.
+     - C3: Corrected position delta sign for short calls across `multileg_pnl.py`, `multileg_paper_trading.py`, and `multileg_llm_prompt.py`.
+     - B13 & Double Slippage: Removed pre-slippage in `paper_trading.py` and clamped full SL only on plain underlying SL hits.
+     - Flagged 56 historical corrupt books in SQLite via migration `M144_add_ml_is_pnl_corrupted` and excluded them from `ml_predictor.py` and `history_analyzer.py`.
+  3. **Phase 2 (Entry Correctness):**
+     - A1: Fixed MCX FUT fallback in `paper_plan.py` (Bullish->BUY, Bearish->SELL, Neutral->None).
+     - A2: Buildup classification flipped for PE (`classify_buildup_bias`) in `intelligence.py`.
+     - A3 & C17 & A11: Derived AI veto in full mode; strategy-aware `get_ai_mode(ctx.engine)`; neutral confidence floor in `decision_pipeline.py`.
+     - A6, A8, A9: Price-OI matrix fallback no fake buildup; symmetric PCR; hi_pe support in `intelligence.py`.
+     - A7: OI delta computed strictly on shared strike contracts in `anomaly_detector.py`.
+     - A12 & A13: Keyword direction via `verdict_sets.py`; paper BLOCKED blocks live/shadow in `pipeline.py`.
+     - A14: Decision engine failure fails closed in `paper_trading.py` and `live_trading.py`.
+     - A15, A16, C9: Notional base margin sizing (`estimate_short_option_margin`) and risk caps in `capital_allocator.py` and `multileg_strategy.py`.
+  4. **Phase 3 (Multi-Leg Risk):**
+     - C8: Explicit rupee stop loss aligned with 150% credit in `multileg_paper_trading.py`.
+     - C2: Multi-leg adjustments enforce side preservation and OTM roll bounds in `multileg_paper_trading.py`.
+     - C10: Cross-book net-delta cap (0.60 per symbol) in `multileg_paper_trading.py`.
+     - C11 & C12: Blocked CUSTOM structures; rejected neutral structures during trending engine regimes in `multileg_validator.py`.
+     - C13: Proposal validator fails closed in `multileg_paper_trading.py`.
+     - C15, C16, C20: Time decay DTE across all symbols; refreshed Greeks; cleared staged AI closes in `multileg_paper_trading.py` and `multileg_llm_prompt.py`.
+  5. **Phase 4 (Live-Readiness Gate):**
+     - B9: Weekly option strike parsing regex fixed (`parse_tradingsymbol`) in `symbol_resolver.py`.
+     - B3: Unconditional stale single-leg and multileg reconciliation; gated manual adoption only.
+     - B4: Real fill price recorded from Kite order history on reconciled closes.
+     - B10: Avoid premature close of trades with pending broker fills (`opened_at < 120s`).
+     - B2: In `_exit_open_live_trade`, explicitly cancel working limit orders on timeout and reconcile partial fills.
+     - B18: Cancel protective GTT before sending market exits to eliminate double exit fills.
+     - B5 & B21: Mode set to `"GTT"`; futures stops support GTT.
+     - B6 & B8: Require positive premium/underlying and enforce exact expiry matching on exit polls.
+     - B14: Support `"LONG"`/`"SHORT"` labels in 1H crossover exit.
+     - B15: Bypass event shock / holiday / open windows for EXIT operations.
+     - B22: Atomic test-and-set claim for GTT order placement.
+     - C4: Square off short `SELL` legs first before closing `BUY` hedges on exits and rollbacks.
+     - C5: Decrement lots on partial fill cancellations in multileg live execution.
+     - C6 & C7: Use risk profile max loss/breakevens and true execution details on entry fills.
+     - C22: Skip AI advice on exit-only polls.
+  6. **Phase 5 (Signal Quality & Tuning):**
+     - A4: `step_heavyweight_alignment` returns neutral 50 for non-index symbols; `trend` converted to HARD gate; removed confidence reduction on composite threshold in `decision_pipeline.py`.
+     - A5: `regime_score_for_trade` scores based on option selling semantics (RANGE=90, SELL PE in uptrend=100, SELL CE in downtrend=100, VOLATILE=40) in `regime_detector.py`.
+     - A10: Direction-aware confidence scoring: PCR confluence and level proximity require alignment with `verdict_bias`; broken levels yield 0 bonus; neutral alerts earn 0; contract alerts deduplicated; zero chart bonus in `intelligence.py`.
+     - A17: `select_candidate` strictly enforces out-of-the-money (OTM) strikes for single-leg SELL options in `trade_plan.py`.
+     - A19: LLM `instrument` override blocked from inverting option types on SELL plans in `paper_plan.py`.

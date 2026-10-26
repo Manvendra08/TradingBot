@@ -70,27 +70,29 @@ def _resolve_leg_current_premium(
                     current_premium = ltp
                     break
 
-    # 2) DB snapshot fallback
+    # 2) DB snapshot fallback (C1 FIX: max 15 minutes stale)
     if current_premium is None:
         try:
+            from datetime import datetime, timedelta, timezone
+            cutoff = (datetime.now(timezone.utc) - timedelta(minutes=15)).isoformat()
             with get_read_conn() as conn:
                 if leg_expiry:
                     opt_row = conn.execute(
                         "SELECT ltp FROM option_chain_snapshots "
                         "WHERE (symbol=? OR symbol=?) AND expiry=? "
                         "AND ABS(strike - ?) < 0.01 AND option_type=? "
-                        "AND ltp IS NOT NULL AND ltp > 0 "
+                        "AND ltp IS NOT NULL AND ltp > 0 AND fetched_at >= ? "
                         "ORDER BY fetched_at DESC LIMIT 1",
-                        (symbol, base_sym, leg_expiry, strike, option_type),
+                        (symbol, base_sym, leg_expiry, strike, option_type, cutoff),
                     ).fetchone()
                 else:
                     opt_row = conn.execute(
                         "SELECT ltp FROM option_chain_snapshots "
                         "WHERE (symbol=? OR symbol=?) "
                         "AND ABS(strike - ?) < 0.01 AND option_type=? "
-                        "AND ltp IS NOT NULL AND ltp > 0 "
+                        "AND ltp IS NOT NULL AND ltp > 0 AND fetched_at >= ? "
                         "ORDER BY fetched_at DESC LIMIT 1",
-                        (symbol, base_sym, strike, option_type),
+                        (symbol, base_sym, strike, option_type, cutoff),
                     ).fetchone()
                 if opt_row:
                     snap_ltp = float(opt_row["ltp"])
@@ -110,8 +112,10 @@ def _resolve_leg_current_premium(
     if current_premium is None and underlying > 0 and book.get("entry_underlying"):
         entry_und = float(book.get("entry_underlying") or underlying)
         und_move = underlying - entry_und
+        # C3 FIX: Stored deltas for short legs are negative. Contract delta for CE is always positive
+        # (Call price rises as underlying rises; Put price falls as underlying rises).
         delta = float(leg.get("delta") or 0.25)
-        delta_sign = delta if option_type == "CE" else -abs(delta)
+        delta_sign = abs(delta) if option_type == "CE" else -abs(delta)
         current_premium = max(0.05, entry_premium + delta_sign * und_move)
         log.warning(
             "[multileg-pnl] %s: leg %s %.0f missing live LTP — "

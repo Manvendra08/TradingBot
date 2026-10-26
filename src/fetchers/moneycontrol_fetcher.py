@@ -35,9 +35,11 @@ _HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
+        "Chrome/130.0.0.0 Safari/537.36"
     )
 }
+
+_MC_BROWSER_LOCK = threading.Lock()
 
 
 def _parse_number(text: str) -> Optional[float]:
@@ -159,17 +161,35 @@ async def _fetch_side_async(
             )
             try:
                 page = await ctx.new_page()
-                await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+                await page.add_init_script("""
+                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                    window.navigator.chrome = { runtime: {} };
+                    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
+                    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+                """)
 
                 log.info("[mc] navigating to option chain: %s", url)
-                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                
-                # Wait for select element container to load
-                await page.wait_for_selector("#sel_exp_date", state="attached", timeout=10000)
-                
+                resp = await page.goto(url, wait_until="domcontentloaded", timeout=20000)
+                if resp and resp.status in (403, 429, 500, 502, 503):
+                    log.warning("[mc] %s returned HTTP %d — skipping fallback", sym_slug, resp.status)
+                    return None, None, []
+
+                title = (await page.title() or "").lower()
+                if "access denied" in title or "blocked" in title or "attention required" in title:
+                    log.warning("[mc] %s access restricted ('%s') — skipping fallback", sym_slug, title)
+                    return None, None, []
+
+                # Wait for select element container to load with graceful fallback
+                try:
+                    await page.wait_for_selector("#sel_exp_date", state="attached", timeout=6000)
+                except Exception:
+                    if not await page.query_selector("#sel_exp_date"):
+                        log.warning("[mc] '#sel_exp_date' not found in DOM for %s (title: '%s')", sym_slug, await page.title())
+                        return None, None, []
+
                 # Poll robustly until child options are populated in select element
                 options = page.locator("#sel_exp_date option")
-                for _ in range(50):
+                for _ in range(30):
                     if await options.count() > 0:
                         break
                     await page.wait_for_timeout(100)
@@ -272,24 +292,27 @@ async def _fetch_side_async(
                         else:
                             log.warning("[mc] expiry %s does not cover spot %.2f", exp, underlying_price)
                     except Exception as e:
-                        log.error("[mc] error testing expiry %s: %s", exp, e)
+                        log.warning("[mc] error testing expiry %s: %s", exp, e)
                         continue
 
             except Exception as exc:
-                log.error("[mc] page interaction failed: %s", exc)
+                log.warning("[mc] page interaction failed: %s", exc)
                 return None, None, []
             finally:
                 try:
-                    await ctx.close()
-                    await browser.close()
+                    await asyncio.wait_for(ctx.close(), timeout=2.0)
+                except Exception:
+                    pass
+                try:
+                    await asyncio.wait_for(browser.close(), timeout=3.0)
                 except Exception:
                     pass
     except Exception as exc:
-        log.error("[mc] outer fetch exception: %s", exc)
+        log.warning("[mc] outer fetch exception: %s", exc)
         return None, None, []
 
     if not table_html:
-        log.error("[mc] could not find any valid option chain table")
+        log.warning("[mc] could not find any valid option chain table")
         return None, None, []
 
     from bs4 import BeautifulSoup
@@ -346,8 +369,15 @@ async def _fetch_side_async(
 
 
 def _fetch_side_sync(base_symbol: str, sym_slug: str, requested_expiry: Optional[str] = None) -> tuple[Optional[str], Optional[float], list[dict]]:
-    """Synchronous wrapper for async fetch — runs in thread pool."""
-    return asyncio.run(_fetch_side_async(base_symbol, sym_slug, requested_expiry))
+    """Synchronous wrapper for async fetch — serialized via lock to prevent concurrent browser contention."""
+    acquired = _MC_BROWSER_LOCK.acquire(blocking=True, timeout=12.0)
+    if not acquired:
+        log.warning("[mc] another Playwright fetch is in progress for %s — skipping to prevent contention", base_symbol)
+        return None, None, []
+    try:
+        return asyncio.run(_fetch_side_async(base_symbol, sym_slug, requested_expiry))
+    finally:
+        _MC_BROWSER_LOCK.release()
 
 
 class MoneycontrolFetcher:
@@ -365,7 +395,7 @@ class MoneycontrolFetcher:
         actual_expiry, underlying_price, strikes = _fetch_side_sync(base, slug, requested_expiry=expiry)
 
         if not strikes:
-            log.error("[mc] no data returned for %s", symbol)
+            log.warning("[mc] no data returned for %s", symbol)
             return None
 
         return {

@@ -722,6 +722,8 @@ _MIGRATIONS = [
     # M141-M142: Invalidation spot column and unique constraint on book_id
     ("M141_add_ml_structural_invalidation_spot", "ALTER TABLE multi_leg_trades ADD COLUMN structural_invalidation_spot REAL"),
     ("M142_add_unique_ml_book_id", "CREATE UNIQUE INDEX IF NOT EXISTS uq_ml_book_id ON multi_leg_trades (book_id) WHERE book_id IS NOT NULL"),
+    ("M143_add_exit_claimed_at_to_live_trades", "ALTER TABLE live_trades ADD COLUMN exit_claimed_at TEXT"),
+    ("M144_add_ml_is_pnl_corrupted", "ALTER TABLE multi_leg_trades ADD COLUMN is_pnl_corrupted INTEGER DEFAULT 0"),
 ]
 
 
@@ -1155,20 +1157,35 @@ def get_prev_snapshots_bulk(
 
 
 def get_latest_option_snapshot(
-    symbol: str, expiry: str, strike: float, option_type: str
+    symbol: str, expiry: str, strike: float, option_type: str, max_age_minutes: int | None = 15
 ) -> dict | None:
-    """Fetch the most recent option chain snapshot for a specific symbol, expiry, strike, and option_type."""
-    base_sym = symbol.upper().split()[0] if symbol else ""
-    sql = """
-        SELECT * FROM option_chain_snapshots
-        WHERE (symbol=? OR symbol=?) AND expiry=? AND ABS(strike - ?) < 0.01 AND option_type=?
-          AND ltp IS NOT NULL AND ltp > 0
-        ORDER BY fetched_at DESC LIMIT 1
+    """Fetch the most recent option chain snapshot for a specific symbol, expiry, strike, and option_type.
+
+    C1 FIX: Default max_age_minutes=15 prevents stale (yesterday/last week) snapshots from being
+    returned when the current chain is missing. Pass None to disable the freshness guard.
     """
+    from datetime import datetime, timedelta, timezone
+
+    base_sym = symbol.upper().split()[0] if symbol else ""
+    if max_age_minutes is not None:
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=max_age_minutes)).isoformat()
+        sql = """
+            SELECT * FROM option_chain_snapshots
+            WHERE (symbol=? OR symbol=?) AND expiry=? AND ABS(strike - ?) < 0.01 AND option_type=?
+              AND ltp IS NOT NULL AND ltp > 0 AND fetched_at >= ?
+            ORDER BY fetched_at DESC LIMIT 1
+        """
+        params = (symbol, base_sym, expiry, float(strike), str(option_type).upper(), cutoff)
+    else:
+        sql = """
+            SELECT * FROM option_chain_snapshots
+            WHERE (symbol=? OR symbol=?) AND expiry=? AND ABS(strike - ?) < 0.01 AND option_type=?
+              AND ltp IS NOT NULL AND ltp > 0
+            ORDER BY fetched_at DESC LIMIT 1
+        """
+        params = (symbol, base_sym, expiry, float(strike), str(option_type).upper())
     with get_conn(read_only=True) as conn:
-        row = conn.execute(
-            sql, (symbol, base_sym, expiry, float(strike), str(option_type).upper())
-        ).fetchone()
+        row = conn.execute(sql, params).fetchone()
         return dict(row) if row else None
 
 
@@ -2067,7 +2084,7 @@ def close_live_trade(
     with get_conn() as conn:
         # BUG-H04 FIX: Also select lot_size from the database for accurate PnL
         row = conn.execute(
-            "SELECT symbol, expiry, option_type, verdict_label, entry_underlying, entry_premium, lots, lot_size, strike, side FROM live_trades WHERE id=? AND status='OPEN'",
+            "SELECT symbol, expiry, option_type, verdict_label, entry_underlying, entry_premium, lots, lot_size, strike, side FROM live_trades WHERE id=? AND status IN ('OPEN','EXIT_PENDING')",
             (trade_id,),
         ).fetchone()
         if not row:
@@ -2186,8 +2203,8 @@ def close_live_trade(
         conn.execute(
             """
             UPDATE live_trades
-            SET closed_at=?, exit_underlying=?, exit_premium=?, pnl_points=?, pnl_rupees=?, status=?, reason=?
-            WHERE id=? AND status='OPEN'
+            SET closed_at=?, exit_underlying=?, exit_premium=?, pnl_points=?, pnl_rupees=?, status=?, reason=?, exit_claimed_at=NULL
+            WHERE id=? AND status IN ('OPEN','EXIT_PENDING')
             """,
             (
                 closed_at,
@@ -2207,6 +2224,90 @@ def close_live_trade(
         audit_trade_close("live_trades", trade_id)
     except Exception:
         log.exception("close_live_trade: accounting audit failed for trade %s", trade_id)
+
+
+def recover_stale_exit_pending(max_age_minutes: int = 10) -> int:
+    """Reclaim live trades stuck in EXIT_PENDING back to OPEN.
+
+    A claim is normally reverted when its exit order path fails, but the process
+    can die mid-exit (or the revert write itself can fail under lock contention),
+    leaving the row permanently invisible to exit logic because every exit query
+    filters status='OPEN'. Rows with no claim timestamp predate claim tracking and
+    are always recovered; otherwise only claims older than ``max_age_minutes``.
+
+    B7 FIX: Before reviving to OPEN, verifies with the broker whether the exit order
+    was actually completed. If the broker order filled, the row is closed with
+    the true fill price instead of being resurrected into a double-exit risk.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=max_age_minutes)).isoformat()
+    recovered: list[int] = []
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, symbol, broker_order_id, broker_status, lots, side, strike, option_type, expiry, exit_premium, entry_underlying, entry_premium
+            FROM live_trades
+            WHERE status='EXIT_PENDING'
+              AND (exit_claimed_at IS NULL OR exit_claimed_at < ?)
+            """,
+            (cutoff,),
+        ).fetchall()
+        for row in rows:
+            trade_id = int(row["id"])
+            broker_order_id = row["broker_order_id"]
+            broker_status = str(row["broker_status"] or "").upper()
+            order_filled = False
+            fill_price = None
+
+            # If broker order was placed (not shadow mode), verify actual broker state
+            if broker_order_id and broker_status not in ("SHADOW", "SIMULATED"):
+                try:
+                    from src.services.zerodha_auth import get_kite_client
+                    kite = get_kite_client()
+                    if kite:
+                        history = kite.order_history(broker_order_id)
+                        if history and isinstance(history, list):
+                            last_state = history[-1]
+                            if last_state.get("status") == "COMPLETE":
+                                order_filled = True
+                                fill_price = float(last_state.get("average_price") or 0.0)
+                except Exception as ex:
+                    log.debug("recover_stale_exit_pending: failed to verify broker order %s: %s", broker_order_id, ex)
+
+            if order_filled:
+                # Order confirmed filled at broker! Close trade record to reflect true broker position
+                from src.models.schema import close_live_trade
+                close_prem = fill_price or float(row.get("exit_premium") or row.get("entry_premium") or 0.0)
+                close_live_trade(
+                    trade_id=trade_id,
+                    closed_at=datetime.now(timezone.utc).isoformat(),
+                    exit_underlying=float(row.get("entry_underlying") or 0.0),
+                    exit_premium=close_prem,
+                    status="CLOSED_RECOVERED_FILL",
+                    reason="Exit order confirmed filled at broker during EXIT_PENDING recovery",
+                )
+                log.info(
+                    "recover_stale_exit_pending: trade #%d exit order %s confirmed COMPLETE at broker — marked closed",
+                    trade_id,
+                    broker_order_id,
+                )
+                continue
+
+            cur = conn.execute(
+                "UPDATE live_trades SET status='OPEN', exit_claimed_at=NULL WHERE id=? AND status='EXIT_PENDING'",
+                (trade_id,),
+            )
+            if cur.rowcount == 1:
+                recovered.append(trade_id)
+
+    if recovered:
+        log.warning(
+            "recover_stale_exit_pending: reclaimed %d stuck EXIT_PENDING live trade(s) -> OPEN: %s",
+            len(recovered),
+            recovered,
+        )
+    return len(recovered)
 
 
 def list_live_trades(symbol: str | None = None, limit: int = 300) -> list[dict]:

@@ -335,6 +335,7 @@ def _run_multileg_live_strategy_inner(
             open_books,
             ai_mode,
             now_iso,
+            exit_check=exit_check,
         )
         # Re-fetch open books in case monitoring closed a book
         open_books = _open_live_books(symbol)
@@ -392,6 +393,7 @@ def _monitor_open_books_live(
     open_books: list[dict],
     ai_mode: str,
     now_iso: str,
+    exit_check: bool = False,
 ) -> dict | None:
     """Monitor existing open books for exit conditions (live mode).
 
@@ -640,8 +642,9 @@ def _monitor_open_books_live(
             except Exception as _ie:
                 log.debug("[multileg-live] Invalidation check error: %s", _ie)
 
-        # 4e. AI exit advice (full and boost_only; boost only affects entries)
-        if ai_mode in ("full", "boost_only"):
+        # 4e. AI exit advice (full and boost_only; skip during mechanical exit polls, Finding C22)
+        is_poll = exit_check or str(digest_id).startswith("poll_") or (intel or {}).get("is_exit_poll", False)
+        if ai_mode in ("full", "boost_only") and not is_poll:
             try:
                 from src.engine.llm_enrichment import get_multileg_exit_advice
 
@@ -1000,7 +1003,9 @@ def _close_live_book(
     exit_results = []
     leg_exits = []
     unfilled_leg_ids: list[int] = []
-    for leg in legs:
+    # Finding C4: Close existing SELL (short) legs first to flatten short liability before closing BUY (hedge) wings
+    sorted_legs = sorted(legs, key=lambda l: 0 if (l.get("side") or "").upper() == "SELL" else 1)
+    for leg in sorted_legs:
         leg_id = leg.get("id")
         broker_order_id = leg.get("broker_order_id")
         strike = float(leg.get("strike") or 0.0)
@@ -1098,6 +1103,7 @@ def _close_live_book(
                     broker_status, filled = _cancel_pending_order(kite, order_id)
                     if broker_status != "COMPLETE" and filled > 0:
                         remaining_lots = max(lots - filled // max(lot_size, 1), 0)
+                        leg["lots"] = remaining_lots  # Finding C5: update in-memory leg dict
                         try:
                             from src.models.schema import get_conn
                             with get_conn() as _c:
@@ -1997,17 +2003,28 @@ def _attempt_new_live_entry(
             )
 
             # ── Place Broker-Side GTT Stop Loss on Short Legs ─────────────
+            # Finding C7: Use actual fill price from broker execution details
+            real_entry_premium = premium
+            if not shadow_mode and kite:
+                try:
+                    from src.engine.live_trading import get_order_execution_details
+                    avg_p, _ = get_order_execution_details(kite, order_id)
+                    if avg_p and avg_p > 0:
+                        real_entry_premium = float(avg_p)
+                except Exception as ef_err:
+                    log.warning("[multileg-live] %s: could not get execution details for %s: %s", symbol, order_id, ef_err)
+
             gtt_order_id = None
             if side.upper() == "SELL":
                 try:
                     from src.engine.live_trading import place_kite_gtt
                     leg_sl_pct = min(max(float(getattr(verdict, "stop_loss_pct", 1.0) or 1.0), 0.4), 1.5)
-                    sl_trigger = round(premium * (1.0 + leg_sl_pct), 2)
+                    sl_trigger = round(real_entry_premium * (1.0 + leg_sl_pct), 2)
                     sl_limit = round(sl_trigger * 1.05, 2)
 
                     target_pct = min(max(float(getattr(verdict, "profit_target_pct", 0.6) or 0.6), 0.2), 0.8)
                     t_size = float(resolved.get("tick_size") or 0.05)
-                    target_trigger = max(round(premium * (1.0 - target_pct), 2), t_size)
+                    target_trigger = max(round(real_entry_premium * (1.0 - target_pct), 2), t_size)
                     target_limit = max(round(target_trigger * 0.98, 2), t_size)
 
                     gtt_order_id = place_kite_gtt(
@@ -2019,7 +2036,7 @@ def _attempt_new_live_entry(
                         quantity=quantity,
                         trigger_values=[target_trigger, sl_trigger],
                         limit_prices=[target_limit, sl_limit],
-                        last_price=premium,
+                        last_price=real_entry_premium,
                         shadow_mode=shadow_mode,
                         tick_size=t_size,
                     )
@@ -2054,7 +2071,7 @@ def _attempt_new_live_entry(
                 "strike": strike,
                 "option_type": option_type,
                 "expiry": expiry,
-                "entry_premium": premium,
+                "entry_premium": real_entry_premium,
                 "exit_premium": 0.0,
                 "delta": float(leg.get("delta") or 0.0),
                 "theta": 0.0,
@@ -2152,10 +2169,16 @@ def _attempt_new_live_entry(
         leg_rats = [l.get("rationale") for l in placed_legs if l.get("rationale")]
         entry_reason = "; ".join(leg_rats) if leg_rats else f"{strategy_type} entry"
 
-    be_upper = getattr(verdict, "breakeven_upper", None)
+    # Finding C6: Use risk_profile for breakevens and risk metrics
+    be_upper = risk_profile.get("breakeven_upper")
+    if be_upper is None:
+        be_upper = getattr(verdict, "breakeven_upper", None)
     if be_upper is not None and float(be_upper) <= 0:
         be_upper = None
-    be_lower = getattr(verdict, "breakeven_lower", None)
+
+    be_lower = risk_profile.get("breakeven_lower")
+    if be_lower is None:
+        be_lower = getattr(verdict, "breakeven_lower", None)
     if be_lower is not None and float(be_lower) <= 0:
         be_lower = None
     if be_upper is not None and be_lower is not None and float(be_upper) < float(be_lower):
@@ -2189,8 +2212,8 @@ def _attempt_new_live_entry(
         "net_delta": book_greeks.get("net_delta", verdict.net_delta),
         "net_theta": book_greeks.get("net_theta", verdict.net_theta),
         "net_vega": book_greeks.get("net_vega", verdict.net_vega),
-        "max_profit": verdict.max_profit,
-        "max_loss": verdict.max_loss,
+        "max_profit": risk_profile.get("max_profit") if risk_profile.get("max_profit") is not None else getattr(verdict, "max_profit", 0.0),
+        "max_loss": risk_profile.get("max_loss") if risk_profile.get("max_loss") is not None else getattr(verdict, "max_loss", 0.0),
         "breakeven_upper": be_upper,
         "breakeven_lower": be_lower,
         "profit_target_pct": verdict.profit_target_pct,
@@ -2308,7 +2331,9 @@ def _rollback_placed_legs(
     rollback_results = []
     rollback_order_ids = []
 
-    for leg in placed_legs:
+    # Finding C4: Rollback short SELL legs first (buy back) before long wings to avoid naked short exposure
+    sorted_placed = sorted(reversed(placed_legs), key=lambda l: 0 if (l.get("side") or "").upper() == "SELL" else 1)
+    for leg in sorted_placed:
         side = (leg.get("side") or "SELL").upper()
         exit_transaction = "BUY" if side == "SELL" else "SELL"
         strike = leg.get("strike", 0.0)

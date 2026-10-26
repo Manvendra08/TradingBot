@@ -91,11 +91,21 @@ def test_regime_range():
 
 
 def test_regime_score_for_trade():
-    assert regime_score_for_trade(REGIME_TRENDING_UP, "CE") == 100
-    assert regime_score_for_trade(REGIME_TRENDING_DOWN, "PE") == 100
-    assert regime_score_for_trade(REGIME_TRENDING_UP, "PE") == 70
-    assert regime_score_for_trade(REGIME_TRENDING_DOWN, "CE") == 70
-    assert regime_score_for_trade(REGIME_RANGE, "CE") == 30
-    assert regime_score_for_trade(REGIME_VOLATILE, "PE") == 40
-    assert regime_score_for_trade(REGIME_NO_TRADE, "CE") == 50
-    assert regime_score_for_trade("UNKNOWN_REGIME", "PE") == 50
+    # Long option trades
+    assert regime_score_for_trade(REGIME_TRENDING_UP, "CE", side="BUY") == 100
+    assert regime_score_for_trade(REGIME_TRENDING_DOWN, "PE", side="BUY") == 100
+    assert regime_score_for_trade(REGIME_TRENDING_UP, "PE", side="BUY") == 30
+    assert regime_score_for_trade(REGIME_TRENDING_DOWN, "CE", side="BUY") == 30
+    assert regime_score_for_trade(REGIME_RANGE, "CE", side="BUY") == 30
+    assert regime_score_for_trade(REGIME_VOLATILE, "PE", side="BUY") == 60
+    assert regime_score_for_trade(REGIME_NO_TRADE, "CE", side="BUY") == 50
+    assert regime_score_for_trade("UNKNOWN_REGIME", "PE", side="BUY") == 50
+
+    # Short option trades (CORE default)
+    assert regime_score_for_trade(REGIME_RANGE, "CE", side="SELL") == 90
+    assert regime_score_for_trade(REGIME_RANGE, "PE", side="SELL") == 90
+    assert regime_score_for_trade(REGIME_TRENDING_UP, "PE", side="SELL") == 100
+    assert regime_score_for_trade(REGIME_TRENDING_UP, "CE", side="SELL") == 30
+    assert regime_score_for_trade(REGIME_TRENDING_DOWN, "CE", side="SELL") == 100
+    assert regime_score_for_trade(REGIME_TRENDING_DOWN, "PE", side="SELL") == 30
+    assert regime_score_for_trade(REGIME_VOLATILE, "CE", side="SELL") == 40

@@ -48,7 +48,7 @@
   "emp_boost_min_trades": 20,
   "emp_boost_min_winrate": 0.6,
   "ml_predictor_mode": "shadow",
-  "derive_min_confidence": false,
+  "derive_min_confidence": true,
   "llm_enrichment_async": false,
   "llm_enrich_timeout_s": 120,
   "autopsy_enabled": true,

@@ -100,6 +100,25 @@ def validate_multileg_trade(
             rejection_reason=f"Risk limit exceeded: Proposal has {len(proposal.legs)} legs (max 6)."
         )
 
+    # C12 FIX: Block CUSTOM structures from execution
+    strategy_type = getattr(proposal, "strategy_type", None) or getattr(proposal, "strategy", None) or getattr(proposal, "structure", None) or ""
+    if str(strategy_type).upper() == "CUSTOM":
+        return ValidationResult(
+            is_valid=False,
+            rejection_reason="CUSTOM structures are not permitted for execution (undefined risk profile)."
+        )
+
+    # C11 FIX: Neutral structures (Iron Condors, Strangles, Straddles) require neutral/sideways engine regime
+    if str(strategy_type).upper() in ("IRON_CONDOR", "SHORT_STRANGLE", "SHORT_STRADDLE"):
+        if is_bullish_engine or is_bearish_engine:
+            # Check if engine verdict is strongly directional
+            from src.engine.verdict_sets import is_bullish, is_bearish
+            if is_bullish(engine_verdict) or is_bearish(engine_verdict):
+                return ValidationResult(
+                    is_valid=False,
+                    rejection_reason=f"Direction conflict: Neutral structure '{strategy_type}' cannot be entered against trending engine verdict '{engine_verdict}'."
+                )
+
     # Approximate margin check
     estimated_margin = _estimate_margin(proposal.legs, underlying, symbol=symbol)
     if estimated_margin > max_margin_inr:

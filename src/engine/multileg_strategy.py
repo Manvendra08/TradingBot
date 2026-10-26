@@ -462,15 +462,21 @@ def calculate_combined_margin(
         )
         return float(MAX_BOOK_MARGIN + 1.0)
 
+    # C9 FIX: Notional-based margin for short legs (approx 12% of underlying notional per lot)
+    # Long legs do NOT add to margin; they cap risk or provide wings.
     naked_margin = 0.0
     total_lots = 1
+    short_legs = [l for l in legs if str(l.get("side", "SELL")).upper() == "SELL"]
     for leg in legs:
-        premium = float(leg.get("premium", 0))
         lots = int(leg.get("lots", 1))
         total_lots = max(total_lots, lots)
-        side = leg.get("side", "SELL").upper()
-        multiplier = SELL_MARGIN_MULTIPLIER if side == "SELL" else 1.0
-        naked_margin += premium * lot_size * lots * multiplier
+
+    if short_legs:
+        # Highest notional short leg + small premium cushion
+        base_notional = (float(underlying) * lot_size * 0.12) if underlying > 0 else 50000.0
+        naked_margin = base_notional * total_lots
+    else:
+        naked_margin = sum(float(l.get("premium", 0)) * lot_size * int(l.get("lots", 1)) for l in legs)
 
     # NOTE: the raw estimate is returned UNCLAMPED on purpose — the book-level
     # cap (MAX_BOOK_MARGIN) is enforced by the risk gates that compare
@@ -646,9 +652,9 @@ def score_entry_quality(
         score += 3
         reasons.append(f"Neutral regime alignment ({regime})")
 
-    # 6. Breakeven width
-    bu = risk_profile.get("breakeven_upper", 0)
-    bl = risk_profile.get("breakeven_lower", 0)
+    # 6. Breakeven width / cushion (C14 FIX: tolerantly handle None on directional spreads)
+    bu = float(risk_profile.get("breakeven_upper") or 0.0)
+    bl = float(risk_profile.get("breakeven_lower") or 0.0)
     if underlying > 0 and bu > 0 and bl > 0:
         width_pct = ((bu - bl) / underlying) * 100
         if width_pct > 3.0:
@@ -657,6 +663,15 @@ def score_entry_quality(
         elif width_pct > 1.5:
             score += 5
             reasons.append(f"Moderate breakeven range {width_pct:.1f}%")
+    elif underlying > 0 and (bu > 0 or bl > 0):
+        # Single-sided breakeven cushion for vertical credit spreads (Bull Put / Bear Call)
+        cushion_pct = ((bu - underlying) / underlying * 100) if bu > 0 else ((underlying - bl) / underlying * 100)
+        if cushion_pct > 2.0:
+            score += 10
+            reasons.append(f"Safe breakeven cushion {cushion_pct:.1f}%")
+        elif cushion_pct > 1.0:
+            score += 5
+            reasons.append(f"Moderate breakeven cushion {cushion_pct:.1f}%")
 
     # ── Deductions ─────────────────────────────────────────────────
 
@@ -701,6 +716,19 @@ def score_entry_quality(
 
 
 # ── Conflict Detection ────────────────────────────────────────────
+
+def _score_entry_quality(proposal: dict, market_data: dict, risk_profile: dict) -> tuple[int, list[str]]:
+    """Convenience adapter for proposal dicts."""
+    return score_entry_quality(
+        strategy_type=proposal.get("structure", ""),
+        legs=proposal.get("legs", []),
+        scan_context=market_data,
+        book_greeks={},
+        risk_profile=risk_profile,
+        net_premium=proposal.get("net_credit", 0.0),
+        underlying=market_data.get("underlying"),
+    )
+
 
 def _normalize_structure_type(strategy_name: str) -> str:
     """Normalize strategy/structure type strings to canonical keys."""

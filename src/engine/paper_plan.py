@@ -16,7 +16,7 @@ import re
 from config.symbol_classes import get_strike_step
 from config.settings import MAX_LEVEL_DISTANCE_STEPS
 from src.engine.confidence_threshold import get_effective_min_confidence
-from src.engine.verdict_sets import BULLISH_VERDICTS, BEARISH_VERDICTS, is_bullish, is_bearish
+from src.engine.verdict_sets import BULLISH_VERDICTS, BEARISH_VERDICTS, is_bullish, is_bearish, is_neutral
 
 log = logging.getLogger(__name__)
 
@@ -150,7 +150,7 @@ VERDICT_ACTION_MAP = {
 }
 
 
-def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | None:
+def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict, *args, **kwargs) -> dict | None:
     """Return the executable paper plan, or None when no clean auto entry exists."""
     from config.settings import PAPER_RESEARCH_MODE
 
@@ -194,20 +194,17 @@ def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | N
             side = "SELL"
             option_type = "PE" if tfss_side == "SELL_PE" else "CE"
             setup_type = "TFSS"
-
-            # Support LLM override of option_type for GO_LONG/GO_SHORT if available
-            if verdict_str in ("GO_LONG", "GO_SHORT") or ctx.get("instrument"):
-                llm_instr = str(ctx.get("instrument") or "")
-                if re.search(r"\bCE\b", llm_instr, re.IGNORECASE):
-                    option_type = "CE"
-                elif re.search(r"\bPE\b", llm_instr, re.IGNORECASE):
-                    option_type = "PE"
+            # A19: Do NOT allow LLM instrument override to flip option_type when side is SELL
     elif verdict_str in ("GO_LONG", "GO_SHORT"):
         llm_instr = str(ctx.get("instrument") or "")
-        if re.search(r"\bCE\b", llm_instr, re.IGNORECASE):
-            option_type = "CE"
-        elif re.search(r"\bPE\b", llm_instr, re.IGNORECASE):
-            option_type = "PE"
+        if side == "SELL":
+            # For SELL plans, ensure option type matches side bias (GO_LONG -> SELL PE, GO_SHORT -> SELL CE)
+            option_type = "PE" if verdict_str == "GO_LONG" else "CE"
+        else:
+            if re.search(r"\bCE\b", llm_instr, re.IGNORECASE):
+                option_type = "CE"
+            elif re.search(r"\bPE\b", llm_instr, re.IGNORECASE):
+                option_type = "PE"
 
     step = float(get_strike_step(symbol) or 1)
     atm = _safe_float(ctx.get("atm_strike")) or _round_to_step(underlying, step)
@@ -218,10 +215,19 @@ def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | N
     if is_mcx_commodity:
         use_options = mcx_option_liquidity_ok(symbol, atm, ctx)
         if not use_options:
-            option_type = "FUT"
-            # TFSS v4: FUT fallback still uses SELL direction for short-premium strategy.
-            # Bullish → SELL FUT (short futures), Bearish → still SELL (no change needed for direction).
-            side = "SELL"
+            # A1 FIX: FUT direction must match market verdict.
+            # Bullish -> BUY FUT, Bearish -> SELL FUT, Neutral/Strangle -> None (cannot execute neutral futures)
+            if is_neutral(verdict) or option_type == "STRANGLE":
+                log.info("%s: MCX options illiquid at strike %.1f and verdict '%s' is neutral — FUT fallback not possible for neutral, skipping entry", symbol, atm, verdict)
+                return None
+            elif is_bullish(verdict):
+                option_type = "FUT"
+                side = "BUY"
+            elif is_bearish(verdict):
+                option_type = "FUT"
+                side = "SELL"
+            else:
+                return None
         # else: keep the original option_type (CE/PE) and side from VERDICT_ACTION_MAP
     support = _safe_float(ctx.get("support"))
     resistance = _safe_float(ctx.get("resistance"))
@@ -409,11 +415,11 @@ def build_paper_trade_plan(verdict: str, confidence: int, ctx: dict) -> dict | N
                             break
                         if option_type == "CE":
                             cur_strike = _round_to_step(cur_strike - step, step)
-                            if cur_strike < underlying:
+                            if cur_strike <= underlying:
                                 break
                         else:
                             cur_strike = _round_to_step(cur_strike + step, step)
-                            if cur_strike > underlying:
+                            if cur_strike >= underlying:
                                 break
 
                 # 4. Final safety fallback: use the first wall or ATM+1 step if premium > 0
@@ -524,3 +530,6 @@ def format_paper_plan(plan: dict | None) -> str:
         f"{side} {strike:g} {opt} at current scan "
         f"| SL spot {sl:g} | Target spot {target:g}"
     )
+
+
+create_paper_trade_plan = build_paper_trade_plan

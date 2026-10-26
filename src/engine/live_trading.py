@@ -460,31 +460,58 @@ def _bg_pending_gtt_placer(
                 log.info(
                     "%s: Pending trade filled in background! Placing GTT...", symbol
                 )
-                gtt_order_id = place_kite_gtt(
-                    kite,
-                    symbol,
-                    exchange,
-                    tradingsymbol,
-                    "SELL" if side == "BUY" else "BUY",
-                    quantity,
-                    [sl_trigger, target_trigger],
-                    [sl_limit, target_limit],
-                    entry_premium,
-                    shadow_mode,
-                )
-                update_live_trade_entry(
-                    inserted_id,
-                    broker_status="COMPLETE",
-                    broker_message="Filled and GTT placed in background",
-                    gtt_order_id=gtt_order_id,
-                    exit_mode="GTT",
-                )
-                from src.alerts.telegram_dispatcher import send_text
+                # Atomic claim to prevent duplicate GTT placement race (Finding B22)
+                claimed = False
+                try:
+                    with get_conn() as conn:
+                        cur = conn.execute(
+                            "UPDATE live_trades SET gtt_order_id='PLACING' WHERE id=? AND (gtt_order_id IS NULL OR gtt_order_id='')",
+                            (inserted_id,),
+                        )
+                        claimed = cur.rowcount == 1
+                except Exception as ce:
+                    log.warning("%s: Failed to claim GTT lock for trade #%s: %s", symbol, inserted_id, ce)
+                if not claimed:
+                    log.info("%s: Trade %d GTT already claimed/placed. Exiting thread.", symbol, inserted_id)
+                    return
 
-                send_text(
-                    f"🤖 **[LIVE]** Background GTT Placed for `{symbol}` after pending fill. GTT ID: `{gtt_order_id}`"
-                )
-                return
+                try:
+                    gtt_order_id = place_kite_gtt(
+                        kite,
+                        symbol,
+                        exchange,
+                        tradingsymbol,
+                        "SELL" if side == "BUY" else "BUY",
+                        quantity,
+                        [sl_trigger, target_trigger],
+                        [sl_limit, target_limit],
+                        entry_premium,
+                        shadow_mode,
+                    )
+                    update_live_trade_entry(
+                        inserted_id,
+                        broker_status="COMPLETE",
+                        broker_message="Filled and GTT placed in background",
+                        gtt_order_id=gtt_order_id,
+                        exit_mode="GTT",
+                    )
+                    from src.alerts.telegram_dispatcher import send_text
+
+                    send_text(
+                        f"🤖 **[LIVE]** Background GTT Placed for `{symbol}` after pending fill. GTT ID: `{gtt_order_id}`"
+                    )
+                    return
+                except Exception as gtt_exc:
+                    log.warning("%s: Background GTT placement failed for trade #%s: %s", symbol, inserted_id, gtt_exc)
+                    try:
+                        with get_conn() as conn:
+                            conn.execute(
+                                "UPDATE live_trades SET gtt_order_id=NULL WHERE id=? AND gtt_order_id='PLACING'",
+                                (inserted_id,),
+                            )
+                    except Exception:
+                        pass
+                    return
             elif b_status in ("REJECTED", "CANCELLED"):
                 log.info(
                     "%s: Pending trade %s in background. Cleaning up...",
@@ -866,8 +893,8 @@ def _exit_open_live_trade(
     trade_id = int(trade["id"])
     with get_conn() as conn:
         cur = conn.execute(
-            "UPDATE live_trades SET status='EXIT_PENDING' WHERE id=? AND status='OPEN'",
-            (trade_id,),
+            "UPDATE live_trades SET status='EXIT_PENDING', exit_claimed_at=? WHERE id=? AND status='OPEN'",
+            (now_iso, trade_id),
         )
         if cur.rowcount != 1:
             raise RuntimeError(
@@ -893,6 +920,46 @@ def _exit_open_live_trade(
         )
         quantity = _resolve_trade_quantity(symbol, int(trade.get("lots") or 1), resolved)
 
+        # Check if already flat on Kite (Finding B3)
+        if not shadow_mode and kite:
+            try:
+                positions = (kite.positions() or {}).get("net", [])
+                net_pos = next((p for p in positions if p.get("tradingsymbol") == tradingsymbol), None)
+                if net_pos and int(net_pos.get("quantity") or 0) == 0:
+                    log.info("%s: Position %s already flat on Kite (qty=0). Closing in DB without new order.", symbol, tradingsymbol)
+                    if trade.get("gtt_order_id"):
+                        cancel_kite_gtt(kite, trade["gtt_order_id"], shadow_mode)
+                    return close_live_trade(
+                        trade["id"],
+                        now_iso,
+                        underlying,
+                        exit_premium,
+                        status="CLOSED_MANUAL",
+                        reason="Position already flat on Kite",
+                    )
+            except Exception as pe:
+                log.warning("%s: Failed checking Kite net positions before exit: %s", symbol, pe)
+
+        # Cancel GTT before placing market exit to eliminate race condition (Finding B18)
+        if trade.get("gtt_order_id"):
+            gtt_id = trade["gtt_order_id"]
+            if not shadow_mode and kite:
+                try:
+                    from src.engine.multileg_live_trading import _gtt_already_filled
+                    if _gtt_already_filled(kite, gtt_id):
+                        log.info("%s: GTT %s already filled. Booking trade from GTT fill.", symbol, gtt_id)
+                        return close_live_trade(
+                            trade["id"],
+                            now_iso,
+                            underlying,
+                            exit_premium,
+                            status="CLOSED_GTT",
+                            reason="GTT stop/target triggered and filled",
+                        )
+                except Exception as gtt_chk_err:
+                    log.warning("%s: GTT status check failed: %s", symbol, gtt_chk_err)
+            cancel_kite_gtt(kite, gtt_id, shadow_mode)
+
         order_id = place_kite_order(
             kite,
             symbol,
@@ -909,27 +976,51 @@ def _exit_open_live_trade(
         if broker_status in ("REJECTED", "CANCELLED"):
             raise RuntimeError(f"Exit order {broker_status.lower()}: {broker_message}")
 
-        # BUG-H07 FIX: Verify exit order is actually COMPLETE before closing trade.
-        # Previously, PENDING orders would still mark the trade as CLOSED even though
-        # the position remained open at the broker, causing phantom closed trades.
+        # Finding B2: Unfilled exit LIMIT must be cancelled and filled quantity checked
         if not shadow_mode and broker_status != "COMPLETE":
             log.warning(
-                "%s: Exit order %s is %s (not COMPLETE). Trade will NOT be marked closed. "
-                "Position may still be open at broker.",
+                "%s: Exit order %s is %s (not COMPLETE). Attempting cancel to prevent reversed position...",
                 symbol, order_id, broker_status,
             )
-            raise RuntimeError(
-                f"Exit order not filled (status={broker_status}): {broker_message}. "
-                f"Trade remains OPEN to prevent phantom close."
-            )
+            try:
+                kite.cancel_order(variety=kite.VARIETY_REGULAR, order_id=order_id)
+            except Exception as ce:
+                log.warning("%s: Cancel order %s failed: %s", symbol, order_id, ce)
 
-        if trade.get("gtt_order_id"):
-            cancel_kite_gtt(kite, trade["gtt_order_id"], shadow_mode)
+            from src.engine.multileg_live_trading import _filled_qty
+            filled_qty = _filled_qty(kite, order_id)
+            if filled_qty >= quantity:
+                broker_status = "COMPLETE"
+                broker_message = "Order filled prior to cancel"
+            elif filled_qty > 0:
+                from config.settings import LOT_SIZES
+                lot_size_val = LOT_SIZES.get(symbol, 1)
+                remaining_lots = max(0, int(trade.get("lots") or 1) - (filled_qty // max(lot_size_val, 1)))
+                with get_conn() as conn:
+                    conn.execute("UPDATE live_trades SET lots=?, status='OPEN', exit_claimed_at=NULL WHERE id=?", (remaining_lots, trade_id))
+                raise RuntimeError(
+                    f"Exit order partially filled ({filled_qty}/{quantity}). Remaining {remaining_lots} lot(s) left OPEN."
+                )
+            else:
+                raise RuntimeError(
+                    f"Exit order not filled (status={broker_status}): {broker_message}. "
+                    f"Cancelled working order and reverted trade to OPEN."
+                )
     except Exception:
-        with get_conn() as conn:
-            conn.execute(
-                "UPDATE live_trades SET status='OPEN' WHERE id=? AND status='EXIT_PENDING'",
-                (trade_id,),
+        # The revert must never mask the original exit failure. If the DB write
+        # itself fails, exit_claimed_at lets recover_stale_exit_pending() reclaim
+        # the row later instead of leaving it stuck in EXIT_PENDING forever.
+        try:
+            with get_conn() as conn:
+                conn.execute(
+                    "UPDATE live_trades SET status='OPEN', exit_claimed_at=NULL WHERE id=? AND status='EXIT_PENDING'",
+                    (trade_id,),
+                )
+        except Exception:
+            log.critical(
+                "%s: failed to revert EXIT_PENDING claim for live trade #%s — "
+                "recover_stale_exit_pending() will reclaim it",
+                symbol, trade_id, exc_info=True,
             )
         raise
 
@@ -1082,55 +1173,75 @@ def run_live_trading(
                 # Try placing GTT now that the order is complete
                 gtt_order_id = None
                 exit_mode = current_open_trade.get("exit_mode")
-                if (
-                    current_open_trade.get("option_type") != "FUT"
-                    and current_open_trade.get("sl_premium") is not None
-                    and current_open_trade.get("target_premium") is not None
-                ):
+                sl_prem_val = current_open_trade.get("sl_premium") or (current_open_trade.get("sl_underlying") if current_open_trade.get("option_type") == "FUT" else None)
+                tgt_prem_val = current_open_trade.get("target_premium") or (current_open_trade.get("target_underlying") if current_open_trade.get("option_type") == "FUT" else None)
+                if sl_prem_val is not None and tgt_prem_val is not None:
+                    # Atomic claim to prevent double-GTT placement race (Finding B22)
+                    claimed = False
                     try:
-                        resolved = resolve_instrument(
-                            symbol,
-                            current_open_trade["expiry"],
-                            current_open_trade["strike"],
-                            current_open_trade["option_type"],
-                        )
-                        tradingsymbol = (
-                            resolved["tradingsymbol"] if resolved else symbol
-                        )
-                        quantity = _resolve_trade_quantity(
-                            symbol, int(current_open_trade.get("lots") or 1), resolved
-                        )
-                        sl_trigger = float(current_open_trade["sl_premium"])
-                        target_trigger = float(current_open_trade["target_premium"])
-                        sl_limit = (
-                            round(sl_trigger * 0.95, 2)
-                            if current_open_trade["side"] == "BUY"
-                            else round(sl_trigger * 1.05, 2)
-                        )
-                        target_limit = (
-                            round(target_trigger * 0.95, 2)
-                            if current_open_trade["side"] == "BUY"
-                            else round(target_trigger * 1.05, 2)
-                        )
-                        gtt_order_id = place_kite_gtt(
-                            kite,
-                            symbol,
-                            _get_exchange(symbol),
-                            tradingsymbol,
-                            "SELL" if current_open_trade["side"] == "BUY" else "BUY",
-                            quantity,
-                            [sl_trigger, target_trigger],
-                            [sl_limit, target_limit],
-                            current_open_trade["entry_premium"],
-                            shadow_mode,
-                        )
-                        exit_mode = "GTT"
-                    except Exception as ge:
-                        log.warning(
-                            "%s: GTT placement failed on fill reconciliation: %s",
-                            symbol,
-                            ge,
-                        )
+                        with get_conn() as conn:
+                            cur = conn.execute(
+                                "UPDATE live_trades SET gtt_order_id='PLACING' WHERE id=? AND (gtt_order_id IS NULL OR gtt_order_id='')",
+                                (current_open_trade["id"],),
+                            )
+                            claimed = cur.rowcount == 1
+                    except Exception as ce:
+                        log.warning("%s: Failed claiming GTT lock on reconciliation for trade #%s: %s", symbol, current_open_trade["id"], ce)
+
+                    if claimed:
+                        try:
+                            resolved = resolve_instrument(
+                                symbol,
+                                current_open_trade["expiry"],
+                                current_open_trade["strike"],
+                                current_open_trade["option_type"],
+                            )
+                            tradingsymbol = (
+                                resolved["tradingsymbol"] if resolved else symbol
+                            )
+                            quantity = _resolve_trade_quantity(
+                                symbol, int(current_open_trade.get("lots") or 1), resolved
+                            )
+                            sl_trigger = float(sl_prem_val)
+                            target_trigger = float(tgt_prem_val)
+                            sl_limit = (
+                                round(sl_trigger * 0.95, 2)
+                                if current_open_trade["side"] == "BUY"
+                                else round(sl_trigger * 1.05, 2)
+                            )
+                            target_limit = (
+                                round(target_trigger * 0.95, 2)
+                                if current_open_trade["side"] == "BUY"
+                                else round(target_trigger * 1.05, 2)
+                            )
+                            entry_val = current_open_trade["entry_premium"] if current_open_trade.get("option_type") != "FUT" else current_open_trade["entry_underlying"]
+                            gtt_order_id = place_kite_gtt(
+                                kite,
+                                symbol,
+                                _get_exchange(symbol),
+                                tradingsymbol,
+                                "SELL" if current_open_trade["side"] == "BUY" else "BUY",
+                                quantity,
+                                [sl_trigger, target_trigger],
+                                [sl_limit, target_limit],
+                                entry_val,
+                                shadow_mode,
+                            )
+                            exit_mode = "GTT"
+                        except Exception as ge:
+                            log.warning(
+                                "%s: GTT placement failed on fill reconciliation: %s",
+                                symbol,
+                                ge,
+                            )
+                            try:
+                                with get_conn() as conn:
+                                    conn.execute(
+                                        "UPDATE live_trades SET gtt_order_id=NULL WHERE id=? AND gtt_order_id='PLACING'",
+                                        (current_open_trade["id"],),
+                                    )
+                            except Exception:
+                                pass
 
                 update_live_trade_entry(
                     current_open_trade["id"],
@@ -1204,7 +1315,7 @@ def run_live_trading(
             or current_open_trade.get("option_type") == "FUT"
         ):
             if current_open_trade["option_type"] == "FUT":
-                exit_premium = underlying
+                exit_premium = underlying if underlying and underlying > 0 else None
             else:
                 exit_premium = _get_option_premium(
                     symbol,
@@ -1214,7 +1325,7 @@ def run_live_trading(
                     option_rows,
                 )
 
-            if exit_premium is not None:
+            if exit_premium is not None and exit_premium > 0:
                 sl_premium = float(current_open_trade.get("sl_premium") or 0.0)
                 target_premium = float(current_open_trade.get("target_premium") or 0.0)
                 is_sell = current_open_trade.get("side") == "SELL"
@@ -1321,8 +1432,10 @@ def run_live_trading(
     else:
         decision = make_trade_decision(symbol, intel, ctx, ai_verdict=ai_verdict)
 
-    if decision.get("status") == "BLOCKED":
-        return {"action": "BLOCKED_DECISION", "reason": decision.get("reason", "Blocked by trade decision engine")}
+    # A14 FIX: Fail-closed on missing or failed trade decision
+    if not decision or not isinstance(decision, dict) or decision.get("status") == "BLOCKED":
+        rej_reason = decision.get("reason") if isinstance(decision, dict) else "Missing or failed trade decision"
+        return {"action": "BLOCKED_DECISION", "reason": rej_reason}
 
     risk_ok, risk_reason = check_live_risk_limits(symbol, scan_context=ctx)
     if not risk_ok:
@@ -1445,16 +1558,17 @@ def run_live_trading(
         return {"action": "BLOCKED_ORDER_FAILED", "reason": broker_message}
 
     gtt_order_id = None
+    sl_prem_val = plan.get("sl_premium") or (plan.get("sl_underlying") if plan.get("option_type") == "FUT" else None)
+    tgt_prem_val = plan.get("target_premium") or (plan.get("target_underlying") if plan.get("option_type") == "FUT" else None)
     if (
-        plan["option_type"] != "FUT"
-        and broker_status == "COMPLETE"
-        and plan.get("sl_premium") is not None
-        and plan.get("target_premium") is not None
+        broker_status == "COMPLETE"
+        and sl_prem_val is not None
+        and tgt_prem_val is not None
     ):
         # Only place GTT if order is complete/filled to avoid placing target/SL on unfilled orders
         try:
-            sl_trigger = float(plan["sl_premium"])
-            target_trigger = float(plan["target_premium"])
+            sl_trigger = float(sl_prem_val)
+            target_trigger = float(tgt_prem_val)
             sl_limit = (
                 round(sl_trigger * 0.95, 2)
                 if plan["side"] == "BUY"
@@ -1465,6 +1579,7 @@ def run_live_trading(
                 if plan["side"] == "BUY"
                 else round(target_trigger * 1.05, 2)
             )
+            entry_val = entry_premium if plan.get("option_type") != "FUT" else underlying
             gtt_order_id = place_kite_gtt(
                 kite,
                 symbol,
@@ -1474,9 +1589,11 @@ def run_live_trading(
                 quantity,
                 [sl_trigger, target_trigger],
                 [sl_limit, target_limit],
-                entry_premium,
+                entry_val,
                 shadow_mode,
             )
+            if gtt_order_id:
+                exit_mode = "GTT"
         except Exception as e:
             exit_mode = "POLL"
             from src.alerts.telegram_dispatcher import send_text
@@ -1485,10 +1602,9 @@ def run_live_trading(
                 f"[GTT FAILED] `{symbol}` - {e}; falling back to premium-poll exit."
             )
     elif (
-        plan["option_type"] != "FUT"
-        and broker_status == "PENDING"
-        and plan.get("sl_premium") is not None
-        and plan.get("target_premium") is not None
+        broker_status == "PENDING"
+        and sl_prem_val is not None
+        and tgt_prem_val is not None
     ):
         # Defer GTT and use POLL exit fallback for safety until resolved
         exit_mode = "POLL"
@@ -1791,12 +1907,12 @@ def run_live_timeframe_strategy(
         if bar_end_1h and trade["opened_at"] < bar_end_1h:
             should_exit = False
             exit_reason = ""
-            if is_bullish(trade["verdict_label"]) and c_1h_close < p_1h_low:
+            if (trade["verdict_label"] == "LONG" or is_bullish(trade["verdict_label"])) and c_1h_close < p_1h_low:
                 crossover_size = p_1h_low - c_1h_close
                 if crossover_size > 2 * breakout_buffer or short_oi_support:
                     should_exit = True
                     exit_reason = f"TF-1H-Cross: 1H close {c_1h_close:.2f} < p1H_low {p_1h_low:.2f}"
-            elif is_bearish(trade["verdict_label"]) and c_1h_close > p_1h_high:
+            elif (trade["verdict_label"] == "SHORT" or is_bearish(trade["verdict_label"])) and c_1h_close > p_1h_high:
                 crossover_size = c_1h_close - p_1h_high
                 if crossover_size > 2 * breakout_buffer or long_oi_support:
                     should_exit = True
@@ -2015,23 +2131,23 @@ def run_live_timeframe_strategy(
 
     gtt_order_id = None
     exit_mode = "POLL"  # Timeframe strategy uses scan-tick 1H candle exit triggers, not static GTT profit targets
+    sl_prem_val = sl_premium or (sl_underlying if opt_type == "FUT" else None)
+    tgt_prem_val = target_premium or (tgt_underlying if opt_type == "FUT" else None)
     if (
-        opt_type != "FUT"
-        and broker_status == "COMPLETE"
-        and sl_premium is not None
-        and target_premium is not None
+        broker_status == "COMPLETE"
+        and sl_prem_val is not None
     ):
         # Only place GTT if order is complete
         try:
-            sl_trigger = float(sl_premium)
+            sl_trigger = float(sl_prem_val)
             sl_buf = max(0.25, min(round(sl_trigger * 0.01, 2), 0.50))
             sl_limit = (
                 round(sl_trigger - sl_buf, 2)
                 if side == "BUY"
                 else round(sl_trigger + sl_buf, 2)
             )
-            if target_premium is not None:
-                target_trigger = float(target_premium)
+            if tgt_prem_val is not None:
+                target_trigger = float(tgt_prem_val)
                 tgt_buf = max(0.25, min(round(target_trigger * 0.01, 2), 0.50))
                 target_limit = (
                     round(target_trigger - tgt_buf, 2)
@@ -2044,6 +2160,7 @@ def run_live_timeframe_strategy(
                 triggers = [sl_trigger]
                 limits = [sl_limit]
 
+            entry_val = entry_premium if opt_type != "FUT" else underlying
             gtt_order_id = place_kite_gtt(
                 kite,
                 symbol,
@@ -2053,9 +2170,11 @@ def run_live_timeframe_strategy(
                 quantity,
                 triggers,
                 limits,
-                entry_premium,
+                entry_val,
                 shadow_mode,
             )
+            if gtt_order_id:
+                exit_mode = "GTT"
         except Exception as e:
             exit_mode = "POLL"
             from src.alerts.telegram_dispatcher import send_text
@@ -2063,7 +2182,7 @@ def run_live_timeframe_strategy(
             send_text(
                 f"⚠️ **[GTT FAILED]** `{symbol}` TF — {e}; falling back to premium-poll exit."
             )
-    elif opt_type != "FUT" and broker_status == "PENDING":
+    elif broker_status == "PENDING":
         exit_mode = "POLL"
 
     trade_data = {
@@ -2580,8 +2699,6 @@ def sync_direct_kite_positions() -> None:
             return
 
     config = load_runtime_config()
-    if not config.get("manage_direct_kite_positions", False):
-        return
 
     kite = get_kite_client()
     if not kite:
@@ -2607,13 +2724,14 @@ def sync_direct_kite_positions() -> None:
     import re
     from datetime import datetime, timedelta, timezone
 
+    from src.engine.symbol_resolver import parse_tradingsymbol
     from src.models.schema import get_conn, insert_live_trade
 
     with get_conn() as conn:
         db_trades = [
             dict(r)
             for r in conn.execute(
-                "SELECT id, symbol, option_type, strike, side, lots, lot_size, setup_type, reason, gtt_order_id, trade_status, broker_status FROM live_trades WHERE status='OPEN'"
+                "SELECT id, symbol, option_type, strike, side, lots, lot_size, setup_type, reason, gtt_order_id, trade_status, broker_status, opened_at FROM live_trades WHERE status='OPEN'"
             ).fetchall()
         ]
         open_db_signatures = []
@@ -2675,16 +2793,11 @@ def sync_direct_kite_positions() -> None:
             if not base_sym:
                 continue
             side = "BUY" if net_qty > 0 else "SELL"
-            option_type = "FUT"
-            strike = 0.0
-            if ts.endswith("CE"):
-                option_type = "CE"
-            elif ts.endswith("PE"):
-                option_type = "PE"
-            if option_type in ("CE", "PE"):
-                m = re.search(r"(\d+(?:\.\d+)?)(?:CE|PE)$", ts)
-                if m:
-                    strike = float(m.group(1))
+            parsed = parse_tradingsymbol(ts)
+            option_type = parsed.get("option_type") or "FUT"
+            strike = float(parsed.get("strike") or 0.0)
+            if parsed.get("symbol") in monitored_bases:
+                base_sym = parsed["symbol"]
             abs_qty = abs(net_qty)
             active_kite_sigs.add(f"{base_sym}:{option_type}:{int(strike)}:{side}:{abs_qty}")
             active_kite_specs[f"{base_sym}:{option_type}:{int(strike)}:{side}"] = abs_qty
@@ -2695,6 +2808,18 @@ def sync_direct_kite_positions() -> None:
             # Only reconcile trades that were actually sent to broker (not shadow trades)
             if dt.get("trade_status") == "SHADOW" or dt.get("broker_status") == "SHADOW":
                 continue
+            # Finding B10: Skip trades whose broker order has not completed, or opened < 2 minutes ago
+            if dt.get("broker_status") != "COMPLETE":
+                continue
+            opened_at_str = dt.get("opened_at")
+            if opened_at_str:
+                try:
+                    dt_opened = datetime.fromisoformat(opened_at_str.replace("Z", "+00:00"))
+                    if (datetime.now(timezone.utc) - dt_opened).total_seconds() < 120:
+                        continue
+                except Exception:
+                    pass
+
             sym = dt["symbol"]
             ot = dt["option_type"]
             stk = int(dt["strike"] or 0)
@@ -2711,10 +2836,31 @@ def sync_direct_kite_positions() -> None:
                     dt["id"],
                     spec,
                 )
-                conn.execute(
-                    "UPDATE live_trades SET status='CLOSED_MANUAL', closed_at=?, reason='Closed on Kite (reconciled)', broker_message='Auto-closed via Kite position reconciliation' WHERE id=?",
-                    (now_iso, dt["id"]),
-                )
+                # Finding B4: Reconciled closes record true fill price from GTT/order history if available
+                exit_prem = None
+                try:
+                    orders = kite.orders() or []
+                    for o in reversed(orders):
+                        if o.get("status") == "COMPLETE":
+                            o_ts = o.get("tradingsymbol", "")
+                            if (ot in ("CE", "PE") and str(int(stk)) in o_ts and ot in o_ts) or (ot == "FUT" and sym in o_ts):
+                                avg_p = float(o.get("average_price") or 0.0)
+                                if avg_p > 0:
+                                    exit_prem = avg_p
+                                    break
+                except Exception as ord_err:
+                    log.debug("Could not lookup fill price for reconciled trade #%s: %s", dt["id"], ord_err)
+
+                if exit_prem is not None and exit_prem > 0:
+                    conn.execute(
+                        "UPDATE live_trades SET status='CLOSED_MANUAL', closed_at=?, exit_premium=?, reason='Closed on Kite (reconciled)', broker_message='Auto-closed via Kite position reconciliation' WHERE id=?",
+                        (now_iso, exit_prem, dt["id"]),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE live_trades SET status='CLOSED_MANUAL', closed_at=?, reason='Closed on Kite (reconciled)', broker_message='Auto-closed via Kite position reconciliation' WHERE id=?",
+                        (now_iso, dt["id"]),
+                    )
                 if dt.get("gtt_order_id"):
                     cancel_kite_gtt(kite, dt["gtt_order_id"], shadow_mode=False)
                 try:
@@ -2800,255 +2946,249 @@ def sync_direct_kite_positions() -> None:
                 except Exception:
                     pass
 
-        # 3. Adopt unmonitored direct Kite positions into DB
-        for p in net_positions:
-            net_qty = int(p.get("quantity", 0) or 0)
-            if net_qty == 0:
-                continue
+        # 3. Adopt unmonitored direct Kite positions into DB (gated by manage_direct_kite_positions)
+        if config.get("manage_direct_kite_positions", False):
+            for p in net_positions:
+                net_qty = int(p.get("quantity", 0) or 0)
+                if net_qty == 0:
+                    continue
 
-            avg_price = float(p.get("average_price") or 0.0)
-            ts = p.get("tradingsymbol", "")
-            base_sym = None
-            for mb in monitored_bases:
-                if ts.startswith(mb):
-                    base_sym = mb
-                    break
+                avg_price = float(p.get("average_price") or 0.0)
+                ts = p.get("tradingsymbol", "")
+                base_sym = None
+                for mb in monitored_bases:
+                    if ts.startswith(mb):
+                        base_sym = mb
+                        break
 
-            if not base_sym:
-                continue
+                if not base_sym:
+                    continue
 
-            side = "BUY" if net_qty > 0 else "SELL"
+                side = "BUY" if net_qty > 0 else "SELL"
+                parsed = parse_tradingsymbol(ts)
+                option_type = parsed.get("option_type") or "FUT"
+                strike = float(parsed.get("strike") or 0.0)
+                if parsed.get("symbol") in monitored_bases:
+                    base_sym = parsed["symbol"]
 
-            option_type = "FUT"
-            strike = 0.0
-            if ts.endswith("CE"):
-                option_type = "CE"
-            elif ts.endswith("PE"):
-                option_type = "PE"
+                abs_qty = abs(net_qty)
+                sig = f"{base_sym}:{option_type}:{int(strike)}:{side}:{abs_qty}"
+                spec_key = f"{base_sym}:{option_type}:{int(strike)}:{side}"
 
-            if option_type in ("CE", "PE"):
-                m = re.search(r"(\d+(?:\.\d+)?)(?:CE|PE)$", ts)
-                if m:
-                    strike = float(m.group(1))
+                # If already tracked in open DB trades, do not duplicate
+                if sig in open_db_signatures or spec_key in open_db_specs:
+                    continue
 
-            abs_qty = abs(net_qty)
-            sig = f"{base_sym}:{option_type}:{int(strike)}:{side}:{abs_qty}"
-            spec_key = f"{base_sym}:{option_type}:{int(strike)}:{side}"
+                init_mode = config.get("direct_kite_initialization_mode", "fixed_pct")
+                sl_premium = 0.0
+                tgt_premium = 0.0
+                sl_underlying = 0.0
+                tgt_underlying = 0.0
+                underlying_price = 0.0
 
-            # If already tracked in open DB trades, do not duplicate
-            if sig in open_db_signatures or spec_key in open_db_specs:
-                continue
+                # Fetch latest underlying price (try live LTP first for indices, fallback to DB)
+                underlying_price = 0.0
+                live_resolved = False
+                mapping = {
+                    "NIFTY": "NSE:NIFTY 50",
+                    "BANKNIFTY": "NSE:NIFTY BANK",
+                    "SENSEX": "BSE:SENSEX",
+                }
+                symbol_key = mapping.get(base_sym)
 
-            init_mode = config.get("direct_kite_initialization_mode", "fixed_pct")
-            sl_premium = 0.0
-            tgt_premium = 0.0
-            sl_underlying = 0.0
-            tgt_underlying = 0.0
-            underlying_price = 0.0
+                if not symbol_key and base_sym in ("NATURALGAS", "CRUDEOIL"):
+                    try:
+                        from config.symbol_classes import get_futures_expiry
+                        from src.engine.symbol_resolver import resolve_instrument
 
-            # Fetch latest underlying price (try live LTP first for indices, fallback to DB)
-            underlying_price = 0.0
-            live_resolved = False
-            mapping = {
-                "NIFTY": "NSE:NIFTY 50",
-                "BANKNIFTY": "NSE:NIFTY BANK",
-                "SENSEX": "BSE:SENSEX",
-            }
-            symbol_key = mapping.get(base_sym)
-
-            if not symbol_key and base_sym in ("NATURALGAS", "CRUDEOIL"):
-                try:
-                    from config.symbol_classes import get_futures_expiry
-                    from src.engine.symbol_resolver import resolve_instrument
-
-                    fut_expiry = get_futures_expiry(base_sym)
-                    if fut_expiry:
-                        resolved_fut = resolve_instrument(
-                            base_sym, fut_expiry, 0.0, "FUT"
+                        fut_expiry = get_futures_expiry(base_sym)
+                        if fut_expiry:
+                            resolved_fut = resolve_instrument(
+                                base_sym, fut_expiry, 0.0, "FUT"
+                            )
+                            if resolved_fut and resolved_fut.get("tradingsymbol"):
+                                symbol_key = f"MCX:{resolved_fut['tradingsymbol']}"
+                    except Exception as e:
+                        log.warning(
+                            "Failed to resolve futures symbol for %s: %s", base_sym, e
                         )
-                        if resolved_fut and resolved_fut.get("tradingsymbol"):
-                            symbol_key = f"MCX:{resolved_fut['tradingsymbol']}"
-                except Exception as e:
-                    log.warning(
-                        "Failed to resolve futures symbol for %s: %s", base_sym, e
-                    )
 
-                if symbol_key.startswith("MCX:"):
-                    # Kite API accounts lack MCX market data permissions — fetch via commodity router
-                    try:
-                        from src.fetchers.router import get_commodity_ohlc
+                    if symbol_key.startswith("MCX:"):
+                        # Kite API accounts lack MCX market data permissions — fetch via commodity router
+                        try:
+                            from src.fetchers.router import get_commodity_ohlc
 
-                        cmd_res = get_commodity_ohlc(base_sym)
-                        if cmd_res and float(cmd_res.get("price") or 0.0) > 0:
-                            underlying_price = float(cmd_res["price"])
-                            live_resolved = True
-                    except Exception as mcx_err:
-                        log.debug("MCX router fetch failed for %s: %s", base_sym, mcx_err)
-                else:
-                    try:
-                        res = kite.ltp(symbol_key)
-                        if res and symbol_key in res:
-                            underlying_price = float(
-                                res[symbol_key].get("last_price") or 0.0
-                            )
-                            if underlying_price > 0:
+                            cmd_res = get_commodity_ohlc(base_sym)
+                            if cmd_res and float(cmd_res.get("price") or 0.0) > 0:
+                                underlying_price = float(cmd_res["price"])
                                 live_resolved = True
-                    except Exception as ltp_err:
-                        if "Insufficient permission" in str(ltp_err):
-                            log.debug(
-                                "Kite market data permission missing for %s (using stored underlying price fallback)",
-                                symbol_key,
-                            )
+                        except Exception as mcx_err:
+                            log.debug("MCX router fetch failed for %s: %s", base_sym, mcx_err)
+                    else:
+                        try:
+                            res = kite.ltp(symbol_key)
+                            if res and symbol_key in res:
+                                underlying_price = float(
+                                    res[symbol_key].get("last_price") or 0.0
+                                )
+                                if underlying_price > 0:
+                                    live_resolved = True
+                        except Exception as ltp_err:
+                            if "Insufficient permission" in str(ltp_err):
+                                log.debug(
+                                    "Kite market data permission missing for %s (using stored underlying price fallback)",
+                                    symbol_key,
+                                )
+                            else:
+                                log.warning(
+                                    "Failed to fetch live LTP for index %s: %s",
+                                    symbol_key,
+                                    ltp_err,
+                                )
+
+                if not live_resolved:
+                    from src.models.schema import get_previous_underlying
+
+                    prev_und = get_previous_underlying(base_sym)
+                    if prev_und:
+                        underlying_price = float(prev_und["price"] or 0.0)
+
+                atr = None
+                if init_mode == "dynamic" and underlying_price > 0:
+                    try:
+                        from src.fetchers.chart_fetcher import get_chart_fetcher
+
+                        chart_data = get_chart_fetcher().fetch(
+                            base_sym, reference_price=underlying_price
+                        )
+                        if chart_data and base_sym in chart_data:
+                            tf_data = chart_data[base_sym]
+                            pay_3h = tf_data.get("3h") or {}
+                            pay_1h = tf_data.get("1h") or {}
+                            atr = pay_3h.get("atr_14") or pay_1h.get("atr_14")
+                    except Exception as chart_err:
+                        log.warning(
+                            "Failed to fetch chart indicators for direct dynamic SL: %s",
+                            chart_err,
+                        )
+
+                if option_type == "FUT":
+                    entry_val = avg_price
+                    if init_mode == "dynamic" and atr and atr > 0:
+                        base_ref = underlying_price if underlying_price > 0 else avg_price
+                        if side == "BUY":
+                            sl_underlying = round(base_ref - 1.5 * atr, 2)
+                            tgt_underlying = round(base_ref + 2.0 * atr, 2)
                         else:
-                            log.warning(
-                                "Failed to fetch live LTP for index %s: %s",
-                                symbol_key,
-                                ltp_err,
-                            )
+                            sl_underlying = round(base_ref + 1.5 * atr, 2)
+                            tgt_underlying = round(base_ref - 2.0 * atr, 2)
+                        log.info(
+                            "Dynamic FUT SL/Tgt computed for manual trade of %s: atr=%s, SL=%s, Tgt=%s",
+                            base_sym,
+                            atr,
+                            sl_underlying,
+                            tgt_underlying,
+                        )
+                    else:
+                        sl_pct = (
+                            float(config.get("direct_kite_default_sl_pct", 75.0)) / 100.0
+                        )
+                        tgt_pct = (
+                            float(config.get("direct_kite_default_tgt_pct", 60.0)) / 100.0
+                        )
+                        if side == "BUY":
+                            sl_underlying = round(entry_val * (1 - sl_pct), 2)
+                            tgt_underlying = round(entry_val * (1 + tgt_pct), 2)
+                        else:
+                            sl_underlying = round(entry_val * (1 + sl_pct), 2)
+                            tgt_underlying = round(entry_val * (1 - tgt_pct), 2)
+                    sl_premium = sl_underlying
+                    tgt_premium = tgt_underlying
+                else:
+                    if init_mode == "dynamic" and atr and atr > 0 and underlying_price > 0:
+                        vol_pct = atr / underlying_price
+                        sl_pct = max(0.15, min(0.45, vol_pct * 40.0))
+                        tgt_pct = max(0.25, min(0.75, vol_pct * 60.0))
+                        log.info(
+                            "Dynamic option SL/Tgt computed for manual trade of %s: vol_pct=%.4f, sl_pct=%.2f, tgt_pct=%.2f",
+                            base_sym,
+                            vol_pct,
+                            sl_pct,
+                            tgt_pct,
+                        )
+                    else:
+                        sl_pct = (
+                            float(config.get("direct_kite_default_sl_pct", 75.0)) / 100.0
+                        )
+                        tgt_pct = (
+                            float(config.get("direct_kite_default_tgt_pct", 60.0)) / 100.0
+                        )
 
-            if not live_resolved:
-                from src.models.schema import get_previous_underlying
+                    if side == "BUY":
+                        sl_premium = round(avg_price * (1 - sl_pct), 2)
+                        tgt_premium = round(avg_price * (1 + tgt_pct), 2)
+                    else:
+                        sl_premium = round(avg_price * (1 + sl_pct), 2)
+                        tgt_premium = round(avg_price * (1 - tgt_pct), 2)
 
-                prev_und = get_previous_underlying(base_sym)
-                if prev_und:
-                    underlying_price = float(prev_und["price"] or 0.0)
+                lot_size_val = LOT_SIZES.get(base_sym, 1)
+                lots = max(1, abs_qty // lot_size_val)
 
-            atr = None
-            if init_mode == "dynamic" and underlying_price > 0:
-                try:
-                    from src.fetchers.chart_fetcher import get_chart_fetcher
-
-                    chart_data = get_chart_fetcher().fetch(
-                        base_sym, reference_price=underlying_price
-                    )
-                    if chart_data and base_sym in chart_data:
-                        tf_data = chart_data[base_sym]
-                        pay_3h = tf_data.get("3h") or {}
-                        pay_1h = tf_data.get("1h") or {}
-                        atr = pay_3h.get("atr_14") or pay_1h.get("atr_14")
-                except Exception as chart_err:
+                expiry_val = get_expiry_for_tradingsymbol(ts)
+                if not expiry_val:
                     log.warning(
-                        "Failed to fetch chart indicators for direct dynamic SL: %s",
-                        chart_err,
-                    )
-
-            if option_type == "FUT":
-                entry_val = avg_price
-                if init_mode == "dynamic" and atr and atr > 0:
-                    base_ref = underlying_price if underlying_price > 0 else avg_price
-                    if side == "BUY":
-                        sl_underlying = round(base_ref - 1.5 * atr, 2)
-                        tgt_underlying = round(base_ref + 2.0 * atr, 2)
-                    else:
-                        sl_underlying = round(base_ref + 1.5 * atr, 2)
-                        tgt_underlying = round(base_ref - 2.0 * atr, 2)
-                    log.info(
-                        "Dynamic FUT SL/Tgt computed for manual trade of %s: atr=%s, SL=%s, Tgt=%s",
+                        "Skipping direct Kite position adoption for %s — "
+                        "could not resolve expiry from tradingsymbol '%s'",
                         base_sym,
-                        atr,
-                        sl_underlying,
-                        tgt_underlying,
+                        ts,
                     )
-                else:
-                    sl_pct = (
-                        float(config.get("direct_kite_default_sl_pct", 75.0)) / 100.0
-                    )
-                    tgt_pct = (
-                        float(config.get("direct_kite_default_tgt_pct", 60.0)) / 100.0
-                    )
-                    if side == "BUY":
-                        sl_underlying = round(entry_val * (1 - sl_pct), 2)
-                        tgt_underlying = round(entry_val * (1 + tgt_pct), 2)
-                    else:
-                        sl_underlying = round(entry_val * (1 + sl_pct), 2)
-                        tgt_underlying = round(entry_val * (1 - tgt_pct), 2)
-                sl_premium = sl_underlying
-                tgt_premium = tgt_underlying
-            else:
-                if init_mode == "dynamic" and atr and atr > 0 and underlying_price > 0:
-                    vol_pct = atr / underlying_price
-                    sl_pct = max(0.15, min(0.45, vol_pct * 40.0))
-                    tgt_pct = max(0.25, min(0.75, vol_pct * 60.0))
-                    log.info(
-                        "Dynamic option SL/Tgt computed for manual trade of %s: vol_pct=%.4f, sl_pct=%.2f, tgt_pct=%.2f",
-                        base_sym,
-                        vol_pct,
-                        sl_pct,
-                        tgt_pct,
-                    )
-                else:
-                    sl_pct = (
-                        float(config.get("direct_kite_default_sl_pct", 75.0)) / 100.0
-                    )
-                    tgt_pct = (
-                        float(config.get("direct_kite_default_tgt_pct", 60.0)) / 100.0
-                    )
+                    continue
 
-                if side == "BUY":
-                    sl_premium = round(avg_price * (1 - sl_pct), 2)
-                    tgt_premium = round(avg_price * (1 + tgt_pct), 2)
-                else:
-                    sl_premium = round(avg_price * (1 + sl_pct), 2)
-                    tgt_premium = round(avg_price * (1 - tgt_pct), 2)
+                shadow_mode = config.get("live_shadow_mode", True)
+                trade_data = {
+                    "opened_at": now_iso,
+                    "symbol": base_sym,
+                    "expiry": expiry_val,
+                    "verdict_label": "DIRECT KITE",
+                    "side": side,
+                    "option_type": option_type,
+                    "strike": strike,
+                    "entry_underlying": avg_price
+                    if option_type == "FUT"
+                    else underlying_price,
+                    "entry_premium": avg_price if option_type != "FUT" else 0.0,
+                    "sl_underlying": sl_underlying,
+                    "sl_premium": sl_premium if option_type != "FUT" else 0.0,
+                    "target_underlying": tgt_underlying,
+                    "target_premium": tgt_premium if option_type != "FUT" else 0.0,
+                    "lots": lots,
+                    "lot_size": lot_size_val,
+                    "status": "OPEN",
+                    "reason": "Direct Kite Manual Entry",
+                    "digest_id": "manual",
+                    "trade_status": "LIVE" if not shadow_mode else "SHADOW",
+                    "setup_type": "DIRECT_KITE",
+                    "decision_reason": f"Adopted {ts} from Kite",
+                    "signal_key": f"kite_direct_{ts}",
+                    "broker_order_id": "direct",
+                    "broker_status": "COMPLETE",
+                    "broker_message": "Adopted manually placed position",
+                    "exit_mode": "POLL",
+                    "ai_model_name": "DIRECT_KITE_MANUAL",
+                }
 
-            lot_size_val = LOT_SIZES.get(base_sym, 1)
-            lots = max(1, abs_qty // lot_size_val)
+                inserted_id = insert_live_trade(trade_data, conn=conn)
+                if inserted_id:
+                    open_db_signatures.append(sig)
+                    log.info("Adopted Kite direct position: %s as %s", ts, sig)
+                    try:
+                        from src.alerts.telegram_dispatcher import send_text
 
-            expiry_val = get_expiry_for_tradingsymbol(ts)
-            if not expiry_val:
-                log.warning(
-                    "Skipping direct Kite position adoption for %s — "
-                    "could not resolve expiry from tradingsymbol '%s'",
-                    base_sym,
-                    ts,
-                )
-                continue
-
-            shadow_mode = config.get("live_shadow_mode", True)
-            trade_data = {
-                "opened_at": now_iso,
-                "symbol": base_sym,
-                "expiry": expiry_val,
-                "verdict_label": "DIRECT KITE",
-                "side": side,
-                "option_type": option_type,
-                "strike": strike,
-                "entry_underlying": avg_price
-                if option_type == "FUT"
-                else underlying_price,
-                "entry_premium": avg_price if option_type != "FUT" else 0.0,
-                "sl_underlying": sl_underlying,
-                "sl_premium": sl_premium if option_type != "FUT" else 0.0,
-                "target_underlying": tgt_underlying,
-                "target_premium": tgt_premium if option_type != "FUT" else 0.0,
-                "lots": lots,
-                "lot_size": lot_size_val,
-                "status": "OPEN",
-                "reason": "Direct Kite Manual Entry",
-                "digest_id": "manual",
-                "trade_status": "LIVE" if not shadow_mode else "SHADOW",
-                "setup_type": "DIRECT_KITE",
-                "decision_reason": f"Adopted {ts} from Kite",
-                "signal_key": f"kite_direct_{ts}",
-                "broker_order_id": "direct",
-                "broker_status": "COMPLETE",
-                "broker_message": "Adopted manually placed position",
-                "exit_mode": "POLL",
-                "ai_model_name": "DIRECT_KITE_MANUAL",
-            }
-
-            inserted_id = insert_live_trade(trade_data, conn=conn)
-            if inserted_id:
-                open_db_signatures.append(sig)
-                log.info("Adopted Kite direct position: %s as %s", ts, sig)
-                try:
-                    from src.alerts.telegram_dispatcher import send_text
-
-                    send_text(
-                        f"🤖 **[KITE DIRECT]** Adopted manual position `{ts}` ({side} Qty: {abs_qty}) at `₹{avg_price}`. AI Exit Advisor will monitor it (SL: `₹{sl_premium}`, Target: `₹{tgt_premium}`)."
-                    )
-                except Exception:
-                    pass
+                        send_text(
+                            f"🤖 **[KITE DIRECT]** Adopted manual position `{ts}` ({side} Qty: {abs_qty}) at `₹{avg_price}`. AI Exit Advisor will monitor it (SL: `₹{sl_premium}`, Target: `₹{tgt_premium}`)."
+                        )
+                    except Exception:
+                        pass
 
     if books_to_close:
         from src.models.schema import close_book
@@ -3110,7 +3250,7 @@ def check_all_live_exits_every_2_min() -> None:
                 symbol=sym,
                 scan_context=scan_ctx,
                 digest_id=f"poll_{int(datetime.now().timestamp())}",
-                intel={"verdict_label": "Neutral", "confidence": 50, "trade_decision": {"status": "BLOCKED", "reason": "POLL_EXIT_CHECK_ONLY"}},
+                intel={"verdict_label": "Neutral", "confidence": 50, "is_exit_poll": True, "trade_decision": {"status": "BLOCKED", "reason": "POLL_EXIT_CHECK_ONLY"}},
             )
         except Exception as te:
             log.warning("[live-exit-poll] Error polling live trade #%s for %s: %s", trade.get("id"), sym, te)
@@ -3141,7 +3281,7 @@ def check_all_live_exits_every_2_min() -> None:
                     symbol=sym,
                     scan_context=scan_ctx,
                     digest_id=f"poll_ml_{int(datetime.now().timestamp())}",
-                    intel={"verdict_label": "Neutral", "confidence": 50},
+                    intel={"verdict_label": "Neutral", "confidence": 50, "is_exit_poll": True},
                     exit_check=True,
                 )
             except Exception as me:

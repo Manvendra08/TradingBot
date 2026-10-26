@@ -374,6 +374,86 @@ def get_expiry_for_tradingsymbol(tsym: str) -> str | None:
     return None
 
 
+def parse_tradingsymbol(tsym: str) -> dict:
+    """Parse tradingsymbol into {symbol, option_type, strike, expiry}.
+
+    Handles:
+    - Weekly options: NIFTY24O1025000CE -> symbol=NIFTY, option_type=CE, strike=25000.0, expiry=2024-10-10
+    - Monthly options: NIFTY24OCT25000CE -> symbol=NIFTY, option_type=CE, strike=25000.0, expiry=...
+    - Futures: NIFTY24OCTFUT / NIFTY24O10FUT -> symbol=NIFTY, option_type=FUT, strike=0.0
+    - Commodity futures/options: NATURALGAS24NOVFUT / NATURALGAS24NOV250CE
+    """
+    if not tsym:
+        return {"symbol": "", "option_type": "FUT", "strike": 0.0, "expiry": ""}
+    tsym = tsym.upper().strip()
+
+    # 1. Fast cache lookup if instrument cache is loaded
+    if tsym in _TRADINGSYMBOL_INDEX:
+        inst = _TRADINGSYMBOL_INDEX[tsym]
+        exp = inst.get("expiry")
+        exp_str = exp.strftime("%Y-%m-%d") if hasattr(exp, "strftime") else str(exp or "")
+        return {
+            "symbol": inst.get("name") or tsym,
+            "option_type": inst.get("instrument_type") or ("CE" if tsym.endswith("CE") else ("PE" if tsym.endswith("PE") else "FUT")),
+            "strike": float(inst.get("strike") or 0.0),
+            "expiry": exp_str,
+            "instrument_token": inst.get("instrument_token"),
+            "lot_size": inst.get("lot_size"),
+            "tick_size": inst.get("tick_size", 0.05),
+        }
+
+    m_chars = {
+        "1": "01", "2": "02", "3": "03", "4": "04", "5": "05", "6": "06",
+        "7": "07", "8": "08", "9": "09", "O": "10", "N": "11", "D": "12",
+    }
+
+    # 2. Weekly options pattern: NIFTY24O1025000CE or SENSEX24O1078000PE
+    m_opt_w = re.match(r"^([A-Z\-]+)(\d{2})([0-9OND])(\d{2})(\d+(?:\.\d+)?)(CE|PE)$", tsym)
+    if m_opt_w:
+        sym = m_opt_w.group(1)
+        yy = m_opt_w.group(2)
+        m_char = m_opt_w.group(3)
+        dd = m_opt_w.group(4)
+        strike = float(m_opt_w.group(5))
+        ot = m_opt_w.group(6)
+        exp = f"20{yy}-{m_chars.get(m_char, '01')}-{dd}"
+        return {"symbol": sym, "option_type": ot, "strike": strike, "expiry": exp}
+
+    # 3. Monthly options pattern: NIFTY24OCT25000CE or NATURALGAS24NOV250CE
+    m_opt_m = re.match(r"^([A-Z\-]+)(\d{2})([A-Z]{3})(\d+(?:\.\d+)?)(CE|PE)$", tsym)
+    if m_opt_m:
+        sym = m_opt_m.group(1)
+        strike = float(m_opt_m.group(4))
+        ot = m_opt_m.group(5)
+        exp = get_expiry_for_tradingsymbol(tsym) or ""
+        return {"symbol": sym, "option_type": ot, "strike": strike, "expiry": exp}
+
+    # 4. Weekly futures pattern
+    m_fut_w = re.match(r"^([A-Z\-]+)(\d{2})([0-9OND])(\d{2})(?:FUT)?$", tsym)
+    if m_fut_w:
+        sym = m_fut_w.group(1)
+        yy = m_fut_w.group(2)
+        m_char = m_fut_w.group(3)
+        dd = m_fut_w.group(4)
+        exp = f"20{yy}-{m_chars.get(m_char, '01')}-{dd}"
+        return {"symbol": sym, "option_type": "FUT", "strike": 0.0, "expiry": exp}
+
+    # 5. Monthly futures pattern
+    m_fut = re.match(r"^([A-Z\-]+)(\d{2})([A-Z]{3})(?:FUT)?$", tsym)
+    if m_fut:
+        sym = m_fut.group(1)
+        exp = get_expiry_for_tradingsymbol(tsym) or ""
+        return {"symbol": sym, "option_type": "FUT", "strike": 0.0, "expiry": exp}
+
+    # Fallback
+    ot = "FUT"
+    if tsym.endswith("CE"):
+        ot = "CE"
+    elif tsym.endswith("PE"):
+        ot = "PE"
+    return {"symbol": tsym, "option_type": ot, "strike": 0.0, "expiry": ""}
+
+
 def resolve_instrument(
     symbol: str, expiry: str, strike: float, option_type: str
 ) -> dict | None:

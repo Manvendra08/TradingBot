@@ -1106,7 +1106,22 @@ def detect_anomalies(
 
     # ── Build scan context ────────────────────────────────────────────────────
     total_ce_oi, total_pe_oi = _sum_oi_by_type(strikes)
-    prev_ce_oi, prev_pe_oi = _sum_oi_by_type(prev_snaps) if prev_snaps else (0, 0)
+    # A7 FIX: Calculate OI change strictly across strikes present in both snapshots
+    # (prevents treating total OI as a fresh delta on first scan or window shift)
+    if not prev_snaps:
+        ce_oi_change = 0
+        pe_oi_change = 0
+    else:
+        ce_oi_change = sum(
+            int(row.get("oi") or 0) - int(prev_by_key[(row.get("strike"), row.get("option_type"))].get("oi") or 0)
+            for row in filtered
+            if (row.get("strike"), row.get("option_type")) in prev_by_key and row.get("option_type") == "CE"
+        )
+        pe_oi_change = sum(
+            int(row.get("oi") or 0) - int(prev_by_key[(row.get("strike"), row.get("option_type"))].get("oi") or 0)
+            for row in filtered
+            if (row.get("strike"), row.get("option_type")) in prev_by_key and row.get("option_type") == "PE"
+        )
 
     max_oi_delta_pct = 0.0
     top_oi_delta = None
@@ -1167,8 +1182,8 @@ def detect_anomalies(
         "prev_expiry": prev_expiry,
         "total_ce_oi": total_ce_oi,
         "total_pe_oi": total_pe_oi,
-        "ce_oi_change": total_ce_oi - prev_ce_oi,
-        "pe_oi_change": total_pe_oi - prev_pe_oi,
+        "ce_oi_change": ce_oi_change,
+        "pe_oi_change": pe_oi_change,
         "pcr": pcr,
         "max_pain": curr_mp,
         "max_pain_change": mp_change,

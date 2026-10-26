@@ -1471,6 +1471,11 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                     elif live_or_shadow_enabled and (_live_entries_blocked or (sid != "TIMEFRAME" and ai_verdict_for_runner is None)):
                         log.debug("%s: skipping %s live/shadow entry (verdict unavailable or edge gate)", symbol, sid)
                     elif live_or_shadow_enabled:
+                        # A12 FIX: Obey specialized strategy gates from the paper runner.
+                        # If the strategy runner returned BLOCKED, skip live/shadow entry as well.
+                        if isinstance(res, dict) and str(res.get("action") or "").startswith("BLOCKED"):
+                            log.info("%s: skipping %s live/shadow entry — paper runner was BLOCKED (%s)", symbol, sid, res.get("reason"))
+                            continue
                         if sid in ("CORE", "NG_MOMENTUM", "NG_PARITY", "NG_EVENT"):
                             try:
                                 from src.engine.live_trading import run_live_trading

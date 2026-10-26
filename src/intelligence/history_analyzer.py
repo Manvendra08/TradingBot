@@ -84,6 +84,7 @@ UNIFIED_TRADES_SQL = """
                COALESCE(s.market_regime, 'NEUTRAL') as regime
         FROM multi_leg_trades m
         LEFT JOIN scan_summaries s ON m.digest_id = s.digest_id
+        WHERE COALESCE(m.is_pnl_corrupted, 0) = 0
         UNION ALL
         SELECT symbol, verdict_label, pnl_rupees, confidence_score, opened_at, closed_at, status, regime
         FROM live_trades

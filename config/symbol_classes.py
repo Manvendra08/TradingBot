@@ -64,7 +64,8 @@ _MCX_2026_EXPIRIES: dict[str, dict[int, tuple[int, int, int]]] = {
 
 def _base_symbol(symbol: str) -> str:
     """Normalize expiry/month variants like 'NATURALGAS MAY FUT'."""
-    return str(symbol or "").upper().strip().split()[0]
+    parts = str(symbol or "").upper().strip().split()
+    return parts[0] if parts else ""
 
 
 def get_symbol_class(symbol: str) -> str:
@@ -85,7 +86,12 @@ def get_strike_step(symbol: str) -> int:
 def market_window(symbol: str) -> tuple[str, str, list[int]]:
     """Return (open, close, weekdays) for the symbol's configured market class."""
     class_key = get_symbol_class(symbol)
-    return MARKET_WINDOWS.get(class_key, MARKET_WINDOWS[_DEFAULT_CLASS])
+    window = MARKET_WINDOWS.get(class_key, MARKET_WINDOWS[_DEFAULT_CLASS])
+    if class_key in ("MCX_COMMODITY", "MCX_AGRI"):
+        from src.engine.time_guards import get_mcx_close_time
+        close_h, close_m = get_mcx_close_time()
+        return (window[0], f"{close_h:02d}:{close_m:02d}", window[2])
+    return window
 
 
 def is_market_open(symbol: str, dt=None) -> bool:

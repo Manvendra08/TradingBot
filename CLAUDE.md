@@ -9,6 +9,21 @@ Guidance for Claude Code in this repo.
   - Large Codebase Exploration: run `graft build` if the AST index needs generating or refreshing ($0, local AST).
   - Blast Radius & Caller Verification: before editing or removing shared APIs, functions, or schemas, use `graft callers <symbol>` to verify all downstream consumers.
   - Report Graft token savings, total baseline tokens, and actual usage at the end of turns (e.g. `🌱 graft saved ~N / ~T total tokens (X% saved, ~U used) this turn`).
+  - **Graft before any search or read.** Run `graft ask` / `graft skeleton` / `graft callers` first. If no `graft/` index exists, run `graft build` before anything else. Do not use broad Grep, Glob or whole-file reads for symbol or architecture lookups.
+  - **Explore and other subagents must use Graft.** Start every agent brief with the Graft commands to run for its scope, and fall back to Grep or Read only when Graft returns nothing. Name the files or area in the brief.
+
+## Skills & token discipline
+
+- Before any task, check the available skills and invoke every one that applies (for example brainstorming before planning new work, systematic-debugging before fixing a bug, writing-plans before a multi-step change). Do this before any search, read or edit.
+- Name the skill and its purpose before using it.
+- Use subagents only when the work cannot be answered with one targeted Graft query. Each agent re-reads the codebase and costs tokens.
+- Report Graft savings at the end of each turn (existing rule).
+- End every task with this four-line footer, filled in with real values (use "~0" or "none" when nothing applies, and mark estimates with "~"):
+  - `🌱 Graft saved ~N tokens this turn across [areas]`
+  - `✂️ Ponytail saved ~N tokens (~N lines avoided) via [what was avoided]`
+  - `🛠️ Skills used: [skills actually invoked via the Skill tool]`
+  - `📊 Total tokens consumed this turn: ~N tokens`
+- Why: one review run used 600k+ tokens by fanning out Explore agents that searched with grep instead of Graft, and it skipped the planning skills.
 
 ## Project
 

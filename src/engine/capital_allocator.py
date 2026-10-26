@@ -1,3 +1,20 @@
+def estimate_short_option_margin(
+    underlying: float,
+    lot_size: int,
+    lots: int = 1,
+    premium: float = 0.0,
+) -> float:
+    """A16 & C9 FIX: Calculate realistic exchange SPAN + exposure margin for short options.
+
+    Naked short options on NSE/BSE/MCX require approximately 10-14% of notional underlying value
+    per lot (underlying * lot_size * 0.12). Premium-multiplier sizing (12 * premium) severely
+    under-margined cheap OTM options by up to 50x.
+    """
+    notional_margin = float(underlying or 0.0) * int(lot_size or 1) * int(lots or 1) * 0.12
+    min_premium_margin = float(premium or 0.0) * int(lot_size or 1) * int(lots or 1) * 2.0
+    return max(notional_margin, min_premium_margin, 1000.0)
+
+
 import concurrent.futures
 import logging
 from config.settings import LOT_SIZES
@@ -129,11 +146,9 @@ def _calculate_live_lots(
     """Live/broker lot sizing: per-symbol override or risk-based auto-calc capped by capital/margin."""
     base = _base_symbol(symbol)
 
+    # A15 FIX: Symbol override is stored but clamped by margin and risk caps downstream
     symbol_lots = config.get("live_symbol_lots") or {}
-    if base in symbol_lots:
-        lots = int(symbol_lots[base])
-        log.debug("%s: using symbol-specific lot override of %d lots", base, lots)
-        return max(1, lots)
+    requested_lots = int(symbol_lots[base]) if base in symbol_lots else None
 
     if not config.get("live_capital_per_trade_inr"):
         log.warning("%s: live_capital_per_trade_inr not set in runtime config, defaulting to ₹50,000", base)
@@ -177,14 +192,18 @@ def _calculate_live_lots(
                 base, effective_cost_per_lot,
             )
         else:
-            effective_cost_per_lot = (
-                entry_premium * instrument_lot_size * _SELL_MARGIN_PREMIUM_MULTIPLIER
+            # A16 FIX: Notional-based margin (12% of underlying) instead of 12 * premium
+            underlying_val = float(config.get("underlying") or strike or entry_premium * 100.0)
+            effective_cost_per_lot = estimate_short_option_margin(
+                underlying=underlying_val,
+                lot_size=instrument_lot_size,
+                lots=1,
+                premium=entry_premium,
             )
             log.debug(
-                "%s: SELL leg — margin-adjusted cost/lot: %.2f "
-                "(premium=%.2f * lot_size=%d * margin_mult=%.1f) [static fallback]",
-                base, effective_cost_per_lot,
-                entry_premium, instrument_lot_size, _SELL_MARGIN_PREMIUM_MULTIPLIER,
+                "%s: SELL leg — notional-based margin cost/lot: ₹%.2f "
+                "(underlying=%.2f, lot_size=%d, premium=%.2f)",
+                base, effective_cost_per_lot, underlying_val, instrument_lot_size, entry_premium,
             )
     else:
         effective_cost_per_lot = entry_premium * instrument_lot_size
@@ -201,15 +220,29 @@ def _calculate_live_lots(
 
     if sl_distance and sl_distance > 0:
         risk_lots = int(max_loss_per_trade // (sl_distance * instrument_lot_size))
-        calculated = min(calculated_margin_lots, max(1, risk_lots))
+        calculated = min(calculated_margin_lots, risk_lots)
         log.info(
-            "%s: risk-based sizing: risk_lots=%d (max_loss=₹%.0f, sl_dist=%.2f, lot_size=%d) vs margin_lots=%d -> using %d lots",
+            "%s: risk-based sizing: risk_lots=%d (max_loss=₹%.0f, sl_dist=%.2f, lot_size=%d) vs margin_lots=%d -> allowed %d lots",
             base, risk_lots, max_loss_per_trade, sl_distance, instrument_lot_size, calculated_margin_lots, calculated
         )
     else:
         calculated = calculated_margin_lots
 
-    lots = min(max(1, calculated), max_auto_lots)
+    # A15 FIX: If requested override exists, clamp by calculated allowance
+    if requested_lots is not None:
+        if calculated <= 0:
+            log.warning("%s: symbol override %d lots BLOCKED by margin/risk allowance (%d)", base, requested_lots, calculated)
+            return 0
+        lots = min(requested_lots, calculated, max_auto_lots)
+        log.info("%s: symbol override %d lots clamped to %d by risk/margin allowance", base, requested_lots, lots)
+        return max(0, lots)
+
+    # A15 FIX: Return 0 when calculated is 0 (do not force 1 lot on capital/risk breach)
+    if calculated <= 0:
+        log.warning("%s: calculated lots is 0 — capital or risk allowance exhausted", base)
+        return 0
+
+    lots = min(calculated, max_auto_lots)
 
     if calculated > max_auto_lots:
         log.warning(

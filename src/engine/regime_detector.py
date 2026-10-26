@@ -189,19 +189,69 @@ def detect_market_regime(symbol: str) -> str:
     return REGIME_RANGE
 
 
-def regime_score_for_trade(regime: str, option_type: str) -> int:
+def regime_score_for_trade(
+    regime: str,
+    option_type: str,
+    side: str = "SELL",
+    direction: str | None = None,
+) -> int:
     """
-    Score 0-100: how favorable is this regime for a long-option trade.
-    Long options decay in RANGE; whipsaw in VOLATILE.
+    Score 0-100: how favorable is this regime for the trade.
+    Option selling thrives in REGIME_RANGE (theta decay) and when trending in the direction
+    of the trade (e.g. selling PE in an uptrend, selling CE in a downtrend).
+    Option buying needs momentum and decays in REGIME_RANGE.
     """
-    if regime == REGIME_TRENDING_UP and option_type == "CE":
-        return 100
-    if regime == REGIME_TRENDING_DOWN and option_type == "PE":
-        return 100
-    if regime in (REGIME_TRENDING_UP, REGIME_TRENDING_DOWN):
-        return 70   # trending but counter-direction
-    if regime == REGIME_RANGE:
-        return 30   # theta decay kills long options
-    if regime == REGIME_VOLATILE:
-        return 40   # whipsaw risk
-    return 50       # NO_TRADE / unknown — neutral score
+    side_norm = side.upper() if side else "SELL"
+
+    # Resolve directional stance: is this trade bullish or bearish?
+    is_bullish_trade = False
+    is_bearish_trade = False
+
+    if direction:
+        d = str(direction).upper()
+        if d in ("LONG", "BULLISH", "BUY"):
+            is_bullish_trade = True
+        elif d in ("SHORT", "BEARISH", "SELL"):
+            is_bearish_trade = True
+
+    if not is_bullish_trade and not is_bearish_trade:
+        # Fall back to option_type and side
+        ot = (option_type or "CE").upper()
+        if side_norm == "SELL":
+            if ot == "PE":
+                is_bullish_trade = True
+            else:
+                is_bearish_trade = True
+        else:  # BUY
+            if ot == "CE":
+                is_bullish_trade = True
+            else:
+                is_bearish_trade = True
+
+    if side_norm == "SELL":
+        # Selling options:
+        # RANGE is ideal (score 90) - theta decay without directional threat
+        if regime == REGIME_RANGE:
+            return 90
+        if regime == REGIME_TRENDING_UP:
+            # Bullish (selling PE) is protected by upward drift -> 100
+            # Bearish (selling CE) is challenged by upward drift -> 30
+            return 100 if is_bullish_trade else 30
+        if regime == REGIME_TRENDING_DOWN:
+            # Bearish (selling CE) is protected by downward drift -> 100
+            # Bullish (selling PE) is challenged by downward drift -> 30
+            return 100 if is_bearish_trade else 30
+        if regime == REGIME_VOLATILE:
+            return 40  # whipsaw / gamma risk for short options
+        return 50  # unknown / neutral
+    else:
+        # Long options:
+        if regime == REGIME_TRENDING_UP:
+            return 100 if is_bullish_trade else 30
+        if regime == REGIME_TRENDING_DOWN:
+            return 100 if is_bearish_trade else 30
+        if regime == REGIME_RANGE:
+            return 30  # theta decay kills long options
+        if regime == REGIME_VOLATILE:
+            return 60  # volatility expansion benefits long gamma, balanced by whipsaw
+        return 50

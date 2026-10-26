@@ -1137,15 +1137,19 @@ def _check_live_exits(symbol: str, underlying: float, strikes: list[dict]) -> No
         ):
             continue
 
-        # Resolve current premium
+        # Resolve current premium (Finding B6 & B8)
         exit_premium = None
         if trade.get("option_type") == "FUT":
-            exit_premium = underlying
+            exit_premium = underlying if underlying and underlying > 0 else None
         else:
             strike = float(trade.get("strike") or 0)
             option_type = str(trade.get("option_type") or "")
+            trade_exp = trade.get("expiry")
             for row in strikes:
                 try:
+                    row_exp = row.get("expiry")
+                    if trade_exp and row_exp and row_exp != trade_exp:
+                        continue
                     if (
                         abs(float(row.get("strike") or 0) - strike) < 0.01
                         and str(row.get("option_type") or "").upper()
@@ -1158,7 +1162,25 @@ def _check_live_exits(symbol: str, underlying: float, strikes: list[dict]) -> No
                 except Exception:
                     continue
 
-        if exit_premium is None:
+            # Fallback to direct option chain fetch if not in current strikes list or wrong expiry
+            if exit_premium is None and trade_exp:
+                try:
+                    from src.fetchers.router import fetch_option_chain
+                    oc = fetch_option_chain(symbol, expiry=trade_exp)
+                    if oc:
+                        for row in (oc.get("strikes") or oc.get("options") or []):
+                            if (
+                                abs(float(row.get("strike") or 0) - strike) < 0.01
+                                and str(row.get("option_type") or "").upper() == option_type.upper()
+                            ):
+                                ltp = float(row.get("ltp") or 0.0)
+                                if ltp > 0:
+                                    exit_premium = ltp
+                                break
+                except Exception:
+                    pass
+
+        if exit_premium is None or exit_premium <= 0:
             continue
 
         sl_premium = float(trade.get("sl_premium") or 0.0)
@@ -1248,6 +1270,15 @@ def _check_live_exits(symbol: str, underlying: float, strikes: list[dict]) -> No
 def _update_live_cmps() -> None:
     """Lightweight live CMP refresh for symbols with OPEN trades."""
     from src.models.schema import get_conn, insert_snapshots, insert_underlying_price
+
+    # Reclaim live trades stuck in EXIT_PENDING (process died mid-exit or the
+    # claim-revert DB write failed). Must run before the OPEN-trades early return
+    # below, otherwise a stuck row starves CMP refresh for the whole symbol.
+    try:
+        from src.models.schema import recover_stale_exit_pending
+        recover_stale_exit_pending()
+    except Exception:
+        log.exception("recover_stale_exit_pending failed")
 
     with get_conn(read_only=True) as conn:
         paper_rows = conn.execute(
@@ -1406,6 +1437,13 @@ def start_scheduler(immediate: bool = False):
 
     # Run a cleanup of expired data on startup
     delete_expired_contracts()
+
+    # Reclaim live trades left in EXIT_PENDING by a previous crash mid-exit
+    try:
+        from src.models.schema import recover_stale_exit_pending
+        recover_stale_exit_pending(max_age_minutes=0)
+    except Exception:
+        log.exception("[scheduler] Startup EXIT_PENDING recovery failed")
 
     # Trigger Index Weights refresh check on startup only if not updated today
     try:
@@ -1834,8 +1872,12 @@ def start_scheduler(immediate: bool = False):
         if now_ist.weekday() != 4:  # Friday
             return
         today_key = now_ist.strftime("%Y-%m-%d")
-        for class_key, close_t in _FRIDAY_EXIT_CLASSES:
-            close_h, close_m = map(int, close_t.split(":"))
+        for class_key, default_close_t in _FRIDAY_EXIT_CLASSES:
+            if class_key == "MCX_COMMODITY":
+                from src.engine.time_guards import get_mcx_close_time
+                close_h, close_m = get_mcx_close_time(now_ist)
+            else:
+                close_h, close_m = map(int, default_close_t.split(":"))
             close_dt = now_ist.replace(
                 hour=close_h, minute=close_m, second=0, microsecond=0
             )

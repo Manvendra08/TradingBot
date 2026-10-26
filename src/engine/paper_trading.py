@@ -762,7 +762,13 @@ def execute_paper_trade(
     }
 
 
-def _monitor_single_paper_trade(symbol: str, open_trade: dict, current_ctx: dict, underlying: float) -> list[dict]:
+def _monitor_single_paper_trade(
+    symbol: str,
+    open_trade: dict,
+    current_ctx: dict,
+    underlying: float,
+    skip_reversal: bool = False,
+) -> list[dict]:
     actions = []
     sl_ul = float(open_trade.get("sl_underlying") or 0)
     tgt_ul = float(open_trade.get("target_underlying") or 0)
@@ -914,7 +920,7 @@ def _monitor_single_paper_trade(symbol: str, open_trade: dict, current_ctx: dict
     # ── Reversal Check ──
     reversal_close = False
     reversal_reason = ""
-    if not hit_sl and not hit_target and not dead_trade_close:
+    if not skip_reversal and not hit_sl and not hit_target and not dead_trade_close:
         verdict = current_ctx.get("verdict_label", "")
         confidence = int(current_ctx.get("confidence") or 0)
         strike_val = float(open_trade.get("strike") or 0)
@@ -944,15 +950,14 @@ def _monitor_single_paper_trade(symbol: str, open_trade: dict, current_ctx: dict
                 option_type,
                 trade_option_rows,
             )
-            if exit_premium and exit_premium > 0:
-                if side == "BUY":
-                    exit_premium *= 0.995
-                else:
-                    exit_premium *= 1.005
-
-            # When SL was triggered by underlying check (not premium check),
-            # validate the fetched premium actually represents a loss.
-            if hit_sl and not hit_target:
+            # B13 FIX & Double-Slippage Elimination:
+            # close_paper_trade() in schema.py already applies canonical 0.5% adverse slippage (min ₹0.05).
+            # Do NOT apply pre-slippage here to prevent double slippage.
+            #
+            # When SL was triggered by plain underlying check (NOT trailing stop, NOT delta stop),
+            # validate the fetched premium actually represents a loss. Never clamp trailing or delta stops
+            # to full initial sl_premium, as trailing stops often exit in profit or at reduced loss.
+            if hit_sl and not trailing_sl_hit and not hit_delta_stop and not hit_target:
                 sl_prem = float(open_trade.get("sl_premium") or 0)
                 if sl_prem > 0 and exit_premium and exit_premium > 0:
                     if side == "BUY":
@@ -961,16 +966,16 @@ def _monitor_single_paper_trade(symbol: str, open_trade: dict, current_ctx: dict
                                 "%s: trade #%s underlying SL triggered but premium (%.2f) > sl_premium (%.2f) — forcing exit to sl_premium",
                                 symbol, open_trade["id"], exit_premium, sl_prem,
                             )
-                            exit_premium = sl_prem * 1.005
+                            exit_premium = sl_prem
                     else:
                         if exit_premium < sl_prem:
                             log.warning(
                                 "%s: trade #%s underlying SL triggered but premium (%.2f) < sl_premium (%.2f) — forcing exit to sl_premium",
                                 symbol, open_trade["id"], exit_premium, sl_prem,
                             )
-                            exit_premium = sl_prem * 0.995
+                            exit_premium = sl_prem
 
-        close_status = "CLOSED_DELTA_STOP" if hit_delta_stop else ("CLOSED_SL" if hit_sl else "CLOSED_TARGET")
+        close_status = "CLOSED_DELTA_STOP" if hit_delta_stop else ("CLOSED_TRAILING_SL" if trailing_sl_hit else ("CLOSED_SL" if hit_sl else "CLOSED_TARGET"))
         close_reason = f"delta stop hit ({delta_val:.2f} >= 0.60)" if hit_delta_stop else reason
         close_paper_trade(
             open_trade["id"],
@@ -1005,7 +1010,7 @@ def _monitor_single_paper_trade(symbol: str, open_trade: dict, current_ctx: dict
             except Exception:
                 pass
         actions.append(
-            {"action": close_status, "trade_id": open_trade["id"], "underlying": underlying}
+            {"action": close_status, "trade_id": open_trade["id"], "underlying": underlying, "exit_premium": exit_premium}
         )
     elif dead_trade_close:
         exit_premium = None
@@ -1129,13 +1134,27 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
         actions.extend(_monitor_single_paper_trade(symbol, tf_trade, current_ctx, underlying))
 
     # ── GeminiAI Trade Monitoring ────────────────────────────────────────────
-    # Gemini Spark trades are autonomously managed by execute_gemini_setups using feed CMP.
-    # Spot-based monitoring is skipped for FUT trades to prevent basis mismatch false stop-outs.
+    # Gemini Spark remains the primary manager (execute_gemini_setups uses feed CMP
+    # and reconciled exits). This local SL/target safety net is mandatory: FUT trades
+    # were previously excluded, so a setup the sheet kept listed as OPEN never exited
+    # even after its stored sl_underlying/target_underlying were breached. The stored
+    # levels live in the same price units as the underlying feed (and the dashboard
+    # CMP), so comparing them is consistent.
     from src.engine.gemini_spark_feed import get_open_gemini_paper_trades_map
     gemini_trades = list(get_open_gemini_paper_trades_map(symbol).values())
     for g_trade in gemini_trades:
-        if str(g_trade.get("option_type", "")).upper() != "FUT":
-            actions.extend(_monitor_single_paper_trade(symbol, g_trade, current_ctx, underlying))
+        is_fut = str(g_trade.get("option_type", "")).upper() == "FUT"
+        is_mcx = symbol in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER", "COPPER")
+        if is_fut and not is_mcx:
+            # B1 FIX: NIFTY/BANKNIFTY/SENSEX futures trade with spot basis difference (50-200+ pts).
+            # Comparing index spot underlying against futures trigger/SL/target causes false stop-outs.
+            # Local safety net is restricted to MCX commodities where spot feed IS futures.
+            continue
+        actions.extend(
+            _monitor_single_paper_trade(
+                symbol, g_trade, current_ctx, underlying, skip_reversal=is_fut
+            )
+        )
 
     # ── TFSS Multi-Leg Book Monitoring ───────────────────────────────────────
     from src.models.schema import get_open_tfss_legs
@@ -1324,6 +1343,7 @@ def run_paper_trading(
     from src.engine.paper_plan import build_paper_trade_plan
     # Pass LLM instrument so GO_LONG/GO_SHORT use the actual CE/PE from the LLM
     plan_ctx = dict(scan_context)
+    plan_ctx["symbol"] = plan_ctx.get("symbol") or symbol
     if ai_verdict is not None:
         plan_ctx["instrument"] = getattr(ai_verdict, "instrument", None) or (
             ai_verdict.get("instrument") if isinstance(ai_verdict, dict) else None
@@ -1363,19 +1383,25 @@ def run_paper_trading(
             except Exception as _td_err:
                 log.debug("%s: could not re-evaluate trade decision in paper_trading: %s", symbol, _td_err)
 
-        if td and isinstance(td, dict):
-            if td.get("audit_row_id"):
-                plan["audit_row_id"] = td["audit_row_id"]
-            if td.get("status") == "BLOCKED":
-                log.info(
-                    "%s: paper trade blocked by decision engine — %s",
-                    symbol,
-                    td.get("reason"),
-                )
-                return {
-                    "action": "BLOCKED_DECISION",
-                    "reason": td.get("reason", "Blocked by trade decision engine"),
-                }
+        # A14 FIX: Fail-closed on missing or failed trade decision
+        if not td or not isinstance(td, dict):
+            log.warning("%s: paper trade blocked — trade decision missing or evaluation failed", symbol)
+            return {
+                "action": "BLOCKED_DECISION",
+                "reason": "Trade decision missing or evaluation failed (fail-closed guard)",
+            }
+        if td.get("audit_row_id"):
+            plan["audit_row_id"] = td["audit_row_id"]
+        if td.get("status") == "BLOCKED":
+            log.info(
+                "%s: paper trade blocked by decision engine — %s",
+                symbol,
+                td.get("reason"),
+            )
+            return {
+                "action": "BLOCKED_DECISION",
+                "reason": td.get("reason", "Blocked by trade decision engine"),
+            }
 
     # Add null target guard:
     if plan.get("target_underlying") is None and plan.get("option_type") != "FUT":

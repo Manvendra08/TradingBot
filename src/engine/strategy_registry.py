@@ -102,10 +102,12 @@ def get_runner(sid: str) -> Optional[Callable]:
     elif sid == "NG_MOMENTUM":
         def run_ng_momentum_strategy(sym, scan_ctx, dig_id, intel_dict, ai_verdict=None):
             from src.engine.ng_momentum_strategy import check_ng_momentum_entry
-            verdict = str(intel_dict.get("verdict_label", "")).upper()
-            if any(k in verdict for k in ("LONG", "BULLISH", "PUT WRITING")):
+            # A13 FIX: Use canonical verdict_sets to avoid 'LONG UNWINDING'->BUY or 'SHORT COVERING'->SELL
+            from src.engine.verdict_sets import is_bullish, is_bearish
+            verdict = str(intel_dict.get("verdict_label", ""))
+            if is_bullish(verdict):
                 side = "BUY"
-            elif any(k in verdict for k in ("SHORT", "BEARISH", "CALL WRITING")):
+            elif is_bearish(verdict):
                 side = "SELL"
             else:
                 side = None

@@ -52,23 +52,31 @@ class TestRegimeDetector:
         assert regime == "NO_TRADE"
 
     def test_regime_score_trending_up(self):
-        """TRENDING_UP + CE should score 100."""
-        assert regime_score_for_trade("TRENDING_UP", "CE") == 100
-        assert regime_score_for_trade("TRENDING_UP", "PE") == 70
+        """TRENDING_UP + CE should score 100 for BUY."""
+        assert regime_score_for_trade("TRENDING_UP", "CE", side="BUY") == 100
+        assert regime_score_for_trade("TRENDING_UP", "PE", side="BUY") == 30
+        # For SELL (CORE default): selling PE is bullish (100), selling CE is bearish (30)
+        assert regime_score_for_trade("TRENDING_UP", "PE", side="SELL") == 100
+        assert regime_score_for_trade("TRENDING_UP", "CE", side="SELL") == 30
 
     def test_regime_score_trending_down(self):
-        """TRENDING_DOWN + PE should score 100."""
-        assert regime_score_for_trade("TRENDING_DOWN", "PE") == 100
-        assert regime_score_for_trade("TRENDING_DOWN", "CE") == 70
+        """TRENDING_DOWN + PE should score 100 for BUY."""
+        assert regime_score_for_trade("TRENDING_DOWN", "PE", side="BUY") == 100
+        assert regime_score_for_trade("TRENDING_DOWN", "CE", side="BUY") == 30
+        # For SELL (CORE default): selling CE is bearish (100), selling PE is bullish (30)
+        assert regime_score_for_trade("TRENDING_DOWN", "CE", side="SELL") == 100
+        assert regime_score_for_trade("TRENDING_DOWN", "PE", side="SELL") == 30
 
     def test_regime_score_range(self):
-        """RANGE should score low (theta decay)."""
-        assert regime_score_for_trade("RANGE", "CE") == 30
-        assert regime_score_for_trade("RANGE", "PE") == 30
+        """RANGE should score 90 for SELL (theta capture) and 30 for BUY."""
+        assert regime_score_for_trade("RANGE", "CE", side="BUY") == 30
+        assert regime_score_for_trade("RANGE", "PE", side="BUY") == 30
+        assert regime_score_for_trade("RANGE", "CE", side="SELL") == 90
+        assert regime_score_for_trade("RANGE", "PE", side="SELL") == 90
 
     def test_regime_score_volatile(self):
-        """VOLATILE should score medium (whipsaw risk)."""
-        assert regime_score_for_trade("VOLATILE", "CE") == 40
+        """VOLATILE should score 40 for short gamma risk."""
+        assert regime_score_for_trade("VOLATILE", "CE", side="SELL") == 40
 
 
 class TestEntryQuality:

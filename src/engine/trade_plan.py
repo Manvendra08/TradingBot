@@ -678,15 +678,27 @@ def select_candidate(side: str, persisted_label: str, dte: int, atr_state: dict,
             continue
             
         try:
+            strike = float(row.get('strike', 0))
+            und_val = float(atr_state.get('underlying') or atr_state.get('spot') or row.get('underlying') or 0)
+
+            # A17: Single-leg SELL must be strictly OTM (strike < und_val for PE, strike > und_val for CE)
+            if und_val > 0:
+                if option_type == "PE" and strike >= und_val:
+                    continue  # Reject ATM and ITM puts
+                if option_type == "CE" and strike <= und_val:
+                    continue  # Reject ATM and ITM calls
+
             raw_d = row.get('delta')
             if raw_d is not None and abs(float(raw_d)) > 0:
                 delta = abs(float(raw_d))
             else:
-                # Estimate implied delta based on OTM distance if delta is missing
-                strike_val = float(row.get('strike', 0))
-                und_val = float(atr_state.get('underlying') or row.get('underlying') or 0)
-                if strike_val > 0 and und_val > 0:
-                    otm_pct = abs(strike_val - und_val) / und_val * 100
+                # Estimate implied delta based on strictly OTM distance if delta is missing
+                if strike > 0 and und_val > 0:
+                    if option_type == "PE":
+                        otm_pct = (und_val - strike) / und_val * 100
+                    else:
+                        otm_pct = (strike - und_val) / und_val * 100
+
                     if otm_pct < 0.3:
                         delta = 0.45
                     elif otm_pct < 0.7:
@@ -706,7 +718,6 @@ def select_candidate(side: str, persisted_label: str, dte: int, atr_state: dict,
             if premium_raw is None:
                 continue
             premium = float(premium_raw)
-            strike = float(row.get('strike', 0))
             
             if target_min <= delta <= target_max:
                 valid_candidates.append({
