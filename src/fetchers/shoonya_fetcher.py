@@ -278,6 +278,7 @@ class ShoonyaFetcher(BaseFetcher):
         # Thread-safe sliding window rate limiter (max 8 requests / sec, safely below Shoonya 10 req/s limit)
         self._rate_timestamps: list[float] = []
         self._rate_lock = threading.Lock()
+        self._just_updated_ip: bool = False
 
         # Try to load cached token to avoid repeated OAuth browser launches.
         self._load_cached_token()
@@ -539,8 +540,42 @@ class ShoonyaFetcher(BaseFetcher):
         if not res:
             return None
         if res.get("stat") != "Ok":
-            log.error("[shoonya] GenAcsTok failed: %s", res)
-            return None
+            emsg = str(res.get("emsg") or "")
+            if "INVALID_IP" in emsg:
+                log.warning(
+                    "[shoonya] GenAcsTok failed with INVALID_IP: %s. Portal IP binding is out of sync.",
+                    res,
+                )
+                try:
+                    from src.fetchers.shoonya_ip_updater import update_shoonya_portal_ip
+                    from src.fetchers.shoonya_ip_guard import reset_shoonya_ip_skip
+
+                    log.info("[shoonya] Triggering reactive headless portal IP update...")
+                    upd_ok, upd_msg = update_shoonya_portal_ip(headless=True)
+                    if upd_ok:
+                        log.info("[shoonya] Reactive portal IP update succeeded: %s", upd_msg)
+                        self._just_updated_ip = True
+                        reset_shoonya_ip_skip()
+                        # Retry GenAcsTok once with current payload in case auth_code is still accepted
+                        retry_res = _post_jdata(_TOKEN_URL, payload)
+                        if retry_res and retry_res.get("stat") == "Ok":
+                            res = retry_res
+                            self._just_updated_ip = False
+                        else:
+                            log.info(
+                                "[shoonya] Auth code expired after portal update; requesting fresh login flow: %s",
+                                retry_res,
+                            )
+                            return None
+                    else:
+                        log.error("[shoonya] Reactive portal IP update failed: %s", upd_msg)
+                        return None
+                except Exception as exc:
+                    log.exception("[shoonya] Error during reactive portal IP update: %s", exc)
+                    return None
+            else:
+                log.error("[shoonya] GenAcsTok failed: %s", res)
+                return None
         # Prefer susertoken (legacy session token for jKey auth) over access_token
         # (OAuth Bearer token). The Noren REST API endpoints (SearchScrip, GetQuotes,
         # GetOptionChain) authenticate via jKey=susertoken in the POST body.
@@ -622,12 +657,21 @@ class ShoonyaFetcher(BaseFetcher):
                         return False
 
                     try:
-                        auth_code = self._get_auth_code_playwright()
-                        if not auth_code:
-                            log.error("[shoonya] Failed to obtain auth_code")
-                            return False
-                        log.info("[shoonya] Exchanging auth_code for access_token...")
-                        token = self._exchange_for_token(auth_code)
+                        token = None
+                        for attempt in range(2):
+                            auth_code = self._get_auth_code_playwright()
+                            if not auth_code:
+                                log.error("[shoonya] Failed to obtain auth_code (attempt %d)", attempt + 1)
+                                return False
+                            log.info("[shoonya] Exchanging auth_code for access_token (attempt %d)...", attempt + 1)
+                            token = self._exchange_for_token(auth_code)
+                            if token:
+                                break
+                            if getattr(self, "_just_updated_ip", False):
+                                self._just_updated_ip = False
+                                log.info("[shoonya] Retrying OAuth login flow after reactive portal IP update...")
+                                continue
+                            break
                         if not token:
                             return False
                         self.access_token = token
