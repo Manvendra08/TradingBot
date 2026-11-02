@@ -105,8 +105,11 @@ def _resolve_leg_current_premium(
                         )
                     else:
                         current_premium = snap_ltp
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning(
+                "[multileg-pnl] %s: DB snapshot fallback failed for leg %s %.0f: %s",
+                symbol, option_type, strike, e,
+            )
 
     # 3) Delta-approximation fallback
     if current_premium is None and underlying > 0 and book.get("entry_underlying"):

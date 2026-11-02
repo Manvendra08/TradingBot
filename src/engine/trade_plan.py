@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from src.models.schema import get_latest_snapshots_for_symbol
+from config.decision_matrix_loader import load_decision_matrix
 
 log = logging.getLogger(__name__)
 
@@ -84,12 +85,14 @@ def calculate_buy_sl_target(
     step: float = 50.0,
     option_type: str = "CE",
     preferred_tf: str = "1h",
+    symbol: str | None = None,
 ) -> tuple[float, float]:
     """
     ATR-based SL/Target for BUY legs.
 
     Uses ATR(14) on the underlying for stop-loss and target distances.
     Falls back to 2-step underlying distance when ATR unavailable.
+    ATR multipliers are read dynamically from decision_matrix.json.
 
     Args:
         entry_premium: Entry premium (used for context, not calculation)
@@ -97,24 +100,27 @@ def calculate_buy_sl_target(
         ctx: Scan context with chart_indicators
         step: Strike step size for fallback calculation
         option_type: CE/PE — PE inverts direction (profit when underlying falls)
+        preferred_tf: Preferred chart timeframe for ATR
+        symbol: Optional symbol override for decision matrix lookup
 
     Returns:
         Tuple of (sl_underlying, target_underlying)
     """
     atr = get_atr(ctx, preferred_tf)
-    # BUG-H05 FIX: Detect MCX commodities for percentage-based fallback.
-    # Step-based fallback (e.g., step=100 for crude oil) produces extremely
-    # wide SL/target levels (200 pts = ~2% move). Percentage-based fallback
-    # is safer for MCX commodities with large step sizes.
-    from config.settings import MCX_SYMBOLS as _MCX_SYMS
-    is_mcx = bool(ctx and ctx.get("symbol") and any(s in str(ctx.get("symbol")).upper() for s in _MCX_SYMS))
+    sym = symbol or (ctx.get("symbol") if ctx else None)
+    cfg = load_decision_matrix(sym)
+    fut_cfg = cfg.get("stops_targets", {}).get("futures", {})
+    sl_atr_mult = float(fut_cfg.get("sl_atr_mult", 1.5))
+    target_atr_mult = float(fut_cfg.get("target_atr_mult", 2.0))
 
+    from config.settings import MCX_SYMBOLS as _MCX_SYMS
+    is_mcx = bool(sym and any(s in str(sym).upper() for s in _MCX_SYMS))
 
     if option_type == "PE":
         # PE: profit when underlying falls
         if atr and atr > 0:
-            sl_underlying = underlying + 1.5 * atr
-            target_underlying = underlying - 2.0 * atr
+            sl_underlying = underlying + sl_atr_mult * atr
+            target_underlying = underlying - target_atr_mult * atr
         else:
             if is_mcx:
                 # Percentage-based fallback for MCX: 2.5% SL, 3.5% target
@@ -133,8 +139,8 @@ def calculate_buy_sl_target(
     else:
         # CE/FUT: profit when underlying rises
         if atr and atr > 0:
-            sl_underlying = underlying - 1.5 * atr
-            target_underlying = underlying + 2.0 * atr
+            sl_underlying = underlying - sl_atr_mult * atr
+            target_underlying = underlying + target_atr_mult * atr
         else:
             if is_mcx:
                 # Percentage-based fallback for MCX: 2.5% SL, 3.5% target
@@ -161,12 +167,14 @@ def calculate_sell_sl_target(
     step: float = 50.0,
     option_type: str = "CE",
     preferred_tf: str = "1h",
+    symbol: str | None = None,
 ) -> tuple[float, float]:
     """
     ATR-based SL/Target for SELL legs.
 
     Uses ATR(14) on the underlying for stop-loss and target distances.
     Falls back to 2-step underlying distance when ATR unavailable.
+    ATR multipliers are read dynamically from decision_matrix.json.
 
     Args:
         entry_premium: Entry premium (used for context, not calculation)
@@ -174,20 +182,27 @@ def calculate_sell_sl_target(
         ctx: Scan context with chart_indicators
         step: Strike step size for fallback calculation
         option_type: CE/PE — PE inverts direction (profit when underlying rises)
+        preferred_tf: Preferred chart timeframe for ATR
+        symbol: Optional symbol override for decision matrix lookup
 
     Returns:
         Tuple of (sl_underlying, target_underlying)
     """
     atr = get_atr(ctx, preferred_tf)
-    from config.settings import MCX_SYMBOLS as _MCX_SYMS
-    is_mcx = bool(ctx and ctx.get("symbol") and any(s in str(ctx.get("symbol")).upper() for s in _MCX_SYMS))
+    sym = symbol or (ctx.get("symbol") if ctx else None)
+    cfg = load_decision_matrix(sym)
+    fut_cfg = cfg.get("stops_targets", {}).get("futures", {})
+    sl_atr_mult = float(fut_cfg.get("sl_atr_mult", 1.5))
+    target_atr_mult = float(fut_cfg.get("target_atr_mult", 2.0))
 
+    from config.settings import MCX_SYMBOLS as _MCX_SYMS
+    is_mcx = bool(sym and any(s in str(sym).upper() for s in _MCX_SYMS))
 
     if option_type == "PE":
         # PE: profit when underlying rises
         if atr and atr > 0:
-            sl_underlying = underlying - 1.5 * atr
-            target_underlying = underlying + 2.0 * atr
+            sl_underlying = underlying - sl_atr_mult * atr
+            target_underlying = underlying + target_atr_mult * atr
         else:
             if is_mcx:
                 sl_underlying = underlying * 0.975
@@ -205,8 +220,8 @@ def calculate_sell_sl_target(
     else:
         # CE/FUT: profit when underlying falls
         if atr and atr > 0:
-            sl_underlying = underlying + 1.5 * atr
-            target_underlying = underlying - 2.0 * atr
+            sl_underlying = underlying + sl_atr_mult * atr
+            target_underlying = underlying - target_atr_mult * atr
         else:
             if is_mcx:
                 sl_underlying = underlying * 1.025
@@ -223,6 +238,105 @@ def calculate_sell_sl_target(
                 target_underlying = underlying - 2.0 * step
 
     return round(sl_underlying, 2), round(target_underlying, 2)
+
+
+def calculate_breakeven_level(
+    entry_underlying: float,
+    side: str,
+    atr: float,
+    symbol: str | None = None,
+) -> float:
+    """Calculate the breakeven trigger level for futures/underlying positions based on decision matrix config."""
+    cfg = load_decision_matrix(symbol)
+    be_mult = float(cfg.get("stops_targets", {}).get("futures", {}).get("breakeven_atr_mult", 1.0))
+    if str(side).upper() in ("BUY", "LONG"):
+        return round(entry_underlying + be_mult * atr, 2)
+    else:
+        return round(entry_underlying - be_mult * atr, 2)
+
+
+def calculate_trailing_sl(
+    current_underlying: float,
+    entry_underlying: float,
+    current_sl: float,
+    side: str,
+    atr: float,
+    symbol: str | None = None,
+) -> float:
+    """
+    Trail stop-loss by trail_atr_mult once price moves beyond breakeven trigger.
+    Enforces a ratchet mechanism: SL only moves in direction of profit, never loosens.
+    """
+    cfg = load_decision_matrix(symbol)
+    fut_cfg = cfg.get("stops_targets", {}).get("futures", {})
+    be_mult = float(fut_cfg.get("breakeven_atr_mult", 1.0))
+    trail_mult = float(fut_cfg.get("trail_atr_mult", 1.0))
+
+    if str(side).upper() in ("BUY", "LONG"):
+        if current_underlying >= (entry_underlying + be_mult * atr):
+            new_sl = round(current_underlying - trail_mult * atr, 2)
+            return max(current_sl, new_sl, entry_underlying)
+        return current_sl
+    else:
+        if current_underlying <= (entry_underlying - be_mult * atr):
+            new_sl = round(current_underlying + trail_mult * atr, 2)
+            return min(current_sl, new_sl, entry_underlying)
+        return current_sl
+
+
+def calculate_option_book_stop_target(
+    strategy_type: str,
+    net_credit: float,
+    wing_width: float = 0.0,
+    dte: int = 0,
+    is_expiry_day: bool = False,
+    symbol: str | None = None,
+    lot_size: int = 1,
+    total_lots: int = 1,
+) -> dict:
+    """
+    Calculate stop loss and target profit thresholds in points and Rupees for multi-leg option books.
+
+    Rules from decision matrix config:
+    - Credit spreads (defined risk): stop at 50% of max loss (wing_width - net_credit).
+    - Iron Condor / Strangle (undefined risk or wings > width): credit multiple stop (1.0x, or 1.5x monthly).
+    - Target: 40% of max credit (60% on expiry day).
+    """
+    cfg = load_decision_matrix(symbol)
+    opt_cfg = cfg.get("stops_targets", {}).get("options", {})
+    st_upper = str(strategy_type or "").upper()
+    is_credit_spread = st_upper in ("BEAR_CALL_SPREAD", "BULL_PUT_SPREAD", "SPREAD")
+
+    # 1. Stop loss calculation
+    if is_credit_spread and wing_width > 0:
+        max_loss_pts = max(0.0, float(wing_width) - float(net_credit))
+        ratio = float(opt_cfg.get("spread_max_loss_ratio", 0.50))
+        sl_pts = round(max_loss_pts * ratio, 2)
+    else:
+        if dte > 20:
+            credit_mult = float(opt_cfg.get("monthly_strangle_credit_mult", 1.5))
+        else:
+            credit_mult = float(opt_cfg.get("strangle_credit_mult", 1.0))
+        sl_pts = round(max(float(net_credit), 0.0) * credit_mult, 2)
+
+    sl_rupees = round(sl_pts * int(lot_size) * int(total_lots), 2)
+
+    # 2. Target profit calculation
+    if is_expiry_day:
+        target_pct = float(opt_cfg.get("target_credit_pct_expiry", 0.60))
+    else:
+        target_pct = float(opt_cfg.get("target_credit_pct", 0.40))
+
+    target_pts = round(max(float(net_credit), 0.0) * target_pct, 2)
+    target_rupees = round(target_pts * int(lot_size) * int(total_lots), 2)
+
+    return {
+        "stop_loss_points": sl_pts,
+        "stop_loss_rupees": sl_rupees,
+        "target_profit_pct": target_pct,
+        "target_profit_points": target_pts,
+        "target_profit_rupees": target_rupees,
+    }
 
 
 # ---------------------------------------------------------------------------

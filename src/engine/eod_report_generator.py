@@ -7,6 +7,7 @@ and dispatches both the summary and document to Telegram.
 """
 
 import asyncio
+import re
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from src.fetchers.firecrawl_eod import fetch_firecrawl_eod_data
 from src.models.schema import get_conn
+from config.settings import LOT_SIZES
 
 log = logging.getLogger(__name__)
 
@@ -62,6 +64,61 @@ class EODMarketReport(BaseModel):
 
 
 # ── Data collection helpers ─────────────────────────────────────────────────
+
+def _get_symbol_pct_change(symbol: str) -> float | None:
+    """Fetch the latest price % change for a symbol from underlying_price table."""
+    with get_conn() as conn:
+        try:
+            row = conn.execute(
+                """
+                SELECT pct_change FROM underlying_price
+                WHERE symbol = ? AND pct_change IS NOT NULL
+                ORDER BY fetched_at DESC LIMIT 1
+                """,
+                (symbol.upper(),),
+            ).fetchone()
+            if row and row["pct_change"] is not None:
+                return float(row["pct_change"])
+        except Exception as e:
+            log.debug("[eod_report] Could not fetch pct_change for %s: %s", symbol, e)
+    return None
+
+
+def _get_latest_fii_dii_flows() -> tuple[float | None, float | None, str | None]:
+    """Fetch latest available FII & DII net cash flows (in Cr) and report date."""
+    with get_conn() as conn:
+        try:
+            row = conn.execute(
+                """
+                SELECT fii_cash_net, dii_cash_net, report_date
+                FROM fii_positioning
+                ORDER BY report_date DESC LIMIT 1
+                """
+            ).fetchone()
+            if row:
+                return (
+                    float(row["fii_cash_net"]) if row["fii_cash_net"] is not None else None,
+                    float(row["dii_cash_net"]) if row["dii_cash_net"] is not None else None,
+                    str(row["report_date"]),
+                )
+        except Exception as e:
+            log.debug("[eod_report] Could not fetch fii_positioning: %s", e)
+    return None, None, None
+
+
+def _extract_pct_from_text(text: str, symbol: str) -> float | None:
+    """Extract percentage change mentioned near symbol in LLM or web text."""
+    if not text:
+        return None
+    pattern = rf"{symbol}[^.\r\n]*?([+-]?\d+\.?\d*)\s*%"
+    m = re.search(pattern, text, re.IGNORECASE)
+    if m:
+        try:
+            return float(m.group(1))
+        except ValueError:
+            pass
+    return None
+
 
 def _get_today_scan_data() -> list[dict]:
     """Fetch the latest scan row per symbol today with all quantitative fields."""
@@ -118,14 +175,21 @@ def _get_today_trade_performance() -> dict:
     }
     with get_conn() as conn:
         try:
+            now_ist = datetime.now(IST)
+            today_start_utc = (
+                now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+                .astimezone(timezone.utc)
+                .strftime("%Y-%m-%d %H:%M:%S")
+            )
             ml_rows = conn.execute(
                 """
                 SELECT symbol, structure, strategy_type, status, total_pnl,
                        net_premium, entry_underlying, exit_underlying, entry_reason
                 FROM multi_leg_trades
-                WHERE date(opened_at) = date('now')
+                WHERE opened_at >= ? OR date(opened_at) = date('now')
                 ORDER BY opened_at DESC
                 """,
+                (today_start_utc,),
             ).fetchall()
             for r in ml_rows:
                 d = dict(r)
@@ -320,15 +384,7 @@ def _send_telegram_chunked(message: str, chunk_size: int = 3800) -> None:
 
 # ── SteadyAlpha HTML & PDF Generation ────────────────────────────────────────
 
-REPORT_LOT_SIZES = {
-    "NIFTY": 75,
-    "BANKNIFTY": 30,
-    "SENSEX": 20,
-    "NATURALGAS": 1250,
-    "CRUDEOIL": 100,
-    "FINNIFTY": 65,
-    "MIDCPNIFTY": 120,
-}
+REPORT_LOT_SIZES = LOT_SIZES
 
 
 def _fmt_oi(val: float) -> str:
@@ -344,7 +400,7 @@ def _fmt_oi_with_lots(val: float, symbol: str, html: bool = False) -> str:
     """Format OI change with underlying share volume and contract lot equivalents."""
     sign = "+" if val > 0 else ""
     lots_sign = "+" if val > 0 else "-"
-    lot_size = REPORT_LOT_SIZES.get(symbol.upper(), 75)
+    lot_size = REPORT_LOT_SIZES.get(symbol.upper(), 65)
     lots = abs(val) / lot_size
 
     # Underlying shares formatting
@@ -519,68 +575,248 @@ def _render_pcr_gauges_svg(nifty_pcr: float, bn_pcr: float, sensex_pcr: float) -
 def _render_steadyalpha_html(date_display: str, scan_data: list[dict], fc_data: dict, report_obj: EODMarketReport | None) -> str:
     """Generate professional SteadyAlpha-style executive memorandum HTML with graphs, charts, and editorial narration."""
     # Index lookups
-    nifty = next((x for x in scan_data if x["symbol"] == "NIFTY"), {})
-    bnifty = next((x for x in scan_data if x["symbol"] == "BANKNIFTY"), {})
-    sensex = next((x for x in scan_data if x["symbol"] == "SENSEX"), {})
-    natgas = next((x for x in scan_data if x["symbol"] == "NATURALGAS"), {})
-
-    def _val(d, k, default="N/A"):
-        v = d.get(k)
-        return f"{v:,.2f}" if isinstance(v, (int, float)) else str(v or default)
+    nifty = next((x for x in scan_data if x.get("symbol") == "NIFTY"), {})
+    bnifty = next((x for x in scan_data if x.get("symbol") == "BANKNIFTY"), {})
+    sensex = next((x for x in scan_data if x.get("symbol") == "SENSEX"), {})
+    natgas = next((x for x in scan_data if x.get("symbol") == "NATURALGAS"), {})
 
     def _num(d, k, default=0.0):
-        return d.get(k) or default
+        val = d.get(k)
+        return float(val) if val is not None else default
 
-    nifty_spot = _num(nifty, "underlying", 23398.10)
-    nifty_atm = _num(nifty, "atm_strike", 23400.0)
-    nifty_mp = _num(nifty, "max_pain", 23400.0)
-    nifty_pcr = _num(nifty, "pcr", 1.0611)
-    nifty_ce_delta = _num(nifty, "ce_oi_change", -19820450)
-    nifty_pe_delta = _num(nifty, "pe_oi_change", -48523735)
-    nifty_sup = _num(nifty, "support", 23300.0)
-    nifty_res = _num(nifty, "resistance", 23800.0)
-    nifty_verdict = nifty.get("verdict_label", "Low Conviction")
-    nifty_conf = int(_num(nifty, "confidence", 45))
+    nifty_spot = _num(nifty, "underlying", 22700.0)
+    nifty_atm = _num(nifty, "atm_strike", 22700.0)
+    nifty_mp = _num(nifty, "max_pain", 22700.0)
+    nifty_pcr = _num(nifty, "pcr", 1.0)
+    nifty_ce_delta = _num(nifty, "ce_oi_change", 0.0)
+    nifty_pe_delta = _num(nifty, "pe_oi_change", 0.0)
+    nifty_sup = _num(nifty, "support", 22500.0)
+    nifty_res = _num(nifty, "resistance", 23000.0)
+    nifty_verdict = nifty.get("verdict_label") or "Neutral"
+    nifty_conf = int(_num(nifty, "confidence", 50))
     nifty_regime, nifty_badge = _classify_oi_regime("NIFTY", nifty_ce_delta, nifty_pe_delta, nifty_verdict, nifty_conf)
 
-    bn_spot = _num(bnifty, "underlying", 56606.55)
-    bn_atm = _num(bnifty, "atm_strike", 56600.0)
-    bn_mp = _num(bnifty, "max_pain", 57100.0)
-    bn_pcr = _num(bnifty, "pcr", 1.1172)
-    bn_ce_delta = _num(bnifty, "ce_oi_change", 1643610)
-    bn_pe_delta = _num(bnifty, "pe_oi_change", 1310970)
-    bn_sup = _num(bnifty, "support", 56600.0)
-    bn_res = _num(bnifty, "resistance", 56700.0)
-    bn_verdict = bnifty.get("verdict_label", "Sideways")
+    bn_spot = _num(bnifty, "underlying", 54300.0)
+    bn_atm = _num(bnifty, "atm_strike", 54300.0)
+    bn_mp = _num(bnifty, "max_pain", 54600.0)
+    bn_pcr = _num(bnifty, "pcr", 1.1)
+    bn_ce_delta = _num(bnifty, "ce_oi_change", 0.0)
+    bn_pe_delta = _num(bnifty, "pe_oi_change", 0.0)
+    bn_sup = _num(bnifty, "support", 54200.0)
+    bn_res = _num(bnifty, "resistance", 54400.0)
+    bn_verdict = bnifty.get("verdict_label") or "Rangebound"
     bn_conf = int(_num(bnifty, "confidence", 50))
     bn_regime, bn_badge = _classify_oi_regime("BANKNIFTY", bn_ce_delta, bn_pe_delta, bn_verdict, bn_conf)
 
-    sensex_spot = _num(sensex, "underlying", 74781.76)
-    sensex_atm = _num(sensex, "atm_strike", 74800.0)
-    sensex_mp = _num(sensex, "max_pain", 74800.0)
-    sensex_pcr = _num(sensex, "pcr", 1.0447)
-    sensex_ce_delta = _num(sensex, "ce_oi_change", -1249620)
-    sensex_pe_delta = _num(sensex, "pe_oi_change", -1434640)
-    sensex_sup = _num(sensex, "support", 74500.0)
-    sensex_res = _num(sensex, "resistance", 75000.0)
-    sensex_verdict = sensex.get("verdict_label", "Low Conviction")
-    sensex_conf = int(_num(sensex, "confidence", 20))
+    sensex_spot = _num(sensex, "underlying", 73300.0)
+    sensex_atm = _num(sensex, "atm_strike", 73300.0)
+    sensex_mp = _num(sensex, "max_pain", 73300.0)
+    sensex_pcr = _num(sensex, "pcr", 1.2)
+    sensex_ce_delta = _num(sensex, "ce_oi_change", 0.0)
+    sensex_pe_delta = _num(sensex, "pe_oi_change", 0.0)
+    sensex_sup = _num(sensex, "support", 72000.0)
+    sensex_res = _num(sensex, "resistance", 74000.0)
+    sensex_verdict = sensex.get("verdict_label") or "Neutral"
+    sensex_conf = int(_num(sensex, "confidence", 50))
     sensex_regime, sensex_badge = _classify_oi_regime("SENSEX", sensex_ce_delta, sensex_pe_delta, sensex_verdict, sensex_conf)
 
-    ng_spot = _num(natgas, "underlying", 269.60)
-    ng_atm = _num(natgas, "atm_strike", 270.0)
-    ng_mp = _num(natgas, "max_pain", 275.0)
-    ng_pcr = _num(natgas, "pcr", 0.5874)
-    ng_ce_delta = _num(natgas, "ce_oi_change", -1041)
-    ng_pe_delta = _num(natgas, "pe_oi_change", -1382)
-    ng_sup = _num(natgas, "support", 260.0)
-    ng_res = _num(natgas, "resistance", 280.0)
-    ng_verdict = natgas.get("verdict_label", "Low Conviction")
-    ng_conf = int(_num(natgas, "confidence", 35))
+    ng_spot = _num(natgas, "underlying", 290.0)
+    ng_atm = _num(natgas, "atm_strike", 290.0)
+    ng_mp = _num(natgas, "max_pain", 295.0)
+    ng_pcr = _num(natgas, "pcr", 1.0)
+    ng_ce_delta = _num(natgas, "ce_oi_change", 0.0)
+    ng_pe_delta = _num(natgas, "pe_oi_change", 0.0)
+    ng_sup = _num(natgas, "support", 285.0)
+    ng_res = _num(natgas, "resistance", 295.0)
+    ng_verdict = natgas.get("verdict_label") or "Neutral"
+    ng_conf = int(_num(natgas, "confidence", 50))
     ng_regime, ng_badge = _classify_oi_regime("NATURALGAS", ng_ce_delta, ng_pe_delta, ng_verdict, ng_conf)
 
+    # Dynamic percentage changes from DB or LLM text
+    report_text = report_obj.index_summary if report_obj else ""
+    nifty_pct = _get_symbol_pct_change("NIFTY") or _extract_pct_from_text(report_text, "NIFTY")
+    bn_pct = _get_symbol_pct_change("BANKNIFTY") or _extract_pct_from_text(report_text, "BANKNIFTY")
+    sensex_pct = _get_symbol_pct_change("SENSEX") or _extract_pct_from_text(report_text, "SENSEX")
+    ng_pct = _get_symbol_pct_change("NATURALGAS") or _extract_pct_from_text(report_text, "NATURALGAS")
+
+    def _fmt_pct(pct: float | None) -> tuple[str, str, str]:
+        if pct is None:
+            return "0.00%", "#64748b", '<path d="M0 10 L100 10" stroke="#64748b" stroke-width="2"/>'
+        sign = "+" if pct >= 0 else ""
+        pct_str = f"{sign}{pct:.2f}%"
+        if pct >= 0:
+            return pct_str, "text-positive", '<path d="M0 16 L25 12 L50 14 L75 6 L100 2" stroke="#059669" stroke-width="2" stroke-linecap="round"/>'
+        return pct_str, "text-negative", '<path d="M0 4 L25 8 L50 6 L75 14 L100 18" stroke="#dc2626" stroke-width="2" stroke-linecap="round"/>'
+
+    n_pct_str, n_pct_cls, n_spark = _fmt_pct(nifty_pct)
+    bn_pct_str, bn_pct_cls, bn_spark = _fmt_pct(bn_pct)
+    s_pct_str, s_pct_cls, s_spark = _fmt_pct(sensex_pct)
+    ng_pct_str, ng_pct_cls, ng_spark = _fmt_pct(ng_pct)
+
+    # Dynamic FII/DII Institutional flows
+    fii_cash, dii_cash, fii_date = _get_latest_fii_dii_flows()
+    if fii_cash is not None or dii_cash is not None:
+        f_val = fii_cash or 0.0
+        d_val = dii_cash or 0.0
+        net_val = f_val + d_val
+        net_sign = "+" if net_val >= 0 else ""
+        flow_net_str = f"{net_sign}₹{net_val:,.0f} Cr Net"
+        flow_col = "#059669" if net_val >= 0 else "#dc2626"
+        fii_str = f"{'+' if f_val >= 0 else ''}₹{f_val:,.0f}Cr"
+        dii_str = f"{'+' if d_val >= 0 else ''}₹{d_val:,.0f}Cr"
+        fii_cls = "text-positive" if f_val >= 0 else "text-negative"
+        dii_cls = "text-positive" if d_val >= 0 else "text-negative"
+        total_mag = abs(f_val) + abs(d_val) + 1e-6
+        f_bar_pct = max(min(int((abs(f_val) / total_mag) * 100), 85), 15)
+        d_bar_pct = 100 - f_bar_pct
+    else:
+        flow_net_str = "Equilibrium Net"
+        flow_col = "#0284c7"
+        fii_str = "Neutral"
+        dii_str = "Neutral"
+        fii_cls = "text-neutral"
+        dii_cls = "text-neutral"
+        f_bar_pct = 50
+        d_bar_pct = 50
+
+    # SVGs
     oi_chart_svg = _render_oi_chart_svg(nifty_ce_delta, nifty_pe_delta, bn_ce_delta, bn_pe_delta, sensex_ce_delta, sensex_pe_delta)
     pcr_gauge_svg = _render_pcr_gauges_svg(nifty_pcr, bn_pcr, sensex_pcr)
+
+    # Dynamic Executive Takeaways
+    if report_obj:
+        takeaway_items = [
+            f"<li><strong>Market Regime & Tone:</strong> {report_obj.bot_performance.replace(chr(10), ' ')}</li>",
+            f"<li><strong>Domestic Benchmarks:</strong> {report_obj.index_summary.replace(chr(10), ' • ')}</li>",
+            f"<li><strong>Derivatives Flow Dynamics:</strong> {report_obj.oi_derivatives_analysis.replace(chr(10), ' • ')}</li>",
+            f"<li><strong>Institutional Catalysts & Watchlist:</strong> {report_obj.macro_and_watchlist.replace(chr(10), ' ')}</li>",
+        ]
+    else:
+        takeaway_items = [
+            f"<li><strong>Market Regime: {nifty_regime} across Domestic Benchmarks.</strong> Closing posture across NIFTY 50 ({nifty_spot:,.1f}), BANKNIFTY ({bn_spot:,.1f}), and SENSEX ({sensex_spot:,.1f}) indicates {nifty_verdict.lower()} order flow with PCR at {nifty_pcr:.2f}.</li>",
+            f"<li><strong>NIFTY 50 Order Flow:</strong> Spot ({nifty_spot:,.1f}) anchored near <strong>{nifty_mp:,.0f} Max Pain</strong>. Net Call OI change {_fmt_oi_with_lots(nifty_ce_delta, 'NIFTY')} vs Put OI change {_fmt_oi_with_lots(nifty_pe_delta, 'NIFTY')}.</li>",
+            f"<li><strong>BANKNIFTY Derivatives Structure:</strong> Spot ({bn_spot:,.1f}) vs Max Pain ({bn_mp:,.0f}) with PCR {bn_pcr:.4f}. Support established at {bn_sup:,.0f} and resistance cluster at {bn_res:,.0f}.</li>",
+            f"<li><strong>Institutional Capital Flows:</strong> {flow_net_str} recorded (FII: {fii_str}, DII: {dii_str}).</li>",
+        ]
+    takeaways_html = "\n      ".join(takeaway_items)
+
+    # SCIR Framework Dynamic Narrative
+    if report_obj and report_obj.index_summary:
+        scir_situation = f"Benchmark indices concluded the session with {report_obj.index_summary.replace(chr(10), ' | ')}."
+    else:
+        scir_situation = (
+            f"Domestic benchmark indices settled the session with NIFTY at {nifty_spot:,.1f} ({n_pct_str}), "
+            f"BANKNIFTY at {bn_spot:,.1f} ({bn_pct_str}), and SENSEX at {sensex_spot:,.1f} ({s_pct_str}). "
+            f"The prevailing structural regime reflects {nifty_regime}."
+        )
+
+    if report_obj and report_obj.oi_derivatives_analysis:
+        scir_complication = f"Derivatives flow deconstruction: {report_obj.oi_derivatives_analysis.replace(chr(10), ' | ')}."
+    else:
+        scir_complication = (
+            f"NIFTY PCR settled at {nifty_pcr:.4f} with net CE delta {_fmt_oi(nifty_ce_delta)} and PE delta {_fmt_oi(nifty_pe_delta)}. "
+            f"Spot tracks {abs(nifty_spot - nifty_mp):.0f} points from the Max Pain magnet ({nifty_mp:,.0f}), "
+            f"while BANKNIFTY tracks {abs(bn_spot - bn_mp):.0f} points from Max Pain ({bn_mp:,.0f})."
+        )
+
+    if report_obj and report_obj.key_levels_tomorrow:
+        scir_implication = f"Key pivot and battleground levels: {report_obj.key_levels_tomorrow.replace(chr(10), ' | ')}."
+    else:
+        scir_implication = (
+            f"Key risk boundaries: NIFTY support floor lies at {nifty_sup:,.0f} with overhead resistance at {nifty_res:,.0f}. "
+            f"BANKNIFTY support is defined at {bn_sup:,.0f} and resistance at {bn_res:,.0f}. "
+            f"A breach of these boundaries will force gamma-neutral dealers to rehedge."
+        )
+
+    if "bull" in nifty_verdict.lower() or nifty_pcr >= 1.2:
+        scir_resolution = (
+            f"Bias favors defending pullbacks into {nifty_sup:,.0f} (NIFTY) and {bn_sup:,.0f} (BANKNIFTY). "
+            f"Optimal risk-defined structures favor Bull Put Spreads or credit put ratio underwriting."
+        )
+    elif "bear" in nifty_verdict.lower() or nifty_pcr < 0.8:
+        scir_resolution = (
+            f"Bias favors fading counter-trend rallies toward {nifty_res:,.0f} (NIFTY) and {bn_res:,.0f} (BANKNIFTY). "
+            f"Deploy Bear Call Spreads to capture premium decay against established resistance ceilings."
+        )
+    else:
+        scir_resolution = (
+            f"Rangebound equilibrium dominates. Desks should prioritize defined-risk delta-neutral structures "
+            f"(Iron Condors / Short Strangles) centered around Max Pain {nifty_mp:,.0f} (NIFTY) and {bn_mp:,.0f} (BANKNIFTY)."
+        )
+
+    # Dynamic Battleground Matrix Rows
+    def _bias_badge(verdict: str) -> tuple[str, str]:
+        v = verdict.lower()
+        if "bull" in v or "put writing" in v or "long buildup" in v:
+            return "badge-bullish", f"Bias: Bullish ({verdict})"
+        elif "bear" in v or "call writing" in v or "short buildup" in v or "unwind" in v:
+            return "badge-bearish", f"Bias: Bearish ({verdict})"
+        return "badge-neutral", f"Bias: Neutral ({verdict})"
+
+    n_bg_badge, n_bg_lbl = _bias_badge(nifty_verdict)
+    bn_bg_badge, bn_bg_lbl = _bias_badge(bn_verdict)
+    s_bg_badge, s_bg_lbl = _bias_badge(sensex_verdict)
+
+    battleground_rows = f"""
+        <tr>
+          <td rowspan="4"><strong>NIFTY 50</strong><br><span class="badge {n_bg_badge}">{n_bg_lbl}</span></td>
+          <td><strong>{nifty_res:,.0f}</strong></td>
+          <td>Major Call Resistance</td>
+          <td>Primary overhead ceiling cluster. Sell credit call spreads on relief spikes towards this strike.</td>
+        </tr>
+        <tr>
+          <td><strong>{nifty_mp:,.0f}</strong></td>
+          <td>ATM / Max Pain Pivot</td>
+          <td>Gravitational equilibrium anchor ({nifty_mp:,.0f}). Spot at {nifty_spot:,.1f}. Watch opening auction price acceptance.</td>
+        </tr>
+        <tr>
+          <td><strong>{nifty_sup:,.0f}</strong></td>
+          <td>Key Put Support</td>
+          <td>Structural Put floor. Sustained break below opens accelerated downside momentum toward next support.</td>
+        </tr>
+        <tr>
+          <td><strong>{max(nifty_sup - 200, 0):,.0f}</strong></td>
+          <td>Extended Buffer Floor</td>
+          <td>Deep institutional put open interest cushion; high-probability zone for squaring short delta.</td>
+        </tr>
+        <tr>
+          <td rowspan="4"><strong>BANKNIFTY</strong><br><span class="badge {bn_bg_badge}">{bn_bg_lbl}</span></td>
+          <td><strong>{bn_res:,.0f}</strong></td>
+          <td>Major Call Resistance</td>
+          <td>Overhead supply ceiling cluster. Fading rallies here offers attractive risk-reward for defined spreads.</td>
+        </tr>
+        <tr>
+          <td><strong>{bn_mp:,.0f}</strong></td>
+          <td>Max Pain Magnet</td>
+          <td>Equilibrium anchor ({bn_mp:,.0f}). Spot currently at {bn_spot:,.1f} ({abs(bn_spot - bn_mp):.0f} pts delta).</td>
+        </tr>
+        <tr>
+          <td><strong>{bn_sup:,.0f}</strong></td>
+          <td>Key Put Support</td>
+          <td>Immediate institutional demand zone. Downside cushion and risk boundary for credit put spreads.</td>
+        </tr>
+        <tr>
+          <td><strong>{max(bn_sup - 500, 0):,.0f}</strong></td>
+          <td>Structural Buffer Floor</td>
+          <td>Extended support cluster for multi-leg strangle / condor wing placement.</td>
+        </tr>
+        <tr>
+          <td rowspan="3"><strong>SENSEX</strong><br><span class="badge {s_bg_badge}">{s_bg_lbl}</span></td>
+          <td><strong>{sensex_res:,.0f}</strong></td>
+          <td>Major Resistance</td>
+          <td>Overhead call writing cluster. Strong resistance barrier for zero-DTE expiry structures.</td>
+        </tr>
+        <tr>
+          <td><strong>{sensex_mp:,.0f}</strong></td>
+          <td>Max Pain Pivot</td>
+          <td>Equilibrium anchor ({sensex_mp:,.0f}). Spot at {sensex_spot:,.1f}. Pinning risk high near expiry.</td>
+        </tr>
+        <tr>
+          <td><strong>{sensex_sup:,.0f}</strong></td>
+          <td>Key Support Floor</td>
+          <td>Structural Put floor ({sensex_sup:,.0f}). Key invalidation level for credit put positions.</td>
+        </tr>
+    """
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -853,6 +1089,7 @@ def _render_steadyalpha_html(date_display: str, scan_data: list[dict], fc_data: 
     .badge-warning {{ background-color: #fef3c7; color: #92400e; }}
     .text-negative {{ color: #dc2626; font-weight: 600; }}
     .text-positive {{ color: #059669; font-weight: 600; }}
+    .text-neutral {{ color: #64748b; font-weight: 600; }}
 
     /* Sector Heatmap Tiles */
     .sector-grid {{
@@ -966,11 +1203,11 @@ def _render_steadyalpha_html(date_display: str, scan_data: list[dict], fc_data: 
       <div class="kpi-label">NIFTY 50 SPOT</div>
       <div class="kpi-val tabular-nums">{nifty_spot:,.1f}</div>
       <div class="kpi-sub">
-        <span class="text-negative tabular-nums">-0.40%</span>
+        <span class="{n_pct_cls} tabular-nums">{n_pct_str}</span>
         <span>PCR <strong class="tabular-nums">{nifty_pcr:.2f}</strong></span>
       </div>
       <svg class="kpi-spark" viewBox="0 0 100 20" fill="none">
-        <path d="M0 4 L25 8 L50 6 L75 14 L100 18" stroke="#dc2626" stroke-width="2" stroke-linecap="round"/>
+        {n_spark}
       </svg>
     </div>
 
@@ -978,11 +1215,11 @@ def _render_steadyalpha_html(date_display: str, scan_data: list[dict], fc_data: 
       <div class="kpi-label">BANKNIFTY SPOT</div>
       <div class="kpi-val tabular-nums">{bn_spot:,.1f}</div>
       <div class="kpi-sub">
-        <span class="text-negative tabular-nums">-0.20%</span>
+        <span class="{bn_pct_cls} tabular-nums">{bn_pct_str}</span>
         <span>PCR <strong class="tabular-nums">{bn_pcr:.2f}</strong></span>
       </div>
       <svg class="kpi-spark" viewBox="0 0 100 20" fill="none">
-        <path d="M0 6 L25 12 L50 10 L75 9 L100 14" stroke="#d97706" stroke-width="2" stroke-linecap="round"/>
+        {bn_spark}
       </svg>
     </div>
 
@@ -990,25 +1227,25 @@ def _render_steadyalpha_html(date_display: str, scan_data: list[dict], fc_data: 
       <div class="kpi-label">SENSEX SPOT</div>
       <div class="kpi-val tabular-nums">{sensex_spot:,.1f}</div>
       <div class="kpi-sub">
-        <span class="text-negative tabular-nums">-1.08%</span>
+        <span class="{s_pct_cls} tabular-nums">{s_pct_str}</span>
         <span>PCR <strong class="tabular-nums">{sensex_pcr:.2f}</strong></span>
       </div>
       <svg class="kpi-spark" viewBox="0 0 100 20" fill="none">
-        <path d="M0 3 L30 8 L60 14 L80 12 L100 19" stroke="#dc2626" stroke-width="2" stroke-linecap="round"/>
+        {s_spark}
       </svg>
     </div>
 
     <div class="kpi-card flows">
       <div class="kpi-label">FII / DII CASH FLOW</div>
-      <div class="kpi-val tabular-nums" style="font-size: 15px; color: #059669;">+₹959 Cr Net</div>
+      <div class="kpi-val tabular-nums" style="font-size: 15px; color: {flow_col};">{flow_net_str}</div>
       <div class="kpi-sub">
-        <span>FII: <strong class="text-negative">-₹273Cr</strong></span>
-        <span>DII: <strong class="text-positive">+₹1,232Cr</strong></span>
+        <span>FII: <strong class="{fii_cls}">{fii_str}</strong></span>
+        <span>DII: <strong class="{dii_cls}">{dii_str}</strong></span>
       </div>
       <!-- Mini Flow Bar -->
       <div style="margin-top: 6px; height: 5px; background: #fee2e2; border-radius: 2.5px; display: flex; overflow: hidden;">
-        <div style="width: 25%; background: #dc2626;"></div>
-        <div style="width: 75%; background: #059669;"></div>
+        <div style="width: {f_bar_pct}%; background: #dc2626;"></div>
+        <div style="width: {d_bar_pct}%; background: #059669;"></div>
       </div>
     </div>
   </div>
@@ -1017,10 +1254,7 @@ def _render_steadyalpha_html(date_display: str, scan_data: list[dict], fc_data: 
   <div class="executive-takeaways avoid-break">
     <div class="takeaways-heading">Executive Summary &amp; Institutional Posture</div>
     <ul class="takeaways-list">
-      <li><strong>Market Regime: High-Conviction Distribution via Systematic Liquidation.</strong> Derivative positioning indicates closing pressure across NIFTY 50 ({nifty_spot:,.1f}), BANKNIFTY ({bn_spot:,.1f}), and SENSEX ({sensex_spot:,.1f}) driven by systemic put liquidation and long unwinding rather than aggressive fresh shorts.</li>
-      <li><strong>NIFTY 50 Support Floor Dissolution:</strong> Spot ({nifty_spot:,.1f}) compressed at the <strong>{nifty_mp:,.0f} Max Pain anchor</strong>. Aggressive dual liquidation across Calls ({_fmt_oi_with_lots(nifty_ce_delta, 'NIFTY')}) and Puts ({_fmt_oi_with_lots(nifty_pe_delta, 'NIFTY')}) highlights explicit dealer surrender and systemic long unwinding.</li>
-      <li><strong>Deceptive BANKNIFTY Structure (PCR {bn_pcr:.4f}):</strong> Headline PCR masks heavy Call writing across 56,700/57,000 strikes. Spot remains compressed <strong>{abs(bn_spot - bn_mp):.0f} points below Max Pain ({bn_mp:,.0f})</strong>.</li>
-      <li><strong>Institutional Capital Flows:</strong> FII cash selling was counterbalanced by active DII domestic liquidity absorption (+₹1,232 Cr), containing outright cascade risks.</li>
+      {takeaways_html}
     </ul>
   </div>
 
@@ -1034,57 +1268,57 @@ def _render_steadyalpha_html(date_display: str, scan_data: list[dict], fc_data: 
     <div class="scir-grid">
       <div class="scir-card situation">
         <div class="scir-label">The Situation</div>
-        <p>Indian benchmark indices registered synchronized downward pressure across both 1H and 3H timeframes. The prevailing regime is firmly characterized as systematic distribution, dragging NIFTY to {nifty_spot:,.1f}, BANKNIFTY to {bn_spot:,.1f}, and SENSEX to {sensex_spot:,.1f}.</p>
+        <p>{scir_situation}</p>
       </div>
 
       <div class="scir-card complication">
         <div class="scir-label">The Complication</div>
-        <p>The structural put support floor has dissolved. NIFTY's PCR shifted to {nifty_pcr:.4f} as {_fmt_oi_with_lots(nifty_pe_delta, 'NIFTY')} were liquidated. Simultaneously, BANKNIFTY exhibits rangebound straddle buildup with spot lagging Max Pain ({bn_mp:,.0f}) by {abs(bn_spot - bn_mp):.0f} points.</p>
+        <p>{scir_complication}</p>
       </div>
 
       <div class="scir-card implication">
         <div class="scir-label">The Implication</div>
-        <p>With NIFTY's {nifty_mp:,.0f} Max Pain anchor tested, delta exposure has turned sharply negative. Breaching the {nifty_sup:,.0f} support opens downside liquidity sweep toward the 23,200 structural base.</p>
+        <p>{scir_implication}</p>
       </div>
 
       <div class="scir-card resolution">
         <div class="scir-label">The Strategic Resolution</div>
-        <p>Institutional desks must emphasize disciplined premium harvest and dynamic delta realignment. The optimal setup favors deploying Bear Call Spreads into counter-trend rallies toward 23,500 (NIFTY) and 56,800–57,000 (BANKNIFTY).</p>
+        <p>{scir_resolution}</p>
       </div>
     </div>
   </section>
 
-  <!-- SECTORAL BREADTH & CATALYSTS HEATMAP TILES -->
+  <!-- CORE ASSET BENCHMARK & CAPITAL FLOW PERFORMANCE MATRIX -->
   <section class="exhibit-container avoid-break" style="margin: 10px 0 0 0;">
     <div class="exhibit-header">
-      <div class="exhibit-tag">Sector Breadth</div>
-      <div class="exhibit-title">Sectoral Rotation &amp; Macro Catalyst Matrix</div>
+      <div class="exhibit-tag">Market Coverage</div>
+      <div class="exhibit-title">Core Asset Benchmark &amp; Capital Flow Performance Matrix</div>
     </div>
     <div class="sector-grid">
       <div class="sector-tile">
-        <div class="sector-name">IT Sector</div>
-        <div class="sector-chg text-negative tabular-nums">-0.8%</div>
-        <div class="sector-desc">Yield headwind &amp; US tier-1 caution.</div>
+        <div class="sector-name">NIFTY 50</div>
+        <div class="sector-chg {n_pct_cls} tabular-nums">{n_pct_str}</div>
+        <div class="sector-desc">{nifty_verdict} ({nifty_conf}%)</div>
       </div>
       <div class="sector-tile">
-        <div class="sector-name">Energy &amp; Oil</div>
-        <div class="sector-chg text-negative tabular-nums">-1.4%</div>
-        <div class="sector-desc">Brent crude spike ($82+) on OMCs.</div>
+        <div class="sector-name">BANKNIFTY</div>
+        <div class="sector-chg {bn_pct_cls} tabular-nums">{bn_pct_str}</div>
+        <div class="sector-desc">{bn_verdict} ({bn_conf}%)</div>
       </div>
       <div class="sector-tile">
-        <div class="sector-name">Auto Sector</div>
-        <div class="sector-chg text-positive tabular-nums">+0.3%</div>
-        <div class="sector-desc">Festive dealer channel restocking.</div>
+        <div class="sector-name">SENSEX</div>
+        <div class="sector-chg {s_pct_cls} tabular-nums">{s_pct_str}</div>
+        <div class="sector-desc">{sensex_verdict} ({sensex_conf}%)</div>
       </div>
       <div class="sector-tile">
-        <div class="sector-name">Banking / Fin</div>
-        <div class="sector-chg text-negative tabular-nums">-0.2%</div>
-        <div class="sector-desc">HDFC/ICICI rangebound near resistance.</div>
+        <div class="sector-name">NATURALGAS</div>
+        <div class="sector-chg {ng_pct_cls} tabular-nums">{ng_pct_str}</div>
+        <div class="sector-desc">{ng_verdict} ({ng_conf}%)</div>
       </div>
       <div class="sector-tile">
-        <div class="sector-name">Metals</div>
-        <div class="sector-chg text-negative tabular-nums">-0.9%</div>
-        <div class="sector-desc">Stronger DXY commodity retracement.</div>
+        <div class="sector-name">FII / DII NET</div>
+        <div class="sector-chg tabular-nums" style="color: {flow_col};">{flow_net_str}</div>
+        <div class="sector-desc">FII: {fii_str} | DII: {dii_str}</div>
       </div>
     </div>
   </section>
@@ -1179,7 +1413,7 @@ def _render_steadyalpha_html(date_display: str, scan_data: list[dict], fc_data: 
   <div class="insights-box avoid-break">
     <div class="insights-title">Microstructure Insight: Anatomy of the Derivative Flow Shift</div>
     <div class="insights-body">
-      <strong>Order Flow Dynamics:</strong> Option writers demonstrated selective risk-off behavior. In NIFTY, dual liquidation ({_fmt_oi_with_lots(nifty_ce_delta, 'NIFTY')} / {_fmt_oi_with_lots(nifty_pe_delta, 'NIFTY')}) marked aggressive long unwinding, while BankNifty's PCR ({bn_pcr:.4f}) reflects straddle accumulation capped by Call writing at 56,700 and 57,000. Institutional desks remain hedged via defined-risk credit spreads into expiry rolls.
+      <strong>Order Flow Dynamics:</strong> In NIFTY, institutional repositioning produced CE change {_fmt_oi_with_lots(nifty_ce_delta, 'NIFTY')} and PE change {_fmt_oi_with_lots(nifty_pe_delta, 'NIFTY')} ({nifty_regime}), while BANKNIFTY's PCR ({bn_pcr:.4f}) reflects positioning with Max Pain at {bn_mp:,.0f} and resistance near {bn_res:,.0f}. Institutional desks remain hedged via defined-risk credit spreads aligned with prevailing volatility.
     </div>
   </div>
 
@@ -1200,48 +1434,7 @@ def _render_steadyalpha_html(date_display: str, scan_data: list[dict], fc_data: 
         </tr>
       </thead>
       <tbody>
-        <tr>
-          <td rowspan="4"><strong>NIFTY 50</strong><br><span class="badge badge-bearish">Bias: Bearish / Sell Rallies</span></td>
-          <td><strong>23,500</strong></td>
-          <td>Major Call Resistance</td>
-          <td>Primary overhead ceiling. Sell 23,500/23,600 Bear Call Spreads on morning relief spikes.</td>
-        </tr>
-        <tr>
-          <td><strong>23,400</strong></td>
-          <td>ATM / Max Pain Pivot</td>
-          <td>Equilibrium anchor ({nifty_mp:,.0f}). Watch opening auction price acceptance and dealer gamma rebalancing.</td>
-        </tr>
-        <tr>
-          <td><strong>23,300</strong></td>
-          <td>Breakdown Trigger</td>
-          <td>Key Put support ({nifty_sup:,.0f}). Sustained break opens downside liquidity sweep toward 23,200 (200-DMA base).</td>
-        </tr>
-        <tr>
-          <td><strong>23,200</strong></td>
-          <td>Structural Support</td>
-          <td>Deep Put open interest floor; high-probability zone for squaring short delta.</td>
-        </tr>
-        <tr>
-          <td rowspan="4"><strong>BANKNIFTY</strong><br><span class="badge badge-warning">Bias: Neutral to Bearish</span></td>
-          <td><strong>57,100</strong></td>
-          <td>Max Pain Magnet</td>
-          <td>Overhead magnet ({bn_mp:,.0f}). Major Call OI barrier established across 56,700–57,100.</td>
-        </tr>
-        <tr>
-          <td><strong>56,700</strong></td>
-          <td>Immediate Resistance</td>
-          <td>Fresh call writing supply ceiling. Primary entry zone for Bear Call Spreads on rallies to 56,800–57,000.</td>
-        </tr>
-        <tr>
-          <td><strong>56,600</strong></td>
-          <td>ATM / Equilibrium Pivot</td>
-          <td>Spot axis ({bn_spot:,.1f}). Watch opening session price acceptance and institutional straddle flows.</td>
-        </tr>
-        <tr>
-          <td><strong>56,200</strong></td>
-          <td>Structural Support</td>
-          <td>Key Put accumulation floor; downside cushion and risk boundary for credit put spreads.</td>
-        </tr>
+        {battleground_rows}
       </tbody>
     </table>
   </section>
@@ -1433,12 +1626,17 @@ RULES:
             f"## {report_obj.title}\n\n"
             f"### 📈 Index Summary\n{report_obj.index_summary}\n\n"
             f"### 📉 OI & Derivatives Analysis\n{report_obj.oi_derivatives_analysis}\n\n"
+            f"### 🤖 Bot Performance & Capital Flows\n{report_obj.bot_performance}\n\n"
             f"### 🎯 Key Levels & Bias for Tomorrow\n{report_obj.key_levels_tomorrow}\n\n"
             f"### 🌐 Macro & Watchlist\n{report_obj.macro_and_watchlist}"
         )
     else:
+        trade_perf = _get_today_trade_performance()
+        bot_perf_fallback = _build_trade_text(trade_perf)
         report_markdown = (
             f"## Indian Market Close EOD Report — {date_display}\n\n"
+            f"### 📈 Index & Quantitative OI Summary\n{scan_text}\n\n"
+            f"### 🤖 Bot Performance & Capital Flows\n{bot_perf_fallback}\n\n"
             f"### 📊 Market Closing Snapshot\n{closing_bell_text}\n\n"
             f"### 📉 FII/DII Flows\n{fii_dii_text}\n\n"
             f"### 🌐 Macro News\n{news_text}"

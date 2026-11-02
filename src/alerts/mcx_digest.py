@@ -19,6 +19,7 @@ import pytz
 
 from src.alerts.digest import (
     _esc,
+    _esc_code,
     _val,
     _humanize_age,
     _top_news,
@@ -118,9 +119,9 @@ def build_mcx_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[st
     elif is_rejected or is_conflict:
         trade_status_str = "🔴 *REJECTED*"
     elif has_ml_activity:
-        trade_status_str = "⏸️ *NO TRADE*"
+        trade_status_str = "⏸️ *STAND ASIDE*"
     else:
-        trade_status_str = ""
+        trade_status_str = "⏸️ *STAND ASIDE*"
 
     # Format expiry & DTE
     if expiry:
@@ -187,7 +188,8 @@ def build_mcx_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[st
             except Exception:
                 pass
 
-        lines.append(f"• Macro EIA Stance: {stance_icon} *{stance}*{valid_str}")
+        stance_fmt = str(stance).replace("_", " ")
+        lines.append(f"• Macro EIA Stance: {stance_icon} *{stance_fmt}*{valid_str}")
 
         act_bcf = ng_macro.get("actual_bcf")
         five_yr_bcf = ng_macro.get("five_year_avg_bcf")
@@ -287,6 +289,76 @@ def build_mcx_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[st
         if econ_parts:
             lines.append(f"Economics: {' · '.join(econ_parts)}")
 
+    # ── 2b. LIVE BOOK MONITORING & POSITION EXIT ADVICE (MCX) ──
+    live_books = multileg.get("live_books") or []
+    closed_items = multileg.get("closed_items") or []
+    ai_exit = multileg.get("ai_exit_advice") or exit_advice
+
+    has_current_trade = is_entered or bool(closed_items)
+    should_show_books = (
+        has_ml_activity
+        and (has_current_trade or is_holding or bool(ai_exit))
+        and (bool(closed_items) or ((is_entered or is_holding) and bool(live_books)) or bool(ai_exit))
+    )
+    if should_show_books:
+        lines.append("")
+        lines.append(DIV)
+        lines.append("📈 *MULTI-LEG TRADES*")
+
+        if closed_items:
+            for c in closed_items:
+                c_id = c.get("book_id") or ""
+                c_st = str(c.get("strategy_type") or "").replace("_", " ").upper()
+                c_pnl = float(c.get("total_pnl") or 0.0)
+                c_re = c.get("reason") or "Closed"
+                pnl_icon = "🟢" if c_pnl >= 0 else "🔴"
+                lines.append(f"• Closed: `{_esc_code(c_id)}` ({c_st}) | {pnl_icon} P&L ₹{c_pnl:,.0f} | {_esc(c_re)}")
+
+        if (is_entered or is_holding) and live_books:
+            entered_book_id = multileg.get("book_id")
+            target_books = [b for b in live_books if b.get("book_id") == entered_book_id] if (entered_book_id and is_entered) else live_books
+            for b in target_books:
+                b_id = b.get("book_id") or ""
+                b_st = str(b.get("strategy_type") or "").replace("_", " ").upper()
+                b_pnl = float(b.get("total_pnl") or 0.0)
+                b_prem = float(b.get("net_premium") or 0.0)
+                b_delta = float(b.get("net_delta") or 0.0)
+                pnl_icon = "🟢" if b_pnl >= 0 else "🔴"
+
+                age_suffix = ""
+                if is_holding and b.get("opened_at"):
+                    age = _humanize_age(b.get("opened_at"))
+                    if age:
+                        age_suffix = f" · entered {age} ago"
+
+                lines.append(f"• Book: `{_esc_code(b_id)}` · {b_st}{age_suffix}")
+                lines.append(f"  Net Prem ₹{b_prem:.1f}/lot | {pnl_icon} Total P&L ₹{b_pnl:,.0f} | Δ Net {b_delta:+.2f}")
+
+                be_l = b.get("breakeven_lower")
+                be_u = b.get("breakeven_upper")
+                if be_l and be_u:
+                    lines.append(f"  BE: ₹{be_l:,.1f} — ₹{be_u:,.1f}")
+
+                b_legs = b.get("legs") or []
+                for l in b_legs:
+                    l_side = (l.get("side") or "SELL").upper()
+                    l_type = (l.get("option_type") or "").upper()
+                    l_strike = float(l.get("strike") or 0.0)
+                    l_entry = float(l.get("entry_premium") or 0.0)
+                    l_curr = float(l.get("current_premium") or l_entry)
+                    s_icon = "🔴" if l_side == "SELL" else "🟢"
+                    lines.append(f"    {s_icon} {l_side} {l_strike:.1f} {l_type} | Entry ₹{l_entry:.1f} → Current ₹{l_curr:.1f}")
+
+        if ai_exit:
+            ea_act = ai_exit.get("action") if isinstance(ai_exit, dict) else getattr(ai_exit, "action", None)
+            if ea_act:
+                ea_urg = ai_exit.get("urgency") if isinstance(ai_exit, dict) else getattr(ai_exit, "urgency", "LOW")
+                ea_rea = ai_exit.get("reasoning") if isinstance(ai_exit, dict) else getattr(ai_exit, "reasoning", "")
+                ea_emoji = {"HOLD": "🔵", "ADJUST": "🔄", "CLOSE": "🔴"}.get(str(ea_act).upper(), "⚙️")
+                lines.append(f"• AI Exit Advice: {ea_emoji} *{_esc(ea_act)}* (Urgency: {_esc(ea_urg)})")
+                if ea_rea:
+                    lines.append(f"  _{_esc(ea_rea)}_")
+
     # ── 3. THESIS & MARKET CONTEXT ──
     thesis_text = (
         ai_thesis
@@ -302,7 +374,14 @@ def build_mcx_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[st
     thesis_text = re.sub(r"(?i)(?:^|\n)news:\s*[\s\S]*?(?=(?:\n[A-Z][a-z]+:|\Z))", "", thesis_text).strip()
 
     # Enforce 72% MCX floor in the thesis verdict (handling single or multiline wrapped verdicts)
-    if is_sub_threshold and not is_entered:
+    if is_holding:
+        floor_verdict = "Verdict: 🔵 HOLD CURRENT POSITION (Monitoring active book)"
+        verdict_pat = r"(?i)verdict:[\s\S]*?(?=(?:\n\n|\n[A-Z][a-z]+:|\Z))"
+        if re.search(r"(?i)verdict:", thesis_text):
+            thesis_text = re.sub(verdict_pat, floor_verdict, thesis_text)
+        else:
+            thesis_text += f"\n\n{floor_verdict}"
+    elif is_sub_threshold and not is_entered:
         floor_verdict = f"Verdict: HOLD / NO-TRADE (Confidence {int(conf_num)}% < 72% MCX Floor)"
         verdict_pat = r"(?i)verdict:[\s\S]*?(?=(?:\n\n|\n[A-Z][a-z]+:|\Z))"
         if re.search(r"(?i)verdict:", thesis_text):
@@ -313,7 +392,10 @@ def build_mcx_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[st
     if thesis_text:
         lines.append("")
         lines.append(DIV)
-        lines.append("💡 *THESIS & MARKET CONTEXT*")
+        if is_holding:
+            lines.append("💡 *POSITION MONITORING & EXIT EVALUATION*")
+        else:
+            lines.append("💡 *THESIS & MARKET CONTEXT*")
         for raw_line in thesis_text.splitlines():
             if not raw_line.strip():
                 continue
@@ -325,6 +407,17 @@ def build_mcx_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[st
     if news_line:
         lines.append("")
         lines.append(f"📰 *News:* {_esc(news_line)}")
+
+    matrix_shadow = payload.get("matrix_shadow")
+    if matrix_shadow:
+        try:
+            from src.alerts.matrix_alerts import matrix_digest_line
+            m_line = matrix_digest_line(matrix_shadow)
+            if m_line:
+                lines.append("")
+                lines.append(m_line)
+        except Exception:
+            pass
 
     if digest_id is None:
         digest_id = str(uuid.uuid4())[:8]

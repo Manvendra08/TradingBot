@@ -323,9 +323,9 @@ def get_futures_expiry(symbol: str, ref_date: "date | None" = None) -> "str | No
         mcx_holidays = set()
         nse_holidays = set()
 
+    from datetime import datetime, timezone, timedelta as _td
+    IST = timezone(_td(hours=5, minutes=30))
     if ref_date is None:
-        from datetime import datetime, timezone, timedelta as _td
-        IST = timezone(_td(hours=5, minutes=30))
         ref_date = datetime.now(IST).date()
 
     base = _base_symbol(symbol)
@@ -366,7 +366,11 @@ def get_futures_expiry(symbol: str, ref_date: "date | None" = None) -> "str | No
                 return _prev_working_day(raw, mcx_holidays)
 
         expiry = _compute(year, month)
-        if expiry < ref_date:
+        # On expiry day, MCX expiring contracts close at 17:00 IST.
+        # After 17:00 IST, the active tradable contract is the next month.
+        now_ist = datetime.now(IST)
+        is_past_expiry_cutoff = (expiry == ref_date and (now_ist.hour > 17 or (now_ist.hour == 17 and now_ist.minute >= 0)))
+        if expiry < ref_date or is_past_expiry_cutoff:
             if month == 12:
                 year, month = year + 1, 1
             else:

@@ -114,10 +114,7 @@ def validate_legs(
     -------
     (is_valid, error_message) — error_message is empty string on success.
     """
-    base_sym = symbol.upper().split()[0] if symbol else ""
-    is_mcx = symbol.upper() in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER") or base_sym in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER")
-    if is_mcx and strategy_type == "IRON_CONDOR":
-        return False, f"IRON_CONDOR strategy is disabled for MCX commodity symbol '{symbol}'"
+
 
     if not legs:
         return False, "No legs provided"
@@ -954,6 +951,16 @@ def get_candidate_strikes(
     min_width_pct = MIN_WING_WIDTH_PCT.get(sym_key, MIN_WING_WIDTH_PCT.get("DEFAULT", 0.005))
     required_wing_width = max(min_width_pts, underlying * min_width_pct)
 
+    target_short_delta = 0.25
+    try:
+        from config.decision_matrix_loader import load_decision_matrix
+        from src.engine.decision_matrix import delta_band
+        dm_cfg = load_decision_matrix()
+        mn_d, mx_d, _ = delta_band("IRON_CONDOR", "SHORT", symbol=symbol, cfg=dm_cfg)
+        target_short_delta = (mn_d + mx_d) / 2.0
+    except Exception:
+        target_short_delta = 0.25
+
     ce_candidates: list[dict] = []
     pe_candidates: list[dict] = []
 
@@ -970,6 +977,15 @@ def get_candidate_strikes(
 
             if strike <= 0 or ltp <= 0 or oi <= 0 or opt_type not in ("CE", "PE"):
                 continue
+
+            if sym_key in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER", "COPPER"):
+                try:
+                    from src.engine.decision_matrix import is_mcx_strike_liquid
+                    liq_ok, _ = is_mcx_strike_liquid(row)
+                    if not liq_ok:
+                        continue
+                except Exception:
+                    pass
 
             # Premium sanity check: discard absurd deep-ITM quotes
             if ltp > underlying * 0.50:
@@ -1009,8 +1025,8 @@ def get_candidate_strikes(
             dist_pct = abs(dist_pts) / underlying * 100.0
 
             if abs_delta > 0.01:
-                # Delta-based scoring: peak score at delta = 0.20
-                delta_gap = abs(abs_delta - 0.20)
+                # Delta-based scoring: peak score at active profile target delta
+                delta_gap = abs(abs_delta - target_short_delta)
                 delta_score = max(0.0, 25.0 - (delta_gap * 90.0))
             else:
                 # Distance-based fallback: peak score at 1.0% - 2.5% OTM

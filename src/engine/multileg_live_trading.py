@@ -154,13 +154,14 @@ MAX_AI_CLOSES_PER_15M_WINDOW: int = 3
 
 def _get_stop_loss_threshold_rupees(book: dict, legs: list[dict], symbol: str) -> float:
     """Calculate the exact Stop Loss threshold in Rupees for a multi-leg book.
-    
-    Hard-enforced by code independent of LLM hallucinations:
-    - Defined-risk: min(credit_collected * stop_loss_pct, physical_max_loss)
-    - Undefined-risk: bounded by broker margin requirement (2.5% of required margin)
-      and hard rupee ceiling per lot (₹25,000 / lot).
+
+    Hard-enforced by decision matrix config:
+    - Defined-risk credit spreads: stop at 50% of max loss (wing_width - net_credit)
+    - Undefined-risk / IC / Strangle: 1.0x credit (1.5x monthly if dte > 20)
+    - Frozen parameter invariant: if book already recorded a stop_loss_rupees, it can only be tightened, never loosened.
     """
     from config.settings import LOT_SIZES
+    from src.engine.trade_plan import calculate_option_book_stop_target
 
     base_symbol = symbol.upper().split()[0] if symbol else symbol.upper()
     lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_symbol, 1))
@@ -170,68 +171,34 @@ def _get_stop_loss_threshold_rupees(book: dict, legs: list[dict], symbol: str) -
     net_premium = float(book.get("net_premium") or 0.0)
     max_loss_val = float(book.get("max_loss") or 0.0)
 
-    # Code-level clamp: stop_loss_pct must be between 0.5 (50% credit loss) and 2.0 (200% credit loss)
-    raw_sl_pct = float(book.get("stop_loss_pct") or 1.5)
-    stop_loss_pct = min(max(raw_sl_pct, 0.5), 2.0)
-
-    underlying = float(book.get("entry_underlying") or 0.0)
     is_defined_risk = strategy_type in ("IRON_CONDOR", "BEAR_CALL_SPREAD", "BULL_PUT_SPREAD")
+    wing_width = max_loss_val + net_premium if is_defined_risk else 0.0
+    dte = int(book.get("time_decay_exit_dte") or 0)
 
-    if is_defined_risk and max_loss_val > 0 and (underlying <= 0 or max_loss_val < underlying * 0.4):
-        credit_sl = max(net_premium, 1.0) * lot_size * total_lots * stop_loss_pct
+    st_res = calculate_option_book_stop_target(
+        strategy_type=strategy_type,
+        net_credit=net_premium,
+        wing_width=wing_width,
+        dte=dte,
+        symbol=symbol,
+        lot_size=lot_size,
+        total_lots=total_lots,
+    )
+    total_max_loss_rupees = st_res["stop_loss_rupees"]
+
+    # Defined-risk physical max loss backstop
+    if is_defined_risk and max_loss_val > 0:
         physical_max = max_loss_val * lot_size * total_lots
-        total_max_loss_rupees = min(credit_sl, physical_max)
+        total_max_loss_rupees = min(total_max_loss_rupees, physical_max)
     else:
-        # Undefined risk: calculate based on broker margin requirement and premium credit
-        from src.engine.multileg_strategy import calculate_combined_margin
-        margin_req = float(book.get("margin_req") or 0.0)
-        if margin_req <= 0:
-            norm_legs = []
-            for l in legs:
-                c = dict(l)
-                if "side" not in c and "action" in c:
-                    c["side"] = c["action"]
-                if "lots" not in c and "ratio" in c:
-                    c["lots"] = c["ratio"]
-                norm_legs.append(c)
-            margin_req = calculate_combined_margin(norm_legs, symbol, underlying=underlying)
+        # Undefined-risk: bounded by broker margin / hard ceiling
+        hard_rupee_ceiling = 50000.0 * total_lots
+        total_max_loss_rupees = min(max(total_max_loss_rupees, 2000.0 * total_lots), hard_rupee_ceiling)
 
-        # Try actual broker margin API first for live broker mode.
-        broker_margin = None
-        try:
-            from src.engine.capital_allocator import _fetch_broker_margin_requirement
-            from config.runtime_config import is_broker_trade_enabled
-            if is_broker_trade_enabled():
-                for l in legs:
-                    tradingsymbol = l.get("tradingsymbol") or l.get("instrument") or ""
-                    exchange = l.get("exchange") or "NFO"
-                    lots = int(l.get("lots") or l.get("ratio") or 1)
-                    premium = float(l.get("entry_premium") or l.get("premium") or 0.0)
-                    if not tradingsymbol or premium <= 0:
-                        continue
-                    broker_margin = _fetch_broker_margin_requirement(
-                        symbol=symbol,
-                        tradingsymbol=tradingsymbol,
-                        exchange=exchange,
-                        transaction_type="SELL",
-                        quantity=lots * lot_size,
-                        premium=premium,
-                    )
-                    if broker_margin and broker_margin > 0:
-                        margin_req = max(margin_req, broker_margin)
-                        break
-        except Exception:
-            broker_margin = None
-
-        credit_sl = max(net_premium, 1.0) * lot_size * total_lots * stop_loss_pct
-        margin_sl = margin_req * 0.025 if margin_req > 0 else 25000.0 * total_lots
-        hard_rupee_ceiling = 25000.0 * total_lots
-        total_max_loss_rupees = min(max(credit_sl, 2000.0 * total_lots), margin_sl, hard_rupee_ceiling)
-        log.debug(
-            "[multileg-live] %s: book %s SL threshold set to ₹%.0f (credit_sl=₹%.0f, margin_sl=₹%.0f, cap=₹%.0f, sl_pct=%.2f, broker_margin=%s)",
-            symbol, book.get("book_id", "unknown"), total_max_loss_rupees, credit_sl, margin_sl, hard_rupee_ceiling, stop_loss_pct,
-            f"₹{broker_margin:.0f}" if broker_margin else "N/A",
-        )
+    # Invariant: Frozen stop loss can only be tightened, never loosened
+    frozen_sl = book.get("stop_loss_rupees")
+    if frozen_sl is not None and float(frozen_sl) > 0:
+        total_max_loss_rupees = min(total_max_loss_rupees, float(frozen_sl))
 
     return max(total_max_loss_rupees, 1.0)
 
@@ -343,22 +310,22 @@ def _run_multileg_live_strategy_inner(
     if exit_check:
         return mon_res
 
-    # ── 5. Gate: Max open books per symbol (cap = 5) ───────────────────
-    MAX_OPEN_BOOKS_PER_SYMBOL = 5
-    if open_books and len(open_books) >= MAX_OPEN_BOOKS_PER_SYMBOL:
+    # ── 5. Gate: Churn guards & max open books (from Decision Matrix config) ─
+    from src.engine.decision_matrix import check_churn_guards
+    churn_ok, churn_reason = check_churn_guards(symbol, open_books, trade_mode="LIVE")
+    if not churn_ok:
         log.info(
-            "[multileg-live] %s: open books cap reached (%d >= %d) — skipping new entry",
+            "[multileg-live] %s: %s — skipping new entry",
             symbol,
-            len(open_books),
-            MAX_OPEN_BOOKS_PER_SYMBOL,
+            churn_reason,
         )
         if isinstance(mon_res, dict):
-            mon_res["new_entry_skipped"] = f"Max open books cap reached ({len(open_books)} >= {MAX_OPEN_BOOKS_PER_SYMBOL})"
+            mon_res["new_entry_skipped"] = churn_reason
             return mon_res
         return {
             "action": "HOLD",
-            "decision_stage": "OPEN_BOOKS_CAP",
-            "reason": f"Max open books cap reached ({len(open_books)} >= {MAX_OPEN_BOOKS_PER_SYMBOL})",
+            "decision_stage": "CHURN_GUARD",
+            "reason": churn_reason,
             "open_books": len(open_books),
         }
 
@@ -477,6 +444,69 @@ def _monitor_open_books_live(
                 "total_pnl": total_pnl,
             })
             continue
+
+        # ── Decision Matrix Exit Priority Evaluation ─────────────────
+        from config.decision_matrix_loader import get_decision_matrix_mode, load_decision_matrix
+        from src.engine.exit_evaluator import evaluate_exit_priority, order_legs_for_exit
+
+        matrix_mode = get_decision_matrix_mode(symbol)
+        dte = _dte_from_expiry(expiry)
+        market_state = {
+            "symbol": symbol,
+            "underlying": curr_und,
+            "total_pnl": total_pnl,
+            "expiry": expiry,
+            "days_to_expiry": dte,
+            "candle_close_15m": (scan_context or {}).get("candle_close_15m"),
+            "upcoming_event": (intel or {}).get("upcoming_event") or (scan_context or {}).get("upcoming_event"),
+            "new_verdict": (scan_context or {}).get("verdict") or (scan_context or {}).get("regime"),
+            "nymex_direction": (scan_context or {}).get("nymex_direction") or (intel or {}).get("nymex_direction"),
+        }
+
+        matrix_cfg = load_decision_matrix(symbol)
+        matrix_exit_dec = evaluate_exit_priority(
+            book=book,
+            legs=legs,
+            market_state=market_state,
+            cfg=matrix_cfg,
+            now_ist=datetime.now(IST),
+        )
+
+        if matrix_mode == "shadow":
+            if matrix_exit_dec.should_exit:
+                log.info(
+                    "[exit_evaluator][SHADOW] %s book %s would exit: reason=%s (%s), priority=%s",
+                    symbol,
+                    book_id,
+                    matrix_exit_dec.exit_reason,
+                    matrix_exit_dec.details,
+                    matrix_exit_dec.priority,
+                )
+        elif matrix_mode == "enforce":
+            if matrix_exit_dec.should_exit:
+                log.info(
+                    "[exit_evaluator][ENFORCE] %s book %s exiting via priority %s (%s): %s",
+                    symbol,
+                    book_id,
+                    matrix_exit_dec.exit_reason,
+                    matrix_exit_dec.priority,
+                    matrix_exit_dec.details,
+                )
+                exit_reason_str = f"{matrix_exit_dec.exit_reason} ({matrix_exit_dec.details})" if matrix_exit_dec.details else matrix_exit_dec.exit_reason
+                _ok = _close_live_book(
+                    symbol, book_id, matrix_exit_dec.ordered_legs or legs, now_iso,
+                    "CLOSED",
+                    exit_reason_str,
+                    total_pnl,
+                    exit_underlying=curr_und,
+                )
+                closed_actions.append({
+                    "action": "CLOSED" if _ok else "CLOSE_PENDING",
+                    "book_id": book_id,
+                    "reason": exit_reason_str,
+                    "total_pnl": total_pnl,
+                })
+                continue
 
         # ── Check exit conditions ──────────────────────────────────────
         # 4a. Profit target
@@ -695,34 +725,29 @@ def _monitor_open_books_live(
                                 )
                                 continue
 
-                            # Verification Guard: Require consecutive confirmation OR a code-side quantitative co-sign
-                            # to prevent single spurious LLM hallucinations from closing books prematurely.
+                            # AI-Authority Gate (replaces legacy is_consecutive/pnl_co_sign heuristics).
+                            # evaluate_exit_priority with ai_verdict checks close_allowed_min_profit_credit_pct (30%)
+                            # and close_allowed_min_loss_stop_ratio (50%) from ai_authority config block.
                             import time as _time
                             now_ts = _time.time()
-                            is_consecutive = (
-                                book_id in _AI_CLOSE_PENDING_BOOKS
-                                and (now_ts - _AI_CLOSE_PENDING_BOOKS[book_id]) <= 7200
+                            ai_exit_dec = evaluate_exit_priority(
+                                book=book,
+                                legs=legs,
+                                market_state=market_state,
+                                cfg=matrix_cfg,
+                                now_ist=now_ist,
+                                ai_verdict=advice,
                             )
-                            base_symbol = symbol.upper().split()[0] if symbol else symbol.upper()
-                            lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_symbol, 1))
-                            stop_loss_threshold = _get_stop_loss_threshold_rupees(book, legs, symbol)
-                            pnl_co_sign = (
-                                (total_pnl <= -0.5 * stop_loss_threshold)
-                                or (net_premium > 0 and total_pnl >= 0.70 * (net_premium * lot_size * max((int(leg.get("lots") or 1) for leg in legs), default=1) * profit_target_pct))
-                            )
-                            expiry_co_sign = (dte == 0 and (now_ist.hour >= 22 if is_mcx else now_ist.hour >= 14))
-
-                            if not (is_consecutive or pnl_co_sign or expiry_co_sign):
-                                _AI_CLOSE_PENDING_BOOKS[book_id] = now_ts
+                            if not (ai_exit_dec.should_exit and ai_exit_dec.exit_reason == "AI_TIGHTEN"):
                                 log.info(
-                                    "[multileg-live] %s: book %s — AI CLOSE staged (awaiting 2nd consecutive cycle confirmation or quantitative co-sign; PnL=₹%.0f, SL_thresh=₹%.0f, DTE=%d): %s",
+                                    "[multileg-live] %s: book %s — AI CLOSE rejected by ai_authority gate"
+                                    " (PnL=₹%.0f not yet at 30%% profit or 50%% SL ratio): %s",
                                     symbol,
                                     book_id,
                                     total_pnl,
-                                    stop_loss_threshold,
-                                    dte,
                                     reasoning,
                                 )
+                                _AI_CLOSE_PENDING_BOOKS.pop(book_id, None)
                                 continue
 
                             # Cluster / Mass-Exit Breaker: Throttle if more than 3 AI closes trigger within 15 minutes
@@ -738,17 +763,17 @@ def _monitor_open_books_live(
                                 )
                                 continue
 
-                            # Confirmed — record timestamp, clear pending flag and proceed to close
+                            # Authorized — record timestamp, clear pending flag and proceed to close
                             _AI_CLOSE_EVENT_TIMESTAMPS.append(now_ts)
                             _AI_CLOSE_PENDING_BOOKS.pop(book_id, None)
 
                             log.info(
-                                "[multileg-live] %s: book %s — AI executing confirmed autonomous CLOSE (consecutive=%s, pnl_cosign=%s, expiry_cosign=%s): %s",
+                                "[multileg-live] %s: book %s — AI executing CLOSE authorized by ai_authority gate"
+                                " (ai_tighten=%s, detail=%s): %s",
                                 symbol,
                                 book_id,
-                                is_consecutive,
-                                pnl_co_sign,
-                                expiry_co_sign,
+                                ai_exit_dec.should_exit,
+                                ai_exit_dec.details,
                                 reasoning,
                             )
                             clean_reason = " ".join(reasoning.split()).strip()
@@ -1004,7 +1029,8 @@ def _close_live_book(
     leg_exits = []
     unfilled_leg_ids: list[int] = []
     # Finding C4: Close existing SELL (short) legs first to flatten short liability before closing BUY (hedge) wings
-    sorted_legs = sorted(legs, key=lambda l: 0 if (l.get("side") or "").upper() == "SELL" else 1)
+    from src.engine.exit_evaluator import order_legs_for_exit
+    sorted_legs = order_legs_for_exit(legs)
     for leg in sorted_legs:
         leg_id = leg.get("id")
         broker_order_id = leg.get("broker_order_id")
@@ -1586,8 +1612,8 @@ def _attempt_new_live_entry(
     # before risking real capital with the broker.
     from src.engine.data_validator import validate_trade_leg_data
     underlying_for_binary = float((scan_context or {}).get("underlying") or 0.0)
-    oc_data_payload = {"strikes": list((scan_context or {}).get("option_rows") or [])}
-    is_binary_valid, binary_issues = validate_trade_leg_data(legs, oc_data_payload, underlying_for_binary)
+    oc_data_payload = {"symbol": symbol, "strikes": list((scan_context or {}).get("option_rows") or [])}
+    is_binary_valid, binary_issues = validate_trade_leg_data(legs, oc_data_payload, underlying_for_binary, symbol=symbol)
     if not is_binary_valid:
         log.warning(
             "[multileg-live] %s: atomic leg data validation failed — %s",
@@ -2227,6 +2253,8 @@ def _attempt_new_live_entry(
         "snapshot_id": (scan_context or {}).get("snapshot_id"),
         "trade_mode": trade_mode,
         "structural_invalidation_spot": float(getattr(verdict, "structural_invalidation_spot", 0.0) or 0.0) or None,
+        "initial_sl_underlying": underlying,
+        "config_version": (load_decision_matrix(symbol).get("version", 1) if "load_decision_matrix" in globals() else 1),
     }
 
     try:

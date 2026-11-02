@@ -178,3 +178,35 @@ def test_build_digest_wrapper_fallback_no_llm():
     assert "TRADING PLAN" in msg
     assert "Sell 21900 PE" in msg
 
+
+
+def test_synthesize_market_insight_naturalgas():
+    from src.alerts.digest import synthesize_market_insight, format_options_insight
+
+    ctx = {
+        "symbol": "NATURALGAS",
+        "underlying": 294.5,
+        "pcr": 1.09,
+        "max_pain": 295.0,
+        "support": 290.0,
+        "resistance": 295.0,
+        "ce_oi_change": 249,
+        "pe_oi_change": -115,
+    }
+
+    # Verify format_options_insight supports both symbol and sym keyword arguments
+    bits1 = format_options_insight(ctx, symbol="NATURALGAS")
+    assert len(bits1) > 0
+    bits2 = format_options_insight(ctx, sym="NATURALGAS")
+    assert len(bits2) > 0
+
+    # Verify synthesize_market_insight completes without error
+    insight = synthesize_market_insight(
+        ctx,
+        verdict_label="HOLD / NO-TRADE",
+        bias="NEUTRAL",
+        confidence=0,
+    )
+    assert "PCR 1.09" in insight
+    assert "Max Pain" in insight
+    assert "Verdict: HOLD / NO-TRADE" in insight

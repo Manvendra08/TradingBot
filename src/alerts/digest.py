@@ -49,8 +49,9 @@ def _esc(text: any) -> str:
     if text is None:
         return ""
     s = str(text)
-    # Escape all Telegram Markdown V1 special chars: _ * ` [ ] ( )
-    for char in ("_", "*", "`", "[", "]", "(", ")"):
+    # Telegram Markdown V1 special formatting chars are: _ * ` [
+    # Note: ( and ) must NOT be escaped in V1 or Telegram displays literal \( and \).
+    for char in ("_", "*", "`", "["):
         s = s.replace(char, f"\\{char}")
     return s
 
@@ -178,10 +179,10 @@ def _fmt_open_position(t) -> str:
     return " ".join(parts)
 
 
-def format_options_insight(ctx: dict | None, symbol: str = "") -> list[str]:
+def format_options_insight(ctx: dict | None, symbol: str = "", sym: str = "", **kwargs) -> list[str]:
     """Compact, scannable raw-options-data block for the OPTIONS INSIGHT section."""
     ctx = ctx or {}
-    sym = str(symbol or ctx.get("symbol") or "").strip()
+    sym = str(symbol or sym or ctx.get("symbol") or "").strip()
     bits: list[str] = []
 
     pcr = ctx.get("pcr")
@@ -255,7 +256,12 @@ def synthesize_market_insight(
     ctx = ctx or {}
     lines: list[str] = []
 
-    # ── Engine verdict (ties together the OPTIONS INSIGHT data above) ──
+    # ── Market structure context (spot vs max pain, range) ──
+    opt_bits = format_options_insight(ctx, symbol=ctx.get("symbol", ""))
+    if opt_bits:
+        lines.extend(opt_bits)
+
+    # ── Engine verdict ──
     vc: list[str] = []
     if verdict_label:
         vc.append(str(verdict_label))
@@ -840,11 +846,9 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
     elif is_rejected or is_conflict:
         trade_status_str = "🔴 *REJECTED*"
     elif has_ml_activity:
-        trade_status_str = "⏸️ *NO TRADE*"
+        trade_status_str = "⏸️ *STAND ASIDE*"
     else:
-        # No genuine multi-leg activity this cycle (MULTILEG LLM proposed
-        # nothing and no multi-leg book exists) — do not spam "NO TRADE".
-        trade_status_str = ""
+        trade_status_str = "⏸️ *STAND ASIDE*"
 
     # Format expiry & DTE
     if expiry:
@@ -1145,6 +1149,17 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
                 continue
             for chunk in textwrap.wrap(raw_line, width=38):
                 lines.append(_esc(chunk))
+
+    matrix_shadow = payload.get("matrix_shadow")
+    if matrix_shadow:
+        try:
+            from src.alerts.matrix_alerts import matrix_digest_line
+            m_line = matrix_digest_line(matrix_shadow)
+            if m_line:
+                lines.append("")
+                lines.append(m_line)
+        except Exception:
+            pass
 
     if digest_id is None:
         digest_id = str(uuid.uuid4())[:8]

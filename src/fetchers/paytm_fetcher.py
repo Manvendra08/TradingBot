@@ -299,6 +299,7 @@ class PaytmFetcher(BaseFetcher):
             if not strikes:
                 log.warning("[paytm] no strikes parsed for %s", symbol)
                 return None
+            strikes = self.filter_atm_strikes(strikes, underlying)
 
             return {
                 "symbol": symbol,

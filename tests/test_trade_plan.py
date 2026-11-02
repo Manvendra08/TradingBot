@@ -13,6 +13,9 @@ from datetime import datetime, timezone, timedelta
 from unittest.mock import patch, MagicMock
 
 from src.engine.trade_plan import (
+    calculate_breakeven_level,
+    calculate_trailing_sl,
+    calculate_option_book_stop_target,
     get_atr,
     calculate_buy_sl_target,
     calculate_sell_sl_target,
@@ -219,5 +222,116 @@ class TestConvertUnderlyingSlToPremium:
         sl, tgt = convert_underlying_sl_to_premium(
             0.0, 0.0, 0.0, 200.0, "SELL", "CE"
         )
-        assert sl == 300.0   # 200 * 1.50
+        assert sl == 270.0   # 200 * 1.35 (capped at max 1.35x entry premium)
         assert tgt == 130.0  # 200 * 0.65 (35% time decay)
+
+
+
+# ── Decision Matrix Config-Driven Stops & Targets (Phase 3) ───────────────────
+
+class TestDecisionMatrixStopsTargets:
+    def test_atr_multipliers_from_config(self, monkeypatch):
+        import copy
+        from config import decision_matrix_loader
+        custom_cfg = copy.deepcopy(decision_matrix_loader.DEFAULTS)
+        custom_cfg["stops_targets"]["futures"]["sl_atr_mult"] = 2.5
+        custom_cfg["stops_targets"]["futures"]["target_atr_mult"] = 4.0
+        monkeypatch.setattr("src.engine.trade_plan.load_decision_matrix", lambda sym=None: custom_cfg)
+
+        ctx = {"chart_indicators": {"3h": {"atr_14": 100.0}}}
+        sl_buy, tgt_buy = calculate_buy_sl_target(200.0, 22000.0, ctx)
+        # SL = 22000 - 2.5 * 100 = 21750
+        # Target = 22000 + 4.0 * 100 = 22400
+        assert sl_buy == 21750.0
+        assert tgt_buy == 22400.0
+
+        sl_sell, tgt_sell = calculate_sell_sl_target(200.0, 22000.0, ctx)
+        # SL = 22000 + 2.5 * 100 = 22250
+        # Target = 22000 - 4.0 * 100 = 21600
+        assert sl_sell == 22250.0
+        assert tgt_sell == 21600.0
+
+    def test_breakeven_level(self):
+        be_buy = calculate_breakeven_level(22000.0, "BUY", 100.0)
+        assert be_buy == 22100.0  # entry + 1.0 * ATR
+
+        be_sell = calculate_breakeven_level(22000.0, "SELL", 100.0)
+        assert be_sell == 21900.0  # entry - 1.0 * ATR
+
+    def test_trailing_sl_ratchet(self):
+        # Long position: entry 22000, initial SL 21850, ATR 100, BE trigger 22100
+        # 1. Price below BE trigger (22050): SL remains 21850
+        sl1 = calculate_trailing_sl(22050.0, 22000.0, 21850.0, "BUY", 100.0)
+        assert sl1 == 21850.0
+
+        # 2. Price hits BE trigger (22100): SL moves to at least entry 22000
+        sl2 = calculate_trailing_sl(22100.0, 22000.0, 21850.0, "BUY", 100.0)
+        assert sl2 == 22000.0
+
+        # 3. Price runs to 22300: SL trails to 22300 - 100 = 22200
+        sl3 = calculate_trailing_sl(22300.0, 22000.0, sl2, "BUY", 100.0)
+        assert sl3 == 22200.0
+
+        # 4. Price pulls back to 22150: SL ratchet maintains highest level (22200)
+        sl4 = calculate_trailing_sl(22150.0, 22000.0, sl3, "BUY", 100.0)
+        assert sl4 == 22200.0
+
+    def test_option_book_credit_spread_stops_targets(self):
+        # Bull Put Spread: 200 pt wing, net credit 50 pts, lot_size 25, 2 lots
+        # Max loss points = 200 - 50 = 150 pts
+        # Stop loss ratio = 0.50 -> 75 pts (Rs 75 * 25 * 2 = 3750)
+        # Normal target = 40% of credit -> 20 pts (Rs 20 * 25 * 2 = 1000)
+        res = calculate_option_book_stop_target(
+            strategy_type="BULL_PUT_SPREAD",
+            net_credit=50.0,
+            wing_width=200.0,
+            dte=5,
+            is_expiry_day=False,
+            lot_size=25,
+            total_lots=2,
+        )
+        assert res["stop_loss_points"] == 75.0
+        assert res["stop_loss_rupees"] == 3750.0
+        assert res["target_profit_pct"] == 0.40
+        assert res["target_profit_points"] == 20.0
+        assert res["target_profit_rupees"] == 1000.0
+
+    def test_option_book_strangle_stops_targets(self):
+        # Weekly Strangle (DTE 4): net credit 100 pts -> 1.0x credit SL (100 pts)
+        res_weekly = calculate_option_book_stop_target(
+            strategy_type="SHORT_STRANGLE",
+            net_credit=100.0,
+            dte=4,
+            is_expiry_day=False,
+            lot_size=50,
+            total_lots=1,
+        )
+        assert res_weekly["stop_loss_points"] == 100.0
+        assert res_weekly["stop_loss_rupees"] == 5000.0
+        assert res_weekly["target_profit_pct"] == 0.40
+
+        # Monthly Strangle (DTE 25): net credit 100 pts -> 1.5x credit SL (150 pts)
+        res_monthly = calculate_option_book_stop_target(
+            strategy_type="SHORT_STRANGLE",
+            net_credit=100.0,
+            dte=25,
+            is_expiry_day=False,
+            lot_size=50,
+            total_lots=1,
+        )
+        assert res_monthly["stop_loss_points"] == 150.0
+        assert res_monthly["stop_loss_rupees"] == 7500.0
+
+    def test_option_book_expiry_day_target(self):
+        # Expiry day target is 60% of credit
+        res = calculate_option_book_stop_target(
+            strategy_type="IRON_CONDOR",
+            net_credit=100.0,
+            dte=0,
+            is_expiry_day=True,
+            lot_size=50,
+            total_lots=1,
+        )
+        assert res["target_profit_pct"] == 0.60
+        assert res["target_profit_points"] == 60.0
+        assert res["target_profit_rupees"] == 3000.0

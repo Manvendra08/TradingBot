@@ -87,6 +87,7 @@ class UpstoxFetcher(BaseFetcher):
                         "bid":         float(md.get("bid_price", 0) or 0),
                         "ask":         float(md.get("ask_price", 0) or 0),
                     })
+            strikes = self.filter_atm_strikes(strikes, underlying)
             return {
                 "symbol":           symbol,
                 "underlying_price": underlying,

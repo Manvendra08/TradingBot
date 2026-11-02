@@ -140,7 +140,7 @@ def test_validate_multileg_delta_breach():
     # Single deep ITM short call with delta 0.75 breaches ±0.60 cap even when scaled to 5 lots
     proposal = ParsedExecution(
         is_valid=True,
-        strategy="CUSTOM",
+        strategy="NAKED_CALL",
         action="GO_SHORT",
         legs=[
             {"action": "SELL", "strike": 25000, "option_type": "CE", "entry_premium": 250.0, "ratio": 5, "delta": 0.75},
@@ -159,3 +159,53 @@ def test_validate_multileg_delta_breach():
 
 
 
+
+
+def test_validate_multileg_itm_short_rejected():
+    """Sold legs must not be ITM."""
+    proposal = ParsedExecution(
+        is_valid=True,
+        strategy="BEAR_CALL_SPREAD",
+        action="GO_SHORT",
+        legs=[
+            {"action": "SELL", "strike": 24000, "option_type": "CE", "entry_premium": 600.0, "ratio": 1},
+            {"action": "BUY", "strike": 24200, "option_type": "CE", "entry_premium": 450.0, "ratio": 1},
+        ]
+    )
+    # Spot is 24500, selling 24000 CE is ITM
+    res = validate_multileg_trade(proposal, engine_verdict="BEARISH", underlying=24500.0)
+    assert res.is_valid is False
+    assert "ITM short leg rejected: CE strike 24000" in res.rejection_reason
+
+
+def test_validate_multileg_danger_ceiling_breach():
+    """Short leg delta exceeding active danger ceiling must be rejected."""
+    proposal = ParsedExecution(
+        is_valid=True,
+        strategy="BULL_PUT_SPREAD",
+        action="GO_LONG",
+        legs=[
+            {"action": "SELL", "strike": 24300, "option_type": "PE", "entry_premium": 150.0, "ratio": 1, "delta": 0.45},
+            {"action": "BUY", "strike": 24100, "option_type": "PE", "entry_premium": 60.0, "ratio": 1, "delta": 0.15},
+        ]
+    )
+    # Aggressive ceiling for credit spread short is 0.40; delta 0.45 breaches it
+    res = validate_multileg_trade(proposal, engine_verdict="BULLISH", underlying=24500.0)
+    assert res.is_valid is False
+    assert "Delta danger ceiling breached" in res.rejection_reason
+
+
+def test_validate_multileg_mcx_naked_ban():
+    """MCX symbols must reject naked structures (SHORT_STRANGLE)."""
+    proposal = ParsedExecution(
+        is_valid=True,
+        strategy="SHORT_STRANGLE",
+        action="GO_SHORT",
+        legs=[
+            {"action": "SELL", "strike": 350, "option_type": "CE", "entry_premium": 12.0, "ratio": 1},
+            {"action": "SELL", "strike": 320, "option_type": "PE", "entry_premium": 10.0, "ratio": 1},
+        ]
+    )
+    res = validate_multileg_trade(proposal, engine_verdict="NEUTRAL", underlying=335.0, symbol="NATURALGAS")
+    assert res.is_valid is False
+    assert "Naked options structure 'SHORT_STRANGLE' is prohibited on MCX" in res.rejection_reason

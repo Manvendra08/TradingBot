@@ -371,6 +371,7 @@ class DhanSensexFetcher(BaseFetcher):
             len(parsed_strikes) / 2,
             actual_expiry or "?",
         )
+        parsed_strikes = self.filter_atm_strikes(parsed_strikes, spot)
 
         return {
             "symbol": "SENSEX",

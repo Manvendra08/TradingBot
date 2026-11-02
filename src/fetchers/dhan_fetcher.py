@@ -237,6 +237,7 @@ class DhanFetcher(BaseFetcher):
             return self._fallback_commodity(symbol, "normalise returned empty result")
 
         underlying = _safe_float((oc_data.get("data") or {}).get("sltp"), 0.0)
+        strikes = self.filter_atm_strikes(strikes, underlying)
 
         return {
             "symbol":           symbol,

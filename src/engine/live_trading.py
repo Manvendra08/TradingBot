@@ -509,8 +509,8 @@ def _bg_pending_gtt_placer(
                                 "UPDATE live_trades SET gtt_order_id=NULL WHERE id=? AND gtt_order_id='PLACING'",
                                 (inserted_id,),
                             )
-                    except Exception:
-                        pass
+                    except Exception as revert_err:
+                        log.warning("%s: Failed to revert GTT lock for trade #%s: %s", symbol, inserted_id, revert_err)
                     return
             elif b_status in ("REJECTED", "CANCELLED"):
                 log.info(
@@ -1240,8 +1240,8 @@ def run_live_trading(
                                         "UPDATE live_trades SET gtt_order_id=NULL WHERE id=? AND gtt_order_id='PLACING'",
                                         (current_open_trade["id"],),
                                     )
-                            except Exception:
-                                pass
+                            except Exception as gtt_revert_err:
+                                log.warning("%s: Failed to revert GTT lock on reconciliation for trade #%s: %s", symbol, current_open_trade["id"], gtt_revert_err)
 
                 update_live_trade_entry(
                     current_open_trade["id"],
@@ -1471,6 +1471,8 @@ def run_live_trading(
         "entry_underlying": plan["entry_underlying"],
         "entry_premium": entry_premium,
         "sl_underlying": plan["sl_underlying"],
+        "initial_sl_underlying": plan.get("initial_sl_underlying") or plan["sl_underlying"],
+        "config_version": plan.get("config_version"),
         "sl_premium": plan["sl_premium"],
         "target_underlying": plan["target_underlying"],
         "target_premium": plan["target_premium"],

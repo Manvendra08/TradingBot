@@ -1,0 +1,39 @@
+{
+  "ok": true,
+  "closing_bell": {
+    "items": [
+      {
+        "title": "Nifty closes at 23431",
+        "url": "http://x.com",
+        "description": "Market ended flat",
+        "snippet": "Market ended flat"
+      }
+    ],
+    "count": 1,
+    "error": null
+  },
+  "fii_dii_flows": {
+    "items": [
+      {
+        "title": "Nifty closes at 23431",
+        "url": "http://x.com",
+        "description": "Market ended flat",
+        "snippet": "Market ended flat"
+      }
+    ],
+    "count": 1,
+    "error": null
+  },
+  "macro_news": {
+    "items": [
+      {
+        "title": "Nifty closes at 23431",
+        "url": "http://x.com",
+        "description": "Market ended flat",
+        "snippet": "Market ended flat"
+      }
+    ],
+    "count": 1,
+    "error": null
+  }
+}

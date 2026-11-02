@@ -1,315 +1,121 @@
 # CLAUDE.md
 
-Guidance for Claude Code in this repo.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Strict Graft Rule
+## Strict Tooling & Operational Discipline
 
-- **ALWAYS use Graft wherever applicable**:
-  - Symbol & Architecture Lookup: use `graft ask "<query>"`, `graft callers <symbol>`, or `graft skeleton <file>` for instant symbol, method, and architecture lookups instead of broad greps or reading whole files.
-  - Large Codebase Exploration: run `graft build` if the AST index needs generating or refreshing ($0, local AST).
-  - Blast Radius & Caller Verification: before editing or removing shared APIs, functions, or schemas, use `graft callers <symbol>` to verify all downstream consumers.
-  - Report Graft token savings, total baseline tokens, and actual usage at the end of turns (e.g. `🌱 graft saved ~N / ~T total tokens (X% saved, ~U used) this turn`).
-  - **Graft before any search or read.** Run `graft ask` / `graft skeleton` / `graft callers` first. If no `graft/` index exists, run `graft build` before anything else. Do not use broad Grep, Glob or whole-file reads for symbol or architecture lookups.
-  - **Explore and other subagents must use Graft.** Start every agent brief with the Graft commands to run for its scope, and fall back to Grep or Read only when Graft returns nothing. Name the files or area in the brief.
-
-## Skills & token discipline
-
-- Before any task, check the available skills and invoke every one that applies (for example brainstorming before planning new work, systematic-debugging before fixing a bug, writing-plans before a multi-step change). Do this before any search, read or edit.
-- Name the skill and its purpose before using it.
-- Use subagents only when the work cannot be answered with one targeted Graft query. Each agent re-reads the codebase and costs tokens.
-- Report Graft savings at the end of each turn (existing rule).
-- End every task with this four-line footer, filled in with real values (use "~0" or "none" when nothing applies, and mark estimates with "~"):
+- **STRICT RULE: ALWAYS use Graft for codebase exploration.**
+  - Symbol & Architecture Lookup: Use `graft ask "<query>"`, `graft callers <symbol>`, or `graft skeleton <file>` for instant symbol, method, and architecture lookups instead of broad greps or reading whole files.
+  - Large Codebase Exploration: Run `graft build` if the AST index needs generating or refreshing ($0, local AST).
+  - Blast Radius & Caller Verification: Before editing or removing shared APIs, functions, or schemas, use `graft callers <symbol>` or `graft trace_calls <symbol>` to verify all downstream consumers.
+  - **Graft before any search or read.** Run `graft ask` / `graft skeleton` / `graft callers` first. Do not use broad Grep, Glob, or whole-file reads for symbol or architecture lookups. Subagents must also start with Graft.
+- **Targeted Testing Only:** Avoid running the full `pytest tests/ -v` test suite on routine changes. Always run targeted test files (e.g. `pytest tests/test_broker_gate.py -v`). Full suite takes significant time and exhausts database connection pools.
+- **Windows Shell & Quoting Discipline:** On Windows, never use multi-line bash heredocs (`cat << 'EOF' > file.py`, `python << 'PY_EOF'`) or stdin gymnastics. Use file editing/writing tools directly or run standalone `.py` scripts.
+- **Mandatory Turn Footer:** End every task turn with this four-line footer (report estimates with "~", use "none" if not applicable):
   - `🌱 Graft saved ~N tokens this turn across [areas]`
   - `✂️ Ponytail saved ~N tokens (~N lines avoided) via [what was avoided]`
   - `🛠️ Skills used: [skills actually invoked via the Skill tool]`
   - `📊 Total tokens consumed this turn: ~N tokens`
-- Why: one review run used 600k+ tokens by fanning out Explore agents that searched with grep instead of Graft, and it skipped the planning skills.
 
-## Project
+---
 
-NSEBOT is a local NSE option-chain monitor, signal engine, Telegram digest bot, dashboard app, paper-trading tracker, and live trading executor.
+## Development & Operational Commands
 
-It:
+### Running Bot & Services
+- **Continuous Bot Scheduler:** `python main.py`
+- **Immediate One-Shot Scan:** `python main.py --now`
+- **One-Shot Scan for Specific Symbols:** `python main.py --now --symbols NIFTY BANKNIFTY NATURALGAS`
+- **FastAPI Web Dashboard:** `python dashboard_server.py` (Serves on `http://localhost:8080`)
+  - Cockpit: `/`
+  - Paper Trading: `/paper`
+  - Live Broker Console: `/broker`
+  - Settings & Strategies: `/settings`
+  - Scan Sentinel Diagnostics: `/sentinel`
+  - Ops Agent Health: `/ops`
+- **Emergency Flatten (Close all positions & cancel GTTs):** `python emergency_flat.py`
+- **Decision Matrix Replay / Backtesting:** `python scripts/replay_decision_matrix.py`
+- **Ops Agent Daemon:** `python ops_agent.py`
 
-- fetches option-chain data for watched symbols (NSE indices + MCX commodities)
-- keeps live output limited to ATM +/- 10 strikes
-- detects OI, PCR, IV, price, max-pain, and candle anomalies
-- builds trader-facing Telegram digests with action-oriented AI trade plans
-- auto-opens and manages paper trades from bot intelligence
-- executes live trades via Zerodha Kite API with GTT SL/Target
-- stores scans, alerts, paper trades, and live trades in SQLite
-- serves a FastAPI dashboard plus a paper-trading page
-- syncs broker positions every 5 minutes
+### Testing Commands
+- **Run a single test file:** `pytest tests/test_decision_matrix.py -v`
+- **Run a specific test method:** `pytest tests/test_trade_plan.py -k test_unified_sl_target -v`
+- **Run related tests with pattern:** `pytest tests/test_multileg*.py -v`
+- **Run with stdout enabled:** `pytest tests/test_broker_gate.py -s -v`
 
-## Current runtime
+### Graft Index Commands
+- **Rebuild AST index:** `graft build`
+- **Repository map:** `graft repo_map`
+- **Search symbol or concept:** `graft ask "<query>"`
+- **File API skeleton:** `graft skeleton <file_path>`
+- **Direct & transitive callers:** `graft callers <symbol>` / `graft trace_calls <symbol>`
 
-- Scheduler interval is user-selectable from the dashboard.
-- Available scan frequencies: `5m`, `15m`, `30m`, `1H`, `3H`, `1D`.
-- `python main.py` runs the bot, `python main.py --now` runs a one-shot scan.
-- `python dashboard_server.py` serves the dashboard.
-- Paper trading page: `http://localhost:8080/paper`.
-- `python main.py --dashboard` prints the FastAPI dashboard command (Streamlit legacy removed).
+---
 
-## LLM Provider Stack
+## High-Level Architecture & Core Flow
 
-Purpose-based routing — five separate pipelines (`live_verdict`, `eod_review`, `formatting`, `sentinel_diagnostic`, `eia_analysis`), not one shared stack. Source: `src/engine/llm_enrichment.py` `FREE_MODEL_PIPELINE` assembly.
+### 1. Central Scan Flow
+```
+main.py -> scheduler (job_runner.py) -> pipeline.py -> fetchers (router.py) ->
+anomaly_detector.py -> intelligence.py + decision_matrix.py -> llm_enrichment.py ->
+strategy_registry.py -> paper_trading.py / live_trading.py -> alerts/digest.py ->
+telegram_dispatcher.py
+```
 
-**OmniRouter group** (all-purpose, primary in 4/5 pipelines) — local proxy on `localhost:20128` (`OMNIROUTER_BASE_URL`), `timeout: 60s`, `max_tokens_override: 4096` (live) / `2048` (sentinel). Six models:
-- `Claude-Models` (combo)
-- `Claude/Antigravity` (Antigravity direct)
-- `claude/Free`
-- `cx/gpt-5.5` (GPT 5.5 CX)
-- `kr/glm-5` (GLM 5 KR)
-- `kr/claude-haiku-4.5` (Claude Haiku 4.5 KR)
+### 2. Timeframe Separation Rules
+- **3H Candles:** Entry timing **ONLY** (breakout/breakdown confirmation with OI trend). Never used for exit timing or trend generation.
+- **1H Candles:** Exit timing **ONLY** (strategy exit trigger). Never used for entries or trend generation.
+- 3H and 1H candles are **strictly decoupled** and never cross-checked against each other.
 
-**OmniRouter Sentinel group** (`sentinel_diagnostic` only) — same primary six plus two sentinel-exclusive: `kr/deepseek-3.2` (DeepSeek 3.2 KR), `trk/qwen/qwen3.8-max-free` (Qwen 3.8 Max Free TRK).
+### 3. Option Chain Ingestion & Strike Filtering
+- Dynamic strike window: Strictly limited to **ATM +/- 10 strikes** across NSE indices (`NIFTY`, `BANKNIFTY`, `FINNIFTY`, `MIDCPNIFTY`, `SENSEX`) and MCX commodities (`NATURALGAS`, `CRUDEOIL`, `GOLD`, `SILVER`).
+- Ingestion routes through `src/fetchers/router.py` (NSE Python API, Shoonya Noren API, NiftyTrader fallback, Dhan built-up data for MCX).
 
-### Pipeline order (top-to-bottom = first-to-last try)
+### 4. Deterministic Decision Matrix & Exit Evaluator
+- **Config Loader (`config/decision_matrix_loader.py`):** Loads `config/decision_matrix.json` with thread-safe hot-reloading and fail-closed fallback to code defaults (`DEFAULTS`).
+- **Decision Matrix Engine (`src/engine/decision_matrix.py`):**
+  - Evaluates IV percentile (`atm_iv_percentile`) and assigns volatility buckets (`vol_bucket`).
+  - Selects optimal options structures (Iron Condor, Short Strangle, Short Straddle, Bull/Bear Spreads) with exact delta bands (`delta_band`).
+  - Enforces MCX strike liquidity guards (`is_mcx_strike_liquid`) and NYMEX trend alignment (`nymex_trend`).
+  - Enforces churn guards (`check_churn_guards`) to prevent over-trading in choppy regimes.
+- **Exit Evaluator (`src/engine/exit_evaluator.py`):**
+  - Priority-based exit decision engine (`evaluate_exit_priority`) checking hard stops, delta triggers, profit targets, time decay, and market-close bounds.
+  - Safe exit leg ordering (`order_legs_for_exit`): Closes short legs first to immediately release SPAN margin and eliminate naked risk before closing long hedges.
+  - Resolves effective stop-loss and target points combining rule-based math and AI suggestions (`resolve_effective_stop_and_target`).
 
-- **`live_verdict`** (per-scan trade verdict/exit advice) — symbol-aware:
-  - **MCX** (NATURALGAS/CRUDEOIL/GOLD/SILVER): OmniRouter → GitHub Models → Groq → Gemini SDK → OpenCode Zen → AnyAPI Free → Bedrock Mantle → NVIDIA NIM → Bedrock SDK → OpenRouter (GPT-OSS 120B Free) → OpenRouter (free pool) → SambaNova
-  - **NSE/BSE indices** (NIFTY/BANKNIFTY/SENSEX/FINNIFTY): OmniRouter → GitHub Models → Groq → Gemini SDK → OpenCode Zen → NVIDIA NIM → Bedrock SDK → OpenRouter (free pool)
-- **`eod_review`** (strategy optimization, end of day): OmniRouter → GitHub Models (EOD) → Groq (EOD) → Gemini SDK → OpenCode Zen (EOD) → Bedrock Mantle → NVIDIA NIM (EOD) → OpenRouter (Nemotron 70B Free)
-- **`formatting`**: OmniRouter → GitHub Models (formatting) → Groq (formatting) → Gemini SDK → OpenCode Zen (formatting) → Bedrock Mantle
-- **`sentinel_diagnostic`** (Scan Sentinel agent): OmniRouter Sentinel → Groq (sentinel) → Gemini SDK (sentinel) → GitHub Models (sentinel) → OpenCode Zen (sentinel)
-- **`eia_analysis`**: OmniRouter → Groq (EIA) → OpenCode Zen (EIA) → GitHub Models (EIA) → Gemini SDK
+### 5. Engine-Aligned LLM Enrichment (v3.0)
+- **Deterministic OI Authority:** The OI engine (`intelligence.py._price_oi_verdict`) holds primary authority over trade direction.
+- **Strict Guardrail (`_enforce_engine_alignment`):** The LLM receives the `ENGINE DECISION` and may enrich execution parameters or downgrade to `NO_TRADE`. Direction flips (e.g. `GO_LONG` on a `BEARISH` engine verdict) are deterministically blocked and converted to `NO_TRADE`.
+- **Position-Aware Bypass:** If an open position exists for a symbol, entry LLM evaluation is bypassed; the exit advisor runs instead.
+- **Purpose-Routed Multi-Tier Failover:** Managed via `src/engine/llm_enrichment.py` across five pipelines (`live_verdict`, `eod_review`, `formatting`, `sentinel_diagnostic`, `eia_analysis`). Primary tier routes to local OmniRouter (`localhost:20128`), failing over sequentially through GitHub Models, Groq, Gemini SDK, OpenCode Zen, NVIDIA NIM, Bedrock SDK, and OpenRouter.
 
-### Provider model rosters
+### 6. Strategy Registry & Execution Engine
+- **Strategy Registry (`src/engine/strategy_registry.py`):** Dispatches active strategies per symbol. Hot-reloaded without restart via `config/runtime_config.py` and dashboard settings.
+  - **CORE:** Directional momentum buying (BUY CE/PE).
+  - **TIMEFRAME:** 3H breakout entries, 1H crossover exits.
+  - **TFSS (Trend-Following Short Strangle):** Multi-tranche premium selling (up to 6 legs) tracked by `leg_group_id` with dynamic lot scaling (`50% -> 30% -> 20%`).
+  - **MULTILEG:** Multi-leg short options selling (Iron Condor, Strangle, Straddle, Spreads, Jade Lizard).
+- **Centralized Broker Authorization Gate (`src/engine/broker_gate.py`):**
+  - All live Kite executions (entry, exit, adjust, reconcile) route through `authorize_broker_execution`.
+  - Strictly fail-closed: Enforces shadow mode, broker disabled switch, emergency pause, market open hours, and symbol whitelists.
+  - Paper trading operates independently even when broker execution is disabled.
+- **Atomic Multi-Leg Execution (`src/engine/multileg_live_trading.py`):**
+  - Places live legs sequentially, confirming order fills via `confirm_order_fill()`.
+  - If any leg fails or rejects, `_rollback_placed_legs()` immediately flattens open legs with opposite market orders.
+- **Unified Trade Plan (`src/engine/trade_plan.py`):**
+  - Single source of truth for ATR-based SL/Target calculations across both paper and live trading. Never duplicate SL/Target logic in individual strategies.
 
-- **OpenCode Zen (free)** — `nemotron-3.5-lightning-free`, `laguna-s-2.1-free`, `hy3-free`, `x-preview-f-free` (EOD/formatting/sentinel only), `nemotron-3-ultra-free`. `timeout: 15s` (live) / `20-25s` (EOD) / `6s` (formatting/sentinel).
-- **Groq** — `openai/gpt-oss-120b`, `qwen/qwen3.8-27b` (live only), `qwen/qwen3.6-27b`, `openai/gpt-oss-20b`, `groq/compound` (live only), `llama-3.3-70b-versatile` (EIA only). `max_tokens_override: 1024-2048` per group.
-- **GitHub Models** — `gpt-4o-mini`, `Llama-3.3-70B-Instruct`. Token source: `GITHUB_TOKEN` env or `gh auth token` subprocess fallback.
-- **Gemini SDK** — `gemini-2.5-flash`, `gemini-2.0-flash`. Requires `google-genai` package.
-- **NVIDIA NIM** (live + EOD) — `nvidia/nemotron-3-super-120b-a12b`, `deepseek-ai/deepseek-v4-flash-0731`, `meta/llama-3.3-70b-instruct`, `minimaxai/minimax-m2.7`, `nvidia/nemotron-3-ultra-550b-a55b`. `timeout: 8s`.
-- **Bedrock SDK** (live only, NSE/MCX) — `zai.glm-5`, `zai.glm-4.7-flash`, `minimax.minimax-m2.5`, `minimax.minimax-m2`, `nvidia.nemotron-super-3-120b`, `nvidia.nemotron-nano-12b-v2`, `qwen.qwen3-32b-v1:0`, `meta.llama3-3-70b-instruct-v1:0`, `mistral.mistral-7b-instruct-v0:2`.
-- **Bedrock Mantle** (EOD/formatting/MCX) — `zai.glm-5`, `deepseek.v3.2`, `deepseek.v3.1`, `qwen.qwen3-235b-a22b-2507`, `qwen.qwen3-coder-480b-a35b-instruct`, `qwen.qwen3-32b`, `mistral.mistral-large-3-675b-instruct`.
-- **AnyAPI Free (MCX only)** — `nvidia/nemotron-3-ultra-550b-a55b:free`, `google/gemma-4-26b-a4b-it:free`, `nvidia/nemotron-3-nano-30b-a3b:free`, `poolside/laguna-m.1:free`, `nvidia/nemotron-nano-12b-v2-vl:free`. `timeout: 15s`.
-- **OpenRouter (live MCX+NSE)** — `google/gemini-2.0-flash-exp:free`, `meta-llama/llama-3.1-8b-instruct:free`, `mistralai/mistral-small-24b-instruct-2501:free`, plus GPT-OSS 120B Free (MCX only).
-- **SambaNova (MCX only, last resort)** — `DeepSeek-V3.1`, `gpt-oss-120b` (`max_tokens_override: 4096`), `Meta-Llama-3.3-70B-Instruct`.
+### 7. Provenance & Persistence
+- **Immutable Scan Snapshots (`src/models/scan_snapshot.py`):** Context frozen at scan time with SHA-256 hash digests and `MappingProxyType` deep immutability.
+- **Database Schema (`src/models/schema.py`):** SQLite running in WAL mode. Migrations M101–M113 link all paper, live, and multi-leg trades to exact `snapshot_id` provenance.
+- **Fail-Closed Runtime Configuration (`config/runtime_config.py`):** Atomic file persistence to `data/runtime_config.json` with safe fallback defaults (`get_fail_closed_defaults`).
 
-### Cross-cutting pipeline behavior
-- Per-purpose `max_tokens` via `LLM_MAX_TOKENS_LIVE` / `_EOD` / `_FORMATTING` in `config/settings.py`.
-- Default timeout: 12s per provider attempt (hard cap so ≥2 models fit in the 75s per-call budget)
-- JSON parsing is tolerant: strips markdown fences, grabs `{...}` from prose, removes control chars
-- Array-wrapped JSON responses are automatically unwrapped
-- Per-symbol verdict cache with DTE-aware TTL (5 min at expiry, 10 min ≤3 DTE, 30 min otherwise) + price/premium-move invalidation
-- Circuit breaker: pauses all LLM calls for 5 min after 3 consecutive total failures
-- Host-level breaker: 2 read timeouts on the same host = 180s host cooldown (skips every provider on that host, all groups)
-- Per-group read-timeout tally is **per-thread** (`threading.local`) — concurrent symbol enrichments don't share cooldown counters
-- Provider-level cooldowns: 402 → 24h, 429 → 30s-3600s (TPD/Antigravity adjusted), 413/502/503/504 → 60s, 400 → 60s, parse error → 60s, read timeout → 20s + host breaker, generic 500 → 10m
-- System prompt explicitly forbids inventing values ("never invent a level, date, or figure") and requires JSON-only output with no markdown fences
-- `OMNIROUTER_API_KEY`/`OPENCODE_API_KEY`/`ANTIGRAVITY_REFRESH_TOKEN` default to a sentinel string when unset (treated as configured but will fail at request — never silently skip)
-- News headlines are sanitized via `_sanitize_news_text()` (strips control chars + 9 prompt-injection patterns) before reaching the prompt
+---
 
-## LLM Schema (v3.0 — Engine-Aligned)
+## Critical Invariants & Constraints
 
-The LLM returns structured trade plans with these fields:
-- `action`: GO_LONG / GO_SHORT / NO_TRADE
-- `confidence`: 0-100, derived from OI Δ + price action + news agreement (3-source scale)
-- `instrument`: Exact contract (e.g., "NIFTY 24500 CE 27Jun") — symbol and expiry overridden from scan context
-- `entry_trigger`: Specific entry condition
-- `stop_loss`, `target_1`, `target_2`: Concrete levels
-- `risk_reward`, `thesis`, `invalidation`, `risk_rating`, `catalyst`
-
-**Engine-alignment architecture (v3.0):**
-- The OI engine (`intelligence.py._price_oi_verdict`) decides direction — the LLM enriches execution detail only.
-- Prompt injects `ENGINE DECISION` block (canonical pattern + rationale) and OI semantics table before asking for output.
-- LLM may downgrade to NO_TRADE but may NOT flip direction (GO_LONG on a BEARISH engine call is blocked).
-- `_enforce_engine_alignment()` post-processes every LLM response — direction flips are forced to NO_TRADE/HIGH regardless of model.
-- Entry advisor is skipped entirely when a position is already open for the symbol; exit advisor runs instead.
-
-**Chart role (strict separation — corrected, was previously documented as dual-timeframe cross-check):**
-- 3H candles are used ONLY for entry timing via breakout/breakdown confirmation. Never for trend/signal generation.
-- 1H candles are used ONLY for exit timing (strategy exit trigger). Never for trend/signals or entries.
-- 3H and 1H are NOT cross-checked against each other — independent, non-overlapping functions.
-- Chart candles never override OI engine direction; they carry zero weight in the confidence derivation.
-
-AI decision modes (`live_ai_decision_mode` in runtime_config.json): `advisory` (info only), `boost_only` (promote blocked → TRIGGERED_EXPERIMENTAL), `full` (can also veto).
-**Current default: `full`** (set via `live_ai_decision_mode` in runtime_config.json). NOTE: `settings.AI_DECISION_MODE` / env `AI_DECISION_MODE` (default `empirical`) is legacy and NOT used by the live decision path.
-
-## Trade Planning Architecture
-
-- **Unified module:** `src/engine/trade_plan.py` — single source of truth for SL/Target, premium resolution, verdict parsing
-- **ATR-based SL/Target:** Uses ATR(14) × 1.5 for SL, × 2.0 for Target on underlying
-- **Premium staleness guard:** DB fallback rejects snapshots older than 15 minutes
-- **Breakout buffer:** `max(ATR_14 * 0.5, underlying * 0.003)` — ATR-proportional, not fixed 0.1%
-- **MCX liquidity check:** Options used only if volume ≥ 500 AND OI ≥ 2000; otherwise FUT
-
-## Risk & Decision Engine
-
-- **Chart conflict — OI trades:** NO penalty, NO hard block. `chart_conflict` flag preserved for display and exit-timing context only. A 1H candle opposing a completed 3H trend is a potential entry point. Applies to core OI-based trades only.
-- **Chart conflict — Timeframe strategy:** Timeframe strategy handles its own conflict checks independently (unchanged).
-- **MCX confidence floor:** NATURALGAS/CRUDEOIL/GOLD/SILVER require `confidence >= 72` (vs 70 for NSE). Thin OI → higher conviction bar. Configurable via `MCX_MIN_CONFIDENCE` in `settings.py`.
-- **Historical OI trend:** Last 10 scans with PCR trend, OI trend, price impact analysis fed to LLM.
-- **Regime detector:** Time-weighted decay using `√(index_w × time_w)` — old scans have lower weight.
-- **Live reversal guard:** 3 guards matching paper (confidence ≥ 75, entry_quality ≥ 60, trend_alignment ≤ 40).
-- **Paper premium monitoring:** `monitor_paper_trades()` checks both underlying AND premium SL/Target.
-- **Signal key dedup:** Live and paper use same format `{symbol}:{option_type}:{strike}:{date}`.
-- **CLOSE_EARLY safety:** Skipped if current LTP unavailable (no zero-P&L exits).
-- **SELL margin multiplier:** 12× (increased from 10× to match actual SPAN+exposure).
-
-## Strategy Registry (Strategy × Symbol granularity)
-
-Three strategies, each independently enable/disable-able globally and per-symbol via the dashboard Settings → Strategies tab. DB (`runtime_config.json`, via `config/runtime_config.py`) is source of truth; `strategy_registry.py`'s `DEFAULT_STRATEGIES` are startup defaults only.
-
-| Strategy | Entry signal | Exit signal | Side | Default symbols |
-|---|---|---|---|---|
-| **CORE** | OI verdict + confidence gate | SL/Target/Reversal/Dead Trade | BUY CE/PE (long premium) | All, enabled |
-| **TIMEFRAME** | 3H candle breakout + OI diff | 1H candle crossover | BUY CE/PE (long premium) | All, enabled |
-| **TFSS** (Trend-Following Short Strangle) | Persisted OI trend + delta gate | Delta stop / ATR / DTE | SELL CE/PE (short premium) | Index only (NIFTY/BANKNIFTY/FINNIFTY/SENSEX); disabled by default, MCX excluded |
-| **MULTILEG** (Multi-Leg Short Options) | LLM decides strategy + strikes | LLM decides exit/adjustment | SELL multi-leg (short premium) | NSE indices only (NIFTY/BANKNIFTY/FINNIFTY/SENSEX) |
-
-- `src/engine/strategy_registry.py` — `active_strategies_for(symbol)` resolves which strategies run this scan cycle (strategy enabled → symbol not explicitly disabled → runner registered). `get_runner()`, `get_params()`, `get_ai_mode()`.
-- `pipeline.py` dispatches through the registry (`active_strategies_for` + `get_runner`), not hardcoded `run_paper_trading`/`run_timeframe_strategy` calls. Precedence preserved: CORE report wins ties over TIMEFRAME (first EXECUTED/CLOSED report in registry order).
-- **TFSS is implemented for paper trading** using multi-leg book tracking (`leg_group_id`). It groups up to 2 sides × 3 tranches (6 legs total) per symbol-day, scaling lot sizes dynamically (`50% -> 30% -> 20%`) via `TRANCHE_SEQUENCE`. Risk Engine checks combined margin (<₹600k), combined net delta (<0.60), and max tranches. Delta-stop exits close the tested side selectively (prioritized via `EXIT_PRIORITY_MAP`), leaving the opposite untested side open.
-- Disabling a strategy mid-trade blocks new entries only; open positions run to their own SL/target (no forced close).
-- **MULTILEG** — LLM-driven multi-leg premium selling. The LLM acts as an experienced options seller, deciding strategy type (IRON_CONDOR/SHORT_STRANGLE/SHORT_STRADDLE/BEAR_CALL_SPREAD/BULL_PUT_SPREAD/JADE_LIZARD/CUSTOM), strikes, exits, and adjustments. All legs are SELL (short premium). Bot enforces hard risk limits: delta cap (0.60), margin cap (₹500K), max 6 legs, conflict detection. ai_mode controls execution: advisory (observe) → boost (promote blocked) → full (auto-execute). Files: `config/multileg_strategies.py`, `src/engine/multileg_*.py`. Subsumes TFSS — MULTILEG can choose SHORT_STRANGLE when trend conditions warrant.
-
-## Live Trading
-
-- **Timeframe strategy:** Fully implemented (not a stub) — 3H breakout entries, 1H crossover exits
-- **Centralized Broker Authorization Gate:** All live Kite order executions (entry, exit, adjustment, reconciliation) are strictly gated through `src/engine/broker_gate.py` (`authorize_broker_execution`), enforcing fail-closed guardrails (shadow mode, broker disabled, trading paused, market open hours)
-- **Position sync:** `sync_direct_kite_positions()` runs every 5 min + on every scan cycle
-- **Exit monitoring:** `_check_live_exits()` runs every 2 min for premium-poll trades
-- **SL/Target unified:** Same ATR-based calculation as paper via `trade_plan.py`
-- **AI Exit Auto-Exits are Enabled:** Autonomous AI exits (`CLOSED_AI_EXIT`) and leg adjustments (`ADJUST`) are fully enabled when `live_ai_exit_advisor_enabled` is true in `runtime_config.json`
-- **Multi-Leg Sequential Execution & Atomic Rollback:** Places orders sequentially, confirms order status via `confirm_order_fill()`, and automatically rolls back placed legs with opposite market orders via `_rollback_placed_legs()` upon partial fill failure
-- **Snapshot Provenance:** Live trades capture immutable `snapshot_id` referencing the exact scan state at execution time
-
-## Current behavior
-
-- Telegram digest includes action-oriented AI trade plan with specific levels
-- Duplicate chart blocks removed from Telegram messages
-- Candle values shown are last closed candles only
-- MCX `NATURALGAS` and `CRUDEOIL` candles sourced from Dhan built-up data
-- `Delta prev scan` compares against actual previous scan
-- Telegram send has timeout retry plus HTTP fallback
-- Paper trades auto-close on strong opposite verdicts
-- Transaction costs (STT + brokerage) applied in paper P&L
-
-## Intelligence routing
-
-- `NATURALGAS`: news-only intelligence
-- `NIFTY` / `BANKNIFTY`: heatmap-only intelligence
-- No cross-mixing between commodity news and index heatmap context
-- EIA report awareness built into macro context (CRUDEOIL Wed 8PM, NATURALGAS Thu 8:30PM IST)
-
-## Hard constraints
-
-- Do not reintroduce Upstox, Paytm, or NSE commodity chain routes.
-- Keep option-chain fetches within ATM +/- 10 strikes.
-- Keep Telegram text clean, short, and trader-readable.
-- Keep docs aligned with the FastAPI dashboard, not old Streamlit references.
-- All SL/Target changes must go through `trade_plan.py` — never duplicate logic.
-- Streamlit dashboard (`src/dashboard/app.py`) deleted — use `dashboard_server.py` only.
-- Way2Wealth news source (`_fetch_way2wealth_commentary`) removed — ICICIDirect + NewsAPI only for NIFTY/BANKNIFTY news.
-- Vendored `src/tvdatafeed/` deleted — use pip-installed `tvdatafeed` package only.
-- `APScheduler` and `dhanhq` removed from `requirements.txt` — unused.
-
-## Main flow
-
-`main.py -> scheduler -> pipeline -> fetch -> detect -> digest -> telegram -> paper/live trade`
-
-## Important modules
-
-- `src/fetchers/router.py` — source routing and ATM strike filtering
-- `src/fetchers/chart_fetcher.py` — candle sourcing and aggregation
-- `src/fetchers/news_fetcher.py` — news sentiment (ICICIDirect h4 headlines + NewsAPI for indices; TradingView for MCX commodities; Way2Wealth removed)
-- `src/engine/pipeline.py` — orchestrates the scan; dispatches strategies via `strategy_registry.active_strategies_for()`; skips LLM entry advisor when position open
-- `src/engine/strategy_registry.py` — Strategy × Symbol enable/disable resolution (CORE/TIMEFRAME/TFSS/MULTILEG); DB-backed via `runtime_config.json`, defaults in `DEFAULT_STRATEGIES`
-- `src/engine/multileg_strategy.py` — Multi-leg validation, Greeks, margin, risk profile, scoring, conflicts
-- `src/engine/multileg_llm_prompt.py` — Full option chain + exit prompts for LLM
-- `src/engine/multileg_llm_schema.py` — Pydantic models for LLM output validation
-- `src/engine/multileg_paper_trading.py` — Paper trading runner with ai_mode integration
-- `src/engine/multileg_live_trading.py` — Live trading with Kite broker execution + rollback
-- `config/multileg_strategies.py` — Strategy types, risk caps, constraints
-- `src/engine/anomaly_detector.py` — computes alerts and scan context
-- `src/engine/intelligence.py` — verdict, trend, trade guidance; chart_conflict flag for display only (no penalty)
-- `src/engine/trade_plan.py` — **unified** SL/Target, premium resolution, verdict parsing
-- `src/engine/trade_decision.py` — trade decision with AI bias mapping; MCX confidence floor; chart conflict noted (no penalty)
-- `src/engine/llm_enrichment.py` — LLM v3.0 engine-aligned schema; `_enforce_engine_alignment()`; `_extract_json()` tolerant parser; direction-explicit exit prompt
-- `src/engine/live_trading.py` — live execution with timeframe strategy, reversal guards, position sync
-- `src/engine/paper_trading.py` — paper trade lifecycle with premium monitoring
-- `src/engine/regime_detector.py` — time-weighted regime detection
-- `src/engine/capital_allocator.py` — position sizing with 12× SELL margin
-- `src/engine/verdict_sets.py` — single source of truth for OI + LLM verdict vocabularies (both sets unified)
-- `src/alerts/digest.py` — Telegram builder; HOLDING line shows position age; 1H/3H diverge = entry timing note
-- `src/alerts/telegram_dispatcher.py` — Telegram delivery and retries
-- `src/engine/broker_gate.py` — Centralized fail-closed broker authorization gate (`authorize_broker_execution`)
-- `src/engine/execution_parser.py` — Strict LLM multi-leg proposal parser (`parse_llm_execution`)
-- `src/engine/multileg_validator.py` — Pre-flight engine alignment and risk validator (`validate_multileg_trade`)
-- `src/models/scan_snapshot.py` — Frozen immutable scan context snapshots & SHA-256 data hashing
-- `config/runtime_config.py` — Fail-closed runtime configuration loader with atomic file persistence
-- `src/models/schema.py` — SQLite tables, migrations (M101–M113), and helpers (transaction costs applied)
-- `src/scheduler/job_runner.py` — scheduler loop, live exit monitoring, position sync timer
-- `dashboard_server.py` — FastAPI dashboard API and pages
-- `config/settings.py` — `MCX_MIN_CONFIDENCE=72`, `MCX_SYMBOLS` (NOTE: `AI_DECISION_MODE` here is legacy/unused; live mode = `live_ai_decision_mode` in runtime_config.json, currently `full`)
-- `config/holidays.py` — 2026 Indian market holiday calendar (NSE & MCX)
-
-## Testing
-
-Run all tests: `pytest tests/ -v`
-
-Key test files:
-- `tests/test_broker_gate.py` - centralized broker authorization gate tests
-- `tests/test_runtime_config_failclosed.py` - fail-closed configuration fallback tests
-- `tests/test_scan_snapshot.py` - immutable snapshot integrity and hashing tests
-- `tests/test_execution_parser.py` - strict LLM proposal parsing and aliasing tests
-- `tests/test_multileg_validator.py` - canonical verdict direction and margin limit tests
-- `tests/test_trade_plan.py` - unified trade plan module (C4)
-- `tests/test_llm_schema_v2.py` - new LLM schema, historical OI, action→bias mapping
-- `tests/test_audit_fixes.py` - C1, C3, C5, H1, H4, M1-M5 regression tests
-- `tests/test_core_engine_coverage.py` - regime, entry quality, risk, trend, trade decision
-- `tests/test_live_trading_p0.py` - live trading critical paths
-- `tests/test_timeframe_strategy.py` - timeframe strategy entries/exits/pyramiding
-
-## Next session context
-
-- Watch for `[llm] engine/LLM direction conflict` log lines — indicates model still attempting to flip; B2 guard is catching it correctly.
-- Watch for `[llm] ... _extract_json` parse failures — should be eliminated; if still occurring, check which provider and model.
-- Confirm exit advisor runs when position open, entry advisor does NOT (pipeline log: "open position exists — skipping LLM entry verdict").
-- Verify `live_ai_decision_mode` is active (runtime_config.json, currently `full`): log line `AI verdict — bias=X conf=Y% … (mode=<live_ai_decision_mode>)`. Note: `settings.AI_DECISION_MODE` is legacy/unused.
-- Watch `MCX_MIN_CONFIDENCE=72` blocking low-conviction NATURALGAS/CRUDEOIL setups (log: "Confidence X% below MCX threshold 72%").
-- Verify candles are still last-closed after any fetcher changes.
-- Keep `Delta prev scan` using actual prior scan data.
-- Validate dashboard and Telegram text after edits.
-- Preserve symbol segregation in intelligence (NATURALGAS=news-only, NIFTY/BANKNIFTY=heatmap-only).
-- All trade plan changes must go through `trade_plan.py`.
-- `AI_INTELLIGENCE_ROADMAP_v3.0.md` is the active ML roadmap — Phase 0 (feature persistence migration) is the current blocker before any ML training.
-- **Strategy Registry:** toggling a strategy/symbol in Settings → Strategies is hot-reload (no restart) — confirm by checking `pipeline.py` log line showing which strategy_ids dispatched for a symbol after a settings save.
-- **TFSS runner not built yet.** Do not register a `run_tfss` callable in `strategy_registry._get_runners()` until it exists and has been reviewed against `Trend_Following_Short_Strangle_FRS_v1.1.md` — registering an unbuilt/unreviewed callable will crash dispatch or execute an unvalidated short-strangle strategy with real risk parameters.
-- **Update KNOWLEDGE_BASE.md**: Update `data/sentinel/KNOWLEDGE_BASE.md` only for **major changes/fixes** in the app or when changes are relevant to **Sentinel scan diagnostics**. Do not update for routine architecture/pipeline changes.
-- **ML Predictor Quality Gate & Mode**: Realignment set to `ml_predictor_mode: "shadow"` in `data/runtime_config.json`. The sample qualification threshold for live activation is calibrated to `MIN_SAMPLES_FOR_LIVE = 250` (samples > 200, CV AUC > 0.68). Multi-leg trade closures automatically trigger incremental retraining.
-- **Natural Gas EIA Macro Stance Dynamic Override**: While weekly EIA stance (`BULLISH_TIGHTENING` / `BEARISH_LOOSENING`) sets initial macro orientation, real-time NYMEX 1H trend alignment and decisive OI buildup patterns (`Call Writing`, `Short Buildup`) override stale EIA bias to permit short entries when price action dictates.
-- **Pipeline Shadow Trading Decoupling**: Fixed `pipeline.py` gating to ensure `run_live_trading()` is invoked under `live_shadow_mode=True` even when physical Kite broker execution is disabled (`is_broker_trade_enabled() == False`).
-- **Multi-Leg Risk Profile & Stoploss Realignment**: Fixed `max_loss` calculation for undefined-risk short straddles/strangles to reference defined strategy stop-loss rather than rigid `underlying * 0.5`, preventing artificial trade rejection in `entry_quality.py` and `multileg_strategy.py`.
-- **NiftyTrader Fetcher Fallback**: Added `src/fetchers/niftytrader_fetcher.py` and wired into `router.py` fallback hierarchy for index option chains.
-- **Shoonya Fetcher Threading Resilience**: Hardened `_bulk_get_quotes` against concurrent shutdown and interpreter cleanup races.
-
-### Recent Engine & Architecture Enhancements
-
-- **Natural Gas EIA Macro Override:** Updated `src/engine/ng_momentum_strategy.py`, `strategy_registry.py`, and `multileg_llm_prompt.py` to allow intraday price breakdown and OI conviction to override weekly EIA stance.
-- **Shadow Mode Pipeline Execution Unblocked:** Refactored `src/engine/pipeline.py` execution guards so shadow live trading executes cleanly without requiring live broker order placement permissions.
-- **ML Predictor Sample Gate Calibration:** Lowered `MIN_SAMPLES_FOR_LIVE` from 300 to 250 in `src/intelligence/ml_predictor.py`, connected multi-leg closures (`close_book()` in `src/models/schema.py`) to retraining triggers, and set runtime default to shadow mode.
-- **Multi-Leg Quality & Risk Profiling Overhaul:** Replaced synthetic `underlying * 0.5` max loss cap in `multileg_strategy.py` and `entry_quality.py` with dynamic stoploss-anchored risk profiling, preventing erroneous rejection of valid short strangles.
-- **NiftyTrader Fetcher Integration:** Implemented `src/fetchers/niftytrader_fetcher.py` and wired secondary fallback routing into `src/fetchers/router.py`.
-- **Shoonya Concurrency Fix:** Hardened `shoonya_fetcher.py` bulk quotes execution to handle shutdown state safely without uncaught futures exceptions.
-
-### Changes in this session
-
-- **Streamlit removed:** `src/dashboard/app.py` deleted; unused transitive deps (pydeck, altair, blinker, toml, rich, watchdog, GitPython) uninstalled.
-- **Way2Wealth removed:** `_fetch_way2wealth_commentary()` deleted from `news_fetcher.py` — ICICIDirect + NewsAPI only for NIFTY/BANKNIFTY.
-- **Vendored tvdatafeed removed:** `src/tvdatafeed/` deleted — project uses pip-installed `tvdatafeed` only.
-- **Package audit:** ~877 MB of unused packages uninstalled (scipy, llvmlite, pyarrow, pandas, Twisted, numba, autobahn, Pygments, setuptools, narwhals, curl_cffi, APScheduler, dhanhq + Twisted orphans).
-- **requirements.txt:** Stripped `APScheduler` and `dhanhq` (unused).
-- **Help text:** `main.py --dashboard` now shows FastAPI command, not Streamlit.
-- **Legend cleanup:** `docs/README.md` dashboard command updated.
-- **TFSS Multi-Leg Strangle Book:** Added `leg_group_id` and `tranche_index` fields to `paper_trades` table schema. Implemented book-level risk limits (max 6 tranches, total margin <= ₹600k, net delta <= 0.60), tranche scaling (`50% -> 30% -> 20%`), and selective tested-side exits based on `HARD_STOP_DELTA (0.35)` and `EXIT_PRIORITY_MAP`.
-- **Autonomous AI Exits & Adjustments Enabled:** Autonomous multi-leg exits (`CLOSED_AI_EXIT`) and adjustments (`ADJUST`) are fully enabled when `live_ai_exit_advisor_enabled` is true (default in `runtime_config.json`).
-- **Dashboard Broker Console Settings Fix:** Resolved `SyntaxError: Unexpected token 'I'` when updating Shadow Mode from the dashboard by using write-enabled connection `get_conn()` instead of read-only `_db()`.
-- **Centralized Fail-Closed Broker Gate:** Built `src/engine/broker_gate.py` to authorize live Kite orders fail-closed (shadow mode, broker disabled, trading paused, market open hours) while decoupling paper lot sizing.
-- **Fail-Closed Runtime Configuration:** Hardened `config/runtime_config.py` with `get_fail_closed_defaults()`, schema validation (`validate_config_dict`), and atomic PID/thread-safe file persistence.
-- **Frozen Immutable Scan Snapshots:** Built `src/models/scan_snapshot.py` (`ScanSnapshot`) with `MappingProxyType` deep immutability and SHA-256 data hashing.
-- **Database Schema Provenance (M111–M113):** Added SQLite migrations `M111_add_snapshot_id_to_paper_trades`, `M112_add_snapshot_id_to_live_trades`, and `M113_add_snapshot_id_to_ml_trades` to trace trades back to exact scan snapshots.
-- **Strict LLM Execution Parser & Multi-Leg Validator:** Built `src/engine/execution_parser.py` (1–6 legs, ratios, strike bounds, markdown fence stripping) and `src/engine/multileg_validator.py` (margin cap, canonical verdict alignment ensuring "Short Covering" is bullish).
-- **Sequential Leg Execution & Atomic Rollback:** Hardened `src/engine/multileg_live_trading.py` with sequential order placement, fill confirmation via `confirm_order_fill()`, and automatic opposite-side rollback via `_rollback_placed_legs()`.
+1. **All SL/Target logic must live in `trade_plan.py`:** Do not implement ad-hoc SL/Target math in strategy runners.
+2. **Never allow LLM direction flips:** Engine OI direction is authoritative.
+3. **Keep option-chain queries within ATM +/- 10 strikes:** Hard performance and payload constraint.
+4. **No Streamlit:** Dashboard is strictly FastAPI (`dashboard_server.py`).
+5. **No obsolete broker/source routes:** Upstox, Paytm, and NSE commodity chain routes are decommissioned.
+6. **Symbol-specific intelligence isolation:** `NATURALGAS` uses news-only intelligence; `NIFTY`/`BANKNIFTY` use heatmap-only intelligence. Never cross-mix.

@@ -79,8 +79,8 @@ def _invalidate_pattern_cache():
         from src.intelligence.history_analyzer import get_analyzer
 
         get_analyzer().invalidate_cache()
-    except Exception:
-        pass  # Non-critical — cache will expire via TTL anyway
+    except Exception as e:
+        log.debug("_invalidate_pattern_cache: failed (non-critical, cache will expire via TTL): %s", e)
 
 
 def _trigger_ml_retraining():
@@ -89,8 +89,8 @@ def _trigger_ml_retraining():
         from src.scheduler.ml_training_job import on_trade_closed
 
         on_trade_closed()
-    except Exception:
-        pass  # Non-critical — counter will be incremented on next trade close
+    except Exception as e:
+        log.debug("_trigger_ml_retraining: failed (non-critical, counter will increment on next close): %s", e)
 
 
 IST = pytz.timezone("Asia/Kolkata")
@@ -698,6 +698,8 @@ def execute_paper_trade(
         "entry_underlying": underlying,
         "entry_premium": entry_premium,
         "sl_underlying": sl_ul,
+        "initial_sl_underlying": plan.get("initial_sl_underlying") or sl_ul,
+        "config_version": plan.get("config_version") or ctx.get("config_version"),
         "sl_premium": plan.get("sl_premium"),
         "target_underlying": tgt_ul,
         "target_premium": plan.get("target_premium"),
@@ -1171,13 +1173,22 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
             continue
         trade_exp = str(g_trade.get("expiry") or "")
         ctx_exp = str(current_ctx.get("expiry") or "")
-        if is_mcx and trade_exp and ctx_exp and trade_exp != ctx_exp:
-            # Do NOT monitor an MCX contract against underlying of a different expiry month (contango spread)
-            log.debug(
-                "%s: Skipping Gemini trade #%s monitoring — expiry mismatch (%s vs %s)",
-                symbol, g_trade.get("id"), trade_exp, ctx_exp,
-            )
-            continue
+        if is_mcx and trade_exp and ctx_exp:
+            # MCX contract expiry alignment:
+            # 1. Options and futures expiries in the same month differ by a few days (e.g. 2026-11-20 vs 2026-11-24).
+            #    If year-month matches (trade_exp[:7] == ctx_exp[:7]), they are the same contract cycle.
+            # 2. On rollover day (when trade_exp is today or in the past), if the trade was entered at the current
+            #    active contract's price level (within 10% of underlying), monitor it against active underlying.
+            same_month = (trade_exp[:7] == ctx_exp[:7])
+            entry_und = float(g_trade.get("entry_underlying") or 0.0)
+            in_active_price_regime = (entry_und > 0 and underlying > 0 and abs(entry_und - underlying) / underlying < 0.10)
+
+            if not same_month and not in_active_price_regime:
+                log.debug(
+                    "%s: Skipping Gemini trade #%s monitoring — expiry month mismatch (%s vs %s)",
+                    symbol, g_trade.get("id"), trade_exp, ctx_exp,
+                )
+                continue
         actions.extend(
             _monitor_single_paper_trade(
                 symbol, g_trade, current_ctx, underlying, skip_reversal=is_fut
@@ -1462,8 +1473,8 @@ def run_paper_trading(
         # Strict 100% Binary Data Integrity check on target entry leg (Flaw #5)
         from src.engine.data_validator import validate_trade_leg_data
         single_leg = [{"strike": strike, "option_type": option_type, "entry_premium": entry_premium}]
-        oc_data_payload = {"strikes": option_rows}
-        is_leg_valid, leg_issues = validate_trade_leg_data(single_leg, oc_data_payload, underlying)
+        oc_data_payload = {"symbol": symbol, "strikes": option_rows}
+        is_leg_valid, leg_issues = validate_trade_leg_data(single_leg, oc_data_payload, underlying, symbol=symbol)
         if not is_leg_valid:
             log.warning(
                 "%s: paper trade plan aborted — leg data integrity validation failed: %s",

@@ -122,6 +122,8 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     entry_premium       REAL,               -- option premium at entry (for options)
     exit_premium        REAL,               -- option premium at exit (for options)
     sl_underlying       REAL,               -- SL in underlying terms
+    initial_sl_underlying REAL,       -- Initial SL at entry (R-multiple baseline)
+    config_version      INTEGER,            -- Decision matrix config version
     target_underlying   REAL,               -- Target in underlying terms
     sl_premium          REAL,               -- SL in premium terms (for options)
     target_premium      REAL,               -- Target in premium terms (for options)
@@ -213,6 +215,8 @@ CREATE TABLE IF NOT EXISTS live_trades (
     entry_premium       REAL,               -- option premium at entry (for options)
     exit_premium        REAL,               -- option premium at exit (for options)
     sl_underlying       REAL,               -- SL in underlying terms
+    initial_sl_underlying REAL,       -- Initial SL at entry (R-multiple baseline)
+    config_version      INTEGER,            -- Decision matrix config version
     target_underlying   REAL,               -- Target in underlying terms
     sl_premium          REAL,               -- SL in premium terms (for options)
     target_premium      REAL,               -- Target in premium terms (for options)
@@ -404,7 +408,9 @@ CREATE TABLE IF NOT EXISTS multi_leg_trades (
     entry_reason TEXT,
     exit_reason TEXT,
     trade_mode TEXT DEFAULT 'PAPER',
-    structural_invalidation_spot REAL
+    structural_invalidation_spot REAL,
+    initial_sl_underlying REAL,
+    config_version INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS multi_leg_legs (
@@ -489,6 +495,20 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     migration_id TEXT PRIMARY KEY,
     applied_at TEXT NOT NULL
 );
+
+-- Top Heavyweights multi-scan history table
+CREATE TABLE IF NOT EXISTS heavyweight_scans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_time TEXT NOT NULL,
+    display_time TEXT NOT NULL,
+    index_name TEXT NOT NULL,
+    spot_price REAL NOT NULL,
+    net_points REAL NOT NULL,
+    index_change_pct REAL NOT NULL,
+    heavyweights_json TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_heavyweight_scans_idx_time ON heavyweight_scans (index_name, id DESC);
 
 """
 
@@ -724,6 +744,15 @@ _MIGRATIONS = [
     ("M142_add_unique_ml_book_id", "CREATE UNIQUE INDEX IF NOT EXISTS uq_ml_book_id ON multi_leg_trades (book_id) WHERE book_id IS NOT NULL"),
     ("M143_add_exit_claimed_at_to_live_trades", "ALTER TABLE live_trades ADD COLUMN exit_claimed_at TEXT"),
     ("M144_add_ml_is_pnl_corrupted", "ALTER TABLE multi_leg_trades ADD COLUMN is_pnl_corrupted INTEGER DEFAULT 0"),
+    # M145-M150: Decision matrix parameter freezing and initial SL provenance
+    ("M145_add_initial_sl_to_paper_trades", "ALTER TABLE paper_trades ADD COLUMN initial_sl_underlying REAL"),
+    ("M146_add_initial_sl_to_live_trades", "ALTER TABLE live_trades ADD COLUMN initial_sl_underlying REAL"),
+    ("M147_add_config_version_to_paper_trades", "ALTER TABLE paper_trades ADD COLUMN config_version INTEGER"),
+    ("M148_add_config_version_to_live_trades", "ALTER TABLE live_trades ADD COLUMN config_version INTEGER"),
+    ("M149_add_config_version_to_ml_trades", "ALTER TABLE multi_leg_trades ADD COLUMN config_version INTEGER"),
+    ("M150_add_initial_sl_to_ml_trades", "ALTER TABLE multi_leg_trades ADD COLUMN initial_sl_underlying REAL"),
+    ("M151_create_heavyweight_scans", "CREATE TABLE IF NOT EXISTS heavyweight_scans (id INTEGER PRIMARY KEY AUTOINCREMENT, scan_time TEXT NOT NULL, display_time TEXT NOT NULL, index_name TEXT NOT NULL, spot_price REAL NOT NULL, net_points REAL NOT NULL, index_change_pct REAL NOT NULL, heavyweights_json TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)"),
+    ("M152_idx_heavyweight_scans_idx_time", "CREATE INDEX IF NOT EXISTS idx_heavyweight_scans_idx_time ON heavyweight_scans (index_name, id DESC)"),
 ]
 
 
@@ -1440,7 +1469,7 @@ def insert_paper_trade(trade: dict) -> int:
              signal_key, pyramid_level, max_favorable_r,
              price_change_pct, pcr, ce_oi_change, pe_oi_change, underlying,
              support, resistance, max_pain, days_to_expiry, chart_conflict,
-              rsi_1h, rsi_3h, regime, entry_dev_pct, leg_group_id, tranche_index, snapshot_id, ai_model_name)
+              rsi_1h, rsi_3h, regime, entry_dev_pct, leg_group_id, tranche_index, snapshot_id, ai_model_name, initial_sl_underlying, config_version)
         VALUES
             (:opened_at, :symbol, :expiry, :verdict_label, :side, :option_type, :strike, :entry_underlying,
              :entry_premium, :sl_underlying, :sl_premium, :target_underlying, :target_premium,
@@ -1450,7 +1479,7 @@ def insert_paper_trade(trade: dict) -> int:
              :signal_key, :pyramid_level, :max_favorable_r,
              :price_change_pct, :pcr, :ce_oi_change, :pe_oi_change, :underlying,
              :support, :resistance, :max_pain, :days_to_expiry, :chart_conflict,
-             :rsi_1h, :rsi_3h, :regime, :entry_dev_pct, :leg_group_id, :tranche_index, :snapshot_id, :ai_model_name)
+             :rsi_1h, :rsi_3h, :regime, :entry_dev_pct, :leg_group_id, :tranche_index, :snapshot_id, :ai_model_name, :initial_sl_underlying, :config_version)
         RETURNING id
     """
     row_data = {
@@ -1469,6 +1498,8 @@ def insert_paper_trade(trade: dict) -> int:
         "tranche_index": trade.get("tranche_index", 0),
         "snapshot_id": trade.get("snapshot_id"),
         "ai_model_name": trade.get("ai_model_name"),
+        "initial_sl_underlying": trade.get("initial_sl_underlying") if trade.get("initial_sl_underlying") is not None else trade.get("sl_underlying"),
+        "config_version": trade.get("config_version"),
         "lot_size": trade["lot_size"]
         if "lot_size" in trade
         else LOT_SIZES.get(trade.get("symbol", "").upper(), 1),
@@ -1908,7 +1939,7 @@ def insert_live_trade(trade: dict, conn: sqlite3.Connection | None = None) -> in
              broker_order_id, gtt_order_id, broker_status, broker_message, exit_mode,
              price_change_pct, pcr, ce_oi_change, pe_oi_change, underlying,
              support, resistance, max_pain, days_to_expiry, chart_conflict,
-              rsi_1h, rsi_3h, regime, entry_dev_pct, snapshot_id, ai_model_name)
+              rsi_1h, rsi_3h, regime, entry_dev_pct, snapshot_id, ai_model_name, initial_sl_underlying, config_version)
         VALUES
             (:opened_at, :symbol, :expiry, :verdict_label, :side, :option_type, :strike, :entry_underlying,
              :entry_premium, :sl_underlying, :sl_premium, :target_underlying, :target_premium,
@@ -1919,7 +1950,7 @@ def insert_live_trade(trade: dict, conn: sqlite3.Connection | None = None) -> in
              :broker_order_id, :gtt_order_id, :broker_status, :broker_message, :exit_mode,
              :price_change_pct, :pcr, :ce_oi_change, :pe_oi_change, :underlying,
              :support, :resistance, :max_pain, :days_to_expiry, :chart_conflict,
-             :rsi_1h, :rsi_3h, :regime, :entry_dev_pct, :snapshot_id, :ai_model_name)
+             :rsi_1h, :rsi_3h, :regime, :entry_dev_pct, :snapshot_id, :ai_model_name, :initial_sl_underlying, :config_version)
         RETURNING id
     """
     row_data = {
@@ -1941,6 +1972,8 @@ def insert_live_trade(trade: dict, conn: sqlite3.Connection | None = None) -> in
         "exit_mode": trade.get("exit_mode"),
         "snapshot_id": trade.get("snapshot_id"),
         "ai_model_name": trade.get("ai_model_name"),
+        "initial_sl_underlying": trade.get("initial_sl_underlying") if trade.get("initial_sl_underlying") is not None else trade.get("sl_underlying"),
+        "config_version": trade.get("config_version"),
         "lot_size": trade.get("lot_size")
         if trade.get("lot_size") is not None
         else LOT_SIZES.get(trade.get("symbol", "").upper().split()[0], 1),
@@ -2514,6 +2547,8 @@ def insert_multi_leg_trade(trade: dict) -> int:
         trade["snapshot_id"] = None
     trade["trade_mode"] = str(trade.get("trade_mode") or "PAPER").upper()
     trade.setdefault("structural_invalidation_spot", None)
+    trade.setdefault("initial_sl_underlying", trade.get("entry_underlying"))
+    trade.setdefault("config_version", None)
 
     bu = trade.get("breakeven_upper")
     bl = trade.get("breakeven_lower")
@@ -3365,7 +3400,8 @@ def get_open_positions_count() -> int:
             ml = conn.execute(
                 "SELECT COUNT(*) as c FROM multi_leg_trades WHERE status='OPEN'"
             ).fetchone()["c"]
-        except Exception:
+        except Exception as e:
+            log.debug("get_open_positions_count: multi_leg_trades count failed: %s", e)
             ml = 0
     return paper + live + ml
 
@@ -3388,11 +3424,13 @@ def get_open_live_positions_count_ro() -> int:
             ml_live = conn.execute(
                 "SELECT COUNT(*) as c FROM multi_leg_trades WHERE status='OPEN' AND UPPER(trade_mode)='LIVE'"
             ).fetchone()["c"]
-        except Exception:
+        except Exception as e:
+            log.debug("get_open_live_positions_count_ro: multi_leg_trades count failed: %s", e)
             ml_live = 0
         conn.close()
         return live + ml_live
-    except Exception:
+    except Exception as e:
+        log.debug("get_open_live_positions_count_ro: connection failed: %s", e)
         return 0
 
 
@@ -3414,11 +3452,13 @@ def get_open_paper_positions_count_ro() -> int:
             ml_paper = conn.execute(
                 "SELECT COUNT(*) as c FROM multi_leg_trades WHERE status='OPEN' AND UPPER(trade_mode)='PAPER'"
             ).fetchone()["c"]
-        except Exception:
+        except Exception as e:
+            log.debug("get_open_paper_positions_count_ro: multi_leg_trades count failed: %s", e)
             ml_paper = 0
         conn.close()
         return paper + ml_paper
-    except Exception:
+    except Exception as e:
+        log.debug("get_open_paper_positions_count_ro: connection failed: %s", e)
         return 0
 
 
@@ -3449,7 +3489,8 @@ def get_oldest_open_position_age_min() -> float | None:
         if opened.tzinfo is None:
             opened = opened.replace(tzinfo=timezone.utc)
         return (datetime.now(timezone.utc) - opened).total_seconds() / 60.0
-    except Exception:
+    except Exception as e:
+        log.debug("get_oldest_open_position_age_min: date parse failed: %s", e)
         return None
 
 

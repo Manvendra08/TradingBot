@@ -888,6 +888,7 @@ class DhanCommodityFetcher(BaseFetcher):
             live_fut = self._fetch_builtup_live_price(secid)
             if live_fut is not None and live_fut > 0:
                 underlying = live_fut
+        strikes = self.filter_atm_strikes(strikes, underlying)
 
         return {
             "symbol": base,

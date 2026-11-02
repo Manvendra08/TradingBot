@@ -71,7 +71,7 @@ def _firecrawl_search(api_key: str, query: str, limit: int = 3, country: str = "
         return []
 
 
-def fetch_firecrawl_eod_data(report_date: str | None = None) -> dict:
+def fetch_firecrawl_eod_data(report_date: str | None = None, use_cache: bool = True) -> dict:
     """Fetch full EOD market data via multiple Firecrawl searches with burst pacing.
 
     Returns:
@@ -87,6 +87,26 @@ def fetch_firecrawl_eod_data(report_date: str | None = None) -> dict:
         log.warning("[firecrawl] FIRECRAWL_API_KEY not set — skipping all EOD searches")
         empty = {"items": [], "count": 0, "error": "FIRECRAWL_API_KEY missing"}
         return {"ok": False, "closing_bell": empty, "fii_dii_flows": empty, "macro_news": empty}
+
+    import json
+    from pathlib import Path
+    import pytz
+    from datetime import datetime
+
+    cache_dir = Path("data/reports")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    today_key = datetime.now(pytz.timezone("Asia/Kolkata")).strftime("%Y%m%d")
+    cache_file = cache_dir / f"firecrawl_eod_{today_key}.json"
+
+    is_test_env = api_key.startswith("test")
+    if use_cache and not is_test_env and cache_file.exists():
+        try:
+            cached_data = json.loads(cache_file.read_text(encoding="utf-8"))
+            if isinstance(cached_data, dict) and cached_data.get("ok"):
+                log.info("[firecrawl] Loaded EOD search results from disk cache (%s)", cache_file.name)
+                return cached_data
+        except Exception as e:
+            log.debug("[firecrawl] Cache read error: %s", e)
 
     date_hint = f" {report_date}" if report_date else ""
 
@@ -118,12 +138,19 @@ def fetch_firecrawl_eod_data(report_date: str | None = None) -> dict:
     log.info("[firecrawl] Market wrap: %d items", len(news))
 
     has_data = bool(closing or fii_dii or news)
-    return {
+    result = {
         "ok": has_data,
         "closing_bell": {"items": closing, "count": len(closing), "error": None if closing else "No results"},
         "fii_dii_flows": {"items": fii_dii, "count": len(fii_dii), "error": None if fii_dii else "No results"},
         "macro_news":    {"items": news, "count": len(news), "error": None if news else "No results"},
     }
+    if has_data and not is_test_env:
+        try:
+            cache_file.write_text(json.dumps(result, indent=2), encoding="utf-8")
+            log.info("[firecrawl] Cached EOD search results to %s", cache_file.name)
+        except Exception as ce:
+            log.warning("[firecrawl] Failed to write cache: %s", ce)
+    return result
 
 
 # ── Legacy wrapper (backward compat) ───────────────────────────────────────

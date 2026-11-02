@@ -114,10 +114,12 @@ def audit_trade_close(table: str, trade_id: int) -> None:
             else exit_premium - entry_premium
         )
     else:
+        # For FUT trades, apply the same realistic execution slippage as close_paper_trade() / close_live_trade()
+        fut_slippage = max(0.05, float(exit_underlying) * 0.0002)
         pnl_points = (
-            entry_underlying - exit_underlying
+            entry_underlying - (float(exit_underlying) + fut_slippage)
             if row["side"] == "SELL"
-            else exit_underlying - entry_underlying
+            else (float(exit_underlying) - fut_slippage) - entry_underlying
         )
 
     expected_pnl = pnl_points * lot_size * lots - _calc_transaction_costs(

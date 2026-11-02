@@ -21,6 +21,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
+from src.fetchers.base_fetcher import filter_atm_strikes
 from src.fetchers.dhan_commodity_fetcher import DhanCommodityFetcher
 
 log = logging.getLogger(__name__)
@@ -132,6 +133,8 @@ def _normalise_dhan_payload(raw: dict, symbol: str) -> dict | None:
             return None
 
         strikes.sort(key=lambda r: (r["strike"], r["option_type"]))
+        underlying_val = float(underlying) if underlying else None
+        strikes = filter_atm_strikes(strikes, underlying_val)
 
         return {
             "symbol": symbol,

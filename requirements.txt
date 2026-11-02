@@ -8,6 +8,7 @@ pytz>=2024.1
 # Environment / secrets
 python-dotenv>=1.0.1
 pyotp>=2.9.0
+kiteconnect>=5.0.0
 
 # Telegram
 python-telegram-bot==21.5
@@ -44,3 +45,6 @@ pydantic>=2.7.0
 google-api-python-client>=2.120.0
 google-auth-httplib2>=0.2.0
 google-auth-oauthlib>=1.2.0
+
+# Error Tracking (Sentry — optional, activates when SENTRY_DSN env var is set)
+sentry-sdk>=2.0.0

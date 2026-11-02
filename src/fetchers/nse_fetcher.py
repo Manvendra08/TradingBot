@@ -173,6 +173,7 @@ class NSEPublicFetcher(BaseFetcher):
                         "bid":         float(opt.get("bidPrice", opt.get("bidprice", 0)) or 0),
                         "ask":         float(opt.get("askPrice", 0) or 0),
                     })
+            strikes = self.filter_atm_strikes(strikes, underlying)
 
             return {
                 "symbol":           symbol,

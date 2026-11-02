@@ -2690,7 +2690,7 @@
                         <span style="font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 6px; background: rgba(34, 211, 238, 0.15); color: var(--cyan); letter-spacing: 0.5px;">📈 CURVE</span>
                     </div>
                     <div class="val" id="k-pnl">—</div>
-                    <div class="sub">closed trades • <span style="text-decoration: underline; color: var(--cyan);">view curve ▾</span></div>
+                    <div class="sub">closed trades • <span id="view-curve-label" style="text-decoration: underline; color: var(--cyan); cursor: pointer;">view curve ▾</span></div>
                     <div class="kpi-icon">💰</div>
                 </div>
                 <div class="kpi kpi-avg">
@@ -2714,7 +2714,7 @@
             </div>
 
             <!-- Equity Curve Card (Linked to Top P&L) -->
-            <div class="card" id="equity-curve-card" style="margin-bottom: 20px; transition: all 0.3s ease;">
+            <div class="card" id="equity-curve-card" style="margin-bottom: 20px; transition: all 0.3s ease; display: none;">
                 <div class="card-title" style="justify-content: space-between">
                     <div style="display:flex;align-items:center;gap:8px">
                         <div class="card-title-bar"></div>
@@ -3696,9 +3696,15 @@
             function toggleEquityCurve(forceState) {
                 const card = document.getElementById("equity-curve-card");
                 if (!card) return;
-                const isHidden = card.style.display === "none";
+                const isHidden = card.style.display === "none" || getComputedStyle(card).display === "none";
                 const newState = (forceState !== undefined) ? forceState : isHidden;
                 card.style.display = newState ? "block" : "none";
+
+                const label = document.getElementById("view-curve-label");
+                if (label) {
+                    label.textContent = newState ? "hide curve ▴" : "view curve ▾";
+                }
+
                 if (newState) {
                     card.scrollIntoView({ behavior: "smooth", block: "nearest" });
                     card.style.borderColor = "var(--cyan)";
@@ -3708,9 +3714,12 @@
                         card.style.boxShadow = "";
                     }, 1200);
                     setTimeout(() => {
-                        if (eqChart) eqChart.resize();
-                        else if (eqAllRows && eqAllRows.length) renderEquity(eqAllRows);
-                    }, 50);
+                        if (eqAllRows && eqAllRows.length) {
+                            renderEquity(eqAllRows);
+                        } else if (eqChart) {
+                            eqChart.resize();
+                        }
+                    }, 60);
                 }
             }
 
@@ -3734,6 +3743,10 @@
 
             function renderEquity(rows) {
                 eqAllRows = rows;
+                const card = document.getElementById("equity-curve-card");
+                if (card && (card.style.display === "none" || getComputedStyle(card).display === "none")) {
+                    return; // Retain rows in eqAllRows; render when user expands via "view curve"
+                }
                 const displayRows = filterEquityByTf(rows, eqTfActive);
                 const dark = isDark();
                 const accent = dark ? "#00e5a0" : "#0891b2";

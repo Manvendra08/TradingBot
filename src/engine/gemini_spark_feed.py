@@ -103,7 +103,7 @@ def _is_symbol_market_open(symbol: str) -> bool:
         return True
 
 
-def _parse_contract(contract_str: str) -> tuple[str, str]:
+def _parse_contract(contract_str: str, setup_id: str = "") -> tuple[str, str]:
     """
     Parse contract string like 'NATURALGAS 27-OCT-2026', 'NIFTY_FUT', 'NIFTY 30OCT2026'.
     Returns canonical (symbol, expiry_iso_str).
@@ -129,11 +129,30 @@ def _parse_contract(contract_str: str) -> tuple[str, str]:
         except ValueError:
             pass
 
-    if not expiry_str:
-        try:
-            from config.symbol_classes import get_futures_expiry
+    # Check if setup_id explicitly names a contract month (e.g. NG_20261027_SELL_NOV_US_OPEN_PULLBACK)
+    MONTH_MAP = {
+        "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
+        "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12
+    }
+    setup_upper = (setup_id or "").upper()
+    setup_month = None
+    for m_abbr, m_num in MONTH_MAP.items():
+        if f"_{m_abbr}_" in setup_upper or f" {m_abbr} " in setup_upper:
+            setup_month = m_num
+            break
+
+    try:
+        from config.symbol_classes import get_futures_expiry, _MCX_2026_EXPIRIES
+        if setup_month:
+            now_dt = datetime.now(IST)
+            if symbol in _MCX_2026_EXPIRIES and setup_month in _MCX_2026_EXPIRIES[symbol]:
+                dt_tuple = _MCX_2026_EXPIRIES[symbol][setup_month]
+                expiry_str = f"{dt_tuple[0]:04d}-{dt_tuple[1]:02d}-{dt_tuple[2]:02d}"
+
+        if not expiry_str:
             expiry_str = get_futures_expiry(symbol) or datetime.now(IST).strftime("%Y-%m-%d")
-        except Exception:
+    except Exception:
+        if not expiry_str:
             expiry_str = datetime.now(IST).strftime("%Y-%m-%d")
 
     return symbol, expiry_str
@@ -331,7 +350,7 @@ def _extract_reconciled_trade_exit(payload: dict[str, Any], setup_id: str) -> di
                             reconciled_list.extend([x for x in cand if isinstance(x, dict)])
 
     for rec in reconciled_list:
-        rec_id = str(rec.get("id") or "").strip()
+        rec_id = str(rec.get("setup_id") or rec.get("id") or "").strip()
         if not rec_id:
             continue
         # Exact match or prefix match
@@ -519,7 +538,7 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
         return
 
     open_trades_map = get_open_gemini_paper_trades_map(symbol)
-    active_setup_ids = {str(s.get("id")) for s in setups if isinstance(s, dict) and s.get("id")}
+    active_setup_ids = {str(s.get("setup_id") or s.get("id")) for s in setups if isinstance(s, dict) and (s.get("setup_id") or s.get("id"))}
 
     # Close any open GeminiAI trade for this symbol whose setup ID is no longer active in the feed
     for open_signal_key, open_trade in list(open_trades_map.items()):
@@ -577,7 +596,7 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
 
     skipped_inactive_count = 0
     for setup in setups:
-        setup_id = setup.get("id")
+        setup_id = setup.get("setup_id") or setup.get("id")
 
         # Check if the setup is completed, closed, missed, or invalidated
         if _is_setup_inactive(setup):
@@ -739,17 +758,42 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
 
         if target_1 == 0.0 and "targets" in setup and isinstance(setup["targets"], list):
             targets_list = setup["targets"]
-            if len(targets_list) > 0 and isinstance(targets_list[0], dict):
-                target_1 = float(targets_list[0].get("price") or 0.0)
-            if len(targets_list) > 1 and isinstance(targets_list[1], dict):
-                target_2 = float(targets_list[1].get("price") or 0.0)
+            if len(targets_list) > 0:
+                if isinstance(targets_list[0], dict):
+                    target_1 = float(targets_list[0].get("price") or 0.0)
+                else:
+                    try:
+                        target_1 = float(targets_list[0] or 0.0)
+                    except (ValueError, TypeError):
+                        pass
+            if len(targets_list) > 1:
+                if isinstance(targets_list[1], dict):
+                    target_2 = float(targets_list[1].get("price") or 0.0)
+                else:
+                    try:
+                        target_2 = float(targets_list[1] or 0.0)
+                    except (ValueError, TypeError):
+                        pass
 
         # 5. Determine actual fill price / current price utilizing top-level CMP
         fill_price = float(cmp_val if cmp_val is not None else (entry_target or stop_loss))
 
+        # Query live underlying tick to supplement lagging sheet CMP
+        live_tick = None
+        try:
+            with get_conn(read_only=True) as conn:
+                p_row = conn.execute(
+                    "SELECT price FROM underlying_price WHERE symbol = ? ORDER BY fetched_at DESC LIMIT 1",
+                    (symbol,),
+                ).fetchone()
+                if p_row and p_row["price"]:
+                    live_tick = float(p_row["price"])
+        except Exception:
+            pass
+
         log_eval(
-            "[gemini_spark] Evaluating setup: %s | %s %s | CMP: %.2f (Zone/Trigger: %.2f) | SL: %.2f | T1: %.2f",
-            setup_id, action_upper, symbol, fill_price, entry_target, stop_loss, target_1,
+            "[gemini_spark] Evaluating setup: %s | %s %s | CMP: %.2f (Live: %s, Zone/Trigger: %.2f) | SL: %.2f | T1: %.2f",
+            setup_id, action_upper, symbol, fill_price, f"{live_tick:.2f}" if live_tick else "N/A", entry_target, stop_loss, target_1,
         )
 
         existing_trade = open_trades_map.get(str(setup_id))
@@ -778,16 +822,25 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
             effective_sl = stop_loss if stop_loss > 0 else current_sl
             effective_tgt = target_1 if target_1 > 0 else current_tgt
 
-            # Mechanical SL / Target breach check against live market price (fill_price / cmp_val)
+            # Mechanical SL / Target breach check against live market price (fill_price and live_tick)
             hit_sl = False
             hit_tgt = False
-            if fill_price > 0:
+            eval_prices = [p for p in (fill_price, live_tick) if p is not None and p > 0]
+            for p in eval_prices:
                 if trade_side == "BUY":
-                    hit_sl = (effective_sl > 0 and fill_price <= effective_sl)
-                    hit_tgt = (effective_tgt > 0 and fill_price >= effective_tgt)
+                    if effective_sl > 0 and p <= effective_sl:
+                        hit_sl = True
+                        fill_price = p
+                    if effective_tgt > 0 and p >= effective_tgt:
+                        hit_tgt = True
+                        fill_price = p
                 elif trade_side == "SELL":
-                    hit_sl = (effective_sl > 0 and fill_price >= effective_sl)
-                    hit_tgt = (effective_tgt > 0 and fill_price <= effective_tgt)
+                    if effective_sl > 0 and p >= effective_sl:
+                        hit_sl = True
+                        fill_price = p
+                    if effective_tgt > 0 and p <= effective_tgt:
+                        hit_tgt = True
+                        fill_price = p
 
             if hit_sl or hit_tgt:
                 close_status = "CLOSED_SL" if hit_sl else "CLOSED_TARGET"
@@ -868,7 +921,11 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
             continue
 
         # Check if this setup was already executed in history (prevent repeat re-entry)
-        sig_key = str(setup_id)
+        if not setup_id or str(setup_id).strip().lower() in ("none", ""):
+            log.warning("[gemini_spark] %s setup missing valid setup_id/id: %s. Skipping unidentifiable setup.", symbol, setup)
+            continue
+
+        sig_key = str(setup_id).strip()
         with get_conn(read_only=True) as conn:
             prior_trade = conn.execute(
                 "SELECT id, status FROM paper_trades WHERE signal_key LIKE ? OR reason LIKE ? LIMIT 1",
@@ -884,13 +941,31 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
         # 6. Breakout / Trigger Condition Check for pending states (Applies to NEW Entries ONLY)
         # If the setup is waiting for a breakout/breakdown, verify if price has reached the trigger level.
         if "WAITING" in status_upper or "PENDING" in status_upper:
+            # Market hours guard: never trigger new pending entries while the symbol's market is closed
+            if not _is_symbol_market_open(symbol):
+                log_eval("[gemini_spark] %s market is currently closed. Skipping trigger check for setup %s.", symbol, setup_id)
+                continue
+
             if entry_target > 0:
-                if action_upper == "BUY" and fill_price < entry_target:
-                    log_eval("[gemini_spark] %s setup %s pending breakout (CMP %.2f < Trigger %.2f). Awaiting trigger.", symbol, setup_id, fill_price, entry_target)
-                    continue
-                elif action_upper == "SELL" and fill_price > entry_target:
-                    log_eval("[gemini_spark] %s setup %s pending breakdown (CMP %.2f > Trigger %.2f). Awaiting trigger.", symbol, setup_id, fill_price, entry_target)
-                    continue
+                setup_type_upper = str(setup.get("type") or setup.get("setup_type") or "").upper()
+                is_pullback = any(k in setup_type_upper for k in ("PULLBACK", "REJECT", "RETEST", "SHELF", "SUPPORT", "HOLD", "BOUNCE", "VALUE", "DIP"))
+                ez_min = float(entry_zone.get("min", entry_target)) if isinstance(entry_zone, dict) else entry_target
+                ez_max = float(entry_zone.get("max", entry_target)) if isinstance(entry_zone, dict) else entry_target
+
+                if action_upper == "BUY":
+                    if is_pullback and fill_price > ez_max:
+                        log_eval("[gemini_spark] %s setup %s pending pullback dip (CMP %.2f > Zone Max %.2f). Awaiting dip.", symbol, setup_id, fill_price, ez_max)
+                        continue
+                    elif not is_pullback and fill_price < ez_min:
+                        log_eval("[gemini_spark] %s setup %s pending breakout (CMP %.2f < Zone Min %.2f). Awaiting trigger.", symbol, setup_id, fill_price, ez_min)
+                        continue
+                elif action_upper == "SELL":
+                    if is_pullback and fill_price < ez_min:
+                        log_eval("[gemini_spark] %s setup %s pending pullback rally (CMP %.2f < Zone Min %.2f). Awaiting rally into resistance.", symbol, setup_id, fill_price, ez_min)
+                        continue
+                    elif not is_pullback and fill_price > ez_max:
+                        log_eval("[gemini_spark] %s setup %s pending breakdown (CMP %.2f > Zone Max %.2f). Awaiting trigger.", symbol, setup_id, fill_price, ez_max)
+                        continue
 
         # 7. Directional Stop-Loss Validation Guard (Applies to NEW Entries ONLY)
         # Validate stop loss relative to planned entry (entry_target if set, else actual fill_price)
@@ -927,16 +1002,25 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
                     )
                 continue
 
-        # New Setup Execution: Autonomous paper trading, never blocked by open position caps (>5) or scan blockers
+        # New Setup Execution: Autonomous paper trading, never blocked by open position caps (>5) or scan blockers
+        if not _is_symbol_market_open(symbol):
+            log_eval("[gemini_spark] %s market is currently closed. Skipping order execution for setup %s.", symbol, setup_id)
+            continue
         capital = float(load_runtime_config().get("live_capital_per_trade_inr", 1000000))
         stop_dist = abs(fill_price - stop_loss) if stop_loss > 0 else (2.0 if symbol == "NATURALGAS" else 40.0)
         lots = calculate_spark_lot_size(symbol, capital, stop_dist)
         lot_size = LOT_SIZES.get(symbol, 65 if symbol == "NIFTY" else 1250)
 
+        setup_expiry = setup.get("contract_expiry") or setup.get("expiry")
+        if not setup_expiry and setup_id:
+            _, setup_parsed_exp = _parse_contract(contract_str, setup_id=str(setup_id))
+            setup_expiry = setup_parsed_exp
+        trade_expiry = setup_expiry or expiry
+
         trade_data = {
             "opened_at": now_iso,
             "symbol": symbol,
-            "expiry": expiry,
+            "expiry": trade_expiry,
             "verdict_label": "GeminiAI",
             "side": action_upper,
             "option_type": "FUT",

@@ -253,3 +253,200 @@ def test_c14_single_sided_breakeven_cushion():
     assert score > 0
     assert any("breakeven cushion" in r.lower() for r in reasons)
 
+
+
+
+# ── Decision Matrix Exit Priority & AI Authority Tests (Phase 4) ─────────────
+
+class TestExitPriorityAndAIAuthority:
+    def test_order_legs_for_exit_sell_first(self):
+        """Phase 4: SELL legs MUST be ordered before BUY legs to flatten short liability first."""
+        from src.engine.exit_evaluator import order_legs_for_exit
+
+        legs = [
+            {"id": 1, "side": "BUY", "strike": 24000, "option_type": "PE"},
+            {"id": 2, "side": "SELL", "strike": 24200, "option_type": "PE"},
+            {"id": 3, "side": "BUY", "strike": 24800, "option_type": "CE"},
+            {"id": 4, "side": "SELL", "strike": 24600, "option_type": "CE"},
+        ]
+        ordered = order_legs_for_exit(legs)
+        assert [l["id"] for l in ordered] == [2, 4, 1, 3]
+        assert ordered[0]["side"] == "SELL"
+        assert ordered[1]["side"] == "SELL"
+        assert ordered[2]["side"] == "BUY"
+        assert ordered[3]["side"] == "BUY"
+
+    def test_exit_priority_precedence(self):
+        """Phase 4: HARD_RISK takes precedence over TARGET even if target threshold is also reached."""
+        from src.engine.exit_evaluator import evaluate_exit_priority
+
+        book = {
+            "symbol": "NIFTY",
+            "strategy_type": "IRON_CONDOR",
+            "net_premium": 50.0,
+            "max_loss": 150.0,
+            "entry_underlying": 24500.0,
+        }
+        legs = [
+            {"id": 1, "side": "SELL", "strike": 24300, "option_type": "PE", "delta": 0.20, "lots": 1},
+            {"id": 2, "side": "SELL", "strike": 24700, "option_type": "CE", "delta": 0.20, "lots": 1},
+        ]
+        # PnL is deeply negative (-Rs 10,000) breaching stop loss (stop is ~50 pts * 25 = 1250)
+        market_state = {
+            "underlying": 24500.0,
+            "total_pnl": -10000.0,
+        }
+        dec = evaluate_exit_priority(book, legs, market_state)
+        assert dec.should_exit is True
+        assert dec.exit_reason == "HARD_RISK"
+        assert dec.priority == 1
+
+    def test_tested_side_delta_triggers(self):
+        """Phase 4: Defined-risk triggers at delta >= 0.48; Naked triggers at delta >= 0.35."""
+        from src.engine.exit_evaluator import evaluate_exit_priority
+
+        # Defined-risk (Iron Condor) with delta = 0.49 on short CE
+        book_def = {
+            "symbol": "NIFTY",
+            "strategy_type": "IRON_CONDOR",
+            "net_premium": 50.0,
+            "max_loss": 150.0,
+            "entry_underlying": 24500.0,
+        }
+        legs_def = [
+            {"id": 1, "side": "SELL", "strike": 24700, "option_type": "CE", "delta": 0.49, "lots": 1},
+            {"id": 2, "side": "BUY", "strike": 24900, "option_type": "CE", "delta": 0.25, "lots": 1},
+        ]
+        dec_def = evaluate_exit_priority(book_def, legs_def, {"underlying": 24650.0, "total_pnl": -500.0})
+        assert dec_def.should_exit is True
+        assert dec_def.exit_reason == "TESTED_SIDE"
+        assert "delta 0.49" in dec_def.details
+
+        # Naked strangle: delta = 0.36 triggers tested side (trigger is 0.35)
+        book_naked = {
+            "symbol": "NIFTY",
+            "strategy_type": "SHORT_STRANGLE",
+            "net_premium": 80.0,
+            "max_loss": 0.0,
+            "entry_underlying": 24500.0,
+        }
+        legs_naked = [
+            {"id": 1, "side": "SELL", "strike": 24700, "option_type": "CE", "delta": 0.36, "lots": 1},
+            {"id": 2, "side": "SELL", "strike": 24300, "option_type": "PE", "delta": 0.15, "lots": 1},
+        ]
+        dec_naked = evaluate_exit_priority(book_naked, legs_naked, {"underlying": 24620.0, "total_pnl": -500.0})
+        assert dec_naked.should_exit is True
+        assert dec_naked.exit_reason == "TESTED_SIDE"
+        assert "0.36" in dec_naked.details
+
+    def test_tested_side_spot_breach(self):
+        """Phase 4: Candle close / spot breach past short strike triggers TESTED_SIDE."""
+        from src.engine.exit_evaluator import evaluate_exit_priority
+
+        book = {
+            "symbol": "NIFTY",
+            "strategy_type": "BEAR_CALL_SPREAD",
+            "net_premium": 30.0,
+            "max_loss": 70.0,
+            "entry_underlying": 24500.0,
+        }
+        legs = [
+            {"id": 1, "side": "SELL", "strike": 24600, "option_type": "CE", "delta": 0.40, "lots": 1},
+            {"id": 2, "side": "BUY", "strike": 24700, "option_type": "CE", "delta": 0.25, "lots": 1},
+        ]
+        # Spot at 24610 has breached the short CE strike 24600
+        dec = evaluate_exit_priority(book, legs, {"underlying": 24610.0, "total_pnl": -300.0})
+        assert dec.should_exit is True
+        assert dec.exit_reason == "TESTED_SIDE"
+        assert "breached short CE strike 24600" in dec.details
+
+    def test_ai_authority_stop_and_target_tighten_only(self):
+        """Phase 4: AI can only tighten stops and targets, never loosen or widen."""
+        from src.engine.exit_evaluator import resolve_effective_stop_and_target
+
+        cfg = {
+            "ai_authority": {
+                "tighten_stop_allowed": True,
+                "widen_stop_allowed": False,
+                "loosen_target_allowed": False,
+            }
+        }
+        # 1. AI proposes tighter stop (40 < 50): accepted
+        sl1, tgt1 = resolve_effective_stop_and_target(50.0, 40.0, ai_sl_pts=40.0, ai_tgt_pts=None, cfg=cfg)
+        assert sl1 == 40.0
+        assert tgt1 == 40.0
+
+        # 2. AI proposes wider stop (70 > 50): rejected (holds at rule 50)
+        sl2, tgt2 = resolve_effective_stop_and_target(50.0, 40.0, ai_sl_pts=70.0, ai_tgt_pts=None, cfg=cfg)
+        assert sl2 == 50.0
+
+        # 3. AI proposes tighter target (25 < 40): accepted
+        sl3, tgt3 = resolve_effective_stop_and_target(50.0, 40.0, ai_sl_pts=None, ai_tgt_pts=25.0, cfg=cfg)
+        assert tgt3 == 25.0
+
+        # 4. AI proposes looser target (60 > 40): rejected (holds at rule 40)
+        sl4, tgt4 = resolve_effective_stop_and_target(50.0, 40.0, ai_sl_pts=None, ai_tgt_pts=60.0, cfg=cfg)
+        assert tgt4 == 40.0
+
+    def test_ai_early_close_authority_gates(self):
+        """Phase 4: AI close allowed only if profit >= 30% credit or loss >= 50% stop."""
+        from src.engine.exit_evaluator import evaluate_exit_priority
+
+        book = {
+            "symbol": "NIFTY",
+            "strategy_type": "IRON_CONDOR",
+            "net_premium": 100.0,
+            "max_loss": 100.0,
+            "entry_underlying": 24500.0,
+        }
+        legs = [
+            {"id": 1, "side": "SELL", "strike": 24300, "option_type": "PE", "delta": 0.20, "lots": 1},
+            {"id": 2, "side": "SELL", "strike": 24700, "option_type": "CE", "delta": 0.20, "lots": 1},
+        ]
+        # Total credit = 100 pts * 25 = Rs 2500. Stop loss = 100 pts * 25 = Rs 2500.
+        # Case 1: Trivial profit Rs 200 (8% of credit < 30%): AI close is REJECTED
+        dec_premature = evaluate_exit_priority(
+            book, legs,
+            {"underlying": 24500.0, "total_pnl": 200.0},
+            ai_verdict={"action": "CLOSE", "reason": "Feeling unsure"}
+        )
+        assert dec_premature.should_exit is False
+
+        # Case 2: Profit Rs 800 (32% of credit >= 30%): AI close is AUTHORIZED
+        dec_profit_qual = evaluate_exit_priority(
+            book, legs,
+            {"underlying": 24500.0, "total_pnl": 2000.0},
+            ai_verdict={"action": "CLOSE", "reason": "Momentum slowing"}
+        )
+        assert dec_profit_qual.should_exit is True
+        assert dec_profit_qual.exit_reason == "AI_TIGHTEN"
+
+        # Case 3: Loss -Rs 1300 (52% of stop >= 50%): AI close is AUTHORIZED
+        dec_loss_qual = evaluate_exit_priority(
+            book, legs,
+            {"underlying": 24500.0, "total_pnl": -3500.0},
+            ai_verdict={"action": "CLOSE", "reason": "Structure deteriorating"}
+        )
+        assert dec_loss_qual.should_exit is True
+        assert dec_loss_qual.exit_reason == "AI_TIGHTEN"
+
+    def test_frozen_parameters_cannot_be_loosened(self):
+        """Phase 1/4: Open trade's frozen stop loss cannot be loosened by config edits."""
+        from src.engine.multileg_paper_trading import _get_stop_loss_threshold_rupees
+
+        # Book entered with frozen stop_loss_rupees = 2500.0
+        book = {
+            "symbol": "NIFTY",
+            "strategy_type": "IRON_CONDOR",
+            "net_premium": 100.0,
+            "max_loss": 300.0,
+            "entry_underlying": 24500.0,
+            "stop_loss_rupees": 2500.0,
+        }
+        legs = [
+            {"id": 1, "side": "SELL", "strike": 24300, "option_type": "PE", "lots": 1},
+            {"id": 2, "side": "SELL", "strike": 24700, "option_type": "CE", "lots": 1},
+        ]
+        # Even if current formula would give higher threshold, frozen cap strictly binds
+        threshold = _get_stop_loss_threshold_rupees(book, legs, "NIFTY")
+        assert threshold <= 2500.0

@@ -494,36 +494,46 @@ def build_multileg_prompt(
     is_strong_bear = (is_bearish(verdict_label) or "BEARISH" in v_upper) and confidence >= 65
     is_rangebound = "RANGEBOUND" in v_upper or ("SIDEWAYS" in v_upper and not is_strong_bull and not is_strong_bear)
 
-    directional_mandate = ""
-    if is_strong_bull:
-        directional_mandate = f"""
-*** QUANT ENGINE MANDATE: HIGH-CONVICTION BULLISH ({verdict_label} {confidence}%) ***
-• The quantitative engine has established a high-conviction BULLISH regime.
-• Candidate Strategy Priority: BULL_PUT_SPREAD (credit put spread with defined risk) or JADE_LIZARD.
-• DO NOT construct delta-neutral straddles, strangles, or bear spreads fighting this upward momentum.
-• Leg Structure: Sell liquid OTM PE (Δ 0.15-0.30) below support, buy lower OTM PE wing for defined risk.
-"""
-    elif is_strong_bear:
-        directional_mandate = f"""
-*** QUANT ENGINE MANDATE: HIGH-CONVICTION BEARISH ({verdict_label} {confidence}%) ***
-• The quantitative engine has established a high-conviction BEARISH regime.
-• Candidate Strategy Priority: BEAR_CALL_SPREAD (credit call spread with defined risk).
-• DO NOT construct delta-neutral straddles, strangles, or bull spreads fighting this downward momentum.
-• Leg Structure: Sell liquid OTM CE (Δ 0.15-0.30) above resistance, buy higher OTM CE wing for defined risk.
-"""
-    elif is_rangebound or (not is_strong_bull and not is_strong_bear):
-        if is_mcx:
-            strat_priority = "SHORT_STRANGLE (OTM Δ 0.15-0.25) or SHORT_STRADDLE (ATM). NOTE: Do NOT use IRON_CONDOR on MCX commodities due to illiquid wing contracts."
-        else:
-            strat_priority = "IRON_CONDOR (defined risk with wide wings) or SHORT_STRANGLE (OTM Δ 0.15-0.25)."
+    # Phase 2: Dynamic Decision Matrix Alignment (Prompt follows config)
+    from config.decision_matrix_loader import load_decision_matrix
+    from src.engine.decision_matrix import select_structure, delta_band, vol_bucket, atm_iv_percentile
+    matrix_cfg = load_decision_matrix()
+    matrix_profile = matrix_cfg.get("delta_profile", "aggressive")
 
-        directional_mandate = f"""
-*** QUANT ENGINE MANDATE: RANGEBOUND / NON-DIRECTIONAL PREMIUM SELLING ({verdict_label} {confidence}%) ***
-• The quantitative engine detects balanced two-sided OI flow or rangebound consolidation.
-• Candidate Strategy Priority: {strat_priority}
-• Edge Source: These non-directional strategies profit from TIME DECAY (Theta) and IV OVERPRICING, not directional price movement.
-• Leg Structure: Place short strikes safely outside spot ± expected move (S/R anchors).
-• DO NOT force directional naked spreads when the market is rangebound.
+    ivp_val = atm_iv_percentile(symbol)
+    vol_reg = vol_bucket(symbol, ivp=ivp_val, cfg=matrix_cfg)
+
+    if is_strong_bull:
+        norm_dir = "BULLISH"
+    elif is_strong_bear:
+        norm_dir = "BEARISH"
+    else:
+        norm_dir = "NEUTRAL"
+
+    rec_struct, allowed_structs, struct_reason = select_structure(
+        direction=norm_dir,
+        vol=vol_reg,
+        symbol=symbol,
+        cfg=matrix_cfg,
+    )
+
+    primary_struct = rec_struct or (allowed_structs[0] if allowed_structs else "BULL_PUT_SPREAD")
+    short_mn, short_mx, short_dc = delta_band(primary_struct, "SHORT", symbol=symbol, cfg=matrix_cfg)
+    long_mn, long_mx, long_dc = delta_band(primary_struct, "LONG", symbol=symbol, cfg=matrix_cfg)
+
+    allowed_str = ", ".join(allowed_structs) if allowed_structs else "NO_TRADE"
+    mcx_note = "• NOTE: Naked strangles and straddles are strictly prohibited on MCX; only defined-risk structures (e.g. IRON_CONDOR, SPREADS) are permitted.\n" if is_mcx else ""
+
+    directional_mandate = f"""
+*** QUANT ENGINE MANDATE: {norm_dir} REGIME (IV {vol_reg}, {verdict_label} {confidence}%) ***
+• The quantitative decision matrix has established a {norm_dir} regime in {vol_reg} implied volatility.
+• Permitted Strategy Set (ONLY select from this list): {allowed_str}
+• Recommended Default: {rec_struct} (Profile: {matrix_profile.upper()})
+• Leg Delta Constraints:
+  - Short Leg target: Δ {short_mn:.2f} - {short_mx:.2f} (Danger ceiling: Δ {short_dc:.2f})
+  - Long Wing target: Δ {long_mn:.2f} - {long_mx:.2f} (Danger ceiling: Δ {long_dc:.2f})
+• Net Credit Rule: Net credit ÷ wing width MUST be ≥ 25% (target ≥ 30%). Proposals < 25% will be strictly rejected.
+{mcx_note}• DO NOT construct strategies outside the permitted strategy set.
 """
 
     # ── Pre-rank Candidate Strikes (Deterministic Python Pre-Filter) ───────

@@ -748,8 +748,16 @@ def evaluate_and_cache_news(
         try:
             ab_msg = _build_ab_telegram_message(updated)
             if ab_msg:
+                import os
+                telemetry_chat_id = os.environ.get("TELEGRAM_TELEMETRY_CHAT_ID")
+                enable_ab_main = os.environ.get("ENABLE_NEWS_AB_TELEGRAM", "false").lower() == "true"
                 from src.alerts.telegram_dispatcher import send_text
-                send_text(ab_msg)
+                if telemetry_chat_id:
+                    send_text(ab_msg, chat_id=telemetry_chat_id)
+                elif enable_ab_main:
+                    send_text(ab_msg)
+                else:
+                    log.info("[news_worker] A/B comparison produced (suppressed from main trader chat): %s", ab_msg[:100])
         except Exception as exc:
             log.debug("[news_worker] A/B Telegram alert failed: %s", exc)
 

@@ -335,6 +335,14 @@ def run_pipeline(symbols: list[str] | None = None, force: bool = False, is_test:
                     pass
 
         log.info("Pipeline run complete | %s", fetched_at)
+        if not is_test:
+            try:
+                from config.symbol_classes import is_market_open
+                if any(is_market_open(idx) for idx in ("NIFTY", "BANKNIFTY", "SENSEX")):
+                    from src.alerts.heavyweight_digest import record_and_dispatch_heavyweights
+                    pipeline_io_executor.submit(record_and_dispatch_heavyweights)
+            except Exception as hw_exc:
+                log.warning("[pipeline] Heavyweights snapshot submission failed: %s", hw_exc)
 
 
 def _async_llm_enrich_and_edit(
@@ -852,17 +860,17 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
         llm_thesis = paper_res.get("thesis")
     if llm_thesis:
         ai_thesis += llm_thesis
-
-    insight = synthesize_market_insight(
-        scan_context,
-        verdict_label=(intel or {}).get("verdict_label"),
-        bias=(intel or {}).get("bias") or scan_context.get("tfss_bias"),
-        confidence=(intel or {}).get("confidence", 0),
-        news_data=news_data,
-        open_trade=open_trade,
-    )
-    if insight:
-        ai_thesis += ("\n\n" if ai_thesis else "") + insight
+    else:
+        insight = synthesize_market_insight(
+            scan_context,
+            verdict_label=(intel or {}).get("verdict_label"),
+            bias=(intel or {}).get("bias") or scan_context.get("tfss_bias"),
+            confidence=(intel or {}).get("confidence", 0),
+            news_data=news_data,
+            open_trade=open_trade,
+        )
+        if insight:
+            ai_thesis += ("\n\n" if ai_thesis else "") + insight
     if not ai_thesis:
         ai_thesis = "No thesis generated."
 
@@ -924,6 +932,7 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
         "exit_advice": exit_advice,
         "news_data": news_data,
         "mcx_macro": mcx_macro,
+        "matrix_shadow": (intel or {}).get("matrix_shadow") or scan_context.get("matrix_shadow"),
     }
 
 
@@ -948,11 +957,25 @@ def _build_quant_inputs(symbol: str, scan_context: dict, intel: dict, news_data:
     ivs: list[float] = []
     for row in option_rows:
         iv = float(row.get("iv") or 0.0)
-        if iv <= 0:
+        stk = float(row.get("strike") or 0.0)
+        # Scrub unphysical or extreme outlier IVs (e.g. 1.0% or 300% model artifacts)
+        if iv < 3.0 or iv > 250.0:
+            continue
+        # Focus on liquid strikes near ATM (+- 20%) to prevent wing noise
+        if atm_strike > 0 and abs(stk - atm_strike) / atm_strike > 0.20:
             continue
         ivs.append(iv)
-        if atm_strike and abs(float(row.get("strike") or 0.0) - atm_strike) < 0.01:
+        if atm_strike and abs(stk - atm_strike) < 0.01 and atm_iv == 0.0:
             atm_iv = iv
+
+    if atm_iv == 0.0 and atm_strike:
+        for row in option_rows:
+            stk = float(row.get("strike") or 0.0)
+            if abs(stk - atm_strike) < 0.01:
+                cand_iv = float(row.get("iv") or 0.0)
+                if cand_iv > 0:
+                    atm_iv = cand_iv
+                    break
 
     return {
         "oi_verdict": (intel or {}).get("verdict_label"),
@@ -1378,6 +1401,20 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                     log.exception("%s: AI enrichment failed gracefully", symbol)
 
 
+    # Phase 1: Decision Matrix shadow evaluation hook
+    matrix_shadow = None
+    try:
+        from config.decision_matrix_loader import get_matrix_mode
+        if get_matrix_mode() != "off":
+            from src.engine.decision_matrix import evaluate_matrix_decision
+            matrix_shadow = evaluate_matrix_decision(symbol, intel, scan_context)
+            if isinstance(intel, dict):
+                intel["matrix_shadow"] = matrix_shadow
+            if isinstance(scan_context, dict):
+                scan_context["matrix_shadow"] = matrix_shadow
+    except Exception as m_err:
+        log.debug("%s: decision matrix shadow evaluation failed gracefully: %s", symbol, m_err)
+
     import uuid
     scan_digest_id = str(uuid.uuid4())[:8]
 
@@ -1555,7 +1592,12 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
             else:
                 diag = (scan_context or {}).get("diagnostics", {})
                 max_oi = float(diag.get("max_oi_delta_pct") or 0)
-                if dedup_suppressed > 0:
+                conf = (intel or {}).get("confidence", 0)
+                # Low conviction / neutral scans (<50% conf) without entries or open positions
+                # should strictly adhere to the 30-min dedup cooldown rather than firing on tiny 1% delta ticks
+                if conf < 50 and not trade_entered and not open_trade:
+                    should_send = should_send_zero_signal(symbol)
+                elif dedup_suppressed > 0:
                     should_send = should_send_zero_signal(symbol)
                 elif max_oi >= 1.0:
                     should_send = True

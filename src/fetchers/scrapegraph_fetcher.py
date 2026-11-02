@@ -113,6 +113,8 @@ class ScrapeGraphFetcher(BaseFetcher):
             if not strikes:
                 log.warning("[scrapegraph] no valid strikes extracted for %s", symbol)
                 return None
+            from src.fetchers.base_fetcher import filter_atm_strikes
+            strikes = filter_atm_strikes(strikes, underlying_price)
 
             return {
                 "symbol": symbol,

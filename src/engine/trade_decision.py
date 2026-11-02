@@ -166,6 +166,28 @@ def make_trade_decision(symbol: str, intel: dict, ctx: dict, ai_verdict=None, su
         scores = pipeline_ctx.scan_context.get("_scores") or {}
 
     # Log to decision_audit SQLite table if not suppressed
+    # Phase 1: Append matrix_shadow StepResult to pipeline_ctx.steps for decision_audit trail_json
+    try:
+        from config.decision_matrix_loader import get_matrix_mode
+        if get_matrix_mode() != "off":
+            from src.engine.decision_matrix import evaluate_matrix_decision
+            from src.engine.decision_pipeline import StepResult
+            shadow_data = evaluate_matrix_decision(symbol, intel, pipeline_ctx.scan_context)
+            pipeline_ctx.steps.append(
+                StepResult(
+                    name="matrix_shadow",
+                    passed=True,
+                    score=float(shadow_data.get("ivp") if shadow_data.get("ivp") is not None else -1.0),
+                    reason=str(shadow_data.get("reason", "OK")),
+                    data=shadow_data,
+                )
+            )
+            pipeline_ctx.scan_context["matrix_shadow"] = shadow_data
+            if isinstance(intel, dict):
+                intel["matrix_shadow"] = shadow_data
+    except Exception as m_err:
+        log.debug("%s: matrix_shadow audit step failed: %s", symbol, m_err)
+
     audit_row_id = None
     if not suppress_logs:
         audit_row_id = log_decision(pipeline_ctx, action="TRADE" if pipeline_ctx.passed else "SKIP")

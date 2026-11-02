@@ -946,6 +946,13 @@ def get_contributors_api(index: str = "NIFTY", refresh: bool = False):
     return get_index_contributors(index_name=index, force_refresh=refresh)
 
 
+@app.get("/api/contributors/heavyweights")
+def get_heavyweights_api(refresh: bool = False, limit: int = 5):
+    from src.engine.index_contributors import get_heavyweights_history
+    # Read-only endpoint: never creates synthetic snapshots on browser fetch
+    return get_heavyweights_history(limit=limit)
+
+
 @app.get("/api/cmps")
 @app.get("/api/topbar_cmps")
 def get_topbar_cmps():
@@ -2529,6 +2536,37 @@ async def post_settings(data: dict):
     # key absent from the request body (irreversible settings wipe).
     update_runtime_config(data)
     return {"status": "SUCCESS", "message": "Runtime settings updated successfully"}
+
+
+@app.get("/api/decision_matrix", dependencies=[Depends(authenticate)])
+async def get_decision_matrix():
+    import json
+    from config.decision_matrix_loader import DECISION_MATRIX_PATH, load_decision_matrix
+    try:
+        if DECISION_MATRIX_PATH.exists():
+            with open(DECISION_MATRIX_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception as e:
+        log.warning("Could not read decision_matrix.json directly: %s", e)
+    return load_decision_matrix()
+
+
+@app.post("/api/decision_matrix", dependencies=[Depends(authenticate)])
+async def post_decision_matrix(data: dict):
+    from config.decision_matrix_loader import save_decision_matrix, validate_decision_matrix
+    errors = validate_decision_matrix(data)
+    if errors:
+        raise HTTPException(
+            status_code=400,
+            detail={"status": "ERROR", "message": "Validation failed", "errors": errors},
+        )
+    success = save_decision_matrix(data)
+    if not success:
+        raise HTTPException(
+            status_code=500,
+            detail={"status": "ERROR", "message": "Failed to atomically save decision matrix config"},
+        )
+    return {"status": "SUCCESS", "message": "Decision matrix configuration updated successfully"}
 
 
 # Threading locks for cache globals to prevent race conditions
@@ -4165,7 +4203,11 @@ def zerodha_callback(client_id: str = None, request_token: str = None):
             status_code=400,
         )
 
-    if not client_id or client_id != config.get("api_key"):
+    valid_ids = {
+        str(config.get("api_key", "")).strip().lower(),
+        str(config.get("user_id", "")).strip().lower(),
+    } - {""}
+    if client_id and client_id.strip().lower() not in valid_ids:
         return HTMLResponse(
             "<h1>Error: Invalid client_id for stored Zerodha configuration</h1>",
             status_code=400,
@@ -4802,6 +4844,7 @@ async def ops_monitor_page():
 # ── EOD Report Web Page & Live Scan Synchronization Endpoint ─────────────────
 
 
+@app.get("/contribution", response_class=HTMLResponse)
 @app.get("/contributors", response_class=HTMLResponse)
 async def contributors_page():
     """Index Contributors & Point Impact Breakdown (NIFTY 50, BANK NIFTY, SENSEX)."""

@@ -81,9 +81,11 @@ def _classify_leg_liquidity(
     ask: float,
     volume: float,
     oi: float,
+    symbol: str = "",
 ) -> tuple[str, str]:
     """
     Hierarchical liquidity validation for an option leg.
+    For MCX contracts, delegates to Decision Matrix two-tier liquidity gate.
     
     Primary Check (Market Depth Available):
         Ask > Bid > 0 and (Ask - Bid) / LTP <= Spread Threshold
@@ -95,6 +97,17 @@ def _classify_leg_liquidity(
     Returns:
         tuple[liquidity_tier ("primary" | "secondary" | "illiquid"), reason_str]
     """
+    from config.settings import MCX_SYMBOLS
+    is_mcx = any(m in str(symbol).upper() for m in MCX_SYMBOLS) if symbol else False
+    if is_mcx:
+        from src.engine.decision_matrix import is_mcx_strike_liquid
+        strike_data = {"ltp": ltp, "bid": bid, "ask": ask, "volume": volume, "oi": oi}
+        ok, reason = is_mcx_strike_liquid(strike_data)
+        if ok:
+            return "primary", f"mcx_gate_ok({reason})"
+        else:
+            return "illiquid", reason
+
     # 1. Primary Check: Market Depth available
     if ask > 0 and bid > 0 and ask >= bid:
         spread = ask - bid
@@ -306,8 +319,8 @@ def validate_market_data(
             pe_ask = float(r.get("pe_ask") or r.get("put_ask") or (r.get("ask") if is_pe_row else 0.0) or 0.0)
 
             # Hierarchical liquidity check
-            ce_tier, _ = _classify_leg_liquidity(ce_ltp, ce_bid, ce_ask, ce_vol, ce_oi)
-            pe_tier, _ = _classify_leg_liquidity(pe_ltp, pe_bid, pe_ask, pe_vol, pe_oi)
+            ce_tier, _ = _classify_leg_liquidity(ce_ltp, ce_bid, ce_ask, ce_vol, ce_oi, symbol=sym_base)
+            pe_tier, _ = _classify_leg_liquidity(pe_ltp, pe_bid, pe_ask, pe_vol, pe_oi, symbol=sym_base)
 
             if is_ce_row:
                 if ce_tier != "illiquid":
@@ -429,6 +442,7 @@ def validate_trade_leg_data(
     legs: list[dict],
     oc_data: Optional[dict[str, Any]],
     underlying: float,
+    symbol: Optional[str] = None,
 ) -> tuple[bool, list[str]]:
     """
     Strict 100% Binary Data Integrity Validation for Multi-Leg Orders before dispatch.
@@ -454,6 +468,13 @@ def validate_trade_leg_data(
     strikes = oc_data.get("strikes") or []
     if not strikes:
         return False, ["Option chain contains no strikes for leg validation"]
+
+    sym_clean = (
+        str(symbol or "").strip()
+        or (oc_data.get("symbol") if isinstance(oc_data, dict) and oc_data.get("symbol") else "")
+        or (legs[0].get("symbol") if legs and isinstance(legs[0], dict) and legs[0].get("symbol") else "")
+        or ""
+    )
 
     issues = []
 
@@ -503,7 +524,7 @@ def validate_trade_leg_data(
             elif not is_valid_option_premium(target_strike, target_opt_norm, ltp, underlying):
                 issues.append(f"Leg #{idx} ({target_strike} {target_opt_norm}): LTP {ltp:.2f} violates intrinsic/boundary limits")
 
-            tier, _ = _classify_leg_liquidity(ltp, bid, ask, vol, oi)
+            tier, _ = _classify_leg_liquidity(ltp, bid, ask, vol, oi, symbol=sym_clean)
             if tier == "illiquid":
                 issues.append(f"Leg #{idx} ({target_strike} {target_opt_norm}): completely illiquid with 0 OI and no market depth")
             break

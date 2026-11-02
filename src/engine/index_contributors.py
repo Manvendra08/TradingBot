@@ -528,3 +528,278 @@ def format_contributor_sentiment_text(cs: Dict[str, Any]) -> str:
 
     return "\n".join(lines)
 
+
+
+# ── Multi-Scan Heavyweight Tracking & Persistence ────────────────────────────
+
+HEAVYWEIGHTS_LIMITS = {
+    "NIFTY": 10,
+    "SENSEX": 10,
+    "BANKNIFTY": 5
+}
+
+
+def record_heavyweights_scan_snapshot(
+    index_names: tuple[str, ...] = ("NIFTY", "BANKNIFTY", "SENSEX"),
+    force_refresh: bool = False
+) -> Dict[str, Any]:
+    """
+    Snapshots the top 10 heavyweights for Nifty & Sensex and top 5 heavyweights
+    for Bank Nifty with their net point movement (impact) into SQLite.
+    Prunes records to maintain recent scan history.
+    """
+    import json
+    from src.models.schema import get_conn
+
+    now_dt = datetime.now(IST)
+    scan_time = now_dt.isoformat()
+    display_time = now_dt.strftime("%d %b %I:%M %p")
+
+    saved_records: Dict[str, Any] = {}
+    try:
+        from config.symbol_classes import is_market_open
+        from config.runtime_config import get_scan_frequency_nse
+        freq_min = get_scan_frequency_nse()
+
+        with get_conn() as conn:
+            for idx in index_names:
+                # Gated strictly by equity market trading hours: do not snapshot off-market hours
+                if not force_refresh and not is_market_open(idx, now_dt):
+                    log.debug("[%s] Skipping heavyweight snapshot: equity market closed at %s", idx, display_time)
+                    continue
+                # Gated by pipeline scan frequency: skip if recorded within the configured scan interval
+                last_row = conn.execute(
+                    "SELECT scan_time FROM heavyweight_scans WHERE index_name = ? ORDER BY id DESC LIMIT 1",
+                    (idx,)
+                ).fetchone()
+
+                if last_row and not force_refresh:
+                    try:
+                        last_dt = datetime.fromisoformat(last_row["scan_time"])
+                        elapsed_s = (now_dt - last_dt).total_seconds()
+                        min_gap_s = max(60, int(freq_min * 60 * 0.8))
+                        if elapsed_s < min_gap_s:
+                            log.debug(
+                                "[%s] Skipping heavyweight snapshot: %ds elapsed < %ds required for %dm pipeline frequency",
+                                idx, elapsed_s, min_gap_s, freq_min
+                            )
+                            continue
+                    except Exception:
+                        pass
+
+                top_n = HEAVYWEIGHTS_LIMITS.get(idx, 10)
+                data = get_index_contributors(idx, force_refresh=force_refresh)
+
+                # Filter/sort top heavyweights strictly by weight
+                heavyweights = sorted(
+                    data.get("all_constituents", []),
+                    key=lambda x: x["weight"],
+                    reverse=True
+                )[:top_n]
+
+                hw_payload = []
+                for rank, h in enumerate(heavyweights, start=1):
+                    hw_payload.append({
+                        "rank": rank,
+                        "symbol": h["symbol"],
+                        "name": h.get("name", h["symbol"]),
+                        "sector": h.get("sector", "Equities"),
+                        "weight": round(h["weight"], 2),
+                        "ltp": round(h["ltp"], 2),
+                        "prev_close": round(h["prev_close"], 2),
+                        "change_pct": round(h["change_pct"], 2),
+                        "point_impact": round(h["point_impact"], 2)
+                    })
+
+                conn.execute(
+                    """
+                    INSERT INTO heavyweight_scans (
+                        scan_time, display_time, index_name, spot_price, net_points, index_change_pct, heavyweights_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        scan_time,
+                        display_time,
+                        idx,
+                        data["spot_price"],
+                        data["net_points"],
+                        data["index_change_pct"],
+                        json.dumps(hw_payload)
+                    )
+                )
+
+                saved_records[idx] = {
+                    "scan_time": scan_time,
+                    "display_time": display_time,
+                    "spot_price": data["spot_price"],
+                    "net_points": data["net_points"],
+                    "index_change_pct": data["index_change_pct"],
+                    "heavyweights": hw_payload
+                }
+
+                # Prune to retain last 30 scans per index
+                conn.execute(
+                    """
+                    DELETE FROM heavyweight_scans 
+                    WHERE index_name = ? AND id NOT IN (
+                        SELECT id FROM heavyweight_scans WHERE index_name = ? ORDER BY id DESC LIMIT 30
+                    )
+                    """,
+                    (idx, idx)
+                )
+    except Exception as exc:
+        log.exception("[index_contributors] Error recording heavyweight scan snapshot: %s", exc)
+
+    return saved_records
+
+
+def get_heavyweights_history(limit: int = 5) -> Dict[str, Any]:
+    """
+    Retrieves the last `limit` (default 5) scans of top heavyweights movement for
+    NIFTY (10), SENSEX (10), and BANK NIFTY (5).
+    Organizes multi-scan timeline matrices and directional trend metrics.
+    """
+    import json
+    from src.models.schema import get_read_conn
+
+    indices = ["NIFTY", "BANKNIFTY", "SENSEX"]
+    history: Dict[str, Any] = {}
+    from config.runtime_config import get_scan_frequency_nse
+    freq_min = get_scan_frequency_nse()
+    history["scan_frequency_minutes"] = freq_min
+
+    # Check if DB has scans; if not, trigger initial snapshot recording
+    with get_read_conn() as conn:
+        count = conn.execute("SELECT COUNT(*) FROM heavyweight_scans").fetchone()[0]
+    if count == 0:
+        record_heavyweights_scan_snapshot()
+
+    with get_read_conn() as conn:
+        for idx in indices:
+            candidate_rows = conn.execute(
+                """
+                SELECT id, scan_time, display_time, spot_price, net_points, index_change_pct, heavyweights_json, created_at
+                FROM heavyweight_scans
+                WHERE index_name = ?
+                ORDER BY id DESC
+                LIMIT 30
+                """,
+                (idx,)
+            ).fetchall()
+
+            if not candidate_rows:
+                continue
+
+            # Pick up to `limit` scans that respect both equity market hours and pipeline scan spacing
+            min_gap_s = max(60, int(freq_min * 60 * 0.70))
+            selected_rows = []
+            for r in candidate_rows:
+                try:
+                    curr_dt = datetime.fromisoformat(r["scan_time"])
+                    # Strictly filter to official equity market trading hours (09:15 to 15:40 IST)
+                    if curr_dt.weekday() >= 5 or not ("09:15" <= curr_dt.strftime("%H:%M") <= "15:40"):
+                        continue
+                except Exception:
+                    pass
+
+                if not selected_rows:
+                    selected_rows.append(r)
+                else:
+                    try:
+                        last_selected_dt = datetime.fromisoformat(selected_rows[-1]["scan_time"])
+                        curr_dt = datetime.fromisoformat(r["scan_time"])
+                        if abs((last_selected_dt - curr_dt).total_seconds()) >= min_gap_s:
+                            selected_rows.append(r)
+                    except Exception:
+                        selected_rows.append(r)
+                if len(selected_rows) >= limit:
+                    break
+
+            # Chronological order: oldest to newest within the selected scans
+            scans_chronological = list(reversed(selected_rows))
+            scan_headers = []
+            for r in scans_chronological:
+                scan_headers.append({
+                    "id": r["id"],
+                    "scan_time": r["scan_time"],
+                    "display_time": r["display_time"],
+                    "spot_price": r["spot_price"],
+                    "net_points": r["net_points"],
+                    "index_change_pct": r["index_change_pct"]
+                })
+
+            stock_map: Dict[str, Dict[str, Any]] = {}
+            for s_idx, r in enumerate(scans_chronological):
+                try:
+                    hws = json.loads(r["heavyweights_json"])
+                except Exception:
+                    hws = []
+                for hw in hws:
+                    sym = hw["symbol"]
+                    if sym not in stock_map:
+                        stock_map[sym] = {
+                            "symbol": sym,
+                            "name": hw.get("name", sym),
+                            "sector": hw.get("sector", "Equities"),
+                            "weight": hw.get("weight", 0.0),
+                            "ltp": hw.get("ltp", 0.0),
+                            "prev_close": hw.get("prev_close", 0.0),
+                            "change_pct": hw.get("change_pct", 0.0),
+                            "point_impact": hw.get("point_impact", 0.0),
+                            "scan_points": [None] * len(scans_chronological),
+                            "scan_pcts": [None] * len(scans_chronological)
+                        }
+                    # Update with latest scan's quote
+                    stock_map[sym]["ltp"] = hw.get("ltp", 0.0)
+                    stock_map[sym]["change_pct"] = hw.get("change_pct", 0.0)
+                    stock_map[sym]["point_impact"] = hw.get("point_impact", 0.0)
+                    stock_map[sym]["scan_points"][s_idx] = hw.get("point_impact", 0.0)
+                    stock_map[sym]["scan_pcts"][s_idx] = hw.get("change_pct", 0.0)
+
+            # Backfill any missing intermediate scan points
+            for sym, item in stock_map.items():
+                pts = item["scan_points"]
+                for i in range(len(pts)):
+                    if pts[i] is None:
+                        pts[i] = pts[i - 1] if i > 0 and pts[i - 1] is not None else item["point_impact"]
+
+                # 5-Scan Shift calculation: net movement from first scan in window to latest scan
+                valid_pts = [p for p in pts if p is not None]
+                if len(valid_pts) >= 2:
+                    diff = valid_pts[-1] - valid_pts[0]
+                    item["shift_pts"] = round(diff, 2)
+                    item["trend"] = "UP" if diff > 0.05 else ("DOWN" if diff < -0.05 else "FLAT")
+                else:
+                    item["shift_pts"] = 0.0
+                    item["trend"] = "FLAT"
+
+            # Sort stocks strictly by index weight descending
+            stocks_sorted = sorted(stock_map.values(), key=lambda x: x["weight"], reverse=True)
+            for r_idx, s in enumerate(stocks_sorted, start=1):
+                s["rank"] = r_idx
+
+            latest_scan = scan_headers[-1] if scan_headers else {}
+            total_hw_pts = sum(s["point_impact"] for s in stocks_sorted)
+            net_idx_pts = latest_scan.get("net_points", 0.0)
+
+            # Share of index move driven by heavyweights
+            hw_share_pct = round((abs(total_hw_pts) / max(0.01, abs(net_idx_pts))) * 100.0, 1) if abs(net_idx_pts) > 0.1 else 100.0
+
+            history[idx] = {
+                "index_name": idx,
+                "scan_frequency_minutes": freq_min,
+                "display_name": INDEX_INFO.get(idx, {}).get("display_name", idx),
+                "scan_count": len(scans_chronological),
+                "latest_scan_time": latest_scan.get("display_time", ""),
+                "spot_price": latest_scan.get("spot_price", 0.0),
+                "net_points": net_idx_pts,
+                "index_change_pct": latest_scan.get("index_change_pct", 0.0),
+                "total_heavyweight_impact": round(total_hw_pts, 2),
+                "heavyweight_share_pct": min(100.0, hw_share_pct),
+                "bullish_count": sum(1 for s in stocks_sorted if s["point_impact"] > 0),
+                "bearish_count": sum(1 for s in stocks_sorted if s["point_impact"] < 0),
+                "scans": scan_headers,
+                "heavyweights": stocks_sorted
+            }
+
+    return history

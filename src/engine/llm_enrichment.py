@@ -2436,23 +2436,6 @@ def call_llm_api(
                 },
             ],
         }
-        _github_models_eod = {
-            "model_group": "github-models-eod",
-            "providers": [
-                {
-                    "name": "GitHub Models (GPT-4o-mini)",
-                    "env_key": "GITHUB_TOKEN",
-                    "url": "https://models.inference.ai.azure.com/chat/completions",
-                    "model": "gpt-4o-mini",
-                },
-                {
-                    "name": "GitHub Models (Llama 3.3 70B)",
-                    "env_key": "GITHUB_TOKEN",
-                    "url": "https://models.inference.ai.azure.com/chat/completions",
-                    "model": "Llama-3.3-70B-Instruct",
-                },
-            ],
-        }
         _groq_group_eod = {
             "model_group": "groq-eod",
             "providers": [
@@ -2464,10 +2447,10 @@ def call_llm_api(
                     "max_tokens_override": 1536,
                 },
                 {
-                    "name": "Groq (Qwen 3.6 27B)",
+                    "name": "Groq (Qwen 3.8 27B)",
                     "env_key": "GROQ_API_KEY",
                     "url": "https://api.groq.com/openai/v1/chat/completions",
-                    "model": "qwen/qwen3.6-27b",
+                    "model": "qwen/qwen3.8-27b",
                     "max_tokens_override": 1536,
                 },
             ],
@@ -2483,7 +2466,6 @@ def call_llm_api(
 
         FREE_MODEL_PIPELINE = [
             _omnirouter_eod_group,
-            _github_models_eod,
             _groq_group_eod,
             _gemini_group,
             _opencode_zen_eod,
@@ -2521,23 +2503,6 @@ def call_llm_api(
             },
         ]
     elif purpose == "formatting":
-        _github_models_fmt = {
-            "model_group": "github-models-formatting",
-            "providers": [
-                {
-                    "name": "GitHub Models (GPT-4o-mini)",
-                    "env_key": "GITHUB_TOKEN",
-                    "url": "https://models.inference.ai.azure.com/chat/completions",
-                    "model": "gpt-4o-mini",
-                },
-                {
-                    "name": "GitHub Models (Llama 3.3 70B)",
-                    "env_key": "GITHUB_TOKEN",
-                    "url": "https://models.inference.ai.azure.com/chat/completions",
-                    "model": "Llama-3.3-70B-Instruct",
-                },
-            ],
-        }
         _groq_group_fmt = {
             "model_group": "groq-formatting",
             "providers": [
@@ -2549,10 +2514,10 @@ def call_llm_api(
                     "max_tokens_override": 1024,
                 },
                 {
-                    "name": "Groq (Qwen 3.6 27B)",
+                    "name": "Groq (Qwen 3.8 27B)",
                     "env_key": "GROQ_API_KEY",
                     "url": "https://api.groq.com/openai/v1/chat/completions",
-                    "model": "qwen/qwen3.6-27b",
+                    "model": "qwen/qwen3.8-27b",
                     "max_tokens_override": 1024,
                 },
                 {
@@ -2607,7 +2572,6 @@ def call_llm_api(
         }
         FREE_MODEL_PIPELINE = [
             _omnirouter_group,
-            _github_models_fmt,
             _groq_group_fmt,
             _gemini_group,
             _opencode_zen_formatting_group,
@@ -2625,10 +2589,10 @@ def call_llm_api(
                     "max_tokens_override": 1024,
                 },
                 {
-                    "name": "Groq (Qwen 3.6 27B)",
+                    "name": "Groq (Qwen 3.8 27B)",
                     "env_key": "GROQ_API_KEY",
                     "url": "https://api.groq.com/openai/v1/chat/completions",
-                    "model": "qwen/qwen3.6-27b",
+                    "model": "qwen/qwen3.8-27b",
                     "max_tokens_override": 1024,
                 },
                 {
@@ -2697,28 +2661,10 @@ def call_llm_api(
                 },
             ],
         }
-        _github_models_sentinel = {
-            "model_group": "github-models-sentinel",
-            "providers": [
-                {
-                    "name": "GitHub Models (GPT-4o-mini)",
-                    "env_key": "GITHUB_TOKEN",
-                    "url": "https://models.inference.ai.azure.com/chat/completions",
-                    "model": "gpt-4o-mini",
-                },
-                {
-                    "name": "GitHub Models (Llama 3.3 70B)",
-                    "env_key": "GITHUB_TOKEN",
-                    "url": "https://models.inference.ai.azure.com/chat/completions",
-                    "model": "Llama-3.3-70B-Instruct",
-                },
-            ],
-        }
         FREE_MODEL_PIPELINE = [
             _omnirouter_sentinel_group,
             _groq_group_sentinel,
             _gemini_group_sentinel,
-            _github_models_sentinel,
             _opencode_zen_sentinel,
         ]
     elif purpose == "eia_analysis":
@@ -2726,16 +2672,10 @@ def call_llm_api(
             "model_group": "groq-eia",
             "providers": [
                 {
-                    "name": "Groq (Llama 3.3 70B)",
+                    "name": "Groq (Qwen 3.8 27B)",
                     "env_key": "GROQ_API_KEY",
                     "url": "https://api.groq.com/openai/v1/chat/completions",
-                    "model": "llama-3.3-70b-versatile",
-                },
-                {
-                    "name": "Groq (Qwen 3.6 27B)",
-                    "env_key": "GROQ_API_KEY",
-                    "url": "https://api.groq.com/openai/v1/chat/completions",
-                    "model": "qwen/qwen3.6-27b",
+                    "model": "qwen/qwen3.8-27b",
                 },
                 {
                     "name": "Groq (GPT-OSS 120B)",
@@ -2771,29 +2711,11 @@ def call_llm_api(
                 },
             ],
         }
-        _github_models_eia = {
-            "model_group": "github-models-eia",
-            "providers": [
-                {
-                    "name": "GitHub Models (GPT-4o-mini)",
-                    "env_key": "GITHUB_TOKEN",
-                    "url": "https://models.inference.ai.azure.com/chat/completions",
-                    "model": "gpt-4o-mini",
-                },
-                {
-                    "name": "GitHub Models (Llama 3.3 70B)",
-                    "env_key": "GITHUB_TOKEN",
-                    "url": "https://models.inference.ai.azure.com/chat/completions",
-                    "model": "Llama-3.3-70B-Instruct",
-                },
-            ],
-        }
         # EIA Analysis Pipeline: OmniRouter (Primary) -> Groq -> OpenCode Zen -> GitHub Models -> Gemini
         FREE_MODEL_PIPELINE = [
             _omnirouter_group,
             _groq_group_eia,
             _opencode_zen_eia,
-            _github_models_eia,
             _gemini_group,
         ]
     else:  # live_verdict — symbol-aware routing
@@ -2897,10 +2819,10 @@ def call_llm_api(
                     "max_tokens_override": 2048,
                 },
                 {
-                    "name": "Groq (Qwen 3.6 27B)",
+                    "name": "Groq (Qwen 3.8 27B)",
                     "env_key": "GROQ_API_KEY",
                     "url": "https://api.groq.com/openai/v1/chat/completions",
-                    "model": "qwen/qwen3.6-27b",
+                    "model": "qwen/qwen3.8-27b",
                     "max_tokens_override": 2048,
                 },
                 {
@@ -2908,13 +2830,6 @@ def call_llm_api(
                     "env_key": "GROQ_API_KEY",
                     "url": "https://api.groq.com/openai/v1/chat/completions",
                     "model": "openai/gpt-oss-20b",
-                    "max_tokens_override": 2048,
-                },
-                {
-                    "name": "Groq (Compound)",
-                    "env_key": "GROQ_API_KEY",
-                    "url": "https://api.groq.com/openai/v1/chat/completions",
-                    "model": "groq/compound",
                     "max_tokens_override": 2048,
                 },
             ],
@@ -3023,23 +2938,6 @@ def call_llm_api(
         }
 
         # GitHub Models — used in both paths at different priority
-        _github_models = {
-            "model_group": "github-models-free",
-            "providers": [
-                {
-                    "name": "GitHub Models (GPT-4o-mini)",
-                    "env_key": "GITHUB_TOKEN",
-                    "url": "https://models.inference.ai.azure.com/chat/completions",
-                    "model": "gpt-4o-mini",
-                },
-                {
-                    "name": "GitHub Models (Llama 3.3 70B)",
-                    "env_key": "GITHUB_TOKEN",
-                    "url": "https://models.inference.ai.azure.com/chat/completions",
-                    "model": "Llama-3.3-70B-Instruct",
-                },
-            ],
-        }
 
         # ── AnyAPI free group (MCX PRIMARY — unified free-tier endpoint) ──
         _anyapi_free_group = {
@@ -3084,10 +2982,9 @@ def call_llm_api(
         }
 
         if _is_mcx:
-            # MCX: OmniRouter → GitHub Models → Groq → Gemini → OpenCode Zen → AnyAPI Free → Bedrock Mantle → Nvidia NIM → Bedrock → OpenRouter → SambaNova
+            # MCX: OmniRouter → Groq → Gemini → OpenCode Zen → AnyAPI Free → Bedrock Mantle → Nvidia NIM → Bedrock → OpenRouter
             FREE_MODEL_PIPELINE = [
                 _omnirouter_group,
-                _github_models,
                 _groq_group,
                 _gemini_group,
                 _opencode_zen_group,
@@ -3107,36 +3004,12 @@ def call_llm_api(
                     ],
                 },
                 _openrouter_group,
-                {
-                    "model_group": "sambanova-mcx",
-                    "providers": [
-                        {
-                            "name": "SambaNova (DeepSeek-V3.1)",
-                            "env_key": "SAMBANOVA_API_KEY",
-                            "url": "https://api.sambanova.ai/v1/chat/completions",
-                            "model": "DeepSeek-V3.1",
-                        },
-                        {
-                            "name": "SambaNova (GPT-OSS-120B)",
-                            "env_key": "SAMBANOVA_API_KEY",
-                            "url": "https://api.sambanova.ai/v1/chat/completions",
-                            "model": "gpt-oss-120b",
-                            "max_tokens_override": 4096,
-                        },
-                        {
-                            "name": "SambaNova (Llama 3.3 70B)",
-                            "env_key": "SAMBANOVA_API_KEY",
-                            "url": "https://api.sambanova.ai/v1/chat/completions",
-                            "model": "Meta-Llama-3.3-70B-Instruct",
-                        },
-                    ],
-                },
+
             ]
         else:
-            # NSE/BSE indices: OmniRouter → GitHub Models → Groq → Gemini → OpenCode Zen → Nvidia NIM → Bedrock → OpenRouter
+            # NSE/BSE indices: OmniRouter → Groq → Gemini → OpenCode Zen → Nvidia NIM → Bedrock → OpenRouter
             FREE_MODEL_PIPELINE = [
                 _omnirouter_group,
-                _github_models,
                 _groq_group,
                 _gemini_group,
                 _opencode_zen_group,
@@ -4970,16 +4843,6 @@ def get_multileg_verdict(
             is_mcx = symbol.upper() in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER") or base_sym in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER")
             strat = result.strategy_type
             legs = [l.model_copy() if hasattr(l, "model_copy") else copy.deepcopy(l) for l in result.legs]
-
-            if is_mcx and strat == "IRON_CONDOR":
-                log.info("[llm-multileg] %s: Iron Condor is disabled for MCX symbols — auto-reclassifying to SHORT_STRANGLE", symbol)
-                strat = "SHORT_STRANGLE"
-                sell_legs = [l for l in legs if getattr(l, "side", "").upper() == "SELL"]
-                legs = (sell_legs[:2] if len(sell_legs) >= 2 else legs[:2])
-                legs = [
-                    l.model_copy(update={"side": "SELL"}) if hasattr(l, "model_copy") else (setattr(l, "side", "SELL") or l)
-                    for l in legs
-                ]
 
             st_upper = str(strat or "").upper().strip()
             if st_upper in ("NO_TRADE", "NONE", "", "NULL"):

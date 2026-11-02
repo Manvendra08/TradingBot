@@ -184,4 +184,113 @@ def validate_multileg_trade(
                     rejection_reason=f"Put wing width {put_width:.0f} pts is too narrow for {symbol} (min required: {effective_min_width:.0f} pts). Buy leg is too close."
                 )
 
+    # ── Phase 2: Decision Matrix Rules & Strike Danger Ceilings ─────────────────
+    from config.decision_matrix_loader import load_decision_matrix, get_matrix_mode
+    matrix_cfg = load_decision_matrix()
+    matrix_mode = get_matrix_mode(matrix_cfg)
+
+    # 1. MCX Naked Ban (Always strictly enforced for capital safety)
+    from src.engine.decision_matrix import MCX_SYMBOLS, delta_band
+    is_mcx_sym = symbol.upper().split()[0] in MCX_SYMBOLS
+    if is_mcx_sym and str(strategy_type).upper() in ("SHORT_STRANGLE", "SHORT_STRADDLE", "CUSTOM"):
+        return ValidationResult(
+            is_valid=False,
+            rejection_reason=f"Naked options structure '{strategy_type}' is prohibited on MCX (defined-risk only)."
+        )
+
+    # 2. Strike ITM and Delta Danger Ceiling Checks
+    for leg in proposal.legs:
+        action = str(leg.get("action") or leg.get("side") or "").upper()
+        opt_type = str(leg.get("option_type") or "").upper()
+        strike = float(leg.get("strike") or 0.0)
+
+        # Rejection: Sold leg must NOT be ITM
+        if action == "SELL" and underlying > 0:
+            if opt_type == "CE" and strike < underlying:
+                return ValidationResult(
+                    is_valid=False,
+                    rejection_reason=f"ITM short leg rejected: CE strike {strike} is below spot {underlying}."
+                )
+            elif opt_type == "PE" and strike > underlying:
+                return ValidationResult(
+                    is_valid=False,
+                    rejection_reason=f"ITM short leg rejected: PE strike {strike} is above spot {underlying}."
+                )
+
+        # Danger ceiling check
+        if "delta" in leg and leg["delta"] is not None and strategy_type:
+            abs_delta = abs(float(leg["delta"]))
+            leg_role = "SHORT" if action == "SELL" else "LONG"
+            _, _, danger_ceiling = delta_band(str(strategy_type), leg_role, symbol=symbol, cfg=matrix_cfg)
+            if abs_delta > danger_ceiling:
+                return ValidationResult(
+                    is_valid=False,
+                    rejection_reason=f"Delta danger ceiling breached: {action} {strike} {opt_type} delta {abs_delta:.2f} > max allowed {danger_ceiling:.2f}."
+                )
+
+    # 3. Credit-to-width rule (When in enforce mode)
+    if matrix_mode == "enforce" and str(strategy_type).upper() in ("BULL_PUT_SPREAD", "BEAR_CALL_SPREAD", "IRON_CONDOR"):
+        net_credit = float(getattr(proposal, "net_credit", 0.0) or 0.0)
+        max_loss = float(getattr(proposal, "max_loss", 0.0) or 0.0)
+        total_width = net_credit + max_loss
+        if total_width > 0:
+            credit_ratio = net_credit / total_width
+            reject_below = float(matrix_cfg.get("credit_rules", {}).get("reject_below_ratio", 0.25))
+            if credit_ratio < reject_below:
+                return ValidationResult(
+                    is_valid=False,
+                    rejection_reason=f"Credit ratio {credit_ratio*100:.1f}% below minimum {reject_below*100:.0f}% of wing width."
+                )
+
+    # 4. Regime-cell structure check (enforce mode only)
+    # Rejects LLM proposals whose structure is outside the allowed set for current
+    # direction × vol regime. select_structure returns (recommended, allowed_list, reason).
+    if matrix_mode == "enforce":
+        try:
+            from src.engine.decision_matrix import select_structure, vol_bucket
+            from datetime import datetime
+            import pytz as _pytz
+            _IST = _pytz.timezone("Asia/Kolkata")
+            _now_ist = datetime.now(_IST)
+            _direction = str(getattr(proposal, "direction", None) or "NEUTRAL").upper()
+            _dte_val = getattr(proposal, "days_to_expiry", None)
+            if _dte_val is None and proposal.legs:
+                # Try to derive DTE from the first leg's expiry
+                try:
+                    from src.engine.multileg_paper_trading import _dte_from_expiry
+                    _expiry_str = str(proposal.legs[0].get("expiry", "") or "")
+                    _dte_val = _dte_from_expiry(_expiry_str) if _expiry_str else None
+                except Exception:
+                    _dte_val = None
+            _is_event = bool(matrix_cfg.get("overrides", {}).get("event_window_active", False))
+            _vol = vol_bucket(symbol, cfg=matrix_cfg)
+            _recommended, _allowed, _reason = select_structure(
+                direction=_direction,
+                vol=_vol,
+                dte=_dte_val,
+                is_event=_is_event,
+                symbol=symbol,
+                now_ist=_now_ist,
+                cfg=matrix_cfg,
+            )
+            if _recommended is None:
+                return ValidationResult(
+                    is_valid=False,
+                    rejection_reason=f"Structure '{strategy_type}' rejected: regime matrix NO_TRADE ({_reason})."
+                )
+            _proposed_upper = str(strategy_type).upper()
+            if _proposed_upper not in [s.upper() for s in _allowed]:
+                return ValidationResult(
+                    is_valid=False,
+                    rejection_reason=(
+                        f"Structure '{strategy_type}' is above regime cell — allowed for {_direction}/{_vol}: "
+                        f"{_allowed}. ({_reason})"
+                    )
+                )
+        except Exception as _sel_exc:
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "[validator] select_structure check failed (non-blocking, skipping): %s", _sel_exc
+            )
+
     return ValidationResult(is_valid=True)

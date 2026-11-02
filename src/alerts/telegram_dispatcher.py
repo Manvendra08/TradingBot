@@ -945,10 +945,20 @@ def _process_telegram_command(command_text: str) -> None:
             log.error("Telegram /health failed: %s", he)
             send_text(f"❌ Health check failed: `{_escape_md_v1(str(he))}`")
 
+    elif cmd in ("/hw", "/heavyweights", "/contributors"):
+        try:
+            from src.alerts.heavyweight_digest import format_heavyweight_scan_digest
+            msg = format_heavyweight_scan_digest()
+            send_text(msg)
+        except Exception as hwe:
+            log.error("Telegram /hw failed: %s", hwe)
+            send_text(f"❌ Heavyweights summary failed: `{_escape_md_v1(str(hwe))}`")
+
     elif cmd in ("/help", "/start"):
         help_text = (
             "🤖 **NSEBOT Telegram Commands**\n\n"
             "• `/status` — View current trading state, broker flags & open positions\n"
+            "• `/hw` — 🏛️ View latest Top Heavyweights Net Impact across NIFTY, BANK NIFTY & SENSEX\n"
             "• `/pause` — Pause new automated trade entries\n"
             "• `/resume` — Resume automated trade entries\n"
             "• `/panic` — 🚨 **EMERGENCY STOP**: Cancel all GTTs, market square-off all positions, disable broker & pause\n"

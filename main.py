@@ -60,6 +60,11 @@ except ImportError:
 from config.logging_config import configure_logging
 from src.models.schema import init_db
 
+# ── Error Tracking (Sentry) ─────────────────────────────────────────────────
+# Importing this module initializes Sentry if SENTRY_DSN is configured.
+# If not configured, it falls back to local logging only.
+import src.utils  # noqa: F401
+
 log = logging.getLogger("nsebot.main")
 
 

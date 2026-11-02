@@ -372,3 +372,49 @@ def calculate_trade_lots(
             log.info("%s: Pyramiding level %d — scaling lot size to %d (25%%)", base, pyramid_level, lots)
  
     return lots
+
+def calculate_multileg_lots(
+    symbol: str,
+    strategy_type: str,
+    max_loss_per_lot: float,
+    underlying: float,
+    capital: float | None = None,
+    daily_atr: float = 0.0,
+    config: dict | None = None,
+) -> int:
+    """
+    Sizing from max loss per Decision Matrix specification:
+    lots = floor(min(capital_cap, gap_stress_cap) / max_loss_per_lot)
+    0 lots -> NO_TRADE
+    """
+    from config.decision_matrix_loader import load_decision_matrix
+    dm_cfg = load_decision_matrix(symbol)
+    stops_targets = dm_cfg.get("stops_targets", {})
+    cap_pct = float(stops_targets.get("capital_cap_pct", 1.5)) / 100.0
+    gap_stress_pct = float(stops_targets.get("gap_stress_pct", 2.0)) / 100.0
+
+    if capital is None or capital <= 0:
+        if config is None:
+            config = load_runtime_config()
+        capital = float(config.get("live_capital_per_trade_inr") or 500000.0)
+
+    capital_cap = capital * cap_pct
+    gap_stress_cap = capital * gap_stress_pct
+
+    base = _base_symbol(symbol)
+    lot_size = LOT_SIZES.get(base, 1)
+
+    # For undefined risk (strangle/straddle), compute potential loss on a 2x daily ATR gap
+    is_undefined_risk = strategy_type in ("SHORT_STRANGLE", "SHORT_STRADDLE", "CUSTOM")
+    if is_undefined_risk and daily_atr > 0:
+        gap_loss_per_lot = (2.0 * daily_atr) * lot_size
+        effective_loss_per_lot = max(max_loss_per_lot, gap_loss_per_lot)
+    else:
+        effective_loss_per_lot = max_loss_per_lot
+
+    if effective_loss_per_lot <= 0:
+        return 0
+
+    allowed_loss = min(capital_cap, gap_stress_cap)
+    lots = int(allowed_loss // effective_loss_per_lot)
+    return max(0, lots)

@@ -710,6 +710,222 @@
                     transform: rotate(360deg);
                 }
             }
+        
+            /* ── Heavyweights Multi-Scan Panel ───────────────────────────── */
+            .heavyweights-panel {
+                background: var(--surface);
+                border: 1px solid var(--border);
+                border-radius: 12px;
+                overflow: hidden;
+                display: flex;
+                flex-direction: column;
+                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+            }
+            .hw-panel-header {
+                background: var(--surface-2);
+                border-bottom: 1px solid var(--border);
+                padding: 12px 20px;
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                flex-wrap: wrap;
+                gap: 12px;
+            }
+            .hw-title-group {
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                flex-wrap: wrap;
+            }
+            .hw-title-text {
+                font-weight: 800;
+                font-size: 13px;
+                letter-spacing: 0.8px;
+                color: var(--text);
+                text-transform: uppercase;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            .hw-badge-tag {
+                font-family: var(--mono);
+                font-size: 10px;
+                padding: 3px 8px;
+                border-radius: 4px;
+                background: rgba(0, 229, 160, 0.12);
+                color: var(--accent);
+                border: 1px solid rgba(0, 229, 160, 0.25);
+                letter-spacing: 0.5px;
+            }
+            .hw-controls {
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                flex-wrap: wrap;
+            }
+            .hw-pills {
+                display: flex;
+                align-items: center;
+                background: rgba(0, 0, 0, 0.25);
+                padding: 3px;
+                border-radius: 6px;
+                border: 1px solid var(--border);
+                gap: 2px;
+            }
+            .hw-pill {
+                padding: 5px 12px;
+                font-size: 11px;
+                font-weight: 700;
+                border-radius: 4px;
+                border: none;
+                background: transparent;
+                color: var(--text-dim);
+                cursor: pointer;
+                transition: all 0.15s ease;
+                font-family: var(--sans);
+            }
+            .hw-pill:hover {
+                color: var(--text);
+            }
+            .hw-pill.active {
+                background: var(--surface);
+                color: var(--accent);
+                box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+            }
+            .hw-scan-provenance {
+                font-family: var(--mono);
+                font-size: 11px;
+                color: var(--text-dim);
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                background: var(--surface);
+                border: 1px solid var(--border);
+                padding: 3px 8px;
+                border-radius: 4px;
+            }
+            .hw-pulse-dot {
+                width: 7px;
+                height: 7px;
+                border-radius: 50%;
+                background: var(--accent);
+                display: inline-block;
+                box-shadow: 0 0 8px var(--accent);
+                animation: hwPulse 2s infinite ease-in-out;
+            }
+            @keyframes hwPulse {
+                0%, 100% { opacity: 0.4; transform: scale(0.9); }
+                50% { opacity: 1; transform: scale(1.15); }
+            }
+
+            .hw-summary-strip {
+                display: grid;
+                grid-template-columns: repeat(3, 1fr);
+                background: rgba(0, 0, 0, 0.12);
+                border-bottom: 1px solid var(--border);
+                padding: 10px 20px;
+                gap: 16px;
+            }
+            @media (max-width: 768px) {
+                .hw-summary-strip {
+                    grid-template-columns: 1fr;
+                    gap: 8px;
+                }
+            }
+            .hw-summary-item {
+                display: flex;
+                flex-direction: column;
+                gap: 2px;
+            }
+            .hw-summary-label {
+                font-size: 10px;
+                font-weight: 600;
+                text-transform: uppercase;
+                color: var(--text-dim);
+                letter-spacing: 0.5px;
+            }
+            .hw-summary-val {
+                font-family: var(--mono);
+                font-weight: 700;
+                font-size: 13px;
+                display: flex;
+                align-items: center;
+                gap: 6px;
+            }
+
+            .hw-matrix-wrap {
+                overflow-x: auto;
+                width: 100%;
+            }
+            .hw-table {
+                width: 100%;
+                border-collapse: collapse;
+                font-size: 12px;
+            }
+            .hw-table th {
+                background: var(--surface-2);
+                color: var(--text-dim);
+                padding: 9px 12px;
+                font-weight: 600;
+                font-size: 11px;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                border-bottom: 1px solid var(--border);
+                white-space: nowrap;
+            }
+            .hw-table td {
+                padding: 8px 12px;
+                border-bottom: 1px solid var(--border);
+                vertical-align: middle;
+            }
+            .hw-table tr:hover td {
+                background: rgba(255, 255, 255, 0.025);
+            }
+            .hw-scan-col-hdr {
+                text-align: right;
+                font-family: var(--mono);
+                font-size: 10px;
+                border-left: 1px dashed var(--border);
+            }
+            .hw-scan-cell {
+                text-align: right;
+                font-family: var(--mono);
+                font-weight: 700;
+                font-size: 11.5px;
+                border-left: 1px dashed var(--border);
+                white-space: nowrap;
+            }
+            .hw-scan-cell.pos {
+                color: var(--green);
+            }
+            .hw-scan-cell.neg {
+                color: var(--red);
+            }
+            .hw-scan-cell.latest {
+                background: rgba(0, 229, 160, 0.04);
+            }
+            .hw-trend-badge {
+                padding: 2px 6px;
+                border-radius: 4px;
+                font-size: 11px;
+                font-family: var(--mono);
+                font-weight: 700;
+                display: inline-flex;
+                align-items: center;
+                gap: 4px;
+            }
+            .hw-trend-badge.up {
+                background: var(--green-bg);
+                color: var(--green);
+            }
+            .hw-trend-badge.down {
+                background: var(--red-bg);
+                color: var(--red);
+            }
+            .hw-trend-badge.flat {
+                background: rgba(148, 163, 184, 0.12);
+                color: var(--text-dim);
+            }
         </style>
     </head>
     <body data-theme="dark">
@@ -846,6 +1062,75 @@
                         <span>Index Weight Dragging Down:</span>
                         <b id="kpi-draggers-weight">0.0%</b>
                     </div>
+                </div>
+            </section>
+
+            <!-- ── Top Heavyweights Net Point Movement & Multi-Scan History ─────── -->
+            <section class="heavyweights-panel" id="heavyweights-panel">
+                <div class="hw-panel-header">
+                    <div class="hw-title-group">
+                        <span class="hw-title-text">
+                            🏛️ Top Heavyweights Net Point Movement
+                        </span>
+                        <span class="hw-badge-tag">Last 5 Scans History</span>
+                    </div>
+                    <div class="hw-controls">
+                        <div class="hw-pills">
+                            <button class="hw-pill active" id="hw-pill-nifty" onclick="switchHeavyweightsIndex('NIFTY')">NIFTY (Top 10)</button>
+                            <button class="hw-pill" id="hw-pill-banknifty" onclick="switchHeavyweightsIndex('BANKNIFTY')">BANK NIFTY (Top 5)</button>
+                            <button class="hw-pill" id="hw-pill-sensex" onclick="switchHeavyweightsIndex('SENSEX')">SENSEX (Top 10)</button>
+                        </div>
+                        <div class="hw-scan-provenance" id="hw-provenance-badge">
+                            <span class="hw-pulse-dot"></span>
+                            <span id="hw-provenance-text">Syncing scans...</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Heavyweight Aggregation Summary Strip -->
+                <div class="hw-summary-strip">
+                    <div class="hw-summary-item">
+                        <span class="hw-summary-label">Top Heavyweights Net Impact</span>
+                        <div class="hw-summary-val" id="hw-summary-impact">+0.00 pts</div>
+                    </div>
+                    <div class="hw-summary-item">
+                        <span class="hw-summary-label">Heavyweight Breadth</span>
+                        <div class="hw-summary-val" id="hw-summary-breadth">0 Bullish / 0 Bearish</div>
+                    </div>
+                    <div class="hw-summary-item">
+                        <span class="hw-summary-label">Index Move Share Driven</span>
+                        <div class="hw-summary-val" id="hw-summary-share">0.0% of Index Move</div>
+                    </div>
+                </div>
+
+                <!-- Multi-Scan Comparison Matrix Table -->
+                <div class="hw-matrix-wrap">
+                    <table class="hw-table" id="hw-matrix-table">
+                        <thead>
+                            <tr id="hw-table-header-row">
+                                <th style="width: 36px">#</th>
+                                <th>Heavyweight Stock</th>
+                                <th style="text-align: right">Weight</th>
+                                <th style="text-align: right">LTP (₹)</th>
+                                <th style="text-align: right">Day %</th>
+                                <th style="text-align: right">Current Impact</th>
+                                <!-- Dynamic scan history columns (up to 5) injected via JS -->
+                                <th class="hw-scan-col-hdr" id="hw-scan-hdr-0">Scan 1</th>
+                                <th class="hw-scan-col-hdr" id="hw-scan-hdr-1">Scan 2</th>
+                                <th class="hw-scan-col-hdr" id="hw-scan-hdr-2">Scan 3</th>
+                                <th class="hw-scan-col-hdr" id="hw-scan-hdr-3">Scan 4</th>
+                                <th class="hw-scan-col-hdr" id="hw-scan-hdr-4">Scan 5 (Latest)</th>
+                                <th style="text-align: center; width: 90px">5-Scan Shift</th>
+                            </tr>
+                        </thead>
+                        <tbody id="hw-table-tbody">
+                            <tr>
+                                <td colspan="12" style="text-align:center; padding: 24px; color: var(--text-dim)">
+                                    Loading persistent multi-scan heavyweights data...
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
                 </div>
             </section>
 
@@ -1081,6 +1366,7 @@
             function switchIndex(idx) {
                 currentIndex = idx;
                 localStorage.setItem("nsebot_contrib_index", idx);
+                switchHeavyweightsIndex(idx);
                 document.querySelectorAll(".index-pill").forEach(p => {
                     p.classList.toggle("active", p.dataset.index === idx);
                 });
@@ -1129,7 +1415,201 @@
                 }
             }
 
-            // Fetch Contributors Data
+            // ── Top Heavyweights Multi-Scan Tracking (NIFTY 10, SENSEX 10, BANKNIFTY 5) ──
+            let currentHwIndex = localStorage.getItem("nsebot_hw_index") || currentIndex || "NIFTY";
+            let hwHistoryData = null;
+            let hwPollTimer = null;
+            let configuredScanFreq = 30; // default pipeline scan frequency
+
+            async function fetchRuntimeConfig() {
+                try {
+                    const res = await fetch("/api/runtime");
+                    if (res.ok) {
+                        const data = await res.json();
+                        configuredScanFreq = data.scan_frequency_nse || data.scan_frequency_minutes || 30;
+                        const arLabel = document.querySelector("#auto-refresh-toggle") ? document.querySelector("#auto-refresh-toggle").parentElement.querySelector("span") : null;
+                        if (arLabel) {
+                            arLabel.textContent = `Auto Refresh (${configuredScanFreq}m)`;
+                        }
+                        const arToggle = document.getElementById("auto-refresh-toggle");
+                        if (arToggle && arToggle.checked) {
+                            toggleAutoRefresh(true);
+                        }
+                        if (typeof renderHeavyweightsPanel === "function") {
+                            renderHeavyweightsPanel();
+                        }
+                    }
+                } catch (e) {
+                    console.warn("Failed to fetch runtime config:", e);
+                }
+            }
+
+            function switchHeavyweightsIndex(idx) {
+                currentHwIndex = idx;
+                localStorage.setItem("nsebot_hw_index", idx);
+                document.querySelectorAll(".hw-pill").forEach(p => {
+                    p.classList.toggle("active", p.id === `hw-pill-${idx.toLowerCase()}`);
+                });
+                renderHeavyweightsPanel();
+            }
+
+            async function fetchHeavyweights(force = false) {
+                try {
+                    const res = await fetch(`/api/contributors/heavyweights?refresh=${force}&limit=5`);
+                    if (!res.ok) return;
+                    hwHistoryData = await res.json();
+                    try {
+                        localStorage.setItem("nsebot_hw_history", JSON.stringify(hwHistoryData));
+                    } catch (e) {}
+                    renderHeavyweightsPanel();
+                } catch (err) {
+                    console.warn("Failed to fetch heavyweights history:", err);
+                }
+            }
+
+            function renderHeavyweightsPanel() {
+                if (!hwHistoryData) {
+                    try {
+                        const cached = localStorage.getItem("nsebot_hw_history");
+                        if (cached) hwHistoryData = JSON.parse(cached);
+                    } catch (e) {}
+                }
+                if (!hwHistoryData) return;
+
+                const idxData = hwHistoryData[currentHwIndex];
+                if (!idxData) return;
+
+                // Sync pill button states
+                document.querySelectorAll(".hw-pill").forEach(p => {
+                    p.classList.toggle("active", p.id === `hw-pill-${currentHwIndex.toLowerCase()}`);
+                });
+
+                const scanFreq = configuredScanFreq || idxData.scan_frequency_minutes || (hwHistoryData && hwHistoryData.scan_frequency_minutes) || 30;
+
+                // Update Provenance Badge with configured scan frequency
+                const provText = document.getElementById("hw-provenance-text");
+                if (provText) {
+                    provText.textContent = `Interval: ${scanFreq}m · ${idxData.scan_count}/5 Scans Tracked · Latest: ${idxData.latest_scan_time || 'Just now'}`;
+                }
+
+                // Update Auto-Refresh text label to match pipeline frequency
+                const arLabel = document.querySelector("#auto-refresh-toggle") ? document.querySelector("#auto-refresh-toggle").parentElement.querySelector("span") : null;
+                if (arLabel) {
+                    arLabel.textContent = `Auto Refresh (${scanFreq}m)`;
+                }
+
+                // Update Summary Strip
+                const impEl = document.getElementById("hw-summary-impact");
+                if (impEl) {
+                    const isPos = idxData.total_heavyweight_impact >= 0;
+                    impEl.style.color = isPos ? "var(--green)" : "var(--red)";
+                    impEl.textContent = `${isPos ? "+" : ""}${idxData.total_heavyweight_impact.toFixed(2)} pts (${isPos ? "+" : ""}${idxData.index_change_pct.toFixed(2)}% idx)`;
+                }
+                const bEl = document.getElementById("hw-summary-breadth");
+                if (bEl) {
+                    bEl.textContent = `${idxData.bullish_count} Bullish / ${idxData.bearish_count} Bearish`;
+                }
+                const sEl = document.getElementById("hw-summary-share");
+                if (sEl) {
+                    sEl.textContent = `${idxData.heavyweight_share_pct.toFixed(1)}% of Index Move`;
+                }
+
+                // Update Table Scan Column Headers (up to 5 scans)
+                const scans = idxData.scans || [];
+                const scanCount = scans.length;
+                for (let i = 0; i < 5; i++) {
+                    const th = document.getElementById(`hw-scan-hdr-${i}`);
+                    if (!th) continue;
+                    if (i < scanCount) {
+                        const s = scans[i];
+                        const isLatest = (i === scanCount - 1);
+                        th.textContent = isLatest ? `Latest (${s.display_time.split(' ').slice(-2).join(' ')})` : `Scan ${i + 1} (${s.display_time.split(' ').slice(-2).join(' ')})`;
+                        th.style.color = isLatest ? "var(--accent)" : "var(--text-dim)";
+                        th.style.display = "";
+                    } else {
+                        th.textContent = `Scan ${i + 1}`;
+                        th.style.color = "var(--text-dim)";
+                        th.style.display = "";
+                    }
+                }
+
+                // Render Heavyweight Rows
+                const tbody = document.getElementById("hw-table-tbody");
+                if (!tbody) return;
+
+                const heavyweights = idxData.heavyweights || [];
+                if (!heavyweights.length) {
+                    tbody.innerHTML = `<tr><td colspan="12" style="text-align:center; padding: 24px; color: var(--text-dim)">No heavyweight data available</td></tr>`;
+                    return;
+                }
+
+                // Find max abs impact for bar scaling
+                const maxAbs = Math.max(0.01, ...heavyweights.map(h => Math.abs(h.point_impact || 0)));
+
+                tbody.innerHTML = heavyweights.map((hw, idx) => {
+                    const isPos = hw.point_impact >= 0;
+                    const barPct = Math.max(4, Math.min(100, Math.round((Math.abs(hw.point_impact) / maxAbs) * 100)));
+                    
+                    // Render the 5 scan columns
+                    let scanCellsHtml = "";
+                    for (let sIdx = 0; sIdx < 5; sIdx++) {
+                        if (sIdx < scanCount) {
+                            const val = (hw.scan_points && hw.scan_points[sIdx] !== undefined) ? hw.scan_points[sIdx] : null;
+                            const isLatest = (sIdx === scanCount - 1);
+                            if (val !== null) {
+                                const vPos = val >= 0;
+                                scanCellsHtml += `
+                                    <td class="hw-scan-cell ${vPos ? 'pos' : 'neg'} ${isLatest ? 'latest' : ''}">
+                                        ${vPos ? '+' : ''}${val.toFixed(2)}
+                                    </td>
+                                `;
+                            } else {
+                                scanCellsHtml += `<td class="hw-scan-cell ${isLatest ? 'latest' : ''}" style="color:var(--text-dim)">—</td>`;
+                            }
+                        } else {
+                            scanCellsHtml += `<td class="hw-scan-cell" style="color:var(--text-dim)">—</td>`;
+                        }
+                    }
+
+                    // 5-scan shift badge
+                    let shiftBadge = `<span class="hw-trend-badge flat">— 0.00</span>`;
+                    if (hw.shift_pts > 0.05) {
+                        shiftBadge = `<span class="hw-trend-badge up">▲ +${hw.shift_pts.toFixed(2)}</span>`;
+                    } else if (hw.shift_pts < -0.05) {
+                        shiftBadge = `<span class="hw-trend-badge down">▼ ${hw.shift_pts.toFixed(2)}</span>`;
+                    }
+
+                    return `
+                        <tr>
+                            <td style="color:var(--text-dim); font-family:var(--mono); font-weight:700">${hw.rank || (idx + 1)}</td>
+                            <td>
+                                <div class="stock-cell">
+                                    <span class="stock-sym">${hw.symbol}</span>
+                                    <span class="stock-name">${hw.name}</span>
+                                </div>
+                            </td>
+                            <td style="text-align: right; font-family:var(--mono); font-weight:700; color:var(--text-dim)">${hw.weight.toFixed(2)}%</td>
+                            <td style="text-align: right; font-family:var(--mono)">₹${hw.ltp.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</td>
+                            <td style="text-align: right; font-family:var(--mono); font-weight:700; color:${hw.change_pct >= 0 ? 'var(--green)' : 'var(--red)'}">
+                                ${hw.change_pct >= 0 ? '+' : ''}${hw.change_pct.toFixed(2)}%
+                            </td>
+                            <td style="text-align: right">
+                                <div class="impact-cell">
+                                    <div class="mini-bar-track" title="Relative Impact: ${barPct}%">
+                                        <div class="mini-bar ${isPos ? 'green' : 'red'}" style="width: ${barPct}%"></div>
+                                    </div>
+                                    <span class="impact-pill ${isPos ? 'green' : 'red'}">
+                                        ${isPos ? '+' : ''}${hw.point_impact.toFixed(2)}
+                                    </span>
+                                </div>
+                            </td>
+                            ${scanCellsHtml}
+                            <td style="text-align: center">${shiftBadge}</td>
+                        </tr>
+                    `;
+                }).join("");
+            }
+
             async function fetchContributors(force = false) {
                 const badge = document.getElementById("last-updated-badge");
                 if (badge) badge.textContent = "Updating...";
@@ -1139,6 +1619,7 @@
                     if (!res.ok) throw new Error(`HTTP ${res.status}`);
                     rawData = await res.json();
                     updateKPIs();
+                    fetchHeavyweights(force);
                     populateSectorDropdown();
                     renderViews();
                     if (badge) badge.textContent = `Synced: ${rawData.last_updated.split(",")[1] || rawData.last_updated}`;
@@ -1442,25 +1923,34 @@
                 });
             }
 
-            // Auto-refresh timer (300s / 5m)
+            // Auto-refresh timer aligned with pipeline frequency set by user
             function toggleAutoRefresh(enabled) {
                 if (autoRefreshTimer) clearInterval(autoRefreshTimer);
                 if (enabled) {
+                    const freqMin = configuredScanFreq || (hwHistoryData && (hwHistoryData.scan_frequency_minutes || (hwHistoryData[currentHwIndex] && hwHistoryData[currentHwIndex].scan_frequency_minutes))) || 30;
+                    const intervalMs = freqMin * 60 * 1000;
                     autoRefreshTimer = setInterval(() => {
                         fetchContributors(false);
+                        fetchHeavyweights(false);
                         fetchTopbarCmps();
-                    }, 300000);
+                    }, intervalMs);
                 }
             }
 
             // Initial Bootstrap
             document.addEventListener("DOMContentLoaded", () => {
                 initTheme();
+                fetchRuntimeConfig();
                 updateSortIcons("pullers");
                 updateSortIcons("draggers");
                 updateSortIcons("single");
                 switchIndex(currentIndex);
                 switchView(currentView);
+                fetchHeavyweights(false).then(() => {
+                    const arToggle = document.getElementById("auto-refresh-toggle");
+                    if (arToggle && arToggle.checked) toggleAutoRefresh(true);
+                });
+                setInterval(() => fetchHeavyweights(false), 60000);
                 fetchTopbarCmps();
                 toggleAutoRefresh(true);
                 setInterval(fetchTopbarCmps, 15000);

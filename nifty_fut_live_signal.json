@@ -1,0 +1,124 @@
+{
+  "timestamp": "2026-10-29T01:00:00+05:30",
+  "last_market_close_timestamp": "2026-10-28T15:30:00+05:30",
+  "symbol": "NIFTY_FUT",
+  "expiry": "2026-11-23",
+  "contract_name": "NIFTY26NOVFUT",
+  "weekly_expiry_date": "2026-11-03",
+  "lot_size": 65,
+  "cmp_inr": 22778.0,
+  "cmp": 22778.0,
+  "previous_close": 22843.8,
+  "open": 22690.0,
+  "day_high": 22875.5,
+  "day_low": 22567.0,
+  "session_vwap": 22702.74,
+  "tick_volume": 4884685,
+  "open_interest": 16313115,
+  "open_interest_change_pct": 4.76,
+  "spot_cmp": 22698.85,
+  "spot_previous_close": 22749.75,
+  "spot_open": 22678.0,
+  "spot_day_high": 22778.05,
+  "spot_day_low": 22497.7,
+  "basis": 79.15,
+  "annualized_coc_pct": 4.89,
+  "account_context": {
+    "baseline_capital_inr": 7500000.0,
+    "margin_total_inr": 7500000.0,
+    "margin_available_inr": 7500000.0,
+    "margin_utilized_inr": 0.0,
+    "unrealized_pnl_inr": 0.0,
+    "session_realized_pnl_inr": 0.0,
+    "cumulative_realized_pnl_inr": 0.0,
+    "open_positions_count": 0,
+    "open_lots": 0,
+    "max_risk_per_trade_inr": 75000.0,
+    "overnight_exposure": "ZERO (Clean Re-Anchored \u20b975.00 Lakh Baseline / 100% Cash Protected)"
+  },
+  "market_state": {
+    "trend": "SIDEWAYS_TO_MILD_BEARISH_PULLBACK",
+    "vwap": 22702.74,
+    "session_range": {
+      "low": 22567.0,
+      "high": 22875.5,
+      "close": 22778.0,
+      "open": 22690.0
+    },
+    "oi_structure": "SHORT_BUILDUP",
+    "pcr": 0.91,
+    "max_pain": 22700,
+    "india_vix": 16.21,
+    "rollover_dynamics": "ACTIVE_NOVEMBER_NEAR_MONTH (26 DTE / Basis +79.15 pts)"
+  },
+  "institutional_flows": {
+    "fii_cash_net_inr_cr": 871.83,
+    "dii_cash_net_inr_cr": 643.35,
+    "fii_index_futures_net_contracts": -235000,
+    "fii_index_futures_bias": "NET_SHORT_HEDGED"
+  },
+  "underlying_benchmarks": {
+    "gift_nifty": 22725.0,
+    "brent_crude_usd": 72.1,
+    "usdinr_spot": 95.22,
+    "india_vix": 16.21
+  },
+  "execution_guardrails": {
+    "blackout_window_ist": "09:15:00 - 09:29:59 IST (Strict No-Entry Opening Blackout)",
+    "earliest_trigger_time_ist": "09:30:00 IST (Requires Closed 15m Confirmation Candle)",
+    "mandatory_square_off_time_ist": "15:15:00 IST",
+    "last_entry_time_ist": "14:45:00 IST",
+    "early_breakeven_trigger_pts": 30.0,
+    "max_risk_per_trade_pct": 0.35
+  },
+  "setups": [
+    {
+      "setup_id": "NF_20261029_01",
+      "direction": "BUY",
+      "action": "BUY",
+      "setup_type": "VWAP_SUPPORT_HOLD_LONG",
+      "status": "WAITING_TRIGGER",
+      "earliest_trigger_time": "09:30:00 IST",
+      "entry_zone": {
+        "min": 22705.0,
+        "max": 22725.0
+      },
+      "stop_loss": 22665.0,
+      "targets": [
+        22795.0,
+        22855.0
+      ],
+      "risk_reward": "1:2.25",
+      "allocation_lots": 10,
+      "quantity_units": 650,
+      "max_risk_inr": 26000.0,
+      "early_breakeven_trigger": "+30 pts (trail SL to Entry + 5 pts at 22755.00)",
+      "condition": "Price holds above Session VWAP (22702.74) and Max Pain (22700) on closed 15m bullish candle at/after 09:30 IST.",
+      "notes": "Thursday long setup on value retest of 22705-22725 shelf with closed 15m confirmation. SL strictly < entry_zone.min (22665 < 22705)."
+    },
+    {
+      "setup_id": "NF_20261029_02",
+      "direction": "SELL",
+      "action": "SELL",
+      "setup_type": "VWAP_BREAKDOWN_SHORT",
+      "status": "WAITING_TRIGGER",
+      "earliest_trigger_time": "09:30:00 IST",
+      "entry_zone": {
+        "min": 22665.0,
+        "max": 22685.0
+      },
+      "stop_loss": 22725.0,
+      "targets": [
+        22595.0,
+        22540.0
+      ],
+      "risk_reward": "1:2.25",
+      "allocation_lots": 10,
+      "quantity_units": 650,
+      "max_risk_inr": 26000.0,
+      "early_breakeven_trigger": "+30 pts (trail SL to Entry - 5 pts at 22635.00)",
+      "condition": "Price breaks and closes 15m candle below Session VWAP (22702.74) and 22690.00 futures open with short buildup at/after 09:30 IST.",
+      "notes": "Thursday short setup on breakdown below 22685 shelf. SL strictly > entry_zone.max (22725 > 22685)."
+    }
+  ]
+}

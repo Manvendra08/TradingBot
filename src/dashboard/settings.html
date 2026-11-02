@@ -15,6 +15,27 @@
     <link rel="stylesheet" href="/static/theme.css" />
     <style>
         /* Cockpit Settings Page Custom Styling */
+        .json-editor-textarea {
+            width: 100%;
+            min-height: 480px;
+            background: var(--surface-2, #182234);
+            color: var(--text, #f1f5f9);
+            border: 1px solid var(--border, #334155);
+            border-radius: 12px;
+            padding: 16px;
+            font-family: var(--mono, "SF Mono", Consolas, Menlo, monospace);
+            font-size: 13px;
+            line-height: 1.5;
+            resize: vertical;
+            white-space: pre;
+            tab-size: 2;
+            box-sizing: border-box;
+        }
+        .json-editor-textarea:focus {
+            outline: none;
+            border-color: var(--blue, #3b82f6);
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+        }
 
         body {
             background: var(--bg);
@@ -905,6 +926,10 @@
                     <button type="button" class="subtab-btn" id="btn-subtab-strategies"
                         onclick="switchSubTab('strategies')" style="padding: 6px 0; margin-left: 20px">
                         <span>🎯</span> Strategies
+                    </button>
+                    <button type="button" class="subtab-btn" id="btn-subtab-decision-matrix"
+                        onclick="switchSubTab('decision-matrix')" style="padding: 6px 0; margin-left: 20px">
+                        <span>🧭</span> Decision Matrix
                     </button>
                     <button type="button" class="subtab-btn" id="btn-subtab-system" onclick="switchSubTab('system')"
                         style="padding: 6px 0; margin-left: 20px">
@@ -1828,6 +1853,62 @@
 
             </div>
 
+            <!-- Decision Matrix Tab (Hidden by default) -->
+            <div id="decision-matrix-settings-card" style="display:none; max-width:960px; margin:0 auto">
+                <div class="card" style="margin-bottom:24px">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px">
+                        <div class="card-title" style="margin-bottom:0">🧭 Decision Matrix &amp; Regime Configuration</div>
+                        <span id="matrix-status-pill" class="badge" style="background:var(--blue-light); color:var(--blue); font-weight:700; padding:4px 10px; border-radius:12px; font-size:11px">SHADOW MODE</span>
+                    </div>
+                    <p style="font-size:12px; color:var(--text-dim); margin-bottom:12px; line-height:1.5">
+                        Deterministic options decision engine. Governs the regime matrix (<strong style="color:var(--text)">Direction × Volatility Bucket → Allowed Strategy Set</strong>),
+                        delta strike bounds, aggressive/defensive profiles, MCX two-tier liquidity filtering, ATR stops/targets, and ordered exit priority.
+                        Edits hot reload automatically without server restart.
+                    </p>
+                    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:16px; margin-top:16px">
+                        <div class="form-group" style="margin-bottom:0">
+                            <label style="font-size:12px; font-weight:700; color:var(--text-dim); text-transform:uppercase">Matrix Mode</label>
+                            <select id="matrix-quick-mode" onchange="onMatrixQuickParamChange()">
+                                <option value="shadow">Shadow (Audit &amp; Log Only)</option>
+                                <option value="enforce">Enforce (Governs Execution)</option>
+                                <option value="off">Off (Legacy Fallback)</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="margin-bottom:0">
+                            <label style="font-size:12px; font-weight:700; color:var(--text-dim); text-transform:uppercase">Delta Profile</label>
+                            <select id="matrix-quick-profile" onchange="onMatrixQuickParamChange()">
+                                <option value="aggressive">Aggressive (Short Δ0.30–0.35, Hedge Δ0.14–0.18)</option>
+                                <option value="defensive">Defensive (Short Δ0.25–0.30, Hedge Δ0.08–0.12)</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="margin-bottom:0">
+                            <label style="font-size:12px; font-weight:700; color:var(--text-dim); text-transform:uppercase">NYMEX Gate Mode</label>
+                            <select id="matrix-quick-nymex" onchange="onMatrixQuickParamChange()">
+                                <option value="shadow">Shadow (Log Agreement)</option>
+                                <option value="enforce">Enforce (Veto on Disagreement)</option>
+                                <option value="off">Off</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card" style="margin-bottom:24px">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px">
+                        <div>
+                            <div class="card-title" style="margin-bottom:2px">📝 Decision Matrix JSON Editor</div>
+                            <div style="font-size:11px; color:var(--text-dim)">Directly configure regime table cells, delta bands, ATR stops/targets, exit priority list, and liquidity parameters.</div>
+                        </div>
+                        <div style="display:flex; gap:8px">
+                            <button type="button" class="btn" onclick="formatMatrixJson()" style="padding:6px 12px; font-size:12px">Format</button>
+                            <button type="button" class="btn" onclick="validateMatrixJsonUI()" style="padding:6px 12px; font-size:12px">Validate</button>
+                            <button type="button" class="btn btn-primary" onclick="saveDecisionMatrixFromUI()" style="padding:6px 14px; font-size:12px; font-weight:700">Save Matrix</button>
+                        </div>
+                    </div>
+                    <div id="matrix-validation-msg" style="display:none; padding:10px 14px; border-radius:8px; margin-bottom:12px; font-size:12px"></div>
+                    <textarea id="decision-matrix-json-editor" class="json-editor-textarea" spellcheck="false" oninput="onMatrixEditorInput()"></textarea>
+                </div>
+            </div>
+
             <!-- System Settings Tab (Tab 3: Hidden by default) -->
             <div id="system-settings-card" style="display: none; max-width: 600px; margin: 0 auto">
                 <div class="card">
@@ -2252,18 +2333,25 @@
             const cockpitGrid = document.getElementById("cockpit-settings-grid");
             const systemCard = document.getElementById("system-settings-card");
             const stratCard = document.getElementById("strategies-settings-card");
+            const matrixCard = document.getElementById("decision-matrix-settings-card");
             const btnCockpit = document.getElementById("btn-subtab-cockpit");
             const btnSystem = document.getElementById("btn-subtab-system");
             const btnStrat = document.getElementById("btn-subtab-strategies");
+            const btnMatrix = document.getElementById("btn-subtab-decision-matrix");
 
             cockpitGrid.style.display = tabName === "cockpit" ? "grid" : "none";
             stratCard.style.display = tabName === "strategies" ? "block" : "none";
             systemCard.style.display = tabName === "system" ? "block" : "none";
+            if (matrixCard) matrixCard.style.display = tabName === "decision-matrix" ? "block" : "none";
 
-            [btnCockpit, btnStrat, btnSystem].forEach(b => b && b.classList.remove("active"));
+            [btnCockpit, btnStrat, btnSystem, btnMatrix].forEach(b => b && b.classList.remove("active"));
             if (tabName === "cockpit") btnCockpit && btnCockpit.classList.add("active");
             if (tabName === "strategies") btnStrat && btnStrat.classList.add("active");
             if (tabName === "system") btnSystem && btnSystem.classList.add("active");
+            if (tabName === "decision-matrix") {
+                btnMatrix && btnMatrix.classList.add("active");
+                fetchDecisionMatrix();
+            }
         }
 
         function renderStrategySymbols(stratId, enabledMap) {
@@ -2454,6 +2542,7 @@
                 return;
 
             const isDirty =
+                isDecisionMatrixDirty() ||
                 isStrategyDirty(_savedStrategies) ||
                 parseInt(document.getElementById("sett-scan-nse").value) !==
                 runtimeConfig.scan_frequency_nse ||
@@ -2649,6 +2738,180 @@
             return false;
         }
 
+        let _savedDecisionMatrix = null;
+
+        function fetchDecisionMatrix() {
+            fetch("/api/decision_matrix")
+                .then(r => {
+                    if (!r.ok) throw new Error("HTTP " + r.status);
+                    return r.json();
+                })
+                .then(data => {
+                    _savedDecisionMatrix = JSON.parse(JSON.stringify(data));
+                    const editor = document.getElementById("decision-matrix-json-editor");
+                    if (editor) {
+                        editor.value = JSON.stringify(data, null, 2);
+                    }
+                    syncMatrixQuickControlsFromData(data);
+                    clearMatrixValidationMsg();
+                    checkDirty();
+                })
+                .catch(err => {
+                    console.error("Failed to fetch decision matrix:", err);
+                });
+        }
+
+        function syncMatrixQuickControlsFromData(data) {
+            if (!data) return;
+            const modeEl = document.getElementById("matrix-quick-mode");
+            if (modeEl && data.mode) modeEl.value = data.mode;
+
+            const profEl = document.getElementById("matrix-quick-profile");
+            if (profEl && data.delta_profile) profEl.value = data.delta_profile;
+
+            const nymexEl = document.getElementById("matrix-quick-nymex");
+            if (nymexEl && data.nymex && data.nymex.mode) nymexEl.value = data.nymex.mode;
+
+            const pill = document.getElementById("matrix-status-pill");
+            if (pill) {
+                const m = (data.mode || "shadow").toUpperCase();
+                pill.textContent = m + " MODE";
+                if (m === "ENFORCE") {
+                    pill.style.background = "var(--green-light, #064e3b)";
+                    pill.style.color = "var(--green, #10b981)";
+                } else if (m === "OFF") {
+                    pill.style.background = "var(--red-light, #7f1d1d)";
+                    pill.style.color = "var(--red, #ef4444)";
+                } else {
+                    pill.style.background = "var(--blue-light, #1e3a8a)";
+                    pill.style.color = "var(--blue, #3b82f6)";
+                }
+            }
+        }
+
+        function onMatrixQuickParamChange() {
+            const editor = document.getElementById("decision-matrix-json-editor");
+            if (!editor) return;
+            try {
+                const data = JSON.parse(editor.value);
+                const modeVal = document.getElementById("matrix-quick-mode").value;
+                const profVal = document.getElementById("matrix-quick-profile").value;
+                const nymexVal = document.getElementById("matrix-quick-nymex").value;
+
+                data.mode = modeVal;
+                data.delta_profile = profVal;
+                if (!data.nymex) data.nymex = {};
+                data.nymex.mode = nymexVal;
+
+                editor.value = JSON.stringify(data, null, 2);
+                syncMatrixQuickControlsFromData(data);
+                checkDirty();
+            } catch (e) {
+                console.warn("Could not sync quick control to invalid JSON:", e);
+            }
+        }
+
+        function onMatrixEditorInput() {
+            try {
+                const editor = document.getElementById("decision-matrix-json-editor");
+                if (!editor) return;
+                const data = JSON.parse(editor.value);
+                syncMatrixQuickControlsFromData(data);
+            } catch (e) {
+                // In middle of editing
+            }
+            checkDirty();
+        }
+
+        function formatMatrixJson() {
+            const editor = document.getElementById("decision-matrix-json-editor");
+            if (!editor) return;
+            try {
+                const data = JSON.parse(editor.value);
+                editor.value = JSON.stringify(data, null, 2);
+                clearMatrixValidationMsg();
+            } catch (e) {
+                showMatrixValidationMsg("Syntax Error: " + e.message, false);
+            }
+        }
+
+        function validateMatrixJsonUI() {
+            const editor = document.getElementById("decision-matrix-json-editor");
+            if (!editor) return false;
+            try {
+                const data = JSON.parse(editor.value);
+                showMatrixValidationMsg("✓ JSON is structurally valid. Ready to save.", true);
+                return true;
+            } catch (e) {
+                showMatrixValidationMsg("❌ JSON Syntax Error: " + e.message, false);
+                return false;
+            }
+        }
+
+        function showMatrixValidationMsg(text, isSuccess) {
+            const el = document.getElementById("matrix-validation-msg");
+            if (!el) return;
+            el.style.display = "block";
+            el.style.background = isSuccess ? "rgba(16, 185, 129, 0.15)" : "rgba(239, 68, 68, 0.15)";
+            el.style.color = isSuccess ? "var(--green, #10b981)" : "var(--red, #ef4444)";
+            el.style.border = "1px solid " + (isSuccess ? "var(--green, #10b981)" : "var(--red, #ef4444)");
+            el.textContent = text;
+        }
+
+        function clearMatrixValidationMsg() {
+            const el = document.getElementById("matrix-validation-msg");
+            if (el) el.style.display = "none";
+        }
+
+        function isDecisionMatrixDirty() {
+            if (!_savedDecisionMatrix) return false;
+            const editor = document.getElementById("decision-matrix-json-editor");
+            if (!editor) return false;
+            try {
+                const current = JSON.parse(editor.value);
+                return JSON.stringify(current) !== JSON.stringify(_savedDecisionMatrix);
+            } catch (e) {
+                return true;
+            }
+        }
+
+        function saveDecisionMatrixFromUI() {
+            const editor = document.getElementById("decision-matrix-json-editor");
+            if (!editor) return;
+            let data = null;
+            try {
+                data = JSON.parse(editor.value);
+            } catch (e) {
+                showMatrixValidationMsg("❌ Cannot save: JSON Syntax Error (" + e.message + ")", false);
+                alert("Cannot save: JSON syntax error (" + e.message + ")");
+                return;
+            }
+
+            fetch("/api/decision_matrix", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(data),
+            })
+            .then(r => r.json().then(j => ({ ok: r.ok, status: r.status, data: j })))
+            .then(res => {
+                if (!res.ok) {
+                    const errDetail = res.data && res.data.detail ? res.data.detail : res.data;
+                    const msg = (errDetail && errDetail.errors) ? errDetail.errors.join("; ") : (errDetail.message || "Failed to save");
+                    showMatrixValidationMsg("❌ Validation Failed: " + msg, false);
+                    alert("Validation Failed:\n" + msg);
+                    return;
+                }
+                _savedDecisionMatrix = JSON.parse(JSON.stringify(data));
+                showMatrixValidationMsg("✓ Decision Matrix configuration saved and hot-reloaded successfully!", true);
+                alert("Decision Matrix saved successfully!");
+                checkDirty();
+            })
+            .catch(err => {
+                showMatrixValidationMsg("❌ Error saving: " + err, false);
+                alert("Error saving decision matrix: " + err);
+            });
+        }
+
         let _savedStrategies = {};
 
         function fetchSettings() {
@@ -2669,6 +2932,7 @@
                         },
                     };
                     loadStrategySettings(_savedStrategies);
+                    fetchDecisionMatrix();
 
                     const shadowCheckbox =
                         document.getElementById("sett-shadow-mode");
@@ -3071,6 +3335,10 @@
                 ),
                 strategies: collectStrategySettings(),
             };
+
+            if (isDecisionMatrixDirty()) {
+                saveDecisionMatrixFromUI();
+            }
 
             fetch("/api/settings", {
                 method: "POST",

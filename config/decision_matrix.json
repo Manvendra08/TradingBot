@@ -1,0 +1,359 @@
+{
+  "_doc": "Decision matrix configuration for Indian markets (Indices & MCX). Hot reloaded.",
+  "version": "2.0.0",
+  "mode": "enforce",
+  "vol_buckets": {
+    "_doc": "ATM IV percentile cutoffs for vol regime classification. Low: <25, Mid: 25-70, High: >70",
+    "low_max": 25.0,
+    "mid_min": 25.0,
+    "mid_max": 70.0,
+    "high_min": 70.0,
+    "lookback_days": 30,
+    "min_samples": 10,
+    "fallback_bucket": "HIGH"
+  },
+  "regime_table": {
+    "_doc": "Direction x Vol bucket -> ordered allowed structure set (first entry is default)",
+    "NEUTRAL": {
+      "LOW": [
+        "SHORT_STRANGLE"
+      ],
+      "MID": [
+        "IRON_CONDOR",
+        "SHORT_STRANGLE"
+      ],
+      "HIGH": [
+        "IRON_CONDOR"
+      ]
+    },
+    "BULLISH": {
+      "LOW": [
+        "NO_TRADE"
+      ],
+      "MID": [
+        "BULL_PUT_SPREAD"
+      ],
+      "HIGH": [
+        "BULL_PUT_SPREAD",
+        "JADE_LIZARD"
+      ]
+    },
+    "BEARISH": {
+      "LOW": [
+        "NO_TRADE"
+      ],
+      "MID": [
+        "BEAR_CALL_SPREAD"
+      ],
+      "HIGH": [
+        "BEAR_CALL_SPREAD"
+      ]
+    }
+  },
+  "overrides": {
+    "_doc": "Rule overrides applied to regime cells",
+    "mcx_no_naked": {
+      "enabled": true,
+      "replacement": {
+        "SHORT_STRANGLE": "IRON_CONDOR"
+      }
+    },
+    "event_window": {
+      "enabled": true,
+      "hours_before": 1.0,
+      "hours_after": 0.5,
+      "action": "defined_risk_half_size"
+    },
+    "zero_dte": {
+      "enabled": true,
+      "no_entry_after_ist": "13:00"
+    },
+    "monthly_dte_window": {
+      "enabled": true,
+      "min_days": 3,
+      "max_days": 35
+    },
+    "min_credit": {
+      "SHORT_STRANGLE": 15.0,
+      "IRON_CONDOR": 8.0,
+      "BULL_PUT_SPREAD": 5.0,
+      "BEAR_CALL_SPREAD": 5.0
+    },
+    "blocked_structures": []
+  },
+  "delta_profile": "aggressive",
+  "delta_bands": {
+    "_doc": "Target delta bands and danger ceiling (hard reject) per structure/leg/asset class",
+    "aggressive": {
+      "indices": {
+        "CREDIT_SPREAD_SHORT": {
+          "min": 0.3,
+          "max": 0.35,
+          "danger_ceiling": 0.4
+        },
+        "CREDIT_SPREAD_LONG": {
+          "min": 0.14,
+          "max": 0.18,
+          "danger_ceiling": 0.25
+        },
+        "IRON_CONDOR_SHORT": {
+          "min": 0.24,
+          "max": 0.28,
+          "danger_ceiling": 0.32
+        },
+        "IRON_CONDOR_LONG": {
+          "min": 0.08,
+          "max": 0.12,
+          "danger_ceiling": 0.15
+        },
+        "SHORT_STRANGLE_SHORT": {
+          "min": 0.15,
+          "max": 0.2,
+          "danger_ceiling": 0.25
+        }
+      },
+      "mcx": {
+        "CREDIT_SPREAD_SHORT": {
+          "min": 0.24,
+          "max": 0.28,
+          "danger_ceiling": 0.32
+        },
+        "CREDIT_SPREAD_LONG": {
+          "min": 0.1,
+          "max": 0.14,
+          "danger_ceiling": 0.2
+        },
+        "IRON_CONDOR_SHORT": {
+          "min": 0.18,
+          "max": 0.22,
+          "danger_ceiling": 0.25
+        },
+        "IRON_CONDOR_LONG": {
+          "min": 0.08,
+          "max": 0.12,
+          "danger_ceiling": 0.15
+        },
+        "SHORT_STRANGLE_SHORT": {
+          "min": 0.15,
+          "max": 0.2,
+          "danger_ceiling": 0.25
+        }
+      }
+    },
+    "defensive": {
+      "indices": {
+        "CREDIT_SPREAD_SHORT": {
+          "min": 0.25,
+          "max": 0.3,
+          "danger_ceiling": 0.4
+        },
+        "CREDIT_SPREAD_LONG": {
+          "min": 0.08,
+          "max": 0.12,
+          "danger_ceiling": 0.25
+        },
+        "IRON_CONDOR_SHORT": {
+          "min": 0.18,
+          "max": 0.22,
+          "danger_ceiling": 0.32
+        },
+        "IRON_CONDOR_LONG": {
+          "min": 0.05,
+          "max": 0.08,
+          "danger_ceiling": 0.15
+        },
+        "SHORT_STRANGLE_SHORT": {
+          "min": 0.15,
+          "max": 0.2,
+          "danger_ceiling": 0.25
+        }
+      },
+      "mcx": {
+        "CREDIT_SPREAD_SHORT": {
+          "min": 0.2,
+          "max": 0.25,
+          "danger_ceiling": 0.32
+        },
+        "CREDIT_SPREAD_LONG": {
+          "min": 0.08,
+          "max": 0.12,
+          "danger_ceiling": 0.2
+        },
+        "IRON_CONDOR_SHORT": {
+          "min": 0.12,
+          "max": 0.18,
+          "danger_ceiling": 0.25
+        },
+        "IRON_CONDOR_LONG": {
+          "min": 0.05,
+          "max": 0.08,
+          "danger_ceiling": 0.15
+        },
+        "SHORT_STRANGLE_SHORT": {
+          "min": 0.15,
+          "max": 0.2,
+          "danger_ceiling": 0.25
+        }
+      }
+    }
+  },
+  "wings": {
+    "_doc": "Fixed wing width in underlying points per symbol",
+    "NIFTY": 200,
+    "BANKNIFTY": 500,
+    "SENSEX": 600,
+    "FINNIFTY": 200,
+    "MIDCPNIFTY": 150,
+    "NATURALGAS": 10.0,
+    "CRUDEOIL": 100.0,
+    "GOLD": 500.0,
+    "SILVER": 1000.0
+  },
+  "credit_rules": {
+    "_doc": "Net credit \u00c3\u00b7 wing width rules (net of transaction costs)",
+    "min_credit_ratio_full_size": 0.3,
+    "min_credit_ratio_half_size": 0.25,
+    "reject_below_ratio": 0.25
+  },
+  "strike_rules": {
+    "_doc": "Short strike positioning relative to OI walls",
+    "beyond_oi_wall": true
+  },
+  "stops_targets": {
+    "_doc": "MCX ATR and credit-based SL/TP settings",
+    "futures": {
+      "sl_atr_mult": 1.5,
+      "target_atr_mult": 2.0,
+      "breakeven_atr_mult": 1.0,
+      "trail_atr_mult": 1.0
+    },
+    "options": {
+      "spread_max_loss_ratio": 0.5,
+      "strangle_credit_mult": 1.0,
+      "monthly_strangle_credit_mult": 1.5,
+      "target_credit_pct": 0.4,
+      "target_credit_pct_expiry": 0.6,
+      "capital_cap_pct": 0.015,
+      "gap_stress_atr_mult": 2.0,
+      "gap_stress_cap_pct": 0.02
+    }
+  },
+  "exits": {
+    "_doc": "Ordered priority list of trade exit conditions",
+    "priority_order": [
+      "HARD_RISK",
+      "TESTED_SIDE",
+      "EVENT",
+      "EXPIRY",
+      "REGIME_FLIP",
+      "TARGET",
+      "DEAD_TRADE",
+      "AI_TIGHTEN"
+    ],
+    "tested_side": {
+      "defined_risk_delta_trigger": 0.48,
+      "naked_delta_trigger": 0.35,
+      "candle_close_15m_breach": true
+    },
+    "event": {
+      "close_minutes_prior": 30
+    },
+    "expiry": {
+      "indices_exit_time_ist": "15:15",
+      "mcx_days_before_expiry": 1,
+      "session_close_buffer_minutes": 10
+    },
+    "regime_flip": {
+      "confidence_threshold": 75,
+      "require_nymex_agree_on_mcx": true
+    },
+    "dead_trade": {
+      "days_threshold": 3,
+      "max_pnl_pct": 0.05
+    }
+  },
+  "ai_authority": {
+    "_doc": "AI veto and tightening authorities only",
+    "veto_allowed": true,
+    "size_cut_allowed": true,
+    "tighten_stop_allowed": true,
+    "widen_stop_allowed": false,
+    "loosen_target_allowed": false,
+    "close_allowed_min_profit_credit_pct": 0.3,
+    "close_allowed_min_loss_stop_ratio": 0.5
+  },
+  "nymex": {
+    "_doc": "NYMEX 1H trend alignment settings for MCX commodities",
+    "mode": "shadow",
+    "symbol_map": {
+      "NATURALGAS": "NG=F",
+      "CRUDEOIL": "CL=F",
+      "GOLD": "GC=F",
+      "SILVER": "SI=F"
+    },
+    "ema_span": 20,
+    "cache_secs": 300
+  },
+  "liquidity": {
+    "_doc": "Two-tier liquidity gate for option strikes",
+    "mcx": {
+      "min_oi": 1500,
+      "max_abs_spread": 0.3,
+      "max_spread_pct": 2.0,
+      "require_quote": true,
+      "spread_mode": "either",
+      "hard_max_spread_pct": 15.0,
+      "time_tiers": [
+        {
+          "before_hour": 12,
+          "min_vol": 50
+        },
+        {
+          "before_hour": 17,
+          "min_vol": 150
+        },
+        {
+          "default": 400
+        }
+      ]
+    }
+  },
+  "events": [
+    {
+      "name": "RBI_POLICY",
+      "datetime_ist": "2026-12-06T10:00:00",
+      "symbols": [
+        "NIFTY",
+        "BANKNIFTY"
+      ]
+    },
+    {
+      "name": "UNION_BUDGET",
+      "datetime_ist": "2027-02-01T11:00:00",
+      "symbols": [
+        "NIFTY",
+        "BANKNIFTY",
+        "SENSEX"
+      ]
+    }
+  ],
+  "churn_guards": {
+    "_doc": "Protection against excessive trade churn",
+    "cooldown_minutes": 30,
+    "max_entries_per_day": 3,
+    "max_open_books_per_symbol": 2
+  },
+  "telegram": {
+    "_doc": "Telegram formatting settings",
+    "verbosity": "compact",
+    "events": {
+      "digest_line": true,
+      "entry": true,
+      "exit": true,
+      "skip": true,
+      "config": true
+    },
+    "skip_cooldown_min": 30
+  },
+  "overrides_by_symbol": {}
+}

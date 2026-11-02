@@ -70,60 +70,51 @@ def _near_level(level: float, underlying: float, step: float, direction: str) ->
 
 def mcx_option_liquidity_ok(symbol: str, atm_strike: float, ctx: dict) -> bool:
     """
-    L5: Check if ATM option liquidity is sufficient for MCX commodities.
+    Check if ATM option liquidity is sufficient for MCX commodities.
+    Delegates to Decision Matrix two-tier liquidity gate (is_mcx_strike_liquid).
     Returns True if BOTH CE and PE options at the ATM strike meet the required thresholds.
     Falls back to FUT if either threshold fails or data is unavailable.
     """
     if atm_strike <= 0:
         return False
 
+    from src.engine.decision_matrix import is_mcx_strike_liquid
+    from config.decision_matrix_loader import load_decision_matrix
+
     option_rows = ctx.get("option_rows") or []
-    ce_vol = 0
-    ce_oi = 0
-    pe_vol = 0
-    pe_oi = 0
-    found_ce = False
-    found_pe = False
+    ce_row = None
+    pe_row = None
 
     for row in option_rows:
         try:
             row_strike = float(row.get("strike") or 0)
             if abs(row_strike - atm_strike) < 0.01:
                 opt_type = str(row.get("option_type") or "").upper()
-                vol = int(row.get("volume") or 0)
-                oi = int(row.get("oi") or 0)
                 if opt_type == "CE":
-                    ce_vol = vol
-                    ce_oi = oi
-                    found_ce = True
+                    ce_row = row
                 elif opt_type == "PE":
-                    pe_vol = vol
-                    pe_oi = oi
-                    found_pe = True
+                    pe_row = row
         except (ValueError, TypeError):
             continue
 
-    if not found_ce or not found_pe:
+    if not ce_row or not pe_row:
         log.debug("%s: MCX liquidity check — ATM CE or PE row missing, falling back to FUT", symbol)
         return False
 
-    min_vol = _MCX_OPTION_MIN_VOLUME // 2
-    min_oi = _MCX_OPTION_MIN_OI // 2
-
-    ce_ok = ce_vol >= min_vol and ce_oi >= min_oi
-    pe_ok = pe_vol >= min_vol and pe_oi >= min_oi
+    dm_cfg = load_decision_matrix(symbol)
+    ce_ok, ce_reason = is_mcx_strike_liquid(ce_row, cfg=dm_cfg)
+    pe_ok, pe_reason = is_mcx_strike_liquid(pe_row, cfg=dm_cfg)
 
     if ce_ok and pe_ok:
         log.debug(
-            "%s: MCX liquidity OK — CE vol=%d, PE vol=%d (min=%d); CE OI=%d, PE OI=%d (min=%d). Using options.",
-            symbol, ce_vol, pe_vol, min_vol, ce_oi, pe_oi, min_oi,
+            "%s: MCX liquidity OK — CE: %s, PE: %s. Using options.",
+            symbol, ce_reason, pe_reason,
         )
         return True
 
     log.debug(
-        "%s: MCX liquidity INSUFFICIENT — CE ok=%s (vol=%d, oi=%d), PE ok=%s (vol=%d, oi=%d). "
-        "Falling back to FUT.",
-        symbol, ce_ok, ce_vol, ce_oi, pe_ok, pe_vol, pe_oi,
+        "%s: MCX liquidity INSUFFICIENT — CE: %s, PE: %s. Falling back to FUT.",
+        symbol, ce_reason, pe_reason,
     )
     return False
 
