@@ -62,9 +62,12 @@ MIN_CREDIT_TO_WIDTH_RATIO = 0.20
 
 # Maximum insurance cost: Long hedge legs cannot consume more than 50% of gross premium collected on short legs.
 # Per-symbol overrides live in MAX_HEDGE_COST_RATIO_BY_SYMBOL.
-MAX_HEDGE_COST_RATIO = 0.50
+MAX_HEDGE_COST_RATIO = 0.60
 MAX_HEDGE_COST_RATIO_BY_SYMBOL: dict[str, float] = {
-    "NATURALGAS": 0.50,
+    "NATURALGAS": 0.55,
+    "NIFTY": 0.60,
+    "BANKNIFTY": 0.60,
+    "SENSEX": 0.60,
 }
 
 

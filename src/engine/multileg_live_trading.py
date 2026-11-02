@@ -1382,6 +1382,10 @@ def _attempt_new_live_entry(
     is_nondirectional = st_upper in ("IRON_CONDOR", "SHORT_STRANGLE", "SHORT_STRADDLE")
     if is_nondirectional:
         effective_confidence = llm_conf
+    elif engine_conf >= 60 and llm_conf >= conf_floor:
+        # If engine conviction is directional (>=60%) and LLM identifies high execution quality (>=conf_floor),
+        # weight towards execution quality to avoid false rejections on 60-69% engine signals
+        effective_confidence = int(round(0.35 * engine_conf + 0.65 * llm_conf))
     elif engine_conf > 0 and llm_conf > 0:
         effective_confidence = min(llm_conf, engine_conf)
     else:

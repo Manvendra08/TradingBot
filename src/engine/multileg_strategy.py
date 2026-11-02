@@ -213,12 +213,23 @@ def validate_legs(
                 )
 
         # Check hedge cost drag: bought wings should not consume excessive premium.
-        # Ceiling is per-symbol (max 50% across symbols via get_max_hedge_cost_ratio).
+        # Ceiling is per-symbol (configured via get_max_hedge_cost_ratio).
         gross_credit = sum(float(l.get("premium") or 0.0) for l in legs if (l.get("side") or "").upper() == "SELL")
         hedge_debit = sum(float(l.get("premium") or 0.0) for l in legs if (l.get("side") or "").upper() == "BUY")
         if gross_credit > 0 and hedge_debit > 0:
             hedge_ratio = hedge_debit / gross_credit
             max_hedge_ratio = get_max_hedge_cost_ratio(sym_key)
+            # If net credit is substantial (>= 25% of total wing width), allow up to 60% hedge cost ratio
+            net_credit = gross_credit - hedge_debit
+            wing_widths = []
+            if ce_sell and ce_buy:
+                wing_widths.append(max(ce_buy) - min(ce_sell))
+            if pe_sell and pe_buy:
+                wing_widths.append(max(pe_sell) - min(pe_buy))
+            min_width = min(wing_widths) if wing_widths else 0.0
+            if min_width > 0 and (net_credit / min_width) >= 0.25:
+                max_hedge_ratio = max(max_hedge_ratio, 0.60)
+
             if hedge_ratio > max_hedge_ratio:
                 return False, (
                     f"Insurance drag too high: Hedge wings cost ₹{hedge_debit:.2f} ({hedge_ratio*100:.1f}% of gross credit ₹{gross_credit:.2f}), "
@@ -952,14 +963,17 @@ def get_candidate_strikes(
     required_wing_width = max(min_width_pts, underlying * min_width_pct)
 
     target_short_delta = 0.25
+    danger_ceiling_short = 0.35
     try:
         from config.decision_matrix_loader import load_decision_matrix
         from src.engine.decision_matrix import delta_band
         dm_cfg = load_decision_matrix()
-        mn_d, mx_d, _ = delta_band("IRON_CONDOR", "SHORT", symbol=symbol, cfg=dm_cfg)
+        struct_for_delta = "IRON_CONDOR" if "NEUTRAL" in str(direction).upper() else ("BULL_PUT_SPREAD" if "BULL" in str(direction).upper() else "BEAR_CALL_SPREAD")
+        mn_d, mx_d, danger_ceiling_short = delta_band(struct_for_delta, "SHORT", symbol=symbol, cfg=dm_cfg)
         target_short_delta = (mn_d + mx_d) / 2.0
     except Exception:
         target_short_delta = 0.25
+        danger_ceiling_short = 0.35
 
     ce_candidates: list[dict] = []
     pe_candidates: list[dict] = []
@@ -996,6 +1010,10 @@ def get_candidate_strikes(
             vol = int(row.get("volume") or 0)
             delta = float(row.get("delta") or 0.0)
             abs_delta = abs(delta)
+
+            # Pre-filter: Discard candidate strikes whose delta breaches the danger ceiling for selling
+            if abs_delta > danger_ceiling_short:
+                continue
 
             # ── 1. Liquidity Score (0 - 35 pts) ───────────────────────
             max_oi = max_ce_oi if opt_type == "CE" else max_pe_oi

@@ -630,10 +630,10 @@ Condor/Spreads: all sold+bought legs liquid.
   * Minimum wing width (buy strike minus sell strike) — HARD validator floors, a proposal below these is auto-rejected:
     NIFTY >=0.50% of spot (approx 120 pts) | BANKNIFTY >=0.60% (approx 340 pts) | SENSEX >=0.60% (approx 450 pts) | NATURALGAS >=10 pts (2 strike steps) | CRUDEOIL >=50 pts.
     Prefer 1.5x these minimums whenever premium allows.
-  * Max Hedge Cost: Total debit spent on BUY wings MUST NOT exceed 50% of gross credit collected from SELL legs. For NATURALGAS and indices, choose wings far enough OTM so buy legs sit at safe strike distances to keep hedge debit strictly under 50%.
+  * Max Hedge Cost: Total debit spent on BUY wings MUST NOT exceed 60% of gross credit collected from SELL legs (and net credit ÷ wing width must be ≥ 25%).
   * If NO liquid strikes for chosen strategy, emit NO_TRADE. A missed trade costs nothing, but valid setups should be proposed when risk-reward is coherent.
 
-Delta target: 0.15-0.30 for OTM sell legs | Max pain={max_pain:.0f} as magnet | S/R for strike anchors.
+Delta target: Follow the QUANT ENGINE MANDATE above strictly for short legs and long wings. NEVER select strikes exceeding the danger ceiling | Max pain={max_pain:.0f} as magnet | S/R for strike anchors.
 
 Risk: Max loss ≤ 3x net premium | Net delta near 0 | Profit target 30-50% max | Don't over-leg.
 - Set time decay exit DTE: 0 for weekly index options (hold to expiry day); DTE ≤ 2 for monthly/commodity options.
@@ -641,7 +641,7 @@ Risk: Max loss ≤ 3x net premium | Net delta near 0 | Profit target 30-50% max 
 CONFIDENCE CALIBRATION & ENGINE ALIGNMENT (0-100):
 - Execution confidence floor is {conf_floor}%. Any proposed strategy with confidence below {conf_floor}% will abort execution.
 - Calibration Rules:
-  * For DIRECTIONAL strategies (BULL_PUT_SPREAD, BEAR_CALL_SPREAD, JADE_LIZARD): Anchor your confidence to the underlying ENGINE conviction ({confidence}%).
+  * For DIRECTIONAL strategies (BULL_PUT_SPREAD, BEAR_CALL_SPREAD, JADE_LIZARD): When the underlying ENGINE conviction is directional (≥60%) and you identify liquid strikes with viable net credit (≥25-30% of wing width) and safe deltas, output execution confidence ≥ {conf_floor}% (typically 75-85%) reflecting setup execution quality. If the setup has poor risk-reward, illiquid strikes, or adverse delta, output confidence below {conf_floor}%.
   * For NON-DIRECTIONAL strategies (IRON_CONDOR, SHORT_STRANGLE, SHORT_STRADDLE): Anchor your confidence to the IV edge, strike distance outside expected move, and option chain liquidity INDEPENDENT of directional engine conviction. If the chain is liquid, net credit is viable, and short strikes sit safely outside expected move, output high confidence (≥75%, typically 75-90%).
 - When the engine confidence is high (≥70%) and you identify liquid strikes with viable net premium and safe delta: output confidence ≥ 70% (typically 75-95% commensurate with setup quality).
 - If the option chain has poor liquidity, wide bid-ask spreads, or negative risk-reward, downgrade confidence below {conf_floor}% or set strategy_type="NO_TRADE" and legs=[].

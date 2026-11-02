@@ -252,7 +252,17 @@ def validate_multileg_trade(
             import pytz as _pytz
             _IST = _pytz.timezone("Asia/Kolkata")
             _now_ist = datetime.now(_IST)
-            _direction = str(getattr(proposal, "direction", None) or "NEUTRAL").upper()
+            # Resolve direction from engine verdict first, or infer from directional strategy types
+            if is_bullish_engine:
+                _direction = "BULLISH"
+            elif is_bearish_engine:
+                _direction = "BEARISH"
+            elif str(strategy_type).upper() == "BULL_PUT_SPREAD":
+                _direction = "BULLISH"
+            elif str(strategy_type).upper() == "BEAR_CALL_SPREAD":
+                _direction = "BEARISH"
+            else:
+                _direction = str(getattr(proposal, "direction", None) or "NEUTRAL").upper()
             _dte_val = getattr(proposal, "days_to_expiry", None)
             if _dte_val is None and proposal.legs:
                 # Try to derive DTE from the first leg's expiry
