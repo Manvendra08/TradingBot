@@ -1002,6 +1002,40 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
                     )
                 continue
 
+        # 7b. Directional Target Validation Guard (Applies to NEW Entries ONLY)
+        # Validate target relative to planned entry (entry_target if set, else actual fill_price)
+        if target_1 > 0 and ref_entry > 0:
+            if action_upper == "BUY" and target_1 <= ref_entry:
+                log.error(
+                    "[gemini_spark] REJECTED %s setup %s: Inverted Target for BUY! Target (%.2f) <= Entry/Fill (%.2f)",
+                    symbol, setup_id, target_1, ref_entry,
+                )
+                setup_alert_key = f"{symbol}:{setup_id}:BUY_INV_TGT"
+                if setup_alert_key not in _ALERTED_REJECTED_SETUPS:
+                    _ALERTED_REJECTED_SETUPS.add(setup_alert_key)
+                    _send_telegram_notification(
+                        f"⚠️ *[GeminiAI] REJECTED Setup `{setup_id}`*\n"
+                        f"• Symbol: `{symbol}` (BUY)\n"
+                        f"• Invalid Target: ₹{target_1:.2f} <= Entry ₹{ref_entry:.2f}\n"
+                        f"• Action: Execution aborted by engine safety guard."
+                    )
+                continue
+            elif action_upper == "SELL" and target_1 >= ref_entry:
+                log.error(
+                    "[gemini_spark] REJECTED %s setup %s: Inverted Target for SELL! Target (%.2f) >= Entry/Fill (%.2f)",
+                    symbol, setup_id, target_1, ref_entry,
+                )
+                setup_alert_key = f"{symbol}:{setup_id}:SELL_INV_TGT"
+                if setup_alert_key not in _ALERTED_REJECTED_SETUPS:
+                    _ALERTED_REJECTED_SETUPS.add(setup_alert_key)
+                    _send_telegram_notification(
+                        f"⚠️ *[GeminiAI] REJECTED Setup `{setup_id}`*\n"
+                        f"• Symbol: `{symbol}` (SELL)\n"
+                        f"• Invalid Target: ₹{target_1:.2f} >= Entry ₹{ref_entry:.2f}\n"
+                        f"• Action: Execution aborted by engine safety guard."
+                    )
+                continue
+
         # New Setup Execution: Autonomous paper trading, never blocked by open position caps (>5) or scan blockers
         if not _is_symbol_market_open(symbol):
             log_eval("[gemini_spark] %s market is currently closed. Skipping order execution for setup %s.", symbol, setup_id)
