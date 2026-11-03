@@ -4,6 +4,9 @@ CLI script to trigger clearing of old completed rows & ledgers across Google She
 Sends action: 'clear_completed' to the Google Apps Script Web App Bridge.
 """
 import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import requests
 import json
 
