@@ -160,6 +160,16 @@ function doPost(e) {
       });
     }
 
+    // ── ACTION 3: CLEAR COMPLETED ROWS & OLD LEDGERS ──
+    if (action === "clear_completed" || action === "clear_ledger") {
+      const result = executeClearCompletedRows();
+      return jsonResponse({
+        status: "success",
+        action: action,
+        result: result
+      });
+    }
+
     return jsonResponse({ status: "ignored", reason: "Unknown action: " + action });
 
   } catch (err) {
@@ -270,4 +280,149 @@ function formatHeaderRow(sheet) {
 function jsonResponse(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj))
     .setMimeType(ContentService.MimeType.JSON);
+}
+
+/**
+ * Direct entry point to execute from Google Apps Script Editor (Run -> clearCompletedTradesAndLedger)
+ */
+function clearCompletedTradesAndLedger() {
+  const res = executeClearCompletedRows();
+  Logger.log("Cleanup completed: " + JSON.stringify(res));
+  return res;
+}
+
+/**
+ * Master cleanup routine:
+ * 1. Clears data rows from NSEBOT_LIVE_LEDGER tab across both sheets (keeps header).
+ * 2. Archives and clears completed/expired rows from main setup sheets.
+ * 3. Prunes inactive/expired setups from mcx_ng_live_signal.json and nifty_fut_live_signal.json.
+ */
+function executeClearCompletedRows() {
+  const summary = {
+    ng_ledger_cleared: false,
+    nifty_ledger_cleared: false,
+    ng_setups_archived: 0,
+    nifty_setups_archived: 0,
+    drive_ng_pruned: 0,
+    drive_nifty_pruned: 0
+  };
+
+  const COMPLETED_STATUSES = [
+    "TARGET_1_HIT",
+    "TARGET_2_HIT",
+    "STOP_LOSS_HIT",
+    "CLOSED",
+    "COMPLETED",
+    "EXPIRED",
+    "EXPIRED_SESSION_CLOSE_CANCELLED",
+    "CASH_PROTECT_EXIT",
+    "CLOSED_EOD_SQUAREOFF",
+    "CANCELLED",
+    "INVALIDATED",
+    "EXITED"
+  ];
+
+  // 1. Clean Ledger on NG & NIFTY sheets
+  summary.ng_ledger_cleared = clearLedgerTab(NG_SPREADSHEET_ID);
+  summary.nifty_ledger_cleared = clearLedgerTab(NIFTY_SPREADSHEET_ID);
+
+  // 2. Archive completed rows from active setup sheet (first sheet)
+  summary.ng_setups_archived = archiveCompletedSetupRows(NG_SPREADSHEET_ID, COMPLETED_STATUSES);
+  summary.nifty_setups_archived = archiveCompletedSetupRows(NIFTY_SPREADSHEET_ID, COMPLETED_STATUSES);
+
+  // 3. Prune Google Drive signal files
+  summary.drive_ng_pruned = pruneDriveSignalFile(NG_SIGNAL_FILE_NAME, COMPLETED_STATUSES);
+  summary.drive_nifty_pruned = pruneDriveSignalFile(NIFTY_SIGNAL_FILE_NAME, COMPLETED_STATUSES);
+
+  return summary;
+}
+
+/** Helper: Deletes logged trade events from NSEBOT_LIVE_LEDGER tab (preserves row 1 header) */
+function clearLedgerTab(spreadsheetId) {
+  try {
+    const ss = SpreadsheetApp.openById(spreadsheetId);
+    const sheet = ss.getSheetByName("NSEBOT_LIVE_LEDGER");
+    if (!sheet) return false;
+    const lastRow = sheet.getLastRow();
+    if (lastRow > 1) {
+      sheet.deleteRows(2, lastRow - 1);
+    }
+    return true;
+  } catch (e) {
+    console.error("clearLedgerTab error for " + spreadsheetId + ": " + e);
+    return false;
+  }
+}
+
+/** Helper: Moves completed/expired setup rows from the main feed sheet to ARCHIVED_SETUPS tab */
+function archiveCompletedSetupRows(spreadsheetId, completedStatuses) {
+  try {
+    const ss = SpreadsheetApp.openById(spreadsheetId);
+    const sheet = ss.getSheets()[0];
+    if (!sheet || sheet.getName().indexOf("NSEBOT") !== -1) return 0;
+
+    const lastRow = sheet.getLastRow();
+    const lastCol = sheet.getLastColumn();
+    if (lastRow <= 1) return 0;
+
+    const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    let statusColIdx = -1;
+    for (let c = 0; c < headers.length; c++) {
+      const h = String(headers[c]).toLowerCase();
+      if (h.indexOf("status") !== -1 || h.indexOf("action_bias") !== -1 || h.indexOf("trade_status") !== -1) {
+        statusColIdx = c + 1;
+        break;
+      }
+    }
+    if (statusColIdx === -1) return 0;
+
+    let archiveSheet = ss.getSheetByName("ARCHIVED_SETUPS");
+    if (!archiveSheet) {
+      archiveSheet = ss.insertSheet("ARCHIVED_SETUPS");
+      archiveSheet.appendRow(headers);
+      formatHeaderRow(archiveSheet);
+    }
+
+    let archivedCount = 0;
+    // Walk from bottom to top so index deletion does not shift pending rows
+    for (let r = lastRow; r >= 2; r--) {
+      const val = String(sheet.getRange(r, statusColIdx).getValue()).trim().toUpperCase();
+      const isCompleted = completedStatuses.some(function(s) { return val.indexOf(s) !== -1; });
+      if (isCompleted) {
+        const rowData = sheet.getRange(r, 1, 1, lastCol).getValues()[0];
+        archiveSheet.appendRow(rowData);
+        sheet.deleteRow(r);
+        archivedCount++;
+      }
+    }
+    return archivedCount;
+  } catch (e) {
+    console.error("archiveCompletedSetupRows error: " + e);
+    return 0;
+  }
+}
+
+/** Helper: Removes completed/expired setups from the JSON signal file in Google Drive */
+function pruneDriveSignalFile(filename, completedStatuses) {
+  try {
+    const file = getLatestFileByName(filename);
+    if (!file) return 0;
+    const content = file.getBlob().getDataAsString();
+    const data = JSON.parse(content);
+    if (!data || !data.setups || !Array.isArray(data.setups)) return 0;
+
+    const initialLen = data.setups.length;
+    data.setups = data.setups.filter(function(s) {
+      const st = String(s.status || s.trade_status || "").trim().toUpperCase();
+      return !completedStatuses.some(function(cs) { return st.indexOf(cs) !== -1; });
+    });
+    const pruned = initialLen - data.setups.length;
+    if (pruned > 0) {
+      file.setContent(JSON.stringify(data, null, 2));
+    }
+    return pruned;
+  } catch (e) {
+    console.error("pruneDriveSignalFile error for " + filename + ": " + e);
+    return 0;
+  }
 }
