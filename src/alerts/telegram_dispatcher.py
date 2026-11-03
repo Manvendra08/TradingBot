@@ -781,10 +781,50 @@ def _process_telegram_command(command_text: str) -> None:
         from config.runtime_config import update_runtime_config
 
         update_runtime_config({"trading_paused": False})
+        # Auto-ack P04 incident if active in ops_agent.db
+        try:
+            from pathlib import Path
+            import sqlite3
+
+            db_path = Path(__file__).resolve().parents[2] / "data" / "ops_agent.db"
+            if db_path.exists():
+                with sqlite3.connect(str(db_path)) as c:
+                    c.execute(
+                        "UPDATE incidents SET acked=1, result=result || ' (Acked via /resume)' WHERE playbook_id='P04' AND acked=0"
+                    )
+        except Exception:
+            pass
         send_text(
             "▶️ **Trading Resumed**\n"
             "• Automated trade entries and exits are active."
         )
+
+    elif cmd.startswith("/ack"):
+        try:
+            from pathlib import Path
+            import sqlite3
+
+            db_path = Path(__file__).resolve().parents[2] / "data" / "ops_agent.db"
+            if db_path.exists():
+                parts = text.strip().split()
+                target_pb = parts[1].upper() if len(parts) > 1 and parts[1].upper() != "ALL" else None
+                with sqlite3.connect(str(db_path)) as c:
+                    if target_pb:
+                        cur = c.execute(
+                            "UPDATE incidents SET acked=1, result=result || ' (Acked via Telegram)' WHERE playbook_id=? AND acked=0",
+                            (target_pb,),
+                        )
+                    else:
+                        cur = c.execute(
+                            "UPDATE incidents SET acked=1, result=result || ' (Acked via Telegram)' WHERE acked=0"
+                        )
+                    count = cur.rowcount
+                send_text(f"✅ **Acknowledged {count} incident(s)**\n• Ops Agent repeat alerts silenced.")
+            else:
+                send_text("ℹ️ Ops Agent DB not found.")
+        except Exception as ae:
+            log.error("Telegram /ack failed: %s", ae)
+            send_text(f"❌ /ack failed: `{_escape_md_v1(str(ae))}`")
 
     elif cmd == "/status":
         from config.runtime_config import load_runtime_config
@@ -960,7 +1000,8 @@ def _process_telegram_command(command_text: str) -> None:
             "• `/status` — View current trading state, broker flags & open positions\n"
             "• `/hw` — 🏛️ View latest Top Heavyweights Net Impact across NIFTY, BANK NIFTY & SENSEX\n"
             "• `/pause` — Pause new automated trade entries\n"
-            "• `/resume` — Resume automated trade entries\n"
+            "• `/resume` — Resume automated trade entries & clear broker pause\n"
+            "• `/ack` — Acknowledge active Ops Agent incidents and silence repeat alerts (e.g. `/ack` or `/ack P04`)\n"
             "• `/panic` — 🚨 **EMERGENCY STOP**: Cancel all GTTs, market square-off all positions, disable broker & pause\n"
             "• `/restart` — Restart scheduler/scan loop without full process restart\n"
             "• `/health` — Run system health check: DB, broker sessions, scheduler heartbeat, disk space\n"

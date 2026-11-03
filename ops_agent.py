@@ -201,14 +201,17 @@ def _is_playbook_active(playbook_id: str) -> bool:
 
 
 def _auto_resolve_incident(playbook_id: str) -> None:
-    """Automatically resolve (acknowledge) an active incident when healthy."""
+    """Automatically resolve (acknowledge) all active incidents for a playbook when healthy."""
     try:
+        with _state_lock:
+            _critical_last_sent.pop(playbook_id, None)
+
         with _get_incidents_conn() as conn:
-            row = conn.execute(
-                "SELECT id, result FROM incidents WHERE playbook_id=? AND acked=0 ORDER BY ts DESC LIMIT 1",
+            rows = conn.execute(
+                "SELECT id, result FROM incidents WHERE playbook_id=? AND acked=0",
                 (playbook_id,)
-            ).fetchone()
-            if row:
+            ).fetchall()
+            for row in rows:
                 inc_id = row["id"]
                 orig_result = row["result"] or ""
                 new_result = orig_result if "(Auto-resolved)" in orig_result else f"{orig_result} (Auto-resolved)"
@@ -216,7 +219,8 @@ def _auto_resolve_incident(playbook_id: str) -> None:
                     "UPDATE incidents SET acked=1, result=? WHERE id=?",
                     (new_result, inc_id)
                 )
-                log.info("Auto-resolved active incident for playbook %s", playbook_id)
+            if rows:
+                log.info("Auto-resolved %d active incident(s) for playbook %s", len(rows), playbook_id)
     except Exception as e:
         log.error("Failed to auto-resolve incident for playbook %s: %s", playbook_id, e)
 
@@ -248,6 +252,17 @@ def _resolve_playbooks_if_healthy(sm: "StateMachine") -> None:
                     _resolve_ok_count[playbook_id] = 0
                     if playbook_id == "P03":
                         _auto_resolve_incident("P04")
+                        # Auto-unpause trading if it was paused by P04
+                        try:
+                            from config.runtime_config import load_runtime_config, update_runtime_config
+                            if load_runtime_config().get("trading_paused", False):
+                                update_runtime_config({"trading_paused": False})
+                                msg = "🟢 RECOVERY | Shoonya broker connection healthy. Trading automatically resumed."
+                                _send_telegram(msg)
+                                _send_discord(msg)
+                                log.info(msg)
+                        except Exception as e:
+                            log.error("Failed to auto-resume trading on P04 resolve: %s", e)
             else:
                 _resolve_ok_count[playbook_id] = 0
 
@@ -439,6 +454,7 @@ class ComponentState:
     consecutive_down: int = 0
     last_ok_time: float = 0.0
     detail: str = ""
+    updated_at: str = ""
 
 
 class StateMachine:
@@ -462,6 +478,7 @@ class StateMachine:
 
         status = (health_row.get("status") or "UNKNOWN").upper()
         state.detail = health_row.get("detail", "")
+        state.updated_at = health_row.get("updated_at", "")
 
         if status == "OK":
             state.consecutive_down = 0
@@ -494,6 +511,7 @@ class StateMachine:
             state.detail = "missing updated_at"
             return state.status
 
+        state.updated_at = updated_at
         try:
             ts = datetime.fromisoformat(updated_at)
             if ts.tzinfo is None:
@@ -536,6 +554,19 @@ class StateMachine:
             state.last_ok_time = now
             state.detail = health_row.get("detail", "")
         else:
+            # Active probe fallback for shoonya_session before flagging DOWN
+            if key == "shoonya_session" and _verify_shoonya_session():
+                state.consecutive_down = 0
+                state.status = "OK"
+                state.last_ok_time = now
+                state.detail = "verified alive via live quote probe"
+                try:
+                    from src.models.schema import stamp_health
+                    stamp_health("shoonya_session", "OK", "session_verified_alive")
+                except Exception:
+                    pass
+                return state.status
+
             state.consecutive_down += 1
             state.status = "DOWN" if state.consecutive_down >= 2 else "DEGRADED"
             state.detail = f"stale {age_s:.0f}s (threshold {stale_min*60:.0f}s)"
@@ -1095,23 +1126,32 @@ def run_playbooks(snap: HealthSnapshot, sm: StateMachine) -> list[PlaybookResult
             is_broker_down = "502" in detail or "timeout" in detail
             if is_broker_down:
                 try:
-                    ts_str = getattr(shoonya_state, "timestamp", getattr(shoonya_state, "last_updated", None))
+                    ts_str = getattr(shoonya_state, "updated_at", getattr(shoonya_state, "timestamp", getattr(shoonya_state, "last_updated", None)))
                     if ts_str:
                         ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                        age_sec = (datetime.now(timezone.utc) - ts).total_seconds()
+                        if ts.tzinfo is None:
+                            ts = ts.replace(tzinfo=IST)
+                        age_sec = (datetime.now(IST) - ts).total_seconds()
                         if age_sec > 300:
                             log.debug("P04: Shoonya 502/timeout health stamp is stale (%d seconds old) — not escalating", age_sec)
                             is_broker_down = False
-                except Exception as e:
-                    if isinstance(e, AttributeError):
-                        is_broker_down = True
-                    else:
-                        is_broker_down = False
+                except Exception:
+                    is_broker_down = False
 
             if is_broker_down:
-                _set_trading_paused()
-                results.append(PlaybookResult(action_taken="P04_broker_down", escalated=True, critical=True))
-                _escalate("P04", "Broker down (502/Timeout). Trading PAUSED.", critical=True)
+                # Active probe: verify if broker is actually down right now before pausing trading
+                if _verify_shoonya_session():
+                    log.info("P04: Shoonya verified alive via active quote check. Suppressing broker down pause.")
+                    is_broker_down = False
+                    try:
+                        from src.models.schema import stamp_health
+                        stamp_health("shoonya_session", "OK", "session_verified_alive")
+                    except Exception:
+                        pass
+                else:
+                    _set_trading_paused()
+                    results.append(PlaybookResult(action_taken="P04_broker_down", escalated=True, critical=True))
+                    _escalate("P04", "Broker down (502/Timeout). Trading PAUSED.", critical=True)
 
     # ── P05: Parity feed DOWN in NG hours → notify ──
     parity_state = sm.components.get("parity_feed")
@@ -1457,9 +1497,17 @@ def main():
 
                 for key, cfg in _COMPONENT_THRESHOLDS.items():
                     row = health_by_key.get(key)
-                    # Only check shoonya_session staleness during market hours
-                    if key == "shoonya_session" and not in_market:
-                        continue
+                    # Only check shoonya_session staleness during NSE market hours
+                    if key == "shoonya_session":
+                        if not nse_open:
+                            continue
+                        try:
+                            from config.runtime_config import load_runtime_config
+                            rconf = load_runtime_config()
+                            nse_interval = int(rconf.get("scan_frequency_nse") or 5)
+                            stale_min = max(cfg["stale_min"], nse_interval * 2)
+                        except Exception:
+                            pass
                     # Only check parity_feed staleness during active PARITY regime hours (09:00-17:30 IST)
                     if key == "parity_feed":
                         from src.engine.ng_session_router import get_ng_regime
