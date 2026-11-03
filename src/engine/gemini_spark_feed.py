@@ -255,6 +255,43 @@ def fetch_latest_signal(symbol: str = "NATURALGAS") -> dict[str, Any]:
     return {}
 
 
+def get_native_live_market_price(symbol: str) -> float | None:
+    """
+    Retrieve the exact available native live price for the symbol.
+    Queries underlying_price DB table first (populated by live fetchers),
+    then scan_summaries as fallback.
+    """
+    base_sym = symbol.upper().split()[0] if symbol else "NIFTY"
+    try:
+        with get_conn(read_only=True) as conn:
+            # 1. Check underlying_price table for recent price tick
+            row = conn.execute(
+                """
+                SELECT price FROM underlying_price 
+                WHERE symbol = ? OR symbol = ? 
+                ORDER BY fetched_at DESC LIMIT 1
+                """,
+                (symbol, base_sym),
+            ).fetchone()
+            if row and row["price"] and float(row["price"]) > 0:
+                return float(row["price"])
+
+            # 2. Check scan_summaries table
+            row = conn.execute(
+                """
+                SELECT underlying FROM scan_summaries 
+                WHERE symbol = ? OR symbol = ? 
+                ORDER BY fetched_at DESC LIMIT 1
+                """,
+                (symbol, base_sym),
+            ).fetchone()
+            if row and row["underlying"] and float(row["underlying"]) > 0:
+                return float(row["underlying"])
+    except Exception as exc:
+        log.debug("[gemini_spark] Error querying native market price for %s: %s", symbol, exc)
+    return None
+
+
 def get_open_gemini_paper_trade(symbol: str = "NATURALGAS") -> dict[str, Any] | None:
     """Retrieve the most recent open paper trade created by GeminiAI for a symbol (backward compatible)."""
     sql = """
@@ -548,6 +585,7 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
             # Check if this setup was recorded in daily_reconciled_trades / reconciled_trades
             reconciled = _extract_reconciled_trade_exit(payload, open_signal_key)
 
+            native_exit = get_native_live_market_price(symbol)
             if reconciled and reconciled.get("exit_price"):
                 close_price = float(reconciled["exit_price"])
                 close_status = reconciled["status"]
@@ -556,11 +594,29 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
                     "[gemini_spark] Setup %s resolved via reconciled records. Closing trade #%s at %.2f (%s)",
                     open_signal_key, trade_id, close_price, close_status,
                 )
+            elif native_exit is not None and native_exit > 0:
+                close_price = float(native_exit)
+                close_status = "CLOSED_AI_EXIT"
+                close_reason = f"GeminiAI: Setup {open_signal_key} exited at native market price"
+                log.info("[gemini_spark] Setup %s removed from feed. Closing trade #%s at native market price %.2f", open_signal_key, trade_id, close_price)
+            elif cmp_val is not None and cmp_val > 0:
+                close_price = float(cmp_val)
+                close_status = "CLOSED_AI_EXIT"
+                close_reason = f"GeminiAI: Setup {open_signal_key} exited at feed CMP"
+                log.info("[gemini_spark] Setup %s removed from feed. Closing trade #%s at feed CMP %.2f", open_signal_key, trade_id, close_price)
             else:
-                close_price = float(cmp_val if cmp_val is not None else (open_trade.get("entry_underlying") or 0.0))
+                close_price = float(open_trade.get("entry_underlying") or 0.0)
                 close_status = "CLOSED_AI_EXIT"
                 close_reason = f"GeminiAI: Setup {open_signal_key} no longer active in feed"
-                log.info("[gemini_spark] Setup %s removed from feed without reconciled price. Closing trade #%s at CMP %.2f", open_signal_key, trade_id, close_price)
+                log.info("[gemini_spark] Setup %s removed from feed without price. Closing trade #%s at entry price %.2f", open_signal_key, trade_id, close_price)
+
+            entry_price = float(open_trade.get("entry_underlying") or 0.0)
+            trade_side = str(open_trade.get("side", "BUY")).upper()
+            trade_lots = int(open_trade.get("lots") or 1)
+            unit_lot_size = LOT_SIZES.get(symbol, 65 if "NIFTY" in symbol else 1250)
+            calc_pnl_pts = (close_price - entry_price) if trade_side == "BUY" else (entry_price - close_price)
+            calc_pnl_inr = calc_pnl_pts * trade_lots * unit_lot_size
+            realized_pnl_pts = float((reconciled.get("pnl_pts") if reconciled else None) or calc_pnl_pts)
 
             close_paper_trade(
                 trade_id=trade_id,
@@ -574,14 +630,16 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
                 "trade_id": trade_id,
                 "symbol": symbol,
                 "side": open_trade.get("side"),
-                "fill_price": open_trade.get("entry_underlying"),
+                "fill_price": entry_price,
                 "exit_price": close_price,
+                "exit_time": now_iso,
                 "sl_price": open_trade.get("sl_underlying"),
                 "target_price": open_trade.get("target_underlying"),
-                "lots": open_trade.get("lots"),
+                "lots": trade_lots,
                 "setup_id": open_signal_key,
                 "reason": close_reason,
-                "pnl": (reconciled.get("pnl_pts") if reconciled else 0.0),
+                "pnl": round(calc_pnl_inr, 2),
+                "pnl_pts": round(realized_pnl_pts, 2),
             })
             _send_telegram_notification(
                 f"🏁 *[GeminiAI] Paper Trade CLOSED*\n"
@@ -605,29 +663,48 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
                 existing_id = int(existing_trade["id"])
                 status_upper = str(setup.get("status", "")).upper()
                 
-                # Check setup first, then reconciled records, then cmp_val
+                # Check setup first, then reconciled records, then native price, then cmp_val
+                native_exit = get_native_live_market_price(symbol)
                 reconciled = _extract_reconciled_trade_exit(payload, str(setup_id))
                 rec_price = float(reconciled["exit_price"]) if (reconciled and reconciled.get("exit_price")) else None
 
-                close_price = float(setup.get("exit_price") or (rec_price if rec_price is not None else (cmp_val if cmp_val is not None else (existing_trade.get("entry_underlying") or 0.0))))
-                
                 if reconciled and rec_price is not None:
+                    close_price = rec_price
                     close_status = reconciled["status"]
                     close_reason = reconciled["reason"]
-                else:
+                elif setup.get("exit_price") and float(setup.get("exit_price") or 0.0) > 0:
+                    close_price = float(setup["exit_price"])
+                    close_status = "CLOSED_AI_EXIT"
+                    close_reason = f"GeminiAI Setup: {status_upper}"
+                elif native_exit is not None and native_exit > 0:
+                    close_price = float(native_exit)
+                    entry_u = float(existing_trade.get("entry_underlying") or 0.0)
+                    trade_side = str(existing_trade.get("side", "")).upper()
+                    is_profit = (close_price > entry_u) if trade_side == "BUY" else (close_price < entry_u)
                     if "TARGET" in status_upper or "PROFIT" in status_upper:
                         close_status = "CLOSED_TARGET"
                     elif "TRAILED" in status_upper:
-                        # For trailed exits, if exit is better than entry for the side, it's CLOSED_TARGET
-                        entry_u = float(existing_trade.get("entry_underlying") or 0.0)
-                        trade_side = str(existing_trade.get("side", "")).upper()
-                        is_profit = (close_price > entry_u) if trade_side == "BUY" else (close_price < entry_u)
                         close_status = "CLOSED_TARGET" if is_profit else "CLOSED_SL"
                     elif "SL" in status_upper or "STOP" in status_upper:
                         close_status = "CLOSED_SL"
                     else:
                         close_status = "CLOSED_AI_EXIT"
+                    close_reason = f"GeminiAI Setup: {status_upper} at native price"
+                elif cmp_val is not None and cmp_val > 0:
+                    close_price = float(cmp_val)
+                    close_status = "CLOSED_AI_EXIT"
+                    close_reason = f"GeminiAI Setup: {status_upper} at feed CMP"
+                else:
+                    close_price = float(existing_trade.get("entry_underlying") or 0.0)
+                    close_status = "CLOSED_AI_EXIT"
                     close_reason = f"GeminiAI Setup: {status_upper}"
+
+                entry_price = float(existing_trade.get("entry_underlying") or 0.0)
+                trade_side = str(existing_trade.get("side", "BUY")).upper()
+                trade_lots = int(existing_trade.get("lots") or 1)
+                unit_lot_size = LOT_SIZES.get(symbol, 65 if "NIFTY" in symbol else 1250)
+                calc_pnl_pts = (close_price - entry_price) if trade_side == "BUY" else (entry_price - close_price)
+                calc_pnl_inr = calc_pnl_pts * trade_lots * unit_lot_size
 
                 log.info("[gemini_spark] Closing open trade #%s (%s) due to setup status '%s' at %.2f (%s)", existing_id, setup_id, status_upper, close_price, close_status)
                 close_paper_trade(
@@ -642,14 +719,16 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
                     "trade_id": existing_id,
                     "symbol": symbol,
                     "side": existing_trade.get("side"),
-                    "fill_price": existing_trade.get("entry_underlying"),
+                    "fill_price": entry_price,
                     "exit_price": close_price,
+                    "exit_time": now_iso,
                     "sl_price": existing_trade.get("sl_underlying"),
                     "target_price": existing_trade.get("target_underlying"),
-                    "lots": existing_trade.get("lots"),
+                    "lots": trade_lots,
                     "setup_id": setup_id,
                     "reason": close_reason,
-                    "pnl": setup.get("total_realized_pnl_inr", 0.0),
+                    "pnl": round(calc_pnl_inr, 2),
+                    "pnl_pts": round(calc_pnl_pts, 2),
                 })
                 sync_active_positions_snapshot()
                 _send_telegram_notification(
@@ -775,21 +854,68 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
                     except (ValueError, TypeError):
                         pass
 
-        # 5. Determine actual fill price / current price utilizing top-level CMP
-        fill_price = float(cmp_val if cmp_val is not None else (entry_target or stop_loss))
+        # 5. Determine actual fill price / current price utilizing native market price first
+        native_price = get_native_live_market_price(symbol)
+        fill_price = float(native_price if native_price is not None and native_price > 0 else (cmp_val if cmp_val is not None and cmp_val > 0 else (entry_target or stop_loss or 0.0)))
+        live_tick = native_price or fill_price
 
-        # Query live underlying tick to supplement lagging sheet CMP
-        live_tick = None
-        try:
-            with get_conn(read_only=True) as conn:
-                p_row = conn.execute(
-                    "SELECT price FROM underlying_price WHERE symbol = ? ORDER BY fetched_at DESC LIMIT 1",
-                    (symbol,),
-                ).fetchone()
-                if p_row and p_row["price"]:
-                    live_tick = float(p_row["price"])
-        except Exception:
-            pass
+        if fill_price <= 0:
+            log_eval("[gemini_spark] %s setup %s skipped: valid live market price unavailable (Native: %s, CMP: %s)", symbol, setup_id, native_price, cmp_val)
+            continue
+
+        # Convert relative SL distance if absolute stop_loss was omitted
+        if stop_loss == 0.0 and fill_price > 0:
+            sl_distance = None
+            for k in ("sl_distance", "sl_distance_pts", "stop_loss_distance", "sl_pts", "stop_pts", "stop_dist"):
+                if k in setup and setup[k] is not None:
+                    try:
+                        val = float(setup[k])
+                        if val > 0:
+                            sl_distance = val
+                            break
+                    except (ValueError, TypeError):
+                        pass
+            if sl_distance and sl_distance > 0:
+                stop_loss = (fill_price - sl_distance) if action_upper == "BUY" else (fill_price + sl_distance)
+            else:
+                default_dist = 40.0 if "NIFTY" in symbol else 2.0
+                stop_loss = (fill_price - default_dist) if action_upper == "BUY" else (fill_price + default_dist)
+
+        # Convert relative Target 1 distance if absolute target_1 was omitted
+        if target_1 == 0.0 and fill_price > 0:
+            t1_distance = None
+            for k in ("t1_distance", "t1_distance_pts", "target_distance", "t1_pts", "target_pts", "tp1_pts"):
+                if k in setup and setup[k] is not None:
+                    try:
+                        val = float(setup[k])
+                        if val > 0:
+                            t1_distance = val
+                            break
+                    except (ValueError, TypeError):
+                        pass
+            if t1_distance and t1_distance > 0:
+                target_1 = (fill_price + t1_distance) if action_upper == "BUY" else (fill_price - t1_distance)
+            else:
+                default_t1 = 80.0 if "NIFTY" in symbol else 4.0
+                target_1 = (fill_price + default_t1) if action_upper == "BUY" else (fill_price - default_t1)
+
+        # Convert relative Target 2 distance if absolute target_2 was omitted
+        if target_2 == 0.0 and fill_price > 0:
+            t2_distance = None
+            for k in ("t2_distance", "t2_distance_pts", "target_2_distance", "t2_pts", "tp2_pts"):
+                if k in setup and setup[k] is not None:
+                    try:
+                        val = float(setup[k])
+                        if val > 0:
+                            t2_distance = val
+                            break
+                    except (ValueError, TypeError):
+                        pass
+            if t2_distance and t2_distance > 0:
+                target_2 = (fill_price + t2_distance) if action_upper == "BUY" else (fill_price - t2_distance)
+            else:
+                default_t2 = 140.0 if "NIFTY" in symbol else 8.0
+                target_2 = (fill_price + default_t2) if action_upper == "BUY" else (fill_price - default_t2)
 
         log_eval(
             "[gemini_spark] Evaluating setup: %s | %s %s | CMP: %.2f (Live: %s, Zone/Trigger: %.2f) | SL: %.2f | T1: %.2f",
@@ -1036,13 +1162,28 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
                     )
                 continue
 
-        # New Setup Execution: Autonomous paper trading, never blocked by open position caps (>5) or scan blockers
-        if not _is_symbol_market_open(symbol):
-            log_eval("[gemini_spark] %s market is currently closed. Skipping order execution for setup %s.", symbol, setup_id)
+        # New Setup Execution: Autonomous paper trading, never blocked by open position caps (>5) or scan blockers
+
+        if not _is_symbol_market_open(symbol):
+
+            log_eval("[gemini_spark] %s market is currently closed. Skipping order execution for setup %s.", symbol, setup_id)
+
             continue
+        setup_lots = None
+        for k in ("lots", "allocation", "allocation_lots", "quantity_lots"):
+            if k in setup and setup[k] is not None:
+                try:
+                    val = int(setup[k])
+                    if val > 0:
+                        setup_lots = val
+                        break
+                except (ValueError, TypeError):
+                    pass
+
         capital = float(load_runtime_config().get("live_capital_per_trade_inr", 1000000))
         stop_dist = abs(fill_price - stop_loss) if stop_loss > 0 else (2.0 if symbol == "NATURALGAS" else 40.0)
-        lots = calculate_spark_lot_size(symbol, capital, stop_dist)
+        calculated_lots = calculate_spark_lot_size(symbol, capital, stop_dist)
+        lots = setup_lots if setup_lots is not None else calculated_lots
         lot_size = LOT_SIZES.get(symbol, 65 if symbol == "NIFTY" else 1250)
 
         setup_expiry = setup.get("contract_expiry") or setup.get("expiry")
@@ -1093,12 +1234,13 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
                 "symbol": symbol,
                 "side": action_upper,
                 "fill_price": fill_price,
+                "fill_time": now_iso,
                 "sl_price": stop_loss,
                 "target_price": target_1,
                 "target_2": target_2,
                 "lots": lots,
                 "setup_id": setup_id,
-                "reason": f"GeminiAI Setup {setup_id} executed",
+                "reason": f"GeminiAI Setup {setup_id} executed at native price ₹{fill_price:.2f}",
             })
             sync_active_positions_snapshot()
             zone_desc = ""
