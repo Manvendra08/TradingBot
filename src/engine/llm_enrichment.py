@@ -1580,13 +1580,40 @@ _EXIT_CACHE = {}
 _MULTILEG_VERDICT_CACHE: dict[str, dict[str, Any]] = {}
 _API_QUOTA_EXHAUSTED_UNTIL = 0.0
 _CONSECUTIVE_FAILURES = 0
-_CIRCUIT_BREAKER_THRESHOLD = 3
-_CIRCUIT_BREAKER_COOLDOWN = 300.0  # 5 minutes
+_CIRCUIT_BREAKER_THRESHOLD = 6
+_CIRCUIT_BREAKER_COOLDOWN = 120.0  # 2 minutes
 _CIRCUIT_OPEN_UNTIL = 0.0
 _PROVIDER_COOLDOWN_UNTIL: dict[str, float] = {}
 _FREE_MODEL_SYMBOL_PACING_LOCK = threading.Lock()
 _LAST_FREE_PROMPT_CALL_TIME: float = 0.0
 _LAST_FREE_PROMPT_SYMBOL: str | None = None
+_OMNIROUTER_LAST_PROBE_TIME: float = 0.0
+_OMNIROUTER_IS_ALIVE: bool = True
+
+
+def _is_omnirouter_online(base_url: str) -> bool:
+    """Probes localhost OmniRouter socket with a 60s cache. Prevents connection refused exceptions when not running."""
+    global _OMNIROUTER_LAST_PROBE_TIME, _OMNIROUTER_IS_ALIVE
+    now = time.time()
+    if (now - _OMNIROUTER_LAST_PROBE_TIME) < 60.0:
+        return _OMNIROUTER_IS_ALIVE
+
+    _OMNIROUTER_LAST_PROBE_TIME = now
+    try:
+        from urllib.parse import urlparse
+        import socket
+        parsed = urlparse(base_url)
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or (20128 if "20128" in base_url else 80)
+        if host in ("localhost", "127.0.0.1", "::1"):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.settimeout(0.2)
+                _OMNIROUTER_IS_ALIVE = (sock.connect_ex((host, port)) == 0)
+        else:
+            _OMNIROUTER_IS_ALIVE = True
+    except Exception:
+        _OMNIROUTER_IS_ALIVE = False
+    return _OMNIROUTER_IS_ALIVE
 
 
 def _provider_cooldown_key(provider: dict) -> str:
@@ -2251,6 +2278,9 @@ def call_llm_api(
         ],
     }
 
+    if not _is_omnirouter_online(_omnirouter_url):
+        _omnirouter_group["providers"] = []
+
     # OmniRouter Sentinel group — PRIMARY for Scan Sentinel Diagnostics
     _omnirouter_sentinel_group = {
         "model_group": "omnirouter-sentinel",
@@ -2320,6 +2350,9 @@ def call_llm_api(
             },
         ],
     }
+
+    if not _is_omnirouter_online(_omnirouter_url):
+        _omnirouter_sentinel_group["providers"] = []
 
     # Primary Bedrock Mantle group for reasoning
     _bedrock_mantle_group = {
@@ -2653,6 +2686,12 @@ def call_llm_api(
                     "use_gemini_sdk": True,
                 },
                 {
+                    "name": "Gemini SDK (1.5 Flash)",
+                    "env_key": "GEMINI_API_KEY",
+                    "model": "gemini-1.5-flash",
+                    "use_gemini_sdk": True,
+                },
+                {
                     "name": "Gemini SDK (2.0 Flash)",
                     "env_key": "GEMINI_API_KEY",
                     "model": "gemini-2.0-flash",
@@ -2783,10 +2822,10 @@ def call_llm_api(
                     "timeout": 8,
                 },
                 {
-                    "name": "NVIDIA NIM (MiniMax M2.7)",
+                    "name": "NVIDIA NIM (Llama 3.1 8B)",
                     "env_key": "NVIDIA_API_KEY",
                     "url": "https://integrate.api.nvidia.com/v1/chat/completions",
-                    "model": "minimaxai/minimax-m2.7",
+                    "model": "meta/llama-3.1-8b-instruct",
                     "timeout": 8,
                 },
                 {
@@ -2838,22 +2877,22 @@ def call_llm_api(
             "model_group": "openrouter-free-pool",
             "providers": [
                 {
-                    "name": "OpenRouter (Gemini 2.0 Flash Exp Free)",
+                    "name": "OpenRouter (Gemini 2.0 Flash)",
                     "env_key": "OPENROUTER_API_KEY",
                     "url": "https://openrouter.ai/api/v1/chat/completions",
-                    "model": "google/gemini-2.0-flash-exp:free",
+                    "model": "google/gemini-2.0-flash-001",
                 },
                 {
-                    "name": "OpenRouter (Llama 3.1 8B Free)",
+                    "name": "OpenRouter (Llama 3.3 70B Free)",
                     "env_key": "OPENROUTER_API_KEY",
                     "url": "https://openrouter.ai/api/v1/chat/completions",
-                    "model": "meta-llama/llama-3.1-8b-instruct:free",
+                    "model": "meta-llama/llama-3.3-70b-instruct:free",
                 },
                 {
-                    "name": "OpenRouter (Mistral Small 24B Free)",
+                    "name": "OpenRouter (DeepSeek Chat Free)",
                     "env_key": "OPENROUTER_API_KEY",
                     "url": "https://openrouter.ai/api/v1/chat/completions",
-                    "model": "mistralai/mistral-small-24b-instruct-2501:free",
+                    "model": "deepseek/deepseek-chat:free",
                 },
             ],
         }
@@ -2865,6 +2904,12 @@ def call_llm_api(
                     "name": "Gemini SDK (2.5 Flash)",
                     "env_key": "GEMINI_API_KEY",
                     "model": "gemini-2.5-flash",
+                    "use_gemini_sdk": True,
+                },
+                {
+                    "name": "Gemini SDK (1.5 Flash)",
+                    "env_key": "GEMINI_API_KEY",
+                    "model": "gemini-1.5-flash",
                     "use_gemini_sdk": True,
                 },
                 {
@@ -2982,10 +3027,14 @@ def call_llm_api(
 
         if _is_mcx:
             # MCX: OmniRouter → Groq → Gemini → OpenCode Zen → AnyAPI Free → Bedrock Mantle → Nvidia NIM → Bedrock → OpenRouter
-            FREE_MODEL_PIPELINE = [
-                _omnirouter_group,
-                _groq_group,
-                _gemini_group,
+            FREE_MODEL_PIPELINE = (
+                [_omnirouter_group, _gemini_group, _groq_group]
+                if getattr(schema, "__name__", "") == "LLMMultiLegVerdict"
+                else [_omnirouter_group, _groq_group, _gemini_group]
+            ) + [
+
+
+
                 _opencode_zen_group,
                 _anyapi_free_group,
                 _bedrock_mantle_group,
@@ -3007,10 +3056,14 @@ def call_llm_api(
             ]
         else:
             # NSE/BSE indices: OmniRouter → Groq → Gemini → OpenCode Zen → Nvidia NIM → Bedrock → OpenRouter
-            FREE_MODEL_PIPELINE = [
-                _omnirouter_group,
-                _groq_group,
-                _gemini_group,
+            FREE_MODEL_PIPELINE = (
+                [_omnirouter_group, _gemini_group, _groq_group]
+                if getattr(schema, "__name__", "") == "LLMMultiLegVerdict"
+                else [_omnirouter_group, _groq_group, _gemini_group]
+            ) + [
+
+
+
                 _opencode_zen_group,
                 _nvidia_nim_group,
                 _bedrock_group,
@@ -3171,10 +3224,10 @@ def call_llm_api(
                     log.info("[llm] Gemini %s failed: %s", provider["model"], err[:200])
                     if "429" in err or "RESOURCE_EXHAUSTED" in err.upper():
                         log.warning(
-                            "[llm] Gemini model hit quota. 10-min cooldown activated."
+                            "[llm] Gemini %s hit rate limit/quota — 60s cooldown.", provider["model"]
                         )
-                        _API_QUOTA_EXHAUSTED_UNTIL = now + 600.0
-                        _PROVIDER_COOLDOWN_UNTIL[cooldown_key] = now + 600.0
+                        # model-level cooldown applies below
+                        _PROVIDER_COOLDOWN_UNTIL[cooldown_key] = now + 60.0
                 continue
 
             if provider.get("use_bedrock_mantle"):
@@ -3327,7 +3380,7 @@ def call_llm_api(
                         log.warning(
                             "[llm] Bedrock model hit rate limit. 10-min cooldown activated."
                         )
-                        _PROVIDER_COOLDOWN_UNTIL[cooldown_key] = now + 600.0
+                        _PROVIDER_COOLDOWN_UNTIL[cooldown_key] = now + 60.0
                 continue
 
             # Handle OpenAI-compatible HTTP POST requests

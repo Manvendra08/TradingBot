@@ -559,6 +559,12 @@ def score_entry_quality(
     regime = (
         str(scan_context.get("regime") or scan_context.get("market_regime") or kwargs.get("regime") or "")
     ).lower()
+    if not regime:
+        engine_v = str(scan_context.get("verdict_label") or scan_context.get("verdict") or "").lower()
+        if any(w in engine_v for w in ("buildup", "trending", "bullish", "bearish")):
+            regime = "trending"
+        elif any(w in engine_v for w in ("range", "rangebound", "sideways", "consolidation")):
+            regime = "range"
     underlying = float(underlying or scan_context.get("underlying") or 0)
     net_premium = float(net_premium or scan_context.get("net_premium") or 0)
     margin = float(margin or scan_context.get("margin") or 0)
@@ -608,6 +614,14 @@ def score_entry_quality(
     elif (iv_rank >= 10 or iv_rank == 0) and (regime or "").lower() in ("range", "rangebound", "sideways"):
         score += 8
         reasons.append(f"Calm/range regime ({iv_rank:.0f} IV rank) — safe theta decay")
+    elif (iv_rank >= 10 or iv_rank == 0) and (regime or "").lower() in ("trending", "trending_up", "trending_down"):
+        score += 8
+        reasons.append(f"Trending regime ({iv_rank:.0f} IV rank) — low-vol directional trend")
+
+    # Structural safety: defined-risk structures have mathematically capped max loss
+    if not is_undefined_risk:
+        score += 10
+        reasons.append("Defined-risk structure (capped max loss)")
 
     # 2. Net delta near 0 — market neutral is ideal for non-directional
     if net_delta <= 0.15:
@@ -634,7 +648,8 @@ def score_entry_quality(
     # 4. Premium yield on margin (convert per-share points to total contract INR)
     if margin > 0 and net_premium > 0:
         from config.settings import LOT_SIZES
-        sym_key = str(kwargs.get("symbol") or scan_context.get("symbol") or (legs[0].get("symbol") if legs else "") or "").upper().split()[0]
+        raw_sym = str(kwargs.get("symbol") or scan_context.get("symbol") or (legs[0].get("symbol") if legs else "") or "").upper().split()
+        sym_key = raw_sym[0] if raw_sym else ""
         lot_size = LOT_SIZES.get(sym_key, 1)
         total_lots = max((int(l.get("lots") or 1) for l in legs), default=1)
         total_premium_inr = net_premium * lot_size * total_lots
@@ -680,6 +695,9 @@ def score_entry_quality(
         elif cushion_pct > 1.0:
             score += 5
             reasons.append(f"Moderate breakeven cushion {cushion_pct:.1f}%")
+        elif cushion_pct > 0.15:
+            score += 3
+            reasons.append(f"Positive breakeven cushion {cushion_pct:.1f}%")
 
     # ── Deductions ─────────────────────────────────────────────────
 

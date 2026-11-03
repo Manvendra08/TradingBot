@@ -1144,6 +1144,14 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
     scan_context["data_legitimacy"] = legitimacy.to_dict()
     scan_context["is_0dte_cutoff"] = getattr(legitimacy, "is_0dte_cutoff", False)
 
+    try:
+        from src.engine.regime_detector import detect_market_regime
+        detected_regime = detect_market_regime(symbol)
+        scan_context["market_regime"] = detected_regime
+        scan_context["regime"] = detected_regime
+    except Exception:
+        log.debug("%s: regime detection failed gracefully", symbol)
+
     exp_str = scan_context.get("expiry") or current_expiry_str
     if exp_str:
         try:

@@ -1780,7 +1780,7 @@ def _attempt_new_live_entry(
         }
 
     # ── 5g2. Entry quality score gate ──────────────────────────────────
-    MIN_MULTILEG_ENTRY_QUALITY = 35
+    MIN_MULTILEG_ENTRY_QUALITY = 25
     if entry_quality < MIN_MULTILEG_ENTRY_QUALITY:
         log.info(
             "[multileg-live] %s: entry quality %d/100 below minimum %d — rejecting trade (%s)",
