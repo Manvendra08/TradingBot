@@ -103,6 +103,94 @@ def _is_symbol_market_open(symbol: str) -> bool:
         return True
 
 
+def _is_entry_window_active(symbol: str) -> tuple[bool, str]:
+    """
+    Check if the current time is within the allowed entry window for NEW Gemini trade setups.
+    - NATURALGAS: Shifted to post-17:30 IST (17:30 - 23:00 IST) when US market / NYMEX open ensures deep option liquidity.
+      Also enforces a Thursday EIA inventory report lockout (19:45 - 20:30 IST).
+    - NIFTY / NSE Indices: Post-open confirmation gate (09:30 - 15:15 IST).
+    Existing open positions are NOT restricted by this gate; only NEW entries and pending triggers are gated.
+    """
+    now_ist = datetime.now(IST)
+    t = now_ist.hour * 100 + now_ist.minute
+    base = symbol.upper().split()[0] if symbol else ""
+
+    if "NATURALGAS" in base or base == "NG":
+        if t < 1730:
+            return False, f"Prior to 17:30 IST (Current: {now_ist.strftime('%H:%M')} IST). Awaiting US session open for deep MCX option liquidity."
+        if t > 2300:
+            return False, f"After 23:00 IST (Current: {now_ist.strftime('%H:%M')} IST). Entry window closed to avoid pre-expiry/overnight gap risk."
+        # Thursday EIA storage report blackout: 19:45 - 20:30 IST
+        if now_ist.weekday() == 3 and 1945 <= t <= 2030:
+            return False, f"EIA inventory report blackout window (19:45 - 20:30 IST). New entries blocked."
+        return True, ""
+
+    if "NIFTY" in base or "BANK" in base or "SENSEX" in base:
+        if t < 930:
+            return False, f"Prior to 09:30 IST (Current: {now_ist.strftime('%H:%M')} IST). Awaiting post-open auction confirmation gate."
+        if t > 1515:
+            return False, f"After 15:15 IST. Post-market / CAS window."
+        return True, ""
+
+    return True, ""
+
+
+def check_ng_option_liquidity(symbol: str, expiry: str, strike: float, option_type: str, side: str = "BUY") -> tuple[bool, str]:
+    """
+    Liquidity Gate: Checks bid-ask spread (<= 5%) and empty order book for MCX / Natural Gas option orders.
+    Returns (is_liquid, reason_msg).
+    """
+    base = symbol.upper().split()[0] if symbol else ""
+    if "NATURALGAS" not in base and base != "NG" and "CRUDEOIL" not in base:
+        return True, ""
+
+    try:
+        from src.models.schema import get_conn
+        with get_conn(read_only=True) as conn:
+            row = conn.execute(
+                """
+                SELECT bid, ask, ltp, fetched_at 
+                FROM option_chain_snapshots 
+                WHERE (symbol = ? OR symbol = ?) AND strike = ? AND option_type = ?
+                ORDER BY fetched_at DESC LIMIT 1
+                """,
+                (symbol, base, float(strike), str(option_type).upper()),
+            ).fetchone()
+            if not row:
+                if side.upper() == "BUY":
+                    return False, f"REJECTED_NO_DEPTH: No recent market depth found for protective wing {strike:.1f} {option_type}"
+                return True, ""
+
+            bid = float(row["bid"] or 0.0)
+            ask = float(row["ask"] or 0.0)
+            ltp = float(row["ltp"] or 0.0)
+
+            # Check protective wing (BUY leg) for empty order book
+            if side.upper() == "BUY":
+                if bid <= 0 or ask <= 0:
+                    return False, (
+                        f"REJECTED_EMPTY_ORDER_BOOK: Protective wing {symbol} {strike:.1f} {option_type} has empty order book "
+                        f"(Bid: {bid:.2f}, Ask: {ask:.2f}). Aborted to prevent unhedged short leg."
+                    )
+
+            # Check bid-ask spread (<= 5%)
+            if bid > 0 and ask > 0:
+                ref_px = ltp if ltp > 0 else ((bid + ask) / 2.0)
+                if ref_px > 0:
+                    spread_pct = (ask - bid) / ref_px
+                    if spread_pct > 0.05:
+                        return False, (
+                            f"REJECTED_ILLIQUID_WING: {symbol} leg {strike:.1f} {option_type} bid-ask spread "
+                            f"{spread_pct*100:.1f}% exceeds 5.0% threshold (Bid: {bid:.2f}, Ask: {ask:.2f}, Ref: {ref_px:.2f})."
+                        )
+            elif side.upper() == "SELL" and (bid <= 0 and ask <= 0):
+                return False, f"REJECTED_EMPTY_ORDER_BOOK: {symbol} short leg {strike:.1f} {option_type} has no bid/ask quotes."
+    except Exception as e:
+        log.debug("[gemini_spark] Liquidity check exception: %s", e)
+
+    return True, ""
+
+
 def _parse_contract(contract_str: str, setup_id: str = "") -> tuple[str, str]:
     """
     Parse contract string like 'NATURALGAS 27-OCT-2026', 'NIFTY_FUT', 'NIFTY 30OCT2026'.
@@ -1072,6 +1160,12 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
                 log_eval("[gemini_spark] %s market is currently closed. Skipping trigger check for setup %s.", symbol, setup_id)
                 continue
 
+            # Entry window guard (post-17:30 IST for Natural Gas, post-09:30 IST for Nifty)
+            win_ok, win_msg = _is_entry_window_active(symbol)
+            if not win_ok:
+                log_eval("[gemini_spark] %s setup %s pending trigger blocked: %s", symbol, setup_id, win_msg)
+                continue
+
             if entry_target > 0:
                 setup_type_upper = str(setup.get("type") or setup.get("setup_type") or "").upper()
                 is_pullback = any(k in setup_type_upper for k in ("PULLBACK", "REJECT", "RETEST", "SHELF", "SUPPORT", "HOLD", "BOUNCE", "VALUE", "DIP"))
@@ -1163,12 +1257,53 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
                 continue
 
         # New Setup Execution: Autonomous paper trading, never blocked by open position caps (>5) or scan blockers
-
         if not _is_symbol_market_open(symbol):
-
             log_eval("[gemini_spark] %s market is currently closed. Skipping order execution for setup %s.", symbol, setup_id)
-
             continue
+
+        # Entry window guard (post-17:30 IST for Natural Gas, post-09:30 IST for Nifty)
+        win_ok, win_msg = _is_entry_window_active(symbol)
+        if not win_ok:
+            log_eval("[gemini_spark] %s setup %s order execution blocked: %s", symbol, setup_id, win_msg)
+            continue
+
+        # Liquidity Gate: Check bid-ask spread and empty order book for options
+        opt_type_check = str(setup.get("option_type") or "FUT").upper()
+        if opt_type_check in ("CE", "PE"):
+            strike_val = float(setup.get("strike") or 0.0)
+            if strike_val > 0:
+                liq_ok, liq_msg = check_ng_option_liquidity(symbol, expiry, strike_val, opt_type_check, side=action_upper)
+                if not liq_ok:
+                    log.error("[gemini_spark] %s setup %s rejected by Liquidity Gate: %s", symbol, setup_id, liq_msg)
+                    _send_telegram_notification(
+                        f"⚠️ *[GeminiAI] REJECTED Setup `{setup_id}`*\n"
+                        f"• Symbol: `{symbol}` ({opt_type_check} {strike_val:.1f})\n"
+                        f"• Reason: {liq_msg}\n"
+                        f"• Action: Execution aborted by Liquidity Gate."
+                    )
+                    continue
+
+        setup_legs = setup.get("legs")
+        if isinstance(setup_legs, list) and setup_legs:
+            legs_liq_failed = False
+            for leg in setup_legs:
+                l_strike = float(leg.get("strike") or leg.get("reference_strike") or 0.0)
+                l_opt = str(leg.get("option_type") or "").upper()
+                l_side = str(leg.get("side") or leg.get("action") or "BUY").upper()
+                if l_strike > 0 and l_opt in ("CE", "PE"):
+                    liq_ok, liq_msg = check_ng_option_liquidity(symbol, expiry, l_strike, l_opt, side=l_side)
+                    if not liq_ok:
+                        log.error("[gemini_spark] %s multi-leg setup %s rejected by Liquidity Gate on leg %s %s: %s", symbol, setup_id, l_strike, l_opt, liq_msg)
+                        _send_telegram_notification(
+                            f"⚠️ *[GeminiAI] REJECTED Multi-Leg Setup `{setup_id}`*\n"
+                            f"• Symbol: `{symbol}` (Leg: {l_side} {l_strike:.1f} {l_opt})\n"
+                            f"• Reason: {liq_msg}\n"
+                            f"• Action: Basket aborted by Liquidity Gate."
+                        )
+                        legs_liq_failed = True
+                        break
+            if legs_liq_failed:
+                continue
         setup_lots = None
         for k in ("lots", "allocation", "allocation_lots", "quantity_lots"):
             if k in setup and setup[k] is not None:

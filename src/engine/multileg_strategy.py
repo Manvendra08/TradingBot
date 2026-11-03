@@ -166,6 +166,71 @@ def validate_legs(
         if opt_data is None:
             return False, f"Leg {i} {opt_type} at strike {strike} not found in option chain"
 
+    # 4b. Liquidity Gate: Bid-Ask Spread (<= 5%) and Empty Order Book Check
+    # Prior to firing NG / MCX option orders:
+    # 1. Protective wing (BUY leg) must have an active order book (non-zero bid & ask).
+    # 2. Bid-ask spread must be <= 5% of reference price to prevent severe slippage.
+    is_mcx_sym = any(s in symbol.upper() for s in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER", "COPPER"))
+    for i, leg in enumerate(legs):
+        strike = float(leg.get("strike") or 0.0)
+        opt_type = (leg.get("option_type") or "").upper()
+        side = (leg.get("side") or "").upper()
+
+        strike_chain = chain.get(strike, {})
+        opt_data = strike_chain.get(opt_type, {})
+
+        bid = float(opt_data.get("bid") or opt_data.get("best_bid") or opt_data.get("bid_price") or 0.0)
+        ask = float(opt_data.get("ask") or opt_data.get("best_ask") or opt_data.get("ask_price") or 0.0)
+        ltp = float(opt_data.get("ltp") or leg.get("premium") or leg.get("entry_premium") or 0.0)
+
+        # Fallback to option_chain_snapshots if bid/ask unpopulated in memory row
+        if (bid <= 0 or ask <= 0) and strike > 0:
+            try:
+                from src.models.schema import get_conn
+                with get_conn(read_only=True) as conn:
+                    row = conn.execute(
+                        "SELECT bid, ask, ltp FROM option_chain_snapshots WHERE symbol=? AND strike=? AND option_type=? ORDER BY fetched_at DESC LIMIT 1",
+                        (symbol, strike, opt_type),
+                    ).fetchone()
+                    if row:
+                        bid = float(row["bid"] or bid)
+                        ask = float(row["ask"] or ask)
+                        ltp = float(row["ltp"] or ltp)
+            except Exception:
+                pass
+
+        # Check protective wing (BUY leg) for empty order book
+        if side == "BUY" and is_mcx_sym:
+            if bid <= 0 or ask <= 0:
+                log.error(
+                    "[liquidity_gate] %s: REJECTED_EMPTY_ORDER_BOOK for protective wing %s %.1f %s (Bid: %.2f, Ask: %.2f). Aborting to prevent unhedged short leg.",
+                    symbol, side, strike, opt_type, bid, ask,
+                )
+                return False, (
+                    f"REJECTED_EMPTY_ORDER_BOOK: Protective wing {symbol} {strike:.1f} {opt_type} has empty order book "
+                    f"(Bid: {bid:.2f}, Ask: {ask:.2f}). Aborted to prevent unhedged short exposure."
+                )
+
+        # Check bid-ask spread (<= 5%) for all legs on MCX / Natural Gas
+        if is_mcx_sym:
+            if bid > 0 and ask > 0:
+                ref_px = ltp if ltp > 0 else ((bid + ask) / 2.0)
+                if ref_px > 0:
+                    spread_pct = (ask - bid) / ref_px
+                    if spread_pct > 0.05:
+                        log.error(
+                            "[liquidity_gate] %s: REJECTED_ILLIQUID_WING for leg %s %.1f %s — spread %.1f%% exceeds 5.0%% limit (Bid: %.2f, Ask: %.2f, Ref: %.2f).",
+                            symbol, side, strike, opt_type, spread_pct * 100, bid, ask, ref_px,
+                        )
+                        return False, (
+                            f"REJECTED_ILLIQUID_WING: {symbol} leg {strike:.1f} {opt_type} bid-ask spread "
+                            f"{spread_pct*100:.1f}% exceeds 5.0% threshold (Bid: {bid:.2f}, Ask: {ask:.2f}, Ref: {ref_px:.2f})."
+                        )
+            elif side == "SELL" and (bid <= 0 and ask <= 0):
+                return False, (
+                    f"REJECTED_EMPTY_ORDER_BOOK: {symbol} short leg {strike:.1f} {opt_type} has no bid/ask quotes."
+                )
+
     # 5. Premium sanity check
     for i, leg in enumerate(legs):
         premium = leg.get("premium", 0)
