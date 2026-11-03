@@ -5,7 +5,7 @@
 - **ALWAYS use Graft wherever applicable**:
   - Symbol & Architecture Lookup: use `graft ask "<query>"`, `graft callers <symbol>`, or `graft skeleton <file>` for instant symbol, method, and architecture lookups instead of broad greps or reading whole files.
   - Large Codebase Exploration: run `graft build` if the AST index needs generating or refreshing ($0, local AST).
-  - Blast Radius & Caller Verification: before editing or removing shared APIs, functions, or schemas, use `graft callers <symbol>` to verify all downstream consumers.
+  - Blast Radius & Caller Verification: before editing or removing shared APIs, functions, or schemas, use `graft callers <symbol>` or `graft trace_calls <symbol>` to verify all downstream consumers.
   - Report Graft token savings and percentage at the end of turns (e.g. `🌱 graft saved ~N tokens (X%) this turn`).
   - Report Ponytail token savings (anti-bloat, minimal diffs, zero filler) at the end of turns (e.g. `✂️ ponytail saved ~M tokens (Y%) this turn`).
 
@@ -28,19 +28,22 @@
   - NATURALGAS: TradingView 24h news + direction scoring
   - NIFTY/BANKNIFTY: ScanX heatmap + combined direction (OI + 1H/3H sentiments)
   - Fallback 1H/3H sentiment generator from local underlying_price history
-- Paper trading dashboard (Phase 1 complete):
+- Contributors & Top Heavyweights:
+  - Consolidated 3-index Telegram alert per scan cycle (`/hw`, `/heavyweights`, `/contributors`) via [heavyweight_digest.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/alerts/heavyweight_digest.py)
+  - Dedicated Contributors page: `http://localhost:8080/contributors`
+- Paper trading dashboard:
   - Bloomberg/TradingView-inspired professional UI
   - 6 comprehensive KPIs: total trades, win rate, P&L, avg P&L, profit factor, streak
+  - Collapsible Equity Curve (linked to Total P&L) initialized in collapsed mode with dynamic "view curve ▾" / "hide curve ▴" toggle
   - Symbol performance breakdown (win rate, avg P&L, total P&L per symbol)
   - Trade duration tracking (human-readable format)
-  - Enhanced equity curve with smooth animations
-  - Color-coded status badges and P&L display
   - Responsive design (desktop/tablet/mobile)
+- Production Cloud Host (OCI):
+  - Oracle Cloud Infrastructure Ubuntu instance `137.23.58.212` (user `ubuntu`, hostname `nsebot`)
+  - Continuous execution managed via systemd: `nsebot.service` (scheduler & engine) and `nsebot-dashboard.service` (dashboard on port 8080)
+  - Fast-forward remote deployment via `git pull origin dev` + `sudo systemctl restart nsebot.service nsebot-dashboard.service`
 - Keep docs aligned with the live FastAPI dashboard, not older Streamlit references
 - News sources: ICICIDirect + NewsAPI for NIFTY/BANKNIFTY; TradingView for MCX (Way2Wealth removed)
-- Vendored `src/tvdatafeed/` deleted — use pip-installed package
-- Dependencies trimmed: ~877 MB of unused packages removed (scipy, pandas, Twisted, numba, etc.)
-- `APScheduler` and `dhanhq` removed from requirements.txt (unused)
 - Multi-leg execution engine: [multileg_live_trading.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/engine/multileg_live_trading.py) & [multileg_paper_trading.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/engine/multileg_paper_trading.py) supporting Iron Condor, Strangles, Straddles, Spreads, and Jade Lizards
 - Centralized Fail-Closed Broker Gate: [broker_gate.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/engine/broker_gate.py) gates all live Kite orders (shadow mode, broker disabled, trading paused, market hours) while decoupling paper lot sizing
 - Fail-Closed Runtime Config: [runtime_config.py](file:///c:/Users/manve/VibeProjects/NSEBOT/config/runtime_config.py) provides safe fallback defaults and atomic file persistence
@@ -74,8 +77,6 @@ Pre-open session uses a call auction mechanism to discover a single equilibrium 
 - **Non-F&O Stocks**: Completely unaffected by CAS; continuous normal trading continues until 3:30 PM IST.
 - **Mandatory Friday Exits**: Handled between 15:35–15:40 IST for NSE F&O (23:25–23:30 MCX) to square off weekend gap risk before derivatives halt.
 
-
-
 ## AI / LLM state (v3.0)
 
 - `live_ai_decision_mode = full` (default in `runtime_config.json`; governs live AI decisions). NOTE: `settings.py AI_DECISION_MODE` (env `AI_DECISION_MODE`, default `empirical`) is legacy and NOT used by the live decision path.
@@ -87,7 +88,8 @@ Pre-open session uses a call auction mechanism to discover a single equilibrium 
 - MCX confidence floor: 72% for NATURALGAS/CRUDEOIL/GOLD/SILVER (vs 70% NSE)
 - JSON parse hardening: `_extract_json()` handles fences, prose wrappers, control chars — eliminates per-cycle OpenRouter parse failures
 - HOLDING alerts now show position age (`entered 47m ago`) to disambiguate from new signals
-- **AI Exit Auto-Exits are Enabled:** Autonomous AI exits (`CLOSED_AI_EXIT`) and AI leg adjustments (`ADJUST`) are fully enabled when `live_ai_exit_advisor_enabled` is true (default in `runtime_config.json`).
+- **Deterministic Decision Matrix (v2.0 Enforce Mode):** Operating under `"mode": "enforce"` in [decision_matrix.json](file:///c:/Users/manve/VibeProjects/NSEBOT/config/decision_matrix.json). Allowed structures are strictly bounded by direction × IV percentile bucket. LLMs cannot select structures outside the regime cell.
+- **AI Exit Auto-Exits & Gating:** Autonomous AI exits (`CLOSED_AI_EXIT`) and leg adjustments (`ADJUST`) are gated by [exit_evaluator.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/engine/exit_evaluator.py). AI cannot close prematurely; it is restricted to tightening conditions ($\ge 30\%$ credit profit or $\le -50\%$ stop loss ratio).
 - **TFSS Multi-Leg Strangle Book (v4.0):** Active TFSS strangles are grouped via `leg_group_id` (`{symbol}:{today_date}:TFSS`). Supports up to 6 open legs (3 per side) per symbol-day. Tranche scale-down (`ENABLE_TFSS_TRANCHE_SCALING = False`) is disabled per requirement so every trade places at 100% full base size in market direction (Bullish → Sell PE, Bearish → Sell CE). Risk Engine checks combined margin (cap ₹600k), combined net delta (cap 0.60), and max tranches (6) before allowing new entries. Exit logic & `EXIT_PRIORITY_MAP` remain fully active (Delta-stop exits close the tested side selectively, leaving the opposite side active).
 
 ## Token Efficiency
@@ -145,13 +147,21 @@ Follow below instructions before starting work:
 
 - **Schema Migrations:** Managed inside `_MIGRATIONS` in [schema.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/models/schema.py) up to M113 (`M111_add_snapshot_id_to_paper_trades`, `M112_add_snapshot_id_to_live_trades`, `M113_add_snapshot_id_to_ml_trades`). SQLite uses WAL (Write-Ahead Logging) mode with `timeout=60.0` to safely handle concurrent, multi-threaded engine and dashboard server writes.
 - **Fail-Closed Broker Invariants:** All live Kite order actions are strictly authorized via [broker_gate.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/engine/broker_gate.py) (`authorize_broker_execution`). Paper trading calculations remain completely decoupled from broker gate states.
+- **Deterministic Decision Matrix (v2.0 Enforce Mode):** Driven by [decision_matrix.json](file:///c:/Users/manve/VibeProjects/NSEBOT/config/decision_matrix.json) and [decision_matrix.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/engine/decision_matrix.py). Permitted options structures (Iron Condor, Short Strangle, Bull Put Spread, Bear Call Spread, Jade Lizard) are strictly determined by direction and IV percentile volatility bucket. Validator rejects proposals outside the cell.
+- **Delta Profiles & Candidate Strike Pre-Filtering:** Delta bands (Aggressive default vs Defensive) have hard danger ceilings. In [multileg_strategy.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/engine/multileg_strategy.py) (`get_candidate_strikes`), candidate strikes are pre-filtered against `danger_ceiling_short` (e.g. >0.32 or >0.25 delta), completely preventing danger ceiling rejections.
+- **Hedge Drag Ceiling & Credit-to-Width:** `MAX_HEDGE_COST_RATIO` in [multileg_strategies.py](file:///c:/Users/manve/VibeProjects/NSEBOT/config/multileg_strategies.py) is calibrated to 0.60 for indices (0.55 for Natural Gas). In `validate_legs()`, hedge debit up to 60% of gross credit is accepted provided net credit is $\ge 25\%$ of wing width.
+- **Directional Engine Alignment & Confidence Blending:** Directional strategies resolve engine direction via `is_bullish_engine` / `is_bearish_engine`. When engine conviction is $\ge 60\%$ and LLM execution confidence $\ge \text{conf\_floor}$, confidence is blended (`0.35 * engine + 0.65 * llm`) in [multileg_paper_trading.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/engine/multileg_paper_trading.py) and [multileg_live_trading.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/engine/multileg_live_trading.py) to prevent false rejections of 60–69% signals.
 - **Strategy Routing & Models:** Plumbed dynamically via [strategy_registry.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/engine/strategy_registry.py). Custom session overrides redirect `NATURALGAS` to specialized strategies (`NG_PARITY`, `NG_EVENT`, `NG_MOMENTUM`) based on time/regime rather than standard `CORE` logic.
-- **Multi-Leg & TFSS Option Execution:** Multi-leg strategies (Iron Condors, Spreads, Straddles, Strangles) and TFSS are executed with strict leg validation, margin checks, net delta caps (`0.60`), and atomic database operations (`insert_multileg_trade_atomically`, `close_book`, `execute_multi_leg_adjustment`). Live execution features sequential Kite fills and automatic rollback (`_rollback_placed_legs`).
-- **Exit Logic Precedents:**
-  1. *AI Exit Auto-Exits:* Fully enabled under `live_ai_exit_advisor_enabled`. When AI recommends `CLOSE`, book closes atomically with live LTPs; when `ADJUST`, challenged leg is rolled atomically with realized P&L tracking.
-  2. *Mechanical Exits:* Checked continuously on every scan tick (based on SL/Target premium thresholds, trailing stops, or time-of-day guards).
-  3. *Friday Exits:* Mandatory square-off is executed between 15:35–15:40 IST (NSE F&O close; 23:25–23:30 MCX) to avoid weekend gap risks.
-  4. *Daily Loss Cap:* Natural Gas blocks new entries for the day after 5 SL hits (query checks count of `CLOSED_SL` or `SL_HIT`).
+- **Multi-Leg & TFSS Option Execution:** Multi-leg strategies and TFSS are executed with strict leg validation, margin checks, net delta caps (`0.60`), and atomic database operations (`insert_multileg_trade_atomically`, `close_book`, `execute_multi_leg_adjustment`). Live execution features sequential Kite fills and automatic rollback (`_rollback_placed_legs`).
+- **Exit Logic Precedents & Safe Leg Ordering:**
+  1. *Priority Map:* Evaluated via [exit_evaluator.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/engine/exit_evaluator.py): `HARD_STOP` $\to$ `TESTED_DELTA` $\to$ `PROFIT_TARGET` $\to$ `TIME_DECAY` $\to$ `CAS_CLOSE` $\to$ `FRIDAY_CLOSE` $\to$ `AI_TIGHTEN`.
+  2. *AI Tightening Authority:* AI closes only fire on true tightening conditions ($\ge 30\%$ credit profit or $\le -50\%$ stop loss ratio). Premature closes are deterministically blocked.
+  3. *Safe Leg Ordering:* Short sold legs are closed first via `order_legs_for_exit()` to immediately release SPAN margin and eliminate naked risk before long hedges are closed.
+  4. *Mechanical Exits:* Checked continuously on every scan tick (based on SL/Target premium thresholds, trailing stops, or time-of-day guards).
+  5. *Friday Exits:* Mandatory square-off is executed between 15:35–15:40 IST (NSE F&O close; 23:25–23:30 MCX) to avoid weekend gap risks.
+  6. *Daily Loss Cap:* Natural Gas blocks new entries for the day after 5 SL hits.
+- **Top Heavyweights Net Impact & Contributors Parity:** [heavyweight_digest.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/alerts/heavyweight_digest.py) generates a single consolidated 3-index Telegram alert per scan during market hours (09:15–15:40 IST). Parity maintained with the Contributors page on the FastAPI dashboard.
+- **OCI Production Cloud Architecture:** Running 24/7 on Ubuntu instance `137.23.58.212` (`nsebot`) via dual systemd units: `nsebot.service` (trading scheduler/engine) and `nsebot-dashboard.service` (dashboard server). Remote updates are deployed via `git pull origin dev` followed by service restarts.
 - **ML Predictor Quality Gate & Retraining Loop:** Configured with `ml_predictor_mode = shadow` in `data/runtime_config.json`. The sample qualification threshold is set to `MIN_SAMPLES_FOR_LIVE = 250` (samples > 200, CV AUC > 0.68). Multi-leg trade closures (`close_book()` in [schema.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/models/schema.py)) automatically trigger model retraining events.
 - **Natural Gas EIA Macro Stance Dynamic Override:** While weekly EIA storage stance (`BULLISH_TIGHTENING` / `BEARISH_LOOSENING`) provides macro direction in [ng_momentum_strategy.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/engine/ng_momentum_strategy.py), intraday price trend (NYMEX 1H breakdown) and OI conviction (`Call Writing`, `Short Buildup`) override stale EIA bias to permit short momentum entries.
 - **Shadow Mode Pipeline Decoupling:** [pipeline.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/engine/pipeline.py) invokes live shadow trading when `live_shadow_mode=True`, completely decoupled from whether live broker order execution (`is_broker_trade_enabled()`) is enabled.

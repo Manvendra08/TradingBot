@@ -3,6 +3,7 @@
     <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <link rel="stylesheet" href="/static/theme.css" />
         <title>NSEBOT — Option Chain Monitor</title>
         <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
         <style>
@@ -454,6 +455,117 @@
                 font-size: 11px;
                 color: var(--accent);
             }
+        
+
+            /* ── Mobile Responsive Extensions ── */
+
+            @media (max-width: 768px) {
+                .header-top-row {
+                    display: flex !important;
+                    flex-direction: column !important;
+                    align-items: stretch !important;
+                    gap: 8px !important;
+                    width: 100% !important;
+                }
+                .header-bottom-row {
+                    display: flex !important;
+                    flex-direction: column !important;
+                    align-items: stretch !important;
+                    gap: 8px !important;
+                    width: 100% !important;
+                }
+                .header-nav, .nav-links {
+                    width: 100% !important;
+                    max-width: 100% !important;
+                    display: flex !important;
+                    flex-wrap: nowrap !important;
+                    overflow-x: auto !important;
+                    -webkit-overflow-scrolling: touch !important;
+                    scrollbar-width: none !important;
+                    gap: 4px !important;
+                    padding: 3px !important;
+                    box-sizing: border-box !important;
+                }
+                .header-nav::-webkit-scrollbar, .nav-links::-webkit-scrollbar {
+                    display: none !important;
+                }
+                .nav-tab, .nav-links a {
+                    flex-shrink: 0 !important;
+                    padding: 7px 12px !important;
+                    font-size: 12px !important;
+                    white-space: nowrap !important;
+                }
+                .header-right {
+                    width: 100% !important;
+                    display: flex !important;
+                    justify-content: flex-end !important;
+                    align-items: center !important;
+                    gap: 8px !important;
+                }
+            }
+
+
+            @media (max-width: 768px) {
+                main {
+                    padding: 12px 10px !important;
+                    gap: 12px !important;
+                }
+                .sub-header {
+                    flex-wrap: wrap !important;
+                    gap: 10px !important;
+                    padding: 8px 12px !important;
+                }
+                .sub-header .controls-group {
+                    flex-wrap: wrap !important;
+                    width: 100% !important;
+                    justify-content: flex-start !important;
+                    gap: 8px !important;
+                }
+                .sub-header .spacer {
+                    display: none !important;
+                }
+                .kpi-row {
+                    grid-template-columns: repeat(2, 1fr) !important;
+                    gap: 8px !important;
+                }
+                .kpi {
+                    padding: 10px 12px !important;
+                }
+                .kpi-value {
+                    font-size: 18px !important;
+                }
+                .charts-grid {
+                    grid-template-columns: 1fr !important;
+                    gap: 12px !important;
+                }
+                .chart-wrap {
+                    height: 220px !important;
+                }
+                .card {
+                    padding: 12px 14px !important;
+                }
+                .oi-table-wrap {
+                    width: 100% !important;
+                    max-height: 400px !important;
+                    overflow-x: auto !important;
+                    -webkit-overflow-scrolling: touch !important;
+                }
+                #recent-intel-grid, .intel-grid, #scanx-heatmaps-grid {
+                    grid-template-columns: 1fr !important;
+                }
+            }
+            @media (max-width: 480px) {
+                .kpi-row {
+                    grid-template-columns: repeat(2, 1fr) !important;
+                }
+                .kpi-label {
+                    font-size: 9px !important;
+                }
+                .kpi-value {
+                    font-size: 16px !important;
+                }
+            }
+
         </style>
         <script>
             (function () {

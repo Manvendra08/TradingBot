@@ -3,6 +3,7 @@
     <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <link rel="stylesheet" href="/static/theme.css" />
         <title>NSEBOT — Broker Console</title>
         <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
         <script>
@@ -1473,6 +1474,103 @@
                 ) !important;
                 filter: grayscale(0.5);
             }
+        
+
+            /* ── Mobile Responsive Extensions ── */
+
+            @media (max-width: 768px) {
+                .header-top-row {
+                    display: flex !important;
+                    flex-direction: column !important;
+                    align-items: stretch !important;
+                    gap: 8px !important;
+                    width: 100% !important;
+                }
+                .header-bottom-row {
+                    display: flex !important;
+                    flex-direction: column !important;
+                    align-items: stretch !important;
+                    gap: 8px !important;
+                    width: 100% !important;
+                }
+                .header-nav, .nav-links {
+                    width: 100% !important;
+                    max-width: 100% !important;
+                    display: flex !important;
+                    flex-wrap: nowrap !important;
+                    overflow-x: auto !important;
+                    -webkit-overflow-scrolling: touch !important;
+                    scrollbar-width: none !important;
+                    gap: 4px !important;
+                    padding: 3px !important;
+                    box-sizing: border-box !important;
+                }
+                .header-nav::-webkit-scrollbar, .nav-links::-webkit-scrollbar {
+                    display: none !important;
+                }
+                .nav-tab, .nav-links a {
+                    flex-shrink: 0 !important;
+                    padding: 7px 12px !important;
+                    font-size: 12px !important;
+                    white-space: nowrap !important;
+                }
+                .header-right {
+                    width: 100% !important;
+                    display: flex !important;
+                    justify-content: flex-end !important;
+                    align-items: center !important;
+                    gap: 8px !important;
+                }
+            }
+
+
+            @media (max-width: 768px) {
+                .wrap, .main-container {
+                    padding: 12px 10px !important;
+                }
+                .sub-header {
+                    flex-direction: column !important;
+                    align-items: stretch !important;
+                    gap: 10px !important;
+                    padding: 8px 12px !important;
+                    height: auto !important;
+                }
+                .sub-header-left, .sub-header-right {
+                    width: 100% !important;
+                    justify-content: space-between !important;
+                }
+                .heartbeat-left, .heartbeat-right {
+                    flex-wrap: wrap !important;
+                    gap: 8px !important;
+                }
+                .kpi-strip, .metrics-grid, .account-summary-grid {
+                    grid-template-columns: repeat(2, 1fr) !important;
+                    gap: 8px !important;
+                }
+                .header-operations-cluster {
+                    width: 100% !important;
+                    justify-content: space-between !important;
+                }
+                .table-container, .orders-table-container, .positions-table-container, .gtt-table-container, .multileg-table-container {
+                    width: 100% !important;
+                    max-width: 100% !important;
+                    overflow-x: auto !important;
+                    -webkit-overflow-scrolling: touch !important;
+                }
+                .card {
+                    padding: 12px 14px !important;
+                }
+            }
+            @media (max-width: 480px) {
+                .kpi-strip, .metrics-grid, .account-summary-grid {
+                    grid-template-columns: repeat(2, 1fr) !important;
+                }
+                .btn-kill-switch {
+                    padding: 6px 10px !important;
+                    font-size: 11px !important;
+                }
+            }
+
         </style>
     </head>
     <body>

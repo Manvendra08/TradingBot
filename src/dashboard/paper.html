@@ -3,6 +3,7 @@
     <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <link rel="stylesheet" href="/static/theme.css" />
         <title>NSEBOT — Paper Trading</title>
         <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 
@@ -56,7 +57,9 @@
                 display: inline-block;
                 line-height: 1;
             }
-        </style>
+        
+
+            </style>
 
         <!-- ── Inlined theme toggle logic (theme.js not served as static) ── -->
         <script>
@@ -2578,6 +2581,130 @@
                 border-color: #dc2626;
                 color: #991b1b;
             }
+        
+            /* ── Mobile Responsive Extensions ── */
+            @media (max-width: 768px) {
+                .header-top-row {
+                    display: flex !important;
+                    flex-direction: column !important;
+                    align-items: stretch !important;
+                    gap: 8px !important;
+                    width: 100% !important;
+                }
+                .header-bottom-row {
+                    display: flex !important;
+                    flex-direction: column !important;
+                    align-items: stretch !important;
+                    gap: 8px !important;
+                    width: 100% !important;
+                }
+                .header-nav {
+                    width: 100% !important;
+                    max-width: 100% !important;
+                    display: flex !important;
+                    flex-wrap: nowrap !important;
+                    overflow-x: auto !important;
+                    -webkit-overflow-scrolling: touch !important;
+                    scrollbar-width: none !important;
+                    gap: 4px !important;
+                    padding: 4px !important;
+                    box-sizing: border-box !important;
+                }
+                .header-nav::-webkit-scrollbar {
+                    display: none !important;
+                }
+                .nav-tab {
+                    flex-shrink: 0 !important;
+                    padding: 7px 12px !important;
+                    font-size: 12px !important;
+                    white-space: nowrap !important;
+                }
+                .header-right {
+                    width: 100% !important;
+                    display: flex !important;
+                    justify-content: flex-end !important;
+                    align-items: center !important;
+                    gap: 8px !important;
+                }
+                .wrap {
+                    padding: 12px 10px !important;
+                }
+                .sub-header {
+                    flex-wrap: wrap !important;
+                    padding: 8px 12px !important;
+                    gap: 8px !important;
+                }
+                .sub-header .controls-group {
+                    flex-wrap: wrap !important;
+                    width: 100% !important;
+                    gap: 8px !important;
+                }
+                .kpis {
+                    grid-template-columns: repeat(2, 1fr) !important;
+                    gap: 10px !important;
+                }
+                .kpi {
+                    min-height: 85px !important;
+                    padding: 10px 12px !important;
+                }
+                .kpi .val {
+                    font-size: clamp(16px, 4.5vw, 22px) !important;
+                }
+                .kpi .lbl {
+                    font-size: 9px !important;
+                }
+                .kpi .sub {
+                    font-size: 9.5px !important;
+                }
+                .grid2 {
+                    grid-template-columns: 1fr !important;
+                    gap: 12px !important;
+                }
+                .grid3 {
+                    grid-template-columns: 1fr !important;
+                    gap: 10px !important;
+                }
+                .metric-grid {
+                    grid-template-columns: repeat(2, 1fr) !important;
+                    gap: 8px !important;
+                }
+                .metric-box {
+                    padding: 10px 12px !important;
+                }
+                .card {
+                    padding: 12px 14px !important;
+                }
+                .tbl-wrap, .multileg-view-container, .multileg-card {
+                    width: 100% !important;
+                    max-width: 100% !important;
+                    overflow-x: auto !important;
+                    -webkit-overflow-scrolling: touch !important;
+                }
+                .multileg-table {
+                    min-width: 600px;
+                }
+                .chart-container {
+                    height: 240px !important;
+                }
+                .view-mode-toggle {
+                    width: 100% !important;
+                    justify-content: space-between !important;
+                }
+            }
+            @media (max-width: 480px) {
+                .kpis {
+                    grid-template-columns: repeat(2, 1fr) !important;
+                    gap: 8px !important;
+                }
+                .kpi {
+                    padding: 8px 10px !important;
+                    min-height: 75px !important;
+                }
+                .kpi .val {
+                    font-size: 16px !important;
+                }
+            }
+
         </style>
     </head>
 

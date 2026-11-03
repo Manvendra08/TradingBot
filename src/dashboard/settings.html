@@ -860,7 +860,107 @@
         #ai-advanced-chevron {
             display: inline-block;
         }
-    </style>
+    
+
+            /* ── Mobile Responsive Extensions ── */
+
+            @media (max-width: 768px) {
+                .header-top-row {
+                    display: flex !important;
+                    flex-direction: column !important;
+                    align-items: stretch !important;
+                    gap: 8px !important;
+                    width: 100% !important;
+                }
+                .header-bottom-row {
+                    display: flex !important;
+                    flex-direction: column !important;
+                    align-items: stretch !important;
+                    gap: 8px !important;
+                    width: 100% !important;
+                }
+                .header-nav, .nav-links {
+                    width: 100% !important;
+                    max-width: 100% !important;
+                    display: flex !important;
+                    flex-wrap: nowrap !important;
+                    overflow-x: auto !important;
+                    -webkit-overflow-scrolling: touch !important;
+                    scrollbar-width: none !important;
+                    gap: 4px !important;
+                    padding: 3px !important;
+                    box-sizing: border-box !important;
+                }
+                .header-nav::-webkit-scrollbar, .nav-links::-webkit-scrollbar {
+                    display: none !important;
+                }
+                .nav-tab, .nav-links a {
+                    flex-shrink: 0 !important;
+                    padding: 7px 12px !important;
+                    font-size: 12px !important;
+                    white-space: nowrap !important;
+                }
+                .header-right {
+                    width: 100% !important;
+                    display: flex !important;
+                    justify-content: flex-end !important;
+                    align-items: center !important;
+                    gap: 8px !important;
+                }
+            }
+
+
+        @media (max-width: 768px) {
+            .main-container {
+                padding: 14px 10px !important;
+            }
+            .settings-grid {
+                grid-template-columns: 1fr !important;
+                gap: 16px !important;
+            }
+            .cockpit-control-bar {
+                flex-direction: column !important;
+                align-items: stretch !important;
+                gap: 12px !important;
+                padding: 10px 12px !important;
+            }
+            .cockpit-control-bar-left, .cockpit-control-bar-right {
+                width: 100% !important;
+                justify-content: space-between !important;
+            }
+            .settings-subtabs {
+                display: flex !important;
+                overflow-x: auto !important;
+                white-space: nowrap !important;
+                -webkit-overflow-scrolling: touch !important;
+                scrollbar-width: none !important;
+                width: 100% !important;
+                padding-bottom: 6px !important;
+                gap: 10px !important;
+            }
+            .settings-subtabs::-webkit-scrollbar {
+                display: none !important;
+            }
+            .subtab-btn {
+                margin-left: 0 !important;
+                flex-shrink: 0 !important;
+                padding: 6px 12px !important;
+                font-size: 12px !important;
+            }
+            .switch-group {
+                padding: 12px 14px !important;
+            }
+            .symbol-lots-list {
+                grid-template-columns: 1fr !important;
+            }
+            .table-wrap, .dm-table-wrap, .matrix-container {
+                overflow-x: auto !important;
+                width: 100% !important;
+                -webkit-overflow-scrolling: touch !important;
+            }
+        }
+
+        </style>
 </head>
 
 <body data-env="shadow">

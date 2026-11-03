@@ -1054,7 +1054,110 @@
             0% { background-color: rgba(0, 229, 160, 0.3); }
             100% { background-color: transparent; }
         }
-    </style>
+    
+
+            /* ── Mobile Responsive Extensions ── */
+
+            @media (max-width: 768px) {
+                .header-top-row {
+                    display: flex !important;
+                    flex-direction: column !important;
+                    align-items: stretch !important;
+                    gap: 8px !important;
+                    width: 100% !important;
+                }
+                .header-bottom-row {
+                    display: flex !important;
+                    flex-direction: column !important;
+                    align-items: stretch !important;
+                    gap: 8px !important;
+                    width: 100% !important;
+                }
+                .header-nav, .nav-links {
+                    width: 100% !important;
+                    max-width: 100% !important;
+                    display: flex !important;
+                    flex-wrap: nowrap !important;
+                    overflow-x: auto !important;
+                    -webkit-overflow-scrolling: touch !important;
+                    scrollbar-width: none !important;
+                    gap: 4px !important;
+                    padding: 3px !important;
+                    box-sizing: border-box !important;
+                }
+                .header-nav::-webkit-scrollbar, .nav-links::-webkit-scrollbar {
+                    display: none !important;
+                }
+                .nav-tab, .nav-links a {
+                    flex-shrink: 0 !important;
+                    padding: 7px 12px !important;
+                    font-size: 12px !important;
+                    white-space: nowrap !important;
+                }
+                .header-right {
+                    width: 100% !important;
+                    display: flex !important;
+                    justify-content: flex-end !important;
+                    align-items: center !important;
+                    gap: 8px !important;
+                }
+            }
+
+
+        @media (max-width: 768px) {
+            .app-header {
+                flex-direction: column !important;
+                align-items: stretch !important;
+                padding: 8px 12px !important;
+                height: auto !important;
+                gap: 8px !important;
+            }
+            .header-left {
+                flex-direction: column !important;
+                align-items: stretch !important;
+                gap: 8px !important;
+                width: 100% !important;
+            }
+            .brand-badge {
+                width: 100% !important;
+            }
+            .header-nav {
+                overflow-x: auto !important;
+                white-space: nowrap !important;
+                -webkit-overflow-scrolling: touch !important;
+                scrollbar-width: none !important;
+                display: flex !important;
+                width: 100% !important;
+            }
+            .header-nav::-webkit-scrollbar {
+                display: none !important;
+            }
+            .live-pill {
+                width: 100% !important;
+                justify-content: center !important;
+            }
+            .header-right {
+                width: 100% !important;
+                justify-content: space-between !important;
+            }
+            .report-wrapper {
+                padding: 12px 10px !important;
+            }
+            .memorandum-header, .memo-title-block {
+                padding: 12px !important;
+            }
+            .executive-grid, .trade-metrics-grid {
+                grid-template-columns: 1fr !important;
+                gap: 10px !important;
+            }
+            .table-wrap, .report-table-container {
+                overflow-x: auto !important;
+                width: 100% !important;
+                -webkit-overflow-scrolling: touch !important;
+            }
+        }
+
+        </style>
 </head>
 <body>
     <!-- App Header (Single Consolidated Row) -->
