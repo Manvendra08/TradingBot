@@ -1459,6 +1459,9 @@ def _worker_loop() -> None:
     last_symbol_poll: dict[str, float] = {}
 
     while not _STOP_EVENT.is_set():
+        if not is_gemini_spark_feed_enabled():
+            _STOP_EVENT.wait(timeout=5.0)
+            continue
         now_time = time.time()
         for sym in SUPPORTED_FEED_SYMBOLS:
             try:

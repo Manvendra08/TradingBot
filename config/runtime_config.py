@@ -98,7 +98,7 @@ def validate_config_dict(config: dict) -> None:
     if "live_ai_decision_mode" in config:
         if config["live_ai_decision_mode"] not in {"advisory", "boost_only", "full"}:
             raise ValueError(f"Invalid live_ai_decision_mode: {config['live_ai_decision_mode']}")
-    for bool_key in ("live_shadow_mode", "live_broker_disabled", "trading_paused", "live_ai_exit_advisor_enabled"):
+    for bool_key in ("live_shadow_mode", "live_broker_disabled", "trading_paused", "live_ai_exit_advisor_enabled", "gemini_spark_feed_enabled"):
         if bool_key in config and not isinstance(config[bool_key], bool):
             raise TypeError(f"Config field '{bool_key}' must be a boolean, got {type(config[bool_key]).__name__}")
     for list_key in ("live_enabled_broker_symbols", "paper_enabled_symbols"):

@@ -1161,8 +1161,12 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
     # even after its stored sl_underlying/target_underlying were breached. The stored
     # levels live in the same price units as the underlying feed (and the dashboard
     # CMP), so comparing them is consistent.
-    from src.engine.gemini_spark_feed import get_open_gemini_paper_trades_map
-    gemini_trades = list(get_open_gemini_paper_trades_map(symbol).values())
+    from config.runtime_config import is_gemini_spark_feed_enabled
+    if is_gemini_spark_feed_enabled():
+        from src.engine.gemini_spark_feed import get_open_gemini_paper_trades_map
+        gemini_trades = list(get_open_gemini_paper_trades_map(symbol).values())
+    else:
+        gemini_trades = []
     for g_trade in gemini_trades:
         is_fut = str(g_trade.get("option_type", "")).upper() == "FUT"
         is_mcx = symbol in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER", "COPPER")

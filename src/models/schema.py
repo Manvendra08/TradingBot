@@ -1904,7 +1904,7 @@ def delete_expired_contracts() -> int:
 def get_open_live_trade(symbol: str) -> dict | None:
     sql = """
         SELECT * FROM live_trades
-        WHERE symbol=? AND status='OPEN' AND (setup_type IS NULL OR setup_type != 'TIMEFRAME')
+        WHERE symbol=? AND status='OPEN' AND (setup_type IS NULL OR (setup_type != 'TIMEFRAME' AND setup_type != 'TFSS' AND setup_type != 'GeminiAI'))
         ORDER BY opened_at DESC
         LIMIT 1
     """

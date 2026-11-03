@@ -1306,6 +1306,24 @@
                             </label>
                         </div>
 
+                        <div class="switch-group" style="
+                                    margin-bottom: 24px;
+                                    border-top: 1px solid var(--border);
+                                    padding-top: 20px;
+                                ">
+                            <div class="switch-label">
+                                <span style="display:flex; align-items:center; gap:8px">
+                                    🤖 Gemini Spark Trading System
+                                    <span style="background:rgba(59,130,246,0.15); color:var(--blue, #3b82f6); font-size:10px; padding:2px 6px; border-radius:4px; font-weight:600">INDEPENDENT</span>
+                                </span>
+                                <span class="switch-sub">Autonomous setup feed executing Gemini AI multi-leg and directional setups (NIFTY &amp; NATURALGAS) via 2-way Google Sheets ledger. Disabling halts polling and order execution completely without affecting Core Bot.</span>
+                            </div>
+                            <label class="switch">
+                                <input type="checkbox" id="sett-gemini-spark-enabled" />
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+
                         <div class="switch-group" style="margin-bottom: 24px">
                             <div class="switch-label">
                                 <span>Scan Sentinel Report Mode</span>
@@ -2706,6 +2724,9 @@
                 document.getElementById("sett-enable-ng-parity")
                     .checked !==
                 (runtimeConfig.enable_ng_parity_trades !== false) ||
+                document.getElementById("sett-gemini-spark-enabled")
+                    .checked !==
+                (runtimeConfig.gemini_spark_feed_enabled !== false) ||
                 document.getElementById("sett-sentinel-report-mode").value !==
                 (runtimeConfig.sentinel_report_mode || "anomalies") ||
                 document.getElementById("sett-ops-agent-mode").value !==
@@ -3228,6 +3249,13 @@
                         enableNgParityCheckbox.checked =
                             data.enable_ng_parity_trades !== false;
 
+                    const enableGeminiSparkCheckbox = document.getElementById(
+                        "sett-gemini-spark-enabled",
+                    );
+                    if (enableGeminiSparkCheckbox)
+                        enableGeminiSparkCheckbox.checked =
+                            data.gemini_spark_feed_enabled !== false;
+
                     const sentinelReportModeSelect = document.getElementById(
                         "sett-sentinel-report-mode",
                     );
@@ -3435,6 +3463,9 @@
                 ).checked,
                 enable_ng_parity_trades: document.getElementById(
                     "sett-enable-ng-parity",
+                ).checked,
+                gemini_spark_feed_enabled: document.getElementById(
+                    "sett-gemini-spark-enabled",
                 ).checked,
                 sentinel_report_mode: document.getElementById(
                     "sett-sentinel-report-mode",
