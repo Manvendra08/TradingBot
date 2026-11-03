@@ -1560,6 +1560,24 @@
                 .card {
                     padding: 12px 14px !important;
                 }
+                /* Pill switcher: theme.css's 38px button min-height clips it */
+                .segment-control {
+                    width: 100% !important;
+                    height: 38px !important;
+                }
+                .segment-btn {
+                    min-height: 0 !important;
+                    font-size: 11px !important;
+                }
+                /* P&L card: drop the 420px desktop floor, spread 3 groups evenly */
+                .m2m-card {
+                    min-width: 0 !important;
+                    width: 100% !important;
+                    box-sizing: border-box !important;
+                    padding: 8px 10px !important;
+                    gap: 8px !important;
+                    justify-content: space-around !important;
+                }
             }
             @media (max-width: 480px) {
                 .kpi-strip, .metrics-grid, .account-summary-grid {

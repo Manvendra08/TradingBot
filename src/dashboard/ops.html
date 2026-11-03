@@ -264,6 +264,17 @@
                 width: 100% !important;
                 -webkit-overflow-scrolling: touch !important;
             }
+            /* Hero banner: icon | text | status squeezes the title into a sliver, so stack it */
+            .ops-banner {
+                flex-direction: column !important;
+                align-items: flex-start !important;
+                gap: 10px !important;
+                padding: 14px !important;
+            }
+            .ops-banner-text, .ops-banner-status {
+                width: 100% !important;
+                min-width: 0 !important;
+            }
         }
 
         </style>

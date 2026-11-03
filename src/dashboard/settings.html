@@ -907,6 +907,24 @@
                     align-items: center !important;
                     gap: 8px !important;
                 }
+                /* Header here is logo | nav | buttons in one row: wrap so the nav gets its own full-width row */
+                .app-header {
+                    flex-wrap: wrap !important;
+                }
+                .app-header .header-left {
+                    order: 1;
+                    flex: 1 1 auto;
+                    width: auto !important;
+                }
+                .app-header .header-right {
+                    order: 2;
+                    flex: 0 0 auto;
+                    width: auto !important;
+                }
+                .app-header .header-nav {
+                    order: 3;
+                    flex: 1 1 100%;
+                }
             }
 
 

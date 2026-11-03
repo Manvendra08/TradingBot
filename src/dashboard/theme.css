@@ -471,6 +471,15 @@ button.primary:hover {
     box-sizing: border-box !important;
   }
 
+  /* Grid pages: let the single column shrink below content width instead of
+     stretching past the viewport (implicit grid tracks default to min-content) */
+  main, .wrap, .main, .main-container {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  main > *, .wrap > *, .kpi-row > *, .charts-grid > * {
+    min-width: 0;
+  }
+
   /* Header & Navigation */
   .app-header {
     padding: 8px 12px !important;
@@ -538,6 +547,9 @@ button.primary:hover {
     padding: 7px 12px !important;
     font-size: 12px !important;
     white-space: nowrap !important;
+    min-height: 36px;
+    display: inline-flex !important;
+    align-items: center !important;
   }
 
   .header-right {
