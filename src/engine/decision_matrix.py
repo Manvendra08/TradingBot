@@ -27,49 +27,87 @@ def atm_iv_percentile(
     symbol: str,
     lookback_days: int = 30,
     min_samples: int = 10,
+    current_atm_iv: float | None = None,
 ) -> float | None:
     """
     Calculate the implied volatility percentile (IVP, 0-100) of current ATM IV
-    relative to historical snapshots over the lookback window.
+    relative to historical ATM snapshots over the lookback window.
     Fail-closed: Returns None if insufficient history or database error.
     """
     try:
+        from config.symbol_classes import get_strike_step
+        step = float(get_strike_step(symbol) or 50)
+        tol = step * 0.60
+
         with get_conn() as conn:
+            # Query historical ATM IVs (strikes within 0.6 * strike_step of underlying_price)
+            # Filter out extreme unphysical model artifacts (< 3.0 or > 250.0)
             rows = conn.execute(
                 """
                 SELECT iv FROM option_chain_snapshots
                 WHERE symbol = ?
-                  AND iv IS NOT NULL AND iv > 0
+                  AND iv IS NOT NULL AND iv >= 3.0 AND iv <= 250.0
+                  AND underlying_price > 0
+                  AND abs(strike - underlying_price) <= ?
                   AND fetched_at >= datetime('now', ?)
                 ORDER BY fetched_at DESC
                 LIMIT 3000
                 """,
-                (symbol, f"-{int(lookback_days)} days"),
+                (symbol, tol, f"-{int(lookback_days)} days"),
             ).fetchall()
 
-        if len(rows) < min_samples:
-            return None
+            # If insufficient ATM rows with underlying_price, fall back to general snapshots
+            if len(rows) < min_samples:
+                rows = conn.execute(
+                    """
+                    SELECT iv FROM option_chain_snapshots
+                    WHERE symbol = ?
+                      AND iv IS NOT NULL AND iv >= 3.0 AND iv <= 250.0
+                      AND fetched_at >= datetime('now', ?)
+                    ORDER BY fetched_at DESC
+                    LIMIT 3000
+                    """,
+                    (symbol, f"-{int(lookback_days)} days"),
+                ).fetchall()
 
-        all_ivs = sorted(float(r["iv"]) for r in rows)
+            if len(rows) < min_samples:
+                return None
 
-        with get_conn() as conn:
-            cur_row = conn.execute(
-                """
-                SELECT iv FROM option_chain_snapshots
-                WHERE symbol = ? AND iv IS NOT NULL AND iv > 0
-                ORDER BY fetched_at DESC
-                LIMIT 1
-                """,
-                (symbol,),
-            ).fetchone()
+            all_ivs = sorted(float(r["iv"]) for r in rows)
 
-        if not cur_row:
-            return None
+            current_iv = current_atm_iv
+            if current_iv is None or current_iv <= 0:
+                cur_row = conn.execute(
+                    """
+                    SELECT iv FROM option_chain_snapshots
+                    WHERE symbol = ?
+                      AND iv IS NOT NULL AND iv >= 3.0 AND iv <= 250.0
+                      AND underlying_price > 0
+                      AND abs(strike - underlying_price) <= ?
+                    ORDER BY fetched_at DESC, abs(strike - underlying_price) ASC
+                    LIMIT 1
+                    """,
+                    (symbol, tol),
+                ).fetchone()
 
-        current_iv = float(cur_row["iv"])
-        rank = sum(1 for iv in all_ivs if iv <= current_iv)
-        percentile = (rank / len(all_ivs)) * 100.0
-        return round(percentile, 2)
+                if not cur_row:
+                    cur_row = conn.execute(
+                        """
+                        SELECT iv FROM option_chain_snapshots
+                        WHERE symbol = ? AND iv IS NOT NULL AND iv >= 3.0 AND iv <= 250.0
+                        ORDER BY fetched_at DESC
+                        LIMIT 1
+                        """,
+                        (symbol,),
+                    ).fetchone()
+
+                if not cur_row:
+                    return None
+                current_iv = float(cur_row["iv"])
+
+            rank = sum(1 for iv in all_ivs if iv <= current_iv)
+            percentile = (rank / len(all_ivs)) * 100.0
+            return round(percentile, 2)
     except Exception as exc:
         log.warning("[decision_matrix] Failed to calculate IVP for %s: %s", symbol, exc)
         return None
@@ -374,7 +412,24 @@ def evaluate_matrix_decision(
     is_mcx = symbol_upper in MCX_SYMBOLS
 
     # 1. Vol regime
-    ivp = atm_iv_percentile(symbol_upper)
+    current_atm_iv = None
+    if isinstance(scan_context, dict):
+        current_atm_iv = scan_context.get("atm_iv")
+        if not current_atm_iv:
+            atm_strike = float(scan_context.get("atm_strike") or 0.0)
+            option_rows = scan_context.get("option_rows") or []
+            if atm_strike > 0 and option_rows:
+                cand_ivs = [
+                    float(r.get("iv") or 0.0)
+                    for r in option_rows
+                    if abs(float(r.get("strike") or 0.0) - atm_strike) < 0.01 and float(r.get("iv") or 0.0) > 0
+                ]
+                if cand_ivs:
+                    current_atm_iv = sum(cand_ivs) / len(cand_ivs)
+    if not current_atm_iv and isinstance(intel, dict):
+        current_atm_iv = intel.get("atm_iv")
+
+    ivp = atm_iv_percentile(symbol_upper, current_atm_iv=current_atm_iv)
     vol_regime = vol_bucket(symbol_upper, ivp=ivp, cfg=cfg)
 
     # 2. Market direction from engine verdict (uses canonical verdict_sets)
@@ -393,6 +448,26 @@ def evaluate_matrix_decision(
         direction = "BEARISH"
     else:
         direction = "NEUTRAL"
+
+    # 2b. Heavyweight Confluence Veto (for NSE/BSE equity indices)
+    hw_veto_applied = False
+    hw_confluence_breadth = None
+    if symbol_upper in ("NIFTY", "BANKNIFTY", "SENSEX"):
+        try:
+            from src.alerts.heavyweight_digest import get_heavyweights_confluence
+            hw_conf = get_heavyweights_confluence() or {}
+            if hw_conf:
+                hw_confluence_breadth = hw_conf.get("breadth")
+                if direction == "BEARISH" and hw_conf.get("veto_bear_calls"):
+                    direction = "NEUTRAL"
+                    hw_veto_applied = True
+                    log.info("[decision_matrix] %s: BEARISH verdict overridden to NEUTRAL by Heavyweights confluence (%s)", symbol_upper, hw_confluence_breadth)
+                elif direction == "BULLISH" and hw_conf.get("veto_bull_puts"):
+                    direction = "NEUTRAL"
+                    hw_veto_applied = True
+                    log.info("[decision_matrix] %s: BULLISH verdict overridden to NEUTRAL by Heavyweights confluence (%s)", symbol_upper, hw_confluence_breadth)
+        except Exception as hw_exc:
+            log.debug("[decision_matrix] Heavyweights confluence check failed gracefully: %s", hw_exc)
 
     # 3. Event check
     now_ist = datetime.now(_IST)
@@ -464,6 +539,8 @@ def evaluate_matrix_decision(
         "actual_core_verdict": str(actual_core_verdict) if actual_core_verdict else None,
         "reason": reason,
         "is_event": is_event,
+        "heavyweight_veto_applied": hw_veto_applied,
+        "heavyweight_confluence": hw_confluence_breadth,
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
     }
 

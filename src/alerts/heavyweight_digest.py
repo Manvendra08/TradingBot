@@ -10,6 +10,7 @@ Provides a unified, high-density scan summary across NIFTY, BANK NIFTY, and SENS
 """
 
 import logging
+import time
 from typing import Any, Dict, Optional
 from datetime import datetime
 import pytz
@@ -23,6 +24,116 @@ _IST = pytz.timezone("Asia/Kolkata")
 
 # In-memory deduplication state to prevent sending duplicate alerts for the same scan timestamp
 _LAST_DISPATCHED_SCAN_TIME: str = ""
+
+_HW_CONF_CACHE: Dict[str, Any] = {}
+_HW_CONF_CACHE_TIME: float = 0.0
+
+
+def compute_heavyweights_confluence(history: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Calculate consolidated market breadth, shift velocity, and strategy guidance
+    across top heavyweights for NIFTY, BANKNIFTY, and SENSEX.
+    """
+    if history is None:
+        history = get_heavyweights_history(limit=5)
+    if not history:
+        return {}
+
+    total_bullish = 0
+    total_bearish = 0
+    total_hw_shift = 0.0
+    nifty_trend = "NEUTRAL"
+    banknifty_trend = "NEUTRAL"
+
+    indices_to_check = [
+        ("NIFTY", "NIFTY 50"),
+        ("BANKNIFTY", "BANK NIFTY"),
+        ("SENSEX", "SENSEX")
+    ]
+
+    for idx_key, _ in indices_to_check:
+        idx_data = history.get(idx_key)
+        if not idx_data:
+            continue
+        hw_impact = float(idx_data.get("total_heavyweight_impact") or 0.0)
+        bull_count = int(idx_data.get("bullish_count") or 0)
+        bear_count = int(idx_data.get("bearish_count") or 0)
+        total_bullish += bull_count
+        total_bearish += bear_count
+
+        hws = idx_data.get("heavyweights", [])
+        shift_pts = sum(float(s.get("shift_pts", 0.0) or 0.0) for s in hws)
+        total_hw_shift += shift_pts
+
+        if idx_key == "NIFTY":
+            nifty_trend = "BULL" if hw_impact > 15 else ("BEAR" if hw_impact < -15 else "NEUTRAL")
+        elif idx_key == "BANKNIFTY":
+            banknifty_trend = "BULL" if hw_impact > 30 else ("BEAR" if hw_impact < -30 else "NEUTRAL")
+
+    # Breadth assessment
+    if total_bullish >= 18 and total_bearish <= 7:
+        breadth_eval = "BROAD-BASED BULLISH (Heavyweights in sync)"
+    elif total_bearish >= 18 and total_bullish <= 7:
+        breadth_eval = "BROAD-BASED BEARISH (Heavyweight selling pressure)"
+    elif nifty_trend != banknifty_trend and nifty_trend != "NEUTRAL" and banknifty_trend != "NEUTRAL":
+        breadth_eval = f"SECTOR DIVERGENCE (Nifty {nifty_trend} vs Bank Nifty {banknifty_trend})"
+    else:
+        breadth_eval = f"MIXED / CHOPPY ({total_bullish} Bullish vs {total_bearish} Bearish)"
+
+    # Shift velocity assessment
+    if total_hw_shift > 25.0:
+        impulse_eval = f"ACCELERATING UPWARD (+{total_hw_shift:.1f} pts across heavyweights)"
+    elif total_hw_shift < -25.0:
+        impulse_eval = f"DECELERATING / PROFIT-TAKING ({total_hw_shift:.1f} pts across heavyweights)"
+    else:
+        impulse_eval = f"RANGE-BOUND COMPRESSION (5-scan shift {total_hw_shift:+.1f} pts)"
+
+    # Actionable options strategy translation & directional vetoes
+    veto_bear_calls = False
+    veto_bull_puts = False
+    if "BULLISH" in breadth_eval and total_hw_shift >= 0:
+        strategy_eval = "Favors Bull Put Spreads | Iron Condor Call wing tested | Veto Bear Call Spreads"
+        veto_bear_calls = True
+    elif "BEARISH" in breadth_eval and total_hw_shift <= 0:
+        strategy_eval = "Favors Bear Call Spreads | Iron Condor Put wing tested | Veto Bull Put Spreads"
+        veto_bull_puts = True
+    elif "DIVERGENCE" in breadth_eval:
+        strategy_eval = "Avoid unhedged directional spreads | Favor Iron Condors with wider wings"
+    else:
+        strategy_eval = "Range-bound | Neutral Iron Condors & Strangles favored | Monitor short deltas"
+
+    return {
+        "breadth": breadth_eval,
+        "velocity": impulse_eval,
+        "strategy": strategy_eval,
+        "total_bullish": total_bullish,
+        "total_bearish": total_bearish,
+        "total_hw_shift": total_hw_shift,
+        "nifty_trend": nifty_trend,
+        "banknifty_trend": banknifty_trend,
+        "veto_bear_calls": veto_bear_calls,
+        "veto_bull_puts": veto_bull_puts,
+    }
+
+
+def get_heavyweights_confluence(limit: int = 5) -> Dict[str, Any]:
+    """
+    Cached accessor for current heavyweights regime confluence (30s TTL).
+    Used by Decision Matrix, Multi-Leg Validator, and LLM Prompt builders.
+    """
+    global _HW_CONF_CACHE, _HW_CONF_CACHE_TIME
+    now = time.time()
+    if _HW_CONF_CACHE and (now - _HW_CONF_CACHE_TIME) < 30.0:
+        return _HW_CONF_CACHE
+    try:
+        history = get_heavyweights_history(limit=limit)
+        conf = compute_heavyweights_confluence(history)
+        _HW_CONF_CACHE = conf
+        _HW_CONF_CACHE_TIME = now
+        return conf
+    except Exception as exc:
+        log.debug("[heavyweight_digest] Error computing heavyweights confluence: %s", exc)
+        return {}
 
 
 def format_heavyweight_scan_digest(history: Optional[Dict[str, Any]] = None) -> str:
@@ -117,33 +228,10 @@ def format_heavyweight_scan_digest(history: Optional[Dict[str, Any]] = None) -> 
     lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     lines.append("🎯 *OPTIONS REGIME CONFLUENCE*:")
 
-    # Breadth assessment
-    if total_bullish >= 18 and total_bearish <= 7:
-        breadth_eval = "BROAD-BASED BULLISH (Heavyweights in sync)"
-    elif total_bearish >= 18 and total_bullish <= 7:
-        breadth_eval = "BROAD-BASED BEARISH (Heavyweight selling pressure)"
-    elif nifty_trend != banknifty_trend and nifty_trend != "NEUTRAL" and banknifty_trend != "NEUTRAL":
-        breadth_eval = f"SECTOR DIVERGENCE (Nifty {nifty_trend} vs Bank Nifty {banknifty_trend})"
-    else:
-        breadth_eval = f"MIXED / CHOPPY ({total_bullish} Bullish vs {total_bearish} Bearish)"
-
-    # Shift velocity assessment
-    if total_hw_shift > 25.0:
-        impulse_eval = f"ACCELERATING UPWARD (+{total_hw_shift:.1f} pts across heavyweights)"
-    elif total_hw_shift < -25.0:
-        impulse_eval = f"DECELERATING / PROFIT-TAKING ({total_hw_shift:.1f} pts across heavyweights)"
-    else:
-        impulse_eval = f"RANGE-BOUND COMPRESSION (5-scan shift {total_hw_shift:+.1f} pts)"
-
-    # Actionable options strategy translation
-    if "BULLISH" in breadth_eval and total_hw_shift >= 0:
-        strategy_eval = "Favors Bull Put Spreads | Iron Condor Call wing tested | Veto Bear Call Spreads"
-    elif "BEARISH" in breadth_eval and total_hw_shift <= 0:
-        strategy_eval = "Favors Bear Call Spreads | Iron Condor Put wing tested | Veto Bull Put Spreads"
-    elif "DIVERGENCE" in breadth_eval:
-        strategy_eval = "Avoid unhedged directional spreads | Favor Iron Condors with wider wings"
-    else:
-        strategy_eval = "Range-bound | Neutral Iron Condors & Strangles favored | Monitor short deltas"
+    confluence = compute_heavyweights_confluence(history)
+    breadth_eval = confluence.get("breadth", f"MIXED / CHOPPY ({total_bullish} Bullish vs {total_bearish} Bearish)")
+    impulse_eval = confluence.get("velocity", f"RANGE-BOUND COMPRESSION (5-scan shift {total_hw_shift:+.1f} pts)")
+    strategy_eval = confluence.get("strategy", "Range-bound | Neutral Iron Condors & Strangles favored | Monitor short deltas")
 
     lines.append(f"• *Breadth*: {_esc(breadth_eval)}")
     lines.append(f"• *Velocity*: {_esc(impulse_eval)}")

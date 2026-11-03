@@ -93,6 +93,29 @@ def validate_multileg_trade(
             rejection_reason=f"Direction conflict: Engine is {engine_verdict}, but proposal is GO_SHORT."
         )
 
+    # Heavyweights Confluence Veto (for NSE/BSE equity indices)
+    base_sym = symbol.upper().split()[0] if symbol else "NIFTY"
+    if base_sym in ("NIFTY", "BANKNIFTY", "SENSEX"):
+        try:
+            from src.alerts.heavyweight_digest import get_heavyweights_confluence
+            hw_conf = get_heavyweights_confluence() or {}
+            if hw_conf:
+                strat_upper = str(getattr(proposal, "strategy_type", None) or getattr(proposal, "strategy", None) or getattr(proposal, "structure", None) or "").upper()
+                if hw_conf.get("veto_bear_calls"):
+                    if strat_upper in ("BEAR_CALL_SPREAD", "BEAR_CALL") or (proposal.action == "GO_SHORT" and any(str(l.get("option_type") or "").upper() == "CE" and str(l.get("action") or l.get("side") or "").upper() == "SELL" for l in proposal.legs)):
+                        return ValidationResult(
+                            is_valid=False,
+                            rejection_reason=f"Heavyweights Veto: Breadth is {hw_conf.get('breadth')} with upward velocity. Bear Call Spreads / short CE vetoed against institutional cash buying."
+                        )
+                if hw_conf.get("veto_bull_puts"):
+                    if strat_upper in ("BULL_PUT_SPREAD", "BULL_PUT") or (proposal.action == "GO_LONG" and any(str(l.get("option_type") or "").upper() == "PE" and str(l.get("action") or l.get("side") or "").upper() == "SELL" for l in proposal.legs)):
+                        return ValidationResult(
+                            is_valid=False,
+                            rejection_reason=f"Heavyweights Veto: Breadth is {hw_conf.get('breadth')} with downward velocity. Bull Put Spreads / short PE vetoed against institutional selling pressure."
+                        )
+        except Exception as hw_val_err:
+            log.debug("[multileg_validator] Heavyweights confluence veto check failed gracefully: %s", hw_val_err)
+
     # Check max legs limit
     if len(proposal.legs) > 6:
         return ValidationResult(

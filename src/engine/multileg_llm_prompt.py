@@ -416,6 +416,20 @@ def build_multileg_prompt(
     base_sym = symbol.upper().strip().split()[0]
     is_nse_bse = base_sym in ("NIFTY", "BANKNIFTY", "SENSEX", "FINNIFTY", "MIDCPNIFTY")
 
+    hw_confluence_str = ""
+    if is_nse_bse:
+        try:
+            from src.alerts.heavyweight_digest import get_heavyweights_confluence
+            hw_c = get_heavyweights_confluence() or {}
+            if hw_c:
+                hw_confluence_str = (
+                    f"• Heavyweights Regime Confluence: {hw_c.get('breadth')}\n"
+                    f"  Velocity: {hw_c.get('velocity')} | Shift: {hw_c.get('total_hw_shift', 0.0):+.1f} pts\n"
+                    f"  Institutional Strategy Guidance: {hw_c.get('strategy')}\n"
+                )
+        except Exception:
+            pass
+
     news_section = ""
     if is_nse_bse:
         cs = scan_context.get("contributor_sentiment")
@@ -500,7 +514,17 @@ def build_multileg_prompt(
     matrix_cfg = load_decision_matrix()
     matrix_profile = matrix_cfg.get("delta_profile", "aggressive")
 
-    ivp_val = atm_iv_percentile(symbol)
+    atm_iv_cand = scan_context.get("atm_iv")
+    if not atm_iv_cand and atm_strike > 0 and option_rows:
+        cand_ivs = [
+            float(r.get("iv") or 0.0)
+            for r in option_rows
+            if abs(float(r.get("strike") or 0.0) - atm_strike) < 0.01 and float(r.get("iv") or 0.0) > 0
+        ]
+        if cand_ivs:
+            atm_iv_cand = sum(cand_ivs) / len(cand_ivs)
+
+    ivp_val = atm_iv_percentile(symbol, current_atm_iv=atm_iv_cand)
     vol_reg = vol_bucket(symbol, ivp=ivp_val, cfg=matrix_cfg)
 
     if is_strong_bull:
