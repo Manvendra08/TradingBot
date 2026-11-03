@@ -87,6 +87,24 @@ GOOGLE_DRIVE_FOLDER_ID = _optional_env("GOOGLE_DRIVE_FOLDER_ID")
 
 
 # ── Market Windows ─────────────────────────────────────────────────────────────────────────────────────────
+# Dynamic MCX session close & final scan times (DST-aware: 23:30 summer, 23:55 winter)
+def _get_mcx_window_times() -> tuple[str, str]:
+    try:
+        from src.engine.time_guards import get_mcx_close_time
+        close_h, close_m = get_mcx_close_time()
+        close_str = f"{close_h:02d}:{close_m:02d}"
+        scan_m = close_m - 2
+        scan_h = close_h
+        if scan_m < 0:
+            scan_m += 60
+            scan_h -= 1
+        scan_str = f"{scan_h:02d}:{scan_m:02d}"
+        return close_str, scan_str
+    except Exception:
+        return "23:55", "23:53"
+
+_mcx_close_t, _mcx_scan_t = _get_mcx_window_times()
+
 # Format: (open_time, close_time, weekdays)  — weekdays: 0=Mon … 6=Sun
 MARKET_WINDOWS = {
     "NSE_INDEX": ("09:15", "15:40", [0, 1, 2, 3, 4]),  # F&O closing extended to 15:40 IST per SEBI
@@ -95,7 +113,7 @@ MARKET_WINDOWS = {
     "NFO": ("09:15", "15:40", [0, 1, 2, 3, 4]),  # F&O closing extended to 15:40 IST per SEBI
     "MCX_COMMODITY": (
         "09:00",
-        "23:30",
+        _mcx_close_t,
         [0, 1, 2, 3, 4],
     ),
 }
@@ -108,7 +126,7 @@ MARKET_CLOSE_SCAN_TIMES = {
     "BSE_INDEX": "15:38",
     "NSE_EQUITY": "15:28",
     "NFO": "15:38",
-    "MCX_COMMODITY": "23:30",
+    "MCX_COMMODITY": _mcx_scan_t,
 }
 
 

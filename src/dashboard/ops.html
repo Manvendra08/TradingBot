@@ -556,15 +556,15 @@ function deriveStatus(row, meta) {
         if (row.key.startsWith("last_scan_")) {
             const sym = row.key.replace("last_scan_", "");
             if (sym === "NATURALGAS" || sym === "CRUDEOIL") {
-                // MCX: 09:00 to 23:30
-                if (timeVal < 900 || timeVal > 2330) isClosed = true;
+                // MCX: 09:00 to 23:55 (DST-aware winter close)
+                if (timeVal < 900 || timeVal > 2355) isClosed = true;
             } else {
                 // NSE/BSE (Index F&O): 09:15 to 15:40
                 if (timeVal < 915 || timeVal > 1540) isClosed = true;
             }
         } else {
-            // General system components: active if any market is open (09:00 to 23:30)
-            if (timeVal < 900 || timeVal > 2330) isClosed = true;
+            // General system components: active if any market is open (09:00 to 23:55)
+            if (timeVal < 900 || timeVal > 2355) isClosed = true;
         }
     }
 

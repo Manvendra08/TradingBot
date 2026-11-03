@@ -1465,7 +1465,8 @@ def _build_exit_prompt(
         nse_close_window = 15.0 <= hour <= 15.65  # 15:00-15:40 IST
     else:
         nse_close_window = 15.0 <= hour <= 15.5  # 15:00-15:30 IST (equity/old behavior)
-    mcx_close_window = 23.0 <= hour <= 23.5  # 23:00-23:30 IST
+    # MCX close window: 23:00 to 23:30 (summer) / 23:55 (winter DST)
+    mcx_close_window = 23.0 <= hour <= 23.95
     in_close_window = mcx_close_window if is_mcx else nse_close_window
 
     ce_chg = int(ctx.get("ce_oi_change") or 0)
@@ -1533,7 +1534,7 @@ TIME-OF-DAY & PRICE DISCOVERY RULES:
 • 15:15 IST: Continuous regular trading for F&O-eligible stocks in cash market ends (CAS runs 15:15–15:35).
 • 15:40 IST: Derivative F&O contracts trade until 15:40 IST (use 15:30–15:40 window for hedging/adjustments).
 • Non-F&O stocks trade continuously until 15:30 IST.
-• {'NSE expiry window 15:00-15:40 IST: only CLOSE_EARLY allowed.' if (dte == 0 and nse_close_window) else 'MCX expiry window 23:00-23:30 IST: only CLOSE_EARLY allowed.' if (dte == 0 and mcx_close_window) else 'Outside close window (or non-expiry day): all actions permitted.'}
+• {'NSE expiry window 15:00-15:40 IST: only CLOSE_EARLY allowed.' if (dte == 0 and nse_close_window) else 'MCX expiry window 23:00-23:55 IST: only CLOSE_EARLY allowed.' if (dte == 0 and mcx_close_window) else 'Outside close window (or non-expiry day): all actions permitted.'}
 
 
 DISCIPLINE & CAPITAL PRESERVATION (agency-reality-checker):

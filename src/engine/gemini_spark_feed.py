@@ -118,11 +118,30 @@ def _is_entry_window_active(symbol: str) -> tuple[bool, str]:
     if "NATURALGAS" in base or base == "NG":
         if t < 1730:
             return False, f"Prior to 17:30 IST (Current: {now_ist.strftime('%H:%M')} IST). Awaiting US session open for deep MCX option liquidity."
-        if t > 2300:
-            return False, f"After 23:00 IST (Current: {now_ist.strftime('%H:%M')} IST). Entry window closed to avoid pre-expiry/overnight gap risk."
-        # Thursday EIA storage report blackout: 19:45 - 20:30 IST
-        if now_ist.weekday() == 3 and 1945 <= t <= 2030:
-            return False, f"EIA inventory report blackout window (19:45 - 20:30 IST). New entries blocked."
+        try:
+            from src.engine.time_guards import get_mcx_close_time, get_eia_announcement_time
+            c_h, c_m = get_mcx_close_time(now_ist)
+            # Entry cutoff 30 min before exchange close (23:25 winter DST, 23:00 summer)
+            cut_m = c_m - 30
+            cut_h = c_h
+            if cut_m < 0:
+                cut_m += 60
+                cut_h -= 1
+            mcx_entry_cutoff = cut_h * 100 + cut_m
+
+            eia_h, eia_m = get_eia_announcement_time(now_ist)
+            # EIA blackout: 15 min prior to release through 30 min post release (DST-aware: 20:45-21:30 winter, 19:45-20:30 summer)
+            eia_start = (eia_h * 100 + eia_m) - 15
+            eia_end = (eia_h * 100 + eia_m) + 30
+        except Exception:
+            mcx_entry_cutoff = 2325
+            eia_start, eia_end = 2045, 2130
+
+        if t > mcx_entry_cutoff:
+            return False, f"After {mcx_entry_cutoff//100:02d}:{mcx_entry_cutoff%100:02d} IST (Current: {now_ist.strftime('%H:%M')} IST). Entry window closed to avoid pre-expiry/overnight gap risk."
+        # Thursday EIA storage report blackout (DST-aware)
+        if now_ist.weekday() == 3 and eia_start <= t <= eia_end:
+            return False, f"EIA inventory report blackout window ({eia_start//100:02d}:{eia_start%100:02d} - {eia_end//100:02d}:{eia_end%100:02d} IST). New entries blocked."
         return True, ""
 
     if "NIFTY" in base or "BANK" in base or "SENSEX" in base:

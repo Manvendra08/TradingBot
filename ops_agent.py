@@ -112,9 +112,15 @@ def _is_market_hours() -> bool:
     minute = now.minute
     time_val = hour * 100 + minute
     # NSE equity / F&O: 09:15-15:40 IST (including SEBI Call Auction Session)
-    # MCX: 09:00-23:30 IST
+    # MCX: 09:00 to 23:30 (summer) / 23:55 (winter DST)
     nse_time = 915 <= time_val <= 1540
-    mcx_time = 900 <= time_val <= 2330
+    try:
+        from src.engine.time_guards import get_mcx_close_time
+        close_h, close_m = get_mcx_close_time(now)
+        mcx_close_val = close_h * 100 + close_m
+    except Exception:
+        mcx_close_val = 2355
+    mcx_time = 900 <= time_val <= mcx_close_val
 
     nse_open = nse_time
     mcx_open = mcx_time
@@ -1282,8 +1288,15 @@ def run_playbooks(snap: HealthSnapshot, sm: StateMachine) -> list[PlaybookResult
             except Exception as e:
                 log.warning("P10 Friday NSE check failed: %s", e)
 
-        # Check MCX after 23:30 close (23:32 - 23:45 IST)
-        if 2332 <= time_val <= 2345:
+        # Check MCX after close (2 min post-close to +15 min IST)
+        try:
+            from src.engine.time_guards import get_mcx_close_time
+            c_h, c_m = get_mcx_close_time(now_ist)
+            mcx_post_close_start = c_h * 100 + (c_m + 2)
+            mcx_post_close_end = c_h * 100 + (c_m + 15)
+        except Exception:
+            mcx_post_close_start, mcx_post_close_end = 2357, 2410
+        if mcx_post_close_start <= time_val <= mcx_post_close_end:
             try:
                 conn = sqlite3.connect(f"file:{BOT_DB_PATH}?mode=ro", uri=True, timeout=5.0)
                 conn.row_factory = sqlite3.Row
@@ -1481,7 +1494,13 @@ def main():
                 time_val = now_ist.hour * 100 + now_ist.minute
                 is_weekday = now_ist.weekday() < 5
                 nse_time = 915 <= time_val <= 1540 and is_weekday
-                mcx_time = 900 <= time_val <= 2330 and is_weekday
+                try:
+                    from src.engine.time_guards import get_mcx_close_time
+                    c_h, c_m = get_mcx_close_time(now_ist)
+                    mcx_c_val = c_h * 100 + c_m
+                except Exception:
+                    mcx_c_val = 2355
+                mcx_time = 900 <= time_val <= mcx_c_val and is_weekday
 
                 nse_open = nse_time
                 mcx_open = mcx_time

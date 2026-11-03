@@ -811,9 +811,15 @@ def _run_ai_diagnostic(r: dict, flags: list[SentinelFlag]) -> ScanDiagnostic | N
         ts_dt = _dt.fromisoformat(timestamp_ist.replace('Z', '+00:00'))
         hour = ts_dt.hour + ts_dt.minute / 60
         if 'MCX' in symbol.upper() or any(m in symbol.upper() for m in ["NATURALGAS","CRUDEOIL","GOLD","SILVER"]):
-            session_hours = 23.5
-            # MCX trades 9:00-23:30 IST
-            is_market_hours = 9.0 <= hour <= 23.5
+            # MCX trades 9:00 to 23:30 (summer) / 23:55 (winter DST)
+            try:
+                from src.engine.time_guards import get_mcx_close_time
+                c_h, c_m = get_mcx_close_time(ts_dt)
+                mcx_close_hr = c_h + c_m / 60.0
+            except Exception:
+                mcx_close_hr = 23.916
+            session_hours = mcx_close_hr
+            is_market_hours = 9.0 <= hour <= mcx_close_hr
         else:
             # NSE F&O (NIFTY/BANKNIFTY/SENSEX/FINNIFTY) extended to 15:40 IST (SEBI)
             sym_root = symbol.upper().split()[0]

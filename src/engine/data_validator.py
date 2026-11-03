@@ -202,9 +202,19 @@ def validate_market_data(
     # NSE/BSE equity: 09:15 to 15:30 (375 minutes). Cut-off on expiry: 15:15 IST
     # MCX: 09:00 to 23:30 (870 minutes). Cut-off on expiry: 23:15 IST
     if is_commodity:
-        market_close_time = time(23, 30)
-        entry_cutoff_time = time(23, 15)
-        trading_day_minutes = 870.0
+        try:
+            from src.engine.time_guards import get_mcx_close_time
+            c_h, c_m = get_mcx_close_time(now_ist)
+        except Exception:
+            c_h, c_m = 23, 55
+        market_close_time = time(c_h, c_m)
+        cut_m = c_m - 15
+        cut_h = c_h
+        if cut_m < 0:
+            cut_m += 60
+            cut_h -= 1
+        entry_cutoff_time = time(cut_h, cut_m)
+        trading_day_minutes = float((c_h * 60 + c_m) - (9 * 60))
     elif is_nse_fno:
         market_close_time = time(15, 40)
         entry_cutoff_time = time(15, 25)
