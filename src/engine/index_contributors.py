@@ -693,6 +693,8 @@ def get_heavyweights_history(limit: int = 5) -> Dict[str, Any]:
             # Pick up to `limit` scans that respect both equity market hours and pipeline scan spacing
             min_gap_s = max(60, int(freq_min * 60 * 0.70))
             selected_rows = []
+            active_session_date = None
+
             for r in candidate_rows:
                 try:
                     curr_dt = datetime.fromisoformat(r["scan_time"])
@@ -700,7 +702,14 @@ def get_heavyweights_history(limit: int = 5) -> Dict[str, Any]:
                     if curr_dt.weekday() >= 5 or not ("09:15" <= curr_dt.strftime("%H:%M") <= "15:40"):
                         continue
                 except Exception:
-                    pass
+                    continue
+
+                # Lock to the latest valid scan's calendar date to isolate the current trading session
+                if active_session_date is None:
+                    active_session_date = curr_dt.date()
+                elif curr_dt.date() != active_session_date:
+                    # Do not cross previous day session boundaries (prevents baseline bleed)
+                    break
 
                 if not selected_rows:
                     selected_rows.append(r)

@@ -86,7 +86,7 @@ def compute_heavyweights_confluence(history: Optional[Dict[str, Any]] = None) ->
     elif total_hw_shift < -25.0:
         impulse_eval = f"DECELERATING / PROFIT-TAKING ({total_hw_shift:.1f} pts across heavyweights)"
     else:
-        impulse_eval = f"RANGE-BOUND COMPRESSION (5-scan shift {total_hw_shift:+.1f} pts)"
+        impulse_eval = f"RANGE-BOUND COMPRESSION (shift {total_hw_shift:+.1f} pts)"
 
     # Actionable options strategy translation & directional vetoes
     veto_bear_calls = False
@@ -205,8 +205,10 @@ def format_heavyweight_scan_digest(history: Optional[Dict[str, Any]] = None) -> 
             shift_sign = "+" if shift_pts >= 0 else ""
             shift_icon = "▲" if shift_pts > 0.5 else ("▼" if shift_pts < -0.5 else "—")
             shift_text = f"*{shift_sign}{shift_pts:.1f} pts* {shift_icon}"
+            shift_label = "5-Scan Shift" if scan_count >= 5 else f"{scan_count}-Scan Shift"
         else:
             shift_text = "Initial Scan"
+            shift_label = "Shift"
 
         # Anchors & Drags
         pos_hws = [s for s in hws if float(s.get("point_impact", 0.0)) > 0]
@@ -220,7 +222,7 @@ def format_heavyweight_scan_digest(history: Optional[Dict[str, Any]] = None) -> 
         block = (
             f"• *{_esc(display_label)}*: {spot:,.1f} ({sign}{idx_chg_pct:.2f}%)\n"
             f"  HW Impact: *{hw_sign}{hw_impact:.1f} pts* ({share_pct:.0f}% of move)\n"
-            f"  Breadth: {bull_count}🟢 {bear_count}🔴 | 5-Scan Shift: {shift_text}\n"
+            f"  Breadth: {bull_count}🟢 {bear_count}🔴 | {shift_label}: {shift_text}\n"
             f"  Anchor: {p_str} | Drag: {d_str}"
         )
         lines.append(block)
@@ -230,7 +232,7 @@ def format_heavyweight_scan_digest(history: Optional[Dict[str, Any]] = None) -> 
 
     confluence = compute_heavyweights_confluence(history)
     breadth_eval = confluence.get("breadth", f"MIXED / CHOPPY ({total_bullish} Bullish vs {total_bearish} Bearish)")
-    impulse_eval = confluence.get("velocity", f"RANGE-BOUND COMPRESSION (5-scan shift {total_hw_shift:+.1f} pts)")
+    impulse_eval = confluence.get("velocity", f"RANGE-BOUND COMPRESSION (shift {total_hw_shift:+.1f} pts)")
     strategy_eval = confluence.get("strategy", "Range-bound | Neutral Iron Condors & Strangles favored | Monitor short deltas")
 
     lines.append(f"• *Breadth*: {_esc(breadth_eval)}")
