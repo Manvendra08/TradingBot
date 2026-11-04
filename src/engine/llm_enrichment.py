@@ -2199,16 +2199,11 @@ def call_llm_api(
         "OmniRouter (GPT 5.5 CX)",
         "OmniRouter (GLM 5 KR)",
         "OmniRouter (KR Haiku)",
-        "GitHub Models",
         "Groq",
         "OpenCode Zen",
-        "AnyAPI Free",
-        "Bedrock Mantle",
         "NVIDIA NIM",
-        "Bedrock",
         "OpenRouter",
         "Gemini",
-        "SambaNova",
     ]
 
     def _provider_sort_key(provider: dict) -> int:
@@ -2502,7 +2497,6 @@ def call_llm_api(
             _groq_group_eod,
             _gemini_group,
             _opencode_zen_eod,
-            _bedrock_mantle_group,
             {
                 "model_group": "nvidia-nim-eod",
                 "providers": [
@@ -2608,7 +2602,6 @@ def call_llm_api(
             _groq_group_fmt,
             _gemini_group,
             _opencode_zen_formatting_group,
-            _bedrock_mantle_group,
         ]
     elif purpose == "sentinel_diagnostic":
         _groq_group_sentinel = {
@@ -3027,20 +3020,14 @@ def call_llm_api(
         }
 
         if _is_mcx:
-            # MCX: OmniRouter → Groq → Gemini → OpenCode Zen → AnyAPI Free → Bedrock Mantle → Nvidia NIM → Bedrock → OpenRouter
+            # MCX: OmniRouter → Groq → Gemini → OpenCode Zen → Nvidia NIM → OpenRouter
             FREE_MODEL_PIPELINE = (
                 [_omnirouter_group, _gemini_group, _groq_group]
                 if getattr(schema, "__name__", "") == "LLMMultiLegVerdict"
                 else [_omnirouter_group, _groq_group, _gemini_group]
             ) + [
-
-
-
                 _opencode_zen_group,
-                _anyapi_free_group,
-                _bedrock_mantle_group,
                 _nvidia_nim_group,
-                _bedrock_group,
                 {
                     "model_group": "openrouter-gpt-oss-free",
                     "providers": [
@@ -3053,21 +3040,16 @@ def call_llm_api(
                     ],
                 },
                 _openrouter_group,
-
             ]
         else:
-            # NSE/BSE indices: OmniRouter → Groq → Gemini → OpenCode Zen → Nvidia NIM → Bedrock → OpenRouter
+            # NSE/BSE indices: OmniRouter → Groq → Gemini → OpenCode Zen → Nvidia NIM → OpenRouter
             FREE_MODEL_PIPELINE = (
                 [_omnirouter_group, _gemini_group, _groq_group]
                 if getattr(schema, "__name__", "") == "LLMMultiLegVerdict"
                 else [_omnirouter_group, _groq_group, _gemini_group]
             ) + [
-
-
-
                 _opencode_zen_group,
                 _nvidia_nim_group,
-                _bedrock_group,
                 _openrouter_group,
             ]
 

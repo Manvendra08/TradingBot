@@ -81,8 +81,8 @@ Pre-open session uses a call auction mechanism to discover a single equilibrium 
 
 - `live_ai_decision_mode = full` (default in `runtime_config.json`; governs live AI decisions). NOTE: `settings.py AI_DECISION_MODE` (env `AI_DECISION_MODE`, default `empirical`) is legacy and NOT used by the live decision path.
 - LLM enrichment is **engine-aligned**: OI engine decides direction; LLM provides execution detail only
-- **NSE/BSE Primary LLM Chain:** OmniRouter (Claude-Models Combo → Claude/Antigravity → claude/Free → GPT 5.5 CX → KR Models) → GitHub Models → Groq → OpenCode Zen → NVIDIA NIM → Bedrock → OpenRouter → Gemini.
-- **MCX Primary LLM Chain:** OmniRouter (Claude-Models Combo → Claude/Antigravity → claude/Free → GPT 5.5 CX → KR Models) → GitHub Models → Groq → OpenCode Zen → AnyAPI Free → Bedrock Mantle → NVIDIA NIM → Bedrock → OpenRouter → Gemini → SambaNova.
+- **NSE/BSE Primary LLM Chain:** OmniRouter (Claude-Models Combo → Claude/Antigravity → claude/Free → GPT 5.5 CX → KR Models) → Groq → Gemini → OpenCode Zen → NVIDIA NIM → OpenRouter.
+- **MCX Primary LLM Chain:** OmniRouter (Claude-Models Combo → Claude/Antigravity → claude/Free → GPT 5.5 CX → KR Models) → Groq → Gemini → OpenCode Zen → NVIDIA NIM → OpenRouter.
 - Multi-Leg entry advisor is skipped when open books for the symbol >= 5; exit advisor monitors existing open books
 - Chart conflict (1H vs 3H): NO penalty for OI-based trades; a 1H opposing a completed 3H = entry timing signal
 - MCX confidence floor: 72% for NATURALGAS/CRUDEOIL/GOLD/SILVER (vs 70% NSE)
