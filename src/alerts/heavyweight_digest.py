@@ -201,27 +201,39 @@ def format_heavyweight_scan_digest(history: Optional[Dict[str, Any]] = None) -> 
         elif idx_key == "BANKNIFTY":
             banknifty_trend = "BULL" if hw_impact > 30 else ("BEAR" if hw_impact < -30 else "NEUTRAL")
 
+        combined_net_impact = float(idx_data.get("combined_net_impact", hw_impact))
+        c_sign = "+" if combined_net_impact >= 0 else ""
+
         if scan_count >= 2:
             shift_sign = "+" if shift_pts >= 0 else ""
             shift_icon = "▲" if shift_pts > 0.5 else ("▼" if shift_pts < -0.5 else "—")
             shift_text = f"*{shift_sign}{shift_pts:.1f} pts* {shift_icon}"
             shift_label = "5-Scan Shift" if scan_count >= 5 else f"{scan_count}-Scan Shift"
+            delta_dir = "▲ Pushing UP" if combined_net_impact >= 0 else "▼ Dragging DOWN"
+            hw_line = f"  HW Impact: *{c_sign}{combined_net_impact:.1f} pts Δ* {delta_dir} (Day: {hw_sign}{hw_impact:.1f} pts)"
+
+            # Anchors & Drags by latest delta
+            pos_delta_hws = [s for s in hws if float(s.get("latest_delta", 0.0)) > 0]
+            neg_delta_hws = [s for s in hws if float(s.get("latest_delta", 0.0)) < 0]
+            top_p = max(pos_delta_hws, key=lambda x: float(x.get("latest_delta", 0.0))) if pos_delta_hws else None
+            top_d = min(neg_delta_hws, key=lambda x: float(x.get("latest_delta", 0.0))) if neg_delta_hws else None
+            p_str = f"{_esc(top_p['symbol'])} (+{float(top_p['latest_delta']):.1f} Δ)" if top_p else "None"
+            d_str = f"{_esc(top_d['symbol'])} ({float(top_d['latest_delta']):.1f} Δ)" if top_d else "None"
         else:
             shift_text = "Initial Scan"
             shift_label = "Shift"
+            hw_line = f"  HW Impact: *{hw_sign}{hw_impact:.1f} pts* ({share_pct:.0f}% of move)"
 
-        # Anchors & Drags
-        pos_hws = [s for s in hws if float(s.get("point_impact", 0.0)) > 0]
-        neg_hws = [s for s in hws if float(s.get("point_impact", 0.0)) < 0]
-        top_p = max(pos_hws, key=lambda x: float(x.get("point_impact", 0.0))) if pos_hws else None
-        top_d = min(neg_hws, key=lambda x: float(x.get("point_impact", 0.0))) if neg_hws else None
-
-        p_str = f"{_esc(top_p['symbol'])} (+{float(top_p['point_impact']):.1f})" if top_p else "None"
-        d_str = f"{_esc(top_d['symbol'])} ({float(top_d['point_impact']):.1f})" if top_d else "None"
+            pos_hws = [s for s in hws if float(s.get("point_impact", 0.0)) > 0]
+            neg_hws = [s for s in hws if float(s.get("point_impact", 0.0)) < 0]
+            top_p = max(pos_hws, key=lambda x: float(x.get("point_impact", 0.0))) if pos_hws else None
+            top_d = min(neg_hws, key=lambda x: float(x.get("point_impact", 0.0))) if neg_hws else None
+            p_str = f"{_esc(top_p['symbol'])} (+{float(top_p['point_impact']):.1f})" if top_p else "None"
+            d_str = f"{_esc(top_d['symbol'])} ({float(top_d['point_impact']):.1f})" if top_d else "None"
 
         block = (
             f"• *{_esc(display_label)}*: {spot:,.1f} ({sign}{idx_chg_pct:.2f}%)\n"
-            f"  HW Impact: *{hw_sign}{hw_impact:.1f} pts* ({share_pct:.0f}% of move)\n"
+            f"{hw_line}\n"
             f"  Breadth: {bull_count}🟢 {bear_count}🔴 | {shift_label}: {shift_text}\n"
             f"  Anchor: {p_str} | Drag: {d_str}"
         )

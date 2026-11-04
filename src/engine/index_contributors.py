@@ -772,6 +772,28 @@ def get_heavyweights_history(limit: int = 5) -> Dict[str, Any]:
                     if pts[i] is None:
                         pts[i] = pts[i - 1] if i > 0 and pts[i - 1] is not None else item["point_impact"]
 
+                # Scan Deltas:
+                # Scan 0 (first scan of session) displays absolute impact
+                # Subsequent scans display delta impact relative to previous scan
+                deltas = []
+                for i in range(len(pts)):
+                    if i == 0:
+                        deltas.append(round(pts[0], 2))
+                    else:
+                        deltas.append(round(pts[i] - pts[i - 1], 2))
+                item["scan_deltas"] = deltas
+
+                # Latest scan delta vs immediately preceding scan
+                if len(pts) >= 2:
+                    item["latest_delta"] = round(pts[-1] - pts[-2], 2)
+                    item["delta_impact"] = item["latest_delta"]
+                elif len(pts) == 1:
+                    item["latest_delta"] = round(pts[0], 2)
+                    item["delta_impact"] = item["point_impact"]
+                else:
+                    item["latest_delta"] = 0.0
+                    item["delta_impact"] = 0.0
+
                 # 5-Scan Shift calculation: net movement from first scan in window to latest scan
                 valid_pts = [p for p in pts if p is not None]
                 if len(valid_pts) >= 2:
@@ -794,19 +816,34 @@ def get_heavyweights_history(limit: int = 5) -> Dict[str, Any]:
             # Share of index move driven by heavyweights
             hw_share_pct = round((abs(total_hw_pts) / max(0.01, abs(net_idx_pts))) * 100.0, 1) if abs(net_idx_pts) > 0.1 else 100.0
 
+            scan_count = len(scans_chronological)
+            is_first_scan = (scan_count <= 1)
+            latest_scan_delta = round(sum(s.get("latest_delta", 0.0) for s in stocks_sorted), 2)
+            # First scan of the day displays absolute impact; subsequent scans display delta impact
+            combined_net_impact = round(total_hw_pts, 2) if is_first_scan else latest_scan_delta
+
+            bullish_delta_count = sum(1 for s in stocks_sorted if s.get("latest_delta", 0.0) > 0.02)
+            bearish_delta_count = sum(1 for s in stocks_sorted if s.get("latest_delta", 0.0) < -0.02)
+
             history[idx] = {
                 "index_name": idx,
                 "scan_frequency_minutes": freq_min,
                 "display_name": INDEX_INFO.get(idx, {}).get("display_name", idx),
-                "scan_count": len(scans_chronological),
+                "scan_count": scan_count,
+                "is_first_scan_of_day": is_first_scan,
                 "latest_scan_time": latest_scan.get("display_time", ""),
                 "spot_price": latest_scan.get("spot_price", 0.0),
                 "net_points": net_idx_pts,
                 "index_change_pct": latest_scan.get("index_change_pct", 0.0),
                 "total_heavyweight_impact": round(total_hw_pts, 2),
+                "combined_net_impact": combined_net_impact,
+                "latest_scan_delta": latest_scan_delta,
+                "impact_mode": "absolute" if is_first_scan else "delta",
                 "heavyweight_share_pct": min(100.0, hw_share_pct),
                 "bullish_count": sum(1 for s in stocks_sorted if s["point_impact"] > 0),
                 "bearish_count": sum(1 for s in stocks_sorted if s["point_impact"] < 0),
+                "bullish_delta_count": bullish_delta_count,
+                "bearish_delta_count": bearish_delta_count,
                 "scans": scan_headers,
                 "heavyweights": stocks_sorted
             }

@@ -856,6 +856,15 @@
                 align-items: center;
                 gap: 6px;
             }
+            .hw-summary-sub {
+                font-size: 11px;
+                color: var(--text-dim);
+                font-family: var(--mono);
+                margin-top: 2px;
+                display: flex;
+                align-items: center;
+                gap: 4px;
+            }
 
             .hw-matrix-wrap {
                 overflow-x: auto;
@@ -1174,12 +1183,14 @@
                 <!-- Heavyweight Aggregation Summary Strip -->
                 <div class="hw-summary-strip">
                     <div class="hw-summary-item">
-                        <span class="hw-summary-label">Top Heavyweights Net Impact</span>
+                        <span class="hw-summary-label" id="hw-summary-impact-label">Top Heavyweights Net Impact</span>
                         <div class="hw-summary-val" id="hw-summary-impact">+0.00 pts</div>
+                        <div class="hw-summary-sub" id="hw-summary-impact-sub"></div>
                     </div>
                     <div class="hw-summary-item">
-                        <span class="hw-summary-label">Heavyweight Breadth</span>
+                        <span class="hw-summary-label" id="hw-summary-breadth-label">Heavyweight Breadth</span>
                         <div class="hw-summary-val" id="hw-summary-breadth">0 Bullish / 0 Bearish</div>
+                        <div class="hw-summary-sub" id="hw-summary-breadth-sub"></div>
                     </div>
                     <div class="hw-summary-item">
                         <span class="hw-summary-label">Index Move Share Driven</span>
@@ -1197,14 +1208,14 @@
                                 <th style="text-align: right">Weight</th>
                                 <th style="text-align: right">LTP (₹)</th>
                                 <th style="text-align: right">Day %</th>
-                                <th style="text-align: right">Current Impact</th>
+                                <th style="text-align: right" id="hw-col-hdr-impact">Current Impact</th>
                                 <!-- Dynamic scan history columns (up to 5) injected via JS -->
                                 <th class="hw-scan-col-hdr" id="hw-scan-hdr-0">Scan 1</th>
                                 <th class="hw-scan-col-hdr" id="hw-scan-hdr-1">Scan 2</th>
                                 <th class="hw-scan-col-hdr" id="hw-scan-hdr-2">Scan 3</th>
                                 <th class="hw-scan-col-hdr" id="hw-scan-hdr-3">Scan 4</th>
                                 <th class="hw-scan-col-hdr" id="hw-scan-hdr-4">Scan 5 (Latest)</th>
-                                <th style="text-align: center; width: 90px">5-Scan Shift</th>
+                                <th style="text-align: center; width: 90px" id="hw-col-hdr-shift">5-Scan Shift</th>
                             </tr>
                         </thead>
                         <tbody id="hw-table-tbody">
@@ -1582,16 +1593,41 @@
                     arLabel.textContent = `Auto Refresh (${scanFreq}m)`;
                 }
 
+                const isFirstScan = (idxData.scan_count <= 1);
+                const combinedImpact = (idxData.combined_net_impact !== undefined) 
+                    ? idxData.combined_net_impact 
+                    : (isFirstScan ? idxData.total_heavyweight_impact : (idxData.latest_scan_delta !== undefined ? idxData.latest_scan_delta : idxData.total_heavyweight_impact));
+
                 // Update Summary Strip
                 const impEl = document.getElementById("hw-summary-impact");
+                const impLabel = document.getElementById("hw-summary-impact-label");
+                const impSub = document.getElementById("hw-summary-impact-sub");
                 if (impEl) {
-                    const isPos = idxData.total_heavyweight_impact >= 0;
+                    const isPos = combinedImpact >= 0;
                     impEl.style.color = isPos ? "var(--green)" : "var(--red)";
-                    impEl.textContent = `${isPos ? "+" : ""}${idxData.total_heavyweight_impact.toFixed(2)} pts (${isPos ? "+" : ""}${idxData.index_change_pct.toFixed(2)}% idx)`;
+                    if (isFirstScan) {
+                        if (impLabel) impLabel.textContent = "Top Heavyweights Net Impact (Absolute)";
+                        impEl.textContent = `${isPos ? "+" : ""}${combinedImpact.toFixed(2)} pts`;
+                        if (impSub) impSub.textContent = `First Scan of Session · ${idxData.index_change_pct >= 0 ? '+' : ''}${idxData.index_change_pct.toFixed(2)}% idx`;
+                    } else {
+                        if (impLabel) impLabel.textContent = "Top Heavyweights Net Impact (Scan Delta)";
+                        const deltaArrow = isPos ? "▲ Pushing Index UP" : "▼ Dragging Index DOWN";
+                        impEl.textContent = `${isPos ? "+" : ""}${combinedImpact.toFixed(2)} pts Δ`;
+                        if (impSub) impSub.textContent = `${deltaArrow} vs prev scan · Day: ${idxData.total_heavyweight_impact >= 0 ? '+' : ''}${idxData.total_heavyweight_impact.toFixed(2)} pts (${idxData.index_change_pct >= 0 ? '+' : ''}${idxData.index_change_pct.toFixed(2)}% idx)`;
+                    }
                 }
                 const bEl = document.getElementById("hw-summary-breadth");
+                const bSub = document.getElementById("hw-summary-breadth-sub");
                 if (bEl) {
-                    bEl.textContent = `${idxData.bullish_count} Bullish / ${idxData.bearish_count} Bearish`;
+                    if (isFirstScan) {
+                        bEl.textContent = `${idxData.bullish_count} Bullish / ${idxData.bearish_count} Bearish`;
+                        if (bSub) bSub.textContent = "Day Cumulative Breadth";
+                    } else {
+                        const upCount = idxData.bullish_delta_count || 0;
+                        const downCount = idxData.bearish_delta_count || 0;
+                        bEl.textContent = `${upCount} Pushing UP / ${downCount} Dragging DOWN`;
+                        if (bSub) bSub.textContent = `Scan Δ · Day: ${idxData.bullish_count} Bullish / ${idxData.bearish_count} Bearish`;
+                    }
                 }
                 const sEl = document.getElementById("hw-summary-share");
                 if (sEl) {
@@ -1601,13 +1637,25 @@
                 // Update Table Scan Column Headers (up to 5 scans)
                 const scans = idxData.scans || [];
                 const scanCount = scans.length;
+                const colHdrImpact = document.getElementById("hw-col-hdr-impact");
+                if (colHdrImpact) {
+                    colHdrImpact.textContent = isFirstScan ? "Current Impact" : "Scan Delta (Δ)";
+                    colHdrImpact.title = isFirstScan ? "Absolute point impact relative to previous day close" : "Delta impact vs previous scan (pushing index up/down)";
+                }
+                const colHdrShift = document.getElementById("hw-col-hdr-shift");
+                if (colHdrShift) {
+                    colHdrShift.textContent = (scanCount >= 5) ? "5-Scan Shift" : `${Math.max(1, scanCount)}-Scan Shift`;
+                }
+
                 for (let i = 0; i < 5; i++) {
                     const th = document.getElementById(`hw-scan-hdr-${i}`);
                     if (!th) continue;
                     if (i < scanCount) {
                         const s = scans[i];
                         const isLatest = (i === scanCount - 1);
-                        th.textContent = isLatest ? `Latest (${s.display_time.split(' ').slice(-2).join(' ')})` : `Scan ${i + 1} (${s.display_time.split(' ').slice(-2).join(' ')})`;
+                        const timeStr = s.display_time.split(' ').slice(-2).join(' ');
+                        const tag = (i === 0) ? "[Abs]" : "[Δ]";
+                        th.textContent = isLatest ? `Latest (${timeStr}) ${tag}` : `Scan ${i + 1} (${timeStr}) ${tag}`;
                         th.style.color = isLatest ? "var(--accent)" : "var(--text-dim)";
                         th.style.display = "";
                     } else {
@@ -1627,24 +1675,48 @@
                     return;
                 }
 
-                // Find max abs impact for bar scaling
-                const maxAbs = Math.max(0.01, ...heavyweights.map(h => Math.abs(h.point_impact || 0)));
+                // Find max abs delta for bar scaling
+                const maxDeltaAbs = Math.max(0.01, ...heavyweights.map(h => {
+                    const d = isFirstScan 
+                        ? h.point_impact 
+                        : (h.latest_delta !== undefined ? h.latest_delta : (h.delta_impact !== undefined ? h.delta_impact : h.point_impact));
+                    return Math.abs(d || 0);
+                }));
 
                 tbody.innerHTML = heavyweights.map((hw, idx) => {
-                    const isPos = hw.point_impact >= 0;
-                    const barPct = Math.max(4, Math.min(100, Math.round((Math.abs(hw.point_impact) / maxAbs) * 100)));
+                    const displayVal = isFirstScan 
+                        ? hw.point_impact 
+                        : (hw.latest_delta !== undefined ? hw.latest_delta : (hw.delta_impact !== undefined ? hw.delta_impact : hw.point_impact));
+                    const isDisplayPos = displayVal >= 0;
+                    const barPct = Math.max(4, Math.min(100, Math.round((Math.abs(displayVal) / maxDeltaAbs) * 100)));
+                    const dayIsPos = hw.point_impact >= 0;
                     
-                    // Render the 5 scan columns
+                    // Render the 5 scan columns (Scan 1 = absolute; Scans 2..5 = delta)
                     let scanCellsHtml = "";
                     for (let sIdx = 0; sIdx < 5; sIdx++) {
                         if (sIdx < scanCount) {
-                            const val = (hw.scan_points && hw.scan_points[sIdx] !== undefined) ? hw.scan_points[sIdx] : null;
+                            let cellVal = null;
+                            if (sIdx === 0) {
+                                cellVal = (hw.scan_deltas && hw.scan_deltas[0] !== undefined) 
+                                    ? hw.scan_deltas[0] 
+                                    : (hw.scan_points && hw.scan_points[0] !== undefined ? hw.scan_points[0] : null);
+                            } else {
+                                cellVal = (hw.scan_deltas && hw.scan_deltas[sIdx] !== undefined) 
+                                    ? hw.scan_deltas[sIdx] 
+                                    : ((hw.scan_points && hw.scan_points[sIdx] !== undefined && hw.scan_points[sIdx - 1] !== undefined) 
+                                        ? (hw.scan_points[sIdx] - hw.scan_points[sIdx - 1]) 
+                                        : null);
+                            }
                             const isLatest = (sIdx === scanCount - 1);
-                            if (val !== null) {
-                                const vPos = val >= 0;
+                            if (cellVal !== null) {
+                                const vPos = cellVal >= 0;
+                                const cumVal = (hw.scan_points && hw.scan_points[sIdx] !== undefined) ? hw.scan_points[sIdx] : null;
+                                const tip = (sIdx === 0)
+                                    ? `Scan 1 Absolute Impact: ${vPos ? '+' : ''}${cellVal.toFixed(2)} pts`
+                                    : `Scan ${sIdx + 1} Delta: ${vPos ? '+' : ''}${cellVal.toFixed(2)} pts (Day Cumulative: ${cumVal !== null && cumVal >= 0 ? '+' : ''}${cumVal !== null ? cumVal.toFixed(2) : '—'} pts)`;
                                 scanCellsHtml += `
-                                    <td class="hw-scan-cell ${vPos ? 'pos' : 'neg'} ${isLatest ? 'latest' : ''}">
-                                        ${vPos ? '+' : ''}${val.toFixed(2)}
+                                    <td class="hw-scan-cell ${vPos ? 'pos' : 'neg'} ${isLatest ? 'latest' : ''}" title="${tip}">
+                                        ${vPos ? '+' : ''}${cellVal.toFixed(2)}
                                     </td>
                                 `;
                             } else {
@@ -1678,13 +1750,16 @@
                                 ${hw.change_pct >= 0 ? '+' : ''}${hw.change_pct.toFixed(2)}%
                             </td>
                             <td style="text-align: right">
-                                <div class="impact-cell">
+                                <div class="impact-cell" title="${isFirstScan ? 'Absolute Impact' : 'Scan Delta Impact (vs prev scan)'}">
                                     <div class="mini-bar-track" title="Relative Impact: ${barPct}%">
-                                        <div class="mini-bar ${isPos ? 'green' : 'red'}" style="width: ${barPct}%"></div>
+                                        <div class="mini-bar ${isDisplayPos ? 'green' : 'red'}" style="width: ${barPct}%"></div>
                                     </div>
-                                    <span class="impact-pill ${isPos ? 'green' : 'red'}">
-                                        ${isPos ? '+' : ''}${hw.point_impact.toFixed(2)}
-                                    </span>
+                                    <div style="display:flex; flex-direction:column; align-items:flex-end;">
+                                        <span class="impact-pill ${isDisplayPos ? 'green' : 'red'}">
+                                            ${isDisplayPos ? '+' : ''}${displayVal.toFixed(2)}${!isFirstScan ? ' Δ' : ''}
+                                        </span>
+                                        ${!isFirstScan ? `<span style="font-size:10px; color:var(--text-dim); font-family:var(--mono); margin-top:2px;">Day: ${dayIsPos ? '+' : ''}${hw.point_impact.toFixed(2)}</span>` : ''}
+                                    </div>
                                 </div>
                             </td>
                             ${scanCellsHtml}
