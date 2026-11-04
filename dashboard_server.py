@@ -1592,8 +1592,8 @@ async def get_paper_trades(symbol: str = "", status: str = "", limit: int = 300)
     all_params = params_pt + [int(limit)]
     rows = _q(sql, all_params)
 
-    # Also aggregate multi_leg_trades
-    clauses_ml = ["status != 'QUARANTINED'"]
+    # Also aggregate multi_leg_trades (Paper mode only for /api/paper_trades)
+    clauses_ml = ["status != 'QUARANTINED'", "trade_mode = 'PAPER'"]
     params_ml: list = []
     if symbol:
         clauses_ml.append("symbol=?")
@@ -1806,10 +1806,10 @@ def _explain_verdict(verdict: str | None, option_type: str | None) -> dict:
 
 
 @app.get("/api/multi_leg_trades")
-def get_multi_leg_trades(status: str = "ALL"):
+def get_multi_leg_trades(status: str = "ALL", trade_mode: str = ""):
     from src.models.schema import list_multi_leg_trades
 
-    return list_multi_leg_trades(status_filter=status)
+    return list_multi_leg_trades(status_filter=status, trade_mode_filter=trade_mode or None)
 
 
 def _find_open_ml_book(trade_ref: str):
@@ -1905,7 +1905,7 @@ async def get_paper_summary(symbol: str = ""):
 
     pt_rows = _q(f"SELECT * FROM paper_trades {where_pt}", tuple(params_pt))
 
-    clauses_ml = ["status != 'QUARANTINED'"]
+    clauses_ml = ["status != 'QUARANTINED'", "trade_mode = 'PAPER'"]
     params_ml: list = []
     if symbol:
         clauses_ml.append("symbol=?")
@@ -2490,7 +2490,7 @@ async def get_paper_equity(symbol: str = ""):
         tuple(params),
     )
 
-    clauses_ml = ["status != 'OPEN' AND status != 'QUARANTINED' AND closed_at IS NOT NULL"]
+    clauses_ml = ["status != 'OPEN' AND status != 'QUARANTINED' AND closed_at IS NOT NULL", "trade_mode = 'PAPER'"]
     params_ml: list = []
     if symbol:
         clauses_ml.append("symbol=?")
@@ -3347,6 +3347,91 @@ def get_live_trades(symbol: str = "", status: str = "", limit: int = 300):
 
                 if not is_duplicate:
                     real_positions.append(row)
+
+            # Also include open multi-leg legs for SHADOW/LIVE mode
+            ml_rows = _q("SELECT * FROM multi_leg_trades WHERE status='OPEN' AND trade_mode IN ('SHADOW', 'LIVE')")
+            from config.settings import LOT_SIZES
+            from src.engine.accounting import calculate_leg_pnl
+            from src.engine.trade_plan import is_valid_option_premium
+
+            for ml in ml_rows:
+                ml_id = ml["id"]
+                ml_sym = (ml.get("symbol") or "").upper().strip()
+                ml_base = ml_sym.split()[0] if ml_sym else ""
+                ml_lot_size = LOT_SIZES.get(ml_sym, LOT_SIZES.get(ml_base, 1))
+                ml_mode = (ml.get("trade_mode") or "SHADOW").upper()
+                ml_struct = (ml.get("structure") or ml.get("strategy_type") or "MULTILEG").replace("_", " ")
+
+                spot_res = _q("SELECT price FROM underlying_price WHERE (symbol=? OR symbol=?) ORDER BY fetched_at DESC LIMIT 1", (ml_sym, ml_base))
+                current_spot = float(spot_res[0]["price"]) if spot_res else float(ml.get("entry_underlying") or 0.0)
+
+                legs = _q("SELECT * FROM multi_leg_legs WHERE trade_id=? AND status='OPEN' ORDER BY strike, option_type", (ml_id,))
+                for leg in legs:
+                    leg_stk = float(leg.get("strike") or 0.0)
+                    leg_opt = (leg.get("option_type") or "CE").upper()
+                    leg_side = (leg.get("side") or "SELL").upper()
+                    entry_p = float(leg.get("entry_premium") or leg.get("entry_price") or 0.0)
+                    leg_lots = int(leg.get("lots") or 1)
+                    leg_exp = str(leg.get("expiry") or ml.get("expiry") or "").strip()
+
+                    cmp_res = None
+                    if leg_exp and leg_stk > 0:
+                        cmp_res = _q(
+                            "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND expiry=? AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
+                            (ml_sym, ml_base, leg_exp, leg_stk, leg_opt),
+                        )
+
+                    leg_cmp = entry_p
+                    if cmp_res:
+                        raw_ltp = float(cmp_res[0]["ltp"])
+                        if current_spot > 0:
+                            if is_valid_option_premium(leg_stk, leg_opt, raw_ltp, current_spot):
+                                leg_cmp = raw_ltp
+                        else:
+                            leg_cmp = raw_ltp
+
+                    leg_pnl = calculate_leg_pnl(
+                        entry_premium=entry_p,
+                        current_or_exit_premium=leg_cmp,
+                        side=leg_side,
+                        lots=leg_lots,
+                        lot_size=ml_lot_size,
+                    )
+
+                    resolved_leg = None
+                    if leg_exp:
+                        resolved_leg = resolve_instrument(ml_sym, leg_exp, leg_stk, leg_opt)
+                    leg_tsym = resolved_leg["tradingsymbol"].upper() if (resolved_leg and resolved_leg.get("tradingsymbol")) else ""
+
+                    is_dup_leg = False
+                    if leg_tsym and (leg_tsym, leg_side) in real_tsyms:
+                        is_dup_leg = True
+                    elif (ml_sym, leg_opt, leg_stk, leg_side) in real_keys:
+                        is_dup_leg = True
+
+                    if not is_dup_leg:
+                        real_positions.append({
+                            "id": f"ML-LEG-{leg['id']}",
+                            "book_id": ml.get("book_id"),
+                            "symbol": ml_sym,
+                            "expiry": leg_exp,
+                            "option_type": leg_opt,
+                            "side": leg_side,
+                            "strike": leg_stk,
+                            "lots": leg_lots,
+                            "lot_size": ml_lot_size,
+                            "entry_premium": entry_p,
+                            "cmp": round(leg_cmp, 2),
+                            "pnl_rupees": round(leg_pnl, 2),
+                            "trade_status": ml_mode,
+                            "broker_status": ml_mode,
+                            "exit_mode": "BOT",
+                            "verdict_label": f"{ml_struct} ({leg_side} {leg_stk} {leg_opt})",
+                            "setup_type": "MULTILEG",
+                            "status": "OPEN",
+                            "opened_at": ml.get("opened_at"),
+                            "reason": ml.get("entry_reason") or ml.get("reason") or "Multi-leg strategy",
+                        })
 
         if symbol:
             sym_upper = symbol.upper().strip()

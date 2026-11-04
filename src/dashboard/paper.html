@@ -5073,7 +5073,7 @@
                 }
 
                 try {
-                    const res = await fetch("/api/multi_leg_trades?status=OPEN");
+                    const res = await fetch("/api/multi_leg_trades?status=OPEN&trade_mode=PAPER");
                     if (!res.ok) {
                         throw new Error(`HTTP ${res.status}: ${res.statusText}`);
                     }

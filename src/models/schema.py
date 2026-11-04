@@ -2987,27 +2987,36 @@ def execute_multi_leg_adjustment(
     return True
 
 
-def list_multi_leg_trades(status_filter: str | None = None) -> list[dict]:
+def list_multi_leg_trades(status_filter: str | None = None, trade_mode_filter: str | None = None) -> list[dict]:
     """List multi-leg trades (from multi_leg_trades table and paper_trades leg_group_id) with live CMPs and P&L.
     
     :param status_filter: 'OPEN', 'CLOSED', or 'ALL' (default None/ALL)
+    :param trade_mode_filter: 'PAPER', 'SHADOW', 'LIVE', or None (default None/ALL)
     """
     from config.settings import LOT_SIZES
 
     result_trades = []
     sf = (status_filter or "ALL").upper().strip()
+    tmf = (trade_mode_filter or "").upper().strip()
     
     # 1. Fetch from multi_leg_trades table
+    clauses = []
+    params = []
     if sf == "OPEN":
-        sql = "SELECT * FROM multi_leg_trades WHERE status='OPEN' ORDER BY opened_at DESC"
+        clauses.append("status='OPEN'")
     elif sf == "CLOSED":
-        sql = "SELECT * FROM multi_leg_trades WHERE status != 'OPEN' ORDER BY opened_at DESC"
-    else:
-        sql = "SELECT * FROM multi_leg_trades ORDER BY opened_at DESC"
+        clauses.append("status != 'OPEN'")
+
+    if tmf in ("PAPER", "SHADOW", "LIVE"):
+        clauses.append("trade_mode = ?")
+        params.append(tmf)
+
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    sql = f"SELECT * FROM multi_leg_trades {where_sql} ORDER BY opened_at DESC"
         
     try:
         with get_read_conn() as conn:
-            ml_rows = [dict(r) for r in conn.execute(sql).fetchall()]
+            ml_rows = [dict(r) for r in conn.execute(sql, tuple(params)).fetchall()]
             for t in ml_rows:
                 legs_sql = "SELECT * FROM multi_leg_legs WHERE trade_id=? ORDER BY strike, option_type"
                 legs = [dict(r) for r in conn.execute(legs_sql, (t["id"],)).fetchall()]
@@ -3112,8 +3121,9 @@ def list_multi_leg_trades(status_filter: str | None = None) -> list[dict]:
     except Exception as e:
         log.exception("[schema] Error fetching multi_leg_trades: %s", e)
             
-    # 2. Fetch TFSS/grouped strangles from paper_trades table by leg_group_id
-    group_sql = """
+    # 2. Fetch TFSS/grouped strangles from paper_trades table by leg_group_id (Only for PAPER mode or ALL)
+    if tmf in ("", "PAPER"):
+        group_sql = """
         SELECT leg_group_id, symbol, MIN(opened_at) as opened_at, MAX(closed_at) as closed_at,
                COUNT(*) as leg_count,
                SUM(CASE WHEN status='OPEN' THEN 1 ELSE 0 END) as open_legs,
@@ -3124,131 +3134,131 @@ def list_multi_leg_trades(status_filter: str | None = None) -> list[dict]:
         WHERE leg_group_id IS NOT NULL AND leg_group_id != ''
         GROUP BY leg_group_id
         ORDER BY opened_at DESC
-    """
-    try:
-        with get_read_conn() as conn:
-            grouped_rows = [dict(r) for r in conn.execute(group_sql).fetchall()]
-            existing_refs = {str(t.get("trade_ref") or t.get("id")) for t in result_trades}
-            
-            for g in grouped_rows:
-                gid = g["leg_group_id"]
-                if gid in existing_refs:
-                    continue
-
-                status = "OPEN" if g["open_legs"] > 0 else "CLOSED"
-                if sf == "OPEN" and status != "OPEN":
-                    continue
-                if sf == "CLOSED" and status != "CLOSED":
-                    continue
-
-                legs_sql = "SELECT * FROM paper_trades WHERE leg_group_id=? ORDER BY option_type, strike"
-                p_legs = [dict(r) for r in conn.execute(legs_sql, (gid,)).fetchall()]
-                if not p_legs:
-                    continue
-
-                symbol = g["symbol"]
-                base_sym = symbol.upper().split()[0] if symbol else ""
-                lot_size = LOT_SIZES.get(base_sym, 1)
-
-                status = "OPEN" if g["open_legs"] > 0 else "CLOSED"
-                net_prem = sum(float(l.get("entry_premium") or 0.0) * float(l.get("lots") or l.get("lot_size") or 1.0) for l in p_legs)
+        """
+        try:
+            with get_read_conn() as conn:
+                grouped_rows = [dict(r) for r in conn.execute(group_sql).fetchall()]
+                existing_refs = {str(t.get("trade_ref") or t.get("id")) for t in result_trades}
                 
-                formatted_legs = []
-                group_live_pnl = 0.0
-                has_group_live_pnl = False
+                for g in grouped_rows:
+                    gid = g["leg_group_id"]
+                    if gid in existing_refs:
+                        continue
 
-                for l in p_legs:
-                    stk = l.get("strike")
-                    op_type = (l.get("option_type") or "CE").upper()
-                    exp = l.get("expiry") or g.get("expiry")
-                    side = (l.get("side") or "SELL").upper()
-                    entry_p = float(l.get("entry_premium") or 0.0)
-                    lots = int(l.get("lots") or l.get("lot_size") or 1)
-                    l_size = int(l.get("lot_size") or lot_size)
+                    status = "OPEN" if g["open_legs"] > 0 else "CLOSED"
+                    if sf == "OPEN" and status != "OPEN":
+                        continue
+                    if sf == "CLOSED" and status != "CLOSED":
+                        continue
 
-                    cmp = None
-                    und_price = 0.0
-                    und_row = conn.execute(
-                        "SELECT price FROM underlying_price WHERE symbol=? OR symbol=? ORDER BY fetched_at DESC LIMIT 1",
-                        (symbol, base_sym)
-                    ).fetchone()
-                    if und_row:
-                        und_price = float(und_row["price"] or 0.0)
+                    legs_sql = "SELECT * FROM paper_trades WHERE leg_group_id=? ORDER BY option_type, strike"
+                    p_legs = [dict(r) for r in conn.execute(legs_sql, (gid,)).fetchall()]
+                    if not p_legs:
+                        continue
 
-                    if op_type in ("CE", "PE") and stk:
-                        from src.engine.trade_plan import is_valid_option_premium
-                        if exp:
-                            opt_rows = conn.execute(
-                                "SELECT ltp, oi, volume FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND expiry=? AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 5",
-                                (symbol, base_sym, exp, float(stk), op_type)
-                            ).fetchall()
+                    symbol = g["symbol"]
+                    base_sym = symbol.upper().split()[0] if symbol else ""
+                    lot_size = LOT_SIZES.get(base_sym, 1)
+
+                    status = "OPEN" if g["open_legs"] > 0 else "CLOSED"
+                    net_prem = sum(float(l.get("entry_premium") or 0.0) * float(l.get("lots") or l.get("lot_size") or 1.0) for l in p_legs)
+                    
+                    formatted_legs = []
+                    group_live_pnl = 0.0
+                    has_group_live_pnl = False
+
+                    for l in p_legs:
+                        stk = l.get("strike")
+                        op_type = (l.get("option_type") or "CE").upper()
+                        exp = l.get("expiry") or g.get("expiry")
+                        side = (l.get("side") or "SELL").upper()
+                        entry_p = float(l.get("entry_premium") or 0.0)
+                        lots = int(l.get("lots") or l.get("lot_size") or 1)
+                        l_size = int(l.get("lot_size") or lot_size)
+
+                        cmp = None
+                        und_price = 0.0
+                        und_row = conn.execute(
+                            "SELECT price FROM underlying_price WHERE symbol=? OR symbol=? ORDER BY fetched_at DESC LIMIT 1",
+                            (symbol, base_sym)
+                        ).fetchone()
+                        if und_row:
+                            und_price = float(und_row["price"] or 0.0)
+
+                        if op_type in ("CE", "PE") and stk:
+                            from src.engine.trade_plan import is_valid_option_premium
+                            if exp:
+                                opt_rows = conn.execute(
+                                    "SELECT ltp, oi, volume FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND expiry=? AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 5",
+                                    (symbol, base_sym, exp, float(stk), op_type)
+                                ).fetchall()
+                            else:
+                                opt_rows = conn.execute(
+                                    "SELECT ltp, oi, volume FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 5",
+                                    (symbol, base_sym, float(stk), op_type)
+                                ).fetchall()
+                            for opt_row in opt_rows:
+                                cand_ltp = float(opt_row["ltp"])
+                                if is_valid_option_premium(float(stk), op_type, cand_ltp, und_price):
+                                    cmp = cand_ltp
+                                    break
+
+                        if cmp is None:
+                            # Delta-based price estimation from underlying movement (never set CMP = spot)
+                            entry_und = float(l.get("underlying_price") or und_price or 0.0)
+                            if und_price > 0 and entry_und > 0 and entry_p > 0:
+                                und_move = und_price - entry_und
+                                delta = float(l.get("delta") or 0.25)
+                                delta_sign = delta if op_type == "CE" else -abs(delta)
+                                cmp = max(0.05, round(entry_p + delta_sign * und_move, 2))
+                            else:
+                                cmp = entry_p
+
+                        cmp_val = round(cmp, 2) if cmp is not None else entry_p
+                        if cmp is not None:
+                            has_group_live_pnl = True
+                            if side == "SELL":
+                                leg_pnl = (entry_p - cmp) * lots * l_size
+                            else:
+                                leg_pnl = (cmp - entry_p) * lots * l_size
+                            group_live_pnl += leg_pnl
                         else:
-                            opt_rows = conn.execute(
-                                "SELECT ltp, oi, volume FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 5",
-                                (symbol, base_sym, float(stk), op_type)
-                            ).fetchall()
-                        for opt_row in opt_rows:
-                            cand_ltp = float(opt_row["ltp"])
-                            if is_valid_option_premium(float(stk), op_type, cand_ltp, und_price):
-                                cmp = cand_ltp
-                                break
+                            leg_pnl = float(l.get("pnl_rupees") or 0.0)
 
-                    if cmp is None:
-                        # Delta-based price estimation from underlying movement (never set CMP = spot)
-                        entry_und = float(l.get("underlying_price") or und_price or 0.0)
-                        if und_price > 0 and entry_und > 0 and entry_p > 0:
-                            und_move = und_price - entry_und
-                            delta = float(l.get("delta") or 0.25)
-                            delta_sign = delta if op_type == "CE" else -abs(delta)
-                            cmp = max(0.05, round(entry_p + delta_sign * und_move, 2))
-                        else:
-                            cmp = entry_p
+                        formatted_legs.append({
+                            "id": l.get("id"),
+                            "side": side,
+                            "lots": lots,
+                            "strike": stk,
+                            "option_type": op_type,
+                            "entry_premium": entry_p,
+                            "exit_premium": l.get("exit_premium"),
+                            "cmp": cmp_val,
+                            "pnl": round(leg_pnl, 2)
+                        })
 
-                    cmp_val = round(cmp, 2) if cmp is not None else entry_p
-                    if cmp is not None:
-                        has_group_live_pnl = True
-                        if side == "SELL":
-                            leg_pnl = (entry_p - cmp) * lots * l_size
-                        else:
-                            leg_pnl = (cmp - entry_p) * lots * l_size
-                        group_live_pnl += leg_pnl
-                    else:
-                        leg_pnl = float(l.get("pnl_rupees") or 0.0)
+                    ref_id = gid.split(":")[-1] if ":" in gid else gid
+                    calc_pnl = round(group_live_pnl, 2) if has_group_live_pnl else round(g["total_pnl"] or 0.0, 2)
+                    group_cmp = round(sum(f["cmp"] for f in formatted_legs), 2)
 
-                    formatted_legs.append({
-                        "id": l.get("id"),
-                        "side": side,
-                        "lots": lots,
-                        "strike": stk,
-                        "option_type": op_type,
-                        "entry_premium": entry_p,
-                        "exit_premium": l.get("exit_premium"),
-                        "cmp": cmp_val,
-                        "pnl": round(leg_pnl, 2)
+                    result_trades.append({
+                        "id": gid,
+                        "trade_ref": f"#{ref_id}",
+                        "symbol": g["symbol"],
+                        "expiry": g.get("expiry"),
+                        "structure": g["setup_type"] or "TFSS_STRANGLE",
+                        "net_premium": round(net_prem, 2),
+                        "margin_req": round(net_prem * lot_size * 10, 2),
+                        "cmp": group_cmp,
+                        "total_pnl": calc_pnl,
+                        "opened_at": g["opened_at"],
+                        "closed_at": g["closed_at"],
+                        "status": status,
+                        "reason": p_legs[0].get("exit_reason") if p_legs else None,
+                        "legs": formatted_legs
                     })
-
-                ref_id = gid.split(":")[-1] if ":" in gid else gid
-                calc_pnl = round(group_live_pnl, 2) if has_group_live_pnl else round(g["total_pnl"] or 0.0, 2)
-                group_cmp = round(sum(f["cmp"] for f in formatted_legs), 2)
-
-                result_trades.append({
-                    "id": gid,
-                    "trade_ref": f"#{ref_id}",
-                    "symbol": g["symbol"],
-                    "expiry": g.get("expiry"),
-                    "structure": g["setup_type"] or "TFSS_STRANGLE",
-                    "net_premium": round(net_prem, 2),
-                    "margin_req": round(net_prem * lot_size * 10, 2),
-                    "cmp": group_cmp,
-                    "total_pnl": calc_pnl,
-                    "opened_at": g["opened_at"],
-                    "closed_at": g["closed_at"],
-                    "status": status,
-                    "reason": p_legs[0].get("exit_reason") if p_legs else None,
-                    "legs": formatted_legs
-                })
-    except Exception as exc:
-        log.exception("[schema] Error building grouped multi-leg trades: %s", exc)
+        except Exception as exc:
+            log.exception("[schema] Error building grouped multi-leg trades: %s", exc)
 
     return result_trades
 
