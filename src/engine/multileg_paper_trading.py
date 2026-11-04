@@ -464,21 +464,20 @@ def _monitor_open_books(
         is_mcx = symbol in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER")
         is_weekly_index = symbol in ("NIFTY", "BANKNIFTY", "SENSEX")
         is_expiry_close = False
-        is_expiry_after_1pm = False
         if dte == 0:
             if is_mcx:
                 is_expiry_close = (now_ist.hour > 23 or (now_ist.hour == 23 and now_ist.minute >= 25))
             else:
-                is_expiry_close = (now_ist.hour > 15 or (now_ist.hour == 15 and now_ist.minute >= 35))
-                is_expiry_after_1pm = (now_ist.hour >= 13)
+                # Expiry day mandatory exit at 15:15 IST
+                is_expiry_close = (now_ist.hour > 15 or (now_ist.hour == 15 and now_ist.minute >= 15))
 
         # C15 FIX: Honor configured time_decay_exit_dte for all instruments (NIFTY/BANKNIFTY/SENSEX/MCX)
         if (time_decay_exit_dte > 0 and dte <= time_decay_exit_dte and dte > 0):
             should_exit_time_decay = True
             exit_reason_str = f"TIME_DECAY (DTE {dte} <= {time_decay_exit_dte})"
-        elif (dte == 0 and is_expiry_after_1pm):
+        elif (dte == 0 and is_expiry_close):
             should_exit_time_decay = True
-            exit_reason_str = f"EXPIRY_SQUAREOFF (15:35 IST)" if is_expiry_close else "EXPIRY_TIME_DECAY (DTE 0 after 13:00 IST)"
+            exit_reason_str = "EXPIRY_SQUAREOFF (15:15 IST)" if not is_mcx else "EXPIRY_SQUAREOFF (23:25 IST)"
         elif dte < 0:
             should_exit_time_decay = True
             exit_reason_str = f"EXPIRED (DTE {dte})"
@@ -594,7 +593,7 @@ def _monitor_open_books(
                         if exit_advisor_enabled:
                             # 0DTE Safety Guard: For weekly index options on expiry day (DTE 0) before 13:00 IST,
                             # do NOT autonomously close if P&L >= 0 (e.g. early morning time/pin-risk hallucinations).
-                            if is_weekly_index and dte == 0 and now_ist.hour < 13 and total_pnl >= 0:
+                            if is_weekly_index and dte == 0 and (now_ist.hour < 15 or (now_ist.hour == 15 and now_ist.minute < 15)) and total_pnl >= 0:
                                 log.info(
                                     "[multileg-paper] %s: book %s — Suppressed premature 0DTE morning AI close (%s IST, PnL=₹%.0f): %s",
                                     symbol,

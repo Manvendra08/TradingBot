@@ -1430,7 +1430,9 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
     # single-leg/multi-leg schema mismatch and ensure the LLM verdict
     # is available when the runner executes.
     multileg_verdict = None
-    if not is_test and _jev_proceed:
+    # Multi-leg evaluates both directional and neutral structures (Iron Condors/Strangles);
+    # do not block multi-leg on directional Jev System-1 chop gate.
+    if not is_test:
         try:
             from src.engine.strategy_registry import active_strategies_for
             if "MULTILEG" in active_strategies_for(symbol):

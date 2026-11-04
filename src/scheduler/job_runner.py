@@ -1774,12 +1774,17 @@ def start_scheduler(immediate: bool = False):
             _, close_t, days = MARKET_WINDOWS[class_key]
             if now_ist.weekday() not in days:
                 continue
-            close_h, close_m = map(int, close_t.split(":"))
-            close_dt = now_ist.replace(
-                hour=close_h, minute=close_m, second=0, microsecond=0
-            )
-            target_dt = close_dt - timedelta(minutes=_EXPIRY_EXIT_TRIGGER_LEAD_MIN)
-            deadline_dt = close_dt + timedelta(minutes=_EXPIRY_EXIT_GRACE_MIN)
+            if class_key in ("NSE_INDEX", "BSE_INDEX", "NFO"):
+                # Expiry day exit at 15:15 IST per user mandate (with retry up to CAS close 15:40)
+                target_dt = now_ist.replace(hour=15, minute=15, second=0, microsecond=0)
+                deadline_dt = now_ist.replace(hour=15, minute=40, second=0, microsecond=0)
+            else:
+                close_h, close_m = map(int, close_t.split(":"))
+                close_dt = now_ist.replace(
+                    hour=close_h, minute=close_m, second=0, microsecond=0
+                )
+                target_dt = close_dt - timedelta(minutes=_EXPIRY_EXIT_TRIGGER_LEAD_MIN)
+                deadline_dt = close_dt + timedelta(minutes=_EXPIRY_EXIT_GRACE_MIN)
             if not target_dt <= now_ist <= deadline_dt:
                 continue
 

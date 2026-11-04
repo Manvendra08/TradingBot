@@ -173,19 +173,9 @@ def is_trading_allowed_now(symbol: str, expiry_str: str | None = None, operation
         if not is_mcx and expiry_str:
             expiry_date = _parse_expiry_date(expiry_str)
             if expiry_date is not None and expiry_date == now.date():
-                if is_index_fno:
-                    # Index F&O: entries blocked 15:25–15:40; exits permitted
-                    # until the 15:40 session close.
-                    if operation != "EXIT" and (h, m) >= (15, 25) and (h, m) < (15, 40):
-                        return False, f"Index F&O expiry end-of-session window (15:25–15:40 IST) for expiry {expiry_str}"
-                else:
-                    # F&O stocks: continuous stops 15:15, CAS 15:15–15:40
-                    # Other NSE stocks: close 15:30, blocked 15:15–15:30
-                    # (No clean symbol-level distinction here; treat F&O stocks as
-                    #  the dominant path and keep the wider 15:15–15:40 window.)
-                    if operation != "EXIT" and (h, m) >= (15, 15) and (h, m) <= (15, 40):
-                        return False, f"F&O expiry end-of-session window (15:15–15:40 IST) for expiry {expiry_str}"
-
+                # On expiry day (0DTE), new entries are allowed strictly up to 14:00 IST (2:00 PM) only
+                if operation != "EXIT" and (h, m) >= (14, 0):
+                    return False, f"0DTE expiry entry cutoff reached (>= 14:00 IST) for expiry {expiry_str}"
         # ── Window 3: EIA report ±15 min (NATURALGAS Thursday, CRUDEOIL Wednesday) ────────
         # EXIT operations bypass event/noise windows: that is exactly when
         # protective square-offs are most needed.

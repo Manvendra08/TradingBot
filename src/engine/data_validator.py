@@ -237,8 +237,9 @@ def validate_market_data(
                 score -= 40
                 fractional_t = 1e-5
             elif dte_calendar == 0:
-                # 0DTE Expiry Day
-                cutoff_dt = datetime.combine(today_date, entry_cutoff_time, tzinfo=_IST)
+                # 0DTE Expiry Day — new entries allowed strictly up to 14:00 IST (2:00 PM)
+                zero_dte_entry_limit = time(14, 0) if (not is_mcx) else entry_cutoff_time
+                cutoff_dt = datetime.combine(today_date, zero_dte_entry_limit, tzinfo=_IST)
                 close_dt = datetime.combine(today_date, market_close_time, tzinfo=_IST)
 
                 if now_ist >= cutoff_dt:

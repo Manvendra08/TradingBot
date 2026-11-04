@@ -854,7 +854,15 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
 
         # 1. Action / Direction Resolution
         raw_direction = str(
-            setup.get("direction") or setup.get("type") or setup.get("action") or setup.get("action_bias") or ""
+            setup.get("direction")
+            or setup.get("type")
+            or setup.get("action")
+            or setup.get("action_bias")
+            or setup.get("strategy_type")
+            or setup.get("strategy_name")
+            or setup.get("sentiment")
+            or setup.get("market_sentiment_fit")
+            or ""
         ).upper()
         status_upper = str(setup.get("status", "")).upper()
 
@@ -863,9 +871,9 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
             log_eval("[gemini_spark] Setup %s is %s (status=%s). Skipping order execution.", setup_id, raw_direction, status_upper)
             continue
 
-        if "SHORT" in raw_direction or "SELL" in raw_direction or "BEARISH" in raw_direction:
+        if "SHORT" in raw_direction or "SELL" in raw_direction or "BEAR" in raw_direction:
             action_upper = "SELL"
-        elif "LONG" in raw_direction or "BUY" in raw_direction or "BULLISH" in raw_direction:
+        elif "LONG" in raw_direction or "BUY" in raw_direction or "BULL" in raw_direction:
             action_upper = "BUY"
         else:
             log_eval("[gemini_spark] Setup %s has unhandled direction '%s'. Skipping.", setup_id, raw_direction)
@@ -874,6 +882,14 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
         # 2. Entry Zone / Trigger Price Resolution
         entry_target = 0.0
         entry_zone = setup.get("entry_zone")
+        if not entry_zone and "underlying_trigger_condition" in setup:
+            utc = setup["underlying_trigger_condition"]
+            if isinstance(utc, dict):
+                entry_zone = {
+                    "min": utc.get("staged_entry_zone_min", utc.get("optimal_underlying_level", 0.0)),
+                    "max": utc.get("staged_entry_zone_max", utc.get("optimal_underlying_level", 0.0)),
+                    "recommended": utc.get("optimal_underlying_level", 0.0),
+                }
         if "entry_trigger" in setup and setup["entry_trigger"] is not None:
             try:
                 entry_target = float(setup["entry_trigger"] or 0.0)
@@ -919,6 +935,13 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
                 except (ValueError, TypeError):
                     pass
 
+        if stop_loss == 0.0 and "combined_risk_rules" in setup and isinstance(setup["combined_risk_rules"], dict):
+            crr = setup["combined_risk_rules"]
+            try:
+                stop_loss = float(crr.get("underlying_stop_loss_level") or crr.get("stop_loss") or 0.0)
+            except (ValueError, TypeError):
+                stop_loss = 0.0
+
         # 4. Take-Profit Resolution
         target_1 = 0.0
         target_2 = 0.0
@@ -960,6 +983,29 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
                         target_2 = float(targets_list[1] or 0.0)
                     except (ValueError, TypeError):
                         pass
+
+        if target_1 == 0.0 and "combined_target_rules" in setup and isinstance(setup["combined_target_rules"], list):
+            import re
+            for tr in setup["combined_target_rules"]:
+                if isinstance(tr, dict):
+                    val = 0.0
+                    if "price" in tr and tr["price"]:
+                        try:
+                            val = float(tr["price"])
+                        except (ValueError, TypeError):
+                            val = 0.0
+                    if val <= 0.0 and "condition" in tr:
+                        m = re.search(r"(\d+)_(\d+)", str(tr["condition"]))
+                        if m:
+                            try:
+                                val = float(f"{m.group(1)}.{m.group(2)}")
+                            except Exception:
+                                val = 0.0
+                    if val > 0.0:
+                        if target_1 == 0.0:
+                            target_1 = val
+                        elif target_2 == 0.0:
+                            target_2 = val
 
         # 5. Determine actual fill price / current price utilizing native market price first
         native_price = get_native_live_market_price(symbol)

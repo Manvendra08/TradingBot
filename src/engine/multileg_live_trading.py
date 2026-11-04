@@ -571,31 +571,26 @@ def _monitor_open_books_live(
         is_mcx = symbol in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER")
         is_weekly_index = symbol in ("NIFTY", "BANKNIFTY", "SENSEX")
         is_expiry_close = False
-        is_expiry_after_1pm = False
         if dte == 0:
             if is_mcx:
                 is_expiry_close = (now_ist.hour > 23 or (now_ist.hour == 23 and now_ist.minute >= 25))
             else:
-                is_expiry_close = (now_ist.hour > 15 or (now_ist.hour == 15 and now_ist.minute >= 35))
-                is_expiry_after_1pm = (now_ist.hour >= 13)
+                # Expiry day mandatory exit at 15:15 IST
+                is_expiry_close = (now_ist.hour > 15 or (now_ist.hour == 15 and now_ist.minute >= 15))
 
         if is_weekly_index:
-            # Weekly index options (NIFTY, BANKNIFTY, SENSEX): DTE 1 or 2 is standard holding territory.
-            # Time decay exit occurs ONLY on expiry day after 1:00 PM IST (13:00) or at 15:35 close squareoff.
             should_exit_time_decay = (
-                (dte == 0 and is_expiry_after_1pm) or
+                (dte == 0 and is_expiry_close) or
                 (dte < 0)
             )
-            exit_reason_str = f"EXPIRY_SQUAREOFF (15:35 IST)" if (dte == 0 and is_expiry_close) else (
-                "EXPIRY_TIME_DECAY (DTE 0 after 13:00 IST)" if (dte == 0 and is_expiry_after_1pm) else f"EXPIRED (DTE {dte})"
-            )
+            exit_reason_str = "EXPIRY_SQUAREOFF (15:15 IST)" if (dte == 0 and is_expiry_close) else f"EXPIRED (DTE {dte})"
         else:
             should_exit_time_decay = (
                 (time_decay_exit_dte > 0 and dte < time_decay_exit_dte and dte > 0) or
                 (dte == 0 and is_expiry_close) or
                 (dte < 0)
             )
-            exit_reason_str = f"EXPIRY_SQUAREOFF ({'23:25' if is_mcx else '15:35'} IST)" if (dte == 0 and is_expiry_close) else f"TIME_DECAY (DTE {dte} < {time_decay_exit_dte})"
+            exit_reason_str = f"EXPIRY_SQUAREOFF ({'23:25' if is_mcx else '15:15'} IST)" if (dte == 0 and is_expiry_close) else f"TIME_DECAY (DTE {dte} < {time_decay_exit_dte})"
 
         if should_exit_time_decay:
             log.info(
@@ -694,7 +689,7 @@ def _monitor_open_books_live(
                         if exit_advisor_enabled:
                             # 0DTE Safety Guard: For weekly index options on expiry day (DTE 0) before 13:00 IST,
                             # do NOT autonomously close if P&L >= 0 (e.g. early morning time/pin-risk hallucinations).
-                            if is_weekly_index and dte == 0 and now_ist.hour < 13 and total_pnl >= 0:
+                            if is_weekly_index and dte == 0 and (now_ist.hour < 15 or (now_ist.hour == 15 and now_ist.minute < 15)) and total_pnl >= 0:
                                 log.info(
                                     "[multileg-live] %s: book %s — Suppressed premature 0DTE morning AI close (%s IST, PnL=₹%.0f): %s",
                                     symbol,
