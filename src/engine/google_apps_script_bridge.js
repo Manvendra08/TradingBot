@@ -426,3 +426,29 @@ function pruneDriveSignalFile(filename, completedStatuses) {
     return 0;
   }
 }
+
+/**
+ * ── ONE-TIME OAUTH AUTHORIZATION FUNCTION ──
+ * Run this function ONCE in the Apps Script editor to trigger Google OAuth Authorization
+ * for SpreadsheetApp and DriveApp scopes.
+ *
+ * Steps:
+ * 1. Open the Apps Script editor: https://script.google.com
+ * 2. Select 'authorizeAndTestPermissions' from the function dropdown and click 'Run'.
+ * 3. In the popup: Click 'Review Permissions' -> Select your Google Account -> 'Advanced' -> 'Go to (unsafe)' -> 'Allow'.
+ * 4. Once execution finishes, click: Deploy -> Manage deployments -> Click the pencil icon (Edit) -> Version: 'New version' -> Deploy.
+ */
+function authorizeAndTestPermissions() {
+  Logger.log("1. Authorizing SpreadsheetApp access...");
+  const ssNg = SpreadsheetApp.openById(NG_SPREADSHEET_ID);
+  Logger.log("✅ NG Spreadsheet connected: " + ssNg.getName());
+
+  const ssNifty = SpreadsheetApp.openById(NIFTY_SPREADSHEET_ID);
+  Logger.log("✅ Nifty Spreadsheet connected: " + ssNifty.getName());
+
+  Logger.log("2. Authorizing DriveApp access...");
+  const root = DriveApp.getRootFolder();
+  Logger.log("✅ Drive root connected: " + root.getName());
+
+  Logger.log("🎉 SUCCESS: All permissions authorized! Now deploy as a NEW VERSION under Manage Deployments.");
+}

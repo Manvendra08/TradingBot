@@ -588,10 +588,20 @@ def push_execution_feedback_to_ledger(event: str, data: dict[str, Any]) -> bool:
             allow_redirects=True,
         )
         if resp.status_code == 200:
+            resp_data = {}
+            try:
+                resp_data = resp.json()
+            except Exception:
+                pass
+            if isinstance(resp_data, dict) and (resp_data.get("status") == "error" or "error" in resp_data):
+                err_msg = resp_data.get("message") or resp_data.get("error")
+                log.error("[gemini_spark] 2-Way Ledger FAILED (Google Apps Script Error): %s (event=%s, trade_id=%s)", err_msg, event, data.get("trade_id"))
+                return False
+
             log.info("[gemini_spark] 2-Way Ledger updated: %s for %s #%s (sheet: %s)", event, data.get("symbol"), data.get("trade_id"), target_sheet_id[:8])
             return True
         else:
-            log.debug("[gemini_spark] 2-Way Ledger post status %s: %s", resp.status_code, resp.text[:200])
+            log.warning("[gemini_spark] 2-Way Ledger post status %s: %s", resp.status_code, resp.text[:200])
     except requests.exceptions.Timeout:
         log.debug("[gemini_spark] Ledger feedback timed out (25s) for %s #%s", event, data.get("trade_id"))
     except Exception as e:
@@ -641,8 +651,20 @@ def sync_active_positions_snapshot() -> bool:
             allow_redirects=True,
         )
         if resp.status_code == 200:
+            resp_data = {}
+            try:
+                resp_data = resp.json()
+            except Exception:
+                pass
+            if isinstance(resp_data, dict) and (resp_data.get("status") == "error" or "error" in resp_data):
+                err_msg = resp_data.get("message") or resp_data.get("error")
+                log.error("[gemini_spark] Positions snapshot sync FAILED (Google Apps Script Error): %s", err_msg)
+                return False
+
             log.debug("[gemini_spark] 2-Way Positions Snapshot synced (%d active)", len(active_trades))
             return True
+        else:
+            log.warning("[gemini_spark] Positions snapshot sync post status %s: %s", resp.status_code, resp.text[:200])
     except requests.exceptions.Timeout:
         log.debug("[gemini_spark] Positions snapshot sync timed out (25s) - will retry on next cycle")
     except Exception as e:
