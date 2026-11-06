@@ -29,7 +29,7 @@ _IST = pytz.timezone("Asia/Kolkata")
 
 
 class EIAAnalysisVerdict(BaseModel):
-    sentiment: str = Field(description="BULLISH_TIGHTENING | BEARISH_LOOSENING | NEUTRAL_BALANCED")
+    sentiment: str = Field(description="BULLISH_TIGHTENING | BEARISH_LOOSENING | DIVERGENT_TACTICAL_RELIEF | DIVERGENT_MACRO_TIGHTENING | NEUTRAL_BALANCED")
     summary: str = Field(description="Summary of physical supply-demand balance and surplus trajectory")
     weekly_outlook: str = Field(description="Actionable multi-day guidance for trades until the next weekly EIA release")
     expected_impact: str = Field(description="Expected immediate and multi-session price impact on MCX/NYMEX Natural Gas")
@@ -170,8 +170,13 @@ CURRENT MCX/LOCAL MARKET STATUS:
 - PCR: {pcr} | CE ΔOI: {ce_oi_chg} | PE ΔOI: {pe_oi_chg}
 - Options Flow Ground Truth: {oi_sentiment}
 
+- Fundamental Sign Rule: A positive number (+Bcf) is ALWAYS an inventory build/injection regardless of the month; a negative number (-Bcf) is a draw. Never refer to a positive build as a draw.
+- Divergent Print Rules:
+  * If actual build beat consensus (smaller build or larger draw) but the 5-year delta remains above norm, classify as DIVERGENT_TACTICAL_RELIEF.
+  * If actual build missed consensus (larger build or shallower draw) but remains below 5-year norm, classify as DIVERGENT_MACRO_TIGHTENING.
+
 TASK:
-1. Determine the calibrated macro stance: BULLISH_TIGHTENING, BEARISH_LOOSENING, or NEUTRAL_BALANCED.
+1. Determine the calibrated macro stance: BULLISH_TIGHTENING, BEARISH_LOOSENING, DIVERGENT_TACTICAL_RELIEF, DIVERGENT_MACRO_TIGHTENING, or NEUTRAL_BALANCED.
 2. Formulate a multi-day trading perspective that guides trades until NEXT Thursday's report resets the view.
 3. Identify specific technical ceiling (resistance) and floor (support) levels.
 4. Generate an executive Telegram message with emojis, bold headers, and dense bullet points.
