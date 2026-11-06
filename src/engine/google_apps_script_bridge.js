@@ -13,6 +13,7 @@ const NG_SPREADSHEET_ID = "19OiN3QrC75S5TRccF0QdzoC5SX1XGshzlJ2hPyIkW7I";
 const NIFTY_SPREADSHEET_ID = "1iWS-yDJ40QGtfuunjv3PuHpDyIAXhIVF_OmBUsV6B5E";
 const LIVE_STATUS_FILE_NAME = "nsebot_live_status.json";
 const NG_SIGNAL_FILE_NAME = "mcx_ng_live_signal.json";
+const NIFTY_OPTIONS_SIGNAL_FILE_NAME = "nifty_options_multileg_signal.json";
 const NIFTY_SIGNAL_FILE_NAME = "nifty_fut_live_signal.json";
 
 /**
@@ -37,9 +38,12 @@ function doGet(e) {
       return jsonResponse({ error: "No live status file found yet." });
     }
 
-    // 2. NIFTY Signal Request
+    // 2. NIFTY Signal Request: Priority to Options Multi-Leg, fallback to Futures signal
     if (symbol.indexOf("NIFTY") !== -1) {
-      const niftyFile = getLatestFileByName(NIFTY_SIGNAL_FILE_NAME);
+      let niftyFile = getLatestFileByName(NIFTY_OPTIONS_SIGNAL_FILE_NAME);
+      if (!niftyFile) {
+        niftyFile = getLatestFileByName(NIFTY_SIGNAL_FILE_NAME);
+      }
       if (niftyFile) {
         return ContentService.createTextOutput(niftyFile.getBlob().getDataAsString())
           .setMimeType(ContentService.MimeType.JSON);
@@ -449,6 +453,9 @@ function authorizeAndTestPermissions() {
   Logger.log("2. Authorizing DriveApp access...");
   const root = DriveApp.getRootFolder();
   Logger.log("✅ Drive root connected: " + root.getName());
+  const testFile = DriveApp.createFile("_nsebot_perm_test.tmp", "test");
+  testFile.setTrashed(true);
+  Logger.log("✅ Drive write permission verified.");
 
   Logger.log("🎉 SUCCESS: All permissions authorized! Now deploy as a NEW VERSION under Manage Deployments.");
 }

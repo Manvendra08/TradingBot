@@ -310,13 +310,12 @@ def is_gemini_spark_feed_enabled() -> bool:
 def get_gemini_spark_sheet_id(symbol: str = "NATURALGAS") -> str:
     cfg = load_runtime_config()
     sheet_ids = cfg.get("gemini_spark_sheet_ids")
-    if isinstance(sheet_ids, dict):
-        base_sym = str(symbol or "").upper().split()[0]
-        if base_sym in sheet_ids:
-            return str(sheet_ids[base_sym])
-    if "NIFTY" in str(symbol).upper():
-        return str(cfg.get("gemini_spark_nifty_sheet_id", "1iWS-yDJ40QGtfuunjv3PuHpDyIAXhIVF_OmBUsV6B5E"))
-    return str(cfg.get("gemini_spark_sheet_id", "19OiN3QrC75S5TRccF0QdzoC5SX1XGshzlJ2hPyIkW7I"))
+    base_sym = str(symbol or "").upper().split()[0]
+    if isinstance(sheet_ids, dict) and base_sym in sheet_ids:
+        return str(sheet_ids[base_sym])
+    if "NIFTY" in base_sym:
+        return "1iWS-yDJ40QGtfuunjv3PuHpDyIAXhIVF_OmBUsV6B5E"
+    return "19OiN3QrC75S5TRccF0QdzoC5SX1XGshzlJ2hPyIkW7I"
 
 
 def get_gemini_spark_poll_interval_sec() -> int:

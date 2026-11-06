@@ -24,7 +24,7 @@
                 --yellow-bg: rgba(255, 209, 102, 0.12);
                 --muted: #4a5568;
                 --text: #e2e8f0;
-                --text-dim: #718096;
+                --text-dim: #94a3b8; /* Upgraded for WCAG 2.1 AA (6.8:1 contrast) */
                 --mono: "Space Mono", monospace;
                 --sans: "DM Sans", sans-serif;
             }
@@ -44,7 +44,7 @@
                 --yellow-bg: rgba(217, 119, 6, 0.1);
                 --muted: #94a3b8;
                 --text: #0f172a;
-                --text-dim: #64748b;
+                --text-dim: #475569; /* Upgraded for WCAG 2.1 AA (5.7:1 contrast) */
             }
 
             * {
@@ -1019,6 +1019,200 @@
                 }
             }
 
+        
+            /* ── Interactive & Accessibility Upgrades ── */
+            :focus-visible {
+                outline: 2px solid var(--accent) !important;
+                outline-offset: 2px !important;
+            }
+            tr {
+                transition: background 0.15s ease;
+            }
+            tr:hover td {
+                background: var(--surface-3) !important;
+            }
+            [data-theme="light"] tr:hover td {
+                background: #e9eef5 !important;
+            }
+            .sticky-col {
+                position: sticky;
+                left: 0;
+                background: var(--surface);
+                z-index: 3;
+                box-shadow: 2px 0 6px -2px rgba(0, 0, 0, 0.35);
+            }
+            th.sticky-col {
+                background: var(--surface-2);
+                z-index: 4;
+            }
+            tr:hover .sticky-col {
+                background: var(--surface-3) !important;
+            }
+            [data-theme="light"] .sticky-col {
+                background: var(--surface);
+                box-shadow: 2px 0 6px -2px rgba(0, 0, 0, 0.08);
+            }
+            [data-theme="light"] th.sticky-col {
+                background: var(--surface-2);
+            }
+            [data-theme="light"] tr:hover .sticky-col {
+                background: #e9eef5 !important;
+            }
+
+            /* Heavyweights View Mode Toggle */
+            .hw-view-toggle {
+                display: flex;
+                align-items: center;
+                background: rgba(0, 0, 0, 0.25);
+                padding: 3px;
+                border-radius: 6px;
+                border: 1px solid var(--border);
+                gap: 2px;
+            }
+            .hw-view-btn {
+                padding: 5px 10px;
+                font-size: 11px;
+                font-weight: 700;
+                border-radius: 4px;
+                border: none;
+                background: transparent;
+                color: var(--text-dim);
+                cursor: pointer;
+                transition: all 0.15s ease;
+                font-family: var(--sans);
+                display: flex;
+                align-items: center;
+                gap: 4px;
+            }
+            .hw-view-btn:hover {
+                color: var(--text);
+            }
+            .hw-view-btn.active {
+                background: var(--surface);
+                color: var(--accent);
+                box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+            }
+            .hw-sparkline-cell {
+                text-align: center;
+                vertical-align: middle;
+                white-space: nowrap;
+                padding: 4px 10px;
+            }
+
+            /* In Compact Mode, hide detailed scan columns and show sparkline */
+            .heavyweights-panel.mode-compact .hw-scan-col-hdr,
+            .heavyweights-panel.mode-compact .hw-scan-cell {
+                display: none !important;
+            }
+            .heavyweights-panel.mode-compact .hw-sparkline-hdr,
+            .heavyweights-panel.mode-compact .hw-sparkline-cell {
+                display: table-cell !important;
+            }
+
+            /* In Detailed Mode, show scan columns and hide sparkline */
+            .heavyweights-panel.mode-detailed .hw-sparkline-hdr,
+            .heavyweights-panel.mode-detailed .hw-sparkline-cell {
+                display: none !important;
+            }
+
+            /* Search Wrapper & Clear Button */
+            .search-wrap {
+                position: relative;
+                display: flex;
+                align-items: center;
+            }
+            .search-clear-btn {
+                position: absolute;
+                right: 8px;
+                background: transparent;
+                border: none;
+                color: var(--text-dim);
+                font-size: 12px;
+                cursor: pointer;
+                display: none;
+                align-items: center;
+                justify-content: center;
+                width: 18px;
+                height: 18px;
+                border-radius: 50%;
+                transition: all 0.15s ease;
+            }
+            .search-clear-btn:hover {
+                color: var(--text);
+                background: rgba(255, 255, 255, 0.1);
+            }
+            .search-badge {
+                font-family: var(--mono);
+                font-size: 11px;
+                color: var(--accent);
+                background: var(--surface);
+                border: 1px solid var(--border);
+                padding: 3px 8px;
+                border-radius: 4px;
+                white-space: nowrap;
+            }
+
+            /* Empty State Display */
+            .empty-state-card {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                padding: 40px 24px;
+                text-align: center;
+                gap: 8px;
+                color: var(--text-dim);
+                background: var(--surface);
+                border-radius: 8px;
+                border: 1px dashed var(--border);
+                margin: 12px 0;
+                width: 100%;
+            }
+            .empty-state-icon {
+                font-size: 32px;
+                opacity: 0.8;
+                margin-bottom: 4px;
+            }
+            .empty-state-title {
+                font-weight: 700;
+                font-size: 14px;
+                color: var(--text);
+            }
+            .empty-state-desc {
+                font-size: 12px;
+                max-width: 420px;
+                line-height: 1.5;
+            }
+            .btn-reset-filters {
+                margin-top: 8px;
+                background: var(--surface-2);
+                border: 1px solid var(--border);
+                color: var(--accent);
+                font-size: 12px;
+                font-weight: 700;
+                padding: 6px 14px;
+                border-radius: 6px;
+                cursor: pointer;
+                transition: all 0.2s ease;
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+            }
+            .btn-reset-filters:hover {
+                background: var(--surface-3);
+                border-color: var(--accent);
+                transform: translateY(-1px);
+            }
+
+            /* Refresh Icon Spinner */
+            .refresh-icon {
+                display: inline-block;
+                transition: transform 0.2s ease;
+            }
+            .refresh-icon.spinning {
+                animation: spin 0.8s linear infinite;
+            }
+
         </style>
     </head>
     <body data-theme="dark">
@@ -1076,11 +1270,11 @@
                 </div>
 
                 <div style="display: flex; align-items: center; gap: 10px">
-                    <button id="theme-toggle-btn" class="theme-toggle-btn" title="Toggle Theme">
+                    <button id="theme-toggle-btn" class="theme-toggle-btn" title="Toggle Light/Dark Theme" aria-label="Toggle between dark and light theme">
                         🌙
                     </button>
-                    <button class="btn-refresh" onclick="fetchContributors(true)">
-                        <span>⟳</span> REFRESH
+                    <button class="btn-refresh" onclick="fetchContributors(true)" title="Manual Refresh: Fetch latest live market data now" aria-label="Refresh contributors and heavyweights data now">
+                        <span class="refresh-icon">⟳</span> REFRESH
                     </button>
                 </div>
             </div>
@@ -1168,10 +1362,19 @@
                         <span class="hw-badge-tag">Last 5 Scans History</span>
                     </div>
                     <div class="hw-controls">
-                        <div class="hw-pills">
-                            <button class="hw-pill active" id="hw-pill-nifty" onclick="switchHeavyweightsIndex('NIFTY')">NIFTY (Top 10)</button>
-                            <button class="hw-pill" id="hw-pill-banknifty" onclick="switchHeavyweightsIndex('BANKNIFTY')">BANK NIFTY (Top 5)</button>
-                            <button class="hw-pill" id="hw-pill-sensex" onclick="switchHeavyweightsIndex('SENSEX')">SENSEX (Top 10)</button>
+                        <div class="hw-pills" role="tablist" aria-label="Select heavyweight index">
+                            <button class="hw-pill active" id="hw-pill-nifty" onclick="switchHeavyweightsIndex('NIFTY')" aria-label="Nifty 50 Top 10 heavyweights">NIFTY (Top 10)</button>
+                            <button class="hw-pill" id="hw-pill-banknifty" onclick="switchHeavyweightsIndex('BANKNIFTY')" aria-label="Bank Nifty Top 5 heavyweights">BANK NIFTY (Top 5)</button>
+                            <button class="hw-pill" id="hw-pill-sensex" onclick="switchHeavyweightsIndex('SENSEX')" aria-label="Sensex Top 10 heavyweights">SENSEX (Top 10)</button>
+                        </div>
+                        <!-- Progressive Disclosure: Compact Sparkline vs 5-Scan Details -->
+                        <div class="hw-view-toggle" role="group" aria-label="Heavyweight display format">
+                            <button class="hw-view-btn active" id="hw-btn-compact" onclick="setHwViewMode('compact')" title="Compact View with 5-Scan Trend Sparklines" aria-label="Compact view with trend sparklines">
+                                📈 Sparklines
+                            </button>
+                            <button class="hw-view-btn" id="hw-btn-detailed" onclick="setHwViewMode('detailed')" title="Detailed View with All 5 Scan Columns" aria-label="Detailed view with all scan columns">
+                                🔢 All Scans
+                            </button>
                         </div>
                         <div class="hw-scan-provenance" id="hw-provenance-badge">
                             <span class="hw-pulse-dot"></span>
@@ -1204,12 +1407,14 @@
                         <thead>
                             <tr id="hw-table-header-row">
                                 <th style="width: 36px">#</th>
-                                <th>Heavyweight Stock</th>
+                                <th class="sticky-col">Heavyweight Stock</th>
                                 <th style="text-align: right">Weight</th>
                                 <th style="text-align: right">LTP (₹)</th>
                                 <th style="text-align: right">Day %</th>
                                 <th style="text-align: right" id="hw-col-hdr-impact">Current Impact</th>
-                                <!-- Dynamic scan history columns (up to 5) injected via JS -->
+                                <!-- Micro-Trend Sparkline Column (visible in Compact Trend mode) -->
+                                <th class="hw-sparkline-hdr" style="text-align: center; min-width: 90px">5-Scan Trend</th>
+                                <!-- Dynamic scan history columns (up to 5) (visible in Detailed Scans mode) -->
                                 <th class="hw-scan-col-hdr" id="hw-scan-hdr-0">Scan 1</th>
                                 <th class="hw-scan-col-hdr" id="hw-scan-hdr-1">Scan 2</th>
                                 <th class="hw-scan-col-hdr" id="hw-scan-hdr-2">Scan 3</th>
@@ -1230,34 +1435,39 @@
             </section>
 
             <!-- View Modes & Filter Tools -->
-            <section class="view-bar">
-                <div class="view-tabs">
-                    <button class="view-tab active" data-view="split" onclick="switchView('split')">
-                        ◫ Split View
+            <section class="view-bar" role="toolbar" aria-label="Constituent View Options and Search">
+                <div class="view-tabs" role="tablist" aria-label="Constituent display modes">
+                    <button class="view-tab active" data-view="split" onclick="switchView('split')" role="tab" aria-selected="true" title="Split View: Side-by-side comparison of market drivers pushing UP vs dragging DOWN" aria-label="Split View: Positive and negative contributor columns">
+                        ◫ Split (Pullers vs Draggers)
                     </button>
-                    <button class="view-tab" data-view="chart" onclick="switchView('chart')">
-                        📊 Visual Bar Graph
+                    <button class="view-tab" data-view="chart" onclick="switchView('chart')" role="tab" aria-selected="false" title="Visual waterfall chart of constituent point contributions" aria-label="Visual Bar Graph">
+                        📊 Visual Waterfall
                     </button>
-                    <button class="view-tab" data-view="gainers" onclick="switchView('gainers')">
+                    <button class="view-tab" data-view="gainers" onclick="switchView('gainers')" role="tab" aria-selected="false" title="Show only positive point contributors" aria-label="Top Pullers">
                         ▲ Top Pullers
                     </button>
-                    <button class="view-tab" data-view="losers" onclick="switchView('losers')">
+                    <button class="view-tab" data-view="losers" onclick="switchView('losers')" role="tab" aria-selected="false" title="Show only negative point contributors" aria-label="Top Draggers">
                         ▼ Top Draggers
                     </button>
-                    <button class="view-tab" data-view="all" onclick="switchView('all')">
+                    <button class="view-tab" data-view="all" onclick="switchView('all')" role="tab" aria-selected="false" title="Unified table of all index constituents" aria-label="All Stocks table">
                         📋 All Stocks
                     </button>
                 </div>
 
                 <div class="filter-tools">
-                    <input
-                        type="text"
-                        id="search-input"
-                        class="search-box"
-                        placeholder="Search symbol or name..."
-                        oninput="onSearchOrSectorChange()"
-                    />
-                    <select id="sector-select" class="sector-select" onchange="onSearchOrSectorChange()">
+                    <div class="search-wrap">
+                        <input
+                            type="text"
+                            id="search-input"
+                            class="search-box"
+                            placeholder="Search symbol or name..."
+                            aria-label="Search constituents by stock symbol or company name"
+                            oninput="onSearchOrSectorChange()"
+                        />
+                        <button id="search-clear-btn" class="search-clear-btn" onclick="clearSearch()" title="Clear search" aria-label="Clear search input">✕</button>
+                    </div>
+                    <span id="search-results-badge" class="search-badge" style="display: none;" aria-live="polite"></span>
+                    <select id="sector-select" class="sector-select" aria-label="Filter constituents by industry sector" onchange="onSearchOrSectorChange()">
                         <option value="ALL">All Sectors</option>
                     </select>
                 </div>
@@ -1277,7 +1487,7 @@
                             <table id="table-split-pullers">
                                 <thead>
                                     <tr>
-                                        <th class="sortable" data-col="symbol" onclick="handleSort('pullers', 'symbol')">Stock <span class="sort-icon">⇅</span></th>
+                                        <th class="sortable sticky-col" tabindex="0" role="button" aria-label="Sort by Stock" data-col="symbol" onclick="handleSort('pullers', 'symbol')">Stock <span class="sort-icon">⇅</span></th>
                                         <th class="sortable" data-col="weight" style="text-align: right" onclick="handleSort('pullers', 'weight')">Weight <span class="sort-icon">⇅</span></th>
                                         <th class="sortable" data-col="ltp" style="text-align: right" onclick="handleSort('pullers', 'ltp')">LTP <span class="sort-icon">⇅</span></th>
                                         <th class="sortable" data-col="change_pct" style="text-align: right" onclick="handleSort('pullers', 'change_pct')">Change <span class="sort-icon">⇅</span></th>
@@ -1299,7 +1509,7 @@
                             <table id="table-split-draggers">
                                 <thead>
                                     <tr>
-                                        <th class="sortable" data-col="symbol" onclick="handleSort('draggers', 'symbol')">Stock <span class="sort-icon">⇅</span></th>
+                                        <th class="sortable sticky-col" tabindex="0" role="button" aria-label="Sort by Stock" data-col="symbol" onclick="handleSort('draggers', 'symbol')">Stock <span class="sort-icon">⇅</span></th>
                                         <th class="sortable" data-col="weight" style="text-align: right" onclick="handleSort('draggers', 'weight')">Weight <span class="sort-icon">⇅</span></th>
                                         <th class="sortable" data-col="ltp" style="text-align: right" onclick="handleSort('draggers', 'ltp')">LTP <span class="sort-icon">⇅</span></th>
                                         <th class="sortable" data-col="change_pct" style="text-align: right" onclick="handleSort('draggers', 'change_pct')">Change <span class="sort-icon">⇅</span></th>
@@ -1338,7 +1548,7 @@
                             <thead>
                                 <tr>
                                     <th style="width: 40px">#</th>
-                                    <th class="sortable" data-col="symbol" onclick="handleSort('single', 'symbol')">Stock <span class="sort-icon">⇅</span></th>
+                                    <th class="sortable sticky-col" tabindex="0" role="button" aria-label="Sort by Stock" data-col="symbol" onclick="handleSort('single', 'symbol')">Stock <span class="sort-icon">⇅</span></th>
                                     <th class="sortable" data-col="sector" onclick="handleSort('single', 'sector')">Sector <span class="sort-icon">⇅</span></th>
                                     <th class="sortable" data-col="weight" style="text-align: right" onclick="handleSort('single', 'weight')">Weight <span class="sort-icon">⇅</span></th>
                                     <th class="sortable" data-col="ltp" style="text-align: right" onclick="handleSort('single', 'ltp')">LTP (₹) <span class="sort-icon">⇅</span></th>
@@ -1510,6 +1720,63 @@
                 }
             }
 
+            
+            // ── Micro Sparkline Generator for Heavyweights ──
+            function generateSparklineSvg(points, isPositive, width = 74, height = 22) {
+                if (!points || !Array.isArray(points) || points.length < 2) {
+                    return `<span style="color:var(--text-dim); font-size:11px;">—</span>`;
+                }
+                const cleanPoints = points.map(p => Number(p) || 0);
+                const min = Math.min(...cleanPoints);
+                const max = Math.max(...cleanPoints);
+                const range = (max - min) || 0.01;
+                const paddingX = 4;
+                const paddingY = 3;
+                const w = width - paddingX * 2;
+                const h = height - paddingY * 2;
+
+                const coords = cleanPoints.map((p, i) => {
+                    const x = paddingX + (i / (cleanPoints.length - 1)) * w;
+                    const y = height - paddingY - ((p - min) / range) * h;
+                    return [x.toFixed(1), y.toFixed(1)];
+                });
+
+                const pathD = coords.map((c, i) => (i === 0 ? `M${c[0]},${c[1]}` : `L${c[0]},${c[1]}`)).join(" ");
+                const areaD = `${pathD} L${coords[coords.length - 1][0]},${height - paddingY} L${coords[0][0]},${height - paddingY} Z`;
+
+                const strokeColor = isPositive ? "var(--green)" : "var(--red)";
+                const fillColor = isPositive ? "rgba(0, 229, 160, 0.15)" : "rgba(255, 77, 109, 0.15)";
+                const lastCoord = coords[coords.length - 1];
+
+                const tooltip = cleanPoints.map((p, idx) => `Scan ${idx + 1}: ${(p >= 0 ? '+' : '') + p.toFixed(2)}`).join(" ➔ ");
+
+                return `
+                    <span class="hw-sparkline-wrap" title="${tooltip}">
+                        <svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" style="overflow:visible; vertical-align:middle;">
+                            <path d="${areaD}" fill="${fillColor}" />
+                            <path d="${pathD}" fill="none" stroke="${strokeColor}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+                            <circle cx="${lastCoord[0]}" cy="${lastCoord[1]}" r="2.5" fill="${strokeColor}" />
+                        </svg>
+                    </span>
+                `;
+            }
+
+            let currentHwViewMode = localStorage.getItem("nsebot_hw_view_mode") || (window.innerWidth < 1024 ? "compact" : "detailed");
+
+            function setHwViewMode(mode) {
+                currentHwViewMode = mode;
+                localStorage.setItem("nsebot_hw_view_mode", mode);
+                const panel = document.getElementById("heavyweights-panel");
+                if (panel) {
+                    panel.classList.toggle("mode-compact", mode === "compact");
+                    panel.classList.toggle("mode-detailed", mode === "detailed");
+                }
+                const btnCompact = document.getElementById("hw-btn-compact");
+                const btnDetailed = document.getElementById("hw-btn-detailed");
+                if (btnCompact) btnCompact.classList.toggle("active", mode === "compact");
+                if (btnDetailed) btnDetailed.classList.toggle("active", mode === "detailed");
+            }
+
             // ── Top Heavyweights Multi-Scan Tracking (NIFTY 10, SENSEX 10, BANKNIFTY 5) ──
             let currentHwIndex = localStorage.getItem("nsebot_hw_index") || currentIndex || "NIFTY";
             let hwHistoryData = null;
@@ -1574,10 +1841,11 @@
                 const idxData = hwHistoryData[currentHwIndex];
                 if (!idxData) return;
 
-                // Sync pill button states
+                // Sync pill button states and view mode
                 document.querySelectorAll(".hw-pill").forEach(p => {
                     p.classList.toggle("active", p.id === `hw-pill-${currentHwIndex.toLowerCase()}`);
                 });
+                setHwViewMode(currentHwViewMode);
 
                 const scanFreq = configuredScanFreq || idxData.scan_frequency_minutes || (hwHistoryData && hwHistoryData.scan_frequency_minutes) || 30;
 
@@ -1735,10 +2003,11 @@
                         shiftBadge = `<span class="hw-trend-badge down">▼ ${hw.shift_pts.toFixed(2)}</span>`;
                     }
 
+                    const sparklineHtml = generateSparklineSvg(hw.scan_points && hw.scan_points.length ? hw.scan_points : [0, hw.point_impact], dayIsPos);
                     return `
                         <tr>
                             <td style="color:var(--text-dim); font-family:var(--mono); font-weight:700">${hw.rank || (idx + 1)}</td>
-                            <td>
+                            <td class="sticky-col">
                                 <div class="stock-cell">
                                     <span class="stock-sym">${hw.symbol}</span>
                                     <span class="stock-name">${hw.name}</span>
@@ -1762,6 +2031,7 @@
                                     </div>
                                 </div>
                             </td>
+                            <td class="hw-sparkline-cell">${sparklineHtml}</td>
                             ${scanCellsHtml}
                             <td style="text-align: center">${shiftBadge}</td>
                         </tr>
@@ -1772,6 +2042,8 @@
             async function fetchContributors(force = false) {
                 const badge = document.getElementById("last-updated-badge");
                 if (badge) badge.textContent = "Updating...";
+                const refreshIcon = document.querySelector(".btn-refresh .refresh-icon");
+                if (refreshIcon) refreshIcon.classList.add("spinning");
 
                 try {
                     const res = await fetch(`/api/contributors?index=${currentIndex}&refresh=${force}`);
@@ -1785,6 +2057,9 @@
                 } catch (err) {
                     console.error("Failed to fetch contributors:", err);
                     if (badge) badge.textContent = "Sync error";
+                } finally {
+                    const icon = document.querySelector(".btn-refresh .refresh-icon");
+                    if (icon) icon.classList.remove("spinning");
                 }
             }
 
@@ -1871,7 +2146,70 @@
                 }
             }
 
+            
+            function escapeHtml(str) {
+                if (!str) return '';
+                return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+            }
+
+            function clearSearch() {
+                const input = document.getElementById("search-input");
+                if (input) {
+                    input.value = "";
+                    onSearchOrSectorChange();
+                    input.focus();
+                }
+            }
+
+            function resetFilters() {
+                const searchInput = document.getElementById("search-input");
+                const sectorSelect = document.getElementById("sector-select");
+                if (searchInput) searchInput.value = "";
+                if (sectorSelect) sectorSelect.value = "ALL";
+                onSearchOrSectorChange();
+                if (searchInput) searchInput.focus();
+            }
+
+            function renderEmptyState(colspan = 5, query = "", sector = "ALL") {
+                return `
+                    <tr>
+                        <td colspan="${colspan}">
+                            <div class="empty-state-card">
+                                <div class="empty-state-icon">🔍</div>
+                                <div class="empty-state-title">No matching stocks found</div>
+                                <div class="empty-state-desc">
+                                    ${query ? `No constituents match "<b>${escapeHtml(query)}</b>"` : 'No stocks available'}
+                                    ${sector !== 'ALL' ? ` in sector "<b>${escapeHtml(sector)}</b>"` : ''}.
+                                    Try adjusting your search query or reset the filter.
+                                </div>
+                                <button class="btn-reset-filters" onclick="resetFilters()">
+                                    <span>↺</span> Reset All Filters
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            }
+
             function onSearchOrSectorChange() {
+                const search = (document.getElementById("search-input").value || "").trim();
+                const sector = document.getElementById("sector-select").value;
+                const clearBtn = document.getElementById("search-clear-btn");
+                if (clearBtn) {
+                    clearBtn.style.display = search ? "flex" : "none";
+                }
+
+                const badge = document.getElementById("search-results-badge");
+                if (badge && rawData && rawData.all_constituents) {
+                    if (search || sector !== "ALL") {
+                        const filtered = getFilteredList(rawData.all_constituents);
+                        badge.style.display = "inline-block";
+                        badge.textContent = `Showing ${filtered.length} of ${rawData.all_constituents.length} stocks`;
+                    } else {
+                        badge.style.display = "none";
+                    }
+                }
+
                 renderViews();
             }
 
@@ -1913,8 +2251,11 @@
                 const tbPullers = document.querySelector("#table-split-pullers tbody");
                 const tbDraggers = document.querySelector("#table-split-draggers tbody");
 
-                tbPullers.innerHTML = pullers.map(renderRow).join("") || `<tr><td colspan="5" style="text-align:center; padding:20px; color:var(--text-dim)">No matching gainers</td></tr>`;
-                tbDraggers.innerHTML = draggers.map(renderRow).join("") || `<tr><td colspan="5" style="text-align:center; padding:20px; color:var(--text-dim)">No matching losers</td></tr>`;
+                const search = (document.getElementById("search-input").value || "").trim();
+                const sector = document.getElementById("sector-select").value;
+
+                tbPullers.innerHTML = pullers.map(renderRow).join("") || renderEmptyState(5, search, sector);
+                tbDraggers.innerHTML = draggers.map(renderRow).join("") || renderEmptyState(5, search, sector);
             }
 
             // Render Single Table
@@ -1940,7 +2281,7 @@
                 tbody.innerHTML = filtered.map((item, idx) => `
                     <tr>
                         <td style="color:var(--text-dim); font-family:var(--mono)">${item.rank || (idx + 1)}</td>
-                        <td>
+                        <td class="sticky-col">
                             <div class="stock-cell">
                                 <span class="stock-sym">${item.symbol}</span>
                                 <span class="stock-name">${item.name}</span>
@@ -1963,14 +2304,14 @@
                             </div>
                         </td>
                     </tr>
-                `).join("") || `<tr><td colspan="7" style="text-align:center; padding:30px; color:var(--text-dim)">No stocks match criteria</td></tr>`;
+                `).join("") || renderEmptyState(7, (document.getElementById("search-input").value || "").trim(), document.getElementById("sector-select").value);
             }
 
             function renderRow(item) {
                 const isPos = item.point_impact >= 0;
                 return `
                     <tr>
-                        <td>
+                        <td class="sticky-col">
                             <div class="stock-cell">
                                 <span class="stock-sym">${item.symbol}</span>
                                 <span class="stock-name">${item.name}</span>
@@ -2097,8 +2438,22 @@
             }
 
             // Initial Bootstrap
+            function initKeyboardSortHeaders() {
+                document.querySelectorAll("th.sortable").forEach(th => {
+                    th.setAttribute("tabindex", "0");
+                    th.setAttribute("role", "button");
+                    th.addEventListener("keydown", (e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            th.click();
+                        }
+                    });
+                });
+            }
+
             document.addEventListener("DOMContentLoaded", () => {
                 initTheme();
+                initKeyboardSortHeaders();
                 fetchRuntimeConfig();
                 updateSortIcons("pullers");
                 updateSortIcons("draggers");
