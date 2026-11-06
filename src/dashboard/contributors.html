@@ -715,6 +715,186 @@
                 }
             }
         
+            /* ── Institutional Drive & Scan Delta Timeline ───────────────── */
+            .hw-timeline-section {
+                background: var(--surface);
+                border: 1px solid var(--border);
+                border-radius: 12px;
+                overflow: hidden;
+                margin-bottom: 20px;
+                display: flex;
+                flex-direction: column;
+                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+            }
+            .hw-timeline-header {
+                background: var(--surface-2);
+                border-bottom: 1px solid var(--border);
+                padding: 12px 20px;
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                flex-wrap: wrap;
+                gap: 12px;
+            }
+            .hw-timeline-title-wrap {
+                display: flex;
+                flex-direction: column;
+                gap: 4px;
+            }
+            .hw-timeline-title {
+                font-weight: 800;
+                font-size: 13px;
+                letter-spacing: 0.8px;
+                color: var(--text);
+                text-transform: uppercase;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            .hw-timeline-subtitle {
+                font-size: 11px;
+                color: var(--text-dim);
+                font-family: var(--sans);
+            }
+            .hw-timeline-actions {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                flex-wrap: wrap;
+            }
+            .hw-day-pills {
+                display: flex;
+                align-items: center;
+                background: rgba(0, 0, 0, 0.25);
+                padding: 3px;
+                border-radius: 6px;
+                border: 1px solid var(--border);
+                gap: 2px;
+            }
+            .hw-day-pill {
+                padding: 4px 10px;
+                font-size: 11px;
+                font-weight: 700;
+                border-radius: 4px;
+                border: none;
+                background: transparent;
+                color: var(--text-dim);
+                cursor: pointer;
+                transition: all 0.15s ease;
+                font-family: var(--sans);
+                white-space: nowrap;
+            }
+            .hw-day-pill:hover {
+                color: var(--text);
+            }
+            .hw-day-pill.active {
+                background: var(--surface);
+                color: var(--accent);
+                box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+            }
+            .hw-timeline-stats-bar {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+                gap: 10px;
+                padding: 12px 20px;
+                background: var(--surface-2);
+                border-bottom: 1px solid var(--border);
+            }
+            .hw-stat-card {
+                background: var(--surface);
+                border: 1px solid var(--border);
+                border-radius: 8px;
+                padding: 10px 14px;
+                display: flex;
+                flex-direction: column;
+                gap: 2px;
+            }
+            .hw-stat-card.highlight {
+                background: rgba(0, 229, 160, 0.04);
+                border-color: rgba(0, 229, 160, 0.25);
+            }
+            .hw-stat-label {
+                font-size: 10px;
+                text-transform: uppercase;
+                letter-spacing: 0.8px;
+                color: var(--text-dim);
+                font-weight: 700;
+                font-family: var(--mono);
+            }
+            .hw-stat-val {
+                font-family: var(--mono);
+                font-size: 18px;
+                font-weight: 800;
+                color: var(--text);
+            }
+            .hw-stat-val.pos { color: var(--green); }
+            .hw-stat-val.neg { color: var(--red); }
+            .hw-stat-badge {
+                font-family: var(--mono);
+                font-size: 11px;
+                font-weight: 700;
+                padding: 3px 6px;
+                border-radius: 4px;
+                display: inline-block;
+                margin-top: 2px;
+            }
+            .hw-stat-sub {
+                font-size: 10px;
+                color: var(--text-dim);
+                font-family: var(--sans);
+            }
+            .hw-timeline-charts-wrap {
+                padding: 16px 20px 20px 20px;
+                display: flex;
+                flex-direction: column;
+                gap: 12px;
+                background: var(--surface);
+            }
+            .hw-chart-legend {
+                display: flex;
+                align-items: center;
+                justify-content: flex-end;
+                flex-wrap: wrap;
+                gap: 16px;
+                font-size: 11px;
+                color: var(--text-dim);
+                padding-bottom: 4px;
+            }
+            .legend-item {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+            }
+            .legend-swatch {
+                width: 14px;
+                height: 3px;
+                border-radius: 2px;
+                display: inline-block;
+            }
+            .legend-swatch.line-hw { background: var(--green); height: 3px; }
+            .legend-swatch.line-idx { background: #38bdf8; height: 2px; border-bottom: 2px dashed #38bdf8; }
+            .legend-swatch.bar-delta { background: var(--accent); height: 8px; width: 8px; border-radius: 2px; }
+            .legend-item.reset-info {
+                font-family: var(--mono);
+                font-size: 10px;
+                color: var(--text-dim);
+                background: var(--surface-2);
+                border: 1px solid var(--border);
+                padding: 2px 8px;
+                border-radius: 4px;
+                margin-left: auto;
+            }
+            .hw-chart-upper-wrap {
+                position: relative;
+                width: 100%;
+                height: 250px;
+            }
+            .hw-chart-lower-wrap {
+                position: relative;
+                width: 100%;
+                height: 115px;
+            }
+
             /* ── Heavyweights Multi-Scan Panel ───────────────────────────── */
             .heavyweights-panel {
                 background: var(--surface);
@@ -1352,6 +1532,84 @@
                 </div>
             </section>
 
+            <!-- ── Top Heavyweights Institutional Drive & Scan Delta Timeline ─────── -->
+            <section class="hw-timeline-section" id="hw-timeline-section">
+                <div class="hw-timeline-header">
+                    <div class="hw-timeline-title-wrap">
+                        <div class="hw-timeline-title">
+                            <span class="hw-pulse-dot"></span>
+                            <span>⚡ Top Heavyweights Net Impact & Scan Delta Timeline</span>
+                            <span class="hw-badge-tag" id="hw-timeline-range-badge">09:15 IST – Last Scan</span>
+                        </div>
+                        <div class="hw-timeline-subtitle">
+                            Visualizing collective institutional point propulsion vs index spot movement across each scan tick
+                        </div>
+                    </div>
+                    <div class="hw-timeline-actions">
+                        <!-- Day Selector Pills (Mon to Fri + All 5 Days) -->
+                        <div class="hw-day-pills" id="hw-day-pills-container" role="tablist" aria-label="Select trading day">
+                            <button class="hw-day-pill active" data-day="today" onclick="switchHwTimelineDay('today')">Today</button>
+                        </div>
+                        <!-- View Mode (Drive vs Index or Pillars Stack) -->
+                        <div class="hw-view-toggle" role="group" aria-label="Chart mode">
+                            <button class="hw-view-btn active" id="hw-chart-btn-drive" onclick="switchHwChartMode('drive')" title="Cumulative HW Drive vs Index Spot Move">
+                                📈 Drive vs Index
+                            </button>
+                            <button class="hw-view-btn" id="hw-chart-btn-pillars" onclick="switchHwChartMode('pillars')" title="Breakdown by Top 5 Key Pillars">
+                                🏛️ Top 5 Pillars
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Institutional Dynamics Summary Bar -->
+                <div class="hw-timeline-stats-bar">
+                    <div class="hw-stat-card">
+                        <span class="hw-stat-label">Cumulative HW Impact (∑Δ)</span>
+                        <div class="hw-stat-val" id="tl-stat-hw-impact">+0.00 pts</div>
+                        <div class="hw-stat-sub" id="tl-stat-hw-sub">Top Heavyweights Propulsion</div>
+                    </div>
+                    <div class="hw-stat-card">
+                        <span class="hw-stat-label">Index Spot Net Move</span>
+                        <div class="hw-stat-val" id="tl-stat-idx-move">+0.00 pts</div>
+                        <div class="hw-stat-sub" id="tl-stat-idx-sub">Spot Point Change</div>
+                    </div>
+                    <div class="hw-stat-card">
+                        <span class="hw-stat-label">Latest Scan Delta (Δ)</span>
+                        <div class="hw-stat-val" id="tl-stat-scan-delta">+0.00 pts</div>
+                        <div class="hw-stat-sub" id="tl-stat-scan-sub">Current Scan Velocity</div>
+                    </div>
+                    <div class="hw-stat-card">
+                        <span class="hw-stat-label">Breadth Divergence</span>
+                        <div class="hw-stat-val" id="tl-stat-divergence">0.00 pts</div>
+                        <div class="hw-stat-sub" id="tl-stat-divergence-sub">HW vs Index Spread</div>
+                    </div>
+                    <div class="hw-stat-card highlight">
+                        <span class="hw-stat-label">Institutional Regime</span>
+                        <div class="hw-stat-val" style="font-size: 13px;" id="tl-stat-regime">ANALYZING...</div>
+                        <div class="hw-stat-sub" id="tl-stat-regime-sub">Leadership Classification</div>
+                    </div>
+                </div>
+
+                <!-- Charts Canvas Container -->
+                <div class="hw-timeline-charts-wrap">
+                    <div class="hw-chart-legend">
+                        <span class="legend-item" id="legend-hw-line"><span class="legend-swatch line-hw"></span> Heavyweights Cumulative (pts)</span>
+                        <span class="legend-item" id="legend-idx-line"><span class="legend-swatch line-idx"></span> Index Net Move (pts)</span>
+                        <span class="legend-item" id="legend-bars"><span class="legend-swatch bar-delta"></span> Scan Delta Impulse (pts Δ)</span>
+                        <span class="legend-item reset-info"><span class="info-icon">ℹ️</span> 5-Day Mon–Fri Rolling · Resets Mon 09:00 IST</span>
+                    </div>
+                    <!-- Upper Cumulative Chart -->
+                    <div class="hw-chart-upper-wrap">
+                        <canvas id="hwUpperChart"></canvas>
+                    </div>
+                    <!-- Lower Delta Impulse Histogram -->
+                    <div class="hw-chart-lower-wrap">
+                        <canvas id="hwLowerChart"></canvas>
+                    </div>
+                </div>
+            </section>
+
             <!-- ── Top Heavyweights Net Point Movement & Multi-Scan History ─────── -->
             <section class="heavyweights-panel" id="heavyweights-panel">
                 <div class="hw-panel-header">
@@ -1665,6 +1923,7 @@
                 localStorage.setItem("theme", next);
                 updateThemeButton(next);
                 if (chartInstance) renderChart();
+                if (typeof renderHwCharts === "function") renderHwCharts();
             });
 
             // Index Switching
@@ -1777,6 +2036,377 @@
                 if (btnDetailed) btnDetailed.classList.toggle("active", mode === "detailed");
             }
 
+            // ── Heavyweights Time-Series Plotting & 5-Day Mon-Fri Retention ──
+            let hwTimelineData = null;
+            let currentHwDayFilter = localStorage.getItem("nsebot_hw_day_filter") || "today";
+            let currentHwChartMode = localStorage.getItem("nsebot_hw_chart_mode") || "drive";
+            let hwUpperChartInstance = null;
+            let hwLowerChartInstance = null;
+
+            async function fetchHeavyweightsTimeline(force = false) {
+                try {
+                    const res = await fetch(`/api/contributors/heavyweights/timeline?index=${currentHwIndex}&day=${currentHwDayFilter}&refresh=${force}`);
+                    if (!res.ok) return;
+                    hwTimelineData = await res.json();
+                    renderHeavyweightsTimeline();
+                } catch (e) {
+                    console.warn("Failed to fetch heavyweights timeline:", e);
+                }
+            }
+
+            function switchHwTimelineDay(day) {
+                currentHwDayFilter = day;
+                localStorage.setItem("nsebot_hw_day_filter", day);
+                fetchHeavyweightsTimeline(false);
+            }
+
+            function switchHwChartMode(mode) {
+                currentHwChartMode = mode;
+                localStorage.setItem("nsebot_hw_chart_mode", mode);
+                document.getElementById("hw-chart-btn-drive").classList.toggle("active", mode === "drive");
+                document.getElementById("hw-chart-btn-pillars").classList.toggle("active", mode === "pillars");
+                renderHeavyweightsTimeline();
+            }
+
+            function renderHeavyweightsTimeline() {
+                if (!hwTimelineData || !hwTimelineData.scans) return;
+
+                // 1. Render Day Selector Pills
+                const container = document.getElementById("hw-day-pills-container");
+                if (container && hwTimelineData.available_days) {
+                    let pillsHtml = '';
+                    // All 5 days option
+                    const isAll = (currentHwDayFilter === 'all');
+                    pillsHtml += `<button class="hw-day-pill ${isAll ? 'active' : ''}" onclick="switchHwTimelineDay('all')" title="View all 5 days of the trading week">5-Day Week</button>`;
+                    
+                    hwTimelineData.available_days.forEach(d => {
+                        const isSelected = (currentHwDayFilter === d.date || (currentHwDayFilter === 'today' && d.date === hwTimelineData.selected_date));
+                        pillsHtml += `<button class="hw-day-pill ${isSelected ? 'active' : ''}" onclick="switchHwTimelineDay('${d.date}')" title="${d.full_day_name} (${d.scan_count} scans)">${d.display_label}</button>`;
+                    });
+                    container.innerHTML = pillsHtml;
+                }
+
+                // 2. Update Stats Bar
+                const scans = hwTimelineData.scans || [];
+                const scanCount = scans.length;
+                const rangeBadge = document.getElementById("hw-timeline-range-badge");
+                if (rangeBadge) {
+                    if (scanCount > 0) {
+                        const firstTime = scans[0].short_time || "09:15";
+                        const lastTime = scans[scans.length - 1].short_time || "Close";
+                        rangeBadge.textContent = `${hwTimelineData.index_name} · ${firstTime} – ${lastTime} IST (${scanCount} Scans)`;
+                    } else {
+                        rangeBadge.textContent = `${hwTimelineData.index_name} · Waiting for Scans...`;
+                    }
+                }
+
+                const hwImpEl = document.getElementById("tl-stat-hw-impact");
+                const hwImpSub = document.getElementById("tl-stat-hw-sub");
+                if (hwImpEl) {
+                    const hwVal = hwTimelineData.latest_hw_cumulative_points || 0;
+                    const isPos = hwVal >= 0;
+                    hwImpEl.className = `hw-stat-val ${isPos ? 'pos' : 'neg'}`;
+                    hwImpEl.textContent = `${isPos ? '+' : ''}${hwVal.toFixed(2)} pts`;
+                    if (hwImpSub && hwTimelineData.top_driver) {
+                        hwImpSub.textContent = `Leader: ${hwTimelineData.top_driver.symbol} (${hwTimelineData.top_driver.impact >= 0 ? '+' : ''}${hwTimelineData.top_driver.impact} pts)`;
+                    }
+                }
+
+                const idxMoveEl = document.getElementById("tl-stat-idx-move");
+                const idxMoveSub = document.getElementById("tl-stat-idx-sub");
+                if (idxMoveEl) {
+                    const idxVal = hwTimelineData.latest_index_net_points || 0;
+                    const isPos = idxVal >= 0;
+                    idxMoveEl.className = `hw-stat-val ${isPos ? 'pos' : 'neg'}`;
+                    idxMoveEl.textContent = `${isPos ? '+' : ''}${idxVal.toFixed(2)} pts`;
+                    if (idxMoveSub) {
+                        idxMoveSub.textContent = `Spot: ₹${(hwTimelineData.latest_spot_price || 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}`;
+                    }
+                }
+
+                const deltaEl = document.getElementById("tl-stat-scan-delta");
+                const deltaSub = document.getElementById("tl-stat-scan-sub");
+                if (deltaEl) {
+                    const dVal = hwTimelineData.latest_hw_scan_delta || 0;
+                    const isPos = dVal >= 0;
+                    deltaEl.className = `hw-stat-val ${isPos ? 'pos' : 'neg'}`;
+                    deltaEl.textContent = `${isPos ? '+' : ''}${dVal.toFixed(2)} pts Δ`;
+                    if (deltaSub) {
+                        const lastScan = scans[scans.length - 1];
+                        if (lastScan && lastScan.top_pullers && lastScan.top_pullers.length) {
+                            const topM = lastScan.top_pullers[0];
+                            deltaSub.textContent = `Pillar Impulse: ${topM.symbol} (${topM.delta >= 0 ? '+' : ''}${topM.delta})`;
+                        } else {
+                            deltaSub.textContent = "Latest scan velocity";
+                        }
+                    }
+                }
+
+                const divEl = document.getElementById("tl-stat-divergence");
+                const divSub = document.getElementById("tl-stat-divergence-sub");
+                if (divEl) {
+                    const divVal = hwTimelineData.divergence_points || 0;
+                    const isPos = divVal >= 0;
+                    divEl.className = `hw-stat-val ${isPos ? 'pos' : 'neg'}`;
+                    divEl.textContent = `${isPos ? '+' : ''}${divVal.toFixed(2)} pts`;
+                    if (divSub) {
+                        divSub.textContent = `${hwTimelineData.hw_share_pct || 0}% Heavyweight Share`;
+                    }
+                }
+
+                const regEl = document.getElementById("tl-stat-regime");
+                const regSub = document.getElementById("tl-stat-regime-sub");
+                if (regEl) {
+                    const regText = hwTimelineData.regime || "BALANCED";
+                    regEl.textContent = regText;
+                    if (regText.includes("Propulsion") || regText.includes("Accumulation") || regText.includes("Advance")) {
+                        regEl.style.color = "var(--green)";
+                    } else if (regText.includes("Propping") || regText.includes("Weakness") || regText.includes("Squeeze")) {
+                        regEl.style.color = "var(--yellow)";
+                    } else if (regText.includes("Selloff") || regText.includes("Distribution") || regText.includes("Liquidation")) {
+                        regEl.style.color = "var(--red)";
+                    } else {
+                        regEl.style.color = "var(--accent)";
+                    }
+                    if (regSub && hwTimelineData.top_dragger) {
+                        regSub.textContent = `Anchor Drag: ${hwTimelineData.top_dragger.symbol} (${hwTimelineData.top_dragger.impact >= 0 ? '+' : ''}${hwTimelineData.top_dragger.impact} pts)`;
+                    }
+                }
+
+                // 3. Render Chart.js
+                renderHwCharts();
+            }
+
+            function renderHwCharts() {
+                if (!hwTimelineData || !hwTimelineData.scans || !hwTimelineData.scans.length) return;
+                const scans = hwTimelineData.scans;
+                const labels = scans.map(s => s.time_label);
+
+                const isDark = (document.body.getAttribute("data-theme") || "dark") === "dark";
+                const gridColor = isDark ? "rgba(255, 255, 255, 0.06)" : "rgba(0, 0, 0, 0.06)";
+                const textColor = isDark ? "#94a3b8" : "#475569";
+                const axisTextColor = isDark ? "#cbd5e1" : "#1e293b";
+
+                // Upper Chart (Cumulative Drive vs Index or Pillars)
+                const upperCanvas = document.getElementById("hwUpperChart");
+                if (!upperCanvas) return;
+                const upperCtx = upperCanvas.getContext("2d");
+
+                if (hwUpperChartInstance) {
+                    hwUpperChartInstance.destroy();
+                }
+
+                let upperDatasets = [];
+                if (currentHwChartMode === 'drive') {
+                    // Drive vs Index Mode
+                    const hwCumValues = scans.map(s => s.hw_cumulative_points);
+                    const idxValues = scans.map(s => s.index_net_points);
+
+                    // Gradient for Heavyweights line
+                    const hwGrad = upperCtx.createLinearGradient(0, 0, 0, 240);
+                    hwGrad.addColorStop(0, "rgba(0, 229, 160, 0.25)");
+                    hwGrad.addColorStop(1, "rgba(0, 229, 160, 0.0)");
+
+                    upperDatasets = [
+                        {
+                            label: "Top Heavyweights Cumulative (pts)",
+                            data: hwCumValues,
+                            borderColor: "#00e5a0",
+                            backgroundColor: hwGrad,
+                            borderWidth: 2.5,
+                            pointRadius: scans.length > 40 ? 1 : 3,
+                            pointHoverRadius: 6,
+                            pointBackgroundColor: "#00e5a0",
+                            fill: true,
+                            tension: 0.25
+                        },
+                        {
+                            label: "Index Net Move (pts)",
+                            data: idxValues,
+                            borderColor: "#38bdf8",
+                            borderWidth: 2,
+                            borderDash: [5, 4],
+                            pointRadius: scans.length > 40 ? 1 : 3,
+                            pointHoverRadius: 6,
+                            pointBackgroundColor: "#38bdf8",
+                            fill: false,
+                            tension: 0.25
+                        }
+                    ];
+                } else {
+                    // Top 5 Pillars Stack Mode
+                    const pillarSymbols = (hwTimelineData.pillar_symbols || []).slice(0, 5);
+                    const pillarColors = ["#00e5a0", "#38bdf8", "#f59e0b", "#ec4899", "#8b5cf6"];
+
+                    upperDatasets = pillarSymbols.map((sym, idx) => {
+                        const color = pillarColors[idx % pillarColors.length];
+                        const pts = scans.map(s => (s.pillar_impacts && s.pillar_impacts[sym] !== undefined) ? s.pillar_impacts[sym] : 0);
+                        return {
+                            label: sym,
+                            data: pts,
+                            borderColor: color,
+                            borderWidth: 2,
+                            pointRadius: scans.length > 40 ? 1 : 2.5,
+                            pointHoverRadius: 5,
+                            pointBackgroundColor: color,
+                            fill: false,
+                            tension: 0.2
+                        };
+                    });
+                }
+
+                hwUpperChartInstance = new Chart(upperCtx, {
+                    type: "line",
+                    data: { labels, datasets: upperDatasets },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        animation: { duration: 300 },
+                        interaction: { mode: "index", intersect: false },
+                        plugins: {
+                            legend: {
+                                display: (currentHwChartMode === 'pillars'),
+                                position: "top",
+                                labels: { color: axisTextColor, font: { family: "Space Mono", size: 10 }, boxWidth: 12 }
+                            },
+                            tooltip: {
+                                backgroundColor: isDark ? "rgba(17, 20, 24, 0.95)" : "rgba(255, 255, 255, 0.95)",
+                                titleColor: isDark ? "#ffffff" : "#0f172a",
+                                bodyColor: isDark ? "#e2e8f0" : "#334155",
+                                borderColor: isDark ? "#1e2530" : "#cbd5e1",
+                                borderWidth: 1,
+                                padding: 10,
+                                bodyFont: { family: "Space Mono", size: 11 },
+                                titleFont: { family: "DM Sans", size: 12, weight: 700 },
+                                callbacks: {
+                                    title: function(items) {
+                                        if (!items.length) return "";
+                                        const s = scans[items[0].dataIndex];
+                                        return `${s.display_time} · Spot: ₹${s.spot_price.toLocaleString("en-IN")}`;
+                                    },
+                                    afterBody: function(items) {
+                                        if (!items.length) return [];
+                                        const s = scans[items[0].dataIndex];
+                                        const lines = [
+                                            `─────────────────────`,
+                                            `Scan Delta: ${s.hw_scan_delta >= 0 ? '+' : ''}${s.hw_scan_delta.toFixed(2)} pts Δ`,
+                                            `HW vs Index Divergence: ${s.divergence_points >= 0 ? '+' : ''}${s.divergence_points.toFixed(2)} pts`,
+                                            `Conviction: ${s.conviction}`
+                                        ];
+                                        if (s.top_pullers && s.top_pullers.length) {
+                                            const pulls = s.top_pullers.filter(p => p.delta > 0.05).map(p => `${p.symbol} (+${p.delta})`).slice(0, 2).join(", ");
+                                            if (pulls) lines.push(`Top Push: ▲ ${pulls}`);
+                                        }
+                                        if (s.top_draggers && s.top_draggers.length) {
+                                            const drags = s.top_draggers.filter(p => p.delta < -0.05).map(p => `${p.symbol} (${p.delta})`).slice(0, 2).join(", ");
+                                            if (drags) lines.push(`Top Drag: ▼ ${drags}`);
+                                        }
+                                        return lines;
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            x: {
+                                grid: { color: gridColor },
+                                ticks: { display: false } // Hidden in upper, shown in lower
+                            },
+                            y: {
+                                grid: { color: gridColor },
+                                ticks: {
+                                    color: textColor,
+                                    font: { family: "Space Mono", size: 10 },
+                                    callback: v => `${v >= 0 ? '+' : ''}${v.toFixed(1)}`
+                                },
+                                title: {
+                                    display: true,
+                                    text: "Points Impact",
+                                    color: textColor,
+                                    font: { family: "DM Sans", size: 10 }
+                                }
+                            }
+                        }
+                    }
+                });
+
+                // Lower Chart (Scan Delta Impulse Histogram)
+                const lowerCanvas = document.getElementById("hwLowerChart");
+                if (!lowerCanvas) return;
+                const lowerCtx = lowerCanvas.getContext("2d");
+
+                if (hwLowerChartInstance) {
+                    hwLowerChartInstance.destroy();
+                }
+
+                const deltaValues = scans.map(s => s.hw_scan_delta);
+                const deltaColors = deltaValues.map(v => v >= 0 ? "rgba(0, 229, 160, 0.85)" : "rgba(255, 77, 109, 0.85)");
+                const deltaBorders = deltaValues.map(v => v >= 0 ? "#00e5a0" : "#ff4d6d");
+
+                hwLowerChartInstance = new Chart(lowerCtx, {
+                    type: "bar",
+                    data: {
+                        labels,
+                        datasets: [{
+                            label: "Scan Delta Impulse (pts Δ)",
+                            data: deltaValues,
+                            backgroundColor: deltaColors,
+                            borderColor: deltaBorders,
+                            borderWidth: 1,
+                            borderRadius: 3
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        animation: { duration: 300 },
+                        interaction: { mode: "index", intersect: false },
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: {
+                                backgroundColor: isDark ? "rgba(17, 20, 24, 0.95)" : "rgba(255, 255, 255, 0.95)",
+                                titleColor: isDark ? "#ffffff" : "#0f172a",
+                                bodyColor: isDark ? "#e2e8f0" : "#334155",
+                                borderColor: isDark ? "#1e2530" : "#cbd5e1",
+                                borderWidth: 1,
+                                bodyFont: { family: "Space Mono", size: 10 },
+                                callbacks: {
+                                    label: function(ctx) {
+                                        const s = scans[ctx.dataIndex];
+                                        return `Scan Delta: ${s.hw_scan_delta >= 0 ? '+' : ''}${s.hw_scan_delta.toFixed(2)} pts Δ`;
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            x: {
+                                grid: { color: gridColor },
+                                ticks: {
+                                    color: textColor,
+                                    font: { family: "Space Mono", size: 9 },
+                                    maxRotation: 0,
+                                    autoSkip: true,
+                                    maxTicksLimit: 12
+                                }
+                            },
+                            y: {
+                                grid: { color: gridColor },
+                                ticks: {
+                                    color: textColor,
+                                    font: { family: "Space Mono", size: 9 },
+                                    callback: v => `${v >= 0 ? '+' : ''}${v.toFixed(1)}`
+                                },
+                                title: {
+                                    display: true,
+                                    text: "Scan Δ pts",
+                                    color: textColor,
+                                    font: { family: "DM Sans", size: 9 }
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+
             // ── Top Heavyweights Multi-Scan Tracking (NIFTY 10, SENSEX 10, BANKNIFTY 5) ──
             let currentHwIndex = localStorage.getItem("nsebot_hw_index") || currentIndex || "NIFTY";
             let hwHistoryData = null;
@@ -1799,6 +2429,7 @@
                         }
                         if (typeof renderHeavyweightsPanel === "function") {
                             renderHeavyweightsPanel();
+                fetchHeavyweightsTimeline(false);
                         }
                     }
                 } catch (e) {
@@ -2432,6 +3063,7 @@
                     autoRefreshTimer = setInterval(() => {
                         fetchContributors(false);
                         fetchHeavyweights(false);
+                        fetchHeavyweightsTimeline(false);
                         fetchTopbarCmps();
                     }, intervalMs);
                 }
@@ -2460,6 +3092,7 @@
                 updateSortIcons("single");
                 switchIndex(currentIndex);
                 switchView(currentView);
+                fetchHeavyweightsTimeline(false);
                 fetchHeavyweights(false).then(() => {
                     const arToggle = document.getElementById("auto-refresh-toggle");
                     if (arToggle && arToggle.checked) toggleAutoRefresh(true);

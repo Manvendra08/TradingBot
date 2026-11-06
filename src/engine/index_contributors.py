@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional
 
@@ -539,6 +539,50 @@ HEAVYWEIGHTS_LIMITS = {
 }
 
 
+def prune_heavyweights_scans(conn, now_dt: Optional[datetime] = None) -> int:
+    """
+    Rolling 5-day week retention & Monday reset engine:
+    - Retains Monday through Friday scans for the active trading week.
+    - Over Saturday and Sunday, retains the active week's scans for weekend post-market review.
+    - Automatically resets on Monday morning (00:00:00 IST), purging scans from prior calendar weeks.
+    - Safety guard: caps total records per index at 500 scans to prevent unbounded storage growth.
+    """
+    if now_dt is None:
+        now_dt = datetime.now(IST)
+
+    # Monday 00:00:00 IST of active calendar week (weekday: Monday=0 ... Sunday=6)
+    current_monday = (now_dt - timedelta(days=now_dt.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    cutoff_iso = current_monday.isoformat()
+
+    try:
+        cur = conn.execute(
+            "DELETE FROM heavyweight_scans WHERE scan_time < ?",
+            (cutoff_iso,)
+        )
+        deleted = cur.rowcount
+        if deleted > 0:
+            log.info(
+                "[heavyweights_retention] Weekly reset: purged %d historical scans prior to current week start (%s)",
+                deleted, cutoff_iso
+            )
+
+        # Secondary safety cap: keep at most 1500 total rows across all indices
+        conn.execute(
+            """
+            DELETE FROM heavyweight_scans 
+            WHERE id NOT IN (
+                SELECT id FROM heavyweight_scans ORDER BY id DESC LIMIT 1500
+            )
+            """
+        )
+        return deleted
+    except Exception as exc:
+        log.warning("[heavyweights_retention] Failed to prune historical scans: %s", exc)
+        return 0
+
+
 def record_heavyweights_scan_snapshot(
     index_names: tuple[str, ...] = ("NIFTY", "BANKNIFTY", "SENSEX"),
     force_refresh: bool = False
@@ -637,16 +681,8 @@ def record_heavyweights_scan_snapshot(
                     "heavyweights": hw_payload
                 }
 
-                # Prune to retain last 30 scans per index
-                conn.execute(
-                    """
-                    DELETE FROM heavyweight_scans 
-                    WHERE index_name = ? AND id NOT IN (
-                        SELECT id FROM heavyweight_scans WHERE index_name = ? ORDER BY id DESC LIMIT 30
-                    )
-                    """,
-                    (idx, idx)
-                )
+            # Rolling 5-day week retention (Mon-Fri) with automatic Monday morning reset
+            prune_heavyweights_scans(conn, now_dt)
     except Exception as exc:
         log.exception("[index_contributors] Error recording heavyweight scan snapshot: %s", exc)
 
@@ -682,7 +718,7 @@ def get_heavyweights_history(limit: int = 5) -> Dict[str, Any]:
                 FROM heavyweight_scans
                 WHERE index_name = ?
                 ORDER BY id DESC
-                LIMIT 30
+                LIMIT 100
                 """,
                 (idx,)
             ).fetchall()
@@ -849,3 +885,296 @@ def get_heavyweights_history(limit: int = 5) -> Dict[str, Any]:
             }
 
     return history
+
+
+def get_heavyweights_timeline(
+    index_name: str = "NIFTY",
+    day_filter: str = "today",
+    force_refresh: bool = False
+) -> Dict[str, Any]:
+    """
+    Returns high-resolution time-series data for Top Heavyweights Net Impact
+    (Scan Delta) and Cumulative Point Impact vs Index Spot movement across scans
+    from 09:15 to 15:40 IST.
+    
+    Supports:
+    - day_filter="today": high-res intraday timeline for the latest/current session
+    - day_filter="YYYY-MM-DD": specific trading day in the active 5-day week
+    - day_filter="all": unified multi-day progression across all 5 trading days
+    """
+    import json
+    from src.models.schema import get_read_conn
+
+    valid_indices = ("NIFTY", "BANKNIFTY", "SENSEX")
+    idx_key = index_name.upper() if index_name.upper() in valid_indices else "NIFTY"
+    now_dt = datetime.now(IST)
+
+    # Weekly cutoff: Monday 00:00:00 IST of active week
+    current_monday = (now_dt - timedelta(days=now_dt.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    cutoff_iso = current_monday.isoformat()
+
+    with get_read_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, scan_time, display_time, spot_price, net_points, index_change_pct, heavyweights_json
+            FROM heavyweight_scans
+            WHERE index_name = ? AND scan_time >= ?
+            ORDER BY scan_time ASC
+            """,
+            (idx_key, cutoff_iso)
+        ).fetchall()
+
+        # Offline / test fallback if no scans found for the active week
+        if not rows:
+            rows = conn.execute(
+                """
+                SELECT id, scan_time, display_time, spot_price, net_points, index_change_pct, heavyweights_json
+                FROM heavyweight_scans
+                WHERE index_name = ?
+                ORDER BY scan_time ASC
+                LIMIT 500
+                """,
+                (idx_key,)
+            ).fetchall()
+
+    if not rows:
+        return {
+            "index_name": idx_key,
+            "status": "empty",
+            "message": "No heavyweight scans recorded yet for the active week.",
+            "available_days": [],
+            "timeline_scans": [],
+            "day_summaries": [],
+            "pillar_symbols": []
+        }
+
+    # Group rows by session date (YYYY-MM-DD)
+    sessions: Dict[str, List[Any]] = {}
+    for r in rows:
+        d_str = r["scan_time"][:10]
+        if d_str not in sessions:
+            sessions[d_str] = []
+        sessions[d_str].append(r)
+
+    available_days = []
+    today_str = now_dt.strftime("%Y-%m-%d")
+    for d_str in sorted(sessions.keys()):
+        d_rows = sessions[d_str]
+        try:
+            d_dt = datetime.fromisoformat(d_rows[0]["scan_time"])
+            d_name = d_dt.strftime("%a")
+            d_full = d_dt.strftime("%A")
+            d_disp = d_dt.strftime("%d %b")
+        except Exception:
+            d_name = "Day"
+            d_full = "Day"
+            d_disp = d_str
+
+        is_today = (d_str == today_str)
+        available_days.append({
+            "date": d_str,
+            "day_name": d_name,
+            "full_day_name": d_full,
+            "display_label": f"Today ({d_name})" if is_today else f"{d_name} ({d_disp})",
+            "is_today": is_today,
+            "scan_count": len(d_rows),
+            "spot_open": d_rows[0]["spot_price"],
+            "spot_latest": d_rows[-1]["spot_price"],
+            "net_points_latest": round(d_rows[-1]["net_points"], 2)
+        })
+
+    # Resolve target dates
+    sorted_dates = sorted(sessions.keys())
+    if day_filter == "all":
+        target_dates = sorted_dates
+    elif day_filter == "today":
+        target_dates = [today_str] if today_str in sessions else [sorted_dates[-1]]
+    elif day_filter in sessions:
+        target_dates = [day_filter]
+    else:
+        target_dates = [sorted_dates[-1]]
+
+    timeline_scans = []
+    day_summaries = []
+    all_pillar_symbols = set()
+    is_multi_day = (len(target_dates) > 1)
+
+    for d_str in target_dates:
+        d_rows = sessions.get(d_str, [])
+        if not d_rows:
+            continue
+
+        prev_hw_pts = None
+        prev_idx_pts = None
+        prev_stock_pts = {}
+        day_first_hw_pts = None
+        day_last_hw_pts = None
+
+        for idx, r in enumerate(d_rows):
+            try:
+                hws = json.loads(r["heavyweights_json"])
+            except Exception:
+                hws = []
+
+            for h in hws:
+                all_pillar_symbols.add(h["symbol"])
+
+            hw_total_pts = round(sum(float(h.get("point_impact", 0.0)) for h in hws), 2)
+            idx_pts = round(float(r["net_points"]), 2)
+            curr_stock_pts = {h["symbol"]: round(float(h.get("point_impact", 0.0)), 2) for h in hws}
+
+            if idx == 0:
+                day_first_hw_pts = hw_total_pts
+                scan_delta = hw_total_pts
+                idx_scan_delta = idx_pts
+                stock_deltas = [
+                    {
+                        "symbol": h["symbol"],
+                        "name": h.get("name", h["symbol"]),
+                        "delta": round(float(h.get("point_impact", 0.0)), 2),
+                        "impact": round(float(h.get("point_impact", 0.0)), 2),
+                        "weight": round(float(h.get("weight", 0.0)), 2)
+                    }
+                    for h in hws
+                ]
+            else:
+                scan_delta = round(hw_total_pts - (prev_hw_pts if prev_hw_pts is not None else 0.0), 2)
+                idx_scan_delta = round(idx_pts - (prev_idx_pts if prev_idx_pts is not None else 0.0), 2)
+                stock_deltas = []
+                for h in hws:
+                    sym = h["symbol"]
+                    p_prev = prev_stock_pts.get(sym, float(h.get("point_impact", 0.0)))
+                    d = round(float(h.get("point_impact", 0.0)) - p_prev, 2)
+                    stock_deltas.append({
+                        "symbol": sym,
+                        "name": h.get("name", sym),
+                        "delta": d,
+                        "impact": round(float(h.get("point_impact", 0.0)), 2),
+                        "weight": round(float(h.get("weight", 0.0)), 2)
+                    })
+
+            day_last_hw_pts = hw_total_pts
+
+            stock_deltas_sorted = sorted(stock_deltas, key=lambda x: x["delta"], reverse=True)
+            top_pullers = stock_deltas_sorted[:3]
+            top_draggers = sorted(stock_deltas, key=lambda x: x["delta"])[:3]
+
+            divergence = round(hw_total_pts - idx_pts, 2)
+            hw_share = round((abs(hw_total_pts) / max(0.01, abs(idx_pts))) * 100.0, 1) if abs(idx_pts) > 0.1 else 100.0
+
+            try:
+                dt_obj = datetime.fromisoformat(r["scan_time"])
+                time_label = dt_obj.strftime("%a %I:%M %p") if is_multi_day else dt_obj.strftime("%I:%M %p")
+                short_time = dt_obj.strftime("%H:%M")
+            except Exception:
+                time_label = r["display_time"]
+                short_time = r["display_time"].split()[-2] if len(r["display_time"].split()) >= 2 else "09:15"
+
+            up_count = sum(1 for d in stock_deltas if d["delta"] > 0.05)
+            down_count = sum(1 for d in stock_deltas if d["delta"] < -0.05)
+            total_stocks = max(1, len(stock_deltas))
+
+            if up_count >= total_stocks * 0.7:
+                conviction = "SYNCHRONIZED ACCUMULATION"
+            elif down_count >= total_stocks * 0.7:
+                conviction = "SYNCHRONIZED DISTRIBUTION"
+            elif abs(scan_delta) >= 5.0 and (up_count <= 2 or down_count <= 2):
+                conviction = "ISOLATED PILLAR SQUEEZE"
+            else:
+                conviction = "MIXED FLOW"
+
+            timeline_scans.append({
+                "id": r["id"],
+                "date": d_str,
+                "scan_time": r["scan_time"],
+                "display_time": r["display_time"],
+                "time_label": time_label,
+                "short_time": short_time,
+                "spot_price": round(float(r["spot_price"]), 2),
+                "index_net_points": idx_pts,
+                "index_scan_delta": idx_scan_delta,
+                "hw_cumulative_points": hw_total_pts,
+                "hw_scan_delta": scan_delta,
+                "divergence_points": divergence,
+                "hw_share_pct": min(100.0, hw_share),
+                "conviction": conviction,
+                "up_count": up_count,
+                "down_count": down_count,
+                "top_pullers": top_pullers,
+                "top_draggers": top_draggers,
+                "pillar_impacts": curr_stock_pts
+            })
+
+            prev_hw_pts = hw_total_pts
+            prev_idx_pts = idx_pts
+            prev_stock_pts = curr_stock_pts
+
+        last_row = d_rows[-1]
+        try:
+            d_dt = datetime.fromisoformat(last_row["scan_time"])
+            d_name = d_dt.strftime("%a")
+        except Exception:
+            d_name = d_str
+
+        day_summaries.append({
+            "date": d_str,
+            "day_name": d_name,
+            "scans_count": len(d_rows),
+            "spot_open": d_rows[0]["spot_price"],
+            "spot_close": last_row["spot_price"],
+            "index_net_points": round(float(last_row["net_points"]), 2),
+            "hw_cumulative_points": day_last_hw_pts or 0.0,
+            "hw_net_day_shift": round((day_last_hw_pts or 0.0) - (day_first_hw_pts or 0.0), 2),
+            "divergence_points": round((day_last_hw_pts or 0.0) - float(last_row["net_points"]), 2)
+        })
+
+    latest_scan = timeline_scans[-1] if timeline_scans else {}
+    latest_hw = latest_scan.get("hw_cumulative_points", 0.0)
+    latest_idx = latest_scan.get("index_net_points", 0.0)
+    latest_div = latest_scan.get("divergence_points", 0.0)
+
+    if latest_hw > 0 and latest_idx > 0:
+        regime = "Heavyweight-Led Propulsion" if latest_scan.get("hw_share_pct", 0) >= 60 else "Broad Market Advance"
+    elif latest_hw > 0 and latest_idx <= 0:
+        regime = "Institutional Propping (Broader Market Weakness)"
+    elif latest_hw < 0 and latest_idx < 0:
+        regime = "Heavyweight-Led Selloff" if latest_scan.get("hw_share_pct", 0) >= 60 else "Broad Market Liquidation"
+    elif latest_hw < 0 and latest_idx >= 0:
+        regime = "Broader Market Resilient (Heavyweights Dragging)"
+    else:
+        regime = "Neutral / Balanced Dynamics"
+
+    latest_impacts = latest_scan.get("pillar_impacts", {})
+    sorted_pillars = sorted(latest_impacts.items(), key=lambda x: x[1], reverse=True)
+    top_driver = sorted_pillars[0] if sorted_pillars else ("None", 0.0)
+    top_dragger = sorted_pillars[-1] if sorted_pillars else ("None", 0.0)
+
+    pillar_order = sorted(
+        list(all_pillar_symbols),
+        key=lambda sym: abs(latest_impacts.get(sym, 0.0)),
+        reverse=True
+    )
+
+    return {
+        "index_name": idx_key,
+        "active_day": day_filter,
+        "selected_date": target_dates[0] if len(target_dates) == 1 else "all",
+        "is_multi_day": is_multi_day,
+        "scan_count": len(timeline_scans),
+        "available_days": available_days,
+        "latest_scan_time": latest_scan.get("display_time", ""),
+        "latest_spot_price": latest_scan.get("spot_price", 0.0),
+        "latest_index_net_points": latest_idx,
+        "latest_hw_cumulative_points": latest_hw,
+        "latest_hw_scan_delta": latest_scan.get("hw_scan_delta", 0.0),
+        "divergence_points": latest_div,
+        "hw_share_pct": latest_scan.get("hw_share_pct", 0.0),
+        "regime": regime,
+        "top_driver": {"symbol": top_driver[0], "impact": round(top_driver[1], 2)},
+        "top_dragger": {"symbol": top_dragger[0], "impact": round(top_dragger[1], 2)},
+        "scans": timeline_scans,
+        "day_summaries": day_summaries,
+        "pillar_symbols": pillar_order
+    }

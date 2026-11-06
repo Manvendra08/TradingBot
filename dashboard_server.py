@@ -953,6 +953,12 @@ def get_heavyweights_api(refresh: bool = False, limit: int = 5):
     return get_heavyweights_history(limit=limit)
 
 
+@app.get("/api/contributors/heavyweights/timeline")
+def get_heavyweights_timeline_api(index: str = "NIFTY", day: str = "today", refresh: bool = False):
+    from src.engine.index_contributors import get_heavyweights_timeline
+    return get_heavyweights_timeline(index_name=index, day_filter=day, force_refresh=refresh)
+
+
 @app.get("/api/cmps")
 @app.get("/api/topbar_cmps")
 def get_topbar_cmps():
