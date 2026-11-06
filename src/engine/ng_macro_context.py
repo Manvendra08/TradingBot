@@ -99,59 +99,89 @@ def classify_storage_event(
     seasonal_regime: str = "INJECTION",
 ) -> tuple[str, str, dict[str, Any]]:
     """
-    Classifies an EIA storage print into a high-level macro stance:
-    - BULLISH_TIGHTENING
-    - BEARISH_LOOSENING
-    - NEUTRAL_BALANCED
+    Classifies an EIA storage print using a rigorous dual-benchmark framework:
+    1. Expectation Surprise: Actual vs Consensus (Immediate intraday price driver)
+    2. Structural Balance: Actual vs 5-Year Historical Average (Macro physical buffer)
 
     Returns: (stance, summary, metrics_dict)
+    Supported Stances:
+      - BULLISH_TIGHTENING: Both 5-Yr and Consensus confirm physical deficit / tightening
+      - BEARISH_LOOSENING: Both 5-Yr and Consensus confirm physical surplus / inventory glut
+      - DIVERGENT_TACTICAL_RELIEF: Consensus beat (under-build) amidst broader 5-yr surplus
+      - DIVERGENT_MACRO_TIGHTENING: Consensus miss (over-build) amidst broader 5-yr deficit
+      - NEUTRAL_BALANCED: In-line print within normal noise thresholds
     """
     consensus_delta = (actual_bcf - consensus_bcf) if consensus_bcf is not None else 0.0
-    five_yr_delta = (actual_bcf - five_year_avg_bcf) if five_year_avg_bcf is not None else consensus_delta
+    five_yr_delta = (actual_bcf - five_year_avg_bcf) if five_year_avg_bcf is not None else 0.0
 
     stance = "NEUTRAL_BALANCED"
     summary_parts = []
 
     if seasonal_regime == "INJECTION":
-        # In Injection: Smaller build than 5-yr avg = deficit/erosion (BULLISH)
-        if five_yr_delta <= -12.0 or (consensus_delta <= -5.0 and five_yr_delta < 0):
+        # In Injection:
+        # consensus_delta < 0 means actual build < consensus (BULLISH BEAT)
+        # consensus_delta > 0 means actual build > consensus (BEARISH MISS)
+        # five_yr_delta < 0 means build < 5yr avg (STRUCTURAL EROSION)
+        # five_yr_delta > 0 means build > 5yr avg (SURPLUS EXPANSION)
+        if five_yr_delta <= -10.0 and consensus_delta <= -2.0:
             stance = "BULLISH_TIGHTENING"
             summary_parts.append(
-                f"Storage increased by {actual_bcf:+.1f} Bcf, but this is {abs(five_yr_delta):.1f} Bcf BELOW the 5-year average build "
-                f"({five_year_avg_bcf:+.1f} Bcf). This marks a significant storage deficit/erosion, tightening the physical balance ahead of winter."
+                f"Dual Bullish Alignment: Storage build of {actual_bcf:+.1f} Bcf is {abs(five_yr_delta):.1f} Bcf below 5-yr norm "
+                f"({five_year_avg_bcf:+.1f} Bcf) and beat consensus by {abs(consensus_delta):.1f} Bcf ({consensus_bcf:+.1f} Bcf est). "
+                f"High-conviction inventory erosion tightening physical balances."
             )
-        elif five_yr_delta >= 12.0 or (consensus_delta >= 5.0 and five_yr_delta > 0):
+        elif five_yr_delta >= 10.0 and consensus_delta >= 2.0:
             stance = "BEARISH_LOOSENING"
             summary_parts.append(
-                f"Storage expanded by {actual_bcf:+.1f} Bcf, exceeding the 5-year average ({five_year_avg_bcf:+.1f} Bcf) by "
-                f"+{five_yr_delta:.1f} Bcf. Strong physical supply is expanding the national storage buffer."
+                f"Dual Bearish Alignment: Storage build of {actual_bcf:+.1f} Bcf exceeded 5-yr norm ({five_year_avg_bcf:+.1f} Bcf) "
+                f"by +{five_yr_delta:.1f} Bcf and exceeded consensus by +{consensus_delta:.1f} Bcf. Strong physical supply expanding storage buffer."
             )
+        elif five_yr_delta >= 8.0 and consensus_delta <= -3.0:
+            stance = "DIVERGENT_TACTICAL_RELIEF"
+            summary_parts.append(
+                f"Tactical Relief into Macro Surplus: Build of {actual_bcf:+.1f} Bcf beat consensus ({consensus_bcf:+.1f} Bcf) "
+                f"by {consensus_delta:+.1f} Bcf triggering intraday short-covering bids, but remains +{five_yr_delta:.1f} Bcf above the 5-yr average "
+                f"({five_year_avg_bcf:+.1f} Bcf), preserving the structural multi-week surplus."
+            )
+        elif five_yr_delta <= -8.0 and consensus_delta >= 3.0:
+            stance = "DIVERGENT_MACRO_TIGHTENING"
+            summary_parts.append(
+                f"Intraday Pullback into Structural Tightness: Build of {actual_bcf:+.1f} Bcf missed consensus by +{consensus_delta:.1f} Bcf "
+                f"sparking headline selling, but physical injection remains {abs(five_yr_delta):.1f} Bcf below 5-yr average, maintaining macro support."
+            )
+        elif abs(five_yr_delta) >= 14.0:
+            stance = "BEARISH_LOOSENING" if five_yr_delta > 0 else "BULLISH_TIGHTENING"
+            summary_parts.append(f"Storage build of {actual_bcf:+.1f} Bcf dominated by massive 5-year divergence ({five_yr_delta:+.1f} Bcf).")
         else:
             stance = "NEUTRAL_BALANCED"
-            summary_parts.append(
-                f"Storage build of {actual_bcf:+.1f} Bcf is roughly in-line with seasonal norms ({five_year_avg_bcf:+.1f} Bcf) "
-                f"and market expectations."
-            )
+            summary_parts.append(f"Storage build of {actual_bcf:+.1f} Bcf is roughly in-line with seasonal norms ({five_year_avg_bcf:+.1f} Bcf).")
     else:
-        # In Withdrawal: Deeper draw than 5-yr avg = high demand (BULLISH)
-        # Note: Draws are negative numbers (e.g. -150 vs -100). -150 < -100.
-        if five_yr_delta <= -15.0 or (consensus_delta <= -8.0 and five_yr_delta < 0):
+        # In Withdrawal (Draws are negative numbers):
+        if five_yr_delta <= -12.0 and consensus_delta <= -3.0:
             stance = "BULLISH_TIGHTENING"
             summary_parts.append(
-                f"Storage draw of {actual_bcf:+.1f} Bcf was significantly deeper than the 5-year average ({five_year_avg_bcf:+.1f} Bcf), "
-                f"indicating intense weather-driven heating demand and accelerating inventory depletion."
+                f"Dual Bullish Alignment: Storage draw of {actual_bcf:+.1f} Bcf was {abs(five_yr_delta):.1f} Bcf deeper than 5-yr norm "
+                f"and beat consensus by {abs(consensus_delta):.1f} Bcf. Intense winter heating demand depleting inventories."
             )
-        elif five_yr_delta >= 15.0 or (consensus_delta >= 8.0 and five_yr_delta > 0):
+        elif five_yr_delta >= 12.0 and consensus_delta >= 3.0:
             stance = "BEARISH_LOOSENING"
             summary_parts.append(
-                f"Storage draw of {actual_bcf:+.1f} Bcf fell well short of the 5-year average ({five_year_avg_bcf:+.1f} Bcf), "
-                f"reflecting mild winter heating demand and bloated end-of-season inventory."
+                f"Dual Bearish Alignment: Storage draw of {actual_bcf:+.1f} Bcf was {five_yr_delta:+.1f} Bcf shallower than 5-yr norm "
+                f"and missed consensus by +{consensus_delta:.1f} Bcf. Mild winter demand leaving bloated storage."
+            )
+        elif five_yr_delta >= 8.0 and consensus_delta <= -4.0:
+            stance = "DIVERGENT_TACTICAL_RELIEF"
+            summary_parts.append(
+                f"Draw of {actual_bcf:+.1f} Bcf beat consensus by {consensus_delta:+.1f} Bcf, but was shallower than 5-yr average by +{five_yr_delta:.1f} Bcf."
+            )
+        elif five_yr_delta <= -8.0 and consensus_delta >= 4.0:
+            stance = "DIVERGENT_MACRO_TIGHTENING"
+            summary_parts.append(
+                f"Draw of {actual_bcf:+.1f} Bcf missed consensus by +{consensus_delta:.1f} Bcf, but remains deeper than 5-yr norm by {five_yr_delta:+.1f} Bcf."
             )
         else:
             stance = "NEUTRAL_BALANCED"
-            summary_parts.append(
-                f"Storage draw of {actual_bcf:+.1f} Bcf aligns with seasonal withdrawal expectations."
-            )
+            summary_parts.append(f"Storage draw of {actual_bcf:+.1f} Bcf aligns with seasonal withdrawal expectations.")
 
     if surplus_vs_5yr_pct is not None:
         summary_parts.append(
@@ -171,6 +201,91 @@ def classify_storage_event(
         "macro_stance": stance,
     }
     return stance, summary, metrics
+
+
+def deduce_institutional_intent(
+    spot_change_pct: float = 0.0,
+    ce_oi_change: int = 0,
+    pe_oi_change: int = 0,
+    pcr: float = 1.0,
+    macro_stance: str = "NEUTRAL_BALANCED",
+    consensus_delta: float = 0.0,
+) -> dict[str, Any]:
+    """
+    Deduce what institutional desks and market makers are doing by cross-referencing:
+    Price Direction x Strike-Level OI Flow x EIA Macro Regime.
+    """
+    tot_oi_chg = ce_oi_change + pe_oi_change
+
+    if spot_change_pct >= 0.4:
+        # Price is rising
+        if ce_oi_change < -500 or (ce_oi_change < 0 and pe_oi_change <= 0):
+            return {
+                "intent_code": "SHORT_COVERING_SQUEEZE",
+                "label": "Short-Covering Squeeze (Weak-Hand Panic)",
+                "rationale": "Trapped short sellers are covering into the pop; net open interest is draining rather than accumulating.",
+                "trading_implication": "Fragile fuel; do not chase longs. Watch overhead resistance for exhaustion / short re-entry.",
+            }
+        elif pe_oi_change > 1000 and pe_oi_change >= ce_oi_change * 1.5:
+            return {
+                "intent_code": "AGGRESSIVE_PUT_FLOOR",
+                "label": "Institutional Put Floor Defense (Long Buildup)",
+                "rationale": "Smart money is actively writing aggressive put premium, anchoring a new price floor.",
+                "trading_implication": "High-probability dip buying; bullish put spreads favored above support.",
+            }
+        elif ce_oi_change > 1200 and ce_oi_change >= pe_oi_change * 1.5:
+            return {
+                "intent_code": "CALL_RESISTANCE_FADE",
+                "label": "Institutional Call Fade (Selling Strength)",
+                "rationale": "Desks are selling massive call premium into retail buying candles at key resistance strikes.",
+                "trading_implication": "Upside is heavily capped by call walls; bear call spreads favored at resistance.",
+            }
+        else:
+            return {
+                "intent_code": "MODERATE_LONG_INFLOW",
+                "label": "Moderate Long Accumulation",
+                "rationale": "Steady spot uptick supported by bilateral participation.",
+                "trading_implication": "Trend following with tight trailing stops.",
+            }
+
+    elif spot_change_pct <= -0.4:
+        # Price is falling
+        if pe_oi_change < -500 or (pe_oi_change < 0 and ce_oi_change <= 0):
+            return {
+                "intent_code": "LONG_LIQUIDATION",
+                "label": "Long Liquidation (Stale Bulls Exiting)",
+                "rationale": "Long positions are squaring off without aggressive fresh short commitment.",
+                "trading_implication": "Support may hold once long liquidation subsides.",
+            }
+        elif ce_oi_change > 1000 and ce_oi_change >= pe_oi_change * 1.5:
+            return {
+                "intent_code": "HEAVY_SHORT_BUILDUP",
+                "label": "Aggressive Institutional Short Buildup",
+                "rationale": "Heavy call writing pushing price down; institutional supply hammering bids.",
+                "trading_implication": "Strong bearish trend pressure; bear call spreads or put debit spreads favored.",
+            }
+        else:
+            return {
+                "intent_code": "MODERATE_SHORT_PRESSURE",
+                "label": "Moderate Short Pressure",
+                "rationale": "Spot drifting downward under general supply.",
+                "trading_implication": "Respect the downtrend; avoid fighting downside momentum.",
+            }
+    else:
+        # Rangebound / pin
+        if tot_oi_chg > 2000 and abs(ce_oi_change - pe_oi_change) < 1000:
+            return {
+                "intent_code": "CONDOR_WRITING_PIN",
+                "label": "Institutional Condor / Strangle Pinning",
+                "rationale": "Desks are writing both CE and PE strikes simultaneously, locking spot around Max Pain.",
+                "trading_implication": "Ideal rangebound volatility selling; Iron Condors favored.",
+            }
+        return {
+            "intent_code": "NEUTRAL_STANDOFF",
+            "label": "Institutional Standoff (Low Conviction)",
+            "rationale": "Equilibrium between buyers and sellers with no definitive institutional commitment.",
+            "trading_implication": "Stand aside or trade well-defined boundaries.",
+        }
 
 
 def get_active_ng_macro_context() -> dict[str, Any]:
@@ -316,6 +431,14 @@ def format_ng_macro_for_llm(context: dict[str, Any] | None = None) -> str:
         cons_str = f"{consensus:+.1f} Bcf" if consensus is not None else "N/A"
         fyr_str = f"{five_yr:+.1f} Bcf" if five_yr is not None else "N/A"
         lines.append(f"  • EIA Storage Print ({rep_date}): Actual {act_str} | Consensus {cons_str} | 5-Yr Avg {fyr_str}")
+        if consensus is not None:
+            c_delta = actual - consensus
+            c_label = "BULLISH BEAT (Under-build / Demand Surge)" if c_delta < 0 else "BEARISH MISS (Over-build)"
+            lines.append(f"  ? Consensus Surprise: {c_delta:+.1f} Bcf ({c_label})")
+        if five_yr is not None:
+            f_delta = actual - five_yr
+            f_label = "STRUCTURAL TIGHTENING / Buffer Erosion" if f_delta < 0 else "SURPLUS EXPANSION"
+            lines.append(f"  ? 5-Year Norm Delta: {f_delta:+.1f} Bcf ({f_label})")
 
     if surplus_bcf is not None and surplus_pct is not None:
         lines.append(f"  • National Storage Buffer: {surplus_bcf:+.0f} Bcf ({surplus_pct:+.1f}% vs 5-year average)")

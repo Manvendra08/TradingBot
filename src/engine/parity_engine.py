@@ -38,8 +38,22 @@ _YF_CACHE = {}
 _YF_CACHE_TTL_SEC = 60
 
 def _get_yf_quote(ticker: str) -> tuple[float, int]:
-    """Returns (last_price, age_sec). Uses 60s cache."""
+    """Returns (last_price, age_sec). Prioritizes live TradingView WS streamer for NG=F, with yfinance fallback."""
     now = time.time()
+    
+    # Priority 1: Real-time TradingView WebSocket streamer for Natural Gas
+    if ticker in ("NG=F", "NATURALGAS", "NYMEX:NG1!"):
+        try:
+            from src.fetchers.tv_nymex_streamer import get_live_nymex_quote
+            tv_quote = get_live_nymex_quote(max_age_sec=30.0)
+            if tv_quote and tv_quote.get("price") and float(tv_quote["price"]) > 0:
+                p = float(tv_quote["price"])
+                age = max(0, int(now - tv_quote.get("updated_at", now)))
+                _YF_CACHE[ticker] = (p, now)
+                return p, age
+        except Exception as exc:
+            log.debug("[parity_engine] tv_nymex_streamer fetch failed: %s, falling back to yfinance", exc)
+
     if ticker in _YF_CACHE:
         cached_price, cached_time = _YF_CACHE[ticker]
         age = int(now - cached_time)

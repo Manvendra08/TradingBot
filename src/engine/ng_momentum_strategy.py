@@ -72,8 +72,8 @@ def check_ng_momentum_entry(
         squeeze_risk = bool(macro_ctx.get("is_rollover_squeeze_risk", False))
 
         is_conflict = (
-            (side == "SELL" and macro_stance == "BULLISH_TIGHTENING") or
-            (side == "BUY" and macro_stance == "BEARISH_LOOSENING")
+            (side == "SELL" and macro_stance in ("BULLISH_TIGHTENING", "DIVERGENT_TACTICAL_RELIEF")) or
+            (side == "BUY" and macro_stance in ("BEARISH_LOOSENING", "DIVERGENT_MACRO_TIGHTENING"))
         )
 
         if is_conflict:

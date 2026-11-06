@@ -275,6 +275,16 @@ def nymex_trend(
             last_close = float(closes.iloc[-1].item() if hasattr(closes.iloc[-1], "item") else closes.iloc[-1])
             last_ema = float(ema20.iloc[-1].item() if hasattr(ema20.iloc[-1], "item") else ema20.iloc[-1])
 
+            # Ingest live sub-second TradingView WebSocket tick if available for Natural Gas
+            if nymex_symbol in ("NG=F", "NATURALGAS", "NYMEX:NG1!"):
+                try:
+                    from src.fetchers.tv_nymex_streamer import get_live_nymex_quote
+                    live_q = get_live_nymex_quote(max_age_sec=30.0)
+                    if live_q and live_q.get("price") and float(live_q["price"]) > 0:
+                        last_close = float(live_q["price"])
+                except Exception:
+                    pass
+
             if last_close > last_ema:
                 trend = "BULLISH"
             elif last_close < last_ema:

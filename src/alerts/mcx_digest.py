@@ -161,7 +161,16 @@ def build_mcx_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[st
 
     status_suffix = f"  {trade_status_str}" if trade_status_str else ""
     lines.append(f"🛢️ *{sym}*{time_str}{status_suffix}")
-    lines.append(f"{expiry_str} · {dte_str} | Spot {spot_str}")
+    nymex_str = ""
+    if "NATURALGAS" in sym.upper():
+        try:
+            from src.fetchers.tv_nymex_streamer import get_live_nymex_quote
+            lq = get_live_nymex_quote(max_age_sec=30.0)
+            if lq and lq.get("price") and float(lq["price"]) > 0:
+                nymex_str = f" | NYMEX ${float(lq['price']):.3f}"
+        except Exception:
+            pass
+    lines.append(f"{expiry_str} · {dte_str} | Spot {spot_str}{nymex_str}")
 
     # ── 1. COMMODITY & MACRO READINGS ──
     lines.append("")
@@ -178,7 +187,7 @@ def build_mcx_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[st
                 ng_macro = {}
 
         stance = ng_macro.get("macro_stance", "NEUTRAL_BALANCED")
-        stance_icon = "🟢" if "BULL" in stance else ("🔴" if "BEAR" in stance else "⚪")
+        stance_icon = "🟢" if "BULL" in stance else ("🔴" if "BEAR" in stance else ("🟡" if "DIVERGENT" in stance else "⚪"))
         valid_until_raw = ng_macro.get("valid_until")
         valid_str = ""
         if valid_until_raw:
@@ -193,17 +202,44 @@ def build_mcx_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[st
 
         act_bcf = ng_macro.get("actual_bcf")
         five_yr_bcf = ng_macro.get("five_year_avg_bcf")
+        cons_bcf = ng_macro.get("consensus_bcf")
         if act_bcf is not None and five_yr_bcf is not None:
             delta_bcf = act_bcf - five_yr_bcf
             delta_desc = "Deficit / Surplus Erosion" if delta_bcf < 0 else "Surplus Expansion"
-            lines.append(f"• Storage Delta: `{act_bcf:+.1f} Bcf` Act vs `{five_yr_bcf:+.1f} Bcf` 5-Yr ({delta_bcf:+.1f} Bcf {delta_desc})")
+            lines.append(f"• Storage Delta (vs 5-Yr): {act_bcf:+.1f} Bcf Act vs {five_yr_bcf:+.1f} Bcf 5-Yr ({delta_bcf:+.1f} Bcf {delta_desc})")
+
+        if act_bcf is not None and cons_bcf is not None:
+            c_delta = act_bcf - cons_bcf
+            c_desc = "Bullish Beat" if c_delta < 0 else "Bearish Miss"
+            lines.append(f"• Consensus Surprise: {act_bcf:+.1f} Bcf Act vs {cons_bcf:+.1f} Bcf Cons ({c_delta:+.1f} Bcf {c_desc})")
 
         surplus_bcf = ng_macro.get("surplus_vs_5yr_bcf")
         surplus_pct = ng_macro.get("surplus_vs_5yr_pct")
         consec = ng_macro.get("consecutive_tightening_weeks", 0)
         streak_str = f" | {consec} below-norm builds" if consec >= 2 else ""
         if surplus_bcf is not None and surplus_pct is not None:
-            lines.append(f"• Storage Buffer: `{surplus_bcf:+.0f} Bcf` (`{surplus_pct:+.1f}%` vs 5-yr norm){streak_str}")
+            lines.append(f"• Storage Buffer: {surplus_bcf:+.0f} Bcf ({surplus_pct:+.1f}% vs 5-yr norm){streak_str}")
+
+        # Big Player Institutional Intent footprint
+        try:
+            from src.engine.ng_macro_context import deduce_institutional_intent
+            p_chg = float(quant.get("price_change_pct") or 0.0)
+            ce_c = int(quant.get("ce_oi_change") or 0)
+            pe_c = int(quant.get("pe_oi_change") or 0)
+            pcr_v = float(quant.get("pcr") or 1.0) if quant.get("pcr") not in (None, "N/A", "") else 1.0
+            cons_d = (act_bcf - cons_bcf) if (act_bcf is not None and cons_bcf is not None) else 0.0
+            inst = deduce_institutional_intent(
+                spot_change_pct=p_chg,
+                ce_oi_change=ce_c,
+                pe_oi_change=pe_c,
+                pcr=pcr_v,
+                macro_stance=stance,
+                consensus_delta=cons_d,
+            )
+            lines.append(f"• Big Player Footprint: 🏦 *{inst['label']}*")
+            lines.append(f"  ↳ _{inst['trading_implication']}_")
+        except Exception:
+            pass
 
         # Commodity session regime
         ng_reg = quant.get("ng_regime")
