@@ -82,7 +82,8 @@ def get_fail_closed_defaults(default_freq: int = 15) -> dict:
         "direct_kite_default_tgt_pct": 60.0,
         "live_broker_disabled": True,  # FORCE BROKER DISABLED
         "trading_paused": True,  # FORCE TRADING PAUSED
-        "enable_tfss_trade_blocked_rules": False,
+        "enable_tfss_trade_blocked_rules": True,
+        "enable_tfss_tranche_scaling": True,
         "enable_ng_parity_trades": False,  # BLOCK NG PARITY
         "sentinel_report_mode": "anomalies",
         "ops_agent_mode": "observe",
@@ -161,7 +162,8 @@ def load_runtime_config() -> dict:
         "direct_kite_default_tgt_pct": 60.0,
         "live_broker_disabled": True,  # Completely block all broker order placement (fail-closed)
         "trading_paused": True,  # OPS Agent safety switch — one-way (human-only unpause, fail-closed)
-        "enable_tfss_trade_blocked_rules": False,
+        "enable_tfss_trade_blocked_rules": True,
+        "enable_tfss_tranche_scaling": True,
         "enable_ng_parity_trades": True,  # Natural Gas Fair Value Parity arbitrage
         "gemini_spark_feed_enabled": True,  # Independent Gemini Spark trade feed via Google Sheets
         "gemini_spark_sheet_id": "19OiN3QrC75S5TRccF0QdzoC5SX1XGshzlJ2hPyIkW7I",

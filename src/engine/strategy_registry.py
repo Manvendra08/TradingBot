@@ -87,8 +87,8 @@ def get_runner(sid: str) -> Optional[Callable]:
         config = load_runtime_config()
         tfss_enabled = bool(config.get("strategies", {}).get("TFSS", {}).get("enabled", False))
         if tfss_enabled:
-            from src.engine.paper_trading import run_paper_trading
-            return run_paper_trading
+            from src.engine.tfss_execution import run_tfss_strategy
+            return run_tfss_strategy
         return None
     elif sid == "TIMEFRAME":
         from src.engine.paper_trading import run_timeframe_strategy

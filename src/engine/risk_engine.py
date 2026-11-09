@@ -303,7 +303,7 @@ def _check_risk_limits_for_table(
             
         # 7. TFSS specific checks (plan §3.5 — additive, book-level)
         if setup_type and "TFSS" in str(setup_type).upper():
-            from config.trend_following_short_strangle import TFSS_MAX_BOOK_MARGIN, TRANCHE_SEQUENCE, TFSS_COMBINED_DELTA_CAP
+            from config.trend_following_short_strangle import TFSS_MAX_BOOK_MARGIN, TRANCHE_SEQUENCE, TFSS_COMBINED_DELTA_CAP, get_tfss_max_book_margin
             opt_rows = candidate_leg.get("option_rows") if candidate_leg and isinstance(candidate_leg, dict) else None
             book = compute_combined_book(symbol, opt_rows, table=trades_table)
             max_tranches = len(TRANCHE_SEQUENCE) * 2  # 3 per side = 6 legs max
@@ -322,9 +322,10 @@ def _check_risk_limits_for_table(
                         return False, (
                             f"[{label}] TFSS combined delta cap exceeded (|{new_net_delta:.2f}| > {TFSS_COMBINED_DELTA_CAP:.2f})"
                         ), "TFSS_COMBINED_DELTA_CAP"
-            if total_margin > TFSS_MAX_BOOK_MARGIN:
+            max_book_margin = get_tfss_max_book_margin()
+            if total_margin > max_book_margin:
                 return False, (
-                    f"[{label}] TFSS combined book margin cap exceeded (\u20b9{total_margin:,.0f} > \u20b9{TFSS_MAX_BOOK_MARGIN:,.0f})"
+                    f"[{label}] TFSS combined book margin cap exceeded (\u20b9{total_margin:,.0f} > \u20b9{max_book_margin:,.0f})"
                 ), "TFSS_MAX_BOOK_MARGIN"
 
         # 8. Multi-Leg Book Risk Checks

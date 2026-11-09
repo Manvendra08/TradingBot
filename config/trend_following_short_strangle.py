@@ -9,12 +9,14 @@ PERSISTENCE_MIN_MATCH = 3
 REQUIRE_BROAD_CORROBORATION = False
 
 # Master switch for TFSS Trade Blocked Rules (persistence history, min match, tranches, delta caps).
-# Disabled per requirement: Core engine verdict handles entry/exit rules directly.
-ENABLE_TFSS_TRADE_BLOCKED_RULES = False
+ENABLE_TFSS_TRADE_BLOCKED_RULES = True
 
 # Master switch for TFSS Multi-Leg Tranche Sizing Logic (scaling down per tranche).
-# Disabled per requirement: Every trade is placed with 100% full base lot size.
-ENABLE_TFSS_TRANCHE_SCALING = False
+ENABLE_TFSS_TRANCHE_SCALING = True
+
+# Disaster wing pairing (far-OTM 0.03-delta wing to cap black swan gap risk)
+TFSS_ENABLE_DISASTER_WINGS = True
+TFSS_DISASTER_WING_DELTA = 0.03
 
 class DteDeltaBand(TypedDict):
     min_dte: int
@@ -43,6 +45,7 @@ DTE_DELTA_BANDS: List[DteDeltaBand] = [
     }
 ]
 
+# Tranche sequence for multi-tranche scaling: 50% on Tranche 0, 30% on Tranche 1, 20% on Tranche 2
 TRANCHE_SEQUENCE = [0.50, 0.30, 0.20]
 
 # High priority overrides lower priority. 1 is highest priority.
@@ -58,8 +61,19 @@ ATR_TIGHTENING_MULTIPLIER_THRESHOLD = 1.5
 
 # Multi-leg book caps and thresholds
 TFSS_COMBINED_DELTA_CAP = 0.60
-TFSS_MAX_BOOK_MARGIN = 500000.0
-HARD_STOP_DELTA = 0.60
-REBALANCE_DELTA_THRESHOLD = 0.50  # Dynamic delta rebalancing triggered when leg delta reaches 0.50
+HARD_STOP_DELTA = 0.50
+REBALANCE_DELTA_THRESHOLD = 0.45  # Dynamic delta rebalancing triggered when leg delta reaches 0.45
 TIME_DECAY_PROFIT_TARGET_PCT = 0.35  # 35% time decay profit target for option sell legs
 
+# Legacy fallback cap
+TFSS_MAX_BOOK_MARGIN = 500000.0
+
+
+def get_tfss_max_book_margin() -> float:
+    """Dynamically scale TFSS book margin capacity to 40% of total portfolio capital."""
+    try:
+        from config.runtime_config import get_total_capital
+        tot_cap = get_total_capital()
+        return max(500000.0, float(tot_cap) * 0.40)
+    except Exception:
+        return 500000.0

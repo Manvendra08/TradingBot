@@ -1515,7 +1515,13 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                             run_multileg_live_strategy(symbol, scan_context, scan_digest_id, intel, ai_verdict=None, exit_check=True)
                         except Exception:
                             log.exception("%s: live/shadow multileg exit monitoring failed", symbol)
-                    elif live_or_shadow_enabled and (_live_entries_blocked or (sid != "TIMEFRAME" and ai_verdict_for_runner is None)):
+                    elif live_or_shadow_enabled and sid == "TFSS" and _live_entries_blocked:
+                        try:
+                            from src.engine.tfss_execution import run_live_tfss_strategy
+                            run_live_tfss_strategy(symbol, scan_context, scan_digest_id, intel, ai_verdict=None, exit_check=True)
+                        except Exception:
+                            log.exception("%s: live/shadow TFSS exit monitoring failed", symbol)
+                    elif live_or_shadow_enabled and (_live_entries_blocked or (sid not in ("TIMEFRAME", "TFSS") and ai_verdict_for_runner is None)):
                         log.debug("%s: skipping %s live/shadow entry (verdict unavailable or edge gate)", symbol, sid)
                     elif live_or_shadow_enabled:
                         # A12 FIX: Obey specialized strategy gates from the paper runner.
@@ -1535,6 +1541,12 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                                 run_live_timeframe_strategy(symbol, scan_context, scan_digest_id, intel, ai_verdict=llm_verdict)
                             except Exception as le:
                                 log.exception("%s: live/shadow timeframe strategy execution failed", symbol)
+                        elif sid == "TFSS":
+                            try:
+                                from src.engine.tfss_execution import run_live_tfss_strategy
+                                run_live_tfss_strategy(symbol, scan_context, scan_digest_id, intel, ai_verdict=llm_verdict)
+                            except Exception as le:
+                                log.exception("%s: live/shadow TFSS strategy execution failed", symbol)
                         elif sid == "MULTILEG":
                             try:
                                 from src.engine.multileg_live_trading import run_multileg_live_strategy

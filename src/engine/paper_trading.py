@@ -1199,125 +1199,14 @@ def monitor_paper_trades(symbol: str, current_ctx: dict) -> list[dict]:
             )
         )
 
-    # ── TFSS Multi-Leg Book Monitoring ───────────────────────────────────────
-    from src.models.schema import get_open_tfss_legs
-    tfss_legs = get_open_tfss_legs(symbol)
-    if tfss_legs:
-        from src.engine.risk_engine import compute_combined_book
-        try:
-            from config.trend_following_short_strangle import HARD_STOP_DELTA
-        except Exception:
-            HARD_STOP_DELTA = 0.60
-
-        sample_leg_exp = tfss_legs[0].get("expiry") if tfss_legs else None
-        option_rows = _get_option_rows_for_expiry(current_ctx, sample_leg_exp, symbol=symbol)
-        book = compute_combined_book(symbol, option_rows)
-        leg_deltas = book.get("leg_deltas", {})
-        within_caps = book.get("within_caps", True)
-        net_delta = book.get("net_delta", 0.0)
-
-        # 1. Check if delta stop is breached across the book
-        delta_stop_leg = None
-        if legs_with_deltas := [l for l in tfss_legs if l["id"] in leg_deltas]:
-            tested_leg = max(legs_with_deltas, key=lambda l: leg_deltas[l["id"]])
-            tested_delta = leg_deltas[tested_leg["id"]]
-            if tested_delta >= HARD_STOP_DELTA:
-                if within_caps:
-                    log.info(
-                        "%s: leg #%s delta %.2f breached but net book delta %.2f within cap — holding",
-                        symbol, tested_leg["id"], tested_delta, net_delta,
-                    )
-                else:
-                    delta_stop_leg = tested_leg
-
-        # 2. Check per-leg SL / Target / Delta Stop
-        for leg in tfss_legs:
-            sl_ul = float(leg.get("sl_underlying") or 0)
-            tgt_ul = float(leg.get("target_underlying") or 0)
-            side = str(leg.get("side", "")).upper()
-            entry_und = float(leg.get("entry_underlying") or 0)
-            option_type = str(leg.get("option_type", "")).upper()
-
-            hit_sl = False
-            hit_target = False
-            if side == "BUY":
-                if option_type == "PE":
-                    hit_sl = sl_ul > 0 and underlying >= sl_ul
-                    hit_target = tgt_ul > 0 and underlying <= tgt_ul
-                else:
-                    hit_sl = sl_ul > 0 and underlying <= sl_ul
-                    hit_target = tgt_ul > 0 and underlying >= tgt_ul
-            else:  # SELL
-                if option_type == "PE":
-                    hit_sl = sl_ul > 0 and underlying <= sl_ul
-                    hit_target = tgt_ul > 0 and underlying >= tgt_ul
-                else:
-                    hit_sl = sl_ul > 0 and underlying >= sl_ul
-                    hit_target = tgt_ul > 0 and underlying <= tgt_ul
-
-            hit_delta_stop = (delta_stop_leg and leg["id"] == delta_stop_leg["id"])
-
-            if hit_sl or hit_target or hit_delta_stop:
-                reason = "CLOSED_SL" if hit_sl else ("CLOSED_TARGET" if hit_target else "CLOSED_DELTA_STOP")
-                if hit_sl:
-                    log_reason = "SL_HIT"
-                elif hit_target:
-                    log_reason = "TARGET_HIT"
-                else:
-                    log_reason = f"leg delta {leg_deltas.get(leg['id'], 0):.2f} + net book delta {net_delta:.2f} both breached"
-
-                exit_premium = None
-                if option_type != "FUT":
-                    leg_option_rows = _get_option_rows_for_expiry(current_ctx, leg.get("expiry"))
-                    exit_premium = _get_option_premium(
-                        symbol,
-                        leg.get("expiry"),
-                        leg.get("strike"),
-                        option_type,
-                        leg_option_rows,
-                    )
-                    if exit_premium and exit_premium > 0:
-                        if side == "BUY":
-                            exit_premium *= 0.995
-                        else:
-                            exit_premium *= 1.005
-
-                    if hit_sl and not hit_target:
-                        sl_prem = float(leg.get("sl_premium") or 0)
-                        if sl_prem > 0 and exit_premium and exit_premium > 0:
-                            if side == "BUY" and exit_premium > sl_prem:
-                                log.warning(
-                                    "%s: leg #%s underlying SL but premium (%.2f) > sl_premium (%.2f) — forcing to sl_premium",
-                                    symbol, leg["id"], exit_premium, sl_prem,
-                                )
-                                exit_premium = sl_prem * 1.005
-                            elif side == "SELL" and exit_premium < sl_prem:
-                                log.warning(
-                                    "%s: leg #%s underlying SL but premium (%.2f) < sl_premium (%.2f) — forcing to sl_premium",
-                                    symbol, leg["id"], exit_premium, sl_prem,
-                                )
-                                exit_premium = sl_prem * 0.995
-
-                close_paper_trade(
-                    leg["id"],
-                    datetime.now(timezone.utc).isoformat(),
-                    underlying,
-                    exit_premium,
-                    reason,
-                    log_reason,
-                )
-                log.info(
-                    "%s: TFSS leg #%s closed — %s at underlying %g",
-                    symbol,
-                    leg["id"],
-                    log_reason,
-                    underlying,
-                )
-                _invalidate_pattern_cache()
-                _trigger_ml_retraining()
-                actions.append(
-                    {"action": reason, "trade_id": leg["id"], "underlying": underlying}
-                )
+    # ── TFSS Multi-Leg Book Monitoring (Dedicated TFSS Execution Engine) ──
+    try:
+        from src.engine.tfss_execution import monitor_tfss_exits
+        tfss_actions = monitor_tfss_exits(symbol, current_ctx, table="paper_trades")
+        if tfss_actions:
+            actions.extend(tfss_actions)
+    except Exception as exc:
+        log.warning("%s: TFSS paper exit monitoring failed: %s", symbol, exc)
 
     return actions
 

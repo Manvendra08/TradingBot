@@ -1939,7 +1939,7 @@ def insert_live_trade(trade: dict, conn: sqlite3.Connection | None = None) -> in
              broker_order_id, gtt_order_id, broker_status, broker_message, exit_mode,
              price_change_pct, pcr, ce_oi_change, pe_oi_change, underlying,
              support, resistance, max_pain, days_to_expiry, chart_conflict,
-              rsi_1h, rsi_3h, regime, entry_dev_pct, snapshot_id, ai_model_name, initial_sl_underlying, config_version)
+              rsi_1h, rsi_3h, regime, entry_dev_pct, leg_group_id, tranche_index, snapshot_id, ai_model_name, initial_sl_underlying, config_version)
         VALUES
             (:opened_at, :symbol, :expiry, :verdict_label, :side, :option_type, :strike, :entry_underlying,
              :entry_premium, :sl_underlying, :sl_premium, :target_underlying, :target_premium,
@@ -1950,7 +1950,7 @@ def insert_live_trade(trade: dict, conn: sqlite3.Connection | None = None) -> in
              :broker_order_id, :gtt_order_id, :broker_status, :broker_message, :exit_mode,
              :price_change_pct, :pcr, :ce_oi_change, :pe_oi_change, :underlying,
              :support, :resistance, :max_pain, :days_to_expiry, :chart_conflict,
-             :rsi_1h, :rsi_3h, :regime, :entry_dev_pct, :snapshot_id, :ai_model_name, :initial_sl_underlying, :config_version)
+             :rsi_1h, :rsi_3h, :regime, :entry_dev_pct, :leg_group_id, :tranche_index, :snapshot_id, :ai_model_name, :initial_sl_underlying, :config_version)
         RETURNING id
     """
     row_data = {
@@ -1974,6 +1974,8 @@ def insert_live_trade(trade: dict, conn: sqlite3.Connection | None = None) -> in
         "ai_model_name": trade.get("ai_model_name"),
         "initial_sl_underlying": trade.get("initial_sl_underlying") if trade.get("initial_sl_underlying") is not None else trade.get("sl_underlying"),
         "config_version": trade.get("config_version"),
+        "leg_group_id": trade.get("leg_group_id"),
+        "tranche_index": trade.get("tranche_index", 0),
         "lot_size": trade.get("lot_size")
         if trade.get("lot_size") is not None
         else LOT_SIZES.get(trade.get("symbol", "").upper().split()[0], 1),
