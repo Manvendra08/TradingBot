@@ -664,10 +664,11 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
     # cover the most common cases.
     if isinstance(paper_res, dict):
         pr_action = str(paper_res.get("action") or "").upper()
-        if pr_action in ("ENTERED", "OPENED", "EXECUTED") and paper_res.get("trade_id"):
+        if pr_action in ("ENTERED", "OPENED", "EXECUTED", "ENTERED_TFSS", "ENTERED_TFSS_LIVE") and (
+            paper_res.get("trade_id") or paper_res.get("short_trade_id")
+        ):
             db_entered = True
-            # multileg runner returns total_lots or per-leg lots; fall back
-            # to the highest leg-lots value, or 1.
+            # multileg/TFSS runner returns total_lots, lots, or short_trade_id; fall back.
             lots_from_res = paper_res.get("total_lots") or paper_res.get("lots")
             if lots_from_res:
                 try:
