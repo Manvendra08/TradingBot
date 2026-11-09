@@ -1736,6 +1736,7 @@ def start_scheduler(immediate: bool = False):
     last_ng_eia_consensus_fetch_date = None
     last_ng_exit_check = 0.0
     _sent_market_closed_date = None
+    _last_holiday_sync_date = None
     _last_weather_fetch_times: dict[str, float] = {}  # hour_key → last_ts
 
     def _should_run_weather(now_ist) -> bool:
@@ -2006,6 +2007,15 @@ def start_scheduler(immediate: bool = False):
 
                 threading.Thread(target=_daily_reauth, daemon=True, name="daily-reauth").start()
 
+            # ── Daily Holiday Calendar Sync ──
+            if _last_holiday_sync_date != current_date:
+                _last_holiday_sync_date = current_date
+                try:
+                    from src.fetchers.nse_holiday_fetcher import get_or_sync_nse_holidays
+                    get_or_sync_nse_holidays()
+                except Exception as he:
+                    log.debug("[scheduler] Daily holiday calendar refresh skipped: %s", he)
+
             # Weekend/Holiday Alert
             if not immediate:
                 all_closed_today = True
@@ -2019,10 +2029,13 @@ def start_scheduler(immediate: bool = False):
                 if all_closed_today:
                     if _sent_market_closed_date != current_date:
                         _sent_market_closed_date = current_date
-                        log.info("[scheduler] Today is a weekend/holiday. All markets are closed today.")
+                        from config.holidays import get_holiday_reason
+                        h_reason = get_holiday_reason("NIFTY", now_ist) or get_holiday_reason("NATURALGAS", now_ist)
+                        desc_str = f"market holiday ({h_reason})" if h_reason else "weekend"
+                        log.info("[scheduler] Today is a %s. All markets are closed today.", desc_str)
                         try:
                             from src.alerts.telegram_dispatcher import send_text
-                            send_text("ℹ️ **Markets Closed** | Today is a weekend/holiday. Scheduled scans are suspended. (To force a scan, run with `--now` or `--once`.)")
+                            send_text(f"ℹ️ **Markets Closed** | Today is a {desc_str}. Scheduled scans are suspended. (To force a scan, run with `--now` or `--once`.)")
                         except Exception as e:
                             log.warning("[scheduler] Failed to send market closed Telegram alert: %s", e)
 

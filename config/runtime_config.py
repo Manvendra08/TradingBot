@@ -50,6 +50,8 @@ def get_fail_closed_defaults(default_freq: int = 15) -> dict:
         "scan_frequency_nse": default_freq,
         "scan_frequency_mcx": default_freq,
         "live_shadow_mode": True,  # FORCE SHADOW MODE
+        "total_capital": 125000.0,
+        "capital_cap_pct": 0.03,
         "live_capital_per_trade_inr": 20000,
         "live_max_capital_utilisation_pct": 80,
         "live_max_concurrent_positions": 2,
@@ -98,6 +100,18 @@ def validate_config_dict(config: dict) -> None:
     if "live_ai_decision_mode" in config:
         if config["live_ai_decision_mode"] not in {"advisory", "boost_only", "full"}:
             raise ValueError(f"Invalid live_ai_decision_mode: {config['live_ai_decision_mode']}")
+    if "total_capital" in config:
+        try:
+            if float(config["total_capital"]) <= 0:
+                raise ValueError
+        except (ValueError, TypeError):
+            raise ValueError(f"Config field 'total_capital' must be a positive number, got {config.get('total_capital')}")
+    if "capital_cap_pct" in config:
+        try:
+            if float(config["capital_cap_pct"]) <= 0:
+                raise ValueError
+        except (ValueError, TypeError):
+            raise ValueError(f"Config field 'capital_cap_pct' must be a positive number, got {config.get('capital_cap_pct')}")
     for bool_key in ("live_shadow_mode", "live_broker_disabled", "trading_paused", "live_ai_exit_advisor_enabled", "gemini_spark_feed_enabled"):
         if bool_key in config and not isinstance(config[bool_key], bool):
             raise TypeError(f"Config field '{bool_key}' must be a boolean, got {type(config[bool_key]).__name__}")
@@ -115,6 +129,8 @@ def load_runtime_config() -> dict:
         "scan_frequency_nse": default_freq,
         "scan_frequency_mcx": default_freq,
         "live_shadow_mode": True,
+        "total_capital": 125000.0,
+        "capital_cap_pct": 0.03,
         "live_capital_per_trade_inr": 20000,
         "live_max_capital_utilisation_pct": 80,
         "live_max_concurrent_positions": 2,
@@ -320,4 +336,59 @@ def get_gemini_spark_sheet_id(symbol: str = "NATURALGAS") -> str:
 
 def get_gemini_spark_poll_interval_sec() -> int:
     return int(load_runtime_config().get("gemini_spark_poll_interval_sec", 20))
+
+
+def get_total_capital() -> float:
+    """Return total portfolio capital in INR (default 125000.0)."""
+    cfg = load_runtime_config()
+    val = cfg.get("total_capital")
+    if val is not None:
+        try:
+            f = float(val)
+            if f > 0:
+                return f
+        except (ValueError, TypeError):
+            pass
+    return 125000.0
+
+
+def set_total_capital(amount: float) -> float:
+    """Set and persist total portfolio capital in INR."""
+    val = float(amount)
+    if val <= 0:
+        raise ValueError(f"total_capital must be positive, got {amount}")
+    config = load_runtime_config()
+    config["total_capital"] = val
+    save_runtime_config(config)
+    return val
+
+
+def get_capital_cap_pct() -> float:
+    """Return max loss cap per trade book as decimal fraction (default 0.03 = 3.0%)."""
+    cfg = load_runtime_config()
+    val = cfg.get("capital_cap_pct")
+    if val is not None:
+        try:
+            f = float(val)
+            if f > 1.0:
+                f /= 100.0
+            if f > 0:
+                return f
+        except (ValueError, TypeError):
+            pass
+    return 0.03
+
+
+def set_capital_cap_pct(pct: float) -> float:
+    """Set and persist max loss cap per trade book (accepts decimal fraction or percentage)."""
+    val = float(pct)
+    if val > 1.0:
+        val /= 100.0
+    if val <= 0 or val > 1.0:
+        raise ValueError(f"capital_cap_pct must be between 0 and 1.0 (or 0-100%), got {pct}")
+    config = load_runtime_config()
+    config["capital_cap_pct"] = val
+    save_runtime_config(config)
+    return val
+
 

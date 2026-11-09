@@ -145,9 +145,9 @@ DEFAULTS: dict[str, Any] = {
             "monthly_strangle_credit_mult": 1.5,
             "target_credit_pct": 0.40,
             "target_credit_pct_expiry": 0.60,
-            "capital_cap_pct": 0.015,
+            "capital_cap_pct": 0.03,
             "gap_stress_atr_mult": 2.0,
-            "gap_stress_cap_pct": 0.02,
+            "gap_stress_cap_pct": 0.03,
         },
     },
     "exits": {

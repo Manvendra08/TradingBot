@@ -127,6 +127,14 @@ Examples:
     # Always ensure DB is initialised
     init_db()
 
+    # ── Exchange Holiday Calendar Sync ──────────────────────────────
+    try:
+        from src.fetchers.nse_holiday_fetcher import get_or_sync_nse_holidays
+        get_or_sync_nse_holidays()
+    except Exception as e:
+        log.warning('[main] Exchange holiday sync failed (using fallback): %s', e)
+
+
     # ── Multileg startup validation (F5/F16/F17) ─────────────────────
     try:
         from src.engine.multileg_startup import (

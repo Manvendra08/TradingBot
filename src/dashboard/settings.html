@@ -1593,6 +1593,40 @@
                             gap: 32px;
                             transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
                         ">
+                    <!-- Card 0: Portfolio Capital & Global Risk Cap -->
+                    <div class="card" id="portfolio-capital-card" style="border: 1px solid var(--accent); background: linear-gradient(180deg, rgba(0, 229, 160, 0.04) 0%, var(--surface) 100%);">
+                        <div class="card-title">
+                            <span>💼 Portfolio Capital & Global Risk Cap</span>
+                            <span class="info-icon"
+                                data-tooltip="Total pool capital (₹). Governs maximum allowable loss per single trade book across Paper, Shadow, and Live modes (strictly capped at 3.0%).">i</span>
+                        </div>
+                        <p style="
+                                    font-size: 12px;
+                                    color: var(--text-dim);
+                                    margin-bottom: 20px;
+                                    line-height: 1.4;
+                                ">
+                            Set total active portfolio capital. Single trade books are strictly gated to lose no more than 3.0% of this pool before triggering an emergency HARD_RISK exit.
+                        </p>
+
+                        <div class="form-group" style="margin-bottom: 8px">
+                            <label style="
+                                        display: inline-flex;
+                                        align-items: center;
+                                    ">
+                                Total Portfolio Capital
+                            </label>
+                            <div class="input-with-prefix">
+                                <span class="prefix">₹</span>
+                                <input type="number" id="sett-total-capital" min="10000" step="5000" required />
+                            </div>
+                            <div style="margin-top: 10px; padding: 10px 14px; background: rgba(0, 229, 160, 0.08); border: 1px solid rgba(0, 229, 160, 0.2); border-radius: 8px; font-size: 12px; display: flex; justify-content: space-between; align-items: center;">
+                                <span style="color: var(--text-dim); font-weight: 600;">Max Loss / Trade Book (3.0% Cap):</span>
+                                <strong id="sett-book-loss-cap-display" style="color: var(--accent); font-family: var(--mono); font-size: 14px; font-weight: 700;">₹3,750</strong>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Card 1: Live Risk Controls -->
                     <div class="card" id="broker-risk-card">
                         <div class="card-title">
@@ -2230,8 +2264,26 @@
                 });
             }
 
+            const totalCapInput = document.getElementById("sett-total-capital");
+            if (totalCapInput) {
+                totalCapInput.addEventListener("input", () => {
+                    updateTotalCapitalDisplay();
+                    checkDirty();
+                });
+            }
+
             fetchSettings();
         });
+
+        function updateTotalCapitalDisplay() {
+            const input = document.getElementById("sett-total-capital");
+            const val = parseFloat(input ? input.value : 0) || 0;
+            const cap = Math.round(val * 0.03);
+            const disp = document.getElementById("sett-book-loss-cap-display");
+            if (disp) {
+                disp.textContent = `₹${cap.toLocaleString('en-IN')}`;
+            }
+        }
 
         function setupSyncSliders() {
             const pairs = [
@@ -2680,6 +2732,8 @@
             const isDirty =
                 isDecisionMatrixDirty() ||
                 isStrategyDirty(_savedStrategies) ||
+                parseFloat(document.getElementById("sett-total-capital")?.value || 0) !==
+                (runtimeConfig.total_capital || 125000) ||
                 parseInt(document.getElementById("sett-scan-nse").value) !==
                 runtimeConfig.scan_frequency_nse ||
                 parseInt(document.getElementById("sett-scan-mcx").value) !==
@@ -3097,6 +3151,12 @@
                         authCheckbox.checked =
                             data.dashboard_auth_enabled || false;
 
+                    const totalCapInput = document.getElementById("sett-total-capital");
+                    if (totalCapInput) {
+                        totalCapInput.value = data.total_capital ?? 125000;
+                        updateTotalCapitalDisplay();
+                    }
+
                     const capInput =
                         document.getElementById("sett-capital");
                     if (capInput)
@@ -3396,6 +3456,9 @@
                         ?.checked || false,
                 dashboard_auth_enabled:
                     document.getElementById("sett-auth-enabled").checked,
+                total_capital: parseFloat(
+                    document.getElementById("sett-total-capital")?.value || 125000,
+                ),
                 live_capital_per_trade_inr: parseInt(
                     document.getElementById("sett-capital").value,
                 ),

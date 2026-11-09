@@ -390,13 +390,27 @@ def calculate_multileg_lots(
     from config.decision_matrix_loader import load_decision_matrix
     dm_cfg = load_decision_matrix(symbol)
     stops_targets = dm_cfg.get("stops_targets", {})
-    cap_pct = float(stops_targets.get("capital_cap_pct", 1.5)) / 100.0
-    gap_stress_pct = float(stops_targets.get("gap_stress_pct", 2.0)) / 100.0
+    from config.runtime_config import get_capital_cap_pct, get_total_capital
+    cap_val = stops_targets.get("capital_cap_pct")
+    if cap_val is not None:
+        cap_pct = float(cap_val)
+        if cap_pct > 1.0:
+            cap_pct /= 100.0
+    else:
+        cap_pct = get_capital_cap_pct()
+
+    gap_val = stops_targets.get("gap_stress_pct") or stops_targets.get("gap_stress_cap_pct")
+    if gap_val is not None:
+        gap_stress_pct = float(gap_val)
+        if gap_stress_pct > 1.0:
+            gap_stress_pct /= 100.0
+    else:
+        gap_stress_pct = cap_pct
 
     if capital is None or capital <= 0:
         if config is None:
             config = load_runtime_config()
-        capital = float(config.get("live_capital_per_trade_inr") or 500000.0)
+        capital = float(config.get("total_capital") or get_total_capital())
 
     capital_cap = capital * cap_pct
     gap_stress_cap = capital * gap_stress_pct

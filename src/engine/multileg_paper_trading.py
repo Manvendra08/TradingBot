@@ -330,6 +330,7 @@ def _monitor_open_books(
         from config.decision_matrix_loader import get_decision_matrix_mode, load_decision_matrix
         from src.engine.exit_evaluator import evaluate_exit_priority, order_legs_for_exit
 
+        from config.runtime_config import get_total_capital
         matrix_mode = get_decision_matrix_mode(symbol)
         dte = _dte_from_expiry(expiry)
         curr_und_val = float((scan_context or {}).get("underlying") or entry_underlying)
@@ -343,6 +344,7 @@ def _monitor_open_books(
             "upcoming_event": (intel or {}).get("upcoming_event") or (scan_context or {}).get("upcoming_event"),
             "new_verdict": (scan_context or {}).get("verdict") or (scan_context or {}).get("regime"),
             "nymex_direction": (scan_context or {}).get("nymex_direction") or (intel or {}).get("nymex_direction"),
+            "total_capital": get_total_capital(),
         }
 
         matrix_cfg = load_decision_matrix(symbol)

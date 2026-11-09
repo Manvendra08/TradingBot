@@ -130,9 +130,22 @@ def evaluate_exit_priority(
                     action="CLOSED",
                 )
 
-            # Capital cap check (e.g. 1.5% max capital loss)
-            capital_cap_pct = float(cfg.get("stops_targets", {}).get("options", {}).get("capital_cap_pct", 0.015))
-            total_capital = float(market_state.get("total_capital") or 500000.0)
+            # Capital cap check (e.g. 3% max capital loss)
+            from config.runtime_config import get_capital_cap_pct, get_total_capital
+
+            cfg_cap_pct = cfg.get("stops_targets", {}).get("options", {}).get("capital_cap_pct") if cfg else None
+            if cfg_cap_pct is not None:
+                try:
+                    capital_cap_pct = float(cfg_cap_pct)
+                except (ValueError, TypeError):
+                    capital_cap_pct = get_capital_cap_pct()
+            else:
+                capital_cap_pct = get_capital_cap_pct()
+
+            if capital_cap_pct > 1.0:
+                capital_cap_pct /= 100.0
+
+            total_capital = float(market_state.get("total_capital") or get_total_capital())
             capital_loss_ceiling = total_capital * capital_cap_pct
             if current_pnl <= -capital_loss_ceiling:
                 return ExitDecision(

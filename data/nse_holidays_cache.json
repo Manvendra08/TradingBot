@@ -1,0 +1,1966 @@
+{
+  "fetched_at": "2026-11-09T13:15:30.932152+05:30",
+  "source": "https://www.nseindia.com/api/holiday-master?type=trading",
+  "segments": {
+    "CBM": [
+      {
+        "date": "2026-01-15",
+        "description": "Municipal Corporation Election - Maharashtra",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 1
+      },
+      {
+        "date": "2026-01-26",
+        "description": "Republic Day",
+        "weekday": "Monday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 2
+      },
+      {
+        "date": "2026-02-15",
+        "description": "Mahashivratri",
+        "weekday": "Sunday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 3
+      },
+      {
+        "date": "2026-02-19",
+        "description": "Chatrapati Shivaji Maharaj Jayanti",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 4
+      },
+      {
+        "date": "2026-03-03",
+        "description": "Holi",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 5
+      },
+      {
+        "date": "2026-03-19",
+        "description": "Gudi Padwa",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 6
+      },
+      {
+        "date": "2026-03-21",
+        "description": "Id-Ul-Fitr (Ramadan Eid)",
+        "weekday": "Saturday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 7
+      },
+      {
+        "date": "2026-03-26",
+        "description": "Shri Ram Navami",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 8
+      },
+      {
+        "date": "2026-03-31",
+        "description": "Shri Mahavir Jayanti",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 9
+      },
+      {
+        "date": "2026-04-01",
+        "description": "Annual Bank Closing",
+        "weekday": "Wednesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 10
+      },
+      {
+        "date": "2026-04-03",
+        "description": "Good Friday",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 11
+      },
+      {
+        "date": "2026-04-14",
+        "description": "Dr. Baba Saheb Ambedkar Jayanti",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 12
+      },
+      {
+        "date": "2026-05-01",
+        "description": "Maharashtra Day",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 13
+      },
+      {
+        "date": "2026-05-28",
+        "description": "Bakri Id",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 14
+      },
+      {
+        "date": "2026-06-26",
+        "description": "Muharram",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 15
+      },
+      {
+        "date": "2026-08-15",
+        "description": "Independence Day",
+        "weekday": "Saturday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 16
+      },
+      {
+        "date": "2026-08-26",
+        "description": "Id-E-Milad",
+        "weekday": "Wednesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 17
+      },
+      {
+        "date": "2026-09-14",
+        "description": "Ganesh Chaturthi",
+        "weekday": "Monday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 18
+      },
+      {
+        "date": "2026-10-02",
+        "description": "Mahatma Gandhi Jayanti",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 19
+      },
+      {
+        "date": "2026-10-20",
+        "description": "Dussehra",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 20
+      },
+      {
+        "date": "2026-11-08",
+        "description": "Diwali Laxmi Pujan*",
+        "weekday": "Sunday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 21
+      },
+      {
+        "date": "2026-11-10",
+        "description": "Diwali-Balipratipada",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 22
+      },
+      {
+        "date": "2026-11-24",
+        "description": "Prakash Gurpurb Sri Guru Nanak Dev",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 23
+      },
+      {
+        "date": "2026-12-25",
+        "description": "Christmas",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 24
+      }
+    ],
+    "CD": [
+      {
+        "date": "2026-01-15",
+        "description": "Municipal Corporation Election - Maharashtra",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 1
+      },
+      {
+        "date": "2026-01-26",
+        "description": "Republic Day",
+        "weekday": "Monday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 2
+      },
+      {
+        "date": "2026-02-15",
+        "description": "Mahashivratri",
+        "weekday": "Sunday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 3
+      },
+      {
+        "date": "2026-02-19",
+        "description": "Chatrapati Shivaji Maharaj Jayanti",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 4
+      },
+      {
+        "date": "2026-03-03",
+        "description": "Holi",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 5
+      },
+      {
+        "date": "2026-03-19",
+        "description": "Gudi Padwa",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 6
+      },
+      {
+        "date": "2026-03-21",
+        "description": "Id-Ul-Fitr (Ramadan Eid)",
+        "weekday": "Saturday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 7
+      },
+      {
+        "date": "2026-03-26",
+        "description": "Shri Ram Navami",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 8
+      },
+      {
+        "date": "2026-03-31",
+        "description": "Shri Mahavir Jayanti",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 9
+      },
+      {
+        "date": "2026-04-01",
+        "description": "Annual Bank Closing",
+        "weekday": "Wednesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 10
+      },
+      {
+        "date": "2026-04-03",
+        "description": "Good Friday",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 11
+      },
+      {
+        "date": "2026-04-14",
+        "description": "Dr. Baba Saheb Ambedkar Jayanti",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 12
+      },
+      {
+        "date": "2026-05-01",
+        "description": "Maharashtra Day / Buddha Pournima",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 13
+      },
+      {
+        "date": "2026-05-28",
+        "description": "Bakri Id",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 14
+      },
+      {
+        "date": "2026-06-26",
+        "description": "Muharram",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 15
+      },
+      {
+        "date": "2026-08-15",
+        "description": "Independence Day / Parsi New Year",
+        "weekday": "Saturday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 16
+      },
+      {
+        "date": "2026-08-26",
+        "description": "Id-E-Milad",
+        "weekday": "Wednesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 17
+      },
+      {
+        "date": "2026-09-14",
+        "description": "Ganesh Chaturthi",
+        "weekday": "Monday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 18
+      },
+      {
+        "date": "2026-10-02",
+        "description": "Mahatma Gandhi Jayanti",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 19
+      },
+      {
+        "date": "2026-10-20",
+        "description": "Dussehra",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 20
+      },
+      {
+        "date": "2026-11-08",
+        "description": "Diwali Laxmi Pujan*",
+        "weekday": "Sunday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 21
+      },
+      {
+        "date": "2026-11-10",
+        "description": "Diwali-Balipratipada",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 22
+      },
+      {
+        "date": "2026-11-24",
+        "description": "Prakash Gurpurb Sri Guru Nanak Dev",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 23
+      },
+      {
+        "date": "2026-12-25",
+        "description": "Christmas",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 24
+      }
+    ],
+    "CM": [
+      {
+        "date": "2026-01-15",
+        "description": "Municipal Corporation Election - Maharashtra",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 1
+      },
+      {
+        "date": "2026-01-26",
+        "description": "Republic Day",
+        "weekday": "Monday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 2
+      },
+      {
+        "date": "2026-02-15",
+        "description": "Mahashivratri",
+        "weekday": "Sunday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 3
+      },
+      {
+        "date": "2026-03-03",
+        "description": "Holi",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 4
+      },
+      {
+        "date": "2026-03-21",
+        "description": "Id-Ul-Fitr (Ramadan Eid)",
+        "weekday": "Saturday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 5
+      },
+      {
+        "date": "2026-03-26",
+        "description": "Shri Ram Navami",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 6
+      },
+      {
+        "date": "2026-03-31",
+        "description": "Shri Mahavir Jayanti",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 7
+      },
+      {
+        "date": "2026-04-03",
+        "description": "Good Friday",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 8
+      },
+      {
+        "date": "2026-04-14",
+        "description": "Dr. Baba Saheb Ambedkar Jayanti",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 9
+      },
+      {
+        "date": "2026-05-01",
+        "description": "Maharashtra Day",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 10
+      },
+      {
+        "date": "2026-05-28",
+        "description": "Bakri Id",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 11
+      },
+      {
+        "date": "2026-06-26",
+        "description": "Muharram",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 12
+      },
+      {
+        "date": "2026-08-15",
+        "description": "Independence Day",
+        "weekday": "Saturday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 13
+      },
+      {
+        "date": "2026-09-14",
+        "description": "Ganesh Chaturthi",
+        "weekday": "Monday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 14
+      },
+      {
+        "date": "2026-10-02",
+        "description": "Mahatma Gandhi Jayanti",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 15
+      },
+      {
+        "date": "2026-10-20",
+        "description": "Dussehra",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 16
+      },
+      {
+        "date": "2026-11-08",
+        "description": "Diwali Laxmi Pujan*",
+        "weekday": "Sunday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 17
+      },
+      {
+        "date": "2026-11-10",
+        "description": "Diwali-Balipratipada",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 18
+      },
+      {
+        "date": "2026-11-24",
+        "description": "Prakash Gurpurb Sri Guru Nanak Dev",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 19
+      },
+      {
+        "date": "2026-12-25",
+        "description": "Christmas",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 20
+      }
+    ],
+    "CMOT": [
+      {
+        "date": "2026-01-15",
+        "description": "Municipal Corporation Election - Maharashtra",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 1
+      },
+      {
+        "date": "2026-01-26",
+        "description": "Republic Day",
+        "weekday": "Monday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 2
+      },
+      {
+        "date": "2026-02-15",
+        "description": "Mahashivratri",
+        "weekday": "Sunday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 3
+      },
+      {
+        "date": "2026-03-03",
+        "description": "Holi",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 4
+      },
+      {
+        "date": "2026-03-21",
+        "description": "Id-Ul-Fitr (Ramadan Eid)",
+        "weekday": "Saturday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 5
+      },
+      {
+        "date": "2026-03-26",
+        "description": "Shri Ram Navami",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 6
+      },
+      {
+        "date": "2026-03-31",
+        "description": "Shri Mahavir Jayanti",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 7
+      },
+      {
+        "date": "2026-04-03",
+        "description": "Good Friday",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 8
+      },
+      {
+        "date": "2026-04-14",
+        "description": "Dr. Baba Saheb Ambedkar Jayanti",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 9
+      },
+      {
+        "date": "2026-05-01",
+        "description": "Maharashtra Day",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 10
+      },
+      {
+        "date": "2026-05-28",
+        "description": "Bakri Id",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 11
+      },
+      {
+        "date": "2026-06-26",
+        "description": "Muharram",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 12
+      },
+      {
+        "date": "2026-08-15",
+        "description": "Independence Day",
+        "weekday": "Saturday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 13
+      },
+      {
+        "date": "2026-09-14",
+        "description": "Ganesh Chaturthi",
+        "weekday": "Monday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 14
+      },
+      {
+        "date": "2026-10-02",
+        "description": "Mahatma Gandhi Jayanti",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 15
+      },
+      {
+        "date": "2026-10-20",
+        "description": "Dussehra",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 16
+      },
+      {
+        "date": "2026-11-08",
+        "description": "Diwali Laxmi Pujan*",
+        "weekday": "Sunday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 17
+      },
+      {
+        "date": "2026-11-10",
+        "description": "Diwali-Balipratipada",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 18
+      },
+      {
+        "date": "2026-11-24",
+        "description": "Prakash Gurpurb Sri Guru Nanak Dev",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 19
+      },
+      {
+        "date": "2026-12-25",
+        "description": "Christmas",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 20
+      }
+    ],
+    "COM": [
+      {
+        "date": "2026-01-01",
+        "description": "New year",
+        "weekday": "Thursday",
+        "morning_session": "Open",
+        "evening_session": "Closed",
+        "sr_no": 1
+      },
+      {
+        "date": "2026-01-15",
+        "description": "Municipal Corporation Election - Maharashtra",
+        "weekday": "Thursday",
+        "morning_session": "Closed",
+        "evening_session": "Open",
+        "sr_no": 2
+      },
+      {
+        "date": "2026-01-26",
+        "description": "Republic Day",
+        "weekday": "Monday",
+        "morning_session": "Closed",
+        "evening_session": "Closed",
+        "sr_no": 3
+      },
+      {
+        "date": "2026-02-15",
+        "description": "Mahashivratri",
+        "weekday": "Sunday",
+        "morning_session": "Closed",
+        "evening_session": "Closed",
+        "sr_no": 4
+      },
+      {
+        "date": "2026-03-03",
+        "description": "Holi",
+        "weekday": "Tuesday",
+        "morning_session": "Closed",
+        "evening_session": "Open",
+        "sr_no": 5
+      },
+      {
+        "date": "2026-03-21",
+        "description": "Id-Ul-Fitr (Ramadan Eid)",
+        "weekday": "Saturday",
+        "morning_session": "Closed",
+        "evening_session": "Closed",
+        "sr_no": 6
+      },
+      {
+        "date": "2026-03-26",
+        "description": "Shri Ram Navami",
+        "weekday": "Thursday",
+        "morning_session": "Closed",
+        "evening_session": "Open",
+        "sr_no": 7
+      },
+      {
+        "date": "2026-03-31",
+        "description": "Shri Mahavir Jayanti",
+        "weekday": "Tuesday",
+        "morning_session": "Closed",
+        "evening_session": "Open",
+        "sr_no": 8
+      },
+      {
+        "date": "2026-04-03",
+        "description": "Good Friday",
+        "weekday": "Friday",
+        "morning_session": "Closed",
+        "evening_session": "Closed",
+        "sr_no": 9
+      },
+      {
+        "date": "2026-04-14",
+        "description": "Dr. Baba Saheb Ambedkar Jayanti",
+        "weekday": "Tuesday",
+        "morning_session": "Closed",
+        "evening_session": "Open",
+        "sr_no": 10
+      },
+      {
+        "date": "2026-05-01",
+        "description": "Maharashtra Day",
+        "weekday": "Friday",
+        "morning_session": "Closed",
+        "evening_session": "Open",
+        "sr_no": 11
+      },
+      {
+        "date": "2026-05-28",
+        "description": "Bakri Id",
+        "weekday": "Thursday",
+        "morning_session": "Closed",
+        "evening_session": "Open",
+        "sr_no": 12
+      },
+      {
+        "date": "2026-06-26",
+        "description": "Muharram",
+        "weekday": "Friday",
+        "morning_session": "Closed",
+        "evening_session": "Open",
+        "sr_no": 13
+      },
+      {
+        "date": "2026-08-15",
+        "description": "Independence Day",
+        "weekday": "Saturday",
+        "morning_session": "Closed",
+        "evening_session": "Closed",
+        "sr_no": 14
+      },
+      {
+        "date": "2026-09-14",
+        "description": "Ganesh Chaturthi",
+        "weekday": "Monday",
+        "morning_session": "Closed",
+        "evening_session": "Open",
+        "sr_no": 15
+      },
+      {
+        "date": "2026-10-02",
+        "description": "Mahatma Gandhi Jayanti",
+        "weekday": "Friday",
+        "morning_session": "Closed",
+        "evening_session": "Closed",
+        "sr_no": 16
+      },
+      {
+        "date": "2026-10-20",
+        "description": "Dussehra",
+        "weekday": "Tuesday",
+        "morning_session": "Closed",
+        "evening_session": "Open",
+        "sr_no": 17
+      },
+      {
+        "date": "2026-11-08",
+        "description": "Diwali Laxmi Pujan*",
+        "weekday": "Sunday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 18
+      },
+      {
+        "date": "2026-11-10",
+        "description": "Diwali-Balipratipada",
+        "weekday": "Tuesday",
+        "morning_session": "Closed",
+        "evening_session": "Open",
+        "sr_no": 19
+      },
+      {
+        "date": "2026-11-24",
+        "description": "Prakash Gurpurb Sri Guru Nanak Dev",
+        "weekday": "Tuesday",
+        "morning_session": "Closed",
+        "evening_session": "Open",
+        "sr_no": 20
+      },
+      {
+        "date": "2026-12-25",
+        "description": "Christmas",
+        "weekday": "Friday",
+        "morning_session": "Closed",
+        "evening_session": "Closed",
+        "sr_no": 21
+      }
+    ],
+    "EGR": [
+      {
+        "date": "2026-11-08",
+        "description": "Diwali Laxmi Pujan*",
+        "weekday": "Sunday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 1
+      }
+    ],
+    "FO": [
+      {
+        "date": "2026-01-15",
+        "description": "Municipal Corporation Election - Maharashtra",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 1
+      },
+      {
+        "date": "2026-01-26",
+        "description": "Republic Day",
+        "weekday": "Monday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 2
+      },
+      {
+        "date": "2026-02-15",
+        "description": "Mahashivratri",
+        "weekday": "Sunday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 3
+      },
+      {
+        "date": "2026-03-03",
+        "description": "Holi",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 4
+      },
+      {
+        "date": "2026-03-21",
+        "description": "Id-Ul-Fitr (Ramadan Eid)",
+        "weekday": "Saturday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 5
+      },
+      {
+        "date": "2026-03-26",
+        "description": "Shri Ram Navami",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 6
+      },
+      {
+        "date": "2026-03-31",
+        "description": "Shri Mahavir Jayanti",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 7
+      },
+      {
+        "date": "2026-04-03",
+        "description": "Good Friday",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 8
+      },
+      {
+        "date": "2026-04-14",
+        "description": "Dr. Baba Saheb Ambedkar Jayanti",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 9
+      },
+      {
+        "date": "2026-05-01",
+        "description": "Maharashtra Day",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 10
+      },
+      {
+        "date": "2026-05-28",
+        "description": "Bakri Id",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 11
+      },
+      {
+        "date": "2026-06-26",
+        "description": "Muharram",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 12
+      },
+      {
+        "date": "2026-08-15",
+        "description": "Independence Day",
+        "weekday": "Saturday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 13
+      },
+      {
+        "date": "2026-09-14",
+        "description": "Ganesh Chaturthi",
+        "weekday": "Monday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 14
+      },
+      {
+        "date": "2026-10-02",
+        "description": "Mahatma Gandhi Jayanti",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 15
+      },
+      {
+        "date": "2026-10-20",
+        "description": "Dussehra",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 16
+      },
+      {
+        "date": "2026-11-08",
+        "description": "Diwali Laxmi Pujan*",
+        "weekday": "Sunday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 17
+      },
+      {
+        "date": "2026-11-10",
+        "description": "Diwali-Balipratipada",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 18
+      },
+      {
+        "date": "2026-11-24",
+        "description": "Prakash Gurpurb Sri Guru Nanak Dev",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 19
+      },
+      {
+        "date": "2026-12-25",
+        "description": "Christmas",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 20
+      }
+    ],
+    "IRD": [
+      {
+        "date": "2026-01-15",
+        "description": "Municipal Corporation Election - Maharashtra",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 1
+      },
+      {
+        "date": "2026-01-26",
+        "description": "Republic Day",
+        "weekday": "Monday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 2
+      },
+      {
+        "date": "2026-02-15",
+        "description": "Mahashivratri",
+        "weekday": "Sunday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 3
+      },
+      {
+        "date": "2026-02-19",
+        "description": "Chatrapati Shivaji Maharaj Jayanti",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 4
+      },
+      {
+        "date": "2026-03-03",
+        "description": "Holi",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 5
+      },
+      {
+        "date": "2026-03-19",
+        "description": "Gudi Padwa",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 6
+      },
+      {
+        "date": "2026-03-21",
+        "description": "Id-Ul-Fitr (Ramadan Eid)",
+        "weekday": "Saturday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 7
+      },
+      {
+        "date": "2026-03-26",
+        "description": "Shri Ram Navami",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 8
+      },
+      {
+        "date": "2026-03-31",
+        "description": "Shri Mahavir Jayanti",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 9
+      },
+      {
+        "date": "2026-04-01",
+        "description": "Annual Bank Closing",
+        "weekday": "Wednesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 10
+      },
+      {
+        "date": "2026-04-03",
+        "description": "Good Friday",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 11
+      },
+      {
+        "date": "2026-04-14",
+        "description": "Dr. Baba Saheb Ambedkar Jayanti",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 12
+      },
+      {
+        "date": "2026-05-01",
+        "description": "Maharashtra Day / Buddha Pournima",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 13
+      },
+      {
+        "date": "2026-05-28",
+        "description": "Bakri Id",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 14
+      },
+      {
+        "date": "2026-06-26",
+        "description": "Muharram",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 15
+      },
+      {
+        "date": "2026-08-15",
+        "description": "Independence Day / Parsi New Year",
+        "weekday": "Saturday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 16
+      },
+      {
+        "date": "2026-08-26",
+        "description": "Id-E-Milad",
+        "weekday": "Wednesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 17
+      },
+      {
+        "date": "2026-09-14",
+        "description": "Ganesh Chaturthi",
+        "weekday": "Monday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 18
+      },
+      {
+        "date": "2026-10-02",
+        "description": "Mahatma Gandhi Jayanti",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 19
+      },
+      {
+        "date": "2026-10-20",
+        "description": "Dussehra",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 20
+      },
+      {
+        "date": "2026-11-08",
+        "description": "Diwali Laxmi Pujan*",
+        "weekday": "Sunday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 21
+      },
+      {
+        "date": "2026-11-10",
+        "description": "Diwali-Balipratipada",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 22
+      },
+      {
+        "date": "2026-11-24",
+        "description": "Prakash Gurpurb Sri Guru Nanak Dev",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 23
+      },
+      {
+        "date": "2026-12-25",
+        "description": "Christmas",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 24
+      }
+    ],
+    "MF": [
+      {
+        "date": "2026-01-15",
+        "description": "Municipal Corporation Election - Maharashtra",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 1
+      },
+      {
+        "date": "2026-01-26",
+        "description": "Republic Day",
+        "weekday": "Monday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 2
+      },
+      {
+        "date": "2026-02-15",
+        "description": "Mahashivratri",
+        "weekday": "Sunday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 3
+      },
+      {
+        "date": "2026-03-03",
+        "description": "Holi",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 4
+      },
+      {
+        "date": "2026-03-21",
+        "description": "Id-Ul-Fitr (Ramadan Eid)",
+        "weekday": "Saturday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 5
+      },
+      {
+        "date": "2026-03-26",
+        "description": "Shri Ram Navami",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 6
+      },
+      {
+        "date": "2026-03-31",
+        "description": "Shri Mahavir Jayanti",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 7
+      },
+      {
+        "date": "2026-04-03",
+        "description": "Good Friday",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 8
+      },
+      {
+        "date": "2026-04-14",
+        "description": "Dr. Baba Saheb Ambedkar Jayanti",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 9
+      },
+      {
+        "date": "2026-05-01",
+        "description": "Maharashtra Day",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 10
+      },
+      {
+        "date": "2026-05-28",
+        "description": "Bakri Id",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 11
+      },
+      {
+        "date": "2026-06-26",
+        "description": "Muharram",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 12
+      },
+      {
+        "date": "2026-08-15",
+        "description": "Independence Day",
+        "weekday": "Saturday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 13
+      },
+      {
+        "date": "2026-09-14",
+        "description": "Ganesh Chaturthi",
+        "weekday": "Monday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 14
+      },
+      {
+        "date": "2026-10-02",
+        "description": "Mahatma Gandhi Jayanti",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 15
+      },
+      {
+        "date": "2026-10-20",
+        "description": "Dussehra",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 16
+      },
+      {
+        "date": "2026-11-08",
+        "description": "Diwali Laxmi Pujan",
+        "weekday": "Sunday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 17
+      },
+      {
+        "date": "2026-11-10",
+        "description": "Diwali-Balipratipada",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 18
+      },
+      {
+        "date": "2026-11-24",
+        "description": "Prakash Gurpurb Sri Guru Nanak Dev",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 19
+      },
+      {
+        "date": "2026-12-25",
+        "description": "Christmas",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 20
+      }
+    ],
+    "NDM": [
+      {
+        "date": "2026-01-15",
+        "description": "Municipal Corporation Election - Maharashtra",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 1
+      },
+      {
+        "date": "2026-01-26",
+        "description": "Republic Day",
+        "weekday": "Monday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 2
+      },
+      {
+        "date": "2026-02-15",
+        "description": "Mahashivratri",
+        "weekday": "Sunday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 3
+      },
+      {
+        "date": "2026-02-19",
+        "description": "Chatrapati Shivaji Maharaj Jayanti",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 4
+      },
+      {
+        "date": "2026-03-03",
+        "description": "Holi",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 5
+      },
+      {
+        "date": "2026-03-19",
+        "description": "Gudi Padwa",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 6
+      },
+      {
+        "date": "2026-03-21",
+        "description": "Id-Ul-Fitr (Ramadan Eid)",
+        "weekday": "Saturday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 7
+      },
+      {
+        "date": "2026-03-26",
+        "description": "Shri Ram Navami",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 8
+      },
+      {
+        "date": "2026-03-31",
+        "description": "Shri Mahavir Jayanti",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 9
+      },
+      {
+        "date": "2026-04-01",
+        "description": "Annual Bank Closing",
+        "weekday": "Wednesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 10
+      },
+      {
+        "date": "2026-04-03",
+        "description": "Good Friday",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 11
+      },
+      {
+        "date": "2026-04-14",
+        "description": "Dr. Baba Saheb Ambedkar Jayanti",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 12
+      },
+      {
+        "date": "2026-05-01",
+        "description": "Maharashtra Day",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 13
+      },
+      {
+        "date": "2026-05-28",
+        "description": "Bakri Id",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 14
+      },
+      {
+        "date": "2026-06-26",
+        "description": "Muharram",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 15
+      },
+      {
+        "date": "2026-08-15",
+        "description": "Independence Day",
+        "weekday": "Saturday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 16
+      },
+      {
+        "date": "2026-08-26",
+        "description": "Id-E-Milad",
+        "weekday": "Wednesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 17
+      },
+      {
+        "date": "2026-09-14",
+        "description": "Ganesh Chaturthi",
+        "weekday": "Monday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 18
+      },
+      {
+        "date": "2026-10-02",
+        "description": "Mahatma Gandhi Jayanti",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 19
+      },
+      {
+        "date": "2026-10-20",
+        "description": "Dussehra",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 20
+      },
+      {
+        "date": "2026-11-08",
+        "description": "Diwali Laxmi Pujan*",
+        "weekday": "Sunday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 21
+      },
+      {
+        "date": "2026-11-10",
+        "description": "Diwali-Balipratipada",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 22
+      },
+      {
+        "date": "2026-11-24",
+        "description": "Prakash Gurpurb Sri Guru Nanak Dev",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 23
+      },
+      {
+        "date": "2026-12-25",
+        "description": "Christmas",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 24
+      }
+    ],
+    "NTRP": [
+      {
+        "date": "2026-01-15",
+        "description": "Municipal Corporation Election - Maharashtra",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 1
+      },
+      {
+        "date": "2026-01-26",
+        "description": "Republic Day",
+        "weekday": "Monday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 2
+      },
+      {
+        "date": "2026-02-15",
+        "description": "Mahashivratri",
+        "weekday": "Sunday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 3
+      },
+      {
+        "date": "2026-02-19",
+        "description": "Chatrapati Shivaji Maharaj Jayanti",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 4
+      },
+      {
+        "date": "2026-03-03",
+        "description": "Holi",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 5
+      },
+      {
+        "date": "2026-03-19",
+        "description": "Gudi Padwa",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 6
+      },
+      {
+        "date": "2026-03-21",
+        "description": "Id-Ul-Fitr (Ramadan Eid)",
+        "weekday": "Saturday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 7
+      },
+      {
+        "date": "2026-03-26",
+        "description": "Shri Ram Navami",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 8
+      },
+      {
+        "date": "2026-03-31",
+        "description": "Shri Mahavir Jayanti",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 9
+      },
+      {
+        "date": "2026-04-01",
+        "description": "Annual Bank Closing",
+        "weekday": "Wednesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 10
+      },
+      {
+        "date": "2026-04-03",
+        "description": "Good Friday",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 11
+      },
+      {
+        "date": "2026-04-14",
+        "description": "Dr. Baba Saheb Ambedkar Jayanti",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 12
+      },
+      {
+        "date": "2026-05-01",
+        "description": "Maharashtra Day",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 13
+      },
+      {
+        "date": "2026-05-28",
+        "description": "Bakri Id",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 14
+      },
+      {
+        "date": "2026-06-26",
+        "description": "Muharram",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 15
+      },
+      {
+        "date": "2026-08-15",
+        "description": "Independence Day",
+        "weekday": "Saturday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 16
+      },
+      {
+        "date": "2026-08-26",
+        "description": "Id-E-Milad",
+        "weekday": "Wednesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 17
+      },
+      {
+        "date": "2026-09-14",
+        "description": "Ganesh Chaturthi",
+        "weekday": "Monday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 18
+      },
+      {
+        "date": "2026-10-02",
+        "description": "Mahatma Gandhi Jayanti",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 19
+      },
+      {
+        "date": "2026-10-20",
+        "description": "Dussehra",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 20
+      },
+      {
+        "date": "2026-11-08",
+        "description": "Diwali Laxmi Pujan*",
+        "weekday": "Sunday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 21
+      },
+      {
+        "date": "2026-11-10",
+        "description": "Diwali-Balipratipada",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 22
+      },
+      {
+        "date": "2026-11-24",
+        "description": "Prakash Gurpurb Sri Guru Nanak Dev",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 23
+      },
+      {
+        "date": "2026-12-25",
+        "description": "Christmas",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 24
+      }
+    ],
+    "SLBS": [
+      {
+        "date": "2026-01-15",
+        "description": "Municipal Corporation Election - Maharashtra",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 1
+      },
+      {
+        "date": "2026-01-26",
+        "description": "Republic Day",
+        "weekday": "Monday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 2
+      },
+      {
+        "date": "2026-02-15",
+        "description": "Mahashivratri",
+        "weekday": "Sunday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 3
+      },
+      {
+        "date": "2026-03-03",
+        "description": "Holi",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 4
+      },
+      {
+        "date": "2026-03-21",
+        "description": "Id-Ul-Fitr (Ramadan Eid)",
+        "weekday": "Saturday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 5
+      },
+      {
+        "date": "2026-03-26",
+        "description": "Shri Ram Navami",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 6
+      },
+      {
+        "date": "2026-03-31",
+        "description": "Shri Mahavir Jayanti",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 7
+      },
+      {
+        "date": "2026-04-03",
+        "description": "Good Friday",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 8
+      },
+      {
+        "date": "2026-04-14",
+        "description": "Dr. Baba Saheb Ambedkar Jayanti",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 9
+      },
+      {
+        "date": "2026-05-01",
+        "description": "Maharashtra Day",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 10
+      },
+      {
+        "date": "2026-05-28",
+        "description": "Bakri Id",
+        "weekday": "Thursday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 11
+      },
+      {
+        "date": "2026-06-26",
+        "description": "Muharram",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 12
+      },
+      {
+        "date": "2026-08-15",
+        "description": "Independence Day",
+        "weekday": "Saturday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 13
+      },
+      {
+        "date": "2026-09-14",
+        "description": "Ganesh Chaturthi",
+        "weekday": "Monday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 14
+      },
+      {
+        "date": "2026-10-02",
+        "description": "Mahatma Gandhi Jayanti",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 15
+      },
+      {
+        "date": "2026-10-20",
+        "description": "Dussehra",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 16
+      },
+      {
+        "date": "2026-11-08",
+        "description": "Diwali Laxmi Pujan*",
+        "weekday": "Sunday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 17
+      },
+      {
+        "date": "2026-11-10",
+        "description": "Diwali-Balipratipada",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 18
+      },
+      {
+        "date": "2026-11-24",
+        "description": "Prakash Gurpurb Sri Guru Nanak Dev",
+        "weekday": "Tuesday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 19
+      },
+      {
+        "date": "2026-12-25",
+        "description": "Christmas",
+        "weekday": "Friday",
+        "morning_session": null,
+        "evening_session": null,
+        "sr_no": 20
+      }
+    ]
+  }
+}

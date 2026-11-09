@@ -149,6 +149,12 @@ def is_trading_allowed_now(symbol: str, expiry_str: str | None = None, operation
             except Exception:
                 pass
 
+        # ── Window 0a: National Exchange Holidays (NSE/BSE & MCX) ─────────────
+        from config.holidays import is_market_holiday, get_holiday_reason
+        if is_market_holiday(sym, now):
+            h_desc = get_holiday_reason(sym, now) or 'Exchange Trading Holiday'
+            return False, f'Exchange holiday for {sym} ({now.strftime("%d-%b-%Y")}): {h_desc}'
+
         # ── Window 0: CME (NYMEX) holidays (NATURALGAS, CRUDEOIL) ────────────
         if operation != "EXIT" and sym in ("NATURALGAS", "NATGAS", "CRUDEOIL"):
             from config.cme_holidays import is_cme_closed, is_cme_early_close

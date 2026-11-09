@@ -1314,6 +1314,7 @@ async def get_expiries(symbol: str):
 
 @app.get("/api/runtime", dependencies=[Depends(authenticate)])
 async def get_runtime():
+    from config.runtime_config import get_total_capital, get_capital_cap_pct
     return {
         "scan_frequency_minutes": get_scan_frequency_minutes(),
         "scan_frequency_nse": get_scan_frequency_nse(),
@@ -1321,6 +1322,8 @@ async def get_runtime():
         "scan_frequency_options": ALLOWED_SCAN_FREQUENCIES,
         "min_scan_frequency_minutes": MIN_SCAN_FREQUENCY,
         "max_scan_frequency_minutes": MAX_SCAN_FREQUENCY,
+        "total_capital": get_total_capital(),
+        "capital_cap_pct": get_capital_cap_pct(),
     }
 
 
@@ -1329,7 +1332,15 @@ async def set_runtime(
     scan_frequency_minutes: int | None = Query(None),
     scan_frequency_nse: int | None = Query(None),
     scan_frequency_mcx: int | None = Query(None),
+    total_capital: float | None = Query(None),
+    capital_cap_pct: float | None = Query(None),
 ):
+    from config.runtime_config import (
+        set_total_capital,
+        get_total_capital,
+        set_capital_cap_pct,
+        get_capital_cap_pct,
+    )
     if scan_frequency_minutes is not None:
         if scan_frequency_minutes not in ALLOWED_SCAN_FREQUENCIES:
             return JSONResponse(
@@ -1363,12 +1374,22 @@ async def set_runtime(
                 status_code=400,
             )
         set_scan_frequency_mcx(scan_frequency_mcx)
+    if total_capital is not None:
+        if total_capital <= 0:
+            return JSONResponse({"ok": False, "error": "total_capital must be positive"}, status_code=400)
+        set_total_capital(total_capital)
+    if capital_cap_pct is not None:
+        if capital_cap_pct <= 0:
+            return JSONResponse({"ok": False, "error": "capital_cap_pct must be positive"}, status_code=400)
+        set_capital_cap_pct(capital_cap_pct)
 
     return {
         "ok": True,
         "scan_frequency_minutes": get_scan_frequency_minutes(),
         "scan_frequency_nse": get_scan_frequency_nse(),
         "scan_frequency_mcx": get_scan_frequency_mcx(),
+        "total_capital": get_total_capital(),
+        "capital_cap_pct": get_capital_cap_pct(),
     }
 
 
