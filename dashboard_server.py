@@ -959,6 +959,22 @@ def get_heavyweights_timeline_api(index: str = "NIFTY", day: str = "today", refr
     return get_heavyweights_timeline(index_name=index, day_filter=day, force_refresh=refresh)
 
 
+@app.get("/api/contributors/pro_ai_summary", response_class=JSONResponse)
+def get_contributors_pro_ai_summary(index: str = "NIFTY", refresh: bool = False, llm: bool = False):
+    """
+    Return institutional Pro Trader AI Intelligence briefing for Index Contributors.
+    Evaluates institutional footprint, heavyweight concentration, pillar clashes,
+    scan delta velocity, and derivatives desk execution playbook.
+    """
+    from src.engine.contributor_intelligence import generate_pro_trader_intelligence
+    result = generate_pro_trader_intelligence(index_name=index, force_refresh=refresh, enable_llm=llm)
+    return JSONResponse(result, headers={
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+        "Expires": "0",
+    })
+
+
 @app.get("/api/cmps")
 @app.get("/api/topbar_cmps")
 def get_topbar_cmps():

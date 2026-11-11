@@ -1393,6 +1393,309 @@
                 animation: spin 0.8s linear infinite;
             }
 
+            /* ── Pro Trader AI Intelligence Dossier ─────────────────────────── */
+            .pro-ai-dossier-section {
+                background: var(--surface);
+                border: 1px solid var(--border);
+                border-radius: 12px;
+                padding: 20px 24px;
+                margin-bottom: 24px;
+                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+                position: relative;
+                overflow: hidden;
+                transition: all 0.3s ease;
+            }
+            .pro-ai-dossier-section::before {
+                content: "";
+                position: absolute;
+                top: 0;
+                left: 0;
+                right: 0;
+                height: 3px;
+                background: linear-gradient(90deg, #38bdf8 0%, #818cf8 35%, #00e5a0 70%, #f59e0b 100%);
+            }
+            .pro-ai-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: flex-start;
+                flex-wrap: wrap;
+                gap: 16px;
+                margin-bottom: 16px;
+            }
+            .pro-ai-title-wrap {
+                display: flex;
+                flex-direction: column;
+                gap: 4px;
+            }
+            .pro-ai-title-row {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                flex-wrap: wrap;
+            }
+            .pro-ai-badge {
+                background: rgba(56, 189, 248, 0.15);
+                border: 1px solid rgba(56, 189, 248, 0.3);
+                color: #38bdf8;
+                font-size: 11px;
+                font-weight: 800;
+                font-family: var(--mono);
+                text-transform: uppercase;
+                letter-spacing: 0.06em;
+                padding: 3px 8px;
+                border-radius: 4px;
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+            }
+            .pro-ai-badge .pulse-glow {
+                width: 6px;
+                height: 6px;
+                border-radius: 50%;
+                background: #38bdf8;
+                box-shadow: 0 0 8px #38bdf8;
+                animation: pulse 1.8s infinite;
+            }
+            .pro-ai-title {
+                font-size: 16px;
+                font-weight: 800;
+                letter-spacing: -0.01em;
+                color: var(--text);
+            }
+            .pro-ai-subtitle {
+                font-size: 12px;
+                color: var(--text-dim);
+            }
+            .pro-ai-actions {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            .pro-ai-btn {
+                background: var(--surface-2);
+                border: 1px solid var(--border);
+                color: var(--text);
+                padding: 6px 12px;
+                border-radius: 6px;
+                font-size: 12px;
+                font-weight: 600;
+                cursor: pointer;
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+                transition: all 0.2s ease;
+            }
+            .pro-ai-btn:hover {
+                background: var(--surface-3);
+                border-color: var(--accent);
+                color: var(--accent);
+            }
+            .pro-ai-btn.btn-llm {
+                border-color: rgba(129, 140, 248, 0.4);
+                background: rgba(129, 140, 248, 0.1);
+                color: #818cf8;
+            }
+            .pro-ai-btn.btn-llm:hover {
+                background: rgba(129, 140, 248, 0.2);
+                border-color: #818cf8;
+                box-shadow: 0 0 10px rgba(129, 140, 248, 0.2);
+            }
+            .pro-ai-headline-banner {
+                background: var(--surface-2);
+                border-left: 3px solid var(--accent);
+                padding: 10px 14px;
+                border-radius: 6px;
+                font-family: var(--mono);
+                font-size: 12px;
+                color: var(--text);
+                margin-bottom: 18px;
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 12px;
+                flex-wrap: wrap;
+            }
+            .pro-ai-headline-text {
+                font-weight: 700;
+                line-height: 1.4;
+            }
+            .pro-ai-conviction-pill {
+                padding: 3px 8px;
+                border-radius: 4px;
+                font-size: 11px;
+                font-weight: 800;
+                font-family: var(--mono);
+                white-space: nowrap;
+            }
+            .pro-ai-conviction-pill.high {
+                background: var(--green-bg);
+                color: var(--green);
+                border: 1px solid rgba(0, 229, 160, 0.3);
+            }
+            .pro-ai-conviction-pill.med {
+                background: var(--yellow-bg);
+                color: var(--yellow);
+                border: 1px solid rgba(255, 209, 102, 0.3);
+            }
+            .pro-ai-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+                gap: 16px;
+            }
+            .pro-ai-card {
+                background: var(--surface-2);
+                border: 1px solid var(--border);
+                border-radius: 8px;
+                padding: 16px;
+                display: flex;
+                flex-direction: column;
+                gap: 12px;
+                transition: transform 0.2s ease, border-color 0.2s ease;
+            }
+            .pro-ai-card:hover {
+                border-color: var(--accent);
+                transform: translateY(-1px);
+            }
+            .pro-ai-card-header {
+                display: flex;
+                align-items: flex-start;
+                justify-content: space-between;
+                gap: 8px;
+                border-bottom: 1px solid var(--border);
+                padding-bottom: 10px;
+            }
+            .pro-ai-card-title {
+                font-size: 13px;
+                font-weight: 700;
+                color: var(--text);
+                display: flex;
+                align-items: center;
+                gap: 6px;
+            }
+            .pro-ai-tag {
+                font-size: 10px;
+                font-weight: 700;
+                font-family: var(--mono);
+                padding: 2px 6px;
+                border-radius: 4px;
+                text-transform: uppercase;
+                white-space: nowrap;
+            }
+            .pro-ai-tag.bullish {
+                background: var(--green-bg);
+                color: var(--green);
+                border: 1px solid rgba(0, 229, 160, 0.25);
+            }
+            .pro-ai-tag.bearish {
+                background: var(--red-bg);
+                color: var(--red);
+                border: 1px solid rgba(255, 77, 109, 0.25);
+            }
+            .pro-ai-tag.neutral {
+                background: var(--yellow-bg);
+                color: var(--yellow);
+                border: 1px solid rgba(255, 209, 102, 0.25);
+            }
+            .pro-ai-card-body {
+                font-size: 12px;
+                line-height: 1.6;
+                color: var(--text);
+                flex-grow: 1;
+            }
+            .pro-ai-card-body b {
+                color: #ffffff;
+            }
+            [data-theme="light"] .pro-ai-card-body b {
+                color: #0f172a;
+            }
+            .pro-ai-micro-stats {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                background: var(--surface);
+                border: 1px solid var(--border);
+                border-radius: 6px;
+                padding: 6px 10px;
+                font-family: var(--mono);
+                font-size: 11px;
+                margin-top: 4px;
+            }
+            .pro-ai-duel-pills {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: 8px;
+                background: var(--surface);
+                border: 1px solid var(--border);
+                border-radius: 6px;
+                padding: 8px;
+                font-family: var(--mono);
+                font-size: 11px;
+                font-weight: 700;
+                margin-top: 4px;
+            }
+            .pro-ai-duel-vs {
+                color: var(--text-dim);
+                font-size: 10px;
+            }
+            .pro-ai-strike-trio {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                background: var(--surface);
+                border: 1px solid var(--border);
+                border-radius: 6px;
+                padding: 6px 10px;
+                font-family: var(--mono);
+                font-size: 11px;
+                margin-top: 4px;
+            }
+            .pro-ai-invalidation {
+                background: rgba(255, 77, 109, 0.08);
+                border-left: 2px solid var(--red);
+                padding: 6px 10px;
+                border-radius: 4px;
+                font-size: 11px;
+                color: var(--text-dim);
+                line-height: 1.4;
+                margin-top: 6px;
+            }
+            .pro-ai-invalidation b {
+                color: var(--red);
+            }
+            .pro-ai-llm-box {
+                margin-top: 16px;
+                background: rgba(129, 140, 248, 0.06);
+                border: 1px solid rgba(129, 140, 248, 0.3);
+                border-radius: 8px;
+                padding: 12px 16px;
+                display: flex;
+                flex-direction: column;
+                gap: 6px;
+                animation: fadeIn 0.3s ease;
+            }
+            .pro-ai-llm-hdr {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                font-size: 11px;
+                font-weight: 800;
+                color: #818cf8;
+                text-transform: uppercase;
+                font-family: var(--mono);
+            }
+            .pro-ai-llm-text {
+                font-size: 12.5px;
+                line-height: 1.6;
+                color: var(--text);
+                font-style: italic;
+            }
+            .pro-ai-collapsed .pro-ai-headline-banner,
+            .pro-ai-collapsed .pro-ai-grid,
+            .pro-ai-collapsed .pro-ai-llm-box {
+                display: none !important;
+            }
+
         </style>
     </head>
     <body data-theme="dark">
@@ -1529,6 +1832,126 @@
                         <span>Index Weight Dragging Down:</span>
                         <b id="kpi-draggers-weight">0.0%</b>
                     </div>
+                </div>
+            </section>
+
+            <!-- ── Pro Trader AI Intelligence Dossier ─────────────────────────── -->
+            <section class="pro-ai-dossier-section" id="pro-ai-dossier-section">
+                <div class="pro-ai-header">
+                    <div class="pro-ai-title-wrap">
+                        <div class="pro-ai-title-row">
+                            <span class="pro-ai-badge">
+                                <span class="pulse-glow"></span>
+                                PRO TRADER INTELLIGENCE
+                            </span>
+                            <span class="pro-ai-title" id="pro-ai-main-title">⚡ Institutional Execution Dossier</span>
+                            <span class="hw-badge-tag" id="pro-ai-time-tag">Syncing...</span>
+                        </div>
+                        <div class="pro-ai-subtitle">
+                            Autonomous institutional synthesis of constituent point propulsion, titan clashes, velocity pulses & derivative execution
+                        </div>
+                    </div>
+                    <div class="pro-ai-actions">
+                        <button class="pro-ai-btn btn-llm" id="btn-pro-ai-llm" onclick="fetchProAiSummary(true, true)" title="Trigger LLM Institutional Synthesis">
+                            <span>🤖 Deep AI Synthesis</span>
+                        </button>
+                        <button class="pro-ai-btn" id="btn-pro-ai-refresh" onclick="fetchProAiSummary(true, false)" title="Force Refresh Dossier">
+                            <span class="refresh-icon">🔄</span>
+                            <span>Refresh</span>
+                        </button>
+                        <button class="pro-ai-btn" id="btn-pro-ai-toggle" onclick="toggleProAiDossier()" title="Toggle Dossier Details">
+                            <span id="pro-ai-toggle-icon">▾</span>
+                            <span id="pro-ai-toggle-text">Collapse</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Headline Summary Banner -->
+                <div class="pro-ai-headline-banner" id="pro-ai-headline-banner">
+                    <div class="pro-ai-headline-text" id="pro-ai-headline-text">
+                        Loading institutional briefing...
+                    </div>
+                    <div class="pro-ai-conviction-pill high" id="pro-ai-conviction-pill">
+                        HIGH CONVICTION
+                    </div>
+                </div>
+
+                <!-- 4-Pillar Quantitative Grid -->
+                <div class="pro-ai-grid">
+                    <!-- Pillar 1: Market Footprint & Breadth Divergence -->
+                    <div class="pro-ai-card">
+                        <div class="pro-ai-card-header">
+                            <span class="pro-ai-card-title">🏛️ Institutional Footprint</span>
+                            <span class="pro-ai-tag neutral" id="pro-ai-footprint-tag">ANALYZING</span>
+                        </div>
+                        <div class="pro-ai-card-body" id="pro-ai-footprint-body">
+                            Evaluating constituent propulsion and heavyweight absorption dynamics...
+                        </div>
+                        <div class="pro-ai-micro-stats">
+                            <span title="Share of index net move contributed by top heavyweights">HW Share: <b id="pro-ai-stat-hw-share">—</b></span>
+                            <span title="Net points from top 10 heavyweights">HW Pts: <b id="pro-ai-stat-hw-pts">—</b></span>
+                            <span title="Net points from remaining constituent basket">Broader: <b id="pro-ai-stat-broader-pts">—</b></span>
+                        </div>
+                    </div>
+
+                    <!-- Pillar 2: Titan Clash & Sector Rotation -->
+                    <div class="pro-ai-card">
+                        <div class="pro-ai-card-header">
+                            <span class="pro-ai-card-title">⚔️ Titan Clash & Rotation</span>
+                            <span class="pro-ai-tag neutral" id="pro-ai-clash-tag">SECTOR STANDOFF</span>
+                        </div>
+                        <div class="pro-ai-card-body" id="pro-ai-clash-body">
+                            Tracking heavyweight leader tug-of-war and capital rotation...
+                        </div>
+                        <div class="pro-ai-duel-pills" id="pro-ai-duel-pills">
+                            <span class="green" id="pro-ai-duel-leader">—</span>
+                            <span class="pro-ai-duel-vs">⚡ VS ⚡</span>
+                            <span class="red" id="pro-ai-duel-dragger">—</span>
+                        </div>
+                    </div>
+
+                    <!-- Pillar 3: Scan Delta Velocity & Momentum Shift -->
+                    <div class="pro-ai-card">
+                        <div class="pro-ai-card-header">
+                            <span class="pro-ai-card-title">⏱️ Scan Delta Velocity</span>
+                            <span class="pro-ai-tag neutral" id="pro-ai-velocity-tag">PULSE</span>
+                        </div>
+                        <div class="pro-ai-card-body" id="pro-ai-velocity-body">
+                            Measuring 15m scan delta impulse and 5-scan directional shifts...
+                        </div>
+                        <div class="pro-ai-micro-stats">
+                            <span>Scan Impulse (15m): <b id="pro-ai-stat-impulse">—</b></span>
+                            <span>Breadth Gap: <b id="pro-ai-stat-divergence">—</b></span>
+                        </div>
+                    </div>
+
+                    <!-- Pillar 4: Desk Execution Playbook -->
+                    <div class="pro-ai-card">
+                        <div class="pro-ai-card-header">
+                            <span class="pro-ai-card-title">🎯 Desk Execution Mandate</span>
+                            <span class="pro-ai-tag bullish" id="pro-ai-mandate-tag">STRUCTURE</span>
+                        </div>
+                        <div class="pro-ai-strike-trio">
+                            <span title="Structural Put Support Strike">Put Base: <b id="pro-ai-put-base">—</b></span>
+                            <span title="Option Chain Max Pain Strike">Max Pain: <b id="pro-ai-max-pain">—</b></span>
+                            <span title="Call Wall Resistance Strike">Call Wall: <b id="pro-ai-call-wall">—</b></span>
+                        </div>
+                        <div class="pro-ai-card-body" id="pro-ai-playbook-body">
+                            Formulating derivatives strategy and strike selection...
+                        </div>
+                        <div class="pro-ai-invalidation" id="pro-ai-invalidation-box">
+                            <b>Invalidation:</b> <span id="pro-ai-invalidation-text">—</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Optional Deep LLM Synthesis Box -->
+                <div class="pro-ai-llm-box" id="pro-ai-llm-box" style="display: none;">
+                    <div class="pro-ai-llm-hdr">
+                        <span>🤖 INSTITUTIONAL PROP DESK SYNTHESIS</span>
+                        <span id="pro-ai-llm-model" style="font-size: 10px; opacity: 0.8;">(OmniRouter Engine)</span>
+                    </div>
+                    <div class="pro-ai-llm-text" id="pro-ai-llm-text"></div>
                 </div>
             </section>
 
@@ -2682,6 +3105,173 @@
                 }).join("");
             }
 
+            // ── Pro Trader AI Intelligence Dossier Logic ──
+            let proAiData = null;
+            let isProAiCollapsed = localStorage.getItem("nsebot_pro_ai_collapsed") === "true";
+
+            function toggleProAiDossier() {
+                isProAiCollapsed = !isProAiCollapsed;
+                localStorage.setItem("nsebot_pro_ai_collapsed", isProAiCollapsed);
+                applyProAiCollapseState();
+            }
+
+            function applyProAiCollapseState() {
+                const section = document.getElementById("pro-ai-dossier-section");
+                const icon = document.getElementById("pro-ai-toggle-icon");
+                const text = document.getElementById("pro-ai-toggle-text");
+                if (!section) return;
+                section.classList.toggle("pro-ai-collapsed", isProAiCollapsed);
+                if (icon) icon.textContent = isProAiCollapsed ? "▴" : "▾";
+                if (text) text.textContent = isProAiCollapsed ? "Expand" : "Collapse";
+            }
+
+            async function fetchProAiSummary(force = false, triggerLlm = false) {
+                const btnRefresh = document.getElementById("btn-pro-ai-refresh");
+                const btnLlm = document.getElementById("btn-pro-ai-llm");
+                if (btnRefresh && force && !triggerLlm) {
+                    const icon = btnRefresh.querySelector(".refresh-icon");
+                    if (icon) icon.classList.add("spinning");
+                }
+                if (btnLlm && triggerLlm) {
+                    btnLlm.disabled = true;
+                    btnLlm.style.opacity = "0.6";
+                    btnLlm.querySelector("span").textContent = "Synthesizing...";
+                }
+                try {
+                    const url = `/api/contributors/pro_ai_summary?index=${currentIndex}&refresh=${force}&llm=${triggerLlm}`;
+                    const res = await fetch(url);
+                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                    const data = await res.json();
+                    if (data && data.status === "ok") {
+                        proAiData = data;
+                        renderProAiSummary(data);
+                    }
+                } catch (e) {
+                    console.warn("Failed to fetch pro AI summary:", e);
+                } finally {
+                    if (btnRefresh) {
+                        const icon = btnRefresh.querySelector(".refresh-icon");
+                        if (icon) icon.classList.remove("spinning");
+                    }
+                    if (btnLlm && triggerLlm) {
+                        btnLlm.disabled = false;
+                        btnLlm.style.opacity = "1";
+                        btnLlm.querySelector("span").textContent = "🤖 Deep AI Synthesis";
+                    }
+                }
+            }
+
+            function renderProAiSummary(d) {
+                if (!d || d.status !== "ok") return;
+
+                // Header Titles & Tag
+                const mainTitle = document.getElementById("pro-ai-main-title");
+                if (mainTitle) mainTitle.textContent = `⚡ ${d.index_name} Institutional Execution Dossier`;
+
+                const timeTag = document.getElementById("pro-ai-time-tag");
+                if (timeTag) timeTag.textContent = `${d.index_name} · Spot: ₹${d.spot.toLocaleString("en-IN", { minimumFractionDigits: 1 })} · ${d.latest_scan_time || 'Latest'}`;
+
+                // Headline & Conviction Pill
+                const hlText = document.getElementById("pro-ai-headline-text");
+                if (hlText) hlText.textContent = d.headline || "INSTITUTIONAL REGIME IDENTIFIED";
+
+                const convPill = document.getElementById("pro-ai-conviction-pill");
+                if (convPill) {
+                    convPill.textContent = `${d.conviction_badge || 'CONVICTION'} (${d.conviction_score || 85}%)`;
+                    convPill.className = `pro-ai-conviction-pill ${(d.conviction_score >= 85) ? 'high' : 'med'}`;
+                }
+
+                // Card 1: Institutional Footprint
+                const fpTag = document.getElementById("pro-ai-footprint-tag");
+                if (fpTag && d.footprint) {
+                    fpTag.textContent = (d.footprint.classification || "ACCUMULATION").toUpperCase();
+                    fpTag.className = `pro-ai-tag ${d.footprint.tone || 'neutral'}`;
+                }
+                const fpBody = document.getElementById("pro-ai-footprint-body");
+                if (fpBody && d.footprint) fpBody.innerHTML = d.footprint.analysis;
+
+                const statHwShare = document.getElementById("pro-ai-stat-hw-share");
+                if (statHwShare) statHwShare.textContent = `${d.hw_share_pct.toFixed(1)}%`;
+                const statHwPts = document.getElementById("pro-ai-stat-hw-pts");
+                if (statHwPts) {
+                    statHwPts.textContent = `${d.hw_cum_pts >= 0 ? '+' : ''}${d.hw_cum_pts.toFixed(1)} pts`;
+                    statHwPts.style.color = d.hw_cum_pts >= 0 ? "var(--green)" : "var(--red)";
+                }
+                const statBroaderPts = document.getElementById("pro-ai-stat-broader-pts");
+                if (statBroaderPts) {
+                    statBroaderPts.textContent = `${d.broader_pts >= 0 ? '+' : ''}${d.broader_pts.toFixed(1)} pts`;
+                    statBroaderPts.style.color = d.broader_pts >= 0 ? "var(--green)" : "var(--red)";
+                }
+
+                // Card 2: Titan Clash & Rotation
+                const clashTag = document.getElementById("pro-ai-clash-tag");
+                if (clashTag && d.conflict) {
+                    clashTag.textContent = (d.conflict.title || "PILLAR DUEL").toUpperCase();
+                    clashTag.className = `pro-ai-tag ${d.pillars && d.pillars.is_sector_clash ? 'neutral' : 'bullish'}`;
+                }
+                const clashBody = document.getElementById("pro-ai-clash-body");
+                if (clashBody && d.conflict) clashBody.innerHTML = d.conflict.analysis;
+
+                const duelLeader = document.getElementById("pro-ai-duel-leader");
+                if (duelLeader && d.pillars && d.pillars.driver) {
+                    duelLeader.textContent = `▲ ${d.pillars.driver.symbol} (${d.pillars.driver.impact >= 0 ? '+' : ''}${d.pillars.driver.impact.toFixed(1)} pts)`;
+                }
+                const duelDragger = document.getElementById("pro-ai-duel-dragger");
+                if (duelDragger && d.pillars && d.pillars.dragger) {
+                    duelDragger.textContent = `▼ ${d.pillars.dragger.symbol} (${d.pillars.dragger.impact.toFixed(1)} pts)`;
+                }
+
+                // Card 3: Scan Delta Velocity & Momentum Shift
+                const velTag = document.getElementById("pro-ai-velocity-tag");
+                if (velTag && d.velocity) {
+                    velTag.textContent = (d.velocity.status || "IMPULSE").toUpperCase();
+                    velTag.className = `pro-ai-tag ${d.velocity.tone || 'neutral'}`;
+                }
+                const velBody = document.getElementById("pro-ai-velocity-body");
+                if (velBody && d.velocity) velBody.innerHTML = d.velocity.analysis;
+
+                const statImpulse = document.getElementById("pro-ai-stat-impulse");
+                if (statImpulse && d.velocity) {
+                    const isPos = d.velocity.scan_delta >= 0;
+                    statImpulse.textContent = `${isPos ? '+' : ''}${d.velocity.scan_delta.toFixed(2)} pts Δ`;
+                    statImpulse.style.color = isPos ? "var(--green)" : "var(--red)";
+                }
+                const statDivergence = document.getElementById("pro-ai-stat-divergence");
+                if (statDivergence && d.key_stats) {
+                    statDivergence.textContent = d.key_stats.breadth_divergence || "—";
+                }
+
+                // Card 4: Desk Execution Playbook
+                const mandateTag = document.getElementById("pro-ai-mandate-tag");
+                if (mandateTag && d.playbook) {
+                    mandateTag.textContent = (d.playbook.mandate_action || "DERIVATIVES MANDATE").toUpperCase();
+                }
+                const putBase = document.getElementById("pro-ai-put-base");
+                if (putBase && d.playbook) putBase.textContent = `₹${d.playbook.put_base}`;
+                const maxPain = document.getElementById("pro-ai-max-pain");
+                if (maxPain && d.playbook) maxPain.textContent = `₹${d.playbook.max_pain}`;
+                const callWall = document.getElementById("pro-ai-call-wall");
+                if (callWall && d.playbook) callWall.textContent = `₹${d.playbook.call_wall}`;
+
+                const playbookBody = document.getElementById("pro-ai-playbook-body");
+                if (playbookBody && d.playbook) playbookBody.innerHTML = d.playbook.analysis;
+
+                const invText = document.getElementById("pro-ai-invalidation-text");
+                if (invText && d.playbook) invText.textContent = d.playbook.invalidation;
+
+                // Deep LLM Synthesis Box (if present)
+                const llmBox = document.getElementById("pro-ai-llm-box");
+                const llmText = document.getElementById("pro-ai-llm-text");
+                if (llmBox && llmText) {
+                    if (d.llm_summary) {
+                        llmText.textContent = `"${d.llm_summary}"`;
+                        llmBox.style.display = "flex";
+                    } else {
+                        llmBox.style.display = "none";
+                    }
+                }
+            }
+
             async function fetchContributors(force = false) {
                 const badge = document.getElementById("last-updated-badge");
                 if (badge) badge.textContent = "Updating...";
@@ -2695,6 +3285,7 @@
                     updateKPIs();
                     fetchHeavyweights(force);
                     fetchHeavyweightsTimeline(force);
+                    fetchProAiSummary(force, false);
                     populateSectorDropdown();
                     renderViews();
                     if (badge) badge.textContent = `Synced: ${rawData.last_updated.split(",")[1] || rawData.last_updated}`;
@@ -3077,6 +3668,7 @@
                         fetchContributors(false);
                         fetchHeavyweights(false);
                         fetchHeavyweightsTimeline(false);
+                        fetchProAiSummary(false, false);
                         fetchTopbarCmps();
                     }, intervalMs);
                 }
@@ -3099,6 +3691,7 @@
             document.addEventListener("DOMContentLoaded", () => {
                 initTheme();
                 initKeyboardSortHeaders();
+                applyProAiCollapseState();
                 fetchRuntimeConfig();
                 updateSortIcons("pullers");
                 updateSortIcons("draggers");
@@ -3110,9 +3703,11 @@
                     const arToggle = document.getElementById("auto-refresh-toggle");
                     if (arToggle && arToggle.checked) toggleAutoRefresh(true);
                 });
+                fetchProAiSummary(false, false);
                 setInterval(() => {
                     fetchHeavyweights(false);
                     fetchHeavyweightsTimeline(false);
+                    fetchProAiSummary(false, false);
                 }, 60000);
                 fetchTopbarCmps();
                 toggleAutoRefresh(true);
