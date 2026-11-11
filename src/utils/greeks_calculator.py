@@ -159,13 +159,21 @@ class GreeksCalculator:
         }
 
     def _solve_implied_vol(self, target_price: float, underlying: float, K: float, T: float, flag: str, exchange: str) -> float:
-        """Robust internal numeric engine to derive IV without crashing external scripts."""
+        """Robust internal numeric engine to derive IV using damped Newton-Raphson with bisection fallback."""
         if target_price <= 0 or underlying <= 0 or K <= 0 or T <= 0:
             return 0.0
 
-        sigma = 0.20
         exp_rt = math.exp(-self.r * T)
+        if exchange.upper() == "MCX":
+            intrinsic = max(0.0, exp_rt * (underlying - K)) if flag == "call" else max(0.0, exp_rt * (K - underlying))
+        else:
+            intrinsic = max(0.0, underlying - K * exp_rt) if flag == "call" else max(0.0, K * exp_rt - underlying)
+        if target_price < intrinsic:
+            return 0.01
+
+        sigma = 0.60 if exchange.upper() == "MCX" else 0.25
         sqrt_T = math.sqrt(T)
+        low, high = 0.01, 2.50
 
         for _ in range(25):
             d1 = (math.log(underlying / K) + (0.5 * sigma ** 2 if exchange.upper() == "MCX" else (self.r + 0.5 * sigma ** 2)) * T) / (sigma * sqrt_T)
@@ -182,11 +190,21 @@ class GreeksCalculator:
             diff = current_price - target_price
             if abs(diff) < 1e-4:
                 return sigma
-            if vega > 1e-3:
-                sigma -= diff / vega
+
+            if vega > 0.05:
+                step = max(-0.35, min(diff / vega, 0.35))
+                new_sigma = sigma - step
+                if low <= new_sigma <= high:
+                    sigma = new_sigma
+                    continue
+
+            if diff > 0:
+                high = sigma
             else:
-                break
-        return max(0.01, min(sigma, 3.0)) # Hard limits to protect system threads
+                low = sigma
+            sigma = 0.5 * (low + high)
+
+        return max(0.01, min(sigma, 2.50))
 
 _calculator: GreeksCalculator | None = None
 

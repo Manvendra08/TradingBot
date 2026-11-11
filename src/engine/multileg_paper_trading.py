@@ -272,6 +272,18 @@ def _monitor_open_books(
             log.debug("[multileg-paper] %s: Market closed or holiday — position tracking disabled", symbol)
             return {"action": "HOLD", "live_books": open_books, "closed": [], "reason": "Market closed or holiday — position tracking disabled"}
 
+        # Guard against opening auction illiquidity / unformed order book noise (09:00-09:15 MCX, 09:15-09:20 NSE/BSE)
+        hour = now_ist.hour
+        minute = now_ist.minute
+        is_mcx = any(m in symbol.upper() for m in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER", "COPPER"))
+        if (is_mcx and hour == 9 and minute < 15) or (not is_mcx and hour == 9 and minute < 20):
+            log.info(
+                "[multileg-paper] %s: Opening auction/liquidity formation window (%s) — deferring exit evaluations",
+                symbol,
+                "09:00–09:15 MCX" if is_mcx else "09:15–09:20 NSE/BSE",
+            )
+            return {"action": "HOLD", "live_books": open_books, "closed": [], "reason": "Opening auction liquidity formation window — exit evaluation deferred"}
+
     from config.multileg_strategies import (
         DEFAULT_PROFIT_TARGET_PCT,
         DEFAULT_STOP_LOSS_PCT,
@@ -1804,6 +1816,21 @@ def _build_real_leg_exits(
     current_underlying = float((sc or {}).get("underlying") or (book.get("entry_underlying") if book else 0.0) or 0.0)
     leg_exits: list[dict] = []
 
+    def _safe_quote_exit(base_prem: float, leg_side: str, q_bid: float, q_ask: float, slip: float) -> float:
+        """Filter illiquid bid/ask outlier quotes to prevent artificial execution fills."""
+        if leg_side == "SELL":
+            # Buy back short leg: only accept ask if within 25% or 1 pt of LTP
+            ask_ceiling = max(base_prem * 1.25, base_prem + 1.0)
+            if 0 < q_ask <= ask_ceiling:
+                return q_ask
+            return round(base_prem + slip, 2)
+        else:
+            # Sell long leg: only accept bid if within 25% or 1 pt of LTP
+            bid_floor = min(base_prem * 0.75, max(0.05, base_prem - 1.0))
+            if q_bid >= bid_floor and q_bid > 0:
+                return q_bid
+            return max(0.05, round(base_prem - slip, 2))
+
     for leg in legs:
         leg_id = leg.get("id")
         if not leg_id:
@@ -1829,10 +1856,7 @@ def _build_real_leg_exits(
         # C1 FIX: Priority #1: Live decision price from this cycle
         if curr_prem > 0 and (current_underlying <= 0 or is_valid_option_premium(leg_strike, leg_opt, curr_prem, current_underlying)):
             slippage = max(0.05, round(curr_prem * 0.005, 2))
-            if side == "SELL":
-                exit_premium = row_ask if row_ask > 0 else round(curr_prem + slippage, 2)
-            else:
-                exit_premium = row_bid if row_bid > 0 else max(0.05, round(curr_prem - slippage, 2))
+            exit_premium = _safe_quote_exit(curr_prem, side, row_bid, row_ask, slippage)
 
         # Priority #2: Fresh option premium lookup (checks live rows + max 15m DB snapshots)
         else:
@@ -1846,10 +1870,7 @@ def _build_real_leg_exits(
             )
             if fresh_prem is not None and fresh_prem > 0:
                 slippage = max(0.05, round(fresh_prem * 0.005, 2))
-                if side == "SELL":
-                    exit_premium = row_ask if row_ask > 0 else round(fresh_prem + slippage, 2)
-                else:
-                    exit_premium = row_bid if row_bid > 0 else max(0.05, round(fresh_prem - slippage, 2))
+                exit_premium = _safe_quote_exit(fresh_prem, side, row_bid, row_ask, slippage)
 
             # Priority #3: Fresh DB snapshot (guarded by max_age_minutes=15)
             else:
@@ -1859,10 +1880,7 @@ def _build_real_leg_exits(
                     snap_bid = float(snap.get("bid") or 0.0) if snap else 0.0
                     snap_ask = float(snap.get("ask") or 0.0) if snap else 0.0
                     slippage = max(0.05, round(snap_ltp * 0.005, 2))
-                    if side == "SELL":
-                        exit_premium = snap_ask if snap_ask > 0 else round(snap_ltp + slippage, 2)
-                    else:
-                        exit_premium = snap_bid if snap_bid > 0 else max(0.05, round(snap_ltp - slippage, 2))
+                    exit_premium = _safe_quote_exit(snap_ltp, side, snap_bid, snap_ask, slippage)
 
                 # Priority #4: Delta-approximation fallback with C3 FIX sign
                 elif current_underlying > 0 and book and book.get("entry_underlying"):

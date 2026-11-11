@@ -378,6 +378,18 @@ def _monitor_open_books_live(
             log.debug("[multileg-live] %s: Market closed or holiday — position tracking disabled", symbol)
             return {"action": "HOLD", "live_books": open_books, "closed": [], "reason": "Market closed or holiday — position tracking disabled"}
 
+        # Guard against opening auction illiquidity / unformed order book noise (09:00-09:15 MCX, 09:15-09:20 NSE/BSE)
+        hour = now_ist.hour
+        minute = now_ist.minute
+        is_mcx = any(m in symbol.upper() for m in ("NATURALGAS", "CRUDEOIL", "GOLD", "SILVER", "COPPER"))
+        if (is_mcx and hour == 9 and minute < 15) or (not is_mcx and hour == 9 and minute < 20):
+            log.info(
+                "[multileg-live] %s: Opening auction/liquidity formation window (%s) — deferring exit evaluations",
+                symbol,
+                "09:00–09:15 MCX" if is_mcx else "09:15–09:20 NSE/BSE",
+            )
+            return {"action": "HOLD", "live_books": open_books, "closed": [], "reason": "Opening auction liquidity formation window — exit evaluation deferred"}
+
     from config.multileg_strategies import (
         DEFAULT_PROFIT_TARGET_PCT,
         DEFAULT_STOP_LOSS_PCT,

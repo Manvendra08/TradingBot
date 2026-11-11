@@ -2751,7 +2751,7 @@ def close_book(
     trade_id = None
     with get_conn() as conn:
         trade = conn.execute(
-            "SELECT id, reason, entry_reason, net_premium FROM multi_leg_trades WHERE book_id=? AND status='OPEN'",
+            "SELECT id, reason, entry_reason, net_premium, structure, strategy_type, max_loss FROM multi_leg_trades WHERE book_id=? AND status='OPEN'",
             (book_id,),
         ).fetchone()
         if not trade:
@@ -2821,9 +2821,33 @@ def close_book(
                 )
                 computed_pnl = None
 
+        # Cap loss for defined-risk multi-leg strategies to prevent impossible losses
+        # caused by illiquid bid/ask quote spikes, bad ticks, or stale fills
+        struct = str(trade["structure"] or trade["strategy_type"] or "").upper()
+        is_defined_risk = any(s in struct for s in ("IRON_CONDOR", "SPREAD", "BULL_PUT_SPREAD", "BEAR_CALL_SPREAD"))
+        max_loss_pts = float(trade["max_loss"] or 0.0)
+        if is_defined_risk and max_loss_pts > 0 and 'legs_by_id' in locals() and legs_by_id:
+            max_lots = max((int(l.get("lots") or 1) for l in legs_by_id.values()), default=1)
+            physical_max_rupees = max_loss_pts * lot_size * max_lots
+            if computed_pnl is not None and computed_pnl < -physical_max_rupees:
+                log.warning(
+                    "close_book: book %s computed loss %.2f exceeds physical max loss %.2f (structure=%s, max_loss=%.2f pts) — clamping",
+                    book_id, computed_pnl, physical_max_rupees, struct, max_loss_pts,
+                )
+                computed_pnl = -physical_max_rupees
+
         # Prefer caller-supplied total_pnl only when it came from a trusted
         # realized-close path; otherwise use recomputed leg math.
         book_pnl = total_pnl if (total_pnl is not None and computed_pnl is None) else (computed_pnl or total_pnl or 0.0)
+        if is_defined_risk and max_loss_pts > 0 and 'legs_by_id' in locals() and legs_by_id:
+            max_lots = max((int(l.get("lots") or 1) for l in legs_by_id.values()), default=1)
+            physical_max_rupees = max_loss_pts * lot_size * max_lots
+            if float(book_pnl) < -physical_max_rupees:
+                log.warning(
+                    "close_book: book %s gross loss %.2f exceeds physical max loss %.2f — clamping to theoretical ceiling",
+                    book_id, float(book_pnl), physical_max_rupees,
+                )
+                book_pnl = -physical_max_rupees
 
         # Deduct transaction costs so multileg P&L is net of brokerage, STT, and exchange fees
         if leg_exits and 'legs_by_id' in locals() and legs_by_id:

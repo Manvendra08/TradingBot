@@ -177,7 +177,16 @@ def evaluate_exit_priority(
                 delta = abs(float(leg.get("delta") or 0.0))
 
                 # Delta trigger breach
-                if delta >= delta_trig:
+                # Physical validity guard: A short call cannot be tested if spot is far below strike (deep OTM),
+                # and a short put cannot be tested if spot is far above strike (deep OTM).
+                is_atm_or_itm = True
+                if underlying > 0 and strike > 0:
+                    if opt_type == "CE":
+                        is_atm_or_itm = underlying >= strike * 0.97
+                    elif opt_type == "PE":
+                        is_atm_or_itm = underlying <= strike * 1.03
+
+                if delta >= delta_trig and is_atm_or_itm:
                     return ExitDecision(
                         should_exit=True,
                         exit_reason="TESTED_SIDE",
