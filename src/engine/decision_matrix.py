@@ -589,7 +589,7 @@ def check_churn_guards(
         with get_read_conn() as conn:
             # Check entries created today
             c_today = conn.execute(
-                "SELECT COUNT(*) as cnt FROM multi_leg_trades WHERE UPPER(symbol)=UPPER(?) AND trade_mode=? AND DATE(created_at) = DATE('now')",
+                "SELECT COUNT(*) as cnt FROM multi_leg_trades WHERE UPPER(symbol)=UPPER(?) AND trade_mode=? AND DATE(opened_at) = DATE('now')",
                 (symbol, trade_mode),
             ).fetchone()
             entries_today = int(c_today["cnt"] if c_today else 0)
