@@ -1,5 +1,5 @@
 {
-  "fetched_at": "2026-11-09T13:15:30.932152+05:30",
+  "fetched_at": "2026-11-11T13:25:19.629940+05:30",
   "source": "https://www.nseindia.com/api/holiday-master?type=trading",
   "segments": {
     "CBM": [
@@ -886,12 +886,84 @@
     ],
     "EGR": [
       {
+        "date": "2026-05-28",
+        "description": "Bakri Id",
+        "weekday": "Thursday",
+        "morning_session": "Closed",
+        "evening_session": "Open",
+        "sr_no": 1
+      },
+      {
+        "date": "2026-06-26",
+        "description": "Muharram",
+        "weekday": "Friday",
+        "morning_session": "Closed",
+        "evening_session": "Open",
+        "sr_no": 2
+      },
+      {
+        "date": "2026-08-15",
+        "description": "Independence Day",
+        "weekday": "Saturday",
+        "morning_session": "Closed",
+        "evening_session": "Closed",
+        "sr_no": 3
+      },
+      {
+        "date": "2026-09-14",
+        "description": "Ganesh Chaturthi",
+        "weekday": "Monday",
+        "morning_session": "Closed",
+        "evening_session": "Open",
+        "sr_no": 4
+      },
+      {
+        "date": "2026-10-02",
+        "description": "Mahatma Gandhi Jayanti",
+        "weekday": "Friday",
+        "morning_session": "Closed",
+        "evening_session": "Closed",
+        "sr_no": 5
+      },
+      {
+        "date": "2026-10-20",
+        "description": "Dussehra",
+        "weekday": "Tuesday",
+        "morning_session": "Closed",
+        "evening_session": "Open",
+        "sr_no": 6
+      },
+      {
         "date": "2026-11-08",
         "description": "Diwali Laxmi Pujan*",
         "weekday": "Sunday",
-        "morning_session": null,
-        "evening_session": null,
-        "sr_no": 1
+        "morning_session": "Closed",
+        "evening_session": "Closed",
+        "sr_no": 7
+      },
+      {
+        "date": "2026-11-10",
+        "description": "Diwali-Balipratipada",
+        "weekday": "Tuesday",
+        "morning_session": "Closed",
+        "evening_session": "Open",
+        "sr_no": 8
+      },
+      {
+        "date": "2026-11-24",
+        "description": "Prakash Gurpurb Sri Guru Nanak Dev",
+        "weekday": "Tuesday",
+        "morning_session": "Closed",
+        "evening_session": "Open",
+        "sr_no": 9
+      },
+      {
+        "date": "2026-12-25",
+        "description": "Christmas",
+        "weekday": "Friday",
+        "morning_session": "Closed",
+        "evening_session": "Closed",
+        "sr_no": 10
       }
     ],
     "FO": [

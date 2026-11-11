@@ -5228,6 +5228,42 @@ async def get_eod_live_data():
     sensex_m = _format_symbol_metrics(sensex, "SENSEX")
     natgas_m = _format_symbol_metrics(natgas, "NATURALGAS")
 
+    # Check market open state
+    from config.symbol_classes import is_market_open
+    is_equity_open = any(is_market_open(idx, now_ist) for idx in ("NIFTY", "BANKNIFTY", "SENSEX"))
+
+    # Process India VIX
+    vix_quote = live_quotes.get("INDIAVIX")
+    vix_price = 14.50
+    vix_prev = 14.50
+    if vix_quote:
+        vix_price = vix_quote.get("price", 14.50)
+        vix_prev = vix_quote.get("prev_close", vix_price)
+    vix_chg = _fmt_change(vix_price, vix_prev)
+
+    if vix_price < 13.0:
+        vix_regime = "Low Volatility / Compression"
+        vix_badge = "neutral"
+    elif vix_price <= 17.5:
+        vix_regime = "Optimal Harvesting / Steady Theta"
+        vix_badge = "bullish"
+    elif vix_price <= 22.0:
+        vix_regime = "Elevated Volatility / Wide Wings Mandate"
+        vix_badge = "bearish"
+    else:
+        vix_regime = "Extreme Volatility / Defined Risk Only"
+        vix_badge = "bearish"
+
+    vix_data = {
+        "price": vix_price,
+        "prev_close": vix_prev,
+        "change_pts": vix_chg["pts"],
+        "change_pct": vix_chg["pct"],
+        "change_str": vix_chg["str"],
+        "regime": vix_regime,
+        "badge": vix_badge,
+    }
+
     # 3. Generate live SVGs
     oi_chart_svg = _render_oi_chart_svg(
         nifty_m["ce_oi_change"], nifty_m["pe_oi_change"],
@@ -5239,19 +5275,33 @@ async def get_eod_live_data():
     )
 
     # 4. Dynamic Executive Takeaways
+    n_supp_text = f"above {nifty_m['support']:,.0f}" if nifty_m['support'] > 0 else f"around ATM {nifty_m['atm_strike_str']}"
+    s_res_str = f"{sensex_m['resistance']:,.0f}" if sensex_m['resistance'] > 0 else f"{round((sensex_m['underlying'] or 82000)/1000)*1000:,.0f}"
+
     takeaways = [
-        f"<b>Index Stability:</b> NIFTY 50 trades at {nifty_m['underlying_str']} ({nifty_m['change']['str']}) with PCR at {nifty_m['pcr_str']} ({nifty_m['pcr_zone']}), indicating disciplined consolidation above {nifty_m['support']:,.0f}.",
-        f"<b>Derivatives Flow Dynamics:</b> Net CE flow of {nifty_m['ce_oi_change']:+,.0f} vs PE flow of {nifty_m['pe_oi_change']:+,.0f} reinforces ATM strike anchoring, while SENSEX shows heavy Call concentration defending {sensex_m['resistance']:,.0f}.",
+        f"<b>Index Stability:</b> NIFTY 50 trades at {nifty_m['underlying_str']} ({nifty_m['change']['str']}) with PCR at {nifty_m['pcr_str']} ({nifty_m['pcr_zone']}), indicating disciplined consolidation {n_supp_text}.",
+        f"<b>Derivatives Flow Dynamics:</b> Net CE flow of {nifty_m['ce_oi_change']:+,.0f} vs PE flow of {nifty_m['pe_oi_change']:+,.0f} reinforces ATM strike anchoring, while SENSEX shows heavy Call concentration defending {s_res_str}.",
         f"<b>Max Pain Gravitational Axis:</b> NIFTY max pain rests at {nifty_m['max_pain_str']}, BANKNIFTY at {bn_m['max_pain_str']}, and SENSEX at {sensex_m['max_pain_str']}, keeping expiry settlement magnet tight within defined boundaries.",
         f"<b>Tactical Desk Mandate:</b> Derivatives structure favors non-directional option selling (Iron Condor / Short Strangles) with defined wings, respecting 3H confirmation before initiating directional exposure.",
     ]
 
     # 5. Dynamic SCIR Context
+    pcr_val = nifty_m["pcr"]
+    if pcr_val < 0.75:
+        scir_imp = "Elevated Call writing creates overhead resistance; Put unwinding reflects cautious sentiment. Realized volatility skew is tilted downward, requiring wider Put wing buffers."
+        scir_res = "Prioritize Bear Call Spreads or Delta-Neutral Iron Condors with asymmetric wing clearance. Enforce mechanical 0.50 delta-stop exits."
+    elif pcr_val > 1.25:
+        scir_imp = f"Heavy Put accumulation provides solid floor support; Call short-covering risk could trigger rapid upside squeeze if spot breaches {nifty_m['resistance']:,.0f}."
+        scir_res = "Favor Bull Put Spreads or Jade Lizards with sold put tranches. Maintain dynamic trailing stops as spot challenges upper resistance boundaries."
+    else:
+        scir_imp = f"Volatility skew remains balanced around ATM strikes ({nifty_m['atm_strike_str']}). Premiums are experiencing steady theta decay with gamma risk concentrated within ±50 points of spot."
+        scir_res = "Deploy delta-neutral multi-tranche structures (Iron Condor / Short Strangles). Enforce mechanical delta-stop (0.50 delta) exits and harvest optimal theta decay."
+
     scir = {
         "situation": f"Indices maintain disciplined range-bound containment following the latest scan. NIFTY spot ({nifty_m['underlying_str']}) anchors adjacent to ATM {nifty_m['atm_strike_str']}, while BANKNIFTY ({bn_m['underlying_str']}) displays {bn_m['verdict_label']} with PCR at {bn_m['pcr_str']}.",
-        "complication": f"Persistent call writing at {nifty_m['resistance']:,.0f} and {sensex_m['resistance']:,.0f} caps upside breakouts, while selective put additions prevent swift breakdown, compressing overall realized volatility.",
-        "implication": "Volatility skew remains tightly bounded around ATM strikes. Premiums are experiencing steady theta decay with gamma risk concentrated solely at strikes within ±50 points of spot.",
-        "resolution": "Deploy delta-neutral structures with full base tranche allocation. Enforce mechanical delta-stop exits on challenged strikes and trail profit targets toward the max pain equilibrium."
+        "complication": f"Persistent call writing at {nifty_m['resistance']:,.0f} and {s_res_str} caps upside breakouts, while selective put additions prevent swift breakdown, compressing overall realized volatility.",
+        "implication": scir_imp,
+        "resolution": scir_res,
     }
 
     # 6. Strategic Battleground Matrix
@@ -5287,7 +5337,7 @@ async def get_eod_live_data():
             "max_pain": sensex_m["max_pain_str"],
             "pcr": sensex_m["pcr_str"],
             "bias": sensex_m["verdict_label"],
-            "strategy": "Strangle Premium Harvest; monitor 75,000 Wall"
+            "strategy": f"Strangle Premium Harvest; monitor {s_res_str} Call Wall"
         },
         {
             "symbol": "NATURALGAS",
@@ -5374,6 +5424,9 @@ async def get_eod_live_data():
         "status": "ok",
         "date_display": date_display,
         "now_display": now_display,
+        "is_market_open": is_equity_open,
+        "session_status": "LIVE INTRADAY" if is_equity_open else "EOD CLOSE",
+        "vix": vix_data,
         "last_scan_iso": latest_scan_iso,
         "last_scan_display": latest_scan_display,
         "last_scan_time_str": latest_scan_time_str,

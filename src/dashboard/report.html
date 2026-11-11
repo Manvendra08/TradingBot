@@ -238,6 +238,34 @@
             transform: translateY(-1px);
         }
 
+        /* Refresh Button & Spinner */
+        .btn-refresh {
+            background: rgba(0, 229, 160, 0.08);
+            border: 1px solid rgba(0, 229, 160, 0.35);
+            color: var(--accent);
+            cursor: pointer;
+        }
+        .btn-refresh:hover {
+            background: rgba(0, 229, 160, 0.16);
+            border-color: var(--accent);
+            transform: translateY(-1px);
+        }
+        .btn-refresh:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .refresh-icon {
+            display: inline-block;
+            transition: transform 0.2s ease;
+        }
+        .refresh-icon.spinning {
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
         .freshness-pill {
             font-family: var(--mono);
             font-size: 10.5px;
@@ -1188,6 +1216,9 @@
         </div>
 
         <div class="header-right">
+            <button class="btn-action btn-refresh" id="btn-refresh-report" onclick="triggerManualRefresh()" title="Force real-time scan and derivatives recalculation">
+                <span class="refresh-icon">⟳</span> REFRESH
+            </button>
             <a href="/api/eod_report_pdf" class="btn-action btn-ghost-action" id="btn-download-pdf" target="_blank" title="Download SteadyAlpha Executive PDF">
                 <span>📄</span> Executive PDF
             </a>
@@ -1207,6 +1238,7 @@
                 </div>
                 <div class="memo-meta-badges">
                     <span class="memo-tag" id="memo-date">Loading date...</span>
+                    <span class="memo-tag highlight" id="memo-vix">VIX: —</span>
                     <span class="memo-tag highlight" id="memo-regime">REGIME: SCAN-ALIGNED</span>
                     <span class="memo-tag" id="memo-time">16:00 IST EOD CLOSE</span>
                 </div>
@@ -1652,6 +1684,33 @@
                 document.getElementById('memo-date').textContent = data.date_display;
                 document.getElementById('footer-sync-time').textContent = `Last Scan: ${data.last_scan_display}`;
 
+                // Dynamic Masthead Market Status
+                const memoTimeEl = document.getElementById('memo-time');
+                if (memoTimeEl) {
+                    if (data.is_market_open) {
+                        memoTimeEl.textContent = `🔴 LIVE INTRADAY • ${data.last_scan_time_str}`;
+                        memoTimeEl.style.color = 'var(--text-accent)';
+                        memoTimeEl.style.borderColor = 'rgba(0, 229, 160, 0.5)';
+                        memoTimeEl.style.background = 'rgba(0, 229, 160, 0.08)';
+                    } else {
+                        memoTimeEl.textContent = `EOD CLOSE • ${data.last_scan_time_str}`;
+                        memoTimeEl.style.color = '';
+                        memoTimeEl.style.borderColor = '';
+                        memoTimeEl.style.background = '';
+                    }
+                }
+
+                // Dynamic VIX & Regime
+                const memoVixEl = document.getElementById('memo-vix');
+                if (memoVixEl && data.vix) {
+                    memoVixEl.textContent = `INDIA VIX: ${data.vix.price.toFixed(2)} (${data.vix.change_str})`;
+                    memoVixEl.title = `Regime: ${data.vix.regime}`;
+                }
+                const memoRegimeEl = document.getElementById('memo-regime');
+                if (memoRegimeEl && data.vix) {
+                    memoRegimeEl.textContent = `REGIME: ${data.vix.regime.toUpperCase()}`;
+                }
+
                 // Update KPI Cards
                 const syms = data.symbols;
                 if (syms) {
@@ -1736,7 +1795,9 @@
                         document.getElementById('ng-pcr').textContent = g.pcr_str;
                         document.getElementById('ng-mp').textContent = g.max_pain_str;
                         document.getElementById('ng-atm').textContent = g.atm_strike_str;
-                        document.getElementById('ng-candles').textContent = `${g.candle_1h} / ${g.candle_3h}`;
+                        const c1 = g.candle_1h || 'NEUTRAL';
+                        const c3 = g.candle_3h || 'NEUTRAL';
+                        document.getElementById('ng-candles').textContent = `${c1} / ${c3}`;
                     }
 
                     // Dynamic SCIR Strike Tags
@@ -1747,8 +1808,11 @@
                         const compTag = document.getElementById('scir-tag-complication');
                         const impTag = document.getElementById('scir-tag-implication');
                         const resTag = document.getElementById('scir-tag-resolution');
-                        if (sitTag) sitTag.textContent = `Pinned: ${n.support ? fmtNum(n.support, 0) : '23,400'}–${n.resistance ? fmtNum(n.resistance, 0) : '23,500'}`;
-                        if (compTag) compTag.textContent = `Wall: NIFTY ${n.resistance ? fmtNum(n.resistance, 0) : '23,500'} / SENSEX ${s.resistance ? fmtNum(s.resistance, 0) : '75,000'}`;
+                        const nSupport = n.support && n.support > 0 ? fmtNum(n.support, 0) : fmtNum(Math.round((n.underlying - 200) / 50) * 50, 0);
+                        const nResistance = n.resistance && n.resistance > 0 ? fmtNum(n.resistance, 0) : fmtNum(Math.round((n.underlying + 200) / 50) * 50, 0);
+                        const sResistance = s.resistance && s.resistance > 0 ? fmtNum(s.resistance, 0) : fmtNum(Math.round(((s.underlying || 82000) + 800) / 100) * 100, 0);
+                        if (sitTag) sitTag.textContent = `Pinned: ${nSupport}–${nResistance}`;
+                        if (compTag) compTag.textContent = `Wall: NIFTY ${nResistance} / SENSEX ${sResistance}`;
                         if (impTag) impTag.textContent = `Gamma: ATM ±50 pts (${fmtNum(n.atm_strike - 50, 0)}–${fmtNum(n.atm_strike + 50, 0)})`;
                         if (resTag) resTag.textContent = `Mandate: Delta Cap 0.60 | Roll Stop`;
                     }
@@ -1864,6 +1928,23 @@
 
             } catch (err) {
                 console.error('[EOD Report] fetch error:', err);
+            }
+        }
+
+        async function triggerManualRefresh() {
+            const btn = document.getElementById('btn-refresh-report');
+            const icon = btn ? btn.querySelector('.refresh-icon') : null;
+            if (icon) icon.classList.add('spinning');
+            if (btn) btn.disabled = true;
+            try {
+                await fetchReportData();
+            } catch (err) {
+                console.error('[EOD Report] manual refresh error:', err);
+            } finally {
+                setTimeout(() => {
+                    if (icon) icon.classList.remove('spinning');
+                    if (btn) btn.disabled = false;
+                }, 500);
             }
         }
 
