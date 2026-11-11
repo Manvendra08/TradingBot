@@ -5013,6 +5013,38 @@ async def download_eod_report_pdf():
     return JSONResponse({"error": "No PDF report generated yet"}, status_code=404)
 
 
+def _get_sebi_cas_status(now_ist) -> dict:
+    """Compute SEBI Call Auction Session (CAS) & Derivatives market execution state."""
+    weekday = now_ist.weekday()
+    if weekday >= 5:
+        return {"phase": "WEEKEND", "badge": "closed", "title": "Weekend Halt • Risk Off", "detail": "Markets closed until Monday 09:00 IST.", "is_trading_active": False, "countdown": ""}
+    m = now_ist.hour * 60 + now_ist.minute
+    if m < 540:
+        return {"phase": "PRE_MARKET", "badge": "neutral", "title": "Pre-Market Desk Prep", "detail": "Pre-Open Auction begins at 09:00 IST.", "is_trading_active": False, "countdown": ""}
+    elif m < 548:
+        return {"phase": "PRE_OPEN_AUCTION", "badge": "neutral", "title": "Pre-Open Order Auction (09:00–09:08)", "detail": "Equilibrium price discovery.", "is_trading_active": False, "countdown": ""}
+    elif m < 555:
+        return {"phase": "PRE_OPEN_BUFFER", "badge": "neutral", "title": "Pre-Open Buffer (09:08–09:15)", "detail": "Continuous opens at 09:15 IST.", "is_trading_active": False, "countdown": ""}
+    elif m < 915:
+        rem = 915 - m
+        h, mn = rem // 60, rem % 60
+        cd = f"{h}h {mn}m" if h > 0 else f"{mn}m"
+        return {"phase": "CONTINUOUS", "badge": "bullish", "title": "Continuous Market Trading", "detail": f"Cash & F&O active. Cash CAS starts in {cd} (15:15 IST).", "is_trading_active": True, "countdown": cd}
+    elif m < 920:
+        return {"phase": "CAS_TRANSITION", "badge": "neutral", "title": "Cash CAS Freeze (15:15–15:20)", "detail": "Cash orders frozen. F&O contracts trading actively until 15:40.", "is_trading_active": True, "countdown": ""}
+    elif m < 930:
+        return {"phase": "CAS_AUCTION", "badge": "neutral", "title": "Cash Call Auction (15:20–15:30)", "detail": "Cash auction active. Derivatives active until 15:40.", "is_trading_active": True, "countdown": ""}
+    elif m < 935:
+        return {"phase": "CAS_MATCHING", "badge": "neutral", "title": "Cash Price Matching (15:30–15:35)", "detail": "Cash close matching. Derivatives active until 15:40.", "is_trading_active": True, "countdown": ""}
+    elif m < 940:
+        is_friday = weekday == 4
+        return {"phase": "DERIVATIVES_SQUAREOFF", "badge": "bearish", "title": "F&O Derivatives Closeout (15:35–15:40)", "detail": "Mandatory Friday square-off window." if is_friday else "Final 5-minute derivative positioning window before 15:40 close.", "is_trading_active": True, "countdown": ""}
+    elif m < 1410:
+        return {"phase": "MCX_EVENING", "badge": "bullish", "title": "MCX Commodities Session", "detail": "NSE closed. Natural Gas / MCX trading active until 23:30 IST.", "is_trading_active": True, "countdown": ""}
+    else:
+        return {"phase": "CLOSED", "badge": "closed", "title": "All Markets Closed", "detail": "Closed until tomorrow 09:00 IST.", "is_trading_active": False, "countdown": ""}
+
+
 @app.get("/api/eod_live_data", response_class=JSONResponse)
 async def get_eod_live_data():
     """Return real-time derivative intelligence refreshed from the latest scan cycle.
@@ -5420,6 +5452,171 @@ async def get_eod_live_data():
     pdf_path = ROOT / "docs" / "reports" / f"eod_report_steadyalpha_{now_ist.strftime('%Y%m%d')}.pdf"
     has_pdf = pdf_path.exists()
 
+    # 8. Unified Desk Risk & Portfolio Capital Telemetry (₹1.00 Cr portfolio)
+    capital = 10000000.0  # ₹1 Crore institutional portfolio
+    ml_open = _q("""
+        SELECT id, symbol, strategy_type, structure, total_pnl, margin_req, net_delta, net_theta, entry_underlying, opened_at
+        FROM multi_leg_trades
+        WHERE status = 'OPEN'
+    """)
+    pt_open = _q("""
+        SELECT id, symbol, verdict_label, option_type, side, strike, lots, pnl_rupees, entry_premium, opened_at
+        FROM paper_trades
+        WHERE status = 'OPEN'
+    """)
+
+    open_ml_ids = [m["id"] for m in ml_open if m.get("id")]
+    legs_by_trade = {}
+    if open_ml_ids:
+        placeholders = ",".join("?" for _ in open_ml_ids)
+        leg_rows = _q(f"""
+            SELECT trade_id, side, option_type, lots, delta, theta, current_premium, entry_premium
+            FROM multi_leg_legs
+            WHERE trade_id IN ({placeholders}) AND status = 'OPEN'
+        """, tuple(open_ml_ids))
+        for lr in leg_rows:
+            tid = lr["trade_id"]
+            if tid not in legs_by_trade:
+                legs_by_trade[tid] = []
+            legs_by_trade[tid].append(lr)
+
+    active_books_count = len(ml_open)
+    single_legs_count = len(pt_open)
+    total_open_trades = active_books_count + single_legs_count
+
+    net_delta = 0.0
+    total_open_pnl = 0.0
+    daily_theta = 0.0
+    margin_deployed = 0.0
+    book_summaries = []
+
+    for ml in ml_open:
+        sym = ml.get("symbol", "")
+        strat = ml.get("strategy_type") or ml.get("structure") or "MULTILEG"
+        pnl = float(ml.get("total_pnl") or 0.0)
+        total_open_pnl += pnl
+
+        m_req = float(ml.get("margin_req") or 0.0)
+        trade_legs = legs_by_trade.get(ml["id"], [])
+        lots = float(trade_legs[0].get("lots") or 1) if trade_legs else 1.0
+
+        if m_req > 0:
+            margin_deployed += m_req
+        else:
+            margin_deployed += lots * 92000.0
+
+        if ml.get("net_delta") is not None:
+            net_delta += float(ml["net_delta"])
+        else:
+            for leg in trade_legs:
+                net_delta += float(leg.get("delta") or 0.0)
+
+        if ml.get("net_theta") is not None:
+            daily_theta += float(ml["net_theta"])
+        else:
+            for leg in trade_legs:
+                daily_theta += float(leg.get("theta") or 0.0) * lots
+
+        book_summaries.append(f"{sym} {strat}")
+
+    for pt in pt_open:
+        pnl = float(pt.get("pnl_rupees") or 0.0)
+        total_open_pnl += pnl
+        lots = float(pt.get("lots") or 1)
+        margin_deployed += lots * 120000.0
+        opt = pt.get("option_type", "CE")
+        side = pt.get("side", "SELL")
+        signed_d = 0.35 if (side == "BUY" and opt == "CE") or (side == "SELL" and opt == "PE") else -0.35
+        net_delta += (signed_d * lots)
+        book_summaries.append(f"{pt.get('symbol')} {pt.get('verdict_label')}")
+
+    margin_pct = (margin_deployed / capital) * 100 if capital > 0 else 0.0
+    free_margin = max(0.0, capital - margin_deployed)
+
+    if abs(net_delta) < 0.20:
+        delta_regime = "DELTA NEUTRAL"
+        delta_badge = "bullish"
+    elif abs(net_delta) <= 0.60:
+        delta_regime = "CONTROLLED SKEW"
+        delta_badge = "neutral"
+    else:
+        delta_regime = "EXCESS SKEW"
+        delta_badge = "bearish"
+
+    desk_risk = {
+        "capital": capital,
+        "capital_str": "₹1.00 Cr",
+        "active_books_count": total_open_trades,
+        "active_books_desc": " • ".join(book_summaries) if book_summaries else "0 Active Positions (All Flat)",
+        "net_delta": round(net_delta, 3),
+        "net_delta_str": f"{net_delta:+.2f} Δ",
+        "delta_regime": delta_regime,
+        "delta_badge": delta_badge,
+        "within_delta_cap": abs(net_delta) <= 0.60,
+        "open_pnl": round(total_open_pnl, 2),
+        "open_pnl_str": f"{'+' if total_open_pnl >= 0 else ''}₹{total_open_pnl:,.2f}",
+        "open_pnl_pct": f"{(total_open_pnl / capital) * 100:+.2f}%",
+        "open_pnl_dir": "up" if total_open_pnl > 0 else ("down" if total_open_pnl < 0 else "flat"),
+        "margin_deployed": round(margin_deployed, 2),
+        "margin_deployed_str": f"₹{margin_deployed/100000:,.1f}L ({margin_pct:.1f}%)",
+        "free_margin_str": f"₹{free_margin/100000:,.1f}L",
+        "margin_cap_pct": "40% Max Cap (₹40.0L)",
+        "margin_badge": "bullish" if margin_pct <= 30.0 else ("neutral" if margin_pct <= 40.0 else "bearish"),
+        "within_margin_cap": margin_pct <= 40.0,
+        "daily_theta": round(daily_theta, 2),
+        "daily_theta_str": f"+₹{abs(daily_theta):,.0f}/day" if daily_theta >= 0 else f"-₹{abs(daily_theta):,.0f}/day",
+    }
+
+    # 9. Calculate Volatility Risk Premium (VRP: IV vs Realized Volatility)
+    rv_20d = 14.81
+    try:
+        rv_rows = _q("""
+            SELECT date(fetched_at, '+05:30') as dt, underlying 
+            FROM scan_summaries 
+            WHERE symbol = 'NIFTY'
+            GROUP BY dt 
+            ORDER BY dt DESC 
+            LIMIT 22
+        """)
+        if len(rv_rows) >= 5:
+            p_list = [r["underlying"] for r in reversed(rv_rows)]
+            import math
+            log_rets = [math.log(p_list[i] / p_list[i-1]) for i in range(1, len(p_list))]
+            mean_r = sum(log_rets) / len(log_rets)
+            var_r = sum((lr - mean_r)**2 for lr in log_rets) / (len(log_rets) - 1)
+            rv_20d = math.sqrt(var_r) * math.sqrt(252) * 100
+    except Exception:
+        pass
+
+    vrp_spread = vix_price - rv_20d
+    vrp_spread_pct = (vrp_spread / rv_20d) * 100 if rv_20d > 0 else 0.0
+    if vrp_spread > 1.5:
+        vrp_regime = "PREMIUM RICH"
+        vrp_badge = "bullish"
+        vrp_desc = f"Options overpriced by {vrp_spread:+.2f} pts vs Realized Vol ({rv_20d:.1f}% RV)"
+    elif vrp_spread >= -1.0:
+        vrp_regime = "FAIR VALUE"
+        vrp_badge = "neutral"
+        vrp_desc = f"Implied volatility aligned with 20D Realized Vol ({rv_20d:.1f}% RV)"
+    else:
+        vrp_regime = "DISCOUNTED"
+        vrp_badge = "bearish"
+        vrp_desc = f"Realized moves outpace implied premiums ({rv_20d:.1f}% RV); define wings tightly"
+
+    vrp_data = {
+        "rv_20d": round(rv_20d, 2),
+        "vix": round(vix_price, 2),
+        "spread": round(vrp_spread, 2),
+        "spread_str": f"{vrp_spread:+.2f}%",
+        "spread_pct": round(vrp_spread_pct, 1),
+        "regime": vrp_regime,
+        "badge": vrp_badge,
+        "desc": vrp_desc,
+    }
+
+    # 10. SEBI CAS State
+    sebi_cas = _get_sebi_cas_status(now_ist)
+
     return JSONResponse({
         "status": "ok",
         "date_display": date_display,
@@ -5427,6 +5624,9 @@ async def get_eod_live_data():
         "is_market_open": is_equity_open,
         "session_status": "LIVE INTRADAY" if is_equity_open else "EOD CLOSE",
         "vix": vix_data,
+        "desk_risk": desk_risk,
+        "vrp": vrp_data,
+        "sebi_cas": sebi_cas,
         "last_scan_iso": latest_scan_iso,
         "last_scan_display": latest_scan_display,
         "last_scan_time_str": latest_scan_time_str,

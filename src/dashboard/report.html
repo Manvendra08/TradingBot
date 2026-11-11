@@ -277,6 +277,157 @@
             font-variant-numeric: tabular-nums;
         }
 
+        /* ── Executive Desk Risk Cockpit ── */
+        .desk-risk-section {
+            background: var(--surface);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 8px;
+            padding: 14px 18px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        [data-theme="light"] .desk-risk-section {
+            border-color: rgba(0, 0, 0, 0.08);
+            background: #ffffff;
+        }
+        .desk-risk-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 8px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+            padding-bottom: 10px;
+        }
+        [data-theme="light"] .desk-risk-header {
+            border-bottom-color: rgba(0, 0, 0, 0.06);
+        }
+        .desk-risk-title-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .desk-risk-title {
+            font-family: var(--mono);
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            color: var(--text);
+            text-transform: uppercase;
+        }
+        .desk-risk-capital-tag {
+            font-family: var(--mono);
+            font-size: 10px;
+            padding: 2px 7px;
+            border-radius: 4px;
+            background: rgba(0, 229, 160, 0.1);
+            color: var(--accent);
+            border: 1px solid rgba(0, 229, 160, 0.3);
+            font-weight: 700;
+        }
+        .desk-risk-status-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-family: var(--mono);
+            font-size: 10.5px;
+            color: var(--text-dim);
+            background: var(--surface-2);
+            padding: 3px 9px;
+            border-radius: 4px;
+            border: 1px solid var(--border);
+        }
+        .desk-risk-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: var(--accent);
+            box-shadow: 0 0 6px var(--accent);
+        }
+        .desk-risk-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 12px;
+        }
+        @media (max-width: 960px) {
+            .desk-risk-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+        @media (max-width: 560px) {
+            .desk-risk-grid { grid-template-columns: 1fr; }
+        }
+        .desk-risk-card {
+            background: var(--surface-2);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 6px;
+            padding: 10px 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        [data-theme="light"] .desk-risk-card {
+            background: #f8fafc;
+            border-color: rgba(0, 0, 0, 0.06);
+        }
+        .drc-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .drc-label {
+            font-family: var(--mono);
+            font-size: 9.5px;
+            font-weight: 700;
+            color: var(--text-dim);
+            letter-spacing: 0.5px;
+        }
+        .drc-badge {
+            font-family: var(--mono);
+            font-size: 9.5px;
+            font-weight: 700;
+            padding: 1px 6px;
+            border-radius: 3px;
+            background: rgba(148, 163, 184, 0.15);
+            color: var(--text);
+        }
+        .drc-badge.bullish {
+            background: rgba(0, 229, 160, 0.15);
+            color: var(--accent);
+        }
+        .drc-badge.bearish {
+            background: rgba(239, 68, 68, 0.15);
+            color: #ef4444;
+        }
+        .drc-badge.neutral {
+            background: rgba(245, 158, 11, 0.15);
+            color: #f59e0b;
+        }
+        .drc-value-row {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 8px;
+        }
+        .drc-val {
+            font-family: var(--mono);
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--text);
+            font-variant-numeric: tabular-nums;
+        }
+        .drc-sub {
+            font-family: var(--mono);
+            font-size: 11px;
+            color: var(--text-dim);
+        }
+        .drc-footer {
+            font-size: 10.5px;
+            color: var(--text-dim);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
         /* ── Main Content Container ── */
         .report-wrapper {
             max-width: 1520px;
@@ -1238,9 +1389,78 @@
                 </div>
                 <div class="memo-meta-badges">
                     <span class="memo-tag" id="memo-date">Loading date...</span>
+                    <span class="memo-tag highlight" id="memo-cas">SEBI CAS: —</span>
                     <span class="memo-tag highlight" id="memo-vix">VIX: —</span>
                     <span class="memo-tag highlight" id="memo-regime">REGIME: SCAN-ALIGNED</span>
                     <span class="memo-tag" id="memo-time">16:00 IST EOD CLOSE</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Executive Desk Risk & Portfolio Cockpit (₹1.00 Cr Account) -->
+        <section class="desk-risk-section">
+            <div class="desk-risk-header">
+                <div class="desk-risk-title-row">
+                    <span class="desk-risk-title">🏛️ INSTITUTIONAL DESK EXPOSURE & RISK TELEMETRY</span>
+                    <span class="desk-risk-capital-tag">PORTFOLIO CAPITAL: ₹1.00 CR</span>
+                </div>
+                <div class="desk-risk-status-pill" id="desk-status-pill">
+                    <span class="desk-risk-dot"></span>
+                    <span id="desk-risk-summary-text">0 Active Positions (All Flat)</span>
+                </div>
+            </div>
+
+            <div class="desk-risk-grid">
+                <!-- Card 1: Net Desk Delta -->
+                <div class="desk-risk-card" id="card-risk-delta">
+                    <div class="drc-top">
+                        <span class="drc-label">PORTFOLIO NET DELTA (±0.60 CAP)</span>
+                        <span class="drc-badge bullish" id="risk-delta-regime">DELTA NEUTRAL</span>
+                    </div>
+                    <div class="drc-value-row">
+                        <span class="drc-val" id="risk-net-delta">+0.00 Δ</span>
+                        <span class="drc-sub" id="risk-delta-status">Cap: ±0.60 Δ</span>
+                    </div>
+                    <div class="drc-footer" id="risk-active-books-desc">0 Active Books</div>
+                </div>
+
+                <!-- Card 2: Capital & Margin Utilization -->
+                <div class="desk-risk-card" id="card-risk-margin">
+                    <div class="drc-top">
+                        <span class="drc-label">MARGIN ALLOCATION (40% CAP)</span>
+                        <span class="drc-badge bullish" id="risk-margin-badge">SAFE (&lt;40%)</span>
+                    </div>
+                    <div class="drc-value-row">
+                        <span class="drc-val" id="risk-margin-deployed">₹0.0L (0.0%)</span>
+                        <span class="drc-sub" id="risk-free-margin">Free: ₹100.0L</span>
+                    </div>
+                    <div class="drc-footer" id="risk-margin-desc">40% Max Cap: ₹40.0L</div>
+                </div>
+
+                <!-- Card 3: Live Portfolio Float / P&L -->
+                <div class="desk-risk-card" id="card-risk-pnl">
+                    <div class="drc-top">
+                        <span class="drc-label">OPEN DESK FLOAT (P&L)</span>
+                        <span class="drc-badge" id="risk-pnl-badge">FLAT</span>
+                    </div>
+                    <div class="drc-value-row">
+                        <span class="drc-val" id="risk-open-pnl">₹0.00</span>
+                        <span class="drc-sub" id="risk-open-pnl-pct">+0.00%</span>
+                    </div>
+                    <div class="drc-footer">Real-time mark-to-market float</div>
+                </div>
+
+                <!-- Card 4: Volatility Risk Premium & Theta -->
+                <div class="desk-risk-card" id="card-risk-vrp">
+                    <div class="drc-top">
+                        <span class="drc-label">HARVESTING EDGE (IV vs RV)</span>
+                        <span class="drc-badge bullish" id="risk-vrp-badge">PREMIUM RICH</span>
+                    </div>
+                    <div class="drc-value-row">
+                        <span class="drc-val" id="risk-vrp-spread">+2.81%</span>
+                        <span class="drc-sub" id="risk-daily-theta">Decay: +₹0/day</span>
+                    </div>
+                    <div class="drc-footer" id="risk-vrp-desc">Options Overpriced vs Realized Vol</div>
                 </div>
             </div>
         </section>
@@ -1709,6 +1929,87 @@
                 const memoRegimeEl = document.getElementById('memo-regime');
                 if (memoRegimeEl && data.vix) {
                     memoRegimeEl.textContent = `REGIME: ${data.vix.regime.toUpperCase()}`;
+                }
+
+                // Dynamic SEBI CAS & Derivatives Phase
+                const memoCasEl = document.getElementById('memo-cas');
+                if (memoCasEl && data.sebi_cas) {
+                    if (data.sebi_cas.countdown) {
+                        memoCasEl.textContent = `SEBI CAS: in ${data.sebi_cas.countdown} (15:15)`;
+                    } else {
+                        memoCasEl.textContent = `PHASE: ${data.sebi_cas.phase}`;
+                    }
+                    memoCasEl.title = `${data.sebi_cas.title} • ${data.sebi_cas.detail}`;
+                    if (data.sebi_cas.badge === 'bullish') {
+                        memoCasEl.className = 'memo-tag highlight';
+                    } else {
+                        memoCasEl.className = 'memo-tag';
+                    }
+                }
+
+                // Dynamic Executive Desk Risk & Portfolio Cockpit
+                if (data.desk_risk) {
+                    const dr = data.desk_risk;
+                    const summaryEl = document.getElementById('desk-risk-summary-text');
+                    if (summaryEl) summaryEl.textContent = `${dr.active_books_count} Active Positions • Margin: ${dr.margin_deployed_str} • Float: ${dr.open_pnl_str}`;
+
+                    // Card 1: Delta
+                    const netDeltaEl = document.getElementById('risk-net-delta');
+                    if (netDeltaEl) netDeltaEl.textContent = dr.net_delta_str;
+                    const deltaRegimeEl = document.getElementById('risk-delta-regime');
+                    if (deltaRegimeEl) {
+                        deltaRegimeEl.textContent = dr.delta_regime;
+                        deltaRegimeEl.className = `drc-badge ${dr.delta_badge}`;
+                    }
+                    const activeBooksDesc = document.getElementById('risk-active-books-desc');
+                    if (activeBooksDesc) {
+                        activeBooksDesc.textContent = dr.active_books_desc;
+                        activeBooksDesc.title = dr.active_books_desc;
+                    }
+
+                    // Card 2: Margin
+                    const marginDepEl = document.getElementById('risk-margin-deployed');
+                    if (marginDepEl) marginDepEl.textContent = dr.margin_deployed_str;
+                    const freeMarginEl = document.getElementById('risk-free-margin');
+                    if (freeMarginEl) freeMarginEl.textContent = `Free: ${dr.free_margin_str}`;
+                    const marginBadgeEl = document.getElementById('risk-margin-badge');
+                    if (marginBadgeEl) {
+                        marginBadgeEl.textContent = dr.within_margin_cap ? "SAFE (<40%)" : "MARGIN BREACH";
+                        marginBadgeEl.className = `drc-badge ${dr.margin_badge}`;
+                    }
+
+                    // Card 3: P&L
+                    const openPnlEl = document.getElementById('risk-open-pnl');
+                    if (openPnlEl) {
+                        openPnlEl.textContent = dr.open_pnl_str;
+                        openPnlEl.style.color = dr.open_pnl > 0 ? "var(--green)" : (dr.open_pnl < 0 ? "var(--red)" : "");
+                    }
+                    const openPnlPctEl = document.getElementById('risk-open-pnl-pct');
+                    if (openPnlPctEl) openPnlPctEl.textContent = `${dr.open_pnl_pct} of Capital`;
+                    const pnlBadgeEl = document.getElementById('risk-pnl-badge');
+                    if (pnlBadgeEl) {
+                        pnlBadgeEl.textContent = dr.open_pnl > 0 ? "PROFIT" : (dr.open_pnl < 0 ? "DRAWDOWN" : "FLAT");
+                        pnlBadgeEl.className = `drc-badge ${dr.open_pnl > 0 ? "bullish" : (dr.open_pnl < 0 ? "bearish" : "")}`;
+                    }
+
+                    // Card 4: VRP & Theta
+                    if (data.vrp) {
+                        const vrp = data.vrp;
+                        const vrpSpreadEl = document.getElementById('risk-vrp-spread');
+                        if (vrpSpreadEl) vrpSpreadEl.textContent = `VRP ${vrp.spread_str}`;
+                        const vrpBadgeEl = document.getElementById('risk-vrp-badge');
+                        if (vrpBadgeEl) {
+                            vrpBadgeEl.textContent = vrp.regime;
+                            vrpBadgeEl.className = `drc-badge ${vrp.badge}`;
+                        }
+                        const dailyThetaEl = document.getElementById('risk-daily-theta');
+                        if (dailyThetaEl) dailyThetaEl.textContent = `Decay: ${dr.daily_theta_str}`;
+                        const vrpDescEl = document.getElementById('risk-vrp-desc');
+                        if (vrpDescEl) {
+                            vrpDescEl.textContent = vrp.desc;
+                            vrpDescEl.title = `20D Realized Vol: ${vrp.rv_20d}% | India VIX: ${vrp.vix}%`;
+                        }
+                    }
                 }
 
                 // Update KPI Cards
