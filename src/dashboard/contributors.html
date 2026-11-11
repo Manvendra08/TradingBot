@@ -2038,7 +2038,14 @@
 
             // ── Heavyweights Time-Series Plotting & 5-Day Mon-Fri Retention ──
             let hwTimelineData = null;
-            let currentHwDayFilter = localStorage.getItem("nsebot_hw_day_filter") || "today";
+            // Always default to 'today' so active/live market data is presented on fresh page load.
+            // Only preserve 'all' if the user explicitly chose 5-Day Week view.
+            // Any stale specific date string (e.g. '2026-11-09') is purged so the dashboard never gets stuck in the past.
+            let storedHwDay = localStorage.getItem("nsebot_hw_day_filter");
+            let currentHwDayFilter = (storedHwDay === "all") ? "all" : "today";
+            if (storedHwDay && storedHwDay !== "all" && storedHwDay !== "today") {
+                localStorage.setItem("nsebot_hw_day_filter", "today");
+            }
             let currentHwChartMode = localStorage.getItem("nsebot_hw_chart_mode") || "drive";
             let hwUpperChartInstance = null;
             let hwLowerChartInstance = null;
@@ -2080,8 +2087,12 @@
                     pillsHtml += `<button class="hw-day-pill ${isAll ? 'active' : ''}" onclick="switchHwTimelineDay('all')" title="View all 5 days of the trading week">5-Day Week</button>`;
                     
                     hwTimelineData.available_days.forEach(d => {
-                        const isSelected = (currentHwDayFilter === d.date || (currentHwDayFilter === 'today' && d.date === hwTimelineData.selected_date));
-                        pillsHtml += `<button class="hw-day-pill ${isSelected ? 'active' : ''}" onclick="switchHwTimelineDay('${d.date}')" title="${d.full_day_name} (${d.scan_count} scans)">${d.display_label}</button>`;
+                        const isToday = !!d.is_today;
+                        // For today's pill, pass 'today' so it remains dynamic and doesn't get hardcoded to a static calendar date in localStorage
+                        const targetDayArg = isToday ? 'today' : d.date;
+                        const isSelected = (currentHwDayFilter === 'today' && (isToday || d.date === hwTimelineData.selected_date)) ||
+                                           (currentHwDayFilter === d.date);
+                        pillsHtml += `<button class="hw-day-pill ${isSelected ? 'active' : ''}" onclick="switchHwTimelineDay('${targetDayArg}')" title="${d.full_day_name} (${d.scan_count} scans)">${d.display_label}</button>`;
                     });
                     container.innerHTML = pillsHtml;
                 }
@@ -2444,6 +2455,7 @@
                     p.classList.toggle("active", p.id === `hw-pill-${idx.toLowerCase()}`);
                 });
                 renderHeavyweightsPanel();
+                fetchHeavyweightsTimeline(false);
             }
 
             async function fetchHeavyweights(force = false) {
@@ -2682,6 +2694,7 @@
                     rawData = await res.json();
                     updateKPIs();
                     fetchHeavyweights(force);
+                    fetchHeavyweightsTimeline(force);
                     populateSectorDropdown();
                     renderViews();
                     if (badge) badge.textContent = `Synced: ${rawData.last_updated.split(",")[1] || rawData.last_updated}`;
@@ -3097,7 +3110,10 @@
                     const arToggle = document.getElementById("auto-refresh-toggle");
                     if (arToggle && arToggle.checked) toggleAutoRefresh(true);
                 });
-                setInterval(() => fetchHeavyweights(false), 60000);
+                setInterval(() => {
+                    fetchHeavyweights(false);
+                    fetchHeavyweightsTimeline(false);
+                }, 60000);
                 fetchTopbarCmps();
                 toggleAutoRefresh(true);
                 setInterval(fetchTopbarCmps, 15000);
