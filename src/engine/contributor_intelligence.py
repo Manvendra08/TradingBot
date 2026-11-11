@@ -234,7 +234,7 @@ def generate_pro_trader_intelligence(
             f"<b>Directional Traders:</b> Avoid chasing expensive OTM calls near {res_str} Call Wall; "
             f"intra-sector friction ({dragger_sym}) caps parabolic breakout potential. Trade pullbacks toward {opt_ctx['atm_strike']:,.0f}."
         )
-        invalidation = f"Invalidation: Spot breakdown below {sup_str} or {driver_sym} flipping to negative scan delta."
+        invalidation = f"Spot breakdown below {sup_str} or {driver_sym} flipping to negative scan delta."
     elif footprint_tone == "bearish" or footprint_class.startswith("Synthetic"):
         mandate_action = "Bear Call Spreads / Range-Bound Iron Condor (Fade Rallies)"
         mandate_desc = (
@@ -242,7 +242,7 @@ def generate_pro_trader_intelligence(
             f"Sell Call strikes defending {res_str} Wall. The heavyweight propping structure makes sharp false breakouts ideal shorting opportunities. "
             f"<b>Directional Traders:</b> Do NOT buy dips in mid-caps while broader breadth is bleeding."
         )
-        invalidation = f"Invalidation: Sustained spot breakout above {res_str} with {dragger_sym} short-covering."
+        invalidation = f"Sustained spot breakout above {res_str} with {dragger_sym} short-covering."
     else:
         mandate_action = "Delta-Neutral Iron Condor / Strangle Harvesting"
         mandate_desc = (
@@ -251,7 +251,7 @@ def generate_pro_trader_intelligence(
             f"Harvest pure theta decay between {sup_str} Base and {res_str} Cap. "
             f"<b>Directional Traders:</b> Range-bound chopping zone; avoid directional futures exposure."
         )
-        invalidation = f"Invalidation: Heavyweight scan delta exceeding ±25 pts or breach of {sup_str}/{res_str} boundaries."
+        invalidation = f"Heavyweight scan delta exceeding ±25 pts or breach of {sup_str}/{res_str} boundaries."
 
     # Conviction Calculation
     base_conv = 80
@@ -264,6 +264,16 @@ def generate_pro_trader_intelligence(
     conviction_score = min(94, max(74, base_conv))
 
     headline = f"{idx_key} PRO TRADER DOSSIER: {footprint_class.upper()} WITH {driver_sym} PULLING VS {dragger_sym} DRAGGING"
+
+    # Determine Primary Configured LLM Model
+    active_model = _get_configured_llm_model_name()
+
+    # Proprietary Prop-Desk Executive Synthesis (Deterministic baseline)
+    desk_synthesis = (
+        f"Institutional flow reflects {footprint_class.lower()} with {hw_share:.1f}% concentration in top heavyweights. "
+        f"{'Intra-sector standoff between ' + driver_sym + ' and ' + dragger_sym if is_sector_clash else 'Cross-sector divergence between ' + driver_sym + ' and ' + dragger_sym} "
+        f"acts as a mechanical speed governor on spot propulsion. Deploy {mandate_action} anchoring between Put Base ({sup_str}) and Call Wall ({res_str})."
+    )
 
     result = {
         "status": "ok",
@@ -313,14 +323,24 @@ def generate_pro_trader_intelligence(
             "breadth_divergence": f"{divergence_pts:+.1f} pts",
             "latest_impulse": f"{hw_scan_delta:+.2f} pts Δ",
         },
+        "llm_model": active_model,
+        "llm_synthesis": desk_synthesis,
         "llm_enriched": False,
         "generated_at": datetime.now(IST).strftime("%d %b %Y, %H:%M:%S IST"),
     }
 
-    # 6. Optional LLM Polish
+    # 6. Optional Deep Generative LLM Polish
     if enable_llm:
         try:
-            from src.engine.llm_enrichment import call_llm_chain
+            from src.engine.llm_enrichment import call_llm_api
+            from pydantic import BaseModel, Field
+
+            class _LLMContributorSynthesisSchema(BaseModel):
+                model_name: Optional[str] = Field(default=None, description="Model used for this response")
+                institutional_thesis: str = Field(description="2-sentence senior derivatives desk synthesis of constituent propulsion and market structure")
+                highest_probability_trade: str = Field(description="Specific recommended option structure and strike anchors")
+                key_risk_invalidation: str = Field(description="Single most critical event or level that breaks the thesis")
+
             prompt = (
                 f"You are a Chief Investment Officer and veteran institutional derivatives trader (15+ years experience, ₹1 Cr portfolio). "
                 f"Analyze this quantitative constituent telemetry for {idx_key}:\n"
@@ -333,18 +353,41 @@ def generate_pro_trader_intelligence(
                 f"- Derivatives Context: ATM {opt_ctx['atm_strike']:,.0f}, Max Pain {opt_ctx['max_pain']:,.0f}, PCR {opt_ctx['pcr']:.2f}, Support {sup_str}, Resistance {res_str}\n\n"
                 f"Provide a concise, razor-sharp 2-sentence institutional synthesis on institutional mechanics and the highest-probability option structure."
             )
-            llm_resp = call_llm_chain(
-                prompt=prompt,
-                schema=None,
+            llm_res = call_llm_api(
                 symbol=idx_key,
-                system_prompt="You are a veteran institutional prop desk head. Be ultra-dense, direct, and actionable. Zero retail fluff.",
-                max_tokens=300
+                prompt=prompt,
+                response_schema=_LLMContributorSynthesisSchema,
+                deadline=None,
+                purpose="contributor_intelligence",
             )
-            if llm_resp and isinstance(llm_resp, str) and len(llm_resp) > 30:
-                result["llm_synthesis"] = llm_resp.strip()
+            if llm_res and hasattr(llm_res, "institutional_thesis") and llm_res.institutional_thesis:
+                result["llm_synthesis"] = f"{llm_res.institutional_thesis.strip()} {llm_res.highest_probability_trade.strip()}"
+                result["llm_model"] = getattr(llm_res, "model_name", None) or active_model
                 result["llm_enriched"] = True
         except Exception as e:
-            log.warning("LLM enrichment skipped for %s: %s", idx_key, e)
+            log.warning("LLM enrichment failed for %s: %s", idx_key, e)
 
     _AI_SUMMARY_CACHE[cache_key] = result
     return result
+
+
+def _get_configured_llm_model_name() -> str:
+    """Return the primary active LLM model configured in the NSEBOT pipeline."""
+    import os
+    try:
+        from src.engine.llm_enrichment import _is_omnirouter_online
+        omni_url = os.environ.get("OMNIROUTER_BASE_URL", "http://localhost:20128/v1")
+        if _is_omnirouter_online(omni_url):
+            return "OmniRouter (Claude-Models Combo)"
+    except Exception:
+        pass
+
+    if os.environ.get("GEMINI_API_KEY"):
+        return "Gemini SDK (2.5 Flash)"
+    if os.environ.get("GROQ_API_KEY"):
+        return "Groq (Qwen 3.8 27B)"
+    if os.environ.get("OPENCODE_API_KEY"):
+        return "OpenCode Zen (Nemotron 3.5 Lightning)"
+    if os.environ.get("OPENROUTER_API_KEY"):
+        return "OpenRouter (Gemini 2.0 Flash)"
+    return "OmniRouter (Claude-Models Combo)"

@@ -1398,7 +1398,7 @@
                 background: var(--surface);
                 border: 1px solid var(--border);
                 border-radius: 12px;
-                padding: 20px 24px;
+                padding: 18px 22px;
                 margin-bottom: 24px;
                 box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
                 position: relative;
@@ -1417,10 +1417,10 @@
             .pro-ai-header {
                 display: flex;
                 justify-content: space-between;
-                align-items: flex-start;
+                align-items: center;
                 flex-wrap: wrap;
-                gap: 16px;
-                margin-bottom: 16px;
+                gap: 14px;
+                margin-bottom: 14px;
             }
             .pro-ai-title-wrap {
                 display: flex;
@@ -1434,16 +1434,16 @@
                 flex-wrap: wrap;
             }
             .pro-ai-badge {
-                background: rgba(56, 189, 248, 0.15);
-                border: 1px solid rgba(56, 189, 248, 0.3);
+                background: rgba(56, 189, 248, 0.12);
+                border: 1px solid rgba(56, 189, 248, 0.35);
                 color: #38bdf8;
                 font-size: 11px;
                 font-weight: 800;
                 font-family: var(--mono);
                 text-transform: uppercase;
                 letter-spacing: 0.06em;
-                padding: 3px 8px;
-                border-radius: 4px;
+                padding: 4px 9px;
+                border-radius: 5px;
                 display: inline-flex;
                 align-items: center;
                 gap: 6px;
@@ -1461,6 +1461,39 @@
                 font-weight: 800;
                 letter-spacing: -0.01em;
                 color: var(--text);
+            }
+            .pro-ai-model-badge {
+                background: linear-gradient(135deg, rgba(99, 102, 241, 0.12) 0%, rgba(168, 85, 247, 0.14) 100%);
+                border: 1px solid rgba(168, 85, 247, 0.4);
+                color: #c084fc;
+                font-size: 11px;
+                font-weight: 700;
+                font-family: var(--mono);
+                padding: 4px 10px;
+                border-radius: 6px;
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+                box-shadow: 0 0 10px rgba(168, 85, 247, 0.1);
+            }
+            .model-badge-label {
+                color: var(--text-dim);
+                font-size: 9.5px;
+                letter-spacing: 0.05em;
+            }
+            .model-badge-name {
+                color: #e9d5ff;
+                font-weight: 800;
+            }
+            [data-theme="light"] .model-badge-name {
+                color: #6b21a8;
+            }
+            .model-status-dot {
+                width: 6px;
+                height: 6px;
+                border-radius: 50%;
+                background: #a855f7;
+                box-shadow: 0 0 6px #a855f7;
             }
             .pro-ai-subtitle {
                 font-size: 12px;
@@ -1492,13 +1525,13 @@
             }
             .pro-ai-btn.btn-llm {
                 border-color: rgba(129, 140, 248, 0.4);
-                background: rgba(129, 140, 248, 0.1);
-                color: #818cf8;
+                background: rgba(129, 140, 248, 0.12);
+                color: #a5b4fc;
             }
             .pro-ai-btn.btn-llm:hover {
-                background: rgba(129, 140, 248, 0.2);
+                background: rgba(129, 140, 248, 0.22);
                 border-color: #818cf8;
-                box-shadow: 0 0 10px rgba(129, 140, 248, 0.2);
+                box-shadow: 0 0 10px rgba(129, 140, 248, 0.25);
             }
             .pro-ai-headline-banner {
                 background: var(--surface-2);
@@ -1508,7 +1541,7 @@
                 font-family: var(--mono);
                 font-size: 12px;
                 color: var(--text);
-                margin-bottom: 18px;
+                margin-bottom: 16px;
                 display: flex;
                 align-items: center;
                 justify-content: space-between;
@@ -1518,6 +1551,9 @@
             .pro-ai-headline-text {
                 font-weight: 700;
                 line-height: 1.4;
+                display: flex;
+                align-items: center;
+                gap: 8px;
             }
             .pro-ai-conviction-pill {
                 padding: 3px 8px;
@@ -1540,17 +1576,18 @@
             .pro-ai-grid {
                 display: grid;
                 grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-                gap: 16px;
+                gap: 14px;
             }
             .pro-ai-card {
                 background: var(--surface-2);
                 border: 1px solid var(--border);
                 border-radius: 8px;
-                padding: 16px;
+                padding: 14px 16px;
                 display: flex;
                 flex-direction: column;
-                gap: 12px;
+                gap: 10px;
                 transition: transform 0.2s ease, border-color 0.2s ease;
+                min-width: 0;
             }
             .pro-ai-card:hover {
                 border-color: var(--accent);
@@ -1558,43 +1595,62 @@
             }
             .pro-ai-card-header {
                 display: flex;
-                align-items: flex-start;
-                justify-content: space-between;
-                gap: 8px;
+                flex-direction: column;
+                gap: 7px;
                 border-bottom: 1px solid var(--border);
                 padding-bottom: 10px;
             }
-            .pro-ai-card-title {
-                font-size: 13px;
-                font-weight: 700;
-                color: var(--text);
+            .pro-ai-card-title-row {
                 display: flex;
                 align-items: center;
-                gap: 6px;
+                justify-content: space-between;
+                gap: 8px;
+            }
+            .pro-ai-card-title {
+                font-size: 13.5px;
+                font-weight: 700;
+                color: var(--text);
+                white-space: nowrap;
+                letter-spacing: -0.01em;
+            }
+            .pro-ai-card-sub {
+                font-size: 11px;
+                color: var(--text-dim);
+                font-family: var(--mono);
+            }
+            .pro-ai-tag-wrapper {
+                display: flex;
+                width: 100%;
             }
             .pro-ai-tag {
-                font-size: 10px;
+                font-size: 10.5px;
                 font-weight: 700;
                 font-family: var(--mono);
-                padding: 2px 6px;
+                padding: 4px 8px;
                 border-radius: 4px;
                 text-transform: uppercase;
-                white-space: nowrap;
+                letter-spacing: 0.03em;
+                line-height: 1.35;
+                white-space: normal;
+                word-break: break-word;
+                display: inline-block;
+                width: 100%;
+                box-sizing: border-box;
             }
             .pro-ai-tag.bullish {
                 background: var(--green-bg);
                 color: var(--green);
-                border: 1px solid rgba(0, 229, 160, 0.25);
+                border: 1px solid rgba(0, 229, 160, 0.3);
             }
             .pro-ai-tag.bearish {
                 background: var(--red-bg);
                 color: var(--red);
-                border: 1px solid rgba(255, 77, 109, 0.25);
+                border: 1px solid rgba(255, 77, 109, 0.3);
             }
             .pro-ai-tag.neutral {
                 background: var(--yellow-bg);
                 color: var(--yellow);
-                border: 1px solid rgba(255, 209, 102, 0.25);
+                border: 1px solid rgba(255, 209, 102, 0.3);
             }
             .pro-ai-card-body {
                 font-size: 12px;
@@ -1620,61 +1676,126 @@
                 font-size: 11px;
                 margin-top: 4px;
             }
-            .pro-ai-duel-pills {
+            .pro-ai-duel-container {
                 display: flex;
                 align-items: center;
-                justify-content: center;
+                justify-content: space-between;
                 gap: 8px;
                 background: var(--surface);
                 border: 1px solid var(--border);
                 border-radius: 6px;
-                padding: 8px;
-                font-family: var(--mono);
-                font-size: 11px;
-                font-weight: 700;
+                padding: 8px 10px;
                 margin-top: 4px;
+            }
+            .pro-ai-duel-chip {
+                display: flex;
+                flex-direction: column;
+                gap: 2px;
+                flex: 1;
+                min-width: 0;
+            }
+            .pro-ai-duel-chip.bull { align-items: flex-start; }
+            .pro-ai-duel-chip.bear { align-items: flex-end; }
+            .duel-chip-role {
+                font-size: 9px;
+                font-weight: 800;
+                font-family: var(--mono);
+                letter-spacing: 0.05em;
+            }
+            .pro-ai-duel-chip.bull .duel-chip-role { color: var(--green); }
+            .pro-ai-duel-chip.bear .duel-chip-role { color: var(--red); }
+            .duel-chip-sym {
+                font-size: 11.5px;
+                font-weight: 700;
+                font-family: var(--mono);
+                color: var(--text);
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                max-width: 100%;
             }
             .pro-ai-duel-vs {
                 color: var(--text-dim);
                 font-size: 10px;
+                font-weight: 800;
+                font-family: var(--mono);
             }
-            .pro-ai-strike-trio {
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
+            .pro-ai-strike-grid {
+                display: grid;
+                grid-template-columns: repeat(3, 1fr);
+                gap: 8px;
+                margin: 2px 0;
+            }
+            .pro-ai-strike-pod {
                 background: var(--surface);
                 border: 1px solid var(--border);
                 border-radius: 6px;
-                padding: 6px 10px;
-                font-family: var(--mono);
-                font-size: 11px;
-                margin-top: 4px;
+                padding: 7px 6px;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                text-align: center;
+                gap: 2px;
             }
+            .pro-ai-strike-pod.put { border-color: rgba(0, 229, 160, 0.35); background: rgba(0, 229, 160, 0.05); }
+            .pro-ai-strike-pod.pain { border-color: rgba(255, 209, 102, 0.35); background: rgba(255, 209, 102, 0.05); }
+            .pro-ai-strike-pod.call { border-color: rgba(255, 77, 109, 0.35); background: rgba(255, 77, 109, 0.05); }
+            .strike-pod-lbl { font-size: 9px; font-weight: 700; font-family: var(--mono); color: var(--text-dim); letter-spacing: 0.04em; }
+            .strike-pod-val { font-size: 13px; font-weight: 800; font-family: var(--mono); color: var(--text); }
+            .pro-ai-strike-pod.put .strike-pod-val { color: var(--green); }
+            .pro-ai-strike-pod.pain .strike-pod-val { color: var(--yellow); }
+            .pro-ai-strike-pod.call .strike-pod-val { color: var(--red); }
+
             .pro-ai-invalidation {
                 background: rgba(255, 77, 109, 0.08);
-                border-left: 2px solid var(--red);
-                padding: 6px 10px;
+                border-left: 3px solid var(--red);
+                padding: 8px 12px;
                 border-radius: 4px;
                 font-size: 11px;
-                color: var(--text-dim);
-                line-height: 1.4;
+                color: var(--text);
+                line-height: 1.45;
                 margin-top: 6px;
+                display: flex;
+                align-items: flex-start;
+                gap: 8px;
             }
-            .pro-ai-invalidation b {
+            .invalidation-icon {
+                font-size: 13px;
+                line-height: 1.2;
+            }
+            .invalidation-content {
+                display: flex;
+                flex-direction: column;
+                gap: 2px;
+            }
+            .invalidation-title {
+                font-size: 10px;
+                font-weight: 800;
+                font-family: var(--mono);
                 color: var(--red);
+                letter-spacing: 0.04em;
             }
             .pro-ai-llm-box {
-                margin-top: 16px;
-                background: rgba(129, 140, 248, 0.06);
-                border: 1px solid rgba(129, 140, 248, 0.3);
+                margin-top: 14px;
+                background: linear-gradient(135deg, rgba(99, 102, 241, 0.07) 0%, rgba(168, 85, 247, 0.06) 100%);
+                border: 1px solid rgba(129, 140, 248, 0.35);
                 border-radius: 8px;
                 padding: 12px 16px;
                 display: flex;
                 flex-direction: column;
-                gap: 6px;
+                gap: 8px;
                 animation: fadeIn 0.3s ease;
             }
             .pro-ai-llm-hdr {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                flex-wrap: wrap;
+                gap: 8px;
+                border-bottom: 1px solid rgba(129, 140, 248, 0.2);
+                padding-bottom: 6px;
+            }
+            .pro-ai-llm-hdr-left {
                 display: flex;
                 align-items: center;
                 gap: 8px;
@@ -1683,6 +1804,25 @@
                 color: #818cf8;
                 text-transform: uppercase;
                 font-family: var(--mono);
+            }
+            .pro-ai-llm-pill {
+                background: rgba(129, 140, 248, 0.18);
+                border: 1px solid rgba(129, 140, 248, 0.4);
+                color: #c7d2fe;
+                font-size: 10px;
+                padding: 2px 7px;
+                border-radius: 4px;
+                font-family: var(--mono);
+                font-weight: 700;
+            }
+            [data-theme="light"] .pro-ai-llm-pill {
+                color: #4338ca;
+            }
+            .pro-ai-llm-verified-tag {
+                font-size: 10px;
+                font-family: var(--mono);
+                color: var(--green);
+                font-weight: 700;
             }
             .pro-ai-llm-text {
                 font-size: 12.5px;
@@ -1846,6 +1986,12 @@
                             </span>
                             <span class="pro-ai-title" id="pro-ai-main-title">⚡ Institutional Execution Dossier</span>
                             <span class="hw-badge-tag" id="pro-ai-time-tag">Syncing...</span>
+                            <span class="pro-ai-model-badge" id="pro-ai-model-tag" title="LLM Engine powering this intelligence">
+                                <span class="model-badge-icon">🧠</span>
+                                <span class="model-badge-label">LLM ENGINE:</span>
+                                <span class="model-badge-name" id="pro-ai-model-name">OmniRouter (Claude-Models Combo)</span>
+                                <span class="model-status-dot"></span>
+                            </span>
                         </div>
                         <div class="pro-ai-subtitle">
                             Autonomous institutional synthesis of constituent point propulsion, titan clashes, velocity pulses & derivative execution
@@ -1869,7 +2015,7 @@
                 <!-- Headline Summary Banner -->
                 <div class="pro-ai-headline-banner" id="pro-ai-headline-banner">
                     <div class="pro-ai-headline-text" id="pro-ai-headline-text">
-                        Loading institutional briefing...
+                        ⚡ REGIME DIAGNOSTIC: Loading institutional briefing...
                     </div>
                     <div class="pro-ai-conviction-pill high" id="pro-ai-conviction-pill">
                         HIGH CONVICTION
@@ -1881,8 +2027,13 @@
                     <!-- Pillar 1: Market Footprint & Breadth Divergence -->
                     <div class="pro-ai-card">
                         <div class="pro-ai-card-header">
-                            <span class="pro-ai-card-title">🏛️ Institutional Footprint</span>
-                            <span class="pro-ai-tag neutral" id="pro-ai-footprint-tag">ANALYZING</span>
+                            <div class="pro-ai-card-title-row">
+                                <span class="pro-ai-card-title">🏛️ Institutional Footprint</span>
+                                <span class="pro-ai-card-sub">Market Breadth</span>
+                            </div>
+                            <div class="pro-ai-tag-wrapper">
+                                <span class="pro-ai-tag neutral" id="pro-ai-footprint-tag">ANALYZING</span>
+                            </div>
                         </div>
                         <div class="pro-ai-card-body" id="pro-ai-footprint-body">
                             Evaluating constituent propulsion and heavyweight absorption dynamics...
@@ -1897,24 +2048,40 @@
                     <!-- Pillar 2: Titan Clash & Sector Rotation -->
                     <div class="pro-ai-card">
                         <div class="pro-ai-card-header">
-                            <span class="pro-ai-card-title">⚔️ Titan Clash & Rotation</span>
-                            <span class="pro-ai-tag neutral" id="pro-ai-clash-tag">SECTOR STANDOFF</span>
+                            <div class="pro-ai-card-title-row">
+                                <span class="pro-ai-card-title">⚔️ Titan Clash & Rotation</span>
+                                <span class="pro-ai-card-sub">Pillar Tug-of-War</span>
+                            </div>
+                            <div class="pro-ai-tag-wrapper">
+                                <span class="pro-ai-tag neutral" id="pro-ai-clash-tag">SECTOR STANDOFF</span>
+                            </div>
                         </div>
                         <div class="pro-ai-card-body" id="pro-ai-clash-body">
                             Tracking heavyweight leader tug-of-war and capital rotation...
                         </div>
-                        <div class="pro-ai-duel-pills" id="pro-ai-duel-pills">
-                            <span class="green" id="pro-ai-duel-leader">—</span>
+                        <div class="pro-ai-duel-container" id="pro-ai-duel-container">
+                            <div class="pro-ai-duel-chip bull">
+                                <span class="duel-chip-role">▲ TOP DRIVER</span>
+                                <span class="duel-chip-sym" id="pro-ai-duel-leader">—</span>
+                            </div>
                             <span class="pro-ai-duel-vs">⚡ VS ⚡</span>
-                            <span class="red" id="pro-ai-duel-dragger">—</span>
+                            <div class="pro-ai-duel-chip bear">
+                                <span class="duel-chip-role">▼ TOP ANCHOR</span>
+                                <span class="duel-chip-sym" id="pro-ai-duel-dragger">—</span>
+                            </div>
                         </div>
                     </div>
 
                     <!-- Pillar 3: Scan Delta Velocity & Momentum Shift -->
                     <div class="pro-ai-card">
                         <div class="pro-ai-card-header">
-                            <span class="pro-ai-card-title">⏱️ Scan Delta Velocity</span>
-                            <span class="pro-ai-tag neutral" id="pro-ai-velocity-tag">PULSE</span>
+                            <div class="pro-ai-card-title-row">
+                                <span class="pro-ai-card-title">⏱️ Scan Delta Velocity</span>
+                                <span class="pro-ai-card-sub">15m Pulse</span>
+                            </div>
+                            <div class="pro-ai-tag-wrapper">
+                                <span class="pro-ai-tag neutral" id="pro-ai-velocity-tag">PULSE</span>
+                            </div>
                         </div>
                         <div class="pro-ai-card-body" id="pro-ai-velocity-body">
                             Measuring 15m scan delta impulse and 5-scan directional shifts...
@@ -1928,30 +2095,53 @@
                     <!-- Pillar 4: Desk Execution Playbook -->
                     <div class="pro-ai-card">
                         <div class="pro-ai-card-header">
-                            <span class="pro-ai-card-title">🎯 Desk Execution Mandate</span>
-                            <span class="pro-ai-tag bullish" id="pro-ai-mandate-tag">STRUCTURE</span>
+                            <div class="pro-ai-card-title-row">
+                                <span class="pro-ai-card-title">🎯 Desk Execution Mandate</span>
+                                <span class="pro-ai-card-sub">₹1 Cr Portfolio</span>
+                            </div>
+                            <div class="pro-ai-tag-wrapper">
+                                <span class="pro-ai-tag bullish" id="pro-ai-mandate-tag">STRUCTURE</span>
+                            </div>
                         </div>
-                        <div class="pro-ai-strike-trio">
-                            <span title="Structural Put Support Strike">Put Base: <b id="pro-ai-put-base">—</b></span>
-                            <span title="Option Chain Max Pain Strike">Max Pain: <b id="pro-ai-max-pain">—</b></span>
-                            <span title="Call Wall Resistance Strike">Call Wall: <b id="pro-ai-call-wall">—</b></span>
+                        <div class="pro-ai-strike-grid">
+                            <div class="pro-ai-strike-pod put" title="Structural Put Support Strike">
+                                <span class="strike-pod-lbl">🛡️ PUT BASE</span>
+                                <span class="strike-pod-val" id="pro-ai-put-base">—</span>
+                            </div>
+                            <div class="pro-ai-strike-pod pain" title="Option Chain Max Pain Strike">
+                                <span class="strike-pod-lbl">⚓ MAX PAIN</span>
+                                <span class="strike-pod-val" id="pro-ai-max-pain">—</span>
+                            </div>
+                            <div class="pro-ai-strike-pod call" title="Call Wall Overhead Resistance">
+                                <span class="strike-pod-lbl">🧱 CALL WALL</span>
+                                <span class="strike-pod-val" id="pro-ai-call-wall">—</span>
+                            </div>
                         </div>
                         <div class="pro-ai-card-body" id="pro-ai-playbook-body">
                             Formulating derivatives strategy and strike selection...
                         </div>
                         <div class="pro-ai-invalidation" id="pro-ai-invalidation-box">
-                            <b>Invalidation:</b> <span id="pro-ai-invalidation-text">—</span>
+                            <span class="invalidation-icon">⚠️</span>
+                            <div class="invalidation-content">
+                                <span class="invalidation-title">THESIS INVALIDATION TRIGGER:</span>
+                                <span id="pro-ai-invalidation-text">—</span>
+                            </div>
                         </div>
                     </div>
                 </div>
 
-                <!-- Optional Deep LLM Synthesis Box -->
-                <div class="pro-ai-llm-box" id="pro-ai-llm-box" style="display: none;">
+                <!-- Deep LLM Synthesis Box -->
+                <div class="pro-ai-llm-box" id="pro-ai-llm-box">
                     <div class="pro-ai-llm-hdr">
-                        <span>🤖 INSTITUTIONAL PROP DESK SYNTHESIS</span>
-                        <span id="pro-ai-llm-model" style="font-size: 10px; opacity: 0.8;">(OmniRouter Engine)</span>
+                        <div class="pro-ai-llm-hdr-left">
+                            <span>🤖 INSTITUTIONAL PROP DESK SYNTHESIS</span>
+                            <span class="pro-ai-llm-pill" id="pro-ai-llm-model-pill">OmniRouter (Claude-Models Combo)</span>
+                        </div>
+                        <span class="pro-ai-llm-verified-tag">✓ VERIFIED INSTITUTIONAL REASONING</span>
                     </div>
-                    <div class="pro-ai-llm-text" id="pro-ai-llm-text"></div>
+                    <div class="pro-ai-llm-text" id="pro-ai-llm-text">
+                        Generating institutional derivatives desk synthesis...
+                    </div>
                 </div>
             </section>
 
@@ -3171,9 +3361,19 @@
                 const timeTag = document.getElementById("pro-ai-time-tag");
                 if (timeTag) timeTag.textContent = `${d.index_name} · Spot: ₹${d.spot.toLocaleString("en-IN", { minimumFractionDigits: 1 })} · ${d.latest_scan_time || 'Latest'}`;
 
+                // LLM Model Name & Attribution
+                const modelNameEl = document.getElementById("pro-ai-model-name");
+                if (modelNameEl) {
+                    modelNameEl.textContent = d.llm_model || "OmniRouter (Claude-Models Combo)";
+                }
+                const modelPillEl = document.getElementById("pro-ai-llm-model-pill");
+                if (modelPillEl) {
+                    modelPillEl.textContent = d.llm_model || "OmniRouter (Claude-Models Combo)";
+                }
+
                 // Headline & Conviction Pill
                 const hlText = document.getElementById("pro-ai-headline-text");
-                if (hlText) hlText.textContent = d.headline || "INSTITUTIONAL REGIME IDENTIFIED";
+                if (hlText) hlText.innerHTML = `⚡ <b>REGIME DIAGNOSTIC:</b> ${d.headline || "INSTITUTIONAL REGIME IDENTIFIED"}`;
 
                 const convPill = document.getElementById("pro-ai-conviction-pill");
                 if (convPill) {
@@ -3214,11 +3414,11 @@
 
                 const duelLeader = document.getElementById("pro-ai-duel-leader");
                 if (duelLeader && d.pillars && d.pillars.driver) {
-                    duelLeader.textContent = `▲ ${d.pillars.driver.symbol} (${d.pillars.driver.impact >= 0 ? '+' : ''}${d.pillars.driver.impact.toFixed(1)} pts)`;
+                    duelLeader.textContent = `${d.pillars.driver.symbol} (${d.pillars.driver.impact >= 0 ? '+' : ''}${d.pillars.driver.impact.toFixed(1)} pts)`;
                 }
                 const duelDragger = document.getElementById("pro-ai-duel-dragger");
                 if (duelDragger && d.pillars && d.pillars.dragger) {
-                    duelDragger.textContent = `▼ ${d.pillars.dragger.symbol} (${d.pillars.dragger.impact.toFixed(1)} pts)`;
+                    duelDragger.textContent = `${d.pillars.dragger.symbol} (${d.pillars.dragger.impact.toFixed(1)} pts)`;
                 }
 
                 // Card 3: Scan Delta Velocity & Momentum Shift
@@ -3259,12 +3459,13 @@
                 const invText = document.getElementById("pro-ai-invalidation-text");
                 if (invText && d.playbook) invText.textContent = d.playbook.invalidation;
 
-                // Deep LLM Synthesis Box (if present)
+                // Deep LLM Synthesis Box
                 const llmBox = document.getElementById("pro-ai-llm-box");
                 const llmText = document.getElementById("pro-ai-llm-text");
+                const synthesis = d.llm_synthesis || d.llm_summary;
                 if (llmBox && llmText) {
-                    if (d.llm_summary) {
-                        llmText.textContent = `"${d.llm_summary}"`;
+                    if (synthesis) {
+                        llmText.innerHTML = `"${synthesis}"`;
                         llmBox.style.display = "flex";
                     } else {
                         llmBox.style.display = "none";
