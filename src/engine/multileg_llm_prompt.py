@@ -316,10 +316,13 @@ def _format_commodity_regime_intelligence(symbol: str, scan_context: dict) -> st
         # 2. EIA Inventory Schedule (Only active on Thursdays or near event)
         is_thu = now_ist.weekday() == 3
         if is_thu:
-            if 18 <= now_ist.hour <= 22:
-                lines.append("- EIA Inventory     : ACTIVE TODAY ~8:00 PM IST (Extreme Gamma Shock Window — Avoid Naked Straddles)")
+            from src.engine.time_guards import get_eia_announcement_time
+            eia_h, eia_m = get_eia_announcement_time(now_ist)
+            eia_str = f"{eia_h % 12 or 12}:{eia_m:02d} {'PM' if eia_h >= 12 else 'AM'} IST"
+            if (eia_h - 2) <= now_ist.hour <= (eia_h + 2):
+                lines.append(f"- EIA Inventory     : ACTIVE TODAY ~{eia_str} (Extreme Gamma Shock Window — Avoid Naked Straddles)")
             elif now_ist.hour >= 17:
-                lines.append("- EIA Inventory     : TODAY ~8:00 PM IST (Pre-event positioning)")
+                lines.append(f"- EIA Inventory     : TODAY ~{eia_str} (Pre-event positioning)")
 
         # 3. Momentum Engine Status
         try:
@@ -869,13 +872,15 @@ def build_multileg_exit_prompt(
     hours_to_event = 999
     if symbol.upper().startswith("NATURALGAS"):
         now_ist = datetime.now(IST)
-        # EIA is Thursday 20:00 IST
+        # EIA is Thursday (DST-aware: 20:00 summer / 21:00 winter IST)
         if now_ist.weekday() == 3:  # Thursday
-            eia_hour = 20
-            hours_to_event = (eia_hour - now_ist.hour) + (eia_hour == now_ist.hour and now_ist.minute > 0)
-            if 0 <= hours_to_event <= 4:
+            from src.engine.time_guards import get_eia_announcement_time
+            eia_hour, eia_minute = get_eia_announcement_time(now_ist)
+            eia_target = now_ist.replace(hour=eia_hour, minute=eia_minute, second=0, microsecond=0)
+            hours_to_event = (eia_target - now_ist).total_seconds() / 3600.0
+            if -1.0 <= hours_to_event <= 4.0:
                 event_within_4h = True
-            next_catalyst = f"EIA Inventory {hours_to_event:.1f}h"
+            next_catalyst = f"EIA Inventory {max(0.0, hours_to_event):.1f}h"
     elif symbol.upper().startswith("CRUDEOIL"):
         # OPEC+ meetings typically Wednesday
         now_ist = datetime.now(IST)

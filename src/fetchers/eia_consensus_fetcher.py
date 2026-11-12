@@ -261,11 +261,13 @@ def fetch_complete_eia_dataset() -> dict | None:
         macro_stance = stance
         stance_summary = summary
 
-    # Next Thursday release validity window (20:00 IST)
+    # Next Thursday release validity window (DST-aware: 20:00 summer / 21:00 winter IST)
+    from src.engine.time_guards import get_eia_announcement_time
+    eia_h, eia_m = get_eia_announcement_time(now_ist)
     days_to_next_thu = (3 - now_ist.weekday()) % 7
     if days_to_next_thu == 0:
         days_to_next_thu = 7
-    next_thu = (now_ist + timedelta(days=days_to_next_thu)).replace(hour=20, minute=0, second=0, microsecond=0)
+    next_thu = (now_ist + timedelta(days=days_to_next_thu)).replace(hour=eia_h, minute=eia_m, second=0, microsecond=0)
     valid_until = next_thu.astimezone(timezone.utc).isoformat()
 
     surprise_bcf = (actual_bcf - consensus) if (actual_bcf is not None and consensus is not None) else None

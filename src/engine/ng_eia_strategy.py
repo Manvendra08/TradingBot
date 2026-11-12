@@ -93,13 +93,15 @@ def fetch_eia_actual_fallback() -> float | None:
     return None
 
 def get_pre_release_price() -> float | None:
-    """Finds NATURALGAS price logged in database between 19:40 and 19:59 IST today.
+    """Finds NATURALGAS price logged in database starting 20 minutes prior to EIA release IST today.
     
     Falls back to the most recent prior price if no pre-release snapshot exists,
     so the reaction-override gate can still evaluate post-EIA price moves.
     """
     now_ist = datetime.now(IST)
-    start_ist = now_ist.replace(hour=19, minute=40, second=0, microsecond=0)
+    from src.engine.time_guards import get_eia_announcement_time
+    eia_h, eia_m = get_eia_announcement_time(now_ist)
+    start_ist = now_ist.replace(hour=eia_h, minute=eia_m, second=0, microsecond=0) - timedelta(minutes=20)
     start_utc = start_ist.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     
     with get_conn() as conn:
@@ -406,9 +408,12 @@ def check_ng_eia_exits_every_2_min() -> None:
             elif side == "SELL" and underlying >= entry_und:
                 hit_sl = True
                 
-    # Hard stop at 21:30 IST
+    # Hard stop 90 min post-announcement (21:30 summer, 22:30 winter)
     now_ist = datetime.now(IST)
-    is_time_stop = now_ist.time() >= datetime.strptime("21:30", "%H:%M").time()
+    from src.engine.time_guards import get_eia_announcement_time
+    eia_h, eia_m = get_eia_announcement_time(now_ist)
+    time_stop_dt = now_ist.replace(hour=eia_h, minute=eia_m, second=0, microsecond=0) + timedelta(minutes=90)
+    is_time_stop = now_ist >= time_stop_dt
     
     exit_hit = hit_target or hit_sl or is_time_stop
     if exit_hit:
@@ -421,7 +426,7 @@ def check_ng_eia_exits_every_2_min() -> None:
             status = "CLOSED_SL"
             reason = "EIA stop loss hit / breakeven trail hit"
         elif is_time_stop:
-            reason = "EIA hard time-stop 21:30 IST"
+            reason = f"EIA hard time-stop {time_stop_dt.strftime('%H:%M')} IST"
             
         exit_premium = None
         if open_trade.get("option_type") != "FUT":

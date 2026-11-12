@@ -2369,28 +2369,40 @@ def start_scheduler(immediate: bool = False):
                     name="ml-training-weekly",
                 ).start()
 
-            # 5. EIA Report Job (Thursday 8:02 PM IST)
+            # 5. EIA Report Job (Thursday: 2 min post-announcement, DST-aware: 20:02 summer / 21:02 winter)
             is_thursday = now_ist.weekday() == 3  # 0=Monday, 3=Thursday
-            is_802pm = now_ist.hour == 20 and now_ist.minute == 2
-            if is_thursday and is_802pm and _last_eia_run_date != current_date:
-                _last_eia_run_date = current_date
-                log.info("[scheduler] EIA Report Job triggered (Thursday 8:02 PM IST)")
+            if is_thursday:
+                from src.engine.time_guards import get_eia_announcement_time
+                eia_h, eia_m = get_eia_announcement_time(now_ist)
+                eia_report_mins = eia_h * 60 + eia_m + 2
+                is_eia_report_time = (now_ist.hour * 60 + now_ist.minute) == eia_report_mins
+                if is_eia_report_time and _last_eia_run_date != current_date:
+                    _last_eia_run_date = current_date
+                    log.info(
+                        "[scheduler] EIA Report Job triggered (Thursday %02d:%02d IST)",
+                        eia_report_mins // 60,
+                        eia_report_mins % 60,
+                    )
 
-                def _run_eia_analyzer():
-                    try:
-                        log.info("[scheduler] Running EIA consensus fetch at 8:02 PM before analysis...")
-                        from src.fetchers.eia_consensus_fetcher import fetch_and_store_eia_consensus
-                        fetch_and_store_eia_consensus()
-                        log.info("[scheduler] EIA consensus fetch finished. Starting EIA report analysis...")
+                    def _run_eia_analyzer():
+                        try:
+                            log.info(
+                                "[scheduler] Running EIA consensus fetch before analysis at %02d:%02d IST...",
+                                eia_report_mins // 60,
+                                eia_report_mins % 60,
+                            )
+                            from src.fetchers.eia_consensus_fetcher import fetch_and_store_eia_consensus
+                            fetch_and_store_eia_consensus()
+                            log.info("[scheduler] EIA consensus fetch finished. Starting EIA report analysis...")
 
-                        from src.engine.eia_analyzer import analyze_eia_report
-                        analyze_eia_report()
-                    except Exception as exc:
-                        log.warning("[scheduler] EIA Report analyzer failed: %s", exc)
+                            from src.engine.eia_analyzer import analyze_eia_report
+                            analyze_eia_report()
+                        except Exception as exc:
+                            log.warning("[scheduler] EIA Report analyzer failed: %s", exc)
 
-                threading.Thread(
-                    target=_run_eia_analyzer, daemon=True, name="eia-analyzer"
-                ).start()
+                    threading.Thread(
+                        target=_run_eia_analyzer, daemon=True, name="eia-analyzer"
+                    ).start()
 
             # 6. Daily Telegram Backup (Runs at 23:56 PM IST, after last MCX scan)
             is_1156pm = now_ist.hour == 23 and now_ist.minute == 56
@@ -2481,14 +2493,21 @@ def start_scheduler(immediate: bool = False):
                     target=_run_fast_exits, daemon=True, name="fast-exits-check"
                 ).start()
 
-            # 8. EIA Pre-Print Force Close (Thursday 19:40 IST)
+            # 8. EIA Pre-Print Force Close (Thursday: 20 min prior to release, DST-aware: 19:40 summer / 20:40 winter)
             if now_ist.weekday() == 3:  # Thursday
-                now_time_str = now_ist.strftime("%H:%M")
+                from src.engine.time_guards import get_eia_announcement_time
+                eia_h, eia_m = get_eia_announcement_time(now_ist)
+                pre_mins = (eia_h * 60 + eia_m) - 20
                 if (
-                    now_time_str == "19:40"
+                    (now_ist.hour * 60 + now_ist.minute) == pre_mins
                     and last_ng_eia_pre_print_close_date != current_date
                 ):
                     last_ng_eia_pre_print_close_date = current_date
+                    log.info(
+                        "[scheduler] EIA Pre-Print Force Close triggered (Thursday %02d:%02d IST)",
+                        pre_mins // 60,
+                        pre_mins % 60,
+                    )
                     try:
                         from src.engine.ng_eia_strategy import force_close_eia_pre_print
 
@@ -2496,16 +2515,19 @@ def start_scheduler(immediate: bool = False):
                     except Exception as e:
                         log.error("[scheduler] EIA pre-print force close failed: %s", e)
 
-            # 9. EIA Consensus Scraper (Thursday 20:00 IST)
+            # 9. EIA Consensus Scraper (Thursday: at announcement time, DST-aware: 20:00 summer / 21:00 winter)
             if now_ist.weekday() == 3:  # Thursday
-                now_time_str = now_ist.strftime("%H:%M")
+                from src.engine.time_guards import get_eia_announcement_time
+                eia_h, eia_m = get_eia_announcement_time(now_ist)
                 if (
-                    now_time_str == "20:00"
+                    (now_ist.hour, now_ist.minute) == (eia_h, eia_m)
                     and last_ng_eia_consensus_fetch_date != current_date
                 ):
                     last_ng_eia_consensus_fetch_date = current_date
                     log.info(
-                        "[scheduler] EIA Consensus Scraper Job triggered (Thursday 8:00 PM IST)"
+                        "[scheduler] EIA Consensus Scraper Job triggered (Thursday %02d:%02d IST)",
+                        eia_h,
+                        eia_m,
                     )
 
                     def _run_eia_fetch():

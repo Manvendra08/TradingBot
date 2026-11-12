@@ -1095,7 +1095,9 @@ def _build_deep_prompt(
     is_wed = now_ist.weekday() == 2
     is_fri = now_ist.weekday() == 4
     if base_sym == "NATURALGAS" and is_thu:
-        event_risk_today = "EIA Thu 20:00 IST"
+        from src.engine.time_guards import get_eia_announcement_time
+        eia_h, eia_m = get_eia_announcement_time(now_ist)
+        event_risk_today = f"EIA Thu {eia_h:02d}:{eia_m:02d} IST"
     elif base_sym == "CRUDEOIL" and is_wed:
         event_risk_today = "OPEC+ Wed ~16:00 IST"
     elif is_fri:

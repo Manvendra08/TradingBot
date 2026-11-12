@@ -131,8 +131,11 @@ def _is_entry_window_active(symbol: str) -> tuple[bool, str]:
 
             eia_h, eia_m = get_eia_announcement_time(now_ist)
             # EIA blackout: 15 min prior to release through 30 min post release (DST-aware: 20:45-21:30 winter, 19:45-20:30 summer)
-            eia_start = (eia_h * 100 + eia_m) - 15
-            eia_end = (eia_h * 100 + eia_m) + 30
+            eia_total_mins = eia_h * 60 + eia_m
+            start_total = eia_total_mins - 15
+            end_total = eia_total_mins + 30
+            eia_start = (start_total // 60) * 100 + (start_total % 60)
+            eia_end = (end_total // 60) * 100 + (end_total % 60)
         except Exception:
             mcx_entry_cutoff = 2325
             eia_start, eia_end = 2045, 2130
