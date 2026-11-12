@@ -46,7 +46,7 @@ Usage
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, date, timedelta
 
 import pytz
 
@@ -92,6 +92,128 @@ def get_eia_announcement_time(dt: datetime | None = None) -> tuple[int, int]:
     et_dt = dt.astimezone(US_EASTERN)
     is_dst = bool(et_dt.dst())
     return (20, 0) if is_dst else (21, 0)
+
+
+def get_scheduled_eia_weekday(d: date) -> int:
+    """Return target weekday (3=Thu, 4=Fri, 2=Wed) for EIA release in week of date d.
+    
+    Standard EIA release is Thursday (weekday 3).
+    When a US Federal Holiday occurs on Mon-Wed (e.g. Veterans Day, MLK Day, Presidents' Day,
+    Memorial Day, Juneteenth, July 4th, Labor Day, Columbus Day), the release shifts 24h to Friday (weekday 4).
+    During Thanksgiving week (4th Thursday in November), the release shifts to Wednesday (weekday 2).
+    """
+    monday = d - timedelta(days=d.weekday())
+    for offset in range(3):
+        day = monday + timedelta(days=offset)
+        y, m, dt_num = day.year, day.month, day.day
+        # Fixed holidays
+        if (m == 1 and dt_num == 1) or (m == 1 and dt_num == 2 and day.weekday() == 0):
+            return 4
+        if (m == 6 and dt_num == 19) or (m == 6 and dt_num in (18, 20) and day.weekday() in (0, 4)):
+            return 4
+        if (m == 7 and dt_num == 4) or (m == 7 and dt_num in (3, 5) and day.weekday() in (0, 4)):
+            return 4
+        if (m == 11 and dt_num == 11) or (m == 11 and dt_num in (10, 12) and day.weekday() in (0, 4)):
+            return 4
+        if (m == 12 and dt_num == 25) or (m == 12 and dt_num in (24, 26) and day.weekday() in (0, 4)):
+            return 4
+        # Floating Monday holidays
+        if day.weekday() == 0:
+            if m == 1 and 15 <= dt_num <= 21:   # MLK Jr. Day
+                return 4
+            if m == 2 and 15 <= dt_num <= 21:   # Presidents' Day
+                return 4
+            if m == 5 and 25 <= dt_num <= 31:   # Memorial Day
+                return 4
+            if m == 9 and 1 <= dt_num <= 7:     # Labor Day
+                return 4
+            if m == 10 and 8 <= dt_num <= 14:   # Columbus Day
+                return 4
+    # Thanksgiving week (4th Thursday of November) -> Wednesday release
+    thursday = monday + timedelta(days=3)
+    if thursday.month == 11 and 22 <= thursday.day <= 28:
+        return 2
+    return 3
+
+
+def get_eia_schedule(dt: datetime | None = None) -> dict:
+    """Return complete dynamic, DST-aware, and holiday-aware EIA Natural Gas Storage schedule.
+    
+    Fields returned:
+      scheduled_release_dt: datetime in IST
+      report_date: str 'YYYY-MM-DD'
+      is_today: bool
+      release_day_name: str ('Friday', 'Thursday', etc.)
+      release_hour: int
+      release_minute: int
+      hours_until: float
+      is_blackout: bool (±15 min of announcement)
+      is_event_regime: bool (-15 min to +90 min of announcement)
+      is_post_release: bool (today and dt >= scheduled_release_dt)
+    """
+    if dt is None:
+        dt = datetime.now(IST)
+    elif dt.tzinfo is None:
+        dt = dt.replace(tzinfo=IST)
+
+    # 1. Check if Forex Factory cache has authoritative event date for this week
+    ff_release_dt = None
+    try:
+        from src.fetchers.eia_consensus_fetcher import _EIA_CACHE
+        if _EIA_CACHE and _EIA_CACHE.get("report_date"):
+            rep_date_str = _EIA_CACHE["report_date"]
+            c_date = datetime.strptime(rep_date_str, "%Y-%m-%d").date()
+            if abs((c_date - dt.date()).days) <= 6:
+                h, m = get_eia_announcement_time(dt)
+                ff_release_dt = IST.localize(datetime(c_date.year, c_date.month, c_date.day, h, m))
+    except Exception:
+        pass
+
+    if ff_release_dt is not None:
+        release_dt = ff_release_dt
+    else:
+        curr_date = dt.date()
+        target_weekday = get_scheduled_eia_weekday(curr_date)
+        monday = curr_date - timedelta(days=curr_date.weekday())
+        rel_date = monday + timedelta(days=target_weekday)
+        rel_hour, rel_minute = get_eia_announcement_time(dt)
+        release_dt = IST.localize(datetime(rel_date.year, rel_date.month, rel_date.day, rel_hour, rel_minute))
+        if dt > release_dt + timedelta(hours=4):
+            next_monday = monday + timedelta(days=7)
+            next_target_weekday = get_scheduled_eia_weekday(next_monday)
+            rel_date = next_monday + timedelta(days=next_target_weekday)
+            rel_hour, rel_minute = get_eia_announcement_time(IST.localize(datetime(rel_date.year, rel_date.month, rel_date.day, 12, 0)))
+            release_dt = IST.localize(datetime(rel_date.year, rel_date.month, rel_date.day, rel_hour, rel_minute))
+
+    rel_h = release_dt.hour
+    rel_m = release_dt.minute
+    is_today = (dt.date() == release_dt.date())
+    hours_until = (release_dt - dt).total_seconds() / 3600.0
+    diff_minutes = (dt - release_dt).total_seconds() / 60.0
+
+    is_blackout = is_today and (-15.0 <= diff_minutes <= 15.0)
+    is_event_regime = is_today and (-15.0 <= diff_minutes <= 90.0)
+    is_post_release = is_today and (dt >= release_dt)
+
+    day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+    return {
+        "scheduled_release_dt": release_dt,
+        "report_date": release_dt.strftime("%Y-%m-%d"),
+        "is_today": is_today,
+        "release_day_name": day_names[release_dt.weekday()],
+        "release_hour": rel_h,
+        "release_minute": rel_m,
+        "hours_until": round(hours_until, 2),
+        "is_blackout": is_blackout,
+        "is_event_regime": is_event_regime,
+        "is_post_release": is_post_release,
+    }
+
+
+def is_eia_release_day(dt: datetime | None = None) -> bool:
+    """Return True if dt (or current IST time) falls on the scheduled EIA release day."""
+    return get_eia_schedule(dt)["is_today"]
 
 
 def _parse_expiry_date(expiry_str: str | None) -> "date | None":
@@ -182,23 +304,24 @@ def is_trading_allowed_now(symbol: str, expiry_str: str | None = None, operation
                 # On expiry day (0DTE), new entries are allowed strictly up to 14:00 IST (2:00 PM) only
                 if operation != "EXIT" and (h, m) >= (14, 0):
                     return False, f"0DTE expiry entry cutoff reached (>= 14:00 IST) for expiry {expiry_str}"
-        # ── Window 3: EIA report ±15 min (NATURALGAS Thursday, CRUDEOIL Wednesday) ────────
+        # ── Window 3: EIA report ±15 min (NATURALGAS Dynamic EIA day, CRUDEOIL Wednesday) ────────
         # EXIT operations bypass event/noise windows: that is exactly when
         # protective square-offs are most needed.
         if operation != "EXIT":
-            eia_hour, eia_minute = get_eia_announcement_time(now)
             if sym in ("NATURALGAS", "NATGAS"):
-                if now.weekday() == _EIA_WEEKDAY:
-                    eia_min = eia_hour * 60 + eia_minute
-                    now_min = h * 60 + m
-                    if abs(now_min - eia_min) <= _EIA_WINDOW:
-                        return (
-                            False,
-                            f"EIA Natural Gas Storage Report window "
-                            f"(Thu {eia_hour:02d}:{eia_minute:02d} IST "
-                            f"±{_EIA_WINDOW} min)",
-                        )
+                eia_sched = get_eia_schedule(now)
+                if eia_sched["is_blackout"]:
+                    rel_day = eia_sched["release_day_name"][:3]
+                    rel_h = eia_sched["release_hour"]
+                    rel_m = eia_sched["release_minute"]
+                    return (
+                        False,
+                        f"EIA Natural Gas Storage Report blackout window "
+                        f"({rel_day} {rel_h:02d}:{rel_m:02d} IST "
+                        f"±{_EIA_WINDOW} min)",
+                    )
             elif sym == "CRUDEOIL":
+                eia_hour, eia_minute = get_eia_announcement_time(now)
                 if now.weekday() == 2:  # Wednesday
                     eia_min = eia_hour * 60 + eia_minute
                     now_min = h * 60 + m

@@ -129,22 +129,21 @@ def _is_entry_window_active(symbol: str) -> tuple[bool, str]:
                 cut_h -= 1
             mcx_entry_cutoff = cut_h * 100 + cut_m
 
-            eia_h, eia_m = get_eia_announcement_time(now_ist)
-            # EIA blackout: 15 min prior to release through 30 min post release (DST-aware: 20:45-21:30 winter, 19:45-20:30 summer)
-            eia_total_mins = eia_h * 60 + eia_m
-            start_total = eia_total_mins - 15
-            end_total = eia_total_mins + 30
-            eia_start = (start_total // 60) * 100 + (start_total % 60)
-            eia_end = (end_total // 60) * 100 + (end_total % 60)
+            from src.engine.time_guards import get_eia_schedule
+            eia_sched = get_eia_schedule(now_ist)
+            # EIA blackout: 15 min prior to release through 30 min post release (DST & holiday-aware)
+            if eia_sched["is_today"]:
+                rel_total_mins = eia_sched["release_hour"] * 60 + eia_sched["release_minute"]
+                diff_m = (now_ist.hour * 60 + now_ist.minute) - rel_total_mins
+                if -15 <= diff_m <= 30:
+                    start_m = rel_total_mins - 15
+                    end_m = rel_total_mins + 30
+                    return False, f"EIA inventory report blackout window ({start_m//60:02d}:{start_m%60:02d} - {end_m//60:02d}:{end_m%60:02d} IST). New entries blocked."
         except Exception:
             mcx_entry_cutoff = 2325
-            eia_start, eia_end = 2045, 2130
 
         if t > mcx_entry_cutoff:
             return False, f"After {mcx_entry_cutoff//100:02d}:{mcx_entry_cutoff%100:02d} IST (Current: {now_ist.strftime('%H:%M')} IST). Entry window closed to avoid pre-expiry/overnight gap risk."
-        # Thursday EIA storage report blackout (DST-aware)
-        if now_ist.weekday() == 3 and eia_start <= t <= eia_end:
-            return False, f"EIA inventory report blackout window ({eia_start//100:02d}:{eia_start%100:02d} - {eia_end//100:02d}:{eia_end%100:02d} IST). New entries blocked."
         return True, ""
 
     if "NIFTY" in base or "BANK" in base or "SENSEX" in base:

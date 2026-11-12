@@ -2369,17 +2369,19 @@ def start_scheduler(immediate: bool = False):
                     name="ml-training-weekly",
                 ).start()
 
-            # 5. EIA Report Job (Thursday: 2 min post-announcement, DST-aware: 20:02 summer / 21:02 winter)
-            is_thursday = now_ist.weekday() == 3  # 0=Monday, 3=Thursday
-            if is_thursday:
-                from src.engine.time_guards import get_eia_announcement_time
-                eia_h, eia_m = get_eia_announcement_time(now_ist)
+            # 5. EIA Report Job (2 min post-announcement, DST-aware & holiday-aware: 20:02 summer / 21:02 winter)
+            from src.engine.time_guards import get_eia_schedule
+            eia_sched = get_eia_schedule(now_ist)
+            if eia_sched["is_today"]:
+                eia_h = eia_sched["release_hour"]
+                eia_m = eia_sched["release_minute"]
                 eia_report_mins = eia_h * 60 + eia_m + 2
                 is_eia_report_time = (now_ist.hour * 60 + now_ist.minute) == eia_report_mins
                 if is_eia_report_time and _last_eia_run_date != current_date:
                     _last_eia_run_date = current_date
                     log.info(
-                        "[scheduler] EIA Report Job triggered (Thursday %02d:%02d IST)",
+                        "[scheduler] EIA Report Job triggered (%s %02d:%02d IST)",
+                        eia_sched["release_day_name"],
                         eia_report_mins // 60,
                         eia_report_mins % 60,
                     )
@@ -2493,10 +2495,10 @@ def start_scheduler(immediate: bool = False):
                     target=_run_fast_exits, daemon=True, name="fast-exits-check"
                 ).start()
 
-            # 8. EIA Pre-Print Force Close (Thursday: 20 min prior to release, DST-aware: 19:40 summer / 20:40 winter)
-            if now_ist.weekday() == 3:  # Thursday
-                from src.engine.time_guards import get_eia_announcement_time
-                eia_h, eia_m = get_eia_announcement_time(now_ist)
+            # 8. EIA Pre-Print Force Close (20 min prior to release, DST-aware & holiday-aware)
+            if eia_sched["is_today"]:
+                eia_h = eia_sched["release_hour"]
+                eia_m = eia_sched["release_minute"]
                 pre_mins = (eia_h * 60 + eia_m) - 20
                 if (
                     (now_ist.hour * 60 + now_ist.minute) == pre_mins
@@ -2504,7 +2506,8 @@ def start_scheduler(immediate: bool = False):
                 ):
                     last_ng_eia_pre_print_close_date = current_date
                     log.info(
-                        "[scheduler] EIA Pre-Print Force Close triggered (Thursday %02d:%02d IST)",
+                        "[scheduler] EIA Pre-Print Force Close triggered (%s %02d:%02d IST)",
+                        eia_sched["release_day_name"],
                         pre_mins // 60,
                         pre_mins % 60,
                     )
@@ -2515,17 +2518,18 @@ def start_scheduler(immediate: bool = False):
                     except Exception as e:
                         log.error("[scheduler] EIA pre-print force close failed: %s", e)
 
-            # 9. EIA Consensus Scraper (Thursday: at announcement time, DST-aware: 20:00 summer / 21:00 winter)
-            if now_ist.weekday() == 3:  # Thursday
-                from src.engine.time_guards import get_eia_announcement_time
-                eia_h, eia_m = get_eia_announcement_time(now_ist)
+            # 9. EIA Consensus Scraper (at announcement time, DST-aware & holiday-aware)
+            if eia_sched["is_today"]:
+                eia_h = eia_sched["release_hour"]
+                eia_m = eia_sched["release_minute"]
                 if (
                     (now_ist.hour, now_ist.minute) == (eia_h, eia_m)
                     and last_ng_eia_consensus_fetch_date != current_date
                 ):
                     last_ng_eia_consensus_fetch_date = current_date
                     log.info(
-                        "[scheduler] EIA Consensus Scraper Job triggered (Thursday %02d:%02d IST)",
+                        "[scheduler] EIA Consensus Scraper Job triggered (%s %02d:%02d IST)",
+                        eia_sched["release_day_name"],
                         eia_h,
                         eia_m,
                     )

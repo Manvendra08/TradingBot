@@ -313,16 +313,19 @@ def _format_commodity_regime_intelligence(symbol: str, scan_context: dict) -> st
             lines.append(f"- Parity Fair Value : ₹{ng_fv:.2f} (Henry Hub Spot parity)")
             lines.append(f"- Parity Deviation  : {ng_dev:+.2f}% ({parity_bias})")
             
-        # 2. EIA Inventory Schedule (Only active on Thursdays or near event)
-        is_thu = now_ist.weekday() == 3
-        if is_thu:
-            from src.engine.time_guards import get_eia_announcement_time
-            eia_h, eia_m = get_eia_announcement_time(now_ist)
-            eia_str = f"{eia_h % 12 or 12}:{eia_m:02d} {'PM' if eia_h >= 12 else 'AM'} IST"
-            if (eia_h - 2) <= now_ist.hour <= (eia_h + 2):
+        # 2. EIA Inventory Schedule (DST & holiday-aware)
+        from src.engine.time_guards import get_eia_schedule
+        eia_sched = get_eia_schedule(now_ist)
+        rel_h = eia_sched["release_hour"]
+        rel_m = eia_sched["release_minute"]
+        eia_str = f"{rel_h % 12 or 12}:{rel_m:02d} {'PM' if rel_h >= 12 else 'AM'} IST"
+        if eia_sched["is_today"]:
+            if (rel_h - 2) <= now_ist.hour <= (rel_h + 2):
                 lines.append(f"- EIA Inventory     : ACTIVE TODAY ~{eia_str} (Extreme Gamma Shock Window — Avoid Naked Straddles)")
             elif now_ist.hour >= 17:
                 lines.append(f"- EIA Inventory     : TODAY ~{eia_str} (Pre-event positioning)")
+        elif 0 < eia_sched["hours_until"] <= 30:
+            lines.append(f"- EIA Inventory     : {eia_sched['release_day_name']} ~{eia_str} (~{eia_sched['hours_until']:.1f}h away)")
 
         # 3. Momentum Engine Status
         try:
@@ -872,15 +875,15 @@ def build_multileg_exit_prompt(
     hours_to_event = 999
     if symbol.upper().startswith("NATURALGAS"):
         now_ist = datetime.now(IST)
-        # EIA is Thursday (DST-aware: 20:00 summer / 21:00 winter IST)
-        if now_ist.weekday() == 3:  # Thursday
-            from src.engine.time_guards import get_eia_announcement_time
-            eia_hour, eia_minute = get_eia_announcement_time(now_ist)
-            eia_target = now_ist.replace(hour=eia_hour, minute=eia_minute, second=0, microsecond=0)
-            hours_to_event = (eia_target - now_ist).total_seconds() / 3600.0
-            if -1.0 <= hours_to_event <= 4.0:
-                event_within_4h = True
-            next_catalyst = f"EIA Inventory {max(0.0, hours_to_event):.1f}h"
+        from src.engine.time_guards import get_eia_schedule
+        eia_sched = get_eia_schedule(now_ist)
+        hours_to_event = eia_sched["hours_until"]
+        if eia_sched["is_today"] and -1.0 <= hours_to_event <= 4.0:
+            event_within_4h = True
+        if eia_sched["is_today"]:
+            next_catalyst = f"EIA Storage {max(0.0, hours_to_event):.1f}h"
+        elif 0 < hours_to_event <= 30:
+            next_catalyst = f"EIA Storage {eia_sched['release_day_name'][:3]} {hours_to_event:.1f}h"
     elif symbol.upper().startswith("CRUDEOIL"):
         # OPEC+ meetings typically Wednesday
         now_ist = datetime.now(IST)

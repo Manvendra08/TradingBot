@@ -31,21 +31,11 @@ def get_ng_regime(now_ist: datetime) -> tuple[str, str]:
     if is_cme_closed(now_ist.date()):
         return "BLOCKED", "CME Holiday"
 
-    # Thursday EIA Storage Report Event
-    if now_ist.weekday() == 3:
-        # BUG-H02 FIX: Use pytz localize for DST-aware time construction.
-        # Previously used .replace() which ignores DST transitions, causing
-        # the EIA window to shift by 1 hour during March/November transitions.
-        ny_now = now_ist.astimezone(NY_TZ)
-        naive_eia = ny_now.replace(hour=10, minute=30, second=0, microsecond=0)
-        # Strip tzinfo and re-localize so pytz applies correct DST offset
-        ny_eia_time = NY_TZ.localize(naive_eia.replace(tzinfo=None))
-        eia_ist = ny_eia_time.astimezone(IST)
-        
-        # Window: T-15 mins to T+90 mins
-        delta_mins = (now_ist - eia_ist).total_seconds() / 60.0
-        if -15 <= delta_mins <= 90:
-            return "EVENT", "EIA Storage Report Window"
+    # Dynamic EIA Storage Report Event (DST-aware & holiday-aware)
+    from src.engine.time_guards import get_eia_schedule
+    eia_sched = get_eia_schedule(now_ist)
+    if eia_sched["is_event_regime"]:
+        return "EVENT", f"EIA Storage Report Window ({eia_sched['release_day_name']})"
 
     h, m = now_ist.hour, now_ist.minute
     time_val = h * 60 + m

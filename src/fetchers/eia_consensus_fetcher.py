@@ -199,20 +199,44 @@ def fetch_complete_eia_dataset() -> dict | None:
     season = get_seasonal_regime(now_ist)
     today_str = now_ist.strftime("%Y-%m-%d")
 
+    from src.engine.time_guards import get_eia_schedule
+    eia_sched = get_eia_schedule(now_ist)
+    scheduled_report_date = eia_sched["report_date"]
+    scheduled_release_dt = eia_sched["scheduled_release_dt"]
+
     # 1. Fetch Forex Factory consensus
     ff_data = fetch_eia_weekly_data() or {}
     consensus = ff_data.get("consensus_bcf")
-    report_date = ff_data.get("report_date") or today_str
+    report_date = ff_data.get("report_date") or scheduled_report_date
     actual_bcf = ff_data.get("actual_bcf")
 
     # 2. Fetch official EIA dataset
     eia_official = fetch_official_eia_wngsr() or {}
-    if eia_official.get("actual_bcf") is not None:
-        actual_bcf = eia_official["actual_bcf"]
+    official_report_date = None
     if eia_official.get("report_date"):
-        # Prefer Thursday date format YYYY-MM-DD
-        if re.match(r"^\d{4}-\d{2}-\d{2}$", eia_official["report_date"]):
-            report_date = eia_official["report_date"]
+        raw_date = eia_official["report_date"].strip()
+        for fmt in ("%Y-%b-%d", "%Y-%m-%d", "%d-%b-%Y"):
+            try:
+                official_report_date = datetime.strptime(raw_date, fmt).strftime("%Y-%m-%d")
+                break
+            except ValueError:
+                pass
+        if not official_report_date and re.match(r"^\d{4}-\d{2}-\d{2}$", raw_date):
+            official_report_date = raw_date
+
+    # CRITICAL GUARD: Only accept official actual_bcf if:
+    # 1. The official report date matches our scheduled report date, AND
+    # 2. The current time is at or after the scheduled release datetime (post-announcement).
+    # This prevents using last week's actual (e.g. Nov 5) for this week's report (e.g. Nov 13)
+    # when the release day has shifted due to holidays or DST.
+    is_released = (official_report_date == scheduled_report_date) and (now_ist >= scheduled_release_dt)
+
+    if is_released and eia_official.get("actual_bcf") is not None:
+        actual_bcf = eia_official["actual_bcf"]
+        report_date = official_report_date
+    elif not is_released:
+        # Pre-release state: actual is not yet known!
+        actual_bcf = None
 
     total_storage = eia_official.get("total_storage_bcf")
     five_yr_total = eia_official.get("five_year_total_bcf")
@@ -260,15 +284,25 @@ def fetch_complete_eia_dataset() -> dict | None:
         )
         macro_stance = stance
         stance_summary = summary
+    else:
+        # Pre-release: preserve active stance from prior week if available
+        try:
+            with get_conn() as conn:
+                prev_stance_row = conn.execute(
+                    "SELECT macro_stance, stance_summary FROM eia_consensus WHERE actual_bcf IS NOT NULL ORDER BY report_date DESC LIMIT 1"
+                ).fetchone()
+                if prev_stance_row and prev_stance_row["macro_stance"]:
+                    macro_stance = prev_stance_row["macro_stance"]
+                    stance_summary = prev_stance_row["stance_summary"] or stance_summary
+        except Exception:
+            pass
 
-    # Next Thursday release validity window (DST-aware: 20:00 summer / 21:00 winter IST)
-    from src.engine.time_guards import get_eia_announcement_time
-    eia_h, eia_m = get_eia_announcement_time(now_ist)
-    days_to_next_thu = (3 - now_ist.weekday()) % 7
-    if days_to_next_thu == 0:
-        days_to_next_thu = 7
-    next_thu = (now_ist + timedelta(days=days_to_next_thu)).replace(hour=eia_h, minute=eia_m, second=0, microsecond=0)
-    valid_until = next_thu.astimezone(timezone.utc).isoformat()
+    # Dynamic release validity window (DST & holiday-aware)
+    if is_released:
+        valid_until_dt = scheduled_release_dt + timedelta(days=7)
+    else:
+        valid_until_dt = scheduled_release_dt
+    valid_until = valid_until_dt.astimezone(timezone.utc).isoformat()
 
     surprise_bcf = (actual_bcf - consensus) if (actual_bcf is not None and consensus is not None) else None
 

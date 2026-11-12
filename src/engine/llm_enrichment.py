@@ -1094,10 +1094,11 @@ def _build_deep_prompt(
     is_thu = now_ist.weekday() == 3
     is_wed = now_ist.weekday() == 2
     is_fri = now_ist.weekday() == 4
-    if base_sym == "NATURALGAS" and is_thu:
-        from src.engine.time_guards import get_eia_announcement_time
-        eia_h, eia_m = get_eia_announcement_time(now_ist)
-        event_risk_today = f"EIA Thu {eia_h:02d}:{eia_m:02d} IST"
+    if base_sym == "NATURALGAS":
+        from src.engine.time_guards import get_eia_schedule
+        eia_sched = get_eia_schedule(now_ist)
+        if eia_sched["is_today"]:
+            event_risk_today = f"EIA {eia_sched['release_day_name'][:3]} {eia_sched['release_hour']:02d}:{eia_sched['release_minute']:02d} IST"
     elif base_sym == "CRUDEOIL" and is_wed:
         event_risk_today = "OPEC+ Wed ~16:00 IST"
     elif is_fri:
@@ -1436,13 +1437,15 @@ def _build_exit_prompt(
     next_catalyst = "None"
     hours_to_event = 999
     now_ist = datetime.now(_IST)
-    if base_sym == "NATURALGAS" and now_ist.weekday() == 3:
-        h_diff = 20 - now_ist.hour - now_ist.minute/60
-        if h_diff >= 0:
+    if base_sym == "NATURALGAS":
+        from src.engine.time_guards import get_eia_schedule
+        eia_sched = get_eia_schedule(now_ist)
+        h_diff = eia_sched["hours_until"]
+        if 0 <= h_diff <= 36:
             hours_to_event = h_diff
-            next_catalyst = f"EIA Inventory {hours_to_event:.1f}h"
-        else:
-            next_catalyst = "EIA Inventory released today (passed)"
+            next_catalyst = f"EIA Storage {eia_sched['release_day_name'][:3]} {hours_to_event:.1f}h"
+        elif eia_sched["is_today"] and h_diff < 0:
+            next_catalyst = "EIA Storage released today (passed)"
     elif base_sym == "CRUDEOIL" and now_ist.weekday() == 2:
         h_diff = 16 - now_ist.hour - now_ist.minute/60
         if h_diff >= 0:

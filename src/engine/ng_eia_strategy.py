@@ -21,12 +21,12 @@ log = logging.getLogger(__name__)
 IST = pytz.timezone("Asia/Kolkata")
 
 def force_close_eia_pre_print() -> None:
-    """Closes all open Natural Gas trades on Thursday 19:40 IST before print."""
+    """Closes all open Natural Gas trades ahead of scheduled EIA print."""
     open_trade = get_open_paper_trade("NATURALGAS")
     if not open_trade:
         return
         
-    log.info("Thursday pre-print flat protection: Force closing NATURALGAS trade #%s", open_trade["id"])
+    log.info("EIA pre-print flat protection: Force closing NATURALGAS trade #%s", open_trade["id"])
     
     # Get current price
     from src.fetchers.router import fetch_option_chain
@@ -170,6 +170,11 @@ def run_ng_eia_strategy(
         return None
         
     now_ist = datetime.now(IST)
+    from src.engine.time_guards import get_eia_schedule
+    eia_sched = get_eia_schedule(now_ist)
+    if not eia_sched["is_today"] or not eia_sched["is_post_release"]:
+        return None
+
     from src.engine.ng_session_router import get_ng_regime
     regime, reason = get_ng_regime(now_ist)
     if regime != "EVENT":
@@ -179,13 +184,13 @@ def run_ng_eia_strategy(
     if underlying <= 0:
         return None
         
-    # Get consensus from DB
-    thursday_str = now_ist.strftime("%Y-%m-%d")
+    # Get consensus from DB for scheduled report_date
+    report_date = eia_sched["report_date"]
     consensus = None
     with get_conn() as conn:
         row = conn.execute(
             "SELECT consensus_bcf FROM eia_consensus WHERE report_date = ?",
-            (thursday_str,)
+            (report_date,)
         ).fetchone()
         if row and row["consensus_bcf"] is not None:
             consensus = float(row["consensus_bcf"])
@@ -234,7 +239,7 @@ def run_ng_eia_strategy(
     with get_conn() as conn:
         conn.execute(
             "UPDATE eia_consensus SET actual_bcf=?, surprise_bcf=? WHERE report_date=?",
-            (actual, surprise, thursday_str)
+            (actual, surprise, report_date)
         )
 
     # Position check
