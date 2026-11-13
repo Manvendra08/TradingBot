@@ -871,9 +871,9 @@
                 border-radius: 2px;
                 display: inline-block;
             }
-            .legend-swatch.line-hw { background: var(--green); height: 3px; }
+            .legend-swatch.line-hw { background: linear-gradient(90deg, #00e5a0 50%, #ff4d6d 50%); height: 3px; border-radius: 2px; }
             .legend-swatch.line-idx { background: #38bdf8; height: 2px; border-bottom: 2px dashed #38bdf8; }
-            .legend-swatch.bar-delta { background: var(--accent); height: 8px; width: 8px; border-radius: 2px; }
+            .legend-swatch.bar-delta { background: linear-gradient(135deg, #00e5a0 50%, #ff4d6d 50%); height: 8px; width: 8px; border-radius: 2px; }
             .legend-item.reset-info {
                 font-family: var(--mono);
                 font-size: 10px;
@@ -2801,6 +2801,62 @@
                 renderHwCharts();
             }
 
+            // ── Dynamic Zero-Line Gradients (Green above 0, Red below 0) ──
+            function getZeroBorderGradient(context) {
+                const chart = context.chart;
+                const { ctx, chartArea, scales } = chart;
+                if (!chartArea || !scales || !scales.y) {
+                    return "#00e5a0";
+                }
+                const yZero = scales.y.getPixelForValue(0);
+                const top = chartArea.top;
+                const bottom = chartArea.bottom;
+                const height = bottom - top;
+                if (height <= 0) return "#00e5a0";
+
+                const zeroRatio = Math.max(0, Math.min(1, (yZero - top) / height));
+                if (zeroRatio >= 1) return "#00e5a0"; // Entirely positive
+                if (zeroRatio <= 0) return "#ff4d6d"; // Entirely negative
+
+                const grad = ctx.createLinearGradient(0, top, 0, bottom);
+                grad.addColorStop(0, "#00e5a0");
+                grad.addColorStop(zeroRatio, "#00e5a0");
+                grad.addColorStop(zeroRatio, "#ff4d6d");
+                grad.addColorStop(1, "#ff4d6d");
+                return grad;
+            }
+
+            function getZeroFillGradient(context) {
+                const chart = context.chart;
+                const { ctx, chartArea, scales } = chart;
+                if (!chartArea || !scales || !scales.y) {
+                    return "rgba(0, 229, 160, 0.25)";
+                }
+                const yZero = scales.y.getPixelForValue(0);
+                const top = chartArea.top;
+                const bottom = chartArea.bottom;
+                const height = bottom - top;
+                if (height <= 0) return "rgba(0, 229, 160, 0.25)";
+
+                const zeroRatio = Math.max(0, Math.min(1, (yZero - top) / height));
+                const grad = ctx.createLinearGradient(0, top, 0, bottom);
+                if (zeroRatio >= 1) {
+                    grad.addColorStop(0, "rgba(0, 229, 160, 0.32)");
+                    grad.addColorStop(1, "rgba(0, 229, 160, 0.0)");
+                } else if (zeroRatio <= 0) {
+                    grad.addColorStop(0, "rgba(255, 77, 109, 0.0)");
+                    grad.addColorStop(1, "rgba(255, 77, 109, 0.32)");
+                } else {
+                    // Above 0: Emerald green fading down towards 0 line
+                    grad.addColorStop(0, "rgba(0, 229, 160, 0.32)");
+                    grad.addColorStop(zeroRatio, "rgba(0, 229, 160, 0.0)");
+                    // Below 0: Crimson red fading up towards 0 line
+                    grad.addColorStop(zeroRatio, "rgba(255, 77, 109, 0.0)");
+                    grad.addColorStop(1, "rgba(255, 77, 109, 0.32)");
+                }
+                return grad;
+            }
+
             function renderHwCharts() {
                 if (!hwTimelineData || !hwTimelineData.scans || !hwTimelineData.scans.length) return;
                 const scans = hwTimelineData.scans;
@@ -2826,22 +2882,19 @@
                     const hwCumValues = scans.map(s => s.hw_cumulative_points);
                     const idxValues = scans.map(s => s.index_net_points);
 
-                    // Gradient for Heavyweights line
-                    const hwGrad = upperCtx.createLinearGradient(0, 0, 0, 240);
-                    hwGrad.addColorStop(0, "rgba(0, 229, 160, 0.25)");
-                    hwGrad.addColorStop(1, "rgba(0, 229, 160, 0.0)");
-
                     upperDatasets = [
                         {
                             label: "Top Heavyweights Cumulative (pts)",
                             data: hwCumValues,
-                            borderColor: "#00e5a0",
-                            backgroundColor: hwGrad,
+                            borderColor: getZeroBorderGradient,
+                            backgroundColor: getZeroFillGradient,
                             borderWidth: 2.5,
                             pointRadius: scans.length > 40 ? 1 : 3,
                             pointHoverRadius: 6,
-                            pointBackgroundColor: "#00e5a0",
-                            fill: true,
+                            pointBackgroundColor: ctx => (ctx.raw !== undefined && ctx.raw !== null && ctx.raw < 0 ? "#ff4d6d" : "#00e5a0"),
+                            pointBorderColor: ctx => (ctx.raw !== undefined && ctx.raw !== null && ctx.raw < 0 ? "#ff4d6d" : "#00e5a0"),
+                            pointHoverBackgroundColor: ctx => (ctx.raw !== undefined && ctx.raw !== null && ctx.raw < 0 ? "#ff4d6d" : "#00e5a0"),
+                            fill: 'origin',
                             tension: 0.25
                         },
                         {
@@ -2936,9 +2989,25 @@
                                 ticks: { display: false } // Hidden in upper, shown in lower
                             },
                             y: {
-                                grid: { color: gridColor },
+                                grid: {
+                                    color: function(ctx) {
+                                        if (ctx.tick && ctx.tick.value === 0) {
+                                            return isDark ? "rgba(255, 255, 255, 0.25)" : "rgba(0, 0, 0, 0.25)";
+                                        }
+                                        return gridColor;
+                                    },
+                                    lineWidth: function(ctx) {
+                                        if (ctx.tick && ctx.tick.value === 0) return 1.5;
+                                        return 1;
+                                    }
+                                },
                                 ticks: {
-                                    color: textColor,
+                                    color: function(ctx) {
+                                        if (ctx.tick && ctx.tick.value === 0) {
+                                            return isDark ? "#f1f5f9" : "#0f172a";
+                                        }
+                                        return textColor;
+                                    },
                                     font: { family: "Space Mono", size: 10 },
                                     callback: v => `${v >= 0 ? '+' : ''}${v.toFixed(1)}`
                                 },
