@@ -22,7 +22,7 @@ from config.settings import GEMINI_API_KEY
 from src.alerts.telegram_dispatcher import send_text
 from src.models.schema import get_conn
 from src.fetchers.eia_consensus_fetcher import fetch_complete_eia_dataset, store_eia_weekly_data
-from src.engine.ng_macro_context import get_seasonal_regime, classify_storage_event
+from src.engine.ng_macro_context import get_seasonal_regime, classify_storage_event, format_eia_surprise
 
 log = logging.getLogger(__name__)
 _IST = pytz.timezone("Asia/Kolkata")
@@ -137,12 +137,22 @@ def analyze_eia_report() -> None:
         except Exception:
             pass
 
-        # 4. Prompt Construction with complete seasonal awareness
+        # 4. Compute deterministic baseline stance, surprise labels, and physical metrics
         actual_str = f"{actual:+.1f} Bcf" if actual is not None else "Pending / N/A"
         cons_str = f"{consensus:+.1f} Bcf" if consensus is not None else "N/A"
-        surp_str = f"{surprise:+.1f} Bcf" if surprise is not None else "N/A"
         fyr_str = f"{five_yr_avg:+.1f} Bcf" if five_yr_avg is not None else "N/A"
         surplus_delta_str = f"{(actual - five_yr_avg):+.1f} Bcf" if (actual is not None and five_yr_avg is not None) else "N/A"
+
+        surp_str, surp_dir, surp_label = format_eia_surprise(actual, consensus)
+
+        deterministic_stance, deterministic_summary, _ = classify_storage_event(
+            actual_bcf=actual if actual is not None else 0.0,
+            consensus_bcf=consensus,
+            five_year_avg_bcf=five_yr_avg,
+            surplus_vs_5yr_bcf=surplus_bcf,
+            surplus_vs_5yr_pct=surplus_pct,
+            seasonal_regime=seasonal_regime,
+        )
 
         prompt = f"""You are an elite commodity hedge fund energy strategist analyzing the US EIA Weekly Natural Gas Storage Report.
 
@@ -150,39 +160,37 @@ REPORT DATA (Lower 48):
 - Release Date: {report_date}
 - Actual Net Change: {actual_str}
 - Consensus Expectation: {cons_str}
-- Surprise vs Consensus: {surp_str}
+- Surprise vs Consensus: {surp_label}
 - 5-Year Historical Average Net Change: {fyr_str}
 - 5-Year Historical Delta (Actual - 5YrAvg): {surplus_delta_str}
 - Total Working Gas in Storage: {total_storage or 'N/A'} Bcf
 - Surplus/Deficit vs 5-Year Average: {surplus_bcf:+.0f} Bcf ({surplus_pct:+.1f}%) if surplus_bcf else 'N/A'
 - Trailing Tightening Streak: {consecutive_weeks} consecutive below-normal builds
 
+DETERMINISTIC REGIME GROUND TRUTH:
+- Baseline Calibrated Stance: {deterministic_stance}
+- Fundamental Summary: {deterministic_summary}
+
 SEASONAL & MACRO CONTEXT:
 - Seasonal Regime: {seasonal_regime} Season (Calendar Week {season_info['calendar_week']})
 - Core Fundamental Rule: {season_info['rule_description']}
 - Market Dynamics: 
-  * In Injection Season (Apr-Oct), an injection on its own is NOT bearish. A build below expectations or below the 5-year average tightens the pre-winter buffer (BULLISH_TIGHTENING).
-  * Check for front-month contract expiry rollover and short-covering triggers.
-  * Check for supply curtailments (Lower 48 production drops) and export LNG feedgas demand.
+  * Storage Surprise = Actual - Consensus.
+  * If Actual < Consensus, surprise is negative, which means LESS gas stored than expected (or deeper draw) -> TIGHTER balance -> BULLISH BEAT. Under NO circumstances classify a negative surprise as Bearish!
+  * If Actual > Consensus, surprise is positive, which means MORE gas stored than expected (or shallower draw) -> LOOSER balance -> BEARISH MISS.
+  * If actual build beat consensus (under-build) but storage remains in a multi-week surplus vs 5-year average (+75 Bcf surplus), the regime is DIVERGENT_TACTICAL_RELIEF (tactical short-covering bounce into macro surplus), NEVER BEARISH_LOOSENING.
 
 CURRENT MCX/LOCAL MARKET STATUS:
 - Spot / Underlying Price: ₹{underlying}
 - PCR: {pcr} | CE ΔOI: {ce_oi_chg} | PE ΔOI: {pe_oi_chg}
 - Options Flow Ground Truth: {oi_sentiment}
 
-- Fundamental Sign Rule: A positive number (+Bcf) is ALWAYS an inventory build/injection regardless of the month; a negative number (-Bcf) is a draw. Never refer to a positive build as a draw.
-- Divergent Print Rules:
-  * If actual build beat consensus (smaller build or larger draw) but the 5-year delta remains above norm, classify as DIVERGENT_TACTICAL_RELIEF.
-  * If actual build missed consensus (larger build or shallower draw) but remains below 5-year norm, classify as DIVERGENT_MACRO_TIGHTENING.
-
 TASK:
-1. Determine the calibrated macro stance: BULLISH_TIGHTENING, BEARISH_LOOSENING, DIVERGENT_TACTICAL_RELIEF, DIVERGENT_MACRO_TIGHTENING, or NEUTRAL_BALANCED.
-2. Formulate a multi-day trading perspective that guides trades until NEXT Thursday's report resets the view.
-3. Identify specific technical ceiling (resistance) and floor (support) levels.
-4. Generate an executive Telegram message with emojis, bold headers, and dense bullet points.
+1. Provide qualitative hedge fund commentary, expected immediate price impact on MCX/NYMEX, and multi-day weekly outlook.
+2. Identify specific technical resistance and support levels.
+3. Your sentiment output MUST align with the deterministic physical regime: '{deterministic_stance}'.
 """
 
-        analysis_msg = None
         verdict_obj: EIAAnalysisVerdict | None = None
         try:
             import time
@@ -194,46 +202,79 @@ TASK:
                 deadline=time.time() + 90.0,
                 purpose="eia_analysis",
             )
-            if result and hasattr(result, "markdown_telegram_message") and result.markdown_telegram_message:
+            if result and hasattr(result, "weekly_outlook") and result.weekly_outlook:
                 verdict_obj = result
-                analysis_msg = result.markdown_telegram_message
         except Exception as e:
-            log.warning("Primary LLM chain for EIA failed, trying fallback: %s", e)
+            log.warning("Primary LLM chain for EIA failed, using deterministic fallback: %s", e)
 
-        # 5. Deterministic fallback if LLM chain failed
-        if not verdict_obj or not analysis_msg:
-            deterministic_stance, deterministic_summary, _ = classify_storage_event(
-                actual_bcf=actual if actual is not None else 0.0,
-                consensus_bcf=consensus,
-                five_year_avg_bcf=five_yr_avg,
-                surplus_vs_5yr_bcf=surplus_bcf,
-                surplus_vs_5yr_pct=surplus_pct,
-                seasonal_regime=seasonal_regime,
-            )
-            analysis_msg = (
-                f"🛢️ *EIA Natural Gas Storage Report*\n\n"
-                f"• *Release Date*: `{report_date}`\n"
-                f"• *Actual Net Change*: `{actual_str}`\n"
-                f"• *Consensus*: `{cons_str}` ({surp_str})\n"
-                f"• *5-Year Benchmark*: `{fyr_str}` (Delta: `{surplus_delta_str}`)\n"
-                f"• *Total Storage*: `{total_storage or 'N/A'}` Bcf ({surplus_pct:+.1f}% vs 5-yr norm)\n\n"
-                f"📊 *Weekly Calibrated Stance*: **{deterministic_stance}**\n"
-                f"{deterministic_summary}\n\n"
-                f"• Spot Price: ₹{underlying} | PCR: {pcr}\n"
-                f"• Options Flow: {oi_sentiment}"
-            )
-            stance_to_store = deterministic_stance
-            summary_to_store = deterministic_summary
-            key_levels_to_store = {}
-        else:
-            stance_to_store = verdict_obj.sentiment
+        # 5. Deterministic Stance Enforcement (LLM cannot override physical reality)
+        stance_to_store = deterministic_stance
+        if verdict_obj and verdict_obj.sentiment == deterministic_stance:
             summary_to_store = f"{verdict_obj.summary} | Outlook: {verdict_obj.weekly_outlook}"
+        elif verdict_obj:
+            log.warning("LLM proposed sentiment '%s' which conflicts with deterministic stance '%s'. Enforcing deterministic.",
+                        verdict_obj.sentiment, deterministic_stance)
+            summary_to_store = f"{deterministic_summary} | Outlook: {verdict_obj.weekly_outlook}"
+        else:
+            summary_to_store = deterministic_summary
+
+        key_levels_to_store = {}
+        if verdict_obj:
             key_levels_to_store = {
                 "resistance": verdict_obj.key_resistance,
                 "support": verdict_obj.key_support,
             }
 
-        # 6. Persist calibrated weekly stance into eia_consensus table (DST & holiday-aware)
+        # 6. Format Authoritative Telegram Alert
+        if surp_dir == "BULLISH":
+            if stance_to_store == "DIVERGENT_TACTICAL_RELIEF":
+                header_icon = "⚡"
+                header_title = f"EIA Natural Gas Report: Tactical Relief Beat ({surp_str})"
+            else:
+                header_icon = "📈"
+                header_title = f"EIA Natural Gas Report: Bullish Surprise ({surp_str})"
+        elif surp_dir == "BEARISH":
+            if stance_to_store == "DIVERGENT_MACRO_TIGHTENING":
+                header_icon = "⚠️"
+                header_title = f"EIA Natural Gas Report: Macro Tightening ({surp_str})"
+            else:
+                header_icon = "📉"
+                header_title = f"EIA Natural Gas Report: Bearish Surprise ({surp_str})"
+        else:
+            header_icon = "📊"
+            header_title = "EIA Natural Gas Storage Report: In-Line"
+
+        outlook_text = verdict_obj.weekly_outlook if verdict_obj else "Monitor technical levels for continuation or exhaustion."
+        impact_text = verdict_obj.expected_impact if verdict_obj else "Tactical repricing on headline surprise."
+        res_text = verdict_obj.key_resistance if verdict_obj and verdict_obj.key_resistance else "₹310.0, ₹315.0"
+        sup_text = verdict_obj.key_support if verdict_obj and verdict_obj.key_support else "₹300.0, ₹295.0"
+
+        surplus_line = f"• *Surplus vs 5-Yr Avg*: `{surplus_bcf:+.0f} Bcf ({surplus_pct:+.1f}%)`\n" if surplus_bcf is not None else ""
+
+        alert_msg = (
+            f"{header_icon} *{header_title}* {header_icon}\n\n"
+            f"📅 *Release Date*: `{report_date}`\n\n"
+            f"📊 *Key Data*:\n"
+            f"• *Actual Net Change*: `{actual_str}`\n"
+            f"• *Consensus*: `{cons_str}`\n"
+            f"• *Surprise*: `{surp_label}`\n"
+            f"• *5-Year Average*: `{fyr_str}` (Delta: `{surplus_delta_str}`)\n"
+            f"• *Total Storage*: `{total_storage or 'N/A'}` Bcf\n"
+            f"{surplus_line}\n"
+            f"📈 *Market Dynamics*:\n"
+            f"• Spot Price: ₹{underlying} | PCR: {pcr}\n"
+            f"• Options Flow: {oi_sentiment}\n\n"
+            f"🎯 *Trading Strategy*:\n"
+            f"• Stance: **{stance_to_store}**\n"
+            f"• Resistance: {res_text}\n"
+            f"• Support: {sup_text}\n"
+            f"• Outlook: {outlook_text}\n"
+            f"• Expected Impact: {impact_text}\n\n"
+            f"⚠️ *Physical Balance Context*:\n"
+            f"{deterministic_summary}"
+        )
+
+        # 7. Persist calibrated weekly stance into eia_consensus table (DST & holiday-aware)
         from src.engine.time_guards import get_eia_schedule
         eia_sched = get_eia_schedule(now_ist)
         next_release_dt = eia_sched["scheduled_release_dt"] + timedelta(days=7)
@@ -264,10 +305,8 @@ TASK:
         store_eia_weekly_data(persisted_data)
         log.info("Persisted weekly EIA recalibration: stance=%s, valid_until=%s", stance_to_store, valid_until_str)
 
-        # 7. Dispatch alert
-        if not analysis_msg.startswith("🛢️"):
-            analysis_msg = f"🛢️ *EIA Natural Gas Report Analysis*\n\n{analysis_msg}"
-        send_text(analysis_msg)
+        # 8. Dispatch alert
+        send_text(alert_msg)
         log.info("EIA Report Analysis dispatched to Telegram.")
 
     except Exception as e:

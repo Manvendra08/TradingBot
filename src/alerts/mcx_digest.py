@@ -209,9 +209,9 @@ def build_mcx_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[st
             lines.append(f"• Storage Delta (vs 5-Yr): {act_bcf:+.1f} Bcf Act vs {five_yr_bcf:+.1f} Bcf 5-Yr ({delta_bcf:+.1f} Bcf {delta_desc})")
 
         if act_bcf is not None and cons_bcf is not None:
-            c_delta = act_bcf - cons_bcf
-            c_desc = "Bullish Beat" if c_delta < 0 else "Bearish Miss"
-            lines.append(f"• Consensus Surprise: {act_bcf:+.1f} Bcf Act vs {cons_bcf:+.1f} Bcf Cons ({c_delta:+.1f} Bcf {c_desc})")
+            from src.engine.ng_macro_context import format_eia_surprise
+            _, _, surp_label = format_eia_surprise(act_bcf, cons_bcf)
+            lines.append(f"• Consensus Surprise: {act_bcf:+.1f} Bcf Act vs {cons_bcf:+.1f} Bcf Cons ({surp_label})")
 
         surplus_bcf = ng_macro.get("surplus_vs_5yr_bcf")
         surplus_pct = ng_macro.get("surplus_vs_5yr_pct")

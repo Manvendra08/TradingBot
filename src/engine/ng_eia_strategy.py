@@ -265,6 +265,14 @@ def run_ng_eia_strategy(
         side = "SELL"
         log.info("EVENT Strategy: Fundamental stance BEARISH_LOOSENING (Actual=%+.1f vs 5YrAvg=%+.1f, delta=%+.1f) -> SELL",
                  actual, five_yr_avg or 0, five_yr_delta)
+    elif macro_stance == "DIVERGENT_TACTICAL_RELIEF":
+        # Immediate tactical relief bid on consensus beat; trade with surprise direction
+        side = "BUY" if surprise < 0 else "SELL"
+        log.info("EVENT Strategy: Fundamental stance DIVERGENT_TACTICAL_RELIEF (Surprise=%+.1f Bcf) -> %s", surprise, side)
+    elif macro_stance == "DIVERGENT_MACRO_TIGHTENING":
+        # Pullback on headline miss into underlying macro deficit
+        side = "SELL" if surprise > 0 else "BUY"
+        log.info("EVENT Strategy: Fundamental stance DIVERGENT_MACRO_TIGHTENING (Surprise=%+.1f Bcf) -> %s", surprise, side)
     else:
         # Neutral / balanced: respect consensus surprise if significant
         if abs_surprise < EIA_NO_TRADE_BAND_BCF and not reaction_override:
