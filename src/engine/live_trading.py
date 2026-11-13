@@ -563,6 +563,35 @@ def place_kite_order(
     expected_price: float = 0.0,
     tick_size: float = 0.05,
 ) -> str:
+    # ── Fat-Finger & Quantity Sanity Pre-Flight Guard ─────────────────
+    if not isinstance(quantity, (int, float)) or quantity <= 0:
+        err_msg = f"Refusing order for {exchange}:{tradingsymbol}: invalid quantity={quantity} (must be > 0)"
+        log.error(err_msg)
+        raise ValueError(err_msg)
+
+    quantity = int(quantity)
+    try:
+        from config.settings import LOT_SIZES
+        from config.runtime_config import load_runtime_config
+        base_sym = str(symbol or "").upper().split()[0]
+        lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_sym, 1))
+        if lot_size <= 0:
+            lot_size = 1
+        cfg = load_runtime_config()
+        max_lots = int(cfg.get("live_max_lots_per_order") or 25)
+        max_allowed_qty = max_lots * lot_size
+        if quantity > max_allowed_qty:
+            err_msg = (
+                f"FAT-FINGER GUARD: Order quantity {quantity} for {exchange}:{tradingsymbol} "
+                f"exceeds maximum allowed {max_allowed_qty} ({max_lots} lots of {lot_size}). Order rejected."
+            )
+            log.critical(err_msg)
+            raise ValueError(err_msg)
+    except ValueError:
+        raise
+    except Exception as e:
+        log.warning("Fat-finger quantity check encountered non-fatal error: %s", e)
+
     if shadow_mode:
         import uuid
 

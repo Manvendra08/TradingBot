@@ -111,6 +111,60 @@ def authorize_broker_execution(
             config_snapshot=config
         )
 
+    # ── Pre-Trade RMS: Daily Loss Lockout Gate ───────────────────────────
+    if operation == "ENTRY":
+        try:
+            from datetime import datetime, timezone
+            import pytz
+            from config.settings import MAX_DAILY_LOSS_RUPEES
+            from src.models.schema import get_conn
+
+            ist = pytz.timezone("Asia/Kolkata")
+            now_ist = datetime.now(timezone.utc).astimezone(ist)
+            today_start_ist = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+            today_start_utc = today_start_ist.astimezone(pytz.utc).isoformat()
+
+            max_daily_loss = float(config.get("live_max_daily_loss_rupees") or MAX_DAILY_LOSS_RUPEES or 25000.0)
+
+            with get_conn(read_only=True) as conn:
+                r1 = conn.execute(
+                    "SELECT COALESCE(SUM(pnl_rupees), 0) AS total FROM live_trades WHERE closed_at >= ? AND (broker_status != 'SHADOW' OR broker_status IS NULL)",
+                    (today_start_utc,)
+                ).fetchone()
+                single_realized = float(r1["total"]) if r1 else 0.0
+
+                r2 = conn.execute(
+                    "SELECT COALESCE(SUM(total_pnl), 0) AS total FROM multi_leg_trades WHERE closed_at >= ? AND UPPER(trade_mode) = 'LIVE'",
+                    (today_start_utc,)
+                ).fetchone()
+                multileg_realized = float(r2["total"]) if r2 else 0.0
+
+                total_realized_loss = single_realized + multileg_realized
+
+                if total_realized_loss <= -abs(max_daily_loss):
+                    log.critical(
+                        "[broker-gate] %s: Max daily loss threshold breached (realized=₹%.2f, cap=₹%.2f) — FAIL-CLOSED",
+                        symbol, total_realized_loss, -abs(max_daily_loss)
+                    )
+                    return ExecutionAuthorization(
+                        is_authorized=False,
+                        is_shadow=False,
+                        symbol=symbol,
+                        operation=operation,
+                        reason=f"Daily loss limit breached: realized loss ₹{abs(total_realized_loss):,.2f} >= cap ₹{abs(max_daily_loss):,.2f}",
+                        config_snapshot=config,
+                    )
+        except Exception as e:
+            log.error("[broker-gate] %s: Daily loss check error (fail-closed): %s", symbol, e)
+            return ExecutionAuthorization(
+                is_authorized=False,
+                is_shadow=False,
+                symbol=symbol,
+                operation=operation,
+                reason=f"Daily loss check evaluation failed (fail-closed): {e}",
+                config_snapshot=config,
+            )
+
     # ── Phase 5: Edge Decay Gate ─────────────────────────────────────────
     if operation == "ENTRY":
         try:

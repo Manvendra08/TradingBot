@@ -25,8 +25,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from config.settings import DB_PATH
-from src.models.schema import close_book, close_live_trade
+try:
+    from config.settings import DB_PATH
+except Exception:
+    DB_PATH = ROOT / "data" / "trades.db"
+
+try:
+    from src.models.schema import close_book, close_live_trade
+except Exception:
+    close_book = None
+    close_live_trade = None
 
 DRY_RUN = "--dry-run" in sys.argv
 AUTO_MODE = "--auto" in sys.argv or "NSEBOT_AUTO" in os.environ
@@ -50,13 +58,14 @@ def _is_shadow_mode() -> bool:
 
 
 def _get_kite():
-    """Get Kite client if available and broker configs exist in DB."""
+    """Get Kite client if available and broker configs exist in DB or environment."""
     try:
         from kiteconnect import KiteConnect
     except ImportError:
         log.warning("kiteconnect package not installed in environment")
         return None
 
+    # Primary: Read from DB
     try:
         conn = sqlite3.connect(str(DB_PATH), timeout=10.0)
         conn.row_factory = sqlite3.Row
@@ -64,15 +73,26 @@ def _get_kite():
             "SELECT api_key, access_token FROM broker_configs ORDER BY id DESC LIMIT 1"
         ).fetchone()
         conn.close()
-        if not row or not row["api_key"] or not row["access_token"]:
-            log.warning("No active broker config found in DB")
-            return None
-        kite = KiteConnect(api_key=row["api_key"])
-        kite.set_access_token(row["access_token"])
-        return kite
+        if row and row["api_key"] and row["access_token"]:
+            kite = KiteConnect(api_key=row["api_key"])
+            kite.set_access_token(row["access_token"])
+            return kite
     except Exception as e:
-        log.error("Failed to initialize Kite client: %s", e)
-        return None
+        log.warning("Failed to initialize Kite client from DB: %s", e)
+
+    # Fallback: Read from environment variables if DB fails
+    api_key = os.environ.get("KITE_API_KEY")
+    access_token = os.environ.get("KITE_ACCESS_TOKEN")
+    if api_key and access_token:
+        try:
+            kite = KiteConnect(api_key=api_key)
+            kite.set_access_token(access_token)
+            log.info("Initialized Kite client from environment credentials")
+            return kite
+        except Exception as env_err:
+            log.error("Failed to initialize Kite client from environment: %s", env_err)
+
+    return None
 
 
 def _get_exchange(symbol: str) -> str:
@@ -136,7 +156,7 @@ def _cancel_all_gtt(kite) -> int:
         return 0
     cancelled = 0
     try:
-        gtts = kite.gtt_orders()
+        gtts = kite.get_gtts() if hasattr(kite, "get_gtts") else []
         log.info("Found %d GTT orders to cancel", len(gtts))
         for gtt in gtts:
             try:
@@ -374,6 +394,46 @@ def _close_multileg_positions(kite, is_shadow: bool) -> int:
     return closed
 
 
+def _close_broker_net_positions(kite, is_shadow: bool) -> int:
+    """Safety net: Query Kite net positions directly from broker and square off any remaining non-zero quantities."""
+    if not kite or is_shadow or DRY_RUN:
+        return 0
+    closed = 0
+    try:
+        pos_resp = kite.positions()
+        net_positions = pos_resp.get("net", []) if isinstance(pos_resp, dict) else []
+        for pos in net_positions:
+            qty = int(pos.get("quantity") or 0)
+            if qty == 0:
+                continue
+            tradingsymbol = pos.get("tradingsymbol", "")
+            exchange = pos.get("exchange", "NFO")
+            product = pos.get("product", kite.PRODUCT_NRML)
+            exit_side = kite.TRANSACTION_TYPE_BUY if qty < 0 else kite.TRANSACTION_TYPE_SELL
+            abs_qty = abs(qty)
+            log.warning(
+                "DIRECT BROKER SQUARE-OFF: %s:%s net Qty=%d — placing %s %d",
+                exchange, tradingsymbol, qty, exit_side, abs_qty
+            )
+            try:
+                order_id = kite.place_order(
+                    variety=kite.VARIETY_REGULAR,
+                    exchange=exchange,
+                    tradingsymbol=tradingsymbol,
+                    transaction_type=exit_side,
+                    quantity=abs_qty,
+                    order_type=kite.ORDER_TYPE_MARKET,
+                    product=product,
+                )
+                log.info("Direct broker square-off placed for %s: OrderID=%s", tradingsymbol, order_id)
+                closed += 1
+            except Exception as ord_err:
+                log.error("Direct broker square-off failed for %s: %s", tradingsymbol, ord_err)
+    except Exception as e:
+        log.error("Failed to fetch or square-off direct broker positions: %s", e)
+    return closed
+
+
 def main():
     log.info("=== EMERGENCY FLAT INITIATED (dry_run=%s, auto=%s) ===", DRY_RUN, AUTO_MODE)
 
@@ -418,7 +478,13 @@ def main():
     log.info("--- Step 3: Closing live multi-leg books ---")
     multileg_closed = _close_multileg_positions(kite, is_shadow)
 
-    total_closed = single_closed + multileg_closed
+    # Step 4: Safety Sweep — Reconcile & square-off any orphaned broker net positions
+    log.info("--- Step 4: Direct broker net position safety sweep ---")
+    broker_sweep_closed = _close_broker_net_positions(kite, is_shadow)
+    if broker_sweep_closed > 0:
+        log.warning("Safety sweep squared off %d orphaned position(s) directly at Kite!", broker_sweep_closed)
+
+    total_closed = single_closed + multileg_closed + broker_sweep_closed
     log.info("=== EMERGENCY FLAT COMPLETED: %d positions/books closed ===", total_closed)
 
     result = {
@@ -427,6 +493,7 @@ def main():
         "gtts_cancelled": gtts_cancelled,
         "single_leg_closed": single_closed,
         "multi_leg_closed": multileg_closed,
+        "broker_sweep_closed": broker_sweep_closed,
         "positions_closed": total_closed,
         "dry_run": DRY_RUN,
         "shadow_mode": is_shadow,
