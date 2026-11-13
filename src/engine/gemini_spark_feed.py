@@ -891,6 +891,21 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
                 log.debug("[gemini_spark] Setup %s is inactive/closed in feed (status=%s). Skipping.", setup_id, setup.get("status"))
             continue
 
+        existing_trade = open_trades_map.get(str(setup_id))
+        status_upper = str(setup.get("status", "")).upper()
+
+        # Guard: If setup is already running / in profit in feed and was NOT previously entered by bot,
+        # never chase into an already-in-progress position.
+        if not existing_trade:
+            already_running_keywords = ("RUNNING", "RUNNER", "PROFIT", "ACTIVE_PROFIT", "STOP_LOSS_WATCH", "WATCH_", "PRESERVED")
+            if any(k in status_upper for k in already_running_keywords):
+                log.info(
+                    "[gemini_spark] Setup %s is an existing/running position from feed (status=%s). Skipping entry since not previously held.",
+                    setup_id, status_upper,
+                )
+                skipped_inactive_count += 1
+                continue
+
         # 1. Action / Direction Resolution
         raw_direction = str(
             setup.get("direction")
@@ -1301,7 +1316,7 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
 
         # 6. Breakout / Trigger Condition Check for pending states (Applies to NEW Entries ONLY)
         # If the setup is waiting for a breakout/breakdown, verify if price has reached the trigger level.
-        if "WAITING" in status_upper or "PENDING" in status_upper:
+        if any(k in status_upper for k in ("WAITING", "PENDING", "STAGED", "AWAITING", "CONFIRMATION", "WATCH")):
             # Market hours guard: never trigger new pending entries while the symbol's market is closed
             if not _is_symbol_market_open(symbol):
                 log_eval("[gemini_spark] %s market is currently closed. Skipping trigger check for setup %s.", symbol, setup_id)
@@ -1311,6 +1326,10 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
             win_ok, win_msg = _is_entry_window_active(symbol)
             if not win_ok:
                 log_eval("[gemini_spark] %s setup %s pending trigger blocked: %s", symbol, setup_id, win_msg)
+                continue
+
+            if entry_target <= 0:
+                log_eval("[gemini_spark] %s setup %s pending/staged (%s) has no valid entry trigger price. Skipping.", symbol, setup_id, status_upper)
                 continue
 
             if entry_target > 0:
@@ -1473,6 +1492,26 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
             _, setup_parsed_exp = _parse_contract(contract_str, setup_id=str(setup_id))
             setup_expiry = setup_parsed_exp
         trade_expiry = setup_expiry or expiry
+
+        # 8. Maximum Open Positions & Deduplication Guard
+        MAX_GEMINI_OPEN_PER_SYMBOL = 2
+        active_gemini_trades = [t for t in open_trades_map.values() if t.get("status") == "OPEN"]
+        if len(active_gemini_trades) >= MAX_GEMINI_OPEN_PER_SYMBOL:
+            log.info(
+                "[gemini_spark] %s: Max open Gemini trade cap reached (%d >= %d) — skipping new entry for setup %s",
+                symbol, len(active_gemini_trades), MAX_GEMINI_OPEN_PER_SYMBOL, setup_id
+            )
+            continue
+
+        same_direction_trades = [
+            t for t in active_gemini_trades if str(t.get("side", "")).upper() == action_upper
+        ]
+        if same_direction_trades:
+            log.info(
+                "[gemini_spark] %s: Already holding active %s Gemini trade (#%s) — skipping duplicate setup %s",
+                symbol, action_upper, same_direction_trades[0].get("id"), setup_id
+            )
+            continue
 
         trade_data = {
             "opened_at": now_iso,
