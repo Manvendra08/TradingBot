@@ -44,6 +44,58 @@ def calculate_leg_pnl(
     return round((current - entry) * num_lots * size, 2)
 
 
+def calculate_single_trade_pnl(
+    option_type: str,
+    side: str,
+    entry_underlying: float,
+    exit_underlying: float,
+    entry_premium: float,
+    exit_premium: float,
+    lots: int,
+    lot_size: int,
+    symbol: str = "",
+) -> tuple[float, float, float, float]:
+    """Calculate single-leg trade gross points, gross rupees, net rupees, and transaction costs.
+
+    Centralized mathematical formula for paper_trades and live_trades:
+    - Options (CE/PE): Points = (entry - exit) for SELL, (exit - entry) for BUY.
+    - Futures (FUT): Points = (entry - exit) for SELL, (exit - entry) for BUY.
+    - Gross P&L (₹) = pnl_points * lot_size * lots.
+    - Net P&L (₹) = gross_pnl_rupees - tx_cost.
+
+    Returns:
+        tuple: (pnl_points, gross_pnl_rupees, net_pnl_rupees, tx_cost)
+    """
+    opt_type = str(option_type or "FUT").upper().strip()
+    s = str(side or "BUY").upper().strip()
+    num_lots = int(lots or 1)
+    size = int(lot_size or 1)
+
+    if opt_type in ("CE", "PE"):
+        ep = float(entry_premium or 0.0)
+        xp = float(exit_premium or 0.0)
+        pnl_points = (ep - xp) if s == "SELL" else (xp - ep)
+    else:
+        eu = float(entry_underlying or 0.0)
+        xu = float(exit_underlying or 0.0)
+        pnl_points = (eu - xu) if s == "SELL" else (xu - eu)
+
+    gross_pnl_rupees = round(pnl_points * size * num_lots, 2)
+    tx_cost = calculate_transaction_costs(
+        option_type=opt_type,
+        side=s,
+        entry_premium=entry_premium,
+        entry_underlying=entry_underlying,
+        exit_premium=exit_premium,
+        exit_underlying=exit_underlying,
+        lot_size=size,
+        lots=num_lots,
+        symbol=symbol,
+    )
+    net_pnl_rupees = round(gross_pnl_rupees - tx_cost, 2)
+    return round(pnl_points, 4), gross_pnl_rupees, net_pnl_rupees, tx_cost
+
+
 def calculate_transaction_costs(
     option_type: str,
     side: str,

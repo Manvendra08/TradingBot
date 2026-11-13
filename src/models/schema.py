@@ -479,9 +479,21 @@ CREATE TABLE IF NOT EXISTS trade_autopsies (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     trade_id INTEGER, ts TEXT,
     reasons_held INTEGER, primary_failure TEXT, note TEXT,
-    llm_model TEXT
+    llm_model TEXT,
+    source_table TEXT DEFAULT 'paper_trades'
 );
 CREATE INDEX IF NOT EXISTS idx_trade_autopsies_trade_id ON trade_autopsies (trade_id);
+
+CREATE TABLE IF NOT EXISTS scheduler_scan_progress (
+    class_key           TEXT NOT NULL,
+    trade_date          TEXT NOT NULL,          -- YYYY-MM-DD in IST
+    last_interval_idx   INTEGER NOT NULL DEFAULT -1,
+    market_close_done   INTEGER NOT NULL DEFAULT 0,
+    is_scanning         INTEGER NOT NULL DEFAULT 0,
+    scan_started_at     TEXT,                   -- ISO UTC
+    updated_at          TEXT NOT NULL,          -- ISO UTC
+    PRIMARY KEY (class_key, trade_date)
+);
 
 CREATE TABLE IF NOT EXISTS pattern_stats_rollup (
     symbol TEXT, verdict_label TEXT, pcr_regime TEXT,
@@ -753,6 +765,8 @@ _MIGRATIONS = [
     ("M150_add_initial_sl_to_ml_trades", "ALTER TABLE multi_leg_trades ADD COLUMN initial_sl_underlying REAL"),
     ("M151_create_heavyweight_scans", "CREATE TABLE IF NOT EXISTS heavyweight_scans (id INTEGER PRIMARY KEY AUTOINCREMENT, scan_time TEXT NOT NULL, display_time TEXT NOT NULL, index_name TEXT NOT NULL, spot_price REAL NOT NULL, net_points REAL NOT NULL, index_change_pct REAL NOT NULL, heavyweights_json TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)"),
     ("M152_idx_heavyweight_scans_idx_time", "CREATE INDEX IF NOT EXISTS idx_heavyweight_scans_idx_time ON heavyweight_scans (index_name, id DESC)"),
+    ("M153_add_source_table_to_trade_autopsies", "ALTER TABLE trade_autopsies ADD COLUMN source_table TEXT DEFAULT 'paper_trades'"),
+    ("M154_create_scheduler_scan_progress", "CREATE TABLE IF NOT EXISTS scheduler_scan_progress (class_key TEXT NOT NULL, trade_date TEXT NOT NULL, last_interval_idx INTEGER NOT NULL DEFAULT -1, market_close_done INTEGER NOT NULL DEFAULT 0, is_scanning INTEGER NOT NULL DEFAULT 0, scan_started_at TEXT, updated_at TEXT NOT NULL, PRIMARY KEY (class_key, trade_date))"),
 ]
 
 
@@ -1762,7 +1776,7 @@ def close_paper_trade(
             else:
                 pnl_points = 0.0
         else:
-            # Futures P&L with bid/ask / slippage
+            # Futures P&L with target clamping
             # Target limit fill clamping: limit orders fill at target price, not runaway spike ticks
             target_underlying = float(row["target_underlying"] or 0.0) if "target_underlying" in row.keys() else 0.0
             if status == "CLOSED_TARGET" and target_underlying > 0:
@@ -1771,27 +1785,18 @@ def close_paper_trade(
                 elif side == "BUY" and float(exit_underlying) > target_underlying:
                     exit_underlying = target_underlying
 
-            fut_slippage = max(0.05, float(exit_underlying) * 0.0002)
-            if side == "SELL":
-                pnl_points = entry_underlying - (float(exit_underlying) + fut_slippage)
-            else:
-                pnl_points = (float(exit_underlying) - fut_slippage) - entry_underlying
-
-        gross_pnl_rupees = pnl_points * lot_size * lots
-
-        # Autopsy fix 4: deduct transaction costs so pnl_rupees is net.
-        tx_cost = _calc_transaction_costs(
-            option_type,
-            side,
-            entry_premium,
-            entry_underlying,
-            exit_premium if exit_premium is not None else 0.0,
-            exit_underlying,
-            lot_size,
-            lots,
-            symbol=symbol,  # P0-04: Pass symbol for index option STT detection
+        from src.engine.accounting import calculate_single_trade_pnl
+        pnl_points, gross_pnl_rupees, pnl_rupees, tx_cost = calculate_single_trade_pnl(
+            option_type=option_type,
+            side=side,
+            entry_underlying=entry_underlying,
+            exit_underlying=float(exit_underlying or 0.0),
+            entry_premium=entry_premium,
+            exit_premium=float(exit_premium or 0.0),
+            lots=lots,
+            lot_size=lot_size,
+            symbol=symbol,
         )
-        pnl_rupees = gross_pnl_rupees - tx_cost
         log.debug(
             "close_paper_trade id=%s: gross=%.2f tx_cost=%.2f net=%.2f",
             trade_id,
@@ -2200,31 +2205,19 @@ def close_live_trade(
             else:
                 pnl_points = 0.0
         else:
-            # BUG-006 FIX: Use only `side` to determine futures P&L direction.
-            # Previously, the OR chain `side == "SELL" or verdict_label == "SHORT"
-            # or is_bearish(verdict_label)` could cause P&L inversion if side
-            # disagreed with verdict_label. The `side` field is the authoritative
-            # source of position direction (BUY = long, SELL = short).
-            if side == "SELL":
-                pnl_points = entry_underlying - float(exit_underlying)
-            else:
-                pnl_points = float(exit_underlying) - entry_underlying
-
-        gross_pnl_rupees = pnl_points * lot_size * lots
-
-        # Autopsy fix 4: deduct transaction costs so pnl_rupees is net.
-        tx_cost = _calc_transaction_costs(
-            option_type,
-            side,
-            entry_premium,
-            entry_underlying,
-            exit_premium if exit_premium is not None else 0.0,
-            exit_underlying,
-            lot_size,
-            lots,
-            symbol=symbol,  # P0-04: Pass symbol for index option STT detection
+            pass
+        from src.engine.accounting import calculate_single_trade_pnl
+        pnl_points, gross_pnl_rupees, pnl_rupees, tx_cost = calculate_single_trade_pnl(
+            option_type=option_type,
+            side=side,
+            entry_underlying=entry_underlying,
+            exit_underlying=float(exit_underlying or 0.0),
+            entry_premium=entry_premium,
+            exit_premium=float(exit_premium or 0.0),
+            lots=lots,
+            lot_size=lot_size,
+            symbol=symbol,
         )
-        pnl_rupees = gross_pnl_rupees - tx_cost
         log.debug(
             "close_live_trade id=%s: gross=%.2f tx_cost=%.2f net=%.2f",
             trade_id,
@@ -3541,3 +3534,106 @@ def stamp_open_positions() -> None:
     if age is not None:
         detail += f" oldest_age={age:.0f}m"
     stamp_health("open_positions", "OK", detail)
+
+
+# ── Scheduler Scan Progress & Lock Persistence (Audit Item 2) ─────────────────
+
+def get_persisted_scan_progress(class_key: str, trade_date: str) -> dict | None:
+    """Retrieve persisted scan interval, market close state, and lock info for a market class on a date."""
+    with get_conn(read_only=True) as conn:
+        row = conn.execute(
+            "SELECT class_key, trade_date, last_interval_idx, market_close_done, is_scanning, scan_started_at, updated_at "
+            "FROM scheduler_scan_progress WHERE class_key = ? AND trade_date = ?",
+            (class_key, trade_date),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def save_persisted_scan_progress(
+    class_key: str,
+    trade_date: str,
+    last_interval_idx: int | None = None,
+    market_close_done: bool | None = None,
+    is_scanning: bool | None = None,
+) -> None:
+    """Persist or update scheduler scan progress for a market class and date."""
+    now_utc = datetime.now(timezone.utc).isoformat()
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT last_interval_idx, market_close_done, is_scanning, scan_started_at FROM scheduler_scan_progress WHERE class_key = ? AND trade_date = ?",
+            (class_key, trade_date),
+        ).fetchone()
+
+        cur_idx = row["last_interval_idx"] if row else -1
+        cur_close = row["market_close_done"] if row else 0
+        cur_scan = row["is_scanning"] if row else 0
+        cur_started = row["scan_started_at"] if row else None
+
+        new_idx = max(cur_idx, last_interval_idx) if last_interval_idx is not None else cur_idx
+        new_close = 1 if (market_close_done is True or cur_close == 1) else (0 if market_close_done is False else cur_close)
+        new_scan = (1 if is_scanning else 0) if is_scanning is not None else cur_scan
+        new_started = now_utc if (is_scanning is True and cur_scan == 0) else (None if is_scanning is False else cur_started)
+
+        conn.execute(
+            """
+            INSERT INTO scheduler_scan_progress (class_key, trade_date, last_interval_idx, market_close_done, is_scanning, scan_started_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(class_key, trade_date) DO UPDATE SET
+                last_interval_idx = excluded.last_interval_idx,
+                market_close_done = excluded.market_close_done,
+                is_scanning = excluded.is_scanning,
+                scan_started_at = excluded.scan_started_at,
+                updated_at = excluded.updated_at
+            """,
+            (class_key, trade_date, new_idx, new_close, new_scan, new_started, now_utc),
+        )
+
+
+def acquire_scan_lock(class_key: str, trade_date: str, timeout_sec: int = 600) -> bool:
+    """Acquire scan lock for class_key on trade_date. Returns True if acquired, False if another scan is active."""
+    now_utc = datetime.now(timezone.utc)
+    now_iso = now_utc.isoformat()
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT is_scanning, scan_started_at FROM scheduler_scan_progress WHERE class_key = ? AND trade_date = ?",
+            (class_key, trade_date),
+        ).fetchone()
+
+        if row and row["is_scanning"]:
+            started_str = row["scan_started_at"]
+            if started_str:
+                try:
+                    started_dt = datetime.fromisoformat(started_str.replace("Z", "+00:00"))
+                    if started_dt.tzinfo is None:
+                        started_dt = started_dt.replace(tzinfo=timezone.utc)
+                    if (now_utc - started_dt).total_seconds() < timeout_sec:
+                        return False
+                except Exception:
+                    pass
+
+        conn.execute(
+            """
+            INSERT INTO scheduler_scan_progress (class_key, trade_date, last_interval_idx, market_close_done, is_scanning, scan_started_at, updated_at)
+            VALUES (?, ?, -1, 0, 1, ?, ?)
+            ON CONFLICT(class_key, trade_date) DO UPDATE SET
+                is_scanning = 1,
+                scan_started_at = excluded.scan_started_at,
+                updated_at = excluded.updated_at
+            """,
+            (class_key, trade_date, now_iso, now_iso),
+        )
+        return True
+
+
+def release_scan_lock(class_key: str, trade_date: str) -> None:
+    """Release scan lock for class_key on trade_date."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE scheduler_scan_progress
+            SET is_scanning = 0, updated_at = ?
+            WHERE class_key = ? AND trade_date = ?
+            """,
+            (now_iso, class_key, trade_date),
+        )

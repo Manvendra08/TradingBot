@@ -868,6 +868,12 @@ def _run_catchup_scan(class_key: str, interval_idx: int, interval_min: int, mark
             last_scanned_interval.get(class_key, -1),
             interval_idx
         )
+        try:
+            from src.models.schema import save_persisted_scan_progress
+            today_str = datetime.now(IST).strftime("%Y-%m-%d")
+            save_persisted_scan_progress(class_key, today_str, last_interval_idx=last_scanned_interval[class_key])
+        except Exception as exc_p:
+            log.debug("Failed to persist catch-up scan progress for %s: %s", class_key, exc_p)
 
 
 def _startup_fill_missed(
@@ -976,22 +982,34 @@ def _startup_fill_missed(
 
 
 def _guarded_run(class_key: str | None = None, force: bool = False):
-    symbols_to_check = [
-        s
-        for s in WATCH_SYMBOLS
-        if (class_key is None or get_symbol_class(s) == class_key)
-    ]
-    if force:
-        open_symbols = symbols_to_check
-    else:
-        open_symbols = [s for s in symbols_to_check if _is_open_for(s)]
-    if not open_symbols:
-        log.info("[%s] Market is closed. Skipping scan.", class_key or "ALL")
-        return
-    closed = set(symbols_to_check) - set(open_symbols)
-    if closed:
-        log.debug("Skipping closed symbols: %s", sorted(closed))
-    run_pipeline(symbols=open_symbols, force=force)
+    from src.models.schema import acquire_scan_lock, release_scan_lock
+    today_date = datetime.now(IST).strftime("%Y-%m-%d")
+    ck = class_key or "ALL"
+    if not force:
+        locked = acquire_scan_lock(ck, today_date, timeout_sec=600)
+        if not locked:
+            log.warning("[scheduler] Scan lock active for %s (%s) — skipping duplicate concurrent scan", ck, today_date)
+            return
+    try:
+        symbols_to_check = [
+            s
+            for s in WATCH_SYMBOLS
+            if (class_key is None or get_symbol_class(s) == class_key)
+        ]
+        if force:
+            open_symbols = symbols_to_check
+        else:
+            open_symbols = [s for s in symbols_to_check if _is_open_for(s)]
+        if not open_symbols:
+            log.info("[%s] Market is closed. Skipping scan.", class_key or "ALL")
+            return
+        closed = set(symbols_to_check) - set(open_symbols)
+        if closed:
+            log.debug("Skipping closed symbols: %s", sorted(closed))
+        run_pipeline(symbols=open_symbols, force=force)
+    finally:
+        if not force:
+            release_scan_lock(ck, today_date)
 
 
 def _run_dhan_naturalgas_scrape():
@@ -1057,6 +1075,11 @@ def _maybe_market_close_scan(
             tracker_key = (class_key, current_date)
             if tracker_key not in close_tracker:
                 close_tracker.add(tracker_key)
+                try:
+                    from src.models.schema import save_persisted_scan_progress
+                    save_persisted_scan_progress(class_key, current_date, market_close_done=True)
+                except Exception as exc_p:
+                    log.debug("Failed to persist market-close state for %s: %s", class_key, exc_p)
                 log.info(
                     "[scheduler] %s: Triggering MANDATORY daily "
                     "market-close scan at %s IST (date: %s, exchange close: %s IST)",
@@ -1725,6 +1748,23 @@ def start_scheduler(immediate: bool = False):
     _friday_exit_alerted: set[tuple[str, str]] = set()  # Telegram warn-once guard
     _friday_exit_lock = threading.Lock()  # non-blocking "sweep busy" flag
     _last_market_close_scan_tracker: set[tuple[str, str]] = set()
+
+    # Restore persisted scan intervals and market-close state from SQLite (Audit Item 2: Prevent duplicate scans on crash)
+    try:
+        from src.models.schema import get_persisted_scan_progress
+        today_date_str = current_date.strftime("%Y-%m-%d")
+        for ck in MARKET_WINDOWS:
+            prog = get_persisted_scan_progress(ck, today_date_str)
+            if prog:
+                p_idx = prog.get("last_interval_idx", -1)
+                if p_idx >= 0:
+                    last_scanned_interval[ck] = max(last_scanned_interval.get(ck, -1), p_idx)
+                    log.info("[scheduler] Restored persisted scan interval for %s: interval %d", ck, p_idx)
+                if prog.get("market_close_done"):
+                    _last_market_close_scan_tracker.add((ck, today_date_str))
+                    log.info("[scheduler] Restored persisted market-close completion for %s (%s)", ck, today_date_str)
+    except Exception as exc_prog:
+        log.warning("[scheduler] Could not restore scan progress from DB: %s", exc_prog)
     _last_auto_login_date = None
     _last_fii_fetch_date = None
     try:
@@ -2223,6 +2263,11 @@ def start_scheduler(immediate: bool = False):
                             last_scanned_interval.get(class_key, -1),
                             current_interval_idx
                         )
+                        try:
+                            from src.models.schema import save_persisted_scan_progress
+                            save_persisted_scan_progress(class_key, current_date.strftime("%Y-%m-%d"), last_interval_idx=last_scanned_interval[class_key])
+                        except Exception as exc_p:
+                            log.debug("Failed to persist scan progress for %s: %s", class_key, exc_p)
 
                 if should_scan:
                     cycle_start = time.time()
@@ -2260,6 +2305,11 @@ def start_scheduler(immediate: bool = False):
                             last_scanned_interval.get(class_key, -1),
                             current_interval_idx,
                         )
+                        try:
+                            from src.models.schema import save_persisted_scan_progress
+                            save_persisted_scan_progress(class_key, current_date.strftime("%Y-%m-%d"), last_interval_idx=last_scanned_interval[class_key])
+                        except Exception as exc_p:
+                            log.debug("Failed to persist scan progress for %s: %s", class_key, exc_p)
 
                 # ── Catch-up: run scans for missed intervals ──
                 if not should_scan and last_scanned_interval.get(class_key, -1) >= 0:

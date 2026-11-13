@@ -73,6 +73,25 @@ def get_closed_trades_today() -> list[dict]:
             for r in ml_rows:
                 r_dict = dict(r)
                 r_dict["source_table"] = "multi_leg_trades"
+                # Enrich with leg details for comprehensive multi-leg autopsy
+                try:
+                    leg_rows = conn.execute(
+                        """
+                        SELECT side, lots, strike, option_type, entry_premium, exit_premium, status
+                        FROM multi_leg_legs
+                        WHERE trade_id = ?
+                        ORDER BY strike ASC, option_type ASC
+                        """,
+                        (r_dict["id"],),
+                    ).fetchall()
+                    legs_summary = [
+                        f"{l['side']} {l['lots']}x {l['strike']}{l['option_type']} "
+                        f"(entry ₹{l['entry_premium'] or 0.0:.2f} -> exit ₹{l['exit_premium'] or 0.0:.2f})"
+                        for l in leg_rows
+                    ]
+                    r_dict["legs_summary"] = " | ".join(legs_summary) if legs_summary else "N/A"
+                except Exception as leg_err:
+                    r_dict["legs_summary"] = "N/A"
                 trades.append(r_dict)
         except Exception as e:
             log.error("Failed to fetch closed multi_leg_trades: %s", e)
@@ -130,8 +149,10 @@ ANALYSIS FRAMEWORK:
 
 TRADE:
 - Symbol: {symbol}
+- Source: {trade.get('source_table', 'paper_trades')}
 - Verdict: {trade.get('verdict_label')}
-- Setup Type: {trade.get('setup_type')}
+- Setup / Structure: {trade.get('setup_type')}
+- Legs: {trade.get('legs_summary', 'N/A')}
 - Entry: {trade.get('entry_premium')}
 - Exit: {trade.get('exit_premium')}
 - P&L: {trade.get('pnl_rupees')}
@@ -195,10 +216,11 @@ def _call_llm_autopsy_batch(trades_with_shadows: list[tuple[dict, dict | None]])
         trade_summaries = []
         for idx, (trade, shadow) in enumerate(batch):
             shadow_str = json.dumps(shadow, default=str)[:300] if shadow else "None"
+            legs_str = f" | Legs: {trade.get('legs_summary')}" if trade.get("legs_summary") and trade.get("legs_summary") != "N/A" else ""
             trade_summaries.append(
-                f"--- Trade {idx + 1} ---\n"
+                f"--- Trade {idx + 1} ({trade.get('source_table', 'paper_trades')}) ---\n"
                 f"Symbol: {trade.get('symbol')} | Verdict: {trade.get('verdict_label')} | "
-                f"Setup: {trade.get('setup_type')}\n"
+                f"Setup: {trade.get('setup_type')}{legs_str}\n"
                 f"Entry: {trade.get('entry_premium')} | Exit: {trade.get('exit_premium')} | "
                 f"P&L: {trade.get('pnl_rupees')}\n"
                 f"Status: {trade.get('status')} | Close: {trade.get('reason')}\n"
@@ -320,6 +342,7 @@ def run_nightly_autopsy() -> int:
     for (trade, _shadow), analysis in zip(trades_with_shadows, analyses):
         autopsy_record = {
             "trade_id": trade["id"],
+            "source_table": trade.get("source_table", "paper_trades"),
             "ts": now_iso,
             "symbol": trade.get("symbol"),
             "pnl_rupees": trade.get("pnl_rupees"),
@@ -333,20 +356,38 @@ def run_nightly_autopsy() -> int:
 
         try:
             with get_conn() as conn:
-                conn.execute(
-                    """
-                    INSERT INTO trade_autopsies (trade_id, ts, reasons_held, primary_failure, note, llm_model)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        trade["id"],
-                        now_iso,
-                        1 if analysis.get("reasons_held") else 0,
-                        analysis.get("primary_failure"),
-                        analysis.get("note"),
-                        "gemini-2.0-flash",
-                    ),
-                )
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO trade_autopsies (trade_id, source_table, ts, reasons_held, primary_failure, note, llm_model)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            trade["id"],
+                            trade.get("source_table", "paper_trades"),
+                            now_iso,
+                            1 if analysis.get("reasons_held") else 0,
+                            analysis.get("primary_failure"),
+                            analysis.get("note"),
+                            "gemini-2.0-flash",
+                        ),
+                    )
+                except Exception:
+                    # Fallback for schema compatibility
+                    conn.execute(
+                        """
+                        INSERT INTO trade_autopsies (trade_id, ts, reasons_held, primary_failure, note, llm_model)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            trade["id"],
+                            now_iso,
+                            1 if analysis.get("reasons_held") else 0,
+                            analysis.get("primary_failure"),
+                            analysis.get("note"),
+                            "gemini-2.0-flash",
+                        ),
+                    )
         except Exception as e:
             log.error("Failed to insert autopsy for trade %d: %s", trade["id"], e)
 
@@ -371,12 +412,20 @@ def run_weekly_rollup() -> dict:
             rows = conn.execute(
                 """
                 SELECT t.setup_type, t.pnl_rupees, s.ai_veto_flag, s.old_ai_would_boost
-                FROM paper_trades t
+                FROM (
+                    SELECT setup_type, pnl_rupees, symbol, closed_at FROM paper_trades
+                    WHERE closed_at >= ? AND pnl_rupees IS NOT NULL
+                    UNION ALL
+                    SELECT setup_type, pnl_rupees, symbol, closed_at FROM live_trades
+                    WHERE closed_at >= ? AND pnl_rupees IS NOT NULL
+                    UNION ALL
+                    SELECT structure as setup_type, total_pnl as pnl_rupees, symbol, closed_at FROM multi_leg_trades
+                    WHERE closed_at >= ? AND total_pnl IS NOT NULL AND status != 'OPEN'
+                ) t
                 LEFT JOIN shadow_decisions s ON t.symbol = s.symbol
                     AND s.ts >= ? AND s.ts <= t.closed_at
-                WHERE t.closed_at >= ? AND t.pnl_rupees IS NOT NULL
                 """,
-                (cutoff, cutoff),
+                (cutoff, cutoff, cutoff, cutoff),
             ).fetchall()
 
             for r in rows:

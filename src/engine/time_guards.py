@@ -386,8 +386,6 @@ def is_trading_allowed_now(symbol: str, expiry_str: str | None = None, operation
 
     except Exception as exc:
         log.exception("time_guards.is_trading_allowed_now: unexpected error (%s)", exc)
-        # Fail-closed for entries to prevent dangerous order placements during engine errors;
-        # allow exits to ensure open risk can always be flattened.
-        if operation == "EXIT":
-            return True, ""
-        return False, f"Time guard system error — fail-closed: {exc}"
+        # Fail-closed for all operations on unexpected system error to prevent
+        # rogue execution or undefined states during engine failures.
+        return False, f"Time guard system error (fail-closed): {exc}"
