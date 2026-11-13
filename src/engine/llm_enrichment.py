@@ -1671,7 +1671,7 @@ def _record_host_timeout(provider: dict, now: float) -> bool:
     Returns True if this call tripped the breaker.
     """
     host = _provider_host(provider)
-    if not host or "localhost" in host or "127.0.0.1" in host:
+    if not host:
         return False
     with _cooldown_lock:
         count = _HOST_FAILURE_COUNTS.get(host, 0) + 1
@@ -2228,7 +2228,7 @@ def call_llm_api(
                 "url": _omnirouter_url,
                 "model": "Claude-Models",
                 "model_group": "omnirouter-primary",
-                "timeout": 60,
+                "timeout": 15,
                 "max_tokens_override": 4096,
             },
             {
@@ -2237,7 +2237,7 @@ def call_llm_api(
                 "url": _omnirouter_url,
                 "model": "Claude/Antigravity",
                 "model_group": "omnirouter-primary",
-                "timeout": 60,
+                "timeout": 15,
                 "max_tokens_override": 4096,
             },
             {
@@ -2246,7 +2246,7 @@ def call_llm_api(
                 "url": _omnirouter_url,
                 "model": "claude/Free",
                 "model_group": "omnirouter-primary",
-                "timeout": 60,
+                "timeout": 15,
                 "max_tokens_override": 4096,
             },
             {
@@ -2255,7 +2255,7 @@ def call_llm_api(
                 "url": _omnirouter_url,
                 "model": "cx/gpt-5.5",
                 "model_group": "omnirouter-primary",
-                "timeout": 60,
+                "timeout": 15,
                 "max_tokens_override": 4096,
             },
             {
@@ -2264,7 +2264,7 @@ def call_llm_api(
                 "url": _omnirouter_url,
                 "model": "kr/glm-5",
                 "model_group": "omnirouter-primary",
-                "timeout": 60,
+                "timeout": 15,
                 "max_tokens_override": 4096,
             },
             {
@@ -2273,7 +2273,7 @@ def call_llm_api(
                 "url": _omnirouter_url,
                 "model": "kr/claude-haiku-4.5",
                 "model_group": "omnirouter-primary",
-                "timeout": 60,
+                "timeout": 15,
                 "max_tokens_override": 4096,
             },
         ],
@@ -2292,7 +2292,7 @@ def call_llm_api(
                 "url": _omnirouter_url,
                 "model": "Claude/Antigravity",
                 "model_group": "omnirouter-sentinel",
-                "timeout": 60,
+                "timeout": 15,
                 "max_tokens_override": 2048,
             },
             {
@@ -2301,7 +2301,7 @@ def call_llm_api(
                 "url": _omnirouter_url,
                 "model": "Claude-Models",
                 "model_group": "omnirouter-sentinel",
-                "timeout": 60,
+                "timeout": 15,
                 "max_tokens_override": 2048,
             },
             {
@@ -2310,7 +2310,7 @@ def call_llm_api(
                 "url": _omnirouter_url,
                 "model": "claude/Free",
                 "model_group": "omnirouter-sentinel",
-                "timeout": 60,
+                "timeout": 15,
                 "max_tokens_override": 2048,
             },
             {
@@ -2319,7 +2319,7 @@ def call_llm_api(
                 "url": _omnirouter_url,
                 "model": "kr/claude-haiku-4.5",
                 "model_group": "omnirouter-sentinel",
-                "timeout": 60,
+                "timeout": 15,
                 "max_tokens_override": 2048,
             },
             {
@@ -2328,7 +2328,7 @@ def call_llm_api(
                 "url": _omnirouter_url,
                 "model": "kr/glm-5",
                 "model_group": "omnirouter-sentinel",
-                "timeout": 60,
+                "timeout": 15,
                 "max_tokens_override": 2048,
             },
             {
@@ -2337,7 +2337,7 @@ def call_llm_api(
                 "url": _omnirouter_url,
                 "model": "kr/deepseek-3.2",
                 "model_group": "omnirouter-sentinel",
-                "timeout": 60,
+                "timeout": 15,
                 "max_tokens_override": 2048,
             },
             {

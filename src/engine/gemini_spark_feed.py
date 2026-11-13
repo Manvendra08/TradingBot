@@ -688,16 +688,31 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
     else:
         market_state = str(market_state_raw).upper()
 
-    contract_str = payload.get("symbol", "NATURALGAS")
+    contract_str = (
+        payload.get("symbol")
+        or payload.get("active_contract")
+        or (payload.get("underlying", {}).get("mcx_symbol") if isinstance(payload.get("underlying"), dict) else "")
+        or "NATURALGAS"
+    )
     symbol, parsed_expiry = _parse_contract(contract_str)
-    expiry = payload.get("contract_expiry") or payload.get("expiry") or parsed_expiry
+    expiry = (
+        payload.get("contract_expiry")
+        or payload.get("expiry")
+        or (payload.get("underlying", {}).get("mcx_expiry") if isinstance(payload.get("underlying"), dict) else "")
+        or (payload.get("derivatives", {}).get("options_expiry") if isinstance(payload.get("derivatives"), dict) else "")
+        or parsed_expiry
+    )
 
     # Extract real-time CMP for accurate entries/exits
     cmp_val = payload.get("cmp_inr")
     if cmp_val is None:
         cmp_val = payload.get("cmp")
+    if cmp_val is None and isinstance(payload.get("underlying"), dict):
+        cmp_val = payload["underlying"].get("cmp") or payload["underlying"].get("cmp_inr")
 
     raw_setups = payload.get("setups")
+    if not isinstance(raw_setups, list) or not raw_setups:
+        raw_setups = payload.get("active_setups_ledger")
     setups = raw_setups if isinstance(raw_setups, list) else []
 
     # If market state is explicitly closed AND there are no actionable setups in payload, exit early
@@ -884,6 +899,7 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
             or setup.get("action_bias")
             or setup.get("strategy_type")
             or setup.get("strategy_name")
+            or setup.get("strategy")
             or setup.get("sentiment")
             or setup.get("market_sentiment_fit")
             or ""
@@ -891,13 +907,24 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
         status_upper = str(setup.get("status", "")).upper()
 
         # Guard: Check for non-actionable or neutral waiting states
-        if "NEUTRAL" in raw_direction or "WAITING" in raw_direction or "FLAT" in raw_direction or "NO_TRADE" in raw_direction:
+        if "WAITING" in raw_direction or "FLAT" in raw_direction or "NO_TRADE" in raw_direction:
             log_eval("[gemini_spark] Setup %s is %s (status=%s). Skipping order execution.", setup_id, raw_direction, status_upper)
             continue
 
-        if "SHORT" in raw_direction or "SELL" in raw_direction or "BEAR" in raw_direction:
+        if (
+            "SHORT" in raw_direction
+            or "SELL" in raw_direction
+            or "BEAR" in raw_direction
+            or "CALL SPREAD" in raw_direction
+            or "CONDOR" in raw_direction
+        ):
             action_upper = "SELL"
-        elif "LONG" in raw_direction or "BUY" in raw_direction or "BULL" in raw_direction:
+        elif (
+            "LONG" in raw_direction
+            or "BUY" in raw_direction
+            or "BULL" in raw_direction
+            or "PUT SPREAD" in raw_direction
+        ):
             action_upper = "BUY"
         else:
             log_eval("[gemini_spark] Setup %s has unhandled direction '%s'. Skipping.", setup_id, raw_direction)
@@ -917,6 +944,11 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
         if "entry_trigger" in setup and setup["entry_trigger"] is not None:
             try:
                 entry_target = float(setup["entry_trigger"] or 0.0)
+            except (ValueError, TypeError):
+                entry_target = 0.0
+        elif setup.get("short_strike"):
+            try:
+                entry_target = float(setup["short_strike"])
             except (ValueError, TypeError):
                 entry_target = 0.0
         elif entry_zone is not None:
@@ -958,6 +990,30 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
                         break
                 except (ValueError, TypeError):
                     pass
+
+        if stop_loss == 0.0 and setup.get("long_strike"):
+            try:
+                val = float(setup["long_strike"])
+                ref_p = entry_target if entry_target > 0 else (cmp_val or 0.0)
+                # Valid only if SL is in correct direction relative to ref_p
+                if (action_upper == "BUY" and val < ref_p) or (action_upper == "SELL" and val > ref_p):
+                    stop_loss = val
+            except (ValueError, TypeError):
+                pass
+
+        if stop_loss == 0.0 and isinstance(setup.get("rules"), dict) and "stop_loss" in setup["rules"]:
+            import re
+            nums = [float(x) for x in re.findall(r"\b\d{3}\.?\d*\b", str(setup["rules"]["stop_loss"]))]
+            if nums:
+                ref_p = entry_target if entry_target > 0 else (cmp_val or 0.0)
+                above = [x for x in nums if x > ref_p]
+                below = [x for x in nums if x < ref_p]
+                if action_upper == "SELL" and above:
+                    stop_loss = above[0]
+                elif action_upper == "BUY" and below:
+                    stop_loss = below[0]
+                elif nums:
+                    stop_loss = nums[0]
 
         if stop_loss == 0.0 and "combined_risk_rules" in setup and isinstance(setup["combined_risk_rules"], dict):
             crr = setup["combined_risk_rules"]
@@ -1040,8 +1096,10 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
             log_eval("[gemini_spark] %s setup %s skipped: valid live market price unavailable (Native: %s, CMP: %s)", symbol, setup_id, native_price, cmp_val)
             continue
 
+        ref_base = entry_target if entry_target > 0 else fill_price
+
         # Convert relative SL distance if absolute stop_loss was omitted
-        if stop_loss == 0.0 and fill_price > 0:
+        if stop_loss == 0.0 and ref_base > 0:
             sl_distance = None
             for k in ("sl_distance", "sl_distance_pts", "stop_loss_distance", "sl_pts", "stop_pts", "stop_dist"):
                 if k in setup and setup[k] is not None:
@@ -1053,13 +1111,13 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
                     except (ValueError, TypeError):
                         pass
             if sl_distance and sl_distance > 0:
-                stop_loss = (fill_price - sl_distance) if action_upper == "BUY" else (fill_price + sl_distance)
+                stop_loss = (ref_base - sl_distance) if action_upper == "BUY" else (ref_base + sl_distance)
             else:
                 default_dist = 40.0 if "NIFTY" in symbol else 2.0
-                stop_loss = (fill_price - default_dist) if action_upper == "BUY" else (fill_price + default_dist)
+                stop_loss = (ref_base - default_dist) if action_upper == "BUY" else (ref_base + default_dist)
 
         # Convert relative Target 1 distance if absolute target_1 was omitted
-        if target_1 == 0.0 and fill_price > 0:
+        if target_1 == 0.0 and ref_base > 0:
             t1_distance = None
             for k in ("t1_distance", "t1_distance_pts", "target_distance", "t1_pts", "target_pts", "tp1_pts"):
                 if k in setup and setup[k] is not None:
@@ -1071,13 +1129,13 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
                     except (ValueError, TypeError):
                         pass
             if t1_distance and t1_distance > 0:
-                target_1 = (fill_price + t1_distance) if action_upper == "BUY" else (fill_price - t1_distance)
+                target_1 = (ref_base + t1_distance) if action_upper == "BUY" else (ref_base - t1_distance)
             else:
                 default_t1 = 80.0 if "NIFTY" in symbol else 4.0
-                target_1 = (fill_price + default_t1) if action_upper == "BUY" else (fill_price - default_t1)
+                target_1 = (ref_base + default_t1) if action_upper == "BUY" else (ref_base - default_t1)
 
         # Convert relative Target 2 distance if absolute target_2 was omitted
-        if target_2 == 0.0 and fill_price > 0:
+        if target_2 == 0.0 and ref_base > 0:
             t2_distance = None
             for k in ("t2_distance", "t2_distance_pts", "target_2_distance", "t2_pts", "tp2_pts"):
                 if k in setup and setup[k] is not None:
@@ -1089,10 +1147,10 @@ def execute_gemini_setups(payload: dict[str, Any], is_new_scan: bool = True) -> 
                     except (ValueError, TypeError):
                         pass
             if t2_distance and t2_distance > 0:
-                target_2 = (fill_price + t2_distance) if action_upper == "BUY" else (fill_price - t2_distance)
+                target_2 = (ref_base + t2_distance) if action_upper == "BUY" else (ref_base - t2_distance)
             else:
                 default_t2 = 140.0 if "NIFTY" in symbol else 8.0
-                target_2 = (fill_price + default_t2) if action_upper == "BUY" else (fill_price - default_t2)
+                target_2 = (ref_base + default_t2) if action_upper == "BUY" else (ref_base - default_t2)
 
         log_eval(
             "[gemini_spark] Evaluating setup: %s | %s %s | CMP: %.2f (Live: %s, Zone/Trigger: %.2f) | SL: %.2f | T1: %.2f",
@@ -1516,11 +1574,17 @@ def poll_and_process_feed(target_symbol: str = "NATURALGAS") -> bool:
         return False
 
     # Defensive symbol guard: Ensure bridge returned the requested asset
-    raw_sym = str(payload.get("symbol", "")).upper()
+    raw_sym = str(
+        payload.get("symbol")
+        or (payload.get("underlying", {}).get("mcx_symbol") if isinstance(payload.get("underlying"), dict) else "")
+        or (payload.get("underlying", {}).get("symbol") if isinstance(payload.get("underlying"), dict) else "")
+        or payload.get("underlying_symbol")
+        or ""
+    ).upper()
     if target_symbol == "NIFTY" and "NIFTY" not in raw_sym:
         # Apps Script did not return NIFTY (e.g. script not updated yet)
         return False
-    if target_symbol == "NATURALGAS" and "NATURALGAS" not in raw_sym:
+    if target_symbol == "NATURALGAS" and ("NATURALGAS" not in raw_sym and "NG" not in raw_sym):
         return False
 
     state = _load_state()
