@@ -112,7 +112,7 @@ def calculate_transaction_costs(
     Includes:
     - Brokerage: ₹20 entry + ₹20 exit = ₹40 flat per leg.
     - STT / CTT:
-        - Options (NSE Index): 0.0625% on round-trip premium turnover
+        - Options (NSE Index): 0.0625% on sell-side premium turnover
         - Options (Stock): 0.0625% on sell-side premium turnover
         - Options (MCX): 0.05% CTT on sell-side premium turnover
         - Futures (MCX): 0.01% CTT on sell-side notional turnover
@@ -148,7 +148,7 @@ def calculate_transaction_costs(
         if is_mcx:
             stt = sell_turnover * 0.0005
         elif is_index:
-            stt = total_turnover * 0.000625
+            stt = sell_turnover * 0.000625
         else:
             stt = sell_turnover * 0.000625
 

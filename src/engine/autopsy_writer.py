@@ -41,8 +41,7 @@ def get_closed_trades_today() -> list[dict]:
                            pnl_rupees, status, verdict_label, setup_type, reason,
                            sl_premium, target_premium
                     FROM {table}
-                    WHERE status IN ('CLOSED_TARGET', 'CLOSED_SL', 'SL_HIT', 'CLOSED_MANUAL',
-                                     'CLOSED_REVERSAL', 'CLOSED_EARLY', 'AI_CLOSE_EARLY')
+                    WHERE (status = 'CLOSED' OR status LIKE 'CLOSED_%' OR status = 'SL_HIT')
                       AND closed_at >= ?
                     ORDER BY closed_at DESC
                     """,
@@ -422,8 +421,11 @@ def run_weekly_rollup() -> dict:
                     SELECT structure as setup_type, total_pnl as pnl_rupees, symbol, closed_at FROM multi_leg_trades
                     WHERE closed_at >= ? AND total_pnl IS NOT NULL AND status != 'OPEN'
                 ) t
-                LEFT JOIN shadow_decisions s ON t.symbol = s.symbol
-                    AND s.ts >= ? AND s.ts <= t.closed_at
+                LEFT JOIN shadow_decisions s ON s.id = (
+                    SELECT id FROM shadow_decisions
+                    WHERE symbol = t.symbol AND ts <= t.closed_at AND ts >= ?
+                    ORDER BY ts DESC LIMIT 1
+                )
                 """,
                 (cutoff, cutoff, cutoff, cutoff),
             ).fetchall()

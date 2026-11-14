@@ -75,6 +75,10 @@ def analyze_eia_report() -> None:
 
         report_date = eia_data.get("report_date") or today_str
         actual = eia_data.get("actual_bcf")
+        if actual is None:
+            log.warning("analyze_eia_report: EIA Actual print is not yet published. Aborting recalibration until next scan tick.")
+            return
+
         consensus = eia_data.get("consensus_bcf")
         surprise = eia_data.get("surprise_bcf")
         five_yr_avg = eia_data.get("five_year_avg_bcf")
@@ -138,15 +142,16 @@ def analyze_eia_report() -> None:
             pass
 
         # 4. Compute deterministic baseline stance, surprise labels, and physical metrics
-        actual_str = f"{actual:+.1f} Bcf" if actual is not None else "Pending / N/A"
+        actual_str = f"{actual:+.1f} Bcf"
         cons_str = f"{consensus:+.1f} Bcf" if consensus is not None else "N/A"
         fyr_str = f"{five_yr_avg:+.1f} Bcf" if five_yr_avg is not None else "N/A"
-        surplus_delta_str = f"{(actual - five_yr_avg):+.1f} Bcf" if (actual is not None and five_yr_avg is not None) else "N/A"
+        surplus_delta_str = f"{(actual - five_yr_avg):+.1f} Bcf" if five_yr_avg is not None else "N/A"
+        surplus_str = f"{surplus_bcf:+.0f} Bcf ({surplus_pct:+.1f}%)" if surplus_bcf is not None else "N/A"
 
         surp_str, surp_dir, surp_label = format_eia_surprise(actual, consensus)
 
         deterministic_stance, deterministic_summary, _ = classify_storage_event(
-            actual_bcf=actual if actual is not None else 0.0,
+            actual_bcf=actual,
             consensus_bcf=consensus,
             five_year_avg_bcf=five_yr_avg,
             surplus_vs_5yr_bcf=surplus_bcf,
@@ -164,7 +169,7 @@ REPORT DATA (Lower 48):
 - 5-Year Historical Average Net Change: {fyr_str}
 - 5-Year Historical Delta (Actual - 5YrAvg): {surplus_delta_str}
 - Total Working Gas in Storage: {total_storage or 'N/A'} Bcf
-- Surplus/Deficit vs 5-Year Average: {surplus_bcf:+.0f} Bcf ({surplus_pct:+.1f}%) if surplus_bcf else 'N/A'
+- Surplus/Deficit vs 5-Year Average: {surplus_str}
 - Trailing Tightening Streak: {consecutive_weeks} consecutive below-normal builds
 
 DETERMINISTIC REGIME GROUND TRUTH:

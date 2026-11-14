@@ -234,7 +234,8 @@ def classify_storage_event(
         summary_parts.append(f"Storage {flow_word} of {actual_bcf:+.1f} Bcf dominated by massive 5-year divergence ({five_yr_delta:+.1f} Bcf).")
     else:
         stance = "NEUTRAL_BALANCED"
-        summary_parts.append(f"Storage {flow_word} of {actual_bcf:+.1f} Bcf is roughly in-line with seasonal norms ({five_year_avg_bcf:+.1f} Bcf).")
+        norm_str = f"({five_year_avg_bcf:+.1f} Bcf)" if five_year_avg_bcf is not None else "(historical norm)"
+        summary_parts.append(f"Storage {flow_word} of {actual_bcf:+.1f} Bcf is roughly in-line with seasonal norms {norm_str}.")
 
     if surplus_vs_5yr_pct is not None and surplus_vs_5yr_bcf is not None:
         summary_parts.append(
@@ -473,10 +474,11 @@ def format_ng_macro_for_llm(context: dict[str, Any] | None = None) -> str:
     squeeze_risk = context.get("is_rollover_squeeze_risk", False)
     season_reg = context.get("seasonal_regime", "INJECTION")
 
+    season_desc = "Builds are expected & normal; below-average builds are bullish." if season_reg == "INJECTION" else "Draws are expected & normal; deeper-than-average draws are bullish."
     lines = [
         "NATURAL GAS FUNDAMENTAL & EIA MACRO INTELLIGENCE:",
         f"  • Active Weekly Stance: **{stance}** (Persisting until next Thursday EIA release)",
-        f"  • Seasonal Regime: {season_reg} SEASON — Builds are expected & normal; below-average builds are bullish.",
+        f"  • Seasonal Regime: {season_reg} SEASON — {season_desc}",
     ]
 
     if actual is not None:
@@ -485,13 +487,16 @@ def format_ng_macro_for_llm(context: dict[str, Any] | None = None) -> str:
         fyr_str = f"{five_yr:+.1f} Bcf" if five_yr is not None else "N/A"
         lines.append(f"  • EIA Storage Print ({rep_date}): Actual {act_str} | Consensus {cons_str} | 5-Yr Avg {fyr_str}")
         if consensus is not None:
-            c_delta = actual - consensus
-            c_label = "BULLISH BEAT (Under-build / Demand Surge)" if c_delta < 0 else "BEARISH MISS (Over-build)"
-            lines.append(f"  ? Consensus Surprise: {c_delta:+.1f} Bcf ({c_label})")
+            _, _, surp_label = format_eia_surprise(actual, consensus)
+            lines.append(f"  • Consensus Surprise: {surp_label}")
         if five_yr is not None:
             f_delta = actual - five_yr
-            f_label = "STRUCTURAL TIGHTENING / Buffer Erosion" if f_delta < 0 else "SURPLUS EXPANSION"
-            lines.append(f"  ? 5-Year Norm Delta: {f_delta:+.1f} Bcf ({f_label})")
+            is_build = actual >= 0
+            if f_delta < 0:
+                f_label = "STRUCTURAL TIGHTENING (Below 5-Yr Norm)" if is_build else "STRUCTURAL TIGHTENING (Deeper Draw than Norm)"
+            else:
+                f_label = "SURPLUS EXPANSION (Above 5-Yr Norm)" if is_build else "SURPLUS EXPANSION (Shallower Draw than Norm)"
+            lines.append(f"  • 5-Year Norm Delta: {f_delta:+.1f} Bcf ({f_label})")
 
     if surplus_bcf is not None and surplus_pct is not None:
         lines.append(f"  • National Storage Buffer: {surplus_bcf:+.0f} Bcf ({surplus_pct:+.1f}% vs 5-year average)")

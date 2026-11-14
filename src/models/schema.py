@@ -2753,22 +2753,24 @@ def close_book(
         orig_entry_reason = trade["entry_reason"] or trade["reason"] or ""
         stored_net_premium = float(trade["net_premium"] or 0.0)
 
+        # Always fetch book legs, symbol, and lot_size for P&L math, risk capping, and fee deductions
+        legs = conn.execute(
+            "SELECT id, side, lots, strike, option_type, entry_premium, exit_premium, status FROM multi_leg_legs WHERE trade_id=?",
+            (trade_id,),
+        ).fetchall()
+        legs_by_id = {int(l["id"]): dict(l) for l in legs}
+        symbol_row = conn.execute(
+            "SELECT symbol FROM multi_leg_trades WHERE id=?", (trade_id,)
+        ).fetchone()
+        symbol = (symbol_row["symbol"] if symbol_row else "") or ""
+        base_sym = symbol.upper().split()[0] if symbol else ""
+        lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_sym, 1))
+
         # Recompute realized P&L from actual leg exits whenever possible.
         # This makes stored total_pnl match leg math instead of an arbitrary
         # caller-supplied snapshot.
         computed_pnl = None
         if leg_exits:
-            legs = conn.execute(
-                "SELECT id, side, lots, strike, option_type, entry_premium, exit_premium, status FROM multi_leg_legs WHERE trade_id=?",
-                (trade_id,),
-            ).fetchall()
-            legs_by_id = {int(l["id"]): dict(l) for l in legs}
-            symbol_row = conn.execute(
-                "SELECT symbol FROM multi_leg_trades WHERE id=?", (trade_id,)
-            ).fetchone()
-            symbol = (symbol_row["symbol"] if symbol_row else "") or ""
-            base_sym = symbol.upper().split()[0] if symbol else ""
-            lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_sym, 1))
             computed_pnl = 0.0
             closed_exit_ids = set()
             unknown_exit_leg = False
@@ -2843,14 +2845,15 @@ def close_book(
                 book_pnl = -physical_max_rupees
 
         # Deduct transaction costs so multileg P&L is net of brokerage, STT, and exchange fees
-        if leg_exits and 'legs_by_id' in locals() and legs_by_id:
+        if legs_by_id:
             total_tx_costs = 0.0
+            leg_exits_list = leg_exits or []
             for lid, l in legs_by_id.items():
                 l_opt = str(l.get("option_type") or "CE").upper()
                 l_side = str(l.get("side") or "SELL").upper()
                 l_entry = float(l.get("entry_premium") or 0.0)
                 l_exit = 0.0
-                for le in leg_exits:
+                for le in leg_exits_list:
                     if int(le.get("id") or 0) == lid:
                         l_exit = float(le.get("exit_premium") or 0.0)
                         break

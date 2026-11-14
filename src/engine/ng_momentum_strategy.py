@@ -121,15 +121,15 @@ def check_ng_momentum_entry(
             price_confirms = False
 
             if side == "SELL":
-                # Price confirmed: NYMEX is BEARISH (already checked) + MCX candle is BEARISH
-                price_confirms = (candle_1h == "BEARISH" or candle_3h == "BEARISH" or nymex_trend == "BEARISH")
+                # Price confirmed: MCX 1H or 3H candle confirms bearish momentum
+                price_confirms = (candle_1h == "BEARISH" or candle_3h == "BEARISH")
                 # OI confirmed: Short Buildup, Call Writing, Long Unwinding, or Call OI added > Put OI
                 is_bearish_verdict = any(k in verdict_label for k in ("SHORT", "CALL WRITING", "LONG UNWINDING", "BEARISH"))
                 is_bearish_flows = (ce_oi_chg > 0 and pe_oi_chg <= 0) or (ce_oi_chg - pe_oi_chg > 1000)
                 oi_confirms = (is_bearish_verdict and conf >= 40) or (is_bearish_flows and conf >= 30)
             elif side == "BUY":
-                # Price confirmed: NYMEX is BULLISH (already checked) + MCX candle is BULLISH
-                price_confirms = (candle_1h == "BULLISH" or candle_3h == "BULLISH" or nymex_trend == "BULLISH")
+                # Price confirmed: MCX 1H or 3H candle confirms bullish momentum
+                price_confirms = (candle_1h == "BULLISH" or candle_3h == "BULLISH")
                 # OI confirmed: Long Buildup, Put Writing, Short Covering, or Put OI added > Call OI
                 is_bullish_verdict = any(k in verdict_label for k in ("LONG", "PUT WRITING", "SHORT COVERING", "BULLISH"))
                 is_bullish_flows = (pe_oi_chg > 0 and ce_oi_chg <= 0) or (pe_oi_chg - ce_oi_chg > 1000)

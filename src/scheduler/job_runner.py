@@ -859,21 +859,23 @@ def _run_catchup_scan(class_key: str, interval_idx: int, interval_min: int, mark
         interval_idx,
         interval_start_ist.strftime("%H:%M"),
     )
+    did_run = False
     try:
-        _guarded_run(class_key, force=force)
+        did_run = bool(_guarded_run(class_key, force=force))
     except Exception as exc:
         log.error("[catchup] Catch-up scan failed for %s interval %d: %s", class_key, interval_idx, exc)
     finally:
-        last_scanned_interval[class_key] = max(
-            last_scanned_interval.get(class_key, -1),
-            interval_idx
-        )
-        try:
-            from src.models.schema import save_persisted_scan_progress
-            today_str = datetime.now(IST).strftime("%Y-%m-%d")
-            save_persisted_scan_progress(class_key, today_str, last_interval_idx=last_scanned_interval[class_key])
-        except Exception as exc_p:
-            log.debug("Failed to persist catch-up scan progress for %s: %s", class_key, exc_p)
+        if did_run:
+            last_scanned_interval[class_key] = max(
+                last_scanned_interval.get(class_key, -1),
+                interval_idx
+            )
+            try:
+                from src.models.schema import save_persisted_scan_progress
+                today_str = datetime.now(IST).strftime("%Y-%m-%d")
+                save_persisted_scan_progress(class_key, today_str, last_interval_idx=last_scanned_interval[class_key])
+            except Exception as exc_p:
+                log.debug("Failed to persist catch-up scan progress for %s: %s", class_key, exc_p)
 
 
 def _startup_fill_missed(
@@ -981,7 +983,7 @@ def _startup_fill_missed(
             )
 
 
-def _guarded_run(class_key: str | None = None, force: bool = False):
+def _guarded_run(class_key: str | None = None, force: bool = False) -> bool:
     from src.models.schema import acquire_scan_lock, release_scan_lock
     today_date = datetime.now(IST).strftime("%Y-%m-%d")
     ck = class_key or "ALL"
@@ -989,7 +991,7 @@ def _guarded_run(class_key: str | None = None, force: bool = False):
         locked = acquire_scan_lock(ck, today_date, timeout_sec=600)
         if not locked:
             log.warning("[scheduler] Scan lock active for %s (%s) — skipping duplicate concurrent scan", ck, today_date)
-            return
+            return False
     try:
         symbols_to_check = [
             s
@@ -1002,11 +1004,12 @@ def _guarded_run(class_key: str | None = None, force: bool = False):
             open_symbols = [s for s in symbols_to_check if _is_open_for(s)]
         if not open_symbols:
             log.info("[%s] Market is closed. Skipping scan.", class_key or "ALL")
-            return
+            return True
         closed = set(symbols_to_check) - set(open_symbols)
         if closed:
             log.debug("Skipping closed symbols: %s", sorted(closed))
         run_pipeline(symbols=open_symbols, force=force)
+        return True
     finally:
         if not force:
             release_scan_lock(ck, today_date)
@@ -1751,7 +1754,14 @@ def start_scheduler(immediate: bool = False):
 
     # Restore persisted scan intervals and market-close state from SQLite (Audit Item 2: Prevent duplicate scans on crash)
     try:
-        from src.models.schema import get_persisted_scan_progress
+        from src.models.schema import get_conn, get_persisted_scan_progress
+        # Clear orphaned scan locks from prior process crash or restart
+        try:
+            with get_conn() as conn:
+                conn.execute("UPDATE scheduler_scan_progress SET is_scanning = 0 WHERE is_scanning = 1")
+        except Exception as exc_lock_reset:
+            log.debug("[scheduler] Orphaned scan lock reset: %s", exc_lock_reset)
+
         today_date_str = current_date.strftime("%Y-%m-%d")
         for ck in MARKET_WINDOWS:
             prog = get_persisted_scan_progress(ck, today_date_str)
@@ -2278,8 +2288,11 @@ def start_scheduler(immediate: bool = False):
                         delta_minutes,
                     )
 
+                    scan_executed = [False]
+
                     def run_all():
-                        _guarded_run(class_key)
+                        if _guarded_run(class_key):
+                            scan_executed[0] = True
                         if class_key == "MCX_COMMODITY":
                             _run_dhan_naturalgas_scrape()
 
@@ -2300,7 +2313,7 @@ def start_scheduler(immediate: bool = False):
                         elapsed,
                         success,
                     )
-                    if success:
+                    if success and scan_executed[0]:
                         last_scanned_interval[class_key] = max(
                             last_scanned_interval.get(class_key, -1),
                             current_interval_idx,
