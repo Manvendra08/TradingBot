@@ -22,6 +22,22 @@
                 --text-dim: #718096;
                 --mono: "Space Mono", monospace;
                 --sans: "DM Sans", sans-serif;
+
+                /* ── Motion Tokens & Glassmorphism Surfaces ── */
+                --duration-fast: 0.18s;
+                --duration-normal: 0.35s;
+                --duration-slow: 0.6s;
+                --ease-smooth: cubic-bezier(0.22, 1, 0.36, 1);
+                --ease-sharp: cubic-bezier(0.4, 0, 0.2, 1);
+                --ease-bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
+                --glass-bg: rgba(17, 20, 24, 0.78);
+                --glass-bg-hover: rgba(26, 29, 35, 0.88);
+                --glass-border: rgba(255, 255, 255, 0.08);
+                --glass-border-hover: rgba(0, 229, 160, 0.32);
+                --glass-blur: blur(12px);
+                --shadow-elevation-low: 0 2px 8px rgba(0, 0, 0, 0.25);
+                --shadow-elevation-mid: 0 8px 24px rgba(0, 0, 0, 0.38);
+                --shadow-glow-accent: 0 0 20px rgba(0, 229, 160, 0.18);
             }
 
             [data-theme="light"] {
@@ -35,6 +51,15 @@
                 --muted: #cbd5e1;
                 --text: #0f172a;
                 --text-dim: #64748b;
+
+                /* Light Mode Glassmorphism */
+                --glass-bg: rgba(255, 255, 255, 0.85);
+                --glass-bg-hover: rgba(241, 245, 249, 0.95);
+                --glass-border: rgba(15, 23, 42, 0.08);
+                --glass-border-hover: rgba(5, 150, 105, 0.35);
+                --shadow-elevation-low: 0 2px 8px rgba(15, 23, 42, 0.06);
+                --shadow-elevation-mid: 0 8px 24px rgba(15, 23, 42, 0.12);
+                --shadow-glow-accent: 0 0 20px rgba(5, 150, 105, 0.14);
             }
 
             * {
@@ -208,17 +233,162 @@
             button.primary:hover {
                 background: rgba(0, 229, 160, 0.08);
             }
+
+            /* ── Telemetry Breathing Pulse Keyframes ── */
+            @keyframes status-pulse {
+                0%, 100% {
+                    transform: scale(1);
+                    opacity: 1;
+                    box-shadow: 0 0 0 0 rgba(0, 229, 160, 0.6);
+                }
+                50% {
+                    transform: scale(1.15);
+                    opacity: 0.85;
+                    box-shadow: 0 0 0 6px rgba(0, 229, 160, 0);
+                }
+            }
+
+            @keyframes beacon-glow {
+                0%, 100% {
+                    opacity: 1;
+                    box-shadow: 0 0 10px rgba(0, 229, 160, 0.45);
+                }
+                50% {
+                    opacity: 0.7;
+                    box-shadow: 0 0 20px rgba(0, 229, 160, 0.8), 0 0 35px rgba(0, 229, 160, 0.3);
+                }
+            }
+
             #status-dot {
-                width: 8px;
-                height: 8px;
+                width: 9px;
+                height: 9px;
                 border-radius: 50%;
                 background: var(--muted);
-                transition: background 0.3s;
+                transition: background-color var(--duration-normal) var(--ease-smooth);
+                flex-shrink: 0;
             }
             #status-dot.live {
                 background: var(--accent);
-                box-shadow: 0 0 6px var(--accent);
+                animation: status-pulse 2s var(--ease-smooth) infinite;
             }
+            #status-dot.scanning {
+                background: var(--accent);
+                animation: beacon-glow 1.2s var(--ease-smooth) infinite;
+            }
+
+            /* ── Symbol Cards & Dynamic Accent Glows ── */
+            .symbol-card {
+                cursor: pointer;
+                will-change: transform;
+                transition: transform var(--duration-fast) var(--ease-smooth),
+                            box-shadow var(--duration-normal) var(--ease-smooth),
+                            border-color var(--duration-normal) var(--ease-smooth),
+                            background var(--duration-fast) var(--ease-smooth);
+            }
+            .symbol-card:hover {
+                transform: translateY(-1px);
+            }
+            .symbol-card:active {
+                transform: scale(0.98);
+            }
+            .symbol-card.glow-bullish {
+                border-color: rgba(0, 229, 160, 0.45) !important;
+                box-shadow: 0 0 16px rgba(0, 229, 160, 0.2) !important;
+            }
+            .symbol-card.glow-bullish:hover {
+                box-shadow: 0 0 24px rgba(0, 229, 160, 0.35) !important;
+            }
+            .symbol-card.glow-bearish {
+                border-color: rgba(255, 77, 109, 0.45) !important;
+                box-shadow: 0 0 16px rgba(255, 77, 109, 0.2) !important;
+            }
+            .symbol-card.glow-bearish:hover {
+                box-shadow: 0 0 24px rgba(255, 77, 109, 0.35) !important;
+            }
+            .symbol-card.glow-neutral {
+                border-color: rgba(255, 209, 102, 0.38) !important;
+                box-shadow: 0 0 14px rgba(255, 209, 102, 0.15) !important;
+            }
+            .symbol-card.glow-neutral:hover {
+                box-shadow: 0 0 20px rgba(255, 209, 102, 0.28) !important;
+            }
+
+            /* ── Clean Skeleton Loading States (Zero CLS) ── */
+            .skeleton-pulse {
+                background: var(--surface-2);
+                border-radius: 4px;
+                position: relative;
+                overflow: hidden;
+            }
+            .skeleton-pulse::after {
+                content: "";
+                position: absolute;
+                top: 0; right: 0; bottom: 0; left: 0;
+                transform: translateX(-100%);
+                background: linear-gradient(
+                    90deg,
+                    rgba(255, 255, 255, 0) 0%,
+                    rgba(255, 255, 255, 0.06) 50%,
+                    rgba(255, 255, 255, 0) 100%
+                );
+                animation: shimmer 1.5s infinite;
+            }
+            [data-theme="light"] .skeleton-pulse {
+                background: #e2e8f0;
+            }
+            [data-theme="light"] .skeleton-pulse::after {
+                background: linear-gradient(
+                    90deg,
+                    rgba(255, 255, 255, 0) 0%,
+                    rgba(255, 255, 255, 0.4) 50%,
+                    rgba(255, 255, 255, 0) 100%
+                );
+            }
+            @keyframes shimmer {
+                100% {
+                    transform: translateX(100%);
+                }
+            }
+            .skeleton-cell {
+                height: 14px;
+                border-radius: 3px;
+                width: 75%;
+                margin: 0 auto;
+            }
+            .skeleton-line {
+                height: 14px;
+                border-radius: 4px;
+                display: block;
+            }
+            .skeleton-row td {
+                padding: 10px 8px;
+            }
+
+            /* ── Tactile Micro-Interactions for Buttons ── */
+            button, select, .nav-tab, .theme-toggle-btn {
+                will-change: transform;
+                transition: transform var(--duration-fast) var(--ease-smooth),
+                            box-shadow var(--duration-fast) var(--ease-smooth),
+                            background-color var(--duration-fast) var(--ease-smooth),
+                            border-color var(--duration-fast) var(--ease-smooth) !important;
+            }
+            button:hover:not(:disabled), .nav-tab:hover, .theme-toggle-btn:hover {
+                transform: translateY(-1px);
+            }
+            button:active:not(:disabled), .nav-tab:active, .theme-toggle-btn:active {
+                transform: scale(0.98);
+            }
+
+            /* ── Accessibility: Reduced Motion ── */
+            @media (prefers-reduced-motion: reduce) {
+                *, *::before, *::after {
+                    animation-duration: 0.01ms !important;
+                    animation-iteration-count: 1 !important;
+                    transition-duration: 0.01ms !important;
+                    scroll-behavior: auto !important;
+                }
+            }
+
             #last-update {
                 font-family: var(--mono);
                 font-size: 11px;
@@ -597,7 +767,10 @@
                     "
                 >
                     <div
-                        class="ticker-item"
+                        class="ticker-item symbol-card"
+                        id="ticker-card-nifty"
+                        onclick="switchSymbol('NIFTY')"
+                        title="Click to view NIFTY"
                         style="
                             display: flex;
                             align-items: center;
@@ -606,8 +779,6 @@
                             font-size: 12px;
                             font-weight: 700;
                             flex-shrink: 0;
-                            background: rgba(255, 255, 255, 0.02);
-                            border: 1px solid var(--border);
                             padding: 4px 10px;
                             border-radius: 6px;
                         "
@@ -632,7 +803,10 @@
                         ></span>
                     </div>
                     <div
-                        class="ticker-item"
+                        class="ticker-item symbol-card"
+                        id="ticker-card-banknifty"
+                        onclick="switchSymbol('BANKNIFTY')"
+                        title="Click to view BANKNIFTY"
                         style="
                             display: flex;
                             align-items: center;
@@ -641,8 +815,6 @@
                             font-size: 12px;
                             font-weight: 700;
                             flex-shrink: 0;
-                            background: rgba(255, 255, 255, 0.02);
-                            border: 1px solid var(--border);
                             padding: 4px 10px;
                             border-radius: 6px;
                         "
@@ -669,7 +841,10 @@
                         ></span>
                     </div>
                     <div
-                        class="ticker-item"
+                        class="ticker-item symbol-card"
+                        id="ticker-card-sensex"
+                        onclick="switchSymbol('SENSEX')"
+                        title="Click to view SENSEX"
                         style="
                             display: flex;
                             align-items: center;
@@ -678,8 +853,6 @@
                             font-size: 12px;
                             font-weight: 700;
                             flex-shrink: 0;
-                            background: rgba(255, 255, 255, 0.02);
-                            border: 1px solid var(--border);
                             padding: 4px 10px;
                             border-radius: 6px;
                         "
@@ -706,7 +879,10 @@
                         ></span>
                     </div>
                     <div
-                        class="ticker-item"
+                        class="ticker-item symbol-card"
+                        id="ticker-card-naturalgas"
+                        onclick="switchSymbol('NATURALGAS')"
+                        title="Click to view NATURALGAS"
                         style="
                             display: flex;
                             align-items: center;
@@ -715,8 +891,6 @@
                             font-size: 12px;
                             font-weight: 700;
                             flex-shrink: 0;
-                            background: rgba(255, 255, 255, 0.02);
-                            border: 1px solid var(--border);
                             padding: 4px 10px;
                             border-radius: 6px;
                         "
@@ -743,7 +917,10 @@
                         ></span>
                     </div>
                     <div
-                        class="ticker-item"
+                        class="ticker-item symbol-card"
+                        id="ticker-card-crudeoil"
+                        onclick="switchSymbol('CRUDEOIL')"
+                        title="Click to view CRUDEOIL"
                         style="
                             display: flex;
                             align-items: center;
@@ -752,8 +929,6 @@
                             font-size: 12px;
                             font-weight: 700;
                             flex-shrink: 0;
-                            background: rgba(255, 255, 255, 0.02);
-                            border: 1px solid var(--border);
                             padding: 4px 10px;
                             border-radius: 6px;
                         "
@@ -1230,6 +1405,47 @@
                 }
             }
 
+            function switchSymbol(sym) {
+                const sel = document.getElementById("symbol-sel");
+                if (sel) {
+                    sel.value = sym;
+                    loadAll();
+                }
+            }
+
+            function showTableSkeleton() {
+                const tbody = document.getElementById("oi-tbody");
+                if (!tbody) return;
+                let rows = "";
+                for (let i = 0; i < 7; i++) {
+                    rows += `
+                        <tr class="skeleton-row">
+                            <td><div class="skeleton-pulse skeleton-cell"></div></td>
+                            <td><div class="skeleton-pulse skeleton-cell"></div></td>
+                            <td><div class="skeleton-pulse skeleton-cell"></div></td>
+                            <td><div class="skeleton-pulse skeleton-cell"></div></td>
+                            <td class="strike"><div class="skeleton-pulse skeleton-cell" style="width:45px;"></div></td>
+                            <td><div class="skeleton-pulse skeleton-cell"></div></td>
+                            <td><div class="skeleton-pulse skeleton-cell"></div></td>
+                            <td><div class="skeleton-pulse skeleton-cell"></div></td>
+                            <td><div class="skeleton-pulse skeleton-cell"></div></td>
+                        </tr>`;
+                }
+                tbody.innerHTML = rows;
+            }
+
+            function showIntelSkeleton() {
+                const el = document.getElementById("intel-wrap");
+                if (!el) return;
+                el.innerHTML = `
+                    <div class="intel-section" style="padding:14px;">
+                        <div class="skeleton-pulse skeleton-line" style="width:30%;height:16px;margin-bottom:12px;"></div>
+                        <div class="skeleton-pulse skeleton-line" style="width:90%;margin-bottom:8px;"></div>
+                        <div class="skeleton-pulse skeleton-line" style="width:75%;margin-bottom:8px;"></div>
+                        <div class="skeleton-pulse skeleton-line" style="width:60%;"></div>
+                    </div>`;
+            }
+
             function fetchTopbarCMPs() {
                 fetch("/api/topbar_cmps")
                     .then((r) => r.json())
@@ -1237,6 +1453,7 @@
                         const symbols = [
                             "NIFTY",
                             "BANKNIFTY",
+                            "SENSEX",
                             "NATURALGAS",
                             "CRUDEOIL",
                         ];
@@ -1257,6 +1474,13 @@
                             const chgEl = document.getElementById(
                                 `ticker-${idPrefix}-chg`,
                             );
+                            const cardEl = document.getElementById(
+                                `ticker-card-${idPrefix}`,
+                            );
+
+                            if (cardEl) {
+                                cardEl.classList.remove("glow-bullish", "glow-bearish", "glow-neutral");
+                            }
 
                             if (ltpEl && chgEl) {
                                 if (
@@ -1271,12 +1495,15 @@
                                     if (change > 0) {
                                         ltpEl.style.color = "var(--green)";
                                         chgEl.style.color = "var(--green)";
+                                        if (cardEl) cardEl.classList.add("glow-bullish");
                                     } else if (change < 0) {
                                         ltpEl.style.color = "var(--red)";
                                         chgEl.style.color = "var(--red)";
+                                        if (cardEl) cardEl.classList.add("glow-bearish");
                                     } else {
                                         ltpEl.style.color = "var(--text)";
                                         chgEl.style.color = "var(--text-dim)";
+                                        if (cardEl) cardEl.classList.add("glow-neutral");
                                     }
                                 } else {
                                     ltpEl.textContent = "—";
@@ -1298,7 +1525,17 @@
                 const hours = document.getElementById("hours").value;
                 if (!sym) return;
 
-                document.getElementById("status-dot").className = "";
+                document.getElementById("status-dot").className = "live scanning";
+
+                const tbody = document.getElementById("oi-tbody");
+                if (tbody && (!tbody.children.length || tbody.querySelector(".empty"))) {
+                    showTableSkeleton();
+                }
+                const intelEl = document.getElementById("intel-wrap");
+                if (intelEl && (!intelEl.children.length || intelEl.querySelector(".empty"))) {
+                    showIntelSkeleton();
+                }
+
                 try {
                     const [meta, price, oi, pcr, intel] = await Promise.all([
                         api(`/api/meta?symbol=${encodeURIComponent(sym)}`),
