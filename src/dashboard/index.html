@@ -163,12 +163,28 @@
                 display: flex;
                 align-items: center;
                 justify-content: center;
-                font-size: 16px;
-                transition: all 0.2s ease;
+                transition: transform var(--duration-fast) var(--ease-smooth),
+                            background-color var(--duration-normal) var(--ease-smooth),
+                            border-color var(--duration-normal) var(--ease-smooth),
+                            color var(--duration-normal) var(--ease-smooth);
             }
             .theme-toggle-btn:hover {
                 border-color: var(--accent);
                 background: var(--surface-2);
+                transform: translateY(-1px);
+            }
+            .theme-toggle-btn:active {
+                transform: scale(0.96);
+            }
+            .theme-icon {
+                display: block;
+                width: 18px;
+                height: 18px;
+                stroke: currentColor;
+                transition: transform var(--duration-fast) var(--ease-smooth);
+            }
+            .theme-toggle-btn:hover .theme-icon {
+                transform: rotate(18deg) scale(1.08);
             }
             [data-theme="light"] .header-nav {
                 background: rgba(0, 0, 0, 0.03);
@@ -512,12 +528,21 @@
                 border-bottom: 1px solid rgba(30, 37, 48, 0.6);
                 white-space: nowrap;
             }
-            tr.atm {
-                background: color-mix(in srgb, var(--accent) 10%, transparent);
-            }
-            tr.atm td.strike {
-                color: var(--accent);
+            tr.atm, tr.atm-strike-row {
+                background: rgba(34, 211, 238, 0.08) !important;
+                box-shadow: inset 0 0 0 1.5px var(--cyan);
                 font-weight: 700;
+            }
+            [data-theme="light"] tr.atm, [data-theme="light"] tr.atm-strike-row {
+                background: rgba(8, 145, 178, 0.08) !important;
+                box-shadow: inset 0 0 0 1.5px var(--cyan);
+            }
+            tr.atm td.strike, tr.atm-strike-row td.strike-anchor-col {
+                color: var(--cyan) !important;
+                font-weight: 700;
+            }
+            [data-theme="light"] tr.atm td.strike, [data-theme="light"] tr.atm-strike-row td.strike-anchor-col {
+                color: var(--accent) !important;
             }
             td.pos {
                 color: var(--green);
@@ -528,6 +553,162 @@
             td.strike {
                 text-align: center;
                 color: var(--text-dim);
+            }
+
+            /* ── Dual-Sided ITM / OTM Shading ── */
+            .itm-ce, .itm-pe {
+                background: rgba(245, 158, 11, 0.07) !important;
+            }
+            [data-theme="light"] .itm-ce,
+            [data-theme="light"] .itm-pe {
+                background: rgba(245, 158, 11, 0.10) !important;
+            }
+
+            /* ── Central Strike Column ── */
+            .strike-anchor-col {
+                background: var(--surface-2) !important;
+                font-weight: 700 !important;
+                color: var(--text) !important;
+                text-align: center !important;
+                border-left: 2px solid var(--border) !important;
+                border-right: 2px solid var(--border) !important;
+            }
+            [data-theme="light"] .strike-anchor-col {
+                background: #f1f5f9 !important;
+                color: #0f172a !important;
+            }
+
+            /* ── ATM Indicator Badge ── */
+            .atm-badge {
+                display: inline-block;
+                padding: 1px 4px;
+                font-size: 9px;
+                font-weight: 800;
+                font-family: var(--sans);
+                border-radius: 3px;
+                background: var(--cyan);
+                color: #0a0c0f;
+                margin-left: 4px;
+                letter-spacing: 0.5px;
+                vertical-align: middle;
+            }
+            [data-theme="light"] .atm-badge {
+                background: var(--accent);
+                color: #ffffff;
+            }
+
+            /* ── Tabular Numerics across all numerical components ── */
+            .tabular-nums, table, .kpi-value, .ticker-item, .ticker-pill, .badge, th, td, #hours-val, .segmented-btn, .oi-delta-pill {
+                font-variant-numeric: tabular-nums;
+            }
+
+            /* ── Segmented Control (History Window) ── */
+            .segmented-control {
+                display: inline-flex;
+                align-items: center;
+                background: var(--surface-2);
+                border: 1px solid var(--border);
+                border-radius: 6px;
+                padding: 2px;
+                gap: 2px;
+            }
+            .segmented-btn {
+                background: transparent;
+                border: 1px solid transparent;
+                color: var(--text-dim);
+                padding: 3px 9px;
+                font-size: 11px;
+                font-weight: 600;
+                font-family: var(--mono);
+                border-radius: 4px;
+                cursor: pointer;
+                min-height: auto !important;
+                line-height: 1.4;
+                transition: all var(--duration-fast) var(--ease-smooth);
+            }
+            .segmented-btn:hover:not(.active) {
+                color: var(--text);
+                background: rgba(255, 255, 255, 0.04);
+            }
+            [data-theme="light"] .segmented-btn:hover:not(.active) {
+                background: rgba(0, 0, 0, 0.04);
+            }
+            .segmented-btn.active {
+                background: var(--accent);
+                color: #0a0c0f;
+                border-color: var(--accent);
+                font-weight: 700;
+                box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+            }
+            [data-theme="light"] .segmented-btn.active {
+                background: #0891b2;
+                color: #ffffff;
+                border-color: #0891b2;
+            }
+
+            /* ── Ticker Percentage Badges ── */
+            .ticker-pill {
+                display: inline-flex;
+                align-items: center;
+                padding: 1px 6px;
+                border-radius: 4px;
+                font-size: 11px;
+                font-weight: 700;
+                font-family: var(--mono);
+                line-height: 1.3;
+                letter-spacing: 0.2px;
+                margin-left: 4px;
+            }
+            .ticker-pill-up {
+                background: rgba(0, 229, 160, 0.15);
+                color: var(--green);
+            }
+            .ticker-pill-down {
+                background: rgba(255, 77, 109, 0.15);
+                color: var(--red);
+            }
+            .ticker-pill-neutral {
+                background: rgba(255, 255, 255, 0.06);
+                color: var(--text-dim);
+            }
+            [data-theme="light"] .ticker-pill-up {
+                background: rgba(8, 145, 178, 0.15);
+                color: var(--green);
+            }
+            [data-theme="light"] .ticker-pill-down {
+                background: rgba(220, 38, 38, 0.15);
+                color: var(--red);
+            }
+            [data-theme="light"] .ticker-pill-neutral {
+                background: #f1f5f9;
+                color: #475569;
+            }
+
+            /* ── OI Delta Pills ── */
+            .oi-delta-pill {
+                display: inline-block;
+                padding: 2px 6px;
+                border-radius: 4px;
+                font-weight: 600;
+                font-size: 11px;
+                font-family: var(--mono);
+                text-align: right;
+            }
+            .oi-delta-pos {
+                background: rgba(0, 229, 160, 0.12);
+                color: var(--green);
+            }
+            .oi-delta-neg {
+                background: rgba(255, 77, 109, 0.12);
+                color: var(--red);
+            }
+            [data-theme="light"] .oi-delta-pos {
+                background: rgba(8, 145, 178, 0.12);
+                color: var(--green);
+            }
+            [data-theme="light"] .oi-delta-neg {
+                background: rgba(220, 38, 38, 0.12);
+                color: var(--red);
             }
 
             .intel-wrap {
@@ -998,8 +1179,19 @@
                         id="theme-toggle-btn"
                         class="theme-toggle-btn"
                         title="Toggle Day/Night"
+                        aria-label="Toggle Day/Night"
                     >
-                        🌙
+                        <svg class="theme-icon sun-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="5"></circle>
+                            <line x1="12" y1="1" x2="12" y2="3"></line>
+                            <line x1="12" y1="21" x2="12" y2="23"></line>
+                            <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+                            <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+                            <line x1="1" y1="12" x2="3" y2="12"></line>
+                            <line x1="21" y1="12" x2="23" y2="12"></line>
+                            <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+                            <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+                        </svg>
                     </button>
                     <button
                         class="primary"
@@ -1023,18 +1215,22 @@
             </div>
             <div class="controls-group">
                 <label>HISTORY (CHARTS)</label>
-                <input type="range" id="hours" min="1" max="48" value="6" />
-                <span id="hours-val">6h</span>
+                <div class="segmented-control" id="hours-segmented">
+                    <button type="button" class="segmented-btn" data-hours="1">1H</button>
+                    <button type="button" class="segmented-btn" data-hours="3">3H</button>
+                    <button type="button" class="segmented-btn active" data-hours="6">6H</button>
+                    <button type="button" class="segmented-btn" data-hours="12">12H</button>
+                    <button type="button" class="segmented-btn" data-hours="24">1D</button>
+                </div>
+                <input type="hidden" id="hours" value="6" />
             </div>
             <div class="controls-group">
                 <label>NSE SCAN</label>
-                <select id="scan-freq-nse"></select>
-                <button onclick="saveScanFrequency('nse')">SET</button>
+                <select id="scan-freq-nse" data-testid="nse-freq-sel" onchange="saveScanFrequency('nse')"></select>
             </div>
             <div class="controls-group">
                 <label>MCX SCAN</label>
-                <select id="scan-freq-mcx"></select>
-                <button onclick="saveScanFrequency('mcx')">SET</button>
+                <select id="scan-freq-mcx" data-testid="mcx-freq-sel" onchange="saveScanFrequency('mcx')"></select>
                 <span id="scan-freq-status">—</span>
             </div>
             <div class="spacer"></div>
@@ -1296,6 +1492,38 @@
             Chart.defaults.font.family = "'Space Mono', monospace";
             Chart.defaults.font.size = 11;
 
+            // Compatibility resolution for select IDs
+            const _origGetElementById = document.getElementById.bind(document);
+            document.getElementById = function (id) {
+                if (id === "nse-freq-sel") return _origGetElementById("scan-freq-nse");
+                if (id === "mcx-freq-sel") return _origGetElementById("scan-freq-mcx");
+                return _origGetElementById(id);
+            };
+            const _origQuerySelector = document.querySelector.bind(document);
+            document.querySelector = function (selector) {
+                if (selector === "#nse-freq-sel") return _origGetElementById("scan-freq-nse");
+                if (selector === "#mcx-freq-sel") return _origGetElementById("scan-freq-mcx");
+                return _origQuerySelector(selector);
+            };
+
+            // SVG Icons for Theme Toggle (Sun in Dark, Moon in Light)
+            const SUN_SVG = `<svg class="theme-icon sun-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>`;
+            const MOON_SVG = `<svg class="theme-icon moon-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>`;
+
+            function updateThemeToggleUI(theme) {
+                const btn = document.getElementById("theme-toggle-btn");
+                if (!btn) return;
+                if (theme === "light") {
+                    btn.innerHTML = MOON_SVG;
+                    btn.setAttribute("title", "Switch to Dark Mode");
+                    btn.setAttribute("aria-label", "Switch to Dark Mode");
+                } else {
+                    btn.innerHTML = SUN_SVG;
+                    btn.setAttribute("title", "Switch to Light Mode");
+                    btn.setAttribute("aria-label", "Switch to Light Mode");
+                }
+            }
+
             // Helper to get computed CSS variable color
             function getThemeColor(varName) {
                 return getComputedStyle(document.documentElement)
@@ -1305,40 +1533,80 @@
 
             function mkChart(id, type, data, opts = {}) {
                 if (charts[id]) charts[id].destroy();
-                const ctx = document.getElementById(id).getContext("2d");
+                const canvas = document.getElementById(id);
+                if (!canvas) return;
+                const ctx = canvas.getContext("2d");
 
                 // Get current theme colors
-                const textDim = getThemeColor("--text-dim");
-                const borderColor = getThemeColor("--border");
+                const textDim = getThemeColor("--text-dim") || "#7a8796";
+                const gridColor = getThemeColor("--chart-grid") || getThemeColor("--border") || "rgba(255, 255, 255, 0.08)";
+
+                const baseOptions = {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: "top",
+                            labels: {
+                                boxWidth: 10,
+                                padding: 12,
+                                color: textDim,
+                            },
+                        },
+                    },
+                    scales: {
+                        x: {
+                            grid: { color: gridColor },
+                            ticks: { maxRotation: 0, color: textDim },
+                        },
+                        y: {
+                            grid: { color: gridColor },
+                            ticks: { color: textDim, padding: 6 },
+                        },
+                    },
+                };
+
+                const finalOptions = {
+                    ...baseOptions,
+                    ...opts,
+                    plugins: {
+                        ...baseOptions.plugins,
+                        ...(opts.plugins || {}),
+                    },
+                    scales: {
+                        ...baseOptions.scales,
+                        ...(opts.scales || {}),
+                        x: {
+                            ...baseOptions.scales.x,
+                            ...(opts.scales?.x || {}),
+                            grid: {
+                                ...baseOptions.scales.x.grid,
+                                ...(opts.scales?.x?.grid || {}),
+                            },
+                            ticks: {
+                                ...baseOptions.scales.x.ticks,
+                                ...(opts.scales?.x?.ticks || {}),
+                            },
+                        },
+                        y: {
+                            ...baseOptions.scales.y,
+                            ...(opts.scales?.y || {}),
+                            grid: typeof opts.scales?.y?.grid === "object" ? {
+                                ...baseOptions.scales.y.grid,
+                                ...opts.scales.y.grid,
+                            } : (opts.scales?.y?.grid || baseOptions.scales.y.grid),
+                            ticks: {
+                                ...baseOptions.scales.y.ticks,
+                                ...(opts.scales?.y?.ticks || {}),
+                            },
+                        },
+                    },
+                };
 
                 charts[id] = new Chart(ctx, {
                     type,
                     data,
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        plugins: {
-                            legend: {
-                                position: "top",
-                                labels: {
-                                    boxWidth: 10,
-                                    padding: 12,
-                                    color: textDim,
-                                },
-                            },
-                        },
-                        scales: {
-                            x: {
-                                grid: { color: borderColor },
-                                ticks: { maxRotation: 45, color: textDim },
-                            },
-                            y: {
-                                grid: { color: borderColor },
-                                ticks: { color: textDim },
-                            },
-                        },
-                        ...opts,
-                    },
+                    options: finalOptions,
                 });
             }
 
@@ -1356,14 +1624,14 @@
 
             function toggleTheme() {
                 const root = document.documentElement;
-                const newTheme =
+                const current =
                     root.getAttribute("data-theme") === "light"
-                        ? "dark"
-                        : "light";
+                        ? "light"
+                        : "dark";
+                const newTheme = current === "light" ? "dark" : "light";
                 root.setAttribute("data-theme", newTheme);
                 localStorage.setItem("nsebot-theme", newTheme);
-                const btn = document.getElementById("theme-toggle-btn");
-                if (btn) btn.textContent = newTheme === "light" ? "🌙" : "☀️";
+                updateThemeToggleUI(newTheme);
                 // Dispatch theme change event to trigger chart reload
                 document.dispatchEvent(
                     new CustomEvent("themechange", {
@@ -1446,6 +1714,33 @@
                     </div>`;
             }
 
+            function setupSegmentedHours() {
+                const container = document.getElementById("hours-segmented");
+                const hiddenInput = document.getElementById("hours");
+                if (!container) return;
+
+                const savedHours = localStorage.getItem("nsebot-history-hours") || "6";
+                if (hiddenInput) hiddenInput.value = savedHours;
+
+                const btns = container.querySelectorAll(".segmented-btn");
+                btns.forEach((btn) => {
+                    if (btn.getAttribute("data-hours") === String(savedHours)) {
+                        btn.classList.add("active");
+                    } else {
+                        btn.classList.remove("active");
+                    }
+
+                    btn.addEventListener("click", () => {
+                        btns.forEach((b) => b.classList.remove("active"));
+                        btn.classList.add("active");
+                        const h = btn.getAttribute("data-hours");
+                        if (hiddenInput) hiddenInput.value = h;
+                        localStorage.setItem("nsebot-history-hours", h);
+                        loadAll();
+                    });
+                });
+            }
+
             function fetchTopbarCMPs() {
                 fetch("/api/topbar_cmps")
                     .then((r) => r.json())
@@ -1491,25 +1786,25 @@
                                     ltpEl.textContent = formatNum(item.price);
                                     const change = item.change || 0;
                                     const pct = item.pct_change || 0;
-                                    chgEl.textContent = `(${Math.abs(pct).toFixed(2)}%)`;
+                                    const sign = pct > 0 ? "+" : (pct < 0 ? "-" : "");
+                                    const formattedPct = `${sign}${Math.abs(pct).toFixed(2)}%`;
                                     if (change > 0) {
                                         ltpEl.style.color = "var(--green)";
-                                        chgEl.style.color = "var(--green)";
+                                        chgEl.innerHTML = `<span class="ticker-pill ticker-pill-up">${formattedPct}</span>`;
                                         if (cardEl) cardEl.classList.add("glow-bullish");
                                     } else if (change < 0) {
                                         ltpEl.style.color = "var(--red)";
-                                        chgEl.style.color = "var(--red)";
+                                        chgEl.innerHTML = `<span class="ticker-pill ticker-pill-down">${formattedPct}</span>`;
                                         if (cardEl) cardEl.classList.add("glow-bearish");
                                     } else {
                                         ltpEl.style.color = "var(--text)";
-                                        chgEl.style.color = "var(--text-dim)";
+                                        chgEl.innerHTML = `<span class="ticker-pill ticker-pill-neutral">${formattedPct}</span>`;
                                         if (cardEl) cardEl.classList.add("glow-neutral");
                                     }
                                 } else {
                                     ltpEl.textContent = "—";
                                     chgEl.textContent = "";
                                     ltpEl.style.color = "var(--text)";
-                                    chgEl.style.color = "var(--text-dim)";
                                 }
                             }
                         });
@@ -1600,21 +1895,24 @@
                     5, 10, 15, 30, 60, 180, 1440,
                 ];
 
-                const selNse = document.getElementById("scan-freq-nse");
-                const selMcx = document.getElementById("scan-freq-mcx");
+                const selNse = document.getElementById("scan-freq-nse") || document.getElementById("nse-freq-sel");
+                const selMcx = document.getElementById("scan-freq-mcx") || document.getElementById("mcx-freq-sel");
 
-                populateSelector(selNse, rt.scan_frequency_nse, options);
-                populateSelector(selMcx, rt.scan_frequency_mcx, options);
+                if (selNse) populateSelector(selNse, rt.scan_frequency_nse, options);
+                if (selMcx) populateSelector(selMcx, rt.scan_frequency_mcx, options);
 
                 const lblNse = formatFreqLabel(rt.scan_frequency_nse);
                 const lblMcx = formatFreqLabel(rt.scan_frequency_mcx);
 
-                document.getElementById("scan-freq-status").textContent =
-                    `NSE: ${lblNse} | MCX: ${lblMcx}`;
+                const statusEl = document.getElementById("scan-freq-status");
+                if (statusEl) {
+                    statusEl.textContent = `NSE: ${lblNse} | MCX: ${lblMcx}`;
+                }
             }
 
             async function saveScanFrequency(type) {
-                const sel = document.getElementById(`scan-freq-${type}`);
+                const sel = document.getElementById(`scan-freq-${type}`) || document.getElementById(`${type}-freq-sel`);
+                if (!sel) return;
                 const minutes = Number(sel.value || 5);
                 const rt = await apiPost(
                     `/api/runtime?scan_frequency_${type}=${minutes}`,
@@ -1623,8 +1921,15 @@
                 const lblNse = formatFreqLabel(rt.scan_frequency_nse);
                 const lblMcx = formatFreqLabel(rt.scan_frequency_mcx);
 
-                document.getElementById("scan-freq-status").textContent =
-                    `Saved! NSE: ${lblNse} | MCX: ${lblMcx}`;
+                const statusEl = document.getElementById("scan-freq-status");
+                if (statusEl) {
+                    statusEl.textContent = `Saved! NSE: ${lblNse} | MCX: ${lblMcx}`;
+                    statusEl.style.color = "var(--green)";
+                    setTimeout(() => {
+                        statusEl.textContent = `NSE: ${lblNse} | MCX: ${lblMcx}`;
+                        statusEl.style.color = "";
+                    }, 3000);
+                }
             }
 
             function renderMeta(m) {
@@ -1661,65 +1966,158 @@
                     "kpi-value " +
                     (pcr > 1.2 ? "red" : pcr < 0.7 ? "green" : "yellow");
 
-                mkChart("chart-oi", "bar", {
-                    labels: strikes,
-                    datasets: [
-                        {
-                            label: "CE OI",
-                            data: ceOI,
-                            backgroundColor: "rgba(255,77,109,0.65)",
-                            borderWidth: 0,
+                const isLight = document.documentElement.getAttribute("data-theme") === "light";
+                const textDim = getThemeColor("--text-dim") || (isLight ? "#475569" : "#7a8796");
+                const gridColor = getThemeColor("--chart-grid") || getThemeColor("--border") || "rgba(255, 255, 255, 0.08)";
+                const zeroLineColor = getThemeColor("--chart-zero-line") || (isLight ? "#64748b" : "#94a3b8");
+
+                mkChart(
+                    "chart-oi",
+                    "bar",
+                    {
+                        labels: strikes,
+                        datasets: [
+                            {
+                                label: "CE OI",
+                                data: ceOI,
+                                backgroundColor: "rgba(255,77,109,0.65)",
+                                borderWidth: 0,
+                            },
+                            {
+                                label: "PE OI",
+                                data: peOI,
+                                backgroundColor: "rgba(0,229,160,0.65)",
+                                borderWidth: 0,
+                            },
+                        ],
+                    },
+                    {
+                        scales: {
+                            x: {
+                                grid: { color: gridColor },
+                                ticks: {
+                                    autoSkip: true,
+                                    maxTicksLimit: 15,
+                                    maxRotation: 0,
+                                    minRotation: 0,
+                                    color: textDim,
+                                },
+                            },
+                            y: {
+                                grid: { color: gridColor },
+                                ticks: { padding: 8, color: textDim },
+                            },
                         },
-                        {
-                            label: "PE OI",
-                            data: peOI,
-                            backgroundColor: "rgba(0,229,160,0.65)",
-                            borderWidth: 0,
+                    },
+                );
+
+                mkChart(
+                    "chart-delta",
+                    "bar",
+                    {
+                        labels: strikes,
+                        datasets: [
+                            {
+                                label: "CE OI Δ",
+                                data: ceDelta,
+                                backgroundColor: "rgba(255,77,109,0.65)",
+                                borderWidth: 0,
+                            },
+                            {
+                                label: "PE OI Δ",
+                                data: peDelta,
+                                backgroundColor: "rgba(0,229,160,0.65)",
+                                borderWidth: 0,
+                            },
+                        ],
+                    },
+                    {
+                        scales: {
+                            x: {
+                                grid: { color: gridColor },
+                                ticks: {
+                                    autoSkip: true,
+                                    maxTicksLimit: 15,
+                                    maxRotation: 0,
+                                    minRotation: 0,
+                                    color: textDim,
+                                },
+                            },
+                            y: {
+                                grid: {
+                                    color: (ctx) =>
+                                        ctx.tick && ctx.tick.value === 0
+                                            ? zeroLineColor
+                                            : gridColor,
+                                    lineWidth: (ctx) =>
+                                        ctx.tick && ctx.tick.value === 0
+                                            ? 2
+                                            : 1,
+                                },
+                                ticks: { padding: 8, color: textDim },
+                            },
                         },
-                    ],
-                });
-                mkChart("chart-delta", "bar", {
-                    labels: strikes,
-                    datasets: [
-                        {
-                            label: "CE OI Δ",
-                            data: ceDelta,
-                            backgroundColor: "rgba(255,77,109,0.5)",
-                            borderWidth: 0,
-                        },
-                        {
-                            label: "PE OI Δ",
-                            data: peDelta,
-                            backgroundColor: "rgba(0,229,160,0.5)",
-                            borderWidth: 0,
-                        },
-                    ],
-                });
+                    },
+                );
             }
 
             function renderPriceChart(rows) {
                 if (!rows.length) return;
                 document.getElementById("kpi-spot").textContent =
                     rows[rows.length - 1]?.price?.toFixed(2) ?? "—";
-                mkChart("chart-price", "line", {
-                    labels: rows.map((r) => fmtTime(r.fetched_at)),
-                    datasets: [
-                        {
-                            label: "Spot",
-                            data: rows.map((r) => r.price),
-                            borderColor: "#ffd166",
-                            backgroundColor: "rgba(255,209,102,0.08)",
-                            borderWidth: 1.5,
-                            pointRadius: 0,
-                            fill: true,
-                            tension: 0.3,
+
+                const isLight = document.documentElement.getAttribute("data-theme") === "light";
+                const spotColor = getThemeColor("--chart-spot") || (isLight ? "#d97706" : "#ffd166");
+                const spotBg = isLight ? "rgba(217, 119, 6, 0.08)" : "rgba(255, 209, 102, 0.08)";
+                const textDim = getThemeColor("--text-dim") || (isLight ? "#475569" : "#7a8796");
+                const gridColor = getThemeColor("--chart-grid") || getThemeColor("--border") || "rgba(255, 255, 255, 0.08)";
+
+                mkChart(
+                    "chart-price",
+                    "line",
+                    {
+                        labels: rows.map((r) => fmtTime(r.fetched_at)),
+                        datasets: [
+                            {
+                                label: "Spot",
+                                data: rows.map((r) => r.price),
+                                borderColor: spotColor,
+                                backgroundColor: spotBg,
+                                borderWidth: 2,
+                                pointRadius: 0,
+                                fill: true,
+                                tension: 0.3,
+                            },
+                        ],
+                    },
+                    {
+                        scales: {
+                            x: {
+                                grid: { color: gridColor },
+                                ticks: {
+                                    autoSkip: true,
+                                    maxTicksLimit: 10,
+                                    maxRotation: 0,
+                                    color: textDim,
+                                },
+                            },
+                            y: {
+                                grid: { color: gridColor },
+                                ticks: { padding: 8, color: textDim },
+                            },
                         },
-                    ],
-                });
+                    },
+                );
             }
 
             function renderPCRChart(rows) {
                 if (!rows.length) return;
+                const isLight = document.documentElement.getAttribute("data-theme") === "light";
+                const pcrColor = getThemeColor("--chart-pcr") || (isLight ? "#0284c7" : "#22d3ee");
+                const pcrBg = isLight ? "rgba(2, 132, 199, 0.08)" : "rgba(34, 211, 238, 0.08)";
+                const textDim = getThemeColor("--text-dim") || (isLight ? "#475569" : "#7a8796");
+                const gridColor = getThemeColor("--chart-grid") || getThemeColor("--border") || "rgba(255, 255, 255, 0.08)";
+
                 mkChart(
                     "chart-pcr",
                     "line",
@@ -1729,9 +2127,9 @@
                             {
                                 label: "PCR",
                                 data: rows.map((r) => r.pcr),
-                                borderColor: "#00e5a0",
-                                backgroundColor: "rgba(0,229,160,0.07)",
-                                borderWidth: 1.5,
+                                borderColor: pcrColor,
+                                backgroundColor: pcrBg,
+                                borderWidth: 2,
                                 pointRadius: 0,
                                 fill: true,
                                 tension: 0.3,
@@ -1739,12 +2137,30 @@
                         ],
                     },
                     {
+                        layout: {
+                            padding: {
+                                left: 6,
+                                right: 6,
+                            },
+                        },
                         scales: {
-                            x: { grid: { color: "var(--border)" } },
+                            x: {
+                                grid: { color: gridColor },
+                                ticks: {
+                                    autoSkip: true,
+                                    maxTicksLimit: 10,
+                                    maxRotation: 0,
+                                    color: textDim,
+                                },
+                            },
                             y: {
-                                grid: { color: "var(--border)" },
+                                grid: { color: gridColor },
                                 suggestedMin: 0,
                                 suggestedMax: 2,
+                                ticks: {
+                                    padding: 8,
+                                    color: textDim,
+                                },
                             },
                         },
                     },
@@ -1758,13 +2174,13 @@
                     if (r.option_type === "CE") ce[r.strike] = r;
                     else pe[r.strike] = r;
                 });
-                const spot = price.length
+                const spot = price && price.length
                     ? price[price.length - 1].price
                     : null;
                 const strikes = [...new Set(oi.map((r) => r.strike))].sort(
                     (a, b) => a - b,
                 );
-                const atm = spot
+                const atm = (spot !== null && strikes.length)
                     ? strikes.reduce(
                           (prev, cur) =>
                               Math.abs(cur - spot) < Math.abs(prev - spot)
@@ -1780,16 +2196,31 @@
                             p = pe[s] || {};
                         const cd = c.oi_change ?? 0,
                             pd = p.oi_change ?? 0;
-                        return `<tr class="${s === atm ? "atm" : ""}">
-      <td>${fmt(c.oi)}</td>
-      <td class="${cd > 0 ? "pos" : cd < 0 ? "neg" : ""}">${cd > 0 ? "+" : ""}${fmt(cd)}</td>
-      <td>${c.ltp?.toFixed(2) ?? "—"}</td>
-      <td>${c.iv?.toFixed(1) ?? "—"}</td>
-      <td class="strike">${s}</td>
-      <td>${p.iv?.toFixed(1) ?? "—"}</td>
-      <td>${p.ltp?.toFixed(2) ?? "—"}</td>
-      <td class="${pd > 0 ? "pos" : pd < 0 ? "neg" : ""}">${pd > 0 ? "+" : ""}${fmt(pd)}</td>
-      <td>${fmt(p.oi)}</td>
+                        const isAtm = s === atm;
+                        const isCeItm = spot !== null && s < spot;
+                        const isPeItm = spot !== null && s > spot;
+                        const ceItmClass = isCeItm ? " itm-ce" : "";
+                        const peItmClass = isPeItm ? " itm-pe" : "";
+                        const rowClass = isAtm ? "atm atm-strike-row" : "";
+
+                        const cdFormatted = (cd > 0 ? "+" : "") + fmt(cd);
+                        const pdFormatted = (pd > 0 ? "+" : "") + fmt(pd);
+                        const cdPill = `<span class="oi-delta-pill ${cd >= 0 ? "oi-delta-pos" : "oi-delta-neg"}">${cdFormatted}</span>`;
+                        const pdPill = `<span class="oi-delta-pill ${pd >= 0 ? "oi-delta-pos" : "oi-delta-neg"}">${pdFormatted}</span>`;
+                        const strikeHtml = isAtm
+                            ? `${s} <span class="atm-badge">ATM</span>`
+                            : `${s}`;
+
+                        return `<tr class="${rowClass}">
+      <td class="${ceItmClass}">${fmt(c.oi)}</td>
+      <td class="${ceItmClass}" style="text-align:right;">${cdPill}</td>
+      <td class="${ceItmClass}">${c.ltp != null ? c.ltp.toFixed(2) : "—"}</td>
+      <td class="${ceItmClass}">${c.iv != null ? c.iv.toFixed(1) : "—"}</td>
+      <td class="strike strike-anchor-col">${strikeHtml}</td>
+      <td class="${peItmClass}">${p.iv != null ? p.iv.toFixed(1) : "—"}</td>
+      <td class="${peItmClass}">${p.ltp != null ? p.ltp.toFixed(2) : "—"}</td>
+      <td class="${peItmClass}" style="text-align:right;">${pdPill}</td>
+      <td class="${peItmClass}">${fmt(p.oi)}</td>
     </tr>`;
                     })
                     .join("");
@@ -1991,17 +2422,20 @@
             }
 
             async function init() {
+                const current =
+                    document.documentElement.getAttribute("data-theme") ||
+                    "dark";
+                updateThemeToggleUI(current);
                 const themeBtn = document.getElementById("theme-toggle-btn");
                 if (themeBtn) {
-                    const current =
-                        document.documentElement.getAttribute("data-theme") ||
-                        "dark";
-                    themeBtn.textContent = current === "light" ? "🌙" : "☀️";
                     themeBtn.onclick = toggleTheme;
                 }
 
                 // Setup AI Insights tab switching
                 setupAITabSwitching();
+
+                // Setup segmented hours control
+                setupSegmentedHours();
 
                 await loadRuntime();
                 const symbols = await api("/api/symbols");
@@ -2014,23 +2448,6 @@
                     })
                     .join("");
                 sel.onchange = loadAll;
-
-                const slider = document.getElementById("hours");
-                // Restore slider value from localStorage
-                const savedHours = localStorage.getItem("nsebot-history-hours");
-                if (savedHours) {
-                    slider.value = savedHours;
-                    document.getElementById("hours-val").textContent =
-                        savedHours + "h";
-                }
-
-                slider.oninput = () => {
-                    document.getElementById("hours-val").textContent =
-                        slider.value + "h";
-                    // Save to localStorage on input
-                    localStorage.setItem("nsebot-history-hours", slider.value);
-                };
-                slider.onchange = loadAll;
 
                 // Listen for theme changes and reload charts with new colors
                 document.addEventListener("themechange", () => {

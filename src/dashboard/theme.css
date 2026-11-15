@@ -14,6 +14,7 @@
   --green: #00e5a0;
   --yellow: #ffd166;
   --blue: #4da6ff;
+  --cyan: #22d3ee;
   --text: #e2e8f0;
   --text-dim: #7a8796;
   --muted: #4a5568;
@@ -22,6 +23,12 @@
   --grad-accent: linear-gradient(135deg, #00e5a0 0%, #00b4d8 100%);
   --grad-red: linear-gradient(135deg, #ff3355 0%, #f72585 100%);
   --transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* ── Chart Color Tokens (Dark Theme) ── */
+  --chart-spot: #ffd166;
+  --chart-pcr: #22d3ee;
+  --chart-grid: rgba(255, 255, 255, 0.08);
+  --chart-zero-line: #94a3b8;
 
   /* ── Motion & Animation Tokens (motion-ui / motionsites-ai) ── */
   --duration-fast: 0.18s;
@@ -58,18 +65,25 @@
   --green: #0891b2;
   --yellow: #d97706;
   --blue: #0284c7;
+  --cyan: #0891b2;
   --text: #0f172a;
-  --text-dim: #334155;
+  --text-dim: #475569;
   --muted: #78716c;
   --grad-accent: linear-gradient(135deg, #0284c7 0%, #00b4d8 100%);
   --grad-red: linear-gradient(135deg, #dc2626 0%, #ff4d6d 100%);
 
+  /* ── Chart Color Tokens (Light Theme) ── */
+  --chart-spot: #d97706;
+  --chart-pcr: #0284c7;
+  --chart-grid: rgba(15, 23, 42, 0.08);
+  --chart-zero-line: #64748b;
+
   /* ── Light Mode Glassmorphism & Elevation Overrides ── */
   --glass-bg: rgba(255, 255, 255, 0.82);
   --glass-bg-hover: rgba(241, 245, 249, 0.95);
-  --glass-border: rgba(15, 23, 42, 0.08);
+  --glass-border: rgba(15, 23, 42, 0.12);
   --glass-border-hover: rgba(8, 145, 178, 0.35);
-  --shadow-elevation-low: 0 2px 8px rgba(15, 23, 42, 0.06);
+  --shadow-elevation-low: 0 1px 3px rgba(15, 23, 42, 0.08), 0 1px 2px rgba(15, 23, 42, 0.04);
   --shadow-elevation-mid: 0 8px 24px rgba(15, 23, 42, 0.12);
   --shadow-elevation-high: 0 16px 36px rgba(15, 23, 42, 0.16);
   --shadow-glow-accent: 0 0 20px rgba(8, 145, 178, 0.14);
@@ -203,6 +217,11 @@ header {
   box-shadow: var(--shadow-elevation-low);
 }
 
+/* ── Typography & Tabular Numerics ── */
+.tabular-nums, table, .kpi .val, .ticker-item, .ticker-chip, .badge, th, td {
+  font-variant-numeric: tabular-nums;
+}
+
 table {
   background: var(--surface);
   border-collapse: separate;
@@ -249,6 +268,67 @@ tr:hover td {
 [data-theme="light"] .table-sticky-header th {
   background: var(--glass-bg);
   border-bottom: 2px solid #cbd5e1;
+}
+
+/* ── Option Chain ITM/OTM Dual-Sided Shading & Central Anchor ── */
+.itm-ce, .itm-pe {
+  background: rgba(245, 158, 11, 0.07) !important;
+}
+
+[data-theme="light"] .itm-ce,
+[data-theme="light"] .itm-pe {
+  background: rgba(245, 158, 11, 0.10) !important;
+  border-color: rgba(245, 158, 11, 0.2) !important;
+}
+
+.strike-anchor-col {
+  background: var(--surface-2) !important;
+  font-weight: 700 !important;
+  color: var(--text) !important;
+  text-align: center;
+  border-left: 2px solid var(--border) !important;
+  border-right: 2px solid var(--border) !important;
+}
+
+.atm-strike-row {
+  position: relative;
+  box-shadow: inset 0 0 0 1.5px var(--cyan);
+  background: rgba(34, 211, 238, 0.08) !important;
+  font-weight: 700;
+}
+
+[data-theme="light"] .atm-strike-row {
+  box-shadow: inset 0 0 0 1.5px var(--cyan);
+  background: rgba(8, 145, 178, 0.08) !important;
+}
+
+.oi-delta-pill {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+  font-size: 11px;
+  text-align: right;
+}
+
+.oi-delta-pos {
+  background: rgba(0, 229, 160, 0.12);
+  color: var(--green);
+}
+
+.oi-delta-neg {
+  background: rgba(255, 77, 109, 0.12);
+  color: var(--red);
+}
+
+[data-theme="light"] .oi-delta-pos {
+  background: rgba(8, 145, 178, 0.12);
+  color: var(--green);
+}
+
+[data-theme="light"] .oi-delta-neg {
+  background: rgba(220, 38, 38, 0.12);
+  color: var(--red);
 }
 
 /* ── Buttons & Inputs (Hardware-accelerated Micro-interactions) ── */
@@ -732,6 +812,89 @@ button.primary:hover:not(:disabled) {
   font-weight: bold;
   display: inline-block;
   line-height: 1;
+}
+
+/* ── Segmented Control & Ticker Pills ── */
+.segmented-control {
+  display: inline-flex;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px;
+  gap: 2px;
+}
+
+.segmented-btn {
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--mono);
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-smooth);
+}
+
+.segmented-btn:hover:not(.active) {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+[data-theme="light"] .segmented-btn:hover:not(.active) {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.segmented-btn.active {
+  background: var(--accent);
+  color: #0a0c0f;
+  font-weight: 700;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+[data-theme="light"] .segmented-btn.active {
+  color: #ffffff;
+  background: #0891b2;
+}
+
+.ticker-pill {
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  margin-left: 4px;
+}
+
+.ticker-pill-up {
+  background: rgba(0, 229, 160, 0.15);
+  color: var(--green);
+}
+
+.ticker-pill-down {
+  background: rgba(255, 77, 109, 0.15);
+  color: var(--red);
+}
+
+[data-theme="light"] .ticker-pill-up {
+  background: rgba(8, 145, 178, 0.15);
+  color: var(--green);
+}
+
+[data-theme="light"] .ticker-pill-down {
+  background: rgba(220, 38, 38, 0.15);
+  color: var(--red);
+}
+
+/* ── Theme Toggle SVG Icon Styling ── */
+.theme-toggle svg,
+.theme-toggle-btn svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  display: block;
 }
 
 
