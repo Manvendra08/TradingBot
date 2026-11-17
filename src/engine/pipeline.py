@@ -1503,7 +1503,8 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                     try:
                         from config.runtime_config import is_broker_trade_enabled, load_runtime_config
                         cfg = load_runtime_config()
-                        live_or_shadow_enabled = is_broker_trade_enabled() or bool(cfg.get("live_shadow_mode", False))
+                        if not bool(cfg.get("live_broker_disabled", False)):
+                            live_or_shadow_enabled = is_broker_trade_enabled() or bool(cfg.get("live_shadow_mode", False))
                     except Exception:
                         live_or_shadow_enabled = False
 

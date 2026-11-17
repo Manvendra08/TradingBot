@@ -60,6 +60,21 @@ def test_authorize_broker_execution_blocked_when_broker_disabled(monkeypatch):
 
     auth = authorize_broker_execution("NIFTY", operation="ENTRY")
     assert auth.is_authorized is False
+    assert auth.is_shadow is False
+    assert "disabled" in auth.reason.lower()
+
+def test_authorize_broker_execution_blocked_when_broker_disabled_even_if_shadow_true(monkeypatch):
+    config = {
+        "live_shadow_mode": True,
+        "live_broker_disabled": True,
+        "trading_paused": False,
+        "live_enabled_broker_symbols": ["NIFTY"]
+    }
+    monkeypatch.setattr("config.runtime_config.load_runtime_config", lambda: config)
+
+    auth = authorize_broker_execution("NIFTY", operation="ENTRY")
+    assert auth.is_authorized is False
+    assert auth.is_shadow is False
     assert "disabled" in auth.reason.lower()
 
 def test_authorize_broker_execution_blocked_when_symbol_not_enabled(monkeypatch):

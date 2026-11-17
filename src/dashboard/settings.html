@@ -2352,8 +2352,8 @@
                     );
                 }
             } else if (mode === "off") {
-                if (shadowCheckbox && !shadowCheckbox.checked) {
-                    shadowCheckbox.checked = true;
+                if (shadowCheckbox && shadowCheckbox.checked) {
+                    shadowCheckbox.checked = false;
                     shadowCheckbox.dispatchEvent(new Event("change"));
                 }
                 if (

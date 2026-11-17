@@ -43,28 +43,16 @@ def authorize_broker_execution(
         log.error(f"Config load failed in broker gate: {e}")
         return ExecutionAuthorization(
             is_authorized=False,
-            is_shadow=True,
+            is_shadow=False,
             symbol=symbol,
             operation=operation,
             reason="Config load failure — fail-closed",
             config_snapshot={}
         )
 
-    # Strict fail-closed shadow invariant:
-    # In shadow mode (live_shadow_mode=True), NO real broker orders (ENTRY, EXIT, or GTT)
-    # are permitted. All operations run in paper/shadow simulation.
-    # Real broker exits are strictly prohibited while shadow mode is active.
-
-    if config.get("live_shadow_mode", True):
-        return ExecutionAuthorization(
-            is_authorized=False,
-            is_shadow=True,
-            symbol=symbol,
-            operation=operation,
-            reason="Shadow mode enabled",
-            config_snapshot=config
-        )
-
+    # ── 1. Hard Kill Switch: Live Broker Disabled ─────────────────────────
+    # When live broker is disabled, ALL live execution and live shadow simulation
+    # are completely suppressed (fail-closed).
     if config.get("live_broker_disabled", True):
         return ExecutionAuthorization(
             is_authorized=False,
@@ -75,6 +63,28 @@ def authorize_broker_execution(
             config_snapshot=config
         )
 
+    # ── 2. Database Broker Kill Switch ─────────────────────────────────────
+    try:
+        from src.models.schema import get_conn
+        with get_conn(read_only=True) as conn:
+            bcfg = conn.execute(
+                "SELECT kill_switch_active FROM broker_configs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            if bcfg and bcfg["kill_switch_active"]:
+                return ExecutionAuthorization(
+                    is_authorized=False,
+                    is_shadow=False,
+                    symbol=symbol,
+                    operation=operation,
+                    reason="Broker kill switch active in database",
+                    config_snapshot=config
+                )
+    except Exception as e:
+        log.warning("[broker-gate] Could not check broker_configs kill_switch: %s", e)
+
+    # ── 3. Global Trading Pause Gate ───────────────────────────────────────
+    # When trading is paused, new entries are blocked (both real and shadow).
+    # Protective exits bypass this gate to avoid trapping open risk on the broker.
     if operation != "EXIT" and config.get("trading_paused", True):
         return ExecutionAuthorization(
             is_authorized=False,
@@ -82,6 +92,20 @@ def authorize_broker_execution(
             symbol=symbol,
             operation=operation,
             reason="Trading is currently paused",
+            config_snapshot=config
+        )
+
+    # ── 4. Strict fail-closed shadow invariant ─────────────────────────────
+    # In shadow mode (live_shadow_mode=True), NO real broker orders (ENTRY, EXIT, or GTT)
+    # are permitted. All operations run in paper/shadow simulation.
+    # Real broker exits are strictly prohibited while shadow mode is active.
+    if config.get("live_shadow_mode", True):
+        return ExecutionAuthorization(
+            is_authorized=False,
+            is_shadow=True,
+            symbol=symbol,
+            operation=operation,
+            reason="Shadow mode enabled",
             config_snapshot=config
         )
 
