@@ -5722,122 +5722,7 @@ async def get_eod_live_data():
     pdf_path = ROOT / "docs" / "reports" / f"eod_report_steadyalpha_{now_ist.strftime('%Y%m%d')}.pdf"
     has_pdf = pdf_path.exists()
 
-    # 8. Unified Desk Risk & Portfolio Capital Telemetry (₹1.00 Cr portfolio)
-    capital = 10000000.0  # ₹1 Crore institutional portfolio
-    ml_open = _q("""
-        SELECT id, symbol, strategy_type, structure, total_pnl, margin_req, net_delta, net_theta, entry_underlying, opened_at
-        FROM multi_leg_trades
-        WHERE status = 'OPEN'
-    """)
-    pt_open = _q("""
-        SELECT id, symbol, verdict_label, option_type, side, strike, lots, pnl_rupees, entry_premium, opened_at
-        FROM paper_trades
-        WHERE status = 'OPEN'
-    """)
-
-    open_ml_ids = [m["id"] for m in ml_open if m.get("id")]
-    legs_by_trade = {}
-    if open_ml_ids:
-        placeholders = ",".join("?" for _ in open_ml_ids)
-        leg_rows = _q(f"""
-            SELECT trade_id, side, option_type, lots, delta, theta, current_premium, entry_premium
-            FROM multi_leg_legs
-            WHERE trade_id IN ({placeholders}) AND status = 'OPEN'
-        """, tuple(open_ml_ids))
-        for lr in leg_rows:
-            tid = lr["trade_id"]
-            if tid not in legs_by_trade:
-                legs_by_trade[tid] = []
-            legs_by_trade[tid].append(lr)
-
-    active_books_count = len(ml_open)
-    single_legs_count = len(pt_open)
-    total_open_trades = active_books_count + single_legs_count
-
-    net_delta = 0.0
-    total_open_pnl = 0.0
-    daily_theta = 0.0
-    margin_deployed = 0.0
-    book_summaries = []
-
-    for ml in ml_open:
-        sym = ml.get("symbol", "")
-        strat = ml.get("strategy_type") or ml.get("structure") or "MULTILEG"
-        pnl = float(ml.get("total_pnl") or 0.0)
-        total_open_pnl += pnl
-
-        m_req = float(ml.get("margin_req") or 0.0)
-        trade_legs = legs_by_trade.get(ml["id"], [])
-        lots = float(trade_legs[0].get("lots") or 1) if trade_legs else 1.0
-
-        if m_req > 0:
-            margin_deployed += m_req
-        else:
-            margin_deployed += lots * 92000.0
-
-        if ml.get("net_delta") is not None:
-            net_delta += float(ml["net_delta"])
-        else:
-            for leg in trade_legs:
-                net_delta += float(leg.get("delta") or 0.0)
-
-        if ml.get("net_theta") is not None:
-            daily_theta += float(ml["net_theta"])
-        else:
-            for leg in trade_legs:
-                daily_theta += float(leg.get("theta") or 0.0) * lots
-
-        book_summaries.append(f"{sym} {strat}")
-
-    for pt in pt_open:
-        pnl = float(pt.get("pnl_rupees") or 0.0)
-        total_open_pnl += pnl
-        lots = float(pt.get("lots") or 1)
-        margin_deployed += lots * 120000.0
-        opt = pt.get("option_type", "CE")
-        side = pt.get("side", "SELL")
-        signed_d = 0.35 if (side == "BUY" and opt == "CE") or (side == "SELL" and opt == "PE") else -0.35
-        net_delta += (signed_d * lots)
-        book_summaries.append(f"{pt.get('symbol')} {pt.get('verdict_label')}")
-
-    margin_pct = (margin_deployed / capital) * 100 if capital > 0 else 0.0
-    free_margin = max(0.0, capital - margin_deployed)
-
-    if abs(net_delta) < 0.20:
-        delta_regime = "DELTA NEUTRAL"
-        delta_badge = "bullish"
-    elif abs(net_delta) <= 0.60:
-        delta_regime = "CONTROLLED SKEW"
-        delta_badge = "neutral"
-    else:
-        delta_regime = "EXCESS SKEW"
-        delta_badge = "bearish"
-
-    desk_risk = {
-        "capital": capital,
-        "capital_str": "₹1.00 Cr",
-        "active_books_count": total_open_trades,
-        "active_books_desc": " • ".join(book_summaries) if book_summaries else "0 Active Positions (All Flat)",
-        "net_delta": round(net_delta, 3),
-        "net_delta_str": f"{net_delta:+.2f} Δ",
-        "delta_regime": delta_regime,
-        "delta_badge": delta_badge,
-        "within_delta_cap": abs(net_delta) <= 0.60,
-        "open_pnl": round(total_open_pnl, 2),
-        "open_pnl_str": f"{'+' if total_open_pnl >= 0 else ''}₹{total_open_pnl:,.2f}",
-        "open_pnl_pct": f"{(total_open_pnl / capital) * 100:+.2f}%",
-        "open_pnl_dir": "up" if total_open_pnl > 0 else ("down" if total_open_pnl < 0 else "flat"),
-        "margin_deployed": round(margin_deployed, 2),
-        "margin_deployed_str": f"₹{margin_deployed/100000:,.1f}L ({margin_pct:.1f}%)",
-        "free_margin_str": f"₹{free_margin/100000:,.1f}L",
-        "margin_cap_pct": "40% Max Cap (₹40.0L)",
-        "margin_badge": "bullish" if margin_pct <= 30.0 else ("neutral" if margin_pct <= 40.0 else "bearish"),
-        "within_margin_cap": margin_pct <= 40.0,
-        "daily_theta": round(daily_theta, 2),
-        "daily_theta_str": f"+₹{abs(daily_theta):,.0f}/day" if daily_theta >= 0 else f"-₹{abs(daily_theta):,.0f}/day",
-    }
-
-    # 9. Calculate Volatility Risk Premium (VRP: IV vs Realized Volatility)
+    # 8. Calculate Volatility Risk Premium (VRP: IV vs Realized Volatility)
     rv_20d = 14.81
     try:
         rv_rows = _q("""
@@ -5884,7 +5769,7 @@ async def get_eod_live_data():
         "desc": vrp_desc,
     }
 
-    # 10. SEBI CAS State
+    # 9. SEBI CAS State
     sebi_cas = _get_sebi_cas_status(now_ist)
 
     return JSONResponse({
@@ -5894,7 +5779,6 @@ async def get_eod_live_data():
         "is_market_open": is_equity_open,
         "session_status": "LIVE INTRADAY" if is_equity_open else "EOD CLOSE",
         "vix": vix_data,
-        "desk_risk": desk_risk,
         "vrp": vrp_data,
         "sebi_cas": sebi_cas,
         "last_scan_iso": latest_scan_iso,
