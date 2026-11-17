@@ -975,6 +975,81 @@ def get_contributors_pro_ai_summary(index: str = "NIFTY", refresh: bool = False,
     })
 
 
+_LIVE_QUOTES_CACHE = {
+    "quotes": {},
+    "ts": 0.0,
+}
+
+
+def _fetch_live_market_quotes(today_ist_str: str = None) -> dict:
+    """Fetch real-time index prices and exact previous session close from Yahoo Finance.
+    Caches results for 10 seconds to prevent outbound throttling.
+    """
+    now = time.time()
+    if now - _LIVE_QUOTES_CACHE["ts"] < 10.0 and _LIVE_QUOTES_CACHE["quotes"]:
+        return _LIVE_QUOTES_CACHE["quotes"]
+
+    import urllib.request
+    from concurrent.futures import ThreadPoolExecutor
+
+    IST_TZ = timezone(timedelta(hours=5, minutes=30))
+    if not today_ist_str:
+        today_ist_str = datetime.now(IST_TZ).strftime("%Y-%m-%d")
+
+    _ticker_map = {
+        "NIFTY": "%5ENSEI",
+        "BANKNIFTY": "%5ENSEBANK",
+        "SENSEX": "%5EBSESN",
+        "INDIAVIX": "%5EINDIAVIX",
+    }
+
+    def _fetch_single(item):
+        s_key, ticker = item
+        try:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?range=5d&interval=1d"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
+                d = json.loads(resp.read().decode("utf-8"))
+                res = d["chart"]["result"][0]
+                meta = res.get("meta", {})
+                p = meta.get("regularMarketPrice")
+                quotes = res.get("indicators", {}).get("quote", [{}])[0]
+                closes = quotes.get("close", [])
+                timestamps = res.get("timestamp", [])
+                prev_close = None
+                for ts, c in zip(timestamps, closes):
+                    if c is not None:
+                        c_date = datetime.fromtimestamp(ts, IST_TZ).strftime("%Y-%m-%d")
+                        if c_date < today_ist_str:
+                            prev_close = float(c)
+                if prev_close is None:
+                    prev_close = meta.get("chartPreviousClose") or meta.get("previousClose")
+                if p is None and closes:
+                    val_closes = [c for c in closes if c is not None]
+                    if val_closes:
+                        p = val_closes[-1]
+                if p is not None and prev_close is not None:
+                    return s_key, {"price": float(p), "prev_close": float(prev_close)}
+        except Exception:
+            pass
+        return s_key, None
+
+    res = {}
+    try:
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            fetched = dict(ex.map(_fetch_single, _ticker_map.items()))
+            for k, v in fetched.items():
+                if v:
+                    res[k] = v
+    except Exception:
+        pass
+
+    if res:
+        _LIVE_QUOTES_CACHE["quotes"] = res
+        _LIVE_QUOTES_CACHE["ts"] = now
+    return _LIVE_QUOTES_CACHE["quotes"]
+
+
 @app.get("/api/cmps")
 @app.get("/api/topbar_cmps")
 def get_topbar_cmps():
@@ -1041,6 +1116,24 @@ def get_topbar_cmps():
             }
         else:
             res[sym] = None
+
+    # Enrich / reconcile with authoritative live market quotes for indices
+    try:
+        live_q = _fetch_live_market_quotes()
+        for sym, q in live_q.items():
+            if sym in ("NIFTY", "BANKNIFTY", "SENSEX") and q.get("price") and q.get("prev_close"):
+                p = q["price"]
+                pc = q["prev_close"]
+                chg = p - pc
+                pct = (chg / pc) * 100
+                res[sym] = {
+                    "price": round(p, 2),
+                    "change": round(chg, 2),
+                    "pct_change": round(pct, 2),
+                }
+    except Exception:
+        pass
+
     return res
 
 
@@ -5375,30 +5468,8 @@ async def get_eod_live_data():
     prev_scan_map = {r["symbol"]: r["underlying"] for r in prev_scan_rows}
 
     # Fast real-time quotes via lightweight market quote helper (for live spot & day change precision)
-    live_quotes = {}
-    try:
-        import urllib.request
-        _ticker_map = {
-            "NIFTY": "%5ENSEI",
-            "BANKNIFTY": "%5ENSEBANK",
-            "SENSEX": "%5EBSESN",
-            "INDIAVIX": "%5EINDIAVIX",
-        }
-        for s_key, ticker in _ticker_map.items():
-            try:
-                _url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d"
-                _req = urllib.request.Request(_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
-                with urllib.request.urlopen(_req, timeout=3.5) as _resp:
-                    _d = json.loads(_resp.read().decode("utf-8"))
-                    _meta = _d["chart"]["result"][0]["meta"]
-                    _p = _meta.get("regularMarketPrice")
-                    _pc = _meta.get("chartPreviousClose")
-                    if _p is not None and _pc is not None:
-                        live_quotes[s_key] = {"price": float(_p), "prev_close": float(_pc)}
-            except Exception:
-                pass
-    except Exception:
-        pass
+    today_ist_str = now_ist.strftime("%Y-%m-%d")
+    live_quotes = _fetch_live_market_quotes(today_ist_str)
 
     # Symbol lookups
     sym_map = {r["symbol"]: r for r in rows}
@@ -5701,15 +5772,30 @@ async def get_eod_live_data():
         live_sectors = []
         for s_name, s_ticker in sec_tickers:
             try:
-                s_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{s_ticker}?interval=1d"
-                s_req = urllib.request.Request(s_url, headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(s_req, timeout=1.8) as s_resp:
+                s_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{s_ticker}?range=5d&interval=1d"
+                s_req = urllib.request.Request(s_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+                with urllib.request.urlopen(s_req, timeout=2.0) as s_resp:
                     s_d = json.loads(s_resp.read().decode("utf-8"))
-                    s_meta = s_d["chart"]["result"][0]["meta"]
+                    s_res = s_d["chart"]["result"][0]
+                    s_meta = s_res.get("meta", {})
                     s_p = s_meta.get("regularMarketPrice")
-                    s_pc = s_meta.get("chartPreviousClose")
-                    if s_p is not None and s_pc:
-                        s_pct = ((s_p - s_pc) / s_pc) * 100
+                    s_quotes = s_res.get("indicators", {}).get("quote", [{}])[0]
+                    s_closes = s_quotes.get("close", [])
+                    s_ts = s_res.get("timestamp", [])
+                    s_prev = None
+                    for ts, c in zip(s_ts, s_closes):
+                        if c is not None:
+                            c_dt = datetime.fromtimestamp(ts, timezone(timedelta(hours=5, minutes=30))).strftime("%Y-%m-%d")
+                            if c_dt < today_ist_str:
+                                s_prev = float(c)
+                    if s_prev is None:
+                        s_prev = s_meta.get("chartPreviousClose") or s_meta.get("previousClose")
+                    if s_p is None and s_closes:
+                        valid_c = [c for c in s_closes if c is not None]
+                        if valid_c:
+                            s_p = valid_c[-1]
+                    if s_p is not None and s_prev:
+                        s_pct = ((s_p - s_prev) / s_prev) * 100
                         s_status = "Accumulation" if s_pct > 0.5 else ("Profit Taking" if s_pct < -1.0 else ("Steady" if s_pct > 0 else "Consolidating"))
                         live_sectors.append({"name": s_name, "change": f"{s_pct:+.2f}%", "status": s_status})
             except Exception:
