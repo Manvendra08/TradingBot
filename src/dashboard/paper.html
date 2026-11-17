@@ -3628,7 +3628,10 @@
                 }
             }
             function fp(v, d = 2) {
-                return v == null ? "—" : Number(v).toFixed(d);
+                if (v == null || v === "") return "—";
+                const n = Number(v);
+                if (isNaN(n)) return String(v);
+                return n.toFixed(d);
             }
             function shortReason(str) {
                 if (!str) return "—";
@@ -3717,12 +3720,12 @@
                 return t.exit_premium != null ? fp(t.exit_premium) : "—";
             }
             function slPrice(t) {
-                if (t.option_type === "MULTILEG") return t.sl_premium ? fp(t.sl_premium) : "—";
+                if (t.option_type === "MULTILEG" || t.is_multileg) return t.sl_premium ? fp(t.sl_premium) : "—";
                 if (t.option_type === "FUT") return fp(t.sl_underlying);
                 return t.sl_premium ? fp(t.sl_premium) : fp(t.sl_underlying);
             }
             function targetPrice(t) {
-                if (t.option_type === "MULTILEG") return t.target_premium ? fp(t.target_premium) : "—";
+                if (t.option_type === "MULTILEG" || t.is_multileg) return t.target_premium ? fp(t.target_premium) : "—";
                 if (t.option_type === "FUT") return fp(t.target_underlying);
                 return t.target_premium
                     ? fp(t.target_premium)
@@ -3887,8 +3890,8 @@
 
                 document.getElementById("sym-breakdown").innerHTML = cardsHtml || '<div class="empty-state"><div class="empty-icon">🗃️</div>No trades yet</div>';
 
-                /* Open trades (exclude multi-leg trades as they have their dedicated section) */
-                const ot = (s.open_trades || []).filter(t => (t.option_type || '').toUpperCase() !== "MULTILEG" && (t.setup_type || '').toUpperCase() !== "MULTILEG" && !String(t.id).startsWith("ML-"));
+                /* Open trades (exclude ML- books as they have their dedicated multi-leg section, include consolidated TFSS spreads) */
+                const ot = (s.open_trades || []).filter(t => !String(t.id).startsWith("ML-"));
                 document.getElementById("open-count").textContent = ot.length;
                 document.getElementById("open-body").innerHTML = ot.length
                     ? ot
@@ -3897,8 +3900,10 @@
                               const otType = (
                                   t.option_type || ""
                               ).toUpperCase();
-                              const instr =
-                                  otType === "FUT"
+                              const isMl = (otType === "MULTILEG" || t.is_multileg);
+                              const instr = isMl
+                                  ? (t.strike || "SPREAD")
+                                  : otType === "FUT"
                                       ? "FUT"
                                       : t.strike
                                         ? t.strike + " " + otType

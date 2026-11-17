@@ -1604,6 +1604,202 @@ def _enrich_trade_details(rows: list[dict]) -> None:
         )
 
 
+def group_tfss_paper_trades(rows: list[dict]) -> list[dict]:
+    """
+    Consolidates paired TFSS legs (e.g. short put/call + disaster tail hedge) 
+    sharing the same leg_group_id into a single unified multi-leg trade object.
+    Preserves independent leg execution in the DB while presenting clean,
+    institution-grade multi-leg spreads on the dashboard.
+    """
+    if not rows:
+        return rows
+
+    import re
+    from collections import defaultdict
+
+    tfss_legs = []
+    non_tfss_rows = []
+
+    for r in rows:
+        gid = str(r.get("leg_group_id") or "")
+        st = str(r.get("setup_type") or "").upper()
+        reason = str(r.get("reason") or "")
+        if st == "TFSS" or ":TFSS" in gid or "TFSS" in reason:
+            tfss_legs.append(r)
+        else:
+            non_tfss_rows.append(r)
+
+    if not tfss_legs:
+        return rows
+
+    short_legs_by_id = {}
+    wing_legs = []
+    other_legs = []
+
+    for leg in tfss_legs:
+        side = (leg.get("side") or "SELL").upper()
+        if side == "SELL":
+            short_legs_by_id[leg.get("id")] = leg
+        else:
+            reason = str(leg.get("reason") or "")
+            match = re.search(r"paired with short leg #(\d+)", reason)
+            if match:
+                wing_legs.append((int(match.group(1)), leg))
+            else:
+                other_legs.append(leg)
+
+    groups = defaultdict(list)
+
+    for short_id, short_leg in short_legs_by_id.items():
+        groups[short_id].append(short_leg)
+
+    for short_id, wing_leg in wing_legs:
+        if short_id in groups:
+            groups[short_id].append(wing_leg)
+        else:
+            gid = wing_leg.get("leg_group_id") or "TFSS"
+            opened_min = str(wing_leg.get("opened_at") or "")[:16]
+            groups[f"{gid}:{opened_min}"].append(wing_leg)
+
+    for leg in other_legs:
+        gid = leg.get("leg_group_id") or "TFSS"
+        opened_min = str(leg.get("opened_at") or "")[:16]
+        matched = False
+        for g_key, g_legs in groups.items():
+            if g_legs and (g_legs[0].get("leg_group_id") == gid) and str(g_legs[0].get("opened_at") or "")[:16] == opened_min:
+                g_legs.append(leg)
+                matched = True
+                break
+        if not matched:
+            groups[f"{gid}:{opened_min}"].append(leg)
+
+    output_rows = list(non_tfss_rows)
+
+    for g_key, legs in groups.items():
+        if not legs:
+            continue
+        if len(legs) == 1:
+            output_rows.append(legs[0])
+            continue
+
+        legs.sort(key=lambda l: (0 if (l.get("side") or "").upper() == "SELL" else 1, float(l.get("strike") or 0.0)))
+        primary_leg = legs[0]
+
+        has_sell_pe = any((l.get("side") or "").upper() == "SELL" and (l.get("option_type") or "").upper() == "PE" for l in legs)
+        has_buy_pe = any((l.get("side") or "").upper() == "BUY" and (l.get("option_type") or "").upper() == "PE" for l in legs)
+        has_sell_ce = any((l.get("side") or "").upper() == "SELL" and (l.get("option_type") or "").upper() == "CE" for l in legs)
+        has_buy_ce = any((l.get("side") or "").upper() == "BUY" and (l.get("option_type") or "").upper() == "CE" for l in legs)
+
+        if has_sell_pe and has_buy_pe and not (has_sell_ce or has_buy_ce):
+            struct_label = "TFSS BULL PUT SPREAD"
+        elif has_sell_ce and has_buy_ce and not (has_sell_pe or has_buy_pe):
+            struct_label = "TFSS BEAR CALL SPREAD"
+        elif (has_sell_pe and has_sell_ce) and (has_buy_pe or has_buy_ce):
+            struct_label = "TFSS IRON CONDOR"
+        elif has_sell_pe and has_sell_ce:
+            struct_label = "TFSS SHORT STRANGLE"
+        else:
+            struct_label = "TFSS MULTI-LEG"
+
+        sell_prem = sum(float(l.get("entry_premium") or 0.0) for l in legs if (l.get("side") or "").upper() == "SELL")
+        buy_prem = sum(float(l.get("entry_premium") or 0.0) for l in legs if (l.get("side") or "").upper() == "BUY")
+        net_credit = round(sell_prem - buy_prem, 2)
+
+        statuses = [l.get("status") for l in legs]
+        if any(s == "OPEN" for s in statuses):
+            group_status = "OPEN"
+        elif any(s in ("CLOSED_TARGET", "CLOSED_PROFIT_TARGET") for s in statuses):
+            group_status = "CLOSED_TARGET"
+        elif any(s in ("CLOSED_SL", "CLOSED_STOP_LOSS") for s in statuses):
+            group_status = "CLOSED_SL"
+        elif any(s == "CLOSED_MANUAL" for s in statuses):
+            group_status = "CLOSED_MANUAL"
+        else:
+            group_status = primary_leg.get("status") or "CLOSED"
+
+        tot_pnl = sum(float(l.get("pnl_rupees") or 0.0) for l in legs)
+        tot_pts = sum(float(l.get("pnl_points") or 0.0) for l in legs)
+
+        strike_parts = []
+        for l in legs:
+            stk = int(l["strike"]) if l.get("strike") and float(l["strike"]).is_integer() else l.get("strike")
+            opt = l.get("option_type") or ""
+            strike_parts.append(f"{stk} {opt}".strip())
+        strike_summary = " / ".join(strike_parts)
+
+        sell_exit = sum(float(l.get("exit_premium") or 0.0) for l in legs if (l.get("side") or "").upper() == "SELL")
+        buy_exit = sum(float(l.get("exit_premium") or 0.0) for l in legs if (l.get("side") or "").upper() == "BUY")
+        net_exit_prem = round(sell_exit - buy_exit, 2) if group_status != "OPEN" else None
+
+        formatted_legs = []
+        for l in legs:
+            formatted_legs.append({
+                "id": l.get("id"),
+                "leg_id": l.get("id"),
+                "side": (l.get("side") or "SELL").upper(),
+                "option_type": (l.get("option_type") or "").upper(),
+                "strike": l.get("strike"),
+                "entry_premium": float(l.get("entry_premium") or 0.0),
+                "exit_premium": float(l.get("exit_premium") or 0.0) if l.get("exit_premium") is not None else None,
+                "cmp": float(l.get("cmp") or l.get("exit_premium") or l.get("entry_premium") or 0.0),
+                "lots": l.get("lots") or 1,
+                "status": l.get("status") or "OPEN",
+                "rationale": l.get("reason") or "",
+                "expiry": l.get("expiry"),
+            })
+
+        min_id = primary_leg.get("id")
+        latest_closed_at = max((l.get("closed_at") or "" for l in legs), default=None)
+
+        combined = {
+            "id": min_id,
+            "opened_at": primary_leg.get("opened_at"),
+            "closed_at": latest_closed_at if group_status != "OPEN" else None,
+            "symbol": primary_leg.get("symbol"),
+            "verdict_label": struct_label,
+            "option_type": "MULTILEG",
+            "strike": strike_summary,
+            "entry_underlying": primary_leg.get("entry_underlying") or 0.0,
+            "exit_underlying": primary_leg.get("exit_underlying"),
+            "sl_underlying": primary_leg.get("sl_underlying"),
+            "target_underlying": primary_leg.get("target_underlying"),
+            "pnl_points": round(tot_pts, 2),
+            "status": group_status,
+            "reason": "; ".join(l.get("reason") for l in legs if l.get("reason")),
+            "entry_reason": primary_leg.get("reason") or "TFSS Multi-Tranche Volatility Harvesting",
+            "exit_reason": "; ".join(str(l.get("exit_reason")) for l in legs if l.get("exit_reason")),
+            "digest_id": primary_leg.get("digest_id"),
+            "entry_premium": net_credit,
+            "exit_premium": net_exit_prem,
+            "cmp": net_credit,
+            "sl_premium": primary_leg.get("sl_premium"),
+            "target_premium": primary_leg.get("target_premium"),
+            "lots": primary_leg.get("lots") or 1,
+            "pnl_rupees": round(tot_pnl, 2),
+            "trade_status": primary_leg.get("trade_status") or "TRIGGERED_CORE",
+            "setup_type": "MULTILEG",
+            "decision_reason": primary_leg.get("decision_reason") or primary_leg.get("reason"),
+            "confidence_score": primary_leg.get("confidence_score") or 80,
+            "entry_quality_score": primary_leg.get("entry_quality_score") or 80,
+            "trend_alignment_score": primary_leg.get("trend_alignment_score"),
+            "regime_score": primary_leg.get("regime_score"),
+            "signal_key": primary_leg.get("leg_group_id") or primary_leg.get("signal_key"),
+            "pyramid_level": primary_leg.get("pyramid_level") or 1,
+            "max_favorable_r": 0.0,
+            "side": "SELL",
+            "expiry": primary_leg.get("expiry"),
+            "leg_group_id": primary_leg.get("leg_group_id"),
+            "is_multileg": True,
+            "is_tfss": True,
+            "legs": formatted_legs,
+            "underlying_trade_ids": [l.get("id") for l in legs],
+        }
+        output_rows.append(combined)
+
+    output_rows.sort(key=lambda r: r.get("opened_at") or "", reverse=True)
+    return output_rows
+
+
 @app.get("/api/paper_trades")
 async def get_paper_trades(symbol: str = "", status: str = "", limit: int = 300):
     clauses_pt = []
@@ -1632,8 +1828,9 @@ async def get_paper_trades(symbol: str = "", status: str = "", limit: int = 300)
     ORDER BY opened_at DESC LIMIT ?
     """
 
-    all_params = params_pt + [int(limit)]
+    all_params = params_pt + [max(int(limit) * 2, 500)]
     rows = _q(sql, all_params)
+    rows = group_tfss_paper_trades(rows)
 
     # Also aggregate multi_leg_trades (Paper mode only for /api/paper_trades)
     clauses_ml = ["status != 'QUARANTINED'", "trade_mode = 'PAPER'"]
@@ -1834,6 +2031,41 @@ def _explain_verdict(verdict: str | None, option_type: str | None) -> dict:
             "action": "Sell FUT" if ot == "FUT" else "Buy PE",
             "emoji": "🟦",
         },
+        "TFSS BULL PUT SPREAD": {
+            "bias": "Bullish",
+            "strategy": "TFSS Short Put + Disaster Wing",
+            "description": "Multi-tranche volatility harvesting with crash wing protection",
+            "action": "Harvest theta decay with capped downside",
+            "emoji": "🛡️",
+        },
+        "TFSS BEAR CALL SPREAD": {
+            "bias": "Bearish",
+            "strategy": "TFSS Short Call + Disaster Wing",
+            "description": "Multi-tranche volatility harvesting with upside crash wing protection",
+            "action": "Harvest theta decay with capped upside risk",
+            "emoji": "🛡️",
+        },
+        "TFSS IRON CONDOR": {
+            "bias": "Neutral",
+            "strategy": "TFSS Both Wings + Disaster Wings",
+            "description": "Double-sided volatility harvesting with tail protection",
+            "action": "Harvest theta decay across range",
+            "emoji": "🛡️",
+        },
+        "TFSS SHORT STRANGLE": {
+            "bias": "Neutral",
+            "strategy": "TFSS Short Strangle + Wings",
+            "description": "Strangle volatility harvesting with delta management",
+            "action": "Harvest theta decay across wide strangle",
+            "emoji": "🛡️",
+        },
+        "TFSS MULTI-LEG": {
+            "bias": "Volatility Harvest",
+            "strategy": "TFSS Volatility Harvesting Spread",
+            "description": "Systematic volatility harvesting with tail-risk defense",
+            "action": "Harvest theta decay with asymmetric delta stops",
+            "emoji": "🛡️",
+        },
     }
 
     return explanations.get(
@@ -1947,6 +2179,7 @@ async def get_paper_summary(symbol: str = ""):
     where_pt = f"WHERE {' AND '.join(clauses_pt)}" if clauses_pt else ""
 
     pt_rows = _q(f"SELECT * FROM paper_trades {where_pt}", tuple(params_pt))
+    pt_rows = group_tfss_paper_trades(pt_rows)
 
     clauses_ml = ["status != 'QUARANTINED'", "trade_mode = 'PAPER'"]
     params_ml: list = []
@@ -2346,6 +2579,7 @@ def _calculate_consecutive_wins(where: str, params: tuple) -> int:
 
 @app.post("/api/paper_trades/close", dependencies=[Depends(authenticate)])
 async def manual_close_paper_trade(trade_id: int = Query(...)):
+    import re
     from datetime import datetime, timezone
 
     from src.models.schema import close_live_trade, close_paper_trade, get_conn
@@ -2359,80 +2593,100 @@ async def manual_close_paper_trade(trade_id: int = Query(...)):
             {"ok": False, "error": "Trade is already closed"}, status_code=400
         )
 
-    symbol = str(row.get("symbol") or "").upper().strip()
-    option_type = str(row.get("option_type") or "").upper().strip()
-    strike = row.get("strike")
-    entry_underlying = float(row.get("entry_underlying") or 0.0)
-
-    # 1. Fetch latest underlying price
-    exit_und = None
-    res_und = _q(
-        "SELECT price FROM underlying_price WHERE symbol=? ORDER BY fetched_at DESC LIMIT 1",
-        (symbol,),
-    )
-    if res_und:
-        exit_und = res_und[0]["price"]
-    else:
-        exit_und = entry_underlying
-
-    # 2. Fetch exit premium
-    exit_prem = None
-    if option_type in ("CE", "PE") and strike is not None:
-        try:
-            strike_val = float(strike)
-        except (ValueError, TypeError):
-            strike_val = 0.0
-        base_sym = symbol.split()[0]
-        expiry = str(row.get("expiry") or "").strip()
-        res_opt = None
-        if expiry:
-            res_opt = _q(
-                "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND expiry=? AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
-                (symbol, base_sym, expiry, strike_val, option_type),
-            )
-        else:
-            res_opt = _q(
-                "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
-                (symbol, base_sym, strike_val, option_type),
-            )
-        if res_opt:
-            exit_prem = res_opt[0]["ltp"]
-        else:
-            exit_prem = None
-    else:
-        # FUT
-        exit_prem = exit_und
+    # Check if this trade is part of a TFSS spread; if so, close all paired legs
+    trades_to_close = [row]
+    reason_str = str(row.get("reason") or "")
+    leg_gid = str(row.get("leg_group_id") or "")
+    if row.get("setup_type") == "TFSS" or ":TFSS" in leg_gid or "TFSS" in reason_str:
+        wings = _q("SELECT * FROM paper_trades WHERE status='OPEN' AND reason LIKE ?", (f"%paired with short leg #{trade_id}%",))
+        trades_to_close.extend(wings)
+        m = re.search(r"paired with short leg #(\d+)", reason_str)
+        if m:
+            short_id = int(m.group(1))
+            shorts = _q("SELECT * FROM paper_trades WHERE id=? AND status='OPEN'", (short_id,))
+            trades_to_close.extend(shorts)
 
     now_iso = datetime.now(timezone.utc).isoformat()
+    closed_ids = []
 
-    # Check if the trade actually belongs to live_trades
-    is_live = False
-    with get_conn() as conn:
-        res = conn.execute(
-            "SELECT 1 FROM live_trades WHERE id=?", (trade_id,)
-        ).fetchone()
-        if res:
-            is_live = True
+    for t_row in trades_to_close:
+        t_id = t_row["id"]
+        if t_id in closed_ids:
+            continue
+        symbol = str(t_row.get("symbol") or "").upper().strip()
+        option_type = str(t_row.get("option_type") or "").upper().strip()
+        strike = t_row.get("strike")
+        entry_underlying = float(t_row.get("entry_underlying") or 0.0)
 
-    if is_live:
-        close_live_trade(
-            trade_id=trade_id,
-            closed_at=now_iso,
-            exit_underlying=exit_und,
-            exit_premium=exit_prem,
-            status="CLOSED_MANUAL",
-            reason="Manual close via dashboard",
+        # 1. Fetch latest underlying price
+        exit_und = None
+        res_und = _q(
+            "SELECT price FROM underlying_price WHERE symbol=? ORDER BY fetched_at DESC LIMIT 1",
+            (symbol,),
         )
-    else:
-        close_paper_trade(
-            trade_id=trade_id,
-            closed_at=now_iso,
-            exit_underlying=exit_und,
-            exit_premium=exit_prem,
-            status="CLOSED_MANUAL",
-            reason="Manual close via dashboard",
-        )
-    return {"ok": True, "trade_id": trade_id}
+        if res_und:
+            exit_und = res_und[0]["price"]
+        else:
+            exit_und = entry_underlying
+
+        # 2. Fetch exit premium
+        exit_prem = None
+        if option_type in ("CE", "PE") and strike is not None:
+            try:
+                strike_val = float(strike)
+            except (ValueError, TypeError):
+                strike_val = 0.0
+            base_sym = symbol.split()[0]
+            expiry = str(t_row.get("expiry") or "").strip()
+            res_opt = None
+            if expiry:
+                res_opt = _q(
+                    "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND expiry=? AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
+                    (symbol, base_sym, expiry, strike_val, option_type),
+                )
+            else:
+                res_opt = _q(
+                    "SELECT ltp FROM option_chain_snapshots WHERE (symbol=? OR symbol=?) AND ABS(strike - ?) < 0.01 AND option_type=? AND ltp IS NOT NULL AND ltp > 0 ORDER BY fetched_at DESC LIMIT 1",
+                    (symbol, base_sym, strike_val, option_type),
+                )
+            if res_opt:
+                exit_prem = res_opt[0]["ltp"]
+            else:
+                exit_prem = float(t_row.get("entry_premium") or 0.0)
+        else:
+            # FUT
+            exit_prem = exit_und
+
+        # Check if the trade actually belongs to live_trades
+        is_live = False
+        with get_conn() as conn:
+            res = conn.execute(
+                "SELECT 1 FROM live_trades WHERE id=?", (t_id,)
+            ).fetchone()
+            if res:
+                is_live = True
+
+        if is_live:
+            close_live_trade(
+                trade_id=t_id,
+                closed_at=now_iso,
+                exit_underlying=exit_und,
+                exit_premium=exit_prem,
+                status="CLOSED_MANUAL",
+                reason="Manual close via dashboard",
+            )
+        else:
+            close_paper_trade(
+                trade_id=t_id,
+                closed_at=now_iso,
+                exit_underlying=exit_und,
+                exit_premium=exit_prem,
+                status="CLOSED_MANUAL",
+                reason="Manual close via dashboard",
+            )
+        closed_ids.append(t_id)
+
+    return {"ok": True, "trade_id": trade_id, "closed_ids": closed_ids}
 
 
 @app.delete("/api/paper_trades", dependencies=[Depends(authenticate)])
