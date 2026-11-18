@@ -194,20 +194,39 @@ def generate_pro_trader_intelligence(
         )
 
     # Pillar 3: Scan Delta Velocity & Momentum Shift
+    # Check for regime conflict: if primary day regime is bearish liquidation (index_net_pts < -50),
+    # a positive scan delta is a counter-trend bounce/short-covering, NOT aggressive acceleration.
     if hw_scan_delta > 10.0:
-        velocity_status = "Aggressive Institutional Acceleration"
-        velocity_tone = "bullish"
-        velocity_desc = (
-            f"Momentum impulse is actively accelerating: the latest 15-minute scan injected <b>{hw_scan_delta:+.2f} pts</b> of fresh heavyweight impulse. "
-            f"Pillars are pushing aggressively in unison. Short-term intraday momentum strongly favors continuation toward upper resistance."
-        )
+        if index_net_pts < -50.0 or footprint_tone == "bearish":
+            velocity_status = "Counter-Trend Bounce / 15m Short-Covering"
+            velocity_tone = "neutral"
+            velocity_desc = (
+                f"Short-term counter-trend pulse: the latest 15-minute scan registered a <b>{hw_scan_delta:+.2f} pts</b> relief bounce from heavyweights. "
+                f"However, this is pushing against a primary liquidation day ({index_net_pts:+.1f} pts net). "
+                f"Treat this as intraday short-covering into overhead resistance rather than sustainable bullish breakout."
+            )
+        else:
+            velocity_status = "Aggressive Institutional Acceleration"
+            velocity_tone = "bullish"
+            velocity_desc = (
+                f"Momentum impulse is actively accelerating: the latest 15-minute scan injected <b>{hw_scan_delta:+.2f} pts</b> of fresh heavyweight impulse. "
+                f"Pillars are pushing aggressively in unison. Short-term intraday momentum strongly favors continuation toward upper resistance."
+            )
     elif hw_scan_delta < -10.0:
-        velocity_status = "Sharp Intraday Reversal / Profit Taking"
-        velocity_tone = "bearish"
-        velocity_desc = (
-            f"Abrupt momentum deceleration: latest 15-minute scan registered a sharp <b>{hw_scan_delta:+.2f} pts</b> negative impulse from heavyweights. "
-            f"Pillars are encountering aggressive profit-taking. High probability of an afternoon mean-reversion pull toward Max Pain."
-        )
+        if index_net_pts > 50.0 or footprint_tone == "bullish":
+            velocity_status = "Intraday Pullback / 15m Mean Reversion"
+            velocity_tone = "neutral"
+            velocity_desc = (
+                f"Temporary intraday pullback: latest 15-minute scan registered a <b>{hw_scan_delta:+.2f} pts</b> negative impulse from heavyweights. "
+                f"With the primary regime bullish ({index_net_pts:+.1f} pts), this reflects healthy profit-taking and mean-reversion toward Put Base."
+            )
+        else:
+            velocity_status = "Sharp Intraday Reversal / Profit Taking"
+            velocity_tone = "bearish"
+            velocity_desc = (
+                f"Abrupt momentum deceleration: latest 15-minute scan registered a sharp <b>{hw_scan_delta:+.2f} pts</b> negative impulse from heavyweights. "
+                f"Pillars are encountering aggressive profit-taking. High probability of an afternoon mean-reversion pull toward Max Pain."
+            )
     elif hw_scan_delta < 0.0 and driver_shift < -5.0:
         velocity_status = "Session Fatigue & Leader Deceleration"
         velocity_tone = "neutral"

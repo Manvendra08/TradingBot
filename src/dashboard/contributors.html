@@ -1398,7 +1398,8 @@
                 background: var(--surface);
                 border: 1px solid var(--border);
                 border-radius: 12px;
-                padding: 18px 22px;
+                padding: 14px 18px;
+                margin-top: 20px;
                 margin-bottom: 24px;
                 box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
                 position: relative;
@@ -1419,13 +1420,14 @@
                 justify-content: space-between;
                 align-items: center;
                 flex-wrap: wrap;
-                gap: 14px;
-                margin-bottom: 14px;
+                gap: 12px;
+                cursor: pointer;
+                user-select: none;
             }
             .pro-ai-title-wrap {
                 display: flex;
                 flex-direction: column;
-                gap: 4px;
+                gap: 3px;
             }
             .pro-ai-title-row {
                 display: flex;
@@ -1437,12 +1439,12 @@
                 background: rgba(56, 189, 248, 0.12);
                 border: 1px solid rgba(56, 189, 248, 0.35);
                 color: #38bdf8;
-                font-size: 11px;
+                font-size: 10.5px;
                 font-weight: 800;
                 font-family: var(--mono);
                 text-transform: uppercase;
                 letter-spacing: 0.06em;
-                padding: 4px 9px;
+                padding: 3px 8px;
                 border-radius: 5px;
                 display: inline-flex;
                 align-items: center;
@@ -1457,46 +1459,13 @@
                 animation: pulse 1.8s infinite;
             }
             .pro-ai-title {
-                font-size: 16px;
+                font-size: 14px;
                 font-weight: 800;
                 letter-spacing: -0.01em;
                 color: var(--text);
             }
-            .pro-ai-model-badge {
-                background: linear-gradient(135deg, rgba(99, 102, 241, 0.12) 0%, rgba(168, 85, 247, 0.14) 100%);
-                border: 1px solid rgba(168, 85, 247, 0.4);
-                color: #c084fc;
-                font-size: 11px;
-                font-weight: 700;
-                font-family: var(--mono);
-                padding: 4px 10px;
-                border-radius: 6px;
-                display: inline-flex;
-                align-items: center;
-                gap: 6px;
-                box-shadow: 0 0 10px rgba(168, 85, 247, 0.1);
-            }
-            .model-badge-label {
-                color: var(--text-dim);
-                font-size: 9.5px;
-                letter-spacing: 0.05em;
-            }
-            .model-badge-name {
-                color: #e9d5ff;
-                font-weight: 800;
-            }
-            [data-theme="light"] .model-badge-name {
-                color: #6b21a8;
-            }
-            .model-status-dot {
-                width: 6px;
-                height: 6px;
-                border-radius: 50%;
-                background: #a855f7;
-                box-shadow: 0 0 6px #a855f7;
-            }
             .pro-ai-subtitle {
-                font-size: 12px;
+                font-size: 11.5px;
                 color: var(--text-dim);
             }
             .pro-ai-actions {
@@ -1508,9 +1477,9 @@
                 background: var(--surface-2);
                 border: 1px solid var(--border);
                 color: var(--text);
-                padding: 6px 12px;
+                padding: 5px 11px;
                 border-radius: 6px;
-                font-size: 12px;
+                font-size: 11.5px;
                 font-weight: 600;
                 cursor: pointer;
                 display: inline-flex;
@@ -1536,12 +1505,13 @@
             .pro-ai-headline-banner {
                 background: var(--surface-2);
                 border-left: 3px solid var(--accent);
-                padding: 10px 14px;
+                padding: 9px 13px;
                 border-radius: 6px;
                 font-family: var(--mono);
-                font-size: 12px;
+                font-size: 11.5px;
                 color: var(--text);
-                margin-bottom: 16px;
+                margin-top: 12px;
+                margin-bottom: 14px;
                 display: flex;
                 align-items: center;
                 justify-content: space-between;
@@ -1582,10 +1552,10 @@
                 background: var(--surface-2);
                 border: 1px solid var(--border);
                 border-radius: 8px;
-                padding: 14px 16px;
+                padding: 13px 15px;
                 display: flex;
                 flex-direction: column;
-                gap: 10px;
+                gap: 9px;
                 transition: transform 0.2s ease, border-color 0.2s ease;
                 min-width: 0;
             }
@@ -1596,9 +1566,9 @@
             .pro-ai-card-header {
                 display: flex;
                 flex-direction: column;
-                gap: 7px;
+                gap: 6px;
                 border-bottom: 1px solid var(--border);
-                padding-bottom: 10px;
+                padding-bottom: 9px;
             }
             .pro-ai-card-title-row {
                 display: flex;
@@ -1607,14 +1577,14 @@
                 gap: 8px;
             }
             .pro-ai-card-title {
-                font-size: 13.5px;
+                font-size: 13px;
                 font-weight: 700;
                 color: var(--text);
                 white-space: nowrap;
                 letter-spacing: -0.01em;
             }
             .pro-ai-card-sub {
-                font-size: 11px;
+                font-size: 10.5px;
                 color: var(--text-dim);
                 font-family: var(--mono);
             }
@@ -1623,10 +1593,10 @@
                 width: 100%;
             }
             .pro-ai-tag {
-                font-size: 10.5px;
+                font-size: 10px;
                 font-weight: 700;
                 font-family: var(--mono);
-                padding: 4px 8px;
+                padding: 3px 7px;
                 border-radius: 4px;
                 text-transform: uppercase;
                 letter-spacing: 0.03em;
@@ -1654,7 +1624,7 @@
             }
             .pro-ai-card-body {
                 font-size: 12px;
-                line-height: 1.6;
+                line-height: 1.55;
                 color: var(--text);
                 flex-grow: 1;
             }
@@ -1664,10 +1634,29 @@
             [data-theme="light"] .pro-ai-card-body b {
                 color: #0f172a;
             }
-            .pro-ai-micro-stats {
+            .pro-ai-footer-attribution {
                 display: flex;
                 align-items: center;
                 justify-content: space-between;
+                font-family: var(--mono);
+                font-size: 10px;
+                color: var(--text-dim);
+                padding-top: 8px;
+                border-top: 1px solid var(--border);
+                margin-top: 8px;
+            }
+            .pro-ai-collapsed .pro-ai-grid,
+            .pro-ai-collapsed .pro-ai-llm-box,
+            .pro-ai-collapsed .pro-ai-footer-attribution {
+                display: none !important;
+            }
+            .pro-ai-collapsed .pro-ai-headline-banner {
+                margin-bottom: 0 !important;
+            }
+            .pro-ai-micro-stats {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
+                gap: 6px;
                 background: var(--surface);
                 border: 1px solid var(--border);
                 border-radius: 6px;
@@ -1676,15 +1665,38 @@
                 font-size: 11px;
                 margin-top: 4px;
             }
+            .pro-ai-micro-stat-item {
+                display: flex;
+                flex-direction: column;
+                gap: 2px;
+                white-space: nowrap;
+                min-width: 0;
+            }
+            .pro-ai-micro-stat-lbl {
+                font-size: 9px;
+                font-family: var(--sans);
+                text-transform: uppercase;
+                color: var(--text-dim);
+                font-weight: 700;
+                letter-spacing: 0.5px;
+            }
+            .pro-ai-micro-stat-val {
+                font-family: var(--mono);
+                font-size: 11.5px;
+                font-weight: 700;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
             .pro-ai-duel-container {
                 display: flex;
                 align-items: center;
                 justify-content: space-between;
-                gap: 8px;
+                gap: 10px;
                 background: var(--surface);
                 border: 1px solid var(--border);
                 border-radius: 6px;
-                padding: 8px 10px;
+                padding: 8px 12px;
                 margin-top: 4px;
             }
             .pro-ai-duel-chip {
@@ -1705,20 +1717,26 @@
             .pro-ai-duel-chip.bull .duel-chip-role { color: var(--green); }
             .pro-ai-duel-chip.bear .duel-chip-role { color: var(--red); }
             .duel-chip-sym {
-                font-size: 11.5px;
-                font-weight: 700;
+                font-size: 12px;
+                font-weight: 800;
                 font-family: var(--mono);
                 color: var(--text);
                 white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
-                max-width: 100%;
             }
+            .duel-chip-val {
+                font-size: 11px;
+                font-family: var(--mono);
+                font-weight: 700;
+                white-space: nowrap;
+            }
+            .duel-chip-val.bull { color: var(--green); }
+            .duel-chip-val.bear { color: var(--red); }
             .pro-ai-duel-vs {
                 color: var(--text-dim);
                 font-size: 10px;
                 font-weight: 800;
                 font-family: var(--mono);
+                flex-shrink: 0;
             }
             .pro-ai-strike-grid {
                 display: grid;
@@ -1975,178 +1993,218 @@
                 </div>
             </section>
 
-            <!-- ── Pro Trader AI Intelligence Dossier ─────────────────────────── -->
-            <section class="pro-ai-dossier-section" id="pro-ai-dossier-section">
-                <div class="pro-ai-header">
-                    <div class="pro-ai-title-wrap">
-                        <div class="pro-ai-title-row">
-                            <span class="pro-ai-badge">
-                                <span class="pulse-glow"></span>
-                                PRO TRADER INTELLIGENCE
-                            </span>
-                            <span class="pro-ai-title" id="pro-ai-main-title">⚡ Institutional Execution Dossier</span>
-                            <span class="hw-badge-tag" id="pro-ai-time-tag">Syncing...</span>
-                            <span class="pro-ai-model-badge" id="pro-ai-model-tag" title="LLM Engine powering this intelligence">
-                                <span class="model-badge-icon">🧠</span>
-                                <span class="model-badge-label">LLM ENGINE:</span>
-                                <span class="model-badge-name" id="pro-ai-model-name">OmniRouter (Claude-Models Combo)</span>
-                                <span class="model-status-dot"></span>
-                            </span>
-                        </div>
-                        <div class="pro-ai-subtitle">
-                            Autonomous institutional synthesis of constituent point propulsion, titan clashes, velocity pulses & derivative execution
-                        </div>
+            <!-- ── Top Heavyweights Net Point Movement & Multi-Scan History ─────── -->
+            <section class="heavyweights-panel" id="heavyweights-panel" style="margin-bottom: 20px;">
+                <div class="hw-panel-header">
+                    <div class="hw-title-group">
+                        <span class="hw-title-text">
+                            🏛️ Top Heavyweights Net Point Movement
+                        </span>
+                        <span class="hw-badge-tag">Last 5 Scans History</span>
                     </div>
-                    <div class="pro-ai-actions">
-                        <button class="pro-ai-btn btn-llm" id="btn-pro-ai-llm" onclick="fetchProAiSummary(true, true)" title="Trigger LLM Institutional Synthesis">
-                            <span>🤖 Deep AI Synthesis</span>
-                        </button>
-                        <button class="pro-ai-btn" id="btn-pro-ai-refresh" onclick="fetchProAiSummary(true, false)" title="Force Refresh Dossier">
-                            <span class="refresh-icon">🔄</span>
-                            <span>Refresh</span>
-                        </button>
-                        <button class="pro-ai-btn" id="btn-pro-ai-toggle" onclick="toggleProAiDossier()" title="Toggle Dossier Details">
-                            <span id="pro-ai-toggle-icon">▾</span>
-                            <span id="pro-ai-toggle-text">Collapse</span>
-                        </button>
-                    </div>
-                </div>
-
-                <!-- Headline Summary Banner -->
-                <div class="pro-ai-headline-banner" id="pro-ai-headline-banner">
-                    <div class="pro-ai-headline-text" id="pro-ai-headline-text">
-                        ⚡ REGIME DIAGNOSTIC: Loading institutional briefing...
-                    </div>
-                    <div class="pro-ai-conviction-pill high" id="pro-ai-conviction-pill">
-                        HIGH CONVICTION
-                    </div>
-                </div>
-
-                <!-- 4-Pillar Quantitative Grid -->
-                <div class="pro-ai-grid">
-                    <!-- Pillar 1: Market Footprint & Breadth Divergence -->
-                    <div class="pro-ai-card">
-                        <div class="pro-ai-card-header">
-                            <div class="pro-ai-card-title-row">
-                                <span class="pro-ai-card-title">🏛️ Institutional Footprint</span>
-                                <span class="pro-ai-card-sub">Market Breadth</span>
-                            </div>
-                            <div class="pro-ai-tag-wrapper">
-                                <span class="pro-ai-tag neutral" id="pro-ai-footprint-tag">ANALYZING</span>
-                            </div>
+                    <div class="hw-controls">
+                        <div class="hw-pills" role="tablist" aria-label="Select heavyweight index">
+                            <button class="hw-pill active" id="hw-pill-nifty" onclick="switchHeavyweightsIndex('NIFTY')" aria-label="Nifty 50 Top 10 heavyweights">NIFTY (Top 10)</button>
+                            <button class="hw-pill" id="hw-pill-banknifty" onclick="switchHeavyweightsIndex('BANKNIFTY')" aria-label="Bank Nifty Top 5 heavyweights">BANK NIFTY (Top 5)</button>
+                            <button class="hw-pill" id="hw-pill-sensex" onclick="switchHeavyweightsIndex('SENSEX')" aria-label="Sensex Top 10 heavyweights">SENSEX (Top 10)</button>
                         </div>
-                        <div class="pro-ai-card-body" id="pro-ai-footprint-body">
-                            Evaluating constituent propulsion and heavyweight absorption dynamics...
+                        <!-- Progressive Disclosure: Compact Sparkline vs 5-Scan Details -->
+                        <div class="hw-view-toggle" role="group" aria-label="Heavyweight display format">
+                            <button class="hw-view-btn active" id="hw-btn-compact" onclick="setHwViewMode('compact')" title="Compact View with 5-Scan Trend Sparklines" aria-label="Compact view with trend sparklines">
+                                📈 Sparklines
+                            </button>
+                            <button class="hw-view-btn" id="hw-btn-detailed" onclick="setHwViewMode('detailed')" title="Detailed View with All 5 Scan Columns" aria-label="Detailed view with all scan columns">
+                                🔢 All Scans
+                            </button>
                         </div>
-                        <div class="pro-ai-micro-stats">
-                            <span title="Share of index net move contributed by top heavyweights">HW Share: <b id="pro-ai-stat-hw-share">—</b></span>
-                            <span title="Net points from top 10 heavyweights">HW Pts: <b id="pro-ai-stat-hw-pts">—</b></span>
-                            <span title="Net points from remaining constituent basket">Broader: <b id="pro-ai-stat-broader-pts">—</b></span>
-                        </div>
-                    </div>
-
-                    <!-- Pillar 2: Titan Clash & Sector Rotation -->
-                    <div class="pro-ai-card">
-                        <div class="pro-ai-card-header">
-                            <div class="pro-ai-card-title-row">
-                                <span class="pro-ai-card-title">⚔️ Titan Clash & Rotation</span>
-                                <span class="pro-ai-card-sub">Pillar Tug-of-War</span>
-                            </div>
-                            <div class="pro-ai-tag-wrapper">
-                                <span class="pro-ai-tag neutral" id="pro-ai-clash-tag">SECTOR STANDOFF</span>
-                            </div>
-                        </div>
-                        <div class="pro-ai-card-body" id="pro-ai-clash-body">
-                            Tracking heavyweight leader tug-of-war and capital rotation...
-                        </div>
-                        <div class="pro-ai-duel-container" id="pro-ai-duel-container">
-                            <div class="pro-ai-duel-chip bull">
-                                <span class="duel-chip-role">▲ TOP DRIVER</span>
-                                <span class="duel-chip-sym" id="pro-ai-duel-leader">—</span>
-                            </div>
-                            <span class="pro-ai-duel-vs">⚡ VS ⚡</span>
-                            <div class="pro-ai-duel-chip bear">
-                                <span class="duel-chip-role">▼ TOP ANCHOR</span>
-                                <span class="duel-chip-sym" id="pro-ai-duel-dragger">—</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Pillar 3: Scan Delta Velocity & Momentum Shift -->
-                    <div class="pro-ai-card">
-                        <div class="pro-ai-card-header">
-                            <div class="pro-ai-card-title-row">
-                                <span class="pro-ai-card-title">⏱️ Scan Delta Velocity</span>
-                                <span class="pro-ai-card-sub">15m Pulse</span>
-                            </div>
-                            <div class="pro-ai-tag-wrapper">
-                                <span class="pro-ai-tag neutral" id="pro-ai-velocity-tag">PULSE</span>
-                            </div>
-                        </div>
-                        <div class="pro-ai-card-body" id="pro-ai-velocity-body">
-                            Measuring 15m scan delta impulse and 5-scan directional shifts...
-                        </div>
-                        <div class="pro-ai-micro-stats">
-                            <span>Scan Impulse (15m): <b id="pro-ai-stat-impulse">—</b></span>
-                            <span>Breadth Gap: <b id="pro-ai-stat-divergence">—</b></span>
-                        </div>
-                    </div>
-
-                    <!-- Pillar 4: Desk Execution Playbook -->
-                    <div class="pro-ai-card">
-                        <div class="pro-ai-card-header">
-                            <div class="pro-ai-card-title-row">
-                                <span class="pro-ai-card-title">🎯 Desk Execution Mandate</span>
-                                <span class="pro-ai-card-sub">₹1 Cr Portfolio</span>
-                            </div>
-                            <div class="pro-ai-tag-wrapper">
-                                <span class="pro-ai-tag bullish" id="pro-ai-mandate-tag">STRUCTURE</span>
-                            </div>
-                        </div>
-                        <div class="pro-ai-strike-grid">
-                            <div class="pro-ai-strike-pod put" title="Structural Put Support Strike">
-                                <span class="strike-pod-lbl">🛡️ PUT BASE</span>
-                                <span class="strike-pod-val" id="pro-ai-put-base">—</span>
-                            </div>
-                            <div class="pro-ai-strike-pod pain" title="Option Chain Max Pain Strike">
-                                <span class="strike-pod-lbl">⚓ MAX PAIN</span>
-                                <span class="strike-pod-val" id="pro-ai-max-pain">—</span>
-                            </div>
-                            <div class="pro-ai-strike-pod call" title="Call Wall Overhead Resistance">
-                                <span class="strike-pod-lbl">🧱 CALL WALL</span>
-                                <span class="strike-pod-val" id="pro-ai-call-wall">—</span>
-                            </div>
-                        </div>
-                        <div class="pro-ai-card-body" id="pro-ai-playbook-body">
-                            Formulating derivatives strategy and strike selection...
-                        </div>
-                        <div class="pro-ai-invalidation" id="pro-ai-invalidation-box">
-                            <span class="invalidation-icon">⚠️</span>
-                            <div class="invalidation-content">
-                                <span class="invalidation-title">THESIS INVALIDATION TRIGGER:</span>
-                                <span id="pro-ai-invalidation-text">—</span>
-                            </div>
+                        <div class="hw-scan-provenance" id="hw-provenance-badge">
+                            <span class="hw-pulse-dot"></span>
+                            <span id="hw-provenance-text">Syncing scans...</span>
                         </div>
                     </div>
                 </div>
 
-                <!-- Deep LLM Synthesis Box -->
-                <div class="pro-ai-llm-box" id="pro-ai-llm-box">
-                    <div class="pro-ai-llm-hdr">
-                        <div class="pro-ai-llm-hdr-left">
-                            <span>🤖 INSTITUTIONAL PROP DESK SYNTHESIS</span>
-                            <span class="pro-ai-llm-pill" id="pro-ai-llm-model-pill">OmniRouter (Claude-Models Combo)</span>
-                        </div>
-                        <span class="pro-ai-llm-verified-tag">✓ VERIFIED INSTITUTIONAL REASONING</span>
+                <!-- Heavyweight Aggregation Summary Strip -->
+                <div class="hw-summary-strip">
+                    <div class="hw-summary-item">
+                        <span class="hw-summary-label" id="hw-summary-impact-label">Top Heavyweights Net Impact</span>
+                        <div class="hw-summary-val" id="hw-summary-impact">+0.00 pts</div>
+                        <div class="hw-summary-sub" id="hw-summary-impact-sub"></div>
                     </div>
-                    <div class="pro-ai-llm-text" id="pro-ai-llm-text">
-                        Generating institutional derivatives desk synthesis...
+                    <div class="hw-summary-item">
+                        <span class="hw-summary-label" id="hw-summary-breadth-label">Heavyweight Breadth</span>
+                        <div class="hw-summary-val" id="hw-summary-breadth">0 Bullish / 0 Bearish</div>
+                        <div class="hw-summary-sub" id="hw-summary-breadth-sub"></div>
                     </div>
+                    <div class="hw-summary-item">
+                        <span class="hw-summary-label">Index Move Share Driven</span>
+                        <div class="hw-summary-val" id="hw-summary-share">0.0% of Index Move</div>
+                    </div>
+                </div>
+
+                <!-- Multi-Scan Comparison Matrix Table -->
+                <div class="hw-matrix-wrap">
+                    <table class="hw-table" id="hw-matrix-table">
+                        <thead>
+                            <tr id="hw-table-header-row">
+                                <th style="width: 36px">#</th>
+                                <th class="sticky-col">Heavyweight Stock</th>
+                                <th style="text-align: right">Weight</th>
+                                <th style="text-align: right">LTP (₹)</th>
+                                <th style="text-align: right">Day %</th>
+                                <th style="text-align: right" id="hw-col-hdr-impact">Current Impact</th>
+                                <!-- Micro-Trend Sparkline Column (visible in Compact Trend mode) -->
+                                <th class="hw-sparkline-hdr" style="text-align: center; min-width: 90px">5-Scan Trend</th>
+                                <!-- Dynamic scan history columns (up to 5) (visible in Detailed Scans mode) -->
+                                <th class="hw-scan-col-hdr" id="hw-scan-hdr-0">Scan 1</th>
+                                <th class="hw-scan-col-hdr" id="hw-scan-hdr-1">Scan 2</th>
+                                <th class="hw-scan-col-hdr" id="hw-scan-hdr-2">Scan 3</th>
+                                <th class="hw-scan-col-hdr" id="hw-scan-hdr-3">Scan 4</th>
+                                <th class="hw-scan-col-hdr" id="hw-scan-hdr-4">Scan 5 (Latest)</th>
+                                <th style="text-align: center; width: 90px" id="hw-col-hdr-shift">5-Scan Shift</th>
+                            </tr>
+                        </thead>
+                        <tbody id="hw-table-tbody">
+                            <tr>
+                                <td colspan="12" style="text-align:center; padding: 24px; color: var(--text-dim)">
+                                    Loading persistent multi-scan heavyweights data...
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
                 </div>
             </section>
 
+            <!-- View Modes & Filter Tools -->
+            <section class="view-bar" role="toolbar" aria-label="Constituent View Options and Search">
+                <div class="view-tabs" role="tablist" aria-label="Constituent display modes">
+                    <button class="view-tab active" data-view="split" onclick="switchView('split')" role="tab" aria-selected="true" title="Split View: Side-by-side comparison of market drivers pushing UP vs dragging DOWN" aria-label="Split View: Positive and negative contributor columns">
+                        ◫ Split (Pullers vs Draggers)
+                    </button>
+                    <button class="view-tab" data-view="chart" onclick="switchView('chart')" role="tab" aria-selected="false" title="Visual waterfall chart of constituent point contributions" aria-label="Visual Bar Graph">
+                        📊 Visual Waterfall
+                    </button>
+                    <button class="view-tab" data-view="gainers" onclick="switchView('gainers')" role="tab" aria-selected="false" title="Show only positive point contributors" aria-label="Top Pullers">
+                        ▲ Top Pullers
+                    </button>
+                    <button class="view-tab" data-view="losers" onclick="switchView('losers')" role="tab" aria-selected="false" title="Show only negative point contributors" aria-label="Top Draggers">
+                        ▼ Top Draggers
+                    </button>
+                    <button class="view-tab" data-view="all" onclick="switchView('all')" role="tab" aria-selected="false" title="Unified table of all index constituents" aria-label="All Stocks table">
+                        📋 All Stocks
+                    </button>
+                </div>
+
+                <div class="filter-tools">
+                    <div class="search-wrap">
+                        <input
+                            type="text"
+                            id="search-input"
+                            class="search-box"
+                            placeholder="Search symbol or name..."
+                            aria-label="Search constituents by stock symbol or company name"
+                            oninput="onSearchOrSectorChange()"
+                        />
+                        <button id="search-clear-btn" class="search-clear-btn" onclick="clearSearch()" title="Clear search" aria-label="Clear search input">✕</button>
+                    </div>
+                    <span id="search-results-badge" class="search-badge" style="display: none;" aria-live="polite"></span>
+                    <select id="sector-select" class="sector-select" aria-label="Filter constituents by industry sector" onchange="onSearchOrSectorChange()">
+                        <option value="ALL">All Sectors</option>
+                    </select>
+                </div>
+            </section>
+
+            <!-- Content Views Container -->
+            <div id="views-container">
+                <!-- 1. Split View (Default) -->
+                <div id="view-split" class="split-view-grid">
+                    <!-- Pullers Column -->
+                    <div class="split-column">
+                        <div class="split-column-header pullers">
+                            <span>▲ POSITIVE CONTRIBUTORS</span>
+                            <span id="split-pullers-summary" style="font-family: var(--mono); font-size: 11px">+0.00 pts</span>
+                        </div>
+                        <div class="table-wrap">
+                            <table id="table-split-pullers">
+                                <thead>
+                                    <tr>
+                                        <th class="sortable sticky-col" tabindex="0" role="button" aria-label="Sort by Stock" data-col="symbol" onclick="handleSort('pullers', 'symbol')">Stock <span class="sort-icon">⇅</span></th>
+                                        <th class="sortable" data-col="weight" style="text-align: right" onclick="handleSort('pullers', 'weight')">Weight <span class="sort-icon">⇅</span></th>
+                                        <th class="sortable" data-col="ltp" style="text-align: right" onclick="handleSort('pullers', 'ltp')">LTP <span class="sort-icon">⇅</span></th>
+                                        <th class="sortable" data-col="change_pct" style="text-align: right" onclick="handleSort('pullers', 'change_pct')">Change <span class="sort-icon">⇅</span></th>
+                                        <th class="sortable active" data-col="point_impact" style="text-align: right" onclick="handleSort('pullers', 'point_impact')">Point Impact <span class="sort-icon">▼</span></th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Draggers Column -->
+                    <div class="split-column">
+                        <div class="split-column-header draggers">
+                            <span>▼ NEGATIVE CONTRIBUTORS</span>
+                            <span id="split-draggers-summary" style="font-family: var(--mono); font-size: 11px">-0.00 pts</span>
+                        </div>
+                        <div class="table-wrap">
+                            <table id="table-split-draggers">
+                                <thead>
+                                    <tr>
+                                        <th class="sortable sticky-col" tabindex="0" role="button" aria-label="Sort by Stock" data-col="symbol" onclick="handleSort('draggers', 'symbol')">Stock <span class="sort-icon">⇅</span></th>
+                                        <th class="sortable" data-col="weight" style="text-align: right" onclick="handleSort('draggers', 'weight')">Weight <span class="sort-icon">⇅</span></th>
+                                        <th class="sortable" data-col="ltp" style="text-align: right" onclick="handleSort('draggers', 'ltp')">LTP <span class="sort-icon">⇅</span></th>
+                                        <th class="sortable" data-col="change_pct" style="text-align: right" onclick="handleSort('draggers', 'change_pct')">Change <span class="sort-icon">⇅</span></th>
+                                        <th class="sortable active" data-col="point_impact" style="text-align: right" onclick="handleSort('draggers', 'point_impact')">Point Impact <span class="sort-icon">▲</span></th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 2. Visual Bar Graph View -->
+                <div id="view-chart" class="chart-view-card" style="display: none">
+                    <div style="display: flex; align-items: center; justify-content: space-between">
+                        <span style="font-weight: 700; font-size: 13px; text-transform: uppercase; color: var(--text-dim)">
+                            Constituent Point Contribution Waterfall
+                        </span>
+                        <span style="font-family: var(--mono); font-size: 11px; color: var(--text-dim)">
+                            Green: Positive Index Impact · Red: Negative Index Impact
+                        </span>
+                    </div>
+                    <div class="chart-canvas-wrap">
+                        <canvas id="contributorsChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- 3. All / Filtered Single Table View -->
+                <div id="view-table" class="split-column" style="display: none">
+                    <div class="split-column-header" id="single-table-header">
+                        <span>ALL CONSTITUENTS</span>
+                        <span id="single-table-count" style="font-family: var(--mono); font-size: 11px">0 stocks</span>
+                    </div>
+                    <div class="table-wrap">
+                        <table id="table-single">
+                            <thead>
+                                <tr>
+                                    <th style="width: 40px">#</th>
+                                    <th class="sortable sticky-col" tabindex="0" role="button" aria-label="Sort by Stock" data-col="symbol" onclick="handleSort('single', 'symbol')">Stock <span class="sort-icon">⇅</span></th>
+                                    <th class="sortable" data-col="sector" onclick="handleSort('single', 'sector')">Sector <span class="sort-icon">⇅</span></th>
+                                    <th class="sortable" data-col="weight" style="text-align: right" onclick="handleSort('single', 'weight')">Weight <span class="sort-icon">⇅</span></th>
+                                    <th class="sortable" data-col="ltp" style="text-align: right" onclick="handleSort('single', 'ltp')">LTP (₹) <span class="sort-icon">⇅</span></th>
+                                    <th class="sortable" data-col="change_pct" style="text-align: right" onclick="handleSort('single', 'change_pct')">Day Change <span class="sort-icon">⇅</span></th>
+                                    <th class="sortable active" data-col="point_impact" style="text-align: right" onclick="handleSort('single', 'point_impact')">Point Impact <span class="sort-icon">▼</span></th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
             <!-- ── Top Heavyweights Institutional Drive & Scan Delta Timeline ─────── -->
-            <section class="hw-timeline-section" id="hw-timeline-section">
+            <section class="hw-timeline-section" id="hw-timeline-section" style="margin-top: 24px;">
                 <div class="hw-timeline-header">
                     <div class="hw-timeline-title-wrap">
                         <div class="hw-timeline-title">
@@ -2223,8 +2281,188 @@
                 </div>
             </section>
 
-            <!-- ── Top Heavyweights Net Point Movement & Multi-Scan History ─────── -->
-            <section class="heavyweights-panel" id="heavyweights-panel">
+            <!-- ── Pro Trader AI Intelligence Dossier (Collapsible by Default) ─────── -->
+            <section class="pro-ai-dossier-section pro-ai-collapsed" id="pro-ai-dossier-section">
+                <div class="pro-ai-header" onclick="toggleProAiDossier()">
+                    <div class="pro-ai-title-wrap">
+                        <div class="pro-ai-title-row">
+                            <span class="pro-ai-badge">
+                                <span class="pulse-glow"></span>
+                                PRO TRADER INTELLIGENCE
+                            </span>
+                            <span class="pro-ai-title" id="pro-ai-main-title">⚡ Institutional Execution Dossier</span>
+                            <span class="hw-badge-tag" id="pro-ai-time-tag">Syncing...</span>
+                        </div>
+                        <div class="pro-ai-subtitle">
+                            Autonomous institutional synthesis of constituent point propulsion, titan clashes, velocity pulses & derivative execution
+                        </div>
+                    </div>
+                    <div class="pro-ai-actions" onclick="event.stopPropagation()">
+                        <button class="pro-ai-btn btn-llm" id="btn-pro-ai-llm" onclick="fetchProAiSummary(true, true)" title="Trigger LLM Institutional Synthesis">
+                            <span>🤖 Deep AI Synthesis</span>
+                        </button>
+                        <button class="pro-ai-btn" id="btn-pro-ai-toggle" onclick="toggleProAiDossier()" title="Toggle Dossier Details">
+                            <span id="pro-ai-toggle-icon">▴</span>
+                            <span id="pro-ai-toggle-text">Expand</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Headline Summary Banner (Always Visible Preview) -->
+                <div class="pro-ai-headline-banner" id="pro-ai-headline-banner">
+                    <div class="pro-ai-headline-text" id="pro-ai-headline-text">
+                        ⚡ REGIME DIAGNOSTIC: Loading institutional briefing...
+                    </div>
+                    <div class="pro-ai-conviction-pill high" id="pro-ai-conviction-pill">
+                        HIGH CONVICTION
+                    </div>
+                </div>
+
+                <!-- 4-Pillar Quantitative Grid -->
+                <div class="pro-ai-grid">
+                    <!-- Pillar 1: Market Footprint & Breadth Divergence -->
+                    <div class="pro-ai-card">
+                        <div class="pro-ai-card-header">
+                            <div class="pro-ai-card-title-row">
+                                <span class="pro-ai-card-title">🏛️ Institutional Footprint</span>
+                                <span class="pro-ai-card-sub">Market Breadth</span>
+                            </div>
+                            <div class="pro-ai-tag-wrapper">
+                                <span class="pro-ai-tag neutral" id="pro-ai-footprint-tag">ANALYZING</span>
+                            </div>
+                        </div>
+                        <div class="pro-ai-card-body" id="pro-ai-footprint-body">
+                            Evaluating constituent propulsion and heavyweight absorption dynamics...
+                        </div>
+                        <div class="pro-ai-micro-stats">
+                            <div class="pro-ai-micro-stat-item" title="Share of index net move contributed by top heavyweights">
+                                <span class="pro-ai-micro-stat-lbl">HW Share</span>
+                                <span class="pro-ai-micro-stat-val" id="pro-ai-stat-hw-share">—</span>
+                            </div>
+                            <div class="pro-ai-micro-stat-item" title="Net points from top heavyweights">
+                                <span class="pro-ai-micro-stat-lbl">HW Pts</span>
+                                <span class="pro-ai-micro-stat-val" id="pro-ai-stat-hw-pts">—</span>
+                            </div>
+                            <div class="pro-ai-micro-stat-item" title="Net points from remaining constituent basket">
+                                <span class="pro-ai-micro-stat-lbl">Broader</span>
+                                <span class="pro-ai-micro-stat-val" id="pro-ai-stat-broader-pts">—</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Pillar 2: Titan Clash & Sector Rotation -->
+                    <div class="pro-ai-card">
+                        <div class="pro-ai-card-header">
+                            <div class="pro-ai-card-title-row">
+                                <span class="pro-ai-card-title">⚔️ Titan Clash & Rotation</span>
+                                <span class="pro-ai-card-sub">Pillar Tug-of-War</span>
+                            </div>
+                            <div class="pro-ai-tag-wrapper">
+                                <span class="pro-ai-tag neutral" id="pro-ai-clash-tag">SECTOR STANDOFF</span>
+                            </div>
+                        </div>
+                        <div class="pro-ai-card-body" id="pro-ai-clash-body">
+                            Tracking heavyweight leader tug-of-war and capital rotation...
+                        </div>
+                        <div class="pro-ai-duel-container" id="pro-ai-duel-container">
+                            <div class="pro-ai-duel-chip bull">
+                                <span class="duel-chip-role">▲ TOP DRIVER</span>
+                                <span class="duel-chip-sym" id="pro-ai-duel-leader-sym">—</span>
+                                <span class="duel-chip-val bull" id="pro-ai-duel-leader-val">—</span>
+                            </div>
+                            <span class="pro-ai-duel-vs">⚡ VS ⚡</span>
+                            <div class="pro-ai-duel-chip bear">
+                                <span class="duel-chip-role">▼ TOP ANCHOR</span>
+                                <span class="duel-chip-sym" id="pro-ai-duel-dragger-sym">—</span>
+                                <span class="duel-chip-val bear" id="pro-ai-duel-dragger-val">—</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Pillar 3: Scan Delta Velocity & Momentum Shift -->
+                    <div class="pro-ai-card">
+                        <div class="pro-ai-card-header">
+                            <div class="pro-ai-card-title-row">
+                                <span class="pro-ai-card-title">⏱️ Scan Delta Velocity</span>
+                                <span class="pro-ai-card-sub">15m Pulse</span>
+                            </div>
+                            <div class="pro-ai-tag-wrapper">
+                                <span class="pro-ai-tag neutral" id="pro-ai-velocity-tag">PULSE</span>
+                            </div>
+                        </div>
+                        <div class="pro-ai-card-body" id="pro-ai-velocity-body">
+                            Measuring 15m scan delta impulse and 5-scan directional shifts...
+                        </div>
+                        <div class="pro-ai-micro-stats">
+                            <div class="pro-ai-micro-stat-item" title="15m scan delta point change">
+                                <span class="pro-ai-micro-stat-lbl">15m Impulse</span>
+                                <span class="pro-ai-micro-stat-val" id="pro-ai-stat-impulse">—</span>
+                            </div>
+                            <div class="pro-ai-micro-stat-item" title="Constituent Breadth Gap">
+                                <span class="pro-ai-micro-stat-lbl">Breadth Gap</span>
+                                <span class="pro-ai-micro-stat-val" id="pro-ai-stat-divergence">—</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Pillar 4: Desk Execution Playbook -->
+                    <div class="pro-ai-card">
+                        <div class="pro-ai-card-header">
+                            <div class="pro-ai-card-title-row">
+                                <span class="pro-ai-card-title">🎯 Desk Execution Mandate</span>
+                                <span class="pro-ai-card-sub">₹1 Cr Portfolio</span>
+                            </div>
+                            <div class="pro-ai-tag-wrapper">
+                                <span class="pro-ai-tag bullish" id="pro-ai-mandate-tag">STRUCTURE</span>
+                            </div>
+                        </div>
+                        <div class="pro-ai-strike-grid">
+                            <div class="pro-ai-strike-pod put" title="Structural Put Support Strike">
+                                <span class="strike-pod-lbl">🛡️ PUT BASE</span>
+                                <span class="strike-pod-val" id="pro-ai-put-base">—</span>
+                            </div>
+                            <div class="pro-ai-strike-pod pain" title="Option Chain Max Pain Strike">
+                                <span class="strike-pod-lbl">⚓ MAX PAIN</span>
+                                <span class="strike-pod-val" id="pro-ai-max-pain">—</span>
+                            </div>
+                            <div class="pro-ai-strike-pod call" title="Call Wall Overhead Resistance">
+                                <span class="strike-pod-lbl">🧱 CALL WALL</span>
+                                <span class="strike-pod-val" id="pro-ai-call-wall">—</span>
+                            </div>
+                        </div>
+                        <div class="pro-ai-card-body" id="pro-ai-playbook-body">
+                            Formulating derivatives strategy and strike selection...
+                        </div>
+                        <div class="pro-ai-invalidation" id="pro-ai-invalidation-box">
+                            <span class="invalidation-icon">⚠️</span>
+                            <div class="invalidation-content">
+                                <span class="invalidation-title">THESIS INVALIDATION TRIGGER:</span>
+                                <span id="pro-ai-invalidation-text">—</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Deep LLM Synthesis Box -->
+                <div class="pro-ai-llm-box" id="pro-ai-llm-box">
+                    <div class="pro-ai-llm-hdr">
+                        <div class="pro-ai-llm-hdr-left">
+                            <span>🤖 INSTITUTIONAL PROP DESK SYNTHESIS</span>
+                            <span class="pro-ai-llm-pill" id="pro-ai-llm-model-pill">OmniRouter</span>
+                        </div>
+                        <span class="pro-ai-llm-verified-tag">✓ VERIFIED INSTITUTIONAL REASONING</span>
+                    </div>
+                    <div class="pro-ai-llm-text" id="pro-ai-llm-text">
+                        Generating institutional derivatives desk synthesis...
+                    </div>
+                </div>
+
+                <!-- Demoted Muted Footer Attribution -->
+                <div class="pro-ai-footer-attribution">
+                    <span>⚡ ENGINE: Derivative Alignment & Point Contribution Engine</span>
+                    <span id="pro-ai-model-tag">LLM: <span id="pro-ai-model-name">OmniRouter</span></span>
+                </div>
+            </section>
                 <div class="hw-panel-header">
                     <div class="hw-title-group">
                         <span class="hw-title-text">
@@ -3481,13 +3719,17 @@
                 const clashBody = document.getElementById("pro-ai-clash-body");
                 if (clashBody && d.conflict) clashBody.innerHTML = d.conflict.analysis;
 
-                const duelLeader = document.getElementById("pro-ai-duel-leader");
-                if (duelLeader && d.pillars && d.pillars.driver) {
-                    duelLeader.textContent = `${d.pillars.driver.symbol} (${d.pillars.driver.impact >= 0 ? '+' : ''}${d.pillars.driver.impact.toFixed(1)} pts)`;
+                const duelLeaderSym = document.getElementById("pro-ai-duel-leader-sym");
+                const duelLeaderVal = document.getElementById("pro-ai-duel-leader-val");
+                if (d.pillars && d.pillars.driver) {
+                    if (duelLeaderSym) duelLeaderSym.textContent = d.pillars.driver.symbol || "—";
+                    if (duelLeaderVal) duelLeaderVal.textContent = `${d.pillars.driver.impact >= 0 ? '+' : ''}${d.pillars.driver.impact.toFixed(1)} pts`;
                 }
-                const duelDragger = document.getElementById("pro-ai-duel-dragger");
-                if (duelDragger && d.pillars && d.pillars.dragger) {
-                    duelDragger.textContent = `${d.pillars.dragger.symbol} (${d.pillars.dragger.impact.toFixed(1)} pts)`;
+                const duelDraggerSym = document.getElementById("pro-ai-duel-dragger-sym");
+                const duelDraggerVal = document.getElementById("pro-ai-duel-dragger-val");
+                if (d.pillars && d.pillars.dragger) {
+                    if (duelDraggerSym) duelDraggerSym.textContent = d.pillars.dragger.symbol || "—";
+                    if (duelDraggerVal) duelDraggerVal.textContent = `${d.pillars.dragger.impact.toFixed(1)} pts`;
                 }
 
                 // Card 3: Scan Delta Velocity & Momentum Shift
