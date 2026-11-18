@@ -550,6 +550,19 @@ class ShoonyaFetcher(BaseFetcher):
                     from src.fetchers.shoonya_ip_updater import update_shoonya_portal_ip
                     from src.fetchers.shoonya_ip_guard import reset_shoonya_ip_skip
 
+                    # Cooldown check: if portal IP update was attempted within the last 15 minutes,
+                    # avoid spamming trade.shoonya.com which terminates user app sessions.
+                    now_ts = time.time()
+                    last_attempt = getattr(self, "_last_portal_update_attempt", 0.0)
+                    if now_ts - last_attempt < 900.0:
+                        log.warning(
+                            "[shoonya] Portal IP update in cooldown (attempted %.0fs ago, cooldown 900s). "
+                            "Skipping reactive update to protect user active sessions.",
+                            now_ts - last_attempt,
+                        )
+                        return None
+
+                    self._last_portal_update_attempt = now_ts
                     log.info("[shoonya] Triggering reactive headless portal IP update...")
                     upd_ok, upd_msg = update_shoonya_portal_ip(headless=True)
                     if upd_ok:

@@ -156,15 +156,24 @@ def _ensure_shoonya_session() -> None:
         # login() returns immediately (no Playwright, no lock wait).
         fetcher._load_cached_token()
         if not fetcher.access_token:
+            # If fetcher is already logging in, don't launch another thread
+            if getattr(fetcher, "_is_logging_in", False):
+                log.info("[pipeline] Shoonya login already in progress — skipping duplicate trigger")
+                return
+
             log.info("[pipeline] Shoonya session not ready — warming up before fetch deadline starts")
             import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                fetcher._is_logging_in = True
                 future = executor.submit(fetcher.login)
                 try:
-                    ok = future.result(timeout=8.0)
+                    # Allow up to 35s for full Playwright launch + TOTP flow without premature timeout
+                    ok = future.result(timeout=35.0)
                 except concurrent.futures.TimeoutError:
-                    log.warning("[pipeline] Shoonya login timed out after 8s — falling back to dhan_commodity")
+                    log.warning("[pipeline] Shoonya login timed out after 35s — falling back to dhan_commodity")
                     ok = False
+                finally:
+                    fetcher._is_logging_in = False
 
             if ok:
                 log.info("[pipeline] Shoonya session ready")

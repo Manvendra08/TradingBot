@@ -157,22 +157,34 @@ def update_shoonya_portal_ip(
             log.info("[shoonya-ip-updater] Clicking Login button (724, 340)...")
             page.mouse.click(724, 340)
 
-            # Wait for authenticated session to establish
-            log.info("[shoonya-ip-updater] Authenticating session...")
-            time.sleep(6.0)
-
-            # Step 1: Retrieve App Key List
-            app_keys_res = page.evaluate("""async (uid) => {
-                try {
-                    const resp = await fetch('https://trade.shoonya.com/NorenWClientWeb/GetAppKeys', {
-                        method: 'POST',
-                        body: 'jData=' + JSON.stringify({ uid: uid })
-                    });
-                    return await resp.json();
-                } catch (e) {
-                    return { stat: 'Error', emsg: String(e) };
-                }
-            }""", user_id)
+            # Wait for authenticated session to establish on Flutter Web Canvas.
+            # Instead of a fixed sleep which can race or timeout depending on Shoonya server latency,
+            # poll GetAppKeys until session cookies are accepted (up to 20s).
+            log.info("[shoonya-ip-updater] Authenticating session and waiting for active cookies...")
+            app_keys_res = None
+            poll_deadline = time.time() + 20.0
+            time.sleep(3.0)  # Initial minimum settling time after click
+            while time.time() < poll_deadline:
+                try:
+                    res = page.evaluate("""async (uid) => {
+                        try {
+                            const resp = await fetch('https://trade.shoonya.com/NorenWClientWeb/GetAppKeys', {
+                                method: 'POST',
+                                body: 'jData=' + JSON.stringify({ uid: uid })
+                            });
+                            return await resp.json();
+                        } catch (e) {
+                            return { stat: 'Error', emsg: String(e) };
+                        }
+                    }""", user_id)
+                    if res and res.get("stat") == "Ok" and res.get("app_key_list"):
+                        app_keys_res = res
+                        log.info("[shoonya-ip-updater] Authenticated session established successfully")
+                        break
+                    time.sleep(1.5)
+                except Exception as eval_err:
+                    log.debug("[shoonya-ip-updater] session polling check: %s", eval_err)
+                    time.sleep(1.5)
 
             if not app_keys_res or app_keys_res.get("stat") != "Ok" or not app_keys_res.get("app_key_list"):
                 err_msg = f"Failed to retrieve App Keys from Shoonya: {app_keys_res}"
