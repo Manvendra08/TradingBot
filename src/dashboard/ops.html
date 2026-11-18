@@ -139,7 +139,28 @@
         .comp-badge.offline { background: rgba(74,85,104,.15); color: var(--text-dim); }
 
         /* ── Incidents Feed ── */
-        .incidents-wrap { display: flex; flex-direction: column; gap: 8px; }
+        .incidents-wrap {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            max-height: 400px;
+            overflow-y: auto;
+            padding-right: 6px;
+        }
+        .incidents-wrap::-webkit-scrollbar {
+            width: 6px;
+        }
+        .incidents-wrap::-webkit-scrollbar-track {
+            background: var(--surface);
+            border-radius: 4px;
+        }
+        .incidents-wrap::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 4px;
+        }
+        .incidents-wrap::-webkit-scrollbar-thumb:hover {
+            background: var(--text-dim);
+        }
         .incident-row {
             background: var(--surface);
             border: 1px solid var(--border);
@@ -287,7 +308,7 @@
     <div class="header-top-row">
         <div class="logo-stack">
             <span class="logo-text">NSEBOT</span>
-            <span class="logo-sub">OPTION MONITOR</span>
+            <span class="logo-sub">OPS MONITOR</span>
         </div>
     </div>
     <div class="header-bottom-row">
@@ -295,11 +316,11 @@
             <a href="/" class="nav-tab" id="tab-dashboard">Dashboard</a>
             <a href="/paper" class="nav-tab" id="tab-paper">Paper Trades</a>
             <a href="/broker" class="nav-tab" id="tab-broker">Broker Console</a>
-            <a href="#" class="nav-tab" id="tab-ai-insights" data-tab="ai-insights">AI Insights</a>
+            <a href="/ai" class="nav-tab" id="tab-ai-insights" data-tab="ai-insights">AI Insights</a>
             <a href="/contributors" class="nav-tab" id="tab-contributors">Contributors</a>
             <a href="/report" class="nav-tab" id="tab-report">Market Summary</a>
-            <a href="/ops" class="nav-tab active" id="tab-ops">Ops Monitor</a>
             <a href="/settings" class="nav-tab" id="tab-settings">Settings</a>
+            <a href="/ops" class="nav-tab active" id="tab-ops">Ops Monitor</a>
         </div>
         <div style="display:flex;align-items:center;gap:12px;">
             <div class="refresh-bar">

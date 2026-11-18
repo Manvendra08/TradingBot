@@ -3,11 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SteadyAlpha — Executive Derivatives Intelligence Report</title>
+    <title>NSEBOT — Executive Market & Derivatives Summary</title>
     <link rel="stylesheet" href="/static/theme.css">
     <script src="/static/theme.js"></script>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;800&family=DM+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Space+Mono:wght@400;700&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
 
         :root {
             --bg: #0a0c0f;
@@ -25,9 +25,9 @@
             --text: #e2e8f0;
             --text-dim: #7a8796;
             --text-muted: #94a3b8;
-            --mono: 'Space Mono', monospace;
-            --sans: 'DM Sans', -apple-system, sans-serif;
-            --serif: 'Cinzel', Georgia, serif;
+            --mono: 'JetBrains Mono', 'Space Mono', monospace;
+            --sans: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            --serif: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
         }
 
         [data-theme="light"] {
@@ -89,28 +89,28 @@
             display: flex;
             align-items: center;
         }
-        .brand-badge {
+        .logo-stack {
             display: flex;
             flex-direction: column;
             justify-content: center;
         }
-        .firm-brand {
-            font-family: var(--serif);
-            font-size: 16.5px;
-            font-weight: 700;
+        .logo-text {
+            font-family: var(--sans);
+            font-weight: 800;
+            font-size: 16px;
+            letter-spacing: 1.5px;
             color: var(--text);
-            letter-spacing: 0.4px;
             line-height: 1.1;
         }
-        .practice-group {
-            font-family: var(--sans);
-            font-size: 8px;
+        .logo-sub {
+            font-family: var(--mono);
+            font-size: 9px;
             font-weight: 700;
             text-transform: uppercase;
-            letter-spacing: 1.2px;
+            letter-spacing: 1.5px;
             color: var(--accent);
             line-height: 1.1;
-            margin-top: 1px;
+            margin-top: 2px;
         }
 
         /* Nav Tabs: Center Segmented Control */
@@ -925,6 +925,20 @@
             padding: 16px;
             overflow-x: auto;
         }
+        .table-panel::-webkit-scrollbar {
+            height: 6px;
+        }
+        .table-panel::-webkit-scrollbar-track {
+            background: var(--surface-2);
+            border-radius: 3px;
+        }
+        .table-panel::-webkit-scrollbar-thumb {
+            background: var(--border-subtle);
+            border-radius: 3px;
+        }
+        .table-panel::-webkit-scrollbar-thumb:hover {
+            background: var(--text-dim);
+        }
         [data-theme="light"] .table-panel {
             border-color: rgba(0, 0, 0, 0.08);
         }
@@ -1278,10 +1292,10 @@
     <!-- App Header (Redesigned Executive Terminal Navigation) -->
     <header class="app-header">
         <div class="header-left">
-            <a href="/" class="brand-link" title="SteadyAlpha Capital Markets">
-                <div class="brand-badge">
-                    <span class="firm-brand">SteadyAlpha</span>
-                    <span class="practice-group">INDIAN CAPITAL MARKETS & QUANT PRACTICE</span>
+            <a href="/" class="brand-link" title="NSEBOT Derivatives Intelligence">
+                <div class="logo-stack">
+                    <span class="logo-text">NSEBOT</span>
+                    <span class="logo-sub">MARKET SUMMARY</span>
                 </div>
             </a>
         </div>
@@ -1314,7 +1328,7 @@
                 <span>Refresh</span>
             </button>
 
-            <a href="/api/eod_report_pdf" class="btn-action btn-ghost-action" id="btn-download-pdf" target="_blank" title="Download SteadyAlpha Executive PDF">
+            <a href="/api/eod_report_pdf" class="btn-action btn-ghost-action" id="btn-download-pdf" target="_blank" title="Download Executive PDF Report">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
                     <polyline points="14 2 14 8 20 8"></polyline>
@@ -1335,7 +1349,7 @@
             <div class="memo-top">
                 <div class="memo-title-block">
                     <span class="memo-category">STRATEGIC DERIVATIVES INTELLIGENCE MEMORANDUM</span>
-                    <h1 class="memo-title">SteadyAlpha Executive Market & Derivatives Report</h1>
+                    <h1 class="memo-title">NSEBOT Executive Market & Derivatives Summary</h1>
                     <span class="memo-subtitle">Real-time systematic scan analysis, option-chain order flow, and scenario playbook</span>
                 </div>
                 <div class="memo-meta-badges">
@@ -1628,7 +1642,7 @@
         <!-- Provenance Footer -->
         <footer class="provenance-footer">
             <div class="provenance-left">
-                <span>SteadyAlpha Quantitative Derivatives Desk</span>
+                <span>NSEBOT Quantitative Derivatives Intelligence</span>
                 <span>•</span>
                 <span id="footer-digest">Digest: Connecting...</span>
                 <span>•</span>

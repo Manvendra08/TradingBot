@@ -46,6 +46,35 @@ const AIInsights = {
   },
 
   /**
+   * Format recommendations containing [GREEN], [RED], [YELLOW], etc. into styled pill badges.
+   */
+  _formatRec(text) {
+    if (!text) return "";
+    const clean = String(text).trim();
+    const m = clean.match(/^\[(GREEN|YELLOW|ORANGE|RED|WHITE|!)\]\s*(.*)$/i);
+    if (!m) return this._esc(clean);
+    const tag = m[1].toUpperCase();
+    const rest = m[2];
+    const colorMap = {
+      GREEN: "good",
+      YELLOW: "warn",
+      ORANGE: "warn",
+      RED: "bad",
+      WHITE: "neutral",
+      "!": "warn",
+    };
+    const cls = colorMap[tag] || "neutral";
+    const parts = rest.split(/\s*-\s*/);
+    if (parts.length > 1) {
+      const badgeText = parts[0];
+      const explanation = parts.slice(1).join(" - ");
+      return `<span class="ai-pill ai-pill--${cls}" style="margin-right:6px;font-size:10px;font-weight:700;">${this._esc(badgeText)}</span><span>${this._esc(explanation)}</span>`;
+    }
+    const label = tag === "!" ? "NOTICE" : tag;
+    return `<span class="ai-pill ai-pill--${cls}" style="margin-right:6px;font-size:10px;font-weight:700;">${this._esc(label)}</span><span>${this._esc(rest)}</span>`;
+  },
+
+  /**
    * Set panel data-state attribute for CSS state management.
    */
   _setState(el, state) {
@@ -328,7 +357,7 @@ const AIInsights = {
           <span class="ai-dna-stat__label">Avg Loss</span>
         </div>
       </div>
-      <p class="ai-rec">${this._esc(d.confidence_note || "")}</p>`;
+      <p class="ai-rec">${this._formatRec(d.confidence_note || "")}</p>`;
   },
 
   // ── Patterns ───────────────────────────────────────────────────────────────
@@ -374,7 +403,7 @@ const AIInsights = {
               <span>Avg ₹${Math.round(p.avg_pnl || 0).toLocaleString()}</span>
               ${p.best_time && p.best_time !== "All day" ? `<span>Best: ${this._esc(p.best_time)}</span>` : ""}
             </div>
-            <div class="ai-rec">${this._esc(p.recommendation || "")}</div>
+            <div class="ai-rec">${this._formatRec(p.recommendation || "")}</div>
           </div>`;
         })
         .join("");
@@ -432,7 +461,7 @@ const AIInsights = {
               ${this._trendPill(h.win_rate_trend)}
               ${this._trendPill(h.pnl_trend)}
             </div>
-            <div class="ai-rec">${this._esc(h.recommendation || "")}</div>
+            <div class="ai-rec">${this._formatRec(h.recommendation || "")}</div>
           </div>`;
         })
         .join("");

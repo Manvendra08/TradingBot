@@ -766,7 +766,16 @@
 
             symSel.addEventListener("change", () => {
                 const sym = symSel.value;
-                loadIntelligence(sym);
+                if (sym === "ALL") {
+                    verdictPill.textContent = "—";
+                    window.AIInsights.setSignal({
+                        symbol: null,
+                        verdict: null,
+                        confidence: 0,
+                    });
+                } else {
+                    loadIntelligence(sym);
+                }
                 window.AIInsights.setFilterSymbol(sym);
                 loadDecisionAudit();
             });
