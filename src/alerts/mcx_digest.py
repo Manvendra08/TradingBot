@@ -428,10 +428,11 @@ def build_mcx_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[st
     if thesis_text:
         lines.append("")
         lines.append(DIV)
+        m_tag = f" ({_esc(ai_model_name)})" if ai_model_name else ""
         if is_holding:
-            lines.append("💡 *POSITION MONITORING & EXIT EVALUATION*")
+            lines.append(f"💡 *POSITION MONITORING & EXIT EVALUATION*{m_tag}")
         else:
-            lines.append("💡 *THESIS & MARKET CONTEXT*")
+            lines.append(f"💡 *THESIS & MARKET CONTEXT*{m_tag}")
         for raw_line in thesis_text.splitlines():
             if not raw_line.strip():
                 continue

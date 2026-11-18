@@ -2198,6 +2198,7 @@ def call_llm_api(
     # fallback is not permitted because different models can yield different
     # trade decisions for identical input.
     _PROVIDER_LADDER_ORDER = [
+        "Antigravity Direct",
         "OmniRouter (Claude-Models Combo)",
         "OmniRouter (Claude/Antigravity)",
         "OmniRouter (Claude/Free)",
@@ -2217,6 +2218,22 @@ def call_llm_api(
             if name.startswith(canonical):
                 return idx
         return len(_PROVIDER_LADDER_ORDER) + 1
+
+    # Antigravity Direct group — Standalone Google CloudCode direct bridge (Gemini 3.8 Flash High)
+    _antigravity_direct_group = {
+        "model_group": "antigravity-direct",
+        "providers": [
+            {
+                "name": "Antigravity Direct (Gemini 3.8 Flash High)",
+                "env_key": "ANTIGRAVITY_TOKEN",
+                "use_antigravity_direct": True,
+                "model": "gemini-3-flash",
+                "model_group": "antigravity-direct",
+                "timeout": 20,
+                "max_tokens_override": 4096,
+            },
+        ],
+    }
 
     # OmniRouter primary group — Claude Combos, Antigravity, Claude Free, GPT 5.5 CX, GLM 5 KR & KR Haiku models.
     _omnirouter_group = {
@@ -3027,9 +3044,9 @@ def call_llm_api(
         if _is_mcx:
             # MCX: OmniRouter → Groq → Gemini → OpenCode Zen → Nvidia NIM → OpenRouter
             FREE_MODEL_PIPELINE = (
-                [_omnirouter_group, _gemini_group, _groq_group]
+                [_antigravity_direct_group, _omnirouter_group, _gemini_group, _groq_group]
                 if getattr(schema, "__name__", "") == "LLMMultiLegVerdict"
-                else [_omnirouter_group, _groq_group, _gemini_group]
+                else [_antigravity_direct_group, _omnirouter_group, _groq_group, _gemini_group]
             ) + [
                 _opencode_zen_group,
                 _nvidia_nim_group,
@@ -3049,9 +3066,9 @@ def call_llm_api(
         else:
             # NSE/BSE indices: OmniRouter → Groq → Gemini → OpenCode Zen → Nvidia NIM → OpenRouter
             FREE_MODEL_PIPELINE = (
-                [_omnirouter_group, _gemini_group, _groq_group]
+                [_antigravity_direct_group, _omnirouter_group, _gemini_group, _groq_group]
                 if getattr(schema, "__name__", "") == "LLMMultiLegVerdict"
-                else [_omnirouter_group, _groq_group, _gemini_group]
+                else [_antigravity_direct_group, _omnirouter_group, _groq_group, _gemini_group]
             ) + [
                 _opencode_zen_group,
                 _nvidia_nim_group,
@@ -3121,8 +3138,8 @@ def call_llm_api(
                     api_key = "omnirouter_local"
                 elif key_name == "OPENCODE_API_KEY":
                     api_key = "opencode_free"
-                elif key_name == "ANTIGRAVITY_REFRESH_TOKEN":
-                    api_key = "antigravity_auto"
+                elif key_name in ("ANTIGRAVITY_TOKEN", "ANTIGRAVITY_REFRESH_TOKEN"):
+                    api_key = "antigravity_direct"
                 elif key_name == "GITHUB_TOKEN":
                     api_key = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_PAT")
                     if not api_key:
@@ -3167,6 +3184,49 @@ def call_llm_api(
             if deadline and time.time() >= deadline - 3:
                 log.warning("[llm] Deadline reached, skipping remaining models")
                 return None
+
+            if provider.get("use_antigravity_direct"):
+                try:
+                    log.info(
+                        "[llm] Trying Antigravity Direct model %s (%.0fs remaining)",
+                        provider["model"],
+                        remaining,
+                    )
+                    from src.engine.antigravity_client import get_antigravity_client
+                    ag_client = get_antigravity_client()
+                    full_p = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
+                    raw_resp, ag_status, ag_err = ag_client.generate_content_with_status(
+                        prompt=full_p,
+                        model=provider.get("model", "gemini-3-flash"),
+                        temperature=0.1,
+                        max_output_tokens=provider.get("max_tokens_override", max_tokens),
+                        timeout=min(remaining, 25.0),
+                    )
+                    if ag_status == 200 and raw_resp:
+                        parsed = _extract_json(raw_resp)
+                        parsed = _normalize_parsed_schema(parsed, schema)
+                        result = schema.model_validate(parsed)
+                        if hasattr(result, "model_name"):
+                            result.model_name = provider.get("name") or provider["model"]
+                        log.info(
+                            "[llm] %s OK via Antigravity Direct (%s)",
+                            schema.__name__,
+                            provider["model"],
+                        )
+                        log.info(
+                            "[llm-validator] %s: Tier-2 Contextual Validation OK ✅ via Antigravity Direct (%s)",
+                            symbol,
+                            provider["model"],
+                        )
+                        _CONSECUTIVE_FAILURES = 0
+                        _log_provider_audit(symbol, provider, schema_name)
+                        return result
+                    else:
+                        log.info("[llm] Antigravity Direct returned status %s: %s", ag_status, ag_err[:150])
+                        if ag_status == 429:
+                            _PROVIDER_COOLDOWN_UNTIL[cooldown_key] = now + 60.0
+                except Exception as inner_e:
+                    log.info("[llm] Antigravity Direct %s failed: %s", provider["model"], str(inner_e)[:200])
 
             if provider.get("use_gemini_sdk"):
                 if not genai or now < _API_QUOTA_EXHAUSTED_UNTIL:

@@ -1140,10 +1140,11 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
     if thesis_text:
         lines.append("")
         lines.append(DIV)
+        m_tag = f" ({_esc(ai_model_name)})" if ai_model_name else ""
         if is_holding:
-            lines.append("💡 *CANDIDATE ENTRY EVALUATION*")
+            lines.append(f"💡 *CANDIDATE ENTRY EVALUATION*{m_tag}")
         else:
-            lines.append("💡 *THESIS & MARKET CONTEXT*")
+            lines.append(f"💡 *THESIS & MARKET CONTEXT*{m_tag}")
         for raw_line in thesis_text.splitlines():
             if not raw_line.strip():
                 continue
@@ -2858,7 +2859,9 @@ def build_llm_consolidated_digest(
     if llm_thesis and str(llm_thesis).strip():
         lines.append("")
         lines.append(DIVIDER)
-        lines.append("🧠 *AI THESIS & MARKET CONTEXT*")
+        m_tag = gv("model_name") or gv("ai_model_name") or ctx.get("ai_model_name") or ""
+        header_title = f"🧠 *AI THESIS & MARKET CONTEXT* ({_esc(m_tag)})" if m_tag else "🧠 *AI THESIS & MARKET CONTEXT*"
+        lines.append(header_title)
         for raw_line in str(llm_thesis).strip().splitlines():
             if not raw_line.strip():
                 continue

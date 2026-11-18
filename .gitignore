@@ -24,6 +24,8 @@ env/
 data/.fernet_key
 *.fernet_key
 .fernet_key
+config/antigravity_token.json
+*antigravity_token*.json
 
 # SQLite database (local data — don't commit)
 data/*.db

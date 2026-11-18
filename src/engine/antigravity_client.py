@@ -47,11 +47,11 @@ ANTIGRAVITY_TOKEN_URI = "https://oauth2.googleapis.com/token"
 ANTIGRAVITY_SCOPES = ["https://www.googleapis.com/auth/cloud-platform"]
 
 # OmniRoute uses the SSE streaming endpoint exclusively (buildUrl → streamGenerateContent)
-ANTIGRAVITY_BASE_URL = "https://cloudcode-pa.googleapis.com"
+ANTIGRAVITY_BASE_URL = "https://daily-cloudcode-pa.googleapis.com"
 ANTIGRAVITY_SSE_ENDPOINT = f"{ANTIGRAVITY_BASE_URL}/v1internal:streamGenerateContent?alt=sse"
 
 # Headers matching antigravityHeaders.ts
-_ANTIGRAVITY_IDE_VERSION = "2.0.0"
+_ANTIGRAVITY_IDE_VERSION = "2.29.0"
 _ANTIGRAVITY_OS_TYPE = "darwin"
 _ANTIGRAVITY_ARCH = "arm64"
 
@@ -142,11 +142,33 @@ def _parse_iso_utc(ts: Optional[str]) -> Optional[float]:
 
 def _discover_refresh_tokens() -> List[Dict[str, Any]]:
     """
-    Discover all active Antigravity accounts from OmniRoute's DB.
-    Returns list of dicts with keys: email, refresh_token, access_token,
-    token_expires_at (epoch float or None), project_id.
+    Discover all active Antigravity accounts from standalone token file or OmniRoute's DB.
     """
     tokens: List[Dict[str, Any]] = []
+
+    # Standalone token file discovery (for OCI / server deployments without OmniRoute)
+    candidate_token_files = [
+        os.environ.get("ANTIGRAVITY_TOKEN_FILE", ""),
+        "/home/ubuntu/nsebot/config/antigravity_token.json",
+        os.path.expanduser("~/.openmausbot/providers/antigravity/0bfcaa2fb540a1015b195b102364ffbf6205868ebe22e5304d4812aadbdf2495/antigravity-acp/acp_token.json"),
+    ]
+    for tf in candidate_token_files:
+        if tf and os.path.exists(tf):
+            try:
+                with open(tf, "r", encoding="utf-8") as f_tok:
+                    tj = json.load(f_tok)
+                    if tj.get("refresh_token"):
+                        tokens.append({
+                            "email": tj.get("email") or "standalone@antigravity",
+                            "refresh_token": tj["refresh_token"],
+                            "access_token": None,
+                            "token_expires_at": None,
+                            "project_id": tj.get("project_id") or "aicode-consumers",
+                            "client_id": tj.get("client_id"),
+                            "client_secret": tj.get("client_secret"),
+                        })
+            except Exception as e_tok:
+                log.debug("Failed to read token file %s: %s", tf, e_tok)
 
     env_token = os.environ.get("ANTIGRAVITY_REFRESH_TOKEN") or os.environ.get("GOOGLE_REFRESH_TOKEN")
     if env_token:
@@ -356,6 +378,10 @@ class AntigravityClient:
                 d = discovered[0]
                 self.refresh_token = d.get("refresh_token")
                 self.project_id = d.get("project_id") or self.project_id
+                if d.get("client_id"):
+                    self.client_id = d["client_id"]
+                if d.get("client_secret"):
+                    self.client_secret = d["client_secret"]
                 log.info("[ antigravity_client ] Auto-discovered token for %s", d["email"])
         if not self.refresh_token:
             log.error("[ antigravity_client ] No refresh token provided or discovered.")
@@ -375,8 +401,10 @@ class AntigravityClient:
                 log.warning("[ antigravity_client ] Failed to construct google.oauth2 credentials: %s", exc)
         return bool(self.refresh_token)
 
-    def _try_refresh_token(self, refresh_token: str) -> Optional[str]:
+    def _try_refresh_token(self, refresh_token: str, client_id: Optional[str] = None, client_secret: Optional[str] = None) -> Optional[str]:
         """Try to get a fresh access token from the given refresh token."""
+        cid = client_id or self.client_id or os.environ.get("ANTIGRAVITY_CLIENT_ID") or ""
+        csec = client_secret or self.client_secret or os.environ.get("ANTIGRAVITY_CLIENT_SECRET") or ""
         # Try google-auth first
         if HAS_GOOGLE_AUTH:
             try:
@@ -384,8 +412,8 @@ class AntigravityClient:
                     token=None,
                     refresh_token=refresh_token,
                     token_uri=self.token_uri,
-                    client_id=self.client_id,
-                    client_secret=self.client_secret,
+                    client_id=cid,
+                    client_secret=csec,
                     scopes=ANTIGRAVITY_SCOPES,
                 )
                 request = google.auth.transport.requests.Request(session=self.session)
@@ -402,8 +430,8 @@ class AntigravityClient:
                 data={
                     "grant_type": "refresh_token",
                     "refresh_token": refresh_token,
-                    "client_id": self.client_id,
-                    "client_secret": self.client_secret,
+                    "client_id": cid,
+                    "client_secret": csec,
                 },
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
                 timeout=10,
@@ -477,7 +505,7 @@ class AntigravityClient:
         # Fall back to token refresh
         if rt:
             log.debug("[ antigravity_client ] Refreshing token for %s via OAuth", entry.get("email"))
-            new_at = self._try_refresh_token(rt)
+            new_at = self._try_refresh_token(rt, entry.get("client_id"), entry.get("client_secret"))
             if new_at:
                 entry["access_token"] = new_at
                 entry["token_expires_at"] = now + 3500

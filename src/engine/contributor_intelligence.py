@@ -375,6 +375,14 @@ def _get_configured_llm_model_name() -> str:
     """Return the primary active LLM model configured in the NSEBOT pipeline."""
     import os
     try:
+        from src.engine.antigravity_client import get_antigravity_client
+        ag = get_antigravity_client()
+        if ag and ag.get_valid_access_token():
+            return "Antigravity Direct (Gemini 3.8 Flash High)"
+    except Exception:
+        pass
+
+    try:
         from src.engine.llm_enrichment import _is_omnirouter_online
         omni_url = os.environ.get("OMNIROUTER_BASE_URL", "http://localhost:20128/v1")
         if _is_omnirouter_online(omni_url):
@@ -390,4 +398,4 @@ def _get_configured_llm_model_name() -> str:
         return "OpenCode Zen (Nemotron 3.5 Lightning)"
     if os.environ.get("OPENROUTER_API_KEY"):
         return "OpenRouter (Gemini 2.0 Flash)"
-    return "OmniRouter (Claude-Models Combo)"
+    return "Antigravity Direct (Gemini 3.8 Flash High)"

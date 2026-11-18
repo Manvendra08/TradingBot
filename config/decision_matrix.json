@@ -284,7 +284,7 @@
   },
   "nymex": {
     "_doc": "NYMEX 1H trend alignment settings for MCX commodities",
-    "mode": "shadow",
+    "mode": "enforce",
     "symbol_map": {
       "NATURALGAS": "NG=F",
       "CRUDEOIL": "CL=F",
