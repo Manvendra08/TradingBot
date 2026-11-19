@@ -37,15 +37,16 @@
         /* ── Header ── */
         .app-header { display: flex; flex-direction: column; padding: 10px 24px; gap: 10px; background: var(--surface); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 100; height: auto !important; }
         .header-top-row { display: flex; align-items: center; justify-content: space-between; width: 100%; }
-        .header-bottom-row { display: flex; align-items: center; justify-content: space-between; width: 100%; }
+        .header-bottom-row { display: flex; align-items: center; justify-content: space-between; width: 100%; gap: 12px; }
         .logo-stack { display: flex; flex-direction: column; }
         .logo-text { font-family: var(--sans); font-weight: 800; font-size: 16px; letter-spacing: 1.5px; color: var(--text); }
         .logo-sub { font-family: var(--mono); font-size: 9px; color: var(--accent); letter-spacing: 2px; text-transform: uppercase; }
-        .header-nav { display: flex; background: rgba(0,0,0,.15); border: 1px solid var(--border); border-radius: 8px; padding: 3px; gap: 2px; }
-        .nav-tab { color: var(--text-dim); text-decoration: none; padding: 6px 16px; font-size: 13px; font-weight: 600; border-radius: 6px; transition: all .2s; border: 1px solid transparent; font-family: var(--sans); }
+        .header-nav { display: flex; background: rgba(0,0,0,.15); border: 1px solid var(--border); border-radius: 8px; padding: 3px; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+        .header-nav::-webkit-scrollbar { display: none; }
+        .nav-tab { color: var(--text-dim); text-decoration: none; padding: 5px 11px; font-size: 12px; font-weight: 600; border-radius: 6px; transition: all .2s; border: 1px solid transparent; font-family: var(--sans); white-space: nowrap; flex-shrink: 0; }
         .nav-tab:hover { color: var(--text); background: rgba(255,255,255,.03); }
         .nav-tab.active { color: var(--accent); background: var(--surface-2); border-color: var(--border); }
-        .theme-toggle-btn { background: transparent; border: 1px solid var(--border); color: var(--text); width: 36px; height: 36px; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 16px; transition: all .2s; }
+        .theme-toggle-btn { background: transparent; border: 1px solid var(--border); color: var(--text); width: 34px; height: 34px; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 15px; transition: all .2s; flex-shrink: 0; }
         .theme-toggle-btn:hover { border-color: var(--accent); background: var(--surface-2); }
         [data-theme="light"] .header-nav { background: rgba(0,0,0,.03); }
         [data-theme="light"] .nav-tab.active { background: #fff; border-color: #cbd5e1; }
@@ -55,7 +56,7 @@
             background: transparent;
             border: 1px solid var(--border);
             color: var(--text-dim);
-            padding: 6px 14px;
+            padding: 5px 10px;
             border-radius: 6px;
             cursor: pointer;
             font-family: var(--sans);
@@ -63,12 +64,14 @@
             font-weight: 600;
             display: inline-flex;
             align-items: center;
-            gap: 6px;
-            height: 36px;
+            gap: 5px;
+            height: 34px;
             line-height: 1;
             overflow: visible;
             box-sizing: border-box;
             transition: all .2s;
+            white-space: nowrap;
+            flex-shrink: 0;
         }
         .arch-toggle-btn:hover {
             border-color: var(--accent);
@@ -344,9 +347,10 @@
         details[open] summary { color: var(--accent); }
 
         /* ── Refresh control ── */
-        .refresh-bar { display: flex; align-items: center; gap: 12px; font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
-        .refresh-bar select { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 4px 8px; border-radius: 4px; font-family: var(--mono); font-size: 11px; cursor: pointer; }
-        #refresh-btn { background: transparent; border: 1px solid var(--border); color: var(--accent); padding: 5px 14px; border-radius: 5px; cursor: pointer; font-family: var(--mono); font-size: 11px; transition: all .2s; }
+        .refresh-bar { display: flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 11px; color: var(--text-dim); flex-shrink: 0; }
+        .refresh-bar label { display: none; }
+        .refresh-bar select { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 4px 6px; border-radius: 4px; font-family: var(--mono); font-size: 11px; cursor: pointer; }
+        #refresh-btn { background: transparent; border: 1px solid var(--border); color: var(--accent); padding: 5px 12px; border-radius: 5px; cursor: pointer; font-family: var(--mono); font-size: 11px; transition: all .2s; white-space: nowrap; flex-shrink: 0; }
         #refresh-btn:hover { background: rgba(0,229,160,.07); border-color: var(--accent); }
         #refresh-countdown { color: var(--text-dim); }
 
@@ -393,11 +397,11 @@
             <a href="/settings" class="nav-tab" id="tab-settings">Settings</a>
             <a href="/ops" class="nav-tab active" id="tab-ops">Ops Monitor</a>
         </div>
-        <div style="display:flex;align-items:center;gap:10px;">
+        <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
             <button class="arch-toggle-btn" id="open-arch-btn" title="View System Architecture & Ops Playbooks"><span style="font-size:14px; line-height:1; display:inline-flex; align-items:center;">📖</span><span>Architecture</span></button>
             <div class="refresh-bar">
-                <label for="refresh-interval">Auto-refresh:</label>
-                <select id="refresh-interval">
+                <label for="refresh-interval" style="display:none;">Auto-refresh:</label>
+                <select id="refresh-interval" title="Auto-refresh interval" aria-label="Auto-refresh interval">
                     <option value="15">15s</option>
                     <option value="30" selected>30s</option>
                     <option value="60">60s</option>
@@ -1136,9 +1140,9 @@ async function loadSentinelIncidents(activeHealth) {
                             <span>Spot: ₹${spot}</span>
                             <span style="${isSlow ? 'color:var(--yellow); font-weight:600;' : ''}">${dur}</span>
                         </div>
-                        <div style="font-size:10px; color:var(--text-dim); display:flex; justify-content:space-between; width:100%;">
+                        <div style="font-size:10px; color:var(--text-dim); display:flex; flex-direction:column; gap:2px; width:100%; margin-top:2px;">
                             <span style="white-space:nowrap;">${r.total_strikes || 0} strk · ${r.zero_ltp_strikes || 0} zero-LTP</span>
-                            <span style="font-family:var(--mono); color:var(--text);">${r.source || "live"} · ${ts}</span>
+                            <span style="font-family:var(--mono); font-size:9.5px; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${r.source || "live"} · ${ts}</span>
                         </div>
                     </div>`;
                 }).join("")}
