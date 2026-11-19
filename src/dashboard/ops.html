@@ -64,6 +64,10 @@
             display: inline-flex;
             align-items: center;
             gap: 6px;
+            height: 36px;
+            line-height: 1;
+            overflow: visible;
+            box-sizing: border-box;
             transition: all .2s;
         }
         .arch-toggle-btn:hover {
@@ -390,7 +394,7 @@
             <a href="/ops" class="nav-tab active" id="tab-ops">Ops Monitor</a>
         </div>
         <div style="display:flex;align-items:center;gap:10px;">
-            <button class="arch-toggle-btn" id="open-arch-btn" title="View System Architecture & Ops Playbooks">📖 Architecture</button>
+            <button class="arch-toggle-btn" id="open-arch-btn" title="View System Architecture & Ops Playbooks"><span style="font-size:14px; line-height:1; display:inline-flex; align-items:center;">📖</span><span>Architecture</span></button>
             <div class="refresh-bar">
                 <label for="refresh-interval">Auto-refresh:</label>
                 <select id="refresh-interval">
@@ -560,7 +564,7 @@ document.addEventListener("keydown", (e) => {
 // ── Component metadata (icon + display name + market segment) ─────────────
 const COMP_META = {
     scheduler_loop:      { icon: "⏱", name: "Scheduler Loop",       staleMin: 3,   segment: "CORE" },
-    shoonya_session:     { icon: "🔑", name: "Shoonya Session",      staleMin: 10,  segment: "NSE_BSE" },
+    shoonya_session:     { icon: "🔑", name: "Shoonya Session",      staleMin: 15,  segment: "HYBRID" },
     parity_feed:         { icon: "⚖️",  name: "Parity Feed",          staleMin: 10,  segment: "MCX" },
     telegram_send:       { icon: "📨", name: "Telegram Send",        staleMin: 999, segment: "CORE" },
     db_write:            { icon: "💾", name: "DB Write",             staleMin: 5,   segment: "CORE" },
@@ -743,20 +747,32 @@ function deriveStatus(row, meta) {
 
     const nowIST = getISTDate();
     const day = nowIST.getDay(); // 0 = Sunday, 6 = Saturday
-    const timeVal = nowIST.getHours() * 100 + nowIST.getMinutes(); // e.g. 1703 for 17:03
+    const timeVal = nowIST.getHours() * 100 + nowIST.getMinutes(); // e.g. 1952 for 19:52
 
     let isMarketClosed = false;
+    let segment = meta.segment || "CORE";
+
+    // Dynamically tie shoonya_session to the active market of its last fetch
+    if (row.key === "shoonya_session") {
+        const detailUpper = (row.detail || "").toUpperCase();
+        const isMcxFetch = detailUpper.includes("NATURALGAS") || detailUpper.includes("CRUDEOIL") || detailUpper.includes("GOLD") || detailUpper.includes("SILVER");
+        // If last fetch was MCX or if currently in evening MCX trading window (15:40 - 23:55), treat as MCX
+        if (isMcxFetch || (timeVal >= 1540 && timeVal <= 2355)) {
+            segment = "MCX";
+        } else {
+            segment = "NSE_BSE";
+        }
+    }
 
     if (day === 0 || day === 6) {
         // Weekends: all exchange trading is halted
         isMarketClosed = true;
     } else {
-        const segment = meta.segment || "CORE";
         if (segment === "NSE_BSE") {
             // NSE / BSE Index F&O: 09:15 to 15:40 IST
             if (timeVal < 915 || timeVal > 1540) isMarketClosed = true;
         } else if (segment === "MCX") {
-            // MCX Commodity Market: 09:00 to 23:55 IST
+            // MCX Commodity Market: 09:00 to 23:55 IST (DST-aware closing)
             if (timeVal < 900 || timeVal > 2355) isMarketClosed = true;
         } else if (segment === "CORE") {
             // Core processes active if either market is operating (09:00 to 23:55)
@@ -774,6 +790,11 @@ function deriveStatus(row, meta) {
     const dbStatus = (row.status || "").toUpperCase();
     const stampAgeMin = row.updated_at ? (Date.now() - new Date(row.updated_at)) / 60000 : 0;
     
+    // Auto-clear sticky scheduler_watchdog error after 60 min if scheduler is ticking
+    if (row.key === "scheduler_watchdog") {
+        if (stampAgeMin > 60) return "ok";
+    }
+
     // Explicit error states (only if recent within 24 hours)
     if (dbStatus === "DOWN" || dbStatus === "ERROR") {
         if (stampAgeMin < 1440) return "down";
@@ -783,9 +804,14 @@ function deriveStatus(row, meta) {
     }
 
     // Staleness check against component threshold (only when market is open)
-    if (row.updated_at && meta.staleMin < 999) {
-        if (stampAgeMin > meta.staleMin * 2) return "down";
-        if (stampAgeMin > meta.staleMin) return "warn";
+    let effectiveStaleMin = meta.staleMin;
+    if (row.key === "shoonya_session" && segment === "MCX") {
+        effectiveStaleMin = 60; // MCX scan intervals can be up to 60m
+    }
+
+    if (row.updated_at && effectiveStaleMin < 999) {
+        if (stampAgeMin > effectiveStaleMin * 2) return "down";
+        if (stampAgeMin > effectiveStaleMin) return "warn";
     }
     
     return "ok";
@@ -933,32 +959,41 @@ function renderBanner(data) {
     document.getElementById("banner-updated").textContent = "Updated " + new Date().toLocaleTimeString("en-IN", {hour:"2-digit",minute:"2-digit",second:"2-digit", hour12:false}) + " IST";
 }
 
-// ── Group Consecutive Duplicate Incidents ──────────────────────────────────
-function groupConsecutiveIncidents(incidents) {
+// ── Group Incidents by Playbook Burst & Time Window (Prevents Alternating Spam) ─
+function groupIncidentsByBurst(incidents) {
     if (!incidents || !incidents.length) return [];
     const grouped = [];
     let current = null;
 
     for (const inc of incidents) {
         const pid = (inc.playbook_id || "P??").toUpperCase();
-        const action = (inc.action || "").trim();
-        const result = (inc.result || "").trim();
-        const key = `${pid}|${action}|${result}`;
+        const action = (inc.action || "—").trim();
+        const result = (inc.result || "—").trim();
+        const tsMs = inc.ts ? new Date(inc.ts).getTime() : 0;
 
-        if (current && current.key === key) {
+        // Group together if same playbook AND within 3 minutes of the burst window
+        const isSameBurst = current && 
+            current.pid === pid && 
+            Math.abs(current.lastMs - tsMs) <= 180000;
+
+        if (isSameBurst) {
             current.count += 1;
+            current.lastMs = tsMs;
             current.oldest_ts = inc.ts;
+            current.actions[action] = (current.actions[action] || 0) + 1;
+            current.results[result] = (current.results[result] || 0) + 1;
+            if (inc.acked) current.acked = true;
         } else {
             if (current) grouped.push(current);
             current = {
-                ...inc,
-                key: key,
                 pid: pid,
-                action: action,
-                result: result,
                 count: 1,
                 latest_ts: inc.ts,
-                oldest_ts: inc.ts
+                oldest_ts: inc.ts,
+                lastMs: tsMs,
+                actions: { [action]: 1 },
+                results: { [result]: 1 },
+                acked: !!inc.acked
             };
         }
     }
@@ -980,7 +1015,7 @@ async function loadIncidents() {
         return;
     }
 
-    const groupedIncidents = groupConsecutiveIncidents(rawIncidents);
+    const groupedIncidents = groupIncidentsByBurst(rawIncidents);
 
     const playbookClass = pid => {
         const n = (pid||"").toLowerCase();
@@ -994,11 +1029,22 @@ async function loadIncidents() {
         const ts = inc.latest_ts ? new Date(inc.latest_ts).toLocaleString("en-IN", {day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit",hour12:false,timeZone:"Asia/Kolkata"}) + " IST" : "—";
         const pid = inc.pid;
         const cls = playbookClass(pid.toLowerCase());
-        const action = escapeHtml(inc.action || "—");
-        const result = escapeHtml(inc.result || "");
-        const isSuccess = inc.result.toLowerCase().includes("ok") || inc.result.toLowerCase().includes("success") || inc.result.toLowerCase().includes("verified");
+        
+        // Aggregate distinct actions and results in this burst
+        const actionStr = Object.entries(inc.actions)
+            .map(([act, cnt]) => cnt > 1 ? `${escapeHtml(act)} (×${cnt})` : escapeHtml(act))
+            .join(", ");
+            
+        const resultStr = Object.entries(inc.results)
+            .map(([res, cnt]) => cnt > 1 ? `${escapeHtml(res)} (×${cnt})` : escapeHtml(res))
+            .join(", ");
+
+        const isSuccess = Object.keys(inc.results).some(r => {
+            const low = r.toLowerCase();
+            return low.includes("ok") || low.includes("success") || low.includes("verified");
+        });
         const ackedBadge = inc.acked ? ' <span style="color:var(--text-dim);font-size:10px;">✓ acked</span>' : '';
-        const countBadge = inc.count > 1 ? `<span class="inc-count-badge" title="${inc.count} consecutive triggers">×${inc.count}</span>` : '';
+        const countBadge = inc.count > 1 ? `<span class="inc-count-badge" title="${inc.count} triggers in this burst">×${inc.count}</span>` : '';
 
         return `
         <div class="incident-row">
@@ -1007,8 +1053,8 @@ async function loadIncidents() {
                 ${countBadge}
             </div>
             <span class="inc-ts">${ts}</span>
-            <span class="inc-action">${action}${ackedBadge}</span>
-            <span class="inc-result ${isSuccess ? 'success' : 'fail'}" title="${result}">${result || "—"}</span>
+            <span class="inc-action">${actionStr}${ackedBadge}</span>
+            <span class="inc-result ${isSuccess ? 'success' : 'fail'}" title="${resultStr}">${resultStr || "—"}</span>
         </div>`;
     }).join("");
 }
@@ -1058,10 +1104,27 @@ async function loadSentinelIncidents(activeHealth) {
                 ${runSymbols.map(sym => {
                     const r = latestRunsBySymbol[sym];
                     const ts = r.timestamp_ist ? new Date(r.timestamp_ist).toLocaleTimeString("en-IN", {hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false,timeZone:"Asia/Kolkata"}) + " IST" : "—";
-                    const dur = r.scan_duration_ms > 0 ? (r.scan_duration_ms / 1000).toFixed(1) + "s" : "<1s";
-                    const hasAnom = (r.zero_ltp_strikes > 0 && r.zero_ltp_strikes === r.total_strikes) || r.status === "CRASHED";
-                    const badgeCls = hasAnom ? "down" : "ok";
-                    const statusText = hasAnom ? "ANOMALY" : "HEALTHY";
+                    const durS = (r.scan_duration_ms || 0) / 1000;
+                    const dur = durS > 0 ? durS.toFixed(1) + "s" : "<1s";
+                    
+                    const isSlow = durS > 90;
+                    const hasCrit = (r.zero_ltp_strikes > 0 && r.zero_ltp_strikes === r.total_strikes) || r.status === "CRASHED";
+
+                    // Cross-reference raw sentinel component health
+                    const rawSentinel = (activeHealth || []).find(h => h.key === `sentinel_${sym}`);
+                    const isRawWarn = rawSentinel && (rawSentinel.status === "DEGRADED" || (rawSentinel.detail || "").toLowerCase().includes("warning"));
+                    const isRawDown = rawSentinel && (rawSentinel.status === "DOWN" || rawSentinel.status === "ERROR");
+
+                    let badgeCls = "ok";
+                    let statusText = "HEALTHY";
+                    if (hasCrit || isRawDown) {
+                        badgeCls = "down";
+                        statusText = "CRITICAL";
+                    } else if (isSlow || isRawWarn) {
+                        badgeCls = "warn";
+                        statusText = "WARN";
+                    }
+
                     const spot = r.underlying_price ? Number(r.underlying_price).toLocaleString("en-IN", {maximumFractionDigits:2}) : "—";
                     return `
                     <div class="component-card ${badgeCls}" style="padding:10px 14px; gap:4px; flex-direction:column; align-items:flex-start;">
@@ -1071,10 +1134,10 @@ async function loadSentinelIncidents(activeHealth) {
                         </div>
                         <div style="font-size:11px; color:var(--text-dim); display:flex; justify-content:space-between; width:100%;">
                             <span>Spot: ₹${spot}</span>
-                            <span>${dur}</span>
+                            <span style="${isSlow ? 'color:var(--yellow); font-weight:600;' : ''}">${dur}</span>
                         </div>
                         <div style="font-size:10px; color:var(--text-dim); display:flex; justify-content:space-between; width:100%;">
-                            <span>${r.total_strikes || 0} strikes (${r.zero_ltp_strikes || 0} 0-LTP)</span>
+                            <span style="white-space:nowrap;">${r.total_strikes || 0} strk · ${r.zero_ltp_strikes || 0} zero-LTP</span>
                             <span style="font-family:var(--mono); color:var(--text);">${r.source || "live"} · ${ts}</span>
                         </div>
                     </div>`;
@@ -1104,9 +1167,12 @@ async function loadSentinelIncidents(activeHealth) {
         return (nowMs - incMs) > sevenDaysMs;
     });
 
-    // Check if any sentinel health rows are currently degraded
-    const hasSentinelWarning = (activeHealth || []).some(r => 
-        r.key && r.key.startsWith("sentinel_") && (r.derivedStatus === "warn" || r.derivedStatus === "down")
+    // Check if any scan latency or anomaly notices are active
+    const hasAnyWarning = runSymbols.some(s => {
+        const run = latestRunsBySymbol[s];
+        return run && ((run.scan_duration_ms || 0) > 90000 || run.zero_ltp_strikes > 0);
+    }) || (activeHealth || []).some(r => 
+        r.key && r.key.startsWith("sentinel_") && (r.status === "DEGRADED" || r.status === "DOWN" || r.derivedStatus === "warn")
     );
 
     let incidentsHtml = "";
@@ -1120,24 +1186,23 @@ async function loadSentinelIncidents(activeHealth) {
                 ${recentIncidents.map(inc => renderIncidentCard(inc, severityClass)).join("")}
             </div>
         </div>`;
-    } else if (hasSentinelWarning) {
+    } else {
+        // Compact single-line 13–14px status bar
+        const barBg = hasAnyWarning ? "rgba(255,209,102,0.06)" : "var(--surface-2)";
+        const barBorder = hasAnyWarning ? "rgba(255,209,102,0.3)" : "var(--border)";
+        const icon = hasAnyWarning ? "⚠️" : "🛡️";
+        const text = hasAnyWarning 
+            ? "Scan latency notices recorded above. Zero critical AI escalation incidents in the last 7 days."
+            : "Zero critical AI diagnostic incidents in the last 7 days. All live scan engines operational.";
+        const textColor = hasAnyWarning ? "var(--yellow)" : "var(--text-dim)";
+
         incidentsHtml = `
         <div style="grid-column:1/-1; margin-top:4px;">
-            <div class="empty-state" style="padding:12px; background:var(--surface); border:1px solid rgba(255,209,102,0.3); border-radius:6px; color:var(--yellow); font-size:12px; display:flex; align-items:center; gap:8px;">
-                <span>⚠️</span>
-                <span>No critical AI escalation incidents logged in last 7 days. (Minor scan latency notices recorded in Component Health above).</span>
+            <div style="padding:6px 14px; background:${barBg}; border:1px solid ${barBorder}; border-radius:6px; font-size:12px; font-family:var(--sans); display:flex; align-items:center; gap:8px;">
+                <span style="font-size:13px; line-height:1;">${icon}</span>
+                <span style="color:${textColor};">${text}</span>
             </div>
         </div>`;
-    } else if (runSymbols.length > 0) {
-        incidentsHtml = `
-        <div style="grid-column:1/-1; margin-top:4px;">
-            <div class="empty-state" style="padding:12px; background:var(--surface); border:1px solid rgba(0,229,160,0.25); border-radius:6px; color:var(--green); font-size:12px; display:flex; align-items:center; gap:8px;">
-                <span>🛡️</span>
-                <span>All scans healthy — Zero anomaly triggers across monitored symbols in the last 7 days.</span>
-            </div>
-        </div>`;
-    } else if (!incidents.length) {
-        incidentsHtml = `<div class="empty-state" style="grid-column:1/-1;"><span>🛡️</span>No Scan Sentinel incidents detected — all scans healthy.</div>`;
     }
 
     let historyToggleHtml = "";

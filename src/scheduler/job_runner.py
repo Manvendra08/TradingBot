@@ -189,6 +189,11 @@ def run_with_timeout(func, timeout: int = 600, *args, **kwargs) -> bool:
     with _ACTIVE_TASKS_LOCK:
         if _ACTIVE_TASKS.get(func_name) is p:
             _ACTIVE_TASKS.pop(func_name, None)
+    try:
+        from src.models.schema import stamp_health
+        stamp_health("scheduler_watchdog", "OK", f"Task '{func_name}' completed normally")
+    except Exception:
+        pass
     return True
 
 
