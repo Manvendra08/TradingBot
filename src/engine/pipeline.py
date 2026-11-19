@@ -155,6 +155,14 @@ def _ensure_shoonya_session() -> None:
         # _load_cached_token refreshes from disk; if token is already valid,
         # login() returns immediately (no Playwright, no lock wait).
         fetcher._load_cached_token()
+        if fetcher.access_token:
+            try:
+                from src.models.schema import stamp_health
+                stamp_health("shoonya_session", "OK", "session_ready")
+            except Exception:
+                pass
+            return
+
         if not fetcher.access_token:
             # If fetcher is already logging in, don't launch another thread
             if getattr(fetcher, "_is_logging_in", False):
@@ -1175,14 +1183,16 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
     if symbol.upper().startswith("NATURALGAS"):
         try:
             from src.engine.parity_engine import get_parity_state
-            parity = get_parity_state()
-            if parity:
-                scan_context["ng_regime"] = parity.get("regime", "UNKNOWN")
-                scan_context["ng_fv"] = parity.get("fair_value", 0.0)
-                scan_context["ng_dev_pct"] = parity.get("dev_pct", 0.0)
-                scan_context["ng_mcx_src"] = parity.get("mcx_src", "")
-                scan_context["ng_fx_src"] = parity.get("fx_src", "")
-                scan_context["ng_nymex_src"] = parity.get("nymex_src", "")
+            underlying_px = float(target_signal_oc_data.get("underlying_price") or scan_context.get("underlying_price") or 0.0)
+            if underlying_px > 0:
+                parity = get_parity_state(underlying_px)
+                if parity:
+                    scan_context["ng_regime"] = getattr(parity, "regime", "UNKNOWN")
+                    scan_context["ng_fv"] = getattr(parity, "fair_value", 0.0)
+                    scan_context["ng_dev_pct"] = getattr(parity, "dev_pct", 0.0)
+                    scan_context["ng_mcx_src"] = getattr(parity, "mcx_src", "")
+                    scan_context["ng_fx_src"] = getattr(parity, "fx_src", "")
+                    scan_context["ng_nymex_src"] = getattr(parity, "nymex_src", "")
         except Exception:
             log.debug("%s: parity injection failed gracefully", symbol)
 

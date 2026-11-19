@@ -806,7 +806,7 @@ function deriveStatus(row, meta) {
     // Staleness check against component threshold (only when market is open)
     let effectiveStaleMin = meta.staleMin;
     if (row.key === "shoonya_session" && segment === "MCX") {
-        effectiveStaleMin = 60; // MCX scan intervals can be up to 60m
+        effectiveStaleMin = 180; // MCX scan frequency can be 30-60m and session token lasts 24h
     }
 
     if (row.updated_at && effectiveStaleMin < 999) {
