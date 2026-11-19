@@ -147,11 +147,14 @@
             border-radius: 12px;
             border: 1px solid var(--border);
             transition: all 0.3s ease;
+            gap: 16px;
         }
 
         .switch-label {
             display: flex;
             flex-direction: column;
+            flex: 1;
+            min-width: 0;
         }
 
         .switch-label span:first-child {
@@ -193,7 +196,10 @@
             position: relative;
             display: inline-block;
             width: 44px;
+            min-width: 44px;
+            max-width: 44px;
             height: 24px;
+            flex-shrink: 0;
         }
 
         .switch input {
@@ -477,15 +483,17 @@
             transition: all 0.3s ease;
         }
 
-        /* Keep Live Risk Controls fully legible in Shadow mode instead of heavily dimmed */
-        #broker-risk-card.dormant {
+        /* Keep Live Risk Controls & Paper Lots fully legible in Shadow mode instead of heavily dimmed */
+        #broker-risk-card.dormant,
+        #paper-lots-card.dormant {
             opacity: 1 !important;
             filter: none !important;
             pointer-events: auto !important;
             background: rgba(255, 255, 255, 0.015) !important;
             border-color: rgba(255, 255, 255, 0.08) !important;
         }
-        #broker-risk-card.dormant input {
+        #broker-risk-card.dormant input,
+        #paper-lots-card.dormant input {
             background: rgba(255, 255, 255, 0.03) !important;
             color: var(--text-dim) !important;
             cursor: not-allowed !important;
@@ -493,7 +501,9 @@
         }
         #broker-risk-card.dormant .slider-integrated-container,
         #broker-risk-card.dormant .input-with-prefix,
-        #broker-risk-card.dormant .input-with-suffix {
+        #broker-risk-card.dormant .input-with-suffix,
+        #paper-lots-card.dormant .input-with-suffix,
+        #paper-lots-card.dormant .symbol-lot-item {
             opacity: 0.85;
             pointer-events: none;
         }
@@ -1864,10 +1874,13 @@
 
                     <!-- Card 3: Paper Symbol Lot Controls -->
                     <div class="card" id="paper-lots-card">
-                        <div class="card-title">
-                            <span>📝 Paper Symbol Lot & Trade Controls</span>
-                            <span class="info-icon"
-                                data-tooltip="Enable/disable paper execution and set per-symbol lot sizes for paper trades. Editable only when Paper mode (Broker Off) is active.">i</span>
+                        <div class="card-title" style="display: flex; align-items: center; justify-content: space-between;">
+                            <div style="display: flex; align-items: center;">
+                                <span>📝 Paper Symbol Lot & Trade Controls</span>
+                                <span class="info-icon"
+                                    data-tooltip="Enable/disable paper execution and set per-symbol lot sizes for paper trades. Editable only when Paper mode (Broker Off) is active.">i</span>
+                            </div>
+                            <span class="risk-locked-pill" id="paper-locked-pill" style="display: none;">🔒 LOCKED IN SHADOW MODE</span>
                         </div>
                         <p id="paper-lots-note" style="
                                     font-size: 12px;
@@ -2746,6 +2759,17 @@
                     "aria-disabled",
                     disablePaperInputs ? "true" : "false",
                 );
+            }
+
+            const paperPill = document.getElementById("paper-locked-pill");
+            if (paperPill) {
+                if (isPaperModeOn) {
+                    paperPill.style.display = "none";
+                } else {
+                    paperPill.style.display = "inline-flex";
+                    const envMode = document.body.getAttribute("data-env") || "shadow";
+                    paperPill.textContent = (envMode === "live") ? "🔒 LOCKED IN LIVE MODE" : "🔒 LOCKED IN SHADOW MODE";
+                }
             }
         }
 
