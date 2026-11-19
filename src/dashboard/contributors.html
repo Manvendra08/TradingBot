@@ -116,9 +116,11 @@
             .cmp-ticker {
                 display: flex;
                 align-items: center;
-                gap: 12px;
+                gap: 8px;
                 overflow-x: auto;
                 scrollbar-width: none;
+                flex-wrap: nowrap;
+                max-width: 100%;
             }
             .cmp-ticker::-webkit-scrollbar {
                 display: none;
@@ -126,22 +128,23 @@
             .ticker-item {
                 display: flex;
                 align-items: center;
-                gap: 6px;
+                gap: 5px;
                 font-family: var(--mono);
-                font-size: 11px;
+                font-size: 10.5px;
                 font-weight: 700;
                 flex-shrink: 0;
                 background: var(--surface-2);
                 border: 1px solid var(--border);
-                padding: 4px 10px;
-                border-radius: 6px;
+                padding: 3px 8px;
+                border-radius: 5px;
+                white-space: nowrap;
             }
             .ticker-label {
-                font-weight: 600;
+                font-weight: 700;
                 color: var(--text-dim);
-                font-size: 10px;
+                font-size: 9.5px;
                 text-transform: uppercase;
-                letter-spacing: 0.5px;
+                letter-spacing: 0.4px;
                 font-family: var(--sans);
             }
 
@@ -1744,6 +1747,53 @@
                 gap: 8px;
                 margin: 2px 0;
             }
+            .stale-badge-pill {
+                display: inline-flex;
+                align-items: center;
+                gap: 4px;
+                font-family: var(--mono);
+                font-size: 10px;
+                font-weight: 800;
+                padding: 2px 7px;
+                border-radius: 4px;
+                background: rgba(245, 158, 11, 0.18);
+                color: #f59e0b;
+                border: 1px solid rgba(245, 158, 11, 0.45);
+                letter-spacing: 0.5px;
+                text-transform: uppercase;
+                animation: pulse-stale 2.5s infinite ease-in-out;
+            }
+            @keyframes pulse-stale {
+                0%, 100% { opacity: 1; }
+                50% { opacity: 0.75; }
+            }
+            .pro-ai-dossier-section.dossier-stale {
+                border-color: rgba(245, 158, 11, 0.35);
+            }
+            .pro-ai-dossier-section.dossier-stale .pro-ai-headline-banner {
+                background: linear-gradient(90deg, rgba(245, 158, 11, 0.14) 0%, rgba(13, 20, 36, 0.6) 100%);
+                border-left-color: #f59e0b;
+            }
+            .pro-ai-card.mandate-card {
+                grid-column: 1 / -1;
+            }
+            .mandate-card-split {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 16px;
+                align-items: start;
+            }
+            @media (max-width: 900px) {
+                .mandate-card-split {
+                    grid-template-columns: 1fr;
+                    gap: 12px;
+                }
+            }
+            .mandate-split-col {
+                display: flex;
+                flex-direction: column;
+                gap: 10px;
+            }
             .pro-ai-strike-pod {
                 background: var(--surface);
                 border: 1px solid var(--border);
@@ -1993,6 +2043,84 @@
                 </div>
             </section>
 
+            <!-- ── Top Heavyweights Institutional Drive & Scan Delta Timeline ─────── -->
+            <section class="hw-timeline-section" id="hw-timeline-section" style="margin-bottom: 20px;">
+                <div class="hw-timeline-header">
+                    <div class="hw-timeline-title-wrap">
+                        <div class="hw-timeline-title">
+                            <span class="hw-pulse-dot"></span>
+                            <span>⚡ Top Heavyweights Net Impact & Scan Delta Timeline</span>
+                            <span class="hw-badge-tag" id="hw-timeline-range-badge">09:15 IST – Last Scan</span>
+                        </div>
+                        <div class="hw-timeline-subtitle">
+                            Visualizing collective institutional point propulsion vs index spot movement across each scan tick
+                        </div>
+                    </div>
+                    <div class="hw-timeline-actions">
+                        <!-- Day Selector Pills (Mon to Fri + All 5 Days) -->
+                        <div class="hw-day-pills" id="hw-day-pills-container" role="tablist" aria-label="Select trading day">
+                            <button class="hw-day-pill active" data-day="today" onclick="switchHwTimelineDay('today')">Today</button>
+                        </div>
+                        <!-- View Mode (Drive vs Index or Pillars Stack) -->
+                        <div class="hw-view-toggle" role="group" aria-label="Chart mode">
+                            <button class="hw-view-btn active" id="hw-chart-btn-drive" onclick="switchHwChartMode('drive')" title="Cumulative HW Drive vs Index Spot Move">
+                                📈 Drive vs Index
+                            </button>
+                            <button class="hw-view-btn" id="hw-chart-btn-pillars" onclick="switchHwChartMode('pillars')" title="Breakdown by Top 5 Key Pillars">
+                                🏛️ Top 5 Pillars
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Institutional Dynamics Summary Bar -->
+                <div class="hw-timeline-stats-bar">
+                    <div class="hw-stat-card">
+                        <span class="hw-stat-label">Cumulative HW Impact (∑Δ)</span>
+                        <div class="hw-stat-val" id="tl-stat-hw-impact">+0.00 pts</div>
+                        <div class="hw-stat-sub" id="tl-stat-hw-sub">Top Heavyweights Propulsion</div>
+                    </div>
+                    <div class="hw-stat-card">
+                        <span class="hw-stat-label">Index Spot Net Move</span>
+                        <div class="hw-stat-val" id="tl-stat-idx-move">+0.00 pts</div>
+                        <div class="hw-stat-sub" id="tl-stat-idx-sub">Spot Point Change</div>
+                    </div>
+                    <div class="hw-stat-card">
+                        <span class="hw-stat-label">Latest Scan Delta (Δ)</span>
+                        <div class="hw-stat-val" id="tl-stat-scan-delta">+0.00 pts</div>
+                        <div class="hw-stat-sub" id="tl-stat-scan-sub">Current Scan Velocity</div>
+                    </div>
+                    <div class="hw-stat-card">
+                        <span class="hw-stat-label">Breadth Divergence</span>
+                        <div class="hw-stat-val" id="tl-stat-divergence">0.00 pts</div>
+                        <div class="hw-stat-sub" id="tl-stat-divergence-sub">HW vs Index Spread</div>
+                    </div>
+                    <div class="hw-stat-card highlight">
+                        <span class="hw-stat-label">Institutional Regime</span>
+                        <div class="hw-stat-val" style="font-size: 13px;" id="tl-stat-regime">ANALYZING...</div>
+                        <div class="hw-stat-sub" id="tl-stat-regime-sub">Leadership Classification</div>
+                    </div>
+                </div>
+
+                <!-- Charts Canvas Container -->
+                <div class="hw-timeline-charts-wrap">
+                    <div class="hw-chart-legend">
+                        <span class="legend-item" id="legend-hw-line"><span class="legend-swatch line-hw"></span> Heavyweights Cumulative (pts)</span>
+                        <span class="legend-item" id="legend-idx-line"><span class="legend-swatch line-idx"></span> Index Net Move (pts)</span>
+                        <span class="legend-item" id="legend-bars"><span class="legend-swatch bar-delta"></span> Scan Delta Impulse (pts Δ)</span>
+                        <span class="legend-item reset-info"><span class="info-icon">ℹ️</span> 5-Day Mon–Fri Rolling · Resets Mon 09:00 IST</span>
+                    </div>
+                    <!-- Upper Cumulative Chart -->
+                    <div class="hw-chart-upper-wrap">
+                        <canvas id="hwUpperChart"></canvas>
+                    </div>
+                    <!-- Lower Delta Impulse Histogram -->
+                    <div class="hw-chart-lower-wrap">
+                        <canvas id="hwLowerChart"></canvas>
+                    </div>
+                </div>
+            </section>
+
             <!-- ── Top Heavyweights Net Point Movement & Multi-Scan History ─────── -->
             <section class="heavyweights-panel" id="heavyweights-panel" style="margin-bottom: 20px;">
                 <div class="hw-panel-header">
@@ -2203,83 +2331,7 @@
                 </div>
             </div>
 
-            <!-- ── Top Heavyweights Institutional Drive & Scan Delta Timeline ─────── -->
-            <section class="hw-timeline-section" id="hw-timeline-section" style="margin-top: 24px;">
-                <div class="hw-timeline-header">
-                    <div class="hw-timeline-title-wrap">
-                        <div class="hw-timeline-title">
-                            <span class="hw-pulse-dot"></span>
-                            <span>⚡ Top Heavyweights Net Impact & Scan Delta Timeline</span>
-                            <span class="hw-badge-tag" id="hw-timeline-range-badge">09:15 IST – Last Scan</span>
-                        </div>
-                        <div class="hw-timeline-subtitle">
-                            Visualizing collective institutional point propulsion vs index spot movement across each scan tick
-                        </div>
-                    </div>
-                    <div class="hw-timeline-actions">
-                        <!-- Day Selector Pills (Mon to Fri + All 5 Days) -->
-                        <div class="hw-day-pills" id="hw-day-pills-container" role="tablist" aria-label="Select trading day">
-                            <button class="hw-day-pill active" data-day="today" onclick="switchHwTimelineDay('today')">Today</button>
-                        </div>
-                        <!-- View Mode (Drive vs Index or Pillars Stack) -->
-                        <div class="hw-view-toggle" role="group" aria-label="Chart mode">
-                            <button class="hw-view-btn active" id="hw-chart-btn-drive" onclick="switchHwChartMode('drive')" title="Cumulative HW Drive vs Index Spot Move">
-                                📈 Drive vs Index
-                            </button>
-                            <button class="hw-view-btn" id="hw-chart-btn-pillars" onclick="switchHwChartMode('pillars')" title="Breakdown by Top 5 Key Pillars">
-                                🏛️ Top 5 Pillars
-                            </button>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Institutional Dynamics Summary Bar -->
-                <div class="hw-timeline-stats-bar">
-                    <div class="hw-stat-card">
-                        <span class="hw-stat-label">Cumulative HW Impact (∑Δ)</span>
-                        <div class="hw-stat-val" id="tl-stat-hw-impact">+0.00 pts</div>
-                        <div class="hw-stat-sub" id="tl-stat-hw-sub">Top Heavyweights Propulsion</div>
-                    </div>
-                    <div class="hw-stat-card">
-                        <span class="hw-stat-label">Index Spot Net Move</span>
-                        <div class="hw-stat-val" id="tl-stat-idx-move">+0.00 pts</div>
-                        <div class="hw-stat-sub" id="tl-stat-idx-sub">Spot Point Change</div>
-                    </div>
-                    <div class="hw-stat-card">
-                        <span class="hw-stat-label">Latest Scan Delta (Δ)</span>
-                        <div class="hw-stat-val" id="tl-stat-scan-delta">+0.00 pts</div>
-                        <div class="hw-stat-sub" id="tl-stat-scan-sub">Current Scan Velocity</div>
-                    </div>
-                    <div class="hw-stat-card">
-                        <span class="hw-stat-label">Breadth Divergence</span>
-                        <div class="hw-stat-val" id="tl-stat-divergence">0.00 pts</div>
-                        <div class="hw-stat-sub" id="tl-stat-divergence-sub">HW vs Index Spread</div>
-                    </div>
-                    <div class="hw-stat-card highlight">
-                        <span class="hw-stat-label">Institutional Regime</span>
-                        <div class="hw-stat-val" style="font-size: 13px;" id="tl-stat-regime">ANALYZING...</div>
-                        <div class="hw-stat-sub" id="tl-stat-regime-sub">Leadership Classification</div>
-                    </div>
-                </div>
-
-                <!-- Charts Canvas Container -->
-                <div class="hw-timeline-charts-wrap">
-                    <div class="hw-chart-legend">
-                        <span class="legend-item" id="legend-hw-line"><span class="legend-swatch line-hw"></span> Heavyweights Cumulative (pts)</span>
-                        <span class="legend-item" id="legend-idx-line"><span class="legend-swatch line-idx"></span> Index Net Move (pts)</span>
-                        <span class="legend-item" id="legend-bars"><span class="legend-swatch bar-delta"></span> Scan Delta Impulse (pts Δ)</span>
-                        <span class="legend-item reset-info"><span class="info-icon">ℹ️</span> 5-Day Mon–Fri Rolling · Resets Mon 09:00 IST</span>
-                    </div>
-                    <!-- Upper Cumulative Chart -->
-                    <div class="hw-chart-upper-wrap">
-                        <canvas id="hwUpperChart"></canvas>
-                    </div>
-                    <!-- Lower Delta Impulse Histogram -->
-                    <div class="hw-chart-lower-wrap">
-                        <canvas id="hwLowerChart"></canvas>
-                    </div>
-                </div>
-            </section>
+            
 
             <!-- ── Pro Trader AI Intelligence Dossier (Collapsible by Default) ─────── -->
             <section class="pro-ai-dossier-section pro-ai-collapsed" id="pro-ai-dossier-section">
@@ -2405,39 +2457,47 @@
                         </div>
                     </div>
 
-                    <!-- Pillar 4: Desk Execution Playbook -->
-                    <div class="pro-ai-card">
-                        <div class="pro-ai-card-header">
-                            <div class="pro-ai-card-title-row">
-                                <span class="pro-ai-card-title">🎯 Desk Execution Mandate</span>
-                                <span class="pro-ai-card-sub">₹1 Cr Portfolio</span>
+                    <!-- Pillar 4: Desk Execution Playbook (Full Width 2-Column Split) -->
+                    <div class="pro-ai-card mandate-card">
+                        <div class="mandate-card-split">
+                            <!-- Left Column: Strategy Header + Strike Pods -->
+                            <div class="mandate-split-col">
+                                <div class="pro-ai-card-header" style="margin-bottom: 0;">
+                                    <div class="pro-ai-card-title-row">
+                                        <span class="pro-ai-card-title">🎯 Desk Execution Mandate</span>
+                                        <span class="pro-ai-card-sub">₹1 Cr Portfolio</span>
+                                    </div>
+                                    <div class="pro-ai-tag-wrapper">
+                                        <span class="pro-ai-tag bullish" id="pro-ai-mandate-tag">STRUCTURE</span>
+                                    </div>
+                                </div>
+                                <div class="pro-ai-strike-grid">
+                                    <div class="pro-ai-strike-pod put" title="Structural Put Support Strike">
+                                        <span class="strike-pod-lbl">🛡️ PUT BASE</span>
+                                        <span class="strike-pod-val" id="pro-ai-put-base">—</span>
+                                    </div>
+                                    <div class="pro-ai-strike-pod pain" title="Option Chain Max Pain Strike">
+                                        <span class="strike-pod-lbl">⚓ MAX PAIN</span>
+                                        <span class="strike-pod-val" id="pro-ai-max-pain">—</span>
+                                    </div>
+                                    <div class="pro-ai-strike-pod call" title="Call Wall Overhead Resistance">
+                                        <span class="strike-pod-lbl">🧱 CALL WALL</span>
+                                        <span class="strike-pod-val" id="pro-ai-call-wall">—</span>
+                                    </div>
+                                </div>
                             </div>
-                            <div class="pro-ai-tag-wrapper">
-                                <span class="pro-ai-tag bullish" id="pro-ai-mandate-tag">STRUCTURE</span>
-                            </div>
-                        </div>
-                        <div class="pro-ai-strike-grid">
-                            <div class="pro-ai-strike-pod put" title="Structural Put Support Strike">
-                                <span class="strike-pod-lbl">🛡️ PUT BASE</span>
-                                <span class="strike-pod-val" id="pro-ai-put-base">—</span>
-                            </div>
-                            <div class="pro-ai-strike-pod pain" title="Option Chain Max Pain Strike">
-                                <span class="strike-pod-lbl">⚓ MAX PAIN</span>
-                                <span class="strike-pod-val" id="pro-ai-max-pain">—</span>
-                            </div>
-                            <div class="pro-ai-strike-pod call" title="Call Wall Overhead Resistance">
-                                <span class="strike-pod-lbl">🧱 CALL WALL</span>
-                                <span class="strike-pod-val" id="pro-ai-call-wall">—</span>
-                            </div>
-                        </div>
-                        <div class="pro-ai-card-body" id="pro-ai-playbook-body">
-                            Formulating derivatives strategy and strike selection...
-                        </div>
-                        <div class="pro-ai-invalidation" id="pro-ai-invalidation-box">
-                            <span class="invalidation-icon">⚠️</span>
-                            <div class="invalidation-content">
-                                <span class="invalidation-title">THESIS INVALIDATION TRIGGER:</span>
-                                <span id="pro-ai-invalidation-text">—</span>
+                            <!-- Right Column: Option Strategy Mandate Text + Invalidation Box -->
+                            <div class="mandate-split-col">
+                                <div class="pro-ai-card-body" id="pro-ai-playbook-body" style="min-height: auto;">
+                                    Formulating derivatives strategy and strike selection...
+                                </div>
+                                <div class="pro-ai-invalidation" id="pro-ai-invalidation-box">
+                                    <span class="invalidation-icon">⚠️</span>
+                                    <div class="invalidation-content">
+                                        <span class="invalidation-title">THESIS INVALIDATION TRIGGER:</span>
+                                        <span id="pro-ai-invalidation-text">—</span>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -2463,213 +2523,6 @@
                     <span id="pro-ai-model-tag">LLM: <span id="pro-ai-model-name">OmniRouter</span></span>
                 </div>
             </section>
-                <div class="hw-panel-header">
-                    <div class="hw-title-group">
-                        <span class="hw-title-text">
-                            🏛️ Top Heavyweights Net Point Movement
-                        </span>
-                        <span class="hw-badge-tag">Last 5 Scans History</span>
-                    </div>
-                    <div class="hw-controls">
-                        <div class="hw-pills" role="tablist" aria-label="Select heavyweight index">
-                            <button class="hw-pill active" id="hw-pill-nifty" onclick="switchHeavyweightsIndex('NIFTY')" aria-label="Nifty 50 Top 10 heavyweights">NIFTY (Top 10)</button>
-                            <button class="hw-pill" id="hw-pill-banknifty" onclick="switchHeavyweightsIndex('BANKNIFTY')" aria-label="Bank Nifty Top 5 heavyweights">BANK NIFTY (Top 5)</button>
-                            <button class="hw-pill" id="hw-pill-sensex" onclick="switchHeavyweightsIndex('SENSEX')" aria-label="Sensex Top 10 heavyweights">SENSEX (Top 10)</button>
-                        </div>
-                        <!-- Progressive Disclosure: Compact Sparkline vs 5-Scan Details -->
-                        <div class="hw-view-toggle" role="group" aria-label="Heavyweight display format">
-                            <button class="hw-view-btn active" id="hw-btn-compact" onclick="setHwViewMode('compact')" title="Compact View with 5-Scan Trend Sparklines" aria-label="Compact view with trend sparklines">
-                                📈 Sparklines
-                            </button>
-                            <button class="hw-view-btn" id="hw-btn-detailed" onclick="setHwViewMode('detailed')" title="Detailed View with All 5 Scan Columns" aria-label="Detailed view with all scan columns">
-                                🔢 All Scans
-                            </button>
-                        </div>
-                        <div class="hw-scan-provenance" id="hw-provenance-badge">
-                            <span class="hw-pulse-dot"></span>
-                            <span id="hw-provenance-text">Syncing scans...</span>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Heavyweight Aggregation Summary Strip -->
-                <div class="hw-summary-strip">
-                    <div class="hw-summary-item">
-                        <span class="hw-summary-label" id="hw-summary-impact-label">Top Heavyweights Net Impact</span>
-                        <div class="hw-summary-val" id="hw-summary-impact">+0.00 pts</div>
-                        <div class="hw-summary-sub" id="hw-summary-impact-sub"></div>
-                    </div>
-                    <div class="hw-summary-item">
-                        <span class="hw-summary-label" id="hw-summary-breadth-label">Heavyweight Breadth</span>
-                        <div class="hw-summary-val" id="hw-summary-breadth">0 Bullish / 0 Bearish</div>
-                        <div class="hw-summary-sub" id="hw-summary-breadth-sub"></div>
-                    </div>
-                    <div class="hw-summary-item">
-                        <span class="hw-summary-label">Index Move Share Driven</span>
-                        <div class="hw-summary-val" id="hw-summary-share">0.0% of Index Move</div>
-                    </div>
-                </div>
-
-                <!-- Multi-Scan Comparison Matrix Table -->
-                <div class="hw-matrix-wrap">
-                    <table class="hw-table" id="hw-matrix-table">
-                        <thead>
-                            <tr id="hw-table-header-row">
-                                <th style="width: 36px">#</th>
-                                <th class="sticky-col">Heavyweight Stock</th>
-                                <th style="text-align: right">Weight</th>
-                                <th style="text-align: right">LTP (₹)</th>
-                                <th style="text-align: right">Day %</th>
-                                <th style="text-align: right" id="hw-col-hdr-impact">Current Impact</th>
-                                <!-- Micro-Trend Sparkline Column (visible in Compact Trend mode) -->
-                                <th class="hw-sparkline-hdr" style="text-align: center; min-width: 90px">5-Scan Trend</th>
-                                <!-- Dynamic scan history columns (up to 5) (visible in Detailed Scans mode) -->
-                                <th class="hw-scan-col-hdr" id="hw-scan-hdr-0">Scan 1</th>
-                                <th class="hw-scan-col-hdr" id="hw-scan-hdr-1">Scan 2</th>
-                                <th class="hw-scan-col-hdr" id="hw-scan-hdr-2">Scan 3</th>
-                                <th class="hw-scan-col-hdr" id="hw-scan-hdr-3">Scan 4</th>
-                                <th class="hw-scan-col-hdr" id="hw-scan-hdr-4">Scan 5 (Latest)</th>
-                                <th style="text-align: center; width: 90px" id="hw-col-hdr-shift">5-Scan Shift</th>
-                            </tr>
-                        </thead>
-                        <tbody id="hw-table-tbody">
-                            <tr>
-                                <td colspan="12" style="text-align:center; padding: 24px; color: var(--text-dim)">
-                                    Loading persistent multi-scan heavyweights data...
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-            </section>
-
-            <!-- View Modes & Filter Tools -->
-            <section class="view-bar" role="toolbar" aria-label="Constituent View Options and Search">
-                <div class="view-tabs" role="tablist" aria-label="Constituent display modes">
-                    <button class="view-tab active" data-view="split" onclick="switchView('split')" role="tab" aria-selected="true" title="Split View: Side-by-side comparison of market drivers pushing UP vs dragging DOWN" aria-label="Split View: Positive and negative contributor columns">
-                        ◫ Split (Pullers vs Draggers)
-                    </button>
-                    <button class="view-tab" data-view="chart" onclick="switchView('chart')" role="tab" aria-selected="false" title="Visual waterfall chart of constituent point contributions" aria-label="Visual Bar Graph">
-                        📊 Visual Waterfall
-                    </button>
-                    <button class="view-tab" data-view="gainers" onclick="switchView('gainers')" role="tab" aria-selected="false" title="Show only positive point contributors" aria-label="Top Pullers">
-                        ▲ Top Pullers
-                    </button>
-                    <button class="view-tab" data-view="losers" onclick="switchView('losers')" role="tab" aria-selected="false" title="Show only negative point contributors" aria-label="Top Draggers">
-                        ▼ Top Draggers
-                    </button>
-                    <button class="view-tab" data-view="all" onclick="switchView('all')" role="tab" aria-selected="false" title="Unified table of all index constituents" aria-label="All Stocks table">
-                        📋 All Stocks
-                    </button>
-                </div>
-
-                <div class="filter-tools">
-                    <div class="search-wrap">
-                        <input
-                            type="text"
-                            id="search-input"
-                            class="search-box"
-                            placeholder="Search symbol or name..."
-                            aria-label="Search constituents by stock symbol or company name"
-                            oninput="onSearchOrSectorChange()"
-                        />
-                        <button id="search-clear-btn" class="search-clear-btn" onclick="clearSearch()" title="Clear search" aria-label="Clear search input">✕</button>
-                    </div>
-                    <span id="search-results-badge" class="search-badge" style="display: none;" aria-live="polite"></span>
-                    <select id="sector-select" class="sector-select" aria-label="Filter constituents by industry sector" onchange="onSearchOrSectorChange()">
-                        <option value="ALL">All Sectors</option>
-                    </select>
-                </div>
-            </section>
-
-            <!-- Content Views Container -->
-            <div id="views-container">
-                <!-- 1. Split View (Default) -->
-                <div id="view-split" class="split-view-grid">
-                    <!-- Pullers Column -->
-                    <div class="split-column">
-                        <div class="split-column-header pullers">
-                            <span>▲ POSITIVE CONTRIBUTORS</span>
-                            <span id="split-pullers-summary" style="font-family: var(--mono); font-size: 11px">+0.00 pts</span>
-                        </div>
-                        <div class="table-wrap">
-                            <table id="table-split-pullers">
-                                <thead>
-                                    <tr>
-                                        <th class="sortable sticky-col" tabindex="0" role="button" aria-label="Sort by Stock" data-col="symbol" onclick="handleSort('pullers', 'symbol')">Stock <span class="sort-icon">⇅</span></th>
-                                        <th class="sortable" data-col="weight" style="text-align: right" onclick="handleSort('pullers', 'weight')">Weight <span class="sort-icon">⇅</span></th>
-                                        <th class="sortable" data-col="ltp" style="text-align: right" onclick="handleSort('pullers', 'ltp')">LTP <span class="sort-icon">⇅</span></th>
-                                        <th class="sortable" data-col="change_pct" style="text-align: right" onclick="handleSort('pullers', 'change_pct')">Change <span class="sort-icon">⇅</span></th>
-                                        <th class="sortable active" data-col="point_impact" style="text-align: right" onclick="handleSort('pullers', 'point_impact')">Point Impact <span class="sort-icon">▼</span></th>
-                                    </tr>
-                                </thead>
-                                <tbody></tbody>
-                            </table>
-                        </div>
-                    </div>
-
-                    <!-- Draggers Column -->
-                    <div class="split-column">
-                        <div class="split-column-header draggers">
-                            <span>▼ NEGATIVE CONTRIBUTORS</span>
-                            <span id="split-draggers-summary" style="font-family: var(--mono); font-size: 11px">-0.00 pts</span>
-                        </div>
-                        <div class="table-wrap">
-                            <table id="table-split-draggers">
-                                <thead>
-                                    <tr>
-                                        <th class="sortable sticky-col" tabindex="0" role="button" aria-label="Sort by Stock" data-col="symbol" onclick="handleSort('draggers', 'symbol')">Stock <span class="sort-icon">⇅</span></th>
-                                        <th class="sortable" data-col="weight" style="text-align: right" onclick="handleSort('draggers', 'weight')">Weight <span class="sort-icon">⇅</span></th>
-                                        <th class="sortable" data-col="ltp" style="text-align: right" onclick="handleSort('draggers', 'ltp')">LTP <span class="sort-icon">⇅</span></th>
-                                        <th class="sortable" data-col="change_pct" style="text-align: right" onclick="handleSort('draggers', 'change_pct')">Change <span class="sort-icon">⇅</span></th>
-                                        <th class="sortable active" data-col="point_impact" style="text-align: right" onclick="handleSort('draggers', 'point_impact')">Point Impact <span class="sort-icon">▲</span></th>
-                                    </tr>
-                                </thead>
-                                <tbody></tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- 2. Visual Bar Graph View -->
-                <div id="view-chart" class="chart-view-card" style="display: none">
-                    <div style="display: flex; align-items: center; justify-content: space-between">
-                        <span style="font-weight: 700; font-size: 13px; text-transform: uppercase; color: var(--text-dim)">
-                            Constituent Point Contribution Waterfall
-                        </span>
-                        <span style="font-family: var(--mono); font-size: 11px; color: var(--text-dim)">
-                            Green: Positive Index Impact · Red: Negative Index Impact
-                        </span>
-                    </div>
-                    <div class="chart-canvas-wrap">
-                        <canvas id="contributorsChart"></canvas>
-                    </div>
-                </div>
-
-                <!-- 3. All / Filtered Single Table View -->
-                <div id="view-table" class="split-column" style="display: none">
-                    <div class="split-column-header" id="single-table-header">
-                        <span>ALL CONSTITUENTS</span>
-                        <span id="single-table-count" style="font-family: var(--mono); font-size: 11px">0 stocks</span>
-                    </div>
-                    <div class="table-wrap">
-                        <table id="table-single">
-                            <thead>
-                                <tr>
-                                    <th style="width: 40px">#</th>
-                                    <th class="sortable sticky-col" tabindex="0" role="button" aria-label="Sort by Stock" data-col="symbol" onclick="handleSort('single', 'symbol')">Stock <span class="sort-icon">⇅</span></th>
-                                    <th class="sortable" data-col="sector" onclick="handleSort('single', 'sector')">Sector <span class="sort-icon">⇅</span></th>
-                                    <th class="sortable" data-col="weight" style="text-align: right" onclick="handleSort('single', 'weight')">Weight <span class="sort-icon">⇅</span></th>
-                                    <th class="sortable" data-col="ltp" style="text-align: right" onclick="handleSort('single', 'ltp')">LTP (₹) <span class="sort-icon">⇅</span></th>
-                                    <th class="sortable" data-col="change_pct" style="text-align: right" onclick="handleSort('single', 'change_pct')">Day Change <span class="sort-icon">⇅</span></th>
-                                    <th class="sortable active" data-col="point_impact" style="text-align: right" onclick="handleSort('single', 'point_impact')">Point Impact <span class="sort-icon">▼</span></th>
-                                </tr>
-                            </thead>
-                            <tbody></tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
         </main>
 
         <!-- ── Interactive JavaScript ─────────────────────────────────────── -->
@@ -2808,6 +2661,41 @@
             }
 
             // Topbar Ticker Fetcher
+            function checkScanStaleness(scanTimeStr, scanTimeIso) {
+                if (!scanTimeStr && !scanTimeIso) return { isStale: false, label: '' };
+                let scanDate = null;
+                if (scanTimeIso) {
+                    scanDate = new Date(scanTimeIso);
+                } else if (scanTimeStr) {
+                    const currentYear = new Date().getFullYear();
+                    scanDate = new Date(`${scanTimeStr} ${currentYear}`);
+                }
+                if (!scanDate || isNaN(scanDate.getTime())) {
+                    return { isStale: false, label: '' };
+                }
+                const now = new Date();
+                const diffMinutes = Math.round((now - scanDate) / (1000 * 60));
+                const isDifferentDay = (now.toDateString() !== scanDate.toDateString());
+                if (isDifferentDay) {
+                    const timeLabel = scanTimeStr || (scanDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) + ' ' + scanDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+                    return {
+                        isStale: true,
+                        diffMinutes: diffMinutes,
+                        isDifferentDay: true,
+                        label: `PREV SESSION (${timeLabel.toUpperCase()})`
+                    };
+                }
+                if (diffMinutes > 20) {
+                    return {
+                        isStale: true,
+                        diffMinutes: diffMinutes,
+                        isDifferentDay: false,
+                        label: `STALE DATA (${diffMinutes}M LAG)`
+                    };
+                }
+                return { isStale: false, label: '' };
+            }
+
             async function fetchTopbarCmps() {
                 try {
                     const res = await fetch("/api/cmps");
@@ -2953,10 +2841,18 @@
                 const scanCount = scans.length;
                 const rangeBadge = document.getElementById("hw-timeline-range-badge");
                 if (rangeBadge) {
+                    const tlStaleObj = checkScanStaleness(hwTimelineData.latest_scan_time, hwTimelineData.latest_scan_iso);
+                    const isTlStale = hwTimelineData.is_stale || tlStaleObj.isStale;
+                    const tlStaleLabel = hwTimelineData.stale_label || tlStaleObj.label;
                     if (scanCount > 0) {
                         const firstTime = scans[0].short_time || "09:15";
                         const lastTime = scans[scans.length - 1].short_time || "Close";
-                        rangeBadge.textContent = `${hwTimelineData.index_name} · ${firstTime} – ${lastTime} IST (${scanCount} Scans)`;
+                        const baseText = `${hwTimelineData.index_name} · ${firstTime} – ${lastTime} IST (${scanCount} Scans)`;
+                        if (isTlStale) {
+                            rangeBadge.innerHTML = `<span class="stale-badge-pill" style="margin-right: 6px;">⚠️ ${tlStaleLabel}</span> ${baseText}`;
+                        } else {
+                            rangeBadge.textContent = baseText;
+                        }
                     } else {
                         rangeBadge.textContent = `${hwTimelineData.index_name} · Waiting for Scans...`;
                     }
@@ -3412,10 +3308,18 @@
 
                 const scanFreq = configuredScanFreq || idxData.scan_frequency_minutes || (hwHistoryData && hwHistoryData.scan_frequency_minutes) || 30;
 
-                // Update Provenance Badge with configured scan frequency
+                // Update Provenance Badge with configured scan frequency & staleness check
                 const provText = document.getElementById("hw-provenance-text");
+                const hwStaleObj = checkScanStaleness(idxData.latest_scan_time, idxData.latest_scan_iso);
+                const isHwStale = idxData.is_stale || hwStaleObj.isStale;
+                const hwStaleLabel = idxData.stale_label || hwStaleObj.label;
+
                 if (provText) {
-                    provText.textContent = `Interval: ${scanFreq}m · ${idxData.scan_count}/5 Scans Tracked · Latest: ${idxData.latest_scan_time || 'Just now'}`;
+                    if (isHwStale) {
+                        provText.innerHTML = `<span class="stale-badge-pill" style="margin-right: 6px;">⚠️ ${hwStaleLabel}</span> Interval: ${scanFreq}m · ${idxData.scan_count}/5 Scans Tracked`;
+                    } else {
+                        provText.textContent = `Interval: ${scanFreq}m · ${idxData.scan_count}/5 Scans Tracked · Latest: ${idxData.latest_scan_time || 'Just now'}`;
+                    }
                 }
 
                 // Update Auto-Refresh text label to match pipeline frequency
@@ -3665,8 +3569,23 @@
                 const mainTitle = document.getElementById("pro-ai-main-title");
                 if (mainTitle) mainTitle.textContent = `⚡ ${d.index_name} Institutional Execution Dossier`;
 
+                const staleObj = checkScanStaleness(d.latest_scan_time, d.latest_scan_iso);
+                const isStale = d.is_stale || staleObj.isStale;
+                const staleLabel = d.stale_label || staleObj.label;
+
+                const dossierSection = document.getElementById("pro-ai-dossier-section");
+                if (dossierSection) {
+                    dossierSection.classList.toggle("dossier-stale", isStale);
+                }
+
                 const timeTag = document.getElementById("pro-ai-time-tag");
-                if (timeTag) timeTag.textContent = `${d.index_name} · Spot: ₹${d.spot.toLocaleString("en-IN", { minimumFractionDigits: 1 })} · ${d.latest_scan_time || 'Latest'}`;
+                if (timeTag) {
+                    if (isStale) {
+                        timeTag.innerHTML = `<span class="stale-badge-pill">⚠️ ${staleLabel}</span> <span>Spot: ₹${d.spot.toLocaleString("en-IN", { minimumFractionDigits: 1 })}</span>`;
+                    } else {
+                        timeTag.textContent = `${d.index_name} · Spot: ₹${d.spot.toLocaleString("en-IN", { minimumFractionDigits: 1 })} · ${d.latest_scan_time || 'Latest'}`;
+                    }
+                }
 
                 // LLM Model Name & Attribution
                 const modelNameEl = document.getElementById("pro-ai-model-name");
@@ -3680,7 +3599,10 @@
 
                 // Headline & Conviction Pill
                 const hlText = document.getElementById("pro-ai-headline-text");
-                if (hlText) hlText.innerHTML = `⚡ <b>REGIME DIAGNOSTIC:</b> ${d.headline || "INSTITUTIONAL REGIME IDENTIFIED"}`;
+                if (hlText) {
+                    const stalePrefix = isStale ? `<span class="stale-badge-pill" style="margin-right: 8px;">⚠️ ${staleLabel}</span> ` : '';
+                    hlText.innerHTML = `${stalePrefix}⚡ <b>REGIME DIAGNOSTIC:</b> ${d.headline || "INSTITUTIONAL REGIME IDENTIFIED"}`;
+                }
 
                 const convPill = document.getElementById("pro-ai-conviction-pill");
                 if (convPill) {

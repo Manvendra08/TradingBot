@@ -861,6 +861,27 @@ def get_heavyweights_history(limit: int = 5) -> Dict[str, Any]:
             bullish_delta_count = sum(1 for s in stocks_sorted if s.get("latest_delta", 0.0) > 0.02)
             bearish_delta_count = sum(1 for s in stocks_sorted if s.get("latest_delta", 0.0) < -0.02)
 
+            now_ist = datetime.now(IST)
+            latest_iso = latest_scan.get("scan_time", "")
+            is_stale = False
+            stale_label = ""
+            if latest_iso:
+                try:
+                    s_dt = datetime.fromisoformat(latest_iso)
+                    if s_dt.tzinfo is None:
+                        s_dt = IST.localize(s_dt)
+                    diff_m = (now_ist - s_dt).total_seconds() / 60.0
+                    is_diff_day = (s_dt.date() != now_ist.date())
+                    disp_t = latest_scan.get("display_time", "")
+                    if is_diff_day:
+                        is_stale = True
+                        stale_label = f"PREV SESSION ({disp_t.upper()})"
+                    elif diff_m > 20.0 and ("09:15" <= now_ist.strftime("%H:%M") <= "15:45"):
+                        is_stale = True
+                        stale_label = f"STALE DATA ({int(diff_m)}M LAG)"
+                except Exception:
+                    pass
+
             history[idx] = {
                 "index_name": idx,
                 "scan_frequency_minutes": freq_min,
@@ -868,6 +889,9 @@ def get_heavyweights_history(limit: int = 5) -> Dict[str, Any]:
                 "scan_count": scan_count,
                 "is_first_scan_of_day": is_first_scan,
                 "latest_scan_time": latest_scan.get("display_time", ""),
+                "latest_scan_iso": latest_iso,
+                "is_stale": is_stale,
+                "stale_label": stale_label,
                 "spot_price": latest_scan.get("spot_price", 0.0),
                 "net_points": net_idx_pts,
                 "index_change_pct": latest_scan.get("index_change_pct", 0.0),
@@ -1157,6 +1181,27 @@ def get_heavyweights_timeline(
         reverse=True
     )
 
+    now_ist = datetime.now(IST)
+    latest_iso = latest_scan.get("scan_time", "")
+    is_stale = False
+    stale_label = ""
+    if latest_iso:
+        try:
+            s_dt = datetime.fromisoformat(latest_iso)
+            if s_dt.tzinfo is None:
+                s_dt = IST.localize(s_dt)
+            diff_m = (now_ist - s_dt).total_seconds() / 60.0
+            is_diff_day = (s_dt.date() != now_ist.date())
+            disp_t = latest_scan.get("display_time", "")
+            if is_diff_day:
+                is_stale = True
+                stale_label = f"PREV SESSION ({disp_t.upper()})"
+            elif diff_m > 20.0 and ("09:15" <= now_ist.strftime("%H:%M") <= "15:45"):
+                is_stale = True
+                stale_label = f"STALE DATA ({int(diff_m)}M LAG)"
+        except Exception:
+            pass
+
     return {
         "index_name": idx_key,
         "active_day": day_filter,
@@ -1165,6 +1210,9 @@ def get_heavyweights_timeline(
         "scan_count": len(timeline_scans),
         "available_days": available_days,
         "latest_scan_time": latest_scan.get("display_time", ""),
+        "latest_scan_iso": latest_iso,
+        "is_stale": is_stale,
+        "stale_label": stale_label,
         "latest_spot_price": latest_scan.get("spot_price", 0.0),
         "latest_index_net_points": latest_idx,
         "latest_hw_cumulative_points": latest_hw,
