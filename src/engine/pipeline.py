@@ -1614,13 +1614,21 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
         market_is_active = is_market_open(symbol)
         trade_entered = bool((structured_payload or {}).get("header", {}).get("trade_entered"))
 
+        # Check for open multileg books as well as single-leg trades
+        has_open_multileg = False
+        try:
+            from src.models.schema import get_open_books_for_symbol
+            has_open_multileg = bool(get_open_books_for_symbol(symbol))
+        except Exception:
+            pass
+
         should_send = bool(new_alerts)
         if not should_send:
             if not market_is_active:
                 log.info("[pipeline] Market closed for %s — suppressing off-market zero-signal digest send", symbol)
                 should_send = False
-            elif not trade_entered and not open_trade and not exit_advice and not ENABLE_ZERO_SIGNAL_TELEGRAM:
-                log.debug("[pipeline] %s: trade not entered & zero alerts — suppressing routine zero-signal Telegram send", symbol)
+            elif not trade_entered and not open_trade and not has_open_multileg and not exit_advice and not ENABLE_ZERO_SIGNAL_TELEGRAM:
+                log.debug("[pipeline] %s: trade not entered & zero alerts & no open books — suppressing routine zero-signal Telegram send", symbol)
                 should_send = False
             else:
                 diag = (scan_context or {}).get("diagnostics", {})
@@ -1628,7 +1636,7 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                 conf = (intel or {}).get("confidence", 0)
                 # Low conviction / neutral scans (<50% conf) without entries or open positions
                 # should strictly adhere to the 30-min dedup cooldown rather than firing on tiny 1% delta ticks
-                if conf < 50 and not trade_entered and not open_trade:
+                if conf < 50 and not trade_entered and not open_trade and not has_open_multileg:
                     should_send = should_send_zero_signal(symbol)
                 elif dedup_suppressed > 0:
                     should_send = should_send_zero_signal(symbol)

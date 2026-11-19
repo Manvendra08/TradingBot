@@ -460,6 +460,22 @@ def run_sentinel(report_data: dict | ScanRunReport) -> ScanDiagnostic | None:
             
             # Log diagnostic findings to sentinel database
             _persist_sentinel_incident(symbol, flags, diagnostic)
+
+            # Dispatch Ops Alert via Telegram
+            try:
+                from src.alerts.telegram_dispatcher import send_text
+                crit_emoji = "🚨" if diagnostic.severity == "CRITICAL" else "⚠️"
+                sentinel_msg = (
+                    f"{crit_emoji} **OPS AGENT | SCAN SENTINEL {diagnostic.severity}**\n\n"
+                    f"• **Symbol:** `{symbol}`\n"
+                    f"• **Anomaly:** {diagnostic.anomaly_summary}\n"
+                    f"• **Root Cause:** {diagnostic.root_cause}\n"
+                    f"• **Recommended Action:** `{diagnostic.recommended_action}`\n"
+                    f"• **Impact:** {diagnostic.impact}"
+                )
+                send_text(sentinel_msg)
+            except Exception as _te:
+                log.warning("%s: Failed to dispatch Sentinel Telegram alert: %s", symbol, _te)
             
             # 3. Self-healing execution
             if is_sentinel_heal_enabled():
@@ -783,6 +799,32 @@ def _check_rules(r: dict) -> list[SentinelFlag]:
     # broker_health = get_health_stamp("shoonya_session")
     # TODO: Query health_stamps table for broker session status
 
+    # R23: Frozen / Stale Underlying Price across consecutive market-hour scans
+    if underlying > 0 and symbol:
+        try:
+            from config.symbol_classes import is_market_open
+            if is_market_open(symbol):
+                from src.models.schema import get_conn
+                with get_conn() as conn:
+                    rows = conn.execute(
+                        "SELECT underlying FROM scan_summaries WHERE symbol=? ORDER BY id DESC LIMIT 4",
+                        (symbol,)
+                    ).fetchall()
+                    if len(rows) >= 3:
+                        prev_spots = [float(row[0] or 0.0) for row in rows if row[0] is not None]
+                        if len(prev_spots) >= 3 and all(abs(p - underlying) < 0.001 for p in prev_spots[:3]):
+                            flags.append(SentinelFlag(
+                                rule="R23_STALE_UNDERLYING_PRICE",
+                                severity="CRITICAL",
+                                detail=(
+                                    f"Underlying spot price frozen at {underlying:.2f} across "
+                                    f"{len(prev_spots[:3]) + 1} consecutive market-hour scans. "
+                                    f"Source feed may be delivering stale or cached SSR data."
+                                )
+                            ))
+        except Exception as _e:
+            log.debug("%s: R23 check error: %s", symbol, _e)
+
     return flags
 
 
@@ -1008,10 +1050,9 @@ def _heal_clear_cache(symbol: str, diag: ScanDiagnostic):
 def _heal_force_rescan(symbol: str, diag: ScanDiagnostic):
     log.info("%s: Bounded healing: Rescan suggested. Adding rescan flag to database.", symbol)
     try:
-        from src.models.schema import get_conn
-        with get_conn() as conn:
-            conn.execute("INSERT OR REPLACE INTO health_state (key, status, detail, updated_at) VALUES (?,?,?,?)",
-                         (f"rescan_trigger_{symbol}", "PENDING", diag.anomaly_summary, datetime.now(timezone.utc).isoformat()))
+        from src.models.schema import stamp_health, purge_expired_health_stamps
+        purge_expired_health_stamps()
+        stamp_health(f"rescan_trigger_{symbol}", "PENDING", diag.anomaly_summary)
     except Exception as e:
         log.error("%s: Failed to execute FORCE_RESCAN healing: %s", symbol, e)
 

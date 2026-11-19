@@ -56,6 +56,10 @@ _cb_lock = threading.Lock()
 _CB_FAIL_THRESHOLD = 3
 _CB_COOLDOWN_S = 300
 
+# Stale underlying tracking: (symbol_base, source) -> [(timestamp, spot)]
+_recent_spots_by_source: dict[tuple[str, str], list[tuple[float, float]]] = {}
+_stale_spots_lock = threading.Lock()
+
 _instances: dict = {}
 _lock = threading.Lock()
 
@@ -119,7 +123,7 @@ def _priority_for(symbol: str) -> list[str]:
     if base in _MCX_COMMODITIES:
         return ["dhan_commodity", "shoonya", "niftytrader", "moneycontrol", "dhan"]
     if base == "SENSEX":
-        return ["niftytrader", "shoonya", "sensibull", "dhan_headless", "nse_public", "moneycontrol"]
+        return ["shoonya", "sensibull", "dhan_headless", "niftytrader", "nse_public", "moneycontrol"]
     return [
         "niftytrader", "shoonya", "sensibull", "dhan_headless", "nse_public", "moneycontrol",
     ]
@@ -279,6 +283,34 @@ def _try_fetcher(source: str, symbol: str, expiry: str | None) -> dict | None:
             )
             _cb_record(source, False)
             return None
+
+        # Stale/Frozen underlying check during active market hours
+        underlying = result.get("underlying_price")
+        if underlying and float(underlying) > 0:
+            try:
+                from config.symbol_classes import is_market_open
+                if is_market_open(symbol):
+                    with _stale_spots_lock:
+                        now_t = time.time()
+                        hist_key = (base, source)
+                        history = _recent_spots_by_source.setdefault(hist_key, [])
+                        history = [(t, s) for (t, s) in history if now_t - t < 7200]
+                        history.append((now_t, float(underlying)))
+                        _recent_spots_by_source[hist_key] = history
+
+                        recent_scans = [(t, s) for (t, s) in history if now_t - t <= 2700]
+                        if len(recent_scans) >= 3:
+                            last_3_spots = [s for (t, s) in recent_scans[-3:]]
+                            if all(abs(s - last_3_spots[0]) < 0.001 for s in last_3_spots):
+                                log.warning(
+                                    "[router] %s | %-12s returned FROZEN underlying price %.2f across %d consecutive scans — rejecting feed",
+                                    symbol, source, float(underlying), len(last_3_spots),
+                                )
+                                _cb_record(source, False)
+                                return None
+            except Exception as e:
+                log.debug("[router] stale spot guard error: %s", e)
+
         _cb_record(source, True)
         return result
     except Exception as exc:

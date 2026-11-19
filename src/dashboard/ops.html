@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <link rel="stylesheet" href="/static/theme.css" />
+    <link rel="stylesheet" href="/static/theme.css" />
     <title>NSEBOT — Ops Monitor</title>
     <style>
         @import url("https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600;800&display=swap");
@@ -34,9 +34,8 @@
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 14px; min-height: 100vh; }
 
-        /* ── Header (exact match with other pages) ── */
+        /* ── Header ── */
         .app-header { display: flex; flex-direction: column; padding: 10px 24px; gap: 10px; background: var(--surface); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 100; height: auto !important; }
-
         .header-top-row { display: flex; align-items: center; justify-content: space-between; width: 100%; }
         .header-bottom-row { display: flex; align-items: center; justify-content: space-between; width: 100%; }
         .logo-stack { display: flex; flex-direction: column; }
@@ -51,29 +50,77 @@
         [data-theme="light"] .header-nav { background: rgba(0,0,0,.03); }
         [data-theme="light"] .nav-tab.active { background: #fff; border-color: #cbd5e1; }
 
+        /* Architecture Toggle Button in Header */
+        .arch-toggle-btn {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text-dim);
+            padding: 6px 14px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-family: var(--sans);
+            font-size: 12px;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            transition: all .2s;
+        }
+        .arch-toggle-btn:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+            background: rgba(0,229,160,0.06);
+        }
+
         /* ── Page Body ── */
         main { padding: 24px; display: flex; flex-direction: column; gap: 20px; max-width: 1400px; margin: 0 auto; }
 
-        /* ── Summary Banner ── */
+        /* ── Summary Banner (Strictly severity-tied borders and tint) ── */
         .ops-banner {
             background: linear-gradient(135deg, rgba(0,229,160,.08) 0%, rgba(0,229,160,.02) 100%);
             border: 1px solid rgba(0,229,160,.25);
             border-radius: 10px;
-            padding: 20px 24px;
+            padding: 18px 24px;
             display: flex;
             align-items: center;
             gap: 20px;
             position: relative;
             overflow: hidden;
+            transition: border-color .3s, background .3s;
         }
         .ops-banner::before {
             content: "";
             position: absolute;
             left: 0; top: 0; bottom: 0;
-            width: 3px;
+            width: 4px;
             background: var(--accent);
-            border-radius: 3px 0 0 3px;
+            border-radius: 4px 0 0 4px;
+            transition: background .3s;
         }
+        .ops-banner.ok {
+            background: linear-gradient(135deg, rgba(0,229,160,.08) 0%, rgba(0,229,160,.02) 100%);
+            border-color: rgba(0,229,160,.25);
+        }
+        .ops-banner.ok::before { background: var(--green); }
+
+        .ops-banner.warn {
+            background: linear-gradient(135deg, rgba(255,209,102,.10) 0%, rgba(255,209,102,.02) 100%);
+            border-color: rgba(255,209,102,.35);
+        }
+        .ops-banner.warn::before { background: var(--yellow); }
+
+        .ops-banner.down {
+            background: linear-gradient(135deg, rgba(255,77,109,.12) 0%, rgba(255,77,109,.02) 100%);
+            border-color: rgba(255,77,109,.35);
+        }
+        .ops-banner.down::before { background: var(--red); }
+
+        .ops-banner.offline {
+            background: linear-gradient(135deg, rgba(74,85,104,.15) 0%, rgba(74,85,104,.03) 100%);
+            border-color: rgba(74,85,104,.35);
+        }
+        .ops-banner.offline::before { background: var(--muted); }
+
         .ops-banner-icon { font-size: 32px; flex-shrink: 0; }
         .ops-banner-text h2 { font-size: 18px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
         .ops-banner-text p { font-size: 13px; color: var(--text-dim); font-family: var(--mono); }
@@ -82,7 +129,7 @@
         .ops-status-badge.ok { background: rgba(0,229,160,.12); color: var(--green); border: 1px solid rgba(0,229,160,.3); }
         .ops-status-badge.warn { background: rgba(255,209,102,.1); color: var(--yellow); border: 1px solid rgba(255,209,102,.3); }
         .ops-status-badge.down { background: rgba(255,77,109,.1); color: var(--red); border: 1px solid rgba(255,77,109,.3); }
-        .ops-status-badge.offline { background: rgba(74,85,104,.15); color: var(--text-dim); border: 1px solid rgba(74,85,104,.3); }
+        .ops-status-badge.offline { background: rgba(74,85,104,.18); color: var(--text-dim); border: 1px solid rgba(74,85,104,.35); }
         .pulse { width: 7px; height: 7px; border-radius: 50%; animation: pulse-anim 1.8s ease-in-out infinite; }
         .pulse.ok { background: var(--green); box-shadow: 0 0 0 0 rgba(0,229,160,.6); }
         .pulse.warn { background: var(--yellow); box-shadow: 0 0 0 0 rgba(255,209,102,.6); }
@@ -103,11 +150,12 @@
         .kpi-value.green { color: var(--green); }
         .kpi-value.yellow { color: var(--yellow); }
         .kpi-value.red { color: var(--red); }
+        .kpi-sub { font-size: 10px; color: var(--text-dim); font-family: var(--mono); margin-top: 4px; }
 
         /* ── Component Health Grid ── */
         .section-title { font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--text-dim); display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
         .section-title::before { content: ""; display: inline-block; width: 3px; height: 14px; background: var(--accent); border-radius: 2px; }
-        .component-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+        .component-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
         .component-card {
             background: var(--surface);
             border: 1px solid var(--border);
@@ -123,51 +171,41 @@
         .component-card.warn { border-left: 3px solid var(--yellow); }
         .component-card.down { border-left: 3px solid var(--red); }
         .component-card.unknown { border-left: 3px solid var(--muted); }
-        .component-card.offline { border-left: 3px solid var(--muted); opacity: 0.8; }
+        .component-card.offline { border-left: 3px solid var(--muted); opacity: 0.75; }
         .comp-icon { font-size: 20px; flex-shrink: 0; width: 32px; text-align: center; }
         .comp-body { flex: 1; min-width: 0; }
         .comp-name { font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 2px; }
         .comp-detail { font-size: 11px; color: var(--text-dim); font-family: var(--sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .detail-key { color: var(--text-dim); font-weight: normal; margin-right: 1px; }
+        .detail-key { color: var(--text-dim); font-weight: normal; margin-right: 2px; }
         .detail-val { color: var(--text); font-weight: 500; }
-        .comp-age { font-size: 10px; color: var(--text-dim); font-family: var(--mono); margin-top: 2px; }
+        .comp-age { font-size: 10px; color: var(--text-dim); font-family: var(--mono); margin-top: 3px; }
         .comp-badge { font-size: 10px; font-weight: 700; font-family: var(--mono); padding: 2px 7px; border-radius: 4px; letter-spacing: .5px; flex-shrink: 0; }
         .comp-badge.ok { background: rgba(0,229,160,.12); color: var(--green); }
         .comp-badge.warn { background: rgba(255,209,102,.1); color: var(--yellow); }
         .comp-badge.down { background: rgba(255,77,109,.1); color: var(--red); }
         .comp-badge.unknown { background: rgba(74,85,104,.2); color: var(--muted); }
-        .comp-badge.offline { background: rgba(74,85,104,.15); color: var(--text-dim); }
+        .comp-badge.offline { background: rgba(74,85,104,.18); color: var(--text-dim); }
 
         /* ── Incidents Feed ── */
         .incidents-wrap {
             display: flex;
             flex-direction: column;
             gap: 8px;
-            max-height: 400px;
+            max-height: 420px;
             overflow-y: auto;
             padding-right: 6px;
         }
-        .incidents-wrap::-webkit-scrollbar {
-            width: 6px;
-        }
-        .incidents-wrap::-webkit-scrollbar-track {
-            background: var(--surface);
-            border-radius: 4px;
-        }
-        .incidents-wrap::-webkit-scrollbar-thumb {
-            background: var(--border);
-            border-radius: 4px;
-        }
-        .incidents-wrap::-webkit-scrollbar-thumb:hover {
-            background: var(--text-dim);
-        }
+        .incidents-wrap::-webkit-scrollbar { width: 6px; }
+        .incidents-wrap::-webkit-scrollbar-track { background: var(--surface); border-radius: 4px; }
+        .incidents-wrap::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+        .incidents-wrap::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
         .incident-row {
             background: var(--surface);
             border: 1px solid var(--border);
             border-radius: 8px;
-            padding: 12px 16px;
+            padding: 10px 16px;
             display: grid;
-            grid-template-columns: 80px 80px 1fr auto;
+            grid-template-columns: 110px 110px 1fr auto;
             align-items: center;
             gap: 12px;
             font-family: var(--mono);
@@ -179,8 +217,8 @@
         @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
         .inc-playbook { font-weight: 700; padding: 2px 7px; border-radius: 4px; font-size: 11px; text-align: center; }
         .inc-playbook.p01,.inc-playbook.p08 { background: rgba(0,229,160,.1); color: var(--green); }
-        .inc-playbook.p02,.inc-playbook.p04,.inc-playbook.p09,.inc-playbook.p10 { background: rgba(255,77,109,.1); color: var(--red); }
-        .inc-playbook.p03 { background: rgba(255,209,102,.1); color: var(--yellow); }
+        .inc-playbook.p02,.inc-playbook.p04,.inc-playbook.p09,.inc-playbook.p10,.inc-playbook.p14 { background: rgba(255,77,109,.1); color: var(--red); }
+        .inc-playbook.p03,.inc-playbook.p13 { background: rgba(255,209,102,.1); color: var(--yellow); }
         .inc-playbook.p05,.inc-playbook.p06,.inc-playbook.p07,.inc-playbook.p11 { background: rgba(251,146,60,.1); color: var(--orange); }
         .inc-playbook.p12 { background: rgba(74,85,104,.2); color: var(--muted); }
         .inc-ts { color: var(--text-dim); font-size: 11px; }
@@ -188,8 +226,112 @@
         .inc-result { font-size: 11px; padding: 4px 10px; border-radius: 4px; white-space: normal; word-break: break-word; line-height: 1.4; display: inline-block; }
         .inc-result.success { background: rgba(0,229,160,.08); color: var(--green); }
         .inc-result.fail { background: rgba(255,77,109,.08); color: var(--red); }
+        .inc-count-badge {
+            font-size: 10px;
+            font-family: var(--mono);
+            font-weight: 700;
+            color: var(--accent);
+            background: rgba(0,229,160,0.12);
+            border: 1px solid rgba(0,229,160,0.3);
+            padding: 1px 5px;
+            border-radius: 4px;
+        }
         .empty-state { text-align: center; padding: 40px; color: var(--text-dim); font-family: var(--mono); font-size: 13px; }
         .empty-state span { font-size: 28px; display: block; margin-bottom: 8px; }
+
+        /* ── System Architecture Modal ── */
+        .arch-modal-backdrop {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0, 0, 0, 0.75);
+            backdrop-filter: blur(5px);
+            z-index: 1000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            animation: fadeIn .2s ease;
+        }
+        .arch-modal-content {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            max-width: 900px;
+            width: 100%;
+            max-height: 85vh;
+            overflow-y: auto;
+            box-shadow: 0 24px 48px rgba(0,0,0,0.6);
+            display: flex;
+            flex-direction: column;
+        }
+        .arch-modal-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 22px;
+            border-bottom: 1px solid var(--border);
+            background: var(--surface-2);
+        }
+        .arch-modal-close {
+            background: transparent;
+            border: none;
+            color: var(--text-dim);
+            font-size: 20px;
+            cursor: pointer;
+            padding: 4px 8px;
+            border-radius: 4px;
+            line-height: 1;
+            transition: all .2s;
+        }
+        .arch-modal-close:hover {
+            color: var(--red);
+            background: rgba(255,77,109,0.1);
+        }
+        .arch-modal-body {
+            padding: 22px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .arch-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 16px;
+        }
+        .arch-card {
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 16px;
+        }
+        .arch-card-title {
+            font-weight: 700;
+            color: var(--text);
+            margin-bottom: 8px;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .arch-card-desc {
+            color: var(--text-dim);
+            font-size: 12px;
+            line-height: 1.6;
+        }
+        .mono-code {
+            font-family: var(--mono);
+            font-size: 11px;
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid var(--border);
+            padding: 1px 5px;
+            border-radius: 4px;
+            color: var(--accent);
+            word-break: break-word;
+        }
+        [data-theme="light"] .mono-code {
+            background: rgba(0, 0, 0, 0.05);
+            color: var(--accent);
+        }
 
         /* ── Raw Health JSON ── */
         .raw-json { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; font-family: var(--mono); font-size: 11px; color: var(--text-dim); white-space: pre-wrap; word-break: break-all; max-height: 320px; overflow-y: auto; }
@@ -209,96 +351,21 @@
         @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 
         /* ── Responsive ── */
-        @media (max-width: 700px) {
-            .kpi-row { grid-template-columns: 1fr 1fr; }
-            .incident-row { grid-template-columns: 60px 1fr; grid-template-rows: auto auto; }
-            .inc-action { grid-column: 1/-1; }
-            .inc-result { display: none; }
-        }
-    
-
-            /* ── Mobile Responsive Extensions ── */
-
-            @media (max-width: 768px) {
-                .header-top-row {
-                    display: flex !important;
-                    flex-direction: column !important;
-                    align-items: stretch !important;
-                    gap: 8px !important;
-                    width: 100% !important;
-                }
-                .header-bottom-row {
-                    display: flex !important;
-                    flex-direction: column !important;
-                    align-items: stretch !important;
-                    gap: 8px !important;
-                    width: 100% !important;
-                }
-                .header-nav, .nav-links {
-                    width: 100% !important;
-                    max-width: 100% !important;
-                    display: flex !important;
-                    flex-wrap: nowrap !important;
-                    overflow-x: auto !important;
-                    -webkit-overflow-scrolling: touch !important;
-                    scrollbar-width: none !important;
-                    gap: 4px !important;
-                    padding: 3px !important;
-                    box-sizing: border-box !important;
-                }
-                .header-nav::-webkit-scrollbar, .nav-links::-webkit-scrollbar {
-                    display: none !important;
-                }
-                .nav-tab, .nav-links a {
-                    flex-shrink: 0 !important;
-                    padding: 7px 12px !important;
-                    font-size: 12px !important;
-                    white-space: nowrap !important;
-                }
-                .header-right {
-                    width: 100% !important;
-                    display: flex !important;
-                    justify-content: flex-end !important;
-                    align-items: center !important;
-                    gap: 8px !important;
-                }
-            }
-
-
         @media (max-width: 768px) {
-            .main-wrap, main, .container {
-                padding: 12px 10px !important;
-            }
-            .kpi-row {
-                grid-template-columns: repeat(2, 1fr) !important;
-                gap: 8px !important;
-            }
-            .refresh-bar {
-                flex-wrap: wrap !important;
-                gap: 6px !important;
-            }
-            .card {
-                padding: 12px 14px !important;
-            }
-            .table-wrap, .log-container, .incident-table-wrap {
-                overflow-x: auto !important;
-                width: 100% !important;
-                -webkit-overflow-scrolling: touch !important;
-            }
-            /* Hero banner: icon | text | status squeezes the title into a sliver, so stack it */
-            .ops-banner {
-                flex-direction: column !important;
-                align-items: flex-start !important;
-                gap: 10px !important;
-                padding: 14px !important;
-            }
-            .ops-banner-text, .ops-banner-status {
-                width: 100% !important;
-                min-width: 0 !important;
-            }
+            .header-top-row { flex-direction: column !important; align-items: stretch !important; gap: 8px !important; }
+            .header-bottom-row { flex-direction: column !important; align-items: stretch !important; gap: 8px !important; }
+            .header-nav { width: 100% !important; overflow-x: auto !important; scrollbar-width: none !important; }
+            .header-nav::-webkit-scrollbar { display: none !important; }
+            .nav-tab { flex-shrink: 0 !important; padding: 7px 12px !important; font-size: 12px !important; }
+            .kpi-row { grid-template-columns: repeat(2, 1fr) !important; gap: 8px !important; }
+            .refresh-bar { flex-wrap: wrap !important; gap: 6px !important; }
+            .ops-banner { flex-direction: column !important; align-items: flex-start !important; gap: 10px !important; padding: 14px !important; }
+            .ops-banner-text, .ops-banner-status { width: 100% !important; min-width: 0 !important; }
+            .incident-row { grid-template-columns: 80px 1fr !important; grid-template-rows: auto auto !important; }
+            .inc-action { grid-column: 1/-1 !important; }
+            .inc-result { display: none !important; }
         }
-
-        </style>
+    </style>
     <script>
         (function(){ const k="nsebot-theme", s=localStorage.getItem(k)||"dark"; document.documentElement.setAttribute("data-theme",s); })();
     </script>
@@ -322,7 +389,8 @@
             <a href="/settings" class="nav-tab" id="tab-settings">Settings</a>
             <a href="/ops" class="nav-tab active" id="tab-ops">Ops Monitor</a>
         </div>
-        <div style="display:flex;align-items:center;gap:12px;">
+        <div style="display:flex;align-items:center;gap:10px;">
+            <button class="arch-toggle-btn" id="open-arch-btn" title="View System Architecture & Ops Playbooks">📖 Architecture</button>
             <div class="refresh-bar">
                 <label for="refresh-interval">Auto-refresh:</label>
                 <select id="refresh-interval">
@@ -343,14 +411,9 @@
 
     <!-- ── Ops Summary Banner ── -->
     <div class="ops-banner" id="ops-banner">
-        <div class="ops-banner-icon">🤖</div>
+        <div class="ops-banner-icon" id="ops-banner-icon">🤖</div>
         <div class="ops-banner-text">
-            <h2 style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-                Ops Agent Monitor
-                <span style="font-size:11px; font-weight:500; font-family:var(--mono); color:var(--text-dim); background:rgba(255,255,255,0.04); padding:3px 10px; border-radius:4px; border:1px solid var(--border);">
-                    ⚡ Ops Engine: Deterministic Rule-Based Playbooks (P01–P12) | 🧠 Trade AI Advisor: OpenRouter Pool & Gemini/Bedrock SDK
-                </span>
-            </h2>
+            <h2>Ops Agent Monitor</h2>
             <p id="banner-sub">Fetching system health…</p>
         </div>
         <div class="ops-banner-status">
@@ -359,34 +422,6 @@
                 <span id="ops-status-text">LOADING</span>
             </div>
             <span id="banner-updated">—</span>
-        </div>
-    </div>
-
-    <!-- ── Architecture & Remediation Info Card ── -->
-    <div style="background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:14px 18px; margin-bottom:20px; display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:16px; font-size:12px;">
-        <div>
-            <div style="font-weight:700; color:var(--text); margin-bottom:4px; display:flex; align-items:center; gap:6px;">
-                <span>⚡ Ops Agent Execution Model</span>
-            </div>
-            <div style="color:var(--text-dim); line-height:1.5;">
-                Powered by a <strong>Deterministic Rule-Based State Machine (`ops_agent.py`)</strong> running 12 independent playbooks (`P01`–`P12`). Zero-latency execution without LLM API overhead ensures instantaneous system recovery and capital protection during broker or infrastructure incidents.
-            </div>
-        </div>
-        <div>
-            <div style="font-weight:700; color:var(--text); margin-bottom:4px; display:flex; align-items:center; gap:6px;">
-                <span>🧠 AI Strategy & Enrichment LLMs</span>
-            </div>
-            <div style="color:var(--text-dim); line-height:1.5;">
-                Trade decisions and news scoring use an engine-aligned multi-provider LLM hierarchy (`llm_enrichment.py`): <strong>OpenRouter Pool (`Llama 3.3 70B`, `Qwen 2.5 Coder`, `Nemotron 3 Super`)</strong>, backed by AWS Bedrock and Google Gemini SDK.
-            </div>
-        </div>
-        <div>
-            <div style="font-weight:700; color:var(--text); margin-bottom:4px; display:flex; align-items:center; gap:6px;">
-                <span>🛠️ Auto-Fix & Alert Capabilities</span>
-            </div>
-            <div style="color:var(--text-dim); line-height:1.5;">
-                <strong>Yes, both!</strong> The agent automatically fixes issues (restarts dead bot, re-auths Shoonya login up to 3×, runs emergency flat to close open positions on broker outage, rotates/vacuums disk) <em>and</em> dispatches real-time alerts.
-            </div>
         </div>
     </div>
 
@@ -419,8 +454,8 @@
     <!-- ── Scan Sentinel Incidents ── -->
     <div>
         <div class="section-title" style="margin-top:20px;">
-            🛡️ Scan Sentinel AI Diagnostics
-            <span style="font-weight:400; font-size:10px; color:var(--text-dim); margin-left:8px;">Real-time scan anomaly detection & AI-powered root cause analysis</span>
+            🛡️ Scan Sentinel Diagnostics
+            <span style="font-weight:400; font-size:10px; color:var(--text-dim); margin-left:8px;">Real-time scan anomaly detection & telemetry</span>
         </div>
         <div class="component-grid" id="sentinel-grid" style="grid-template-columns:repeat(auto-fill, minmax(300px, 1fr));">
             <div class="skeleton"></div>
@@ -435,6 +470,64 @@
 
 </main>
 
+<!-- ── Collapsible System Architecture Modal ── -->
+<div class="arch-modal-backdrop" id="arch-modal" style="display:none;">
+    <div class="arch-modal-content">
+        <div class="arch-modal-header">
+            <div style="display:flex; align-items:center; gap:8px;">
+                <span style="font-size:18px;">🏛️</span>
+                <span style="font-weight:700; font-size:15px; color:var(--text);">System Architecture & Ops Playbooks</span>
+            </div>
+            <button class="arch-modal-close" id="close-arch-btn" title="Close (Esc)">✕</button>
+        </div>
+        <div class="arch-modal-body">
+            <div class="arch-grid">
+                <div class="arch-card">
+                    <div class="arch-card-title">
+                        <span>⚡ Ops Agent Execution Model</span>
+                    </div>
+                    <div class="arch-card-desc">
+                        Powered by a <strong>Deterministic Rule-Based State Machine (<code class="mono-code">ops_agent.py</code>)</strong> running 14 independent playbooks (<code class="mono-code">P01</code>–<code class="mono-code">P14</code>). Zero-latency execution without LLM API overhead ensures instantaneous system recovery and capital protection during broker or infrastructure incidents.
+                    </div>
+                </div>
+                <div class="arch-card">
+                    <div class="arch-card-title">
+                        <span>🧠 AI Strategy & Enrichment LLMs</span>
+                    </div>
+                    <div class="arch-card-desc">
+                        Trade decisions and news scoring use an engine-aligned multi-provider LLM hierarchy (<code class="mono-code">llm_enrichment.py</code>): <strong>OmniRouter Pool</strong> (<code class="mono-code">Claude 3.5 Sonnet</code>, <code class="mono-code">GPT-4o</code>, <code class="mono-code">Llama 3.3 70B</code>, <code class="mono-code">Qwen 2.5 Coder</code>), backed by AWS Bedrock and Google Gemini SDK.
+                    </div>
+                </div>
+                <div class="arch-card">
+                    <div class="arch-card-title">
+                        <span>🛠️ Auto-Fix & Alert Capabilities</span>
+                    </div>
+                    <div class="arch-card-desc">
+                        <strong>Autonomous Remediation & Alerting:</strong> The agent automatically repairs transient failures (restarts frozen bot process, re-authenticates Shoonya sessions up to 3×, executes emergency flat order unwinding on broker loss, vacuums/rotates disk) and dispatches real-time Telegram/Discord alerts with strict deduplication.
+                    </div>
+                </div>
+            </div>
+            <div style="margin-top:4px; padding:12px; background:var(--surface-2); border:1px solid var(--border); border-radius:8px; font-size:11px; color:var(--text-dim); line-height:1.7;">
+                <strong style="color:var(--text);">Playbook Registry:</strong><br>
+                <code class="mono-code">P01</code> Bot Restart · 
+                <code class="mono-code">P02</code> Shoonya Re-auth · 
+                <code class="mono-code">P03</code> Stale Feed Refresh · 
+                <code class="mono-code">P04</code> DB Lock Recovery · 
+                <code class="mono-code">P05</code> Disk Pruning · 
+                <code class="mono-code">P06</code> Telegram Gateway · 
+                <code class="mono-code">P07</code> Telegram Escalation · 
+                <code class="mono-code">P08</code> Heartbeat Stamp · 
+                <code class="mono-code">P09</code> Shadow Unwind · 
+                <code class="mono-code">P10</code> Live Position Loss Recovery · 
+                <code class="mono-code">P11</code> ML Predictor Gate · 
+                <code class="mono-code">P12</code> Maintenance Vacuum · 
+                <code class="mono-code">P13</code> Scan Sentinel Anomaly Escalation · 
+                <code class="mono-code">P14</code> Hard Risk Loss Breach Alert
+            </div>
+        </div>
+    </div>
+</div>
+
 <script>
 // ── Theme ──────────────────────────────────────────────────────────────────
 const KEY = "nsebot-theme";
@@ -447,19 +540,100 @@ document.getElementById("theme-toggle-btn").addEventListener("click", () => {
 });
 if (localStorage.getItem(KEY) === "light") document.getElementById("theme-toggle-btn").textContent = "☀️";
 
-// ── Component metadata (icon + display name) ───────────────────────────────
+// ── Architecture Modal Handlers ───────────────────────────────────────────
+const archModal = document.getElementById("arch-modal");
+const openArchBtn = document.getElementById("open-arch-btn");
+const closeArchBtn = document.getElementById("close-arch-btn");
+
+function showArchModal() { archModal.style.display = "flex"; }
+function hideArchModal() { archModal.style.display = "none"; }
+
+openArchBtn.addEventListener("click", showArchModal);
+closeArchBtn.addEventListener("click", hideArchModal);
+archModal.addEventListener("click", (e) => {
+    if (e.target === archModal) hideArchModal();
+});
+document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && archModal.style.display !== "none") hideArchModal();
+});
+
+// ── Component metadata (icon + display name + market segment) ─────────────
 const COMP_META = {
-    scheduler_loop:   { icon: "⏱", name: "Scheduler Loop",     staleMin: 3 },
-    shoonya_session:  { icon: "🔑", name: "Shoonya Session",    staleMin: 10 },
-    parity_feed:      { icon: "⚖️",  name: "Parity Feed",        staleMin: 10 },
-    telegram_send:    { icon: "📨", name: "Telegram Send",      staleMin: 999 },
-    db_write:         { icon: "💾", name: "DB Write",           staleMin: 5 },
-    open_positions:   { icon: "📊", name: "Open Positions",     staleMin: 5 },
+    scheduler_loop:      { icon: "⏱", name: "Scheduler Loop",       staleMin: 3,   segment: "CORE" },
+    shoonya_session:     { icon: "🔑", name: "Shoonya Session",      staleMin: 10,  segment: "NSE_BSE" },
+    parity_feed:         { icon: "⚖️",  name: "Parity Feed",          staleMin: 10,  segment: "MCX" },
+    telegram_send:       { icon: "📨", name: "Telegram Send",        staleMin: 999, segment: "CORE" },
+    db_write:            { icon: "💾", name: "DB Write",             staleMin: 5,   segment: "CORE" },
+    open_positions:      { icon: "📊", name: "Open Positions",       staleMin: 5,   segment: "CORE" },
+    scheduler_watchdog:  { icon: "🐕", name: "Scheduler Watchdog",   staleMin: 60,  segment: "CORE" },
 };
+
 function compMeta(key) {
     if (COMP_META[key]) return COMP_META[key];
-    if (key.startsWith("last_scan_")) return { icon: "🔍", name: "Scan: " + key.replace("last_scan_", ""), staleMin: 30 };
-    return { icon: "🔧", name: key, staleMin: 30 };
+    if (key.startsWith("last_scan_")) {
+        const sym = key.replace("last_scan_", "").toUpperCase();
+        const isMcx = ["NATURALGAS", "CRUDEOIL", "GOLD", "SILVER", "COPPER"].includes(sym);
+        return { 
+            icon: "🔍", 
+            name: "Scan: " + sym, 
+            staleMin: isMcx ? 30 : 15,
+            segment: isMcx ? "MCX" : "NSE_BSE"
+        };
+    }
+    if (key.startsWith("sentinel_")) {
+        const sym = key.replace("sentinel_", "").toUpperCase();
+        const isMcx = ["NATURALGAS", "CRUDEOIL", "GOLD", "SILVER", "COPPER"].includes(sym);
+        return { 
+            icon: "🛡️", 
+            name: "Sentinel: " + sym, 
+            staleMin: 30,
+            segment: isMcx ? "MCX" : "NSE_BSE"
+        };
+    }
+    if (key.startsWith("rescan_trigger_")) {
+        const sym = key.replace("rescan_trigger_", "").toUpperCase();
+        const isMcx = ["NATURALGAS", "CRUDEOIL", "GOLD", "SILVER", "COPPER"].includes(sym);
+        return { 
+            icon: "🔄", 
+            name: "Rescan: " + sym, 
+            staleMin: 1440,
+            segment: isMcx ? "MCX" : "NSE_BSE"
+        };
+    }
+    return { icon: "🔧", name: key, staleMin: 30, segment: "CORE" };
+}
+
+// ── Clean IST Timestamp Formatter (Defends against 35-char ISO truncation) ─
+function cleanTimestamp(val) {
+    if (!val || typeof val !== "string") return val;
+    const isoMatch = val.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?$/);
+    if (isoMatch) {
+        try {
+            const d = new Date(val);
+            if (!isNaN(d.getTime())) {
+                const now = new Date();
+                const isToday = d.toDateString() === now.toDateString();
+                const timeStr = d.toLocaleTimeString("en-IN", {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit",
+                    hour12: false,
+                    timeZone: "Asia/Kolkata"
+                });
+                if (isToday) {
+                    return `${timeStr} IST`;
+                } else {
+                    const dateStr = d.toLocaleDateString("en-IN", {
+                        day: "2-digit",
+                        month: "short",
+                        timeZone: "Asia/Kolkata"
+                    });
+                    return `${dateStr} ${timeStr} IST`;
+                }
+            }
+        } catch {}
+    }
+    return val;
 }
 
 // ── Detail Formatter ────────────────────────────────────────────────────────
@@ -489,7 +663,7 @@ function formatDetail(key, detail) {
         if (key === "shoonya_session") {
             const kv = parseKV(detail);
             if (kv.last_fetch) {
-                return `Last: <span class="detail-val">${kv.last_fetch}</span>`;
+                return `Last: <span class="detail-val">${cleanTimestamp(kv.last_fetch)}</span>`;
             }
         }
         if (key === "scheduler_loop") {
@@ -524,12 +698,15 @@ function formatDetail(key, detail) {
         return pairs.map(p => {
             const idx = p.indexOf("=");
             if (idx !== -1) {
-                return `<span class="detail-key">${p.substring(0, idx)}:</span><span class="detail-val">${p.substring(idx+1)}</span>`;
+                const k = p.substring(0, idx);
+                const rawV = p.substring(idx + 1);
+                const v = cleanTimestamp(rawV);
+                return `<span class="detail-key">${k}:</span><span class="detail-val">${v}</span>`;
             }
-            return p;
+            return cleanTimestamp(p);
         }).join(" · ");
     }
-    return detail;
+    return cleanTimestamp(detail);
 }
 
 // ── Staleness helper ───────────────────────────────────────────────────────
@@ -540,65 +717,75 @@ function ageStr(updatedAt) {
         const sec = Math.round((Date.now() - ts) / 1000);
         if (sec < 60) return sec + "s ago";
         if (sec < 3600) return Math.round(sec/60) + "m ago";
-        return Math.round(sec/3600) + "h ago";
+        if (sec < 86400) return Math.round(sec/3600) + "h ago";
+        return Math.round(sec/86400) + "d ago";
     } catch { return "—"; }
 }
 
 // Helper to get current Date object set to IST timezone fields
 function getISTDate() {
     const d = new Date();
-    // Convert local browser/machine time to UTC, then add 5.5 hours for IST
     const utc = d.getTime() + (d.getTimezoneOffset() * 60000);
     return new Date(utc + (3600000 * 5.5));
 }
 
-// ── Status derivation ──────────────────────────────────────────────────────
+// ── Status derivation (Separates MARKET CLOSED from true DOWN/WARN) ────────
 function deriveStatus(row, meta) {
     if (!row) return "unknown";
     
-    // 1. Explicit database error states ALWAYS override market hours (to preserve actual crashes/alerts)
-    const dbStatus = (row.status || "").toUpperCase();
-    if (dbStatus === "DOWN") return "down";
-    if (dbStatus === "DEGRADED") return "warn";
-
-    // 2. Check if the market for this component is closed right now in IST
-    const nowIST = getISTDate();
-    const day = nowIST.getDay(); // 0 = Sunday, 6 = Saturday, 1-5 = Weekdays
-    const hour = nowIST.getHours();
-    const min = nowIST.getMinutes();
-    const timeVal = hour * 100 + min; // e.g. 1530 for 15:30
-
-    let isClosed = false;
-
-    if (day === 0 || day === 6) {
-        // Weekends: all markets closed
-        isClosed = true;
-    } else {
-        if (row.key.startsWith("last_scan_")) {
-            const sym = row.key.replace("last_scan_", "");
-            if (sym === "NATURALGAS" || sym === "CRUDEOIL") {
-                // MCX: 09:00 to 23:55 (DST-aware winter close)
-                if (timeVal < 900 || timeVal > 2355) isClosed = true;
-            } else {
-                // NSE/BSE (Index F&O): 09:15 to 15:40
-                if (timeVal < 915 || timeVal > 1540) isClosed = true;
-            }
-        } else {
-            // General system components: active if any market is open (09:00 to 23:55)
-            if (timeVal < 900 || timeVal > 2355) isClosed = true;
+    // Auto-expire ancient rescan triggers (>24 hours old)
+    if (row.key && row.key.startsWith("rescan_trigger_")) {
+        if (row.updated_at) {
+            const ageHours = (Date.now() - new Date(row.updated_at)) / 3600000;
+            if (ageHours > 24) return "expired";
         }
     }
 
-    // 3. If the market is closed, the component is OFFLINE rather than stale DOWN/WARN
-    if (isClosed) {
+    const nowIST = getISTDate();
+    const day = nowIST.getDay(); // 0 = Sunday, 6 = Saturday
+    const timeVal = nowIST.getHours() * 100 + nowIST.getMinutes(); // e.g. 1703 for 17:03
+
+    let isMarketClosed = false;
+
+    if (day === 0 || day === 6) {
+        // Weekends: all exchange trading is halted
+        isMarketClosed = true;
+    } else {
+        const segment = meta.segment || "CORE";
+        if (segment === "NSE_BSE") {
+            // NSE / BSE Index F&O: 09:15 to 15:40 IST
+            if (timeVal < 915 || timeVal > 1540) isMarketClosed = true;
+        } else if (segment === "MCX") {
+            // MCX Commodity Market: 09:00 to 23:55 IST
+            if (timeVal < 900 || timeVal > 2355) isMarketClosed = true;
+        } else if (segment === "CORE") {
+            // Core processes active if either market is operating (09:00 to 23:55)
+            if (timeVal < 900 || timeVal > 2355) isMarketClosed = true;
+        }
+    }
+
+    // If market for this component is closed: status is OFFLINE (Market Closed)
+    // Never flag closed market modules as DOWN or DEGRADED to eliminate alarm fatigue
+    if (isMarketClosed) {
         return "offline";
     }
 
-    // 4. Staleness check (only enforced when the market is open)
+    // If market is currently open:
+    const dbStatus = (row.status || "").toUpperCase();
+    const stampAgeMin = row.updated_at ? (Date.now() - new Date(row.updated_at)) / 60000 : 0;
+    
+    // Explicit error states (only if recent within 24 hours)
+    if (dbStatus === "DOWN" || dbStatus === "ERROR") {
+        if (stampAgeMin < 1440) return "down";
+    }
+    if (dbStatus === "DEGRADED") {
+        if (stampAgeMin < 1440) return "warn";
+    }
+
+    // Staleness check against component threshold (only when market is open)
     if (row.updated_at && meta.staleMin < 999) {
-        const ageMin = (Date.now() - new Date(row.updated_at)) / 60000;
-        if (ageMin > meta.staleMin * 2) return "down";
-        if (ageMin > meta.staleMin) return "warn";
+        if (stampAgeMin > meta.staleMin * 2) return "down";
+        if (stampAgeMin > meta.staleMin) return "warn";
     }
     
     return "ok";
@@ -606,37 +793,82 @@ function deriveStatus(row, meta) {
 
 // ── Render functions ───────────────────────────────────────────────────────
 function renderKPIs(data) {
-    const rows = data.health || [];
+    const rawRows = data.health || [];
+    const validRows = rawRows.filter(r => r.derivedStatus !== "expired");
     const openPos = data.open_positions ?? 0;
     const heartbeatAge = data.heartbeat_age_s;
-    const downCount = rows.filter(r => r.derivedStatus === "down").length;
-    const warnCount = rows.filter(r => r.derivedStatus === "warn").length;
+    
+    const downCount = validRows.filter(r => r.derivedStatus === "down").length;
+    const warnCount = validRows.filter(r => r.derivedStatus === "warn").length;
+    const okCount = validRows.filter(r => r.derivedStatus === "ok").length;
+    const offlineCount = validRows.filter(r => r.derivedStatus === "offline").length;
 
     const hbStatus = heartbeatAge == null ? "?" : heartbeatAge < 120 ? "OK" : "STALE";
     const hbClass = hbStatus === "OK" ? "green" : "red";
-
     const posClass = openPos > 0 ? "yellow" : "green";
 
+    const activeTotal = validRows.length - offlineCount;
+
     document.getElementById("kpi-row").innerHTML = `
-        <div class="kpi"><div class="kpi-label">Heartbeat</div><div class="kpi-value ${hbClass}">${hbStatus}</div></div>
-        <div class="kpi"><div class="kpi-label">Components OK</div><div class="kpi-value green">${rows.length - downCount - warnCount}/${rows.length}</div></div>
-        <div class="kpi"><div class="kpi-label">Down / Warn</div><div class="kpi-value ${downCount > 0 ? "red" : warnCount > 0 ? "yellow" : "green"}">${downCount} / ${warnCount}</div></div>
-        <div class="kpi"><div class="kpi-label">Open Positions</div><div class="kpi-value ${posClass}">${openPos}</div></div>
-        <div class="kpi"><div class="kpi-label">HB Age</div><div class="kpi-value">${heartbeatAge != null ? Math.round(heartbeatAge) + "s" : "N/A"}</div></div>
-        <div class="kpi"><div class="kpi-label">Components</div><div class="kpi-value">${rows.length}</div></div>
+        <div class="kpi">
+            <div class="kpi-label">Heartbeat</div>
+            <div class="kpi-value ${hbClass}">${hbStatus}</div>
+            <div class="kpi-sub">${heartbeatAge != null ? Math.round(heartbeatAge) + "s age" : "N/A"}</div>
+        </div>
+        <div class="kpi">
+            <div class="kpi-label">Components Active</div>
+            <div class="kpi-value green">${okCount} / ${activeTotal}</div>
+            <div class="kpi-sub">${offlineCount} market closed</div>
+        </div>
+        <div class="kpi">
+            <div class="kpi-label">Down / Warn</div>
+            <div class="kpi-value ${downCount > 0 ? "red" : warnCount > 0 ? "yellow" : "green"}">${downCount} / ${warnCount}</div>
+            <div class="kpi-sub">${downCount > 0 ? "Action required" : "Healthy"}</div>
+        </div>
+        <div class="kpi">
+            <div class="kpi-label">Open Positions</div>
+            <div class="kpi-value ${posClass}">${openPos}</div>
+            <div class="kpi-sub">${data.open_live_positions ?? 0} live · ${data.open_paper_positions ?? 0} paper</div>
+        </div>
+        <div class="kpi">
+            <div class="kpi-label">Total Monitored</div>
+            <div class="kpi-value">${validRows.length}</div>
+            <div class="kpi-sub">System modules</div>
+        </div>
     `;
 }
 
+// Sorting Severity Order: DOWN (0) -> WARN (1) -> OK (2) -> MARKET CLOSED (3)
+const SEVERITY_ORDER = {
+    down: 0,
+    warn: 1,
+    ok: 2,
+    offline: 3,
+    unknown: 4
+};
+
 function renderComponents(data) {
-    const rows = data.health || [];
+    const rawRows = data.health || [];
+    // Filter expired rescan triggers
+    const rows = rawRows.filter(r => r.derivedStatus !== "expired");
+
     if (!rows.length) {
         document.getElementById("component-grid").innerHTML = `<div class="empty-state"><span>💤</span>No health stamps yet. Bot may not have completed a scan cycle.</div>`;
         return;
     }
-    document.getElementById("component-grid").innerHTML = rows.map(row => {
+
+    // Sort by severity (DOWN -> WARN -> OK -> MARKET CLOSED), then alphabetically
+    const sortedRows = [...rows].sort((a, b) => {
+        const sA = SEVERITY_ORDER[a.derivedStatus] ?? 99;
+        const sB = SEVERITY_ORDER[b.derivedStatus] ?? 99;
+        if (sA !== sB) return sA - sB;
+        return (a.key || "").localeCompare(b.key || "");
+    });
+
+    document.getElementById("component-grid").innerHTML = sortedRows.map(row => {
         const meta = compMeta(row.key);
         const status = row.derivedStatus || "unknown";
-        const badgeLabel = status.toUpperCase();
+        const badgeLabel = status === "offline" ? "MARKET CLOSED" : status.toUpperCase();
         const age = ageStr(row.updated_at);
         const detail = row.detail || "—";
         return `
@@ -653,7 +885,8 @@ function renderComponents(data) {
 }
 
 function renderBanner(data) {
-    const rows = data.health || [];
+    const rawRows = data.health || [];
+    const rows = rawRows.filter(r => r.derivedStatus !== "expired");
     const downCount = rows.filter(r => r.derivedStatus === "down").length;
     const warnCount = rows.filter(r => r.derivedStatus === "warn").length;
     const offlineCount = rows.filter(r => r.derivedStatus === "offline").length;
@@ -665,10 +898,31 @@ function renderBanner(data) {
     let statusText = "ALL SYSTEMS OK";
     let subText = `${rows.length} components monitored · ${openPos} open position${openPos !== 1 ? "s" : ""}`;
 
-    if (!heartbeatOk && heartbeatAge !== null) { overallStatus = "down"; statusText = "BOT HEARTBEAT LOST"; subText = `Heartbeat stale (${Math.round(heartbeatAge)}s) — scheduler may be down`; }
-    else if (downCount > 0) { overallStatus = "down"; statusText = `${downCount} COMPONENT${downCount > 1 ? "S" : ""} DOWN`; subText = `${warnCount} degraded · ${openPos} open position${openPos !== 1 ? "s" : ""}`; }
-    else if (warnCount > 0) { overallStatus = "warn"; statusText = `${warnCount} DEGRADED`; subText = `All critical components healthy · ${openPos} open position${openPos !== 1 ? "s" : ""}`; }
-    else if (offlineCount > 0 && (offlineCount + rows.filter(r => r.derivedStatus === "unknown").length) === rows.length) { overallStatus = "offline"; statusText = "MARKETS CLOSED (SLEEPING)"; subText = `Bot is sleeping until next market open · ${openPos} open position${openPos !== 1 ? "s" : ""}`; }
+    if (!heartbeatOk && heartbeatAge !== null) {
+        overallStatus = "down";
+        statusText = "BOT HEARTBEAT LOST";
+        subText = `Heartbeat stale (${Math.round(heartbeatAge)}s) — scheduler process may be down`;
+    } else if (downCount > 0) {
+        overallStatus = "down";
+        statusText = `${downCount} COMPONENT${downCount > 1 ? "S" : ""} DOWN`;
+        subText = `${warnCount} degraded · Active live market attention required`;
+    } else if (warnCount > 0) {
+        overallStatus = "warn";
+        statusText = `${warnCount} DEGRADED`;
+        subText = `All critical trading loops healthy · Non-blocking notices active`;
+    } else if (offlineCount > 0 && offlineCount === rows.length) {
+        overallStatus = "offline";
+        statusText = "ALL MARKETS CLOSED (STANDBY)";
+        subText = `Exchange trading halted · Bot in standby mode until next session open`;
+    } else if (offlineCount > 0) {
+        overallStatus = "ok";
+        statusText = "SYSTEM HEALTHY (MCX ACTIVE / NSE CLOSED)";
+        subText = `${rows.length - offlineCount} components active · ${offlineCount} market closed`;
+    }
+
+    // Banner container styling tied strictly to worst active severity
+    const banner = document.getElementById("ops-banner");
+    banner.className = `ops-banner ${overallStatus}`;
 
     const badge = document.getElementById("ops-status-badge");
     const pulse = document.getElementById("ops-pulse");
@@ -676,44 +930,82 @@ function renderBanner(data) {
     pulse.className = `pulse ${overallStatus}`;
     document.getElementById("ops-status-text").textContent = statusText;
     document.getElementById("banner-sub").textContent = subText;
-    document.getElementById("banner-updated").textContent = "Updated " + new Date().toLocaleTimeString("en-IN", {hour:"2-digit",minute:"2-digit",second:"2-digit"}) + " IST";
+    document.getElementById("banner-updated").textContent = "Updated " + new Date().toLocaleTimeString("en-IN", {hour:"2-digit",minute:"2-digit",second:"2-digit", hour12:false}) + " IST";
+}
+
+// ── Group Consecutive Duplicate Incidents ──────────────────────────────────
+function groupConsecutiveIncidents(incidents) {
+    if (!incidents || !incidents.length) return [];
+    const grouped = [];
+    let current = null;
+
+    for (const inc of incidents) {
+        const pid = (inc.playbook_id || "P??").toUpperCase();
+        const action = (inc.action || "").trim();
+        const result = (inc.result || "").trim();
+        const key = `${pid}|${action}|${result}`;
+
+        if (current && current.key === key) {
+            current.count += 1;
+            current.oldest_ts = inc.ts;
+        } else {
+            if (current) grouped.push(current);
+            current = {
+                ...inc,
+                key: key,
+                pid: pid,
+                action: action,
+                result: result,
+                count: 1,
+                latest_ts: inc.ts,
+                oldest_ts: inc.ts
+            };
+        }
+    }
+    if (current) grouped.push(current);
+    return grouped;
 }
 
 // ── Incidents from ops_agent.db via /api/ops-incidents ────────────────────
 async function loadIncidents() {
-    let incidents = [];
+    let rawIncidents = [];
     try {
         const r = await fetch("/api/ops-incidents", { signal: AbortSignal.timeout(5000) });
-        if (r.ok) incidents = await r.json();
+        if (r.ok) rawIncidents = await r.json();
     } catch {}
 
     const wrap = document.getElementById("incidents-wrap");
-    if (!incidents.length) {
+    if (!rawIncidents.length) {
         wrap.innerHTML = `<div class="empty-state"><span>🟢</span>No Ops Agent incidents recorded yet — all quiet.</div>`;
         return;
     }
 
+    const groupedIncidents = groupConsecutiveIncidents(rawIncidents);
+
     const playbookClass = pid => {
         const n = (pid||"").toLowerCase();
-        if (["p02","p04","p09","p10"].includes(n)) return "down";
-        if (["p03","p05","p06","p07","p11"].includes(n)) return "warn";
+        if (["p02","p04","p09","p10","p14"].includes(n)) return "down";
+        if (["p03","p05","p06","p07","p11","p13"].includes(n)) return "warn";
         if (["p01","p08"].includes(n)) return "ok";
         return "unknown";
     };
 
-    wrap.innerHTML = incidents.slice(0, 50).map(inc => {
-        const ts = inc.ts ? new Date(inc.ts).toLocaleString("en-IN", {day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}) : "—";
-        const pid = (inc.playbook_id || "P??").toUpperCase();
+    wrap.innerHTML = groupedIncidents.slice(0, 30).map(inc => {
+        const ts = inc.latest_ts ? new Date(inc.latest_ts).toLocaleString("en-IN", {day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit",hour12:false,timeZone:"Asia/Kolkata"}) + " IST" : "—";
+        const pid = inc.pid;
         const cls = playbookClass(pid.toLowerCase());
-        const rawAction = inc.action || "—";
-        const rawResult = inc.result || "";
-        const action = escapeHtml(rawAction);
-        const result = escapeHtml(rawResult);
-        const isSuccess = rawResult.toLowerCase().includes("ok") || rawResult.toLowerCase().includes("success") || rawResult.toLowerCase().includes("verified");
+        const action = escapeHtml(inc.action || "—");
+        const result = escapeHtml(inc.result || "");
+        const isSuccess = inc.result.toLowerCase().includes("ok") || inc.result.toLowerCase().includes("success") || inc.result.toLowerCase().includes("verified");
         const ackedBadge = inc.acked ? ' <span style="color:var(--text-dim);font-size:10px;">✓ acked</span>' : '';
+        const countBadge = inc.count > 1 ? `<span class="inc-count-badge" title="${inc.count} consecutive triggers">×${inc.count}</span>` : '';
+
         return `
         <div class="incident-row">
-            <span class="inc-playbook ${pid.toLowerCase().replace('+','')}">${pid}</span>
+            <div style="display:flex; align-items:center; gap:6px;">
+                <span class="inc-playbook ${pid.toLowerCase().replace('+','')}">${pid}</span>
+                ${countBadge}
+            </div>
             <span class="inc-ts">${ts}</span>
             <span class="inc-action">${action}${ackedBadge}</span>
             <span class="inc-result ${isSuccess ? 'success' : 'fail'}" title="${result}">${result || "—"}</span>
@@ -721,7 +1013,7 @@ async function loadIncidents() {
     }).join("");
 }
 
-// ── HTML escape (defend against LLM-authored text breaking layout) ─────────
+// ── HTML escape ────────────────────────────────────────────────────────────
 function escapeHtml(s) {
     return String(s == null ? "" : s)
         .replace(/&/g, "&amp;")
@@ -732,7 +1024,7 @@ function escapeHtml(s) {
 }
 
 // ── Scan Sentinel Live Telemetry & Incidents ───────────────────────────────
-async function loadSentinelIncidents() {
+async function loadSentinelIncidents(activeHealth) {
     let incidents = [];
     let runs = [];
     try {
@@ -762,17 +1054,17 @@ async function loadSentinelIncidents() {
             <div style="font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-dim); margin-bottom:6px;">
                 ⚡ Live Scan Telemetry (${runSymbols.length} Symbols Monitored)
             </div>
-            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:8px;">
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:8px;">
                 ${runSymbols.map(sym => {
                     const r = latestRunsBySymbol[sym];
-                    const ts = r.timestamp_ist ? new Date(r.timestamp_ist).toLocaleTimeString("en-IN", {hour:"2-digit",minute:"2-digit",second:"2-digit"}) : "—";
+                    const ts = r.timestamp_ist ? new Date(r.timestamp_ist).toLocaleTimeString("en-IN", {hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false,timeZone:"Asia/Kolkata"}) + " IST" : "—";
                     const dur = r.scan_duration_ms > 0 ? (r.scan_duration_ms / 1000).toFixed(1) + "s" : "<1s";
                     const hasAnom = (r.zero_ltp_strikes > 0 && r.zero_ltp_strikes === r.total_strikes) || r.status === "CRASHED";
                     const badgeCls = hasAnom ? "down" : "ok";
                     const statusText = hasAnom ? "ANOMALY" : "HEALTHY";
                     const spot = r.underlying_price ? Number(r.underlying_price).toLocaleString("en-IN", {maximumFractionDigits:2}) : "—";
                     return `
-                    <div class="component-card ${badgeCls}" style="padding:8px 12px; gap:4px; flex-direction:column; align-items:flex-start;">
+                    <div class="component-card ${badgeCls}" style="padding:10px 14px; gap:4px; flex-direction:column; align-items:flex-start;">
                         <div style="display:flex; width:100%; justify-content:space-between; align-items:center;">
                             <span style="font-weight:700; font-size:12px;">${sym}</span>
                             <span class="comp-badge ${badgeCls}" style="font-size:9px; padding:2px 6px;">${statusText}</span>
@@ -812,6 +1104,11 @@ async function loadSentinelIncidents() {
         return (nowMs - incMs) > sevenDaysMs;
     });
 
+    // Check if any sentinel health rows are currently degraded
+    const hasSentinelWarning = (activeHealth || []).some(r => 
+        r.key && r.key.startsWith("sentinel_") && (r.derivedStatus === "warn" || r.derivedStatus === "down")
+    );
+
     let incidentsHtml = "";
     if (recentIncidents.length > 0) {
         incidentsHtml = `
@@ -823,12 +1120,20 @@ async function loadSentinelIncidents() {
                 ${recentIncidents.map(inc => renderIncidentCard(inc, severityClass)).join("")}
             </div>
         </div>`;
+    } else if (hasSentinelWarning) {
+        incidentsHtml = `
+        <div style="grid-column:1/-1; margin-top:4px;">
+            <div class="empty-state" style="padding:12px; background:var(--surface); border:1px solid rgba(255,209,102,0.3); border-radius:6px; color:var(--yellow); font-size:12px; display:flex; align-items:center; gap:8px;">
+                <span>⚠️</span>
+                <span>No critical AI escalation incidents logged in last 7 days. (Minor scan latency notices recorded in Component Health above).</span>
+            </div>
+        </div>`;
     } else if (runSymbols.length > 0) {
         incidentsHtml = `
         <div style="grid-column:1/-1; margin-top:4px;">
-            <div class="empty-state" style="padding:12px; background:var(--surface); border:1px solid rgba(46,213,115,0.2); border-radius:6px; color:var(--green); font-size:12px; display:flex; align-items:center; gap:8px;">
+            <div class="empty-state" style="padding:12px; background:var(--surface); border:1px solid rgba(0,229,160,0.25); border-radius:6px; color:var(--green); font-size:12px; display:flex; align-items:center; gap:8px;">
                 <span>🛡️</span>
-                <span>All active scans healthy — Zero anomaly triggers across monitored symbols in the last 7 days.</span>
+                <span>All scans healthy — Zero anomaly triggers across monitored symbols in the last 7 days.</span>
             </div>
         </div>`;
     } else if (!incidents.length) {
@@ -854,7 +1159,7 @@ async function loadSentinelIncidents() {
 }
 
 function renderIncidentCard(inc, severityClass) {
-    const ts = inc.ts ? new Date(inc.ts).toLocaleString("en-IN", {day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}) : "—";
+    const ts = inc.ts ? new Date(inc.ts).toLocaleString("en-IN", {day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit",hour12:false,timeZone:"Asia/Kolkata"}) + " IST" : "—";
     const sev = (inc.severity || "INFO").toUpperCase();
     const cls = severityClass(sev);
     const sym = escapeHtml(inc.symbol || "—");
@@ -879,6 +1184,7 @@ function renderIncidentCard(inc, severityClass) {
 
 // ── Main fetch ─────────────────────────────────────────────────────────────
 async function refresh() {
+    let healthData = null;
     try {
         const r = await fetch("/health", { signal: AbortSignal.timeout(6000) });
         const data = await r.json();
@@ -891,6 +1197,7 @@ async function refresh() {
                 return { ...row, derivedStatus: derived };
             });
         }
+        healthData = data;
 
         renderBanner(data);
         renderKPIs(data);
@@ -898,13 +1205,16 @@ async function refresh() {
 
         document.getElementById("raw-json").textContent = JSON.stringify(data, null, 2);
     } catch (e) {
+        const banner = document.getElementById("ops-banner");
+        banner.className = "ops-banner down";
         document.getElementById("ops-status-badge").className = "ops-status-badge down";
+        document.getElementById("ops-pulse").className = "pulse down";
         document.getElementById("ops-status-text").textContent = "DASHBOARD UNREACHABLE";
-        document.getElementById("banner-sub").textContent = "Cannot connect to /health — dashboard may be down";
+        document.getElementById("banner-sub").textContent = "Cannot connect to /health — dashboard service may be down";
         document.getElementById("kpi-row").innerHTML = `<div style="grid-column:1/-1;color:var(--red);font-family:var(--mono);font-size:12px;">Error: ${e.message}</div>`;
     }
     await loadIncidents();
-    await loadSentinelIncidents();
+    await loadSentinelIncidents(healthData ? healthData.health : []);
 }
 
 // ── Auto-refresh countdown ─────────────────────────────────────────────────

@@ -139,6 +139,29 @@ def _normalise(base: str, symbol: str, requested_expiry: Optional[str], payload:
 
     underlying_price = _safe_float(spot.get("last_trade_price") or spot.get("close") or chain[0].get("index_close"))
 
+    # Stale SSR spot cache validation: NiftyTrader Next.js static pages can freeze on old timestamps (e.g. SENSEX)
+    spot_ts = spot.get("timestamp") or spot.get("created_at")
+    if spot_ts:
+        try:
+            from datetime import timedelta, timezone
+            IST = timezone(timedelta(hours=5, minutes=30))
+            ts_str = str(spot_ts).replace("Z", "+00:00")
+            ts_dt = datetime.fromisoformat(ts_str)
+            if ts_dt.tzinfo is None:
+                ts_dt = ts_dt.replace(tzinfo=IST)
+            else:
+                ts_dt = ts_dt.astimezone(IST)
+            now_ist = datetime.now(IST)
+            # If spot timestamp is from a prior calendar day and market is open or past 09:15 on a weekday, reject
+            if ts_dt.date() < now_ist.date() and now_ist.weekday() < 5 and (now_ist.hour > 9 or (now_ist.hour == 9 and now_ist.minute >= 15)):
+                log.warning(
+                    "[niftytrader] %s spot timestamp %s is from a prior date (today is %s) — rejecting stale SSR feed",
+                    base, ts_dt.strftime("%Y-%m-%d %H:%M:%S"), now_ist.strftime("%Y-%m-%d"),
+                )
+                return None
+        except Exception as exc:
+            log.debug("[niftytrader] failed to validate spot timestamp %s: %s", spot_ts, exc)
+
     strikes = []
     for item in chain:
         strike_price = _safe_float(item.get("strike_price"))

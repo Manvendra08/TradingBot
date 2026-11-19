@@ -666,3 +666,19 @@ Pre-open session uses a call auction mechanism to discover a single equilibrium 
      - A10: Direction-aware confidence scoring: PCR confluence and level proximity require alignment with `verdict_bias`; broken levels yield 0 bonus; neutral alerts earn 0; contract alerts deduplicated; zero chart bonus in `intelligence.py`.
      - A17: `select_candidate` strictly enforces out-of-the-money (OTM) strikes for single-leg SELL options in `trade_plan.py`.
      - A19: LLM `instrument` override blocked from inverting option types on SELL plans in `paper_plan.py`.
+
+
+### F156: Frozen Underlying Spot Detection & Multi-Leg Exit Alerting (P0-CRITICAL)
+- **Symptom:** SENSEX Iron Condor (Trade #48/#49) entered on DTE 1 and held past its stop loss on expiry day for an ₹84.3k loss without `TESTED_SIDE` triggering; no Telegram/Discord alert sent by Ops Agent or Trading Engine.
+- **Root Cause:**
+  1. Primary fetcher for SENSEX (`niftytrader`) fetched static Next.js SSR HTML (`/bse-option-chain`), which froze `initialSpot` on the prior session's close (`82047.91`) for 5.5 hours, blinding the engine from detecting the real spot breakout above the short strike (`82500`).
+  2. Scan Sentinel had 22 rules but lacked a check for frozen/stale spot prices across consecutive market-hour scans.
+  3. Routine scan digest was suppressed by `ENABLE_ZERO_SIGNAL_TELEGRAM=False` because the open position check only queried single-leg `open_trade`, ignoring open multi-leg books (`multi_leg_trades`).
+  4. Multi-leg book closures in `close_book()` did not dispatch Telegram exit notifications.
+- **Self-Heal & Fix:**
+  1. `NiftyTraderFetcher` rejects spot data whose timestamp date is prior to today during active market hours.
+  2. `router.py` prioritizes `shoonya` and `sensibull` before `niftytrader` for SENSEX, and implements a Stale Spot Guard rejecting feeds with frozen underlying across $\ge 3$ consecutive market scans.
+  3. `ScanSentinel` implements rule `R23_STALE_UNDERLYING_PRICE` (CRITICAL) and dispatches instant Telegram Ops alerts upon anomaly diagnosis.
+  4. `close_book()` in `src/models/schema.py` automatically dispatches detailed Telegram exit alerts (P&L, exit reason, spot progression) for all closed multi-leg books.
+  5. `pipeline.py` zero-signal suppression check accounts for `has_open_multileg`.
+  6. `ops_agent.py` implements playbook `P14_ALERT_RISK_BREACH` to monitor and escalate hard-risk breaches and large drawdowns independently.

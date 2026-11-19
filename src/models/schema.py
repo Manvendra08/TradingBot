@@ -2742,14 +2742,16 @@ def close_book(
         return
 
     trade_id = None
+    trade_meta = {}
     with get_conn() as conn:
         trade = conn.execute(
-            "SELECT id, reason, entry_reason, net_premium, structure, strategy_type, max_loss FROM multi_leg_trades WHERE book_id=? AND status='OPEN'",
+            "SELECT id, symbol, trade_mode, reason, entry_reason, net_premium, structure, strategy_type, max_loss, entry_underlying FROM multi_leg_trades WHERE book_id=? AND status='OPEN'",
             (book_id,),
         ).fetchone()
         if not trade:
             return
         trade_id = int(trade["id"])
+        trade_meta = dict(trade)
         orig_entry_reason = trade["entry_reason"] or trade["reason"] or ""
         stored_net_premium = float(trade["net_premium"] or 0.0)
 
@@ -2913,6 +2915,33 @@ def close_book(
             on_trade_closed()
         except Exception:
             pass
+
+        # Dispatch Multi-Leg Trade Exit Notification to Telegram
+        try:
+            from src.alerts.telegram_dispatcher import send_text
+            from datetime import datetime, timezone, timedelta
+            IST = timezone(timedelta(hours=5, minutes=30))
+            now_str = datetime.now(IST).strftime("%H:%M:%S IST")
+            t_mode = str(trade_meta.get("trade_mode") or "PAPER").upper()
+            t_sym = str(trade_meta.get("symbol") or symbol or "UNKNOWN")
+            pnl_val = round(float(book_pnl), 2)
+            pnl_emoji = "🟢" if pnl_val >= 0 else "🔴"
+            pnl_str = f"+₹{pnl_val:,.2f}" if pnl_val >= 0 else f"-₹{abs(pnl_val):,.2f}"
+            entry_und = float(trade_meta.get("entry_underlying") or 0.0)
+            exit_und_str = f"{float(exit_underlying):.1f}" if exit_underlying is not None else "N/A"
+            strat_str = str(trade_meta.get("strategy_type") or trade_meta.get("structure") or "MULTI_LEG").upper()
+
+            exit_msg = (
+                f"🛑 **MULTI-LEG EXIT | {t_sym} | {strat_str}** [{t_mode}]\n\n"
+                f"• **Book ID:** `#{book_id}`\n"
+                f"• **Exit Reason:** `{reason}`\n"
+                f"• **Realized P&L:** {pnl_emoji} **{pnl_str}**\n"
+                f"• **Spot:** `{entry_und:.1f}` ➔ `{exit_und_str}`\n"
+                f"• **Time:** {now_str}"
+            )
+            send_text(exit_msg)
+        except Exception as _te:
+            log.warning("close_book: failed to dispatch exit alert for %s: %s", book_id, _te)
 
 
 def close_leg(leg_id: int, closed_at: str, exit_premium: float, exit_reason: str) -> None:
@@ -3394,15 +3423,32 @@ def stamp_health(key: str, status: str, detail: str = "") -> None:
         conn.execute(sql, (key, status, detail, now_ist))
 
 
+def purge_expired_health_stamps() -> None:
+    """Purge transient health stamps like rescan_trigger_* older than 24h."""
+    try:
+        cutoff = (datetime.now(_IST) - timedelta(hours=24)).isoformat()
+        with get_conn() as conn:
+            conn.execute(
+                "DELETE FROM health_state WHERE key LIKE 'rescan_trigger_%' AND updated_at < ?",
+                (cutoff,)
+            )
+    except Exception as e:
+        log.debug("purge_expired_health_stamps failed: %s", e)
+
+
 def read_health_state() -> list[dict]:
-    """Read all health state rows (for /health endpoint and ops_agent)."""
+    """Read all health state rows (for /health endpoint and ops_agent), filtering expired rescan triggers."""
+    cutoff = (datetime.now(_IST) - timedelta(hours=24)).isoformat()
     with get_conn(read_only=True) as conn:
-        rows = conn.execute("SELECT * FROM health_state").fetchall()
+        rows = conn.execute(
+            "SELECT * FROM health_state WHERE NOT (key LIKE 'rescan_trigger_%' AND updated_at < ?)",
+            (cutoff,)
+        ).fetchall()
     return [dict(r) for r in rows]
 
 
 def read_health_state_ro() -> list[dict]:
-    """Read-only health state for ops_agent (separate connection, no WAL lock)."""
+    """Read-only health state for ops_agent (separate connection, no WAL lock), filtering expired rescan triggers."""
     try:
         db_uri = Path(DB_PATH).as_uri() + "?mode=ro"
         conn = sqlite3.connect(
@@ -3412,7 +3458,11 @@ def read_health_state_ro() -> list[dict]:
             timeout=5.0,
         )
         conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT * FROM health_state").fetchall()
+        cutoff = (datetime.now(_IST) - timedelta(hours=24)).isoformat()
+        rows = conn.execute(
+            "SELECT * FROM health_state WHERE NOT (key LIKE 'rescan_trigger_%' AND updated_at < ?)",
+            (cutoff,)
+        ).fetchall()
         conn.close()
         return [dict(r) for r in rows]
     except Exception:

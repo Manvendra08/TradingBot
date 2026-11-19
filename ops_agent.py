@@ -1389,6 +1389,61 @@ def run_playbooks(snap: HealthSnapshot, sm: StateMachine) -> list[PlaybookResult
     except Exception as e:
         log.warning("P13: Failed to check sentinel incidents: %s", e)
 
+    # ── P14: Large Drawdown / Hard Risk Trade Watchdog ──
+    try:
+        db_uri = Path(BOT_DB_PATH).as_uri() + "?mode=ro"
+        conn = sqlite3.connect(db_uri, uri=True, timeout=5.0)
+        conn.row_factory = sqlite3.Row
+
+        local_conn = _get_incidents_conn()
+        notified_p14 = {
+            str(r["trigger_state"])
+            for r in local_conn.execute("SELECT trigger_state FROM incidents WHERE playbook_id='P14'").fetchall()
+            if r["trigger_state"]
+        }
+        local_conn.close()
+
+        recent_risk_trades = conn.execute(
+            """
+            SELECT id, book_id, symbol, structure, strategy_type, total_pnl, exit_reason, closed_at, trade_mode
+            FROM multi_leg_trades
+            WHERE status='CLOSED' AND (exit_reason LIKE '%HARD_RISK%' OR total_pnl <= -20000)
+            ORDER BY id DESC LIMIT 10
+            """
+        ).fetchall()
+
+        for t in recent_risk_trades:
+            t_key = f"ml_{t['id']}"
+            if t_key not in notified_p14:
+                pnl = float(t["total_pnl"] or 0.0)
+                reason_str = str(t["exit_reason"] or "N/A")
+                sym = t["symbol"]
+                b_id = t["book_id"] or t["id"]
+                mode = t["trade_mode"] or "PAPER"
+                strat = t["strategy_type"] or t["structure"] or "MULTI_LEG"
+
+                _log_incident(
+                    playbook_id="P14",
+                    trigger=t_key,
+                    action="ALERT_RISK_BREACH",
+                    result="Alerted",
+                )
+
+                risk_msg = (
+                    f"🚨 **OPS AGENT | TRADE RISK WATCHDOG (P14)**\n\n"
+                    f"• **Symbol:** `{sym}` ({strat}) [{mode}]\n"
+                    f"• **Book:** `#{b_id}`\n"
+                    f"• **Loss:** **-₹{abs(pnl):,.2f}**\n"
+                    f"• **Exit Reason:** `{reason_str}`\n"
+                    f"• **Closed At:** `{t['closed_at']}`\n"
+                )
+                _escalate("P14", risk_msg, critical=True)
+                results.append(PlaybookResult(action_taken=f"P14_risk_{sym}_{b_id}", escalated=True, critical=True))
+
+        conn.close()
+    except Exception as e:
+        log.warning("P14: Failed to check risk trades: %s", e)
+
     return results
 
 
