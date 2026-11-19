@@ -1025,6 +1025,9 @@ def get_heavyweights_timeline(
     all_pillar_symbols = set()
     is_multi_day = (len(target_dates) > 1)
 
+    cum_day_offset_hw = 0.0
+    cum_day_offset_idx = 0.0
+
     for d_str in target_dates:
         d_rows = sessions.get(d_str, [])
         if not d_rows:
@@ -1049,20 +1052,28 @@ def get_heavyweights_timeline(
             idx_pts = round(float(r["net_points"]), 2)
             curr_stock_pts = {h["symbol"]: round(float(h.get("point_impact", 0.0)), 2) for h in hws}
 
+            # In multi-day mode, carry over prior days' closed points for a true continuous cumulative baseline
+            display_hw_cumulative = round(cum_day_offset_hw + hw_total_pts, 2) if is_multi_day else hw_total_pts
+            display_idx_net = round(cum_day_offset_idx + idx_pts, 2) if is_multi_day else idx_pts
+
             if idx == 0:
                 day_first_hw_pts = hw_total_pts
-                scan_delta = hw_total_pts
-                idx_scan_delta = idx_pts
+                # First scan of the session: scan delta is 0 to avoid conflating overnight gap into 15m intraday velocity
+                scan_delta = 0.0
+                idx_scan_delta = 0.0
                 stock_deltas = [
                     {
                         "symbol": h["symbol"],
                         "name": h.get("name", h["symbol"]),
-                        "delta": round(float(h.get("point_impact", 0.0)), 2),
+                        "delta": 0.0,
                         "impact": round(float(h.get("point_impact", 0.0)), 2),
                         "weight": round(float(h.get("weight", 0.0)), 2)
                     }
                     for h in hws
                 ]
+                stock_impacts_sorted = sorted(stock_deltas, key=lambda x: x["impact"], reverse=True)
+                top_pullers = stock_impacts_sorted[:3]
+                top_draggers = sorted(stock_deltas, key=lambda x: x["impact"])[:3]
             else:
                 scan_delta = round(hw_total_pts - (prev_hw_pts if prev_hw_pts is not None else 0.0), 2)
                 idx_scan_delta = round(idx_pts - (prev_idx_pts if prev_idx_pts is not None else 0.0), 2)
@@ -1078,15 +1089,14 @@ def get_heavyweights_timeline(
                         "impact": round(float(h.get("point_impact", 0.0)), 2),
                         "weight": round(float(h.get("weight", 0.0)), 2)
                     })
+                stock_deltas_sorted = sorted(stock_deltas, key=lambda x: x["delta"], reverse=True)
+                top_pullers = stock_deltas_sorted[:3]
+                top_draggers = sorted(stock_deltas, key=lambda x: x["delta"])[:3]
 
             day_last_hw_pts = hw_total_pts
 
-            stock_deltas_sorted = sorted(stock_deltas, key=lambda x: x["delta"], reverse=True)
-            top_pullers = stock_deltas_sorted[:3]
-            top_draggers = sorted(stock_deltas, key=lambda x: x["delta"])[:3]
-
-            divergence = round(hw_total_pts - idx_pts, 2)
-            hw_share = round((abs(hw_total_pts) / max(0.01, abs(idx_pts))) * 100.0, 1) if abs(idx_pts) > 0.1 else 100.0
+            divergence = round(display_hw_cumulative - display_idx_net, 2)
+            hw_share = round((abs(display_hw_cumulative) / max(0.01, abs(display_idx_net))) * 100.0, 1) if abs(display_idx_net) > 0.1 else 100.0
 
             try:
                 dt_obj = datetime.fromisoformat(r["scan_time"])
@@ -1096,8 +1106,8 @@ def get_heavyweights_timeline(
                 time_label = r["display_time"]
                 short_time = r["display_time"].split()[-2] if len(r["display_time"].split()) >= 2 else "09:15"
 
-            up_count = sum(1 for d in stock_deltas if d["delta"] > 0.05)
-            down_count = sum(1 for d in stock_deltas if d["delta"] < -0.05)
+            up_count = sum(1 for d in stock_deltas if (d["delta"] > 0.05 if idx > 0 else d["impact"] > 0.5))
+            down_count = sum(1 for d in stock_deltas if (d["delta"] < -0.05 if idx > 0 else d["impact"] < -0.5))
             total_stocks = max(1, len(stock_deltas))
 
             if up_count >= total_stocks * 0.7:
@@ -1117,10 +1127,11 @@ def get_heavyweights_timeline(
                 "time_label": time_label,
                 "short_time": short_time,
                 "spot_price": round(float(r["spot_price"]), 2),
-                "index_net_points": idx_pts,
+                "index_net_points": display_idx_net,
                 "index_scan_delta": idx_scan_delta,
-                "hw_cumulative_points": hw_total_pts,
+                "hw_cumulative_points": display_hw_cumulative,
                 "hw_scan_delta": scan_delta,
+                "hw_day_raw_points": hw_total_pts,
                 "divergence_points": divergence,
                 "hw_share_pct": min(100.0, hw_share),
                 "conviction": conviction,
@@ -1128,7 +1139,9 @@ def get_heavyweights_timeline(
                 "down_count": down_count,
                 "top_pullers": top_pullers,
                 "top_draggers": top_draggers,
-                "pillar_impacts": curr_stock_pts
+                "pillar_impacts": curr_stock_pts,
+                "is_session_open": (idx == 0),
+                "opening_gap_hw": hw_total_pts if (idx == 0) else 0.0
             })
 
             prev_hw_pts = hw_total_pts
@@ -1153,6 +1166,10 @@ def get_heavyweights_timeline(
             "hw_net_day_shift": round((day_last_hw_pts or 0.0) - (day_first_hw_pts or 0.0), 2),
             "divergence_points": round((day_last_hw_pts or 0.0) - float(last_row["net_points"]), 2)
         })
+
+        if is_multi_day:
+            cum_day_offset_hw += day_last_hw_pts or 0.0
+            cum_day_offset_idx += round(float(last_row["net_points"]), 2)
 
     latest_scan = timeline_scans[-1] if timeline_scans else {}
     latest_hw = latest_scan.get("hw_cumulative_points", 0.0)

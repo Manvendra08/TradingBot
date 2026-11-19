@@ -832,6 +832,7 @@
             }
             .hw-stat-val.pos { color: var(--green); }
             .hw-stat-val.neg { color: var(--red); }
+            .hw-stat-val.warn { color: var(--yellow, #f59e0b); }
             .hw-stat-badge {
                 font-family: var(--mono);
                 font-size: 11px;
@@ -2891,9 +2892,16 @@
                     deltaEl.textContent = `${isPos ? '+' : ''}${dVal.toFixed(2)} pts Δ`;
                     if (deltaSub) {
                         const lastScan = scans[scans.length - 1];
-                        if (lastScan && lastScan.top_pullers && lastScan.top_pullers.length) {
+                        if (lastScan && lastScan.is_session_open) {
+                            deltaSub.textContent = "Session Open (09:15 Print)";
+                        } else if (lastScan && dVal < 0 && lastScan.top_draggers && lastScan.top_draggers.length) {
+                            const topD = lastScan.top_draggers[0];
+                            const dStr = (topD.delta !== undefined && topD.delta !== 0) ? (topD.delta > 0 ? `+${topD.delta}` : `${topD.delta}`) : (topD.impact >= 0 ? `+${topD.impact}` : `${topD.impact}`);
+                            deltaSub.textContent = `Primary Drag: ${topD.symbol} (${dStr} pts)`;
+                        } else if (lastScan && lastScan.top_pullers && lastScan.top_pullers.length) {
                             const topM = lastScan.top_pullers[0];
-                            deltaSub.textContent = `Pillar Impulse: ${topM.symbol} (${topM.delta >= 0 ? '+' : ''}${topM.delta})`;
+                            const pStr = (topM.delta !== undefined && topM.delta !== 0) ? (topM.delta > 0 ? `+${topM.delta}` : `${topM.delta}`) : (topM.impact >= 0 ? `+${topM.impact}` : `${topM.impact}`);
+                            deltaSub.textContent = `Pillar Impulse: ${topM.symbol} (${pStr} pts)`;
                         } else {
                             deltaSub.textContent = "Latest scan velocity";
                         }
@@ -2904,11 +2912,21 @@
                 const divSub = document.getElementById("tl-stat-divergence-sub");
                 if (divEl) {
                     const divVal = hwTimelineData.divergence_points || 0;
-                    const isPos = divVal >= 0;
-                    divEl.className = `hw-stat-val ${isPos ? 'pos' : 'neg'}`;
-                    divEl.textContent = `${isPos ? '+' : ''}${divVal.toFixed(2)} pts`;
+                    const idxVal = hwTimelineData.latest_index_net_points || 0;
+                    // If index is down and divergence is positive, broader market fell MORE than heavyweights (liquidation/lagging).
+                    // Style as warn (amber) to avoid false bullish impression during selloffs.
+                    let divClass = "hw-stat-val";
+                    if (idxVal < 0) {
+                        divClass += (divVal > 0) ? " warn" : " neg";
+                    } else {
+                        divClass += (divVal >= 0) ? " pos" : " neg";
+                    }
+                    divEl.className = divClass;
+                    divEl.textContent = `${divVal >= 0 ? '+' : ''}${divVal.toFixed(2)} pts`;
                     if (divSub) {
-                        divSub.textContent = `${hwTimelineData.hw_share_pct || 0}% Heavyweight Share`;
+                        const share = hwTimelineData.hw_share_pct || 0;
+                        const note = (idxVal < 0 && divVal > 0) ? `Broader Lagging (${share}% HW)` : `${share}% Heavyweight Share`;
+                        divSub.textContent = note;
                     }
                 }
 
