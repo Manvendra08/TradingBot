@@ -317,8 +317,8 @@ def _provider_order(base_symbol: str) -> list[str]:
     except (ImportError, AttributeError):
         pass
     
-    # Default: Dhan Builtup primary, Yahoo Finance fallback, Shoonya last
-    return ["dhan_builtup", "yfinance", "shoonya"]
+    # Default: Zerodha Kite primary, Dhan Builtup secondary, Yahoo Finance fallback, Shoonya last
+    return ["kite", "dhan_builtup", "yfinance", "shoonya"]
 
 
 @contextlib.contextmanager
@@ -1134,6 +1134,100 @@ def _fetch_shoonya_candles(
     return payload
 
 
+def _fetch_kite_candles(
+    base_symbol: str, tf: str, reference_price: float | None = None
+) -> Optional[dict]:
+    """
+    Fetch OHLC candle data from Zerodha Kite Connect historical API.
+    - Resolves instrument token for indices (NSE/BSE) and near-month commodities (MCX).
+    - Requests 60minute bars; 3H or other timeframes are aggregated via market-grid logic.
+    - Returns exchange-native INR prices.
+    """
+    try:
+        from src.fetchers.kite_fetcher import get_kite_data_client
+
+        client = get_kite_data_client()
+        if not client.is_authenticated():
+            return None
+
+        token = client.resolve_instrument_token(base_symbol)
+        if not token:
+            log.debug("[chart] kite: could not resolve instrument token for %s", base_symbol)
+            return None
+
+        to_date = datetime.now(IST)
+        from_date = to_date - timedelta(days=30)  # 30 days of history for Wilder's ATR warm-up
+
+        raw_bars = client.get_historical_candles(
+            instrument_token=token,
+            interval="60minute",
+            from_date=from_date,
+            to_date=to_date,
+            continuous=False,
+            oi=True,
+        )
+        if not raw_bars:
+            log.debug("[chart] kite: no bars returned for %s token %s", base_symbol, token)
+            return None
+
+        bars: list[dict] = []
+        for r in raw_bars:
+            try:
+                dt_val = r.get("date")
+                if isinstance(dt_val, datetime):
+                    ts = dt_val.timestamp()
+                else:
+                    continue
+                bars.append(
+                    {
+                        "Open": float(r["open"]),
+                        "High": float(r["high"]),
+                        "Low": float(r["low"]),
+                        "Close": float(r["close"]),
+                        "_ts": float(ts),
+                    }
+                )
+            except Exception:
+                continue
+
+        if not bars:
+            return None
+
+        if tf.endswith("m"):
+            tf_mins = int(tf[:-1])
+        elif tf.endswith("h"):
+            tf_mins = int(tf[:-1]) * 60
+        elif tf.endswith("d"):
+            tf_mins = int(tf[:-1]) * 1440
+        else:
+            tf_mins = 60
+
+        agg_bars = _aggregate_bars_grid(bars, tf_mins, base_symbol)
+        payload = _payload_from_grid_bars(agg_bars)
+        if not payload:
+            log.debug(
+                "[chart] kite: grid aggregation produced no completed bar for %s %s",
+                base_symbol,
+                tf,
+            )
+            return None
+
+        atr = _calculate_atr_from_bars(agg_bars, period=14)
+        if atr is not None:
+            payload["atr_14"] = atr
+
+        log.info(
+            "[chart] successfully fetched %s %s using kite (token=%s)",
+            base_symbol,
+            tf,
+            token,
+        )
+        return payload
+    except Exception as exc:
+        log.warning("[chart] kite candle fetch failed for %s %s: %s", base_symbol, tf, exc)
+        return None
+
+
 def _fetch_tv(base_symbol: str, tf: str) -> Optional[dict]:
     if not _tvdatafeed_available():
         return None
@@ -1481,7 +1575,12 @@ class ChartFetcher:
             higher_priority_failed = False
 
             for provider in _provider_order(base):
-                if provider == "shoonya":
+                if provider == "kite":
+                    payload = _fetch_kite_candles(
+                        base, tf, reference_price=reference_price
+                    )
+                    source = "kite"
+                elif provider == "shoonya":
                     payload = _fetch_shoonya_candles(
                         base, tf, reference_price=reference_price
                     )
@@ -1536,7 +1635,16 @@ class ChartFetcher:
         from src.fetchers.shoonya_fetcher import get_shoonya_fetcher
 
         shoonya = get_shoonya_fetcher()
+        kite_auth = False
+        try:
+            from src.fetchers.kite_fetcher import get_kite_data_client
+
+            kite_auth = get_kite_data_client().is_authenticated()
+        except Exception:
+            pass
+
         return {
+            "kite": kite_auth,
             "shoonya": bool(shoonya.access_token),
             "tv_disable": TV_DISABLE,
             "tvdatafeed": _tvdatafeed_available() and not TV_DISABLE,

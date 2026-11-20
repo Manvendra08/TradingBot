@@ -4277,14 +4277,23 @@
                 }
             }
 
-            function triggerKiteLogin() {
+            async function triggerKiteLogin() {
+                if (!brokerStatus || !brokerStatus.api_key) {
+                    try {
+                        const r = await fetch("/api/broker_status");
+                        brokerStatus = await r.json();
+                        updateAuthIndicator();
+                    } catch (e) {
+                        console.error("Failed to fetch broker status:", e);
+                    }
+                }
                 if (brokerStatus && brokerStatus.status === "CONNECTED") {
-                    alert("Kite is already connected and active for today!");
+                    alert("Kite is already connected and active for today! Session is live.");
                     return;
                 }
                 const apiKey = brokerStatus ? brokerStatus.api_key : null;
                 if (!apiKey) {
-                    alert("API Key is not configured yet. Opening credentials setup...");
+                    alert("API Key is not configured yet in the database. Opening credentials setup...");
                     openCredentialsModal();
                     return;
                 }

@@ -982,12 +982,29 @@ _LIVE_QUOTES_CACHE = {
 
 
 def _fetch_live_market_quotes(today_ist_str: str = None) -> dict:
-    """Fetch real-time index prices and exact previous session close from Yahoo Finance.
+    """Fetch real-time index and commodity quotes.
+    Prioritizes Zerodha Kite Connect live quotes.
+    Falls back to Yahoo Finance HTTP API.
     Caches results for 10 seconds to prevent outbound throttling.
     """
     now = time.time()
     if now - _LIVE_QUOTES_CACHE["ts"] < 10.0 and _LIVE_QUOTES_CACHE["quotes"]:
         return _LIVE_QUOTES_CACHE["quotes"]
+
+    # 1. Primary: Zerodha Kite Connect live quotes
+    try:
+        from src.fetchers.kite_fetcher import get_kite_data_client
+        kite_client = get_kite_data_client()
+        if kite_client.is_authenticated():
+            quotes = kite_client.get_market_quotes(
+                ["NIFTY", "BANKNIFTY", "SENSEX", "INDIAVIX", "NATURALGAS", "CRUDEOIL"]
+            )
+            if quotes and "NIFTY" in quotes and "BANKNIFTY" in quotes:
+                _LIVE_QUOTES_CACHE["quotes"] = quotes
+                _LIVE_QUOTES_CACHE["ts"] = now
+                return _LIVE_QUOTES_CACHE["quotes"]
+    except Exception as exc:
+        log.debug("[dashboard] Kite live market quotes failed: %s", exc)
 
     import urllib.request
     from concurrent.futures import ThreadPoolExecutor
@@ -1117,15 +1134,15 @@ def get_topbar_cmps():
         else:
             res[sym] = None
 
-    # Enrich / reconcile with authoritative live market quotes for indices
+    # Enrich / reconcile with authoritative live market quotes for indices and commodities
     try:
         live_q = _fetch_live_market_quotes()
         for sym, q in live_q.items():
-            if sym in ("NIFTY", "BANKNIFTY", "SENSEX") and q.get("price") and q.get("prev_close"):
+            if sym in ("NIFTY", "BANKNIFTY", "SENSEX", "NATURALGAS", "CRUDEOIL") and q.get("price") and q.get("prev_close"):
                 p = q["price"]
                 pc = q["prev_close"]
-                chg = p - pc
-                pct = (chg / pc) * 100
+                chg = q.get("change", p - pc)
+                pct = q.get("pct_change", ((p - pc) / pc) * 100 if pc else 0.0)
                 res[sym] = {
                     "price": round(p, 2),
                     "change": round(chg, 2),

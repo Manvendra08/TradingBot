@@ -254,16 +254,19 @@ STRIKES_AROUND_ATM = int(os.environ.get("STRIKES_AROUND_ATM", "15"))
 # ── Fetcher Priority ────────────────────────────────────────────────────────────────────────────────────────────
 # Order in which fetchers are tried for each symbol.
 FETCHER_PRIORITY = {
-    "NIFTY": ["niftytrader", "shoonya", "sensibull", "dhan_headless", "nse_public", "moneycontrol"],
-    "BANKNIFTY": ["niftytrader", "shoonya", "sensibull", "dhan_headless", "nse_public", "moneycontrol"],
-    "FINNIFTY": ["niftytrader", "shoonya", "sensibull", "dhan_headless", "nse_public", "moneycontrol"],
-    "MIDCPNIFTY": ["niftytrader", "shoonya", "sensibull", "dhan_headless", "nse_public", "moneycontrol"],
-    "SENSEX": ["niftytrader", "shoonya", "sensibull", "dhan_headless", "nse_public", "moneycontrol"],
-    "NATURALGAS": ["dhan_commodity", "shoonya", "niftytrader", "moneycontrol", "dhan"],
-    "CRUDEOIL": ["dhan_commodity", "shoonya", "niftytrader", "moneycontrol", "dhan"],
-    "GOLD": ["dhan_commodity", "shoonya", "niftytrader", "moneycontrol", "dhan"],
-    "SILVER": ["dhan_commodity", "shoonya", "niftytrader", "moneycontrol", "dhan"],
+    "NIFTY": ["kite", "niftytrader", "shoonya", "sensibull", "dhan_headless", "nse_public", "moneycontrol"],
+    "BANKNIFTY": ["kite", "niftytrader", "shoonya", "sensibull", "dhan_headless", "nse_public", "moneycontrol"],
+    "FINNIFTY": ["kite", "niftytrader", "shoonya", "sensibull", "dhan_headless", "nse_public", "moneycontrol"],
+    "MIDCPNIFTY": ["kite", "niftytrader", "shoonya", "sensibull", "dhan_headless", "nse_public", "moneycontrol"],
+    "SENSEX": ["kite", "niftytrader", "shoonya", "sensibull", "dhan_headless", "nse_public", "moneycontrol"],
+    "NATURALGAS": ["kite", "dhan_commodity", "shoonya", "niftytrader", "moneycontrol", "dhan"],
+    "CRUDEOIL": ["kite", "dhan_commodity", "shoonya", "niftytrader", "moneycontrol", "dhan"],
+    "GOLD": ["kite", "dhan_commodity", "shoonya", "niftytrader", "moneycontrol", "dhan"],
+    "SILVER": ["kite", "dhan_commodity", "shoonya", "niftytrader", "moneycontrol", "dhan"],
 }
+
+# Order in which chart providers are tried for candles (1H, 3H)
+CHART_PROVIDER_PRIORITY = ["kite", "dhan_builtup", "yfinance", "shoonya"]
 
 LOG_LEVEL = "INFO"
 LOG_ROTATION = "midnight"

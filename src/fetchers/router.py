@@ -31,6 +31,11 @@ try:
 except ImportError:
     ShoonyaFetcher = None
 
+try:
+    from src.fetchers.kite_fetcher import KiteFetcher
+except ImportError:
+    KiteFetcher = None
+
 log = logging.getLogger(__name__)
 
 _MCX_COMMODITIES = {"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"}
@@ -45,6 +50,8 @@ _FETCHERS = {
     "dhan_headless": DhanHeadlessFetcher,
     "moneycontrol": MoneycontrolFetcher,
 }
+if KiteFetcher is not None:
+    _FETCHERS["kite"] = KiteFetcher
 if ShoonyaFetcher is not None:
     _FETCHERS["shoonya"] = ShoonyaFetcher
 if SensibullFetcher is not None:
@@ -121,11 +128,11 @@ def _priority_for(symbol: str) -> list[str]:
     
     # Default priorities per symbol class
     if base in _MCX_COMMODITIES:
-        return ["dhan_commodity", "shoonya", "niftytrader", "moneycontrol", "dhan"]
+        return ["kite", "dhan_commodity", "shoonya", "niftytrader", "moneycontrol", "dhan"]
     if base == "SENSEX":
-        return ["shoonya", "sensibull", "dhan_headless", "niftytrader", "nse_public", "moneycontrol"]
+        return ["kite", "shoonya", "sensibull", "dhan_headless", "niftytrader", "nse_public", "moneycontrol"]
     return [
-        "niftytrader", "shoonya", "sensibull", "dhan_headless", "nse_public", "moneycontrol",
+        "kite", "niftytrader", "shoonya", "sensibull", "dhan_headless", "nse_public", "moneycontrol",
     ]
 
 
