@@ -382,9 +382,36 @@
                 </div>
             </header>
 
+            <!-- Signal Standby Banner (visible when Symbol=ALL or no active live signal) -->
+            <div
+                id="ai-signal-idle-strip"
+                class="ai-card"
+                style="
+                    display: none;
+                    margin-bottom: 16px;
+                    padding: 12px 18px;
+                    background: var(--surface);
+                    border: 1px solid var(--border);
+                    border-radius: 8px;
+                    font-size: 13px;
+                    align-items: center;
+                    justify-content: space-between;
+                "
+            >
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-size: 16px;">⚡</span>
+                    <div>
+                        <strong style="color: var(--text);">Signal Diagnostics Standby:</strong>
+                        <span style="color: var(--text-dim);">No active signal currently firing. Live ML Success Probability and Trade DNA are parked to maximize view of Edge Health &amp; Verified Patterns below.</span>
+                    </div>
+                </div>
+                <span class="ai-pill ai-pill--neutral" style="font-size: 11px;">Select symbol with live signal to expand</span>
+            </div>
+
             <!-- HERO: ML Success Probability -->
             <article
                 class="ai-card ai-card--hero"
+                id="ai-ml-card"
                 aria-labelledby="ai-ml-title"
             >
                 <h3 id="ai-ml-title" class="ai-card__title">
@@ -413,8 +440,8 @@
             </article>
 
             <!-- Two-column: Trade DNA + Edge Health -->
-            <div class="ai-grid-2">
-                <article class="ai-card" aria-labelledby="ai-dna-title">
+            <div class="ai-grid-2" id="ai-signal-grid">
+                <article class="ai-card" id="ai-dna-card" aria-labelledby="ai-dna-title">
                     <h3 id="ai-dna-title" class="ai-card__title">
                         🧬 Trade DNA
                     </h3>
@@ -440,7 +467,7 @@
                     </div>
                 </article>
 
-                <article class="ai-card" aria-labelledby="ai-edge-title">
+                <article class="ai-card" id="ai-edge-card" aria-labelledby="ai-edge-title">
                     <h3 id="ai-edge-title" class="ai-card__title">
                         📉 Edge Health
                     </h3>
@@ -541,10 +568,8 @@
                             >Decision Audit Logs</span
                         >
                     </div>
-                    <div style="display: flex; gap: 12px; align-items: center">
-                        <div
-                            style="display: flex; align-items: center; gap: 6px"
-                        >
+                    <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                        <div style="display: flex; align-items: center; gap: 5px">
                             <label
                                 for="audit-engine-filter"
                                 style="
@@ -574,6 +599,70 @@
                                 <option value="TIMEFRAME">TIMEFRAME</option>
                             </select>
                         </div>
+                        <div style="display: flex; align-items: center; gap: 5px">
+                            <label
+                                for="audit-action-filter"
+                                style="
+                                    font-size: 11px;
+                                    text-transform: uppercase;
+                                    color: var(--text-dim);
+                                    font-weight: 600;
+                                "
+                                >Decision:</label
+                            >
+                            <select
+                                id="audit-action-filter"
+                                onchange="loadDecisionAudit()"
+                                class="btn"
+                                style="
+                                    background: var(--bg);
+                                    color: var(--text);
+                                    border: 1px solid var(--border);
+                                    font-size: 11px;
+                                    padding: 2px 6px;
+                                    border-radius: 4px;
+                                    height: auto;
+                                "
+                            >
+                                <option value="">ALL</option>
+                                <option value="TRADE">TRADE</option>
+                                <option value="SKIP">SKIP</option>
+                            </select>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 5px">
+                            <label
+                                for="audit-step-filter"
+                                style="
+                                    font-size: 11px;
+                                    text-transform: uppercase;
+                                    color: var(--text-dim);
+                                    font-weight: 600;
+                                "
+                                >Block Step:</label
+                            >
+                            <select
+                                id="audit-step-filter"
+                                onchange="loadDecisionAudit()"
+                                class="btn"
+                                style="
+                                    background: var(--bg);
+                                    color: var(--text);
+                                    border: 1px solid var(--border);
+                                    font-size: 11px;
+                                    padding: 2px 6px;
+                                    border-radius: 4px;
+                                    height: auto;
+                                "
+                            >
+                                <option value="">ALL</option>
+                                <option value="signal">signal</option>
+                                <option value="tfss_handoff">tfss_handoff</option>
+                                <option value="entry_quality">entry_quality</option>
+                                <option value="time">time</option>
+                                <option value="risk">risk</option>
+                                <option value="ai">ai</option>
+                            </select>
+                        </div>
                         <button
                             class="btn"
                             onclick="loadDecisionAudit()"
@@ -591,6 +680,35 @@
                             Refresh
                         </button>
                     </div>
+                </div>
+
+                <!-- Audit Funnel Summary Strip -->
+                <div
+                    id="audit-funnel-strip"
+                    style="
+                        display: flex;
+                        gap: 12px;
+                        flex-wrap: wrap;
+                        margin-bottom: 16px;
+                        padding: 10px 14px;
+                        background: var(--surface-2);
+                        border-radius: 6px;
+                        border: 1px solid var(--border);
+                        font-size: 11.5px;
+                        font-family: var(--mono);
+                        align-items: center;
+                    "
+                >
+                    <span style="color: var(--text-dim); font-weight: 700; letter-spacing: 0.8px;">FUNNEL AUDIT:</span>
+                    <span id="funnel-total" style="color: var(--text); font-weight: 700;">-- Evaluated</span>
+                    <span style="color: var(--border);">•</span>
+                    <span id="funnel-executed" style="color: var(--green); font-weight: 700;">-- Executed</span>
+                    <span style="color: var(--border);">•</span>
+                    <span id="funnel-signal" style="color: var(--yellow); font-weight: 700;">-- Signal Filtered</span>
+                    <span style="color: var(--border);">•</span>
+                    <span id="funnel-tfss" style="color: #f97316; font-weight: 700;">-- TFSS Vetoed</span>
+                    <span style="color: var(--border);">•</span>
+                    <span id="funnel-risk" style="color: var(--red); font-weight: 700;">-- Risk / Timing Blocked</span>
                 </div>
                 <div
                     style="
@@ -780,21 +898,80 @@
                 loadDecisionAudit();
             });
 
+            async function updateFunnelStats(sym) {
+                try {
+                    const symbolParam = sym === "ALL" ? "" : sym;
+                    const res = await fetch(
+                        `/api/decisions/stats?symbol=${encodeURIComponent(symbolParam)}`,
+                    );
+                    if (!res.ok) return;
+                    const stats = await res.json();
+                    const elTotal = document.getElementById("funnel-total");
+                    const elExec = document.getElementById("funnel-executed");
+                    const elSig = document.getElementById("funnel-signal");
+                    const elTfss = document.getElementById("funnel-tfss");
+                    const elRisk = document.getElementById("funnel-risk");
+
+                    if (elTotal) elTotal.textContent = `${stats.total_evaluated || 0} Evaluated`;
+                    if (elExec) elExec.textContent = `${stats.executed || 0} Executed`;
+                    if (elSig) elSig.textContent = `${stats.signal_blocked || 0} Signal Filtered`;
+                    if (elTfss) elTfss.textContent = `${stats.tfss_vetoed || 0} TFSS Vetoed`;
+                    if (elRisk) elRisk.textContent = `${stats.risk_blocked || 0} Risk/Timing Blocked`;
+                } catch (e) {
+                    console.error("Funnel stats error:", e);
+                }
+            }
+
             async function loadDecisionAudit() {
                 const sym = document.getElementById("ai-symbol-sel").value;
                 const engine =
                     document.getElementById("audit-engine-filter").value || "";
+                const action =
+                    document.getElementById("audit-action-filter").value || "";
+                const blockStep =
+                    document.getElementById("audit-step-filter").value || "";
                 const symbolParam = sym === "ALL" ? "" : sym;
+
+                updateFunnelStats(sym);
+
                 try {
-                    const res = await fetch(
-                        `/api/decisions?symbol=${encodeURIComponent(symbolParam)}&engine=${encodeURIComponent(engine)}&limit=20`,
-                    );
+                    let url = `/api/decisions?limit=40`;
+                    if (symbolParam) url += `&symbol=${encodeURIComponent(symbolParam)}`;
+                    if (engine) url += `&engine=${encodeURIComponent(engine)}`;
+                    if (action) url += `&action=${encodeURIComponent(action)}`;
+                    if (blockStep) url += `&block_step=${encodeURIComponent(blockStep)}`;
+
+                    const res = await fetch(url);
                     if (!res.ok) throw new Error("Failed to fetch decisions");
                     const data = await res.json();
                     renderDecisionAudit(data);
                 } catch (e) {
                     console.error("Decision audit error:", e);
                 }
+            }
+
+            function renderScorePill(label, val) {
+                if (val === null || val === undefined || val === "" || val < 0) {
+                    return `<span title="${label}" style="background: var(--surface-2); border: 1px solid var(--border); padding: 2px 6px; border-radius: 4px; color: var(--text-dim);"><span style="color: var(--text-dim); font-size: 9px; margin-right: 2px;">${label}:</span>—</span>`;
+                }
+                const num = Math.round(Number(val));
+                let borderCol = "var(--border)";
+                let textCol = "var(--text)";
+                let bgCol = "var(--surface-2)";
+                if (num >= 80) {
+                    borderCol = "rgba(0, 229, 160, 0.4)";
+                    textCol = "var(--green)";
+                    bgCol = "rgba(0, 229, 160, 0.08)";
+                } else if (num >= 50) {
+                    borderCol = "rgba(255, 209, 102, 0.4)";
+                    textCol = "var(--yellow)";
+                    bgCol = "rgba(255, 209, 102, 0.08)";
+                } else {
+                    borderCol = "rgba(255, 77, 109, 0.4)";
+                    textCol = "var(--red)";
+                    bgCol = "rgba(255, 77, 109, 0.08)";
+                }
+                return `<span title="${label} Score: ${num}%" style="background: ${bgCol}; border: 1px solid ${borderCol}; padding: 2px 6px; border-radius: 4px; color: ${textCol}; font-weight: 700;"><span style="color: var(--text-dim); font-size: 9px; margin-right: 2px;">${label}:</span>${num}%</span>`;
             }
 
             function renderDecisionAudit(data) {
@@ -805,16 +982,13 @@
           <tr>
             <td colspan="6">
               <div class="empty-state" style="text-align: center; padding: 40px; color: var(--text-dim);">
-                No decision audits found
+                No decision audits found matching filter criteria
               </div>
             </td>
           </tr>
         `;
                     return;
                 }
-
-                const fmtScore = (val) =>
-                    val !== null && val >= 0 ? val : "-";
 
                 body.innerHTML = data
                     .map((d, idx) => {
@@ -872,10 +1046,10 @@
             </td>
             <td style="padding: 12px 14px; white-space: nowrap;">
               <div style="display: flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 11px;">
-                <span title="Signal Score" style="background: var(--surface-2); border: 1px solid var(--border); padding: 2px 6px; border-radius: 4px; color: var(--text);"><span style="color: var(--text-dim); font-size: 9px; margin-right: 2px;">S:</span>${fmtScore(d.signal_score)}</span>
-                <span title="Entry Quality" style="background: var(--surface-2); border: 1px solid var(--border); padding: 2px 6px; border-radius: 4px; color: var(--text);"><span style="color: var(--text-dim); font-size: 9px; margin-right: 2px;">Q:</span>${fmtScore(d.entry_quality)}</span>
-                <span title="Trend Score" style="background: var(--surface-2); border: 1px solid var(--border); padding: 2px 6px; border-radius: 4px; color: var(--text);"><span style="color: var(--text-dim); font-size: 9px; margin-right: 2px;">T:</span>${fmtScore(d.trend_score)}</span>
-                <span title="Regime Score" style="background: var(--surface-2); border: 1px solid var(--border); padding: 2px 6px; border-radius: 4px; color: var(--text);"><span style="color: var(--text-dim); font-size: 9px; margin-right: 2px;">R:</span>${fmtScore(d.regime_score)}</span>
+                ${renderScorePill("S", d.signal_score)}
+                ${renderScorePill("Q", d.entry_quality)}
+                ${renderScorePill("T", d.trend_score)}
+                ${renderScorePill("R", d.regime_score)}
               </div>
             </td>
             <td style="padding: 12px 14px; min-width: 240px; max-width: 420px;">

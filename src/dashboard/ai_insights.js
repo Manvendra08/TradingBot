@@ -29,8 +29,8 @@ const AIInsights = {
 
   // ── Configuration ──────────────────────────────────────────────────────────
   POLL_INTERVAL_MS: 30000, // 30 seconds
-  MAX_PATTERNS: 6,
-  MAX_EDGE_STRATEGIES: 6,
+  MAX_PATTERNS: 24,
+  MAX_EDGE_STRATEGIES: 8,
 
   // ── Shared Helpers ─────────────────────────────────────────────────────────
 
@@ -43,6 +43,27 @@ const AIInsights = {
       /[&<>"]/g,
       (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c],
     );
+  },
+
+  /**
+   * Currency formatter that handles negative amounts as -₹X rather than ₹-X.
+   */
+  _fmtCurrency(val) {
+    const n = Math.round(val || 0);
+    if (n < 0) {
+      return `-₹${Math.abs(n).toLocaleString()}`;
+    }
+    return `₹${n.toLocaleString()}`;
+  },
+
+  /**
+   * Net PnL formatter with explicit +/- prefix.
+   */
+  _fmtNetPnl(val) {
+    const n = Math.round(val || 0);
+    if (n > 0) return `+₹${n.toLocaleString()}`;
+    if (n < 0) return `-₹${Math.abs(n).toLocaleString()}`;
+    return `₹0`;
   },
 
   /**
@@ -64,11 +85,11 @@ const AIInsights = {
       "!": "warn",
     };
     const cls = colorMap[tag] || "neutral";
-    const parts = rest.split(/\s*-\s*/);
+    const parts = rest.split(/\s*[-·•]\s*/);
     if (parts.length > 1) {
       const badgeText = parts[0];
-      const explanation = parts.slice(1).join(" - ");
-      return `<span class="ai-pill ai-pill--${cls}" style="margin-right:6px;font-size:10px;font-weight:700;">${this._esc(badgeText)}</span><span>${this._esc(explanation)}</span>`;
+      const explanation = parts.slice(1).join(" · ");
+      return `<span class="ai-pill ai-pill--${cls}" style="margin-right:6px;font-size:10px;font-weight:700;">${this._esc(badgeText)}</span><span style="font-family:var(--mono);font-size:11.5px;">${this._esc(explanation)}</span>`;
     }
     const label = tag === "!" ? "NOTICE" : tag;
     return `<span class="ai-pill ai-pill--${cls}" style="margin-right:6px;font-size:10px;font-weight:700;">${this._esc(label)}</span><span>${this._esc(rest)}</span>`;
@@ -142,15 +163,17 @@ const AIInsights = {
   /**
    * Map trend string to pill class and label.
    */
-  _trendPill(trend) {
+  _trendPill(trend, labelPrefix = "") {
     const map = {
       IMPROVING: ["good", "Improving"],
       DECLINING: ["bad", "Declining"],
       STABLE: ["neutral", "Stable"],
       INSUFFICIENT_HISTORY: ["neutral", "New"],
+      INSUFFICIENT_DATA: ["neutral", "N/A"],
     };
     const [cls, label] = map[trend] || ["neutral", trend || "Unknown"];
-    return `<span class="ai-pill ai-pill--${cls}">${this._esc(label)}</span>`;
+    const text = labelPrefix ? `${labelPrefix}: ${label}` : label;
+    return `<span class="ai-pill ai-pill--${cls}">${this._esc(text)}</span>`;
   },
 
   /**
@@ -345,15 +368,15 @@ const AIInsights = {
           <span class="ai-dna-stat__label">Similar trades</span>
         </div>
         <div class="ai-dna-stat">
-          <span class="ai-dna-stat__value">₹${Math.round(d.avg_pnl || 0).toLocaleString()}</span>
+          <span class="ai-dna-stat__value">${this._fmtCurrency(d.avg_pnl)}</span>
           <span class="ai-dna-stat__label">Avg P&L</span>
         </div>
         <div class="ai-dna-stat">
-          <span class="ai-dna-stat__value ai-is-good">₹${Math.round(d.avg_win || 0).toLocaleString()}</span>
+          <span class="ai-dna-stat__value ai-is-good">${this._fmtCurrency(d.avg_win)}</span>
           <span class="ai-dna-stat__label">Avg Win</span>
         </div>
         <div class="ai-dna-stat">
-          <span class="ai-dna-stat__value ai-is-bad">₹${Math.round(d.avg_loss || 0).toLocaleString()}</span>
+          <span class="ai-dna-stat__value ai-is-bad">${this._fmtCurrency(d.avg_loss)}</span>
           <span class="ai-dna-stat__label">Avg Loss</span>
         </div>
       </div>
@@ -384,31 +407,66 @@ const AIInsights = {
       }
 
       this._setState(el, "ready");
-      const rows = list
-        .slice(0, this.MAX_PATTERNS)
-        .map((p) => {
-          const s = this._status(p.win_rate, 0.6, 0.5);
 
-          return `
-          <div class="ai-row">
-            <div class="ai-row__head">
-              <span class="ai-row__name">${this._esc(p.name)}</span>
-              <span class="ai-pill ai-pill--${s.cls}"
-                    aria-label="${(p.win_rate * 100).toFixed(0)} percent win rate">
-                ${(p.win_rate * 100).toFixed(0)}%
-              </span>
-            </div>
-            <div class="ai-row__meta">
-              <span>${this._esc(p.sample_size)} trades</span>
-              <span>Avg ₹${Math.round(p.avg_pnl || 0).toLocaleString()}</span>
-              ${p.best_time && p.best_time !== "All day" ? `<span>Best: ${this._esc(p.best_time)}</span>` : ""}
-            </div>
-            <div class="ai-rec">${this._formatRec(p.recommendation || "")}</div>
-          </div>`;
-        })
-        .join("");
+      const dimMap = {
+        setup: { title: "Setup Patterns", icon: "⚡", items: [] },
+        regime: { title: "Market Regimes", icon: "🌐", items: [] },
+        confidence: { title: "Confidence Tiers", icon: "🎯", items: [] },
+        session: { title: "Session Windows", icon: "⏰", items: [] },
+      };
 
-      el.innerHTML = rows;
+      list.forEach((p) => {
+        const d = (p.dimension || "setup").toLowerCase();
+        if (dimMap[d]) {
+          dimMap[d].items.push(p);
+        } else {
+          dimMap.setup.items.push(p);
+        }
+      });
+
+      const renderPatternItem = (p) => {
+        const wr = (p.win_rate * 100).toFixed(0);
+        const netPnlStr = this._fmtNetPnl(p.net_pnl);
+        const pnlClass = (p.net_pnl || 0) >= 0 ? "ai-is-good" : "ai-is-bad";
+        const pf = Number(p.profit_factor || 0);
+        const pfClass = pf >= 1.4 ? "good" : pf >= 1.0 ? "warn" : "bad";
+
+        return `
+        <div class="ai-row" style="padding: 10px 0; border-top: 1px solid var(--ai-border);">
+          <div class="ai-row__head">
+            <span class="ai-row__name" style="font-size: 13px;">${this._esc(p.name)}</span>
+            <span class="ai-pill ai-pill--${pfClass}">
+              PF ${pf.toFixed(2)} · Win ${wr}%
+            </span>
+          </div>
+          <div class="ai-row__meta" style="margin-top: 4px; gap: 8px;">
+            <span>n=${this._esc(p.sample_size)}</span>
+            <span class="${pnlClass}" style="font-weight: 600;">Net ${netPnlStr}</span>
+            <span>Avg ${this._fmtCurrency(p.avg_pnl)}</span>
+            <span>W/L: ${this._fmtCurrency(p.avg_win)} / ${this._fmtCurrency(p.avg_loss)}</span>
+          </div>
+          <div class="ai-rec" style="margin-top: 5px;">${this._formatRec(p.recommendation || "")}</div>
+        </div>`;
+      };
+
+      const dimCards = Object.values(dimMap).map((dim) => {
+        const content = dim.items.length
+          ? dim.items.slice(0, 2).map(renderPatternItem).join("")
+          : `<div class="ai-micro" style="padding: 14px 0; text-align: center; color: var(--ai-text-dim);">No significant pattern detected yet (n < 10)</div>`;
+
+        return `
+        <div class="ai-pattern-dim" style="background: var(--ai-surface-2); border: 1px solid var(--ai-border); border-radius: 8px; padding: 14px 16px;">
+          <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.2px; color: var(--ai-text-dim); margin-bottom: 10px; display: flex; align-items: center; gap: 6px;">
+            <span>${dim.icon}</span> <span>${dim.title}</span>
+          </div>
+          ${content}
+        </div>`;
+      }).join("");
+
+      el.innerHTML = `
+        <div class="ai-patterns-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px;">
+          ${dimCards}
+        </div>`;
     } catch (e) {
       console.error("[AI Insights] Patterns failed:", e);
       this._error(el, () => this.loadPatterns());
@@ -442,10 +500,33 @@ const AIInsights = {
       const rows = list
         .slice(0, this.MAX_EDGE_STRATEGIES)
         .map((h) => {
-          const score = h.health_score || 0;
+          const score = h.health_score;
+          const sampleSize = h.sample_size || 0;
+          const isInsufficient = score === null || sampleSize < 15;
+          const winRate = h.current_win_rate || 0;
+
+          if (isInsufficient) {
+            return `
+            <div class="ai-row">
+              <div class="ai-row__head">
+                <span class="ai-row__name">${this._esc(h.strategy_name)}</span>
+                <span class="ai-pill ai-pill--neutral"
+                      style="font-weight:700;"
+                      aria-label="Insufficient sample size: ${sampleSize} of 15 trades">
+                  INSUFFICIENT DATA (n=${sampleSize}/15)
+                </span>
+              </div>
+              <div class="ai-row__meta">
+                <span>Win ${(winRate * 100).toFixed(0)}%</span>
+                <span class="ai-pill ai-pill--neutral">Sample: n=${sampleSize}</span>
+                ${this._trendPill(h.pnl_trend, "Drift")}
+              </div>
+              <div class="ai-rec">${this._formatRec(h.recommendation || "")}</div>
+            </div>`;
+          }
+
           const scoreClass =
             score >= 70 ? "good" : score >= 50 ? "warn" : "bad";
-          const winRate = h.current_win_rate || 0;
 
           return `
           <div class="ai-row">
@@ -458,8 +539,9 @@ const AIInsights = {
             </div>
             <div class="ai-row__meta">
               <span>Win ${(winRate * 100).toFixed(0)}%</span>
-              ${this._trendPill(h.win_rate_trend)}
-              ${this._trendPill(h.pnl_trend)}
+              <span class="ai-pill ai-pill--neutral">Sample: n=${sampleSize}</span>
+              ${this._trendPill(h.win_rate_trend, "Trend")}
+              ${this._trendPill(h.pnl_trend, "Drift")}
             </div>
             <div class="ai-rec">${this._formatRec(h.recommendation || "")}</div>
           </div>`;
@@ -490,9 +572,27 @@ const AIInsights = {
       pill.textContent = symbol || "—";
     }
 
+    // Toggle standby bar vs live signal cards
+    const idleStrip = document.getElementById("ai-signal-idle-strip");
+    const mlCard = document.getElementById("ai-ml-card");
+    const dnaCard = document.getElementById("ai-dna-card");
+    const grid = document.getElementById("ai-signal-grid");
+
+    const hasLiveSignal = !!(this.symbol && this.verdict);
+
+    if (idleStrip) idleStrip.style.display = hasLiveSignal ? "none" : "flex";
+    if (mlCard) mlCard.style.display = hasLiveSignal ? "block" : "none";
+    if (dnaCard) dnaCard.style.display = hasLiveSignal ? "block" : "none";
+    if (grid) {
+      grid.style.display = "grid";
+      grid.style.gridTemplateColumns = hasLiveSignal ? "1fr 1fr" : "1fr";
+    }
+
     // Reload ML and DNA panels with new context
-    this.loadML();
-    this.loadDNA();
+    if (hasLiveSignal) {
+      this.loadML();
+      this.loadDNA();
+    }
   },
 
   /**

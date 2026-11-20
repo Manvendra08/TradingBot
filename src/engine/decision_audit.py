@@ -42,7 +42,11 @@ def log_decision(ctx: PipelineContext, action: str, trade_id: int | None = None)
 
         for step in ctx.steps:
             if step.name == "signal":
-                signal_score = step.score if step.passed else None
+                signal_score = (
+                    step.score
+                    if (step.score is not None and step.score >= 0)
+                    else (step.data.get("confidence") if step.data else None)
+                )
             elif step.name == "rule":
                 rule_passed = 1 if step.passed else 0
             elif step.name == "ai":

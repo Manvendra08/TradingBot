@@ -4968,7 +4968,7 @@ async def zerodha_postback(request: Request):
 @app.get("/api/ai/patterns")
 async def get_ai_patterns(symbol: str = None):
     """
-    Get discovered trading patterns.
+    Get discovered trading patterns with full quant metrics.
 
     Uses module-level singleton + 5-min in-memory cache.
     Cache invalidates on trade close or after 5 minutes.
@@ -4987,8 +4987,13 @@ async def get_ai_patterns(symbol: str = None):
                 "sample_size": p.sample_size,
                 "recommendation": p.recommendation,
                 "best_time": p.best_time,
+                "profit_factor": getattr(p, "profit_factor", 0.0),
+                "net_pnl": getattr(p, "net_pnl", 0.0),
+                "avg_win": getattr(p, "avg_win", 0.0),
+                "avg_loss": getattr(p, "avg_loss", 0.0),
+                "dimension": getattr(p, "dimension", "Setup"),
             }
-            for p in patterns[:10]
+            for p in patterns[:24]
         ]
     except Exception as e:
         log.exception("Failed to get AI patterns")
@@ -5152,9 +5157,15 @@ async def get_ml_prediction(symbol: str, verdict: str = None, confidence: int = 
 
 
 @app.get("/api/decisions")
-async def get_decisions(symbol: str = None, engine: str = None, limit: int = 50):
+async def get_decisions(
+    symbol: str = None,
+    engine: str = None,
+    action: str = None,
+    block_step: str = None,
+    limit: int = 50,
+):
     """
-    Get recent decision audits from decision_audit table.
+    Get recent decision audits from decision_audit table with optional filters.
     """
     try:
         from src.models.schema import get_conn
@@ -5169,6 +5180,12 @@ async def get_decisions(symbol: str = None, engine: str = None, limit: int = 50)
         if engine:
             where_clauses.append("engine = ?")
             params.append(engine.upper())
+        if action:
+            where_clauses.append("action = ?")
+            params.append(action.upper())
+        if block_step:
+            where_clauses.append("block_step = ?")
+            params.append(block_step.lower())
 
         if where_clauses:
             query += " WHERE " + " AND ".join(where_clauses)
@@ -5196,23 +5213,55 @@ async def get_decisions(symbol: str = None, engine: str = None, limit: int = 50)
 @app.get("/api/decisions/stats")
 async def get_decision_stats(symbol: str = None):
     """
-    Get block step frequency distribution (how often each step blocks/fails).
+    Get funnel statistics and block step frequency distribution.
     """
     try:
         from src.models.schema import get_conn
 
-        query = "SELECT block_step, COUNT(*) as count FROM decision_audit WHERE action = 'SKIP'"
+        where_clause = ""
         params = []
         if symbol:
-            query += " AND symbol = ?"
+            where_clause = " WHERE symbol = ?"
             params.append(symbol.upper())
-        query += " GROUP BY block_step ORDER BY count DESC"
 
         with get_conn() as conn:
-            rows = conn.execute(query, params).fetchall()
-            return [
-                {"step": r["block_step"] or "None", "count": r["count"]} for r in rows
-            ]
+            total_eval = conn.execute(
+                f"SELECT COUNT(*) FROM decision_audit{where_clause}", params
+            ).fetchone()[0]
+
+            executed = conn.execute(
+                f"SELECT COUNT(*) FROM decision_audit WHERE action = 'TRADE'"
+                + (f" AND symbol = ?" if symbol else ""),
+                params if symbol else [],
+            ).fetchone()[0]
+
+            query_steps = (
+                f"SELECT block_step, COUNT(*) as count FROM decision_audit WHERE action = 'SKIP'"
+                + (f" AND symbol = ?" if symbol else "")
+                + " GROUP BY block_step ORDER BY count DESC"
+            )
+            step_rows = conn.execute(query_steps, params if symbol else []).fetchall()
+            steps = [{"step": r["block_step"] or "None", "count": r["count"]} for r in step_rows]
+
+            # Compute specific funnel counts
+            step_dict = {s["step"].lower(): s["count"] for s in steps}
+            signal_blocked = step_dict.get("signal", 0)
+            tfss_vetoed = step_dict.get("tfss_handoff", 0)
+            risk_blocked = sum(
+                step_dict.get(k, 0)
+                for k in ["risk", "entry_quality", "time", "holding", "max_trades", "loss_cap"]
+            )
+            ai_blocked = step_dict.get("ai", 0)
+
+            return {
+                "total_evaluated": total_eval,
+                "executed": executed,
+                "signal_blocked": signal_blocked,
+                "tfss_vetoed": tfss_vetoed,
+                "risk_blocked": risk_blocked,
+                "ai_blocked": ai_blocked,
+                "steps": steps,
+            }
     except Exception as e:
         log.exception("Failed to fetch decision stats")
         return JSONResponse({"error": str(e)}, status_code=500)

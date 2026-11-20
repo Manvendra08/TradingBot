@@ -384,22 +384,24 @@ def step_tfss_handoff_core(ctx: PipelineContext) -> StepResult:
     # Compute native persistence using the >=3 of last 5 rule
     persisted = compute_persisted_trend(ctx.symbol, ctx.scan_context)
     if not persisted.is_valid:
+        # Fall back to standard Core multi-leg strategy execution — do not veto high-conviction signals
         return StepResult(
             name="tfss_handoff",
-            passed=False,
-            score=0,
-            reason=f"TFSS Persistence Blocked: {persisted.reason}",
-            data={"tfss_eligible": True, "persisted": persisted.is_valid}
+            passed=True,
+            score=100,
+            reason=f"TFSS bypassed (trend not persisted: {persisted.reason}); routing to standard Core execution",
+            data={"tfss_eligible": False, "persisted": False, "reason": persisted.reason}
         )
         
     side_res = resolve_tfss_execution_side(tfss_intent, persisted)
     if isinstance(side_res, dict) and side_res.get("action") == "BLOCK":
+        # Fall back to standard Core multi-leg strategy execution
         return StepResult(
             name="tfss_handoff",
-            passed=False,
-            score=0,
-            reason=f"TFSS Blocked: {side_res.get('reason')}",
-            data={"tfss_eligible": True, "persisted": persisted.is_valid}
+            passed=True,
+            score=100,
+            reason=f"TFSS side blocked ({side_res.get('reason')}); routing to standard Core execution",
+            data={"tfss_eligible": False, "persisted": True, "reason": side_res.get("reason")}
         )
     
     # Store the TFSS resolution in scan_context for downstream steps

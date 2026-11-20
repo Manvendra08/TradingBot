@@ -505,6 +505,25 @@
   }
 }
 
+/* ── Patterns Grid ─────────────────────────────────────────────────────────── */
+.ai-patterns-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--ai-sp-4);
+}
+
+.ai-pattern-dim {
+  background: var(--ai-surface-2);
+  border: 1px solid var(--ai-border);
+  border-radius: var(--ai-radius-sm);
+  padding: var(--ai-sp-4);
+  transition: border-color 0.2s ease;
+}
+
+.ai-pattern-dim:hover {
+  border-color: color-mix(in srgb, var(--ai-accent) 25%, var(--ai-border));
+}
+
 /* ── Print ─────────────────────────────────────────────────────────────────── */
 @media print {
   .ai-insights {

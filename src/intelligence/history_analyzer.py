@@ -39,6 +39,11 @@ class PatternInsight:
     best_time: str  # e.g., "09:30-11:00"
     best_conditions: dict  # e.g., {"min_confidence": 75, "pcr_range": [1.1, 1.5]}
     recommendation: str  # actionable advice
+    profit_factor: float = 0.0
+    net_pnl: float = 0.0
+    avg_win: float = 0.0
+    avg_loss: float = 0.0
+    dimension: str = "setup"  # "setup", "regime", "confidence", "session"
 
 
 # -- Singleton + Cache (v2.2 FIX) ------------------------------------------------------------------------
@@ -170,17 +175,21 @@ class TradeHistoryAnalyzer:
 
                 patterns = []
                 for row in rows:
+                    conds = json.loads(row["best_conditions"]) if row["best_conditions"] else {}
                     patterns.append(
                         PatternInsight(
                             pattern_name=row["pattern_name"],
                             sample_size=row["sample_size"],
                             win_rate=row["win_rate"],
                             avg_pnl=row["avg_pnl"],
-                            best_time="All day",
-                            best_conditions=json.loads(row["best_conditions"])
-                            if row["best_conditions"]
-                            else {},
+                            best_time=conds.get("best_time", "All day"),
+                            best_conditions=conds,
                             recommendation=row["recommendation"],
+                            profit_factor=conds.get("profit_factor", 0.0),
+                            net_pnl=conds.get("net_pnl", 0.0),
+                            avg_win=conds.get("avg_win", 0.0),
+                            avg_loss=conds.get("avg_loss", 0.0),
+                            dimension=conds.get("dimension", "setup"),
                         )
                     )
                 return patterns
@@ -194,10 +203,17 @@ class TradeHistoryAnalyzer:
             from src.models.schema import get_conn
 
             with get_conn() as conn:
-                # get_conn() context manager opens a BEGIN IMMEDIATE transaction automatically
-                # and commits/rolls back on exit, ensuring the table refresh is strictly atomic.
                 conn.execute("DELETE FROM ai_pattern_insights")
                 for p in patterns:
+                    conds = dict(p.best_conditions or {})
+                    conds.update({
+                        "profit_factor": p.profit_factor,
+                        "net_pnl": p.net_pnl,
+                        "avg_win": p.avg_win,
+                        "avg_loss": p.avg_loss,
+                        "dimension": p.dimension,
+                        "best_time": p.best_time,
+                    })
                     conn.execute(
                         """
                         INSERT INTO ai_pattern_insights
@@ -207,11 +223,11 @@ class TradeHistoryAnalyzer:
                     """,
                         (
                             p.pattern_name,
-                            "auto",
+                            p.dimension,
                             p.sample_size,
                             p.win_rate,
                             p.avg_pnl,
-                            json.dumps(p.best_conditions),
+                            json.dumps(conds),
                             p.recommendation,
                         ),
                     )
@@ -237,12 +253,14 @@ class TradeHistoryAnalyzer:
         # 5. By Market Regime
         patterns.extend(self._analyze_by_regime(symbol))
 
-        return sorted(patterns, key=lambda p: p.win_rate * p.sample_size, reverse=True)
+        # Sort patterns by Net PnL (expectancy * volume) descending
+        return sorted(patterns, key=lambda p: (p.net_pnl, p.profit_factor), reverse=True)
 
     def _analyze_by_symbol_verdict(self, symbol: str = None) -> list[PatternInsight]:
         """Analyze performance by symbol and verdict label."""
         from src.models.schema import get_conn
 
+        filter_clause = "status != 'OPEN' AND closed_at IS NOT NULL AND verdict_label NOT IN ('Low Conviction', 'NEUTRAL', 'UNKNOWN', 'N/A', 'None', '')"
         with get_conn() as conn:
             if symbol:
                 rows = conn.execute(f"""
@@ -252,10 +270,14 @@ class TradeHistoryAnalyzer:
                         COUNT(*) as count,
                         AVG(CASE WHEN pnl_rupees > 0 THEN 1.0 ELSE 0.0 END) as win_rate,
                         AVG(pnl_rupees) as avg_pnl,
+                        SUM(pnl_rupees) as net_pnl,
+                        SUM(CASE WHEN pnl_rupees > 0 THEN pnl_rupees ELSE 0 END) as gross_profit,
+                        ABS(SUM(CASE WHEN pnl_rupees < 0 THEN pnl_rupees ELSE 0 END)) as gross_loss,
+                        COALESCE(AVG(CASE WHEN pnl_rupees > 0 THEN pnl_rupees ELSE NULL END), 0) as avg_win,
+                        COALESCE(ABS(AVG(CASE WHEN pnl_rupees < 0 THEN pnl_rupees ELSE NULL END)), 0) as avg_loss,
                         AVG(confidence_score) as avg_confidence
                     FROM {UNIFIED_TRADES_SQL}
-                    WHERE status != 'OPEN'
-                      AND closed_at IS NOT NULL
+                    WHERE {filter_clause}
                       AND symbol = ?
                     GROUP BY symbol, verdict_label
                     HAVING COUNT(*) >= ?
@@ -268,18 +290,35 @@ class TradeHistoryAnalyzer:
                         COUNT(*) as count,
                         AVG(CASE WHEN pnl_rupees > 0 THEN 1.0 ELSE 0.0 END) as win_rate,
                         AVG(pnl_rupees) as avg_pnl,
+                        SUM(pnl_rupees) as net_pnl,
+                        SUM(CASE WHEN pnl_rupees > 0 THEN pnl_rupees ELSE 0 END) as gross_profit,
+                        ABS(SUM(CASE WHEN pnl_rupees < 0 THEN pnl_rupees ELSE 0 END)) as gross_loss,
+                        COALESCE(AVG(CASE WHEN pnl_rupees > 0 THEN pnl_rupees ELSE NULL END), 0) as avg_win,
+                        COALESCE(ABS(AVG(CASE WHEN pnl_rupees < 0 THEN pnl_rupees ELSE NULL END)), 0) as avg_loss,
                         AVG(confidence_score) as avg_confidence
                     FROM {UNIFIED_TRADES_SQL}
-                    WHERE status != 'OPEN'
-                      AND closed_at IS NOT NULL
+                    WHERE {filter_clause}
                     GROUP BY symbol, verdict_label
                     HAVING COUNT(*) >= ?
                 """, (self.MIN_PATTERN_TRADES,)).fetchall()
 
         insights = []
         for row in rows:
-            recommendation = self._generate_recommendation(
-                row["win_rate"], row["avg_pnl"], row["count"]
+            gross_p = float(row["gross_profit"] or 0.0)
+            gross_l = float(row["gross_loss"] or 0.0)
+            pf = round(gross_p / gross_l, 2) if gross_l > 0 else (99.0 if gross_p > 0 else 1.0)
+            net_p = float(row["net_pnl"] or 0.0)
+            avg_w = float(row["avg_win"] or 0.0)
+            avg_l = float(row["avg_loss"] or 0.0)
+
+            rec = self._generate_recommendation(
+                win_rate=row["win_rate"],
+                avg_pnl=row["avg_pnl"],
+                count=row["count"],
+                profit_factor=pf,
+                net_pnl=net_p,
+                avg_win=avg_w,
+                avg_loss=avg_l,
             )
             insights.append(
                 PatternInsight(
@@ -289,7 +328,12 @@ class TradeHistoryAnalyzer:
                     avg_pnl=row["avg_pnl"],
                     best_time="All day",
                     best_conditions={"avg_confidence": row["avg_confidence"]},
-                    recommendation=recommendation,
+                    recommendation=rec,
+                    profit_factor=pf,
+                    net_pnl=net_p,
+                    avg_win=avg_w,
+                    avg_loss=avg_l,
+                    dimension="setup",
                 )
             )
         return insights
@@ -297,29 +341,26 @@ class TradeHistoryAnalyzer:
     def _analyze_by_session(self, symbol: str = None) -> list[PatternInsight]:
         """
         Analyze performance by time of day (IST sessions).
-
-        v2.0 FIX: Database stores UTC timestamps. Must convert to IST
-        before bucketing. A 9:15 AM IST trade is 3:45 UTC.
-
-        v2.1 FIX: Previous hour/minute string comparison caused overlapping
-        sessions (e.g., 15:00 matched both Afternoon and Closing). Now uses
-        total-minutes-since-midnight comparison for mutually exclusive buckets.
-        Sessions are defined as start_minutes to end_minutes (inclusive start,
-        exclusive end) - so no trade can belong to two sessions.
-
-        v2.2 FIX: Runs a single CASE WHEN query instead of 5 separate queries
-        in a loop. Each trade is bucketed exactly once (or into NULL if outside
-        all sessions), and aggregation is computed in one pass.
+        Classifies by Expectancy and Profit Factor, eliminating win-rate myopia.
         """
         from src.models.schema import get_conn
+
+        quant_cols = """
+            COUNT(*) as count,
+            AVG(CASE WHEN pnl_rupees > 0 THEN 1.0 ELSE 0.0 END) as win_rate,
+            AVG(pnl_rupees) as avg_pnl,
+            SUM(pnl_rupees) as net_pnl,
+            SUM(CASE WHEN pnl_rupees > 0 THEN pnl_rupees ELSE 0 END) as gross_profit,
+            ABS(SUM(CASE WHEN pnl_rupees < 0 THEN pnl_rupees ELSE 0 END)) as gross_loss,
+            COALESCE(AVG(CASE WHEN pnl_rupees > 0 THEN pnl_rupees ELSE NULL END), 0) as avg_win,
+            COALESCE(ABS(AVG(CASE WHEN pnl_rupees < 0 THEN pnl_rupees ELSE NULL END)), 0) as avg_loss
+        """
 
         if symbol:
             query = f"""
                 SELECT
                     session,
-                    COUNT(*) as count,
-                    AVG(CASE WHEN pnl_rupees > 0 THEN 1.0 ELSE 0.0 END) as win_rate,
-                    AVG(pnl_rupees) as avg_pnl
+                    {quant_cols}
                 FROM (
                     SELECT
                         pnl_rupees,
@@ -351,9 +392,7 @@ class TradeHistoryAnalyzer:
             query = f"""
                 SELECT
                     session,
-                    COUNT(*) as count,
-                    AVG(CASE WHEN pnl_rupees > 0 THEN 1.0 ELSE 0.0 END) as win_rate,
-                    AVG(pnl_rupees) as avg_pnl
+                    {quant_cols}
                 FROM (
                     SELECT
                         pnl_rupees,
@@ -381,7 +420,6 @@ class TradeHistoryAnalyzer:
                 HAVING COUNT(*) >= ?
             """
 
-        # Session names in display order (for sorting results)
         SESSION_ORDER = [
             "Market Open (09:15-10:30)",
             "Mid-Morning (10:30-12:00)",
@@ -398,14 +436,26 @@ class TradeHistoryAnalyzer:
             else:
                 rows = conn.execute(query, (self.MIN_PATTERN_TRADES,)).fetchall()
 
-        # Build lookup for O(1) access by session name
         row_by_session = {row["session"]: row for row in rows}
 
         for session_name in SESSION_ORDER:
             row = row_by_session.get(session_name)
             if row:
-                recommendation = self._generate_recommendation(
-                    row["win_rate"], row["avg_pnl"], row["count"]
+                gross_p = float(row["gross_profit"] or 0.0)
+                gross_l = float(row["gross_loss"] or 0.0)
+                pf = round(gross_p / gross_l, 2) if gross_l > 0 else (99.0 if gross_p > 0 else 1.0)
+                net_p = float(row["net_pnl"] or 0.0)
+                avg_w = float(row["avg_win"] or 0.0)
+                avg_l = float(row["avg_loss"] or 0.0)
+
+                rec = self._generate_recommendation(
+                    win_rate=row["win_rate"],
+                    avg_pnl=row["avg_pnl"],
+                    count=row["count"],
+                    profit_factor=pf,
+                    net_pnl=net_p,
+                    avg_win=avg_w,
+                    avg_loss=avg_l,
                 )
                 insights.append(
                     PatternInsight(
@@ -413,9 +463,14 @@ class TradeHistoryAnalyzer:
                         sample_size=row["count"],
                         win_rate=row["win_rate"],
                         avg_pnl=row["avg_pnl"],
-                        best_time=session_name,
+                        best_time="",  # Avoid redundant self-reference in UI
                         best_conditions={},
-                        recommendation=recommendation,
+                        recommendation=rec,
+                        profit_factor=pf,
+                        net_pnl=net_p,
+                        avg_win=avg_w,
+                        avg_loss=avg_l,
+                        dimension="session",
                     )
                 )
         return insights
@@ -424,7 +479,6 @@ class TradeHistoryAnalyzer:
         """Analyze performance by confidence score range."""
         from src.models.schema import get_conn
 
-        # Define confidence ranges
         confidence_ranges = [
             ("Low Confidence (60-70)", 60, 70),
             ("Medium Confidence (70-80)", 70, 80),
@@ -433,15 +487,23 @@ class TradeHistoryAnalyzer:
         ]
 
         insights = []
+        quant_cols = """
+            COUNT(*) as count,
+            AVG(CASE WHEN pnl_rupees > 0 THEN 1.0 ELSE 0.0 END) as win_rate,
+            AVG(pnl_rupees) as avg_pnl,
+            SUM(pnl_rupees) as net_pnl,
+            SUM(CASE WHEN pnl_rupees > 0 THEN pnl_rupees ELSE 0 END) as gross_profit,
+            ABS(SUM(CASE WHEN pnl_rupees < 0 THEN pnl_rupees ELSE 0 END)) as gross_loss,
+            COALESCE(AVG(CASE WHEN pnl_rupees > 0 THEN pnl_rupees ELSE NULL END), 0) as avg_win,
+            COALESCE(ABS(AVG(CASE WHEN pnl_rupees < 0 THEN pnl_rupees ELSE NULL END)), 0) as avg_loss
+        """
+
         with get_conn() as conn:
             for range_name, min_conf, max_conf in confidence_ranges:
                 if symbol:
                     row = conn.execute(
                         f"""
-                        SELECT
-                            COUNT(*) as count,
-                            AVG(CASE WHEN pnl_rupees > 0 THEN 1.0 ELSE 0.0 END) as win_rate,
-                            AVG(pnl_rupees) as avg_pnl
+                        SELECT {quant_cols}
                         FROM {UNIFIED_TRADES_SQL}
                         WHERE status != 'OPEN'
                           AND closed_at IS NOT NULL
@@ -453,10 +515,7 @@ class TradeHistoryAnalyzer:
                 else:
                     row = conn.execute(
                         f"""
-                        SELECT
-                            COUNT(*) as count,
-                            AVG(CASE WHEN pnl_rupees > 0 THEN 1.0 ELSE 0.0 END) as win_rate,
-                            AVG(pnl_rupees) as avg_pnl
+                        SELECT {quant_cols}
                         FROM {UNIFIED_TRADES_SQL}
                         WHERE status != 'OPEN'
                           AND closed_at IS NOT NULL
@@ -466,8 +525,21 @@ class TradeHistoryAnalyzer:
                     ).fetchone()
 
                 if row and row["count"] >= self.MIN_PATTERN_TRADES:
-                    recommendation = self._generate_recommendation(
-                        row["win_rate"], row["avg_pnl"], row["count"]
+                    gross_p = float(row["gross_profit"] or 0.0)
+                    gross_l = float(row["gross_loss"] or 0.0)
+                    pf = round(gross_p / gross_l, 2) if gross_l > 0 else (99.0 if gross_p > 0 else 1.0)
+                    net_p = float(row["net_pnl"] or 0.0)
+                    avg_w = float(row["avg_win"] or 0.0)
+                    avg_l = float(row["avg_loss"] or 0.0)
+
+                    rec = self._generate_recommendation(
+                        win_rate=row["win_rate"],
+                        avg_pnl=row["avg_pnl"],
+                        count=row["count"],
+                        profit_factor=pf,
+                        net_pnl=net_p,
+                        avg_win=avg_w,
+                        avg_loss=avg_l,
                     )
                     insights.append(
                         PatternInsight(
@@ -475,9 +547,14 @@ class TradeHistoryAnalyzer:
                             sample_size=row["count"],
                             win_rate=row["win_rate"],
                             avg_pnl=row["avg_pnl"],
-                            best_time="All day",
+                            best_time="",
                             best_conditions={"confidence_range": [min_conf, max_conf]},
-                            recommendation=recommendation,
+                            recommendation=rec,
+                            profit_factor=pf,
+                            net_pnl=net_p,
+                            avg_win=avg_w,
+                            avg_loss=avg_l,
+                            dimension="confidence",
                         )
                     )
         return insights
@@ -486,18 +563,26 @@ class TradeHistoryAnalyzer:
         """Analyze performance by verdict/setup type."""
         from src.models.schema import get_conn
 
+        filter_clause = "status != 'OPEN' AND closed_at IS NOT NULL AND verdict_label NOT IN ('Low Conviction', 'NEUTRAL', 'UNKNOWN', 'N/A', 'None', '')"
+        quant_cols = """
+            verdict_label,
+            COUNT(*) as count,
+            AVG(CASE WHEN pnl_rupees > 0 THEN 1.0 ELSE 0.0 END) as win_rate,
+            AVG(pnl_rupees) as avg_pnl,
+            SUM(pnl_rupees) as net_pnl,
+            SUM(CASE WHEN pnl_rupees > 0 THEN pnl_rupees ELSE 0 END) as gross_profit,
+            ABS(SUM(CASE WHEN pnl_rupees < 0 THEN pnl_rupees ELSE 0 END)) as gross_loss,
+            COALESCE(AVG(CASE WHEN pnl_rupees > 0 THEN pnl_rupees ELSE NULL END), 0) as avg_win,
+            COALESCE(ABS(AVG(CASE WHEN pnl_rupees < 0 THEN pnl_rupees ELSE NULL END)), 0) as avg_loss
+        """
+
         with get_conn() as conn:
             if symbol:
                 rows = conn.execute(
                     f"""
-                    SELECT
-                        verdict_label,
-                        COUNT(*) as count,
-                        AVG(CASE WHEN pnl_rupees > 0 THEN 1.0 ELSE 0.0 END) as win_rate,
-                        AVG(pnl_rupees) as avg_pnl
+                    SELECT {quant_cols}
                     FROM {UNIFIED_TRADES_SQL}
-                    WHERE status != 'OPEN'
-                      AND closed_at IS NOT NULL
+                    WHERE {filter_clause}
                       AND symbol = ?
                     GROUP BY verdict_label
                     HAVING COUNT(*) >= ?
@@ -507,14 +592,9 @@ class TradeHistoryAnalyzer:
             else:
                 rows = conn.execute(
                     f"""
-                    SELECT
-                        verdict_label,
-                        COUNT(*) as count,
-                        AVG(CASE WHEN pnl_rupees > 0 THEN 1.0 ELSE 0.0 END) as win_rate,
-                        AVG(pnl_rupees) as avg_pnl
+                    SELECT {quant_cols}
                     FROM {UNIFIED_TRADES_SQL}
-                    WHERE status != 'OPEN'
-                      AND closed_at IS NOT NULL
+                    WHERE {filter_clause}
                     GROUP BY verdict_label
                     HAVING COUNT(*) >= ?
                 """,
@@ -523,8 +603,21 @@ class TradeHistoryAnalyzer:
 
         insights = []
         for row in rows:
-            recommendation = self._generate_recommendation(
-                row["win_rate"], row["avg_pnl"], row["count"]
+            gross_p = float(row["gross_profit"] or 0.0)
+            gross_l = float(row["gross_loss"] or 0.0)
+            pf = round(gross_p / gross_l, 2) if gross_l > 0 else (99.0 if gross_p > 0 else 1.0)
+            net_p = float(row["net_pnl"] or 0.0)
+            avg_w = float(row["avg_win"] or 0.0)
+            avg_l = float(row["avg_loss"] or 0.0)
+
+            rec = self._generate_recommendation(
+                win_rate=row["win_rate"],
+                avg_pnl=row["avg_pnl"],
+                count=row["count"],
+                profit_factor=pf,
+                net_pnl=net_p,
+                avg_win=avg_w,
+                avg_loss=avg_l,
             )
             insights.append(
                 PatternInsight(
@@ -534,7 +627,12 @@ class TradeHistoryAnalyzer:
                     avg_pnl=row["avg_pnl"],
                     best_time="All day",
                     best_conditions={},
-                    recommendation=recommendation,
+                    recommendation=rec,
+                    profit_factor=pf,
+                    net_pnl=net_p,
+                    avg_win=avg_w,
+                    avg_loss=avg_l,
+                    dimension="setup",
                 )
             )
         return insights
@@ -543,15 +641,23 @@ class TradeHistoryAnalyzer:
         """Analyze performance by market regime."""
         from src.models.schema import get_conn
 
+        quant_cols = """
+            regime,
+            COUNT(*) as count,
+            AVG(CASE WHEN pnl_rupees > 0 THEN 1.0 ELSE 0.0 END) as win_rate,
+            AVG(pnl_rupees) as avg_pnl,
+            SUM(pnl_rupees) as net_pnl,
+            SUM(CASE WHEN pnl_rupees > 0 THEN pnl_rupees ELSE 0 END) as gross_profit,
+            ABS(SUM(CASE WHEN pnl_rupees < 0 THEN pnl_rupees ELSE 0 END)) as gross_loss,
+            COALESCE(AVG(CASE WHEN pnl_rupees > 0 THEN pnl_rupees ELSE NULL END), 0) as avg_win,
+            COALESCE(ABS(AVG(CASE WHEN pnl_rupees < 0 THEN pnl_rupees ELSE NULL END)), 0) as avg_loss
+        """
+
         with get_conn() as conn:
             if symbol:
                 rows = conn.execute(
                     f"""
-                    SELECT
-                        regime,
-                        COUNT(*) as count,
-                        AVG(CASE WHEN pnl_rupees > 0 THEN 1.0 ELSE 0.0 END) as win_rate,
-                        AVG(pnl_rupees) as avg_pnl
+                    SELECT {quant_cols}
                     FROM {UNIFIED_TRADES_SQL}
                     WHERE status != 'OPEN'
                       AND closed_at IS NOT NULL
@@ -565,11 +671,7 @@ class TradeHistoryAnalyzer:
             else:
                 rows = conn.execute(
                     f"""
-                    SELECT
-                        regime,
-                        COUNT(*) as count,
-                        AVG(CASE WHEN pnl_rupees > 0 THEN 1.0 ELSE 0.0 END) as win_rate,
-                        AVG(pnl_rupees) as avg_pnl
+                    SELECT {quant_cols}
                     FROM {UNIFIED_TRADES_SQL}
                     WHERE status != 'OPEN'
                       AND closed_at IS NOT NULL
@@ -582,8 +684,21 @@ class TradeHistoryAnalyzer:
 
         insights = []
         for row in rows:
-            recommendation = self._generate_recommendation(
-                row["win_rate"], row["avg_pnl"], row["count"]
+            gross_p = float(row["gross_profit"] or 0.0)
+            gross_l = float(row["gross_loss"] or 0.0)
+            pf = round(gross_p / gross_l, 2) if gross_l > 0 else (99.0 if gross_p > 0 else 1.0)
+            net_p = float(row["net_pnl"] or 0.0)
+            avg_w = float(row["avg_win"] or 0.0)
+            avg_l = float(row["avg_loss"] or 0.0)
+
+            rec = self._generate_recommendation(
+                win_rate=row["win_rate"],
+                avg_pnl=row["avg_pnl"],
+                count=row["count"],
+                profit_factor=pf,
+                net_pnl=net_p,
+                avg_win=avg_w,
+                avg_loss=avg_l,
             )
             insights.append(
                 PatternInsight(
@@ -593,33 +708,45 @@ class TradeHistoryAnalyzer:
                     avg_pnl=row["avg_pnl"],
                     best_time="All day",
                     best_conditions={},
-                    recommendation=recommendation,
+                    recommendation=rec,
+                    profit_factor=pf,
+                    net_pnl=net_p,
+                    avg_win=avg_w,
+                    avg_loss=avg_l,
+                    dimension="regime",
                 )
             )
         return insights
 
     def _generate_recommendation(
-        self, win_rate: float, avg_pnl: float, count: int
+        self,
+        win_rate: float,
+        avg_pnl: float,
+        count: int,
+        profit_factor: float = 0.0,
+        net_pnl: float = 0.0,
+        avg_win: float = 0.0,
+        avg_loss: float = 0.0,
     ) -> str:
-        """Generate actionable recommendation based on performance."""
-        # v3.0 FIX: Gate on the same constant as the HAVING clause. Previously
-        # this used self.min_trades (30) while HAVING used MIN_PATTERN_TRADES
-        # (10), so 10-29-trade patterns surfaced then displayed "insufficient".
+        """Generate decision-grade quant recommendation based on Expectancy & Profit Factor."""
         if count < self.MIN_PATTERN_TRADES:
-            return (
-                f"[!] Insufficient data ({count}/{self.MIN_PATTERN_TRADES} trades needed)"
-            )
+            return f"[!] Insufficient data ({count}/{self.MIN_PATTERN_TRADES} trades needed)"
 
-        if win_rate >= 0.70 and avg_pnl > 1000:
-            return "[GREEN] STRONG EDGE - Increase position size or frequency"
-        elif win_rate >= 0.60 and avg_pnl > 0:
-            return "[YELLOW] MODERATE EDGE - Trade with standard size, look for confluence"
-        elif win_rate >= 0.50 and avg_pnl >= 0:
-            return "[ORANGE] WEAK EDGE - Reduce size or wait for higher confidence"
-        elif win_rate < 0.50:
-            return "[RED] NEGATIVE EDGE - Avoid this setup until performance improves"
+        pnl_str = f"+₹{net_pnl:,.0f}" if net_pnl >= 0 else f"-₹{abs(net_pnl):,.0f}"
+        metrics = f"Net: {pnl_str} · PF: {profit_factor:.2f} · W/L: ₹{avg_win:,.0f}/₹{avg_loss:,.0f}"
+
+        # Decision-grade quant classification:
+        # Strong Edge: Positive Expectancy (avg_pnl >= 1000 and PF >= 1.4) or high-asymmetric payoff (PF >= 2.0)
+        if (avg_pnl >= 1000 and profit_factor >= 1.4) or (profit_factor >= 2.0 and avg_pnl > 300):
+            return f"[GREEN] STRONG EDGE · {metrics}"
+        elif avg_pnl > 0 and profit_factor >= 1.15:
+            return f"[YELLOW] MODERATE EDGE · {metrics}"
+        elif abs(avg_pnl) <= 500 or (0.9 <= profit_factor < 1.15):
+            return f"[WHITE] MARGINAL EDGE · {metrics}"
+        elif avg_pnl < 0 or profit_factor < 0.9:
+            return f"[RED] NEGATIVE EDGE · {metrics}"
         else:
-            return "[WHITE] NEUTRAL - Monitor for more data"
+            return f"[WHITE] NEUTRAL · {metrics}"
 
     def get_trade_dna_match(self, current_trade_context: dict) -> dict:
         """

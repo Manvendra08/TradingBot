@@ -46,10 +46,11 @@ class EdgeHealth:
     strategy_name: str
     current_win_rate: float
     historical_win_rate: float
-    win_rate_trend: str  # "IMPROVING", "STABLE", "DECLINING", "INSUFFICIENT_HISTORY"
-    pnl_trend: str  # "IMPROVING", "STABLE", "DECLINING", "INSUFFICIENT_HISTORY"
-    health_score: float  # 0-100
+    win_rate_trend: str  # "IMPROVING", "STABLE", "DECLINING", "INSUFFICIENT_DATA"
+    pnl_trend: str  # "IMPROVING", "STABLE", "DECLINING", "INSUFFICIENT_DATA"
+    health_score: float | None  # 0-100 or None if n < MIN_HEALTH_TRADES
     recommendation: str
+    sample_size: int = 0
 
     def to_dict(self) -> dict:
         """Convert to JSON-serializable dict for API responses."""
@@ -77,7 +78,8 @@ def get_monitor() -> "EdgeDecayMonitor":
 class EdgeDecayMonitor:
     """Detects when trading edge is weakening."""
 
-    MIN_HISTORICAL_TRADES = 5  # v2.0: Guard against biased comparisons
+    MIN_HEALTH_TRADES = 15  # Strict minimum closed trade sample for statistical significance
+    MIN_HISTORICAL_TRADES = 15  # Backward compatibility alias
     RECENT_WINDOW_DAYS = 30
     HISTORICAL_WINDOW_DAYS = 90
     DECAY_THRESHOLD = 0.15  # 15% decline triggers alert
@@ -101,8 +103,7 @@ class EdgeDecayMonitor:
                 - verdict_label: Filter by specific verdict (e.g., "Long Buildup")
 
         Returns:
-            List of EdgeHealth objects. Usually a single-element list for the
-            overall health, or filtered subset.
+            List of EdgeHealth objects. Suppresses numeric health_score when n < 15.
         """
         from src.models.schema import get_conn
 
@@ -117,6 +118,9 @@ class EdgeDecayMonitor:
                 where_clause += " AND verdict_label = ?"
                 params.append(strategy_filter["verdict_label"])
 
+        # Filter out noise/conviction labels from strategy evaluations
+        where_clause += " AND verdict_label NOT IN ('Low Conviction', 'NEUTRAL', 'UNKNOWN', 'N/A', 'None', '')"
+
         now_utc = datetime.now(timezone.utc)
         recent_cutoff = (now_utc - timedelta(days=self.rolling_window_days)).isoformat()
         hist_start = (now_utc - timedelta(days=self.historical_window_days)).isoformat()
@@ -129,12 +133,27 @@ class EdgeDecayMonitor:
                        m.total_pnl as pnl_rupees, m.closed_at, m.status
                 FROM multi_leg_trades m
                 LEFT JOIN scan_summaries s ON m.digest_id = s.digest_id
+                WHERE COALESCE(m.is_pnl_corrupted, 0) = 0
                 UNION ALL
                 SELECT symbol, verdict_label, pnl_rupees, closed_at, status FROM live_trades
             )
         """
 
         with get_conn() as conn:
+            # Total closed trades across the store
+            total_stats = conn.execute(
+                f"""
+                SELECT
+                    COUNT(*) as count,
+                    SUM(CASE WHEN pnl_rupees > 0 THEN 1 ELSE 0 END) as wins,
+                    SUM(pnl_rupees) as total_pnl,
+                    AVG(pnl_rupees) as avg_pnl
+                FROM {trades_source}
+                WHERE {where_clause}
+            """,
+                params,
+            ).fetchone()
+
             # Recent window (last 30 days)
             recent = conn.execute(
                 f"""
@@ -163,78 +182,78 @@ class EdgeDecayMonitor:
                 params + [hist_start, recent_cutoff],
             ).fetchone()
 
-        # ── Guard: insufficient recent data ────────────────────────────────
-        recent_count = recent["count"] if recent else 0
-        if not recent or recent_count < self.MIN_HISTORICAL_TRADES:
+        total_count = total_stats["count"] if total_stats else 0
+        strategy_name = self._get_strategy_name(strategy_filter)
+
+        # ── Guard: insufficient sample size (< 15 trades) ──────────────────
+        if total_count < self.MIN_HEALTH_TRADES:
+            curr_wr = (total_stats["wins"] / total_count) if (total_stats and total_count > 0) else 0.0
             return [
                 EdgeHealth(
-                    strategy_name=self._get_strategy_name(strategy_filter),
-                    current_win_rate=0,
-                    historical_win_rate=0,
-                    win_rate_trend="INSUFFICIENT_HISTORY",  # v3.0: unified sentinel
-                    pnl_trend="INSUFFICIENT_HISTORY",
-                    health_score=50,
-                    recommendation=f"⏳ Not enough recent trades to assess ({recent_count}/{self.MIN_HISTORICAL_TRADES} needed)",
+                    strategy_name=strategy_name,
+                    current_win_rate=curr_wr,
+                    historical_win_rate=0.0,
+                    win_rate_trend="INSUFFICIENT_DATA",
+                    pnl_trend="INSUFFICIENT_DATA",
+                    health_score=None,  # Suppress numeric health score completely below n=15
+                    recommendation=f"⏳ INSUFFICIENT DATA ({total_count}/{self.MIN_HEALTH_TRADES} trades) — Minimum 15 closed trades required for statistical health scoring.",
+                    sample_size=total_count,
                 )
             ]
 
-        current_win_rate = (
-            recent["wins"] / recent["count"] if recent["count"] > 0 else 0
-        )
-
-        # ── Guard: insufficient historical data ────────────────────────────
+        # ── Longitudinal comparison if historical window has data ─────────
         hist_count = historical["count"] if historical else 0
-        if hist_count < self.MIN_HISTORICAL_TRADES:
+        recent_count = recent["count"] if recent else 0
+
+        if hist_count >= 10 and recent_count >= 10:
+            current_win_rate = recent["wins"] / recent_count if recent_count > 0 else 0.0
+            hist_win_rate = historical["wins"] / hist_count if hist_count > 0 else 0.0
+            hist_avg_pnl = historical["avg_pnl"] or 0.0
+
+            win_rate_change = current_win_rate - hist_win_rate
+            pnl_change = (recent["avg_pnl"] or 0.0) - hist_avg_pnl
+            win_rate_trend = self._classify_trend(win_rate_change, hist_win_rate)
+
+            pnl_baseline = max(abs(hist_avg_pnl), 100.0)
+            pnl_trend = self._classify_trend(pnl_change, pnl_baseline)
+
+            health_score = self._calculate_health_score(
+                current_win_rate, hist_win_rate, recent["avg_pnl"], hist_avg_pnl
+            )
+            recommendation = self._generate_edge_recommendation(
+                current_win_rate, hist_win_rate, recent["avg_pnl"], win_rate_trend
+            )
             return [
                 EdgeHealth(
-                    strategy_name=self._get_strategy_name(strategy_filter),
+                    strategy_name=strategy_name,
                     current_win_rate=current_win_rate,
-                    historical_win_rate=0,
-                    win_rate_trend="INSUFFICIENT_HISTORY",
-                    pnl_trend="INSUFFICIENT_HISTORY",
-                    health_score=self._calculate_health_score_absolute(
-                        current_win_rate, recent["avg_pnl"]
-                    ),
-                    recommendation=(
-                        f"⏳ Building history ({hist_count}/{self.MIN_HISTORICAL_TRADES} trades). "
-                        f"Current win rate: {current_win_rate:.0%}"
-                    ),
+                    historical_win_rate=hist_win_rate,
+                    win_rate_trend=win_rate_trend,
+                    pnl_trend=pnl_trend,
+                    health_score=health_score,
+                    recommendation=recommendation,
+                    sample_size=total_count,
                 )
             ]
 
-        # ── Full comparison: recent vs historical ──────────────────────────
-        hist_win_rate = historical["wins"] / historical["count"]
-        hist_avg_pnl = historical["avg_pnl"] if historical else 0
-
-        win_rate_change = current_win_rate - hist_win_rate
-        pnl_change = recent["avg_pnl"] - hist_avg_pnl
-
-        win_rate_trend = self._classify_trend(win_rate_change, hist_win_rate)
-
-        # v3.0 FIX #12: Floor the PnL baseline. When historical avg PnL ≈ 0
-        # the ratio change/baseline explodes and every period reads IMPROVING
-        # or DECLINING. Floor at ₹100 so tiny baselines can't dominate.
-        pnl_baseline = max(abs(hist_avg_pnl), 100.0)
-        pnl_trend = self._classify_trend(pnl_change, pnl_baseline)
-
-        # v2.0 FIX: Health score includes absolute performance
-        health_score = self._calculate_health_score(
-            current_win_rate, hist_win_rate, recent["avg_pnl"], hist_avg_pnl
-        )
-
+        # ── Sufficient data (n >= 15), but concentrated in recent history ──
+        current_win_rate = (total_stats["wins"] / total_count) if total_count > 0 else 0.0
+        avg_pnl = total_stats["avg_pnl"] or 0.0
+        health_score = self._calculate_health_score_absolute(current_win_rate, avg_pnl)
         recommendation = self._generate_edge_recommendation(
-            current_win_rate, hist_win_rate, recent["avg_pnl"], win_rate_trend
+            current_win_rate, current_win_rate, avg_pnl, "STABLE"
         )
 
         return [
             EdgeHealth(
-                strategy_name=self._get_strategy_name(strategy_filter),
+                strategy_name=strategy_name,
                 current_win_rate=current_win_rate,
-                historical_win_rate=hist_win_rate,
-                win_rate_trend=win_rate_trend,
-                pnl_trend=pnl_trend,
+                historical_win_rate=0.0,
+                win_rate_trend="STABLE",
+                pnl_trend="STABLE",
                 health_score=health_score,
                 recommendation=recommendation,
+                sample_size=total_count,
             )
         ]
 
@@ -279,73 +298,84 @@ class EdgeDecayMonitor:
         """
 
         # Single GROUP BY query — fetches all strategy metrics at once
+        where_cond = """
+            status != 'OPEN'
+            AND closed_at IS NOT NULL
+            AND verdict_label IS NOT NULL
+            AND verdict_label NOT IN ('Low Conviction', 'NEUTRAL', 'UNKNOWN', 'N/A', 'None', '')
+        """
+        params = []
+        if symbol:
+            where_cond += " AND symbol = ?"
+            params.append(symbol.upper())
+
         with get_conn() as conn:
-            if symbol:
-                rows = conn.execute(
-                    f"""
-                    SELECT
-                        symbol,
-                        verdict_label,
-                        COUNT(*) as count,
-                        SUM(CASE WHEN pnl_rupees > 0 THEN 1 ELSE 0 END) as wins,
-                        AVG(pnl_rupees) as avg_pnl
-                    FROM {trades_source}
-                    WHERE status != 'OPEN'
-                      AND closed_at IS NOT NULL
-                      AND closed_at >= ?
-                      AND symbol = ?
-                    GROUP BY symbol, verdict_label
-                    HAVING COUNT(*) >= ?
-                """,
-                    (recent_cutoff, symbol, self.MIN_HISTORICAL_TRADES),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    f"""
-                    SELECT
-                        symbol,
-                        verdict_label,
-                        COUNT(*) as count,
-                        SUM(CASE WHEN pnl_rupees > 0 THEN 1 ELSE 0 END) as wins,
-                        AVG(pnl_rupees) as avg_pnl
-                    FROM {trades_source}
-                    WHERE status != 'OPEN'
-                      AND closed_at IS NOT NULL
-                      AND closed_at >= ?
-                    GROUP BY symbol, verdict_label
-                    HAVING COUNT(*) >= ?
-                """,
-                    (recent_cutoff, self.MIN_HISTORICAL_TRADES),
-                ).fetchall()
+            rows = conn.execute(
+                f"""
+                SELECT
+                    symbol,
+                    verdict_label,
+                    COUNT(*) as count,
+                    SUM(CASE WHEN pnl_rupees > 0 THEN 1 ELSE 0 END) as wins,
+                    AVG(pnl_rupees) as avg_pnl
+                FROM {trades_source}
+                WHERE {where_cond}
+                GROUP BY symbol, verdict_label
+                HAVING COUNT(*) >= 1
+                ORDER BY count DESC
+            """,
+                params,
+            ).fetchall()
 
-        # ── Group A: overall health (trend-based, real comparison) ─────────
-        overall = self.check_edge_health()
+        # ── Group A: overall health (trend-based or sample-evaluated) ─────────
+        overall = self.check_edge_health({"symbol": symbol} if symbol else None)
 
-        # ── Group B: per-strategy snapshots (absolute scoring, no trend claim) ──
+        # ── Group B: per-strategy snapshots (taxonomy: Symbol × Setup) ──
         per_strategy = []
         for row in rows:
             total = row["count"]
             wins = row["wins"]
-            avg_pnl = row["avg_pnl"]
+            avg_pnl = row["avg_pnl"] or 0.0
             win_rate = wins / total if total > 0 else 0.0
-            score = self._calculate_health_score_absolute(win_rate, avg_pnl)
-            per_strategy.append(
-                EdgeHealth(
-                    strategy_name=f"{row['symbol']} {row['verdict_label']}",
-                    current_win_rate=win_rate,
-                    historical_win_rate=0.0,
-                    # v3.0: honest sentinel — this is a snapshot, not a trend
-                    win_rate_trend="INSUFFICIENT_HISTORY",
-                    pnl_trend="INSUFFICIENT_HISTORY",
-                    health_score=score,
-                    recommendation=self._generate_edge_recommendation(
-                        win_rate, win_rate, avg_pnl, "INSUFFICIENT_HISTORY"
-                    ),
-                )
-            )
 
-        # Sort each group by health_score; overall first, then worst strategies.
-        return overall + sorted(per_strategy, key=lambda h: h.health_score)
+            if total < self.MIN_HEALTH_TRADES:
+                # Suppress numeric health score below n=15
+                per_strategy.append(
+                    EdgeHealth(
+                        strategy_name=f"{row['symbol']} {row['verdict_label']}",
+                        current_win_rate=win_rate,
+                        historical_win_rate=0.0,
+                        win_rate_trend="INSUFFICIENT_DATA",
+                        pnl_trend="INSUFFICIENT_DATA",
+                        health_score=None,
+                        recommendation=f"⏳ INSUFFICIENT DATA ({total}/{self.MIN_HEALTH_TRADES} trades) — Minimum 15 closed trades required.",
+                        sample_size=total,
+                    )
+                )
+            else:
+                score = self._calculate_health_score_absolute(win_rate, avg_pnl)
+                per_strategy.append(
+                    EdgeHealth(
+                        strategy_name=f"{row['symbol']} {row['verdict_label']}",
+                        current_win_rate=win_rate,
+                        historical_win_rate=0.0,
+                        win_rate_trend="STABLE",
+                        pnl_trend="STABLE",
+                        health_score=score,
+                        recommendation=self._generate_edge_recommendation(
+                            win_rate, win_rate, avg_pnl, "STABLE"
+                        ),
+                        sample_size=total,
+                    )
+                )
+
+        # Sort: overall first, then scored strategies (lowest health score first), then insufficient data
+        scored = [s for s in per_strategy if s.health_score is not None]
+        unscored = [s for s in per_strategy if s.health_score is None]
+        scored.sort(key=lambda h: h.health_score)
+        unscored.sort(key=lambda h: h.sample_size, reverse=True)
+
+        return overall + scored + unscored
 
     # ── Helper methods ─────────────────────────────────────────────────────
 
