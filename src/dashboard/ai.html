@@ -1025,6 +1025,11 @@
                             d.block_reason ||
                             "All pipeline checks passed successfully.";
 
+                        const sigScore =
+                            d.signal_score !== null && d.signal_score !== undefined && d.signal_score >= 0
+                                ? d.signal_score
+                                : ((d.trail || []).find((s) => s.name === "signal")?.score ?? null);
+
                         return `
           <tr class="audit-row" style="cursor: pointer; border-bottom: 1px solid var(--border); transition: background 0.15s ease;" onclick="toggleAuditDetails(${d.id})" onmouseover="this.style.background='var(--surface-2)'" onmouseout="this.style.background='transparent'">
             <td style="padding: 12px 14px; white-space: nowrap;">
@@ -1046,7 +1051,7 @@
             </td>
             <td style="padding: 12px 14px; white-space: nowrap;">
               <div style="display: flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 11px;">
-                ${renderScorePill("S", d.signal_score)}
+                ${renderScorePill("S", sigScore)}
                 ${renderScorePill("Q", d.entry_quality)}
                 ${renderScorePill("T", d.trend_score)}
                 ${renderScorePill("R", d.regime_score)}
