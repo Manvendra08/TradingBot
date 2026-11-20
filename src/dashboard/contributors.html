@@ -1625,14 +1625,17 @@
                 color: var(--accent);
             }
             .pro-ai-btn.btn-llm {
-                border-color: rgba(129, 140, 248, 0.4);
-                background: rgba(129, 140, 248, 0.12);
-                color: #a5b4fc;
+                border-color: #818cf8;
+                background: linear-gradient(135deg, rgba(99, 102, 241, 0.28) 0%, rgba(139, 92, 246, 0.28) 100%);
+                color: #ffffff;
+                font-weight: 700;
+                box-shadow: 0 0 10px rgba(129, 140, 248, 0.25);
             }
             .pro-ai-btn.btn-llm:hover {
-                background: rgba(129, 140, 248, 0.22);
-                border-color: #818cf8;
-                box-shadow: 0 0 10px rgba(129, 140, 248, 0.25);
+                background: linear-gradient(135deg, rgba(99, 102, 241, 0.42) 0%, rgba(139, 92, 246, 0.42) 100%);
+                border-color: #a5b4fc;
+                box-shadow: 0 0 16px rgba(129, 140, 248, 0.4);
+                color: #ffffff;
             }
             .pro-ai-headline-banner {
                 background: var(--surface-2);
@@ -1674,6 +1677,17 @@
                 background: var(--yellow-bg);
                 color: var(--yellow);
                 border: 1px solid rgba(255, 209, 102, 0.3);
+            }
+            .pro-ai-conviction-pill.invalidated {
+                background: rgba(255, 77, 109, 0.2);
+                color: #ff4d6d;
+                border: 1px solid rgba(255, 77, 109, 0.6);
+                box-shadow: 0 0 8px rgba(255, 77, 109, 0.3);
+                animation: pulse-invalidated 2s infinite ease-in-out;
+            }
+            @keyframes pulse-invalidated {
+                0%, 100% { opacity: 1; }
+                50% { opacity: 0.8; }
             }
             .pro-ai-grid {
                 display: grid;
@@ -1753,6 +1767,11 @@
                 background: var(--yellow-bg);
                 color: var(--yellow);
                 border: 1px solid rgba(255, 209, 102, 0.3);
+            }
+            .pro-ai-tag.invalidated {
+                background: rgba(255, 77, 109, 0.2);
+                color: #ff4d6d;
+                border: 1px solid rgba(255, 77, 109, 0.6);
             }
             .pro-ai-card-body {
                 font-size: 12px;
@@ -1955,6 +1974,13 @@
                 display: flex;
                 align-items: flex-start;
                 gap: 8px;
+                transition: all 0.2s ease;
+            }
+            .pro-ai-invalidation.tripped {
+                background: rgba(255, 77, 109, 0.18);
+                border: 1px solid rgba(255, 77, 109, 0.5);
+                border-left: 4px solid #ff4d6d;
+                box-shadow: 0 0 12px rgba(255, 77, 109, 0.22);
             }
             .invalidation-icon {
                 font-size: 13px;
@@ -1971,6 +1997,67 @@
                 font-family: var(--mono);
                 color: var(--red);
                 letter-spacing: 0.04em;
+            }
+            .pro-ai-invalidation.tripped .invalidation-title {
+                color: #ff4d6d;
+                font-weight: 900;
+            }
+            .mandate-trader-row {
+                display: block;
+                margin-bottom: 7px;
+                line-height: 1.5;
+                font-size: 12px;
+            }
+            .mandate-trader-row:last-child {
+                margin-bottom: 0;
+            }
+            .mandate-trader-role {
+                font-family: var(--mono);
+                font-weight: 800;
+                font-size: 11px;
+                text-transform: uppercase;
+                letter-spacing: 0.04em;
+                margin-right: 6px;
+            }
+            .mandate-trader-role.option-sellers {
+                color: #38bdf8;
+            }
+            .mandate-trader-role.directional {
+                color: #fbbf24;
+            }
+            .pro-ai-conflict-banner {
+                background: rgba(245, 158, 11, 0.14);
+                border: 1px solid rgba(245, 158, 11, 0.45);
+                border-left: 3px solid #f59e0b;
+                padding: 7px 10px;
+                border-radius: 4px;
+                font-family: var(--mono);
+                font-size: 11px;
+                color: #fbbf24;
+                margin-bottom: 8px;
+                line-height: 1.4;
+                display: flex;
+                align-items: center;
+                gap: 6px;
+            }
+            .pro-ai-action-pill {
+                font-family: var(--mono);
+                font-size: 10px;
+                font-weight: 800;
+                padding: 2px 7px;
+                border-radius: 4px;
+                text-transform: uppercase;
+                letter-spacing: 0.05em;
+            }
+            .pro-ai-action-pill.no-trade {
+                background: rgba(255, 77, 109, 0.2);
+                color: #ff4d6d;
+                border: 1px solid rgba(255, 77, 109, 0.45);
+            }
+            .pro-ai-action-pill.trade {
+                background: rgba(0, 229, 160, 0.2);
+                color: var(--green);
+                border: 1px solid rgba(0, 229, 160, 0.45);
             }
             .pro-ai-llm-box {
                 margin-top: 14px;
@@ -2020,6 +2107,12 @@
                 font-family: var(--mono);
                 color: var(--green);
                 font-weight: 700;
+            }
+            .pro-ai-llm-verified-tag.conflict {
+                color: #f59e0b;
+            }
+            .pro-ai-llm-verified-tag.agreed {
+                color: var(--green);
             }
             .pro-ai-llm-text {
                 font-size: 12.5px;
@@ -2545,7 +2638,7 @@
                         <div class="pro-ai-card-header">
                             <div class="pro-ai-card-title-row">
                                 <span class="pro-ai-card-title">⚔️ Titan Clash & Rotation</span>
-                                <span class="pro-ai-card-sub">Pillar Tug-of-War</span>
+                                <span class="pro-ai-card-sub">Index-Wide Tug-of-War</span>
                             </div>
                             <div class="pro-ai-tag-wrapper">
                                 <span class="pro-ai-tag neutral" id="pro-ai-clash-tag">SECTOR STANDOFF</span>
@@ -2588,9 +2681,9 @@
                                 <span class="pro-ai-micro-stat-lbl">15m Impulse</span>
                                 <span class="pro-ai-micro-stat-val" id="pro-ai-stat-impulse">—</span>
                             </div>
-                            <div class="pro-ai-micro-stat-item" title="Constituent Breadth Gap">
-                                <span class="pro-ai-micro-stat-lbl">Breadth Gap</span>
-                                <span class="pro-ai-micro-stat-val" id="pro-ai-stat-divergence">—</span>
+                            <div class="pro-ai-micro-stat-item" title="5-Scan Heavyweight Cumulative Shift Velocity">
+                                <span class="pro-ai-micro-stat-lbl">5-Scan Shift</span>
+                                <span class="pro-ai-micro-stat-val" id="pro-ai-stat-shift-velocity">—</span>
                             </div>
                         </div>
                     </div>
@@ -2626,6 +2719,7 @@
                             </div>
                             <!-- Right Column: Option Strategy Mandate Text + Invalidation Box -->
                             <div class="mandate-split-col">
+                                <div id="pro-ai-conflict-container"></div>
                                 <div class="pro-ai-card-body" id="pro-ai-playbook-body" style="min-height: auto;">
                                     Formulating derivatives strategy and strike selection...
                                 </div>
@@ -2647,8 +2741,9 @@
                         <div class="pro-ai-llm-hdr-left">
                             <span>🤖 INSTITUTIONAL PROP DESK SYNTHESIS</span>
                             <span class="pro-ai-llm-pill" id="pro-ai-llm-model-pill">OmniRouter</span>
+                            <span class="pro-ai-action-pill no-trade" id="pro-ai-llm-action-pill" style="display: none;">NO_TRADE</span>
                         </div>
-                        <span class="pro-ai-llm-verified-tag">✓ VERIFIED INSTITUTIONAL REASONING</span>
+                        <span class="pro-ai-llm-verified-tag agreed" id="pro-ai-llm-verified-tag">✓ VERIFIED INSTITUTIONAL REASONING</span>
                     </div>
                     <div class="pro-ai-llm-text" id="pro-ai-llm-text">
                         Generating institutional derivatives desk synthesis...
@@ -3819,14 +3914,17 @@
                 // Headline & Conviction Pill
                 const hlText = document.getElementById("pro-ai-headline-text");
                 if (hlText) {
-                    const stalePrefix = isStale ? `<span class="stale-badge-pill" style="margin-right: 8px;">⚠️ ${staleLabel}</span> ` : '';
-                    hlText.innerHTML = `${stalePrefix}⚡ <b>REGIME DIAGNOSTIC:</b> ${d.headline || "INSTITUTIONAL REGIME IDENTIFIED"}`;
+                    hlText.innerHTML = `⚡ <b>REGIME:</b> ${d.headline || "INSTITUTIONAL REGIME IDENTIFIED"}`;
                 }
 
                 const convPill = document.getElementById("pro-ai-conviction-pill");
                 if (convPill) {
                     convPill.textContent = `${d.conviction_badge || 'CONVICTION'} (${d.conviction_score || 85}%)`;
-                    convPill.className = `pro-ai-conviction-pill ${(d.conviction_score >= 85) ? 'high' : 'med'}`;
+                    if (d.is_invalidated) {
+                        convPill.className = "pro-ai-conviction-pill invalidated";
+                    } else {
+                        convPill.className = `pro-ai-conviction-pill ${(d.conviction_score >= 85) ? 'high' : 'med'}`;
+                    }
                 }
 
                 // Card 1: Institutional Footprint
@@ -3888,15 +3986,24 @@
                     statImpulse.textContent = `${isPos ? '+' : ''}${d.velocity.scan_delta.toFixed(2)} pts Δ`;
                     statImpulse.style.color = isPos ? "var(--green)" : "var(--red)";
                 }
-                const statDivergence = document.getElementById("pro-ai-stat-divergence");
-                if (statDivergence && d.key_stats) {
-                    statDivergence.textContent = d.key_stats.breadth_divergence || "—";
+                const statShift = document.getElementById("pro-ai-stat-shift-velocity");
+                if (statShift && d.key_stats) {
+                    const shiftStr = d.key_stats.shift_velocity || d.key_stats.breadth_divergence || "—";
+                    statShift.textContent = shiftStr;
+                    if (shiftStr.startsWith("+")) {
+                        statShift.style.color = "var(--green)";
+                    } else if (shiftStr.startsWith("-")) {
+                        statShift.style.color = "var(--red)";
+                    } else {
+                        statShift.style.color = "var(--text)";
+                    }
                 }
 
                 // Card 4: Desk Execution Playbook
                 const mandateTag = document.getElementById("pro-ai-mandate-tag");
                 if (mandateTag && d.playbook) {
                     mandateTag.textContent = (d.playbook.mandate_action || "DERIVATIVES MANDATE").toUpperCase();
+                    mandateTag.className = `pro-ai-tag ${d.is_invalidated ? 'invalidated' : 'bullish'}`;
                 }
                 const putBase = document.getElementById("pro-ai-put-base");
                 if (putBase && d.playbook) putBase.textContent = `₹${d.playbook.put_base}`;
@@ -3905,8 +4012,34 @@
                 const callWall = document.getElementById("pro-ai-call-wall");
                 if (callWall && d.playbook) callWall.textContent = `₹${d.playbook.call_wall}`;
 
+                // Engine conflict banner inside Card 4
+                const conflictContainer = document.getElementById("pro-ai-conflict-container");
+                if (conflictContainer) {
+                    if (d.engine_agreement === false && d.llm_action) {
+                        conflictContainer.innerHTML = `
+                            <div class="pro-ai-conflict-banner">
+                                <span>⚠️</span>
+                                <div><b>ENGINE CONFLICT:</b> Desk Synthesis signaled <b>${d.llm_action}</b> vs rule matrix <b>${d.playbook ? d.playbook.mandate_action : 'MANDATE'}</b>. Reconciled with Stand-Down priority.</div>
+                            </div>
+                        `;
+                        conflictContainer.style.display = "block";
+                    } else {
+                        conflictContainer.innerHTML = "";
+                        conflictContainer.style.display = "none";
+                    }
+                }
+
                 const playbookBody = document.getElementById("pro-ai-playbook-body");
                 if (playbookBody && d.playbook) playbookBody.innerHTML = d.playbook.analysis;
+
+                const invBox = document.getElementById("pro-ai-invalidation-box");
+                if (invBox) {
+                    invBox.classList.toggle("tripped", Boolean(d.is_invalidated));
+                    const invTitle = invBox.querySelector(".invalidation-title");
+                    if (invTitle) {
+                        invTitle.textContent = d.is_invalidated ? "THESIS INVALIDATED — TRIPPED CONDITION:" : "THESIS INVALIDATION TRIGGER:";
+                    }
+                }
 
                 const invText = document.getElementById("pro-ai-invalidation-text");
                 if (invText && d.playbook) invText.textContent = d.playbook.invalidation;
@@ -3921,6 +4054,29 @@
                         llmBox.style.display = "flex";
                     } else {
                         llmBox.style.display = "none";
+                    }
+                }
+
+                // LLM Action Pill & Verified Tag
+                const llmActionPill = document.getElementById("pro-ai-llm-action-pill");
+                if (llmActionPill) {
+                    if (d.llm_action) {
+                        llmActionPill.textContent = d.llm_action.replace(/_/g, " ");
+                        llmActionPill.className = `pro-ai-action-pill ${d.llm_action === "NO_TRADE" || d.llm_action === "STAND_DOWN" ? "no-trade" : "trade"}`;
+                        llmActionPill.style.display = "inline-block";
+                    } else {
+                        llmActionPill.style.display = "none";
+                    }
+                }
+
+                const verifiedTag = document.getElementById("pro-ai-llm-verified-tag");
+                if (verifiedTag) {
+                    if (d.engine_agreement === false) {
+                        verifiedTag.textContent = "⚠️ ENGINE CONFLICT: PRO DESK vs RULE MATRIX";
+                        verifiedTag.className = "pro-ai-llm-verified-tag conflict";
+                    } else {
+                        verifiedTag.textContent = "✓ VERIFIED INSTITUTIONAL REASONING";
+                        verifiedTag.className = "pro-ai-llm-verified-tag agreed";
                     }
                 }
             }
