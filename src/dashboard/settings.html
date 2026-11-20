@@ -552,61 +552,107 @@
             left: 0;
             width: 100vw;
             height: 100vh;
-            background: rgba(0, 0, 0, 0.78);
-            backdrop-filter: blur(4px);
+            background: rgba(0, 0, 0, 0.82);
+            backdrop-filter: blur(6px);
             z-index: 99999;
             display: flex;
             align-items: center;
             justify-content: center;
         }
         .modal-box.danger-modal {
-            background: #161b22;
-            border: 1px solid rgba(239, 68, 68, 0.5);
+            background: #11161d !important;
+            border: 1px solid #ef4444 !important;
             border-radius: 12px;
-            padding: 24px;
-            max-width: 480px;
+            padding: 24px 26px;
+            max-width: 490px;
             width: 90%;
-            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8), 0 0 30px rgba(239, 68, 68, 0.25);
+            box-shadow: 0 24px 60px rgba(0, 0, 0, 0.9), 0 0 35px rgba(239, 68, 68, 0.3);
+            color: #f1f5f9 !important;
         }
         .modal-header {
             display: flex;
             align-items: center;
             gap: 12px;
             margin-bottom: 16px;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            border-bottom: 1px solid rgba(239, 68, 68, 0.25);
             padding-bottom: 12px;
         }
         .modal-header h3 {
             margin: 0;
-            font-size: 16px;
-            font-weight: 700;
-            color: #ef4444;
+            font-size: 16.5px;
+            font-weight: 800;
+            color: #ff4d6d !important;
             letter-spacing: 0.5px;
         }
         .modal-body {
-            font-size: 13px;
+            font-size: 13.5px;
+            line-height: 1.6;
+            color: #e2e8f0 !important;
+            margin-bottom: 22px;
+        }
+        .modal-body p {
+            margin: 0 0 12px 0;
+            color: #e2e8f0 !important;
+        }
+        .modal-body .modal-sub-warning {
+            font-weight: 700;
+            font-size: 14px;
+            color: #fca5a5 !important;
+            margin-bottom: 8px;
+        }
+        .modal-body strong {
+            color: #ffffff !important;
+            font-weight: 700;
+            background: rgba(239, 68, 68, 0.25);
+            padding: 1px 6px;
+            border-radius: 4px;
+        }
+        .modal-callout {
+            background: rgba(239, 68, 68, 0.16) !important;
+            border: 1px solid rgba(239, 68, 68, 0.45) !important;
+            border-radius: 8px;
+            padding: 12px 16px;
+            font-size: 12.5px;
             line-height: 1.5;
-            color: var(--text);
-            margin-bottom: 20px;
+            color: #ffffff !important;
+            font-weight: 500;
         }
         .modal-footer {
             display: flex;
             justify-content: flex-end;
             gap: 12px;
         }
+        .btn-modal-cancel {
+            background: #1e2633 !important;
+            color: #f1f5f9 !important;
+            border: 1px solid #3b4556 !important;
+            font-weight: 600 !important;
+            font-size: 13px !important;
+            padding: 9px 18px !important;
+            border-radius: 7px !important;
+            cursor: pointer !important;
+            transition: all 0.2s ease !important;
+        }
+        .btn-modal-cancel:hover {
+            background: #283344 !important;
+            color: #ffffff !important;
+            border-color: #64748b !important;
+        }
         .btn-danger-confirm {
             background: #dc2626 !important;
-            color: #fff !important;
+            color: #ffffff !important;
             font-weight: 700 !important;
+            font-size: 13px !important;
             border: 1px solid #ef4444 !important;
-            padding: 8px 16px;
-            border-radius: 6px;
-            cursor: pointer;
-            box-shadow: 0 0 10px rgba(220, 38, 38, 0.5);
-            transition: all 0.2s ease;
+            padding: 9px 18px !important;
+            border-radius: 7px !important;
+            cursor: pointer !important;
+            box-shadow: 0 0 14px rgba(220, 38, 38, 0.5) !important;
+            transition: all 0.2s ease !important;
         }
         .btn-danger-confirm:hover {
             background: #b91c1c !important;
+            box-shadow: 0 0 18px rgba(220, 38, 38, 0.7) !important;
         }
 
         /* Suffix and Prefix styles */
@@ -2361,22 +2407,22 @@
     <div id="live-confirm-modal" class="modal-overlay" style="display: none;">
         <div class="modal-box danger-modal">
             <div class="modal-header">
-                <span style="font-size: 20px;">⚠️</span>
+                <span style="font-size: 22px;">⚠️</span>
                 <h3>ARM LIVE BROKER EXECUTION?</h3>
             </div>
             <div class="modal-body">
-                <p style="margin-bottom: 10px; font-weight: 600; color: #ff6b81;">
+                <div class="modal-sub-warning">
                     Warning: Real Capital Risk
-                </p>
-                <p style="margin-bottom: 12px; color: var(--text-dim); line-height: 1.5;">
+                </div>
+                <p>
                     Switching to <strong>LIVE</strong> mode disengages Shadow isolation. Real orders will be transmitted directly to Kotak / Zerodha Kite using live margin and capital allocations.
                 </p>
-                <div style="background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 6px; padding: 10px 14px; font-size: 12px; color: #fca5a5;">
+                <div class="modal-callout">
                     Ensure your Max Daily Loss Limit, Position Size, and Broker Gate controls are verified before proceeding.
                 </div>
             </div>
             <div class="modal-footer">
-                <button type="button" class="btn" onclick="closeLiveConfirmModal()" style="padding: 8px 16px; border: 1px solid var(--border); background: transparent; color: var(--text); border-radius: 6px; cursor: pointer;">
+                <button type="button" class="btn btn-modal-cancel" onclick="closeLiveConfirmModal()">
                     Cancel
                 </button>
                 <button type="button" class="btn btn-danger-confirm" onclick="confirmLiveExecution()">
