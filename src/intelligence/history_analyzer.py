@@ -174,8 +174,12 @@ class TradeHistoryAnalyzer:
                     """).fetchall()
 
                 patterns = []
+                has_legacy = False
                 for row in rows:
                     conds = json.loads(row["best_conditions"]) if row["best_conditions"] else {}
+                    if "profit_factor" not in conds or "dimension" not in conds:
+                        has_legacy = True
+                        break
                     patterns.append(
                         PatternInsight(
                             pattern_name=row["pattern_name"],
@@ -192,6 +196,8 @@ class TradeHistoryAnalyzer:
                             dimension=conds.get("dimension", "setup"),
                         )
                     )
+                if has_legacy:
+                    return []
                 return patterns
         except Exception as e:
             log.warning(f"Failed to load patterns from DB cache: {e}")
@@ -254,7 +260,10 @@ class TradeHistoryAnalyzer:
         patterns.extend(self._analyze_by_regime(symbol))
 
         # Sort patterns by Net PnL (expectancy * volume) descending
-        return sorted(patterns, key=lambda p: (p.net_pnl, p.profit_factor), reverse=True)
+        sorted_patterns = sorted(patterns, key=lambda p: (p.net_pnl, p.profit_factor), reverse=True)
+        if not symbol:
+            self._persist_patterns_to_db(sorted_patterns)
+        return sorted_patterns
 
     def _analyze_by_symbol_verdict(self, symbol: str = None) -> list[PatternInsight]:
         """Analyze performance by symbol and verdict label."""
