@@ -645,6 +645,7 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
                 "closed_items": closed_items,
                 "ai_exit_advice": paper_res.get("ai_exit_advice"),
                 "ai_model_name": paper_res.get("ai_model_name"),
+                "live_res": (intel or {}).get("live_res"),
             }
 
     # Fallback: only query the DB when the symbol *could* have multileg books.
@@ -774,7 +775,8 @@ def _build_structured_payload(symbol: str, fetched_at: str, scan_context: dict, 
         "market_regime": scan_context.get("market_regime") or "UNKNOWN",
         "confidence": llm_conf or (intel or {}).get("confidence", 0),
         "trade_entered": trade_entered,
-        "ai_model_name": ai_model_name
+        "ai_model_name": ai_model_name,
+        "live_res": (intel or {}).get("live_res"),
     }
 
     is_timeframe = td.get("execution_source") == "TIMEFRAME"
@@ -1565,13 +1567,17 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                         elif sid == "TFSS":
                             try:
                                 from src.engine.tfss_execution import run_live_tfss_strategy
-                                run_live_tfss_strategy(symbol, scan_context, scan_digest_id, intel, ai_verdict=llm_verdict)
+                                tfss_live_res = run_live_tfss_strategy(symbol, scan_context, scan_digest_id, intel, ai_verdict=llm_verdict)
+                                if isinstance(intel, dict) and tfss_live_res:
+                                    intel["live_res"] = tfss_live_res
                             except Exception as le:
                                 log.exception("%s: live/shadow TFSS strategy execution failed", symbol)
                         elif sid == "MULTILEG":
                             try:
                                 from src.engine.multileg_live_trading import run_multileg_live_strategy
-                                run_multileg_live_strategy(symbol, scan_context, scan_digest_id, intel, ai_verdict=ai_verdict_for_runner)
+                                ml_live_res = run_multileg_live_strategy(symbol, scan_context, scan_digest_id, intel, ai_verdict=ai_verdict_for_runner)
+                                if isinstance(intel, dict) and ml_live_res:
+                                    intel["live_res"] = ml_live_res
                             except Exception as le:
                                 log.exception("%s: live/shadow multileg strategy execution failed", symbol)
             except Exception:

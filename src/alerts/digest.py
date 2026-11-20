@@ -836,7 +836,11 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
             _is_live = is_broker_trade_enabled()
         except Exception:
             pass
-        trade_status_str = "🟢 *LIVE ENTERED*" if _is_live else "🟢 *PAPER ENTERED*"
+        live_res = header.get("live_res") or (multileg.get("live_res") if multileg else None)
+        if _is_live and live_res and live_res.get("action") in ("ENTRY_FAILED", "REJECTED", "PARTIAL_FILL_ROLLBACK"):
+            trade_status_str = "⚠️ *LIVE REJECTED (PAPER ONLY)*"
+        else:
+            trade_status_str = "🟢 *LIVE ENTERED*" if _is_live else "🟢 *PAPER ENTERED*"
     elif is_closed_cycle:
         trade_status_str = "🔴 *EXITED*"
     elif is_holding:
@@ -1109,6 +1113,10 @@ def build_tfss_timeframe_digest(payload: dict, digest_id: str = None) -> tuple[s
 
                 lines.append(f"• Book: `{_esc_code(b_id)}` · {b_st}{age_suffix}")
                 lines.append(f"  Net Prem ₹{b_prem:.1f}/lot | {pnl_icon} Total P&L ₹{b_pnl:,.0f} | Δ Net {b_delta:+.2f}")
+                live_res_book = header.get("live_res") or (multileg.get("live_res") if multileg else None)
+                if live_res_book and live_res_book.get("action") in ("ENTRY_FAILED", "REJECTED", "PARTIAL_FILL_ROLLBACK"):
+                    fail_re = live_res_book.get("reason") or "Broker order rejected"
+                    lines.append(f"  ⚠️ *Live Broker Failed:* `{_esc(fail_re)}`")
 
                 be_l = b.get("breakeven_lower")
                 be_u = b.get("breakeven_upper")
