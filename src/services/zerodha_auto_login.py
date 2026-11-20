@@ -579,3 +579,23 @@ def _exchange_request_token(request_token: str, api_key: str, api_secret: str) -
             "success": False,
             "message": f"Token exchange failed: {e}",
         }
+
+
+if __name__ == "__main__":
+    import argparse
+    import sys
+    from pathlib import Path
+
+    # Ensure project root is in sys.path
+    project_root = Path(__file__).resolve().parents[2]
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+
+    parser = argparse.ArgumentParser(description="Headless Zerodha Kite Auto-Login via Playwright")
+    parser.add_argument("--force", action="store_true", help="Force login even if token is valid today")
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    res = auto_login_kite(force=args.force)
+    print(f"Result: {res}")
+    sys.exit(0 if res.get("success") else 1)

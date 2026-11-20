@@ -1566,28 +1566,30 @@ def start_scheduler(immediate: bool = False):
         except Exception as e:
             log.warning("[scheduler] Shoonya auth error: %s", e)
 
-        from config.runtime_config import is_broker_trade_enabled
-        if is_broker_trade_enabled():
-            try:
-                # Kite: ensure valid session or trigger auto-login
-                from src.engine.live_trading import get_kite_client
-                from src.services.zerodha_auto_login import auto_login_kite
-                
+        try:
+            # Kite: ensure valid session or trigger auto-login
+            from src.engine.live_trading import get_kite_client
+            from src.services.zerodha_auto_login import auto_login_kite
+            from src.models.schema import get_broker_config
+
+            broker_cfg = get_broker_config()
+            if broker_cfg and broker_cfg.get("api_key") and broker_cfg.get("user_id"):
                 kite = get_kite_client()
                 if kite:
                     log.info("[scheduler] Kite session OK")
                 else:
                     # Trigger auto-login if Kite client not available
                     log.info("[scheduler] Kite client not available — attempting auto-login...")
-                    result = auto_login_kite(force=True)
+                    result = auto_login_kite(force=False)
                     if result.get("success"):
-                        log.info("[scheduler] Kite auto-login successful")
+                        log.info("[scheduler] Kite auto-login: %s", result.get("message", "OK"))
                     else:
-                        log.info("[scheduler] Kite auto-login pending: %s", result.get("message", "credentials not configured"))
-            except Exception as e:
-                log.warning("[scheduler] Kite auth error: %s", e)
-        else:
-            log.debug("[scheduler] Broker trade disabled — skipping Kite pre-pipeline authentication.")
+                        log.info(
+                            "[scheduler] Kite auto-login pending: %s",
+                            result.get("message", "credentials not configured"),
+                        )
+        except Exception as e:
+            log.warning("[scheduler] Kite auth error: %s", e)
 
         _last_auth_date = today
 
@@ -2048,17 +2050,19 @@ def start_scheduler(immediate: bool = False):
                             log.warning("[scheduler] Daily Shoonya re-auth failed")
                     except Exception as e:
                         log.debug("[scheduler] Shoonya re-auth skipped: %s", e)
-                    from config.runtime_config import is_broker_trade_enabled
-                    if is_broker_trade_enabled():
-                        try:
-                            from src.services.zerodha_auto_login import auto_login_kite
+                    try:
+                        from src.services.zerodha_auto_login import auto_login_kite
+                        from src.models.schema import get_broker_config
+
+                        broker_cfg = get_broker_config()
+                        if broker_cfg and broker_cfg.get("api_key") and broker_cfg.get("user_id"):
                             result = auto_login_kite(force=False)
                             if result.get("success"):
                                 log.info("[scheduler] Daily Kite auto-login: %s", result.get("message", "OK"))
                             else:
                                 log.debug("[scheduler] Kite auto-login: %s", result.get("message", ""))
-                        except Exception as e:
-                            log.debug("[scheduler] Kite re-auth skipped: %s", e)
+                    except Exception as e:
+                        log.debug("[scheduler] Kite re-auth skipped: %s", e)
 
                 threading.Thread(target=_daily_reauth, daemon=True, name="daily-reauth").start()
 
@@ -2117,8 +2121,9 @@ def start_scheduler(immediate: bool = False):
                 now_time_str = now_ist.strftime("%H:%M")
                 if "08:45" <= now_time_str <= "09:05" and _last_auto_login_date != current_date:
                     _last_auto_login_date = current_date
-                    from config.runtime_config import is_broker_trade_enabled
-                    if is_broker_trade_enabled():
+                    from src.models.schema import get_broker_config
+                    broker_cfg = get_broker_config()
+                    if broker_cfg and broker_cfg.get("api_key") and broker_cfg.get("user_id"):
                         log.info(
                             "[scheduler] Pre-market: triggering headless Kite auto-login (08:45 IST)"
                         )
@@ -2139,7 +2144,7 @@ def start_scheduler(immediate: bool = False):
                         except Exception as exc:
                             log.error("[scheduler] Kite auto-login exception: %s", exc)
                     else:
-                        log.debug("[scheduler] Broker trade disabled — skipping pre-market Kite auto-login.")
+                        log.debug("[scheduler] Kite credentials not configured — skipping pre-market auto-login.")
 
             # ── Post-market: FII/DII Data Fetch at 19:15 IST (Mon-Fri) ──
             if now_ist.weekday() < 5:
