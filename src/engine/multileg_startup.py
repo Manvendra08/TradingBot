@@ -133,7 +133,8 @@ def reconcile_multileg_books_at_startup(symbol: str | None = None) -> list[dict[
         log.info("[multileg-startup] No open live multileg books to reconcile")
         return actions
 
-    for book in open_books:
+    for book_row in open_books:
+        book = dict(book_row)
         book_id = book["id"]
         book_symbol = book["symbol"]
         trade_mode = book.get("trade_mode", "PAPER")
@@ -167,7 +168,8 @@ def reconcile_multileg_books_at_startup(symbol: str | None = None) -> list[dict[
                     (book_id,)
                 ).fetchall()
 
-                for leg in legs:
+                for leg_row in legs:
+                    leg = dict(leg_row)
                     tradingsymbol = leg.get("tradingsymbol", "")
                     broker_qty = broker_qty_map.get(tradingsymbol, 0)
                     db_qty = int(leg.get("filled_quantity") or leg.get("lots", 0))
