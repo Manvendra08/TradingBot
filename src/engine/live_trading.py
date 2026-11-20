@@ -844,7 +844,11 @@ def cancel_kite_gtt(kite, gtt_id: str, shadow_mode: bool) -> None:
         log.info("[SHADOW] Suppressed GTT cancellation for ID: %s", gtt_id)
         return
     try:
-        kite.cancel_gtt(gtt_id)
+        gid = int(gtt_id) if str(gtt_id).isdigit() else gtt_id
+        if hasattr(kite, "delete_gtt"):
+            kite.delete_gtt(gid)
+        elif hasattr(kite, "cancel_gtt"):
+            kite.cancel_gtt(gid)
     except Exception as e:
         log.warning("Kite GTT cancellation failed for ID %s: %s", gtt_id, e)
 
@@ -2469,7 +2473,11 @@ def reconcile_and_cancel_orphan_gtts(kite=None) -> int:
                 is_in_db,
             )
             try:
-                kite.cancel_gtt(int(gtt_id) if gtt_id.isdigit() else gtt_id)
+                gid = int(gtt_id) if str(gtt_id).isdigit() else gtt_id
+                if hasattr(kite, "delete_gtt"):
+                    kite.delete_gtt(gid)
+                elif hasattr(kite, "cancel_gtt"):
+                    kite.cancel_gtt(gid)
                 cancelled_count += 1
                 try:
                     from src.alerts.telegram_dispatcher import send_text
@@ -2616,7 +2624,11 @@ def execute_panic_shutdown() -> str:
                 if gtt.get("status") == "active":
                     gid = gtt.get("id")
                     try:
-                        kite.cancel_gtt(int(gid) if str(gid).isdigit() else gid)
+                        g_id = int(gid) if str(gid).isdigit() else gid
+                        if hasattr(kite, "delete_gtt"):
+                            kite.delete_gtt(g_id)
+                        elif hasattr(kite, "cancel_gtt"):
+                            kite.cancel_gtt(g_id)
                         cancelled_gtts += 1
                     except Exception as ce:
                         log.warning("[PANIC] Failed to cancel GTT %s: %s", gid, ce)
