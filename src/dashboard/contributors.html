@@ -1001,6 +1001,11 @@
                 box-shadow: 0 0 8px var(--accent);
                 animation: hwPulse 2s infinite ease-in-out;
             }
+            .hw-scan-provenance.stale .hw-pulse-dot {
+                background: #f59e0b !important;
+                box-shadow: 0 0 6px rgba(245, 158, 11, 0.6) !important;
+                animation: none !important;
+            }
             @keyframes hwPulse {
                 0%, 100% { opacity: 0.4; transform: scale(0.9); }
                 50% { opacity: 1; transform: scale(1.15); }
@@ -1062,7 +1067,7 @@
             .hw-table th {
                 background: var(--surface-2);
                 color: var(--text-dim);
-                padding: 9px 12px;
+                padding: 7px 10px;
                 font-weight: 600;
                 font-size: 11px;
                 text-transform: uppercase;
@@ -1071,18 +1076,52 @@
                 white-space: nowrap;
             }
             .hw-table td {
-                padding: 8px 12px;
+                padding: 6px 10px;
                 border-bottom: 1px solid var(--border);
                 vertical-align: middle;
             }
             .hw-table tr:hover td {
                 background: rgba(255, 255, 255, 0.025);
             }
+            
+            /* Two-line header labels */
+            .hw-hdr-two-line {
+                display: inline-flex;
+                flex-direction: column;
+                align-items: flex-end;
+                gap: 1px;
+                line-height: 1.15;
+            }
+            .hw-hdr-time {
+                font-family: var(--mono);
+                font-size: 11px;
+                font-weight: 700;
+                color: var(--text);
+                white-space: nowrap;
+            }
+            .hw-hdr-sub {
+                font-family: var(--mono);
+                font-size: 9px;
+                font-weight: 600;
+                color: var(--text-dim);
+                letter-spacing: 0.4px;
+                white-space: nowrap;
+            }
+            .hw-hdr-sub.base-sub {
+                color: var(--accent);
+                font-weight: 700;
+            }
+            .hw-hdr-sub.delta-sub {
+                color: var(--text-dim);
+            }
+
+            /* Scan History Columns */
             .hw-scan-col-hdr {
                 text-align: right;
                 font-family: var(--mono);
                 font-size: 10px;
                 border-left: 1px dashed var(--border);
+                padding: 6px 8px;
             }
             .hw-scan-cell {
                 text-align: right;
@@ -1091,6 +1130,7 @@
                 font-size: 11.5px;
                 border-left: 1px dashed var(--border);
                 white-space: nowrap;
+                padding: 6px 8px;
             }
             .hw-scan-cell.pos {
                 color: var(--green);
@@ -1098,9 +1138,96 @@
             .hw-scan-cell.neg {
                 color: var(--red);
             }
-            .hw-scan-cell.latest {
-                background: rgba(0, 229, 160, 0.04);
+
+            /* Baseline (ABS) Visual Separation */
+            .hw-scan-col-hdr.base {
+                background: rgba(255, 255, 255, 0.03) !important;
+                border-right: 1px solid rgba(255, 255, 255, 0.12) !important;
             }
+            .hw-scan-cell.base {
+                background: rgba(255, 255, 255, 0.02) !important;
+                border-right: 1px solid rgba(255, 255, 255, 0.12) !important;
+                font-weight: 600;
+            }
+            .hw-scan-cell.base.pos {
+                color: rgba(0, 229, 160, 0.75);
+            }
+            .hw-scan-cell.base.neg {
+                color: rgba(255, 91, 107, 0.75);
+            }
+
+            /* Center-Zero Diverging Bar & Two-Line Stack */
+            .hw-impact-cell {
+                display: inline-flex;
+                align-items: center;
+                justify-content: flex-end;
+                gap: 8px;
+                white-space: nowrap;
+            }
+            .hw-diverging-track {
+                width: 52px;
+                height: 6px;
+                background: rgba(255, 255, 255, 0.08);
+                border-radius: 3px;
+                position: relative;
+                overflow: hidden;
+                flex-shrink: 0;
+            }
+            .hw-diverging-track::after {
+                content: '';
+                position: absolute;
+                left: 50%;
+                top: 0;
+                bottom: 0;
+                width: 1px;
+                background: rgba(255, 255, 255, 0.35);
+                z-index: 2;
+            }
+            .hw-diverging-bar {
+                position: absolute;
+                top: 0;
+                bottom: 0;
+                height: 100%;
+                border-radius: 2px;
+                transition: width 0.25s ease;
+            }
+            .hw-diverging-bar.pos {
+                left: 50%;
+                background: var(--green);
+            }
+            .hw-diverging-bar.neg {
+                right: 50%;
+                background: var(--red);
+            }
+
+            .hw-delta-stack {
+                display: inline-flex;
+                flex-direction: column;
+                align-items: flex-end;
+                white-space: nowrap;
+                line-height: 1.15;
+                min-width: 58px;
+            }
+            .hw-delta-val {
+                font-family: var(--mono);
+                font-size: 12px;
+                font-weight: 700;
+                white-space: nowrap;
+            }
+            .hw-delta-val.pos {
+                color: var(--green);
+            }
+            .hw-delta-val.neg {
+                color: var(--red);
+            }
+            .hw-day-sub {
+                font-size: 9.5px;
+                color: var(--text-dim);
+                font-family: var(--mono);
+                margin-top: 1px;
+                white-space: nowrap;
+            }
+
             .hw-trend-badge {
                 padding: 2px 6px;
                 border-radius: 4px;
@@ -1110,6 +1237,7 @@
                 display: inline-flex;
                 align-items: center;
                 gap: 4px;
+                white-space: nowrap;
             }
             .hw-trend-badge.up {
                 background: var(--green-bg);
@@ -2181,21 +2309,30 @@
                                 <th style="text-align: right">Weight</th>
                                 <th style="text-align: right">LTP (₹)</th>
                                 <th style="text-align: right">Day %</th>
-                                <th style="text-align: right" id="hw-col-hdr-impact">Current Impact</th>
+                                <th style="text-align: right" id="hw-col-hdr-impact">
+                                    <div class="hw-hdr-two-line">
+                                        <span id="hw-col-hdr-impact-title">Current Impact</span>
+                                        <span class="hw-hdr-time" id="hw-col-hdr-impact-time" style="color:var(--accent); font-size:10px;"></span>
+                                    </div>
+                                </th>
                                 <!-- Micro-Trend Sparkline Column (visible in Compact Trend mode) -->
-                                <th class="hw-sparkline-hdr" style="text-align: center; min-width: 90px">5-Scan Trend</th>
-                                <!-- Dynamic scan history columns (up to 5) (visible in Detailed Scans mode) -->
-                                <th class="hw-scan-col-hdr" id="hw-scan-hdr-0">Scan 1</th>
+                                <th class="hw-sparkline-hdr" style="text-align: center; min-width: 80px">5-Scan Trend</th>
+                                <!-- Dynamic scan history columns (up to 4 prior scans) (visible in Detailed Scans mode) -->
+                                <th class="hw-scan-col-hdr base" id="hw-scan-hdr-0">Scan 1</th>
                                 <th class="hw-scan-col-hdr" id="hw-scan-hdr-1">Scan 2</th>
                                 <th class="hw-scan-col-hdr" id="hw-scan-hdr-2">Scan 3</th>
                                 <th class="hw-scan-col-hdr" id="hw-scan-hdr-3">Scan 4</th>
-                                <th class="hw-scan-col-hdr" id="hw-scan-hdr-4">Scan 5 (Latest)</th>
-                                <th style="text-align: center; width: 90px" id="hw-col-hdr-shift">5-Scan Shift</th>
+                                <th style="text-align: center; width: 85px" id="hw-col-hdr-shift">
+                                    <div class="hw-hdr-two-line" style="align-items: center;">
+                                        <span id="hw-col-hdr-shift-title">5-SCAN</span>
+                                        <span class="hw-hdr-sub">SHIFT</span>
+                                    </div>
+                                </th>
                             </tr>
                         </thead>
                         <tbody id="hw-table-tbody">
                             <tr>
-                                <td colspan="12" style="text-align:center; padding: 24px; color: var(--text-dim)">
+                                <td colspan="11" style="text-align:center; padding: 24px; color: var(--text-dim)">
                                     Loading persistent multi-scan heavyweights data...
                                 </td>
                             </tr>
@@ -3306,6 +3443,31 @@
                 }
             }
 
+            function formatScanTimeCompact(displayTime) {
+                if (!displayTime) return "--:--";
+                try {
+                    const parts = displayTime.trim().split(/\s+/);
+                    if (parts.length >= 2) {
+                        const timePart = parts[parts.length - 2];
+                        const ampm = parts[parts.length - 1].toUpperCase();
+                        if (ampm === "AM" || ampm === "PM") {
+                            const [hStr, mStr] = timePart.split(":");
+                            let h = parseInt(hStr, 10);
+                            if (ampm === "PM" && h < 12) h += 12;
+                            if (ampm === "AM" && h === 12) h = 0;
+                            return `${String(h).padStart(2, '0')}:${mStr}`;
+                        }
+                    }
+                    if (displayTime.includes("T")) {
+                        const d = new Date(displayTime);
+                        if (!isNaN(d.getTime())) {
+                            return d.toLocaleTimeString("en-GB", { hour: '2-digit', minute: '2-digit', hour12: false });
+                        }
+                    }
+                } catch (e) {}
+                return displayTime.split(' ').slice(-2).join(' ');
+            }
+
             function renderHeavyweightsPanel() {
                 if (!hwHistoryData) {
                     try {
@@ -3327,11 +3489,15 @@
                 const scanFreq = configuredScanFreq || idxData.scan_frequency_minutes || (hwHistoryData && hwHistoryData.scan_frequency_minutes) || 30;
 
                 // Update Provenance Badge with configured scan frequency & staleness check
+                const provBadge = document.getElementById("hw-provenance-badge");
                 const provText = document.getElementById("hw-provenance-text");
                 const hwStaleObj = checkScanStaleness(idxData.latest_scan_time, idxData.latest_scan_iso);
                 const isHwStale = idxData.is_stale || hwStaleObj.isStale;
                 const hwStaleLabel = idxData.stale_label || hwStaleObj.label;
 
+                if (provBadge) {
+                    provBadge.classList.toggle("stale", Boolean(isHwStale));
+                }
                 if (provText) {
                     if (isHwStale) {
                         provText.innerHTML = `<span class="stale-badge-pill" style="margin-right: 6px;">⚠️ ${hwStaleLabel}</span> Interval: ${scanFreq}m · ${idxData.scan_count}/5 Scans Tracked`;
@@ -3364,21 +3530,24 @@
                         if (impSub) impSub.textContent = `First Scan of Session · ${idxData.index_change_pct >= 0 ? '+' : ''}${idxData.index_change_pct.toFixed(2)}% idx`;
                     } else {
                         if (impLabel) impLabel.textContent = "Top Heavyweights Net Impact (Scan Delta)";
-                        const deltaArrow = isPos ? "▲ Pushing Index UP" : "▼ Dragging Index DOWN";
+                        const deltaArrow = isPos ? "▲ Pushing UP" : "▼ Dragging DOWN";
+                        const dayImpact = idxData.total_heavyweight_impact || 0;
+                        const dayPos = dayImpact >= 0;
+                        const idxPct = idxData.index_change_pct || 0;
                         impEl.textContent = `${isPos ? "+" : ""}${combinedImpact.toFixed(2)} pts Δ`;
-                        if (impSub) impSub.textContent = `${deltaArrow} vs prev scan · Day: ${idxData.total_heavyweight_impact >= 0 ? '+' : ''}${idxData.total_heavyweight_impact.toFixed(2)} pts (${idxData.index_change_pct >= 0 ? '+' : ''}${idxData.index_change_pct.toFixed(2)}% idx)`;
+                        if (impSub) impSub.textContent = `${deltaArrow} vs prev scan · Day ${dayPos ? '+' : ''}${dayImpact.toFixed(2)} (${idxPct >= 0 ? '+' : ''}${idxPct.toFixed(2)}%)`;
                     }
                 }
                 const bEl = document.getElementById("hw-summary-breadth");
                 const bSub = document.getElementById("hw-summary-breadth-sub");
                 if (bEl) {
                     if (isFirstScan) {
-                        bEl.textContent = `${idxData.bullish_count} Bullish / ${idxData.bearish_count} Bearish`;
+                        bEl.innerHTML = `<span style="color:var(--green)">${idxData.bullish_count} Bullish</span> / <span style="color:var(--red)">${idxData.bearish_count} Bearish</span>`;
                         if (bSub) bSub.textContent = "Day Cumulative Breadth";
                     } else {
                         const upCount = idxData.bullish_delta_count || 0;
                         const downCount = idxData.bearish_delta_count || 0;
-                        bEl.textContent = `${upCount} Pushing UP / ${downCount} Dragging DOWN`;
+                        bEl.innerHTML = `<span style="color:var(--green)">${upCount} Pushing UP</span> / <span style="color:var(--red)">${downCount} Dragging DOWN</span>`;
                         if (bSub) bSub.textContent = `Scan Δ · Day: ${idxData.bullish_count} Bullish / ${idxData.bearish_count} Bearish`;
                     }
                 }
@@ -3387,34 +3556,65 @@
                     sEl.textContent = `${idxData.heavyweight_share_pct.toFixed(1)}% of Index Move`;
                 }
 
-                // Update Table Scan Column Headers (up to 5 scans)
+                // Update Table Scan Column Headers
                 const scans = idxData.scans || [];
                 const scanCount = scans.length;
+                const latestScan = scanCount > 0 ? scans[scanCount - 1] : null;
+                const latestTime = latestScan ? formatScanTimeCompact(latestScan.display_time) : "";
+
                 const colHdrImpact = document.getElementById("hw-col-hdr-impact");
                 if (colHdrImpact) {
-                    colHdrImpact.textContent = isFirstScan ? "Current Impact" : "Scan Delta (Δ)";
-                    colHdrImpact.title = isFirstScan ? "Absolute point impact relative to previous day close" : "Delta impact vs previous scan (pushing index up/down)";
+                    const colTitle = isFirstScan ? "CURRENT IMPACT" : "SCAN DELTA (Δ)";
+                    colHdrImpact.innerHTML = `
+                        <div class="hw-hdr-two-line">
+                            <span id="hw-col-hdr-impact-title">${colTitle}</span>
+                            <span class="hw-hdr-time" id="hw-col-hdr-impact-time" style="color:var(--accent); font-size:10px;">${latestTime}</span>
+                        </div>
+                    `;
+                    colHdrImpact.title = isFirstScan 
+                        ? "Absolute point impact relative to previous day close" 
+                        : `Delta impact vs previous scan at ${latestScan ? latestScan.display_time : 'latest scan'}`;
                 }
                 const colHdrShift = document.getElementById("hw-col-hdr-shift");
                 if (colHdrShift) {
-                    colHdrShift.textContent = (scanCount >= 5) ? "5-Scan Shift" : `${Math.max(1, scanCount)}-Scan Shift`;
+                    const shiftLabel = (scanCount >= 5) ? "5-SCAN" : `${Math.max(1, scanCount)}-SCAN`;
+                    colHdrShift.innerHTML = `
+                        <div class="hw-hdr-two-line" style="align-items: center;">
+                            <span id="hw-col-hdr-shift-title">${shiftLabel}</span>
+                            <span class="hw-hdr-sub">SHIFT</span>
+                        </div>
+                    `;
+                    colHdrShift.title = `Cumulative point shift across the last ${scanCount} scans`;
                 }
 
-                for (let i = 0; i < 5; i++) {
+                // 4 historical scan headers: Scan 0 = BASE, Scans 1..3 = Δ
+                for (let i = 0; i < 4; i++) {
                     const th = document.getElementById(`hw-scan-hdr-${i}`);
                     if (!th) continue;
-                    if (i < scanCount) {
+                    const isBase = (i === 0);
+                    const hasScan = (i < scanCount - 1) || (scanCount === 1 && i === 0);
+                    if (hasScan && i < scans.length) {
                         const s = scans[i];
-                        const isLatest = (i === scanCount - 1);
-                        const timeStr = s.display_time.split(' ').slice(-2).join(' ');
-                        const tag = (i === 0) ? "[Abs]" : "[Δ]";
-                        th.textContent = isLatest ? `Latest (${timeStr}) ${tag}` : `Scan ${i + 1} (${timeStr}) ${tag}`;
-                        th.style.color = isLatest ? "var(--accent)" : "var(--text-dim)";
-                        th.style.display = "";
+                        const timeCompact = formatScanTimeCompact(s.display_time);
+                        th.className = `hw-scan-col-hdr ${isBase ? 'base' : ''}`;
+                        th.innerHTML = `
+                            <div class="hw-hdr-two-line">
+                                <span class="hw-hdr-time">${timeCompact}</span>
+                                <span class="hw-hdr-sub ${isBase ? 'base-sub' : 'delta-sub'}">${isBase ? 'BASE' : 'Δ'}</span>
+                            </div>
+                        `;
+                        th.title = isBase 
+                            ? `Scan 1 Baseline at ${s.display_time} [Absolute]` 
+                            : `Scan ${i + 1} Delta at ${s.display_time} [Δ vs prev scan]`;
                     } else {
-                        th.textContent = `Scan ${i + 1}`;
-                        th.style.color = "var(--text-dim)";
-                        th.style.display = "";
+                        th.className = `hw-scan-col-hdr ${isBase ? 'base' : ''}`;
+                        th.innerHTML = `
+                            <div class="hw-hdr-two-line">
+                                <span class="hw-hdr-time" style="color:var(--text-dim)">--:--</span>
+                                <span class="hw-hdr-sub ${isBase ? 'base-sub' : 'delta-sub'}">${isBase ? 'BASE' : 'Δ'}</span>
+                            </div>
+                        `;
+                        th.title = `Scan ${i + 1} (pending)`;
                     }
                 }
 
@@ -3424,11 +3624,11 @@
 
                 const heavyweights = idxData.heavyweights || [];
                 if (!heavyweights.length) {
-                    tbody.innerHTML = `<tr><td colspan="12" style="text-align:center; padding: 24px; color: var(--text-dim)">No heavyweight data available</td></tr>`;
+                    tbody.innerHTML = `<tr><td colspan="11" style="text-align:center; padding: 24px; color: var(--text-dim)">No heavyweight data available</td></tr>`;
                     return;
                 }
 
-                // Find max abs delta for bar scaling
+                // Find max abs delta for center-zero diverging bar scaling
                 const maxDeltaAbs = Math.max(0.01, ...heavyweights.map(h => {
                     const d = isFirstScan 
                         ? h.point_impact 
@@ -3441,18 +3641,20 @@
                         ? hw.point_impact 
                         : (hw.latest_delta !== undefined ? hw.latest_delta : (hw.delta_impact !== undefined ? hw.delta_impact : hw.point_impact));
                     const isDisplayPos = displayVal >= 0;
-                    const barPct = Math.max(4, Math.min(100, Math.round((Math.abs(displayVal) / maxDeltaAbs) * 100)));
+                    const halfPct = Math.max(3, Math.min(50, Math.round((Math.abs(displayVal) / maxDeltaAbs) * 50)));
                     const dayIsPos = hw.point_impact >= 0;
                     
-                    // Render the 5 scan columns (Scan 1 = absolute; Scans 2..5 = delta)
+                    // Render the 4 historical scan columns (Scan 0 = BASE; Scans 1..3 = Δ)
                     let scanCellsHtml = "";
-                    for (let sIdx = 0; sIdx < 5; sIdx++) {
-                        if (sIdx < scanCount) {
+                    for (let sIdx = 0; sIdx < 4; sIdx++) {
+                        const isBase = (sIdx === 0);
+                        const hasScan = (sIdx < scanCount - 1) || (scanCount === 1 && sIdx === 0);
+                        if (hasScan && sIdx < scans.length) {
                             let cellVal = null;
                             if (sIdx === 0) {
-                                cellVal = (hw.scan_deltas && hw.scan_deltas[0] !== undefined) 
-                                    ? hw.scan_deltas[0] 
-                                    : (hw.scan_points && hw.scan_points[0] !== undefined ? hw.scan_points[0] : null);
+                                cellVal = (hw.scan_points && hw.scan_points[0] !== undefined) 
+                                    ? hw.scan_points[0] 
+                                    : ((hw.scan_deltas && hw.scan_deltas[0] !== undefined) ? hw.scan_deltas[0] : null);
                             } else {
                                 cellVal = (hw.scan_deltas && hw.scan_deltas[sIdx] !== undefined) 
                                     ? hw.scan_deltas[sIdx] 
@@ -3460,23 +3662,22 @@
                                         ? (hw.scan_points[sIdx] - hw.scan_points[sIdx - 1]) 
                                         : null);
                             }
-                            const isLatest = (sIdx === scanCount - 1);
                             if (cellVal !== null) {
                                 const vPos = cellVal >= 0;
                                 const cumVal = (hw.scan_points && hw.scan_points[sIdx] !== undefined) ? hw.scan_points[sIdx] : null;
-                                const tip = (sIdx === 0)
-                                    ? `Scan 1 Absolute Impact: ${vPos ? '+' : ''}${cellVal.toFixed(2)} pts`
+                                const tip = isBase
+                                    ? `Scan 1 Absolute Baseline: ${vPos ? '+' : ''}${cellVal.toFixed(2)} pts`
                                     : `Scan ${sIdx + 1} Delta: ${vPos ? '+' : ''}${cellVal.toFixed(2)} pts (Day Cumulative: ${cumVal !== null && cumVal >= 0 ? '+' : ''}${cumVal !== null ? cumVal.toFixed(2) : '—'} pts)`;
                                 scanCellsHtml += `
-                                    <td class="hw-scan-cell ${vPos ? 'pos' : 'neg'} ${isLatest ? 'latest' : ''}" title="${tip}">
+                                    <td class="hw-scan-cell ${isBase ? 'base' : ''} ${vPos ? 'pos' : 'neg'}" title="${tip}">
                                         ${vPos ? '+' : ''}${cellVal.toFixed(2)}
                                     </td>
                                 `;
                             } else {
-                                scanCellsHtml += `<td class="hw-scan-cell ${isLatest ? 'latest' : ''}" style="color:var(--text-dim)">—</td>`;
+                                scanCellsHtml += `<td class="hw-scan-cell ${isBase ? 'base' : ''}" style="color:var(--text-dim)">—</td>`;
                             }
                         } else {
-                            scanCellsHtml += `<td class="hw-scan-cell" style="color:var(--text-dim)">—</td>`;
+                            scanCellsHtml += `<td class="hw-scan-cell ${isBase ? 'base' : ''}" style="color:var(--text-dim)">—</td>`;
                         }
                     }
 
@@ -3504,15 +3705,15 @@
                                 ${hw.change_pct >= 0 ? '+' : ''}${hw.change_pct.toFixed(2)}%
                             </td>
                             <td style="text-align: right">
-                                <div class="impact-cell" title="${isFirstScan ? 'Absolute Impact' : 'Scan Delta Impact (vs prev scan)'}">
-                                    <div class="mini-bar-track" title="Relative Impact: ${barPct}%">
-                                        <div class="mini-bar ${isDisplayPos ? 'green' : 'red'}" style="width: ${barPct}%"></div>
+                                <div class="hw-impact-cell" title="${isFirstScan ? 'Absolute Impact' : 'Scan Delta Impact (vs prev scan)'}">
+                                    <div class="hw-diverging-track" title="Relative Impact: ${(halfPct * 2)}%">
+                                        <div class="hw-diverging-bar ${isDisplayPos ? 'pos' : 'neg'}" style="width: ${halfPct}%"></div>
                                     </div>
-                                    <div style="display:flex; flex-direction:column; align-items:flex-end;">
-                                        <span class="impact-pill ${isDisplayPos ? 'green' : 'red'}">
-                                            ${isDisplayPos ? '+' : ''}${displayVal.toFixed(2)}${!isFirstScan ? ' Δ' : ''}
+                                    <div class="hw-delta-stack">
+                                        <span class="hw-delta-val ${isDisplayPos ? 'pos' : 'neg'}">
+                                            ${isDisplayPos ? '+' : ''}${displayVal.toFixed(2)}
                                         </span>
-                                        ${!isFirstScan ? `<span style="font-size:10px; color:var(--text-dim); font-family:var(--mono); margin-top:2px;">Day: ${dayIsPos ? '+' : ''}${hw.point_impact.toFixed(2)}</span>` : ''}
+                                        ${!isFirstScan ? `<span class="hw-day-sub">Day ${dayIsPos ? '+' : ''}${hw.point_impact.toFixed(2)}</span>` : ''}
                                     </div>
                                 </div>
                             </td>
