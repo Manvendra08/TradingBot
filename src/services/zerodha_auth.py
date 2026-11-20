@@ -3,13 +3,14 @@ import pyotp
 import logging
 from pathlib import Path
 from cryptography.fernet import Fernet
+from config.settings import DATA_DIR
 from src.models.schema import get_broker_config, update_broker_config
 
 import threading
 
 log = logging.getLogger("nsebot.zerodha_auth")
 
-KEY_PATH = Path("data/.fernet_key")
+KEY_PATH = DATA_DIR / ".fernet_key"
 _FERNET_LOCK = threading.Lock()
 _FERNET_INSTANCE: Fernet | None = None
 
