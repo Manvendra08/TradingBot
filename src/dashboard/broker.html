@@ -1942,6 +1942,7 @@
                                     id="dropdown-login-btn"
                                     class="dropdown-login-btn"
                                     onclick="triggerKiteLogin()"
+                                    style="display: none;"
                                 >
                                     Login Kite
                                 </button>
@@ -1949,6 +1950,7 @@
                                     id="dropdown-logout-btn"
                                     class="dropdown-logout-btn"
                                     onclick="logoutBroker()"
+                                    style="display: none;"
                                 >
                                     Logout
                                 </button>
@@ -4176,9 +4178,14 @@
             }
 
             function triggerKiteLogin() {
-                const apiKey = brokerStatus.api_key;
+                if (brokerStatus && brokerStatus.status === "CONNECTED") {
+                    alert("Kite is already connected and active for today!");
+                    return;
+                }
+                const apiKey = brokerStatus ? brokerStatus.api_key : null;
                 if (!apiKey) {
-                    alert("Please configure and save your API Key first!");
+                    alert("API Key is not configured yet. Opening credentials setup...");
+                    openCredentialsModal();
                     return;
                 }
                 const url = `https://kite.zerodha.com/connect/login?api_key=${apiKey}`;
