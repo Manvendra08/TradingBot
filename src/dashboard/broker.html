@@ -590,10 +590,10 @@
             }
 
             .main-container {
-                display: grid;
-                grid-template-columns: 380px 1fr;
-                gap: 24px;
-                padding: 24px;
+                display: flex;
+                flex-direction: column;
+                gap: 20px;
+                padding: 20px 24px;
                 max-width: 100%;
                 width: 100%;
                 box-sizing: border-box;
@@ -601,16 +601,42 @@
                 flex: 1;
             }
 
+            .broker-top-grid {
+                display: grid;
+                grid-template-columns: 340px 380px 1fr;
+                gap: 20px;
+                width: 100%;
+                box-sizing: border-box;
+            }
+
+            @media (max-width: 1300px) {
+                .broker-top-grid {
+                    grid-template-columns: 1fr 1fr;
+                }
+                .broker-top-grid > .top-grid-exposure {
+                    grid-column: span 2;
+                }
+            }
+
+            @media (max-width: 850px) {
+                .broker-top-grid {
+                    grid-template-columns: 1fr;
+                }
+                .broker-top-grid > .top-grid-exposure {
+                    grid-column: span 1;
+                }
+            }
+
             .sidebar {
                 display: flex;
                 flex-direction: column;
-                gap: 24px;
+                gap: 20px;
             }
 
             .content-area {
                 display: flex;
                 flex-direction: column;
-                gap: 24px;
+                gap: 20px;
             }
 
             /* Card design */
@@ -1191,10 +1217,40 @@
                 margin-top: 4px;
             }
             .legend-dot.equity {
-                background: var(--accent);
+                background: #00e5a0;
             }
             .legend-dot.commodity {
                 background: var(--blue);
+            }
+            .risk-badge {
+                display: inline-block;
+                padding: 2px 6px;
+                border-radius: 4px;
+                font-size: 10px;
+                font-weight: 700;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                line-height: 1.2;
+            }
+            .risk-badge.ok {
+                background: rgba(0, 229, 160, 0.15);
+                color: #00e5a0;
+                border: 1px solid rgba(0, 229, 160, 0.3);
+            }
+            .risk-badge.warn {
+                background: rgba(255, 183, 3, 0.15);
+                color: #ffb703;
+                border: 1px solid rgba(255, 183, 3, 0.3);
+            }
+            .risk-badge.danger {
+                background: rgba(255, 77, 109, 0.15);
+                color: #ff4d6d;
+                border: 1px solid rgba(255, 77, 109, 0.3);
+            }
+            .risk-badge.neutral {
+                background: rgba(148, 163, 184, 0.15);
+                color: #94a3b8;
+                border: 1px solid rgba(148, 163, 184, 0.3);
             }
             .legend-text {
                 display: flex;
@@ -1301,10 +1357,9 @@
             }
 
             .symbol-metrics {
-                display: flex;
-                flex-wrap: wrap;
-                justify-content: space-between;
-                gap: 4px 2px;
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 6px 12px;
                 margin-top: 10px;
                 padding-top: 8px;
                 border-top: 1px solid rgba(255, 255, 255, 0.05); /* Subdued divider */
@@ -1316,9 +1371,9 @@
             }
             .symbol-metrics .metric-item {
                 display: flex;
-                flex-direction: column;
+                justify-content: space-between;
                 align-items: center;
-                gap: 2px;
+                gap: 6px;
             }
             .symbol-metrics .metric-label {
                 color: var(--text-dim);
@@ -2080,8 +2135,8 @@
         </div>
 
         <div class="main-container">
-            <!-- Left Side Controls -->
-            <div class="sidebar">
+            <!-- Top Overview Grid: Margins, Risk, Exposure -->
+            <div class="broker-top-grid">
                 <!-- Margin Utilisation Card -->
                 <div class="card pulse-card accent-header">
                     <div class="card-title" style="margin-bottom: 0">
@@ -2109,6 +2164,42 @@
                                 "
                             >
                                 <canvas id="margin-donut-chart"></canvas>
+                                <div
+                                    id="donut-center-overlay"
+                                    style="
+                                        position: absolute;
+                                        top: 0;
+                                        left: 0;
+                                        width: 100%;
+                                        height: 100%;
+                                        display: flex;
+                                        flex-direction: column;
+                                        align-items: center;
+                                        justify-content: center;
+                                        pointer-events: none;
+                                    "
+                                >
+                                    <span
+                                        id="donut-center-pct"
+                                        style="
+                                            font-size: 13px;
+                                            font-weight: 800;
+                                            font-family: var(--mono);
+                                            color: var(--text);
+                                            line-height: 1.1;
+                                        "
+                                        >0%</span
+                                    >
+                                    <span
+                                        style="
+                                            font-size: 8.5px;
+                                            color: var(--text-dim);
+                                            text-transform: uppercase;
+                                            letter-spacing: 0.5px;
+                                        "
+                                        >USED</span
+                                    >
+                                </div>
                             </div>
                             <div
                                 class="margin-legend"
@@ -2214,7 +2305,7 @@
                 </div>
 
                 <!-- Risk Dashboard Card -->
-                <div class="card pulse-card" style="margin-top: 16px">
+                <div class="card pulse-card">
                     <div class="card-title" style="margin-bottom: 12px">
                         Risk Dashboard
                     </div>
@@ -2465,23 +2556,21 @@
                     </div>
                 </div>
 
-                <!-- Settings moved to Settings Page -->
-            </div>
-
-            <!-- Right Side Grid Lists -->
-            <div class="content-area">
-                <!-- Tier 2: Portfolio Pulse (Visual Summarization) -->
-                <div class="portfolio-pulse-container">
-                    <!-- Symbol Aggregation Grid -->
-                    <div class="symbol-cards-grid" id="symbol-cards-container">
+                <!-- Underlying Risk Exposure (Portfolio Pulse) Card -->
+                <div class="card pulse-card top-grid-exposure" style="display: flex; flex-direction: column;">
+                    <div class="card-title" style="margin-bottom: 12px">
+                        Underlying Exposure &amp; Greeks
+                    </div>
+                    <div class="symbol-cards-grid" id="symbol-cards-container" style="flex: 1;">
                         <!-- Dynamically populated Symbol Cards -->
                     </div>
                 </div>
+            </div>
 
-                <!-- Live Positions -->
-                <div class="card accent-header no-clip">
-                    <div
-                        class="card-title"
+            <!-- Live Positions (100% full width) -->
+            <div class="card accent-header no-clip" style="width: 100%;">
+                <div
+                    class="card-title"
                         style="
                             display: flex;
                             justify-content: space-between;
@@ -2649,7 +2738,6 @@
                         </table>
                     </div>
                 </div>
-            </div>
         </div>
 
         <script>
@@ -3103,14 +3191,14 @@
                         );
                         if (ddEmojiEl) {
                             if (data.drawdown_pct === 0.0) {
-                                ddEmojiEl.textContent = "😊";
+                                ddEmojiEl.innerHTML = '<span class="risk-badge ok">OK</span>';
                                 ddEmojiEl.title =
                                     "Excellent: No drawdown today.";
                             } else if (data.drawdown_pct <= 5.0) {
-                                ddEmojiEl.textContent = "😐";
+                                ddEmojiEl.innerHTML = '<span class="risk-badge warn">WARN</span>';
                                 ddEmojiEl.title = `Acceptable: Low drawdown of ${ddPct}.`;
                             } else {
-                                ddEmojiEl.textContent = "😢";
+                                ddEmojiEl.innerHTML = '<span class="risk-badge danger">CRIT</span>';
                                 ddEmojiEl.title = `Warning: High drawdown of ${ddPct}!`;
                             }
                         }
@@ -3138,16 +3226,16 @@
                             document.getElementById("risk-pf-emoji");
                         if (pfEmojiEl) {
                             if (pf === 99.99 || pf >= 1.5) {
-                                pfEmojiEl.textContent = "😊";
+                                pfEmojiEl.innerHTML = '<span class="risk-badge ok">OK</span>';
                                 pfEmojiEl.title =
                                     pf === 99.99
                                         ? "Excellent: Infinite Profit Factor (no losses)."
                                         : `Excellent: High Profit Factor of ${pf.toFixed(2)}.`;
                             } else if (pf >= 1.0 && pf < 1.5) {
-                                pfEmojiEl.textContent = "😐";
+                                pfEmojiEl.innerHTML = '<span class="risk-badge warn">WARN</span>';
                                 pfEmojiEl.title = `Acceptable: Moderate Profit Factor of ${pf.toFixed(2)}.`;
                             } else {
-                                pfEmojiEl.textContent = "😢";
+                                pfEmojiEl.innerHTML = '<span class="risk-badge danger">CRIT</span>';
                                 pfEmojiEl.title = `Warning: Poor Profit Factor of ${pf.toFixed(2)} (gross losses exceed gross profits)!`;
                             }
                         }
@@ -3177,13 +3265,13 @@
                         );
                         if (dlEmojiEl) {
                             if (dlPct < 50.0) {
-                                dlEmojiEl.textContent = "😊";
+                                dlEmojiEl.innerHTML = '<span class="risk-badge ok">OK</span>';
                                 dlEmojiEl.title = `Safe: Daily loss limit utilization is low (${dlPct.toFixed(2)}%).`;
                             } else if (dlPct < 80.0) {
-                                dlEmojiEl.textContent = "😐";
+                                dlEmojiEl.innerHTML = '<span class="risk-badge warn">WARN</span>';
                                 dlEmojiEl.title = `Caution: Daily loss limit utilization is moderate (${dlPct.toFixed(2)}%).`;
                             } else {
-                                dlEmojiEl.textContent = "😢";
+                                dlEmojiEl.innerHTML = '<span class="risk-badge danger">CRIT</span>';
                                 dlEmojiEl.title = `Critical Warning: Daily loss limit utilization is high (${dlPct.toFixed(2)}%)!`;
                             }
                         }
@@ -3209,23 +3297,23 @@
                             document.getElementById("risk-rr-emoji");
                         if (rrEmojiEl) {
                             if (rr >= 1.5) {
-                                rrEmojiEl.textContent = "😊";
+                                rrEmojiEl.innerHTML = '<span class="risk-badge ok">OK</span>';
                                 rrEmojiEl.title = `Excellent: Active Avg R:R is ${rr.toFixed(2)}.`;
                             } else if (rr >= 1.0 && rr < 1.5) {
-                                rrEmojiEl.textContent = "😐";
+                                rrEmojiEl.innerHTML = '<span class="risk-badge warn">WARN</span>';
                                 rrEmojiEl.title = `Acceptable: Active Avg R:R is ${rr.toFixed(2)}.`;
                             } else if (rr > 0 && rr < 1.0) {
-                                rrEmojiEl.textContent = "😢";
+                                rrEmojiEl.innerHTML = '<span class="risk-badge danger">CRIT</span>';
                                 rrEmojiEl.title = `Warning: Poor Active Avg R:R of ${rr.toFixed(2)} (risk exceeds reward).`;
                             } else {
-                                rrEmojiEl.textContent = "😐";
+                                rrEmojiEl.innerHTML = '<span class="risk-badge neutral">—</span>';
                                 rrEmojiEl.title =
                                     "No active positions to calculate R:R.";
                             }
                         }
 
                         // Notional Exposure
-                        const exp = `₹${data.total_notional_exposure.toLocaleString("en-IN", { minimumFractionDigits: 2 })}`;
+                        const exp = `₹${Math.round(data.total_notional_exposure || 0).toLocaleString("en-IN")}`;
                         const expEl = document.getElementById("risk-exposure");
                         if (expEl) {
                             expEl.textContent = exp;
@@ -3235,10 +3323,10 @@
                         );
                         if (expEmojiEl) {
                             if (data.total_notional_exposure > 0) {
-                                expEmojiEl.textContent = "🙂";
+                                expEmojiEl.innerHTML = '<span class="risk-badge ok">ACTIVE</span>';
                                 expEmojiEl.title = `Active Exposure: Current total notional size of open positions is ₹${data.total_notional_exposure.toLocaleString("en-IN")}.`;
                             } else {
-                                expEmojiEl.textContent = "😐";
+                                expEmojiEl.innerHTML = '<span class="risk-badge neutral">—</span>';
                                 expEmojiEl.title =
                                     "No active exposure: no open positions.";
                             }
@@ -3272,9 +3360,9 @@
                             (data.equity.available || 0) +
                             (data.equity.utilized || 0);
 
-                        const eqAvail = `₹${data.equity.available.toLocaleString("en-IN", { minimumFractionDigits: 2 })}`;
-                        const eqUtil = `₹${data.equity.utilized.toLocaleString("en-IN", { minimumFractionDigits: 2 })}`;
-                        const eqTotal = `₹${eqTotalVal.toLocaleString("en-IN", { minimumFractionDigits: 2 })}`;
+                        const eqAvail = `₹${Math.round(data.equity.available || 0).toLocaleString("en-IN")}`;
+                        const eqUtil = `₹${Math.round(data.equity.utilized || 0).toLocaleString("en-IN")}`;
+                        const eqTotal = `₹${Math.round(eqTotalVal).toLocaleString("en-IN")}`;
 
                         if (document.getElementById("eq-avail"))
                             document.getElementById("eq-avail").textContent =
@@ -3306,6 +3394,10 @@
 
                 const eqUtil = Math.max(0, data.equity.utilized || 0);
                 const freeMargin = Math.max(0, data.equity.available || 0);
+                const totalMargin = eqUtil + freeMargin;
+                const utilPct = totalMargin > 0 ? Math.round((eqUtil / totalMargin) * 100) : 0;
+                const centerPctEl = document.getElementById("donut-center-pct");
+                if (centerPctEl) centerPctEl.textContent = `${utilPct}%`;
 
                 const isLight =
                     document.documentElement.getAttribute("data-theme") ===
@@ -3703,10 +3795,8 @@
                         const diff = cmp - entry;
                         const pct = (diff / entry) * 100;
                         const arrow = pct >= 0 ? "↑" : "↓";
-                        const pctColor =
-                            pct >= 0 ? "var(--profit)" : "var(--loss)";
                         const signStr = pct >= 0 ? "+" : "";
-                        deltaStr = `<span class="delta-indicator" style="color:${pctColor};">${arrow} ${signStr}${pct.toFixed(2)}%</span>`;
+                        deltaStr = `<span class="delta-indicator" style="color:var(--text-dim); font-size:11px;">${arrow} ${signStr}${pct.toFixed(2)}%</span>`;
                     }
 
                     const lotsSign = p.side === "BUY" ? "+" : "-";
@@ -3819,15 +3909,17 @@
                     const m = data[base];
                     const el = document.getElementById(`metrics-${base}`);
                     if (el) {
-                        el.style.display = "flex";
+                        el.style.display = "grid";
 
                         const dVal = m.net_delta;
                         const formattedDelta =
-                            dVal > 0
-                                ? `+${dVal.toFixed(2)}`
-                                : dVal < 0
-                                  ? `${dVal.toFixed(2)}`
-                                  : `0.00`;
+                            dVal != null
+                                ? (dVal > 0 ? "+" : "") +
+                                  dVal.toLocaleString("en-IN", {
+                                      minimumFractionDigits: 2,
+                                      maximumFractionDigits: 2,
+                                  })
+                                : "0.00";
                         const mpVal = m.max_profit;
                         const mlVal = m.max_loss;
 
@@ -3850,7 +3942,14 @@
                         };
 
                     const thetaVal = m.net_theta;
-                    const formattedTheta = thetaVal != null ? (thetaVal > 0 ? "+" : "") + thetaVal.toFixed(2) : "—";
+                    const formattedTheta =
+                        thetaVal != null
+                            ? (thetaVal > 0 ? "+" : "") +
+                              thetaVal.toLocaleString("en-IN", {
+                                  minimumFractionDigits: 2,
+                                  maximumFractionDigits: 2,
+                              })
+                            : "—";
 
                     el.innerHTML = `
         <div class="metric-item"><span class="metric-label">Net Delta</span><span class="metric-val" style="color:var(--text-dim);">${formattedDelta}</span></div>
@@ -3947,7 +4046,8 @@
                         data.forEach((p) => {
                             const pnl = p.pnl_rupees || 0;
                             const pnlClass = pnl >= 0 ? "pnl-green" : "pnl-red";
-                            const sign = pnl >= 0 ? "+" : "";
+                            const sign = pnl >= 0 ? "+" : "-";
+                            const absPnl = Math.abs(pnl);
 
                             const isShadow = p.trade_status === "SHADOW" || p.broker_status === "SHADOW";
                             const isLive = !isShadow && p.broker_status !== "REJECTED";
@@ -3999,7 +4099,7 @@
             <td>${lotsDisplay}</td>
             <td>${p.option_type === "FUT" ? formatNumeric(p.entry_underlying) : (p.entry_premium != null ? formatNumeric(p.entry_premium) : "—")}</td>
             <td>${p.option_type === "FUT" ? formatNumeric(p.exit_underlying) : (p.exit_premium != null ? formatNumeric(p.exit_premium) : "—")}</td>
-            <td class="pnl-cell ${pnlClass}">${sign}₹${pnl.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+            <td class="pnl-cell ${pnlClass}">${sign}₹${absPnl.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
             <td><span style="font-size:11px; background:var(--surface); padding:2px 6px; border-radius:4px; border:1.5px solid var(--border);">${p.reason || p.status.replace("CLOSED_", "")}</span></td>
             <td>${tradeModeHtml}</td>
           </tr>

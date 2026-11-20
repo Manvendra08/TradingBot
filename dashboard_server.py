@@ -3244,6 +3244,8 @@ def _fetch_real_kite_positions(kite) -> list[dict]:
                             "option_type": option_type,
                             "strike": strike,
                             "lots": db_lots,
+                            "lot_size": lot_size,
+                            "quantity": db_lots if exchange == "MCX" else db_lots * lot_size,
                             "entry_premium": bot_entry,
                             "cmp": cmp,
                             "sl_premium": sl_val,
@@ -3268,6 +3270,8 @@ def _fetch_real_kite_positions(kite) -> list[dict]:
                             "option_type": option_type,
                             "strike": strike,
                             "lots": manual_lots,
+                            "lot_size": lot_size,
+                            "quantity": manual_lots if exchange == "MCX" else manual_lots * lot_size,
                             "entry_premium": entry_px,
                             "cmp": cmp,
                             "sl_premium": "—",
@@ -3298,6 +3302,8 @@ def _fetch_real_kite_positions(kite) -> list[dict]:
                             "option_type": option_type,
                             "strike": strike,
                             "lots": lots_count,
+                            "lot_size": lot_size,
+                            "quantity": abs(qty),
                             "entry_premium": bot_entry,
                             "cmp": cmp,
                             "sl_premium": sl_val,
@@ -3345,6 +3351,8 @@ def _fetch_real_kite_positions(kite) -> list[dict]:
                         "option_type": option_type,
                         "strike": strike,
                         "lots": lots_count,
+                        "lot_size": lot_size,
+                        "quantity": abs(qty),
                         "entry_premium": entry_px,
                         "cmp": cmp,
                         "sl_premium": sl_val,
@@ -3934,7 +3942,33 @@ def get_portfolio_metrics():
     for base, positions in groups.items():
         from config.settings import LOT_SIZES
 
-        lot_size = LOT_SIZES.get(base, 1)
+        lot_size = LOT_SIZES.get(base)
+        if not lot_size:
+            for pos_item in positions:
+                if pos_item.get("lot_size") and int(pos_item["lot_size"]) > 1:
+                    lot_size = int(pos_item["lot_size"])
+                    break
+        if not lot_size:
+            for pos_item in positions:
+                tsym = pos_item.get("tradingsymbol") or ""
+                if tsym:
+                    try:
+                        from src.engine.symbol_resolver import parse_tradingsymbol, resolve_instrument
+                        parsed = parse_tradingsymbol(tsym)
+                        if parsed:
+                            inst = resolve_instrument(
+                                parsed["symbol"],
+                                parsed.get("expiry", ""),
+                                parsed.get("strike", 0.0),
+                                parsed.get("option_type", ""),
+                            )
+                            if inst and inst.get("lot_size"):
+                                lot_size = int(inst["lot_size"])
+                                break
+                    except Exception:
+                        pass
+        if not lot_size or lot_size < 1:
+            lot_size = 1
 
         # Get the latest underlying and delta from DB for options
         rows = _q(
@@ -3955,13 +3989,15 @@ def get_portfolio_metrics():
 
         for p in positions:
             side = 1 if p.get("side") == "BUY" else -1
-            # Robust lots: prefer "lots" field, fallback to raw quantity / lot_size
-            raw_lots = p.get("lots")
-            if raw_lots is None or raw_lots == "" or float(raw_lots or 0) == 0:
-                raw_qty = float(p.get("quantity", 0) or p.get("qty", 0) or 0)
-                raw_lots = raw_qty / lot_size if lot_size else 0
-            lots_val = float(raw_lots or 0)
-            qty = lots_val * lot_size
+            pos_lot_size = int(p.get("lot_size") or lot_size)
+            if p.get("quantity") and float(p.get("quantity") or 0) > 0:
+                qty = abs(float(p["quantity"]))
+            else:
+                raw_lots = p.get("lots")
+                if raw_lots is None or raw_lots == "" or float(raw_lots or 0) == 0:
+                    raw_qty = float(p.get("qty", 0) or 0)
+                    raw_lots = raw_qty / pos_lot_size if pos_lot_size else 0
+                qty = abs(float(raw_lots or 0)) * pos_lot_size
             opt_type = (p.get("option_type") or "").upper()
 
             if opt_type == "FUT":
@@ -4099,12 +4135,15 @@ def get_portfolio_metrics():
             pnl = 0.0
             for p in positions:
                 side = 1 if p.get("side") == "BUY" else -1
-                raw_lots = p.get("lots")
-                if raw_lots is None or raw_lots == "" or float(raw_lots or 0) == 0:
-                    raw_qty = float(p.get("quantity", 0) or p.get("qty", 0) or 0)
-                    raw_lots = raw_qty / lot_size if lot_size else 0
-                lots_val = float(raw_lots or 0)
-                qty = lots_val * lot_size
+                pos_lot_size = int(p.get("lot_size") or lot_size)
+                if p.get("quantity") and float(p.get("quantity") or 0) > 0:
+                    qty = abs(float(p["quantity"]))
+                else:
+                    raw_lots = p.get("lots")
+                    if raw_lots is None or raw_lots == "" or float(raw_lots or 0) == 0:
+                        raw_qty = float(p.get("quantity", 0) or p.get("qty", 0) or 0)
+                        raw_lots = raw_qty / pos_lot_size if pos_lot_size else 0
+                    qty = abs(float(raw_lots or 0)) * pos_lot_size
                 opt_type = (p.get("option_type") or "").upper()
 
                 if opt_type == "FUT":
