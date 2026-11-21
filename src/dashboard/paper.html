@@ -3923,9 +3923,9 @@
                         ? `${ha.median_duration_minutes}m`
                         : "—";
                 document.getElementById("h-fastest").textContent =
-                    ha.fastest_trade || "—";
+                    (ha.fastest_trade && ha.fastest_trade !== "0s") ? ha.fastest_trade : "—";
                 document.getElementById("h-slowest").textContent =
-                    ha.slowest_trade || "—";
+                    (ha.slowest_trade && ha.slowest_trade !== "0s") ? ha.slowest_trade : "—";
 
                 const distVals = [
                     {
@@ -4111,7 +4111,16 @@
                                 grid: { color: gridColor },
                                 ticks: {
                                     color: tickColor,
-                                    callback: (v) => "₹" + (Math.abs(v) >= 1000 ? (v/1000).toFixed(0) + "k" : v),
+                                    maxTicksLimit: 6,
+                                    callback: (v) => {
+                                        const abs = Math.abs(v);
+                                        if (abs >= 100000) return "₹" + (v / 100000).toFixed(1) + "L";
+                                        if (abs >= 1000) {
+                                            const k = v / 1000;
+                                            return "₹" + (k % 1 === 0 ? k.toFixed(0) : k.toFixed(1)) + "k";
+                                        }
+                                        return "₹" + v;
+                                    },
                                 },
                             },
                             x: {

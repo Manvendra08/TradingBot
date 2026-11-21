@@ -187,6 +187,7 @@ header {
 [data-theme="light"] .card:hover,
 [data-theme="light"] .kpi:hover {
   border-color: var(--border-strong);
+}
 /* ── Typography & Tabular Numerics ── */
 .tabular-nums, table, .kpi .val, .ticker-item, .ticker-chip, .badge, th, td {
   font-variant-numeric: tabular-nums;
@@ -667,17 +668,19 @@ button.primary:hover:not(:disabled) {
   border-color: var(--border);
 }
 .theme-toggle-btn {
-  background: transparent;
+  background: var(--surface);
   border: 1px solid var(--border);
   color: var(--text);
-  width: 34px;
-  height: 34px;
-  border-radius: var(--radius-btn);
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm, 6px);
   cursor: pointer;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 15px;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
   transition: var(--transition);
 }
 .theme-toggle-btn:hover {

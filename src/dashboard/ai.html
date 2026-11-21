@@ -4,6 +4,17 @@
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>NSEBOT — AI Intelligence</title>
+        <script>
+            (function () {
+                const KEY = "nsebot-theme";
+                const saved = localStorage.getItem(KEY) || "dark";
+                if (saved === "light") {
+                    document.documentElement.setAttribute("data-theme", "light");
+                } else {
+                    document.documentElement.removeAttribute("data-theme");
+                }
+            })();
+        </script>
         <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
         <style>
             @import url("https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500&display=swap");
@@ -13,7 +24,7 @@
                 --surface: #111418;
                 --surface-2: #1a1f26;
                 --border: #1e2530;
-                --accent: #00e5a0</title>;
+                --accent: #00e5a0;
                 --red: #ff4d6d;
                 --green: #00e5a0;
                 --yellow: #ffd166;
