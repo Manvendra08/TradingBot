@@ -2328,28 +2328,43 @@ def check_token_expiry_with_open_positions(kite_client=None) -> bool:
 
     If open positions exist but Kite cannot authenticate, dispatches an urgent Telegram alert.
     Returns True if healthy, False if token is invalid with open positions.
+    Suppressed on weekends and when markets for held positions are closed.
     """
     global _last_token_expiry_alert_ts
+
+    now_ist = datetime.now(IST)
+    # 1. Never alert on weekends (Saturday & Sunday: all exchanges closed)
+    if now_ist.weekday() >= 5:
+        return True
+
     from src.models.schema import get_conn
 
     try:
         with get_conn(read_only=True) as conn:
-            open_live_trades = conn.execute(
-                "SELECT count(*) FROM live_trades WHERE status='OPEN' AND (trade_status IS NULL OR trade_status != 'SHADOW')"
-            ).fetchone()[0]
-            open_live_books = conn.execute(
-                "SELECT count(*) FROM multi_leg_trades WHERE status='OPEN'"
-            ).fetchone()[0]
+            open_live_trades_rows = conn.execute(
+                "SELECT symbol FROM live_trades WHERE status='OPEN' AND (trade_status IS NULL OR trade_status != 'SHADOW')"
+            ).fetchall()
+            open_live_books_rows = conn.execute(
+                "SELECT symbol FROM multi_leg_trades WHERE status='OPEN' AND UPPER(trade_mode)='LIVE'"
+            ).fetchall()
     except Exception as e:
         log.warning("Failed to check open live positions for token alert: %s", e)
         return True
 
+    open_live_trades = len(open_live_trades_rows)
+    open_live_books = len(open_live_books_rows)
     total_live_open = open_live_trades + open_live_books
     if total_live_open == 0:
         return True
 
     from config.runtime_config import is_broker_trade_enabled
     if not is_broker_trade_enabled():
+        return True
+
+    # 2. Only alert during market hours when exits/orders can actually execute
+    from config.symbol_classes import is_market_open
+    held_symbols = {r[0] for r in open_live_trades_rows if r[0]} | {r[0] for r in open_live_books_rows if r[0]}
+    if not any(is_market_open(s, now_ist) for s in held_symbols):
         return True
 
     from src.services.zerodha_auth import is_token_valid
@@ -2363,12 +2378,14 @@ def check_token_expiry_with_open_positions(kite_client=None) -> bool:
                 _last_token_expiry_alert_ts = now_ts
                 should_alert = True
         if should_alert:
+            import os
+            dashboard_url = os.environ.get("DASHBOARD_URL", "http://localhost:8080").rstrip("/")
             msg = (
                 f"🚨 **CRITICAL: Zerodha Kite Token Expired / Unavailable!**\n"
                 f"You are currently holding **{total_live_open} open live position(s)** "
                 f"({open_live_trades} single-leg, {open_live_books} multileg)!\n"
                 f"⚠️ Automated SL/Target exits, GTT tracking, and risk management are **BLOCKED**.\n"
-                f"👉 Please re-authenticate immediately at http://localhost:8080/settings"
+                f"👉 Please re-authenticate immediately at {dashboard_url}/settings"
             )
             log.critical(msg)
             try:
@@ -3251,17 +3268,22 @@ def check_all_live_exits_every_2_min() -> None:
     """Poll all open live positions and books every 15 minutes for stop-loss, target, or expiry exit.
 
     Runs as a periodic background job, decoupled from the 60-minute NSE scan interval.
+    Suppressed on weekends when markets are closed.
     """
+    now_ist = datetime.now(IST)
+    if now_ist.weekday() >= 5:  # All exchanges closed on Saturday & Sunday
+        return
+
     from src.models.schema import get_conn
     from src.fetchers.router import fetch_option_chain
 
     # Quick check if there are any open live single-leg trades or multi-leg books
     with get_conn(read_only=True) as conn:
         open_trades = [dict(r) for r in conn.execute(
-            "SELECT * FROM live_trades WHERE status = 'OPEN'"
+            "SELECT * FROM live_trades WHERE status = 'OPEN' AND (trade_status IS NULL OR trade_status != 'SHADOW')"
         ).fetchall()]
         open_books = [dict(r) for r in conn.execute(
-            "SELECT * FROM multi_leg_trades WHERE status = 'OPEN'"
+            "SELECT * FROM multi_leg_trades WHERE status = 'OPEN' AND UPPER(trade_mode) = 'LIVE'"
         ).fetchall()]
 
     if not open_trades and not open_books:
