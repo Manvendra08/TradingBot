@@ -268,12 +268,11 @@
                 display: none;
                 position: fixed;
                 inset: 0;
-                background: rgba(0, 0, 0, 0.6);
-                backdrop-filter: blur(4px);
+                background: rgba(9, 11, 14, 0.8);
                 z-index: 10000;
                 align-items: center;
                 justify-content: center;
-                animation: fadeIn 0.2s ease-out;
+                animation: fadeIn 0.15s ease-out;
             }
             .modal-backdrop.open {
                 display: flex;
@@ -281,7 +280,7 @@
             .modal-container {
                 background: var(--surface);
                 border: 1px solid var(--border);
-                border-radius: 12px;
+                border-radius: var(--radius-card);
                 width: 100%;
                 max-width: 400px;
                 padding: 24px;

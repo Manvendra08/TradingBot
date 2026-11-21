@@ -552,8 +552,7 @@
             left: 0;
             width: 100vw;
             height: 100vh;
-            background: rgba(0, 0, 0, 0.82);
-            backdrop-filter: blur(6px);
+            background: rgba(9, 11, 14, 0.85);
             z-index: 99999;
             display: flex;
             align-items: center;
@@ -562,11 +561,11 @@
         .modal-box.danger-modal {
             background: #11161d !important;
             border: 1px solid #ef4444 !important;
-            border-radius: 12px;
+            border-radius: var(--radius-card);
             padding: 24px 26px;
             max-width: 490px;
             width: 90%;
-            box-shadow: 0 24px 60px rgba(0, 0, 0, 0.9), 0 0 35px rgba(239, 68, 68, 0.3);
+            box-shadow: 0 16px 40px rgba(0, 0, 0, 0.9);
             color: #f1f5f9 !important;
         }
         .modal-header {
@@ -748,7 +747,7 @@
             border-bottom-right-radius: inherit;
         }
 
-        /* Floating Save Action Banner (Overlay Toast) */
+        /* Floating Save Action Banner (Overlay Toast — Swiss Flat) */
         .unsaved-banner {
             position: fixed;
             bottom: 24px;
@@ -756,23 +755,19 @@
             transform: translateX(-50%) translateY(150px);
             opacity: 0;
             pointer-events: none;
-            background: rgba(17, 20, 24, 0.9);
-            backdrop-filter: blur(12px) saturate(180%);
-            -webkit-backdrop-filter: blur(12px) saturate(180%);
+            background: var(--surface-2);
             border: 1px solid var(--accent);
-            border-radius: 16px;
-            padding: 18px 28px;
+            border-radius: var(--radius-card);
+            padding: 16px 24px;
             width: calc(100% - 48px);
             max-width: 580px;
-            box-shadow:
-                0 20px 40px rgba(0, 0, 0, 0.5),
-                0 0 30px rgba(0, 229, 160, 0.1);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
             z-index: 50;
             display: flex;
             align-items: center;
             transition:
-                transform 0.4s cubic-bezier(0.16, 1, 0.3, 1),
-                opacity 0.4s ease;
+                transform 0.25s ease-out,
+                opacity 0.25s ease-out;
         }
 
         .unsaved-banner.show {
@@ -782,40 +777,24 @@
         }
 
         .btn-dirty {
-            background: #00e5a0 !important;
-            color: #000 !important;
-            box-shadow: 0 0 15px rgba(0, 229, 160, 0.4) !important;
-            animation: pulse-glow 2s infinite;
+            background: var(--accent) !important;
+            color: #090b0e !important;
+            box-shadow: none !important;
+            font-weight: 700;
         }
 
-        @keyframes pulse-glow {
-            0% {
-                box-shadow: 0 0 5px rgba(0, 229, 160, 0.3);
-            }
-
-            50% {
-                box-shadow: 0 0 20px rgba(0, 229, 160, 0.7);
-            }
-
-            100% {
-                box-shadow: 0 0 5px rgba(0, 229, 160, 0.3);
-            }
-        }
-
-        /* Toast Backdrop Blur */
+        /* Toast Backdrop */
         .toast-backdrop {
             position: fixed;
             top: 0;
             left: 0;
             right: 0;
             bottom: 0;
-            background: rgba(0, 0, 0, 0.25);
-            backdrop-filter: blur(2px);
-            -webkit-backdrop-filter: blur(2px);
+            background: rgba(0, 0, 0, 0.4);
             z-index: 49;
             opacity: 0;
             pointer-events: none;
-            transition: opacity 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+            transition: opacity 0.2s ease-out;
         }
 
         .toast-backdrop.show {

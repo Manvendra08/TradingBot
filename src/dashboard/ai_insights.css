@@ -54,12 +54,12 @@
   --ai-sp-6: 1.5rem;
   --ai-sp-8: 2rem;
 
-  /* Radii & shadows */
-  --ai-radius: 12px;
-  --ai-radius-sm: 8px;
+  /* Radii & shadows (Swiss Modern Flat Architecture) */
+  --ai-radius: 6px;
+  --ai-radius-sm: 4px;
   --ai-radius-pill: 999px;
-  --ai-shadow: 0 1px 2px rgba(0,0,0,.4), 0 4px 16px rgba(0,0,0,.25);
-  --ai-shadow-sm: 0 1px 3px rgba(0,0,0,.2);
+  --ai-shadow: none;
+  --ai-shadow-sm: none;
 }
 
 /* Light theme overrides */
@@ -68,8 +68,8 @@
   --ai-warn-bg: rgba(217, 119, 6, 0.10);
   --ai-bad-bg: rgba(220, 38, 38, 0.08);
   --ai-neutral-bg: rgba(71, 85, 105, 0.08);
-  --ai-shadow: 0 1px 3px rgba(15, 23, 42, 0.08), 0 4px 12px rgba(15, 23, 42, 0.06);
-  --ai-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --ai-shadow: none;
+  --ai-shadow-sm: none;
 }
 
 /* ── Layout ────────────────────────────────────────────────────────────────── */

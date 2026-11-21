@@ -250,24 +250,23 @@
         .arch-modal-backdrop {
             position: fixed;
             top: 0; left: 0; right: 0; bottom: 0;
-            background: rgba(0, 0, 0, 0.75);
-            backdrop-filter: blur(5px);
+            background: rgba(9, 11, 14, 0.85);
             z-index: 1000;
             display: flex;
             align-items: center;
             justify-content: center;
             padding: 20px;
-            animation: fadeIn .2s ease;
+            animation: fadeIn .15s ease;
         }
         .arch-modal-content {
             background: var(--surface);
             border: 1px solid var(--border);
-            border-radius: 12px;
+            border-radius: var(--radius-card);
             max-width: 900px;
             width: 100%;
             max-height: 85vh;
             overflow-y: auto;
-            box-shadow: 0 24px 48px rgba(0,0,0,0.6);
+            box-shadow: 0 12px 32px rgba(0,0,0,0.6);
             display: flex;
             flex-direction: column;
         }
