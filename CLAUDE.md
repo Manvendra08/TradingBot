@@ -26,13 +26,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Immediate One-Shot Scan:** `python main.py --now`
 - **One-Shot Scan for Specific Symbols:** `python main.py --now --symbols NIFTY BANKNIFTY NATURALGAS`
 - **FastAPI Web Dashboard:** `python dashboard_server.py` (Serves on `http://localhost:8080`)
-  - Cockpit: `/`
-  - Paper Trading: `/paper`
-  - Broker Live Trades: `/broker`
+  - Main Cockpit & Option Chain: `/`
+  - Paper Trading Console: `/paper`
+  - Broker Live Console: `/broker`
+  - AI Insights & Decision Audit: `/ai`
   - Contributors & Heavyweights: `/contributors`
-  - Settings & Strategies: `/settings`
-  - Scan Sentinel Diagnostics: `/sentinel`
-  - Ops Agent Health: `/ops`
+  - Market Summary Memorandum: `/report`
+  - Settings & Strategy Cockpit: `/settings`
+  - Ops Agent & Sentinel Health: `/ops`
 - **Emergency Flatten (Close all positions & cancel GTTs):** `python emergency_flat.py`
 - **Decision Matrix Replay / Backtesting:** `python scripts/replay_decision_matrix.py`
 - **Ops Agent Daemon:** `python ops_agent.py`
@@ -141,8 +142,17 @@ alerts/digest.py + alerts/heavyweight_digest.py -> telegram_dispatcher.py
   - Aggregates heavyweight point movement across `NIFTY`, `BANKNIFTY`, and `SENSEX`.
   - Dispatches a single combined Telegram alert per scan during market hours (09:15–15:40 IST) with 5-scan velocity tracking and options strategy cues.
   - Responsive commands: `/hw`, `/heavyweights`, `/contributors`.
-- **Contributors Dashboard (`src/dashboard/contributors.html`):** Real-time web view of top heavyweight movers and point drag.
-- **Paper Trading Equity Curve:** Defaults to collapsed mode (`display: none;`) on `/paper` until toggled by the user via "view curve ▾".
+- **Contributors Dashboard (`src/dashboard/contributors.html`):**
+  - Real-time web view of top heavyweight movers, point drag, and pullers vs draggers breakdown.
+  - **Top Heavyweights Net Point Movement Table:** Compact 2-line headers (`13:17 BASE`, `13:47 Δ`, etc.) eliminating horizontal scrollbar (all 11 columns fit cleanly in 1920px container); center-zero diverging mini-bars (red growing left, green growing right); visually shaded baseline column.
+  - **Institutional Execution Dossier:** State machine automatically trips `THESIS INVALIDATED — STAND DOWN` in high-contrast red when 15m scan delta impulse exceeds ±25 pts or boundaries breach; surfaces tripped condition with exact root cause; parses LLM prop desk synthesis cleanly into status badges.
+- **Swiss Modern Flat Architecture Design System (`theme.css`):**
+  - Professional, glare-free flat styling: solid 3-tier elevation (`#090b0e`, `#10141a`, `#161c24`), crisp 1px borders (`var(--border)`), tabular numbers (`font-variant-numeric: tabular-nums`), and standardized 32×32px theme toggles across all 8 web templates.
+  - Paper trading collapsible equity curve features dynamic, precision-aware Y-axis tick formatting (`maxTicksLimit: 6`, fractional `k`/`L`) eliminating duplicate label collisions; holding durations sanitize sub-second trades to `—`.
+
+### 9. Weekend & Market Session Guardrails
+- **Kite Token Expiry Alerts (`src/engine/live_trading.py`):** Token expiry alerts (`check_token_expiry_with_open_positions()`) and 15-minute exit checks (`check_all_live_exits_every_2_min()`) bypass execution on weekends (`now_ist.weekday() >= 5`) and when markets for held symbols are closed. Paper trades (`trade_mode = 'PAPER'`) and shadow positions are strictly decoupled from live broker alert counts.
+- **Nightly Telegram Database Backup (`src/scheduler/job_runner.py` & `src/utils/gdrive_backup.py`):** Daily 23:56 PM IST database backup is strictly guarded to Monday–Friday (`is_weekday = now_ist.weekday() < 5`). Defensive guard inside `backup_db_to_telegram()` automatically skips on Saturday and Sunday unless explicitly forced.
 
 ---
 
@@ -154,3 +164,4 @@ alerts/digest.py + alerts/heavyweight_digest.py -> telegram_dispatcher.py
 4. **No Streamlit:** Dashboard is strictly FastAPI (`dashboard_server.py`).
 5. **No obsolete broker/source routes:** Upstox, Paytm, and NSE commodity chain routes are decommissioned.
 6. **Symbol-specific intelligence isolation:** `NATURALGAS` uses news-only intelligence; `NIFTY`/`BANKNIFTY` use heatmap-only intelligence. Never cross-mix.
+7. **No weekend alert spam or DB backups:** Token expiry warnings and nightly backups never fire on Saturdays or Sundays. Paper positions must never trigger live broker alerts.

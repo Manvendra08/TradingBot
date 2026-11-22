@@ -21,18 +21,25 @@ Autonomous options trading system, real-time option-chain monitor, signal engine
   - Priority engine in [exit_evaluator.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/engine/exit_evaluator.py) (`HARD_STOP` $\to$ `TESTED_DELTA` $\to$ `PROFIT_TARGET` $\to$ `TIME_DECAY` $\to$ `CAS_CLOSE` $\to$ `FRIDAY_CLOSE` $\to$ `AI_TIGHTEN`).
   - AI exits only permitted on true tightening conditions ($\ge 30\%$ credit profit or $\le -50\%$ stop loss ratio).
   - Safe exit leg ordering closes short legs first to immediately release SPAN margin and eliminate naked risk before closing long wings.
-- **Top Heavyweights Net Impact Digest & Contributors Page:**
+- **Top Heavyweights Net Impact Digest & Contributors Cockpit:**
   - Consolidated 3-index Telegram alert (`NIFTY`, `BANKNIFTY`, `SENSEX`) dispatched once per scan cycle via [heavyweight_digest.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/alerts/heavyweight_digest.py) during market hours (09:15–15:40 IST).
   - Web dashboard Contributors cockpit ([contributors.html](file:///c:/Users/manve/VibeProjects/NSEBOT/src/dashboard/contributors.html)) displaying real-time heavyweight point contributions, 5-scan velocity shifts, and options strategy takeaways.
+  - **Top Heavyweights Net Point Movement Table:** Compact 2-line headers (`13:17 BASE`, `13:47 Δ`, etc.) with zero horizontal scroll (all 11 columns fit cleanly on 1920px); center-zero diverging mini-bars (red growing left, green growing right); visually shaded baseline column.
+  - **Institutional Execution Dossier:** State machine automatically trips `THESIS INVALIDATED — STAND DOWN` in high-contrast red when 15m scan delta impulse exceeds ±25 pts or boundaries breach; surfaces tripped condition with exact root cause; parses LLM prop desk synthesis cleanly into status badges.
+- **Weekend & Market Session Guardrails:**
+  - Token expiry alerts in [live_trading.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/engine/live_trading.py) and fast exit checks bypass execution on weekends (`now_ist.weekday() >= 5`) and when markets are closed. Paper trades (`trade_mode = 'PAPER'`) and shadow positions are strictly decoupled from live broker alert counts.
+  - Nightly Telegram database backup at 23:56 PM IST is restricted to Monday–Friday (`is_weekday = now_ist.weekday() < 5`) with a defensive function bypass in [gdrive_backup.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/utils/gdrive_backup.py) on Saturdays and Sundays.
 - **Fail-Closed Broker Authorization Gate:** All live Kite executions (entry, exit, adjustment, reconciliation) are strictly gated through [broker_gate.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/engine/broker_gate.py) (`authorize_broker_execution`), verifying shadow mode, broker disabled switches, pause flags, enabled symbol lists, and market hours. Paper trading remains fully operational even when broker mode is disabled.
 - **Fail-Closed Runtime Configuration:** Persisted in `data/runtime_config.json` via [runtime_config.py](file:///c:/Users/manve/VibeProjects/NSEBOT/config/runtime_config.py) with atomic file writes and fail-closed fallback defaults (`get_fail_closed_defaults`).
 - **Immutable Scan Snapshots:** Context frozen at scan time in [scan_snapshot.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/models/scan_snapshot.py) with SHA-256 data hashing and `MappingProxyType` immutability. Provenance tracked via `snapshot_id` across `paper_trades`, `live_trades`, and `multi_leg_trades`.
 - **Sequential Leg Execution & Atomic Rollback:** Multi-leg live orders verify fills sequentially via `confirm_order_fill()`. Upon partial rejection or broker failure, `_rollback_placed_legs()` instantly flattens all open positions.
-- **Bloomberg / TradingView Dashboard:** High-performance FastAPI server ([dashboard_server.py](file:///c:/Users/manve/VibeProjects/NSEBOT/dashboard_server.py)) serving:
+- **Swiss Modern Flat Architecture Dashboard:** High-performance FastAPI server ([dashboard_server.py](file:///c:/Users/manve/VibeProjects/NSEBOT/dashboard_server.py)) built on a glare-free solid 3-tier elevation system (`#090b0e`, `#10141a`, `#161c24`), 1px borders, tabular numeric typography, and standardized 32×32px theme toggle buttons serving 8 dedicated views:
   - Main Cockpit & Recent Intelligence (TradingView 24h news, ScanX heatmaps, combined sentiment)
-  - Paper Trading Console (6 KPIs, collapsible equity curve with smooth animations, trade duration, win rates, MTM P&L)
-  - Live Broker Console (Zerodha Kite position reconciliation, GTT order tracking)
-  - Contributors Cockpit (Top heavyweights net impact, 5-scan velocity tracking)
+  - Paper Trading Console (6 KPIs, collapsible equity curve with dynamic precision-aware Y-axis ticks, sub-second duration sanitization `—`, win rates, MTM P&L)
+  - Live Broker Console (Zerodha Kite position reconciliation, GTT order tracking, flush 109px sticky header alignment)
+  - AI Insights & Decision Audit (`/ai`: Success probability, SHAP drivers, Edge Health, Top Patterns, and expandable 10-step Decision Audit Trail)
+  - Contributors Cockpit (Top heavyweights net impact, diverging delta bars, 5-scan velocity tracking, and institutional dossier)
+  - Market Summary Memorandum (`/report`: Executive Derivatives Summary, AOI flow, Multi-zone PCR gauges, cross-index matrix)
   - Settings & Strategy Cockpit (Hot-reloadable runtime config and decision matrix)
   - Ops Agent & Scan Sentinel Diagnostics (Health checks, self-healing, anomaly rules)
 
@@ -114,9 +121,10 @@ Open in your browser:
 - **Main Dashboard & Cockpit:** [http://localhost:8080/](http://localhost:8080/)
 - **Paper Trading:** [http://localhost:8080/paper](http://localhost:8080/paper)
 - **Broker Live Trades:** [http://localhost:8080/broker](http://localhost:8080/broker)
+- **AI Insights & Decision Audit:** [http://localhost:8080/ai](http://localhost:8080/ai)
 - **Contributors & Heavyweights:** [http://localhost:8080/contributors](http://localhost:8080/contributors)
+- **Market Summary Memorandum:** [http://localhost:8080/report](http://localhost:8080/report)
 - **Settings & Strategy Cockpit:** [http://localhost:8080/settings](http://localhost:8080/settings)
-- **Scan Sentinel Diagnostics:** [http://localhost:8080/sentinel](http://localhost:8080/sentinel)
 - **Ops Agent Safety Monitor:** [http://localhost:8080/ops](http://localhost:8080/ops)
 
 ---
@@ -224,10 +232,20 @@ NSEBOT/
 │   │   ├── digest.py            # Clean trader-facing Telegram digest builder
 │   │   ├── heavyweight_digest.py# Consolidated 3-index heavyweights impact alert
 │   │   └── telegram_dispatcher.py # Reliable Telegram delivery with HTTP fallback
+│   ├── utils/
+│   │   ├── gdrive_backup.py     # SQLite snapshot & Telegram database backup
+│   │   └── tls_adapter.py       # Resilient TLS connection adapter
 │   └── dashboard/
-│       ├── contributors.html    # Top heavyweights net movement cockpit
+│       ├── index.html           # Main option chain & market intelligence cockpit
 │       ├── paper.html           # Paper trading console with collapsible equity curve
-│       └── settings.html        # Settings, runtime config & decision matrix editor
+│       ├── broker.html          # Live Kite broker console & M2M accounting
+│       ├── ai.html              # AI Insights & 10-step Decision Audit Trail
+│       ├── contributors.html    # Top heavyweights net movement & execution dossier
+│       ├── report.html          # Executive Market & Derivatives Summary
+│       ├── settings.html        # Settings, runtime config & decision matrix editor
+│       ├── ops.html             # Ops agent & Sentinel health monitor
+│       ├── theme.css            # Swiss Modern Flat design system
+│       └── ai_insights.css      # Quant insights & audit table styling
 ├── dashboard_server.py          # FastAPI dashboard server
 ├── main.py                      # Bot daemon entry point
 └── tests/                       # Unit and integration test suites

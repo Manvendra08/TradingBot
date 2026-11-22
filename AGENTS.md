@@ -20,8 +20,15 @@
 
 - Main app entry: `python main.py`
 - One-shot scan: `python main.py --now`
-- Dashboard server: `python dashboard_server.py` (FastAPI — Streamlit legacy removed)
-- Paper trading page: `http://localhost:8080/paper`
+- Dashboard server: `python dashboard_server.py` (FastAPI — serving on `http://localhost:8080`)
+  - Main Cockpit & Option Chain: `http://localhost:8080/`
+  - Paper Trading: `http://localhost:8080/paper`
+  - Broker Console: `http://localhost:8080/broker`
+  - AI Insights & Decision Audit: `http://localhost:8080/ai`
+  - Contributors & Heavyweights: `http://localhost:8080/contributors`
+  - Market Summary Memorandum: `http://localhost:8080/report`
+  - Settings & Strategy Cockpit: `http://localhost:8080/settings`
+  - Ops Monitor & Sentinel: `http://localhost:8080/ops`
 - Active scan interval options: `5m`, `15m`, `30m`, `1H`, `3H`, `1D`
 - Live option-chain output is limited to ATM +/- 10 strikes
 - Dashboard "Recent Intelligence" section:
@@ -31,10 +38,12 @@
 - Contributors & Top Heavyweights:
   - Consolidated 3-index Telegram alert per scan cycle (`/hw`, `/heavyweights`, `/contributors`) via [heavyweight_digest.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/alerts/heavyweight_digest.py)
   - Dedicated Contributors page: `http://localhost:8080/contributors`
+  - **Top Heavyweights Net Point Movement Table:** Compact 2-line headers (`13:17 BASE`, `13:47 Δ`, etc.) with zero horizontal scroll (all 11 columns fit cleanly on 1920px); center-zero diverging mini-bars (red growing left, green growing right); visually shaded baseline column.
+  - **Institutional Execution Dossier:** State machine automatically trips `THESIS INVALIDATED — STAND DOWN` in high-contrast red when 15m scan delta impulse exceeds ±25 pts or boundaries breach; surfaces tripped condition with exact root cause; parses LLM prop desk synthesis cleanly into status badges.
 - Paper trading dashboard:
-  - Bloomberg/TradingView-inspired professional UI
+  - Bloomberg/TradingView-inspired professional UI with Swiss Modern Flat Architecture
   - 6 comprehensive KPIs: total trades, win rate, P&L, avg P&L, profit factor, streak
-  - Collapsible Equity Curve (linked to Total P&L) initialized in collapsed mode with dynamic "view curve ▾" / "hide curve ▴" toggle
+  - Collapsible Equity Curve (linked to Total P&L) initialized in collapsed mode with dynamic "view curve ▾" / "hide curve ▴" toggle, precision-aware dynamic Y-axis tick formatting (`maxTicksLimit: 6`, fractional `k`/`L`), and sub-second holding duration sanitization (`—`)
   - Symbol performance breakdown (win rate, avg P&L, total P&L per symbol)
   - Trade duration tracking (human-readable format)
   - Responsive design (desktop/tablet/mobile)
@@ -42,6 +51,7 @@
   - Oracle Cloud Infrastructure Ubuntu instance `137.23.58.212` (user `ubuntu`, hostname `nsebot`)
   - Continuous execution managed via systemd: `nsebot.service` (scheduler & engine) and `nsebot-dashboard.service` (dashboard on port 8080)
   - Fast-forward remote deployment via `git pull origin dev` + `sudo systemctl restart nsebot.service nsebot-dashboard.service`
+  - Automated weekend guards: Token expiry alerts and 23:56 PM IST database backups automatically silenced on Saturdays & Sundays. Paper and shadow trades decoupled from live broker alert counts.
 - Keep docs aligned with the live FastAPI dashboard, not older Streamlit references
 - News sources: ICICIDirect + NewsAPI for NIFTY/BANKNIFTY; TradingView for MCX (Way2Wealth removed)
 - Multi-leg execution engine: [multileg_live_trading.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/engine/multileg_live_trading.py) & [multileg_paper_trading.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/engine/multileg_paper_trading.py) supporting Iron Condor, Strangles, Straddles, Spreads, and Jade Lizards
@@ -167,3 +177,6 @@ Follow below instructions before starting work:
 - **Shadow Mode Pipeline Decoupling:** [pipeline.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/engine/pipeline.py) invokes live shadow trading when `live_shadow_mode=True`, completely decoupled from whether live broker order execution (`is_broker_trade_enabled()`) is enabled.
 - **Multi-Leg Risk Profile & Stop-Loss Calculation:** For undefined-risk short straddles/strangles, max loss is computed based on strategy stop-loss thresholds rather than arbitrary `underlying * 0.5`, eliminating false trade rejections in [multileg_strategy.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/engine/multileg_strategy.py) and [entry_quality.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/engine/entry_quality.py).
 - **Secondary Chain Fetcher Fallbacks:** Option chain fallback router in [router.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/fetchers/router.py) integrates [niftytrader_fetcher.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/fetchers/niftytrader_fetcher.py), while [shoonya_fetcher.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/fetchers/shoonya_fetcher.py) bulk fetching is guarded against interpreter shutdown concurrency faults.
+- **Swiss Modern Flat Architecture (v2.0 UI Contract):** Built strictly on solid 3-tier elevation surfaces (`#090b0e`, `#10141a`, `#161c24`), crisp 1px borders (`var(--border)`), tabular numbers (`font-variant-numeric: tabular-nums`), and zero decorative gradients or glassmorphism blurs. Dark mode initialized immediately in `<head>` to prevent light-mode FOUC, and `.theme-toggle-btn` standardized to discrete 32×32px buttons across all 8 web templates.
+- **Institutional Execution Dossier & Invalidation State Machine:** In [contributors.html](file:///c:/Users/manve/VibeProjects/NSEBOT/src/dashboard/contributors.html), the dossier continuously monitors heavyweights point velocity. When the 15-minute scan delta impulse exceeds ±25 pts or boundary walls breach, it automatically trips `THESIS INVALIDATED — STAND DOWN` in high-contrast red, displays the tripped condition and root cause, and suppresses contradictory options execution mandates.
+- **Weekend & Market Session Guard Invariants:** In [live_trading.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/engine/live_trading.py), Kite token expiry alerts and 15-minute fast exit checks bypass execution on weekends (`now_ist.weekday() >= 5`) and when markets are closed, strictly decoupling paper (`trade_mode = 'PAPER'`) and shadow positions from live broker alert counts. In [job_runner.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/scheduler/job_runner.py) and [gdrive_backup.py](file:///c:/Users/manve/VibeProjects/NSEBOT/src/utils/gdrive_backup.py), the 23:56 PM IST nightly database backup is restricted to Monday–Friday (`is_weekday = now_ist.weekday() < 5`) with a defensive function bypass on Saturdays and Sundays.
