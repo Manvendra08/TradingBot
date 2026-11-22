@@ -2479,12 +2479,14 @@ def start_scheduler(immediate: bool = False):
                         target=_run_eia_analyzer, daemon=True, name="eia-analyzer"
                     ).start()
 
-            # 6. Daily Telegram Backup (Runs at 23:56 PM IST, after last MCX scan)
+            # 6. Daily Telegram Backup (Runs at 23:56 PM IST, Mon-Fri only; skip Sat-Sun)
+            is_weekday = now_ist.weekday() < 5
             is_1156pm = now_ist.hour == 23 and now_ist.minute == 56
-            if is_1156pm and _last_backup_date != current_date:
+            if is_weekday and is_1156pm and _last_backup_date != current_date:
                 _last_backup_date = current_date
                 log.info(
-                    "[scheduler] Daily Telegram database backup triggered (23:56 PM IST)"
+                    "[scheduler] Daily Telegram database backup triggered (23:56 PM IST, %s)",
+                    now_ist.strftime("%A"),
                 )
 
                 def _run_telegram_backup():

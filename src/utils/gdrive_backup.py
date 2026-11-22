@@ -28,8 +28,19 @@ def _tg_send_file(file_path: Path, caption: str, session: requests.Session) -> d
     return resp.json()
 
 
-def backup_db_to_telegram() -> bool:
-    """Creates a point-in-time online SQLite backup, compresses to ZIP, and pushes to Telegram."""
+def backup_db_to_telegram(force: bool = False) -> bool:
+    """Creates a point-in-time online SQLite backup, compresses to ZIP, and pushes to Telegram.
+
+    Skips on weekends (Saturday & Sunday) unless force=True.
+    """
+    now_ist = datetime.now(IST)
+    if not force and now_ist.weekday() >= 5:
+        log.info(
+            "[backup] Skipping database backup on weekend (%s)",
+            now_ist.strftime("%A"),
+        )
+        return True
+
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         log.error("Telegram token or Chat ID not configured. Backup skipped.")
         return False
@@ -38,7 +49,6 @@ def backup_db_to_telegram() -> bool:
         log.error(f"Local database not found at {DB_PATH}. Cannot backup.")
         return False
 
-    now_ist = datetime.now(IST)
     now_str = now_ist.strftime("%Y%m%d_%H%M%S")
     now_human = now_ist.strftime("%d-%b-%Y %I:%M:%S %p IST")
 
@@ -163,5 +173,5 @@ def _send_discord_notification(text: str):
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-8s | %(message)s")
-    success = backup_db_to_telegram()
+    success = backup_db_to_telegram(force=True)
     print(f"\nDB Backup & Telegram Delivery: {'SUCCESS' if success else 'FAILED'}\n")
