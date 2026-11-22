@@ -66,10 +66,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Graft Index Commands
 - **Rebuild AST index:** `graft build`
-- **Repository map:** `graft repo_map`
+- **Repository map & orientation:** `graft map` (CLI) or MCP tool `graft_repo_map`
 - **Search symbol or concept:** `graft ask "<query>"`
 - **File API skeleton:** `graft skeleton <file_path>`
-- **Direct & transitive callers:** `graft callers <symbol>` / `graft trace_calls <symbol>`
+- **Direct & transitive callers:** `graft callers <symbol>`
+- **Blast radius of changes:** `graft blast`
 
 ---
 
