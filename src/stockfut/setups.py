@@ -403,10 +403,13 @@ def build_watchlist(
             "reversal_kind": rev_kind,
         }
         snap = create_scan_snapshot(
-            scan_time=f"{asof_date}T{asof_time}+05:30",
-            raw_intel=snapshot_payload,
-            nifty_spot=0.0,
-            banknifty_spot=0.0,
+            symbol=sym,
+            underlying=entry_price,
+            expiry=contract.expiry,
+            option_rows=[],
+            engine_verdict=b_label,
+            engine_confidence=score,
+            intel=snapshot_payload,
         )
 
         row = WatchRow(

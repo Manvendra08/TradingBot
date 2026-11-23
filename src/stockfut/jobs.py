@@ -362,18 +362,29 @@ def register_stockfut_jobs(scheduler: Any) -> None:
         replace_existing=True,
     )
 
-    # 3. 19:30 EOD Scan (Mon-Fri)
+    # 3. Post-Market Close EOD Scan (Mon-Fri at 15:45 IST on final completed bars)
+    scheduler.add_job(
+        job_stockfut_eod_scan,
+        "cron",
+        hour=15,
+        minute=45,
+        day_of_week="mon-fri",
+        id="stockfut_eod_scan_close",
+        replace_existing=True,
+    )
+
+    # 4. Evening EOD Scan on final settlement bhavcopy (Mon-Fri at 19:30 IST)
     scheduler.add_job(
         job_stockfut_eod_scan,
         "cron",
         hour=19,
         minute=30,
         day_of_week="mon-fri",
-        id="stockfut_eod_scan",
+        id="stockfut_eod_scan_evening",
         replace_existing=True,
     )
 
-    # 4. Every 15 minutes reconciliation between 09:15 and 15:30 (Mon-Fri)
+    # 5. Every 15 minutes reconciliation between 09:15 and 15:30 (Mon-Fri)
     scheduler.add_job(
         job_stockfut_reconcile,
         "cron",
