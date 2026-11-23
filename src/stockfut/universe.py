@@ -86,16 +86,24 @@ class UniverseBuilder:
         max_spread_pct = float(self.cfg.get("max_spread_pct", 0.05))
 
         # 1. Fetch hygiene lists if not injected
-        try:
-            if ban_list is None:
+        if ban_list is None:
+            try:
                 ban_list = fetch_ban_list()
-            if mwpl_dict is None:
+            except Exception as exc:
+                log.warning("Hygiene ban_list fetch error (%s); defaulting to empty ban list", exc)
+                ban_list = set()
+        if mwpl_dict is None:
+            try:
                 mwpl_dict = fetch_mwpl()
-            if events_dict is None:
+            except Exception as exc:
+                log.warning("Hygiene mwpl fetch error (%s); defaulting to empty MWPL map", exc)
+                mwpl_dict = {}
+        if events_dict is None:
+            try:
                 events_dict = fetch_events(days=events_blackout)
-        except Exception as exc:
-            log.error("UniverseBuilder fetch error during hygiene refresh: %s; failing closed to empty universe", exc)
-            return []
+            except Exception as exc:
+                log.warning("Hygiene events fetch error (%s); defaulting to empty events map", exc)
+                events_dict = {}
 
         # 2. Fetch all stock futures from instrument master
         all_contracts = self.kite_client.list_stock_futures()

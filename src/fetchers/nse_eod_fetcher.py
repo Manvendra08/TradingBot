@@ -64,6 +64,30 @@ class NseEodFetcher:
             except Exception:
                 pass
 
+        # 1. Primary: nsearchives official CSV
+        csv_url = "https://nsearchives.nseindia.com/content/fo/fo_secban.csv"
+        try:
+            resp = requests.get(csv_url, headers=self.HEADERS, timeout=self.timeout)
+            if resp.status_code == 200 and resp.text:
+                banned = set()
+                for line in resp.text.strip().splitlines()[1:]:
+                    if "," in line:
+                        parts = line.split(",")
+                        if len(parts) >= 2:
+                            sym = parts[1].strip().upper()
+                            if sym:
+                                banned.add(sym)
+                if banned or "Securities in Ban" in resp.text:
+                    try:
+                        with open(cache_file, "w", encoding="utf-8") as f:
+                            json.dump(list(banned), f)
+                    except Exception:
+                        pass
+                    return banned
+        except Exception as e:
+            log.debug("Failed fetching ban list from nsearchives csv: %s", e)
+
+        # 2. Secondary: NSE JSON API
         url = f"{self.BASE_URL}/api/fo-sec-ban"
         session = self._get_session()
         try:
@@ -74,31 +98,35 @@ class NseEodFetcher:
                 pass
 
             resp = session.get(url, timeout=self.timeout)
-            if resp.status_code != 200:
-                raise FetchError(f"HTTP {resp.status_code} fetching ban list")
+            if resp.status_code == 200:
+                data = resp.json()
+                banned = set()
+                items = data if isinstance(data, list) else data.get("secBanList", data.get("data", []))
+                for item in items:
+                    sym = item if isinstance(item, str) else item.get("symbol", item.get("secName", ""))
+                    sym_clean = str(sym).strip().upper()
+                    if sym_clean:
+                        banned.add(sym_clean)
 
-            data = resp.json()
-            banned = set()
-            # NSE API returns list of symbols or dict with 'secBanList' / 'data'
-            items = data if isinstance(data, list) else data.get("secBanList", data.get("data", []))
-            for item in items:
-                sym = item if isinstance(item, str) else item.get("symbol", item.get("secName", ""))
-                sym_clean = str(sym).strip().upper()
-                if sym_clean:
-                    banned.add(sym_clean)
-
-            # Cache on success
-            try:
-                with open(cache_file, "w", encoding="utf-8") as f:
-                    json.dump(list(banned), f)
-            except Exception:
-                pass
-
-            return banned
+                try:
+                    with open(cache_file, "w", encoding="utf-8") as f:
+                        json.dump(list(banned), f)
+                except Exception:
+                    pass
+                return banned
         except Exception as e:
-            if isinstance(e, FetchError):
-                raise
-            raise FetchError(f"Failed to fetch ban list: {e}") from e
+            log.warning("Failed fetching ban list from nseindia api: %s", e)
+
+        # 3. Fallback: Check for any existing recent cache file
+        for p in sorted(CACHE_DIR.glob("ban_list_*.json"), reverse=True):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    return set(json.load(f))
+            except Exception:
+                continue
+
+        log.warning("Ban list could not be fetched; defaulting to empty ban set")
+        return set()
 
     def fetch_mwpl(self) -> Dict[str, float]:
         """
@@ -122,31 +150,34 @@ class NseEodFetcher:
                 pass
 
             resp = session.get(url, timeout=self.timeout)
-            if resp.status_code != 200:
-                raise FetchError(f"HTTP {resp.status_code} fetching MWPL")
+            if resp.status_code == 200:
+                data = resp.json()
+                mwpl_dict: Dict[str, float] = {}
+                for item in data.get("data", []):
+                    sym = str(item.get("symbol") or "").strip().upper()
+                    mwpl_pct = float(item.get("mwplPercentage") or item.get("meta", {}).get("mwpl", 0.0))
+                    if sym:
+                        mwpl_dict[sym] = round(mwpl_pct, 2)
 
-            data = resp.json()
-            mwpl_dict: Dict[str, float] = {}
-            for item in data.get("data", []):
-                sym = str(item.get("symbol") or "").strip().upper()
-                # MWPL or percent utilization field
-                p_oi = item.get("pChangeOI") or item.get("meta", {}).get("total_mwpl", 0.0)
-                # Check for explicit MWPL fields
-                mwpl_pct = float(item.get("mwplPercentage") or item.get("meta", {}).get("mwpl", 0.0))
-                if sym:
-                    mwpl_dict[sym] = round(mwpl_pct, 2)
-
-            try:
-                with open(cache_file, "w", encoding="utf-8") as f:
-                    json.dump(mwpl_dict, f)
-            except Exception:
-                pass
-
-            return mwpl_dict
+                try:
+                    with open(cache_file, "w", encoding="utf-8") as f:
+                        json.dump(mwpl_dict, f)
+                except Exception:
+                    pass
+                return mwpl_dict
         except Exception as e:
-            if isinstance(e, FetchError):
-                raise
-            raise FetchError(f"Failed to fetch MWPL data: {e}") from e
+            log.warning("MWPL fetch failed (%s); checking cache fallback", e)
+
+        # Cache fallback
+        for p in sorted(CACHE_DIR.glob("mwpl_*.json"), reverse=True):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                continue
+
+        log.warning("MWPL data unavailable; defaulting to empty MWPL map")
+        return {}
 
     def fetch_events(self, days: int = 7) -> Dict[str, List[str]]:
         """
@@ -175,29 +206,35 @@ class NseEodFetcher:
                 pass
 
             resp = session.get(url, timeout=self.timeout)
-            if resp.status_code != 200:
-                raise FetchError(f"HTTP {resp.status_code} fetching events")
+            if resp.status_code == 200:
+                data = resp.json()
+                events_dict: Dict[str, List[str]] = {}
+                for item in (data if isinstance(data, list) else data.get("data", [])):
+                    sym = str(item.get("symbol") or "").strip().upper()
+                    desc = str(item.get("purpose") or item.get("desc") or "EVENT").strip().upper()
+                    ev_date = str(item.get("date") or "").strip()
+                    if sym:
+                        events_dict.setdefault(sym, []).append(f"{desc}_{ev_date}")
 
-            data = resp.json()
-            events_dict: Dict[str, List[str]] = {}
-            for item in (data if isinstance(data, list) else data.get("data", [])):
-                sym = str(item.get("symbol") or "").strip().upper()
-                desc = str(item.get("purpose") or item.get("desc") or "EVENT").strip().upper()
-                ev_date = str(item.get("date") or "").strip()
-                if sym:
-                    events_dict.setdefault(sym, []).append(f"{desc}_{ev_date}")
-
-            try:
-                with open(cache_file, "w", encoding="utf-8") as f:
-                    json.dump(events_dict, f)
-            except Exception:
-                pass
-
-            return events_dict
+                try:
+                    with open(cache_file, "w", encoding="utf-8") as f:
+                        json.dump(events_dict, f)
+                except Exception:
+                    pass
+                return events_dict
         except Exception as e:
-            if isinstance(e, FetchError):
-                raise
-            raise FetchError(f"Failed to fetch event calendar: {e}") from e
+            log.warning("Corporate events fetch failed (%s); checking cache fallback", e)
+
+        # Cache fallback
+        for p in sorted(CACHE_DIR.glob("events_*.json"), reverse=True):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                continue
+
+        log.warning("Corporate events data unavailable; defaulting to empty events map")
+        return {}
 
 
 # Module-level convenience functions
