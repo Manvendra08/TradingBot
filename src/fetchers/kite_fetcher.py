@@ -483,7 +483,10 @@ class KiteDataClient:
         if to_date is None:
             to_date = datetime.now(IST)
         if from_date is None:
-            from_date = to_date - timedelta(days=5)
+            if interval in ("day", "60minute", "120minute"):
+                from_date = to_date - timedelta(days=120)
+            else:
+                from_date = to_date - timedelta(days=5)
 
         try:
             return k.historical_data(

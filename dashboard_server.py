@@ -5670,6 +5670,20 @@ async def get_futures_performance():
     }
 
 
+@app.post("/api/futures/scan", dependencies=[Depends(authenticate)])
+async def post_futures_scan():
+    """Trigger an on-demand Stock Futures scan across all F&O universe stocks."""
+    try:
+        import threading
+        from src.stockfut.jobs import job_stockfut_eod_scan
+
+        threading.Thread(target=job_stockfut_eod_scan, daemon=True, name="api-stockfut-scan").start()
+        return {"status": "SUCCESS", "message": "Stock Futures scan dispatched in background"}
+    except Exception as e:
+        log.error("API /api/futures/scan failed: %s", e)
+        return JSONResponse({"status": "FAILED", "message": str(e)}, status_code=500)
+
+
 @app.post("/api/futures/pause", dependencies=[Depends(authenticate)])
 async def post_futures_pause(data: dict):
     """Pause or resume stock futures execution."""

@@ -218,6 +218,8 @@ def job_stockfut_eod_scan() -> None:
         features_map: Dict[str, Dict[str, Any]] = {}
         zones_map: Dict[str, List[Any]] = {}
         candles_map: Dict[str, List[Dict[str, Any]]] = {}
+        now_dt = datetime.now(IST)
+        from_date = now_dt - timedelta(days=120)
 
         # Scan each universe stock
         for contract in universe:
@@ -227,7 +229,12 @@ def job_stockfut_eod_scan() -> None:
                 token = client.resolve_instrument_token(sym)
                 if not token:
                     continue
-                daily = client.get_historical_candles(instrument_token=token, interval="day")
+                daily = client.get_historical_candles(
+                    instrument_token=token,
+                    interval="day",
+                    from_date=from_date,
+                    to_date=now_dt,
+                )
                 if not daily or len(daily) < 25:
                     continue
 
@@ -240,6 +247,7 @@ def job_stockfut_eod_scan() -> None:
                 atr = float(feat.get("atr14", 10.0))
                 zones = build_zones(daily, atr=atr)
                 zones_map[sym] = zones
+                time.sleep(0.04)  # Smooth rate limiting
             except Exception as e:
                 log.debug("[%s] EOD scan feature fetch error: %s", sym, e)
 

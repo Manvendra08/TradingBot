@@ -382,6 +382,7 @@
                 </div>
                 <div class="header-actions">
                     <span id="system-status-indicator" style="font-family: var(--mono); font-size: 11px; color: var(--green);">● SYSTEM OPERATIONAL</span>
+                    <button class="btn" id="btn-run-scan" onclick="triggerManualScan()" title="Trigger on-demand Stock Futures scan" style="border-color: var(--accent); color: var(--accent);">⚡ Run Scan</button>
                     <button class="btn" id="btn-pause-engine" onclick="togglePause()">Pause Engine</button>
                     <button class="btn btn-danger" onclick="emergencyFlatten()">Flatten All</button>
                     <button class="btn theme-toggle-btn" onclick="toggleTheme()" title="Toggle Dark/Light Mode">🌓</button>
@@ -844,6 +845,36 @@
                     }).join("");
                 } catch (e) {
                     console.error("Trades fetch error:", e);
+                }
+            }
+
+            async function triggerManualScan() {
+                const btn = document.getElementById("btn-run-scan");
+                if (btn) {
+                    btn.disabled = true;
+                    btn.textContent = "Scanning...";
+                }
+                try {
+                    const res = await fetch("/api/futures/scan", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" }
+                    });
+                    const data = await res.json();
+                    if (res.ok) {
+                        alert("Stock Futures scan triggered in background.\nWatchlist will update as candidates are evaluated.");
+                    } else {
+                        alert("Scan dispatch failed: " + (data.message || "Unknown error"));
+                    }
+                } catch (e) {
+                    alert("Error triggering scan: " + e.message);
+                } finally {
+                    setTimeout(() => {
+                        if (btn) {
+                            btn.disabled = false;
+                            btn.textContent = "⚡ Run Scan";
+                        }
+                        refreshAll();
+                    }, 4000);
                 }
             }
 

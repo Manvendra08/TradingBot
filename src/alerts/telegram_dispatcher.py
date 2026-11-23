@@ -994,10 +994,21 @@ def _process_telegram_command(command_text: str) -> None:
             log.error("Telegram /hw failed: %s", hwe)
             send_text(f"❌ Heavyweights summary failed: `{_escape_md_v1(str(hwe))}`")
 
+    elif cmd in ("/futscan", "/scan_futures", "/futures_scan", "/scanfut"):
+        send_text("🎯 *Triggering manual Stock Futures EOD scan across 219 F&O stocks...*\n_This scans all eligible contracts, builds levels & features, and will post the ARMED watchlist here upon completion._")
+        try:
+            from src.stockfut.jobs import job_stockfut_eod_scan
+            import threading
+            threading.Thread(target=job_stockfut_eod_scan, daemon=True, name="manual-tg-stockfut-scan").start()
+        except Exception as scan_err:
+            log.error("Telegram /futscan failed: %s", scan_err)
+            send_text(f"❌ Failed to dispatch Stock Futures scan: `{_escape_md_v1(str(scan_err))}`")
+
     elif cmd in ("/help", "/start"):
         help_text = (
             "🤖 **NSEBOT Telegram Commands**\n\n"
             "• `/status` — View current trading state, broker flags & open positions\n"
+            "• `/futscan` — 🎯 Trigger manual Stock Futures scan across 219 F&O stocks & send watchlist alert\n"
             "• `/hw` — 🏛️ View latest Top Heavyweights Net Impact across NIFTY, BANK NIFTY & SENSEX\n"
             "• `/pause` — Pause new automated trade entries\n"
             "• `/resume` — Resume automated trade entries & clear broker pause\n"
