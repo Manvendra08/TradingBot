@@ -1188,6 +1188,7 @@
         <div class="header-nav">
             <a href="/" class="nav-tab" id="tab-dashboard">Dashboard</a>
             <a href="/paper" class="nav-tab" id="tab-paper">Paper Trades</a>
+            <a href="/futures" class="nav-tab" id="tab-futures">Stock Futures</a>
             <a href="/broker" class="nav-tab" id="tab-broker">Broker Console</a>
             <a href="/ai" class="nav-tab" id="tab-ai-insights">AI Insights</a>
             <a href="/contributors" class="nav-tab" id="tab-contributors">Contributors</a>
@@ -2195,6 +2196,29 @@
                     </div>
                 </div>
 
+                <!-- STOCKFUT Strategy -->
+                <div class="card" style="margin-bottom:24px" id="strategy-card-STOCKFUT">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px">
+                        <div>
+                            <div class="card-title" style="margin-bottom:2px">🎯 STOCKFUT — Stock Futures Daily Swing System</div>
+                            <div style="font-size:11px; color:var(--text-dim)">Entry: 19:30 EOD Setup → 09:30 IST Marketable Limit Orders &nbsp;|&nbsp; Exit: SL / T1 (1.6R) / T2 / Time Stop &nbsp;|&nbsp; Model A Architecture</div>
+                        </div>
+                        <label class="switch" style="flex-shrink:0">
+                            <input type="checkbox" id="strat-STOCKFUT-enabled" onchange="onStrategyToggle('STOCKFUT')">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    <div id="strat-STOCKFUT-body">
+                        <div style="font-size:12px; color:var(--text-dim); line-height:1.5; margin-bottom:12px;">
+                            Automated end-to-end trading system across eligible NSE stock futures. Scans 180+ liquid contracts at 19:30 IST, generates top ARMED candidates, and executes at 09:30 IST. Governed by 2-lot minimums, 0.75% capital risk budget, and multi-layered portfolio circuit breakers.
+                        </div>
+                        <div style="display:flex; gap:12px; align-items:center; font-size:12px;">
+                            <span style="color:var(--text-dim);">Cockpit Control:</span>
+                            <a href="/futures" class="btn" style="text-decoration:none; padding:4px 10px; font-size:11px; font-family:var(--mono);">Open Stock Futures Cockpit ↗</a>
+                        </div>
+                    </div>
+                </div>
+
             </div>
 
             <!-- Decision Matrix Tab (Hidden by default) -->
@@ -2419,6 +2443,7 @@
             "BANKNIFTY",
             "SENSEX",
             "CRUDEOIL",
+            "STOCKFUT",
         ];
 
         document.addEventListener("DOMContentLoaded", () => {
@@ -2810,7 +2835,12 @@
 
             let html = "";
             TRADE_CONTROL_SYMBOLS.forEach((sym) => {
-                const currentLot = lotsObj[sym] || 1;
+                const isStockFut = sym === "STOCKFUT";
+                const displayLabel = isStockFut ? "STOCK FUTURES" : sym;
+                const minLots = isStockFut ? 2 : 1;
+                const currentLot = lotsObj[sym] || minLots;
+                const badge = isStockFut ? '<span style="font-size:10px; font-weight:700; color:var(--accent); background:rgba(0,229,160,0.12); padding:1px 5px; border-radius:3px;">EQUITY</span>' : '';
+
                 if (includeEnableCheckbox) {
                     const isChecked = (enabledSymbols || []).includes(sym)
                         ? "checked"
@@ -2819,21 +2849,25 @@
         <div class="symbol-lot-item" style="display:flex; justify-content:space-between; align-items:center; gap: 8px;">
           <div style="display:flex; align-items:center; gap:10px;">
             <input type="checkbox" name="enable-${namePrefix}-${sym}" ${isChecked} style="width:16px; height:16px; cursor:pointer; accent-color:var(--accent);">
-            <label>${sym}</label>
+            <label style="cursor:pointer;">${displayLabel}</label>
+            ${badge}
           </div>
           <div style="display:flex; align-items:center; gap:8px;">
             <span style="font-size:11px; color:var(--text-dim);">Lots:</span>
-            <input type="number" name="${namePrefix}-${sym}" min="1" max="100" value="${currentLot}" required style="width:60px; padding:4px 8px; border-radius:6px; text-align:right;">
+            <input type="number" name="${namePrefix}-${sym}" min="${minLots}" max="100" value="${currentLot}" required style="width:60px; padding:4px 8px; border-radius:6px; text-align:right;">
           </div>
         </div>
       `;
                 } else {
                     html += `
         <div class="symbol-lot-item" style="display:flex; justify-content:space-between; align-items:center; gap: 8px;">
-          <label>${sym}</label>
+          <div style="display:flex; align-items:center; gap:10px;">
+            <label>${displayLabel}</label>
+            ${badge}
+          </div>
           <div style="display:flex; align-items:center; gap:8px;">
             <span style="font-size:11px; color:var(--text-dim);">Lots:</span>
-            <input type="number" name="${namePrefix}-${sym}" min="1" max="100" value="${currentLot}" required style="width:60px; padding:4px 8px; border-radius:6px; text-align:right;">
+            <input type="number" name="${namePrefix}-${sym}" min="${minLots}" max="100" value="${currentLot}" required style="width:60px; padding:4px 8px; border-radius:6px; text-align:right;">
           </div>
         </div>
       `;
@@ -2926,7 +2960,7 @@
         }
 
         function loadStrategySettings(strategies) {
-            ["CORE", "TIMEFRAME", "TFSS", "MULTILEG", "NG_PARITY"].forEach(sid => {
+            ["CORE", "TIMEFRAME", "TFSS", "MULTILEG", "NG_PARITY", "STOCKFUT"].forEach(sid => {
                 const s = strategies[sid] || {};
                 const enabledEl = document.getElementById(`strat-${sid}-enabled`);
                 if (enabledEl) { enabledEl.checked = s.enabled !== false; }
@@ -2952,7 +2986,7 @@
 
         function collectStrategySettings() {
             const out = {};
-            ["CORE", "TIMEFRAME", "TFSS", "MULTILEG", "NG_PARITY"].forEach(sid => {
+            ["CORE", "TIMEFRAME", "TFSS", "MULTILEG", "NG_PARITY", "STOCKFUT"].forEach(sid => {
                 out[sid] = {
                     enabled: document.getElementById(`strat-${sid}-enabled`)?.checked ?? true,
                     ai_mode: document.getElementById(`strat-${sid}-ai-mode`)?.value || "boost_only",
@@ -3707,17 +3741,16 @@
                     updateAIDecisionFields();
 
                     // Render lot overrides and checkboxes
+                    let liveEnabled = data.live_enabled_broker_symbols ? [...data.live_enabled_broker_symbols] : ["NIFTY", "BANKNIFTY", "NATURALGAS", "CRUDEOIL"];
+                    if (data.stockfut_live_enabled && !liveEnabled.includes("STOCKFUT")) {
+                        liveEnabled.push("STOCKFUT");
+                    }
                     renderSymbolLotsContainer(
                         "lots-container",
                         data.live_symbol_lots || {},
                         "lot",
                         true,
-                        data.live_enabled_broker_symbols || [
-                            "NIFTY",
-                            "BANKNIFTY",
-                            "NATURALGAS",
-                            "CRUDEOIL",
-                        ],
+                        liveEnabled,
                     );
 
                     const paperGlobalInput = document.getElementById(
@@ -3726,17 +3759,16 @@
                     if (paperGlobalInput)
                         paperGlobalInput.value = data.paper_lots || 10;
 
+                    let paperEnabled = data.paper_enabled_symbols ? [...data.paper_enabled_symbols] : ["NIFTY", "BANKNIFTY", "NATURALGAS", "CRUDEOIL", "STOCKFUT"];
+                    if (data.stockfut_paper_enabled !== false && !paperEnabled.includes("STOCKFUT")) {
+                        paperEnabled.push("STOCKFUT");
+                    }
                     renderSymbolLotsContainer(
                         "paper-lots-container",
                         data.paper_symbol_lots || {},
                         "paper-lot",
                         true,
-                        data.paper_enabled_symbols || [
-                            "NIFTY",
-                            "BANKNIFTY",
-                            "NATURALGAS",
-                            "CRUDEOIL",
-                        ],
+                        paperEnabled,
                     );
                     updateSafetyZoneUI(
                         data.live_shadow_mode,
@@ -3831,6 +3863,8 @@
                 ),
                 live_enabled_broker_symbols: enabledSymbols,
                 paper_enabled_symbols: paperEnabledSymbols,
+                stockfut_live_enabled: enabledSymbols.includes("STOCKFUT"),
+                stockfut_paper_enabled: paperEnabledSymbols.includes("STOCKFUT"),
                 live_ai_decision_mode: document.getElementById(
                     "sett-ai-decision-mode",
                 ).value,

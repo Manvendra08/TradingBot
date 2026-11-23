@@ -20,11 +20,12 @@ TRADE_CONTROL_SYMBOLS = [
     "SENSEX",
     "NATURALGAS",
     "CRUDEOIL",
+    "STOCKFUT",
 ]
 
 
 def default_symbol_lots(default_lot: int = 1) -> dict[str, int]:
-    return {sym: default_lot for sym in TRADE_CONTROL_SYMBOLS}
+    return {sym: (2 if sym == "STOCKFUT" else default_lot) for sym in TRADE_CONTROL_SYMBOLS}
 
 
 def _clamp_minutes(value: int) -> int:
@@ -85,6 +86,8 @@ def get_fail_closed_defaults(default_freq: int = 15) -> dict:
         "enable_tfss_trade_blocked_rules": True,
         "enable_tfss_tranche_scaling": True,
         "enable_ng_parity_trades": False,  # BLOCK NG PARITY
+        "stockfut_live_enabled": False,  # STOCK FUTURES LIVE TRADING
+        "stockfut_paper_enabled": True,  # STOCK FUTURES PAPER TRADING
         "sentinel_report_mode": "anomalies",
         "ops_agent_mode": "observe",
         "tiered_gates_enabled": True,
@@ -113,7 +116,7 @@ def validate_config_dict(config: dict) -> None:
                 raise ValueError
         except (ValueError, TypeError):
             raise ValueError(f"Config field 'capital_cap_pct' must be a positive number, got {config.get('capital_cap_pct')}")
-    for bool_key in ("live_shadow_mode", "live_broker_disabled", "trading_paused", "live_ai_exit_advisor_enabled", "gemini_spark_feed_enabled"):
+    for bool_key in ("live_shadow_mode", "live_broker_disabled", "trading_paused", "live_ai_exit_advisor_enabled", "gemini_spark_feed_enabled", "stockfut_live_enabled", "stockfut_paper_enabled"):
         if bool_key in config and not isinstance(config[bool_key], bool):
             raise TypeError(f"Config field '{bool_key}' must be a boolean, got {type(config[bool_key]).__name__}")
     for list_key in ("live_enabled_broker_symbols", "paper_enabled_symbols"):
@@ -319,6 +322,24 @@ def is_broker_trade_enabled() -> bool:
     if cfg.get("trading_paused", True):
         return False
     return True
+
+
+def is_stockfut_live_enabled() -> bool:
+    """Check whether stock futures live broker execution is enabled."""
+    cfg = load_runtime_config()
+    if cfg.get("live_broker_disabled", True) or cfg.get("trading_paused", True):
+        return False
+    if "STOCKFUT" in cfg.get("live_enabled_broker_symbols", []):
+        return True
+    return bool(cfg.get("stockfut_live_enabled", False))
+
+
+def is_stockfut_paper_enabled() -> bool:
+    """Check whether stock futures paper execution is enabled."""
+    cfg = load_runtime_config()
+    if "STOCKFUT" in cfg.get("paper_enabled_symbols", []):
+        return True
+    return bool(cfg.get("stockfut_paper_enabled", True))
 
 
 def is_gemini_spark_feed_enabled() -> bool:

@@ -1,0 +1,64 @@
+{
+  "stockfut_live_enabled": false,
+  "capital_reference": 10000000.0,
+  "risk_budget_pct": 0.75,
+  "min_lots": 2,
+  "max_risk_multiplier": 1.25,
+  "max_open_positions": 6,
+  "max_positions_per_sector": 2,
+  "max_net_directional_pct": 0.60,
+  "max_gross_notional_mult": 2.0,
+  "gap_stress_loss_cap_pct": 0.06,
+  "margin_headroom_min_pct": 0.40,
+  "daily_loss_limit_pct": 0.02,
+  "weekly_loss_limit_pct": 0.04,
+  "consecutive_loss_limit": 3,
+  "drawdown_kill_switch_pct": 0.08,
+  "min_sessions_to_expiry_near": 12,
+  "expiry_squareoff_sessions": 5,
+  "events_blackout_sessions": 7,
+  "mwpl_max_pct": 80.0,
+  "min_oi_value_cr": 50.0,
+  "max_spread_pct": 0.05,
+  "sl_atr_min": 0.75,
+  "sl_atr_max": 2.0,
+  "target_r_ratio": 1.6,
+  "opposing_zone_atr_buffer": 0.5,
+  "entry_max_drift_atr": 0.3,
+  "gtt_sl_limit_buffer_atr": 0.3,
+  "runner_sl_entry_buffer_atr": 0.25,
+  "scoring_weights": {
+    "trend": 25,
+    "relative_strength": 25,
+    "oi_flow": 30,
+    "regime_fit": 20
+  },
+  "matrix_permissions": {
+    "STRONG_BULL": {
+      "RISK_ON": {"side": "LONG", "min_score": 65},
+      "NEUTRAL": {"side": "LONG", "min_score": 70},
+      "RISK_OFF": {"side": "LONG", "min_score": 80}
+    },
+    "BULL": {
+      "RISK_ON": {"side": "LONG", "min_score": 70},
+      "NEUTRAL": {"side": "LONG", "min_score": 75},
+      "RISK_OFF": null
+    },
+    "NEUTRAL": {
+      "RISK_ON": null,
+      "NEUTRAL": null,
+      "RISK_OFF": null
+    },
+    "BEAR": {
+      "RISK_ON": null,
+      "NEUTRAL": {"side": "SHORT", "min_score": 75},
+      "RISK_OFF": {"side": "SHORT", "min_score": 70}
+    },
+    "STRONG_BEAR": {
+      "RISK_ON": {"side": "SHORT", "min_score": 80},
+      "NEUTRAL": {"side": "SHORT", "min_score": 70},
+      "RISK_OFF": {"side": "SHORT", "min_score": 65}
+    }
+  },
+  "whitelist": []
+}

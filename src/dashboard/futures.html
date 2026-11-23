@@ -1,0 +1,890 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>NSEBOT — Stock Futures Cockpit</title>
+        <script>
+            // Anti-FOUC immediate theme initialization
+            (function () {
+                var theme = localStorage.getItem("nsebot_theme") || "dark";
+                document.documentElement.setAttribute("data-theme", theme);
+            })();
+        </script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+        <style>
+            @import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=DM+Sans:wght@400;500;600;700&display=swap");
+
+            :root {
+                --bg: #090b0e;
+                --surface: #10141a;
+                --surface-2: #161c24;
+                --surface-3: #1e2632;
+                --border: #222b38;
+                --border-strong: #2e3a4d;
+                --accent: #00e5a0;
+                --accent-dim: rgba(0, 229, 160, 0.12);
+                --red: #ff4d6d;
+                --red-dim: rgba(255, 77, 109, 0.12);
+                --green: #00e5a0;
+                --green-dim: rgba(0, 229, 160, 0.12);
+                --yellow: #ffd166;
+                --yellow-dim: rgba(255, 209, 102, 0.12);
+                --blue: #4da6ff;
+                --blue-dim: rgba(77, 166, 255, 0.12);
+                --text: #e2e8f0;
+                --text-dim: #94a3b8;
+                --muted: #4a5568;
+                --mono: "JetBrains Mono", monospace;
+                --sans: "DM Sans", -apple-system, sans-serif;
+            }
+
+            [data-theme="light"] {
+                --bg: #f8fafc;
+                --surface: #ffffff;
+                --surface-2: #f1f5f9;
+                --surface-3: #e2e8f0;
+                --border: #cbd5e1;
+                --border-strong: #94a3b8;
+                --accent: #0284c7;
+                --accent-dim: rgba(2, 132, 199, 0.12);
+                --red: #dc2626;
+                --red-dim: rgba(220, 38, 38, 0.12);
+                --green: #16a34a;
+                --green-dim: rgba(22, 163, 74, 0.12);
+                --yellow: #d97706;
+                --yellow-dim: rgba(217, 119, 6, 0.12);
+                --blue: #2563eb;
+                --blue-dim: rgba(37, 99, 235, 0.12);
+                --text: #0f172a;
+                --text-dim: #475569;
+                --muted: #94a3b8;
+            }
+
+            * {
+                box-sizing: border-box;
+                margin: 0;
+                padding: 0;
+            }
+
+            body {
+                background: var(--bg);
+                color: var(--text);
+                font-family: var(--sans);
+                font-size: 13px;
+                line-height: 1.5;
+                font-variant-numeric: tabular-nums;
+                overflow-x: hidden;
+            }
+
+            /* ── Header & Navigation ──────────────────────── */
+            .header-bar {
+                background: var(--surface);
+                border-bottom: 1px solid var(--border);
+                position: sticky;
+                top: 0;
+                z-index: 200;
+            }
+
+            .header-top {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 10px 24px;
+                border-bottom: 1px solid var(--border);
+            }
+
+            .brand-title {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                font-family: var(--mono);
+                font-size: 15px;
+                font-weight: 700;
+                letter-spacing: 0.5px;
+            }
+
+            .brand-badge {
+                font-size: 10px;
+                font-weight: 700;
+                padding: 2px 6px;
+                border-radius: 3px;
+                background: var(--accent-dim);
+                color: var(--accent);
+                border: 1px solid var(--accent);
+            }
+
+            .header-actions {
+                display: flex;
+                align-items: center;
+                gap: 12px;
+            }
+
+            .nav-tabs {
+                display: flex;
+                align-items: center;
+                gap: 4px;
+                padding: 6px 24px;
+                background: var(--surface-2);
+                overflow-x: auto;
+            }
+
+            .nav-tab {
+                padding: 6px 14px;
+                font-size: 12px;
+                font-weight: 600;
+                color: var(--text-dim);
+                text-decoration: none;
+                border-radius: 4px;
+                transition: background 0.15s, color 0.15s;
+                white-space: nowrap;
+            }
+
+            .nav-tab:hover {
+                background: var(--surface-3);
+                color: var(--text);
+            }
+
+            .nav-tab.active {
+                background: var(--surface);
+                color: var(--accent);
+                border: 1px solid var(--border);
+            }
+
+            .btn {
+                font-family: var(--mono);
+                font-size: 11px;
+                font-weight: 600;
+                padding: 6px 12px;
+                border-radius: 4px;
+                cursor: pointer;
+                border: 1px solid var(--border);
+                background: var(--surface-2);
+                color: var(--text);
+                transition: background 0.15s, border-color 0.15s;
+            }
+
+            .btn:hover {
+                background: var(--surface-3);
+                border-color: var(--border-strong);
+            }
+
+            .btn-danger {
+                background: var(--red-dim);
+                color: var(--red);
+                border-color: var(--red);
+            }
+
+            .btn-danger:hover {
+                background: var(--red);
+                color: #fff;
+            }
+
+            .theme-toggle-btn {
+                width: 32px;
+                height: 32px;
+                padding: 0;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+
+            /* ── Layout Container ─────────────────────────── */
+            .container {
+                max-width: 1720px;
+                margin: 0 auto;
+                padding: 20px 24px 60px;
+                display: flex;
+                flex-direction: column;
+                gap: 20px;
+            }
+
+            /* ── KPI Row ─────────────────────────────────── */
+            .kpi-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+                gap: 12px;
+            }
+
+            .kpi-card {
+                background: var(--surface);
+                border: 1px solid var(--border);
+                border-radius: 6px;
+                padding: 14px 18px;
+                display: flex;
+                flex-direction: column;
+                gap: 6px;
+            }
+
+            .kpi-title {
+                font-size: 11px;
+                font-weight: 600;
+                color: var(--text-dim);
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }
+
+            .kpi-val {
+                font-family: var(--mono);
+                font-size: 20px;
+                font-weight: 700;
+                color: var(--text);
+            }
+
+            .kpi-sub {
+                font-size: 11px;
+                color: var(--text-dim);
+            }
+
+            .text-green { color: var(--green); }
+            .text-red { color: var(--red); }
+            .text-yellow { color: var(--yellow); }
+            .text-blue { color: var(--blue); }
+
+            /* ── Section Cards ────────────────────────────── */
+            .card {
+                background: var(--surface);
+                border: 1px solid var(--border);
+                border-radius: 6px;
+                overflow: hidden;
+            }
+
+            .card-header {
+                padding: 12px 18px;
+                background: var(--surface-2);
+                border-bottom: 1px solid var(--border);
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+            }
+
+            .card-title {
+                font-family: var(--mono);
+                font-size: 13px;
+                font-weight: 700;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+
+            .badge {
+                font-family: var(--mono);
+                font-size: 10px;
+                font-weight: 700;
+                padding: 2px 7px;
+                border-radius: 3px;
+            }
+
+            .badge-green { background: var(--green-dim); color: var(--green); border: 1px solid var(--green); }
+            .badge-red { background: var(--red-dim); color: var(--red); border: 1px solid var(--red); }
+            .badge-yellow { background: var(--yellow-dim); color: var(--yellow); border: 1px solid var(--yellow); }
+            .badge-blue { background: var(--blue-dim); color: var(--blue); border: 1px solid var(--blue); }
+
+            /* ── Tables ───────────────────────────────────── */
+            .table-wrap {
+                width: 100%;
+                overflow-x: auto;
+            }
+
+            table {
+                width: 100%;
+                border-collapse: collapse;
+                font-size: 12px;
+                text-align: left;
+            }
+
+            th {
+                background: var(--surface-2);
+                color: var(--text-dim);
+                font-family: var(--mono);
+                font-size: 11px;
+                font-weight: 600;
+                padding: 10px 14px;
+                border-bottom: 1px solid var(--border);
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                white-space: nowrap;
+            }
+
+            td {
+                padding: 11px 14px;
+                border-bottom: 1px solid var(--border);
+                white-space: nowrap;
+            }
+
+            tr:hover td {
+                background: rgba(255, 255, 255, 0.015);
+            }
+
+            .empty-row {
+                text-align: center;
+                padding: 30px;
+                color: var(--text-dim);
+                font-style: italic;
+            }
+
+            /* ── Dual Columns Layout ──────────────────────── */
+            .dual-col {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 20px;
+            }
+
+            @media (max-width: 1100px) {
+                .dual-col {
+                    grid-template-columns: 1fr;
+                }
+            }
+
+            /* ── Stress & Risk Gauges ─────────────────────── */
+            .risk-row {
+                display: flex;
+                flex-direction: column;
+                gap: 12px;
+                padding: 16px 18px;
+            }
+
+            .gauge-item {
+                display: flex;
+                flex-direction: column;
+                gap: 5px;
+            }
+
+            .gauge-header {
+                display: flex;
+                justify-content: space-between;
+                font-size: 12px;
+            }
+
+            .gauge-bar-bg {
+                height: 8px;
+                background: var(--surface-3);
+                border-radius: 4px;
+                overflow: hidden;
+            }
+
+            .gauge-bar-fill {
+                height: 100%;
+                background: var(--accent);
+                transition: width 0.3s;
+            }
+        </style>
+    </head>
+    <body>
+        <header class="header-bar">
+            <div class="header-top">
+                <div class="brand-title">
+                    <span>NSEBOT</span>
+                    <span style="color: var(--text-dim);">/</span>
+                    <span style="color: var(--accent);">STOCK FUTURES COCKPIT</span>
+                    <span class="brand-badge" id="badge-mode">PAPER</span>
+                    <span class="brand-badge" id="badge-regime">NEUTRAL</span>
+                </div>
+                <div class="header-actions">
+                    <span id="system-status-indicator" style="font-family: var(--mono); font-size: 11px; color: var(--green);">● SYSTEM OPERATIONAL</span>
+                    <button class="btn" id="btn-pause-engine" onclick="togglePause()">Pause Engine</button>
+                    <button class="btn btn-danger" onclick="emergencyFlatten()">Flatten All</button>
+                    <button class="btn theme-toggle-btn" onclick="toggleTheme()" title="Toggle Dark/Light Mode">🌓</button>
+                </div>
+            </div>
+            <nav class="nav-tabs">
+                <a href="/" class="nav-tab">Dashboard</a>
+                <a href="/paper" class="nav-tab">Paper Trades</a>
+                <a href="/futures" class="nav-tab active" id="tab-futures">Stock Futures</a>
+                <a href="/broker" class="nav-tab">Broker Console</a>
+                <a href="/ai" class="nav-tab">AI Insights</a>
+                <a href="/contributors" class="nav-tab">Contributors</a>
+                <a href="/report" class="nav-tab">Market Summary</a>
+                <a href="/settings" class="nav-tab">Settings</a>
+                <a href="/ops" class="nav-tab">Ops Monitor</a>
+            </nav>
+        </header>
+
+        <main class="container">
+            <!-- ── Top KPIs ────────────────────────────────── -->
+            <section class="kpi-grid">
+                <div class="kpi-card">
+                    <span class="kpi-title">Capital Reference</span>
+                    <span class="kpi-val" id="kpi-capital">₹1.00 Cr</span>
+                    <span class="kpi-sub">Margin Cap: 40% (₹40.0L)</span>
+                </div>
+                <div class="kpi-card">
+                    <span class="kpi-title">Margin Utilized</span>
+                    <span class="kpi-val" id="kpi-margin">₹0.00</span>
+                    <span class="kpi-sub" id="kpi-margin-sub">0.0% of Capital</span>
+                </div>
+                <div class="kpi-card">
+                    <span class="kpi-title">Open Positions</span>
+                    <span class="kpi-val" id="kpi-positions">0 / 6</span>
+                    <span class="kpi-sub">Hard portfolio limit: 6 names</span>
+                </div>
+                <div class="kpi-card">
+                    <span class="kpi-title">Gross Notional Exposure</span>
+                    <span class="kpi-val" id="kpi-gross-notional">₹0.00</span>
+                    <span class="kpi-sub" id="kpi-gross-mult">0.00x / 2.0x Max Gross</span>
+                </div>
+                <div class="kpi-card">
+                    <span class="kpi-title">Net Directional Tilt</span>
+                    <span class="kpi-val" id="kpi-net-tilt">0.0% FLAT</span>
+                    <span class="kpi-sub">Directional skew limit: 60%</span>
+                </div>
+                <div class="kpi-card">
+                    <span class="kpi-title">Realized Expectancy</span>
+                    <span class="kpi-val" id="kpi-expectancy">0.00 R</span>
+                    <span class="kpi-sub" id="kpi-winrate">Win Rate: 0.0% (0 trades)</span>
+                </div>
+            </section>
+
+            <!-- ── Open Positions & GTT Watcher ───────────── -->
+            <section class="card">
+                <div class="card-header">
+                    <div class="card-title">
+                        <span>ACTIVE OPEN FUTURES POSITIONS</span>
+                        <span class="badge badge-green" id="pos-count-badge">0 OPEN</span>
+                    </div>
+                    <div style="font-family: var(--mono); font-size: 11px; color: var(--text-dim);">
+                        SL / Target GTT Protection Active
+                    </div>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Tradingsymbol</th>
+                                <th>Side</th>
+                                <th>Lots / Qty</th>
+                                <th>Entry Px</th>
+                                <th>CMP</th>
+                                <th>P&L (Unrealized)</th>
+                                <th>Stop Loss</th>
+                                <th>Target 1 (1.6R)</th>
+                                <th>Target 2</th>
+                                <th>GTT Status</th>
+                                <th>Entered At</th>
+                            </tr>
+                        </thead>
+                        <tbody id="positions-tbody">
+                            <tr><td colspan="11" class="empty-row">No active stock futures positions.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- ── ARMED Watchlist (09:30 Morning Routine) ── -->
+            <section class="card">
+                <div class="card-header">
+                    <div class="card-title">
+                        <span>EOD ARMED WATCHLIST (09:30 IST EXECUTION QUEUE)</span>
+                        <span class="badge badge-blue" id="wl-count-badge">0 ARMED</span>
+                    </div>
+                    <div style="font-family: var(--mono); font-size: 11px; color: var(--text-dim);" id="wl-date-label">
+                        Scan Date: —
+                    </div>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Symbol</th>
+                                <th>Contract</th>
+                                <th>Direction</th>
+                                <th>Setup Bias</th>
+                                <th>Score</th>
+                                <th>Planned Entry</th>
+                                <th>Stop Loss</th>
+                                <th>Target 1</th>
+                                <th>Target 2</th>
+                                <th>Lots (Min 2)</th>
+                                <th>Risk / Lot</th>
+                                <th>Status</th>
+                                <th>Notes / Skip Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody id="watchlist-tbody">
+                            <tr><td colspan="13" class="empty-row">Watchlist will populate after 19:30 EOD Scan.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- ── Dual Column: Risk Gauges + Equity Curve ── -->
+            <div class="dual-col">
+                <!-- Portfolio Risk & Stress Gauges -->
+                <section class="card">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <span>PORTFOLIO STRESS & EXPOSURE GAUGES</span>
+                        </div>
+                    </div>
+                    <div class="risk-row">
+                        <div class="gauge-item">
+                            <div class="gauge-header">
+                                <span>Gross Notional Multiplier</span>
+                                <span id="gauge-gross-val" style="font-family: var(--mono);">0.00x / 2.0x</span>
+                            </div>
+                            <div class="gauge-bar-bg">
+                                <div class="gauge-bar-fill" id="gauge-gross-fill" style="width: 0%;"></div>
+                            </div>
+                        </div>
+
+                        <div class="gauge-item">
+                            <div class="gauge-header">
+                                <span>Net Directional Tilt</span>
+                                <span id="gauge-net-val" style="font-family: var(--mono);">0.0% / 60%</span>
+                            </div>
+                            <div class="gauge-bar-bg">
+                                <div class="gauge-bar-fill" id="gauge-net-fill" style="width: 0%;"></div>
+                            </div>
+                        </div>
+
+                        <div class="gauge-item">
+                            <div class="gauge-header">
+                                <span>5% Adverse Gap Stress Test</span>
+                                <span id="gauge-gap-val" style="font-family: var(--mono);">0.0% / 6.0% Max Loss</span>
+                            </div>
+                            <div class="gauge-bar-bg">
+                                <div class="gauge-bar-fill" id="gauge-gap-fill" style="width: 0%;"></div>
+                            </div>
+                        </div>
+
+                        <div style="border-top: 1px solid var(--border); padding-top: 12px; font-size: 12px;">
+                            <div style="font-weight: 600; margin-bottom: 6px;">Sector Concentration Tracker (Max 2/sector):</div>
+                            <div id="sector-badges-container" style="display: flex; flex-wrap: wrap; gap: 6px;">
+                                <span style="color: var(--text-dim); font-style: italic;">No positions open</span>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Performance Equity Curve -->
+                <section class="card">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <span>EQUITY CURVE TRAJECTORY</span>
+                        </div>
+                        <span id="equity-total-pnl" style="font-family: var(--mono); font-size: 12px; font-weight: 700;">₹0.00</span>
+                    </div>
+                    <div style="padding: 16px; height: 260px;">
+                        <canvas id="equityChart"></canvas>
+                    </div>
+                </section>
+            </div>
+
+            <!-- ── Completed Trades History ───────────────── -->
+            <section class="card">
+                <div class="card-header">
+                    <div class="card-title">
+                        <span>COMPLETED STOCK FUTURES TRADES</span>
+                        <span class="badge" id="closed-count-badge">0 TRADES</span>
+                    </div>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Closed At</th>
+                                <th>Tradingsymbol</th>
+                                <th>Direction</th>
+                                <th>Lots</th>
+                                <th>Entry Px</th>
+                                <th>Exit Px</th>
+                                <th>Realized P&L</th>
+                                <th>Realized R</th>
+                                <th>Exit Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody id="trades-tbody">
+                            <tr><td colspan="9" class="empty-row">No closed trades yet.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        </main>
+
+        <script>
+            let equityChartInstance = null;
+
+            function toggleTheme() {
+                const current = document.documentElement.getAttribute("data-theme") || "dark";
+                const next = current === "light" ? "dark" : "light";
+                document.documentElement.setAttribute("data-theme", next);
+                localStorage.setItem("nsebot_theme", next);
+            }
+
+            async function fetchOverview() {
+                try {
+                    const res = await fetch("/api/futures/overview");
+                    if (!res.ok) return;
+                    const d = await res.json();
+
+                    document.getElementById("badge-mode").textContent = d.mode;
+                    document.getElementById("badge-regime").textContent = d.regime;
+                    document.getElementById("kpi-capital").textContent = "₹" + (d.capital_reference / 10000000).toFixed(2) + " Cr";
+                    document.getElementById("kpi-margin").textContent = "₹" + (d.margin_used || 0).toLocaleString("en-IN", {maximumFractionDigits: 0});
+                    document.getElementById("kpi-margin-sub").textContent = d.margin_used_pct + "% of Capital";
+                    document.getElementById("kpi-positions").textContent = d.active_positions_count + " / " + d.max_positions;
+                    document.getElementById("kpi-gross-notional").textContent = "₹" + (d.gross_notional || 0).toLocaleString("en-IN", {maximumFractionDigits: 0});
+                    document.getElementById("kpi-gross-mult").textContent = d.gross_notional_multiple + "x / 2.0x Max Gross";
+                    
+                    const tiltEl = document.getElementById("kpi-net-tilt");
+                    tiltEl.textContent = d.net_directional_pct + "% " + d.net_direction;
+                    tiltEl.className = "kpi-val " + (d.net_direction === "LONG" ? "text-green" : (d.net_direction === "SHORT" ? "text-red" : ""));
+
+                    document.getElementById("kpi-expectancy").textContent = (d.expectancy_r >= 0 ? "+" : "") + d.expectancy_r + " R";
+                    document.getElementById("kpi-winrate").textContent = "Win Rate: " + d.win_rate + "% (" + d.total_trades_count + " trades)";
+
+                    const statusInd = document.getElementById("system-status-indicator");
+                    if (d.halted) {
+                        statusInd.textContent = "🛑 HALTED: " + d.halt_reason;
+                        statusInd.style.color = "var(--red)";
+                        document.getElementById("btn-pause-engine").textContent = "Resume Engine";
+                    } else {
+                        statusInd.textContent = "● SYSTEM OPERATIONAL";
+                        statusInd.style.color = "var(--green)";
+                        document.getElementById("btn-pause-engine").textContent = "Pause Engine";
+                    }
+                } catch (e) {
+                    console.error("Overview fetch error:", e);
+                }
+            }
+
+            async function fetchPositions() {
+                try {
+                    const res = await fetch("/api/futures/positions");
+                    if (!res.ok) return;
+                    const d = await res.json();
+                    document.getElementById("pos-count-badge").textContent = d.count + " OPEN";
+                    const tbody = document.getElementById("positions-tbody");
+                    if (!d.positions || d.positions.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="11" class="empty-row">No active stock futures positions.</td></tr>';
+                        return;
+                    }
+
+                    tbody.innerHTML = d.positions.map(p => {
+                        const pnl = p.unrealized_pnl || 0;
+                        const pnlClass = pnl >= 0 ? "text-green" : "text-red";
+                        const sideBadge = p.direction === "LONG" ? "badge-green" : "badge-red";
+                        return `
+                            <tr>
+                                <td><b>${p.tradingsymbol}</b></td>
+                                <td><span class="badge ${sideBadge}">${p.direction}</span></td>
+                                <td>${p.lots} (${p.remaining_qty})</td>
+                                <td>₹${Number(p.entry_price).toFixed(2)}</td>
+                                <td>₹${Number(p.current_price).toFixed(2)}</td>
+                                <td class="${pnlClass}" style="font-weight:700;">₹${Number(pnl).toLocaleString("en-IN", {maximumFractionDigits: 0})}</td>
+                                <td>₹${Number(p.sl_price).toFixed(2)}</td>
+                                <td>₹${Number(p.t1_price).toFixed(2)}</td>
+                                <td>₹${Number(p.t2_price).toFixed(2)}</td>
+                                <td><span class="badge badge-blue">${p.gtt_status || "ACTIVE"}</span></td>
+                                <td style="color:var(--text-dim);">${(p.entered_at || "").substring(11, 16)}</td>
+                            </tr>
+                        `;
+                    }).join("");
+                } catch (e) {
+                    console.error("Positions fetch error:", e);
+                }
+            }
+
+            async function fetchWatchlist() {
+                try {
+                    const res = await fetch("/api/futures/watchlist");
+                    if (!res.ok) return;
+                    const d = await res.json();
+                    document.getElementById("wl-count-badge").textContent = d.count + " ITEMS";
+                    document.getElementById("wl-date-label").textContent = "Scan Date: " + (d.scan_date || "—");
+
+                    const tbody = document.getElementById("watchlist-tbody");
+                    if (!d.watchlist || d.watchlist.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="13" class="empty-row">Watchlist will populate after 19:30 EOD Scan.</td></tr>';
+                        return;
+                    }
+
+                    tbody.innerHTML = d.watchlist.map(w => {
+                        const sideBadge = w.side === "LONG" ? "badge-green" : "badge-red";
+                        const statusBadge = w.status === "ARMED" ? "badge-green" : (w.status === "TRIGGERED" ? "badge-blue" : "badge-yellow");
+                        const riskPerLot = Math.abs(w.planned_entry - w.sl) * w.lot_size;
+                        return `
+                            <tr>
+                                <td><b>${w.symbol}</b></td>
+                                <td style="font-family:var(--mono);">${w.tradingsymbol}</td>
+                                <td><span class="badge ${sideBadge}">${w.side}</span></td>
+                                <td>${w.bias}</td>
+                                <td><b>${w.score}/10</b></td>
+                                <td>₹${Number(w.planned_entry).toFixed(2)}</td>
+                                <td>₹${Number(w.sl).toFixed(2)}</td>
+                                <td>₹${Number(w.t1).toFixed(2)}</td>
+                                <td>₹${Number(w.t2).toFixed(2)}</td>
+                                <td>${w.lots} (size ${w.lot_size})</td>
+                                <td>₹${Number(riskPerLot).toLocaleString("en-IN", {maximumFractionDigits: 0})}</td>
+                                <td><span class="badge ${statusBadge}">${w.status}</span></td>
+                                <td style="color:var(--text-dim);">${w.skip_reason || "Ready for 09:30"}</td>
+                            </tr>
+                        `;
+                    }).join("");
+                } catch (e) {
+                    console.error("Watchlist fetch error:", e);
+                }
+            }
+
+            async function fetchRisk() {
+                try {
+                    const res = await fetch("/api/futures/risk");
+                    if (!res.ok) return;
+                    const r = await res.json();
+
+                    // Gross gauge
+                    document.getElementById("gauge-gross-val").textContent = r.gross_notional_multiple + "x / 2.0x";
+                    document.getElementById("gauge-gross-fill").style.width = Math.min((r.gross_notional_multiple / 2.0) * 100, 100) + "%";
+
+                    // Net tilt gauge
+                    document.getElementById("gauge-net-val").textContent = r.net_directional_pct + "% / 60%";
+                    document.getElementById("gauge-net-fill").style.width = Math.min((r.net_directional_pct / 60.0) * 100, 100) + "%";
+
+                    // Gap stress gauge
+                    document.getElementById("gauge-gap-val").textContent = r.gap_stress_loss_pct + "% / 6.0%";
+                    document.getElementById("gauge-gap-fill").style.width = Math.min((r.gap_stress_loss_pct / 6.0) * 100, 100) + "%";
+
+                    // Sector badges
+                    const sectorContainer = document.getElementById("sector-badges-container");
+                    if (r.sector_counts && Object.keys(r.sector_counts).length > 0) {
+                        sectorContainer.innerHTML = Object.entries(r.sector_counts).map(([sec, count]) => {
+                            const badgeClass = count >= 2 ? "badge-red" : "badge-blue";
+                            return `<span class="badge ${badgeClass}">${sec}: ${count}/2</span>`;
+                        }).join("");
+                    } else {
+                        sectorContainer.innerHTML = '<span style="color: var(--text-dim); font-style: italic;">No positions open</span>';
+                    }
+                } catch (e) {
+                    console.error("Risk fetch error:", e);
+                }
+            }
+
+            async function fetchPerformance() {
+                try {
+                    const res = await fetch("/api/futures/performance");
+                    if (!res.ok) return;
+                    const p = await res.json();
+
+                    const pnlEl = document.getElementById("equity-total-pnl");
+                    pnlEl.textContent = (p.total_pnl >= 0 ? "+₹" : "-₹") + Math.abs(p.total_pnl).toLocaleString("en-IN", {maximumFractionDigits: 0});
+                    pnlEl.className = p.total_pnl >= 0 ? "text-green" : "text-red";
+
+                    const ctx = document.getElementById("equityChart").getContext("2d");
+                    const labels = p.curve.map(c => c.date);
+                    const data = p.curve.map(c => c.equity);
+
+                    if (equityChartInstance) {
+                        equityChartInstance.data.labels = labels;
+                        equityChartInstance.data.datasets[0].data = data;
+                        equityChartInstance.update();
+                    } else {
+                        equityChartInstance = new Chart(ctx, {
+                            type: "line",
+                            data: {
+                                labels: labels,
+                                datasets: [{
+                                    label: "Account Equity (₹)",
+                                    data: data,
+                                    borderColor: "#00e5a0",
+                                    borderWidth: 2,
+                                    fill: false,
+                                    tension: 0.1,
+                                    pointRadius: 2,
+                                }]
+                            },
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                plugins: { legend: { display: false } },
+                                scales: {
+                                    x: { grid: { display: false } },
+                                    y: {
+                                        ticks: {
+                                            callback: function(v) { return "₹" + (v / 100000).toFixed(1) + "L"; }
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                    }
+                } catch (e) {
+                    console.error("Performance fetch error:", e);
+                }
+            }
+
+            async function fetchTrades() {
+                try {
+                    const res = await fetch("/api/futures/trades?limit=25");
+                    if (!res.ok) return;
+                    const d = await res.json();
+                    document.getElementById("closed-count-badge").textContent = d.total + " TRADES";
+                    const tbody = document.getElementById("trades-tbody");
+                    if (!d.trades || d.trades.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="9" class="empty-row">No closed trades yet.</td></tr>';
+                        return;
+                    }
+
+                    tbody.innerHTML = d.trades.map(t => {
+                        const pnl = t.realized_pnl || 0;
+                        const pnlClass = pnl >= 0 ? "text-green" : "text-red";
+                        const sideBadge = t.direction === "LONG" ? "badge-green" : "badge-red";
+                        return `
+                            <tr>
+                                <td>${(t.closed_at || "").substring(0, 16)}</td>
+                                <td><b>${t.tradingsymbol}</b></td>
+                                <td><span class="badge ${sideBadge}">${t.direction}</span></td>
+                                <td>${t.lots}</td>
+                                <td>₹${Number(t.entry_price).toFixed(2)}</td>
+                                <td>₹${Number(t.exit_price || 0).toFixed(2)}</td>
+                                <td class="${pnlClass}" style="font-weight:700;">₹${Number(pnl).toLocaleString("en-IN", {maximumFractionDigits: 0})}</td>
+                                <td>${t.r_multiple_realized != null ? (t.r_multiple_realized >= 0 ? "+" : "") + Number(t.r_multiple_realized).toFixed(2) + " R" : "—"}</td>
+                                <td><span class="badge badge-yellow">${t.exit_reason || "CLOSED"}</span></td>
+                            </tr>
+                        `;
+                    }).join("");
+                } catch (e) {
+                    console.error("Trades fetch error:", e);
+                }
+            }
+
+            async function togglePause() {
+                const isCurrentlyHalted = document.getElementById("btn-pause-engine").textContent.includes("Resume");
+                const res = await fetch("/api/futures/pause", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ pause: !isCurrentlyHalted })
+                });
+                if (res.ok) {
+                    fetchOverview();
+                }
+            }
+
+            async function emergencyFlatten() {
+                if (!confirm("Are you sure you want to EMERGENCY FLATTEN all open stock futures positions?")) return;
+                const res = await fetch("/api/futures/flatten", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ confirm: true })
+                });
+                if (res.ok) {
+                    fetchOverview();
+                    fetchPositions();
+                    fetchTrades();
+                }
+            }
+
+            function refreshAll() {
+                fetchOverview();
+                fetchPositions();
+                fetchWatchlist();
+                fetchRisk();
+                fetchPerformance();
+                fetchTrades();
+            }
+
+            // Initial load & 10-second polling
+            refreshAll();
+            setInterval(refreshAll, 10000);
+        </script>
+    </body>
+</html>

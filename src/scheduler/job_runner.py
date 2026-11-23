@@ -63,6 +63,7 @@ _ACTIVE_TASKS: dict[str, multiprocessing.Process] = {}
 _ACTIVE_TASKS_LOCK = threading.Lock()
 _scheduler_restart_requested = False
 _scheduler_restart_lock = threading.Lock()
+_stockfut_scheduler = None
 
 
 def request_scheduler_restart() -> None:
@@ -1439,6 +1440,7 @@ def _update_live_cmps() -> None:
 
 
 def start_scheduler(immediate: bool = False):
+    global _stockfut_scheduler
     from src.models.schema import delete_expired_contracts
 
     reset_scheduler_restart_request()
@@ -1501,6 +1503,23 @@ def start_scheduler(immediate: bool = False):
         log.info("[scheduler] Gemini Spark Feed Poller dispatched")
     except Exception as e:
         log.error("[scheduler] Failed to start Gemini Spark feed worker: %s", e)
+
+    # ── Stock Futures Scheduled Jobs (Task 15) ───────────────────────────────
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler
+        from src.stockfut.jobs import register_stockfut_jobs
+        from src.stockfut.reconcile import reconcile_startup
+
+        # Run startup reconciliation first to auto-fix/verify DB & GTTs
+        reconcile_startup()
+
+        if _stockfut_scheduler is None or not _stockfut_scheduler.running:
+            _stockfut_scheduler = BackgroundScheduler(timezone=IST)
+            register_stockfut_jobs(_stockfut_scheduler)
+            _stockfut_scheduler.start()
+            log.info("[scheduler] Stock Futures APScheduler started successfully")
+    except Exception as sfe:
+        log.error("[scheduler] Failed to start Stock Futures APScheduler: %s", sfe)
 
     # ── Phase 2: Weekly ML Training Job ──────────────────────────────────────
     # AI_INTELLIGENCE_ROADMAP_v3.0 — Weekly fallback retraining (Sunday 2 AM IST)
@@ -2673,6 +2692,12 @@ def start_scheduler(immediate: bool = False):
             from src.alerts.telegram_dispatcher import stop_telegram_command_listener
 
             stop_telegram_command_listener()
+        except Exception:
+            pass
+        try:
+            if _stockfut_scheduler and _stockfut_scheduler.running:
+                _stockfut_scheduler.shutdown(wait=False)
+                log.info("[scheduler] Stock Futures APScheduler shut down")
         except Exception:
             pass
         log.info("Scheduler stopped")

@@ -84,8 +84,9 @@ def authorize_broker_execution(
 
     # ── 3. Global Trading Pause Gate ───────────────────────────────────────
     # When trading is paused, new entries are blocked (both real and shadow).
-    # Protective exits bypass this gate to avoid trapping open risk on the broker.
-    if operation != "EXIT" and config.get("trading_paused", True):
+    # Protective exits and protective GTT placements bypass this gate to avoid trapping open risk on the broker.
+    is_protective_op = operation in ("EXIT", "GTT_PROTECTION", "PROTECTIVE_GTT")
+    if not is_protective_op and config.get("trading_paused", True):
         return ExecutionAuthorization(
             is_authorized=False,
             is_shadow=False,
@@ -94,6 +95,24 @@ def authorize_broker_execution(
             reason="Trading is currently paused",
             config_snapshot=config
         )
+
+    # ── 3b. Strategy Specific Check: Stock Futures ─────────────────────────
+    is_stockfut = False
+    if scan_context and (scan_context.get("strategy") == "STOCKFUT" or scan_context.get("asset_class") == "STOCKFUT"):
+        is_stockfut = True
+
+    if is_stockfut:
+        from config.stockfut_loader import load_stockfut_config
+        sf_cfg = load_stockfut_config()
+        if not sf_cfg.get("stockfut_live_enabled", False):
+            return ExecutionAuthorization(
+                is_authorized=False,
+                is_shadow=False,
+                symbol=symbol,
+                operation=operation,
+                reason="Stock futures live trading disabled in config",
+                config_snapshot=config,
+            )
 
     # ── 4. Strict fail-closed shadow invariant ─────────────────────────────
     # In shadow mode (live_shadow_mode=True), NO real broker orders (ENTRY, EXIT, or GTT)
@@ -163,7 +182,16 @@ def authorize_broker_execution(
                 ).fetchone()
                 multileg_realized = float(r2["total"]) if r2 else 0.0
 
-                total_realized_loss = single_realized + multileg_realized
+                try:
+                    r3 = conn.execute(
+                        "SELECT COALESCE(SUM(pnl), 0) AS total FROM stockfut_trades WHERE exit_time >= ? AND mode = 'LIVE'",
+                        (today_start_utc,)
+                    ).fetchone()
+                    stockfut_realized = float(r3["total"]) if r3 else 0.0
+                except Exception:
+                    stockfut_realized = 0.0
+
+                total_realized_loss = single_realized + multileg_realized + stockfut_realized
 
                 if total_realized_loss <= -abs(max_daily_loss):
                     log.critical(

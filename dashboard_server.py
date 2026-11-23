@@ -5450,6 +5450,261 @@ async def eod_redirect():
     return RedirectResponse(url="/report")
 
 
+# ── Stock Futures Dashboard & API Endpoints ─────────────────────────────────
+
+_FUT_IST = timezone(timedelta(hours=5, minutes=30))
+
+
+@app.get("/futures", response_class=HTMLResponse)
+async def futures_page():
+    """NSE Stock Futures Portfolio & Execution Cockpit."""
+    html_path = ROOT / "src" / "dashboard" / "futures.html"
+    if html_path.exists():
+        return HTMLResponse(html_path.read_text(encoding="utf-8"))
+    return HTMLResponse("<h1>futures.html not found</h1>", status_code=404)
+
+
+@app.get("/api/futures/overview")
+async def get_futures_overview():
+    """Stock Futures summary KPIs, regime, and capital utilization."""
+    from config.stockfut_loader import load_stockfut_config
+    from src.models.schema import get_open_stockfut_trades
+    from src.stockfut.portfolio_risk import compute_portfolio_metrics, is_halted
+
+    cfg = load_stockfut_config()
+    capital = float(cfg.get("capital_reference", 10000000.0))
+    open_trades = get_open_stockfut_trades()
+    risk_metrics = compute_portfolio_metrics(open_trades, equity=capital, cfg=cfg)
+
+    # Today's realized P&L
+    now_ist = datetime.now(timezone.utc).astimezone(_FUT_IST)
+    today_str = now_ist.strftime("%Y-%m-%d")
+    today_trades = _q(
+        "SELECT * FROM stockfut_trades WHERE entry_time LIKE ? OR exit_time LIKE ?",
+        (f"{today_str}%", f"{today_str}%"),
+    )
+    today_realized_pnl = sum(
+        float(t.get("pnl", 0.0) or 0.0)
+        for t in today_trades
+        if t.get("status") == "CLOSED"
+    )
+
+    all_closed = _q("SELECT * FROM stockfut_trades WHERE status = 'CLOSED'")
+    total_trades = len(all_closed)
+    wins = [t for t in all_closed if float(t.get("pnl", 0.0) or 0.0) > 0]
+    win_rate = (len(wins) / total_trades * 100.0) if total_trades > 0 else 0.0
+
+    r_multiples = [
+        float(t.get("pnl_r", 0.0) or 0.0)
+        for t in all_closed
+        if t.get("pnl_r") is not None
+    ]
+    expectancy_r = (sum(r_multiples) / len(r_multiples)) if r_multiples else 0.0
+
+    halted, halt_reason = is_halted()
+    mode = "LIVE" if cfg.get("stockfut_live_enabled", False) else "PAPER"
+
+    return {
+        "mode": mode,
+        "capital_reference": capital,
+        "margin_used": risk_metrics["estimated_margin_used"],
+        "margin_used_pct": round(
+            (risk_metrics["estimated_margin_used"] / capital) * 100.0, 1
+        )
+        if capital > 0
+        else 0.0,
+        "gross_notional": risk_metrics["gross_notional"],
+        "gross_notional_multiple": risk_metrics["gross_notional_multiple"],
+        "net_direction": risk_metrics["net_direction"],
+        "net_directional_pct": risk_metrics["net_directional_pct"],
+        "today_pnl": today_realized_pnl,
+        "active_positions_count": len(open_trades),
+        "max_positions": risk_metrics["max_open_positions"],
+        "total_trades_count": total_trades,
+        "win_rate": round(win_rate, 1),
+        "expectancy_r": round(expectancy_r, 2),
+        "halted": halted,
+        "halt_reason": halt_reason,
+        "regime": "NEUTRAL",
+    }
+
+
+@app.get("/api/futures/watchlist")
+async def get_futures_watchlist(date: str = ""):
+    """Latest EOD ARMED watchlist."""
+    from src.models.schema import get_latest_stockfut_watchlist
+
+    if not date:
+        now_ist = datetime.now(timezone.utc).astimezone(_FUT_IST)
+        date_str = now_ist.strftime("%Y-%m-%d")
+    else:
+        date_str = date.strip()
+
+    watchlist = get_latest_stockfut_watchlist(scan_date=date_str)
+    if not watchlist and not date:
+        # If no watchlist for today yet, fetch latest available scan_date
+        latest_row = _q("SELECT scan_date FROM stockfut_watchlist ORDER BY scan_date DESC LIMIT 1")
+        if latest_row:
+            date_str = latest_row[0]["scan_date"]
+            watchlist = get_latest_stockfut_watchlist(scan_date=date_str)
+
+    def _sort_key(w):
+        status_rank = 0 if w.get("status") == "ARMED" else (1 if w.get("status") == "TRIGGERED" else 2)
+        return (status_rank, -int(w.get("score", 0)))
+
+    watchlist = sorted(watchlist, key=_sort_key)
+    return {"scan_date": date_str, "count": len(watchlist), "watchlist": watchlist}
+
+
+@app.get("/api/futures/positions")
+async def get_futures_positions():
+    """Active open futures positions with live P&L and GTT state."""
+    from src.fetchers.kite_fetcher import get_kite_data_client
+    from src.models.schema import get_open_stockfut_trades
+
+    open_trades = get_open_stockfut_trades()
+    quotes: dict[str, dict] = {}
+    try:
+        symbols = [t["tradingsymbol"] for t in open_trades if t.get("tradingsymbol")]
+        if symbols:
+            client = get_kite_data_client()
+            quotes = client.get_futures_quotes(symbols)
+    except Exception as e:
+        log.debug("Live quote fetch for stock futures positions skipped: %s", e)
+
+    positions = []
+    for t in open_trades:
+        tsym = t.get("tradingsymbol", "")
+        q = quotes.get(tsym, {})
+        current_px = float(q.get("price") or t.get("entry_price", 0.0))
+        entry_px = float(t.get("entry_price", 0.0))
+        side = t.get("side", t.get("direction", "LONG")).upper()
+        qty = int(t.get("remaining_qty", int(t.get("lots", 0)) * int(t.get("lot_size", 0))))
+
+        if side in ("LONG", "BUY"):
+            unrealized_pnl = (current_px - entry_px) * qty
+        else:
+            unrealized_pnl = (entry_px - current_px) * qty
+
+        pos = dict(t)
+        pos["direction"] = side
+        pos["current_price"] = current_px
+        pos["sl_price"] = float(t.get("sl", 0.0))
+        pos["t1_price"] = float(t.get("t1", 0.0))
+        pos["t2_price"] = float(t.get("t2", 0.0))
+        pos["entered_at"] = t.get("entry_time", "")
+        pos["unrealized_pnl"] = round(unrealized_pnl, 2)
+        positions.append(pos)
+
+    return {"count": len(positions), "positions": positions}
+
+
+@app.get("/api/futures/trades")
+async def get_futures_trades(limit: int = 50, offset: int = 0):
+    """Historical completed stock futures trades."""
+    trades = _q(
+        "SELECT * FROM stockfut_trades WHERE status = 'CLOSED' ORDER BY exit_time DESC LIMIT ? OFFSET ?",
+        (limit, offset),
+    )
+    total_row = _q("SELECT COUNT(*) as c FROM stockfut_trades WHERE status = 'CLOSED'")
+    total = total_row[0]["c"] if total_row else 0
+    return {"total": total, "trades": trades}
+
+
+@app.get("/api/futures/risk")
+async def get_futures_risk():
+    """Real-time portfolio exposure, net directional tilt, and gap stress."""
+    from config.stockfut_loader import load_stockfut_config
+    from src.models.schema import get_open_stockfut_trades
+    from src.stockfut.portfolio_risk import compute_portfolio_metrics, is_halted
+
+    cfg = load_stockfut_config()
+    capital = float(cfg.get("capital_reference", 10000000.0))
+    open_trades = get_open_stockfut_trades()
+    risk_info = compute_portfolio_metrics(open_trades, equity=capital, cfg=cfg)
+    halted, halt_reason = is_halted()
+    risk_info["halted"] = halted
+    risk_info["halt_reason"] = halt_reason
+    return risk_info
+
+
+@app.get("/api/futures/performance")
+async def get_futures_performance():
+    """Equity curve trajectory, total P&L, and R-multiple progression."""
+    from config.stockfut_loader import load_stockfut_config
+
+    cfg = load_stockfut_config()
+    capital = float(cfg.get("capital_reference", 10000000.0))
+
+    trades = _q("SELECT * FROM stockfut_trades WHERE status = 'CLOSED' ORDER BY exit_time ASC")
+    curve = [{"trade_no": 0, "date": "Initial", "equity": capital, "realized_pnl": 0.0, "r_multiple": 0.0}]
+    current_equity = capital
+    for i, t in enumerate(trades, 1):
+        pnl = float(t.get("pnl", 0.0) or 0.0)
+        current_equity += pnl
+        closed_date = (t.get("exit_time") or "")[:10]
+        r_mult = float(t.get("pnl_r", 0.0) or 0.0)
+        curve.append({
+            "trade_no": i,
+            "date": closed_date,
+            "equity": round(current_equity, 2),
+            "realized_pnl": pnl,
+            "r_multiple": r_mult,
+            "symbol": t.get("symbol", ""),
+        })
+
+    return {
+        "starting_capital": capital,
+        "current_equity": round(current_equity, 2),
+        "total_pnl": round(current_equity - capital, 2),
+        "curve": curve,
+    }
+
+
+@app.post("/api/futures/pause", dependencies=[Depends(authenticate)])
+async def post_futures_pause(data: dict):
+    """Pause or resume stock futures execution."""
+    from src.stockfut.portfolio_risk import set_halt
+
+    pause = bool(data.get("pause", True))
+    if pause:
+        set_halt(True, reason="MANUAL_OPERATOR_PAUSE")
+        return {"status": "SUCCESS", "message": "Stock futures engine PAUSED"}
+    else:
+        set_halt(False, reason="")
+        return {"status": "SUCCESS", "message": "Stock futures engine RESUMED"}
+
+
+@app.post("/api/futures/arm_live", dependencies=[Depends(authenticate)])
+async def post_futures_arm_live(data: dict):
+    """Toggle stock futures between LIVE and PAPER modes."""
+    from config.runtime_config import update_runtime_config
+
+    enable_live = bool(data.get("stockfut_live_enabled", False))
+    update_runtime_config({"stockfut_live_enabled": enable_live})
+    return {"status": "SUCCESS", "stockfut_live_enabled": enable_live}
+
+
+@app.post("/api/futures/flatten", dependencies=[Depends(authenticate)])
+async def post_futures_flatten(data: dict):
+    """Emergency flatten open futures positions (requires confirm: True)."""
+    if not data.get("confirm", False):
+        return JSONResponse({"status": "FAILED", "message": "Confirmation required (pass confirm: true)"}, status_code=400)
+
+    from src.models.schema import get_open_stockfut_trades
+    from src.stockfut.executor import PaperExecutor
+
+    open_trades = get_open_stockfut_trades()
+    executor = PaperExecutor()
+    closed_count = 0
+    for t in open_trades:
+        entry_px = float(t.get("entry_price", 0.0))
+        executor.exit(t, exit_price=entry_px, exit_reason="MANUAL_OPERATOR_FLATTEN", lots=int(t.get("lots", 0)))
+        closed_count += 1
+
+    return {"status": "SUCCESS", "message": f"Flattened {closed_count} open futures positions"}
+
+
 @app.get("/api/eod_report_pdf")
 async def download_eod_report_pdf():
     """Serve the latest SteadyAlpha executive PDF report."""

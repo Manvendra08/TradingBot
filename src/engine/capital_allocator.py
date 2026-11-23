@@ -432,3 +432,53 @@ def calculate_multileg_lots(
     allowed_loss = min(capital_cap, gap_stress_cap)
     lots = int(allowed_loss // effective_loss_per_lot)
     return max(0, lots)
+
+
+def calculate_future_lots(
+    sl_distance: float,
+    lot_size: int,
+    capital: float,
+    budget_pct: float = 0.75,
+    min_lots: int = 2,
+    max_risk_mult: float = 1.25,
+) -> tuple[int, str | None]:
+    """
+    Calculate position size in lots for stock futures swing trades.
+    Enforces Section 5:
+    - lots = max(min_lots, floor(risk_budget / (sl_distance * lot_size)))
+    - risk_budget = capital * (budget_pct / 100)
+    - If total risk(lots) > max_risk_mult * risk_budget: skips with MIN_LOTS_BREACH.
+    """
+    if sl_distance <= 0 or lot_size <= 0 or capital <= 0:
+        return 0, "INVALID_INPUTS"
+
+    risk_budget = capital * (budget_pct / 100.0)
+    hard_risk_cap = risk_budget * max_risk_mult
+    risk_per_lot = sl_distance * lot_size
+
+    if risk_per_lot <= 0:
+        return 0, "INVALID_RISK"
+
+    calculated_lots = int(risk_budget // risk_per_lot)
+    lots = max(min_lots, calculated_lots)
+
+    total_risk = lots * risk_per_lot
+    if total_risk > hard_risk_cap:
+        return 0, "MIN_LOTS_BREACH"
+
+    return lots, None
+
+
+def split_lots(n: int) -> tuple[int, int]:
+    """
+    Split lots for two-tier profit target (T1 and T2).
+    - T1 leg = floor(n / 2)
+    - T2 leg = n - floor(n / 2)
+    With n >= 2, both legs are guaranteed non-empty.
+    """
+    if n <= 1:
+        return 1, max(0, n - 1)
+    t1_lots = n // 2
+    t2_lots = n - t1_lots
+    return t1_lots, t2_lots
+

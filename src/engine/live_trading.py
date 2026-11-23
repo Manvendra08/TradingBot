@@ -554,14 +554,18 @@ def _reject_fallback_instrument(
 
 def place_kite_order(
     kite,
-    symbol: str,
-    exchange: str,
-    tradingsymbol: str,
-    transaction_type: str,
-    quantity: int,
-    shadow_mode: bool,
+    symbol: str = "",
+    exchange: str = "NFO",
+    tradingsymbol: str = "",
+    transaction_type: str = "BUY",
+    quantity: int = 1,
+    shadow_mode: bool = False,
     expected_price: float = 0.0,
     tick_size: float = 0.05,
+    is_hedge: bool = False,
+    dte: int | None = None,
+    marketable: bool = False,
+    **kwargs,
 ) -> str:
     # ── Fat-Finger & Quantity Sanity Pre-Flight Guard ─────────────────
     if not isinstance(quantity, (int, float)) or quantity <= 0:
@@ -574,6 +578,11 @@ def place_kite_order(
         from config.settings import LOT_SIZES
         from config.runtime_config import load_runtime_config
         base_sym = str(symbol or "").upper().split()[0]
+        if not base_sym and tradingsymbol:
+            for s in ("BANKNIFTY", "NIFTY", "NATURALGAS", "CRUDEOIL", "GOLD", "SILVER", "SENSEX", "MIDCPNIFTY"):
+                if tradingsymbol.upper().startswith(s):
+                    base_sym = s
+                    break
         lot_size = LOT_SIZES.get(symbol, LOT_SIZES.get(base_sym, 1))
         if lot_size <= 0:
             lot_size = 1
@@ -605,28 +614,53 @@ def place_kite_order(
         )
         return sh_id
     try:
-        # Kite API rejects bare MARKET orders. Use LIMIT with a price buffer
-        # to simulate market execution. Fetch LTP, apply slippage buffer.
+        # Kite API rejects bare MARKET orders on F&O options. Use LIMIT with a price buffer
+        # to simulate market execution. Fetch quote/depth, apply slippage buffer.
         full_symbol = f"{exchange}:{tradingsymbol}"
         ltp = None
+        best_bid = None
+        best_ask = None
+
+        # 1. First attempt full quote to retrieve order book depth (bid/ask)
         try:
-            quote = kite.ltp(full_symbol)
-            if isinstance(quote, dict):
-                instr_dict = quote.get(full_symbol)
-                if isinstance(instr_dict, dict) and "last_price" in instr_dict:
-                    ltp = float(instr_dict["last_price"])
+            q_res = kite.quote(full_symbol)
+            if isinstance(q_res, dict) and full_symbol in q_res:
+                q_data = q_res[full_symbol]
+                ltp = float(q_data.get("last_price") or 0.0) or None
+                depth = q_data.get("depth") or {}
+                buy_depth = depth.get("buy") or []
+                sell_depth = depth.get("sell") or []
+                if buy_depth and isinstance(buy_depth, list) and len(buy_depth) > 0:
+                    top_buy = float(buy_depth[0].get("price") or 0.0)
+                    if top_buy > 0:
+                        best_bid = top_buy
+                if sell_depth and isinstance(sell_depth, list) and len(sell_depth) > 0:
+                    top_sell = float(sell_depth[0].get("price") or 0.0)
+                    if top_sell > 0:
+                        best_ask = top_sell
         except Exception as qe:
-            err_msg = str(qe)
-            if "Insufficient permission" in err_msg:
-                log.info(
-                    "Kite LTP subscription missing for %s (falling back to expected price: %s)",
-                    full_symbol,
-                    expected_price,
-                )
-            else:
-                log.warning(
-                    "Could not fetch LTP for %s before order: %s", full_symbol, qe
-                )
+            log.debug("kite.quote failed for %s, falling back to kite.ltp: %s", full_symbol, qe)
+
+        # 2. If LTP not found from quote, fallback to kite.ltp
+        if ltp is None or ltp <= 0:
+            try:
+                quote = kite.ltp(full_symbol)
+                if isinstance(quote, dict):
+                    instr_dict = quote.get(full_symbol)
+                    if isinstance(instr_dict, dict) and "last_price" in instr_dict:
+                        ltp = float(instr_dict["last_price"])
+            except Exception as ltp_err:
+                err_msg = str(ltp_err)
+                if "Insufficient permission" in err_msg:
+                    log.info(
+                        "Kite LTP subscription missing for %s (falling back to expected price: %s)",
+                        full_symbol,
+                        expected_price,
+                    )
+                else:
+                    log.warning(
+                        "Could not fetch LTP for %s before order: %s", full_symbol, ltp_err
+                    )
 
         try:
             exp_p = float(expected_price or 0.0)
@@ -638,14 +672,10 @@ def place_kite_order(
 
         if ltp and ltp > 0:
             is_future = "FUT" in tradingsymbol.upper()
-            # BUG-C10 FIX: Use tick-based slippage instead of percentage-based.
-            # Previously used 5% buffer for options, which on a ₹50 premium meant
-            # placing limit at ₹52.50 (250% over tick size) — massive slippage.
-            # Now uses 3-5 ticks above/below LTP for tight market-like fills.
             t_size = tick_size or 0.05
             if t_size <= 0:
                 t_size = 0.05
-            
+
             if is_future:
                 # Futures: use 0.2% buffer (existing behavior, avoids circuit limits)
                 buffer_pct = 0.002
@@ -653,13 +683,42 @@ def place_kite_order(
                     limit_price = ltp * (1 + buffer_pct)
                 else:
                     limit_price = ltp * (1 - buffer_pct)
+            elif is_hedge or marketable or (dte == 0 and transaction_type == "BUY"):
+                # Marketable Limit Order for Long Hedge Wings / 0 DTE:
+                # On 0 DTE or long wings, placing static limit orders at LTP frequently misses fills
+                # by ₹1–2 and triggers rollbacks. Marketable limits cross the spread slightly (ask + 0.5% or min ₹1.50)
+                # guaranteeing immediate fills on Kite while the exchange fills at best counterparty price.
+                if transaction_type == "BUY":
+                    base_p = best_ask if (best_ask and best_ask > 0) else ltp
+                    if base_p >= 5.0:
+                        buffer = max(base_p * 0.005, 1.50, 10 * t_size)
+                    else:
+                        buffer = max(base_p * 0.05, 6 * t_size)
+                    limit_price = base_p + buffer
+                    log.info(
+                        "[marketable-limit] BUY %s: base=₹%.2f (ask=%s, ltp=₹%.2f) buffer=+₹%.2f -> limit=₹%.2f (0DTE=%s, hedge=%s)",
+                        full_symbol, base_p, best_ask, ltp, buffer, limit_price, (dte == 0), is_hedge,
+                    )
+                else:
+                    base_p = best_bid if (best_bid and best_bid > 0) else ltp
+                    if base_p >= 5.0:
+                        buffer = max(base_p * 0.005, 1.50, 10 * t_size)
+                    else:
+                        buffer = max(base_p * 0.05, 6 * t_size)
+                    limit_price = max(base_p - buffer, t_size)
+                    log.info(
+                        "[marketable-limit] SELL %s: base=₹%.2f (bid=%s, ltp=₹%.2f) buffer=-₹%.2f -> limit=₹%.2f (0DTE=%s, hedge=%s)",
+                        full_symbol, base_p, best_bid, ltp, buffer, limit_price, (dte == 0), is_hedge,
+                    )
             else:
-                # Options: use tick-based buffer (5 ticks for BUY, 5 ticks for SELL)
+                # Standard options limit order: tick-based buffer anchored to best depth / LTP
                 TICKS_BUFFER = 5
                 if transaction_type == "BUY":
-                    limit_price = ltp + (TICKS_BUFFER * t_size)
+                    base_p = best_ask if (best_ask and best_ask > 0) else ltp
+                    limit_price = base_p + (TICKS_BUFFER * t_size)
                 else:
-                    limit_price = ltp - (TICKS_BUFFER * t_size)
+                    base_p = best_bid if (best_bid and best_bid > 0) else ltp
+                    limit_price = max(base_p - (TICKS_BUFFER * t_size), t_size)
 
             # Align to tick size
             decimals = 2 if t_size >= 0.01 else 4
@@ -683,6 +742,15 @@ def place_kite_order(
         else:
             err_msg = (
                 f"Refusing to place {transaction_type} order for {full_symbol}: "
+                f"no valid market price (LTP unavailable and expected_price={expected_price})"
+            )
+            log.error(err_msg)
+            raise ValueError(err_msg)
+        return order_id
+    except Exception as e:
+        _handle_kite_ip_error(e)
+        log.error("Kite order placement failed: %s", e)
+        raise e
                 f"no valid market price (LTP unavailable and expected_price={expected_price})"
             )
             log.error(err_msg)
@@ -760,6 +828,22 @@ def get_order_filled_quantity(kite, order_id: str) -> int:
     except Exception as e:
         log.warning("Failed to read filled_quantity for %s: %s", order_id, e)
         return 0
+
+
+def get_order_execution_details(kite, order_id: str) -> tuple[float, int]:
+    """Return (average_price, filled_quantity) from Kite order_history."""
+    if not kite or not order_id or str(order_id).startswith("sh-"):
+        return 0.0, 0
+    try:
+        history = kite.order_history(order_id)
+        if history:
+            latest = history[-1]
+            avg_p = float(latest.get("average_price") or 0.0)
+            filled_q = int(latest.get("filled_quantity") or 0)
+            return avg_p, filled_q
+    except Exception as e:
+        log.warning("Failed to get order execution details for %s: %s", order_id, e)
+    return 0.0, 0
 
 
 def place_kite_gtt(

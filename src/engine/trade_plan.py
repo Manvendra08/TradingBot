@@ -852,3 +852,140 @@ def select_candidate(side: str, persisted_label: str, dte: int, atr_state: dict,
     valid_candidates.sort(key=lambda c: abs(c['delta'] - midpoint))
     
     return valid_candidates[0]
+
+
+def calculate_future_sl_target(
+    entry: float,
+    side: str,
+    zones: list,
+    atr: float,
+    target_r_ratio: float = 1.6,
+    min_sl_atr: float = 0.75,
+    max_sl_atr: float = 2.0,
+    opposing_zone_atr_buffer: float = 0.5,
+) -> dict | None:
+    """
+    Calculate price-level stop loss, T1, and T2 for stock futures swing trades.
+    Enforces Section 4.2 geometry gates:
+    - SL distance inside 0.75 - 2.0x ATR
+    - T1 distance >= target_r_ratio * SL distance (>= 1.6x)
+    - No strong opposing zone within opposing_zone_atr_buffer * SL distance
+    Returns None if any geometry gate fails or no qualifying level exists.
+    """
+    if entry <= 0 or atr <= 0 or not zones:
+        return None
+
+    side_upper = str(side).upper().strip()
+    is_long = side_upper in ("LONG", "BUY")
+
+    if is_long:
+        # Supporting zones below entry
+        supports = [z for z in zones if (getattr(z, "kind", "") == "SUPPORT" or (isinstance(z, dict) and z.get("kind") == "SUPPORT"))]
+        qualified_supports = [z for z in supports if (getattr(z, "high", z.get("high", 0.0) if isinstance(z, dict) else 0.0) <= entry)]
+        if not qualified_supports:
+            return None
+
+        # Nearest support below entry
+        nearest_sup = max(qualified_supports, key=lambda z: getattr(z, "high", z.get("high", 0.0) if isinstance(z, dict) else 0.0))
+        sup_low = float(getattr(nearest_sup, "low", nearest_sup.get("low", 0.0) if isinstance(nearest_sup, dict) else 0.0))
+        sl = sup_low - 0.25 * atr
+        sl_dist = entry - sl
+
+        # Gate 1: SL distance within 0.75 - 2.0x ATR
+        if sl_dist < min_sl_atr * atr or sl_dist > max_sl_atr * atr:
+            return None
+
+        # Opposing zones (resistances) above entry
+        resistances = [z for z in zones if (getattr(z, "kind", "") == "RESISTANCE" or (isinstance(z, dict) and z.get("kind") == "RESISTANCE"))]
+        qualified_resists = [z for z in resistances if (getattr(z, "low", z.get("low", 0.0) if isinstance(z, dict) else 0.0) >= entry)]
+        if not qualified_resists:
+            return None
+
+        # Sort resistances ascending by price
+        qualified_resists.sort(key=lambda z: getattr(z, "low", z.get("low", 0.0) if isinstance(z, dict) else 0.0))
+        nearest_res = qualified_resists[0]
+        res_low = float(getattr(nearest_res, "low", nearest_res.get("low", 0.0) if isinstance(nearest_res, dict) else 0.0))
+        dist_to_res = res_low - entry
+
+        # Gate 2: Opposing zone too close check
+        if dist_to_res < opposing_zone_atr_buffer * sl_dist:
+            return None
+
+        t1 = res_low - 0.05 * atr
+        t1_dist = t1 - entry
+
+        # Gate 3: T1 distance >= 1.6x SL distance
+        if t1_dist < target_r_ratio * sl_dist:
+            return None
+
+        # T2: Next strong resistance or 2.5x R extension
+        if len(qualified_resists) > 1:
+            next_res = qualified_resists[1]
+            t2 = float(getattr(next_res, "low", next_res.get("low", 0.0) if isinstance(next_res, dict) else 0.0)) - 0.05 * atr
+        else:
+            t2 = entry + 2.5 * sl_dist
+
+        r_t1 = round(t1_dist / sl_dist, 2)
+        return {
+            "sl": round(sl, 2),
+            "t1": round(t1, 2),
+            "t2": round(t2, 2),
+            "r_t1": r_t1,
+            "sl_distance": round(sl_dist, 2),
+        }
+    else:
+        # SHORT: Mirror image
+        resistances = [z for z in zones if (getattr(z, "kind", "") == "RESISTANCE" or (isinstance(z, dict) and z.get("kind") == "RESISTANCE"))]
+        qualified_resists = [z for z in resistances if (getattr(z, "low", z.get("low", 0.0) if isinstance(z, dict) else 0.0) >= entry)]
+        if not qualified_resists:
+            return None
+
+        # Nearest resistance above entry
+        nearest_res = min(qualified_resists, key=lambda z: getattr(z, "low", z.get("low", 0.0) if isinstance(z, dict) else 0.0))
+        res_high = float(getattr(nearest_res, "high", nearest_res.get("high", 0.0) if isinstance(nearest_res, dict) else 0.0))
+        sl = res_high + 0.25 * atr
+        sl_dist = sl - entry
+
+        # Gate 1: SL distance within 0.75 - 2.0x ATR
+        if sl_dist < min_sl_atr * atr or sl_dist > max_sl_atr * atr:
+            return None
+
+        # Opposing zones (supports) below entry
+        supports = [z for z in zones if (getattr(z, "kind", "") == "SUPPORT" or (isinstance(z, dict) and z.get("kind") == "SUPPORT"))]
+        qualified_supports = [z for z in supports if (getattr(z, "high", z.get("high", 0.0) if isinstance(z, dict) else 0.0) <= entry)]
+        if not qualified_supports:
+            return None
+
+        # Sort supports descending by price
+        qualified_supports.sort(key=lambda z: getattr(z, "high", z.get("high", 0.0) if isinstance(z, dict) else 0.0), reverse=True)
+        nearest_sup = qualified_supports[0]
+        sup_high = float(getattr(nearest_sup, "high", nearest_sup.get("high", 0.0) if isinstance(nearest_sup, dict) else 0.0))
+        dist_to_sup = entry - sup_high
+
+        # Gate 2: Opposing zone too close check
+        if dist_to_sup < opposing_zone_atr_buffer * sl_dist:
+            return None
+
+        t1 = sup_high + 0.05 * atr
+        t1_dist = entry - t1
+
+        # Gate 3: T1 distance >= 1.6x SL distance
+        if t1_dist < target_r_ratio * sl_dist:
+            return None
+
+        # T2: Next strong support or 2.5x R extension
+        if len(qualified_supports) > 1:
+            next_sup = qualified_supports[1]
+            t2 = float(getattr(next_sup, "high", next_sup.get("high", 0.0) if isinstance(next_sup, dict) else 0.0)) + 0.05 * atr
+        else:
+            t2 = entry - 2.5 * sl_dist
+
+        r_t1 = round(t1_dist / sl_dist, 2)
+        return {
+            "sl": round(sl, 2),
+            "t1": round(t1, 2),
+            "t2": round(t2, 2),
+            "r_t1": r_t1,
+            "sl_distance": round(sl_dist, 2),
+        }
+

@@ -522,6 +522,93 @@ CREATE TABLE IF NOT EXISTS heavyweight_scans (
 );
 CREATE INDEX IF NOT EXISTS idx_heavyweight_scans_idx_time ON heavyweight_scans (index_name, id DESC);
 
+CREATE TABLE IF NOT EXISTS stockfut_trades (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol              TEXT NOT NULL,
+    tradingsymbol       TEXT NOT NULL,
+    expiry              TEXT NOT NULL,
+    side                TEXT NOT NULL,      -- LONG | SHORT
+    lots                INTEGER NOT NULL,
+    lot_size            INTEGER NOT NULL,
+    entry_price         REAL NOT NULL,
+    entry_time          TEXT NOT NULL,
+    sl                  REAL NOT NULL,
+    initial_sl          REAL NOT NULL,
+    t1                  REAL NOT NULL,
+    t2                  REAL NOT NULL,
+    t1_lots             INTEGER NOT NULL,
+    t2_lots             INTEGER NOT NULL,
+    remaining_qty       INTEGER NOT NULL,
+    gtt_ids             TEXT,               -- JSON list of GTT IDs
+    status              TEXT DEFAULT 'OPEN', -- OPEN | PARTIAL | CLOSED | CANCELLED
+    exit_price          REAL,
+    exit_time           TEXT,
+    exit_reason         TEXT,
+    pnl                 REAL DEFAULT 0.0,
+    pnl_r               REAL DEFAULT 0.0,
+    gross_pnl           REAL DEFAULT 0.0,
+    tx_costs            REAL DEFAULT 0.0,
+    snapshot_id         TEXT,
+    mode                TEXT DEFAULT 'PAPER', -- PAPER | LIVE | SHADOW
+    order_tag           TEXT,
+    created_at          TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS stockfut_watchlist (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_date           TEXT NOT NULL,
+    scan_time           TEXT NOT NULL,
+    symbol              TEXT NOT NULL,
+    tradingsymbol       TEXT NOT NULL,
+    expiry              TEXT NOT NULL,
+    side                TEXT NOT NULL,
+    bias                TEXT NOT NULL,
+    score               INTEGER NOT NULL,
+    planned_entry       REAL NOT NULL,
+    sl                  REAL NOT NULL,
+    t1                  REAL NOT NULL,
+    t2                  REAL NOT NULL,
+    lots                INTEGER NOT NULL,
+    lot_size            INTEGER NOT NULL,
+    r_multiple          REAL NOT NULL,
+    status              TEXT NOT NULL DEFAULT 'ARMED', -- ARMED | TRIGGERED | EXPIRED | CANCELLED | SKIPPED
+    skip_reason         TEXT,
+    snapshot_id         TEXT,
+    created_at          TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS stockfut_decisions (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp           TEXT NOT NULL,
+    kind                TEXT NOT NULL,
+    symbol              TEXT NOT NULL,
+    payload_json        TEXT NOT NULL,
+    snapshot_id         TEXT,
+    created_at          TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS stockfut_order_intents (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    intent_id           TEXT UNIQUE NOT NULL,
+    order_tag           TEXT NOT NULL,
+    symbol              TEXT NOT NULL,
+    tradingsymbol       TEXT NOT NULL,
+    side                TEXT NOT NULL,
+    quantity            INTEGER NOT NULL,
+    order_type          TEXT NOT NULL,
+    price               REAL,
+    status              TEXT DEFAULT 'PENDING',
+    broker_order_id     TEXT,
+    rejection_reason    TEXT,
+    created_at          TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_stockfut_trades_status ON stockfut_trades (status, mode);
+CREATE INDEX IF NOT EXISTS idx_stockfut_watchlist_date ON stockfut_watchlist (scan_date, status);
+CREATE INDEX IF NOT EXISTS idx_stockfut_decisions_sym ON stockfut_decisions (symbol, timestamp);
+
 """
 
 
@@ -767,6 +854,11 @@ _MIGRATIONS = [
     ("M152_idx_heavyweight_scans_idx_time", "CREATE INDEX IF NOT EXISTS idx_heavyweight_scans_idx_time ON heavyweight_scans (index_name, id DESC)"),
     ("M153_add_source_table_to_trade_autopsies", "ALTER TABLE trade_autopsies ADD COLUMN source_table TEXT DEFAULT 'paper_trades'"),
     ("M154_create_scheduler_scan_progress", "CREATE TABLE IF NOT EXISTS scheduler_scan_progress (class_key TEXT NOT NULL, trade_date TEXT NOT NULL, last_interval_idx INTEGER NOT NULL DEFAULT -1, market_close_done INTEGER NOT NULL DEFAULT 0, is_scanning INTEGER NOT NULL DEFAULT 0, scan_started_at TEXT, updated_at TEXT NOT NULL, PRIMARY KEY (class_key, trade_date))"),
+    ("M155_create_stockfut_trades", "CREATE TABLE IF NOT EXISTS stockfut_trades (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, tradingsymbol TEXT NOT NULL, expiry TEXT NOT NULL, side TEXT NOT NULL, lots INTEGER NOT NULL, lot_size INTEGER NOT NULL, entry_price REAL NOT NULL, entry_time TEXT NOT NULL, sl REAL NOT NULL, initial_sl REAL NOT NULL, t1 REAL NOT NULL, t2 REAL NOT NULL, t1_lots INTEGER NOT NULL, t2_lots INTEGER NOT NULL, remaining_qty INTEGER NOT NULL, gtt_ids TEXT, status TEXT DEFAULT 'OPEN', exit_price REAL, exit_time TEXT, exit_reason TEXT, pnl REAL DEFAULT 0.0, pnl_r REAL DEFAULT 0.0, gross_pnl REAL DEFAULT 0.0, tx_costs REAL DEFAULT 0.0, snapshot_id TEXT, mode TEXT DEFAULT 'PAPER', order_tag TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)"),
+    ("M156_create_stockfut_watchlist", "CREATE TABLE IF NOT EXISTS stockfut_watchlist (id INTEGER PRIMARY KEY AUTOINCREMENT, scan_date TEXT NOT NULL, scan_time TEXT NOT NULL, symbol TEXT NOT NULL, tradingsymbol TEXT NOT NULL, expiry TEXT NOT NULL, side TEXT NOT NULL, bias TEXT NOT NULL, score INTEGER NOT NULL, planned_entry REAL NOT NULL, sl REAL NOT NULL, t1 REAL NOT NULL, t2 REAL NOT NULL, lots INTEGER NOT NULL, lot_size INTEGER NOT NULL, r_multiple REAL NOT NULL, status TEXT NOT NULL DEFAULT 'ARMED', skip_reason TEXT, snapshot_id TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)"),
+    ("M157_create_stockfut_decisions", "CREATE TABLE IF NOT EXISTS stockfut_decisions (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL, kind TEXT NOT NULL, symbol TEXT NOT NULL, payload_json TEXT NOT NULL, snapshot_id TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)"),
+    ("M158_create_stockfut_order_intents", "CREATE TABLE IF NOT EXISTS stockfut_order_intents (id INTEGER PRIMARY KEY AUTOINCREMENT, intent_id TEXT UNIQUE NOT NULL, order_tag TEXT NOT NULL, symbol TEXT NOT NULL, tradingsymbol TEXT NOT NULL, side TEXT NOT NULL, quantity INTEGER NOT NULL, order_type TEXT NOT NULL, price REAL, status TEXT DEFAULT 'PENDING', broker_order_id TEXT, rejection_reason TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)"),
+    ("M159_idx_stockfut", "CREATE INDEX IF NOT EXISTS idx_stockfut_trades_status ON stockfut_trades (status, mode)"),
 ]
 
 
@@ -3690,3 +3782,260 @@ def release_scan_lock(class_key: str, trade_date: str) -> None:
             """,
             (now_iso, class_key, trade_date),
         )
+
+
+# =====================================================================
+# Stock Futures Storage Functions (stockfut_*)
+# =====================================================================
+
+def insert_stockfut_trade(trade: dict) -> int:
+    """Insert a new stock futures trade, returning its row id."""
+    gtt_ids = trade.get("gtt_ids")
+    if isinstance(gtt_ids, list):
+        gtt_ids = json.dumps(gtt_ids)
+
+    with get_conn() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO stockfut_trades (
+                symbol, tradingsymbol, expiry, side, lots, lot_size,
+                entry_price, entry_time, sl, initial_sl, t1, t2,
+                t1_lots, t2_lots, remaining_qty, gtt_ids, status,
+                pnl, pnl_r, gross_pnl, tx_costs, snapshot_id, mode, order_tag
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                trade["symbol"],
+                trade["tradingsymbol"],
+                trade["expiry"],
+                trade["side"],
+                int(trade["lots"]),
+                int(trade["lot_size"]),
+                float(trade["entry_price"]),
+                trade["entry_time"],
+                float(trade["sl"]),
+                float(trade.get("initial_sl", trade["sl"])),
+                float(trade["t1"]),
+                float(trade["t2"]),
+                int(trade["t1_lots"]),
+                int(trade["t2_lots"]),
+                int(trade["remaining_qty"]),
+                gtt_ids,
+                trade.get("status", "OPEN"),
+                float(trade.get("pnl", 0.0)),
+                float(trade.get("pnl_r", 0.0)),
+                float(trade.get("gross_pnl", 0.0)),
+                float(trade.get("tx_costs", 0.0)),
+                trade.get("snapshot_id"),
+                trade.get("mode", "PAPER"),
+                trade.get("order_tag"),
+            ),
+        )
+        return int(cursor.lastrowid)
+
+
+def get_open_stockfut_trades(mode: str | None = None) -> list[dict]:
+    """Retrieve all open or partial stock futures trades."""
+    with get_read_conn() as conn:
+        if mode:
+            rows = conn.execute(
+                """
+                SELECT * FROM stockfut_trades
+                WHERE status IN ('OPEN', 'PARTIAL') AND mode = ?
+                ORDER BY id ASC
+                """,
+                (mode,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT * FROM stockfut_trades
+                WHERE status IN ('OPEN', 'PARTIAL')
+                ORDER BY id ASC
+                """
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_stockfut_trade_by_id(trade_id: int) -> dict | None:
+    """Retrieve a single stock futures trade by id."""
+    with get_read_conn() as conn:
+        row = conn.execute("SELECT * FROM stockfut_trades WHERE id = ?", (trade_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def update_stockfut_trade(trade_id: int, updates: dict) -> None:
+    """Update arbitrary fields of a stock futures trade."""
+    if not updates:
+        return
+    fields = []
+    values = []
+    for k, v in updates.items():
+        if k == "gtt_ids" and isinstance(v, list):
+            v = json.dumps(v)
+        fields.append(f"{k} = ?")
+        values.append(v)
+    values.append(datetime.now(timezone.utc).isoformat())
+    values.append(trade_id)
+    set_clause = ", ".join(fields)
+    with get_conn() as conn:
+        conn.execute(f"UPDATE stockfut_trades SET {set_clause}, updated_at = ? WHERE id = ?", values)
+
+
+def close_stockfut_trade(
+    trade_id: int,
+    exit_price: float,
+    exit_time: str,
+    exit_reason: str,
+    pnl: float,
+    pnl_r: float,
+    gross_pnl: float = 0.0,
+    tx_costs: float = 0.0,
+) -> None:
+    """Mark a stock futures trade closed."""
+    with get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE stockfut_trades
+            SET status = 'CLOSED', remaining_qty = 0, exit_price = ?, exit_time = ?,
+                exit_reason = ?, pnl = ?, pnl_r = ?, gross_pnl = ?, tx_costs = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (exit_price, exit_time, exit_reason, pnl, pnl_r, gross_pnl, tx_costs, trade_id),
+        )
+
+
+def insert_stockfut_watchlist(row: dict) -> int:
+    """Insert a watchlist row."""
+    with get_conn() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO stockfut_watchlist (
+                scan_date, scan_time, symbol, tradingsymbol, expiry,
+                side, bias, score, planned_entry, sl, t1, t2, lots,
+                lot_size, r_multiple, status, skip_reason, snapshot_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                row["scan_date"],
+                row["scan_time"],
+                row["symbol"],
+                row["tradingsymbol"],
+                row["expiry"],
+                row["side"],
+                row["bias"],
+                int(row["score"]),
+                float(row["planned_entry"]),
+                float(row["sl"]),
+                float(row["t1"]),
+                float(row["t2"]),
+                int(row["lots"]),
+                int(row["lot_size"]),
+                float(row["r_multiple"]),
+                row.get("status", "ARMED"),
+                row.get("skip_reason"),
+                row.get("snapshot_id"),
+            ),
+        )
+        return int(cursor.lastrowid)
+
+
+def get_latest_stockfut_watchlist(scan_date: str | None = None) -> list[dict]:
+    """Retrieve the latest watchlist rows."""
+    with get_read_conn() as conn:
+        if scan_date:
+            rows = conn.execute(
+                "SELECT * FROM stockfut_watchlist WHERE scan_date = ? ORDER BY score DESC",
+                (scan_date,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT * FROM stockfut_watchlist
+                WHERE scan_date = (SELECT MAX(scan_date) FROM stockfut_watchlist)
+                ORDER BY score DESC
+                """
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def update_stockfut_watchlist_status(watchlist_id: int, status: str, skip_reason: str | None = None) -> None:
+    """Update the status of a watchlist row."""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE stockfut_watchlist SET status = ?, skip_reason = ? WHERE id = ?",
+            (status, skip_reason, watchlist_id),
+        )
+
+
+def log_stockfut_decision(kind: str, symbol: str, payload: dict, snapshot_id: str | None = None) -> None:
+    """Record a decision or skip event in stockfut_decisions."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    payload_str = json.dumps(payload, default=str)
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO stockfut_decisions (timestamp, kind, symbol, payload_json, snapshot_id)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (now_iso, kind, symbol, payload_str, snapshot_id),
+        )
+
+
+def insert_stockfut_order_intent(intent: dict) -> int:
+    """Insert an order intent before broker dispatch."""
+    with get_conn() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO stockfut_order_intents (
+                intent_id, order_tag, symbol, tradingsymbol, side,
+                quantity, order_type, price, status, broker_order_id, rejection_reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                intent["intent_id"],
+                intent["order_tag"],
+                intent["symbol"],
+                intent["tradingsymbol"],
+                intent["side"],
+                int(intent["quantity"]),
+                intent["order_type"],
+                float(intent["price"]) if intent.get("price") is not None else None,
+                intent.get("status", "PENDING"),
+                intent.get("broker_order_id"),
+                intent.get("rejection_reason"),
+            ),
+        )
+        return int(cursor.lastrowid)
+
+
+def get_stockfut_order_intent(intent_id: str) -> dict | None:
+    """Get an order intent by intent_id."""
+    with get_read_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM stockfut_order_intents WHERE intent_id = ?",
+            (intent_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def update_stockfut_order_intent(
+    intent_id: str,
+    status: str,
+    broker_order_id: str | None = None,
+    rejection_reason: str | None = None,
+) -> None:
+    """Update an order intent status."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE stockfut_order_intents
+            SET status = ?, broker_order_id = COALESCE(?, broker_order_id),
+                rejection_reason = COALESCE(?, rejection_reason), updated_at = ?
+            WHERE intent_id = ?
+            """,
+            (status, broker_order_id, rejection_reason, now_iso, intent_id),
+        )
+
