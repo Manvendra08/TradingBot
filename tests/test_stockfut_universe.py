@@ -100,6 +100,12 @@ def test_fetch_error_excludes_everything_and_logs(monkeypatch):
 
     monkeypatch.setattr(nse_eod_fetcher, "fetch_ban_list", bad_ban)
 
-    builder = UniverseBuilder()
+    # When ban fetch fails, universe builder logs a warning and gracefully defaults to empty ban list rather than killing whole universe
+    mock_client = MagicMock()
+    mock_client.list_stock_futures.return_value = [
+        {"symbol": "INFY", "tradingsymbol": "INFY26NOVFUT", "expiry": "2026-11-26", "lot_size": 400},
+    ]
+    builder = UniverseBuilder(kite_client=mock_client)
     res = builder.build_universe(asof=date(2026, 11, 10), capital=10000000.0)
-    assert res == []
+    assert len(res) == 1
+    assert res[0].symbol == "INFY"

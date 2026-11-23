@@ -274,16 +274,16 @@ def open_check(
     if ltp <= 0:
         return False, "INVALID_LTP"
 
-    # 1. Price drift check
-    drift = abs(ltp - row.planned_entry)
-    if drift > max_drift_atr * atr:
-        return False, f"PRICE_DRIFT_EXCEEDED ({drift:.2f} > {max_drift_atr * atr:.2f})"
-
-    # 2. SL breach check
+    # 1. SL breach check (checked first so a gap breaching SL is flagged as SL breach, not general drift)
     if row.side == "LONG" and ltp <= row.sl:
         return False, f"SL_BREACHED_AT_OPEN ({ltp:.2f} <= {row.sl:.2f})"
     elif row.side == "SHORT" and ltp >= row.sl:
         return False, f"SL_BREACHED_AT_OPEN ({ltp:.2f} >= {row.sl:.2f})"
+
+    # 2. Price drift check
+    drift = abs(ltp - row.planned_entry)
+    if drift > max_drift_atr * atr:
+        return False, f"PRICE_DRIFT_EXCEEDED ({drift:.2f} > {max_drift_atr * atr:.2f})"
 
     # 3. Spread check
     if bid > 0 and ask >= bid:
