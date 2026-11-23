@@ -59,7 +59,8 @@ def run():
     from src.stockfut.setups import stock_bias, bias_label, matrix_permission, is_daily_reversal, calculate_setup_score
     from src.stockfut.levels import build_zones
 
-    for sym, d in data_map.items():
+    for sym, d in list(data_map.items())[:3]:
+        print(f"OI series for {sym} (len={len(d['oi_series'])}): {d['oi_series'][-5:]}")
         feat = compute_features(
             sym,
             d["candles"],
