@@ -36,12 +36,14 @@
 
 ### F5: Fetcher Degradation, MCX Priority & Fast Dual-Fetch Failover (P1-HIGH)
 - **Symptom:** Primary fetcher hangs or fails (e.g. Shoonya timeout on MCX or Dhan timeout).
-- **Root Cause:** 
-  1. Shoonya API is an equity/index broker (NFO/BFO) and lacks full MCX commodity option chain structures, causing 12s timeouts when listed first for commodities.
-  2. Zerodha Kite API accounts lack MCX market data permissions, raising `Insufficient permission` warnings when querying `MCX:...` symbols.
-- **Self-Heal:** 
-  1. `_priority_for` in [router.py](file:///c:/Users/manve/Downloads/NSEBOT/src/fetchers/router.py#L108) prioritizes dedicated commodity fetchers (`dhan_commodity` -> `moneycontrol`) ahead of `shoonya` for MCX commodities (`NATURALGAS`, `CRUDEOIL`, `GOLD`, `SILVER`).
-  2. [live_trading.py](file:///c:/Users/manve/Downloads/NSEBOT/src/engine/live_trading.py#L2212) bypasses `kite.ltp` for `MCX:` keys, resolving underlying prices via Dhan/MoneyControl and DB fallback cleanly without permission warnings.
+- **Resolution & Priority Cascade:** 
+  1. Zerodha Kite has full verified MCX permissions (NCO, MCX, NFO, NSE, BSE, CDS, BFO). It provides 60+ real-time option strikes, Black-Scholes Greeks, 5-level depth, and native historical candles.
+  2. _priority_for in router.py and config/settings.py routes MCX commodities (NATURALGAS, CRUDEOIL, GOLD, SILVER) strictly as:
+     - **Primary:** kite (Zerodha Kite Connect)
+     - **Fallback 1:** shoonya (Shoonya Finvasia)
+     - **Fallback 2:** dhan_commodity (Dhan ScanX API)
+     - **Fallback 3:** moneycontrol (Web scraper fallback)
+  3. live_trading.py queries kite.ltp directly for all MCX: keys with automated failover to the router cascade.
 
 ### F6: Multi-Leg Expiry Filter & CMP Inflation (P0-CRITICAL)
 - **Symptom:** Dashboard and paper trading show massive bloated CMPs (e.g. ₹500–790 on OTM options with entry premiums of ₹30–100), distorting open position PnL by lakhs.

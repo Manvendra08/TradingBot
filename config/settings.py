@@ -259,10 +259,10 @@ FETCHER_PRIORITY = {
     "FINNIFTY": ["kite", "niftytrader", "shoonya", "sensibull", "dhan_headless", "nse_public", "moneycontrol"],
     "MIDCPNIFTY": ["kite", "niftytrader", "shoonya", "sensibull", "dhan_headless", "nse_public", "moneycontrol"],
     "SENSEX": ["kite", "niftytrader", "shoonya", "sensibull", "dhan_headless", "nse_public", "moneycontrol"],
-    "NATURALGAS": ["kite", "dhan_commodity", "shoonya", "niftytrader", "moneycontrol", "dhan"],
-    "CRUDEOIL": ["kite", "dhan_commodity", "shoonya", "niftytrader", "moneycontrol", "dhan"],
-    "GOLD": ["kite", "dhan_commodity", "shoonya", "niftytrader", "moneycontrol", "dhan"],
-    "SILVER": ["kite", "dhan_commodity", "shoonya", "niftytrader", "moneycontrol", "dhan"],
+    "NATURALGAS": ["kite", "shoonya", "dhan_commodity", "moneycontrol"],
+    "CRUDEOIL": ["kite", "shoonya", "dhan_commodity", "moneycontrol"],
+    "GOLD": ["kite", "shoonya", "dhan_commodity", "moneycontrol"],
+    "SILVER": ["kite", "shoonya", "dhan_commodity", "moneycontrol"],
 }
 
 # Order in which chart providers are tried for candles (1H, 3H)

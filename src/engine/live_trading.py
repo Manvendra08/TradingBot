@@ -3154,35 +3154,29 @@ def sync_direct_kite_positions() -> None:
                             "Failed to resolve futures symbol for %s: %s", base_sym, e
                         )
 
-                    if symbol_key.startswith("MCX:"):
-                        # Kite API accounts lack MCX market data permissions — fetch via commodity router
-                        try:
-                            from src.fetchers.router import get_commodity_ohlc
-
-                            cmd_res = get_commodity_ohlc(base_sym)
-                            if cmd_res and float(cmd_res.get("price") or 0.0) > 0:
-                                underlying_price = float(cmd_res["price"])
+                    try:
+                        res = kite.ltp(symbol_key)
+                        if res and symbol_key in res:
+                            underlying_price = float(
+                                res[symbol_key].get("last_price") or 0.0
+                            )
+                            if underlying_price > 0:
                                 live_resolved = True
-                        except Exception as mcx_err:
-                            log.debug("MCX router fetch failed for %s: %s", base_sym, mcx_err)
-                    else:
+                    except Exception as ltp_err:
+                        log.debug(
+                            "Kite LTP fetch failed for %s: %s (falling back to router/stored price)",
+                            symbol_key,
+                            ltp_err,
+                        )
                         try:
-                            res = kite.ltp(symbol_key)
-                            if res and symbol_key in res:
-                                underlying_price = float(
-                                    res[symbol_key].get("last_price") or 0.0
-                                )
-                                if underlying_price > 0:
-                                    live_resolved = True
-                        except Exception as ltp_err:
-                            if "Insufficient permission" in str(ltp_err):
-                                log.debug(
-                                    "Kite market data permission missing for %s (using stored underlying price fallback)",
-                                    symbol_key,
-                                )
-                            else:
-                                log.warning(
-                                    "Failed to fetch live LTP for index %s: %s",
+                            from src.fetchers.router import fetch_option_chain
+
+                            oc_res = fetch_option_chain(base_sym)
+                            if oc_res and float(oc_res.get("underlying_price") or 0.0) > 0:
+                                underlying_price = float(oc_res["underlying_price"])
+                                live_resolved = True
+                        except Exception as router_err:
+                            log.debug("Router option chain fallback failed for %s: %s", base_sym, router_err)
                                     symbol_key,
                                     ltp_err,
                                 )

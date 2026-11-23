@@ -114,13 +114,14 @@ Regimes are evaluated dynamically in `src/engine/ng_session_router.py`:
 
 ## Data Pipeline & Fetcher Invariants
 
-1. **MCX Permissions & Fallback Priority (`src/fetchers/router.py`)**:
-   - Zerodha Kite API accounts typically lack MCX market data permissions, raising `Insufficient permission` errors when querying `MCX:NATURALGAS...`.
+1. **MCX Permissions & Priority Order (`src/fetchers/router.py`)**:
+   - Zerodha Kite API provides full real-time quotes, Greeks, depth, and historical candles for MCX commodities.
    - `_priority_for` routes `NATURALGAS` strictly through:
-     1. `dhan_commodity` (Primary dedicated MCX scrip master).
-     2. `moneycontrol` (Scraped commodity fallback).
-     3. `shoonya` (Third-tier fallback; guarded by `_api_lock` to avoid concurrency drop).
-   - `live_trading.py` bypasses `kite.ltp` for `MCX:` keys.
+     1. **`kite`** (Primary broker feed: 60+ strikes, Black-Scholes Greeks, 5-level market depth).
+     2. **`shoonya`** (Fallback 1: Shoonya Finvasia broker API).
+     3. **`dhan_commodity`** (Fallback 2: Dhan ScanX API).
+     4. **`moneycontrol`** (Fallback 3: Web-scraped commodity fallback).
+   - `live_trading.py` uses `kite.ltp` directly for `MCX:` keys with automatic failover to the router.
 2. **Weekend & Holiday Invariants**:
    - No open directional positions over weekends (`NG_WEEKEND_FLAT = True`). Friday exits executed at 23:25–23:30 IST.
    - CME holidays completely block both Parity and Momentum trading.
