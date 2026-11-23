@@ -29,6 +29,7 @@ from config.settings import (
     TIERED_GATES_ENABLED,
     CONTRA_ENABLED,
     get_tiered_gates_profile,
+    TF_CONTINUATION_OI_MULTIPLIER,
 )
 from src.engine.time_guards import is_trading_allowed_now
 from src.engine.entry_quality import calculate_entry_quality
@@ -38,6 +39,8 @@ from src.engine.trend_analysis import (
     check_trend_persistence,
     calculate_momentum_score,
     get_broader_trend_from_alerts,
+    detect_underlying_trend,
+    evaluate_3h_candle_reversal,
 )
 from src.engine.regime_detector import detect_market_regime, regime_score_for_trade, REGIME_NO_TRADE, REGIME_RANGE
 from src.engine.risk_engine import _check_risk_limits_for_table
@@ -861,16 +864,53 @@ def step_signal_timeframe(ctx: PipelineContext) -> StepResult:
             data={}
         )
 
-    c_3h_close = float(ohlc_3h["close"])
-    p_3h_high = float(prev_3h["high"])
-    p_3h_low = float(prev_3h["low"])
+    try:
+        c_3h_close = float(ohlc_3h["close"])
+        p_3h_high = float(prev_3h["high"])
+        p_3h_low = float(prev_3h["low"])
+    except (KeyError, ValueError, TypeError) as err:
+        return StepResult(
+            name="signal",
+            passed=False,
+            score=0,
+            reason=f"Corrupt 3H candle values: {err}",
+            data={}
+        )
 
     from src.engine.paper_trading import _get_atr
     atr_val = _get_atr(ctx.scan_context)
     breakout_buffer = max((atr_val or 0) * 0.5, ctx.underlying * 0.003)
 
-    is_long_trigger = c_3h_close > p_3h_high + breakout_buffer
-    is_short_trigger = c_3h_close < p_3h_low - breakout_buffer
+    # 1. Dedicated Reversal Entry Path
+    trend = detect_underlying_trend(ctx.symbol, ctx.scan_context, pay_3h)
+    rev_sentiment, is_reversal, rev_reason = evaluate_3h_candle_reversal(ohlc_3h, prev_3h, trend)
+
+    # 2. High-Conviction Continuation Breakout Path
+    is_long_breakout = c_3h_close > p_3h_high + breakout_buffer
+    is_short_breakout = c_3h_close < p_3h_low - breakout_buffer
+
+    # Decision arbitration: Dedicated Reversal takes precedence when qualified
+    is_long_trigger = False
+    is_short_trigger = False
+    entry_mode = None
+    trigger_reason = ""
+
+    if is_reversal and rev_sentiment == "BULLISH":
+        is_long_trigger = True
+        entry_mode = "REVERSAL"
+        trigger_reason = rev_reason
+    elif is_reversal and rev_sentiment == "BEARISH":
+        is_short_trigger = True
+        entry_mode = "REVERSAL"
+        trigger_reason = rev_reason
+    elif is_long_breakout:
+        is_long_trigger = True
+        entry_mode = "CONTINUATION_BREAKOUT"
+        trigger_reason = f"3H Breakout LONG detected (close={c_3h_close:.2f}, high={p_3h_high:.2f}, low={p_3h_low:.2f}, buffer={breakout_buffer:.2f})"
+    elif is_short_breakout:
+        is_short_trigger = True
+        entry_mode = "CONTINUATION_BREAKOUT"
+        trigger_reason = f"3H Breakout SHORT detected (close={c_3h_close:.2f}, high={p_3h_high:.2f}, low={p_3h_low:.2f}, buffer={breakout_buffer:.2f})"
 
     if not is_long_trigger and not is_short_trigger:
         return StepResult(
@@ -878,23 +918,41 @@ def step_signal_timeframe(ctx: PipelineContext) -> StepResult:
             passed=False,
             score=0,
             reason="No 3H breakout detected",
-            data={"c_3h_close": c_3h_close, "p_3h_high": p_3h_high, "p_3h_low": p_3h_low, "buffer": breakout_buffer}
+            data={
+                "c_3h_close": c_3h_close,
+                "p_3h_high": p_3h_high,
+                "p_3h_low": p_3h_low,
+                "buffer": breakout_buffer,
+                "trend": trend,
+                "reversal_evaluated": rev_reason,
+            }
         )
 
     ctx.direction = "LONG" if is_long_trigger else "SHORT"
 
-    # Cache breakout info
+    # Cache breakout & reversal info
     ctx.scan_context["_breakout_buffer"] = breakout_buffer
     ctx.scan_context["_c_3h_close"] = c_3h_close
     ctx.scan_context["_p_3h_high"] = p_3h_high
     ctx.scan_context["_p_3h_low"] = p_3h_low
+    ctx.scan_context["_entry_mode"] = entry_mode
+    ctx.scan_context["_is_reversal"] = (entry_mode == "REVERSAL")
+    ctx.scan_context["_underlying_trend"] = trend
 
     return StepResult(
         name="signal",
         passed=True,
         score=100,
-        reason=f"3H Breakout {ctx.direction} detected (close={c_3h_close:.2f}, high={p_3h_high:.2f}, low={p_3h_low:.2f}, buffer={breakout_buffer:.2f})",
-        data={"c_3h_close": c_3h_close, "p_3h_high": p_3h_high, "p_3h_low": p_3h_low, "buffer": breakout_buffer, "direction": ctx.direction}
+        reason=trigger_reason,
+        data={
+            "c_3h_close": c_3h_close,
+            "p_3h_high": p_3h_high,
+            "p_3h_low": p_3h_low,
+            "buffer": breakout_buffer,
+            "direction": ctx.direction,
+            "entry_mode": entry_mode,
+            "trend": trend,
+        }
     )
 
 
@@ -1168,7 +1226,10 @@ def step_trend_alignment_tf(ctx: PipelineContext) -> StepResult:
     ce_diff = current_ce - prev_ce
     pe_diff = current_pe - prev_pe
 
-    min_diff_pct = TIMEFRAME_OI_MIN_DIFF_PCT
+    # Reversal setups use standard OI threshold; continuation breakouts require high-conviction 2x OI
+    is_reversal = ctx.scan_context.get("_is_reversal", False)
+    min_diff_pct = TIMEFRAME_OI_MIN_DIFF_PCT if is_reversal else (TIMEFRAME_OI_MIN_DIFF_PCT * TF_CONTINUATION_OI_MULTIPLIER)
+
     long_oi_support = (pe_diff - ce_diff) > (prev_pe * min_diff_pct)
     short_oi_support = (ce_diff - pe_diff) > (prev_ce * min_diff_pct)
 

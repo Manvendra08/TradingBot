@@ -458,3 +458,150 @@ def detect_reversal_from_scans(
         f"No clean reversal: prior scan directions={prev_directions}, "
         f"current={current_dir}"
     )
+
+
+def detect_underlying_trend(
+    symbol: str,
+    ctx: dict | None = None,
+    pay_3h: dict | None = None,
+) -> str:
+    """
+    Detect whether the underlying is in an established continuous downtrend or uptrend.
+    Returns: 'DOWNTREND', 'UPTREND', or 'NEUTRAL'.
+
+    Evaluation hierarchy:
+    1. Multi-bar 3H candle progression (if prev_prev_ohlc and prev_ohlc are available)
+    2. Market regime from scan_context ('TRENDING_DOWN' / 'TRENDING_UP')
+    3. Historical underlying prices across recent non-fallback scans
+    4. Single-bar + price change fallback
+    """
+    ctx = ctx or {}
+    pay_3h = pay_3h or {}
+
+    # 1. Multi-bar 3H progression if prev_prev_ohlc exists
+    prev_3h = pay_3h.get("prev_ohlc") or pay_3h.get("last_closed_ohlc") or {}
+    prev_prev_3h = pay_3h.get("prev_prev_ohlc") or {}
+    if prev_3h and prev_prev_3h:
+        try:
+            pp_close = float(prev_prev_3h["close"])
+            p_close = float(prev_3h["close"])
+            p_open = float(prev_3h.get("open", p_close))
+            if p_close < pp_close and p_close <= p_open:
+                return "DOWNTREND"
+            if p_close > pp_close and p_close >= p_open:
+                return "UPTREND"
+        except (KeyError, ValueError, TypeError):
+            pass
+
+    # 2. Market regime from scan context
+    regime = str(ctx.get("market_regime") or "").upper()
+    if regime == "TRENDING_DOWN":
+        return "DOWNTREND"
+    if regime == "TRENDING_UP":
+        return "UPTREND"
+
+    # 3. Check historical scan summaries for directional slope
+    try:
+        with get_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT underlying, fetched_at
+                FROM scan_summaries
+                WHERE symbol = ?
+                  AND (is_fallback IS NULL OR is_fallback = 0)
+                  AND underlying IS NOT NULL AND underlying > 0
+                ORDER BY fetched_at DESC
+                LIMIT 8
+                """,
+                (symbol,),
+            ).fetchall()
+        if len(rows) >= 3:
+            prices = [float(r["underlying"]) for r in rows if r["underlying"]]
+            prices = list(reversed(prices))
+            mid = len(prices) // 2
+            old_avg = sum(prices[:mid]) / mid
+            new_avg = sum(prices[mid:]) / len(prices[mid:])
+            if old_avg > 0:
+                chg_pct = (new_avg - old_avg) / old_avg * 100
+                if chg_pct <= -0.25:
+                    return "DOWNTREND"
+                if chg_pct >= 0.25:
+                    return "UPTREND"
+    except Exception as e:
+        log.debug("%s: DB trend query error in detect_underlying_trend: %s", symbol, e)
+
+    # 4. Fallback: single candle + price change inspection
+    if prev_3h:
+        try:
+            p_open = float(prev_3h.get("open", 0.0))
+            p_close = float(prev_3h.get("close", 0.0))
+            price_chg = float(ctx.get("price_change_pct") or 0.0)
+            if p_open > 0 and p_close > 0:
+                if p_close < p_open and price_chg < -0.20:
+                    return "DOWNTREND"
+                if p_close > p_open and price_chg > 0.20:
+                    return "UPTREND"
+        except Exception:
+            pass
+
+    return "NEUTRAL"
+
+
+def evaluate_3h_candle_reversal(
+    ohlc_3h: dict,
+    prev_3h: dict,
+    underlying_trend: str = "NEUTRAL",
+) -> tuple[str, bool, str]:
+    """
+    Evaluate whether current 3H candle qualifies as a valid reversal signal for entry.
+
+    Contract:
+    - Long reversal: requires underlying continuous downtrend + green candle (close > open)
+      closing ABOVE previous 3H candle (close > prev_close).
+    - Short reversal: requires underlying continuous uptrend + red candle (close < open)
+      closing BELOW previous 3H candle (close < prev_close).
+    - Returns: (sentiment: 'BULLISH'|'BEARISH'|'NEUTRAL', is_valid: bool, reason: str)
+    """
+    if not ohlc_3h or not prev_3h:
+        return "NEUTRAL", False, "Missing 3H OHLC data"
+
+    try:
+        c_open = float(ohlc_3h["open"])
+        c_close = float(ohlc_3h["close"])
+        p_open = float(prev_3h.get("open", 0.0))
+        p_close = float(prev_3h["close"])
+    except (KeyError, ValueError, TypeError) as err:
+        return "NEUTRAL", False, f"Invalid 3H OHLC values: {err}"
+
+    if underlying_trend == "DOWNTREND":
+        is_green = c_close > c_open
+        closed_above = c_close > p_close
+        if is_green and closed_above:
+            return (
+                "BULLISH",
+                True,
+                f"3H Bullish Reversal: close ({c_close:.2f}) > prev_close ({p_close:.2f}) following continuous downtrend",
+            )
+        return (
+            "NEUTRAL",
+            False,
+            f"3H candle failed bullish reversal criteria (green={is_green}, closed_above={closed_above})",
+        )
+
+    elif underlying_trend == "UPTREND":
+        is_red = c_close < c_open
+        closed_below = c_close < p_close
+        if is_red and closed_below:
+            return (
+                "BEARISH",
+                True,
+                f"3H Bearish Reversal: close ({c_close:.2f}) < prev_close ({p_close:.2f}) following continuous uptrend",
+            )
+        return (
+            "NEUTRAL",
+            False,
+            f"3H candle failed bearish reversal criteria (red={is_red}, closed_below={closed_below})",
+        )
+
+    return "NEUTRAL", False, f"Underlying not in continuous trend (trend={underlying_trend})"
+

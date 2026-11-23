@@ -1256,7 +1256,7 @@ ANALYSIS (ordered):
 1. OI pattern from Δ above — fresh positioning or unwinding?
 2. Price confirms/contradicts OI? Near S/R/Pain?
 3. Persistent across OI HISTORY, or one-scan noise?
-4. Entry timing: 3H ({_c3}) breakout only (ignore 1H {_c1} for entries)
+4. Entry timing: 3H ({_c3}) reversal (downtrend+green close > prev_close / uptrend+red close < prev_close) or 2x OI continuation breakout (ignore 1H {_c1} for entries)
 5. Macro catalyst? (EIA/RBI/OPEC/expiry)
 6. Confidence: count [OI, price, news] agreement
    3/3→80-95 | 2/3→60-75 | 1/3→35-55 | 0/3→NO_TRADE

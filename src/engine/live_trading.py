@@ -2013,11 +2013,17 @@ def run_live_timeframe_strategy(
         if (
             signal_step
             and not signal_step.passed
-            and "No 3H breakout detected" in signal_step.reason
+            and any(
+                phrase in signal_step.reason
+                for phrase in (
+                    "No 3H breakout detected",
+                    "No 3H reversal or breakout detected",
+                )
+            )
         ):
             return {
                 "action": "SKIPPED",
-                "reason": "No 3H breakout trigger detected",
+                "reason": "No 3H reversal or breakout trigger detected",
             }
         if (
             signal_step

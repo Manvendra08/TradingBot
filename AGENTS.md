@@ -63,7 +63,7 @@
 
 ## Timeframe Role Separation (strict — do not cross-use)
 
-- **3H candles**: entry timing ONLY — breakout/breakdown confirmation combined with OI buildup classification. Never used for trend/signal generation.
+- **3H candles**: entry timing ONLY — evaluates dual paths: (1) dedicated reversal entry (requires underlying continuous downtrend/uptrend + close above/below previous 3H candle), alongside (2) high-conviction continuation breakout (requires breakout beyond previous 3H high/low + 2x OI differential multiplier via `TF_CONTINUATION_OI_MULTIPLIER`). Never used for trend/signal generation.
 - **1H candles**: exit timing ONLY — strategy-level exit trigger. Never used for entries, trend, or signal generation.
 - 3H and 1H are **NOT** cross-checked against each other. They serve independent, non-overlapping functions.
 

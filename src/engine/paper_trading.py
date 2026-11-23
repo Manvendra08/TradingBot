@@ -1848,13 +1848,14 @@ def run_timeframe_strategy(
         if (
             signal_step
             and not signal_step.passed
-            and "No 3H breakout detected" in signal_step.reason
-        ):
-            return None
-        if (
-            signal_step
-            and not signal_step.passed
-            and "Missing or incomplete 3H candle data" in signal_step.reason
+            and any(
+                phrase in signal_step.reason
+                for phrase in (
+                    "No 3H breakout detected",
+                    "No 3H reversal or breakout detected",
+                    "Missing or incomplete 3H candle data",
+                )
+            )
         ):
             return None
 
@@ -1973,11 +1974,20 @@ def run_timeframe_strategy(
         sl_premium = sl_underlying
         target_premium = None
 
-    reason_str = (
-        f"timeframe entry | 3H close {c_3h_close:.2f} > p3H_high {p_3h_high:.2f} | level {pyramid_level}"
-        if direction == "LONG"
-        else f"timeframe entry | 3H close {c_3h_close:.2f} < p3H_low {p_3h_low:.2f} | level {pyramid_level}"
-    )
+    entry_mode = pipeline_ctx.scan_context.get("_entry_mode", "CONTINUATION_BREAKOUT")
+    if entry_mode == "REVERSAL":
+        p_3h_close = float(prev_3h.get("close", 0.0))
+        reason_str = (
+            f"timeframe reversal entry | 3H close {c_3h_close:.2f} > p3H_close {p_3h_close:.2f} after downtrend | level {pyramid_level}"
+            if direction == "LONG"
+            else f"timeframe reversal entry | 3H close {c_3h_close:.2f} < p3H_close {p_3h_close:.2f} after uptrend | level {pyramid_level}"
+        )
+    else:
+        reason_str = (
+            f"timeframe entry | 3H close {c_3h_close:.2f} > p3H_high {p_3h_high:.2f} | level {pyramid_level}"
+            if direction == "LONG"
+            else f"timeframe entry | 3H close {c_3h_close:.2f} < p3H_low {p_3h_low:.2f} | level {pyramid_level}"
+        )
 
     # Phase 0: Capture ML feature snapshot at trade-open time
     ml_features = _build_ml_feature_snapshot(ctx, ai_verdict)

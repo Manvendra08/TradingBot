@@ -457,12 +457,25 @@ def _payload_from_closed_bars(
         except Exception:
             pass
 
+    prev_prev_ohlc = None
+    if len(closed) >= 3 * aggregate_count:
+        pp_selected = closed[-3 * aggregate_count : -2 * aggregate_count]
+        try:
+            pp_o = float(pp_selected[0][1]["Open"])
+            pp_h = max(float(item[1]["High"]) for item in pp_selected)
+            pp_l = min(float(item[1]["Low"]) for item in pp_selected)
+            pp_c = float(pp_selected[-1][1]["Close"])
+            prev_prev_ohlc = {"open": pp_o, "high": pp_h, "low": pp_l, "close": pp_c}
+        except Exception:
+            pass
+
     start_dt = selected[0][0]
     end_dt = selected[-1][0] + timedelta(minutes=bar_minutes)
     return {
         "sentiment": _sentiment(o, c, h, l),
         "ohlc": {"open": o, "high": h, "low": l, "close": c},
         "prev_ohlc": prev_ohlc,
+        "prev_prev_ohlc": prev_prev_ohlc,
         "bar_start_utc": start_dt.isoformat(),
         "bar_end_utc": end_dt.isoformat(),
     }
@@ -605,6 +618,16 @@ def _payload_from_grid_bars(agg_bars: list[dict]) -> dict | None:
             "close": prev_bar["Close"],
         }
 
+    prev_prev_ohlc = None
+    if len(agg_bars) >= 3:
+        pp_bar = agg_bars[-3]
+        prev_prev_ohlc = {
+            "open": pp_bar["Open"],
+            "high": pp_bar["High"],
+            "low": pp_bar["Low"],
+            "close": pp_bar["Close"],
+        }
+
     start_dt = last_bar["_slot_start"].astimezone(timezone.utc)
     end_dt = last_bar["_slot_end"].astimezone(timezone.utc)
 
@@ -612,6 +635,7 @@ def _payload_from_grid_bars(agg_bars: list[dict]) -> dict | None:
         "sentiment": _sentiment(o, c, h, l),
         "ohlc": {"open": o, "high": h, "low": l, "close": c},
         "prev_ohlc": prev_ohlc,
+        "prev_prev_ohlc": prev_prev_ohlc,
         "bar_start_utc": start_dt.isoformat(),
         "bar_end_utc": end_dt.isoformat(),
     }
@@ -1026,6 +1050,15 @@ def _fetch_local_ohlc_from_db(base_symbol: str, tf: str) -> Optional[dict]:
                             "high": prev_b["High"],
                             "low": prev_b["Low"],
                             "close": prev_b["Close"],
+                        }
+
+                    if len(bars_for_atr) >= 3:
+                        prev_prev_b = bars_for_atr[-3]
+                        result["prev_prev_ohlc"] = {
+                            "open": prev_prev_b.get("Open", prev_prev_b["Close"]),
+                            "high": prev_prev_b["High"],
+                            "low": prev_prev_b["Low"],
+                            "close": prev_prev_b["Close"],
                         }
 
                     if len(bars_for_atr) >= 15:

@@ -123,6 +123,7 @@ alerts/digest.py + alerts/heavyweight_digest.py -> telegram_dispatcher.py
   - **TIMEFRAME:** 3H breakout entries, 1H crossover exits.
   - **TFSS (Trend-Following Short Strangle):** Multi-tranche premium selling (up to 6 legs) tracked by `leg_group_id` with dynamic lot scaling (`50% -> 30% -> 20%`).
   - **MULTILEG:** Multi-leg short options selling (Iron Condor, Strangle, Straddle, Spreads, Jade Lizard).
+  - **TIMEFRAME:** 3H entry / 1H exit with dual entry paths: (1) dedicated reversal entry (requires underlying continuous trend + close above/below previous 3H candle) and (2) high-conviction continuation breakout (requires 3H range breakout + 2x OI differential multiplier via `TF_CONTINUATION_OI_MULTIPLIER`).
 - **Centralized Broker Authorization Gate (`src/engine/broker_gate.py`):**
   - All live Kite executions (entry, exit, adjust, reconcile) route through `authorize_broker_execution`.
   - Strictly fail-closed: Enforces shadow mode, broker disabled switch, emergency pause, market open hours, and symbol whitelists.
