@@ -30,53 +30,74 @@ def run():
     nifty_tok = client.resolve_instrument_token("NIFTY") or 256265
     nifty_daily = client.get_historical_candles(nifty_tok, interval="day", from_date=from_date, to_date=now_dt)
 
-    # 1. First pass: collect candles and 20d returns
-    data_map = {}
+    drop_counts = {
+        "NO_CANDLES": 0,
+        "BIAS_NEUTRAL": 0,
+        "NO_PERMISSION": 0,
+        "LOW_SCORE": 0,
+        "NO_REVERSAL": 0,
+        "GEOMETRY_FAIL": 0,
+        "SIZING_FAIL": 0,
+        "ARMED": 0,
+    }
+
+    # Pass 1: returns
+    stock_map = {}
     returns_20d = []
     for c in u:
         c_tok = client.resolve_instrument_token(c.symbol)
         if not c_tok:
+            drop_counts["NO_CANDLES"] += 1
             continue
         candles = client.get_historical_candles(c_tok, interval="day", from_date=from_date, to_date=now_dt)
         if not candles or len(candles) < 25:
+            drop_counts["NO_CANDLES"] += 1
             continue
-        # Also get futures candles for OI
-        f_candles = client.get_historical_candles(c.token, interval="day", from_date=from_date, to_date=now_dt)
-        oi_series = [b.get("oi", 0) for b in f_candles] if f_candles else []
-        closes = [b["close"] for b in candles]
+        closes = [float(b["close"]) for b in candles]
         ret_20d = (closes[-1] - closes[-20]) / closes[-20] * 100.0 if len(closes) >= 20 and closes[-20] > 0 else 0.0
         returns_20d.append(ret_20d)
-        data_map[c.symbol] = {
-            "contract": c,
-            "candles": candles,
-            "oi_series": oi_series,
-            "ret_20d": ret_20d,
-        }
-        if len(data_map) >= 20: # Test on first 20 for diagnostic
-            break
+        stock_map[c.symbol] = (c, candles)
 
-    print(f"Processed {len(data_map)} sample stocks. Computing features with universe returns...")
+    print(f"Candles loaded for {len(stock_map)} stocks. Evaluating pipeline dropoffs...")
     from src.stockfut.setups import stock_bias, bias_label, matrix_permission, is_daily_reversal, calculate_setup_score
-    from src.stockfut.levels import build_zones
+    from src.stockfut.levels import build_zones, shift_zones
+    from src.engine.trade_plan import calculate_future_sl_target
+    from src.engine.capital_allocator import calculate_future_lots
 
-    for sym, d in list(data_map.items())[:3]:
-        print(f"OI series for {sym} (len={len(d['oi_series'])}): {d['oi_series'][-5:]}")
-        feat = compute_features(
-            sym,
-            d["candles"],
-            index_daily=nifty_daily,
-            universe_20d_returns=returns_20d,
-            combined_oi_daily=d["oi_series"],
-        )
+    armed_list = []
+    reversal_candidates = []
+
+    for sym, (c, candles) in stock_map.items():
+        feat = compute_features(sym, candles, index_daily=nifty_daily, universe_20d_returns=returns_20d)
         if not feat:
             continue
         b_score = stock_bias(feat)
         b_lbl = bias_label(b_score)
-        score = calculate_setup_score(feat, b_lbl, "NEUTRAL")
-        atr = float(feat.get("atr14", 10.0))
-        zones = build_zones(d["candles"], atr=atr)
+        if b_lbl == "NEUTRAL":
+            drop_counts["BIAS_NEUTRAL"] += 1
+            continue
         perm = matrix_permission(b_lbl, "NEUTRAL")
-        print(f"{sym}: bias={b_lbl}({b_score}), score={score}, perm={perm}, OI_flow={feat.get('oi_flow_20d')}, RS={feat.get('rs_rank_index')}")
+        if not perm:
+            drop_counts["NO_PERMISSION"] += 1
+            continue
+        side, min_score = perm
+        score = calculate_setup_score(feat, b_lbl, "NEUTRAL")
+        if score < min_score:
+            drop_counts["LOW_SCORE"] += 1
+            continue
+        atr = float(feat.get("atr14", 10.0))
+        zones = build_zones(candles, atr=atr)
+        rev = is_daily_reversal(side=side, daily=candles, zones=zones, atr=atr, oi_flow_20d=feat.get("oi_flow_20d", "NONE"))
+        if not rev:
+            drop_counts["NO_REVERSAL"] += 1
+            reversal_candidates.append((sym, side, score, b_lbl))
+            continue
+        drop_counts["ARMED"] += 1
+        armed_list.append((sym, side, score, rev))
+
+    print("Dropoff Summary:", drop_counts)
+    print("Candidates that passed Bias+Permission+Score but missed reversal touch/close:", reversal_candidates[:10])
+    print("Armed Setups:", armed_list)
 
 if __name__ == "__main__":
     run()
