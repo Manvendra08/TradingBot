@@ -608,6 +608,7 @@ CREATE TABLE IF NOT EXISTS stockfut_order_intents (
 
 CREATE INDEX IF NOT EXISTS idx_stockfut_trades_status ON stockfut_trades (status, mode);
 CREATE INDEX IF NOT EXISTS idx_stockfut_watchlist_date ON stockfut_watchlist (scan_date, status);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_stockfut_watchlist_date_symbol ON stockfut_watchlist (scan_date, symbol);
 CREATE INDEX IF NOT EXISTS idx_stockfut_decisions_sym ON stockfut_decisions (symbol, timestamp);
 
 """
@@ -860,6 +861,8 @@ _MIGRATIONS = [
     ("M157_create_stockfut_decisions", "CREATE TABLE IF NOT EXISTS stockfut_decisions (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL, kind TEXT NOT NULL, symbol TEXT NOT NULL, payload_json TEXT NOT NULL, snapshot_id TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)"),
     ("M158_create_stockfut_order_intents", "CREATE TABLE IF NOT EXISTS stockfut_order_intents (id INTEGER PRIMARY KEY AUTOINCREMENT, intent_id TEXT UNIQUE NOT NULL, order_tag TEXT NOT NULL, symbol TEXT NOT NULL, tradingsymbol TEXT NOT NULL, side TEXT NOT NULL, quantity INTEGER NOT NULL, order_type TEXT NOT NULL, price REAL, status TEXT DEFAULT 'PENDING', broker_order_id TEXT, rejection_reason TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)"),
     ("M159_idx_stockfut", "CREATE INDEX IF NOT EXISTS idx_stockfut_trades_status ON stockfut_trades (status, mode)"),
+    ("M160_dedup_stockfut_watchlist", "DELETE FROM stockfut_watchlist WHERE id NOT IN (SELECT MAX(id) FROM stockfut_watchlist GROUP BY scan_date, symbol)"),
+    ("M161_idx_stockfut_watchlist_unique", "CREATE UNIQUE INDEX IF NOT EXISTS uq_stockfut_watchlist_date_symbol ON stockfut_watchlist (scan_date, symbol)"),
 ]
 
 
@@ -3908,53 +3911,115 @@ def close_stockfut_trade(
 
 
 def insert_stockfut_watchlist(row: dict) -> int:
-    """Insert a watchlist row."""
+    """Insert or update a watchlist row for (scan_date, symbol)."""
     with get_conn() as conn:
-        cursor = conn.execute(
-            """
-            INSERT INTO stockfut_watchlist (
-                scan_date, scan_time, symbol, tradingsymbol, expiry,
-                side, bias, score, planned_entry, sl, t1, t2, lots,
-                lot_size, r_multiple, status, skip_reason, snapshot_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                row["scan_date"],
-                row["scan_time"],
-                row["symbol"],
-                row["tradingsymbol"],
-                row["expiry"],
-                row["side"],
-                row["bias"],
-                int(row["score"]),
-                float(row["planned_entry"]),
-                float(row["sl"]),
-                float(row["t1"]),
-                float(row["t2"]),
-                int(row["lots"]),
-                int(row["lot_size"]),
-                float(row["r_multiple"]),
-                row.get("status", "ARMED"),
-                row.get("skip_reason"),
-                row.get("snapshot_id"),
-            ),
-        )
-        return int(cursor.lastrowid)
+        existing = conn.execute(
+            "SELECT id, status FROM stockfut_watchlist WHERE scan_date = ? AND symbol = ?",
+            (row["scan_date"], row["symbol"]),
+        ).fetchone()
+        if existing:
+            row_id = existing["id"]
+            if existing["status"] == "ARMED":
+                conn.execute(
+                    """
+                    UPDATE stockfut_watchlist SET
+                        scan_time = ?,
+                        tradingsymbol = ?,
+                        expiry = ?,
+                        side = ?,
+                        bias = ?,
+                        score = ?,
+                        planned_entry = ?,
+                        sl = ?,
+                        t1 = ?,
+                        t2 = ?,
+                        lots = ?,
+                        lot_size = ?,
+                        r_multiple = ?,
+                        snapshot_id = ?,
+                        status = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        row["scan_time"],
+                        row["tradingsymbol"],
+                        row["expiry"],
+                        row["side"],
+                        row["bias"],
+                        int(row["score"]),
+                        float(row["planned_entry"]),
+                        float(row["sl"]),
+                        float(row["t1"]),
+                        float(row["t2"]),
+                        int(row["lots"]),
+                        int(row["lot_size"]),
+                        float(row["r_multiple"]),
+                        row.get("snapshot_id"),
+                        row.get("status", "ARMED"),
+                        row_id,
+                    ),
+                )
+            return int(row_id)
+        else:
+            cursor = conn.execute(
+                """
+                INSERT INTO stockfut_watchlist (
+                    scan_date, scan_time, symbol, tradingsymbol, expiry,
+                    side, bias, score, planned_entry, sl, t1, t2, lots,
+                    lot_size, r_multiple, status, skip_reason, snapshot_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row["scan_date"],
+                    row["scan_time"],
+                    row["symbol"],
+                    row["tradingsymbol"],
+                    row["expiry"],
+                    row["side"],
+                    row["bias"],
+                    int(row["score"]),
+                    float(row["planned_entry"]),
+                    float(row["sl"]),
+                    float(row["t1"]),
+                    float(row["t2"]),
+                    int(row["lots"]),
+                    int(row["lot_size"]),
+                    float(row["r_multiple"]),
+                    row.get("status", "ARMED"),
+                    row.get("skip_reason"),
+                    row.get("snapshot_id"),
+                ),
+            )
+            return int(cursor.lastrowid)
 
 
 def get_latest_stockfut_watchlist(scan_date: str | None = None) -> list[dict]:
-    """Retrieve the latest watchlist rows."""
+    """Retrieve the latest watchlist rows, deduplicated by symbol."""
     with get_read_conn() as conn:
         if scan_date:
             rows = conn.execute(
-                "SELECT * FROM stockfut_watchlist WHERE scan_date = ? ORDER BY score DESC",
-                (scan_date,),
+                """
+                SELECT * FROM stockfut_watchlist
+                WHERE scan_date = ?
+                AND id IN (
+                    SELECT MAX(id) FROM stockfut_watchlist
+                    WHERE scan_date = ?
+                    GROUP BY symbol
+                )
+                ORDER BY score DESC
+                """,
+                (scan_date, scan_date),
             ).fetchall()
         else:
             rows = conn.execute(
                 """
                 SELECT * FROM stockfut_watchlist
                 WHERE scan_date = (SELECT MAX(scan_date) FROM stockfut_watchlist)
+                AND id IN (
+                    SELECT MAX(id) FROM stockfut_watchlist
+                    WHERE scan_date = (SELECT MAX(scan_date) FROM stockfut_watchlist)
+                    GROUP BY symbol
+                )
                 ORDER BY score DESC
                 """
             ).fetchall()

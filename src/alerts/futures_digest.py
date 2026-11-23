@@ -50,11 +50,13 @@ def build_eod_watchlist_digest(
             t1 = row.get("t1_price", 0.0)
             risk = row.get("risk_per_lot", 0.0)
             lot = row.get("lot_size", 0)
+            lots = row.get("lots", 0)
+            lots_str = f"Lots: {lots} (Size: {lot})" if lots else f"Lot Size: {lot}"
 
             lines.append(
-                f"{icon} <b>{sym}</b> ({direction} • {setup}) [Score {score}/10]\n"
+                f"{icon} <b>{sym}</b> ({direction} • {setup}) [Score {score}/100]\n"
                 f"   Entry: ₹{entry:.2f} | SL: ₹{sl:.2f} | T1: ₹{t1:.2f}\n"
-                f"   Lot: {lot} | Risk/Lot: ₹{risk:,.0f}"
+                f"   {lots_str} | Risk/Lot: ₹{risk:,.0f}"
             )
 
     lines.append("──────────────────────────")

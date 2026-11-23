@@ -313,6 +313,7 @@ def job_stockfut_eod_scan() -> None:
                     "t2_price": w.t2,
                     "risk_per_lot": (w.planned_entry - w.sl if w.side == "LONG" else w.sl - w.planned_entry) * w.lot_size,
                     "lot_size": w.lot_size,
+                    "lots": w.lots,
                     "status": w.status,
                 }
                 for w in top_watchlist
