@@ -1,9 +1,10 @@
 # NSEBOT Python dependencies
 # Install: python -m pip install -r "C:\Users\manve\Downloads\NSEBOT\requirements.txt"
 
-# Core HTTP + timezone
+# Core HTTP + timezone + scheduler
 requests>=2.31.0
 pytz>=2024.1
+apscheduler>=3.10.0
 
 # Environment / secrets
 python-dotenv>=1.0.1
