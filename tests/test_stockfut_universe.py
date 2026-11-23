@@ -35,37 +35,38 @@ def test_banned_and_event_names_excluded():
     assert "INFY" in symbols
 
 
-def test_near_month_used_only_with_12_sessions_left():
+def test_near_month_used_until_expiry_day():
     mock_client = MagicMock()
-    # Contract 1: near month expiry 2026-11-26 (11 sessions from 2026-11-11)
-    # Contract 2: next month expiry 2026-12-31 (36 sessions)
+    # Contract 1: near month expiry 2026-11-26
+    # Contract 2: next month expiry 2026-12-31
     mock_client.list_stock_futures.return_value = [
         {"symbol": "RELIANCE", "tradingsymbol": "RELIANCE26NOVFUT", "expiry": "2026-11-26", "lot_size": 250},
         {"symbol": "RELIANCE", "tradingsymbol": "RELIANCE26DECFUT", "expiry": "2026-12-31", "lot_size": 250},
     ]
 
     builder = UniverseBuilder(kite_client=mock_client)
-    # With asof 2026-11-11, sessions to Nov 26 = 11 sessions (< 12) -> should pick next month (DEC)
-    res_11 = builder.build_universe(
-        asof=date(2026, 11, 11),
-        capital=10000000.0,
-        ban_list=set(),
-        mwpl_dict={},
-        events_dict={},
-    )
-    assert len(res_11) == 1
-    assert res_11[0].tradingsymbol == "RELIANCE26DECFUT"
 
-    # With asof 2026-11-10, sessions to Nov 26 = 12 sessions (>= 12) -> should pick near month (NOV)
-    res_12 = builder.build_universe(
-        asof=date(2026, 11, 10),
+    # 1. Day before expiry (2026-11-25) -> should pick current month (NOV)
+    res_before = builder.build_universe(
+        asof=date(2026, 11, 25),
         capital=10000000.0,
         ban_list=set(),
         mwpl_dict={},
         events_dict={},
     )
-    assert len(res_12) == 1
-    assert res_12[0].tradingsymbol == "RELIANCE26NOVFUT"
+    assert len(res_before) == 1
+    assert res_before[0].tradingsymbol == "RELIANCE26NOVFUT"
+
+    # 2. Expiry day itself (2026-11-26) -> should pick next month (DEC)
+    res_expiry = builder.build_universe(
+        asof=date(2026, 11, 26),
+        capital=10000000.0,
+        ban_list=set(),
+        mwpl_dict={},
+        events_dict={},
+    )
+    assert len(res_expiry) == 1
+    assert res_expiry[0].tradingsymbol == "RELIANCE26DECFUT"
 
 
 def test_unsizable_two_lots_at_2atr_excluded():

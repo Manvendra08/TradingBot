@@ -138,7 +138,8 @@ class UniverseBuilder:
             if not sorted_contracts:
                 continue
 
-            # Contract selection: Near month if >= 12 sessions left, else Next month
+            # Contract selection: Near (current) month if >= min_sessions_near (default: 1 session left, i.e. before expiry day)
+            # On Expiry Day (asof == near_expiry_date or near_sessions < min_sessions_near), trade Next Month contract.
             chosen_contract: Optional[Dict[str, Any]] = None
             chosen_sessions = 0
 
@@ -149,7 +150,7 @@ class UniverseBuilder:
             except Exception:
                 near_sessions = 0
 
-            if near_sessions >= min_sessions_near:
+            if near_sessions >= min_sessions_near and near_expiry_date > asof:
                 chosen_contract = near_contract
                 chosen_sessions = near_sessions
             elif len(sorted_contracts) > 1:
@@ -161,6 +162,9 @@ class UniverseBuilder:
                     next_sessions = 0
                 chosen_contract = next_contract
                 chosen_sessions = next_sessions
+            else:
+                chosen_contract = near_contract
+                chosen_sessions = near_sessions
 
             if not chosen_contract:
                 log.debug("[%s] Excluded: NO_ELIGIBLE_EXPIRY", sym_upper)

@@ -56,9 +56,8 @@ def test_t1_books_floor_half_and_moves_stop_to_entry_minus_quarter_atr():
     assert dec.new_sl == 1292.0
 
 
-def test_expiry_exit_5_sessions_before():
-    today = date(2026, 11, 23)
-    expiry = "2026-11-26"  # 3 trading sessions away (<= 5)
+def test_expiry_exit_on_expiry_day():
+    expiry = "2026-11-26"  # Expiry date
     trade = {
         "symbol": "SBIN",
         "side": "LONG",
@@ -73,11 +72,18 @@ def test_expiry_exit_5_sessions_before():
         "status": "OPEN",
     }
     market = {"price": 810.0, "open": 810.0, "high": 815.0, "low": 808.0}
-    now_dt = datetime(2026, 11, 23, 9, 30, tzinfo=IST)
-    dec = evaluate_future_exit(trade, market, now=now_dt)
-    assert dec is not None
-    assert dec.rule == "EXPIRY"
-    assert dec.action == "EXIT_ALL"
+
+    # 1. 3 sessions before expiry (2026-11-23) -> Should NOT exit on EXPIRY rule
+    now_dt_before = datetime(2026, 11, 23, 9, 30, tzinfo=IST)
+    dec_before = evaluate_future_exit(trade, market, now=now_dt_before)
+    assert dec_before is None
+
+    # 2. On expiry day (2026-11-26) -> Must exit to avoid physical delivery
+    now_dt_expiry = datetime(2026, 11, 26, 15, 10, tzinfo=IST)
+    dec_expiry = evaluate_future_exit(trade, market, now=now_dt_expiry)
+    assert dec_expiry is not None
+    assert dec_expiry.rule == "EXPIRY"
+    assert dec_expiry.action == "EXIT_ALL"
 
 
 def test_banned_held_name_exits_only():

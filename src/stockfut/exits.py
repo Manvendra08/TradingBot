@@ -44,6 +44,7 @@ def evaluate_future_exit(
     regime: Optional[str] = None,
     last_daily_bar: Optional[Dict[str, Any]] = None,
     daily_support_level: Optional[float] = None,
+    cfg: Optional[Dict[str, Any]] = None,
 ) -> Optional[ExitDecision]:
     """
     Evaluate exit rules in strict priority order.
@@ -51,6 +52,14 @@ def evaluate_future_exit(
     """
     now_dt = now or datetime.now(IST)
     today = now_dt.date()
+
+    if cfg is None:
+        try:
+            from config.stockfut_loader import load_stockfut_config
+            cfg = load_stockfut_config()
+        except Exception:
+            cfg = {}
+    expiry_squareoff_sessions = int(cfg.get("expiry_squareoff_sessions", 0))
 
     symbol = str(trade.get("symbol", "")).upper()
     side = str(trade.get("side", "LONG")).upper()
@@ -225,18 +234,24 @@ def evaluate_future_exit(
         except Exception:
             pass
 
-    # 10. EXPIRY (Exit 5 sessions before expiry to avoid physical settlement margin spikes)
+    # 10. EXPIRY (Exit on expiry day before physical delivery close)
     expiry_str = str(trade.get("expiry", ""))
     if expiry_str:
         try:
             expiry_date = parse_date(expiry_str)
             sessions_to_exp = count_trading_sessions(today, expiry_date)
-            if sessions_to_exp <= 5:
+            if today >= expiry_date or sessions_to_exp <= expiry_squareoff_sessions:
+                time_now = now_dt.time()
+                is_expiry_day = (today >= expiry_date or sessions_to_exp == 0)
+                if is_expiry_day and time_now >= datetime.strptime("15:00", "%H:%M").time():
+                    reason = f"Expiry day mandatory square-off at {time_now.strftime('%H:%M')} IST (avoid physical delivery)"
+                else:
+                    reason = f"Expiry reached: {sessions_to_exp} sessions to expiry (threshold <= {expiry_squareoff_sessions}); exit to avoid physical delivery"
                 return ExitDecision(
                     rule="EXPIRY",
                     action="EXIT_ALL",
                     lots=remaining_lots,
-                    reason=f"Only {sessions_to_exp} sessions to expiry (<= 5); exit to prevent delivery margin",
+                    reason=reason,
                 )
         except Exception:
             pass
