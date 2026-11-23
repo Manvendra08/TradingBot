@@ -25,13 +25,57 @@ def run():
     builder = UniverseBuilder()
     u = builder.build_universe(date.today())
     print(f"Total universe: {len(u)}")
-    for c in u[:5]:
-        print(f"Contract: {c.symbol} | {c.tradingsymbol} | token={c.token}")
-        f_candles = client.get_historical_candles(instrument_token=c.token, interval="day", from_date=from_date, to_date=now_dt)
-        print(f"  Futures candles: {len(f_candles)} bars")
-        if f_candles:
-            print(f"  Last candle keys: {list(f_candles[-1].keys())}")
-            print(f"  Last OI: {f_candles[-1].get('oi')}")
+
+    # Fetch Nifty daily candles
+    nifty_tok = client.resolve_instrument_token("NIFTY") or 256265
+    nifty_daily = client.get_historical_candles(nifty_tok, interval="day", from_date=from_date, to_date=now_dt)
+
+    # 1. First pass: collect candles and 20d returns
+    data_map = {}
+    returns_20d = []
+    for c in u:
+        c_tok = client.resolve_instrument_token(c.symbol)
+        if not c_tok:
+            continue
+        candles = client.get_historical_candles(c_tok, interval="day", from_date=from_date, to_date=now_dt)
+        if not candles or len(candles) < 25:
+            continue
+        # Also get futures candles for OI
+        f_candles = client.get_historical_candles(c.token, interval="day", from_date=from_date, to_date=now_dt)
+        oi_series = [b.get("oi", 0) for b in f_candles] if f_candles else []
+        closes = [b["close"] for b in candles]
+        ret_20d = (closes[-1] - closes[-20]) / closes[-20] * 100.0 if len(closes) >= 20 and closes[-20] > 0 else 0.0
+        returns_20d.append(ret_20d)
+        data_map[c.symbol] = {
+            "contract": c,
+            "candles": candles,
+            "oi_series": oi_series,
+            "ret_20d": ret_20d,
+        }
+        if len(data_map) >= 20: # Test on first 20 for diagnostic
+            break
+
+    print(f"Processed {len(data_map)} sample stocks. Computing features with universe returns...")
+    from src.stockfut.setups import stock_bias, bias_label, matrix_permission, is_daily_reversal, calculate_setup_score
+    from src.stockfut.levels import build_zones
+
+    for sym, d in data_map.items():
+        feat = compute_features(
+            sym,
+            d["candles"],
+            index_daily=nifty_daily,
+            universe_20d_returns=returns_20d,
+            combined_oi_daily=d["oi_series"],
+        )
+        if not feat:
+            continue
+        b_score = stock_bias(feat)
+        b_lbl = bias_label(b_score)
+        score = calculate_setup_score(feat, b_lbl, "NEUTRAL")
+        atr = float(feat.get("atr14", 10.0))
+        zones = build_zones(d["candles"], atr=atr)
+        perm = matrix_permission(b_lbl, "NEUTRAL")
+        print(f"{sym}: bias={b_lbl}({b_score}), score={score}, perm={perm}, OI_flow={feat.get('oi_flow_20d')}, RS={feat.get('rs_rank_index')}")
 
 if __name__ == "__main__":
     run()
