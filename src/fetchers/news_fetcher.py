@@ -28,6 +28,7 @@ from config.settings import IST, NEWSAPI_KEY as _NEWSAPI_KEY
 
 # Map symbols to NewsAPI search queries (Commodities only — NSE/BSE use constituent sentiment)
 _SYMBOL_NEWSAPI_QUERIES: dict[str, str] = {
+    "NATURALGAS": "(\"Natural Gas\" OR \"Henry Hub\") AND (EIA OR storage OR weather OR LNG OR prices OR MCX)",
     "GOLD": "\"Gold\" AND (MCX OR commodity)",
     "SILVER": "\"Silver\" AND (MCX OR commodity)",
     "CRUDEOIL": "\"Crude Oil\" AND (MCX OR commodity)",
@@ -102,7 +103,24 @@ import re
 # In injection season (Apr-Oct), storage builds are normal; builds below expectations
 # or below the 5-year average are bullish (surplus erosion).
 
+# Price action overrides (authoritative direction of price movement)
+_NG_PRICE_BEARISH = [
+    r"(?:natural\s+gas|gas|prices?|futures?|nymex|mcx|henry\s+hub)\s+(?:tumbles?|tumbled|plunges?|plunged|slumps?|slumped|slides?|slid|drops?|dropped|fell|falls?|crashes?|crashed|tanks?|tanked|sinks?|sank)",
+    r"(?:tumbles?|tumbled|plunges?|plunged|slumps?|slumped|slides?|slid|drops?|dropped|fell|falls?|crashes?|crashed|tanks?|tanked|sinks?|sank)\s+(?:more than|over|by)?\s*\d+%",
+    r"(?:sharp|heavy|steep|severe)\s+(?:sell-off|selling|slide|drop|fall|decline|retreat)",
+    r"(?:long\s+unwinding|liquidation\s+pressure|bearish\s+breakdown)",
+    r"(?:cuts?|cut|slashes?|slashed|lowers?|lowered)\s+.*?(?:price\s+)?(?:forecast|target|outlook)",
+]
+
+_NG_PRICE_BULLISH = [
+    r"(?:natural\s+gas|gas|prices?|futures?|nymex|mcx|henry\s+hub)\s+(?:surges?|surged|jumps?|jumped|soars?|soared|climbs?|climbed|rallies|rallied|spikes?|spiked|gains?|gained|rises?|rose)",
+    r"(?:surges?|surged|jumps?|jumped|soars?|soared|climbs?|climbed|rallies|rallied|spikes?|spiked|gains?|gained|rises?|rose)\s+(?:more than|over|by)?\s*\d+%",
+    r"(?:bullish\s+breakout|covering\s+rally|short\s+squeeze|sharp\s+rebound)",
+    r"(?:raises?|raised|hikes?|hiked|lifts?|lifted)\s+.*?(?:price\s+)?(?:forecast|target|outlook)",
+]
+
 _NG_STORAGE_BULLISH = [
+    r"(?:storage|build|injection)\s+.*?below\s+(?:the\s+)?(?:five-year|5-year|consensus|forecast|average)",
     r"(?:storage|build|injection)\s+(?:misses?|below|smaller|trails?|lags?|underperforms?|less than)",
     r"(?:smaller|lesser|modest|meager|subdued|weak|lean)\s+(?:than expected|than average)?\s*(?:build|injection|addition)",
     r"(?:surplus|cushion)\s+(?:shrinks?|narrows?|erodes?|tightens?|slims?|declines?|contracts?)",
@@ -114,40 +132,67 @@ _NG_STORAGE_BULLISH = [
 ]
 
 _NG_STORAGE_BEARISH = [
+    r"(?:storage|build|injection)\s+.*?exceed(?:s|ed|ing)?\s+(?:the\s+)?(?:five-year|5-year|consensus|forecast|average)",
     r"(?:storage|build|injection)\s+(?:beats?|exceeds?|tops?|larger|surpasses?|higher than)",
     r"(?:heavier|massive|huge|strong|oversized|jumbo|monster)\s+(?:than expected|than average)?\s*(?:build|injection|addition)",
-    r"(?:surplus|cushion)\s+(?:swells?|grows?|widens?|expands?|balloons?|rises?|balloons?)",
+    r"(?:surplus|cushion)\s+(?:swells?|grows?|widens?|expands?|balloons?|rises?)",
     r"(?:glut|oversupply|abundant supply|record production)",
-    r"(?:production|output)\s+(?:record|rises?|jumps?|surges?|hits?\s+record|climbs?)",
-    r"(?:weak|slumping|lagging)\s+(?:feedgas|LNG exports?|cooling demand|heating demand)",
+    r"(?:production|output)\s+(?:record|rises?|jumps?|surges?|hits?\s+record|climbs?|raised)",
+    r"(?:raises?|raised|hikes?|hiked|lifts?|lifted|increases?|increased)\s+.*?(?:production|output)\s+forecast",
+    r"storage\s+.*?(?:above|higher than|exceeding)\s+.*?(?:five-year|5-year|seasonal|average)",
+    r"inventories\s+(?:above|exceeding)\s+(?:the\s+)?(?:seasonal|five-year|5-year)\s+average",
+    r"(?:ample|comfortable|record|high)\s+(?:domestic\s+)?(?:supplies|storage\s+levels?|inventories)\s+(?:continue\s+to\s+)?weigh",
+    r"(?:weak|slumping|lagging)\s+(?:feedgas|lng exports?|cooling demand|heating demand)",
+]
+
+_NG_DEMAND_BEARISH = [
+    r"(?:mild|milder|warm|warmer|above[- ]normal|unseasonabl[ey]\s+warm)\s+(?:weather|temperatures?|forecasts?|conditions?|outlook|trends?|pattern|winter)",
+    r"(?:weather|forecast|model)\s+(?:shifts?|turns?|reverses?|trends?)\s+(?:mild|warmer|bearish)",
+    r"(?:weak|slumping|lagging|falling|reduced|lower|soft|tepid|sluggish)\s+(?:heating\s+demand|cooling\s+demand|gas\s+demand|feedgas|consumption|demand)",
+    r"(?:heating|cooling|feedgas|gas)\s+demand\s+(?:drops?|falls?|plunges?|slumps?|dips?|declines?|evaporates?|contracts?)",
+    r"demand\s+(?:destruction|slump|weakness|plunge)",
+    r"(?:fewer|loss\s+of|reduced|lower)\s+(?:heating\s+degree\s+days|hdd|cooling\s+degree\s+days|cdd)",
 ]
 
 _NG_DEMAND_BULLISH = [
     r"demand\s+(?:rises?|increases?|grows?|climbs?|surges?|jumps?|soars?|spikes?)",
     r"(?:cold|freezing|winter|polar|arctic|icy)\s+(?:weather|forecast|snap|wave|blast|temperatures?)",
-    r"heating\s+(?:degree|demand|needs?|season|loads?)",
+    r"(?:higher|strong|robust|soaring|surging|spiking|rising|elevated|peak|boosted?)\s+heating\s+(?:demand|degree|needs?|loads?)",
+    r"heating\s+(?:demand|loads?|needs?)\s+(?:rises?|jumps?|soars?|spikes?|surges?|climbs?|increases?)",
     r"(?:cooling|heatwave|record heat|blistering)\s+(?:demand|wave|load|degrees?)",
-    r"(?:LNG|liquefied)\s+(?:exports?|demand|shipments?|cargoes?|feedgas)\s+(?:rises?|increases?|grow|climb|surge|jump|hit|record)",
+    r"(?:lng|liquefied)\s+(?:exports?|demand|shipments?|cargoes?|feedgas)\s+(?:rises?|increases?|grow|climb|surge|jump|hit|record)",
     r"(?:exports?|exporting)\s+(?:rises?|increases?|grows?|climbs?|surges?)",
-    r"(?:freeze|freezing|cold|winter)\s+(?:drives?|fuels?|boosts?|supports?|lifts?)\s+(?:prices?|demand|rall)",
+    r"(?:freeze|freezing|cold|winter)\s+(?:drives?|fuels?|boosts?|supports?|lifts?)\s+(?:prices?|demand|rally)",
 ]
 
 
 def _news_sentiment_score(title: str) -> int:
     t = (title or "").lower()
 
-    # 1. Specific contextual storage & physical balance overrides take precedence
-    for pat in _NG_STORAGE_BULLISH:
+    # 1. Authoritative price-action movements in the headline or text take top priority
+    for pat in _NG_PRICE_BEARISH:
+        if re.search(pat, t):
+            return -1
+    for pat in _NG_PRICE_BULLISH:
         if re.search(pat, t):
             return 1
+
+    # 2. Fundamental supply/demand/weather overrides
+    # Bearish physical signals take precedence over secondary context
     for pat in _NG_STORAGE_BEARISH:
         if re.search(pat, t):
             return -1
+    for pat in _NG_DEMAND_BEARISH:
+        if re.search(pat, t):
+            return -1
+    for pat in _NG_STORAGE_BULLISH:
+        if re.search(pat, t):
+            return 1
     for pat in _NG_DEMAND_BULLISH:
         if re.search(pat, t):
             return 1
 
-    # 2. Check for generic seasonal build mentions without qualifiers
+    # 3. Check for generic seasonal build mentions without qualifiers
     # In injection season (Apr-Oct), an injection on its own is neutral, NOT bearish!
     current_month = datetime.now(timezone.utc).month
     is_injection_season = 4 <= current_month <= 10
@@ -156,7 +201,7 @@ def _news_sentiment_score(title: str) -> int:
         if not re.search(r"(?:glut|oversupply|excess|plunge|crash)", t):
             return 0  # Neutral operational build
 
-    # 3. Standard dictionary word matching
+    # 4. Standard dictionary word matching
     score = 0
     for w in _POS_WORDS:
         if re.search(r'\b' + re.escape(w) + r'\b', t):
@@ -632,9 +677,9 @@ def fetch_news(symbol: str) -> dict:
             x_items = _fetch_x_nginews()
             primary_items = primary_items + te_items + x_items
 
-    # Step 2: Supplement with NewsAPI.org for commodity symbols (except NATURALGAS)
+    # Step 2: Supplement with NewsAPI.org for commodity symbols
     newsapi_items = []
-    if sym not in ("NATURALGAS", "NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"):
+    if sym not in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"):
         newsapi_items = _fetch_newsapi_news(sym)
 
     # Step 3: Merge — deduplicate by title (fuzzy), prefer primary source order
