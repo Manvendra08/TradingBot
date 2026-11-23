@@ -21,27 +21,16 @@ def run():
     now_dt = datetime.now(IST)
     from_date = now_dt - timedelta(days=120)
 
-    test_symbols = ["RELIANCE", "INFY", "TCS", "HDFCBANK", "SBIN", "TATASTEEL"]
-    for sym in test_symbols:
-        tok = client.resolve_instrument_token(sym)
-        if not tok:
-            print(f"{sym}: NO_TOKEN")
-            continue
-        candles = client.get_historical_candles(instrument_token=tok, interval="day", from_date=from_date, to_date=now_dt)
-        if not candles:
-            print(f"{sym}: NO_CANDLES for token {tok}")
-            continue
-        feat = compute_features(sym, candles)
-        if not feat:
-            print(f"{sym}: FEAT_FAILED")
-            continue
-        b_score = stock_bias(feat)
-        b_lbl = bias_label(b_score)
-        atr = float(feat.get("atr14", 10.0))
-        zones = build_zones(candles, atr=atr)
-        perm = matrix_permission(b_lbl, "NEUTRAL")
-        rev = is_daily_reversal(perm[0] if perm else "LONG", candles, zones, atr, feat.get("oi_flow_20d", "NONE")) if perm else None
-        print(f"{sym}: tok={tok}, bars={len(candles)}, bias={b_lbl}({b_score}), perm={perm}, rev={rev}, zones={len(zones)}")
+    builder = UniverseBuilder()
+    u = builder.build_universe(date.today())
+    print(f"Total universe: {len(u)}")
+    for c in u[:5]:
+        print(f"Contract: {c.symbol} | {c.tradingsymbol} | token={c.token}")
+        f_candles = client.get_historical_candles(instrument_token=c.token, interval="day", from_date=from_date, to_date=now_dt)
+        print(f"  Futures candles: {len(f_candles)} bars")
+        if f_candles:
+            print(f"  Last candle keys: {list(f_candles[-1].keys())}")
+            print(f"  Last OI: {f_candles[-1].get('oi')}")
 
 if __name__ == "__main__":
     run()
