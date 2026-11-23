@@ -73,7 +73,7 @@ try:
     import secrets
 
     import uvicorn
-    from fastapi import Depends, FastAPI, HTTPException, Query, status
+    from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
     from fastapi.responses import HTMLResponse, JSONResponse
     from fastapi.security import HTTPBasic, HTTPBasicCredentials
 except ImportError:
@@ -222,6 +222,15 @@ class GracefulDisconnectMiddleware:
 
 
 app.add_middleware(GracefulDisconnectMiddleware)
+
+from starlette.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 try:
@@ -6445,6 +6454,141 @@ def _supervise_ops_agent():
         except Exception as e:  # pragma: no cover - best effort supervisor
             log.error("ops_agent supervisor launch failed: %s", e)
         time.sleep(15)
+
+
+# ─── OpenAI-Compatible Antigravity Gateway for Browgent & External Agents ─────
+
+@app.get("/v1/models")
+async def list_v1_models(request: Request):
+    """Return available Antigravity models in standard OpenAI format."""
+    auth_header = request.headers.get("authorization", "")
+    token = auth_header.replace("Bearer ", "").strip() if auth_header.startswith("Bearer ") else ""
+    expected_key = os.environ.get("ANTIGRAVITY_GATEWAY_KEY", "sk-antigravity-gateway-manav-2026")
+    if token != expected_key:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+    return {
+        "object": "list",
+        "data": [
+            {"id": "gemini-3-flash", "object": "model", "owned_by": "antigravity"},
+            {"id": "gemini-3.8-flash", "object": "model", "owned_by": "antigravity"},
+            {"id": "gemini-2.5-flash", "object": "model", "owned_by": "antigravity"},
+            {"id": "anti", "object": "model", "owned_by": "antigravity"},
+        ]
+    }
+
+
+@app.post("/v1/chat/completions")
+async def chat_completions(request: Request):
+    """
+    OpenAI-compatible /v1/chat/completions proxy to Antigravity Cloud Code.
+    Does NOT affect NSEBOT internal execution, shares thread-safe AntigravityClient.
+    """
+    auth_header = request.headers.get("authorization", "")
+    token = auth_header.replace("Bearer ", "").strip() if auth_header.startswith("Bearer ") else ""
+    expected_key = os.environ.get("ANTIGRAVITY_GATEWAY_KEY", "sk-antigravity-gateway-manav-2026")
+    if token != expected_key:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+    model_req = body.get("model", "gemini-3-flash")
+    # Resolve aliases
+    if model_req in ("anti", "default", "gemini-3.8-flash"):
+        model_name = "gemini-3-flash"
+    else:
+        model_name = model_req
+
+    messages = body.get("messages", [])
+    if not messages:
+        raise HTTPException(status_code=400, detail="messages array is required")
+
+    system_instruction = None
+    user_prompt_parts = []
+
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        # Handle string content or multimodal content list
+        if isinstance(content, list):
+            text_items = [item.get("text", "") for item in content if isinstance(item, dict) and item.get("type") == "text"]
+            content = " ".join(text_items)
+        if role in ("system", "developer"):
+            if system_instruction:
+                system_instruction += "\n" + content
+            else:
+                system_instruction = content
+        elif role == "user":
+            user_prompt_parts.append(f"User: {content}")
+        elif role == "assistant":
+            user_prompt_parts.append(f"Assistant: {content}")
+
+    full_prompt = "\n\n".join(user_prompt_parts)
+    if not full_prompt and system_instruction:
+        full_prompt = system_instruction
+        system_instruction = None
+
+    try:
+        from src.engine.antigravity_client import get_antigravity_client
+        client = get_antigravity_client()
+        temperature = float(body.get("temperature", 0.7))
+        max_tokens = int(body.get("max_tokens", 4096))
+
+        raw_resp, ag_status, ag_err = client.generate_content_with_status(
+            prompt=full_prompt,
+            model=model_name,
+            system_instruction=system_instruction,
+            temperature=temperature,
+            max_output_tokens=max_tokens,
+        )
+
+        if ag_status != 200 or not raw_resp:
+            return JSONResponse(
+                {
+                    "error": {
+                        "message": ag_err or "Antigravity upstream error",
+                        "type": "upstream_error",
+                        "code": ag_status,
+                    }
+                },
+                status_code=ag_status if ag_status in (400, 401, 403, 429, 500, 502, 503) else 502,
+            )
+
+        import uuid
+        resp_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+        created_ts = int(time.time())
+
+        return {
+            "id": resp_id,
+            "object": "chat.completion",
+            "created": created_ts,
+            "model": model_name,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": raw_resp,
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {
+                "prompt_tokens": len(full_prompt) // 4,
+                "completion_tokens": len(raw_resp) // 4,
+                "total_tokens": (len(full_prompt) + len(raw_resp)) // 4,
+            },
+        }
+
+    except Exception as e:
+        log.error("[v1/chat/completions] Gateway exception: %s", e)
+        return JSONResponse(
+            {"error": {"message": str(e), "type": "internal_error", "code": 500}},
+            status_code=500,
+        )
 
 
 if __name__ == "__main__":
