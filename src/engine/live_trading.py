@@ -3177,9 +3177,6 @@ def sync_direct_kite_positions() -> None:
                                 live_resolved = True
                         except Exception as router_err:
                             log.debug("Router option chain fallback failed for %s: %s", base_sym, router_err)
-                                    symbol_key,
-                                    ltp_err,
-                                )
 
                 if not live_resolved:
                     from src.models.schema import get_previous_underlying
