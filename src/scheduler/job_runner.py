@@ -2149,7 +2149,7 @@ def start_scheduler(immediate: bool = False):
                         try:
                             from src.services.zerodha_auto_login import auto_login_kite
 
-                            result = auto_login_kite(force=False)
+                            result = auto_login_kite(force=True)
                             if result.get("success"):
                                 log.info(
                                     "[scheduler] Kite auto-login: %s",
