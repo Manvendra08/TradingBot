@@ -221,7 +221,14 @@ def job_stockfut_eod_scan() -> None:
         now_dt = datetime.now(IST)
         from_date = now_dt - timedelta(days=120)
 
-        # Scan each universe stock
+        # Benchmark: Nifty 50 daily candles for relative strength
+        nifty_tok = client.resolve_instrument_token("NIFTY") or 256265
+        nifty_daily = client.get_historical_candles(nifty_tok, interval="day", from_date=from_date, to_date=now_dt)
+
+        # Pass 1: Collect cash candles, futures OI series, and 20-day returns across universe
+        raw_stock_data: Dict[str, Dict[str, Any]] = {}
+        universe_20d_returns: List[float] = []
+
         for contract in universe:
             sym = contract.symbol
             try:
@@ -238,18 +245,47 @@ def job_stockfut_eod_scan() -> None:
                 if not daily or len(daily) < 25:
                     continue
 
-                candles_map[sym] = daily
-                feat = compute_features(sym, daily)
-                if not feat:
-                    continue
-                features_map[sym] = feat
+                # Fetch futures candles for real derivative open interest
+                f_candles = client.get_historical_candles(
+                    instrument_token=contract.token,
+                    interval="day",
+                    from_date=from_date,
+                    to_date=now_dt,
+                ) if contract.token else []
+                oi_series = [b.get("oi", 0) for b in f_candles] if f_candles else []
 
-                atr = float(feat.get("atr14", 10.0))
-                zones = build_zones(daily, atr=atr)
-                zones_map[sym] = zones
-                time.sleep(0.04)  # Smooth rate limiting
+                closes = [float(b["close"]) for b in daily]
+                ret_20d = (closes[-1] - closes[-20]) / closes[-20] * 100.0 if len(closes) >= 20 and closes[-20] > 0 else 0.0
+                universe_20d_returns.append(ret_20d)
+
+                raw_stock_data[sym] = {
+                    "daily": daily,
+                    "oi_series": oi_series,
+                    "contract": contract,
+                }
+                time.sleep(0.03)  # Smooth rate limiting
             except Exception as e:
-                log.debug("[%s] EOD scan feature fetch error: %s", sym, e)
+                log.debug("[%s] EOD scan candle fetch error: %s", sym, e)
+
+        # Pass 2: Compute full features with cross-universe relative strength & futures OI
+        for sym, d in raw_stock_data.items():
+            daily = d["daily"]
+            oi_series = d["oi_series"]
+            candles_map[sym] = daily
+            feat = compute_features(
+                sym,
+                daily,
+                index_daily=nifty_daily,
+                universe_20d_returns=universe_20d_returns,
+                combined_oi_daily=oi_series,
+            )
+            if not feat:
+                continue
+            features_map[sym] = feat
+
+            atr = float(feat.get("atr14", 10.0))
+            zones = build_zones(daily, atr=atr)
+            zones_map[sym] = zones
 
         # Build and persist watchlist
         top_watchlist = build_watchlist(

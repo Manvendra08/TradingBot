@@ -206,16 +206,18 @@ def compute_features(
         rs_sector = rs_nifty
 
     # 5. OI Flows on combined near+next month OI
-    # If explicit combined OI series provided, use it; else fallback to daily candle 'oi' field
-    oi_series: List[float] = []
-    if combined_oi_daily and len(combined_oi_daily) == len(daily):
-        oi_series = [float(x) for x in combined_oi_daily]
+    if combined_oi_daily:
+        oi_series = [float(x) for x in combined_oi_daily if x is not None]
     else:
         oi_series = [float(b.get("oi") or 0.0) for b in daily]
 
     def calc_flow(lookback: int) -> str:
         if len(closes) <= lookback or len(oi_series) <= lookback:
-            return "NONE"
+            # Fallback to shorter lookback if futures contract history is shorter than 20 days
+            if lookback == 20 and len(oi_series) >= 5 and len(closes) >= 5:
+                lookback = min(len(oi_series) - 1, 15)
+            else:
+                return "NONE"
         c_now = closes[-1]
         c_prev = closes[-1 - lookback]
         oi_now = oi_series[-1]
