@@ -21,13 +21,20 @@ Implementation tasks: `docs/superpowers/plans/2026-11-22-stock-futures-system.md
 
 A future is linear, so there is no theta cushion. Win rate comes from three levers:
 **selection** (trend, OI flow, sector and market agree), **geometry** (first target just
-before the nearest strong level, at least 1.3R away) and **abstention** (skip events,
+before the nearest strong level, at least 1.6R away) and **abstention** (skip events,
 bans, expiry, gap risk).
 
 Judge the system by **expectancy in R after costs**, with a "win" meaning a trade that closes net
-positive. Because half is booked at T1 and the rest is protected at breakeven, a win is often
-+0.7R to +1.0R, not a full target. A 55–65% win rate with expectancy above +0.15R is the aim.
-A claimed rate above ~70% usually hides tail risk.
+positive. Worked friction model (2 lots, half booked at T1):
+- T1 only, runner stopped on its trailing stop near entry: ≈ +0.8R gross (0.5 × 1.6R) − ~0.1R
+  costs and slippage ≈ **+0.7R net**.
+- T1 + T2 (≥ 2.5R): ≈ +2.0R gross ≈ **+1.9R net**.
+- Full loss including gap slippage on the stop: **≈ −1.1R to −1.15R**.
+
+At 1.3R with an immediate breakeven stop the "T1 + BE" win nets only ~+0.55R and expectancy
+collapses towards zero at a 55% win rate; that is why the T1 gate is 1.6R and the runner is not
+moved to breakeven on T1 (exit row 5). Aim: 55–65% win rate with expectancy above +0.15R net,
+measured in replay (Task 11) before any live trading. A claimed rate above ~70% usually hides tail risk.
 
 ## 2. Data inventory — and what must be built
 
@@ -47,11 +54,22 @@ Rate limit: ~3 history requests/s → about 70 s for 200 stocks. History runs af
 ```
 08:45  ban + event refresh ─► universe_today
 19:30  EOD scan ─► features ─► levels ─► bias ─► entry matrix ─► WATCHLIST (≤20, with full plan)
-12:15 / 15:15 (3H closes) ─► trigger check on watchlist ─► risk gate ─► execute
-15:15  daily exit rules on open positions (exit-only, uses the final 1H bars)
+12:15 (3H close) ─► trigger check on watchlist ─► risk gate ─► execute (done by 12:45)
+15:15 (3H close) ─► trigger check only ─► queue as NEXT_OPEN (no entry at 15:15)
+09:45  NEXT_OPEN queue ─► re-quote, gap check, 4.3 step 4 gates ─► execute
+14:15 (1H close) ─► daily exit rules on open positions, executed by 14:45
 hourly (1H closes) ─► trailing-stop exits
+14:45  entry blackout for the rest of the session (exits, GTTs and the watcher keep running)
 every 15 min ─► reconciliation + portfolio risk monitor (GTTs guard the intraday risk)
 ```
+
+**No entries in the last 45 minutes.** Liquidity and spreads in single-stock futures degrade
+into the close (closing-price window, thinner cash-market hedging), and a fresh swing entry minutes
+before the close takes overnight gap risk with no intraday cushion. The 3H grid stays
+09:15/12:15/15:15 (repo rule), so a valid 15:15 trigger is not chased: it is queued and re-checked
+at 09:45 next session. A NEXT_OPEN entry is cancelled if the open gapped beyond 0.5 × ATR from the
+trigger price, beyond SL, or past T1's halfway point; otherwise the normal 4.3 step 4 gates apply.
+Replay (Task 11) measures 12:15 entries and NEXT_OPEN entries separately.
 
 The scan runs at 19:30, after NSE publishes ban and MWPL data. Everything in
 `src/stockfut/` including its jobs (`jobs.py`) stays out of `job_runner.py`
@@ -80,7 +98,9 @@ level and change → `RISK_ON / NEUTRAL / RISK_OFF`.
 ### 3.3 Setup (v1 ships one)
 **A. Trend pullback continuation.** Long: stock bias Bull or Strong Bull (section 4.3), then a
 2–5 day pullback to EMA20 or the last breakout level on **falling OI and volume**. The
-trigger is a 3H close back through the prior 3H high with OI rising. Short is the mirror image.
+trigger is a **3H reversal candle** that ends the pullback run (section 4.3 step 3); OI rising, flat or falling is allowed on the
+trigger bar as long as the daily 5-day OI flow is still net Long Build-up (section 4.3 step 3).
+Short is the mirror image.
 Setups B (squeeze breakout) and C (short-trap reversal) wait until A passes paper.
 
 ### 3.4 Scoring and watchlist
@@ -95,8 +115,11 @@ Sources: swing pivots (60 and 120 sessions, clustered within 0.3 × ATR), breako
 edges, EMA20/EMA50 as dynamic levels. Nearby levels merge into a **zone**; strength = touch
 count + recency + number of agreeing sources.
 
-Levels are computed on the continuous futures series and **shifted by today's basis** to the
-traded contract, because GTTs trigger on that contract's LTP.
+Levels are computed on **unadjusted cash-equity daily bars** (`NSE:<SYMBOL>`), where resting
+institutional orders actually sit, not on a spliced continuous futures series (rollover premium,
+carry and dividends distort old pivots). Each level is then projected to the traded contract by
+adding today's basis (`futures LTP − cash LTP`), refreshed at every trigger check and stop move,
+because GTTs trigger on the future's LTP. OI features still come from futures (section 3.2).
 
 **Validation:** zone reaction rates are measured **pooled across the universe by zone type** in
 replay (per-stock samples are too small). A zone type below a 55% reaction rate is dropped from use.
@@ -106,7 +129,7 @@ Long (mirror for short): **SL** = beyond the nearest strong support under entry 
 **T1** = just before the nearest strong resistance above entry. **T2** = the next strong resistance.
 Skip the trade if any gate fails:
 - SL distance outside 0.75–2.0 × ATR.
-- **T1 distance < 1.3 × SL distance** (raised from 1.0 so a 50% booking plus a breakeven stop still pays after costs).
+- **T1 distance < 1.6 × SL distance** (see the friction model in section 1; 1.3 leaves near-zero expectancy).
 - A strong opposing zone within 0.5 × SL distance of entry.
 - No qualifying level exists (the system never invents one).
 
@@ -133,13 +156,30 @@ a higher score; **size is never reduced below 2 lots**, so difficulty is express
 | Bear | — | SHORT ≥ 75 | SHORT ≥ 70 |
 | Strong Bear | SHORT ≥ 80 | SHORT ≥ 70 | SHORT ≥ 65 |
 
-**Step 3: trigger on the 3H close (entry-only).** Price and OI must agree:
+**Step 3: trigger on the 3H close (entry-only).** The 3H bar is read only as a **reversal signal**
+against a continuous run. Both must hold:
+
+1. **Continuous run first.** The bars before the trigger form an unbroken run against the trade:
+   for a LONG, at least 3 consecutive 3H bars each with a lower close and a lower high than the bar
+   before (a 3H downtrend inside the daily uptrend's pullback); for a SHORT, at least 3 consecutive
+   bars with higher closes and higher highs. No run, no trigger, however strong the bar is.
+2. **Reversal close.** The trigger bar **closes above the previous 3H bar's high** (LONG) or
+   **below the previous 3H bar's low** (SHORT). A close inside the previous bar's range, or a
+   wick through it that closes back inside, does not qualify.
+
+The run length (3) is a starting value to tune in replay. Only then is the bar's OI read against the daily 5-day
+OI flow, because the first bounce off EMA20 is usually short covering, and fresh build-up only
+shows after the move has run 1.5–2% (by then T1 room is often gone):
 
 | Trigger bar | LONG | SHORT |
 |---|---|---|
 | Price ↑, OI ↑ | ✅ enter | ❌ |
 | Price ↓, OI ↑ | ❌ | ✅ enter |
-| Price ↑, OI ↓ (short covering) or Price ↓, OI ↓ (long unwinding) | ❌ in v1 (Setup C territory) | ❌ in v1 |
+| Price ↑, OI flat or ↓ (short covering) | ✅ only if 5-day OI flow is net Long Build-up | ❌ |
+| Price ↓, OI flat or ↓ (long unwinding) | ❌ | ✅ only if 5-day OI flow is net Short Build-up |
+
+Replay reports win rate per trigger row so the covering/unwinding rows can be dropped if they
+underperform.
 
 **Step 4: final gates.** Price within 0.3 × ATR of the planned entry; 4.2 geometry still valid on the live price;
 pre-trade validation passes (section 6.1); portfolio limits have room (section 5). An armed setup
@@ -150,18 +190,19 @@ expires after 3 sessions without a trigger.
 | # | Exit | Condition (long; mirror for short) | Action | Evaluated |
 |---|---|---|---|---|
 | 1 | HARD_STOP | Price trades through SL | Exit all (GTT at broker + watcher, see 6.2) | Broker + 1-min watcher |
-| 2 | GAP_THROUGH | Opens beyond SL | Marketable limit ladder from 09:15:30 | Open |
-| 3 | THESIS_BREAK | Close back through the supporting zone, or 2 straight days of opposing OI flow | Exit all | 15:15 |
+| 2 | GAP_THROUGH | Opens beyond SL | The SL GTT has already fired and left a resting limit order that the gap skipped: `cancel_order` it, poll until `CANCELLED` (or filled), re-read net quantity, then send a marketable limit ladder for what remains. Never send the ladder while that order rests (double exit / unintended reverse position). | Open, from 09:15:30 |
+| 3 | THESIS_BREAK | Close back through the supporting zone, or 2 straight days of opposing OI flow | Exit all | 14:15 |
 | 4 | EVENT | Results, AGM or ex-date within 1 session; ban entry for a held name (reduce-only) | Exit all | 15:00 and 08:45 |
-| 5 | T1_HIT | Reaches T1 | Book `floor(n/2)` lots; stop on the rest → breakeven + costs | Broker GTT |
+| 5 | T1_HIT | Reaches T1 | Book `floor(n/2)` lots; move the runner's stop to the structural swing low of the trigger bar (not breakeven), so it has room to reach T2 | Broker GTT |
 | 6 | T2_HIT | Reaches T2 | Exit the remainder | Broker GTT |
 | 7 | TRAIL | After T1: 1H close below the higher of the last daily swing low or the newest support zone | Exit the remainder | 1H closes |
-| 8 | REGIME_TURN | Market regime flips against the trade | Tighten stop to max(breakeven, last 1H swing low) | 15:15 |
-| 9 | TIME_STOP | T1 not hit in 5 sessions, or 10 sessions total | Exit all | 15:15 |
-| 10 | EXPIRY | Flat **5 sessions before expiry**, before the delivery-margin window | Exit all. **No rolling.** | 15:15 |
+| 8 | REGIME_TURN | Market regime flips against the trade | Tighten stop to max(trigger-bar swing low, last 1H swing low) | 14:15 |
+| 9 | TIME_STOP | T1 not hit in 5 sessions, or 10 sessions total | Exit all | 14:15 |
+| 10 | EXPIRY | Flat **5 sessions before expiry**, before the delivery-margin window | Exit all. **No rolling.** | 14:15 |
 
-Daily-close rows (3, 8, 9, 10) are evaluated at 15:15 on near-final prices and executed before
-the close, not at the next open, so they stay in the exit-only (1H) timeframe.
+Daily-close rows (3, 8, 9, 10) are evaluated on the 14:15 1H close as the daily-close proxy and
+executed by 14:45, while liquidity is still continuous, so they stay in the exit-only (1H) timeframe.
+A close that reverses after 14:15 is caught by the next session's check or the GTT.
 
 ## 5. Sizing and portfolio risk (₹1 Cr reference)
 
@@ -205,7 +246,7 @@ Implementation: `calculate_future_lots` (`capital_allocator.py`), portfolio chec
 
 ### 6.2 GTT safety (the existing GTT code sends LIMIT orders on both legs)
 - **SL leg limit** is set with a wide buffer beyond the trigger (default 0.3 × ATR), so a fast move still fills.
-- **Post-trigger watcher** (1-minute): if a GTT is `triggered` and the position is still open after 60 s, cancel the resting order and send a marketable-limit ladder, and alert.
+- **Post-trigger watcher** (1-minute): if a GTT is `triggered` and the position is still open after 60 s, cancel the resting order, **wait for `CANCELLED` and re-read net quantity**, then send a marketable-limit ladder for the remainder, and alert. Same cancel-confirm-then-ladder sequence as GAP_THROUGH.
 - **After any GTT fires:** cancel the sibling order and the other GTT, verify, then reconcile.
 - **Invariant, checked after every change:** broker net quantity = sum of live GTT quantities. Mismatch → flatten the excess or alert.
 - **Replace before cancel** on stop moves (place the new GTT, then cancel the old).

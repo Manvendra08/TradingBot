@@ -19,7 +19,9 @@
 - Every live order goes through `authorize_broker_execution`. No MARKET orders for stock futures. NRML only.
 - Fail closed: missing data for a stock means no trade for that stock, logged.
 - No hedging. No rolling: exit 5 sessions before expiry. Near month only if ≥ 12 sessions left.
-- Hold 2–10 sessions; T1 distance ≥ 1.3 × SL distance; SL distance 0.75–2.0 × daily ATR.
+- Hold 2–10 sessions; T1 distance ≥ 1.6 × SL distance; SL distance 0.75–2.0 × daily ATR.
+- No entries after 14:45 IST. 12:15 3H triggers execute live; 15:15 3H triggers queue as NEXT_OPEN for a 09:45 re-check. Daily exit rows run on the 14:15 1H close.
+- Levels from unadjusted cash-equity daily bars, projected to the future by live basis.
 - Tests: targeted files only (`pytest tests/test_stockfut_<area>.py -v`), never the full suite. Windows: no heredocs.
 - Config lives in `config/stockfut.json`; reads fail closed to code defaults.
 
@@ -117,7 +119,7 @@
 
 **Interfaces:** Produces `build_zones(daily: list[dict], atr: float) -> list[Zone]` (`low, high, kind, strength`); `shift_zones(zones: list[Zone], basis: float) -> list[Zone]`; `nearest_zone(zones, price, side: str, strong_only: bool = True) -> Zone | None`.
 
-- [ ] **Step 1: Tests** `test_pivots_within_0_3_atr_merge`; `test_more_touches_means_higher_strength`; `test_basis_shift_moves_all_zones`; `test_no_zone_returns_none`.
+- [ ] **Step 1: Tests** `test_pivots_within_0_3_atr_merge`; `test_more_touches_means_higher_strength`; `test_basis_shift_moves_all_zones`; `test_no_zone_returns_none`; `test_zones_built_from_cash_bars_not_futures` (caller passes `NSE:` equity daily bars; futures bars with a rollover jump must not create a pivot).
 - [ ] **Steps 2–5:** fail, implement (pivots, breakout/gap edges, EMA20/50), pass, commit.
 
 ### Task 7: Bias, entry matrix, watchlist
@@ -126,9 +128,9 @@
 
 **Interfaces:**
 - Consumes: Tasks 5–6, 8.
-- Produces: `stock_bias(f: dict) -> int` (−4..+4) and `bias_label(score: int) -> str`; `matrix_permission(bias: str, regime: str) -> tuple[str, int] | None` (side, min score); `trigger_ok(side: str, price_pct: float, oi_pct: float) -> bool`; `build_watchlist(universe, features, zones, regime) -> list[WatchRow]` (each row frozen to a scan snapshot).
+- Produces: `stock_bias(f: dict) -> int` (−4..+4) and `bias_label(score: int) -> str`; `matrix_permission(bias: str, regime: str) -> tuple[str, int] | None` (side, min score); `is_reversal_candle(side: str, bars_3h: list[dict], min_run: int = 3) -> bool` (prior `min_run` bars form a continuous run against `side` — lower closes and lower highs before a LONG, higher closes and higher highs before a SHORT — and the last bar closes above the previous bar's high for LONG / below its low for SHORT); `trigger_ok(side: str, price_pct: float, oi_pct: float, oi_flow_5d: str) -> bool` (called only after `is_reversal_candle` passes); `next_open_ok(row: WatchRow, open_price: float, atr: float) -> tuple[bool, str]` (cancel on gap > 0.5 ATR, beyond SL, or past half of T1); `build_watchlist(universe, features, zones, regime) -> list[WatchRow]` (each row frozen to a scan snapshot).
 
-- [ ] **Step 1: Tests** one assertion per matrix cell (e.g. `matrix_permission("STRONG_BEAR", "RISK_ON") == ("SHORT", 80)`, `matrix_permission("BULL", "RISK_OFF") is None`); `test_neutral_bias_never_trades`; `test_short_covering_trigger_rejected_in_v1`; `test_watchlist_capped_at_20_by_score`.
+- [ ] **Step 1: Tests** one assertion per matrix cell (e.g. `matrix_permission("STRONG_BEAR", "RISK_ON") == ("SHORT", 80)`, `matrix_permission("BULL", "RISK_OFF") is None`); `test_neutral_bias_never_trades`; `test_reversal_long_requires_close_above_prev_high` (close inside prev range → False; wick above but close inside → False); `test_reversal_short_requires_close_below_prev_low`; `test_reversal_rejected_without_3_bar_run` (2-bar run → False; run broken by a higher close → False); `test_short_covering_trigger_allowed_when_5d_flow_long_buildup`; `test_short_covering_trigger_rejected_when_5d_flow_not_long_buildup`; `test_next_open_cancelled_on_gap_beyond_half_atr`; `test_no_entry_after_1445`; `test_watchlist_capped_at_20_by_score`.
 - [ ] **Steps 2–5:** fail, implement, pass, commit.
 
 ### Task 8: Trade plan and lots
@@ -138,7 +140,7 @@
 **Interfaces:**
 - Produces: `calculate_future_sl_target(entry: float, side: str, zones: list, atr: float) -> dict | None` returning `sl, t1, t2, r_t1` or None when a geometry gate fails; `calculate_future_lots(sl_distance: float, lot_size: int, capital: float, budget_pct: float = 0.75) -> tuple[int, str | None]` returning `(lots, skip_reason)`; `split_lots(n: int) -> tuple[int, int]`.
 
-- [ ] **Step 1: Tests** `test_split_lots_5_is_2_and_3`; `test_split_lots_2_is_1_and_1`; `test_min_two_lots_even_when_budget_gives_one`; `test_min_lots_breach_skips` (2 lots risk > 1.25 × budget → `(0, "MIN_LOTS_BREACH")`); `test_t1_under_1_3r_returns_none`; `test_sl_outside_atr_band_returns_none`; `test_opposing_zone_too_close_returns_none`; `test_short_is_mirror_of_long`.
+- [ ] **Step 1: Tests** `test_split_lots_5_is_2_and_3`; `test_split_lots_2_is_1_and_1`; `test_min_two_lots_even_when_budget_gives_one`; `test_min_lots_breach_skips` (2 lots risk > 1.25 × budget → `(0, "MIN_LOTS_BREACH")`); `test_t1_under_1_6r_returns_none`; `test_sl_outside_atr_band_returns_none`; `test_opposing_zone_too_close_returns_none`; `test_short_is_mirror_of_long`.
 - [ ] **Steps 2–5:** fail, implement, pass, commit.
 
 ### Task 9: Portfolio risk
@@ -156,7 +158,7 @@
 
 **Interfaces:** Produces `evaluate_future_exit(trade: dict, market: dict, now: datetime) -> ExitDecision | None` with `rule, action, lots, new_sl`; rule names `HARD_STOP, GAP_THROUGH, THESIS_BREAK, EVENT, T1_HIT, T2_HIT, TRAIL, REGIME_TURN, TIME_STOP, EXPIRY`, evaluated in that order.
 
-- [ ] **Step 1: Tests** one per rule; `test_priority_hard_stop_beats_time_stop`; `test_expiry_exit_5_sessions_before`; `test_banned_held_name_exits_only`; `test_t1_books_floor_half_and_moves_stop_to_breakeven_plus_costs`; `test_short_mirrors_long`.
+- [ ] **Step 1: Tests** one per rule; `test_priority_hard_stop_beats_time_stop`; `test_expiry_exit_5_sessions_before`; `test_banned_held_name_exits_only`; `test_t1_books_floor_half_and_moves_stop_to_trigger_bar_swing_low` (not breakeven); `test_short_mirrors_long`.
 - [ ] **Steps 2–5:** fail, implement, pass, commit.
 
 ### Task 11: Replay harness
@@ -185,7 +187,7 @@
 **Interfaces:**
 - Produces: `validate_order(order: dict, contract: Contract, ltp: float, cfg: dict) -> tuple[bool, str]`; `LiveExecutor.enter(row) -> int | None`; `place_protection(trade_id: int, filled_lots: int) -> bool` (two GTT-OCOs, SL limit buffered by 0.3 × ATR); `watch_triggered_gtts() -> None` (60-second ladder); gate honours `stockfut_live_enabled` and treats protective GTT placement as `EXIT`; `emergency_flat` stock futures path (cancel orders and GTTs, flatten `STOCK_FUT` only, verify net 0).
 
-- [ ] **Step 1: Tests** (mock Kite): `test_validate_rejects_non_lot_multiple`; `test_validate_rejects_price_outside_band`; `test_pending_order_cancelled_and_actual_fill_protected`; `test_gtt_failure_flattens_and_halts`; `test_order_tag_max_20_chars_and_idempotent`; `test_triggered_gtt_unfilled_after_60s_sends_ladder`; `test_net_qty_equals_sum_of_gtt_qty_invariant`; `test_paused_bot_can_still_place_protective_gtt`; `test_orphan_sweep_covers_stock_futures`; `test_emergency_flat_ignores_non_stockfut_positions`; `test_gate_blocks_stockfut_when_flag_off_but_options_unaffected`.
+- [ ] **Step 1: Tests** (mock Kite): `test_validate_rejects_non_lot_multiple`; `test_validate_rejects_price_outside_band`; `test_pending_order_cancelled_and_actual_fill_protected`; `test_gtt_failure_flattens_and_halts`; `test_order_tag_max_20_chars_and_idempotent`; `test_triggered_gtt_unfilled_after_60s_sends_ladder`; `test_gap_through_cancels_resting_gtt_order_and_waits_for_cancelled_before_ladder` (ladder never sent while the order is OPEN; ladder qty = re-read net qty); `test_net_qty_equals_sum_of_gtt_qty_invariant`; `test_paused_bot_can_still_place_protective_gtt`; `test_orphan_sweep_covers_stock_futures`; `test_emergency_flat_ignores_non_stockfut_positions`; `test_gate_blocks_stockfut_when_flag_off_but_options_unaffected`.
 - [ ] **Steps 2–5:** fail, implement (reuse `confirm_order_fill`, `place_kite_gtt` patterns), pass, commit.
 
 ### Task 14: Reconciliation
@@ -201,7 +203,7 @@
 
 **Files:** Create `src/stockfut/jobs.py`, `tests/test_stockfut_jobs.py`; modify `src/scheduler/job_runner.py` (one `register_stockfut_jobs(scheduler)` call).
 
-**Interfaces:** Produces `register_stockfut_jobs(scheduler) -> None` adding: 08:45 refresh, 19:30 EOD scan, 12:15 and 15:15 trigger checks, 15:15 daily-exit pass, hourly trail, 15-minute reconcile + risk monitor, 1-minute GTT watcher (only while positions are open). All weekday-only and holiday-aware.
+**Interfaces:** Produces `register_stockfut_jobs(scheduler) -> None` adding: 08:45 refresh, 19:30 EOD scan, 12:15 trigger check (live), 15:15 trigger check (queue NEXT_OPEN only), 09:45 NEXT_OPEN re-check, 14:15 daily-exit pass, 14:45 entry blackout, hourly trail, 15-minute reconcile + risk monitor, 1-minute GTT watcher (only while positions are open). All weekday-only and holiday-aware.
 
 - [ ] **Step 1: Tests** `test_jobs_skip_weekends`; `test_jobs_noop_when_config_disabled`; `test_register_adds_expected_job_ids`.
 - [ ] **Steps 2–5:** fail, implement, pass, commit.
