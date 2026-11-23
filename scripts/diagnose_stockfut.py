@@ -13,6 +13,7 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 def run():
     from src.fetchers.kite_fetcher import get_kite_data_client
+    from src.stockfut.universe import UniverseBuilder
     from src.stockfut.features import compute_features
     from src.stockfut.levels import build_zones
     from src.stockfut.setups import stock_bias, bias_label, matrix_permission, is_daily_reversal
