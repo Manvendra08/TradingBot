@@ -874,6 +874,13 @@ def init_db() -> None:
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA synchronous = NORMAL")
         conn.row_factory = sqlite3.Row
+        try:
+            conn.execute(
+                "DELETE FROM stockfut_watchlist WHERE id NOT IN (SELECT MAX(id) FROM stockfut_watchlist GROUP BY scan_date, symbol)"
+            )
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # Table does not exist yet on clean initialization
         conn.executescript(DDL)
         applied = {
             row["migration_id"]
