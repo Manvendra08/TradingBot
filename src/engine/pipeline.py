@@ -1551,11 +1551,19 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
                     elif live_or_shadow_enabled and (_live_entries_blocked or (sid not in ("TIMEFRAME", "TFSS") and ai_verdict_for_runner is None)):
                         log.debug("%s: skipping %s live/shadow entry (verdict unavailable or edge gate)", symbol, sid)
                     elif live_or_shadow_enabled:
-                        # A12 FIX: Obey specialized strategy gates from the paper runner.
-                        # If the strategy runner returned BLOCKED, skip live/shadow entry as well.
-                        if isinstance(res, dict) and str(res.get("action") or "").startswith("BLOCKED"):
-                            log.info("%s: skipping %s live/shadow entry — paper runner was BLOCKED (%s)", symbol, sid, res.get("reason"))
-                            continue
+                        # A12 FIX: Obey specialized strategy gates and synchronization from the paper runner.
+                        # If the paper runner was BLOCKED, in CONFLICT, or HOLDING an existing position from an earlier cycle,
+                        # skip new live entry to maintain synchronization and avoid duplicate/mismatched live structures.
+                        if isinstance(res, dict):
+                            act = str(res.get("action") or "").upper()
+                            if act.startswith("BLOCKED") or act == "CONFLICT":
+                                log.info("%s: skipping %s live/shadow entry — paper runner was %s (%s)", symbol, sid, act, res.get("reason"))
+                                continue
+                            if sid == "MULTILEG" and act in ("HOLD", "HOLDING"):
+                                open_live = [b for b in (res.get("live_books") or []) if b.get("trade_mode") in ("LIVE", "SHADOW") and b.get("status") == "OPEN"]
+                                if not open_live and (res.get("live_books") or []):
+                                    log.info("%s: skipping new multileg live entry — paper is holding active book(s) from earlier cycle", symbol)
+                                    continue
                         if sid in ("CORE", "NG_MOMENTUM", "NG_PARITY", "NG_EVENT"):
                             try:
                                 from src.engine.live_trading import run_live_trading

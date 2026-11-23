@@ -1350,15 +1350,23 @@ def _attempt_new_entry(
                 "reason": "Margin computation returned invalid zero/negative margin for short options book",
             }
 
-    # ── 5d. Book conflict check ────────────────────────────────────────
+    # ── 5d. Book conflict check (Paper-Live Synchronization) ───────────
     if check_book_conflicts is not None:
         try:
+            from src.models.schema import get_open_books_for_symbol
+            live_books = [b for m in ("LIVE", "SHADOW") for b in get_open_books_for_symbol(symbol, trade_mode=m)]
+            prior_live_books = [
+                b for b in live_books
+                if b.get("status") == "OPEN" and str(b.get("digest_id") or "") != str(digest_id or "")
+            ]
+            paper_books = open_books or get_open_books_for_symbol(symbol, trade_mode="PAPER")
+            books_to_check = paper_books + prior_live_books
             has_conflict, conflict_msg = check_book_conflicts(
-                symbol, strategy_type, open_books or get_open_books_for_symbol(symbol, trade_mode="PAPER")
+                symbol, strategy_type, books_to_check
             )
             if has_conflict:
                 log.info(
-                    "[multileg-paper] %s: book conflict — %s",
+                    "[multileg-paper] %s: book conflict (synced with live/paper) — %s",
                     symbol,
                     conflict_msg,
                 )

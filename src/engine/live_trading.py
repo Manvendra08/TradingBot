@@ -751,15 +751,6 @@ def place_kite_order(
         _handle_kite_ip_error(e)
         log.error("Kite order placement failed: %s", e)
         raise e
-                f"no valid market price (LTP unavailable and expected_price={expected_price})"
-            )
-            log.error(err_msg)
-            raise ValueError(err_msg)
-        return order_id
-    except Exception as e:
-        _handle_kite_ip_error(e)
-        log.error("Kite order placement failed: %s", e)
-        raise e
 
 
 def confirm_order_fill(kite, order_id: str, shadow_mode: bool) -> tuple[str, str]:

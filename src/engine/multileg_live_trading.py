@@ -1126,6 +1126,8 @@ def _close_live_book(
                     # Fallback when kite.ltp is unavailable (missing quote permission).
                     expected_price=float(leg.get("current_premium") or leg.get("entry_premium") or 0.0),
                     tick_size=float(resolved.get("tick_size") or 0.05),
+                    dte=_dte_from_expiry(book.get("expiry", "")),
+                    marketable=True,
                 )
                 # C1 FIX: verify the exit order actually filled before closing
                 # the leg in DB. A REJECTED/PENDING exit order must NOT mark the
@@ -1701,15 +1703,29 @@ def _attempt_new_live_entry(
                 "reason": "Margin computation returned invalid zero/negative margin for short options book",
             }
 
-    # ── 5d. Book conflict check ────────────────────────────────────────
+    # ── 5d. Book conflict check (Paper-Live Synchronization) ───────────
     if check_book_conflicts is not None:
         try:
+            # Synchronize with paper engine:
+            # An active paper position from an earlier cycle must block new live entries for that structure.
+            from src.models.schema import get_open_books_for_symbol
+            paper_books = get_open_books_for_symbol(symbol, trade_mode="PAPER")
+            live_books = open_books or _open_live_books(symbol)
+
+            # Prior paper books from earlier scan cycles (distinct digest_id)
+            prior_paper_books = [
+                b for b in paper_books
+                if b.get("status") == "OPEN" and str(b.get("digest_id") or "") != str(digest_id or "")
+            ]
+
+            # Check conflicts against live books AND prior paper books
+            books_to_check = live_books + prior_paper_books
             has_conflict, conflict_msg = check_book_conflicts(
-                symbol, strategy_type, open_books or _open_live_books(symbol)
+                symbol, strategy_type, books_to_check
             )
             if has_conflict:
                 log.info(
-                    "[multileg-live] %s: book conflict — %s",
+                    "[multileg-live] %s: book conflict (synced with paper/live) — %s",
                     symbol,
                     conflict_msg,
                 )
@@ -1880,6 +1896,7 @@ def _attempt_new_live_entry(
     # Placing long wings first gives margin relief and ensures naked short risk
     # cannot occur if the broker rejects subsequent legs.
     sorted_legs = sorted(legs, key=lambda l: 0 if str(l.get("side") or "").upper() == "BUY" else 1)
+    cur_dte = _dte_from_expiry(expiry) if expiry else int((scan_context or {}).get("dte") or 99)
 
     for i, leg in enumerate(sorted_legs):
         strike = float(leg.get("strike") or 0.0)
@@ -1888,6 +1905,7 @@ def _attempt_new_live_entry(
         premium = float(leg.get("premium") or 0.0)
         side = leg.get("side", "SELL")
         quantity = lots * lot_size
+        is_buy_hedge = (str(side).upper() == "BUY")
 
         try:
             resolved = resolve_instrument(
@@ -1914,6 +1932,9 @@ def _attempt_new_live_entry(
                 shadow_mode=shadow_mode,
                 expected_price=premium,
                 tick_size=float(resolved.get("tick_size") or 0.05),
+                is_hedge=is_buy_hedge,
+                dte=cur_dte,
+                marketable=is_buy_hedge,
             )
 
             # Verify order status before proceeding to next leg (Risk 4 fix)
@@ -2448,6 +2469,9 @@ def _rollback_placed_legs(
                 shadow_mode=shadow_mode,
                 expected_price=float(leg.get("entry_premium") or leg.get("current_premium") or 0.0),
                 tick_size=float(resolved.get("tick_size") or 0.05),
+                is_hedge=True,
+                dte=_dte_from_expiry(leg_expiry),
+                marketable=True,
             )
             log.info(
                 "[multileg-live] %s: rollback order placed — %s %s %s Qty=%d, order_id=%s",
