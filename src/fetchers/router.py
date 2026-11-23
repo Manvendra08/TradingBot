@@ -447,6 +447,7 @@ def _merge_fetcher_results(primary: dict, fallback: dict, symbol: str) -> dict:
         return primary
 
     underlying = primary.get("underlying_price")
+    fallback_underlying = fallback.get("underlying_price")
     if not underlying:
         log.warning("[router] %s | primary missing underlying_price, cannot filter ATM strikes", symbol)
         return primary
@@ -460,6 +461,22 @@ def _merge_fetcher_results(primary: dict, fallback: dict, symbol: str) -> dict:
     primary_strike_vals = sorted(set(s.get("strike") for s in primary_strikes if s.get("strike") is not None))
     if not primary_strike_vals:
         return primary
+
+    # Sanity guard: detect contract rollover / future month mismatch across fetchers
+    median_strike = primary_strike_vals[len(primary_strike_vals) // 2]
+    if (
+        underlying
+        and fallback_underlying
+        and median_strike > 0
+        and abs(underlying - median_strike) / median_strike > 0.10
+        and abs(fallback_underlying - median_strike) / median_strike <= 0.05
+    ):
+        log.warning(
+            "[router] %s | Primary underlying %.2f diverges >10%% from median strike %.2f, but fallback underlying %.2f is aligned. Overriding with fallback underlying.",
+            symbol, underlying, median_strike, fallback_underlying
+        )
+        underlying = fallback_underlying
+        primary["underlying_price"] = fallback_underlying
     
     # Find ATM strike (closest to underlying)
     atm_strike = min(primary_strike_vals, key=lambda x: abs(x - underlying))

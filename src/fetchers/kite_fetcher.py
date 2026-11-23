@@ -234,7 +234,51 @@ class KiteDataClient:
         clean = symbol.strip().upper().split(":")[-1]
         return res.get(clean)
 
-    def resolve_tradingsymbol(self, symbol: str) -> Optional[Tuple[str, str]]:
+    @staticmethod
+    def _match_mcx_future(
+        fut_contracts: List[Dict[str, Any]],
+        target_expiry: Optional[str] = None,
+        reference_price: Optional[float] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Match the appropriate MCX futures contract for a commodity.
+        Options on MCX commodities devolve into and are priced off the futures
+        contract of the corresponding expiry month (e.g. Dec options -> Dec futures).
+        """
+        if not fut_contracts:
+            return None
+
+        if target_expiry:
+            try:
+                dt = datetime.strptime(target_expiry, "%Y-%m-%d")
+                month_key = dt.strftime("%y%b").upper()  # e.g. "26DEC"
+                month_name = dt.strftime("%b").upper()   # e.g. "DEC"
+
+                # 1. Exact YYMMM match in tradingsymbol (e.g. NATURALGAS26DECFUT)
+                matched = next((f for f in fut_contracts if month_key in f.get("tradingsymbol", "").upper()), None)
+                if matched:
+                    return matched
+
+                # 2. MMM match in tradingsymbol
+                matched = next((f for f in fut_contracts if month_name in f.get("tradingsymbol", "").upper()), None)
+                if matched:
+                    return matched
+
+                # 3. Earliest future expiring on or after target_expiry
+                valid_futs = sorted(
+                    [f for f in fut_contracts if (f.get("expiry") or "") >= target_expiry],
+                    key=lambda x: x.get("expiry") or ""
+                )
+                if valid_futs:
+                    return valid_futs[0]
+            except Exception as ex:
+                log.debug("Failed matching MCX future for target_expiry %s: %s", target_expiry, ex)
+
+        # Fallback to near-month future
+        sorted_futs = sorted(fut_contracts, key=lambda x: x.get("expiry") or "")
+        return sorted_futs[0] if sorted_futs else None
+
+    def resolve_tradingsymbol(self, symbol: str, target_expiry: Optional[str] = None) -> Optional[Tuple[str, str]]:
         """
         Returns (exchange, tradingsymbol) for a given symbol.
         e.g. 'NIFTY' -> ('NSE', 'NIFTY 50')
@@ -243,7 +287,7 @@ class KiteDataClient:
              'MIDCPNIFTY' -> ('NSE', 'NIFTY MID SELECT')
              'SENSEX' -> ('BSE', 'SENSEX')
              'INDIAVIX' -> ('NSE', 'INDIA VIX')
-             'NATURALGAS' -> ('MCX', 'NATURALGAS26NOVFUT')
+             'NATURALGAS' -> ('MCX', 'NATURALGAS26DECFUT')
         """
         clean = symbol.strip().upper().split(":")[-1]
         static_map = {
@@ -265,8 +309,9 @@ class KiteDataClient:
                 if i.get("name") == clean and i.get("instrument_type") == "FUT" and (i.get("expiry") or "") >= today_str
             ]
             if futs:
-                futs.sort(key=lambda x: x.get("expiry") or "")
-                return ("MCX", futs[0]["tradingsymbol"])
+                target_fut = self._match_mcx_future(futs, target_expiry=target_expiry)
+                if target_fut:
+                    return ("MCX", target_fut["tradingsymbol"])
 
         return ("NSE", clean)
 
@@ -322,6 +367,101 @@ class KiteDataClient:
             log.warning("Failed fetching Kite market quotes: %s", e)
             return {}
 
+    def get_futures_quotes(self, contracts: List[str]) -> Dict[str, Dict[str, Any]]:
+        """
+        Fetch quotes with OI and top-of-book depth for futures contracts.
+        Returns empty dict for any contract that fails or is missing (never zeros).
+        """
+        k = self.kite
+        if not k or not contracts:
+            return {}
+
+        query_keys = []
+        key_to_contract = {}
+        for c in contracts:
+            c_str = str(c).strip().upper()
+            if not c_str:
+                continue
+            kite_key = c_str if ":" in c_str else f"NFO:{c_str}"
+            query_keys.append(kite_key)
+            key_to_contract[kite_key] = c_str.split(":")[-1]
+
+        if not query_keys:
+            return {}
+
+        try:
+            raw = k.quote(query_keys)
+            results: Dict[str, Dict[str, Any]] = {}
+            for kite_key, q in raw.items():
+                if not isinstance(q, dict):
+                    continue
+                contract_sym = key_to_contract.get(kite_key, kite_key.split(":")[-1])
+                ltp = float(q.get("last_price") or 0.0)
+                if ltp <= 0.0:
+                    continue
+
+                depth = q.get("depth") or {}
+                buys = depth.get("buy") or []
+                sells = depth.get("sell") or []
+
+                best_bid = float(buys[0]["price"]) if buys and buys[0].get("price") else ltp
+                best_ask = float(sells[0]["price"]) if sells and sells[0].get("price") else ltp
+                bid_qty = int(buys[0]["quantity"]) if buys and buys[0].get("quantity") else 0
+                ask_qty = int(sells[0]["quantity"]) if sells and sells[0].get("quantity") else 0
+
+                results[contract_sym] = {
+                    "price": round(ltp, 2),
+                    "oi": int(q.get("oi") or 0),
+                    "volume": int(q.get("volume") or 0),
+                    "bid": round(best_bid, 2),
+                    "ask": round(best_ask, 2),
+                    "bid_qty": bid_qty,
+                    "ask_qty": ask_qty,
+                    "ohlc": q.get("ohlc") or {},
+                }
+            return results
+        except Exception as e:
+            log.warning("Failed fetching Kite futures quotes: %s", e)
+            return {}
+
+    def list_stock_futures(self) -> List[Dict[str, Any]]:
+        """
+        List all active single-stock futures from NFO instrument catalog.
+        Reads per-contract lot size strictly from instrument master (never static dict).
+        Excludes index futures.
+        """
+        instruments = self.get_instruments("NFO")
+        index_names = {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50"}
+        futures: List[Dict[str, Any]] = []
+
+        for inst in instruments:
+            itype = str(inst.get("instrument_type") or "").upper().strip()
+            seg = str(inst.get("segment") or "").upper().strip()
+            if itype != "FUT" and not seg.endswith("-FUT"):
+                continue
+
+            name = str(inst.get("name") or "").upper().strip()
+            if not name or name in index_names:
+                continue
+
+            tsym = str(inst.get("tradingsymbol") or "").upper().strip()
+            token = int(inst.get("instrument_token") or 0)
+            expiry = str(inst.get("expiry") or "").strip()
+            lot_size = int(inst.get("lot_size") or 0)
+
+            if not tsym or not expiry or lot_size <= 0:
+                continue
+
+            futures.append({
+                "symbol": name,
+                "tradingsymbol": tsym,
+                "token": token,
+                "expiry": expiry,
+                "lot_size": lot_size,
+            })
+
+        return futures
+
     def get_historical_candles(
         self,
         instrument_token: int,
@@ -358,7 +498,12 @@ class KiteDataClient:
             log.error("Failed to fetch historical candles for token %d: %s", instrument_token, e)
             return []
 
-    def resolve_instrument_token(self, symbol: str) -> Optional[int]:
+    def resolve_instrument_token(
+        self,
+        symbol: str,
+        target_expiry: Optional[str] = None,
+        reference_price: Optional[float] = None,
+    ) -> Optional[int]:
         """Resolve instrument token for an index, commodity or equity stock."""
         clean = symbol.strip().upper().split(":")[-1]
         if clean in self._STATIC_INDEX_TOKENS:
@@ -373,8 +518,9 @@ class KiteDataClient:
                 if i.get("name") == clean and i.get("instrument_type") == "FUT" and (i.get("expiry") or "") >= today_str
             ]
             if futs:
-                futs.sort(key=lambda x: x.get("expiry") or "")
-                return int(futs[0]["instrument_token"])
+                target_fut = self._match_mcx_future(futs, target_expiry=target_expiry, reference_price=reference_price)
+                if target_fut:
+                    return int(target_fut["instrument_token"])
 
         # Check NSE equities / indices
         nse_instruments = self.get_instruments("NSE")
@@ -480,15 +626,25 @@ class KiteDataClient:
         if underlying_price <= 0:
             fut_contracts = [
                 c for c in instruments
-                if c.get("name") == base_sym and c.get("instrument_type") == "FUT" and c.get("expiry") >= today_str
+                if c.get("name") == base_sym and c.get("instrument_type") == "FUT" and (c.get("expiry") or "") >= today_str
             ]
             if fut_contracts and k:
-                nearest_fut = sorted(fut_contracts, key=lambda x: x.get("expiry"))[0]
+                target_fut = self._match_mcx_future(fut_contracts, target_expiry=target_expiry)
+                if not target_fut:
+                    target_fut = sorted(fut_contracts, key=lambda x: x.get("expiry") or "")[0]
                 try:
-                    f_sym = f"{segment}:{nearest_fut['tradingsymbol']}"
+                    f_sym = f"{segment}:{target_fut['tradingsymbol']}"
                     fut_q = k.quote([f_sym])
                     if f_sym in fut_q:
                         underlying_price = float(fut_q[f_sym].get("last_price", 0.0))
+                        log.info(
+                            "[%s] Matched underlying future %s (expiry: %s) for option expiry %s: price=%.2f",
+                            base_sym,
+                            target_fut["tradingsymbol"],
+                            target_fut.get("expiry"),
+                            target_expiry,
+                            underlying_price,
+                        )
                 except Exception as e:
                     log.debug("[%s] Could not fetch futures price: %s", base_sym, e)
 
@@ -496,6 +652,14 @@ class KiteDataClient:
         all_strikes = sorted(list(set(float(c["strike"]) for c in expiry_contracts if c.get("strike"))))
         if underlying_price <= 0 and all_strikes:
             underlying_price = all_strikes[len(all_strikes) // 2]
+        elif all_strikes and underlying_price > 0:
+            # Sanity guard: detect if underlying price is heavily diverged from median strike
+            median_strike = all_strikes[len(all_strikes) // 2]
+            if abs(underlying_price - median_strike) / median_strike > 0.10:
+                log.warning(
+                    "[%s] Underlying price %.2f diverges >10%% from median strike %.2f for expiry %s (possible contract month mismatch)",
+                    base_sym, underlying_price, median_strike, target_expiry
+                )
 
         # Find ATM strike
         atm_strike = min(all_strikes, key=lambda x: abs(x - underlying_price)) if all_strikes else 0.0

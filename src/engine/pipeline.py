@@ -242,7 +242,11 @@ def _prefetch_symbol_data(symbol: str, fetched_at: str) -> dict:
     chart_future = pipeline_io_executor.submit(
         lambda: run_with_deadline(
             "chart",
-            lambda: get_chart_fetcher().fetch(symbol, reference_price=underlying) or {},
+            lambda: get_chart_fetcher().fetch(
+                symbol,
+                reference_price=underlying,
+                target_expiry=expiry,
+            ) or {},
             timeout_s=25.0
         )
     )

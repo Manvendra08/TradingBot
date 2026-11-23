@@ -796,9 +796,12 @@ def _aggregate_rows_to_payload(
 
 
 def _fetch_dhan_builtup_ohlc(
-    base_symbol: str, tf: str, reference_price: float | None = None
+    base_symbol: str,
+    tf: str,
+    reference_price: float | None = None,
+    target_expiry: str | None = None,
 ) -> Optional[dict]:
-    sid = get_dhan_security_id(base_symbol)
+    sid = get_dhan_security_id(base_symbol, target_expiry=target_expiry)
     if not sid:
         return None
 
@@ -1168,7 +1171,10 @@ def _fetch_shoonya_candles(
 
 
 def _fetch_kite_candles(
-    base_symbol: str, tf: str, reference_price: float | None = None
+    base_symbol: str,
+    tf: str,
+    reference_price: float | None = None,
+    target_expiry: str | None = None,
 ) -> Optional[dict]:
     """
     Fetch OHLC candle data from Zerodha Kite Connect historical API.
@@ -1183,7 +1189,11 @@ def _fetch_kite_candles(
         if not client.is_authenticated():
             return None
 
-        token = client.resolve_instrument_token(base_symbol)
+        token = client.resolve_instrument_token(
+            base_symbol,
+            target_expiry=target_expiry,
+            reference_price=reference_price,
+        )
         if not token:
             log.debug("[chart] kite: could not resolve instrument token for %s", base_symbol)
             return None
@@ -1593,6 +1603,7 @@ class ChartFetcher:
         symbol: str,
         timeframes: list[str] | None = None,
         reference_price: float | None = None,
+        target_expiry: str | None = None,
     ) -> dict:
         tfs = list(timeframes or self.DEFAULT_TIMEFRAMES)
         base = _base_symbol(symbol)
@@ -1610,7 +1621,10 @@ class ChartFetcher:
             for provider in _provider_order(base):
                 if provider == "kite":
                     payload = _fetch_kite_candles(
-                        base, tf, reference_price=reference_price
+                        base,
+                        tf,
+                        reference_price=reference_price,
+                        target_expiry=target_expiry,
                     )
                     source = "kite"
                 elif provider == "shoonya":
@@ -1626,7 +1640,10 @@ class ChartFetcher:
                     source = "yfinance"
                 elif provider == "dhan_builtup":
                     payload = _fetch_dhan_builtup_ohlc(
-                        base, tf, reference_price=reference_price
+                        base,
+                        tf,
+                        reference_price=reference_price,
+                        target_expiry=target_expiry,
                     )
                     source = "dhan_builtup"
 
