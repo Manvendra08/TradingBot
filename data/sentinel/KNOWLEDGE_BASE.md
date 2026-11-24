@@ -1,14 +1,14 @@
 # NSEBOT Architecture — Scan Sentinel Knowledge Base
 
 ## 1. Core Pipeline Flow
-1. **Option Chain Fetching (`src.fetchers.router`)**: Cascading dual-source parallel fetch (`Sensibull` / `Shoonya` / `Dhan` / `Paytm` / `NSE`). Returns immediately on primary success (12s deadline) or falls back to completed sources.
+1. **Option Chain Fetching (`src.fetchers.router`)**: Cascading multi-source fetch with Zerodha Kite (`kite`) as the primary fetcher across all symbols (NSE, BSE, and MCX), followed by `niftytrader`, `shoonya`, `sensibull`, `dhan_headless`, `nse_public`, and `moneycontrol`. Returns immediately on primary success (12s deadline) or falls back to secondary sources.
 2. **Anomaly Detection (`src.engine.anomaly_detector`)**: Computes OI, PCR, Max Pain, support/resistance walls, volume anomalies, and checks fake LTP / Zero OI triggers.
-3. **Engine-Aligned LLM Enrichment (`src.engine.llm_enrichment`)**: High-priority LLM chain provides execution context without overriding engine direction. Fast failover (12s) with 10-minute provider failure cooldown.
-4. **Strategy Execution (`src.engine.strategy_registry`)**: Executes strategy runners (`CORE`, `TIMEFRAME`, `NG_PARITY`, `NG_MOMENTUM`, `NG_EVENT`).
-5. **Risk Engine Guardrails (`src.engine.risk_engine`)**: Evaluates capital limits, max open trades, and symbol-level TFSS combined net delta cap (0.60).
+3. **Engine-Aligned LLM Enrichment (`src.engine.llm_enrichment`)**: High-priority LLM chain provides execution context without overriding engine direction. Fast failover (12s–20s) with 10-minute provider failure cooldown.
+4. **Strategy Execution (`src.engine.strategy_registry`, `src.stockfut.jobs`)**: Executes options strategy runners (`MULTILEG`, `CORE`, `TIMEFRAME`, `TFSS`, `NG_PARITY`, `NG_MOMENTUM`, `NG_EVENT`), alongside the automated NSE Stock Futures swing execution system (`src.stockfut`).
+5. **Risk Engine Guardrails (`src.engine.risk_engine`)**: Evaluates capital limits, max open trades, symbol-level TFSS combined net delta cap (0.60), dynamic TFSS book margin scaling up to 40% of total portfolio capital (`get_tfss_max_book_margin()`), and 0.03-delta disaster tail wings.
 6. **Persistence & Position Tracking (`src.models.schema`)**: WAL-mode SQLite database with `BEGIN IMMEDIATE` transaction locks and lock retries.
-7. **Structured Alerting (`src.alerts.digest`)**: Formats Telegram alerts verified strictly against committed database trades (`paper_trades`/`live_trades`).
-8. **Scheduler (`src.scheduler.job_runner.start_scheduler`)**: Main loop ticks every 10s, dispatches interval-driven scans per market class. **Mandatory final scan** at market close (15:38 IST NSE/BSE, 23:30 IST MCX) via `_maybe_market_close_scan()`, guaranteed to run regardless of configured scan frequency, scheduled 2 minutes before exchange close to allow order execution for adjustments. Uses per-class/date dedup tracker (`_last_market_close_scan_tracker`) to prevent duplicate scans within the same trading session.
+7. **Structured Alerting (`src.alerts.digest`, `src.alerts.futures_digest`)**: Formats Telegram alerts verified strictly against committed database trades (`paper_trades`/`live_trades`/`multi_leg_trades`/`stockfut_trades`).
+8. **Scheduler (`src.scheduler.job_runner.start_scheduler`)**: Main loop ticks every 10s, dispatches interval-driven scans per market class. **Mandatory final scan** at market close (15:38 IST NSE/BSE, 23:30/23:55 IST MCX) via `_maybe_market_close_scan()`, guaranteed to run regardless of configured scan frequency, scheduled 2 minutes before exchange close to allow order execution for adjustments. Uses per-class/date dedup tracker (`_last_market_close_scan_tracker`) to prevent duplicate scans within the same trading session.
 
 ---
 
@@ -208,14 +208,14 @@
 
 ### F8: Symbol-Aware LLM Provider Chain & Failure Cooldown (P1-HIGH)
 - **Symptom:** Unresponsive LLM provider causes 35s scan stalls on every tick.
-- **Chain Priorities (OpenCode Zen is always PRIMARY; OmniRouter Antigravity models come second):**
-  - **NSE & BSE (live_verdict):** OpenCode Zen -> OmniRouter (Antigravity) -> Groq -> GitHub Models -> NVIDIA NIM -> Bedrock -> OpenRouter -> Gemini
-  - **MCX Symbols (live_verdict):** OpenCode Zen -> OmniRouter (Antigravity) -> Groq -> GitHub Models -> AnyAPI Free -> Bedrock Mantle -> NVIDIA NIM -> Bedrock -> OpenRouter -> Gemini -> SambaNova
-  - **eod_review:** OpenCode Zen EOD -> OmniRouter (Antigravity) -> Groq -> GitHub Models -> Bedrock Mantle -> NVIDIA NIM -> OpenRouter (Nemotron)
-  - **formatting:** OpenCode Zen -> OmniRouter (Antigravity) -> Bedrock Mantle -> GitHub Models -> Groq -> NVIDIA NIM -> OpenRouter (Qwen coder)
-- **OmniRouter group is Antigravity-only** (`antigravity/*` via port 20128, timeout 20s) — OpenCode free models were removed from it. No `claude/oc/*` models remain.
-- **Self-Heal:** 12-second provider timeout (OmniRouter group 20s). HTTP 500, empty content, or network exceptions trigger an automatic 10-minute cooldown (`_PROVIDER_COOLDOWN_UNTIL[key] = now + 600.0`), skipping failing providers instantly on subsequent ticks.
-- **OmniRouter read-timeout policy (2026-08-25 fix):** A single read timeout on one OmniRouter route (e.g. agent-backed `Claude/Antigravity` on large verdict prompts) cools down only that provider for 60s. The whole `omnirouter-primary`/`omnirouter-sentinel` group is cooled down 90s only after 2 consecutive route timeouts in one call, or immediately on host-level errors (connection refused/reset → 120s). This prevents one slow upstream route from benching all premium models behind the local proxy.
+- **Production Chain Priorities (OmniRouter is PRIMARY across all symbol classes):**
+  - **NSE & BSE (live_verdict & multileg):** OmniRouter (Claude-Models Combo → Claude/Antigravity → claude/Free → GPT 5.5 CX → GLM 5 KR → Claude Haiku 4.5 KR) -> Groq -> Gemini -> OpenCode Zen -> NVIDIA NIM -> OpenRouter
+  - **MCX Symbols (live_verdict & multileg):** OmniRouter (Claude-Models Combo → Claude/Antigravity → claude/Free → GPT 5.5 CX → GLM 5 KR → Claude Haiku 4.5 KR) -> Groq -> Gemini -> OpenCode Zen -> NVIDIA NIM -> OpenRouter
+  - **eod_review:** OmniRouter EOD -> Groq -> GitHub Models -> Bedrock Mantle -> NVIDIA NIM -> OpenRouter (Nemotron)
+  - **formatting:** OmniRouter -> Groq -> NVIDIA NIM -> OpenRouter
+- **AI Decision Governance:** Governed by `live_ai_decision_mode = full` in `runtime_config.json`. (`settings.py AI_DECISION_MODE` is legacy and not used on the live path).
+- **Self-Heal:** 12-second provider timeout (OmniRouter group 15s–20s). HTTP 500, empty content, or network exceptions trigger an automatic 10-minute cooldown (`_PROVIDER_COOLDOWN_UNTIL[key] = now + 600.0`), skipping failing providers instantly on subsequent ticks.
+- **OmniRouter read-timeout policy:** A single read timeout on one OmniRouter route cools down only that provider for 60s. The whole `omnirouter-primary`/`omnirouter-sentinel` group is cooled down 90s only after 2 consecutive route timeouts in one call, or immediately on host-level errors (connection refused/reset → 120s). This prevents one slow upstream route from benching all premium models behind the local proxy.
 
 ### F9: Alert Payload Execution Discrepancy Guard (P1-HIGH)
 - **Symptom:** Alert header reported `🟢 Entered` while the Signal section reported `Trade: ✗ Not entered` for setups blocked by Risk Engine or missing valid contracts.
@@ -256,12 +256,13 @@
   5. Decoupled `effective_confidence` in both `multileg_paper_trading.py` and `multileg_live_trading.py`: `effective_confidence = llm_conf` for non-directional strategies, while preserving `min(llm_conf, engine_conf)` for directional spreads.
 
 
+### F10: Friday Weekend Gap Risk Square-Off (P0-CRITICAL)
 - **Symptom:** Open position carried over the weekend exposing account to gap risk.
-- **Self-Heal:** Range check `"15:25" <= current_time <= "15:30"` IST (MCX `"23:25" <= current_time <= "23:30"`) forces square-off of open positions on Fridays.
+- **Self-Heal:** Range check `"15:35" <= current_time <= "15:40"` IST for NSE/BSE F&O (MCX `"23:25" <= current_time <= "23:30"` IST / `"23:50" <= current_time <= "23:55"` Winter DST) forces mandatory square-off of open positions on Fridays via dedicated Friday sweep watchdogs.
 
-### F11: Natural Gas Session Regime Routing (P1-HIGH)
-- **Symptom:** Static NG strategy logic misaligned with market session hours.
-- **Self-Heal:** `ng_session_router.py` dynamically routes NATURALGAS to `NG_PARITY`, `NG_EVENT`, or `NG_MOMENTUM` based on time of day. Daily loss cap checks are disabled to allow valid setups.
+### F11: Natural Gas Session Regime Routing & Daily Loss Cap (P1-HIGH)
+- **Symptom:** Static NG strategy logic misaligned with market session hours or runaway entries on losing streaks.
+- **Self-Heal:** `ng_session_router.py` dynamically routes NATURALGAS to `NG_PARITY`, `NG_EVENT`, or `NG_MOMENTUM` based on time of day. Natural Gas enforces a hard daily loss cap after 5 SL hits, blocking new entries for the remainder of the session. Macro EIA storage bias (`BULLISH_TIGHTENING` / `BEARISH_LOOSENING`) is dynamically overridden when intraday 1H NYMEX trend and live options flow indicate an opposing breakdown or breakout.
 
 ### F13: Trade Status Discrepancy for Profitable Exits (P1-HIGH)
 - **Symptom:** Trade History displays red `SL HIT` status badge for trades with positive net P&L (e.g. +₹26,863 and +₹27,288).
@@ -479,19 +480,30 @@
 
 ---
 
-## 3. Scan Sentinel Safety Suite (Rules R1–R12)
-1. **R1 (Data Integrity):** Verifies LTP > 0, IV >= 0, and non-null strike increments.
-2. **R2 (PCR Sanity):** Validates PCR within `[0.10, 5.00]`.
-3. **R3 (AI Inversion Guard):** Confirms LLM thesis matches OI engine direction.
-4. **R4 (Risk Cap Enforcement):** Verifies TFSS net delta <= 0.60 and book margin <= 600k.
-5. **R5 (Position Synchronization):** Reconciles paper, shadow, and live broker trade states. `sync_direct_kite_positions()` in `live_trading.py` adopts manually placed Kite positions. Requires module-level `import time` in `schema.py` to avoid `NameError` in database lock retry handlers.
-6. **R6 (Digest Truthfulness):** Verifies Telegram alert text matches DB entry status.
-7. **R7 (Database Health):** Verifies WAL mode and connection lock availability.
-8. **R8 (Fetcher Fallback Coverage):** Ensures secondary fetcher availability on primary failure.
-9. **R9 (Expiry Alignment):** Confirms DTE calculation and contract rollover dates.
-10. **R10 (Friday Square-off):** Ensures Friday exit triggers execute before weekend close.
-11. **R11 (Cooldown Enforcement):** Verifies failing LLM and fetcher cooldown timers.
-12. **R12 (Order Execution Integrity):** Confirms tick size, lot sizing, and slippage calculations.
+## 3. Scan Sentinel Safety Suite (Active Production Rules)
+Deterministic zero-latency safety rules executed by `src.engine.scan_sentinel` at the conclusion of every symbol scan tick. Flags are classified as `INFO`, `WARNING`, or `CRITICAL`. If any rule flags an anomaly, an asynchronous AI diagnostic agent correlates log evidence against this Knowledge Base and dispatches instant Telegram ops alerts:
+
+1. **R1: `R1_PREMIUM_IS_UNDERLYING` (CRITICAL)**: Flags if target 1 or target 2 premium is within 5% of the underlying index spot ($0.95 < \text{target}/\text{underlying} < 1.05$), catching unpopulated or illiquid option quotes defaulting to spot.
+2. **R2: `R2_HIGH_ERROR_RATE` (WARNING)**: Flags if $\ge 3$ `ERROR` or `CRITICAL` log messages were captured during the symbol scan cycle.
+3. **R3: `R3_DEAD_OPTION_CHAIN` (WARNING)**: Flags if $>80\%$ of option chain strikes have 0 LTP when total strikes $> 10$.
+4. **R4: `R4_SLOW_SCAN` (WARNING)**: Flags if scan duration exceeds 90 seconds (limit 90s). Skips AI diagnostic escalation as it is a performance warning (`ALERT_ONLY`).
+5. **R5: `R5_OPTION_TYPE_MISMATCH` (WARNING)**: Flags unexpected action/instrument mismatches on non-index symbols for CORE buy-premium setups. NOTE: `GO_SHORT + CE` (sell call) and `GO_LONG + PE` (sell put) are valid short-premium constructions used by MULTILEG/TFSS strategies and are permitted on index options.
+6. **R6: `R6_PREMIUM_OUT_OF_BOUNDS` (CRITICAL)**: Flags target option entry premium $> ₹5,000$ for standard option contracts.
+7. **R7: `R7_EXPIRED_CONTRACT` (CRITICAL)**: Flags if the scan resolved to an expired contract ($\text{DTE} < 0$).
+8. **R8: `R8_INVERSE_TARGET_SL` (CRITICAL)**: Flags inverse target/SL pricing: target premium $\le$ entry premium or stop loss $\ge$ entry premium on option BUY trades (or target $\ge$ entry, SL $\le$ entry on option SELL trades). Excludes underlying-level stop values.
+9. **R9: `R9_ZERO_SPOT_PRICE` (CRITICAL)**: Flags if underlying spot price is $\le 0.0$ or missing for the symbol.
+10. **R10: `R10_PIPELINE_CRASH` (CRITICAL)**: Flags unhandled exceptions or pipeline crashes during the symbol scan execution.
+11. **R11: `R11_EXTREME_STRIKE_DISTANCE` (INFO)**: Flags if selected option strike is $>40\%$ away from underlying spot price.
+12. **R12: `R12_ZERO_OI_DOMINANCE` (WARNING)**: Flags if $>85\%$ of option chain strikes return 0 Open Interest when total strikes $> 10$.
+13. **R13: `R13_CROSS_EXPIRY_STRIKE_MISMATCH` (CRITICAL)**: Flags if resolved instrument contract expiry does not match scan context expiry.
+14. **R14: `R14_LOT_SIZE_ZERO_OR_NEGATIVE` (CRITICAL)**: Flags if computed lot size $\le 0$ when an active trade is being entered or triggered.
+15. **R15: `R15_MARGIN_EXCEEDS_CAPITAL` (CRITICAL)**: Flags if required trade margin exceeds 2x available capital.
+16. **R17: `R17_CONFIDENCE_BELOW_THRESHOLD` (WARNING)**: Flags if LLM execution confidence is $> 0$ and $< 50\%$ (below random guessing floor).
+17. **R18: `R18_IV_PERCENTILE_MISSING_OR_STALE` (WARNING)**: Flags if tracked IV percentile data is $> 7$ days stale (only evaluated when IV percentile tracking is active).
+18. **R19: `R19_MCX_AFTER_CUTOFF_TIME` (CRITICAL)**: Flags if an MCX commodity entry is proposed at or after 23:15 IST on expiry day.
+19. **R21: `R21_GREEKS_CALCULATION_FAILED` (WARNING)**: Flags if all Black-Scholes Greeks (delta, theta, vega) calculate to near zero ($<0.01$) on an active, non-blocked option trade.
+20. **R23: `R23_STALE_UNDERLYING_PRICE` (CRITICAL)**: Flags if underlying spot price is frozen identically across $\ge 3$ consecutive market-hour scans, detecting stale scraper caches or frozen SSR feeds.
+*(Note: Rules R16 Duplicate Signal Key, R20 Zero Volume on Selected Strike, and R22 Broker Session Expired are architected and deferred to v2).*
 
 ---
 
@@ -552,7 +564,7 @@ Pre-open session uses a call auction mechanism to discover a single equilibrium 
 - **Requirement:** Bot must track index heavyweights (NIFTY top 8: HDFCBANK 10.24%, ICICIBANK 9.14%, RELIANCE 7.47%, BHARTIARTL 4.88%, LT 4.55%, AXISBANK 3.66%, INFY 3.64%, SBIN 3.48%; BANKNIFTY top 5: HDFCBANK 27.5%, ICICIBANK 23.5%, SBIN 11.2%, AXISBANK 10.2%, KOTAKBANK 8.5%) to gauge institutional market flow and fine-tune trade decisions.
 - **Root Cause & Previous Gap:** `index_weights_sentiment` was isolated in dashboard queries and never injected into live scanning context or multi-leg prompt. Consequently, quant engine could trigger Long Call trades while banking pillars (>26% of NIFTY and >70% of BANKNIFTY) were aggressively selling off.
 - **Fix & Architectural Safeguards:**
-  1. **Sub-300ms Constituent Ingestion (`src/engine/index_weights.py`)**: Updated `DEFAULT_WEIGHTS` with exact official weights for top constituents and normalized remaining basket. Wired Dhan ScanX API for live constituent snapshots (90s cache TTL) with yfinance fallback. Computes `weighted_momentum`, `banking_drag`, `top_heavyweights`, `heavyweight_summary`, `advance_decline`, and `heavyweight_conflict`.
+  1. **Sub-300ms Constituent Ingestion (`src/engine/index_weights.py`, `src/engine/index_contributors.py`)**: Zerodha Kite Connect (`kite.quote()`) serves as the authoritative primary source for all 50 NIFTY, 14 BANKNIFTY, and 30 SENSEX constituent quotes, achieving sub-300ms ingestion with fallback to Dhan ScanX and yfinance. Computes `weighted_momentum`, `banking_drag`, `top_heavyweights`, `heavyweight_summary`, `advance_decline`, and `heavyweight_conflict`. Ensures 100% parity with the `/contributors` cockpit and consolidated 3-index Telegram alerts (`src/alerts/heavyweight_digest.py`).
   2. **Pipeline Injection (`src/engine/pipeline.py`)**: Injects live heavyweight sentiment into `scan_context["index_weights_sentiment"]` and `scan_context["heavyweight_intel"]` for NIFTY, BANKNIFTY, and SENSEX before immutable snapshot caching and intelligence generation.
   3. **Confidence Calibration & Force Order (`src/engine/intelligence.py`)**: Confluence boost (+6 points) awarded when heavyweights align with verdict. Contrarian penalty (-15 points) and hard ceiling cap (min(ceiling, 65%)) applied when verdict opposes heavyweight momentum (<= -0.30%) or faces severe banking drag (<= -0.75%). Heavyweight forces added to Bull/Bear criticality order.
   4. **Decision Pipeline Hard/Soft Gate (`src/engine/decision_pipeline.py`)**: `step_heavyweight_alignment` checks both overall weighted momentum and banking sector drag, blocking contrarian trades that fight heavyweight flow.
@@ -684,3 +696,71 @@ Pre-open session uses a call auction mechanism to discover a single equilibrium 
   4. `close_book()` in `src/models/schema.py` automatically dispatches detailed Telegram exit alerts (P&L, exit reason, spot progression) for all closed multi-leg books.
   5. `pipeline.py` zero-signal suppression check accounts for `has_open_multileg`.
   6. `ops_agent.py` implements playbook `P14_ALERT_RISK_BREACH` to monitor and escalate hard-risk breaches and large drawdowns independently.
+
+### F157: MCX Commodity Options vs Matching Futures Contract Month Alignment (P0-CRITICAL)
+- **Status:** RESOLVED & VERIFIED across `kite_fetcher.py`, `router.py`, `chart_fetcher.py`, and `pipeline.py`.
+- **Symptom:** Spot/underlying price (e.g. 304.4) was compared against a next-month options chain (strikes 340–350, max pain 345.0), triggering false divergence warnings ("underlying spot price at 304.4 sits far below max pain 345.0"), corrupting Moneyness calculations, and blocking valid non-directional and directional trades.
+- **Root Cause:** MCX commodity options (e.g. `NATURALGAS`, `CRUDEOIL`) expire prior to the futures contract. When near-month futures are in their final delivery/expiry phase, options trading migrates to the next-month contract. Comparing near-month futures quotes with next-month option strikes creates an artificial basis mismatch.
+- **Self-Heal & Fix:**
+  1. Implemented `_match_mcx_future()` in `src/fetchers/kite_fetcher.py` to inspect the option contract expiry month and dynamically map it to the matching futures contract month, ensuring underlying spot strictly mirrors the options contract's underlying instrument.
+  2. Added strike-vs-spot sanity checking in `src/fetchers/router.py` to reject misaligned quote feeds.
+  3. Aligned `src/fetchers/chart_fetcher.py` to fetch historical candles for the matching futures contract month rather than defaulting to near-month.
+
+### F158: 0 DTE Marketable Limit Fills on Long Wings & Fill Price Resolution (P0-CRITICAL)
+- **Status:** RESOLVED & VERIFIED in `live_trading.py` and `multileg_live_trading.py`.
+- **Symptom:** Multi-leg live execution on 0 DTE expiry days experienced resting limit timeouts on long wings, missing fills by ₹1–2 and triggering automated rollbacks (`_rollback_placed_legs`).
+- **Root Cause:** Fast-moving 0 DTE option premiums move away from static limit quotes placed at the snapshot ask. Placing static limit orders on long hedge wings during rapid volatility surges leaves orders unfilled at the exchange.
+- **Self-Heal & Fix:**
+  1. Updated `place_kite_order()` in `src/engine/live_trading.py` to inspect live market depth (`kite.quote()`) for `best_ask` and apply a dynamic marketable limit buffer: `max(ask * 0.005, 1.50, 10 * tick_size)` to guarantee instant fills on long hedge wings.
+  2. Integrated `get_order_execution_details()` to inspect Kite order history and capture the exact weighted average fill price instead of relying on snapshot estimates.
+
+### F159: Paper-Live Multi-Leg Exclusivity Synchronization (P0-CRITICAL)
+- **Status:** RESOLVED & VERIFIED in `multileg_live_trading.py`, `multileg_paper_trading.py`, and `pipeline.py`.
+- **Symptom:** Live execution engine attempted to open an independent real multi-leg position on Kite when a paper trade was already open for the same setup/symbol (or vice-versa), risking duplicate exposure.
+- **Root Cause:** Paper and live multi-leg execution runners tracked book limits in isolation without cross-checking prior cycle open books.
+- **Self-Heal & Fix:**
+  1. Implemented `check_book_conflicts()` in `src/engine/multileg_live_trading.py` and `src/engine/multileg_paper_trading.py`.
+  2. Enforced cross-checking of open books from prior cycles (`digest_id != current_digest_id`) across both paper and live, enforcing strict exclusivity and preventing uncoordinated live entries when paper is holding an active book.
+
+### F160: NSE Stock Futures Swing Trading Architecture & Risk Lifecycle (P0-CRITICAL)
+- **Status:** RESOLVED & VERIFIED across `src/stockfut/` (`jobs.py`, `executor.py`, `features.py`, `levels.py`, `setups.py`, `universe.py`, `portfolio_risk.py`, `reconcile.py`), `/futures` cockpit, and `src/alerts/futures_digest.py`.
+- **Requirement:** Deliver an automated, end-to-end swing trading system on daily bars for the top 200 liquid NSE single-stock futures.
+- **Architecture & Operational Lifecycle:**
+  1. **Universe Filtering (`universe.py`)**: Filters top 200 F&O stocks by MWPL, NSE ban lists, quarterly earnings blackouts, turnover, and relative strength ranking.
+  2. **Feature & Setup Pipeline (`features.py`, `setups.py`)**: Computes 20-day trend, 2-day pullbacks, key S/R zones, volume expansion, and matrix permission.
+  3. **Scheduled Jobs (`jobs.py`)**:
+     - `08:45 IST`: Ban list and event refresh.
+     - `09:30 IST`: Morning execution routine (sequential exits -> fill confirmation -> broker margin refresh -> armed entries).
+     - `15:45 IST`: Post-close scan.
+     - `19:30 IST`: EOD scan on completed daily bars -> ARMED watchlist.
+     - Every 15 min: Periodic reconciliation + portfolio risk monitor.
+  4. **Portfolio Risk Limits (`portfolio_risk.py`)**: Maximum 5 concurrent open positions, sector concentration limits, margin utilization thresholds, and GTT stop loss management.
+  5. **Cockpit & Alerts**: Real-time management via `/futures` (`futures.html`) and structured Telegram digests (`futures_digest.py`).
+
+### F161: Timeframe Separation & Dual 3H Entry Paths (P1-HIGH)
+- **Status:** RESOLVED & VERIFIED in `decision_pipeline.py` and `AGENTS.md`.
+- **Architecture Principle:** Strict timeframe role separation. 3H candles are reserved for entry timing ONLY; 1H candles are reserved for exit timing ONLY. They are never cross-checked against each other.
+- **Dual 3H Entry Paths:**
+  1. **Dedicated Reversal Entry**: Requires underlying continuous trend (downtrend for buy, uptrend for sell) + 3H candle closes above/below previous 3H candle.
+  2. **High-Conviction Continuation Breakout**: Requires breakout beyond previous 3H high/low + 2x OI differential multiplier via `TF_CONTINUATION_OI_MULTIPLIER = 2.0`.
+
+### F162: Weekend & Off-Session Guard Invariants (P1-HIGH)
+- **Status:** RESOLVED & VERIFIED in `live_trading.py`, `job_runner.py`, and `gdrive_backup.py`.
+- **Symptom:** False-alarm Telegram alerts and wasteful API polling over weekends (Kite token expiration warnings, off-session exit checks, unneeded database backups).
+- **Self-Heal & Fix:**
+  1. In `live_trading.py`, Kite token expiry alerts and 15-minute fast exit checks bypass execution on weekends (`now_ist.weekday() >= 5`) and when markets are closed, strictly decoupling paper (`trade_mode = 'PAPER'`) and shadow positions from live broker alert counts.
+  2. In `job_runner.py` and `gdrive_backup.py`, 23:56 PM IST nightly database backup is restricted to Monday–Friday (`is_weekday = now_ist.weekday() < 5`) with a defensive function bypass on Saturdays and Sundays.
+  3. Pre-market Kite token check at 08:45 IST forces automated login before market open.
+
+---
+
+## 5. Production UI Contract & Operational KPI Standards
+1. **Swiss Modern Flat Architecture (v2.0 UI Contract)**:
+   - Built on solid 3-tier elevation surfaces (`#090b0e`, `#10141a`, `#161c24`), crisp 1px borders (`var(--border)`), and tabular figures (`font-variant-numeric: tabular-nums`). Zero decorative gradients or glassmorphism blur.
+   - Immediate dark mode initialization in `<head>` to prevent light-mode FOUC, and discrete 32×32px theme toggle buttons across all 8 web templates.
+2. **Standardized Paper Trading KPIs**:
+   - 6 comprehensive performance KPIs: Total Trades, Win Rate %, Total P&L (₹), Avg P&L (₹), Profit Factor, and Consecutive Streak.
+   - Collapsible Equity Curve linked to Total P&L with fractional `k`/`L` formatting and sub-second holding duration sanitization (`—`).
+3. **Institutional Execution Dossier & Invalidation State Machine (`/contributors`)**:
+   - Top Heavyweights Net Point Movement table with compact 2-line headers, zero horizontal scroll, center-zero diverging mini-bars, and baseline shading.
+   - Invalidation State Machine automatically trips `THESIS INVALIDATED — STAND DOWN` in high-contrast red when 15m scan delta impulse exceeds $\pm 25$ points or boundary walls breach, cleanly suppressing contradictory options execution mandates.
