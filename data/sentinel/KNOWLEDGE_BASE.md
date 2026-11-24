@@ -3,7 +3,7 @@
 ## 1. Core Pipeline Flow
 1. **Option Chain Fetching (`src.fetchers.router`)**: Cascading multi-source fetch with Zerodha Kite (`kite`) as the primary fetcher across all symbols (NSE, BSE, and MCX), followed by `niftytrader`, `shoonya`, `sensibull`, `dhan_headless`, `nse_public`, and `moneycontrol`. Returns immediately on primary success (12s deadline) or falls back to secondary sources.
 2. **Anomaly Detection (`src.engine.anomaly_detector`)**: Computes OI, PCR, Max Pain, support/resistance walls, volume anomalies, and checks fake LTP / Zero OI triggers.
-3. **Engine-Aligned LLM Enrichment (`src.engine.llm_enrichment`)**: High-priority LLM chain provides execution context without overriding engine direction. Fast failover (12s–20s) with 10-minute provider failure cooldown.
+3. **Engine-Aligned LLM Enrichment (`src.engine.llm_enrichment`)**: High-priority LLM chain led by **Antigravity Direct** (Gemini 3.8 Flash High via standalone Google CloudCode SSE bridge, bypassing OmniRouter) with secondary fallback to OmniRouter proxy models, Groq, Gemini, OpenCode Zen, NVIDIA NIM, and OpenRouter. Provides execution context without overriding engine direction. Fast failover (12s–25s) with 10-minute provider failure cooldown (30s for Antigravity 429s).
 4. **Strategy Execution (`src.engine.strategy_registry`, `src.stockfut.jobs`)**: Executes options strategy runners (`MULTILEG`, `CORE`, `TIMEFRAME`, `TFSS`, `NG_PARITY`, `NG_MOMENTUM`, `NG_EVENT`), alongside the automated NSE Stock Futures swing execution system (`src.stockfut`).
 5. **Risk Engine Guardrails (`src.engine.risk_engine`)**: Evaluates capital limits, max open trades, symbol-level TFSS combined net delta cap (0.60), dynamic TFSS book margin scaling up to 40% of total portfolio capital (`get_tfss_max_book_margin()`), and 0.03-delta disaster tail wings.
 6. **Persistence & Position Tracking (`src.models.schema`)**: WAL-mode SQLite database with `BEGIN IMMEDIATE` transaction locks and lock retries.
@@ -208,13 +208,18 @@
 
 ### F8: Symbol-Aware LLM Provider Chain & Failure Cooldown (P1-HIGH)
 - **Symptom:** Unresponsive LLM provider causes 35s scan stalls on every tick.
-- **Production Chain Priorities (OmniRouter is PRIMARY across all symbol classes):**
-  - **NSE & BSE (live_verdict & multileg):** OmniRouter (Claude-Models Combo → Claude/Antigravity → claude/Free → GPT 5.5 CX → GLM 5 KR → Claude Haiku 4.5 KR) -> Groq -> Gemini -> OpenCode Zen -> NVIDIA NIM -> OpenRouter
-  - **MCX Symbols (live_verdict & multileg):** OmniRouter (Claude-Models Combo → Claude/Antigravity → claude/Free → GPT 5.5 CX → GLM 5 KR → Claude Haiku 4.5 KR) -> Groq -> Gemini -> OpenCode Zen -> NVIDIA NIM -> OpenRouter
-  - **eod_review:** OmniRouter EOD -> Groq -> GitHub Models -> Bedrock Mantle -> NVIDIA NIM -> OpenRouter (Nemotron)
-  - **formatting:** OmniRouter -> Groq -> NVIDIA NIM -> OpenRouter
+- **Production Chain Priorities (Antigravity Direct is PRIMARY at Rank 0):**
+  - **Rank 0 (Standalone Direct Bridge):** `Antigravity Direct (Gemini 3.8 Flash High)` via `src.engine.antigravity_client`. Connects directly to Google's Cloud Code SSE endpoint (`https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse`). Completely standalone and independent; bypasses the OmniRouter proxy (`localhost:20128`) entirely.
+  - **Rank 1 (OmniRouter Fallback Proxy):** OmniRouter local proxy fallback group (`Claude-Models Combo` → `Claude/Antigravity` → `claude/Free` → `GPT 5.5 CX` → `GLM 5 KR` → `Claude Haiku 4.5 KR`). Engaged only if Antigravity Direct fails, rate-limits, or times out.
+  - **Rank 2:** Groq
+  - **Rank 3:** Gemini API Direct
+  - **Rank 4:** OpenCode Zen
+  - **Rank 5:** NVIDIA NIM
+  - **Rank 6:** OpenRouter
+  - **eod_review:** Antigravity Direct -> OmniRouter EOD -> Groq -> GitHub Models -> Bedrock Mantle -> NVIDIA NIM -> OpenRouter (Nemotron)
+  - **formatting:** Antigravity Direct -> OmniRouter -> Groq -> NVIDIA NIM -> OpenRouter
 - **AI Decision Governance:** Governed by `live_ai_decision_mode = full` in `runtime_config.json`. (`settings.py AI_DECISION_MODE` is legacy and not used on the live path).
-- **Self-Heal:** 12-second provider timeout (OmniRouter group 15s–20s). HTTP 500, empty content, or network exceptions trigger an automatic 10-minute cooldown (`_PROVIDER_COOLDOWN_UNTIL[key] = now + 600.0`), skipping failing providers instantly on subsequent ticks.
+- **Self-Heal:** 12-second provider timeout (Antigravity Direct 20s–25s, OmniRouter group 15s–20s). HTTP 500, empty content, or network exceptions trigger an automatic 10-minute cooldown (`_PROVIDER_COOLDOWN_UNTIL[key] = now + 600.0`), skipping failing providers instantly on subsequent ticks. For Antigravity Direct, upstream 429 uses a short 30s cooldown because quotas reset quickly.
 - **OmniRouter read-timeout policy:** A single read timeout on one OmniRouter route cools down only that provider for 60s. The whole `omnirouter-primary`/`omnirouter-sentinel` group is cooled down 90s only after 2 consecutive route timeouts in one call, or immediately on host-level errors (connection refused/reset → 120s). This prevents one slow upstream route from benching all premium models behind the local proxy.
 
 ### F9: Alert Payload Execution Discrepancy Guard (P1-HIGH)
