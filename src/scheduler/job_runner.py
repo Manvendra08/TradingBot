@@ -2094,28 +2094,65 @@ def start_scheduler(immediate: bool = False):
                 except Exception as he:
                     log.debug("[scheduler] Daily holiday calendar refresh skipped: %s", he)
 
-            # Weekend/Holiday Alert
+            # Weekend/Holiday Alert — dispatches once per day during pre-market window (08:30–09:00 IST)
+            # Differentiates full-market closures from partial MCX session holidays (e.g. MCX opening at 17:00 IST).
             if not immediate:
-                all_closed_today = True
-                for symbol in WATCH_SYMBOLS:
-                    _, _, days = market_window(symbol)
-                    if now_ist.weekday() in days:
-                        from config.holidays import is_market_holiday
-                        if not is_market_holiday(symbol, now_ist):
-                            all_closed_today = False
-                            break
-                if all_closed_today:
-                    if _sent_market_closed_date != current_date:
+                now_hm = now_ist.strftime("%H:%M")
+                is_weekend = now_ist.weekday() >= 5
+                # On weekends dispatch at 09:00 IST; on weekdays dispatch during pre-market 08:30-09:00 IST
+                alert_time_reached = ("08:30" <= now_hm <= "09:05") if not is_weekend else ("09:00" <= now_hm <= "09:35")
+                if alert_time_reached and _sent_market_closed_date != current_date:
+                    from config.holidays import is_market_holiday, get_holiday_reason
+
+                    # Check which watched classes trade today
+                    # We evaluate both regular market hours and MCX evening session (17:00-23:30 IST)
+                    nse_open_today = False
+                    mcx_open_today = False
+
+                    midday_test = now_ist.replace(hour=11, minute=0, second=0, microsecond=0)
+                    evening_test = now_ist.replace(hour=18, minute=0, second=0, microsecond=0)
+
+                    for s in WATCH_SYMBOLS:
+                        s_class = get_symbol_class(s)
+                        _, _, days = market_window(s)
+                        if now_ist.weekday() in days:
+                            if s_class in ("NSE_INDEX", "BSE_INDEX", "NSE_EQUITY", "BSE_EQUITY"):
+                                if not is_market_holiday(s, midday_test):
+                                    nse_open_today = True
+                            elif s_class in ("MCX_COMMODITY", "MCX_AGRI"):
+                                if not is_market_holiday(s, midday_test) or not is_market_holiday(s, evening_test):
+                                    mcx_open_today = True
+
+                    if not nse_open_today and not mcx_open_today:
                         _sent_market_closed_date = current_date
-                        from config.holidays import get_holiday_reason
                         h_reason = get_holiday_reason("NIFTY", now_ist) or get_holiday_reason("NATURALGAS", now_ist)
                         desc_str = f"market holiday ({h_reason})" if h_reason else "weekend"
                         log.info("[scheduler] Today is a %s. All markets are closed today.", desc_str)
                         try:
                             from src.alerts.telegram_dispatcher import send_text
-                            send_text(f"ℹ️ **Markets Closed** | Today is a {desc_str}. Scheduled scans are suspended. (To force a scan, run with `--now` or `--once`.)")
+                            send_text(
+                                f"ℹ️ **Markets Closed** | Today is a {desc_str}. All scheduled scans are suspended. (To force a scan, run with `--now` or `--once`.)"
+                            )
                         except Exception as e:
                             log.warning("[scheduler] Failed to send market closed Telegram alert: %s", e)
+                    elif not nse_open_today and mcx_open_today:
+                        # Partial holiday: NSE/BSE closed, but MCX opens in the evening
+                        _sent_market_closed_date = current_date
+                        h_reason = get_holiday_reason("NIFTY", now_ist) or "Exchange Holiday"
+                        log.info(
+                            "[scheduler] Today is %s for NSE/BSE. MCX commodity trading opens at 17:00 IST.",
+                            h_reason,
+                        )
+                        try:
+                            from src.alerts.telegram_dispatcher import send_text
+                            send_text(
+                                f"ℹ️ **Markets Notice** | Today is a market holiday for NSE/BSE ({h_reason}).\n\n"
+                                f"• **NSE/BSE (NIFTY/BANKNIFTY/SENSEX):** Closed all day.\n"
+                                f"• **MCX (NATURALGAS):** Morning session closed. **Evening session opens at 17:00 IST**.\n\n"
+                                f"_Scheduled MCX commodity scans will commence automatically at 17:00 IST._"
+                            )
+                        except Exception as e:
+                            log.warning("[scheduler] Failed to send partial holiday Telegram alert: %s", e)
 
             # ── Monday Weightage Refresh ──
             # Only trigger once every Monday; skip if already updated today
