@@ -837,9 +837,25 @@ def _format_forces(intel: dict) -> str:
     return "\n".join(lines) if lines else "  No force breakdown available."
 
 
-def _format_historical_oi(symbol: str) -> str:
+def format_price_delta_summary(ctx: dict) -> str:
+    """Format scan-to-scan price delta alongside day-over-day move from previous close."""
+    pts = ctx.get("price_change_points")
+    pct = ctx.get("price_change_pct")
+    scan_part = f"Scan {pts if pts is not None else 'N/A'} pts ({pct if pct is not None else 'N/A'}%)"
+    prev_close = ctx.get("prev_close")
+    day_pts = ctx.get("day_change_points")
+    day_pct = ctx.get("day_change_pct")
+    if prev_close and day_pts is not None and day_pct is not None:
+        return (
+            f"{scan_part} | Day vs Prev Close ({float(prev_close):.2f}): "
+            f"{float(day_pts):+.2f} pts ({float(day_pct):+.2f}%)"
+        )
+    return scan_part
+
+
+def _format_historical_oi(symbol: str, raise_on_empty: bool = True) -> str:
     """
-    Fetch last 10 scans and format OI/price trend for the LLM prompt.
+    Fetch last 5 scans and format OI/price trend for the LLM prompt.
     Includes price-impact analysis (OI vs price correlation).
     """
     from src.models.schema import get_conn
@@ -886,9 +902,11 @@ def _format_historical_oi(symbol: str) -> str:
             pass
 
         if not rows or len(rows) < 2:
-            raise ValueError(
-                f"Insufficient historical data ({len(rows) if rows else 0} scans < 2). Skipping LLM enrichment."
-            )
+            if raise_on_empty:
+                raise ValueError(
+                    f"Insufficient historical data ({len(rows) if rows else 0} scans < 2). Skipping LLM enrichment."
+                )
+            return "  Insufficient historical scans (<2)."
 
     chrono_rows = list(reversed(rows))
     lines = []
@@ -1134,7 +1152,7 @@ DATA:
 • Verdict: {intel.get("verdict_label")} @ {intel.get("confidence", 0)}% | {intel.get("trend", "N/A")}
 • Levels: S={ctx.get("support")} R={ctx.get("resistance")} Pain={ctx.get("max_pain")} PCR={ctx.get("pcr")}
 • OI Δ: CE {ce_oi_chg:+,} | PE {pe_oi_chg:+,} → Flow: {oi_flow_gt}
-• Price Δ: {ctx.get("price_change_pct", "N/A")}% ({ctx.get("price_change_points", "N/A")} pts)
+• Price Δ: {format_price_delta_summary(ctx)}
 • Chart: {_format_chart_data(ctx.get("chart_indicators"))}
 • Premiums (ATM ± 3, use exact LTP):
 {_format_option_premiums(ctx.get("option_rows"), ctx.get("atm_strike"))}
@@ -1517,7 +1535,7 @@ POSITION:
   Expiry: {expiry} | {time_left_str}
 
 MARKET:
-  Und {ctx.get("underlying")} | Chg {ctx.get("price_change_points",0)}pts ({ctx.get("price_change_pct","N/A")}%)
+  Und {ctx.get("underlying")} | {format_price_delta_summary(ctx)}
   PCR {ctx.get("pcr")} | S/R {ctx.get("support")}/{ctx.get("resistance")}
   OI Δ: CE {ce_chg:+,} | PE {pe_chg:+,} → Flow: {oi_flow_gt}
   (Ground Truth: PE buildup = Bullish Support; CE buildup = Bearish Resistance)

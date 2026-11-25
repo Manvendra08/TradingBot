@@ -609,8 +609,9 @@ class KiteDataClient:
             log.warning("[%s] No contracts found for expiry %s", base_sym, target_expiry)
             return None
 
-        # Determine underlying price
+        # Determine underlying price & previous trading day's close
         underlying_price = 0.0
+        prev_close = 0.0
         # Check spot or futures quote
         spot_keys = {
             "NIFTY": "NSE:NIFTY 50",
@@ -624,7 +625,9 @@ class KiteDataClient:
             try:
                 spot_q = k.quote([spot_key])
                 if spot_key in spot_q:
-                    underlying_price = float(spot_q[spot_key].get("last_price", 0.0))
+                    spot_item = spot_q[spot_key]
+                    underlying_price = float(spot_item.get("last_price", 0.0))
+                    prev_close = float((spot_item.get("ohlc") or {}).get("close") or 0.0)
             except Exception as e:
                 log.debug("[%s] Could not fetch spot price for %s: %s", base_sym, spot_key, e)
 
@@ -642,7 +645,9 @@ class KiteDataClient:
                     f_sym = f"{segment}:{target_fut['tradingsymbol']}"
                     fut_q = k.quote([f_sym])
                     if f_sym in fut_q:
-                        underlying_price = float(fut_q[f_sym].get("last_price", 0.0))
+                        fut_item = fut_q[f_sym]
+                        underlying_price = float(fut_item.get("last_price", 0.0))
+                        prev_close = float((fut_item.get("ohlc") or {}).get("close") or 0.0)
                         log.info(
                             "[%s] Matched underlying future %s (expiry: %s) for option expiry %s: price=%.2f",
                             base_sym,
@@ -747,6 +752,7 @@ class KiteDataClient:
         return {
             "symbol": base_sym,
             "underlying_price": underlying_price,
+            "prev_close": round(prev_close, 2) if prev_close > 0 else None,
             "expiry": target_expiry,
             "strikes": filtered,
             "source": "kite"

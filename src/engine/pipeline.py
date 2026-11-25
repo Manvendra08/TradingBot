@@ -1237,6 +1237,38 @@ def _process_prefetched_symbol(packet: dict, is_test: bool = False) -> None:
         if cs:
             scan_context["contributor_sentiment"] = cs
 
+    # Inject previous trading day's close and day-over-day price change across all symbols (NSE/BSE & MCX)
+    try:
+        prev_close = oc_data.get("prev_close")
+        if not prev_close or float(prev_close) <= 0:
+            cs_obj = scan_context.get("contributor_sentiment") or {}
+            prev_close = cs_obj.get("prev_close")
+        if (not prev_close or float(prev_close) <= 0) and not scan_context.get("is_expiry_swap"):
+            try:
+                today_start_utc = (
+                    (datetime.now(timezone.utc) + IST_OFFSET)
+                    .replace(hour=0, minute=0, second=0, microsecond=0)
+                    - IST_OFFSET
+                ).isoformat()
+                with get_conn(read_only=True) as conn:
+                    row_prev_day = conn.execute(
+                        "SELECT price FROM underlying_price WHERE symbol = ? AND fetched_at < ? ORDER BY fetched_at DESC LIMIT 1",
+                        (symbol, today_start_utc),
+                    ).fetchone()
+                    if row_prev_day and row_prev_day["price"]:
+                        prev_close = float(row_prev_day["price"])
+            except Exception:
+                pass
+        if prev_close and float(prev_close) > 0 and underlying and float(underlying) > 0:
+            pc_val = float(prev_close)
+            day_pts = round(float(underlying) - pc_val, 2)
+            day_pct = round((day_pts / pc_val) * 100.0, 2)
+            scan_context["prev_close"] = round(pc_val, 2)
+            scan_context["day_change_points"] = day_pts
+            scan_context["day_change_pct"] = day_pct
+    except Exception as dc_err:
+        log.debug("%s: day change calculation skipped gracefully: %s", symbol, dc_err)
+
     try:
         update_scan_snapshot(symbol, scan_context)
     except Exception:

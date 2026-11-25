@@ -478,8 +478,12 @@ def build_multileg_prompt(
 
     ce_oi_chg = int(scan_context.get("ce_oi_change") or 0)
     pe_oi_chg = int(scan_context.get("pe_oi_change") or 0)
-    px_chg_pts = scan_context.get("price_change_points", "N/A")
-    px_chg_pct = scan_context.get("price_change_pct", "N/A")
+    from src.engine.llm_enrichment import format_price_delta_summary, _format_historical_oi
+    price_move_str = format_price_delta_summary(scan_context)
+    try:
+        historical_oi_str = _format_historical_oi(symbol, raise_on_empty=False)
+    except Exception:
+        historical_oi_str = "  Historical data unavailable."
 
     # Determine canonical OI flow ground truth from options writers' perspective
     if pe_oi_chg > 0 and ce_oi_chg < 0:
@@ -592,7 +596,7 @@ def build_multileg_prompt(
 {symbol} | ₹{underlying:.2f} | ATM {atm_strike:.0f} | {expiry} (DTE {dte})
 Verdict: {verdict_label} {confidence}% | PCR {pcr:.2f} | S={support:.0f} R={resistance:.0f} Pain={max_pain:.0f} | Regime: {regime}
 OI Flow: CE Δ {ce_oi_chg:+,} | PE Δ {pe_oi_chg:+,} → {oi_flow_ground_truth}
-Price Move: {px_chg_pts} pts ({px_chg_pct}%)
+Price Move: {price_move_str}
 
 OPTIONS MARKET MECHANICS (MANDATORY WRITER GROUND TRUTH — NEVER INVERT):
 • PE Buildup (Positive PE OI change) = PUT WRITING / PUT SELLING by institutions establishing support floor → BULLISH. NEVER interpret PE buildup as bearish short positioning!
@@ -609,6 +613,8 @@ CHAIN (use only strikes with OI>0 and LTP>0):
 
 IV: {_format_iv_summary(option_rows, atm_strike)}
 Chart: 3H {float(ohlc_3h.get('open',0)):.0f}/{float(ohlc_3h.get('high',0)):.0f}/{float(ohlc_3h.get('low',0)):.0f}/{float(ohlc_3h.get('close',0)):.0f} | 1H {float(ohlc_1h.get('open',0)):.0f}/{float(ohlc_1h.get('high',0)):.0f}/{float(ohlc_1h.get('low',0)):.0f}/{float(ohlc_1h.get('close',0)):.0f}
+OI HISTORY (chronological oldest → CURRENT):
+{historical_oi_str}
 {news_section}
 Open: {open_summary}
 History: {historical_perf or _format_historical_strategy_performance(symbol)}
@@ -933,6 +939,9 @@ def build_multileg_exit_prompt(
         inval_level = float(inval_m.group(1))
         inval_str = f" | Invalidation Level: ₹{inval_level:.1f}"
 
+    from src.engine.llm_enrichment import format_price_delta_summary
+    mkt_delta_str = format_price_delta_summary(scan_context)
+
     prompt = f"""Managing multi-leg position: {symbol}
 
 Book {book.get('book_id', 'N/A')} | {book.get('strategy_type', 'N/A')}
@@ -945,7 +954,7 @@ Profit: {profit_target_pct:.0%} max | Stop: {stop_loss_pct:.0%} credit | Time: {
 LEGS:
 {chr(10).join(leg_lines)}
 
-MARKET: ₹{underlying:.2f} | {intel.get('verdict_label', 'N/A')} {intel.get('confidence', 0)}%{oi_flow_str}
+MARKET: ₹{underlying:.2f} ({mkt_delta_str}) | {intel.get('verdict_label', 'N/A')} {intel.get('confidence', 0)}%{oi_flow_str}
 
 ROLL TARGETS:
 {roll_targets_str}
